@@ -1,0 +1,10 @@
+[package]
+name = "gamebyro-cxx-bridge"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cxx = { workspace = true }
+
+[build-dependencies]
+cxx-build = { workspace = true }

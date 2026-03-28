@@ -1,0 +1,15 @@
+[package]
+name = "gamebyro-redux"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gamebyro-core = { workspace = true }
+gamebyro-renderer = { workspace = true }
+gamebyro-platform = { workspace = true }
+gamebyro-scripting = { workspace = true }
+gamebyro-cxx-bridge = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+anyhow = { workspace = true }
+winit = { workspace = true }

@@ -1,0 +1,8 @@
+[package]
+name = "gamebyro-scripting"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gamebyro-core = { workspace = true }
+log = { workspace = true }

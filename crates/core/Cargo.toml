@@ -1,0 +1,9 @@
+[package]
+name = "gamebyro-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+glam = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }

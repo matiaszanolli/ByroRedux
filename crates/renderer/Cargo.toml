@@ -1,0 +1,16 @@
+[package]
+name = "gamebyro-renderer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gamebyro-core = { workspace = true }
+gamebyro-platform = { workspace = true }
+ash = { workspace = true }
+ash-window = { workspace = true }
+gpu-allocator = { workspace = true }
+winit = { workspace = true }
+raw-window-handle = { workspace = true }
+log = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }

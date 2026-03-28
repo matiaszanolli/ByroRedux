@@ -1,0 +1,47 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/renderer",
+    "crates/platform",
+    "crates/scripting",
+    "crates/cxx-bridge",
+    "gamebyro-redux",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+# Engine crates
+gamebyro-core = { path = "crates/core" }
+gamebyro-renderer = { path = "crates/renderer" }
+gamebyro-platform = { path = "crates/platform" }
+gamebyro-scripting = { path = "crates/scripting" }
+gamebyro-cxx-bridge = { path = "crates/cxx-bridge" }
+
+# Vulkan / GPU
+ash = "0.38"
+ash-window = "0.13"
+gpu-allocator = { version = "0.27", features = ["vulkan"] }
+
+# Windowing
+winit = "0.30"
+raw-window-handle = "0.6"
+
+# Math
+glam = "0.29"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# C++ interop
+cxx = "1"
+cxx-build = "1"
