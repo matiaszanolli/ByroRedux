@@ -1,0 +1,537 @@
+//! World: the top-level container for all entities and component storages.
+//!
+//! Holds one `RwLock`-wrapped storage instance per component type in a
+//! `TypeMap`. Storages are lazily initialised on first `insert()`.
+//!
+//! The `RwLock` enables query methods to take `&self` instead of `&mut self`,
+//! so multiple queries can be held simultaneously across different component
+//! types without fighting the borrow checker.
+
+use super::query::{QueryRead, QueryWrite};
+use super::storage::{Component, ComponentStorage, EntityId};
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
+use std::sync::RwLock;
+
+pub struct World {
+    storages: HashMap<TypeId, RwLock<Box<dyn Any + Send + Sync>>>,
+    next_entity: EntityId,
+}
+
+impl World {
+    pub fn new() -> Self {
+        Self {
+            storages: HashMap::new(),
+            next_entity: 0,
+        }
+    }
+
+    /// Allocate a new entity id.
+    pub fn spawn(&mut self) -> EntityId {
+        let id = self.next_entity;
+        self.next_entity += 1;
+        id
+    }
+
+    /// Pre-register a storage for a component type without inserting data.
+    ///
+    /// Call this during setup if you need `query()`/`query_mut()` to
+    /// succeed for a type before any entity has that component.
+    /// Otherwise, storage is created lazily on first `insert()`.
+    pub fn register<T: Component>(&mut self) {
+        self.storages
+            .entry(TypeId::of::<T>())
+            .or_insert_with(|| RwLock::new(Box::new(T::Storage::default())));
+    }
+
+    /// Attach a component to an entity. Overwrites if already present.
+    /// Creates the storage for this component type if it doesn't exist yet.
+    pub fn insert<T: Component>(&mut self, entity: EntityId, component: T) {
+        self.storage_write::<T>().insert(entity, component);
+    }
+
+    /// Remove a component from an entity.
+    pub fn remove<T: Component>(&mut self, entity: EntityId) -> Option<T> {
+        self.storage_write::<T>().remove(entity)
+    }
+
+    /// Get an immutable reference to an entity's component.
+    ///
+    /// For holding references across multiple component types, use
+    /// [`query`](Self::query) / [`query_mut`](Self::query_mut) instead.
+    pub fn get<T: Component>(&self, entity: EntityId) -> Option<&T> {
+        let lock = self.storages.get(&TypeId::of::<T>())?;
+        let guard = lock.read().expect("storage lock poisoned");
+        let storage = guard
+            .downcast_ref::<T::Storage>()
+            .expect("storage type mismatch");
+        let ptr = storage.get(entity)? as *const T;
+        // SAFETY: We have &self which prevents any &mut self calls (insert,
+        // remove, etc). The RwLock read guard prevents write-lock acquisition
+        // through the query API. The pointer is valid for 'self because the
+        // storage allocation won't move or be freed while &self is held.
+        Some(unsafe { &*ptr })
+    }
+
+    /// Get a mutable reference to an entity's component.
+    pub fn get_mut<T: Component>(&mut self, entity: EntityId) -> Option<&mut T> {
+        self.storage_write::<T>().get_mut(entity)
+    }
+
+    /// Check if an entity has a specific component.
+    pub fn has<T: Component>(&self, entity: EntityId) -> bool {
+        self.storages
+            .get(&TypeId::of::<T>())
+            .is_some_and(|lock| {
+                let guard = lock.read().expect("storage lock poisoned");
+                guard
+                    .downcast_ref::<T::Storage>()
+                    .expect("storage type mismatch")
+                    .contains(entity)
+            })
+    }
+
+    /// Returns the number of entities that have component `T`.
+    pub fn count<T: Component>(&self) -> usize {
+        self.storages
+            .get(&TypeId::of::<T>())
+            .map_or(0, |lock| {
+                let guard = lock.read().expect("storage lock poisoned");
+                guard
+                    .downcast_ref::<T::Storage>()
+                    .expect("storage type mismatch")
+                    .len()
+            })
+    }
+
+    /// Returns the next entity id that will be assigned.
+    pub fn entity_count(&self) -> EntityId {
+        self.next_entity
+    }
+
+    // ── Query API (takes &self — RwLock provides interior mutability) ───
+
+    /// Acquire a read-only query for a single component type.
+    ///
+    /// Returns `None` if no entity has ever had this component
+    /// (storage was never created). Use `register::<T>()` during
+    /// setup if you need guaranteed access.
+    pub fn query<T: Component>(&self) -> Option<QueryRead<'_, T>> {
+        let lock = self.storages.get(&TypeId::of::<T>())?;
+        let guard = lock.read().expect("storage lock poisoned");
+        Some(QueryRead::new(guard))
+    }
+
+    /// Acquire a mutable query for a single component type.
+    ///
+    /// Returns `None` if no entity has ever had this component.
+    /// Only one `QueryWrite` can exist per component type at a time.
+    pub fn query_mut<T: Component>(&self) -> Option<QueryWrite<'_, T>> {
+        let lock = self.storages.get(&TypeId::of::<T>())?;
+        let guard = lock.write().expect("storage lock poisoned");
+        Some(QueryWrite::new(guard))
+    }
+
+    /// Acquire a read query and a write query for two different component
+    /// types simultaneously.
+    ///
+    /// Locks are acquired in `TypeId` order to prevent deadlocks.
+    ///
+    /// Returns `None` if either storage doesn't exist.
+    ///
+    /// # Panics
+    /// Panics if `A` and `B` are the same type (would deadlock).
+    pub fn query_2_mut<A: Component, B: Component>(
+        &self,
+    ) -> Option<(QueryRead<'_, A>, QueryWrite<'_, B>)> {
+        assert_ne!(
+            TypeId::of::<A>(),
+            TypeId::of::<B>(),
+            "query_2_mut: A and B must be different component types"
+        );
+
+        let lock_a = self.storages.get(&TypeId::of::<A>())?;
+        let lock_b = self.storages.get(&TypeId::of::<B>())?;
+
+        let id_a = TypeId::of::<A>();
+        let id_b = TypeId::of::<B>();
+
+        // Always lock in TypeId order to prevent deadlocks.
+        if id_a < id_b {
+            let guard_a = lock_a.read().expect("lock poisoned");
+            let guard_b = lock_b.write().expect("lock poisoned");
+            Some((QueryRead::new(guard_a), QueryWrite::new(guard_b)))
+        } else {
+            let guard_b = lock_b.write().expect("lock poisoned");
+            let guard_a = lock_a.read().expect("lock poisoned");
+            Some((QueryRead::new(guard_a), QueryWrite::new(guard_b)))
+        }
+    }
+
+    /// Acquire write queries for two different component types simultaneously.
+    ///
+    /// Locks are acquired in `TypeId` order to prevent deadlocks.
+    ///
+    /// Returns `None` if either storage doesn't exist.
+    ///
+    /// # Panics
+    /// Panics if `A` and `B` are the same type (would deadlock).
+    pub fn query_2_mut_mut<A: Component, B: Component>(
+        &self,
+    ) -> Option<(QueryWrite<'_, A>, QueryWrite<'_, B>)> {
+        assert_ne!(
+            TypeId::of::<A>(),
+            TypeId::of::<B>(),
+            "query_2_mut_mut: A and B must be different component types"
+        );
+
+        let lock_a = self.storages.get(&TypeId::of::<A>())?;
+        let lock_b = self.storages.get(&TypeId::of::<B>())?;
+
+        let id_a = TypeId::of::<A>();
+        let id_b = TypeId::of::<B>();
+
+        if id_a < id_b {
+            let guard_a = lock_a.write().expect("lock poisoned");
+            let guard_b = lock_b.write().expect("lock poisoned");
+            Some((QueryWrite::new(guard_a), QueryWrite::new(guard_b)))
+        } else {
+            let guard_b = lock_b.write().expect("lock poisoned");
+            let guard_a = lock_a.write().expect("lock poisoned");
+            Some((QueryWrite::new(guard_a), QueryWrite::new(guard_b)))
+        }
+    }
+
+    // ── Internal ────────────────────────────────────────────────────────
+
+    /// Get or create the storage for a component type (requires &mut self).
+    fn storage_write<T: Component>(&mut self) -> &mut T::Storage {
+        self.storages
+            .entry(TypeId::of::<T>())
+            .or_insert_with(|| RwLock::new(Box::new(T::Storage::default())))
+            .get_mut()
+            .expect("storage lock poisoned")
+            .downcast_mut::<T::Storage>()
+            .expect("storage type mismatch (bug in World)")
+    }
+}
+
+impl Default for World {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ecs::packed::PackedStorage;
+    use crate::ecs::sparse_set::SparseSetStorage;
+
+    struct Health(f32);
+    impl Component for Health {
+        type Storage = SparseSetStorage<Self>;
+    }
+
+    struct Position {
+        x: f32,
+        y: f32,
+    }
+    impl Component for Position {
+        type Storage = PackedStorage<Self>;
+    }
+
+    struct Velocity {
+        dx: f32,
+        dy: f32,
+    }
+    impl Component for Velocity {
+        type Storage = PackedStorage<Self>;
+    }
+
+    // ── Basic World operations ──────────────────────────────────────────
+
+    #[test]
+    fn spawn_and_insert() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+        world.insert(e, Position { x: 1.0, y: 2.0 });
+
+        assert_eq!(world.get::<Health>(e).unwrap().0, 100.0);
+        assert_eq!(world.get::<Position>(e).unwrap().x, 1.0);
+    }
+
+    #[test]
+    fn different_storage_backends() {
+        let mut world = World::new();
+        let a = world.spawn();
+        let b = world.spawn();
+
+        world.insert(a, Health(50.0));
+        world.insert(b, Health(75.0));
+        world.insert(a, Position { x: 0.0, y: 0.0 });
+
+        assert_eq!(world.count::<Health>(), 2);
+        assert_eq!(world.count::<Position>(), 1);
+
+        assert!(world.has::<Health>(a));
+        assert!(world.has::<Health>(b));
+        assert!(world.has::<Position>(a));
+        assert!(!world.has::<Position>(b));
+    }
+
+    #[test]
+    fn remove_component() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+
+        let removed = world.remove::<Health>(e).unwrap();
+        assert_eq!(removed.0, 100.0);
+        assert!(!world.has::<Health>(e));
+    }
+
+    #[test]
+    fn mutate_component() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+
+        world.get_mut::<Health>(e).unwrap().0 -= 25.0;
+        assert_eq!(world.get::<Health>(e).unwrap().0, 75.0);
+    }
+
+    #[test]
+    fn get_nonexistent() {
+        let world = World::new();
+        assert!(world.get::<Health>(0).is_none());
+        assert!(world.get::<Position>(999).is_none());
+    }
+
+    #[test]
+    fn lazy_storage_init() {
+        let world = World::new();
+        assert_eq!(world.count::<Health>(), 0);
+        assert!(!world.has::<Health>(0));
+    }
+
+    // ── Single-component query ──────────────────────────────────────────
+
+    #[test]
+    fn query_read_single() {
+        let mut world = World::new();
+        let a = world.spawn();
+        let b = world.spawn();
+        world.insert(a, Health(100.0));
+        world.insert(b, Health(50.0));
+
+        let q = world.query::<Health>().unwrap();
+        assert_eq!(q.get(a).unwrap().0, 100.0);
+        assert_eq!(q.get(b).unwrap().0, 50.0);
+        assert_eq!(q.len(), 2);
+    }
+
+    #[test]
+    fn query_write_single() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+
+        {
+            let mut q = world.query_mut::<Health>().unwrap();
+            q.get_mut(e).unwrap().0 -= 30.0;
+        }
+
+        assert_eq!(world.get::<Health>(e).unwrap().0, 70.0);
+    }
+
+    #[test]
+    fn query_write_insert_remove() {
+        let mut world = World::new();
+        let a = world.spawn();
+        let b = world.spawn();
+        world.insert(a, Health(100.0));
+
+        {
+            let mut q = world.query_mut::<Health>().unwrap();
+            q.insert(b, Health(200.0));
+            q.remove(a);
+        }
+
+        assert!(world.get::<Health>(a).is_none());
+        assert_eq!(world.get::<Health>(b).unwrap().0, 200.0);
+    }
+
+    #[test]
+    fn query_returns_none_for_unregistered() {
+        let world = World::new();
+        assert!(world.query::<Health>().is_none());
+        assert!(world.query_mut::<Health>().is_none());
+    }
+
+    #[test]
+    fn query_after_register() {
+        let mut world = World::new();
+        world.register::<Health>();
+
+        let q = world.query::<Health>().unwrap();
+        assert_eq!(q.len(), 0);
+    }
+
+    // ── Multiple concurrent queries ─────────────────────────────────────
+
+    #[test]
+    fn multiple_read_queries_coexist() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+        world.insert(e, Position { x: 1.0, y: 2.0 });
+
+        // Two reads at the same time — no deadlock, no borrow error.
+        let q_health = world.query::<Health>().unwrap();
+        let q_pos = world.query::<Position>().unwrap();
+
+        assert_eq!(q_health.get(e).unwrap().0, 100.0);
+        assert_eq!(q_pos.get(e).unwrap().x, 1.0);
+    }
+
+    #[test]
+    fn query_2_mut_read_and_write() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Position { x: 10.0, y: 20.0 });
+        world.insert(e, Velocity { dx: 5.0, dy: 3.0 });
+
+        {
+            let (q_pos, mut q_vel) =
+                world.query_2_mut::<Position, Velocity>().unwrap();
+
+            let pos = q_pos.get(e).unwrap();
+            let vel = q_vel.get_mut(e).unwrap();
+            // Apply position offset to velocity.
+            vel.dx += pos.x;
+            vel.dy += pos.y;
+        }
+
+        assert_eq!(world.get::<Velocity>(e).unwrap().dx, 15.0);
+        assert_eq!(world.get::<Velocity>(e).unwrap().dy, 23.0);
+    }
+
+    #[test]
+    fn query_2_mut_mut_both_writable() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Position { x: 1.0, y: 2.0 });
+        world.insert(e, Velocity { dx: 10.0, dy: 20.0 });
+
+        {
+            let (mut q_pos, mut q_vel) =
+                world.query_2_mut_mut::<Position, Velocity>().unwrap();
+
+            let vel = q_vel.get(e).unwrap();
+            let dx = vel.dx;
+            let dy = vel.dy;
+
+            let pos = q_pos.get_mut(e).unwrap();
+            pos.x += dx;
+            pos.y += dy;
+
+            let vel = q_vel.get_mut(e).unwrap();
+            vel.dx = 0.0;
+            vel.dy = 0.0;
+        }
+
+        assert_eq!(world.get::<Position>(e).unwrap().x, 11.0);
+        assert_eq!(world.get::<Position>(e).unwrap().y, 22.0);
+        assert_eq!(world.get::<Velocity>(e).unwrap().dx, 0.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "must be different component types")]
+    fn query_2_mut_same_type_panics() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+
+        let _ = world.query_2_mut::<Health, Health>();
+    }
+
+    // ── Iteration ───────────────────────────────────────────────────────
+
+    #[test]
+    fn query_iter() {
+        let mut world = World::new();
+        for i in 0..5 {
+            let e = world.spawn();
+            world.insert(e, Health(i as f32 * 10.0));
+        }
+
+        let q = world.query::<Health>().unwrap();
+        let sum: f32 = q.iter().map(|(_, h)| h.0).sum();
+        assert_eq!(sum, 100.0); // 0 + 10 + 20 + 30 + 40
+    }
+
+    #[test]
+    fn query_iter_mut() {
+        let mut world = World::new();
+        for i in 0..3 {
+            let e = world.spawn();
+            world.insert(e, Health(i as f32 * 10.0));
+        }
+
+        {
+            let mut q = world.query_mut::<Health>().unwrap();
+            for (_, health) in q.iter_mut() {
+                health.0 *= 2.0;
+            }
+        }
+
+        let q = world.query::<Health>().unwrap();
+        let mut values: Vec<f32> = q.iter().map(|(_, h)| h.0).collect();
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(values, vec![0.0, 20.0, 40.0]);
+    }
+
+    // ── Intersection iteration (the real-world use case) ────────────────
+
+    #[test]
+    fn intersection_iteration() {
+        let mut world = World::new();
+
+        // Entity 0: has both Position + Velocity
+        let e0 = world.spawn();
+        world.insert(e0, Position { x: 0.0, y: 0.0 });
+        world.insert(e0, Velocity { dx: 1.0, dy: 2.0 });
+
+        // Entity 1: only Position
+        let e1 = world.spawn();
+        world.insert(e1, Position { x: 5.0, y: 5.0 });
+
+        // Entity 2: has both
+        let e2 = world.spawn();
+        world.insert(e2, Position { x: 10.0, y: 10.0 });
+        world.insert(e2, Velocity { dx: 3.0, dy: 4.0 });
+
+        {
+            let (q_vel, mut q_pos) =
+                world.query_2_mut::<Velocity, Position>().unwrap();
+
+            // Iterate the smaller set (velocity), look up in the larger.
+            for (entity, vel) in q_vel.iter() {
+                if let Some(pos) = q_pos.get_mut(entity) {
+                    pos.x += vel.dx;
+                    pos.y += vel.dy;
+                }
+            }
+        }
+
+        // e0 moved, e1 untouched, e2 moved.
+        assert_eq!(world.get::<Position>(e0).unwrap().x, 1.0);
+        assert_eq!(world.get::<Position>(e0).unwrap().y, 2.0);
+        assert_eq!(world.get::<Position>(e1).unwrap().x, 5.0);
+        assert_eq!(world.get::<Position>(e1).unwrap().y, 5.0);
+        assert_eq!(world.get::<Position>(e2).unwrap().x, 13.0);
+        assert_eq!(world.get::<Position>(e2).unwrap().y, 14.0);
+    }
+}
