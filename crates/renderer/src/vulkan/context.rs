@@ -1,5 +1,7 @@
 //! Top-level Vulkan context that owns the entire graphics state.
 
+use super::allocator::{self, SharedAllocator};
+use super::buffer::GpuBuffer;
 use super::debug;
 use super::device::{self, QueueFamilyIndices};
 use super::instance;
@@ -7,9 +9,19 @@ use super::pipeline;
 use super::surface;
 use super::swapchain::{self, SwapchainState};
 use super::sync::{self, FrameSync, MAX_FRAMES_IN_FLIGHT};
+use crate::vertex::Vertex;
 use anyhow::{Context, Result};
 use ash::vk;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+
+/// Triangle vertex data — same RGB corners as Phase 1, now from Rust.
+const TRIANGLE_VERTICES: [Vertex; 3] = [
+    Vertex::new([0.0, -0.5, 0.0], [1.0, 0.0, 0.0]), // top — red
+    Vertex::new([0.5, 0.5, 0.0], [0.0, 1.0, 0.0]),   // bottom-right — green
+    Vertex::new([-0.5, 0.5, 0.0], [0.0, 0.0, 1.0]),  // bottom-left — blue
+];
+
+const TRIANGLE_INDICES: [u32; 3] = [0, 1, 2];
 
 pub struct VulkanContext {
     // Ordered for drop safety — later fields are destroyed first.
@@ -19,12 +31,16 @@ pub struct VulkanContext {
     command_buffers: Vec<vk::CommandBuffer>,
     command_pool: vk::CommandPool,
     framebuffers: Vec<vk::Framebuffer>,
+    index_buffer: GpuBuffer,
+    vertex_buffer: GpuBuffer,
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     vert_module: vk::ShaderModule,
     frag_module: vk::ShaderModule,
     render_pass: vk::RenderPass,
     swapchain_state: SwapchainState,
+
+    allocator: Option<SharedAllocator>,
 
     pub graphics_queue: vk::Queue,
     pub present_queue: vk::Queue,
@@ -86,7 +102,11 @@ impl VulkanContext {
         let (device, graphics_queue, present_queue) =
             device::create_logical_device(&vk_instance, physical_device, queue_indices)?;
 
-        // 7. Swapchain
+        // 7. GPU allocator
+        let gpu_allocator =
+            allocator::create_allocator(&vk_instance, &device, physical_device)?;
+
+        // 8. Swapchain
         let swapchain_state = swapchain::create_swapchain(
             &vk_instance,
             &device,
@@ -104,17 +124,25 @@ impl VulkanContext {
         let (pipeline_handle, pipeline_layout, vert_module, frag_module) =
             pipeline::create_triangle_pipeline(&device, render_pass, swapchain_state.extent)?;
 
-        // 10. Framebuffers
+        // 10. Vertex + index buffers
+        let vertex_buffer =
+            GpuBuffer::create_vertex_buffer(&device, &gpu_allocator, &TRIANGLE_VERTICES)?;
+        let index_buffer =
+            GpuBuffer::create_index_buffer(&device, &gpu_allocator, &TRIANGLE_INDICES)?;
+        log::info!("Vertex + index buffers created");
+
+        // 11. Framebuffers
         let framebuffers =
             create_framebuffers(&device, render_pass, &swapchain_state)?;
 
-        // 11. Command pool + buffers
+        // 12. Command pool + buffers
         let command_pool = create_command_pool(&device, queue_indices.graphics)?;
         let command_buffers =
             allocate_command_buffers(&device, command_pool, swapchain_state.images.len())?;
 
-        // 12. Sync objects
-        let frame_sync = sync::create_sync_objects(&device)?;
+        // 13. Sync objects
+        let frame_sync =
+            sync::create_sync_objects(&device, swapchain_state.images.len())?;
 
         log::info!("Vulkan context fully initialized");
 
@@ -130,11 +158,14 @@ impl VulkanContext {
             graphics_queue,
             present_queue,
             swapchain_state,
+            allocator: Some(gpu_allocator),
             render_pass,
             pipeline: pipeline_handle,
             pipeline_layout,
             vert_module,
             frag_module,
+            vertex_buffer,
+            index_buffer,
             framebuffers,
             command_pool,
             command_buffers,
@@ -145,33 +176,48 @@ impl VulkanContext {
 
     /// Record and submit a frame that clears to the given color.
     pub fn draw_clear_frame(&mut self, clear_color: [f32; 4]) -> Result<bool> {
-        let sync = &self.frame_sync;
         let frame = self.current_frame;
 
-        // Wait for the previous use of this frame slot.
+        // Wait for this frame-in-flight slot to be available.
         unsafe {
             self.device
-                .wait_for_fences(&[sync.in_flight[frame]], true, u64::MAX)
+                .wait_for_fences(&[self.frame_sync.in_flight[frame]], true, u64::MAX)
                 .context("wait_for_fences")?;
         }
 
-        // Acquire next image.
+        // Acquire next swapchain image. Use the image-indexed semaphore
+        // for acquisition — we don't know the image index yet, so use
+        // frame index for the acquire semaphore (it's only waited on by
+        // our own submit, not by the present engine).
         let (image_index, suboptimal) = unsafe {
             match self.swapchain_state.swapchain_loader.acquire_next_image(
                 self.swapchain_state.swapchain,
                 u64::MAX,
-                sync.image_available[frame],
+                self.frame_sync.image_available[frame],
                 vk::Fence::null(),
             ) {
                 Ok((idx, suboptimal)) => (idx, suboptimal),
-                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => return Ok(true), // need recreate
+                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => return Ok(true),
                 Err(e) => anyhow::bail!("acquire_next_image: {:?}", e),
             }
         };
 
+        let img = image_index as usize;
+
+        // If this swapchain image is still in use by a different frame, wait.
+        let image_fence = self.frame_sync.images_in_flight[img];
+        if image_fence != vk::Fence::null() && image_fence != self.frame_sync.in_flight[frame] {
+            unsafe {
+                self.device
+                    .wait_for_fences(&[image_fence], true, u64::MAX)
+                    .context("wait for image fence")?;
+            }
+        }
+        self.frame_sync.images_in_flight[img] = self.frame_sync.in_flight[frame];
+
         unsafe {
             self.device
-                .reset_fences(&[sync.in_flight[frame]])
+                .reset_fences(&[self.frame_sync.in_flight[frame]])
                 .context("reset_fences")?;
         }
 
@@ -238,8 +284,16 @@ impl VulkanContext {
             }];
             self.device.cmd_set_scissor(cmd, 0, &scissors);
 
-            // Draw the triangle (3 vertices, 1 instance).
-            self.device.cmd_draw(cmd, 3, 1, 0, 0);
+            // Bind vertex and index buffers, draw indexed.
+            self.device
+                .cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
+            self.device.cmd_bind_index_buffer(
+                cmd,
+                self.index_buffer.buffer,
+                0,
+                vk::IndexType::UINT32,
+            );
+            self.device.cmd_draw_indexed(cmd, TRIANGLE_INDICES.len() as u32, 1, 0, 0, 0);
 
             self.device.cmd_end_render_pass(cmd);
             self.device
@@ -248,20 +302,29 @@ impl VulkanContext {
         }
 
         // Submit.
-        let wait_semaphores = [sync.image_available[frame]];
+        // Wait on the frame-indexed acquire semaphore.
+        // Signal the image-indexed render_finished semaphore — this is
+        // what the present engine waits on, and it holds it until the
+        // image is re-acquired. By indexing per image, we guarantee
+        // the semaphore isn't reused until this specific image comes back.
+        let wait_semaphores = [self.frame_sync.image_available[frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let signal_semaphores = [sync.render_finished[frame]];
-        let command_buffers = [cmd];
+        let signal_semaphores = [self.frame_sync.render_finished[img]];
+        let command_buffers_to_submit = [cmd];
 
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(&wait_semaphores)
             .wait_dst_stage_mask(&wait_stages)
-            .command_buffers(&command_buffers)
+            .command_buffers(&command_buffers_to_submit)
             .signal_semaphores(&signal_semaphores);
 
         unsafe {
             self.device
-                .queue_submit(self.graphics_queue, &[submit_info], sync.in_flight[frame])
+                .queue_submit(
+                    self.graphics_queue,
+                    &[submit_info],
+                    self.frame_sync.in_flight[frame],
+                )
                 .context("queue_submit")?;
         }
 
@@ -331,6 +394,10 @@ impl VulkanContext {
             self.swapchain_state.images.len(),
         )?;
 
+        // Reset per-image fence tracking for the new swapchain.
+        self.frame_sync
+            .reset_image_fences(self.swapchain_state.images.len());
+
         log::info!(
             "Swapchain recreated: {}x{}",
             self.swapchain_state.extent.width,
@@ -352,6 +419,10 @@ impl Drop for VulkanContext {
             for &fb in &self.framebuffers {
                 self.device.destroy_framebuffer(fb, None);
             }
+            if let Some(ref alloc) = self.allocator {
+                self.vertex_buffer.destroy(&self.device, alloc);
+                self.index_buffer.destroy(&self.device, alloc);
+            }
             self.device.destroy_pipeline(self.pipeline, None);
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
@@ -359,6 +430,16 @@ impl Drop for VulkanContext {
             self.device.destroy_shader_module(self.frag_module, None);
             self.device.destroy_render_pass(self.render_pass, None);
             self.swapchain_state.destroy(&self.device);
+            // Drop the allocator before destroying the device.
+            // take() extracts from Option, then try_unwrap gets the inner
+            // Mutex if we hold the last Arc, then into_inner gives us the
+            // Allocator which we drop — running its cleanup while the device
+            // is still alive.
+            if let Some(alloc_arc) = self.allocator.take() {
+                if let Ok(mutex) = std::sync::Arc::try_unwrap(alloc_arc) {
+                    drop(mutex.into_inner().expect("allocator lock poisoned"));
+                }
+            }
             self.device.destroy_device(None);
             self.surface_loader.destroy_surface(self.surface, None);
             if let Some((ref utils, messenger)) = self.debug_messenger {

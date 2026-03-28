@@ -1,5 +1,6 @@
 //! Graphics pipeline creation and shader module loading.
 
+use crate::vertex::Vertex;
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -55,8 +56,12 @@ pub fn create_triangle_pipeline(
             .name(entry_point),
     ];
 
-    // No vertex input — positions are hardcoded in the vertex shader.
-    let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+    // Vertex input from buffer — position + color per vertex.
+    let binding_descriptions = [Vertex::binding_description()];
+    let attribute_descriptions = Vertex::attribute_descriptions();
+    let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+        .vertex_binding_descriptions(&binding_descriptions)
+        .vertex_attribute_descriptions(&attribute_descriptions);
 
     let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
         .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
