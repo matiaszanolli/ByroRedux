@@ -3,6 +3,7 @@
 use super::debug;
 use super::device::{self, QueueFamilyIndices};
 use super::instance;
+use super::pipeline;
 use super::surface;
 use super::swapchain::{self, SwapchainState};
 use super::sync::{self, FrameSync, MAX_FRAMES_IN_FLIGHT};
@@ -18,6 +19,10 @@ pub struct VulkanContext {
     command_buffers: Vec<vk::CommandBuffer>,
     command_pool: vk::CommandPool,
     framebuffers: Vec<vk::Framebuffer>,
+    pipeline: vk::Pipeline,
+    pipeline_layout: vk::PipelineLayout,
+    vert_module: vk::ShaderModule,
+    frag_module: vk::ShaderModule,
     render_pass: vk::RenderPass,
     swapchain_state: SwapchainState,
 
@@ -95,16 +100,20 @@ impl VulkanContext {
         // 8. Render pass
         let render_pass = create_render_pass(&device, swapchain_state.format.format)?;
 
-        // 9. Framebuffers
+        // 9. Graphics pipeline
+        let (pipeline_handle, pipeline_layout, vert_module, frag_module) =
+            pipeline::create_triangle_pipeline(&device, render_pass, swapchain_state.extent)?;
+
+        // 10. Framebuffers
         let framebuffers =
             create_framebuffers(&device, render_pass, &swapchain_state)?;
 
-        // 10. Command pool + buffers
+        // 11. Command pool + buffers
         let command_pool = create_command_pool(&device, queue_indices.graphics)?;
         let command_buffers =
             allocate_command_buffers(&device, command_pool, swapchain_state.images.len())?;
 
-        // 11. Sync objects
+        // 12. Sync objects
         let frame_sync = sync::create_sync_objects(&device)?;
 
         log::info!("Vulkan context fully initialized");
@@ -122,6 +131,10 @@ impl VulkanContext {
             present_queue,
             swapchain_state,
             render_pass,
+            pipeline: pipeline_handle,
+            pipeline_layout,
+            vert_module,
+            frag_module,
             framebuffers,
             command_pool,
             command_buffers,
@@ -200,6 +213,34 @@ impl VulkanContext {
                 &render_pass_begin,
                 vk::SubpassContents::INLINE,
             );
+
+            // Bind the graphics pipeline.
+            self.device.cmd_bind_pipeline(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline,
+            );
+
+            // Set dynamic viewport and scissor.
+            let viewports = [vk::Viewport {
+                x: 0.0,
+                y: 0.0,
+                width: self.swapchain_state.extent.width as f32,
+                height: self.swapchain_state.extent.height as f32,
+                min_depth: 0.0,
+                max_depth: 1.0,
+            }];
+            self.device.cmd_set_viewport(cmd, 0, &viewports);
+
+            let scissors = [vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: self.swapchain_state.extent,
+            }];
+            self.device.cmd_set_scissor(cmd, 0, &scissors);
+
+            // Draw the triangle (3 vertices, 1 instance).
+            self.device.cmd_draw(cmd, 3, 1, 0, 0);
+
             self.device.cmd_end_render_pass(cmd);
             self.device
                 .end_command_buffer(cmd)
@@ -311,6 +352,11 @@ impl Drop for VulkanContext {
             for &fb in &self.framebuffers {
                 self.device.destroy_framebuffer(fb, None);
             }
+            self.device.destroy_pipeline(self.pipeline, None);
+            self.device
+                .destroy_pipeline_layout(self.pipeline_layout, None);
+            self.device.destroy_shader_module(self.vert_module, None);
+            self.device.destroy_shader_module(self.frag_module, None);
             self.device.destroy_render_pass(self.render_pass, None);
             self.swapchain_state.destroy(&self.device);
             self.device.destroy_device(None);

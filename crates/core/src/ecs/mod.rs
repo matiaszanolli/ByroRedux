@@ -16,7 +16,7 @@ pub mod storage;
 pub mod system;
 pub mod world;
 
-pub use components::Name;
+pub use components::{ActiveCamera, Camera, Name, Transform};
 pub use packed::PackedStorage;
 pub use query::{QueryRead, QueryWrite};
 pub use resource::{Resource, ResourceRead, ResourceWrite};
