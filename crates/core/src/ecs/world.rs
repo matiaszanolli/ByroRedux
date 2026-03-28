@@ -112,6 +112,25 @@ impl World {
         self.next_entity
     }
 
+    /// Find the first entity with the given name.
+    ///
+    /// Resolves `name` through the [`StringPool`](crate::string::StringPool)
+    /// resource, then scans [`Name`](super::components::Name) components
+    /// for a matching symbol. Returns `None` if the string was never
+    /// interned or no entity has that name.
+    pub fn find_by_name(&self, name: &str) -> Option<EntityId> {
+        use super::components::Name;
+        use crate::string::StringPool;
+
+        let pool = self.try_resource::<StringPool>()?;
+        let sym = pool.get(name)?;
+        drop(pool);
+
+        let names = self.query::<Name>()?;
+        let result = names.iter().find(|(_, n)| n.0 == sym).map(|(id, _)| id);
+        result
+    }
+
     // ── Query API (takes &self — RwLock provides interior mutability) ───
 
     /// Acquire a read-only query for a single component type.
@@ -720,5 +739,79 @@ mod tests {
         let world = World::new();
         assert!(world.try_resource::<DeltaTime>().is_none());
         assert!(world.try_resource_mut::<DeltaTime>().is_none());
+    }
+
+    // ── Name + StringPool + find_by_name ────────────────────────────────
+
+    use crate::ecs::components::Name;
+    use crate::string::StringPool;
+
+    #[test]
+    fn name_component_attach_and_query() {
+        let mut world = World::new();
+        world.insert_resource(StringPool::new());
+
+        let sym = world.resource_mut::<StringPool>().intern("player");
+        let e = world.spawn();
+        world.insert(e, Name(sym));
+
+        let name = world.get::<Name>(e).unwrap();
+        assert_eq!(name.0, sym);
+
+        let pool = world.resource::<StringPool>();
+        assert_eq!(pool.resolve(name.0), Some("player"));
+    }
+
+    #[test]
+    fn find_by_name_hit() {
+        let mut world = World::new();
+        world.insert_resource(StringPool::new());
+
+        let sym = world.resource_mut::<StringPool>().intern("hero");
+        let e = world.spawn();
+        world.insert(e, Name(sym));
+
+        assert_eq!(world.find_by_name("hero"), Some(e));
+    }
+
+    #[test]
+    fn find_by_name_miss() {
+        let mut world = World::new();
+        world.insert_resource(StringPool::new());
+
+        let sym = world.resource_mut::<StringPool>().intern("hero");
+        let e = world.spawn();
+        world.insert(e, Name(sym));
+
+        assert!(world.find_by_name("villain").is_none());
+    }
+
+    #[test]
+    fn find_by_name_no_pool() {
+        let world = World::new();
+        assert!(world.find_by_name("anything").is_none());
+    }
+
+    #[test]
+    fn find_by_name_no_name_components() {
+        let mut world = World::new();
+        world.insert_resource(StringPool::new());
+        world.resource_mut::<StringPool>().intern("ghost");
+
+        assert!(world.find_by_name("ghost").is_none());
+    }
+
+    #[test]
+    fn string_pool_as_world_resource() {
+        let mut world = World::new();
+        world.insert_resource(StringPool::new());
+
+        let sym = {
+            let mut pool = world.resource_mut::<StringPool>();
+            pool.intern("asset/texture.png")
+        };
+
+        let pool = world.resource::<StringPool>();
+        assert_eq!(pool.resolve(sym), Some("asset/texture.png"));
     }
 }

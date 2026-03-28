@@ -42,6 +42,9 @@ env_logger = "0.11"
 anyhow = "1"
 thiserror = "2"
 
+# String interning
+string-interner = "0.17"
+
 # C++ interop
 cxx = "1"
 cxx-build = "1"

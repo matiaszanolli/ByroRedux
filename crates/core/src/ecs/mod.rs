@@ -5,6 +5,7 @@
 //! - [`SparseSetStorage`] — O(1) insert/remove, dense iteration (default)
 //! - [`PackedStorage`] — sorted by entity, cache-friendly iteration (opt-in)
 
+pub mod components;
 pub mod packed;
 pub mod query;
 pub mod resource;
@@ -15,6 +16,7 @@ pub mod storage;
 pub mod system;
 pub mod world;
 
+pub use components::Name;
 pub use packed::PackedStorage;
 pub use query::{QueryRead, QueryWrite};
 pub use resource::{Resource, ResourceRead, ResourceWrite};
