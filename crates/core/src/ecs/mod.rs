@@ -7,12 +7,20 @@
 
 pub mod packed;
 pub mod query;
+pub mod resource;
+pub mod resources;
+pub mod scheduler;
 pub mod sparse_set;
 pub mod storage;
+pub mod system;
 pub mod world;
 
 pub use packed::PackedStorage;
 pub use query::{QueryRead, QueryWrite};
+pub use resource::{Resource, ResourceRead, ResourceWrite};
+pub use resources::{DeltaTime, EngineConfig, TotalTime};
+pub use scheduler::Scheduler;
 pub use sparse_set::SparseSetStorage;
 pub use storage::{Component, ComponentStorage, EntityId};
+pub use system::System;
 pub use world::World;

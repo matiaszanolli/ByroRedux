@@ -8,6 +8,7 @@
 //! types without fighting the borrow checker.
 
 use super::query::{QueryRead, QueryWrite};
+use super::resource::{Resource, ResourceRead, ResourceWrite};
 use super::storage::{Component, ComponentStorage, EntityId};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -15,6 +16,7 @@ use std::sync::RwLock;
 
 pub struct World {
     storages: HashMap<TypeId, RwLock<Box<dyn Any + Send + Sync>>>,
+    resources: HashMap<TypeId, RwLock<Box<dyn Any + Send + Sync>>>,
     next_entity: EntityId,
 }
 
@@ -22,6 +24,7 @@ impl World {
     pub fn new() -> Self {
         Self {
             storages: HashMap::new(),
+            resources: HashMap::new(),
             next_entity: 0,
         }
     }
@@ -200,6 +203,67 @@ impl World {
             let guard_a = lock_a.write().expect("lock poisoned");
             Some((QueryWrite::new(guard_a), QueryWrite::new(guard_b)))
         }
+    }
+
+    // ── Resource API ─────────────────────────────────────────────────────
+
+    /// Insert a global resource. Overwrites if already present.
+    pub fn insert_resource<R: Resource>(&mut self, resource: R) {
+        self.resources
+            .insert(TypeId::of::<R>(), RwLock::new(Box::new(resource)));
+    }
+
+    /// Remove a global resource, returning it if it existed.
+    pub fn remove_resource<R: Resource>(&mut self) -> Option<R> {
+        let lock = self.resources.remove(&TypeId::of::<R>())?;
+        let boxed = lock.into_inner().expect("resource lock poisoned");
+        Some(*boxed.downcast::<R>().expect("resource type mismatch"))
+    }
+
+    /// Read-only access to a resource (takes `&self`).
+    ///
+    /// # Panics
+    /// Panics if the resource was never inserted. The panic message
+    /// includes the type name for easy debugging.
+    pub fn resource<R: Resource>(&self) -> ResourceRead<'_, R> {
+        let lock = self.resources.get(&TypeId::of::<R>()).unwrap_or_else(|| {
+            panic!(
+                "Resource `{}` not found — call world.insert_resource() first",
+                std::any::type_name::<R>()
+            )
+        });
+        let guard = lock.read().expect("resource lock poisoned");
+        ResourceRead::new(guard)
+    }
+
+    /// Mutable access to a resource (takes `&self`).
+    ///
+    /// # Panics
+    /// Panics if the resource was never inserted. The panic message
+    /// includes the type name for easy debugging.
+    pub fn resource_mut<R: Resource>(&self) -> ResourceWrite<'_, R> {
+        let lock = self.resources.get(&TypeId::of::<R>()).unwrap_or_else(|| {
+            panic!(
+                "Resource `{}` not found — call world.insert_resource() first",
+                std::any::type_name::<R>()
+            )
+        });
+        let guard = lock.write().expect("resource lock poisoned");
+        ResourceWrite::new(guard)
+    }
+
+    /// Try to read a resource, returning `None` if it doesn't exist.
+    pub fn try_resource<R: Resource>(&self) -> Option<ResourceRead<'_, R>> {
+        let lock = self.resources.get(&TypeId::of::<R>())?;
+        let guard = lock.read().expect("resource lock poisoned");
+        Some(ResourceRead::new(guard))
+    }
+
+    /// Try to write a resource, returning `None` if it doesn't exist.
+    pub fn try_resource_mut<R: Resource>(&self) -> Option<ResourceWrite<'_, R>> {
+        let lock = self.resources.get(&TypeId::of::<R>())?;
+        let guard = lock.write().expect("resource lock poisoned");
+        Some(ResourceWrite::new(guard))
     }
 
     // ── Internal ────────────────────────────────────────────────────────
@@ -533,5 +597,128 @@ mod tests {
         assert_eq!(world.get::<Position>(e1).unwrap().y, 5.0);
         assert_eq!(world.get::<Position>(e2).unwrap().x, 13.0);
         assert_eq!(world.get::<Position>(e2).unwrap().y, 14.0);
+    }
+
+    // ── Resource tests ──────────────────────────────────────────────────
+
+    struct DeltaTime(f32);
+    impl Resource for DeltaTime {}
+
+    struct GameConfig {
+        gravity: f32,
+        max_speed: f32,
+    }
+    impl Resource for GameConfig {}
+
+    #[test]
+    fn resource_insert_and_read() {
+        let mut world = World::new();
+        world.insert_resource(DeltaTime(1.0 / 60.0));
+
+        let dt = world.resource::<DeltaTime>();
+        assert!((dt.0 - 1.0 / 60.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn resource_insert_and_mutate() {
+        let mut world = World::new();
+        world.insert_resource(DeltaTime(1.0 / 60.0));
+
+        {
+            let mut dt = world.resource_mut::<DeltaTime>();
+            dt.0 = 1.0 / 30.0;
+        }
+
+        let dt = world.resource::<DeltaTime>();
+        assert!((dt.0 - 1.0 / 30.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn two_resource_types_coexist() {
+        let mut world = World::new();
+        world.insert_resource(DeltaTime(0.016));
+        world.insert_resource(GameConfig {
+            gravity: -9.81,
+            max_speed: 50.0,
+        });
+
+        // Both readable at the same time.
+        let dt = world.resource::<DeltaTime>();
+        let config = world.resource::<GameConfig>();
+        assert!((dt.0 - 0.016).abs() < f32::EPSILON);
+        assert!((config.gravity - -9.81).abs() < f32::EPSILON);
+        assert!((config.max_speed - 50.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    #[should_panic(expected = "Resource `")]
+    fn missing_resource_panics_with_type_name() {
+        let world = World::new();
+        let _ = world.resource::<DeltaTime>();
+    }
+
+    #[test]
+    #[should_panic(expected = "not found")]
+    fn missing_resource_mut_panics() {
+        let world = World::new();
+        let _ = world.resource_mut::<DeltaTime>();
+    }
+
+    #[test]
+    fn remove_resource_returns_value() {
+        let mut world = World::new();
+        world.insert_resource(DeltaTime(0.016));
+
+        let removed = world.remove_resource::<DeltaTime>().unwrap();
+        assert!((removed.0 - 0.016).abs() < f32::EPSILON);
+
+        // Gone now.
+        assert!(world.try_resource::<DeltaTime>().is_none());
+    }
+
+    #[test]
+    fn remove_nonexistent_resource_returns_none() {
+        let mut world = World::new();
+        assert!(world.remove_resource::<DeltaTime>().is_none());
+    }
+
+    #[test]
+    fn resource_overwrite() {
+        let mut world = World::new();
+        world.insert_resource(DeltaTime(0.016));
+        world.insert_resource(DeltaTime(0.033));
+
+        let dt = world.resource::<DeltaTime>();
+        assert!((dt.0 - 0.033).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn resource_visible_to_system_via_scheduler() {
+        use crate::ecs::scheduler::Scheduler;
+
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+        world.insert_resource(DeltaTime(0.5));
+
+        let mut scheduler = Scheduler::new();
+        scheduler.add(|world: &World, _dt: f32| {
+            let dt = world.resource::<DeltaTime>();
+            let mut q = world.query_mut::<Health>().unwrap();
+            for (_, health) in q.iter_mut() {
+                // Drain 60 HP/sec.
+                health.0 -= 60.0 * dt.0;
+            }
+        });
+
+        scheduler.run(&world, 0.0);
+        assert_eq!(world.get::<Health>(e).unwrap().0, 70.0);
+    }
+
+    #[test]
+    fn try_resource_returns_none_when_missing() {
+        let world = World::new();
+        assert!(world.try_resource::<DeltaTime>().is_none());
+        assert!(world.try_resource_mut::<DeltaTime>().is_none());
     }
 }
