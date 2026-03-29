@@ -111,3 +111,14 @@ pub fn cube_vertices() -> (Vec<Vertex>, Vec<u32>) {
 
     (vertices, indices)
 }
+
+/// A single colored triangle in the XY plane at Z=0.
+pub fn triangle_vertices(color: [f32; 3]) -> (Vec<Vertex>, Vec<u32>) {
+    let vertices = vec![
+        Vertex::new([ 0.0,  0.5, 0.0], color),
+        Vertex::new([-0.5, -0.5, 0.0], color),
+        Vertex::new([ 0.5, -0.5, 0.0], color),
+    ];
+    let indices = vec![0, 1, 2];
+    (vertices, indices)
+}

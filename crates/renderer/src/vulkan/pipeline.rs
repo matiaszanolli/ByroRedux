@@ -125,6 +125,13 @@ pub fn create_triangle_pipeline(
             .context("Failed to create pipeline layout")?
     };
 
+    let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+        .depth_test_enable(true)
+        .depth_write_enable(true)
+        .depth_compare_op(vk::CompareOp::LESS)
+        .depth_bounds_test_enable(false)
+        .stencil_test_enable(false);
+
     let pipeline_info = [vk::GraphicsPipelineCreateInfo::default()
         .stages(&shader_stages)
         .vertex_input_state(&vertex_input)
@@ -132,6 +139,7 @@ pub fn create_triangle_pipeline(
         .viewport_state(&viewport_state)
         .rasterization_state(&rasterizer)
         .multisample_state(&multisampling)
+        .depth_stencil_state(&depth_stencil)
         .color_blend_state(&color_blending)
         .dynamic_state(&dynamic_state)
         .layout(pipeline_layout)

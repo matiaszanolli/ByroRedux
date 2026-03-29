@@ -2,6 +2,6 @@ pub mod mesh;
 pub mod vertex;
 pub mod vulkan;
 
-pub use mesh::{cube_vertices, MeshRegistry};
+pub use mesh::{cube_vertices, triangle_vertices, MeshRegistry};
 pub use vertex::Vertex;
 pub use vulkan::context::VulkanContext;

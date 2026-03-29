@@ -11,7 +11,11 @@ use super::sync::{self, FrameSync, MAX_FRAMES_IN_FLIGHT};
 use crate::mesh::MeshRegistry;
 use anyhow::{Context, Result};
 use ash::vk;
+use gpu_allocator::vulkan as vk_alloc;
+use gpu_allocator::MemoryLocation;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+
+const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
 
 /// A single draw command: which mesh to draw, with what model matrix.
 pub struct DrawCommand {
@@ -27,6 +31,9 @@ pub struct VulkanContext {
     command_buffers: Vec<vk::CommandBuffer>,
     command_pool: vk::CommandPool,
     framebuffers: Vec<vk::Framebuffer>,
+    depth_image_view: vk::ImageView,
+    depth_image: vk::Image,
+    depth_allocation: Option<vk_alloc::Allocation>,
     pub mesh_registry: MeshRegistry,
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
@@ -112,26 +119,30 @@ impl VulkanContext {
             window_size,
         )?;
 
-        // 8. Render pass
+        // 8. Depth resources
+        let (depth_image, depth_image_view, depth_allocation) =
+            create_depth_resources(&device, &gpu_allocator, swapchain_state.extent)?;
+
+        // 9. Render pass (color + depth)
         let render_pass = create_render_pass(&device, swapchain_state.format.format)?;
 
-        // 9. Graphics pipeline
+        // 10. Graphics pipeline (with depth test enabled)
         let (pipeline_handle, pipeline_layout, vert_module, frag_module) =
             pipeline::create_triangle_pipeline(&device, render_pass, swapchain_state.extent)?;
 
-        // 10. Mesh registry (empty — meshes uploaded by the application)
+        // 11. Mesh registry (empty — meshes uploaded by the application)
         let mesh_registry = MeshRegistry::new();
 
-        // 11. Framebuffers
+        // 12. Framebuffers (color + depth attachments)
         let framebuffers =
-            create_framebuffers(&device, render_pass, &swapchain_state)?;
+            create_framebuffers(&device, render_pass, &swapchain_state, depth_image_view)?;
 
-        // 12. Command pool + buffers
+        // 13. Command pool + buffers
         let command_pool = create_command_pool(&device, queue_indices.graphics)?;
         let command_buffers =
             allocate_command_buffers(&device, command_pool, swapchain_state.images.len())?;
 
-        // 13. Sync objects
+        // 14. Sync objects
         let frame_sync =
             sync::create_sync_objects(&device, swapchain_state.images.len())?;
 
@@ -156,6 +167,9 @@ impl VulkanContext {
             vert_module,
             frag_module,
             mesh_registry,
+            depth_allocation: Some(depth_allocation),
+            depth_image,
+            depth_image_view,
             framebuffers,
             command_pool,
             command_buffers,
@@ -236,11 +250,19 @@ impl VulkanContext {
                 .context("begin_command_buffer")?;
         }
 
-        let clear_values = [vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: clear_color,
+        let clear_values = [
+            vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: clear_color,
+                },
             },
-        }];
+            vk::ClearValue {
+                depth_stencil: vk::ClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0,
+                },
+            },
+        ];
 
         let render_pass_begin = vk::RenderPassBeginInfo::default()
             .render_pass(self.render_pass)
@@ -391,11 +413,24 @@ impl VulkanContext {
             self.device.device_wait_idle().context("device_wait_idle")?;
         }
 
-        // Destroy old framebuffers, render pass, swapchain views.
+        // Destroy old framebuffers, depth resources, render pass, swapchain views.
         unsafe {
             for &fb in &self.framebuffers {
                 self.device.destroy_framebuffer(fb, None);
             }
+            // Depth: view → free allocation → destroy image.
+            self.device.destroy_image_view(self.depth_image_view, None);
+            if let Some(alloc) = self.depth_allocation.take() {
+                self.allocator
+                    .as_ref()
+                    .expect("allocator missing during resize")
+                    .lock()
+                    .expect("allocator lock poisoned")
+                    .free(alloc)
+                    .expect("Failed to free depth allocation");
+            }
+            self.device.destroy_image(self.depth_image, None);
+
             self.device.destroy_render_pass(self.render_pass, None);
             self.swapchain_state.destroy(&self.device);
         }
@@ -410,10 +445,23 @@ impl VulkanContext {
             window_size,
         )?;
 
+        let (depth_image, depth_image_view, depth_allocation) = create_depth_resources(
+            &self.device,
+            self.allocator.as_ref().expect("allocator missing"),
+            self.swapchain_state.extent,
+        )?;
+        self.depth_image = depth_image;
+        self.depth_image_view = depth_image_view;
+        self.depth_allocation = Some(depth_allocation);
+
         self.render_pass =
             create_render_pass(&self.device, self.swapchain_state.format.format)?;
-        self.framebuffers =
-            create_framebuffers(&self.device, self.render_pass, &self.swapchain_state)?;
+        self.framebuffers = create_framebuffers(
+            &self.device,
+            self.render_pass,
+            &self.swapchain_state,
+            self.depth_image_view,
+        )?;
 
         // Reallocate command buffers if image count changed.
         unsafe {
@@ -451,6 +499,19 @@ impl Drop for VulkanContext {
             for &fb in &self.framebuffers {
                 self.device.destroy_framebuffer(fb, None);
             }
+            // Destroy depth resources before the allocator.
+            self.device.destroy_image_view(self.depth_image_view, None);
+            if let Some(alloc) = self.depth_allocation.take() {
+                if let Some(ref allocator) = self.allocator {
+                    allocator
+                        .lock()
+                        .expect("allocator lock poisoned")
+                        .free(alloc)
+                        .expect("Failed to free depth allocation");
+                }
+            }
+            self.device.destroy_image(self.depth_image, None);
+
             if let Some(ref alloc) = self.allocator {
                 self.mesh_registry.destroy_all(&self.device, alloc);
             }
@@ -485,7 +546,7 @@ impl Drop for VulkanContext {
 // ── Helper functions ────────────────────────────────────────────────────
 
 fn create_render_pass(device: &ash::Device, color_format: vk::Format) -> Result<vk::RenderPass> {
-    let attachment = vk::AttachmentDescription::default()
+    let color_attachment = vk::AttachmentDescription::default()
         .format(color_format)
         .samples(vk::SampleCountFlags::TYPE_1)
         .load_op(vk::AttachmentLoadOp::CLEAR)
@@ -495,25 +556,50 @@ fn create_render_pass(device: &ash::Device, color_format: vk::Format) -> Result<
         .initial_layout(vk::ImageLayout::UNDEFINED)
         .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
 
+    let depth_attachment = vk::AttachmentDescription::default()
+        .format(DEPTH_FORMAT)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .load_op(vk::AttachmentLoadOp::CLEAR)
+        .store_op(vk::AttachmentStoreOp::DONT_CARE)
+        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
     let color_ref = vk::AttachmentReference {
         attachment: 0,
         layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
     };
     let color_refs = [color_ref];
 
+    let depth_ref = vk::AttachmentReference {
+        attachment: 1,
+        layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
+
     let subpass = vk::SubpassDescription::default()
         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-        .color_attachments(&color_refs);
+        .color_attachments(&color_refs)
+        .depth_stencil_attachment(&depth_ref);
 
     let dependency = vk::SubpassDependency::default()
         .src_subpass(vk::SUBPASS_EXTERNAL)
         .dst_subpass(0)
-        .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+        .src_stage_mask(
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+        )
         .src_access_mask(vk::AccessFlags::empty())
-        .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-        .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
+        .dst_stage_mask(
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+        )
+        .dst_access_mask(
+            vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+        );
 
-    let attachments = [attachment];
+    let attachments = [color_attachment, depth_attachment];
     let subpasses = [subpass];
     let dependencies = [dependency];
 
@@ -528,7 +614,7 @@ fn create_render_pass(device: &ash::Device, color_format: vk::Format) -> Result<
             .context("Failed to create render pass")?
     };
 
-    log::info!("Render pass created");
+    log::info!("Render pass created (color + depth)");
     Ok(render_pass)
 }
 
@@ -536,12 +622,13 @@ fn create_framebuffers(
     device: &ash::Device,
     render_pass: vk::RenderPass,
     swapchain: &SwapchainState,
+    depth_view: vk::ImageView,
 ) -> Result<Vec<vk::Framebuffer>> {
     swapchain
         .image_views
         .iter()
         .map(|&view| {
-            let attachments = [view];
+            let attachments = [view, depth_view];
             let create_info = vk::FramebufferCreateInfo::default()
                 .render_pass(render_pass)
                 .attachments(&attachments)
@@ -556,6 +643,80 @@ fn create_framebuffers(
             }
         })
         .collect()
+}
+
+/// Create the depth image, view, and allocation.
+fn create_depth_resources(
+    device: &ash::Device,
+    allocator: &SharedAllocator,
+    extent: vk::Extent2D,
+) -> Result<(vk::Image, vk::ImageView, vk_alloc::Allocation)> {
+    let image_info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(DEPTH_FORMAT)
+        .extent(vk::Extent3D {
+            width: extent.width,
+            height: extent.height,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+
+    let image = unsafe {
+        device
+            .create_image(&image_info, None)
+            .context("Failed to create depth image")?
+    };
+
+    let requirements = unsafe { device.get_image_memory_requirements(image) };
+
+    let allocation = allocator
+        .lock()
+        .expect("allocator lock poisoned")
+        .allocate(&vk_alloc::AllocationCreateDesc {
+            name: "depth_buffer",
+            requirements,
+            location: MemoryLocation::GpuOnly,
+            linear: false,
+            allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
+        })
+        .context("Failed to allocate depth image memory")?;
+
+    unsafe {
+        device
+            .bind_image_memory(image, allocation.memory(), allocation.offset())
+            .context("Failed to bind depth image memory")?;
+    }
+
+    let view_info = vk::ImageViewCreateInfo::default()
+        .image(image)
+        .view_type(vk::ImageViewType::TYPE_2D)
+        .format(DEPTH_FORMAT)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::DEPTH,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        });
+
+    let view = unsafe {
+        device
+            .create_image_view(&view_info, None)
+            .context("Failed to create depth image view")?
+    };
+
+    log::info!(
+        "Depth buffer created: {}x{} D32_SFLOAT",
+        extent.width,
+        extent.height
+    );
+    Ok((image, view, allocation))
 }
 
 fn create_command_pool(device: &ash::Device, queue_family: u32) -> Result<vk::CommandPool> {

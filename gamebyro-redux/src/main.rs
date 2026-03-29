@@ -9,7 +9,7 @@ use gamebyro_core::math::{Quat, Vec3};
 use gamebyro_core::types::Color;
 use gamebyro_platform::window::{self, WindowConfig};
 use gamebyro_renderer::vulkan::context::DrawCommand;
-use gamebyro_renderer::{cube_vertices, VulkanContext};
+use gamebyro_renderer::{cube_vertices, triangle_vertices, VulkanContext};
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -79,18 +79,47 @@ impl App {
             .upload(&ctx.device, alloc, &verts, &idxs)
             .expect("Failed to upload cube mesh");
 
-        // Spawn a cube entity.
+        // Upload two triangle meshes with different colors.
+        let (red_verts, red_idxs) = triangle_vertices([1.0, 0.2, 0.2]);
+        let red_handle = ctx
+            .mesh_registry
+            .upload(&ctx.device, alloc, &red_verts, &red_idxs)
+            .expect("Failed to upload red triangle mesh");
+
+        let (blue_verts, blue_idxs) = triangle_vertices([0.2, 0.2, 1.0]);
+        let blue_handle = ctx
+            .mesh_registry
+            .upload(&ctx.device, alloc, &blue_verts, &blue_idxs)
+            .expect("Failed to upload blue triangle mesh");
+
+        // Spawn cube entity (still spinning).
         let cube = self.world.spawn();
         self.world
-            .insert(cube, Transform::from_translation(Vec3::ZERO));
+            .insert(cube, Transform::from_translation(Vec3::new(-1.5, 0.0, 0.0)));
         self.world.insert(cube, MeshHandle(cube_handle));
+
+        // Spawn red triangle — closer to camera (Z = 0.5), offset right.
+        // Drawn SECOND but should occlude the blue triangle via depth test.
+        let red_tri = self.world.spawn();
+        self.world.insert(
+            red_tri,
+            Transform::from_translation(Vec3::new(1.2, 0.0, 0.5)),
+        );
+        self.world.insert(red_tri, MeshHandle(red_handle));
+
+        // Spawn blue triangle — farther from camera (Z = -0.3), overlapping.
+        // Drawn FIRST but should be occluded where the red triangle covers it.
+        let blue_tri = self.world.spawn();
+        self.world.insert(
+            blue_tri,
+            Transform::from_translation(Vec3::new(1.5, 0.0, -0.3)),
+        );
+        self.world.insert(blue_tri, MeshHandle(blue_handle));
 
         // Spawn camera entity looking at the origin.
         let cam = self.world.spawn();
-        let cam_pos = Vec3::new(0.0, 1.5, 3.0);
+        let cam_pos = Vec3::new(0.0, 1.5, 4.0);
         let cam_target = Vec3::ZERO;
-        // Compute rotation: camera forward is -Z, so we need the quat
-        // that rotates -Z to point from cam_pos toward cam_target.
         let forward = (cam_target - cam_pos).normalize();
         let cam_rotation = Quat::from_rotation_arc(-Vec3::Z, forward);
         self.world.insert(
@@ -100,7 +129,7 @@ impl App {
         self.world.insert(cam, Camera::default());
         self.world.insert_resource(ActiveCamera(cam));
 
-        log::info!("Scene ready: 1 cube, 1 camera");
+        log::info!("Scene ready: 1 cube, 2 overlapping triangles (depth test), 1 camera");
     }
 }
 
