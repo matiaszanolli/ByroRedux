@@ -7,7 +7,7 @@ Long-term goal: load and render content from Gamebryo/Creation-era games.
 
 ```bash
 cargo check                    # Type check (fast)
-cargo test -p byroredux-core    # Run ECS/core tests (68 tests)
+cargo test -p byroredux-core    # Run ECS/core tests (81 tests)
 cargo test                     # Full workspace tests
 cargo run                      # Launch engine (spinning cube demo)
 cargo build --release          # Release build
@@ -44,8 +44,9 @@ crates/
       fo4.rs                 Fallout 4 parser stub
   renderer/                  Vulkan graphics (ash, gpu-allocator, image)
     src/vulkan/              context, pipeline, device, swapchain, sync, allocator, buffer
-    src/vulkan/texture.rs    Texture upload (staging buffer, layout transitions, sampler)
-    src/vulkan/descriptors.rs  DescriptorState (pool, layout, per-image sets)
+    src/vulkan/texture.rs    Texture upload (RGBA + BC-compressed DDS, staging, layout transitions)
+    src/vulkan/dds.rs        DDS header parser (BC1/BC3/BC5, FourCC + DX10 extended, mip sizes)
+    src/texture_registry.rs  TextureRegistry (path→handle cache, per-texture descriptor sets)
     src/mesh.rs              MeshRegistry, cube/triangle/quad geometry helpers
     src/vertex.rs            Vertex (position + color + normal + UV), 4 attribute descriptions
     shaders/                 GLSL → SPIR-V (pre-compiled, include_bytes!)
@@ -119,12 +120,13 @@ Detailed analysis in `docs/legacy/`.
 
 ## Development Roadmap
 
-See `.claude/plans/stateless-finding-zephyr.md` for the active roadmap plan.
-Current: Phases 1–9 + S1 + BSA + Lighting complete. Can load and render real Fallout New Vegas meshes.
+See [ROADMAP.md](ROADMAP.md) for the full roadmap with milestones, known issues, and game compatibility.
+Current: 14 milestones complete (M1–M14). Can load FNV meshes with real DDS textures.
 Usage:
   `cargo run -- path/to/mesh.nif` — render a loose NIF file
   `cargo run -- --bsa path.bsa --mesh meshes\\foo.nif` — extract from BSA and render
-Next: DDS texture loading, animation (.kf files), ESM parser, full scripting event catalog.
+  `cargo run -- --bsa meshes.bsa --mesh meshes\\foo.nif --textures-bsa textures.bsa` — with textures
+Next: Multi-light system (M15), Skyrim SE NIF (M16), BSA v105 (M17), animation (M18).
 
 ## Git Conventions
 

@@ -9,10 +9,13 @@ Not a port — a ground-up rebuild that understands the legacy architecture and 
 ```
 byroredux/            Binary — game loop entry point
 crates/
-  core/                    ECS, math (glam), types, string interning
+  core/                    ECS, math (glam), types, string interning, form IDs
   renderer/                Vulkan graphics via ash + gpu-allocator
+  plugin/                  Plugin system, manifests, conflict resolution, legacy bridge
+  nif/                     NIF file parser (Gamebryo .nif binary format)
+  bsa/                     BSA archive reader (Bethesda Softworks Archive v104)
+  scripting/               ECS-native scripting (events, timers)
   platform/                Windowing via winit (Linux-first)
-  scripting/               Placeholder for embedded scripting
   cxx-bridge/              C++ interop via cxx
 ```
 
@@ -33,11 +36,13 @@ Instance + validation layers, debug messenger, surface, physical/logical device,
 
 ## Current State
 
-- ECS with pluggable storage, system scheduler, resources, string interning
-- Vulkan renderer: graphics pipeline, vertex/index buffers, push constants (MVP matrices)
-- ECS-driven spinning cube with perspective camera
-- C++ interop bridge operational
-- 68 unit tests
+- ECS with pluggable storage (SparseSet + Packed), system scheduler, resources, string interning
+- Vulkan renderer: graphics pipeline, depth buffer, texturing, directional lighting
+- NIF parser: 15 block types, scene graph flattening, real Fallout New Vegas meshes
+- BSA archive reader: v104 format, zlib decompression, CLI integration
+- Plugin system: stable Form IDs, DAG-based conflict resolution, legacy bridge
+- ECS-native scripting: events, timers, Papyrus VM elimination
+- 167 unit tests
 
 ## Building
 
@@ -85,9 +90,17 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 | 6. Legacy bridge | Done | ESM/ESP/ESL/ESH Form ID conversion, per-game parser stubs |
 | 7. Depth buffer | Done | Correct occlusion, multiple objects |
 | 8. Texturing | Done | Staging upload, descriptor sets, sampled checkerboard |
-| 9. NIF parser | Next | Parse Gamebryo .nif files |
-| 10. NIF-to-ECS import | Planned | Load and render legacy meshes |
-| 11. Animation | Planned | Keyframe playback from .kf files |
+| 9. NIF parser | Done | 15 block types, scene graph walking, version-aware parsing |
+| 10. NIF-to-ECS import | Done | Scene graph flattening, geometry/material extraction |
+| 11. Real asset loading | Done | FNV meshes, BSA v104 reader, CLI integration |
+| 12. Scripting foundation | Done | ECS-native events, timers, Papyrus VM elimination |
+| 13. Directional lighting | Done | Vertex normals, directional light in fragment shader |
+| 14. DDS textures | Done | DDS parser, TextureRegistry, per-mesh texture binding |
+| 15. Multi-light system | Planned | Point lights, spotlights, light components in ECS |
+| 16. Skyrim SE NIF | Planned | BSLightingShaderProperty, version branching |
+| 17. Animation | Planned | Keyframe playback from .kf files |
+
+See [ROADMAP.md](ROADMAP.md) for the full roadmap with details, known issues, and game compatibility.
 
 ## Dependencies
 

@@ -21,6 +21,8 @@ pub struct NiMaterialProperty {
     pub emissive: NiColor,
     pub shininess: f32,
     pub alpha: f32,
+    /// Emissive multiplier. Present when user_version_2 >= 27 (FO3/FNV+).
+    pub emissive_mult: f32,
 }
 
 impl NiObject for NiMaterialProperty {
@@ -42,13 +44,32 @@ impl NiMaterialProperty {
 
         // NiProperty::LoadBinary reads NOTHING — pure pass-through to NiObjectNET.
 
-        // NiMaterialProperty
-        let ambient = stream.read_ni_color()?;
-        let diffuse = stream.read_ni_color()?;
+        // Bethesda optimization (FO3/FNV+): ambient and diffuse are omitted from
+        // the binary format when user_version >= 11 && user_version_2 > 21.
+        let bethesda_compact = stream.user_version() >= 11 && stream.user_version_2() > 21;
+
+        let ambient = if bethesda_compact {
+            NiColor { r: 0.5, g: 0.5, b: 0.5 }
+        } else {
+            stream.read_ni_color()?
+        };
+        let diffuse = if bethesda_compact {
+            NiColor { r: 0.5, g: 0.5, b: 0.5 }
+        } else {
+            stream.read_ni_color()?
+        };
+
         let specular = stream.read_ni_color()?;
         let emissive = stream.read_ni_color()?;
         let shininess = stream.read_f32_le()?;
         let alpha = stream.read_f32_le()?;
+
+        // Emissive multiplier — Bethesda extension (FO3/FNV+, user_version_2 >= 27).
+        let emissive_mult = if stream.user_version_2() >= 27 {
+            stream.read_f32_le()?
+        } else {
+            1.0
+        };
 
         Ok(Self {
             name,
@@ -60,6 +81,7 @@ impl NiMaterialProperty {
             emissive,
             shininess,
             alpha,
+            emissive_mult,
         })
     }
 }

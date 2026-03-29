@@ -28,6 +28,8 @@ pub struct BSShaderPPLightingProperty {
     pub env_map_scale: f32,
     pub texture_clamp_mode: u32,
     pub texture_set_ref: BlockRef,
+    /// Emissive color (RGBA). Present when user_version_2 >= 34 (FNV+).
+    pub emissive_color: [f32; 4],
 }
 
 impl NiObject for BSShaderPPLightingProperty {
@@ -62,8 +64,17 @@ impl BSShaderPPLightingProperty {
         // BSShaderPPLightingProperty: texture set reference
         let texture_set_ref = stream.read_block_ref()?;
 
-        // Remaining bytes depend on shaderType (env map params, emittance, etc.)
-        // Block-size auto-correction in lib.rs handles the rest.
+        // Emissive color (RGBA) — Bethesda extension for FNV+ (user_version_2 >= 34).
+        let emissive_color = if stream.user_version_2() >= 34 {
+            [
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+            ]
+        } else {
+            [0.0, 0.0, 0.0, 1.0]
+        };
 
         Ok(Self {
             name,
@@ -76,6 +87,7 @@ impl BSShaderPPLightingProperty {
             env_map_scale,
             texture_clamp_mode,
             texture_set_ref,
+            emissive_color,
         })
     }
 }

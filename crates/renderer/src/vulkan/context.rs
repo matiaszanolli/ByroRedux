@@ -2,7 +2,6 @@
 
 use super::allocator::{self, SharedAllocator};
 use super::debug;
-use super::descriptors::DescriptorState;
 use super::device::{self, QueueFamilyIndices};
 use super::instance;
 use super::pipeline;
@@ -11,6 +10,7 @@ use super::swapchain::{self, SwapchainState};
 use super::sync::{self, FrameSync, MAX_FRAMES_IN_FLIGHT};
 use super::texture::Texture;
 use crate::mesh::MeshRegistry;
+use crate::texture_registry::TextureRegistry;
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
@@ -19,9 +19,10 @@ use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
 
-/// A single draw command: which mesh to draw, with what model matrix.
+/// A single draw command: which mesh to draw, with what texture, and what model matrix.
 pub struct DrawCommand {
     pub mesh_handle: u32,
+    pub texture_handle: u32,
     pub model_matrix: [f32; 16],
 }
 
@@ -31,14 +32,13 @@ pub struct VulkanContext {
 
     frame_sync: FrameSync,
     command_buffers: Vec<vk::CommandBuffer>,
-    command_pool: vk::CommandPool,
+    pub command_pool: vk::CommandPool,
     framebuffers: Vec<vk::Framebuffer>,
     depth_image_view: vk::ImageView,
     depth_image: vk::Image,
     depth_allocation: Option<vk_alloc::Allocation>,
     pub mesh_registry: MeshRegistry,
-    descriptors: DescriptorState,
-    texture: Texture,
+    pub texture_registry: TextureRegistry,
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     vert_module: vk::ShaderModule,
@@ -133,9 +133,9 @@ impl VulkanContext {
         // 10. Command pool (needed for texture upload one-time commands)
         let command_pool = create_command_pool(&device, queue_indices.graphics)?;
 
-        // 11. Generate and upload checkerboard test texture
+        // 11. Texture registry with checkerboard fallback
         let checkerboard = super::texture::generate_checkerboard(256, 256, 32);
-        let texture = Texture::from_rgba(
+        let fallback_texture = Texture::from_rgba(
             &device,
             &gpu_allocator,
             graphics_queue,
@@ -144,21 +144,20 @@ impl VulkanContext {
             256,
             &checkerboard,
         )?;
-
-        // 12. Descriptor sets (texture sampler)
-        let descriptors = DescriptorState::new(
+        let texture_registry = TextureRegistry::new(
             &device,
             swapchain_state.images.len() as u32,
-            &texture,
+            1024,
+            fallback_texture,
         )?;
 
-        // 13. Graphics pipeline (with depth test + descriptor set layout)
+        // 12. Graphics pipeline (with depth test + descriptor set layout)
         let (pipeline_handle, pipeline_layout, vert_module, frag_module) =
             pipeline::create_triangle_pipeline(
                 &device,
                 render_pass,
                 swapchain_state.extent,
-                descriptors.layout,
+                texture_registry.descriptor_set_layout,
             )?;
 
         // 14. Mesh registry (empty — meshes uploaded by the application)
@@ -197,8 +196,7 @@ impl VulkanContext {
             vert_module,
             frag_module,
             mesh_registry,
-            descriptors,
-            texture,
+            texture_registry,
             depth_allocation: Some(depth_allocation),
             depth_image,
             depth_image_view,
@@ -336,16 +334,6 @@ impl VulkanContext {
             }];
             self.device.cmd_set_scissor(cmd, 0, &scissors);
 
-            // Bind texture descriptor set.
-            self.device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline_layout,
-                0,
-                &[self.descriptors.sets[image_index as usize]],
-                &[],
-            );
-
             // Push viewProj matrix (first 64 bytes of push constants).
             let view_proj_bytes: &[u8] = std::slice::from_raw_parts(
                 view_proj.as_ptr() as *const u8,
@@ -359,9 +347,27 @@ impl VulkanContext {
                 view_proj_bytes,
             );
 
-            // Draw each object.
+            // Draw each object with per-mesh texture binding.
+            let mut last_texture = u32::MAX;
             for draw_cmd in draw_commands {
                 if let Some(mesh) = self.mesh_registry.get(draw_cmd.mesh_handle) {
+                    // Bind texture descriptor set (skip if same as previous draw).
+                    if draw_cmd.texture_handle != last_texture {
+                        let desc_set = self.texture_registry.descriptor_set(
+                            draw_cmd.texture_handle,
+                            image_index as usize,
+                        );
+                        self.device.cmd_bind_descriptor_sets(
+                            cmd,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            self.pipeline_layout,
+                            0,
+                            &[desc_set],
+                            &[],
+                        );
+                        last_texture = draw_cmd.texture_handle;
+                    }
+
                     // Push model matrix (bytes 64..128).
                     let model_bytes: &[u8] = std::slice::from_raw_parts(
                         draw_cmd.model_matrix.as_ptr() as *const u8,
@@ -499,12 +505,10 @@ impl VulkanContext {
         self.render_pass =
             create_render_pass(&self.device, self.swapchain_state.format.format)?;
 
-        // Recreate descriptor sets for new swapchain image count.
-        self.descriptors.destroy(&self.device);
-        self.descriptors = DescriptorState::new(
+        // Recreate descriptor sets for existing textures (new swapchain image count).
+        self.texture_registry.recreate_descriptor_sets(
             &self.device,
             self.swapchain_state.images.len() as u32,
-            &self.texture,
         )?;
 
         self.framebuffers = create_framebuffers(
@@ -550,10 +554,9 @@ impl Drop for VulkanContext {
             for &fb in &self.framebuffers {
                 self.device.destroy_framebuffer(fb, None);
             }
-            // Destroy descriptors and texture before depth/allocator.
-            self.descriptors.destroy(&self.device);
+            // Destroy texture registry (all textures + descriptor pool/layout).
             if let Some(ref alloc) = self.allocator {
-                self.texture.destroy(&self.device, alloc);
+                self.texture_registry.destroy(&self.device, alloc);
             }
 
             // Destroy depth resources before the allocator.

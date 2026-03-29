@@ -1,6 +1,7 @@
 pub mod allocator;
 pub mod buffer;
 pub mod context;
+pub mod dds;
 pub mod debug;
 pub mod descriptors;
 pub mod device;

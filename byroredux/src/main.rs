@@ -2,10 +2,18 @@
 
 use anyhow::Result;
 use byroredux_core::ecs::{
-    ActiveCamera, Camera, DeltaTime, EngineConfig, MeshHandle, Scheduler, TotalTime, Transform,
-    World,
+    ActiveCamera, Camera, Component, DeltaTime, EngineConfig, MeshHandle, Scheduler,
+    SparseSetStorage, TextureHandle, TotalTime, Transform, World,
 };
 use byroredux_core::math::{Mat3, Quat, Vec3};
+
+/// Marker component for entities that should spin in the demo scene.
+#[derive(Debug, Clone, Copy)]
+struct Spinning;
+
+impl Component for Spinning {
+    type Storage = SparseSetStorage<Self>;
+}
 use byroredux_core::types::Color;
 use byroredux_platform::window::{self, WindowConfig};
 use byroredux_renderer::vulkan::context::DrawCommand;
@@ -103,11 +111,12 @@ impl App {
             .upload(&ctx.device, alloc, &blue_verts, &blue_idxs)
             .expect("Failed to upload blue triangle mesh");
 
-        // Spawn cube entity (still spinning, now textured).
+        // Spawn cube entity (spinning demo).
         let cube = self.world.spawn();
         self.world
             .insert(cube, Transform::from_translation(Vec3::new(-1.5, 0.0, 0.0)));
         self.world.insert(cube, MeshHandle(cube_handle));
+        self.world.insert(cube, Spinning);
 
         // Spawn textured quad — checkerboard visible.
         let quad = self.world.spawn();
@@ -116,6 +125,7 @@ impl App {
             Transform::from_translation(Vec3::new(0.0, 0.0, -1.0)),
         );
         self.world.insert(quad, MeshHandle(quad_handle));
+        self.world.insert(quad, Spinning);
 
         // Spawn red triangle — closer to camera (Z = 0.5), offset right.
         let red_tri = self.world.spawn();
@@ -124,6 +134,7 @@ impl App {
             Transform::from_translation(Vec3::new(1.5, 0.0, 0.5)),
         );
         self.world.insert(red_tri, MeshHandle(red_handle));
+        self.world.insert(red_tri, Spinning);
 
         // Spawn blue triangle — farther from camera (Z = -0.3), overlapping.
         let blue_tri = self.world.spawn();
@@ -132,6 +143,7 @@ impl App {
             Transform::from_translation(Vec3::new(1.8, 0.0, -0.3)),
         );
         self.world.insert(blue_tri, MeshHandle(blue_handle));
+        self.world.insert(blue_tri, Spinning);
 
         // Load NIF from CLI: either a loose file or from a BSA archive.
         //   cargo run -- path/to/file.nif
@@ -139,8 +151,13 @@ impl App {
         let nif_count = load_nif_from_args(&mut self.world, ctx);
 
         // Spawn camera entity looking at the origin.
+        // Pull back for Bethesda-scale meshes (~1 unit ≈ 1.4 cm).
         let cam = self.world.spawn();
-        let cam_pos = Vec3::new(0.0, 1.5, 4.0);
+        let cam_pos = if nif_count > 0 {
+            Vec3::new(0.0, 10.0, 30.0)
+        } else {
+            Vec3::new(0.0, 1.5, 4.0)
+        };
         let cam_target = Vec3::ZERO;
         let forward = (cam_target - cam_pos).normalize();
         let cam_rotation = Quat::from_rotation_arc(-Vec3::Z, forward);
@@ -159,9 +176,54 @@ impl App {
 
 }
 
+/// Provides DDS texture data by searching BSA archives and loose files.
+struct TextureProvider {
+    archives: Vec<byroredux_bsa::BsaArchive>,
+}
+
+impl TextureProvider {
+    fn new() -> Self {
+        Self { archives: Vec::new() }
+    }
+
+    fn extract(&self, path: &str) -> Option<Vec<u8>> {
+        for archive in &self.archives {
+            if let Ok(data) = archive.extract(path) {
+                return Some(data);
+            }
+        }
+        None
+    }
+}
+
 /// Parse CLI arguments and load NIF data accordingly.
+///
+/// Supported flags:
+///   `cargo run -- path/to/file.nif` — loose NIF file
+///   `cargo run -- --bsa meshes.bsa --mesh meshes\foo.nif` — extract from BSA
+///   `cargo run -- --bsa meshes.bsa --mesh meshes\foo.nif --textures-bsa textures.bsa`
 fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> usize {
     let args: Vec<String> = std::env::args().collect();
+
+    // Collect texture BSA archives.
+    let mut tex_provider = TextureProvider::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--textures-bsa" {
+            if let Some(path) = args.get(i + 1) {
+                match byroredux_bsa::BsaArchive::open(path) {
+                    Ok(a) => {
+                        log::info!("Opened textures BSA: '{}'", path);
+                        tex_provider.archives.push(a);
+                    }
+                    Err(e) => log::warn!("Failed to open textures BSA '{}': {}", path, e),
+                }
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
 
     if let Some(bsa_idx) = args.iter().position(|a| a == "--bsa") {
         // BSA mode: --bsa <archive> --mesh <path_in_archive>
@@ -183,21 +245,30 @@ fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> usize {
             Err(e) => { log::error!("Failed to extract '{}': {}", mesh_path, e); return 0; }
         };
         log::info!("Extracted {} bytes from BSA '{}'", data.len(), mesh_path);
-        load_nif_bytes(world, ctx, &data, mesh_path)
+        load_nif_bytes(world, ctx, &data, mesh_path, &tex_provider)
     } else if let Some(nif_path) = args.get(1) {
+        if nif_path.starts_with("--") {
+            return 0; // Skip flags that aren't NIF paths
+        }
         // Loose file mode: <path.nif>
         let data = match std::fs::read(nif_path) {
             Ok(d) => d,
             Err(e) => { log::error!("Failed to read NIF file '{}': {}", nif_path, e); return 0; }
         };
-        load_nif_bytes(world, ctx, &data, nif_path)
+        load_nif_bytes(world, ctx, &data, nif_path, &tex_provider)
     } else {
         0
     }
 }
 
-/// Parse NIF bytes, import meshes, upload to GPU, and spawn ECS entities.
-fn load_nif_bytes(world: &mut World, ctx: &mut VulkanContext, data: &[u8], label: &str) -> usize {
+/// Parse NIF bytes, import meshes, upload to GPU, load textures, and spawn ECS entities.
+fn load_nif_bytes(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    data: &[u8],
+    label: &str,
+    tex_provider: &TextureProvider,
+) -> usize {
     let scene = match byroredux_nif::parse_nif(data) {
         Ok(s) => s,
         Err(e) => {
@@ -224,12 +295,44 @@ fn load_nif_bytes(world: &mut World, ctx: &mut VulkanContext, data: &[u8], label
             })
             .collect();
 
-        let handle = match ctx.mesh_registry.upload(&ctx.device, alloc, &vertices, &mesh.indices) {
+        let mesh_handle = match ctx.mesh_registry.upload(&ctx.device, alloc, &vertices, &mesh.indices) {
             Ok(h) => h,
             Err(e) => {
                 log::warn!("Failed to upload NIF mesh '{}': {}", mesh.name.as_deref().unwrap_or("?"), e);
                 continue;
             }
+        };
+
+        // Load DDS texture if the mesh has a texture path.
+        let tex_handle = match &mesh.texture_path {
+            Some(tex_path) => {
+                // Check cache first.
+                if let Some(cached) = ctx.texture_registry.get_by_path(tex_path) {
+                    cached
+                } else if let Some(dds_bytes) = tex_provider.extract(tex_path) {
+                    match ctx.texture_registry.load_dds(
+                        &ctx.device,
+                        alloc,
+                        ctx.graphics_queue,
+                        ctx.command_pool,
+                        tex_path,
+                        &dds_bytes,
+                    ) {
+                        Ok(h) => {
+                            log::info!("Loaded DDS texture: '{}'", tex_path);
+                            h
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to load DDS '{}': {}", tex_path, e);
+                            ctx.texture_registry.fallback()
+                        }
+                    }
+                } else {
+                    log::debug!("Texture not found in BSA: '{}'", tex_path);
+                    ctx.texture_registry.fallback()
+                }
+            }
+            None => ctx.texture_registry.fallback(),
         };
 
         // Convert NiTransform to ECS Transform
@@ -243,7 +346,8 @@ fn load_nif_bytes(world: &mut World, ctx: &mut VulkanContext, data: &[u8], label
 
         let entity = world.spawn();
         world.insert(entity, Transform::new(translation, quat, mesh.scale));
-        world.insert(entity, MeshHandle(handle));
+        world.insert(entity, MeshHandle(mesh_handle));
+        world.insert(entity, TextureHandle(tex_handle));
 
         log::info!(
             "Loaded NIF mesh '{}': {} verts, {} tris, tex={:?}",
@@ -259,10 +363,10 @@ fn load_nif_bytes(world: &mut World, ctx: &mut VulkanContext, data: &[u8], label
     count
 }
 
-/// Rotates entities that have both Transform and MeshHandle (not cameras).
+/// Rotates only entities marked with the Spinning component.
 fn spin_system(world: &World, dt: f32) {
-    if let Some((mq, mut tq)) = world.query_2_mut::<MeshHandle, Transform>() {
-        for (entity, _mesh) in mq.iter() {
+    if let Some((sq, mut tq)) = world.query_2_mut::<Spinning, Transform>() {
+        for (entity, _) in sq.iter() {
             if let Some(transform) = tq.get_mut(entity) {
                 let rotation =
                     Quat::from_rotation_y(dt * 1.0) * Quat::from_rotation_x(dt * 0.3);
@@ -441,18 +545,27 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>) {
     };
 
     // Collect draw commands from entities with (Transform, MeshHandle).
+    // TextureHandle is optional — entities without one use the fallback (0).
     let mut draw_commands = Vec::new();
     if let Some((tq, mq)) = world.query_2_mut::<Transform, MeshHandle>() {
-        // Iterate the smaller set (meshes), look up transforms.
+        let tex_q = world.query::<TextureHandle>();
         for (entity, mesh) in mq.iter() {
             if let Some(transform) = tq.get(entity) {
+                let tex_handle = tex_q
+                    .as_ref()
+                    .and_then(|q| q.get(entity))
+                    .map(|t| t.0)
+                    .unwrap_or(0);
                 draw_commands.push(DrawCommand {
                     mesh_handle: mesh.0,
+                    texture_handle: tex_handle,
                     model_matrix: transform.to_matrix().to_cols_array(),
                 });
             }
         }
     }
+    // Sort by texture handle to minimize descriptor set rebinds.
+    draw_commands.sort_unstable_by_key(|cmd| cmd.texture_handle);
 
     (view_proj, draw_commands)
 }

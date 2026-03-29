@@ -201,10 +201,15 @@ impl<'a> NifStream<'a> {
     }
 
     pub fn read_ni_transform(&mut self) -> io::Result<NiTransform> {
+        // Gamebryo serialization order: translation, rotation, scale
+        // (see NiAVObject::LoadBinary in Gamebryo 2.3 source)
+        let translation = self.read_ni_point3()?;
+        let rotation = self.read_ni_matrix3()?;
+        let scale = self.read_f32_le()?;
         Ok(NiTransform {
-            rotation: self.read_ni_matrix3()?,
-            translation: self.read_ni_point3()?,
-            scale: self.read_f32_le()?,
+            rotation,
+            translation,
+            scale,
         })
     }
 }

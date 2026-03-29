@@ -126,14 +126,14 @@ mod tests {
 
         // NiAVObject: flags (u32 for version >= 20.2.0.7)
         block.extend_from_slice(&14u32.to_le_bytes());
-        // transform: identity rotation (9 floats)
-        for r in &[1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
-            block.extend_from_slice(&r.to_le_bytes());
-        }
-        // translation: (1.0, 2.0, 3.0)
+        // transform: translation (1.0, 2.0, 3.0)
         block.extend_from_slice(&1.0f32.to_le_bytes());
         block.extend_from_slice(&2.0f32.to_le_bytes());
         block.extend_from_slice(&3.0f32.to_le_bytes());
+        // identity rotation (9 floats)
+        for r in &[1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
+            block.extend_from_slice(&r.to_le_bytes());
+        }
         // scale: 1.0
         block.extend_from_slice(&1.0f32.to_le_bytes());
         // properties: count=0
@@ -290,6 +290,15 @@ mod tests {
         assert!(!m.indices.is_empty(), "mesh should have indices");
         eprintln!("Bottle mesh: {} verts, {} indices, texture={:?}",
             m.positions.len(), m.indices.len(), m.texture_path);
+        eprintln!("  translation: {:?}", m.translation);
+        eprintln!("  scale: {}", m.scale);
+        eprintln!("  scale: {}", m.scale);
+        // Vertex bounds
+        let (mut min, mut max) = (m.positions[0], m.positions[0]);
+        for p in &m.positions {
+            for i in 0..3 { min[i] = min[i].min(p[i]); max[i] = max[i].max(p[i]); }
+        }
+        eprintln!("  vertex bounds: min={:?} max={:?}", min, max);
     }
 
     /// Parse a real Fallout: New Vegas NIF file (deathclaw sign).

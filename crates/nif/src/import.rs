@@ -131,19 +131,20 @@ fn extract_mesh(
         return None;
     }
 
-    // Convert positions
+    // Convert positions: Gamebryo Z-up → renderer Y-up: (x,y,z) → (x,z,-y)
     let positions: Vec<[f32; 3]> = geom.vertices.iter()
-        .map(|v| [v.x, v.y, v.z])
+        .map(|v| [v.x, v.z, -v.y])
         .collect();
 
-    // Convert indices (u16 → u32)
+    // Convert indices (u16 → u32). Winding order preserved — the Z-up → Y-up
+    // transform is a proper rotation (det=+1), not a reflection.
     let indices: Vec<u32> = geom.triangles.iter()
         .flat_map(|tri| [tri[0] as u32, tri[1] as u32, tri[2] as u32])
         .collect();
 
-    // Convert normals (fall back to +Y up if none)
+    // Convert normals with same axis swap (fall back to +Y up if none)
     let normals: Vec<[f32; 3]> = if !geom.normals.is_empty() {
-        geom.normals.iter().map(|n| [n.x, n.y, n.z]).collect()
+        geom.normals.iter().map(|n| [n.x, n.z, -n.y]).collect()
     } else {
         vec![[0.0, 1.0, 0.0]; positions.len()]
     };
@@ -156,18 +157,26 @@ fn extract_mesh(
     // Determine vertex colors: prefer per-vertex colors, then material diffuse, then white
     let (colors, texture_path) = extract_material(scene, shape, &geom);
 
+    // Apply Z-up → Y-up to the entity transform as well.
+    let t = &world_transform.translation;
+    let r = &world_transform.rotation.rows;
+
+    // Rotation matrix axis swap: for each row [rx, ry, rz] → [rx, rz, -ry],
+    // and swap row order: row_y ↔ row_z with negation.
+    let converted_rotation = [
+        [r[0][0], r[0][2], -r[0][1]],  // original X row, axes swapped
+        [r[2][0], r[2][2], -r[2][1]],  // original Z row becomes Y row
+        [-r[1][0], -r[1][2], r[1][1]], // original -Y row becomes Z row
+    ];
+
     Some(ImportedMesh {
         positions,
         colors,
         normals,
         uvs,
         indices,
-        translation: [
-            world_transform.translation.x,
-            world_transform.translation.y,
-            world_transform.translation.z,
-        ],
-        rotation: world_transform.rotation.rows,
+        translation: [t.x, t.z, -t.y],
+        rotation: converted_rotation,
         scale: world_transform.scale,
         name: shape.name.clone(),
         texture_path,
@@ -401,7 +410,7 @@ mod tests {
         assert_eq!(m.positions.len(), 3);
         assert_eq!(m.indices, vec![0, 1, 2]);
         assert_eq!(m.uvs.len(), 3);
-        // Identity transform
+        // Identity transform (Z-up → Y-up is identity for zero translation)
         assert_eq!(m.translation, [0.0, 0.0, 0.0]);
         assert_eq!(m.scale, 1.0);
     }
@@ -427,6 +436,8 @@ mod tests {
     #[test]
     fn import_composes_nested_transforms() {
         // Root at (5, 0, 0) → Child NiNode at (0, 3, 0) → Shape at identity
+        // NIF-space composed: (5, 3, 0)
+        // After Z-up → Y-up (x,z,-y): (5, 0, -3)
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
             Box::new(make_ni_node(translated(5.0, 0.0, 0.0), vec![BlockRef(1)])),
             Box::new(make_ni_node(translated(0.0, 3.0, 0.0), vec![BlockRef(2)])),
@@ -439,7 +450,8 @@ mod tests {
         assert_eq!(meshes.len(), 1);
         let m = &meshes[0];
         assert!((m.translation[0] - 5.0).abs() < 1e-6);
-        assert!((m.translation[1] - 3.0).abs() < 1e-6);
+        assert!((m.translation[1] - 0.0).abs() < 1e-6);
+        assert!((m.translation[2] - -3.0).abs() < 1e-6);
     }
 
     #[test]
@@ -523,6 +535,7 @@ mod tests {
             emissive: NiColor { r: 0.0, g: 0.0, b: 0.0 },
             shininess: 10.0,
             alpha: 1.0,
+            emissive_mult: 1.0,
         };
 
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![

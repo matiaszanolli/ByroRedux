@@ -10,6 +10,8 @@ use std::path::Path;
 pub struct BsaArchive {
     path: std::path::PathBuf,
     compressed_by_default: bool,
+    /// When set (flag 0x100), each file's data starts with a bstring name prefix to skip.
+    embed_file_names: bool,
     /// Maps normalized file path to FileEntry.
     files: HashMap<String, FileEntry>,
 }
@@ -58,6 +60,7 @@ impl BsaArchive {
         let include_dir_names = archive_flags & 1 != 0;
         let include_file_names = archive_flags & 2 != 0;
         let compressed_by_default = archive_flags & 4 != 0;
+        let embed_file_names = archive_flags & 0x100 != 0;
 
         if !include_dir_names || !include_file_names {
             return Err(io::Error::new(
@@ -157,6 +160,7 @@ impl BsaArchive {
         Ok(BsaArchive {
             path: path.to_path_buf(),
             compressed_by_default,
+            embed_file_names,
             files,
         })
     }
@@ -192,8 +196,21 @@ impl BsaArchive {
         let mut reader = BufReader::new(File::open(&self.path)?);
         reader.seek(SeekFrom::Start(entry.offset))?;
 
+        // Skip embedded file name prefix (bstring: 1 byte length + name).
+        // Present when archive flag 0x100 is set. The size field includes these bytes.
+        let name_prefix_len = if self.embed_file_names {
+            let mut len_buf = [0u8; 1];
+            reader.read_exact(&mut len_buf)?;
+            let name_len = len_buf[0] as usize;
+            reader.seek(SeekFrom::Current(name_len as i64))?;
+            1 + name_len
+        } else {
+            0
+        };
+
         // Determine if this file is compressed
         let is_compressed = self.compressed_by_default != entry.compression_toggle;
+        let data_size = entry.size as usize - name_prefix_len;
 
         if is_compressed {
             // First 4 bytes are the original uncompressed size
@@ -202,7 +219,7 @@ impl BsaArchive {
             let original_size = u32::from_le_bytes(size_buf) as usize;
 
             // Read remaining compressed data
-            let compressed_len = entry.size as usize - 4;
+            let compressed_len = data_size - 4;
             let mut compressed = vec![0u8; compressed_len];
             reader.read_exact(&mut compressed)?;
 
@@ -213,7 +230,7 @@ impl BsaArchive {
 
             Ok(decompressed)
         } else {
-            let mut data = vec![0u8; entry.size as usize];
+            let mut data = vec![0u8; data_size];
             reader.read_exact(&mut data)?;
             Ok(data)
         }
@@ -321,6 +338,24 @@ mod tests {
         let archive = BsaArchive::open(FNV_MESHES_BSA).unwrap();
         let result = archive.extract("meshes\\nonexistent.nif");
         assert!(result.is_err());
+    }
+
+    #[test]
+    #[ignore]
+    fn texture_bsa_extract_dds() {
+        let tex_bsa = "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data/Fallout - Textures.bsa";
+        if !Path::new(tex_bsa).exists() {
+            return;
+        }
+        let archive = BsaArchive::open(tex_bsa).unwrap();
+        eprintln!("Textures BSA: {} files", archive.file_count());
+
+        assert!(archive.contains(r"textures\clutter\food\beerbottle.dds"),
+                "should contain beerbottle texture");
+
+        let data = archive.extract(r"textures\clutter\food\beerbottle.dds").unwrap();
+        eprintln!("Extracted {} bytes, first 4: {:?}", data.len(), &data[..4]);
+        assert_eq!(&data[..4], b"DDS ", "should start with DDS magic");
     }
 
     #[test]
