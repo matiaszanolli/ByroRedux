@@ -1,5 +1,58 @@
 # Scripting Architecture: From Papyrus VM to ECS-Native
 
+## Three Generations of Bethesda Scripting
+
+### ObScript (Morrowind → Fallout: New Vegas)
+
+The original scripting system ran synchronously in the game loop:
+
+- **GameMode block** executed every frame — any timed behavior required manual
+  `GetSecondsPassed()` tracking and state variables
+- No user-defined functions, no loops, no states — just sequential IF/ELSE
+- `set variable to 25` syntax, `Begin OnTriggerEnter Player` events
+- Single-threaded: script execution directly affected framerate
+- All variables public, no encapsulation
+
+ObScript was simple but limited. Complex behavior required dozens of tracking
+variables and deeply nested conditionals. The per-frame execution model meant
+heavy scripts visibly dropped FPS.
+
+### Papyrus (Skyrim → Fallout 4)
+
+Papyrus introduced modern language features but moved scripts into a VM:
+
+- User-defined functions, While loops, states, latent functions (Wait, MoveTo)
+- Properties with editor configuration and optional get/set validation
+- Multithreaded VM — scripts time-sliced, don't directly affect framerate
+- 136 events (Fallout 4), type-safe compilation, script inheritance
+
+But the VM architecture created new problems: *"Telling a script to wait for
+0.5 seconds really means 0.5 seconds plus the time it takes for the script to
+get its number called."* Under load, this queue delay grows to seconds.
+Multiple instances of the same event can run simultaneously (e.g., two
+OnTriggerEnter events overlapping), requiring States or control variables.
+
+### ByroRedux (this engine)
+
+Takes the best of both: **ObScript's deterministic synchronous execution** with
+**Papyrus's modern features**, implemented as ECS components and systems. No VM,
+no event queue, no separate threading model. Scripts run in the ECS scheduler
+like any other system — deterministic timing, zero overhead for idle scripts,
+and component data is the only state that exists.
+
+| | ObScript | Papyrus | ByroRedux |
+|---|---|---|---|
+| Execution | Synchronous, per-frame | Async VM, time-sliced | Synchronous ECS scheduler |
+| Framerate impact | Direct | None (but script lag) | None (queries skip empty) |
+| Functions | No | Yes | Yes (Rust functions) |
+| Loops | No | While | Rust loops |
+| States | No | GoToState | Enum component field |
+| Save safety | Variables only | Stacks + properties (fragile) | Components only (robust) |
+| Timing | Deterministic | Non-deterministic (queue) | Deterministic |
+| Mod conflicts | Variable collision | Script-level override | Per-component, auto-merge |
+
+---
+
 ## Why Replace Papyrus?
 
 Papyrus is the scripting language used in Skyrim and Fallout 4. It runs inside a
@@ -427,5 +480,6 @@ running legacy scripts from mods without manual porting.
 - [Function Reference](https://falloutck.uesp.net/wiki/Function_Reference)
 - [Expression Reference](https://falloutck.uesp.net/wiki/Expression_Reference)
 - [Differences from Skyrim to Fallout 4](https://falloutck.uesp.net/wiki/Differences_from_Skyrim_to_Fallout_4)
+- [Differences from Previous Scripting](https://falloutck.uesp.net/wiki/Differences_from_Previous_Scripting) (ObScript → Papyrus)
 - Internal: `docs/engine/lighting-from-cells.md` (cell-based lighting, probe seeding)
 - Memory: `papyrus_reference.md`, `papyrus_events_catalog.md`, `scripting_as_ecs.md`
