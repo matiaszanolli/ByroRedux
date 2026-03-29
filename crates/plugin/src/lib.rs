@@ -9,11 +9,13 @@
 //! stable [`FormIdPair`] identity.
 
 pub mod datastore;
+pub mod legacy;
 pub mod manifest;
 pub mod record;
 pub mod resolver;
 
 pub use datastore::{Conflict, DataStore, ResolvedRecord};
+pub use legacy::{LegacyFormId, LegacyLoadOrder};
 pub use manifest::PluginManifest;
 pub use record::{ErasedComponent, ErasedComponentData, Record, RecordType};
 pub use resolver::{ConflictResolution, DependencyResolver};

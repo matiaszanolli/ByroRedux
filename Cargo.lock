@@ -629,6 +629,7 @@ dependencies = [
 name = "gamebyro-plugin"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "gamebyro-core",
  "semver",
  "serde",
