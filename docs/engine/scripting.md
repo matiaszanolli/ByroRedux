@@ -82,6 +82,52 @@ ByroRedux eliminates all of these by making scripts first-class ECS citizens:
 script state is component data, script logic is systems, and the ECS scheduler
 owns all execution. No VM, no stacks, no separate threads.
 
+### The Numbers: Bethesda's Own Profiling Data
+
+Bethesda's official [Papyrus performance guide](https://falloutck.uesp.net/wiki/Performance_(Papyrus))
+includes profiling data that quantifies the problems:
+
+**Queue push latency dominates execution time:**
+```
+ObjectReference.GetPositionY:  0.04ms actual execution
+                            5,760.60ms waiting in queue
+```
+That's a **144,000x overhead** — the work is instant, the VM scheduling is
+catastrophic. A function that calls `GetPositionX`, `GetPositionY`, and
+`GetPositionZ` separately spent 7,233ms total, of which ~7,200ms was queue
+waiting. In ECS, reading `transform.translation` is a single field access —
+nanoseconds, no queue.
+
+**Object contention serializes access:**
+When multiple scripts need data from the same object (e.g., the player), they
+queue behind each other. 10 scripts asking for the player's level execute
+serially, each waiting for the previous one to finish. In ECS, component reads
+are concurrent (`RwLock<T>` allows multiple readers).
+
+**Native function framerate sync:**
+Most native function calls sync to the game's framerate — 30 native calls at
+30fps takes ~1 second. "Non-delayed" functions bypass this, but most common
+operations (position, inventory, actor values) don't qualify. In ECS, component
+access is immediate — no frame boundary synchronization.
+
+**Persistence traps:**
+Storing an ObjectReference in a script variable makes that object persistent —
+it cannot be unloaded to save memory. Function-local variables release on
+return, but script-level variables persist indefinitely. Bethesda's advice:
+"prefer function variables over script variables" and "set to None when done."
+In ECS, components are owned by the world — no persistence surprises.
+
+**Bethesda's own recommended patterns validate ECS:**
+- "Use states with empty handlers instead of condition checks" → ECS queries
+  skip entities without the relevant component (zero-cost non-participation)
+- "Don't re-do work; cache in local variables" → component data is always
+  available, no need to call through a native bridge
+- "Prefer single point of entry over multiple cross-script calls" → in ECS,
+  a system reads all components it needs in one query
+- "Prefer events over polling loops" → ECS systems are inherently event-like
+  (marker components appear, systems process, markers removed)
+- "Break large functions into smaller ones" → each system does one thing
+
 ---
 
 ## Papyrus Language Model
@@ -432,12 +478,39 @@ The Papyrus VM serializes:
 4. All event registrations
 
 Orphaned stacks (from removed mods) persist forever, consuming RAM and
-eventually corrupting the save.
+eventually corrupting the save. Bethesda's official position: *"Removing mods
+and continuing to use the same save game is not supported by the game."*
+
+The save can happen **between lines or even mid-line**. When scripts change
+between saves, the engine must reconcile old serialized execution state with
+new code. [Bethesda's official rules](https://falloutck.uesp.net/wiki/Save_File_Notes_(Papyrus))
+reveal the complexity:
+
+**Property/variable rules:**
+- Auto property: saved value overrides masterfile value (unless const)
+- Non-auto property: backing variable saved, won't get masterfile value on new add
+- Const property: always uses masterfile value, ignores save — but still
+  serializes the old value, and other variables assigned from it keep the old value
+- Changing const↔non-const swaps which value wins on load
+- `OnInit` runs only once ever — new variables added after first save won't be initialized
+- Rename = delete + create (value lost)
+- Type change = value discarded
+
+**Function rules (mid-execution changes):**
+- Removed function mid-execution: old bytecode loaded from save, finishes
+  running, then future calls fail with errors
+- Changed function: old serialized version runs to completion, new version
+  used for subsequent calls — two versions coexist in one session
+- Native→scripted change: **stack thrown out entirely**
+
+**Persistence trap:** putting an ObjectReference in a script variable makes
+that object permanently loaded in memory. Function-local variables release
+on return, but script-level variables persist indefinitely.
 
 ### ECS Save Solution
 
 Only component data is serialized. There are no stacks, no suspended frames,
-no registration lists.
+no registration lists. None of the above complexity exists.
 
 - **Properties** → component fields → serialized as regular data
 - **Const properties** → skipped (value comes from the plugin, not the save)
@@ -446,9 +519,17 @@ no registration lists.
 - **Event registrations** → `RemoteWatch`/`CustomEventWatch` components →
   serialized as entity + event references
 
+**Mod changes between saves — clean semantics:**
+- Adding a component field → field gets default value, no initialization timing issues
+- Removing a component field → field ignored on load, no orphaned state
+- Changing a field type → migration system handles conversion or resets to default
+- No mid-execution saves — systems complete atomically within their frame tick
+- No function versioning — systems are compiled Rust code, not serialized bytecode
+- No persistence traps — components are world-owned, not reference-counted
+
 Removing a mod removes its components from all entities. No orphaned state.
-Adding a mod adds new components to entities that match its records. No
-compatibility issues.
+Adding a mod adds new components to entities that match its records.
+**Removing mods and continuing to play is fully supported.**
 
 ---
 
@@ -470,6 +551,34 @@ system functions. The grammar is simple enough (standard operator precedence,
 no complex control flow) that a transpiler is feasible. This would allow
 running legacy scripts from mods without manual porting.
 
+### Approach 3: PEX Bytecode Interpreter (stretch goal)
+
+Load compiled `.pex` bytecode directly and interpret it within the ECS. This
+would support mods that distribute only compiled scripts (no `.psc` source).
+Requires understanding the `.pas` assembly-level opcodes. The pipeline is:
+`.psc` source → `.pas` assembly → `.pex` bytecode → interpreter → ECS actions.
+
+### API Surface to Support
+
+The complete Papyrus API surface that legacy content uses is documented in
+`docs/legacy/papyrus-api-reference.md`. Key numbers:
+
+- **101 script types** in the inheritance hierarchy
+- **ScriptObject root:** 17 registration functions, 23 events, state machine,
+  timers, reflection
+- **Form base:** 7 native + 17 F4SE functions (keyword checks, name/weight/value)
+- **Actor:** ~150 member functions decomposable into 15 ECS components, ~40 events
+- **Utility scripts:** 10 global function containers (Game, Math, Debug, etc.)
+- **ObjectMod system:** data-driven property modification with 6 operators,
+  5 value types, ~70 weapon properties
+
+### UI Compatibility
+
+Legacy content uses Scaleform GFx (Flash) for all UI menus. 34 named menus
+are accessed via the `UI` script object. ByroRedux will use the Ruffle
+project (Rust-native Flash emulator) as a compatibility layer for loading
+original `.swf` files. See `docs/legacy/creation-engine-ui.md`.
+
 ---
 
 ## References
@@ -481,5 +590,10 @@ running legacy scripts from mods without manual porting.
 - [Expression Reference](https://falloutck.uesp.net/wiki/Expression_Reference)
 - [Differences from Skyrim to Fallout 4](https://falloutck.uesp.net/wiki/Differences_from_Skyrim_to_Fallout_4)
 - [Differences from Previous Scripting](https://falloutck.uesp.net/wiki/Differences_from_Previous_Scripting) (ObScript → Papyrus)
+- [Script Objects](https://falloutck.uesp.net/wiki/Category:Script_Objects) (101 script types)
+- [Script File Structure](https://falloutck.uesp.net/wiki/Script_File_Structure) (`.psc` grammar)
+- [Extending Scripts](https://falloutck.uesp.net/wiki/Extending_Scripts_(Papyrus)) (inheritance rules)
+- Internal: `docs/legacy/papyrus-api-reference.md` (full API surface documentation)
+- Internal: `docs/legacy/creation-engine-ui.md` (Scaleform UI system, Ruffle strategy)
 - Internal: `docs/engine/lighting-from-cells.md` (cell-based lighting, probe seeding)
 - Memory: `papyrus_reference.md`, `papyrus_events_catalog.md`, `scripting_as_ecs.md`

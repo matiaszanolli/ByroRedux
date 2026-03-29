@@ -136,6 +136,33 @@ Versions: min 20.0.0.3, max 34.1.1.3 in this codebase.
 - **.nif** — NetImmerse File (scene graph with meshes, materials, animation)
 - **.kf** — Key Frame file (animation controller sequences)
 - **.kfm** — Key Frame Master (animation state machine: sequences, transitions, sync groups)
+- **.psc** — Papyrus source, **.pas** — Papyrus assembly, **.pex** — Papyrus bytecode
+- **.swf** — Flash/Scaleform UI menus (Data/Interface/)
+
+## Creation Engine Additions (beyond Gamebryo 2.3)
+
+The Creation Engine (Skyrim onwards) added several major systems on top of
+the Gamebryo 2.3 base. These are documented in detail in separate files:
+
+### Papyrus Scripting VM
+Replaced ObScript with a multithreaded bytecode VM. 101 script types in an
+inheritance hierarchy, 136+ events, latent functions, states, properties.
+ByroRedux replaces this with ECS-native scripting.
+See: `docs/engine/scripting.md`, `docs/legacy/papyrus-api-reference.md`
+
+### Scaleform GFx UI
+All in-game menus rendered via Adobe Flash (Scaleform). 34 named menus
+accessed through a Papyrus `UI` script bridge. Scaleform was discontinued
+before Skyrim shipped; ByroRedux will use Ruffle (Rust Flash emulator) for
+legacy `.swf` compatibility.
+See: `docs/legacy/creation-engine-ui.md`
+
+### Object Modification System (Fallout 4)
+Data-driven item customization via OMOD records. Each mod is a list of
+`(target_field, operator, value)` tuples applied to base items at workbenches.
+6 operators (Set/Add/Mult-Add/And/Or/Remove), 5 value types, ~70 weapon
+properties, keyword-based attach point system on 3D models.
+See: `docs/legacy/papyrus-api-reference.md` (ObjectMod section)
 
 ## Compatibility Mapping: Gamebryo → Redux
 
