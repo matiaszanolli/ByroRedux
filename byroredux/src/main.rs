@@ -133,12 +133,10 @@ impl App {
         );
         self.world.insert(blue_tri, MeshHandle(blue_handle));
 
-        // Load NIF file if passed as CLI argument.
-        let nif_count = if let Some(nif_path) = std::env::args().nth(1) {
-            load_nif(&mut self.world, ctx, &nif_path)
-        } else {
-            0
-        };
+        // Load NIF from CLI: either a loose file or from a BSA archive.
+        //   cargo run -- path/to/file.nif
+        //   cargo run -- --bsa path.bsa --mesh meshes\foo.nif
+        let nif_count = load_nif_from_args(&mut self.world, ctx);
 
         // Spawn camera entity looking at the origin.
         let cam = self.world.spawn();
@@ -161,21 +159,49 @@ impl App {
 
 }
 
-/// Load a NIF file, import its meshes, upload to GPU, and spawn ECS entities.
-/// Returns the number of meshes loaded.
-fn load_nif(world: &mut World, ctx: &mut VulkanContext, path: &str) -> usize {
-    let data = match std::fs::read(path) {
-        Ok(d) => d,
-        Err(e) => {
-            log::error!("Failed to read NIF file '{}': {}", path, e);
-            return 0;
-        }
-    };
+/// Parse CLI arguments and load NIF data accordingly.
+fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> usize {
+    let args: Vec<String> = std::env::args().collect();
 
-    let scene = match byroredux_nif::parse_nif(&data) {
+    if let Some(bsa_idx) = args.iter().position(|a| a == "--bsa") {
+        // BSA mode: --bsa <archive> --mesh <path_in_archive>
+        let bsa_path = match args.get(bsa_idx + 1) {
+            Some(p) => p,
+            None => { log::error!("--bsa requires an archive path"); return 0; }
+        };
+        let mesh_path = match args.iter().position(|a| a == "--mesh").and_then(|i| args.get(i + 1)) {
+            Some(p) => p,
+            None => { log::error!("--bsa requires --mesh <path>"); return 0; }
+        };
+
+        let archive = match byroredux_bsa::BsaArchive::open(bsa_path) {
+            Ok(a) => a,
+            Err(e) => { log::error!("Failed to open BSA '{}': {}", bsa_path, e); return 0; }
+        };
+        let data = match archive.extract(mesh_path) {
+            Ok(d) => d,
+            Err(e) => { log::error!("Failed to extract '{}': {}", mesh_path, e); return 0; }
+        };
+        log::info!("Extracted {} bytes from BSA '{}'", data.len(), mesh_path);
+        load_nif_bytes(world, ctx, &data, mesh_path)
+    } else if let Some(nif_path) = args.get(1) {
+        // Loose file mode: <path.nif>
+        let data = match std::fs::read(nif_path) {
+            Ok(d) => d,
+            Err(e) => { log::error!("Failed to read NIF file '{}': {}", nif_path, e); return 0; }
+        };
+        load_nif_bytes(world, ctx, &data, nif_path)
+    } else {
+        0
+    }
+}
+
+/// Parse NIF bytes, import meshes, upload to GPU, and spawn ECS entities.
+fn load_nif_bytes(world: &mut World, ctx: &mut VulkanContext, data: &[u8], label: &str) -> usize {
+    let scene = match byroredux_nif::parse_nif(data) {
         Ok(s) => s,
         Err(e) => {
-            log::error!("Failed to parse NIF file '{}': {}", path, e);
+            log::error!("Failed to parse NIF '{}': {}", label, e);
             return 0;
         }
     };
@@ -192,6 +218,7 @@ fn load_nif(world: &mut World, ctx: &mut VulkanContext, path: &str) -> usize {
                 Vertex::new(
                     mesh.positions[i],
                     if i < mesh.colors.len() { mesh.colors[i] } else { [1.0, 1.0, 1.0] },
+                    if i < mesh.normals.len() { mesh.normals[i] } else { [0.0, 1.0, 0.0] },
                     if i < mesh.uvs.len() { mesh.uvs[i] } else { [0.0, 0.0] },
                 )
             })
@@ -228,7 +255,7 @@ fn load_nif(world: &mut World, ctx: &mut VulkanContext, path: &str) -> usize {
         count += 1;
     }
 
-    log::info!("Imported {} meshes from '{}'", count, path);
+    log::info!("Imported {} meshes from '{}'", count, label);
     count
 }
 

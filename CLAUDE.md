@@ -47,15 +47,17 @@ crates/
     src/vulkan/texture.rs    Texture upload (staging buffer, layout transitions, sampler)
     src/vulkan/descriptors.rs  DescriptorState (pool, layout, per-image sets)
     src/mesh.rs              MeshRegistry, cube/triangle/quad geometry helpers
-    src/vertex.rs            Vertex (position + color + UV), 3 attribute descriptions
+    src/vertex.rs            Vertex (position + color + normal + UV), 4 attribute descriptions
     shaders/                 GLSL → SPIR-V (pre-compiled, include_bytes!)
+  bsa/                       BSA archive reader (Bethesda Softworks Archive v104)
+    src/archive.rs           BsaArchive: open, list, extract (zlib decompression)
   platform/                  Windowing (winit), raw handles
   nif/                       NIF file parser (Gamebryo .nif binary format)
     src/header.rs            NifHeader, version-aware header parsing
     src/version.rs           NifVersion (packed u32), version constants
     src/types.rs             NiPoint3, NiMatrix3, NiTransform, NiColor, BlockRef
     src/stream.rs            NifStream: version-aware binary reader
-    src/blocks/              Block parsers: NiNode, NiTriShape, NiTriShapeData, properties, textures
+    src/blocks/              Block parsers: NiNode, NiTriShape/Strips, NiTriShapeData/StripsData, properties, BSShader, textures
     src/import.rs            NIF-to-ECS import: scene graph flattening, geometry/transform conversion
     src/scene.rs             NifScene: parsed block collection with downcasting
   scripting/                 ECS-native scripting (events, timers)
@@ -118,9 +120,11 @@ Detailed analysis in `docs/legacy/`.
 ## Development Roadmap
 
 See `.claude/plans/stateless-finding-zephyr.md` for the active roadmap plan.
-Current: Phases 1–9 + S1 complete (triangle → vertex buffers → ECS rendering → plugins → legacy bridge → depth → texturing → NIF parser → NIF import → scripting foundation).
-Usage: `cargo run -- path/to/mesh.nif` loads and renders NIF meshes alongside the demo scene.
-Next: material/lighting pipeline, animation (.kf files), full scripting event catalog.
+Current: Phases 1–9 + S1 + BSA + Lighting complete. Can load and render real Fallout New Vegas meshes.
+Usage:
+  `cargo run -- path/to/mesh.nif` — render a loose NIF file
+  `cargo run -- --bsa path.bsa --mesh meshes\\foo.nif` — extract from BSA and render
+Next: DDS texture loading, animation (.kf files), ESM parser, full scripting event catalog.
 
 ## Git Conventions
 

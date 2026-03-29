@@ -221,6 +221,7 @@ name = "byroredux"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "byroredux-bsa",
  "byroredux-core",
  "byroredux-cxx-bridge",
  "byroredux-nif",
@@ -230,6 +231,15 @@ dependencies = [
  "env_logger",
  "log",
  "winit",
+]
+
+[[package]]
+name = "byroredux-bsa"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "log",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

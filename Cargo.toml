@@ -7,6 +7,7 @@ members = [
     "crates/platform",
     "crates/scripting",
     "crates/cxx-bridge",
+    "crates/bsa",
     "byroredux",
 ]
 resolver = "2"
@@ -24,6 +25,7 @@ byroredux-platform = { path = "crates/platform" }
 byroredux-plugin = { path = "crates/plugin" }
 byroredux-scripting = { path = "crates/scripting" }
 byroredux-nif = { path = "crates/nif" }
+byroredux-bsa = { path = "crates/bsa" }
 byroredux-cxx-bridge = { path = "crates/cxx-bridge" }
 
 # Vulkan / GPU
@@ -56,6 +58,9 @@ uuid = { version = "1", features = ["v5", "serde"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 semver = { version = "1", features = ["serde"] }
+
+# Compression
+flate2 = "1"
 
 # Image loading
 image = "0.24"

@@ -18,10 +18,12 @@ use crate::types::{NiMatrix3, NiPoint3, NiTransform};
 /// A mesh extracted from a NIF file, ready for GPU upload.
 #[derive(Debug)]
 pub struct ImportedMesh {
-    /// Vertices in renderer format: position + color + UV.
+    /// Vertices in renderer format: position + color + normal + UV.
     pub positions: Vec<[f32; 3]>,
     /// Vertex colors (RGB). Falls back to material diffuse or white.
     pub colors: Vec<[f32; 3]>,
+    /// Vertex normals. Falls back to +Y up if the mesh has no normals.
+    pub normals: Vec<[f32; 3]>,
     /// UV coordinates. Empty if the mesh has no UVs.
     pub uvs: Vec<[f32; 2]>,
     /// Triangle indices (u32 for Vulkan compatibility).
@@ -139,6 +141,13 @@ fn extract_mesh(
         .flat_map(|tri| [tri[0] as u32, tri[1] as u32, tri[2] as u32])
         .collect();
 
+    // Convert normals (fall back to +Y up if none)
+    let normals: Vec<[f32; 3]> = if !geom.normals.is_empty() {
+        geom.normals.iter().map(|n| [n.x, n.y, n.z]).collect()
+    } else {
+        vec![[0.0, 1.0, 0.0]; positions.len()]
+    };
+
     // Get UVs from first UV set (if available)
     let uvs = geom.uv_sets.first()
         .cloned()
@@ -150,6 +159,7 @@ fn extract_mesh(
     Some(ImportedMesh {
         positions,
         colors,
+        normals,
         uvs,
         indices,
         translation: [

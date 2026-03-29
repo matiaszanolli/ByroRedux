@@ -1,0 +1,9 @@
+[package]
+name = "byroredux-bsa"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+log = { workspace = true }
+thiserror = { workspace = true }
+flate2 = { workspace = true }

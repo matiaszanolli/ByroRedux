@@ -2,7 +2,7 @@
 
 use ash::vk;
 
-/// Per-vertex data for position + color + UV rendering.
+/// Per-vertex data for position + color + normal + UV rendering.
 ///
 /// `#[repr(C)]` ensures the layout matches what the shader expects.
 #[repr(C)]
@@ -10,12 +10,13 @@ use ash::vk;
 pub struct Vertex {
     pub position: [f32; 3],
     pub color: [f32; 3],
+    pub normal: [f32; 3],
     pub uv: [f32; 2],
 }
 
 impl Vertex {
-    pub const fn new(position: [f32; 3], color: [f32; 3], uv: [f32; 2]) -> Self {
-        Self { position, color, uv }
+    pub const fn new(position: [f32; 3], color: [f32; 3], normal: [f32; 3], uv: [f32; 2]) -> Self {
+        Self { position, color, normal, uv }
     }
 
     /// How vertex data is read from the buffer (stride, rate).
@@ -28,7 +29,7 @@ impl Vertex {
     }
 
     /// Per-attribute layout within a vertex.
-    pub fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
+    pub fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 4] {
         [
             // location 0: position (vec3)
             vk::VertexInputAttributeDescription {
@@ -44,12 +45,19 @@ impl Vertex {
                 format: vk::Format::R32G32B32_SFLOAT,
                 offset: std::mem::size_of::<[f32; 3]>() as u32,
             },
-            // location 2: uv (vec2)
+            // location 2: normal (vec3)
             vk::VertexInputAttributeDescription {
                 location: 2,
                 binding: 0,
-                format: vk::Format::R32G32_SFLOAT,
+                format: vk::Format::R32G32B32_SFLOAT,
                 offset: (std::mem::size_of::<[f32; 3]>() * 2) as u32,
+            },
+            // location 3: uv (vec2)
+            vk::VertexInputAttributeDescription {
+                location: 3,
+                binding: 0,
+                format: vk::Format::R32G32_SFLOAT,
+                offset: (std::mem::size_of::<[f32; 3]>() * 3) as u32,
             },
         ]
     }
