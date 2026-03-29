@@ -46,6 +46,6 @@ Read `_audit-common.md` and `_audit-severity.md` for shared protocol.
 ## Process
 
 1. Read each file in `crates/core/src/ecs/`
-2. Run `cargo test -p gamebyro-core` to verify all tests pass
+2. Run `cargo test -p byroredux-core` to verify all tests pass
 3. Check each dimension
 4. Save report to `docs/audits/AUDIT_ECS_<TODAY>.md`

@@ -17,7 +17,7 @@ pub fn create_instance(
     entry: &ash::Entry,
     display_handle: RawDisplayHandle,
 ) -> Result<ash::Instance> {
-    let app_name = CString::new("Gamebyro Redux")?;
+    let app_name = CString::new("ByroRedux")?;
     let engine_name = CString::new("Gamebyro")?;
 
     let app_info = vk::ApplicationInfo::default()

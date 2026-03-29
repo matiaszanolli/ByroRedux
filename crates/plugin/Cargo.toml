@@ -1,10 +1,10 @@
 [package]
-name = "gamebyro-plugin"
+name = "byroredux-plugin"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-gamebyro-core = { workspace = true }
+byroredux-core = { workspace = true }
 uuid = { workspace = true }
 semver = { workspace = true }
 toml = { workspace = true }

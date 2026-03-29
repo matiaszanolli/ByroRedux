@@ -8,10 +8,10 @@
 //! records can hold arbitrary component types without the record type
 //! itself being generic.
 
-use gamebyro_core::ecs::components::FormIdComponent;
-use gamebyro_core::ecs::storage::{Component, EntityId};
-use gamebyro_core::ecs::world::World;
-use gamebyro_core::form_id::{FormIdPair, FormIdPool};
+use byroredux_core::ecs::components::FormIdComponent;
+use byroredux_core::ecs::storage::{Component, EntityId};
+use byroredux_core::ecs::world::World;
+use byroredux_core::form_id::{FormIdPair, FormIdPool};
 use std::any::TypeId;
 use std::collections::HashMap;
 
@@ -117,7 +117,7 @@ impl Record {
 /// unknown types from future games or mods work without changes.
 ///
 /// ```
-/// # use gamebyro_plugin::RecordType;
+/// # use byroredux_plugin::RecordType;
 /// assert_eq!(RecordType::WEAP.as_str(), "WEAP");
 /// assert_eq!(RecordType::from_str("NPC_"), RecordType::NPC_);
 /// ```
@@ -272,10 +272,10 @@ impl std::fmt::Display for RecordType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gamebyro_core::ecs::components::Transform;
-    use gamebyro_core::ecs::sparse_set::SparseSetStorage;
-    use gamebyro_core::form_id::{LocalFormId, PluginId};
-    use gamebyro_core::math::Vec3;
+    use byroredux_core::ecs::components::Transform;
+    use byroredux_core::ecs::sparse_set::SparseSetStorage;
+    use byroredux_core::form_id::{LocalFormId, PluginId};
+    use byroredux_core::math::Vec3;
 
     fn test_pair() -> FormIdPair {
         FormIdPair {

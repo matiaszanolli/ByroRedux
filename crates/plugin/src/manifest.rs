@@ -4,7 +4,7 @@
 //! `plugin.toml` file. Dependencies reference plugins by UUID — not by
 //! filename or load order — so no external sorting tool is needed.
 
-use gamebyro_core::form_id::PluginId;
+use byroredux_core::form_id::PluginId;
 use serde::Deserialize;
 
 /// A loaded plugin's metadata, parsed from `plugin.toml`.
@@ -20,7 +20,7 @@ impl PluginManifest {
     /// Parse a manifest from a TOML string.
     ///
     /// ```
-    /// # use gamebyro_plugin::manifest::PluginManifest;
+    /// # use byroredux_plugin::manifest::PluginManifest;
     /// let toml = r#"
     /// [plugin]
     /// uuid = "550e8400-e29b-41d4-a716-446655440000"

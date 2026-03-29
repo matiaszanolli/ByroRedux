@@ -6,7 +6,7 @@ members = [
     "crates/platform",
     "crates/scripting",
     "crates/cxx-bridge",
-    "gamebyro-redux",
+    "byroredux",
 ]
 resolver = "2"
 
@@ -17,12 +17,12 @@ license = "MIT"
 
 [workspace.dependencies]
 # Engine crates
-gamebyro-core = { path = "crates/core" }
-gamebyro-renderer = { path = "crates/renderer" }
-gamebyro-platform = { path = "crates/platform" }
-gamebyro-plugin = { path = "crates/plugin" }
-gamebyro-scripting = { path = "crates/scripting" }
-gamebyro-cxx-bridge = { path = "crates/cxx-bridge" }
+byroredux-core = { path = "crates/core" }
+byroredux-renderer = { path = "crates/renderer" }
+byroredux-platform = { path = "crates/platform" }
+byroredux-plugin = { path = "crates/plugin" }
+byroredux-scripting = { path = "crates/scripting" }
+byroredux-cxx-bridge = { path = "crates/cxx-bridge" }
 
 # Vulkan / GPU
 ash = "0.38"

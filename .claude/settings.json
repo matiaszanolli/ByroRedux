@@ -2,7 +2,18 @@
   "permissions": {
     "allow": [
       "Bash(cargo check:*)",
-      "Bash(git init:*)"
+      "Bash(git init:*)",
+      "Bash(cargo test:*)",
+      "Bash(grep -r \"#\\\\[test\\\\]\" /mnt/data/src/gamebyro-redux --include=\"*.rs\" ! -path \"*/target/*\")",
+      "Bash(glslc --version)",
+      "Bash(glslangValidator --version)",
+      "Bash(glslangValidator -V triangle.vert -o triangle.vert.spv)",
+      "Bash(glslangValidator -V triangle.frag -o triangle.frag.spv)"
+    ],
+    "additionalDirectories": [
+      "/mnt/data/src/gamebyro-redux/.claude",
+      "/home/matias/.claude/plans",
+      "/mnt/data/src/gamebyro-redux/docs/engine"
     ]
   }
 }

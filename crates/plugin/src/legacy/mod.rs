@@ -27,7 +27,7 @@ pub mod tes3;
 pub mod tes4;
 pub mod tes5;
 
-use gamebyro_core::form_id::{FormIdPair, LocalFormId, PluginId};
+use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
 
 // ── LegacyFormId ────────────────────────────────────────────────────────
 
@@ -53,7 +53,7 @@ impl LegacyFormId {
     /// Returns true if this is a save-generated reference (slot 0xFF).
     ///
     /// These are ephemeral (PlaceAtMe, fired arrows, ash piles) and must
-    /// never be interned into [`FormIdPool`](gamebyro_core::form_id::FormIdPool)
+    /// never be interned into [`FormIdPool`](byroredux_core::form_id::FormIdPool)
     /// as stable identities.
     pub fn is_save_generated(&self) -> bool {
         self.plugin_index() == 0xFF

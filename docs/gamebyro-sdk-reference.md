@@ -1,4 +1,4 @@
-# Gamebyro SDK — Architecture Reference for Gamebyro Redux
+# Gamebyro SDK — Architecture Reference for ByroRedux
 
 Source: Emergent Game Technologies SDK, VC80 (Visual Studio 2005), ~2007.  
 Used in: Oblivion, Fallout 3, Fallout: New Vegas, and the basis for Creation Engine.  
@@ -167,7 +167,7 @@ submission — but the implementations are irrelevant.
 
 ---
 
-## Key Insights for Gamebyro Redux Design
+## Key Insights for ByroRedux Design
 
 ### The ExtraData Lesson → Scripting Layer
 
@@ -216,7 +216,7 @@ quest-relevant objects need names. Sparse storage makes this free.
 
 ---
 
-## Recommended Next Steps for Gamebyro Redux
+## Recommended Next Steps for ByroRedux
 
 In priority order:
 

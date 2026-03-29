@@ -25,12 +25,12 @@ and consumed by individual crates via `{ workspace = true }`.
 
 | Crate | Depends On |
 |-------|-----------|
-| gamebyro-core | (none — leaf crate) |
-| gamebyro-platform | core |
-| gamebyro-renderer | core, platform |
-| gamebyro-scripting | core |
-| gamebyro-cxx-bridge | (none) |
-| gamebyro-redux (binary) | all of the above |
+| byroredux-core | (none — leaf crate) |
+| byroredux-platform | core |
+| byroredux-renderer | core, platform |
+| byroredux-scripting | core |
+| byroredux-cxx-bridge | (none) |
+| byroredux (binary) | all of the above |
 
 ## Dependency Philosophy
 

@@ -12,7 +12,7 @@ Source: `crates/platform/src/`
 
 ```rust
 pub struct WindowConfig {
-    pub title: String,     // default: "Gamebyro Redux"
+    pub title: String,     // default: "ByroRedux"
     pub width: u32,        // default: 1280
     pub height: u32,       // default: 720
 }

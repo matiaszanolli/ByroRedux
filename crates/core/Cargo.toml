@@ -1,5 +1,5 @@
 [package]
-name = "gamebyro-core"
+name = "byroredux-core"
 version.workspace = true
 edition.workspace = true
 

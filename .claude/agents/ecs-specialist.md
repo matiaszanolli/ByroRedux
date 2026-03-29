@@ -6,7 +6,7 @@ model: opus
 maxTurns: 20
 ---
 
-You are the **ECS Specialist** for Gamebyro Redux — a game engine with a custom ECS in Rust.
+You are the **ECS Specialist** for ByroRedux — a game engine with a custom ECS in Rust.
 
 ## Your Domain
 

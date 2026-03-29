@@ -1,0 +1,15 @@
+[package]
+name = "byroredux"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+byroredux-core = { workspace = true }
+byroredux-renderer = { workspace = true }
+byroredux-platform = { workspace = true }
+byroredux-scripting = { workspace = true }
+byroredux-cxx-bridge = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+anyhow = { workspace = true }
+winit = { workspace = true }

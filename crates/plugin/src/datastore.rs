@@ -5,8 +5,8 @@
 //! winners for any records touched by multiple plugins. The resolution
 //! is deterministic and requires no external sorting.
 
-use gamebyro_core::ecs::resource::Resource;
-use gamebyro_core::form_id::{FormIdPair, PluginId};
+use byroredux_core::ecs::resource::Resource;
+use byroredux_core::form_id::{FormIdPair, PluginId};
 use std::collections::HashMap;
 
 use crate::manifest::PluginManifest;
@@ -37,7 +37,7 @@ pub struct Conflict {
 /// 2. Call [`resolve_conflicts`](Self::resolve_conflicts) once all plugins are loaded
 /// 3. Query records via [`get`](Self::get)
 ///
-/// Register as a global [`Resource`] on the [`World`](gamebyro_core::ecs::world::World).
+/// Register as a global [`Resource`] on the [`World`](byroredux_core::ecs::world::World).
 pub struct DataStore {
     /// All candidate records, grouped by FormIdPair.
     /// Before resolution: may contain multiple entries per form ID.
@@ -159,12 +159,12 @@ impl Resource for DataStore {}
 mod tests {
     use super::*;
     use crate::record::RecordType;
-    use gamebyro_core::ecs::components::Transform;
-    use gamebyro_core::ecs::sparse_set::SparseSetStorage;
-    use gamebyro_core::ecs::storage::Component;
-    use gamebyro_core::ecs::world::World;
-    use gamebyro_core::form_id::{FormIdPool, LocalFormId};
-    use gamebyro_core::math::Vec3;
+    use byroredux_core::ecs::components::Transform;
+    use byroredux_core::ecs::sparse_set::SparseSetStorage;
+    use byroredux_core::ecs::storage::Component;
+    use byroredux_core::ecs::world::World;
+    use byroredux_core::form_id::{FormIdPool, LocalFormId};
+    use byroredux_core::math::Vec3;
 
     fn plugin_manifest(name: &str, deps: &[&str]) -> PluginManifest {
         PluginManifest {

@@ -1,9 +1,9 @@
-#include "gamebyro-cxx-bridge/cpp/native_utils.h"
+#include "byroredux-cxx-bridge/cpp/native_utils.h"
 
-namespace gamebyro {
+namespace byroredux {
 
 rust::String native_hello() {
-    return rust::String("Hello from C++ side of Gamebyro Redux!");
+    return rust::String("Hello from C++ side of ByroRedux!");
 }
 
-} // namespace gamebyro
+} // namespace byroredux

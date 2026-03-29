@@ -1,7 +1,7 @@
 # Testing
 
 All tests are in-module (`#[cfg(test)] mod tests`) within the source files
-they cover. Run with `cargo test -p gamebyro-core`.
+they cover. Run with `cargo test -p byroredux-core`.
 
 ## Test Coverage: 57 Tests
 
@@ -94,12 +94,12 @@ they cover. Run with `cargo test -p gamebyro-core`.
 
 ```bash
 # All core tests
-cargo test -p gamebyro-core
+cargo test -p byroredux-core
 
 # Specific module
-cargo test -p gamebyro-core -- ecs::world
-cargo test -p gamebyro-core -- ecs::sparse_set
-cargo test -p gamebyro-core -- string
+cargo test -p byroredux-core -- ecs::world
+cargo test -p byroredux-core -- ecs::sparse_set
+cargo test -p byroredux-core -- string
 
 # Full workspace (includes renderer/platform compilation check)
 cargo test

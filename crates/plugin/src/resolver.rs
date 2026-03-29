@@ -11,13 +11,13 @@
 //!    [`PluginId`] (UUID lexicographic order) wins, and the conflict is
 //!    flagged as `TieBreak` for user review.
 
-use gamebyro_core::form_id::PluginId;
+use byroredux_core::form_id::PluginId;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::manifest::PluginManifest;
 
 /// Outcome of resolving a conflict between multiple plugins that touch
-/// the same [`FormIdPair`](gamebyro_core::form_id::FormIdPair).
+/// the same [`FormIdPair`](byroredux_core::form_id::FormIdPair).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConflictResolution {
     /// The winner transitively depends on the loser — intentional override.

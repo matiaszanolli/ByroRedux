@@ -1,4 +1,4 @@
-# Gamebyro Redux
+# ByroRedux
 
 A clean rebuild of the Gamebryo/Creation engine lineage in **Rust + C++**, using **Vulkan** for rendering. Linux-first, with the long-term goal of loading and running content from Gamebryo/Creation-era games (Oblivion, Fallout 3, New Vegas, Skyrim).
 
@@ -7,7 +7,7 @@ Not a port — a ground-up rebuild that understands the legacy architecture and 
 ## Architecture
 
 ```
-gamebyro-redux/            Binary — game loop entry point
+byroredux/            Binary — game loop entry point
 crates/
   core/                    ECS, math (glam), types, string interning
   renderer/                Vulkan graphics via ash + gpu-allocator

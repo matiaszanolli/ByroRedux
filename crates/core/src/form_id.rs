@@ -61,7 +61,7 @@ impl PluginId {
     /// always produces the same identity.
     ///
     /// ```
-    /// # use gamebyro_core::form_id::PluginId;
+    /// # use byroredux_core::form_id::PluginId;
     /// let a = PluginId::from_filename("Skyrim.esm");
     /// let b = PluginId::from_filename("Skyrim.esm");
     /// assert_eq!(a, b);

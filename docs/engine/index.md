@@ -1,4 +1,4 @@
-# Gamebyro Redux Engine Documentation
+# ByroRedux Engine Documentation
 
 ## Engine Documentation
 
@@ -22,13 +22,13 @@
 
 | What | Where |
 |------|-------|
-| ECS types | `gamebyro_core::ecs::*` |
-| Math (Vec3, Quat, etc.) | `gamebyro_core::math::*` |
-| String interning | `gamebyro_core::string::{StringPool, FixedString}` |
-| Color type | `gamebyro_core::types::Color` |
-| Vulkan context | `gamebyro_renderer::VulkanContext` |
-| Window creation | `gamebyro_platform::window::create_window` |
-| C++ bridge | `gamebyro_cxx_bridge::ffi::*` |
+| ECS types | `byroredux_core::ecs::*` |
+| Math (Vec3, Quat, etc.) | `byroredux_core::math::*` |
+| String interning | `byroredux_core::string::{StringPool, FixedString}` |
+| Color type | `byroredux_core::types::Color` |
+| Vulkan context | `byroredux_renderer::VulkanContext` |
+| Window creation | `byroredux_platform::window::create_window` |
+| C++ bridge | `byroredux_cxx_bridge::ffi::*` |
 
 ## Stats
 

@@ -217,6 +217,88 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
+name = "byroredux"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "byroredux-core",
+ "byroredux-cxx-bridge",
+ "byroredux-platform",
+ "byroredux-renderer",
+ "byroredux-scripting",
+ "env_logger",
+ "log",
+ "winit",
+]
+
+[[package]]
+name = "byroredux-core"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "log",
+ "string-interner",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "byroredux-cxx-bridge"
+version = "0.1.0"
+dependencies = [
+ "cxx",
+ "cxx-build",
+]
+
+[[package]]
+name = "byroredux-platform"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "byroredux-core",
+ "log",
+ "raw-window-handle",
+ "winit",
+]
+
+[[package]]
+name = "byroredux-plugin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "byroredux-core",
+ "semver",
+ "serde",
+ "toml",
+ "uuid",
+]
+
+[[package]]
+name = "byroredux-renderer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ash",
+ "ash-window",
+ "byroredux-core",
+ "byroredux-platform",
+ "gpu-allocator",
+ "image",
+ "log",
+ "raw-window-handle",
+ "thiserror 2.0.18",
+ "winit",
+]
+
+[[package]]
+name = "byroredux-scripting"
+version = "0.1.0"
+dependencies = [
+ "byroredux-core",
+ "log",
+]
+
+[[package]]
 name = "bytemuck"
 version = "1.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -697,88 +779,6 @@ dependencies = [
  "futures-task",
  "pin-project-lite",
  "slab",
-]
-
-[[package]]
-name = "gamebyro-core"
-version = "0.1.0"
-dependencies = [
- "glam",
- "log",
- "string-interner",
- "thiserror 2.0.18",
- "uuid",
-]
-
-[[package]]
-name = "gamebyro-cxx-bridge"
-version = "0.1.0"
-dependencies = [
- "cxx",
- "cxx-build",
-]
-
-[[package]]
-name = "gamebyro-platform"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "gamebyro-core",
- "log",
- "raw-window-handle",
- "winit",
-]
-
-[[package]]
-name = "gamebyro-plugin"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "gamebyro-core",
- "semver",
- "serde",
- "toml",
- "uuid",
-]
-
-[[package]]
-name = "gamebyro-redux"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "env_logger",
- "gamebyro-core",
- "gamebyro-cxx-bridge",
- "gamebyro-platform",
- "gamebyro-renderer",
- "gamebyro-scripting",
- "log",
- "winit",
-]
-
-[[package]]
-name = "gamebyro-renderer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ash",
- "ash-window",
- "gamebyro-core",
- "gamebyro-platform",
- "gpu-allocator",
- "image",
- "log",
- "raw-window-handle",
- "thiserror 2.0.18",
- "winit",
-]
-
-[[package]]
-name = "gamebyro-scripting"
-version = "0.1.0"
-dependencies = [
- "gamebyro-core",
- "log",
 ]
 
 [[package]]

@@ -36,7 +36,7 @@ Follow project conventions from CLAUDE.md.
 
 ## Phase 6: Verify
 ```bash
-cargo test -p gamebyro-core
+cargo test -p byroredux-core
 cargo check
 ```
 All 68+ tests must pass.

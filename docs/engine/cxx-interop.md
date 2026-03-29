@@ -22,7 +22,7 @@ cxx-bridge/
 ## Bridge Definition
 
 ```rust
-#[cxx::bridge(namespace = "gamebyro")]
+#[cxx::bridge(namespace = "byroredux")]
 pub mod ffi {
     struct EngineInfo {
         name: String,
@@ -36,7 +36,7 @@ pub mod ffi {
     }
 
     unsafe extern "C++" {
-        include!("gamebyro-cxx-bridge/cpp/native_utils.h");
+        include!("byroredux-cxx-bridge/cpp/native_utils.h");
         fn native_hello() -> String;
     }
 }
@@ -60,7 +60,7 @@ is linked correctly.
 cxx_build::bridge("src/lib.rs")
     .file("cpp/native_utils.cpp")
     .std("c++17")
-    .compile("gamebyro_cxx");
+    .compile("byroredux_cxx");
 ```
 
 ## Future Use

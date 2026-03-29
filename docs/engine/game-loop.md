@@ -1,6 +1,6 @@
 # Game Loop
 
-The game loop lives in the binary crate at `gamebyro-redux/src/main.rs`.
+The game loop lives in the binary crate at `byroredux/src/main.rs`.
 It uses winit's `ApplicationHandler` trait for event-driven execution.
 
 ## Startup Sequence
@@ -22,7 +22,7 @@ It uses winit's `ApplicationHandler` trait for event-driven execution.
 ### `resumed` (once, on first window creation)
 
 ```
-1. Create window (1280x720, "Gamebyro Redux")
+1. Create window (1280x720, "ByroRedux")
 2. Get raw display + window handles
 3. Initialize VulkanContext (full 11-step chain)
 4. Record last_frame = Instant::now()

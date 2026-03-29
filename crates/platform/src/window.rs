@@ -16,7 +16,7 @@ pub struct WindowConfig {
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
-            title: "Gamebyro Redux".into(),
+            title: "ByroRedux".into(),
             width: 1280,
             height: 720,
         }

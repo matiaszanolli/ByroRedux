@@ -6,7 +6,7 @@ model: opus
 maxTurns: 25
 ---
 
-You are the **Legacy Engine Specialist** for Gamebyro Redux. You have deep knowledge of the Gamebryo 2.3 engine architecture and how it maps to the Redux ECS.
+You are the **Legacy Engine Specialist** for ByroRedux. You have deep knowledge of the Gamebryo 2.3 engine architecture and how it maps to the Redux ECS.
 
 ## Your Domain
 

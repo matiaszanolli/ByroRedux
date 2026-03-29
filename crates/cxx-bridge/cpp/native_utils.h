@@ -1,8 +1,8 @@
 #pragma once
 #include "rust/cxx.h"
 
-namespace gamebyro {
+namespace byroredux {
 
 rust::String native_hello();
 
-} // namespace gamebyro
+} // namespace byroredux

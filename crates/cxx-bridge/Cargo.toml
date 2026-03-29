@@ -1,5 +1,5 @@
 [package]
-name = "gamebyro-cxx-bridge"
+name = "byroredux-cxx-bridge"
 version.workspace = true
 edition.workspace = true
 

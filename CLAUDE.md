@@ -1,4 +1,4 @@
-# Gamebyro Redux
+# ByroRedux
 
 Clean rebuild of the Gamebryo/Creation engine lineage in Rust + C++ with Vulkan.
 Long-term goal: load and render content from Gamebryo/Creation-era games.
@@ -7,7 +7,7 @@ Long-term goal: load and render content from Gamebryo/Creation-era games.
 
 ```bash
 cargo check                    # Type check (fast)
-cargo test -p gamebyro-core    # Run ECS/core tests (68 tests)
+cargo test -p byroredux-core    # Run ECS/core tests (68 tests)
 cargo test                     # Full workspace tests
 cargo run                      # Launch engine (spinning cube demo)
 cargo build --release          # Release build
@@ -23,7 +23,7 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 ## Workspace Structure
 
 ```
-gamebyro-redux/              Binary — game loop, scene setup, systems
+byroredux/              Binary — game loop, scene setup, systems
 crates/
   core/                      ECS, math (glam), types, string interning, form IDs
     src/ecs/                 World, Component, Storage, Query, System, Scheduler, Resource

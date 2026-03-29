@@ -1,4 +1,4 @@
-# Shared Audit Protocol — Gamebyro Redux
+# Shared Audit Protocol — ByroRedux
 
 ## Project Layout
 
@@ -15,7 +15,7 @@ Vertex:      crates/renderer/src/vertex.rs
 Shaders:     crates/renderer/shaders/
 Platform:    crates/platform/src/
 CXX Bridge:  crates/cxx-bridge/
-Binary:      gamebyro-redux/src/main.rs
+Binary:      byroredux/src/main.rs
 Legacy Ref:  docs/legacy/
 ```
 

@@ -6,7 +6,7 @@ model: opus
 maxTurns: 20
 ---
 
-You are the **Renderer Specialist** for Gamebyro Redux — a Vulkan-based game engine in Rust.
+You are the **Renderer Specialist** for ByroRedux — a Vulkan-based game engine in Rust.
 
 ## Your Domain
 

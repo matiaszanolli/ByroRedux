@@ -1,8 +1,8 @@
 [package]
-name = "gamebyro-scripting"
+name = "byroredux-scripting"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-gamebyro-core = { workspace = true }
+byroredux-core = { workspace = true }
 log = { workspace = true }

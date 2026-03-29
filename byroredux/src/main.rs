@@ -1,15 +1,15 @@
-//! Gamebyro Redux — ECS-driven game loop with spinning cube.
+//! ByroRedux — ECS-driven game loop with spinning cube.
 
 use anyhow::Result;
-use gamebyro_core::ecs::{
+use byroredux_core::ecs::{
     ActiveCamera, Camera, DeltaTime, EngineConfig, MeshHandle, Scheduler, TotalTime, Transform,
     World,
 };
-use gamebyro_core::math::{Quat, Vec3};
-use gamebyro_core::types::Color;
-use gamebyro_platform::window::{self, WindowConfig};
-use gamebyro_renderer::vulkan::context::DrawCommand;
-use gamebyro_renderer::{cube_vertices, quad_vertices, triangle_vertices, VulkanContext};
+use byroredux_core::math::{Quat, Vec3};
+use byroredux_core::types::Color;
+use byroredux_platform::window::{self, WindowConfig};
+use byroredux_renderer::vulkan::context::DrawCommand;
+use byroredux_renderer::{cube_vertices, quad_vertices, triangle_vertices, VulkanContext};
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -19,13 +19,13 @@ use winit::window::{Window, WindowId};
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    log::info!("Gamebyro Redux starting");
+    log::info!("ByroRedux starting");
 
     // Verify C++ bridge is linked.
-    log::info!("{}", gamebyro_cxx_bridge::ffi::native_hello());
+    log::info!("{}", byroredux_cxx_bridge::ffi::native_hello());
 
     // Initialize scripting placeholder.
-    gamebyro_scripting::init();
+    byroredux_scripting::init();
 
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -301,7 +301,7 @@ impl ApplicationHandler for App {
 
 /// Build the view-projection matrix and draw command list from ECS queries.
 fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>) {
-    use gamebyro_core::math::Mat4;
+    use byroredux_core::math::Mat4;
 
     // Get camera view-projection.
     let view_proj = if let Some(active) = world.try_resource::<ActiveCamera>() {
@@ -344,7 +344,7 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>) {
     (view_proj, draw_commands)
 }
 
-fn world_resource_set<R: gamebyro_core::ecs::Resource>(
+fn world_resource_set<R: byroredux_core::ecs::Resource>(
     world: &World,
     f: impl FnOnce(&mut R),
 ) {

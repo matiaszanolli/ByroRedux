@@ -4,7 +4,7 @@
 //! FFI boundary. Each bridge module maps to a corresponding C++ source file
 //! under `cpp/`.
 
-#[cxx::bridge(namespace = "gamebyro")]
+#[cxx::bridge(namespace = "byroredux")]
 pub mod ffi {
     /// Example struct shared across the FFI boundary.
     struct EngineInfo {
@@ -19,7 +19,7 @@ pub mod ffi {
     }
 
     unsafe extern "C++" {
-        include!("gamebyro-cxx-bridge/cpp/native_utils.h");
+        include!("byroredux-cxx-bridge/cpp/native_utils.h");
 
         /// Placeholder: returns a greeting from the C++ side.
         fn native_hello() -> String;
@@ -28,7 +28,7 @@ pub mod ffi {
 
 fn engine_info() -> ffi::EngineInfo {
     ffi::EngineInfo {
-        name: "Gamebyro Redux".into(),
+        name: "ByroRedux".into(),
         version_major: 0,
         version_minor: 1,
         version_patch: 0,

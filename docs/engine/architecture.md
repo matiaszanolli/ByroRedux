@@ -1,6 +1,6 @@
-# Gamebyro Redux — Architecture Overview
+# ByroRedux — Architecture Overview
 
-Gamebyro Redux is a clean rebuild of the Gamebryo and Creation engine lineage,
+ByroRedux is a clean rebuild of the Gamebryo and Creation engine lineage,
 built from scratch in Rust and C++ using Vulkan. The goal is a modern engine
 with Rust's safety guarantees that can eventually load and run content from
 Gamebryo/Creation-era games (Oblivion, Fallout 3, New Vegas, Skyrim).
@@ -8,9 +8,9 @@ Gamebryo/Creation-era games (Oblivion, Fallout 3, New Vegas, Skyrim).
 ## Workspace Structure
 
 ```
-gamebyro-redux/
+byroredux/
 ├── Cargo.toml                 Workspace root
-├── gamebyro-redux/            Binary crate — game loop entry point
+├── byroredux/            Binary crate — game loop entry point
 ├── crates/
 │   ├── core/                  ECS, math, types, string interning
 │   ├── renderer/              Vulkan graphics via ash
@@ -57,19 +57,19 @@ gamebyro-redux/
 ## Crate Dependency Graph
 
 ```
-gamebyro-redux (binary)
-├── gamebyro-core
-├── gamebyro-renderer
-│   ├── gamebyro-core
-│   └── gamebyro-platform
-│       └── gamebyro-core
-├── gamebyro-platform
-├── gamebyro-scripting
-│   └── gamebyro-core
-└── gamebyro-cxx-bridge
+byroredux (binary)
+├── byroredux-core
+├── byroredux-renderer
+│   ├── byroredux-core
+│   └── byroredux-platform
+│       └── byroredux-core
+├── byroredux-platform
+├── byroredux-scripting
+│   └── byroredux-core
+└── byroredux-cxx-bridge
 ```
 
-`gamebyro-core` is the leaf dependency — it has no engine crate dependencies.
+`byroredux-core` is the leaf dependency — it has no engine crate dependencies.
 All other crates depend on it for ECS types, math, and string interning.
 
 ## Current State
