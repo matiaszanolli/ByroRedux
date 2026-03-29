@@ -83,8 +83,8 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 | 4. Plugin system (core) | Done | Stable Form IDs, FormIdPool, FormIdComponent |
 | 5. Plugin system (data) | Done | Plugin manifests, DataStore, DAG-based conflict resolution |
 | 6. Legacy bridge | Done | ESM/ESP/ESL/ESH Form ID conversion, per-game parser stubs |
-| 7. Depth buffer | Next | Correct occlusion, multiple objects |
-| 8. Texturing | Planned | Textured geometry |
+| 7. Depth buffer | Done | Correct occlusion, multiple objects |
+| 8. Texturing | Next | Textured geometry |
 | 9. NIF parser | Planned | Parse Gamebryo .nif files |
 | 10. NIF-to-ECS import | Planned | Load and render legacy meshes |
 | 11. Animation | Planned | Keyframe playback from .kf files |
