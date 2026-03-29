@@ -131,6 +131,18 @@ impl World {
         result
     }
 
+    /// Find the first entity with the given [`FormId`](crate::form_id::FormId).
+    ///
+    /// Scans [`FormIdComponent`](super::components::FormIdComponent) storage
+    /// for a matching handle. Returns `None` if no entity has that form ID.
+    pub fn find_by_form_id(&self, id: crate::form_id::FormId) -> Option<EntityId> {
+        use super::components::FormIdComponent;
+
+        let q = self.query::<FormIdComponent>()?;
+        let result = q.iter().find(|(_, fid)| fid.0 == id).map(|(eid, _)| eid);
+        result
+    }
+
     // ── Query API (takes &self — RwLock provides interior mutability) ───
 
     /// Acquire a read-only query for a single component type.
@@ -739,6 +751,98 @@ mod tests {
         let world = World::new();
         assert!(world.try_resource::<DeltaTime>().is_none());
         assert!(world.try_resource_mut::<DeltaTime>().is_none());
+    }
+
+    // ── Name + StringPool + find_by_name ────────────────────────────────
+
+    // ── FormIdComponent + find_by_form_id ──────────────────────────────
+
+    use crate::ecs::components::FormIdComponent;
+    use crate::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+
+    #[test]
+    fn form_id_component_attach_and_query() {
+        let mut world = World::new();
+        world.insert_resource(FormIdPool::new());
+
+        let pair = FormIdPair {
+            plugin: PluginId::from_filename("Skyrim.esm"),
+            local: LocalFormId(0x000014),
+        };
+        let fid = world.resource_mut::<FormIdPool>().intern(pair);
+
+        let e = world.spawn();
+        world.insert(e, FormIdComponent(fid));
+
+        let got = world.get::<FormIdComponent>(e).unwrap();
+        assert_eq!(got.0, fid);
+    }
+
+    #[test]
+    fn find_by_form_id_hit() {
+        let mut world = World::new();
+        world.insert_resource(FormIdPool::new());
+
+        let pair = FormIdPair {
+            plugin: PluginId::from_filename("Skyrim.esm"),
+            local: LocalFormId(0x000014),
+        };
+        let fid = world.resource_mut::<FormIdPool>().intern(pair);
+
+        let e = world.spawn();
+        world.insert(e, FormIdComponent(fid));
+
+        assert_eq!(world.find_by_form_id(fid), Some(e));
+    }
+
+    #[test]
+    fn find_by_form_id_miss() {
+        let mut world = World::new();
+        world.insert_resource(FormIdPool::new());
+
+        let pair_a = FormIdPair {
+            plugin: PluginId::from_filename("Skyrim.esm"),
+            local: LocalFormId(0x000014),
+        };
+        let pair_b = FormIdPair {
+            plugin: PluginId::from_filename("Skyrim.esm"),
+            local: LocalFormId(0x000015),
+        };
+        let fid_a = world.resource_mut::<FormIdPool>().intern(pair_a);
+        let fid_b = world.resource_mut::<FormIdPool>().intern(pair_b);
+
+        let e = world.spawn();
+        world.insert(e, FormIdComponent(fid_a));
+
+        assert!(world.find_by_form_id(fid_b).is_none());
+    }
+
+    #[test]
+    fn find_by_form_id_no_components() {
+        let world = World::new();
+        let mut pool = FormIdPool::new();
+        let fid = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("Skyrim.esm"),
+            local: LocalFormId(0x001),
+        });
+        assert!(world.find_by_form_id(fid).is_none());
+    }
+
+    #[test]
+    fn form_id_pool_as_world_resource() {
+        let mut world = World::new();
+        world.insert_resource(FormIdPool::new());
+
+        let pair = FormIdPair {
+            plugin: PluginId::from_filename("Oblivion.esm"),
+            local: LocalFormId(0x100),
+        };
+
+        let fid = world.resource_mut::<FormIdPool>().intern(pair);
+        let pool = world.resource::<FormIdPool>();
+        assert_eq!(pool.resolve(fid).unwrap().local, LocalFormId(0x100));
+        assert_eq!(pool.len(), 1);
+        assert!(!pool.is_empty());
     }
 
     // ── Name + StringPool + find_by_name ────────────────────────────────

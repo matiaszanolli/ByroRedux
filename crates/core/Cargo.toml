@@ -8,3 +8,4 @@ glam = { workspace = true }
 log = { workspace = true }
 string-interner = { workspace = true }
 thiserror = { workspace = true }
+uuid = { workspace = true }

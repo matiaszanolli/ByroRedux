@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/core",
+    "crates/plugin",
     "crates/renderer",
     "crates/platform",
     "crates/scripting",
@@ -19,6 +20,7 @@ license = "MIT"
 gamebyro-core = { path = "crates/core" }
 gamebyro-renderer = { path = "crates/renderer" }
 gamebyro-platform = { path = "crates/platform" }
+gamebyro-plugin = { path = "crates/plugin" }
 gamebyro-scripting = { path = "crates/scripting" }
 gamebyro-cxx-bridge = { path = "crates/cxx-bridge" }
 
@@ -44,6 +46,14 @@ thiserror = "2"
 
 # String interning
 string-interner = "0.17"
+
+# Identity
+uuid = { version = "1", features = ["v5", "serde"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+semver = { version = "1", features = ["serde"] }
 
 # C++ interop
 cxx = "1"

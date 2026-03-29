@@ -80,11 +80,13 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 | 1. Hardcoded triangle | Done | Graphics pipeline end-to-end |
 | 2. GPU vertex buffers | Done | Geometry from Rust data via gpu-allocator |
 | 3. ECS-driven rendering | Done | Spinning cube, perspective camera, push constants |
-| 4. Depth buffer | Next | Correct occlusion, multiple objects |
-| 5. Texturing | Planned | Textured geometry |
-| 6. NIF parser | Planned | Parse Gamebryo .nif files |
-| 7. NIF-to-ECS import | Planned | Load and render legacy meshes |
-| 8. Animation | Planned | Keyframe playback from .kf files |
+| 4. Plugin system (core) | Done | Stable Form IDs, FormIdPool, FormIdComponent |
+| 5. Plugin system (data) | Done | Plugin manifests, DataStore, DAG-based conflict resolution |
+| 6. Depth buffer | Next | Correct occlusion, multiple objects |
+| 7. Texturing | Planned | Textured geometry |
+| 8. NIF parser | Planned | Parse Gamebryo .nif files |
+| 9. NIF-to-ECS import | Planned | Load and render legacy meshes |
+| 10. Animation | Planned | Keyframe playback from .kf files |
 
 ## Dependencies
 
@@ -95,6 +97,9 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 | winit | Cross-platform windowing |
 | glam | Linear algebra |
 | string-interner | O(1) string equality |
+| uuid | Stable plugin identity (UUID v5) |
+| semver | Plugin version parsing |
+| serde + toml | Plugin manifest parsing |
 | cxx | C++ interop |
 
 ## License

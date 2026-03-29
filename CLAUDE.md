@@ -25,11 +25,17 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 ```
 gamebyro-redux/              Binary — game loop, scene setup, systems
 crates/
-  core/                      ECS, math (glam), types, string interning
+  core/                      ECS, math (glam), types, string interning, form IDs
     src/ecs/                 World, Component, Storage, Query, System, Scheduler, Resource
-    src/ecs/components/      Transform, Camera, MeshHandle, Name
+    src/ecs/components/      Transform, Camera, MeshHandle, Name, FormIdComponent
     src/ecs/resources.rs     DeltaTime, TotalTime, EngineConfig
+    src/form_id.rs           FormId, PluginId, LocalFormId, FormIdPair, FormIdPool
     src/string/              StringPool, FixedString
+  plugin/                    Plugin system — manifests, records, DataStore, conflict resolution
+    src/manifest.rs          PluginManifest, TOML parsing
+    src/record.rs            Record (component bundles), ErasedComponentData
+    src/datastore.rs         DataStore resource, ResolvedRecord, Conflict
+    src/resolver.rs          DependencyResolver (DAG), ConflictResolution
   renderer/                  Vulkan graphics (ash, gpu-allocator)
     src/vulkan/              context, pipeline, device, swapchain, sync, allocator, buffer
     src/mesh.rs              MeshRegistry, cube_vertices()
@@ -92,8 +98,9 @@ Detailed analysis in `docs/legacy/`.
 
 ## Development Roadmap
 
-See `.claude/plans/atomic-puzzling-music.md` for the active roadmap.
-Current phase: 3 complete (ECS-driven spinning cube), Phase 4 next (depth buffer).
+See `.claude/plans/playful-bouncing-quasar.md` for the active plugin system plan.
+Current: Phases A+B complete (stable Form IDs, plugin manifests, DataStore, conflict resolution).
+Next rendering phase: depth buffer. Next plugin phase: C (legacy ESM/ESP/ESL bridge).
 
 ## Git Conventions
 

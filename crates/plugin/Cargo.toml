@@ -1,0 +1,11 @@
+[package]
+name = "gamebyro-plugin"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gamebyro-core = { workspace = true }
+uuid = { workspace = true }
+semver = { workspace = true }
+toml = { workspace = true }
+serde = { workspace = true }
