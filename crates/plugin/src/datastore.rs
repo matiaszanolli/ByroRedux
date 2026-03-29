@@ -194,7 +194,7 @@ mod tests {
 
         let manifest = plugin_manifest("Base.esm", &[]);
         let pair = make_pair("Base.esm", 0x001);
-        let mut record = Record::new(pair, RecordType::Weapon);
+        let mut record = Record::new(pair, RecordType::WEAP);
         record.add_component(Damage(25.0));
 
         store.add_plugin(manifest, vec![record]);
@@ -214,11 +214,11 @@ mod tests {
         let pair = make_pair("A.esm", 0x001);
 
         let manifest_a = plugin_manifest("A.esm", &[]);
-        let mut rec_a = Record::new(pair, RecordType::Weapon);
+        let mut rec_a = Record::new(pair, RecordType::WEAP);
         rec_a.add_component(Damage(10.0));
 
         let manifest_b = plugin_manifest("B.esm", &["A.esm"]);
-        let mut rec_b = Record::new(pair, RecordType::Weapon);
+        let mut rec_b = Record::new(pair, RecordType::WEAP);
         rec_b.add_component(Damage(99.0));
 
         store.add_plugin(manifest_a, vec![rec_a]);
@@ -245,10 +245,10 @@ mod tests {
         let pair = make_pair("A.esm", 0x001);
 
         let manifest_a = plugin_manifest("A.esm", &[]);
-        let rec_a = Record::new(pair, RecordType::Static);
+        let rec_a = Record::new(pair, RecordType::STAT);
 
         let manifest_b = plugin_manifest("B.esm", &[]);
-        let rec_b = Record::new(pair, RecordType::Static);
+        let rec_b = Record::new(pair, RecordType::STAT);
 
         store.add_plugin(manifest_a, vec![rec_a]);
         store.add_plugin(manifest_b, vec![rec_b]);
@@ -271,7 +271,7 @@ mod tests {
 
         let pair = make_pair("Base.esm", 0x100);
         let manifest = plugin_manifest("Base.esm", &[]);
-        let mut record = Record::new(pair, RecordType::Npc);
+        let mut record = Record::new(pair, RecordType::NPC_);
         record.add_component(Transform::from_translation(Vec3::new(10.0, 20.0, 30.0)));
         record.add_component(Damage(75.0));
 
