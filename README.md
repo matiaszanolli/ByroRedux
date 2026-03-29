@@ -82,11 +82,12 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 | 3. ECS-driven rendering | Done | Spinning cube, perspective camera, push constants |
 | 4. Plugin system (core) | Done | Stable Form IDs, FormIdPool, FormIdComponent |
 | 5. Plugin system (data) | Done | Plugin manifests, DataStore, DAG-based conflict resolution |
-| 6. Depth buffer | Next | Correct occlusion, multiple objects |
-| 7. Texturing | Planned | Textured geometry |
-| 8. NIF parser | Planned | Parse Gamebryo .nif files |
-| 9. NIF-to-ECS import | Planned | Load and render legacy meshes |
-| 10. Animation | Planned | Keyframe playback from .kf files |
+| 6. Legacy bridge | Done | ESM/ESP/ESL/ESH Form ID conversion, per-game parser stubs |
+| 7. Depth buffer | Next | Correct occlusion, multiple objects |
+| 8. Texturing | Planned | Textured geometry |
+| 9. NIF parser | Planned | Parse Gamebryo .nif files |
+| 10. NIF-to-ECS import | Planned | Load and render legacy meshes |
+| 11. Animation | Planned | Keyframe playback from .kf files |
 
 ## Dependencies
 

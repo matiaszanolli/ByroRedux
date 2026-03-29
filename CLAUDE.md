@@ -36,6 +36,12 @@ crates/
     src/record.rs            Record (component bundles), ErasedComponentData
     src/datastore.rs         DataStore resource, ResolvedRecord, Conflict
     src/resolver.rs          DependencyResolver (DAG), ConflictResolution
+    src/legacy/              Legacy ESM/ESP/ESL/ESH bridge
+      mod.rs                 LegacyFormId, LegacyLoadOrder
+      tes3.rs                Morrowind parser stub
+      tes4.rs                Oblivion parser stub
+      tes5.rs                Skyrim parser stub
+      fo4.rs                 Fallout 4 parser stub
   renderer/                  Vulkan graphics (ash, gpu-allocator)
     src/vulkan/              context, pipeline, device, swapchain, sync, allocator, buffer
     src/mesh.rs              MeshRegistry, cube_vertices()
@@ -99,8 +105,8 @@ Detailed analysis in `docs/legacy/`.
 ## Development Roadmap
 
 See `.claude/plans/playful-bouncing-quasar.md` for the active plugin system plan.
-Current: Phases A+B complete (stable Form IDs, plugin manifests, DataStore, conflict resolution).
-Next rendering phase: depth buffer. Next plugin phase: C (legacy ESM/ESP/ESL bridge).
+Current: Phases A+B+C complete (stable Form IDs, plugin manifests, DataStore, conflict resolution, legacy bridge).
+Next rendering phase: depth buffer. Next plugin phase: D (scripting as ECS).
 
 ## Git Conventions
 
