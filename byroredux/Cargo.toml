@@ -8,6 +8,7 @@ byroredux-core = { workspace = true }
 byroredux-renderer = { workspace = true }
 byroredux-platform = { workspace = true }
 byroredux-scripting = { workspace = true }
+byroredux-nif = { workspace = true }
 byroredux-cxx-bridge = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }

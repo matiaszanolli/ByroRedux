@@ -223,6 +223,7 @@ dependencies = [
  "anyhow",
  "byroredux-core",
  "byroredux-cxx-bridge",
+ "byroredux-nif",
  "byroredux-platform",
  "byroredux-renderer",
  "byroredux-scripting",

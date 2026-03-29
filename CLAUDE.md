@@ -56,6 +56,7 @@ crates/
     src/types.rs             NiPoint3, NiMatrix3, NiTransform, NiColor, BlockRef
     src/stream.rs            NifStream: version-aware binary reader
     src/blocks/              Block parsers: NiNode, NiTriShape, NiTriShapeData, properties, textures
+    src/import.rs            NIF-to-ECS import: scene graph flattening, geometry/transform conversion
     src/scene.rs             NifScene: parsed block collection with downcasting
   scripting/                 ECS-native scripting (events, timers)
     src/events.rs            Transient marker components: ActivateEvent, HitEvent, TimerExpired
@@ -117,9 +118,9 @@ Detailed analysis in `docs/legacy/`.
 ## Development Roadmap
 
 See `.claude/plans/stateless-finding-zephyr.md` for the active roadmap plan.
-Current: Phases 1–8 complete (triangle → vertex buffers → ECS rendering → plugins → legacy bridge → depth → texturing).
-Phase 9A (NIF parser) and Phase S1 (scripting foundation) in progress.
-Next: Phase 9B (NIF-to-ECS import — first real game asset rendered).
+Current: Phases 1–9 + S1 complete (triangle → vertex buffers → ECS rendering → plugins → legacy bridge → depth → texturing → NIF parser → NIF import → scripting foundation).
+Usage: `cargo run -- path/to/mesh.nif` loads and renders NIF meshes alongside the demo scene.
+Next: material/lighting pipeline, animation (.kf files), full scripting event catalog.
 
 ## Git Conventions
 

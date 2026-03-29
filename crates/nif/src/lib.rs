@@ -14,6 +14,7 @@
 
 pub mod blocks;
 pub mod header;
+pub mod import;
 pub mod scene;
 pub mod stream;
 pub mod types;

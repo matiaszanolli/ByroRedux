@@ -5,11 +5,11 @@ use byroredux_core::ecs::{
     ActiveCamera, Camera, DeltaTime, EngineConfig, MeshHandle, Scheduler, TotalTime, Transform,
     World,
 };
-use byroredux_core::math::{Quat, Vec3};
+use byroredux_core::math::{Mat3, Quat, Vec3};
 use byroredux_core::types::Color;
 use byroredux_platform::window::{self, WindowConfig};
 use byroredux_renderer::vulkan::context::DrawCommand;
-use byroredux_renderer::{cube_vertices, quad_vertices, triangle_vertices, VulkanContext};
+use byroredux_renderer::{cube_vertices, quad_vertices, triangle_vertices, Vertex, VulkanContext};
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -133,6 +133,13 @@ impl App {
         );
         self.world.insert(blue_tri, MeshHandle(blue_handle));
 
+        // Load NIF file if passed as CLI argument.
+        let nif_count = if let Some(nif_path) = std::env::args().nth(1) {
+            load_nif(&mut self.world, ctx, &nif_path)
+        } else {
+            0
+        };
+
         // Spawn camera entity looking at the origin.
         let cam = self.world.spawn();
         let cam_pos = Vec3::new(0.0, 1.5, 4.0);
@@ -146,8 +153,83 @@ impl App {
         self.world.insert(cam, Camera::default());
         self.world.insert_resource(ActiveCamera(cam));
 
-        log::info!("Scene ready: 1 textured cube, 1 textured quad, 2 triangles, 1 camera");
+        log::info!(
+            "Scene ready: 1 textured cube, 1 textured quad, 2 triangles, {} NIF meshes, 1 camera",
+            nif_count
+        );
     }
+
+}
+
+/// Load a NIF file, import its meshes, upload to GPU, and spawn ECS entities.
+/// Returns the number of meshes loaded.
+fn load_nif(world: &mut World, ctx: &mut VulkanContext, path: &str) -> usize {
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(e) => {
+            log::error!("Failed to read NIF file '{}': {}", path, e);
+            return 0;
+        }
+    };
+
+    let scene = match byroredux_nif::parse_nif(&data) {
+        Ok(s) => s,
+        Err(e) => {
+            log::error!("Failed to parse NIF file '{}': {}", path, e);
+            return 0;
+        }
+    };
+
+    let imported = byroredux_nif::import::import_nif(&scene);
+    let alloc = ctx.allocator.as_ref().unwrap();
+    let mut count = 0;
+
+    for mesh in &imported {
+        // Build renderer Vertex array from imported data
+        let num_verts = mesh.positions.len();
+        let vertices: Vec<Vertex> = (0..num_verts)
+            .map(|i| {
+                Vertex::new(
+                    mesh.positions[i],
+                    if i < mesh.colors.len() { mesh.colors[i] } else { [1.0, 1.0, 1.0] },
+                    if i < mesh.uvs.len() { mesh.uvs[i] } else { [0.0, 0.0] },
+                )
+            })
+            .collect();
+
+        let handle = match ctx.mesh_registry.upload(&ctx.device, alloc, &vertices, &mesh.indices) {
+            Ok(h) => h,
+            Err(e) => {
+                log::warn!("Failed to upload NIF mesh '{}': {}", mesh.name.as_deref().unwrap_or("?"), e);
+                continue;
+            }
+        };
+
+        // Convert NiTransform to ECS Transform
+        let rotation = Mat3::from_cols(
+            Vec3::new(mesh.rotation[0][0], mesh.rotation[1][0], mesh.rotation[2][0]),
+            Vec3::new(mesh.rotation[0][1], mesh.rotation[1][1], mesh.rotation[2][1]),
+            Vec3::new(mesh.rotation[0][2], mesh.rotation[1][2], mesh.rotation[2][2]),
+        );
+        let quat = Quat::from_mat3(&rotation);
+        let translation = Vec3::new(mesh.translation[0], mesh.translation[1], mesh.translation[2]);
+
+        let entity = world.spawn();
+        world.insert(entity, Transform::new(translation, quat, mesh.scale));
+        world.insert(entity, MeshHandle(handle));
+
+        log::info!(
+            "Loaded NIF mesh '{}': {} verts, {} tris, tex={:?}",
+            mesh.name.as_deref().unwrap_or("unnamed"),
+            num_verts,
+            mesh.indices.len() / 3,
+            mesh.texture_path,
+        );
+        count += 1;
+    }
+
+    log::info!("Imported {} meshes from '{}'", count, path);
+    count
 }
 
 /// Rotates entities that have both Transform and MeshHandle (not cameras).
