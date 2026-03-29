@@ -2,12 +2,14 @@
 
 use super::allocator::{self, SharedAllocator};
 use super::debug;
+use super::descriptors::DescriptorState;
 use super::device::{self, QueueFamilyIndices};
 use super::instance;
 use super::pipeline;
 use super::surface;
 use super::swapchain::{self, SwapchainState};
 use super::sync::{self, FrameSync, MAX_FRAMES_IN_FLIGHT};
+use super::texture::Texture;
 use crate::mesh::MeshRegistry;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -35,6 +37,8 @@ pub struct VulkanContext {
     depth_image: vk::Image,
     depth_allocation: Option<vk_alloc::Allocation>,
     pub mesh_registry: MeshRegistry,
+    descriptors: DescriptorState,
+    texture: Texture,
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     vert_module: vk::ShaderModule,
@@ -126,23 +130,49 @@ impl VulkanContext {
         // 9. Render pass (color + depth)
         let render_pass = create_render_pass(&device, swapchain_state.format.format)?;
 
-        // 10. Graphics pipeline (with depth test enabled)
-        let (pipeline_handle, pipeline_layout, vert_module, frag_module) =
-            pipeline::create_triangle_pipeline(&device, render_pass, swapchain_state.extent)?;
+        // 10. Command pool (needed for texture upload one-time commands)
+        let command_pool = create_command_pool(&device, queue_indices.graphics)?;
 
-        // 11. Mesh registry (empty — meshes uploaded by the application)
+        // 11. Generate and upload checkerboard test texture
+        let checkerboard = super::texture::generate_checkerboard(256, 256, 32);
+        let texture = Texture::from_rgba(
+            &device,
+            &gpu_allocator,
+            graphics_queue,
+            command_pool,
+            256,
+            256,
+            &checkerboard,
+        )?;
+
+        // 12. Descriptor sets (texture sampler)
+        let descriptors = DescriptorState::new(
+            &device,
+            swapchain_state.images.len() as u32,
+            &texture,
+        )?;
+
+        // 13. Graphics pipeline (with depth test + descriptor set layout)
+        let (pipeline_handle, pipeline_layout, vert_module, frag_module) =
+            pipeline::create_triangle_pipeline(
+                &device,
+                render_pass,
+                swapchain_state.extent,
+                descriptors.layout,
+            )?;
+
+        // 14. Mesh registry (empty — meshes uploaded by the application)
         let mesh_registry = MeshRegistry::new();
 
-        // 12. Framebuffers (color + depth attachments)
+        // 15. Framebuffers (color + depth attachments)
         let framebuffers =
             create_framebuffers(&device, render_pass, &swapchain_state, depth_image_view)?;
 
-        // 13. Command pool + buffers
-        let command_pool = create_command_pool(&device, queue_indices.graphics)?;
+        // 16. Command buffers
         let command_buffers =
             allocate_command_buffers(&device, command_pool, swapchain_state.images.len())?;
 
-        // 14. Sync objects
+        // 17. Sync objects
         let frame_sync =
             sync::create_sync_objects(&device, swapchain_state.images.len())?;
 
@@ -167,6 +197,8 @@ impl VulkanContext {
             vert_module,
             frag_module,
             mesh_registry,
+            descriptors,
+            texture,
             depth_allocation: Some(depth_allocation),
             depth_image,
             depth_image_view,
@@ -303,6 +335,16 @@ impl VulkanContext {
                 extent: self.swapchain_state.extent,
             }];
             self.device.cmd_set_scissor(cmd, 0, &scissors);
+
+            // Bind texture descriptor set.
+            self.device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                0,
+                &[self.descriptors.sets[image_index as usize]],
+                &[],
+            );
 
             // Push viewProj matrix (first 64 bytes of push constants).
             let view_proj_bytes: &[u8] = std::slice::from_raw_parts(
@@ -456,6 +498,15 @@ impl VulkanContext {
 
         self.render_pass =
             create_render_pass(&self.device, self.swapchain_state.format.format)?;
+
+        // Recreate descriptor sets for new swapchain image count.
+        self.descriptors.destroy(&self.device);
+        self.descriptors = DescriptorState::new(
+            &self.device,
+            self.swapchain_state.images.len() as u32,
+            &self.texture,
+        )?;
+
         self.framebuffers = create_framebuffers(
             &self.device,
             self.render_pass,
@@ -499,6 +550,12 @@ impl Drop for VulkanContext {
             for &fb in &self.framebuffers {
                 self.device.destroy_framebuffer(fb, None);
             }
+            // Destroy descriptors and texture before depth/allocator.
+            self.descriptors.destroy(&self.device);
+            if let Some(ref alloc) = self.allocator {
+                self.texture.destroy(&self.device, alloc);
+            }
+
             // Destroy depth resources before the allocator.
             self.device.destroy_image_view(self.depth_image_view, None);
             if let Some(alloc) = self.depth_allocation.take() {

@@ -2,20 +2,20 @@
 
 use ash::vk;
 
-/// Per-vertex data for position + color rendering.
+/// Per-vertex data for position + color + UV rendering.
 ///
 /// `#[repr(C)]` ensures the layout matches what the shader expects.
-/// Will be extended with UVs in Phase 5 (texturing).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Vertex {
     pub position: [f32; 3],
     pub color: [f32; 3],
+    pub uv: [f32; 2],
 }
 
 impl Vertex {
-    pub const fn new(position: [f32; 3], color: [f32; 3]) -> Self {
-        Self { position, color }
+    pub const fn new(position: [f32; 3], color: [f32; 3], uv: [f32; 2]) -> Self {
+        Self { position, color, uv }
     }
 
     /// How vertex data is read from the buffer (stride, rate).
@@ -28,7 +28,7 @@ impl Vertex {
     }
 
     /// Per-attribute layout within a vertex.
-    pub fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
+    pub fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
         [
             // location 0: position (vec3)
             vk::VertexInputAttributeDescription {
@@ -43,6 +43,13 @@ impl Vertex {
                 binding: 0,
                 format: vk::Format::R32G32B32_SFLOAT,
                 offset: std::mem::size_of::<[f32; 3]>() as u32,
+            },
+            // location 2: uv (vec2)
+            vk::VertexInputAttributeDescription {
+                location: 2,
+                binding: 0,
+                format: vk::Format::R32G32_SFLOAT,
+                offset: (std::mem::size_of::<[f32; 3]>() * 2) as u32,
             },
         ]
     }

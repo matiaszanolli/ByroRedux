@@ -42,10 +42,12 @@ crates/
       tes4.rs                Oblivion parser stub
       tes5.rs                Skyrim parser stub
       fo4.rs                 Fallout 4 parser stub
-  renderer/                  Vulkan graphics (ash, gpu-allocator)
+  renderer/                  Vulkan graphics (ash, gpu-allocator, image)
     src/vulkan/              context, pipeline, device, swapchain, sync, allocator, buffer
-    src/mesh.rs              MeshRegistry, cube_vertices()
-    src/vertex.rs            Vertex struct with binding descriptions
+    src/vulkan/texture.rs    Texture upload (staging buffer, layout transitions, sampler)
+    src/vulkan/descriptors.rs  DescriptorState (pool, layout, per-image sets)
+    src/mesh.rs              MeshRegistry, cube/triangle/quad geometry helpers
+    src/vertex.rs            Vertex (position + color + UV), 3 attribute descriptions
     shaders/                 GLSL → SPIR-V (pre-compiled, include_bytes!)
   platform/                  Windowing (winit), raw handles
   scripting/                 Placeholder

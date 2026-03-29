@@ -28,14 +28,12 @@ pub fn load_shader_module(device: &ash::Device, spv: &[u8]) -> Result<vk::Shader
     Ok(module)
 }
 
-/// Creates the graphics pipeline for the hardcoded triangle (Phase 1).
-///
-/// No vertex input (positions are hardcoded in the shader).
-/// Will be extended with vertex buffers in Phase 2.
+/// Creates the graphics pipeline with textured rendering.
 pub fn create_triangle_pipeline(
     device: &ash::Device,
     render_pass: vk::RenderPass,
     extent: vk::Extent2D,
+    descriptor_set_layout: vk::DescriptorSetLayout,
 ) -> Result<(vk::Pipeline, vk::PipelineLayout, vk::ShaderModule, vk::ShaderModule)> {
     let vert_spv = include_bytes!("../../shaders/triangle.vert.spv");
     let frag_spv = include_bytes!("../../shaders/triangle.frag.spv");
@@ -117,7 +115,9 @@ pub fn create_triangle_pipeline(
         offset: 0,
         size: 128, // 2 * sizeof(mat4)
     }];
+    let set_layouts = [descriptor_set_layout];
     let layout_info = vk::PipelineLayoutCreateInfo::default()
+        .set_layouts(&set_layouts)
         .push_constant_ranges(&push_constant_ranges);
     let pipeline_layout = unsafe {
         device

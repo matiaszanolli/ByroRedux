@@ -65,39 +65,39 @@ impl MeshRegistry {
     }
 }
 
-/// Colored cube geometry: 8 vertices, 36 indices (12 triangles).
+/// Colored cube geometry: 24 vertices (4 per face), 36 indices, with UVs.
 pub fn cube_vertices() -> (Vec<Vertex>, Vec<u32>) {
     let vertices = vec![
         // Front face (red-ish)
-        Vertex::new([-0.5, -0.5,  0.5], [1.0, 0.3, 0.3]),
-        Vertex::new([ 0.5, -0.5,  0.5], [1.0, 0.3, 0.3]),
-        Vertex::new([ 0.5,  0.5,  0.5], [1.0, 0.5, 0.5]),
-        Vertex::new([-0.5,  0.5,  0.5], [1.0, 0.5, 0.5]),
+        Vertex::new([-0.5, -0.5,  0.5], [1.0, 0.3, 0.3], [0.0, 1.0]),
+        Vertex::new([ 0.5, -0.5,  0.5], [1.0, 0.3, 0.3], [1.0, 1.0]),
+        Vertex::new([ 0.5,  0.5,  0.5], [1.0, 0.5, 0.5], [1.0, 0.0]),
+        Vertex::new([-0.5,  0.5,  0.5], [1.0, 0.5, 0.5], [0.0, 0.0]),
         // Back face (blue-ish)
-        Vertex::new([-0.5, -0.5, -0.5], [0.3, 0.3, 1.0]),
-        Vertex::new([ 0.5, -0.5, -0.5], [0.3, 0.3, 1.0]),
-        Vertex::new([ 0.5,  0.5, -0.5], [0.5, 0.5, 1.0]),
-        Vertex::new([-0.5,  0.5, -0.5], [0.5, 0.5, 1.0]),
+        Vertex::new([-0.5, -0.5, -0.5], [0.3, 0.3, 1.0], [1.0, 1.0]),
+        Vertex::new([ 0.5, -0.5, -0.5], [0.3, 0.3, 1.0], [0.0, 1.0]),
+        Vertex::new([ 0.5,  0.5, -0.5], [0.5, 0.5, 1.0], [0.0, 0.0]),
+        Vertex::new([-0.5,  0.5, -0.5], [0.5, 0.5, 1.0], [1.0, 0.0]),
         // Top face (green-ish)
-        Vertex::new([-0.5,  0.5, -0.5], [0.3, 1.0, 0.3]),
-        Vertex::new([ 0.5,  0.5, -0.5], [0.3, 1.0, 0.3]),
-        Vertex::new([ 0.5,  0.5,  0.5], [0.5, 1.0, 0.5]),
-        Vertex::new([-0.5,  0.5,  0.5], [0.5, 1.0, 0.5]),
+        Vertex::new([-0.5,  0.5, -0.5], [0.3, 1.0, 0.3], [0.0, 1.0]),
+        Vertex::new([ 0.5,  0.5, -0.5], [0.3, 1.0, 0.3], [1.0, 1.0]),
+        Vertex::new([ 0.5,  0.5,  0.5], [0.5, 1.0, 0.5], [1.0, 0.0]),
+        Vertex::new([-0.5,  0.5,  0.5], [0.5, 1.0, 0.5], [0.0, 0.0]),
         // Bottom face (yellow-ish)
-        Vertex::new([-0.5, -0.5, -0.5], [1.0, 1.0, 0.3]),
-        Vertex::new([ 0.5, -0.5, -0.5], [1.0, 1.0, 0.3]),
-        Vertex::new([ 0.5, -0.5,  0.5], [1.0, 1.0, 0.5]),
-        Vertex::new([-0.5, -0.5,  0.5], [1.0, 1.0, 0.5]),
+        Vertex::new([-0.5, -0.5, -0.5], [1.0, 1.0, 0.3], [0.0, 0.0]),
+        Vertex::new([ 0.5, -0.5, -0.5], [1.0, 1.0, 0.3], [1.0, 0.0]),
+        Vertex::new([ 0.5, -0.5,  0.5], [1.0, 1.0, 0.5], [1.0, 1.0]),
+        Vertex::new([-0.5, -0.5,  0.5], [1.0, 1.0, 0.5], [0.0, 1.0]),
         // Right face (cyan-ish)
-        Vertex::new([ 0.5, -0.5, -0.5], [0.3, 1.0, 1.0]),
-        Vertex::new([ 0.5,  0.5, -0.5], [0.3, 1.0, 1.0]),
-        Vertex::new([ 0.5,  0.5,  0.5], [0.5, 1.0, 1.0]),
-        Vertex::new([ 0.5, -0.5,  0.5], [0.5, 1.0, 1.0]),
+        Vertex::new([ 0.5, -0.5, -0.5], [0.3, 1.0, 1.0], [0.0, 1.0]),
+        Vertex::new([ 0.5,  0.5, -0.5], [0.3, 1.0, 1.0], [0.0, 0.0]),
+        Vertex::new([ 0.5,  0.5,  0.5], [0.5, 1.0, 1.0], [1.0, 0.0]),
+        Vertex::new([ 0.5, -0.5,  0.5], [0.5, 1.0, 1.0], [1.0, 1.0]),
         // Left face (magenta-ish)
-        Vertex::new([-0.5, -0.5, -0.5], [1.0, 0.3, 1.0]),
-        Vertex::new([-0.5,  0.5, -0.5], [1.0, 0.3, 1.0]),
-        Vertex::new([-0.5,  0.5,  0.5], [1.0, 0.5, 1.0]),
-        Vertex::new([-0.5, -0.5,  0.5], [1.0, 0.5, 1.0]),
+        Vertex::new([-0.5, -0.5, -0.5], [1.0, 0.3, 1.0], [1.0, 1.0]),
+        Vertex::new([-0.5,  0.5, -0.5], [1.0, 0.3, 1.0], [1.0, 0.0]),
+        Vertex::new([-0.5,  0.5,  0.5], [1.0, 0.5, 1.0], [0.0, 0.0]),
+        Vertex::new([-0.5, -0.5,  0.5], [1.0, 0.5, 1.0], [0.0, 1.0]),
     ];
 
     let indices = vec![
@@ -112,13 +112,25 @@ pub fn cube_vertices() -> (Vec<Vertex>, Vec<u32>) {
     (vertices, indices)
 }
 
-/// A single colored triangle in the XY plane at Z=0.
+/// A single colored triangle in the XY plane at Z=0, with UVs.
 pub fn triangle_vertices(color: [f32; 3]) -> (Vec<Vertex>, Vec<u32>) {
     let vertices = vec![
-        Vertex::new([ 0.0,  0.5, 0.0], color),
-        Vertex::new([-0.5, -0.5, 0.0], color),
-        Vertex::new([ 0.5, -0.5, 0.0], color),
+        Vertex::new([ 0.0,  0.5, 0.0], color, [0.5, 0.0]),
+        Vertex::new([-0.5, -0.5, 0.0], color, [0.0, 1.0]),
+        Vertex::new([ 0.5, -0.5, 0.0], color, [1.0, 1.0]),
     ];
     let indices = vec![0, 1, 2];
+    (vertices, indices)
+}
+
+/// A textured quad in the XY plane at Z=0.
+pub fn quad_vertices() -> (Vec<Vertex>, Vec<u32>) {
+    let vertices = vec![
+        Vertex::new([-0.5, -0.5, 0.0], [1.0, 1.0, 1.0], [0.0, 1.0]),
+        Vertex::new([ 0.5, -0.5, 0.0], [1.0, 1.0, 1.0], [1.0, 1.0]),
+        Vertex::new([ 0.5,  0.5, 0.0], [1.0, 1.0, 1.0], [1.0, 0.0]),
+        Vertex::new([-0.5,  0.5, 0.0], [1.0, 1.0, 1.0], [0.0, 0.0]),
+    ];
+    let indices = vec![0, 1, 2, 2, 3, 0];
     (vertices, indices)
 }

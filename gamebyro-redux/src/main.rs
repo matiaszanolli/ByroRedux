@@ -9,7 +9,7 @@ use gamebyro_core::math::{Quat, Vec3};
 use gamebyro_core::types::Color;
 use gamebyro_platform::window::{self, WindowConfig};
 use gamebyro_renderer::vulkan::context::DrawCommand;
-use gamebyro_renderer::{cube_vertices, triangle_vertices, VulkanContext};
+use gamebyro_renderer::{cube_vertices, quad_vertices, triangle_vertices, VulkanContext};
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -79,6 +79,13 @@ impl App {
             .upload(&ctx.device, alloc, &verts, &idxs)
             .expect("Failed to upload cube mesh");
 
+        // Upload a textured quad.
+        let (quad_verts, quad_idxs) = quad_vertices();
+        let quad_handle = ctx
+            .mesh_registry
+            .upload(&ctx.device, alloc, &quad_verts, &quad_idxs)
+            .expect("Failed to upload quad mesh");
+
         // Upload two triangle meshes with different colors.
         let (red_verts, red_idxs) = triangle_vertices([1.0, 0.2, 0.2]);
         let red_handle = ctx
@@ -92,27 +99,33 @@ impl App {
             .upload(&ctx.device, alloc, &blue_verts, &blue_idxs)
             .expect("Failed to upload blue triangle mesh");
 
-        // Spawn cube entity (still spinning).
+        // Spawn cube entity (still spinning, now textured).
         let cube = self.world.spawn();
         self.world
             .insert(cube, Transform::from_translation(Vec3::new(-1.5, 0.0, 0.0)));
         self.world.insert(cube, MeshHandle(cube_handle));
 
+        // Spawn textured quad — checkerboard visible.
+        let quad = self.world.spawn();
+        self.world.insert(
+            quad,
+            Transform::from_translation(Vec3::new(0.0, 0.0, -1.0)),
+        );
+        self.world.insert(quad, MeshHandle(quad_handle));
+
         // Spawn red triangle — closer to camera (Z = 0.5), offset right.
-        // Drawn SECOND but should occlude the blue triangle via depth test.
         let red_tri = self.world.spawn();
         self.world.insert(
             red_tri,
-            Transform::from_translation(Vec3::new(1.2, 0.0, 0.5)),
+            Transform::from_translation(Vec3::new(1.5, 0.0, 0.5)),
         );
         self.world.insert(red_tri, MeshHandle(red_handle));
 
         // Spawn blue triangle — farther from camera (Z = -0.3), overlapping.
-        // Drawn FIRST but should be occluded where the red triangle covers it.
         let blue_tri = self.world.spawn();
         self.world.insert(
             blue_tri,
-            Transform::from_translation(Vec3::new(1.5, 0.0, -0.3)),
+            Transform::from_translation(Vec3::new(1.8, 0.0, -0.3)),
         );
         self.world.insert(blue_tri, MeshHandle(blue_handle));
 
@@ -129,7 +142,7 @@ impl App {
         self.world.insert(cam, Camera::default());
         self.world.insert_resource(ActiveCamera(cam));
 
-        log::info!("Scene ready: 1 cube, 2 overlapping triangles (depth test), 1 camera");
+        log::info!("Scene ready: 1 textured cube, 1 textured quad, 2 triangles, 1 camera");
     }
 }
 

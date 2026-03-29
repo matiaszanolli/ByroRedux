@@ -14,3 +14,4 @@ raw-window-handle = { workspace = true }
 log = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+image = { workspace = true }
