@@ -50,7 +50,17 @@ crates/
     src/vertex.rs            Vertex (position + color + UV), 3 attribute descriptions
     shaders/                 GLSL → SPIR-V (pre-compiled, include_bytes!)
   platform/                  Windowing (winit), raw handles
-  scripting/                 Placeholder
+  nif/                       NIF file parser (Gamebryo .nif binary format)
+    src/header.rs            NifHeader, version-aware header parsing
+    src/version.rs           NifVersion (packed u32), version constants
+    src/types.rs             NiPoint3, NiMatrix3, NiTransform, NiColor, BlockRef
+    src/stream.rs            NifStream: version-aware binary reader
+    src/blocks/              Block parsers: NiNode, NiTriShape, NiTriShapeData, properties, textures
+    src/scene.rs             NifScene: parsed block collection with downcasting
+  scripting/                 ECS-native scripting (events, timers)
+    src/events.rs            Transient marker components: ActivateEvent, HitEvent, TimerExpired
+    src/timer.rs             ScriptTimer component + timer_tick_system
+    src/cleanup.rs           event_cleanup_system (end-of-frame marker removal)
   cxx-bridge/                C++ interop (cxx crate)
 docs/
   engine/                    Engine documentation (architecture, ECS, renderer, etc.)
@@ -106,9 +116,10 @@ Detailed analysis in `docs/legacy/`.
 
 ## Development Roadmap
 
-See `.claude/plans/playful-bouncing-quasar.md` for the active plugin system plan.
-Current: Phases A+B+C complete (stable Form IDs, plugin manifests, DataStore, conflict resolution, legacy bridge).
-Next rendering phase: depth buffer. Next plugin phase: D (scripting as ECS).
+See `.claude/plans/stateless-finding-zephyr.md` for the active roadmap plan.
+Current: Phases 1–8 complete (triangle → vertex buffers → ECS rendering → plugins → legacy bridge → depth → texturing).
+Phase 9A (NIF parser) and Phase S1 (scripting foundation) in progress.
+Next: Phase 9B (NIF-to-ECS import — first real game asset rendered).
 
 ## Git Conventions
 

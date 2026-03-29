@@ -1,0 +1,364 @@
+//! NIF file header parsing.
+//!
+//! The header contains version info, block type tables, block sizes,
+//! and the string table. Everything needed to navigate the block data.
+
+use crate::version::NifVersion;
+use std::io::{self, Cursor, Read};
+
+/// Parsed NIF file header.
+#[derive(Debug, Clone)]
+pub struct NifHeader {
+    /// File format version (packed u32).
+    pub version: NifVersion,
+    /// Endianness (true = little-endian, the common case).
+    pub little_endian: bool,
+    /// Game-specific version tag.
+    pub user_version: u32,
+    /// Second user version (Bethesda-specific, present in 20.2.0.7+).
+    pub user_version_2: u32,
+    /// Number of object blocks in the file.
+    pub num_blocks: u32,
+    /// RTTI class name table (e.g., "NiNode", "NiTriShape").
+    pub block_types: Vec<String>,
+    /// Maps each block index to its type in `block_types`.
+    pub block_type_indices: Vec<u16>,
+    /// Byte size of each serialized block.
+    pub block_sizes: Vec<u32>,
+    /// Global string table (referenced by string-table-indexed fields).
+    pub strings: Vec<String>,
+    /// Maximum string length in the string table.
+    pub max_string_length: u32,
+    /// Number of object groups (for deferred loading).
+    pub num_groups: u32,
+}
+
+impl NifHeader {
+    /// Parse a NIF header from raw file bytes.
+    /// Returns the header and the byte offset where block data begins.
+    pub fn parse(data: &[u8]) -> io::Result<(Self, usize)> {
+        // Phase 1: Parse ASCII header line
+        let header_line_end = data.iter().position(|&b| b == b'\n')
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no header line found"))?;
+        let header_line = std::str::from_utf8(&data[..header_line_end])
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "non-UTF8 header line"))?;
+
+        // Validate it's a Gamebryo/NetImmerse file
+        if !header_line.contains("Gamebryo File Format") && !header_line.contains("NetImmerse File Format") {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                format!("unrecognized NIF header: {header_line}")));
+        }
+
+        let mut cursor = Cursor::new(data);
+        cursor.set_position((header_line_end + 1) as u64);
+
+        // Phase 2: Binary header fields
+        let version = NifVersion(read_u32_le(&mut cursor)?);
+
+        // Endianness byte (present in version >= 20.0.0.4)
+        let little_endian = if version >= NifVersion(0x14000004) {
+            let e = read_u8(&mut cursor)?;
+            e != 0
+        } else {
+            true // older files are always little-endian
+        };
+
+        // User version (present in version >= 10.0.1.0)
+        let user_version = if version >= NifVersion(0x0A000100) {
+            read_u32_le(&mut cursor)?
+        } else {
+            0
+        };
+
+        let num_blocks = read_u32_le(&mut cursor)?;
+
+        // User version 2 / BS version (Bethesda-specific, version >= 10.0.1.0 with user_version >= 10)
+        let user_version_2 = if version >= NifVersion(0x0A000100) && user_version >= 10 {
+            read_u32_le(&mut cursor)?
+        } else {
+            0
+        };
+
+        // Author/process/export info strings (version >= 10.0.1.0 with user_version >= 10)
+        if version >= NifVersion(0x0A000100) && user_version >= 10 {
+            let _author = read_short_string(&mut cursor)?;
+            // In some Bethesda versions, there may be process/export strings too
+            if user_version_2 > 0 {
+                let _process_script = read_short_string(&mut cursor)?;
+                let _export_script = read_short_string(&mut cursor)?;
+            }
+        }
+
+        // Block types table (version >= 10.0.1.0)
+        let (block_types, block_type_indices) = if version >= NifVersion(0x0A000100) {
+            let num_block_types = read_u16_le(&mut cursor)? as usize;
+            let mut types = Vec::with_capacity(num_block_types);
+            for _ in 0..num_block_types {
+                types.push(read_sized_string(&mut cursor)?);
+            }
+            let mut indices = Vec::with_capacity(num_blocks as usize);
+            for _ in 0..num_blocks {
+                indices.push(read_u16_le(&mut cursor)?);
+            }
+            (types, indices)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
+        // Block sizes (version >= 20.2.0.7)
+        let block_sizes = if version >= NifVersion::V20_2_0_7 {
+            let mut sizes = Vec::with_capacity(num_blocks as usize);
+            for _ in 0..num_blocks {
+                sizes.push(read_u32_le(&mut cursor)?);
+            }
+            sizes
+        } else {
+            Vec::new()
+        };
+
+        // String table (version >= 20.1.0.3)
+        let (strings, max_string_length) = if version >= NifVersion(0x14010003) {
+            let num_strings = read_u32_le(&mut cursor)? as usize;
+            let max_len = read_u32_le(&mut cursor)?;
+            let mut strs = Vec::with_capacity(num_strings);
+            for _ in 0..num_strings {
+                strs.push(read_sized_string(&mut cursor)?);
+            }
+            (strs, max_len)
+        } else {
+            (Vec::new(), 0)
+        };
+
+        // Number of groups (version >= 10.0.1.0)
+        let num_groups = if version >= NifVersion(0x0A000100) {
+            read_u32_le(&mut cursor)?
+        } else {
+            0
+        };
+
+        // Skip group sizes if present
+        if num_groups > 0 {
+            for _ in 0..num_groups {
+                let _ = read_u32_le(&mut cursor)?;
+            }
+        }
+
+        let offset = cursor.position() as usize;
+
+        Ok((NifHeader {
+            version,
+            little_endian,
+            user_version,
+            user_version_2,
+            num_blocks,
+            block_types,
+            block_type_indices,
+            block_sizes,
+            strings,
+            max_string_length,
+            num_groups,
+        }, offset))
+    }
+
+    /// Get the type name of a block by its index.
+    pub fn block_type_name(&self, block_index: usize) -> Option<&str> {
+        let type_idx = *self.block_type_indices.get(block_index)? as usize;
+        self.block_types.get(type_idx).map(|s| s.as_str())
+    }
+}
+
+// ── Helper functions for raw cursor reading ────────────────────────────
+
+fn read_u8(cursor: &mut Cursor<&[u8]>) -> io::Result<u8> {
+    let mut buf = [0u8; 1];
+    cursor.read_exact(&mut buf)?;
+    Ok(buf[0])
+}
+
+fn read_u16_le(cursor: &mut Cursor<&[u8]>) -> io::Result<u16> {
+    let mut buf = [0u8; 2];
+    cursor.read_exact(&mut buf)?;
+    Ok(u16::from_le_bytes(buf))
+}
+
+fn read_u32_le(cursor: &mut Cursor<&[u8]>) -> io::Result<u32> {
+    let mut buf = [0u8; 4];
+    cursor.read_exact(&mut buf)?;
+    Ok(u32::from_le_bytes(buf))
+}
+
+fn read_sized_string(cursor: &mut Cursor<&[u8]>) -> io::Result<String> {
+    let len = read_u32_le(cursor)? as usize;
+    let mut buf = vec![0u8; len];
+    cursor.read_exact(&mut buf)?;
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+fn read_short_string(cursor: &mut Cursor<&[u8]>) -> io::Result<String> {
+    let len = read_u8(cursor)? as usize;
+    let mut buf = vec![0u8; len];
+    cursor.read_exact(&mut buf)?;
+    // Short strings may include null terminator
+    let s = if buf.last() == Some(&0) {
+        String::from_utf8_lossy(&buf[..buf.len() - 1]).into_owned()
+    } else {
+        String::from_utf8_lossy(&buf).into_owned()
+    };
+    Ok(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::version::NifVersion;
+
+    /// Build a minimal valid NIF header for version 20.2.0.7 (Skyrim).
+    /// num_blocks=0, user_version=12, user_version_2=83.
+    fn build_minimal_skyrim_header() -> Vec<u8> {
+        let mut buf = Vec::new();
+
+        // ASCII header line
+        buf.extend_from_slice(b"Gamebryo File Format, Version 20.2.0.7\n");
+
+        // u32: version
+        buf.extend_from_slice(&0x14020007u32.to_le_bytes());
+
+        // u8: little-endian flag (version >= 20.0.0.4)
+        buf.push(1);
+
+        // u32: user_version (version >= 10.0.1.0)
+        buf.extend_from_slice(&12u32.to_le_bytes());
+
+        // u32: num_blocks
+        buf.extend_from_slice(&0u32.to_le_bytes());
+
+        // u32: user_version_2 (version >= 10.0.1.0 && user_version >= 10)
+        buf.extend_from_slice(&83u32.to_le_bytes());
+
+        // short strings: author, process_script, export_script
+        // (version >= 10.0.1.0 && user_version >= 10, user_version_2 > 0)
+        buf.push(1); buf.push(0); // author: 1 byte, null terminator
+        buf.push(1); buf.push(0); // process_script
+        buf.push(1); buf.push(0); // export_script
+
+        // u16: num_block_types = 0 (version >= 10.0.1.0)
+        buf.extend_from_slice(&0u16.to_le_bytes());
+
+        // (no block type indices — num_blocks is 0)
+        // (no block sizes — num_blocks is 0)
+
+        // u32: num_strings = 0 (version >= 20.1.0.3)
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        // u32: max_string_length = 0
+        buf.extend_from_slice(&0u32.to_le_bytes());
+
+        // u32: num_groups = 0 (version >= 10.0.1.0)
+        buf.extend_from_slice(&0u32.to_le_bytes());
+
+        buf
+    }
+
+    #[test]
+    fn parse_minimal_skyrim_header() {
+        let data = build_minimal_skyrim_header();
+        let (header, offset) = NifHeader::parse(&data).unwrap();
+
+        assert_eq!(header.version, NifVersion::V20_2_0_7);
+        assert!(header.little_endian);
+        assert_eq!(header.user_version, 12);
+        assert_eq!(header.user_version_2, 83);
+        assert_eq!(header.num_blocks, 0);
+        assert!(header.block_types.is_empty());
+        assert!(header.block_sizes.is_empty());
+        assert!(header.strings.is_empty());
+        assert_eq!(header.num_groups, 0);
+        assert_eq!(offset, data.len());
+    }
+
+    #[test]
+    fn parse_header_with_blocks_and_strings() {
+        let mut buf = Vec::new();
+
+        // Header line
+        buf.extend_from_slice(b"Gamebryo File Format, Version 20.2.0.7\n");
+        buf.extend_from_slice(&0x14020007u32.to_le_bytes()); // version
+        buf.push(1); // little-endian
+        buf.extend_from_slice(&12u32.to_le_bytes()); // user_version
+        buf.extend_from_slice(&2u32.to_le_bytes()); // num_blocks = 2
+        buf.extend_from_slice(&83u32.to_le_bytes()); // user_version_2
+
+        // Author/process/export short strings
+        buf.push(1); buf.push(0);
+        buf.push(1); buf.push(0);
+        buf.push(1); buf.push(0);
+
+        // Block types: 2 types
+        buf.extend_from_slice(&2u16.to_le_bytes());
+        // "NiNode" (sized string)
+        buf.extend_from_slice(&6u32.to_le_bytes());
+        buf.extend_from_slice(b"NiNode");
+        // "NiTriShape" (sized string)
+        buf.extend_from_slice(&10u32.to_le_bytes());
+        buf.extend_from_slice(b"NiTriShape");
+
+        // Block type indices: block 0 → type 0, block 1 → type 1
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+
+        // Block sizes: 100 bytes each (version >= 20.2.0.7)
+        buf.extend_from_slice(&100u32.to_le_bytes());
+        buf.extend_from_slice(&200u32.to_le_bytes());
+
+        // String table: 2 strings
+        buf.extend_from_slice(&2u32.to_le_bytes()); // num_strings
+        buf.extend_from_slice(&6u32.to_le_bytes()); // max_string_length
+        // "Scene" (sized string)
+        buf.extend_from_slice(&5u32.to_le_bytes());
+        buf.extend_from_slice(b"Scene");
+        // "Mesh01" (sized string)
+        buf.extend_from_slice(&6u32.to_le_bytes());
+        buf.extend_from_slice(b"Mesh01");
+
+        // num_groups = 0
+        buf.extend_from_slice(&0u32.to_le_bytes());
+
+        let (header, _offset) = NifHeader::parse(&buf).unwrap();
+
+        assert_eq!(header.num_blocks, 2);
+        assert_eq!(header.block_types, vec!["NiNode", "NiTriShape"]);
+        assert_eq!(header.block_type_indices, vec![0, 1]);
+        assert_eq!(header.block_sizes, vec![100, 200]);
+        assert_eq!(header.strings, vec!["Scene", "Mesh01"]);
+        assert_eq!(header.max_string_length, 6);
+
+        assert_eq!(header.block_type_name(0), Some("NiNode"));
+        assert_eq!(header.block_type_name(1), Some("NiTriShape"));
+        assert_eq!(header.block_type_name(2), None);
+    }
+
+    #[test]
+    fn reject_invalid_header_line() {
+        let data = b"Not a NIF file\n\x00\x00\x00\x00";
+        let result = NifHeader::parse(data);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("unrecognized NIF header"));
+    }
+
+    #[test]
+    fn accept_netimmerse_header() {
+        // Old NIF files use "NetImmerse File Format" instead of "Gamebryo"
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"NetImmerse File Format, Version 4.0.0.2\n");
+        buf.extend_from_slice(&0x04000002u32.to_le_bytes()); // version 4.0.0.2
+        // num_blocks (no user_version for this old version)
+        buf.extend_from_slice(&0u32.to_le_bytes());
+
+        let (header, _) = NifHeader::parse(&buf).unwrap();
+        assert_eq!(header.version, NifVersion::V4_0_0_2);
+        assert_eq!(header.num_blocks, 0);
+        // Old versions don't have user_version, block types, etc.
+        assert_eq!(header.user_version, 0);
+        assert!(header.block_types.is_empty());
+    }
+}

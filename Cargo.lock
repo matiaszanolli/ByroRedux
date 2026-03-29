@@ -251,6 +251,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "byroredux-nif"
+version = "0.1.0"
+dependencies = [
+ "byroredux-core",
+ "log",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "byroredux-platform"
 version = "0.1.0"
 dependencies = [

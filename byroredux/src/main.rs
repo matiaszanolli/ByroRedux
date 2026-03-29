@@ -24,8 +24,7 @@ fn main() -> Result<()> {
     // Verify C++ bridge is linked.
     log::info!("{}", byroredux_cxx_bridge::ffi::native_hello());
 
-    // Initialize scripting placeholder.
-    byroredux_scripting::init();
+    // Scripting subsystem is initialized per-world in App::new().
 
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -53,10 +52,15 @@ impl App {
         world.insert_resource(TotalTime(0.0));
         world.insert_resource(EngineConfig::default());
 
+        // Register scripting component storages.
+        byroredux_scripting::register(&mut world);
+
         // Build the system schedule.
         let mut scheduler = Scheduler::new();
         scheduler.add(spin_system);
+        scheduler.add(byroredux_scripting::timer_tick_system);
         scheduler.add(log_stats_system);
+        scheduler.add(byroredux_scripting::event_cleanup_system);
 
         Self {
             window: None,

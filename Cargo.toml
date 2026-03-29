@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/core",
+    "crates/nif",
     "crates/plugin",
     "crates/renderer",
     "crates/platform",
@@ -22,6 +23,7 @@ byroredux-renderer = { path = "crates/renderer" }
 byroredux-platform = { path = "crates/platform" }
 byroredux-plugin = { path = "crates/plugin" }
 byroredux-scripting = { path = "crates/scripting" }
+byroredux-nif = { path = "crates/nif" }
 byroredux-cxx-bridge = { path = "crates/cxx-bridge" }
 
 # Vulkan / GPU
