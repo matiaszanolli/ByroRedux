@@ -1,7 +1,6 @@
 //! Top-level Vulkan context that owns the entire graphics state.
 
 use super::allocator::{self, SharedAllocator};
-use super::buffer::GpuBuffer;
 use super::debug;
 use super::device::{self, QueueFamilyIndices};
 use super::instance;
@@ -9,19 +8,16 @@ use super::pipeline;
 use super::surface;
 use super::swapchain::{self, SwapchainState};
 use super::sync::{self, FrameSync, MAX_FRAMES_IN_FLIGHT};
-use crate::vertex::Vertex;
+use crate::mesh::MeshRegistry;
 use anyhow::{Context, Result};
 use ash::vk;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
-/// Triangle vertex data — same RGB corners as Phase 1, now from Rust.
-const TRIANGLE_VERTICES: [Vertex; 3] = [
-    Vertex::new([0.0, -0.5, 0.0], [1.0, 0.0, 0.0]), // top — red
-    Vertex::new([0.5, 0.5, 0.0], [0.0, 1.0, 0.0]),   // bottom-right — green
-    Vertex::new([-0.5, 0.5, 0.0], [0.0, 0.0, 1.0]),  // bottom-left — blue
-];
-
-const TRIANGLE_INDICES: [u32; 3] = [0, 1, 2];
+/// A single draw command: which mesh to draw, with what model matrix.
+pub struct DrawCommand {
+    pub mesh_handle: u32,
+    pub model_matrix: [f32; 16],
+}
 
 pub struct VulkanContext {
     // Ordered for drop safety — later fields are destroyed first.
@@ -31,8 +27,7 @@ pub struct VulkanContext {
     command_buffers: Vec<vk::CommandBuffer>,
     command_pool: vk::CommandPool,
     framebuffers: Vec<vk::Framebuffer>,
-    index_buffer: GpuBuffer,
-    vertex_buffer: GpuBuffer,
+    pub mesh_registry: MeshRegistry,
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     vert_module: vk::ShaderModule,
@@ -40,7 +35,7 @@ pub struct VulkanContext {
     render_pass: vk::RenderPass,
     swapchain_state: SwapchainState,
 
-    allocator: Option<SharedAllocator>,
+    pub allocator: Option<SharedAllocator>,
 
     pub graphics_queue: vk::Queue,
     pub present_queue: vk::Queue,
@@ -124,12 +119,8 @@ impl VulkanContext {
         let (pipeline_handle, pipeline_layout, vert_module, frag_module) =
             pipeline::create_triangle_pipeline(&device, render_pass, swapchain_state.extent)?;
 
-        // 10. Vertex + index buffers
-        let vertex_buffer =
-            GpuBuffer::create_vertex_buffer(&device, &gpu_allocator, &TRIANGLE_VERTICES)?;
-        let index_buffer =
-            GpuBuffer::create_index_buffer(&device, &gpu_allocator, &TRIANGLE_INDICES)?;
-        log::info!("Vertex + index buffers created");
+        // 10. Mesh registry (empty — meshes uploaded by the application)
+        let mesh_registry = MeshRegistry::new();
 
         // 11. Framebuffers
         let framebuffers =
@@ -164,8 +155,7 @@ impl VulkanContext {
             pipeline_layout,
             vert_module,
             frag_module,
-            vertex_buffer,
-            index_buffer,
+            mesh_registry,
             framebuffers,
             command_pool,
             command_buffers,
@@ -174,8 +164,16 @@ impl VulkanContext {
         })
     }
 
-    /// Record and submit a frame that clears to the given color.
-    pub fn draw_clear_frame(&mut self, clear_color: [f32; 4]) -> Result<bool> {
+    /// Record and submit a frame.
+    ///
+    /// `view_proj`: combined view-projection matrix as column-major [f32; 16].
+    /// `draw_commands`: per-object (mesh_handle, model_matrix) pairs.
+    pub fn draw_frame(
+        &mut self,
+        clear_color: [f32; 4],
+        view_proj: &[f32; 16],
+        draw_commands: &[DrawCommand],
+    ) -> Result<bool> {
         let frame = self.current_frame;
 
         // Wait for this frame-in-flight slot to be available.
@@ -284,16 +282,50 @@ impl VulkanContext {
             }];
             self.device.cmd_set_scissor(cmd, 0, &scissors);
 
-            // Bind vertex and index buffers, draw indexed.
-            self.device
-                .cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
-            self.device.cmd_bind_index_buffer(
-                cmd,
-                self.index_buffer.buffer,
-                0,
-                vk::IndexType::UINT32,
+            // Push viewProj matrix (first 64 bytes of push constants).
+            let view_proj_bytes: &[u8] = std::slice::from_raw_parts(
+                view_proj.as_ptr() as *const u8,
+                64,
             );
-            self.device.cmd_draw_indexed(cmd, TRIANGLE_INDICES.len() as u32, 1, 0, 0, 0);
+            self.device.cmd_push_constants(
+                cmd,
+                self.pipeline_layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                view_proj_bytes,
+            );
+
+            // Draw each object.
+            for draw_cmd in draw_commands {
+                if let Some(mesh) = self.mesh_registry.get(draw_cmd.mesh_handle) {
+                    // Push model matrix (bytes 64..128).
+                    let model_bytes: &[u8] = std::slice::from_raw_parts(
+                        draw_cmd.model_matrix.as_ptr() as *const u8,
+                        64,
+                    );
+                    self.device.cmd_push_constants(
+                        cmd,
+                        self.pipeline_layout,
+                        vk::ShaderStageFlags::VERTEX,
+                        64,
+                        model_bytes,
+                    );
+
+                    self.device.cmd_bind_vertex_buffers(
+                        cmd,
+                        0,
+                        &[mesh.vertex_buffer.buffer],
+                        &[0],
+                    );
+                    self.device.cmd_bind_index_buffer(
+                        cmd,
+                        mesh.index_buffer.buffer,
+                        0,
+                        vk::IndexType::UINT32,
+                    );
+                    self.device.cmd_draw_indexed(cmd, mesh.index_count, 1, 0, 0, 0);
+                }
+            }
 
             self.device.cmd_end_render_pass(cmd);
             self.device
@@ -420,8 +452,7 @@ impl Drop for VulkanContext {
                 self.device.destroy_framebuffer(fb, None);
             }
             if let Some(ref alloc) = self.allocator {
-                self.vertex_buffer.destroy(&self.device, alloc);
-                self.index_buffer.destroy(&self.device, alloc);
+                self.mesh_registry.destroy_all(&self.device, alloc);
             }
             self.device.destroy_pipeline(self.pipeline, None);
             self.device

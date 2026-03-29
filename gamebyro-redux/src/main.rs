@@ -1,10 +1,15 @@
-//! Gamebyro Redux — ECS-driven game loop with Vulkan clear pass.
+//! Gamebyro Redux — ECS-driven game loop with spinning cube.
 
 use anyhow::Result;
-use gamebyro_core::ecs::{DeltaTime, EngineConfig, Scheduler, TotalTime, World};
+use gamebyro_core::ecs::{
+    ActiveCamera, Camera, DeltaTime, EngineConfig, MeshHandle, Scheduler, TotalTime, Transform,
+    World,
+};
+use gamebyro_core::math::{Quat, Vec3};
 use gamebyro_core::types::Color;
 use gamebyro_platform::window::{self, WindowConfig};
-use gamebyro_renderer::VulkanContext;
+use gamebyro_renderer::vulkan::context::DrawCommand;
+use gamebyro_renderer::{cube_vertices, VulkanContext};
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -50,6 +55,7 @@ impl App {
 
         // Build the system schedule.
         let mut scheduler = Scheduler::new();
+        scheduler.add(spin_system);
         scheduler.add(log_stats_system);
 
         Self {
@@ -60,6 +66,55 @@ impl App {
             last_frame: Instant::now(),
         }
     }
+
+    /// Called once after the renderer is ready — uploads meshes and spawns entities.
+    fn setup_scene(&mut self) {
+        let ctx = self.renderer.as_mut().unwrap();
+        let alloc = ctx.allocator.as_ref().unwrap();
+
+        // Upload cube mesh.
+        let (verts, idxs) = cube_vertices();
+        let cube_handle = ctx
+            .mesh_registry
+            .upload(&ctx.device, alloc, &verts, &idxs)
+            .expect("Failed to upload cube mesh");
+
+        // Spawn a cube entity.
+        let cube = self.world.spawn();
+        self.world
+            .insert(cube, Transform::from_translation(Vec3::ZERO));
+        self.world.insert(cube, MeshHandle(cube_handle));
+
+        // Spawn camera entity looking at the origin.
+        let cam = self.world.spawn();
+        let cam_pos = Vec3::new(0.0, 1.5, 3.0);
+        let cam_target = Vec3::ZERO;
+        // Compute rotation: camera forward is -Z, so we need the quat
+        // that rotates -Z to point from cam_pos toward cam_target.
+        let forward = (cam_target - cam_pos).normalize();
+        let cam_rotation = Quat::from_rotation_arc(-Vec3::Z, forward);
+        self.world.insert(
+            cam,
+            Transform::new(cam_pos, cam_rotation, 1.0),
+        );
+        self.world.insert(cam, Camera::default());
+        self.world.insert_resource(ActiveCamera(cam));
+
+        log::info!("Scene ready: 1 cube, 1 camera");
+    }
+}
+
+/// Rotates entities that have both Transform and MeshHandle (not cameras).
+fn spin_system(world: &World, dt: f32) {
+    if let Some((mq, mut tq)) = world.query_2_mut::<MeshHandle, Transform>() {
+        for (entity, _mesh) in mq.iter() {
+            if let Some(transform) = tq.get_mut(entity) {
+                let rotation =
+                    Quat::from_rotation_y(dt * 1.0) * Quat::from_rotation_x(dt * 0.3);
+                transform.rotation = rotation * transform.rotation;
+            }
+        }
+    }
 }
 
 /// Logs TotalTime and dt once per second.
@@ -67,16 +122,11 @@ fn log_stats_system(world: &World, _dt: f32) {
     let total = world.resource::<TotalTime>().0;
     let dt = world.resource::<DeltaTime>().0;
 
-    // Log once per second: fire when we cross an integer boundary.
     let prev = total - dt;
     if prev < 0.0 || total.floor() != prev.floor() {
         let config = world.resource::<EngineConfig>();
         if config.debug_logging {
-            log::info!(
-                "[stats] total={:.1}s  dt={:.2}ms",
-                total,
-                dt * 1000.0,
-            );
+            log::info!("[stats] total={:.1}s  dt={:.2}ms", total, dt * 1000.0);
         }
     }
 }
@@ -113,6 +163,7 @@ impl ApplicationHandler for App {
                 self.renderer = Some(ctx);
                 self.window = Some(win);
                 self.last_frame = Instant::now();
+                self.setup_scene();
                 log::info!("Engine ready — entering game loop");
             }
             Err(e) => {
@@ -142,13 +193,26 @@ impl ApplicationHandler for App {
                             log::error!("Swapchain recreate failed: {e:#}");
                             event_loop.exit();
                         }
+                        // Update camera aspect ratio.
+                        if let Some(active) = self.world.try_resource::<ActiveCamera>() {
+                            let cam_entity = active.0;
+                            drop(active);
+                            if let Some(mut q) = self.world.query_mut::<Camera>() {
+                                if let Some(cam) = q.get_mut(cam_entity) {
+                                    cam.aspect = size.width as f32 / size.height as f32;
+                                }
+                            }
+                        }
                     }
                 }
             }
             WindowEvent::RedrawRequested => {
                 if let Some(ref mut ctx) = self.renderer {
+                    // Build view-projection matrix from camera.
+                    let (view_proj, draw_commands) = build_render_data(&self.world);
+
                     let color = Color::CORNFLOWER_BLUE;
-                    match ctx.draw_clear_frame(color.as_array()) {
+                    match ctx.draw_frame(color.as_array(), &view_proj, &draw_commands) {
                         Ok(needs_recreate) => {
                             if needs_recreate {
                                 if let Some(ref win) = self.window {
@@ -176,8 +240,6 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        // ── Per-frame tick: update time resources, run systems, then render ──
-
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
@@ -186,17 +248,60 @@ impl ApplicationHandler for App {
         world_resource_set::<DeltaTime>(&self.world, |r| r.0 = dt);
         world_resource_set::<TotalTime>(&self.world, |r| r.0 += dt);
 
-        // Run all systems.
+        // Run all systems (spin, stats).
         self.scheduler.run(&self.world, dt);
 
-        // Request redraw to trigger the Vulkan clear pass.
         if let Some(ref win) = self.window {
             win.request_redraw();
         }
     }
 }
 
-/// Helper: mutate a resource through the RwLock via &World.
+/// Build the view-projection matrix and draw command list from ECS queries.
+fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>) {
+    use gamebyro_core::math::Mat4;
+
+    // Get camera view-projection.
+    let view_proj = if let Some(active) = world.try_resource::<ActiveCamera>() {
+        let cam_entity = active.0;
+        drop(active);
+
+        let cam_q = world.query::<Camera>();
+        let transform_q = world.query::<Transform>();
+
+        let vp = match (cam_q, transform_q) {
+            (Some(cq), Some(tq)) => {
+                let cam = cq.get(cam_entity);
+                let t = tq.get(cam_entity);
+                match (cam, t) {
+                    (Some(c), Some(t)) => c.projection_matrix() * Camera::view_matrix(t),
+                    _ => Mat4::IDENTITY,
+                }
+            }
+            _ => Mat4::IDENTITY,
+        };
+        vp.to_cols_array()
+    } else {
+        Mat4::IDENTITY.to_cols_array()
+    };
+
+    // Collect draw commands from entities with (Transform, MeshHandle).
+    let mut draw_commands = Vec::new();
+    if let Some((tq, mq)) = world.query_2_mut::<Transform, MeshHandle>() {
+        // Iterate the smaller set (meshes), look up transforms.
+        for (entity, mesh) in mq.iter() {
+            if let Some(transform) = tq.get(entity) {
+                draw_commands.push(DrawCommand {
+                    mesh_handle: mesh.0,
+                    model_matrix: transform.to_matrix().to_cols_array(),
+                });
+            }
+        }
+    }
+
+    (view_proj, draw_commands)
+}
+
 fn world_resource_set<R: gamebyro_core::ecs::Resource>(
     world: &World,
     f: impl FnOnce(&mut R),

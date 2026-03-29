@@ -111,8 +111,14 @@ pub fn create_triangle_pipeline(
     let dynamic_state =
         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
-    // Empty pipeline layout — no uniforms, no push constants (Phase 1).
-    let layout_info = vk::PipelineLayoutCreateInfo::default();
+    // Push constants: viewProj (mat4) + model (mat4) = 128 bytes.
+    let push_constant_ranges = [vk::PushConstantRange {
+        stage_flags: vk::ShaderStageFlags::VERTEX,
+        offset: 0,
+        size: 128, // 2 * sizeof(mat4)
+    }];
+    let layout_info = vk::PipelineLayoutCreateInfo::default()
+        .push_constant_ranges(&push_constant_ranges);
     let pipeline_layout = unsafe {
         device
             .create_pipeline_layout(&layout_info, None)
