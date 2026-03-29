@@ -226,3 +226,139 @@ impl NiTexturingProperty {
         Ok(Some(TexDesc { source_ref, clamp_mode, filter_mode, uv_set }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::header::NifHeader;
+    use crate::stream::NifStream;
+    use crate::version::NifVersion;
+
+    fn make_header(user_version: u32, user_version_2: u32) -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version,
+            user_version_2,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: vec!["Material".to_string()],
+            max_string_length: 8,
+            num_groups: 0,
+        }
+    }
+
+    fn write_color(buf: &mut Vec<u8>, r: f32, g: f32, b: f32) {
+        buf.extend_from_slice(&r.to_le_bytes());
+        buf.extend_from_slice(&g.to_le_bytes());
+        buf.extend_from_slice(&b.to_le_bytes());
+    }
+
+    /// Build NiMaterialProperty bytes for the classic (Oblivion) format:
+    /// ambient + diffuse + specular + emissive + shininess + alpha.
+    fn build_material_oblivion() -> Vec<u8> {
+        let mut data = Vec::new();
+        // NiObjectNET: name, extra_data count=0, controller=-1
+        data.extend_from_slice(&0i32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // ambient (0.2, 0.2, 0.2)
+        write_color(&mut data, 0.2, 0.2, 0.2);
+        // diffuse (0.8, 0.6, 0.4)
+        write_color(&mut data, 0.8, 0.6, 0.4);
+        // specular
+        write_color(&mut data, 1.0, 1.0, 1.0);
+        // emissive
+        write_color(&mut data, 0.0, 0.0, 0.0);
+        // shininess
+        data.extend_from_slice(&25.0f32.to_le_bytes());
+        // alpha
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data
+    }
+
+    /// Build NiMaterialProperty bytes for the FNV format:
+    /// no ambient/diffuse, + emissive_mult.
+    fn build_material_fnv() -> Vec<u8> {
+        let mut data = Vec::new();
+        // NiObjectNET: name, extra_data count=0, controller=-1
+        data.extend_from_slice(&0i32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // NO ambient, NO diffuse (Bethesda optimization)
+        // specular (0.5, 0.5, 0.5)
+        write_color(&mut data, 0.5, 0.5, 0.5);
+        // emissive (0.1, 0.0, 0.0)
+        write_color(&mut data, 0.1, 0.0, 0.0);
+        // shininess
+        data.extend_from_slice(&10.0f32.to_le_bytes());
+        // alpha
+        data.extend_from_slice(&0.8f32.to_le_bytes());
+        // emissive_mult
+        data.extend_from_slice(&2.5f32.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn parse_material_oblivion_reads_ambient_diffuse() {
+        // Regression: Oblivion (user_version < 11) reads all 4 colors.
+        let header = make_header(0, 0);
+        let data = build_material_oblivion();
+        let mut stream = NifStream::new(&data, &header);
+
+        let mat = NiMaterialProperty::parse(&mut stream).unwrap();
+        assert!((mat.ambient.r - 0.2).abs() < 1e-6);
+        assert!((mat.diffuse.r - 0.8).abs() < 1e-6);
+        assert!((mat.diffuse.g - 0.6).abs() < 1e-6);
+        assert!((mat.shininess - 25.0).abs() < 1e-6);
+        assert!((mat.emissive_mult - 1.0).abs() < 1e-6); // default
+    }
+
+    #[test]
+    fn parse_material_fnv_skips_ambient_diffuse() {
+        // Regression: FNV (user_version=11, user_version_2=34) skips ambient/diffuse.
+        let header = make_header(11, 34);
+        let data = build_material_fnv();
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+
+        let mat = NiMaterialProperty::parse(&mut stream).unwrap();
+        // Ambient and diffuse should be defaults (not read from stream)
+        assert!((mat.ambient.r - 0.5).abs() < 1e-6);
+        assert!((mat.diffuse.r - 0.5).abs() < 1e-6);
+        // Specular should be read from stream
+        assert!((mat.specular.r - 0.5).abs() < 1e-6);
+        assert!((mat.emissive.r - 0.1).abs() < 1e-6);
+        assert!((mat.shininess - 10.0).abs() < 1e-6);
+        assert!((mat.alpha - 0.8).abs() < 1e-6);
+        assert!((mat.emissive_mult - 2.5).abs() < 1e-6);
+        // All bytes consumed
+        assert_eq!(stream.position() as usize, expected_len);
+    }
+
+    #[test]
+    fn parse_material_version_boundary_ambient_diffuse() {
+        // user_version=11, user_version_2=21: condition is > 21, so 21 should still read colors
+        let header = make_header(11, 21);
+        let data = build_material_oblivion();
+        let mut stream = NifStream::new(&data, &header);
+
+        let mat = NiMaterialProperty::parse(&mut stream).unwrap();
+        // Should have read ambient/diffuse from stream (21 is NOT > 21)
+        assert!((mat.ambient.r - 0.2).abs() < 1e-6);
+        assert!((mat.diffuse.r - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_material_version_boundary_emissive_mult() {
+        // user_version_2=26: condition is >= 27, so 26 should NOT read emissive_mult
+        let header = make_header(11, 26);
+        let data = build_material_oblivion(); // no emissive_mult in data
+        let mut stream = NifStream::new(&data, &header);
+
+        let mat = NiMaterialProperty::parse(&mut stream).unwrap();
+        assert!((mat.emissive_mult - 1.0).abs() < 1e-6); // default
+    }
+}

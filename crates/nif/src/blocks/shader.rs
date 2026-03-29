@@ -124,3 +124,92 @@ impl BSShaderTextureSet {
         Ok(Self { textures })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::header::NifHeader;
+    use crate::stream::NifStream;
+    use crate::version::NifVersion;
+
+    fn make_header(user_version: u32, user_version_2: u32) -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version,
+            user_version_2,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: vec!["ShaderProp".to_string()],
+            max_string_length: 10,
+            num_groups: 0,
+        }
+    }
+
+    /// Build bytes for BSShaderPPLightingProperty, optionally including emissive color.
+    fn build_bsshader_bytes(user_version_2: u32) -> Vec<u8> {
+        let mut data = Vec::new();
+        // NiObjectNET: name (string table index 0)
+        data.extend_from_slice(&0i32.to_le_bytes());
+        // extra_data_refs: count=0
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // controller_ref: -1
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // BSShaderProperty: shader_flags (u16)
+        data.extend_from_slice(&0u16.to_le_bytes());
+        // shader_type (u32)
+        data.extend_from_slice(&1u32.to_le_bytes());
+        // shader_flags_1 (u32)
+        data.extend_from_slice(&0x80000000u32.to_le_bytes());
+        // shader_flags_2 (u32)
+        data.extend_from_slice(&0x00000001u32.to_le_bytes());
+        // env_map_scale (f32)
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        // texture_clamp_mode (u32)
+        data.extend_from_slice(&3u32.to_le_bytes());
+        // texture_set_ref (i32)
+        data.extend_from_slice(&5i32.to_le_bytes());
+        // emissive_color (4×f32) — only if user_version_2 >= 34
+        if user_version_2 >= 34 {
+            data.extend_from_slice(&0.1f32.to_le_bytes());
+            data.extend_from_slice(&0.2f32.to_le_bytes());
+            data.extend_from_slice(&0.3f32.to_le_bytes());
+            data.extend_from_slice(&0.9f32.to_le_bytes());
+        }
+        data
+    }
+
+    #[test]
+    fn parse_bsshader_fnv_reads_emissive_color() {
+        // Regression: user_version_2 >= 34 (FNV) must read 4 extra floats for emissive color.
+        let header = make_header(11, 34);
+        let data = build_bsshader_bytes(34);
+        let mut stream = NifStream::new(&data, &header);
+
+        let prop = BSShaderPPLightingProperty::parse(&mut stream).unwrap();
+        assert_eq!(prop.texture_set_ref.index(), Some(5));
+        assert!((prop.emissive_color[0] - 0.1).abs() < 1e-6);
+        assert!((prop.emissive_color[1] - 0.2).abs() < 1e-6);
+        assert!((prop.emissive_color[2] - 0.3).abs() < 1e-6);
+        assert!((prop.emissive_color[3] - 0.9).abs() < 1e-6);
+        // All data consumed: 38 base + 16 emissive = 54 bytes
+        assert_eq!(stream.position(), 54);
+    }
+
+    #[test]
+    fn parse_bsshader_oblivion_no_emissive_color() {
+        // Regression: user_version_2 < 34 must NOT read emissive color.
+        let header = make_header(11, 21);
+        let data = build_bsshader_bytes(21);
+        let mut stream = NifStream::new(&data, &header);
+
+        let prop = BSShaderPPLightingProperty::parse(&mut stream).unwrap();
+        assert_eq!(prop.texture_set_ref.index(), Some(5));
+        // Default emissive color
+        assert_eq!(prop.emissive_color, [0.0, 0.0, 0.0, 1.0]);
+        // Only 38 bytes consumed (no emissive)
+        assert_eq!(stream.position(), 38);
+    }
+}

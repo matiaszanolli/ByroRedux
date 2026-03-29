@@ -602,4 +602,114 @@ mod tests {
         assert!((c.translation.y - 7.0).abs() < 1e-6);
         assert!((c.translation.z - 9.0).abs() < 1e-6);
     }
+
+    // ── Z-up → Y-up coordinate conversion regression tests ─────────
+
+    #[test]
+    fn zup_to_yup_vertex_positions() {
+        // Regression: Gamebryo is Z-up, renderer is Y-up.
+        // Conversion: (x,y,z) → (x, z, -y)
+        // make_tri_shape_data has vertices at (0,0,0), (1,0,0), (0,1,0)
+        // After conversion: (0,0,0), (1,0,0), (0,0,-1)
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+            Box::new(make_ni_node(identity_transform(), vec![BlockRef(1)])),
+            Box::new(make_ni_tri_shape("Test", identity_transform(), 2, Vec::new())),
+            Box::new(make_tri_shape_data()),
+        ];
+        let scene = scene_from_blocks(blocks);
+        let meshes = import_nif(&scene);
+        let m = &meshes[0];
+
+        assert_eq!(m.positions[0], [0.0, 0.0, 0.0]);
+        assert_eq!(m.positions[1], [1.0, 0.0, 0.0]);
+        assert_eq!(m.positions[2], [0.0, 0.0, -1.0]); // Z-up (0,1,0) → Y-up (0,0,-1)
+    }
+
+    #[test]
+    fn zup_to_yup_vertex_normals() {
+        // make_tri_shape_data normals are all (0,0,1) in Z-up
+        // After conversion: (0, 1, 0) — pointing up in Y-up
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+            Box::new(make_ni_node(identity_transform(), vec![BlockRef(1)])),
+            Box::new(make_ni_tri_shape("Test", identity_transform(), 2, Vec::new())),
+            Box::new(make_tri_shape_data()),
+        ];
+        let scene = scene_from_blocks(blocks);
+        let meshes = import_nif(&scene);
+
+        for n in &meshes[0].normals {
+            assert_eq!(*n, [0.0, 1.0, 0.0]); // Z-up (0,0,1) → Y-up (0,1,0)
+        }
+    }
+
+    #[test]
+    fn zup_to_yup_translation() {
+        // A node translated along NIF-Z (up) should become Y (up) in renderer.
+        // NIF translation (0, 0, 5) → Y-up (0, 5, 0)
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+            Box::new(make_ni_node(translated(0.0, 0.0, 5.0), vec![BlockRef(1)])),
+            Box::new(make_ni_tri_shape("Up", identity_transform(), 2, Vec::new())),
+            Box::new(make_tri_shape_data()),
+        ];
+        let scene = scene_from_blocks(blocks);
+        let meshes = import_nif(&scene);
+
+        assert!((meshes[0].translation[0]).abs() < 1e-6);       // X unchanged
+        assert!((meshes[0].translation[1] - 5.0).abs() < 1e-6); // Z→Y
+        assert!((meshes[0].translation[2]).abs() < 1e-6);        // Y→-Z (was 0)
+    }
+
+    #[test]
+    fn zup_to_yup_translation_forward() {
+        // NIF Y-axis (forward in Z-up) maps to -Z in Y-up.
+        // NIF translation (0, 7, 0) → Y-up (0, 0, -7)
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+            Box::new(make_ni_node(translated(0.0, 7.0, 0.0), vec![BlockRef(1)])),
+            Box::new(make_ni_tri_shape("Fwd", identity_transform(), 2, Vec::new())),
+            Box::new(make_tri_shape_data()),
+        ];
+        let scene = scene_from_blocks(blocks);
+        let meshes = import_nif(&scene);
+
+        assert!((meshes[0].translation[0]).abs() < 1e-6);
+        assert!((meshes[0].translation[1]).abs() < 1e-6);
+        assert!((meshes[0].translation[2] - -7.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn zup_to_yup_identity_rotation_stays_identity() {
+        // An identity rotation in NIF space should remain identity after conversion.
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+            Box::new(make_ni_node(identity_transform(), vec![BlockRef(1)])),
+            Box::new(make_ni_tri_shape("Id", identity_transform(), 2, Vec::new())),
+            Box::new(make_tri_shape_data()),
+        ];
+        let scene = scene_from_blocks(blocks);
+        let meshes = import_nif(&scene);
+
+        let r = &meshes[0].rotation;
+        assert!((r[0][0] - 1.0).abs() < 1e-6);
+        assert!((r[1][1] - 1.0).abs() < 1e-6);
+        assert!((r[2][2] - 1.0).abs() < 1e-6);
+        // Off-diagonals near zero
+        assert!(r[0][1].abs() < 1e-6);
+        assert!(r[0][2].abs() < 1e-6);
+        assert!(r[1][0].abs() < 1e-6);
+    }
+
+    #[test]
+    fn zup_to_yup_winding_order_preserved() {
+        // The Z→Y conversion is a proper rotation (det=+1), not a reflection,
+        // so triangle winding order must stay the same.
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+            Box::new(make_ni_node(identity_transform(), vec![BlockRef(1)])),
+            Box::new(make_ni_tri_shape("Wind", identity_transform(), 2, Vec::new())),
+            Box::new(make_tri_shape_data()),
+        ];
+        let scene = scene_from_blocks(blocks);
+        let meshes = import_nif(&scene);
+
+        // Original triangle: [0, 1, 2] — winding must be preserved
+        assert_eq!(meshes[0].indices, vec![0, 1, 2]);
+    }
 }

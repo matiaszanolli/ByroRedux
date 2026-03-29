@@ -358,4 +358,58 @@ mod tests {
         stream.skip(25);
         assert_eq!(stream.position(), 75);
     }
+
+    #[test]
+    fn read_ni_transform_translation_before_rotation() {
+        // Regression: NiTransform serialization order is translation, rotation, scale
+        // (matches Gamebryo 2.3 NiAVObject::LoadBinary). A previous bug read rotation first.
+        let header = test_header(NifVersion::V20_2_0_7);
+        let mut data = Vec::new();
+        // Translation: (10.0, 20.0, 30.0)
+        data.extend_from_slice(&10.0f32.to_le_bytes());
+        data.extend_from_slice(&20.0f32.to_le_bytes());
+        data.extend_from_slice(&30.0f32.to_le_bytes());
+        // Rotation: identity
+        for v in &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0f32] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // Scale: 2.5
+        data.extend_from_slice(&2.5f32.to_le_bytes());
+
+        let mut stream = NifStream::new(&data, &header);
+        let t = stream.read_ni_transform().unwrap();
+
+        assert_eq!(t.translation.x, 10.0);
+        assert_eq!(t.translation.y, 20.0);
+        assert_eq!(t.translation.z, 30.0);
+        assert_eq!(t.rotation.rows[0], [1.0, 0.0, 0.0]);
+        assert_eq!(t.rotation.rows[1], [0.0, 1.0, 0.0]);
+        assert_eq!(t.rotation.rows[2], [0.0, 0.0, 1.0]);
+        assert_eq!(t.scale, 2.5);
+        // 3 + 9 + 1 = 13 floats = 52 bytes
+        assert_eq!(stream.position(), 52);
+    }
+
+    #[test]
+    fn read_ni_transform_non_identity_rotation() {
+        // Regression: ensure a non-trivial rotation doesn't get mixed up with translation.
+        let header = test_header(NifVersion::V20_2_0_7);
+        let mut data = Vec::new();
+        // Translation: (0, 0, 0)
+        for _ in 0..3 { data.extend_from_slice(&0.0f32.to_le_bytes()); }
+        // Rotation: 90° around Z (in row-major): [[0,-1,0],[1,0,0],[0,0,1]]
+        for v in &[0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0f32] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // Scale: 1.0
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+
+        let mut stream = NifStream::new(&data, &header);
+        let t = stream.read_ni_transform().unwrap();
+
+        assert_eq!(t.translation.x, 0.0);
+        assert_eq!(t.rotation.rows[0], [0.0, -1.0, 0.0]);
+        assert_eq!(t.rotation.rows[1], [1.0, 0.0, 0.0]);
+        assert_eq!(t.scale, 1.0);
+    }
 }
