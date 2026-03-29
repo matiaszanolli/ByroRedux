@@ -49,7 +49,14 @@ pub fn parse_nif(data: &[u8]) -> io::Result<NifScene> {
         let block_size = header.block_sizes.get(i).copied();
         let start_pos = stream.position();
 
-        let block = parse_block(type_name, &mut stream, block_size)?;
+        let block = parse_block(type_name, &mut stream, block_size)
+            .map_err(|e| {
+                let consumed = stream.position() - start_pos;
+                io::Error::new(e.kind(), format!(
+                    "block {} '{}' (size {:?}, offset {}, consumed {}): {}",
+                    i, type_name, block_size, start_pos, consumed, e
+                ))
+            })?;
 
         // Verify we consumed exactly block_size bytes (if known)
         if let Some(size) = block_size {
@@ -256,5 +263,69 @@ mod tests {
         // Block 0 is NiNode, not NiTriShape
         let result = scene.get_as::<blocks::tri_shape::NiTriShape>(0);
         assert!(result.is_none());
+    }
+
+    /// Parse a real Fallout: New Vegas NIF file (beer bottle).
+    ///
+    /// Requires /tmp/test_fnv_bottle.nif to be present — these are real game
+    /// assets that can't be committed to the repo.
+    #[test]
+    #[ignore]
+    fn parse_real_fnv_bottle() {
+        let path = std::path::Path::new("/tmp/test_fnv_bottle.nif");
+        if !path.exists() {
+            eprintln!("Skipping: {path:?} not found");
+            return;
+        }
+        let data = std::fs::read(path).unwrap();
+        let scene = parse_nif(&data).expect("parse_nif should succeed on FNV bottle");
+
+        assert_eq!(scene.len(), 12, "FNV bottle should have 12 blocks");
+
+        let meshes = import::import_nif(&scene);
+        assert!(!meshes.is_empty(), "should import at least one mesh from bottle");
+
+        let m = &meshes[0];
+        assert!(!m.positions.is_empty(), "mesh should have vertices");
+        assert!(!m.indices.is_empty(), "mesh should have indices");
+        eprintln!("Bottle mesh: {} verts, {} indices, texture={:?}",
+            m.positions.len(), m.indices.len(), m.texture_path);
+    }
+
+    /// Parse a real Fallout: New Vegas NIF file (deathclaw sign).
+    #[test]
+    #[ignore]
+    fn parse_real_fnv_sign() {
+        let path = std::path::Path::new("/tmp/test_fnv.nif");
+        if !path.exists() {
+            eprintln!("Skipping: {path:?} not found");
+            return;
+        }
+        let data = std::fs::read(path).unwrap();
+        let scene = parse_nif(&data).expect("parse_nif should succeed on FNV sign");
+
+        assert_eq!(scene.len(), 18, "FNV sign should have 18 blocks");
+
+        let meshes = import::import_nif(&scene);
+        assert!(!meshes.is_empty(), "should import at least one mesh from sign");
+        eprintln!("Sign: {} meshes imported", meshes.len());
+    }
+
+    /// Parse a real Fallout: New Vegas NIF file (cave rock).
+    #[test]
+    #[ignore]
+    fn parse_real_fnv_rock() {
+        let path = std::path::Path::new("/tmp/test_fnv_rock.nif");
+        if !path.exists() {
+            eprintln!("Skipping: {path:?} not found");
+            return;
+        }
+        let data = std::fs::read(path).unwrap();
+        let scene = parse_nif(&data).expect("parse_nif should succeed on FNV rock");
+
+        let meshes = import::import_nif(&scene);
+        assert!(!meshes.is_empty(), "should import at least one mesh from rock");
+        eprintln!("Rock: {} meshes, first has {} verts",
+            meshes.len(), meshes[0].positions.len());
     }
 }

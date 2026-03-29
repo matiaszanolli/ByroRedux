@@ -38,7 +38,7 @@ impl NiExtraData {
 
         match type_name {
             "NiStringExtraData" => {
-                string_value = Some(stream.read_sized_string()?);
+                string_value = stream.read_string()?;
             }
             "NiIntegerExtraData" | "BSXFlags" => {
                 integer_value = Some(stream.read_u32_le()?);

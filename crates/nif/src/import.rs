@@ -9,8 +9,9 @@
 
 use crate::blocks::node::NiNode;
 use crate::blocks::properties::{NiMaterialProperty, NiTexturingProperty};
+use crate::blocks::shader::{BSShaderPPLightingProperty, BSShaderTextureSet};
 use crate::blocks::texture::NiSourceTexture;
-use crate::blocks::tri_shape::{NiTriShape, NiTriShapeData};
+use crate::blocks::tri_shape::{NiTriShape, NiTriShapeData, NiTriStripsData};
 use crate::scene::NifScene;
 use crate::types::{NiMatrix3, NiPoint3, NiTransform};
 
@@ -74,7 +75,8 @@ fn walk_node(
         return;
     }
 
-    // Try as NiTriShape (geometry leaf)
+    // Try as NiTriShape or NiTriStrips (geometry leaf).
+    // NiTriStrips is a type alias for NiTriShape, so both downcast to NiTriShape.
     if let Some(shape) = block.as_any().downcast_ref::<NiTriShape>() {
         let world_transform = compose_transforms(parent_transform, &shape.transform);
 
@@ -84,37 +86,66 @@ fn walk_node(
     }
 }
 
+/// Intermediate geometry data extracted from either NiTriShapeData or NiTriStripsData.
+#[allow(dead_code)]
+struct GeomData<'a> {
+    vertices: &'a [NiPoint3],
+    normals: &'a [NiPoint3],
+    vertex_colors: &'a [[f32; 4]],
+    uv_sets: &'a [Vec<[f32; 2]>],
+    triangles: Vec<[u16; 3]>,
+}
+
 /// Extract an ImportedMesh from an NiTriShape and its referenced data block.
 fn extract_mesh(
     scene: &NifScene,
     shape: &NiTriShape,
     world_transform: &NiTransform,
 ) -> Option<ImportedMesh> {
-    // Resolve the geometry data block
     let data_idx = shape.data_ref.index()?;
-    let data = scene.get_as::<NiTriShapeData>(data_idx)?;
 
-    if data.vertices.is_empty() || data.triangles.is_empty() {
+    // Try NiTriShapeData first, then NiTriStripsData
+    let geom = if let Some(data) = scene.get_as::<NiTriShapeData>(data_idx) {
+        GeomData {
+            vertices: &data.vertices,
+            normals: &data.normals,
+            vertex_colors: &data.vertex_colors,
+            uv_sets: &data.uv_sets,
+            triangles: data.triangles.clone(),
+        }
+    } else if let Some(data) = scene.get_as::<NiTriStripsData>(data_idx) {
+        GeomData {
+            vertices: &data.vertices,
+            normals: &data.normals,
+            vertex_colors: &data.vertex_colors,
+            uv_sets: &data.uv_sets,
+            triangles: data.to_triangles(),
+        }
+    } else {
+        return None;
+    };
+
+    if geom.vertices.is_empty() || geom.triangles.is_empty() {
         return None;
     }
 
     // Convert positions
-    let positions: Vec<[f32; 3]> = data.vertices.iter()
+    let positions: Vec<[f32; 3]> = geom.vertices.iter()
         .map(|v| [v.x, v.y, v.z])
         .collect();
 
     // Convert indices (u16 → u32)
-    let indices: Vec<u32> = data.triangles.iter()
+    let indices: Vec<u32> = geom.triangles.iter()
         .flat_map(|tri| [tri[0] as u32, tri[1] as u32, tri[2] as u32])
         .collect();
 
     // Get UVs from first UV set (if available)
-    let uvs = data.uv_sets.first()
+    let uvs = geom.uv_sets.first()
         .cloned()
         .unwrap_or_default();
 
     // Determine vertex colors: prefer per-vertex colors, then material diffuse, then white
-    let (colors, texture_path) = extract_material(scene, shape, &data);
+    let (colors, texture_path) = extract_material(scene, shape, &geom);
 
     Some(ImportedMesh {
         positions,
@@ -137,7 +168,7 @@ fn extract_mesh(
 fn extract_material(
     scene: &NifScene,
     shape: &NiTriShape,
-    data: &NiTriShapeData,
+    data: &GeomData,
 ) -> (Vec<[f32; 3]>, Option<String>) {
     let num_verts = data.vertices.len();
 
@@ -167,14 +198,38 @@ fn extract_material(
 }
 
 /// Walk the shape's properties to find the base texture filename.
+///
+/// Checks NiTexturingProperty → NiSourceTexture (Gamebryo path) and
+/// BSShaderPPLightingProperty → BSShaderTextureSet (Bethesda FO3/FNV path).
 fn find_texture_path(scene: &NifScene, shape: &NiTriShape) -> Option<String> {
     for prop_ref in &shape.properties {
-        let idx = prop_ref.index()?;
+        let idx = match prop_ref.index() {
+            Some(i) => i,
+            None => continue,
+        };
+
+        // Gamebryo path: NiTexturingProperty → NiSourceTexture
         if let Some(tex_prop) = scene.get_as::<NiTexturingProperty>(idx) {
             if let Some(ref base) = tex_prop.base_texture {
                 if let Some(src_idx) = base.source_ref.index() {
                     if let Some(src_tex) = scene.get_as::<NiSourceTexture>(src_idx) {
-                        return src_tex.filename.clone();
+                        if src_tex.filename.is_some() {
+                            return src_tex.filename.clone();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Bethesda path: BSShaderPPLightingProperty → BSShaderTextureSet
+        if let Some(shader_prop) = scene.get_as::<BSShaderPPLightingProperty>(idx) {
+            if let Some(ts_idx) = shader_prop.texture_set_ref.index() {
+                if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
+                    // textures[0] is the diffuse texture
+                    if let Some(path) = tex_set.textures.first() {
+                        if !path.is_empty() {
+                            return Some(path.clone());
+                        }
                     }
                 }
             }
@@ -302,6 +357,8 @@ mod tests {
             skin_instance_ref: BlockRef::NULL,
             shader_property_ref: BlockRef::NULL,
             alpha_property_ref: BlockRef::NULL,
+            num_materials: 0,
+            active_material_index: 0,
         }
     }
 
@@ -450,7 +507,6 @@ mod tests {
             name: None,
             extra_data_refs: Vec::new(),
             controller_ref: BlockRef::NULL,
-            flags: 0,
             ambient: NiColor { r: 0.2, g: 0.2, b: 0.2 },
             diffuse: NiColor { r: 0.8, g: 0.4, b: 0.2 },
             specular: NiColor::default(),

@@ -27,6 +27,14 @@ impl<'a> NifStream<'a> {
         self.header.version
     }
 
+    pub fn user_version(&self) -> u32 {
+        self.header.user_version
+    }
+
+    pub fn user_version_2(&self) -> u32 {
+        self.header.user_version_2
+    }
+
     pub fn position(&self) -> u64 {
         self.cursor.position()
     }
@@ -72,14 +80,24 @@ impl<'a> NifStream<'a> {
         Ok(f32::from_le_bytes(buf))
     }
 
+    /// Read a NiBool (version-dependent size).
+    /// Post-Oblivion (>= 20.2.0.7): u32. Pre-Oblivion: u8.
+    /// Used for NiNode children, NiTriBasedGeom, etc.
     pub fn read_bool(&mut self) -> io::Result<bool> {
         if self.header.version >= NifVersion::V20_2_0_7 {
-            // Post-Oblivion: bools are u32
+            // Post-Oblivion: NiBool is u32
             Ok(self.read_u32_le()? != 0)
         } else {
-            // Pre-Oblivion: bools are u8
+            // Pre-Oblivion: NiBool is u8
             Ok(self.read_u8()? != 0)
         }
+    }
+
+    /// Read a 1-byte boolean (`bool` type in niftools, NOT `NiBool`).
+    /// NiGeometryData and related blocks use 1-byte bools for
+    /// has_vertices, has_normals, has_colors, etc. in all versions.
+    pub fn read_byte_bool(&mut self) -> io::Result<bool> {
+        Ok(self.read_u8()? != 0)
     }
 
     pub fn read_bytes(&mut self, len: usize) -> io::Result<Vec<u8>> {

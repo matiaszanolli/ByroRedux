@@ -11,7 +11,10 @@ use super::NiObject;
 use std::any::Any;
 use std::io;
 
-/// Geometry leaf node referencing NiTriShapeData.
+/// Geometry leaf node referencing NiTriShapeData or NiTriStripsData.
+///
+/// This struct is used for both NiTriShape and NiTriStrips — they have
+/// identical serialization (both inherit NiGeometry).
 #[derive(Debug)]
 pub struct NiTriShape {
     pub name: Option<String>,
@@ -23,8 +26,13 @@ pub struct NiTriShape {
     pub collision_ref: BlockRef,
     pub data_ref: BlockRef,
     pub skin_instance_ref: BlockRef,
+    /// Skyrim+ (user_version_2 >= 130): dedicated shader property ref.
     pub shader_property_ref: BlockRef,
+    /// Skyrim+ (user_version_2 >= 130): dedicated alpha property ref.
     pub alpha_property_ref: BlockRef,
+    /// Material names from NiGeometry material array (pre-Skyrim SSE).
+    pub num_materials: u32,
+    pub active_material_index: u32,
 }
 
 impl NiObject for NiTriShape {
@@ -45,7 +53,7 @@ impl NiTriShape {
         let controller_ref = stream.read_block_ref()?;
 
         // NiAVObject fields
-        let flags = if stream.version() >= crate::version::NifVersion::V20_2_0_7 {
+        let flags = if stream.version() >= NifVersion::V20_2_0_7 {
             stream.read_u32_le()?
         } else {
             stream.read_u16_le()? as u32
@@ -58,17 +66,39 @@ impl NiTriShape {
         let data_ref = stream.read_block_ref()?;
         let skin_instance_ref = stream.read_block_ref()?;
 
-        // Shader property refs (version >= 20.2.0.7 with BS version)
-        let shader_property_ref = if stream.version() >= crate::version::NifVersion::V20_2_0_7 {
-            stream.read_block_ref()?
+        let mut shader_property_ref = BlockRef::NULL;
+        let mut alpha_property_ref = BlockRef::NULL;
+        let mut num_materials = 0u32;
+        let mut active_material_index = 0u32;
+
+        if stream.version() >= NifVersion(0x14020005) {
+            // v20.2.0.5+ : material array format
+            num_materials = stream.read_u32_le()?;
+            for _ in 0..num_materials {
+                let _mat_name_idx = stream.read_u32_le()?;  // string table index
+                let _mat_extra_data = stream.read_u32_le()?;
+            }
+            active_material_index = stream.read_u32_le()?;
+
+            if stream.version() >= NifVersion::V20_2_0_7 {
+                // Material needs update default flag.
+                // Bethesda serializes this as u8 (not NiBool u32).
+                let _dirty_flag = stream.read_u8()?;
+            }
+
+            // Skyrim SSE+ (user_version_2 >= 130): dedicated shader/alpha property refs
+            if stream.user_version_2() >= 130 {
+                shader_property_ref = stream.read_block_ref()?;
+                alpha_property_ref = stream.read_block_ref()?;
+            }
         } else {
-            BlockRef::NULL
-        };
-        let alpha_property_ref = if stream.version() >= crate::version::NifVersion::V20_2_0_7 {
-            stream.read_block_ref()?
-        } else {
-            BlockRef::NULL
-        };
+            // Pre-20.2.0.5: hasShader format
+            let has_shader = stream.read_bool()?;
+            if has_shader {
+                let _shader_name = stream.read_sized_string()?;
+                let _implementation = stream.read_u32_le()?;
+            }
+        }
 
         Ok(Self {
             name,
@@ -82,9 +112,14 @@ impl NiTriShape {
             skin_instance_ref,
             shader_property_ref,
             alpha_property_ref,
+            num_materials,
+            active_material_index,
         })
     }
 }
+
+/// NiTriStrips — identical serialization to NiTriShape (both are NiGeometry).
+pub type NiTriStrips = NiTriShape;
 
 /// The actual geometry data: vertices, normals, UVs, and triangle indices.
 #[derive(Debug)]
@@ -108,108 +143,113 @@ impl NiObject for NiTriShapeData {
     }
 }
 
+/// Parse the NiGeometryData base class fields shared by NiTriShapeData and NiTriStripsData.
+/// Returns (vertices, data_flags, normals, center, radius, vertex_colors, uv_sets).
+fn parse_geometry_data_base(stream: &mut NifStream) -> io::Result<(
+    Vec<NiPoint3>,   // vertices
+    u16,             // data_flags
+    Vec<NiPoint3>,   // normals
+    NiPoint3,        // center
+    f32,             // radius
+    Vec<[f32; 4]>,   // vertex_colors
+    Vec<Vec<[f32; 2]>>, // uv_sets
+)> {
+    let _group_id = stream.read_i32_le()?; // usually 0
+    let num_vertices = stream.read_u16_le()? as usize;
+    let _keep_flags = stream.read_u8()?;
+    let _compress_flags = stream.read_u8()?;
+
+    let has_vertices = stream.read_byte_bool()?;
+    let vertices = if has_vertices {
+        let mut verts = Vec::with_capacity(num_vertices);
+        for _ in 0..num_vertices {
+            verts.push(stream.read_ni_point3()?);
+        }
+        verts
+    } else {
+        Vec::new()
+    };
+
+    // u16 dataFlags is always present in NiGeometryData.
+    // Bethesda extensions (material CRC) only exist in Skyrim+ (user_version >= 12).
+    let data_flags = stream.read_u16_le()?;
+    if stream.user_version() >= 12 {
+        let _material_crc = stream.read_u32_le()?;
+    }
+
+    let has_normals = stream.read_byte_bool()?;
+    let normals = if has_normals {
+        let mut norms = Vec::with_capacity(num_vertices);
+        for _ in 0..num_vertices {
+            norms.push(stream.read_ni_point3()?);
+        }
+        norms
+    } else {
+        Vec::new()
+    };
+
+    // Tangents + bitangents (if has_normals and dataFlags bit 12 set = NBT method)
+    if has_normals && data_flags & 0xF000 != 0 {
+        // Skip tangents (num_vertices * 3 floats)
+        stream.skip(num_vertices as u64 * 12);
+        // Skip bitangents (num_vertices * 3 floats)
+        stream.skip(num_vertices as u64 * 12);
+    }
+
+    // Bounding sphere
+    let center = stream.read_ni_point3()?;
+    let radius = stream.read_f32_le()?;
+
+    // Vertex colors
+    let has_vertex_colors = stream.read_byte_bool()?;
+    let vertex_colors = if has_vertex_colors {
+        let mut colors = Vec::with_capacity(num_vertices);
+        for _ in 0..num_vertices {
+            let r = stream.read_f32_le()?;
+            let g = stream.read_f32_le()?;
+            let b = stream.read_f32_le()?;
+            let a = stream.read_f32_le()?;
+            colors.push([r, g, b, a]);
+        }
+        colors
+    } else {
+        Vec::new()
+    };
+
+    // UV sets: count is packed in dataFlags bits [0..5]
+    let num_uv_sets = (data_flags & 0x003F) as usize;
+    let mut uv_sets = Vec::with_capacity(num_uv_sets);
+    for _ in 0..num_uv_sets {
+        let mut uvs = Vec::with_capacity(num_vertices);
+        for _ in 0..num_vertices {
+            let u = stream.read_f32_le()?;
+            let v = stream.read_f32_le()?;
+            uvs.push([u, v]);
+        }
+        uv_sets.push(uvs);
+    }
+
+    // Consistency flags
+    let _consistency_flags = stream.read_u16_le()?;
+
+    // Additional data (version >= 20.0.0.4)
+    if stream.version() >= NifVersion(0x14000004) {
+        let _additional_data_ref = stream.read_block_ref()?;
+    }
+
+    Ok((vertices, data_flags, normals, center, radius, vertex_colors, uv_sets))
+}
+
 impl NiTriShapeData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // NiGeometryData base
-        let _group_id = stream.read_i32_le()?; // usually 0
-        let num_vertices = stream.read_u16_le()? as usize;
-        let _keep_flags = stream.read_u8()?;
-        let _compress_flags = stream.read_u8()?;
-
-        let has_vertices = stream.read_bool()?;
-        let vertices = if has_vertices {
-            let mut verts = Vec::with_capacity(num_vertices);
-            for _ in 0..num_vertices {
-                verts.push(stream.read_ni_point3()?);
-            }
-            verts
-        } else {
-            Vec::new()
-        };
-
-        // BS-specific vector flags (version >= 20.2.0.7 with user_version >= 12)
-        // We read them but don't use them yet
-        let bs_vector_flags = if stream.version() >= crate::version::NifVersion::V20_2_0_7 {
-            stream.read_u16_le()?
-        } else {
-            0
-        };
-        let _material_crc = if stream.version() >= crate::version::NifVersion::V20_2_0_7 {
-            stream.read_u32_le()?
-        } else {
-            0
-        };
-
-        let has_normals = stream.read_bool()?;
-        let normals = if has_normals {
-            let mut norms = Vec::with_capacity(num_vertices);
-            for _ in 0..num_vertices {
-                norms.push(stream.read_ni_point3()?);
-            }
-            norms
-        } else {
-            Vec::new()
-        };
-
-        // Tangents + bitangents (if has_normals and BS vector flags indicate)
-        if has_normals && bs_vector_flags & 0x1000 != 0 {
-            // Skip tangents (num_vertices * 3 floats)
-            stream.skip(num_vertices as u64 * 12);
-            // Skip bitangents (num_vertices * 3 floats)
-            stream.skip(num_vertices as u64 * 12);
-        }
-
-        // Bounding sphere
-        let center = stream.read_ni_point3()?;
-        let radius = stream.read_f32_le()?;
-
-        // Vertex colors
-        let has_vertex_colors = stream.read_bool()?;
-        let vertex_colors = if has_vertex_colors {
-            let mut colors = Vec::with_capacity(num_vertices);
-            for _ in 0..num_vertices {
-                let r = stream.read_f32_le()?;
-                let g = stream.read_f32_le()?;
-                let b = stream.read_f32_le()?;
-                let a = stream.read_f32_le()?;
-                colors.push([r, g, b, a]);
-            }
-            colors
-        } else {
-            Vec::new()
-        };
-
-        // UV sets
-        let num_uv_sets = if stream.version() >= crate::version::NifVersion::V20_2_0_7 {
-            (bs_vector_flags & 0x003F) as usize // packed in vector flags
-        } else {
-            // Older: read from data flags field (already skipped, default 1)
-            if has_vertices { 1 } else { 0 }
-        };
-        let mut uv_sets = Vec::with_capacity(num_uv_sets);
-        for _ in 0..num_uv_sets {
-            let mut uvs = Vec::with_capacity(num_vertices);
-            for _ in 0..num_vertices {
-                let u = stream.read_f32_le()?;
-                let v = stream.read_f32_le()?;
-                uvs.push([u, v]);
-            }
-            uv_sets.push(uvs);
-        }
-
-        // Consistency flags
-        let _consistency_flags = stream.read_u16_le()?;
-
-        // Additional data (version >= 20.0.0.4)
-        if stream.version() >= NifVersion(0x14000004) {
-            let _additional_data_ref = stream.read_block_ref()?;
-        }
+        let (vertices, _data_flags, normals, center, radius, vertex_colors, uv_sets) =
+            parse_geometry_data_base(stream)?;
 
         // NiTriShapeData specific: triangles
         let num_triangles = stream.read_u16_le()? as usize;
         let _num_triangle_points = stream.read_u32_le()?; // num_triangles * 3
 
-        let has_triangles = stream.read_bool()?;
+        let has_triangles = stream.read_byte_bool()?;
         let triangles = if has_triangles {
             let mut tris = Vec::with_capacity(num_triangles);
             for _ in 0..num_triangles {
@@ -239,5 +279,93 @@ impl NiTriShapeData {
             uv_sets,
             triangles,
         })
+    }
+}
+
+/// Triangle strip geometry data (NiTriStripsData).
+///
+/// Same NiGeometryData base as NiTriShapeData, but stores triangle strips
+/// instead of a flat triangle index list.
+#[derive(Debug)]
+pub struct NiTriStripsData {
+    pub vertices: Vec<NiPoint3>,
+    pub normals: Vec<NiPoint3>,
+    pub center: NiPoint3,
+    pub radius: f32,
+    pub vertex_colors: Vec<[f32; 4]>,
+    pub uv_sets: Vec<Vec<[f32; 2]>>,
+    pub num_triangles: u16,
+    pub strips: Vec<Vec<u16>>,
+}
+
+impl NiObject for NiTriStripsData {
+    fn block_type_name(&self) -> &'static str {
+        "NiTriStripsData"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiTriStripsData {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let (vertices, _data_flags, normals, center, radius, vertex_colors, uv_sets) =
+            parse_geometry_data_base(stream)?;
+
+        // NiTriBasedGeomData: num_triangles
+        let num_triangles = stream.read_u16_le()?;
+
+        // NiTriStripsData specific
+        let num_strips = stream.read_u16_le()? as usize;
+        let mut strip_lengths = Vec::with_capacity(num_strips);
+        for _ in 0..num_strips {
+            strip_lengths.push(stream.read_u16_le()?);
+        }
+
+        let has_strips = stream.read_byte_bool()?;
+        let mut strips = Vec::with_capacity(num_strips);
+        if has_strips {
+            for &len in &strip_lengths {
+                let mut strip = Vec::with_capacity(len as usize);
+                for _ in 0..len {
+                    strip.push(stream.read_u16_le()?);
+                }
+                strips.push(strip);
+            }
+        }
+
+        Ok(Self {
+            vertices,
+            normals,
+            center,
+            radius,
+            vertex_colors,
+            uv_sets,
+            num_triangles,
+            strips,
+        })
+    }
+
+    /// Convert triangle strips to a flat triangle list.
+    ///
+    /// Handles winding order alternation and skips degenerate triangles
+    /// (used for strip stitching).
+    pub fn to_triangles(&self) -> Vec<[u16; 3]> {
+        let mut triangles = Vec::new();
+        for strip in &self.strips {
+            for i in 2..strip.len() {
+                let (a, b, c) = if i % 2 == 0 {
+                    (strip[i - 2], strip[i - 1], strip[i])
+                } else {
+                    (strip[i - 1], strip[i - 2], strip[i]) // flip winding
+                };
+                // Skip degenerate triangles (strip stitching)
+                if a != b && b != c && a != c {
+                    triangles.push([a, b, c]);
+                }
+            }
+        }
+        triangles
     }
 }

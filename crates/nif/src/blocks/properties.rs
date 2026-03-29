@@ -15,7 +15,6 @@ pub struct NiMaterialProperty {
     pub name: Option<String>,
     pub extra_data_refs: Vec<BlockRef>,
     pub controller_ref: BlockRef,
-    pub flags: u16,
     pub ambient: NiColor,
     pub diffuse: NiColor,
     pub specular: NiColor,
@@ -41,8 +40,7 @@ impl NiMaterialProperty {
         let extra_data_refs = stream.read_block_ref_list()?;
         let controller_ref = stream.read_block_ref()?;
 
-        // NiProperty
-        let flags = stream.read_u16_le()?;
+        // NiProperty::LoadBinary reads NOTHING — pure pass-through to NiObjectNET.
 
         // NiMaterialProperty
         let ambient = stream.read_ni_color()?;
@@ -56,7 +54,6 @@ impl NiMaterialProperty {
             name,
             extra_data_refs,
             controller_ref,
-            flags,
             ambient,
             diffuse,
             specular,

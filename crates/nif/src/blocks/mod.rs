@@ -10,14 +10,16 @@ pub mod properties;
 pub mod texture;
 pub mod extra_data;
 pub mod controller;
+pub mod shader;
 
 use crate::stream::NifStream;
 use node::NiNode;
-use tri_shape::{NiTriShape, NiTriShapeData};
+use tri_shape::{NiTriShape, NiTriShapeData, NiTriStripsData};
 use properties::{NiMaterialProperty, NiAlphaProperty, NiTexturingProperty};
 use texture::NiSourceTexture;
 use extra_data::NiExtraData;
 use controller::NiTimeController;
+use shader::{BSShaderPPLightingProperty, BSShaderTextureSet};
 use std::any::Any;
 use std::fmt::Debug;
 use std::io;
@@ -57,11 +59,20 @@ pub fn parse_block(
         "NiNode" | "BSFadeNode" | "BSLeafAnimNode" | "BSTreeNode" => {
             Ok(Box::new(NiNode::parse(stream)?))
         }
-        "NiTriShape" | "BSTriShape" => {
+        "NiTriShape" | "BSTriShape" | "NiTriStrips" => {
             Ok(Box::new(NiTriShape::parse(stream)?))
         }
         "NiTriShapeData" => {
             Ok(Box::new(NiTriShapeData::parse(stream)?))
+        }
+        "NiTriStripsData" => {
+            Ok(Box::new(NiTriStripsData::parse(stream)?))
+        }
+        "BSShaderPPLightingProperty" | "BSShaderNoLightingProperty" => {
+            Ok(Box::new(BSShaderPPLightingProperty::parse(stream)?))
+        }
+        "BSShaderTextureSet" => {
+            Ok(Box::new(BSShaderTextureSet::parse(stream)?))
         }
         "NiMaterialProperty" => {
             Ok(Box::new(NiMaterialProperty::parse(stream)?))
