@@ -44,9 +44,8 @@ impl NiMaterialProperty {
 
         // NiProperty::LoadBinary reads NOTHING — pure pass-through to NiObjectNET.
 
-        // Bethesda optimization (FO3/FNV+): ambient and diffuse are omitted from
-        // the binary format when user_version >= 11 && user_version_2 > 21.
-        let bethesda_compact = stream.user_version() >= 11 && stream.user_version_2() > 21;
+        // Bethesda optimization (FO3/FNV+): ambient and diffuse are omitted.
+        let bethesda_compact = stream.variant().compact_material();
 
         let ambient = if bethesda_compact {
             NiColor { r: 0.5, g: 0.5, b: 0.5 }
@@ -64,8 +63,8 @@ impl NiMaterialProperty {
         let shininess = stream.read_f32_le()?;
         let alpha = stream.read_f32_le()?;
 
-        // Emissive multiplier — Bethesda extension (FO3/FNV+, user_version_2 >= 27).
-        let emissive_mult = if stream.user_version_2() >= 27 {
+        // Emissive multiplier — Bethesda extension (FO3/FNV+).
+        let emissive_mult = if stream.variant().has_emissive_mult() {
             stream.read_f32_le()?
         } else {
             1.0
@@ -339,26 +338,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_material_version_boundary_ambient_diffuse() {
-        // user_version=11, user_version_2=21: condition is > 21, so 21 should still read colors
-        let header = make_header(11, 21);
-        let data = build_material_oblivion();
+    fn parse_material_fo3_also_skips_ambient_diffuse() {
+        // Fallout 3 (uv=11, uv2=34) uses the same compact format as FNV.
+        let header = make_header(11, 34);
+        let data = build_material_fnv();
         let mut stream = NifStream::new(&data, &header);
 
         let mat = NiMaterialProperty::parse(&mut stream).unwrap();
-        // Should have read ambient/diffuse from stream (21 is NOT > 21)
-        assert!((mat.ambient.r - 0.2).abs() < 1e-6);
-        assert!((mat.diffuse.r - 0.8).abs() < 1e-6);
-    }
-
-    #[test]
-    fn parse_material_version_boundary_emissive_mult() {
-        // user_version_2=26: condition is >= 27, so 26 should NOT read emissive_mult
-        let header = make_header(11, 26);
-        let data = build_material_oblivion(); // no emissive_mult in data
-        let mut stream = NifStream::new(&data, &header);
-
-        let mat = NiMaterialProperty::parse(&mut stream).unwrap();
-        assert!((mat.emissive_mult - 1.0).abs() < 1e-6); // default
+        // Ambient/diffuse are defaults (not read from stream)
+        assert!((mat.ambient.r - 0.5).abs() < 1e-6);
+        assert!((mat.diffuse.r - 0.5).abs() < 1e-6);
+        assert!((mat.emissive_mult - 2.5).abs() < 1e-6);
     }
 }

@@ -64,8 +64,8 @@ impl BSShaderPPLightingProperty {
         // BSShaderPPLightingProperty: texture set reference
         let texture_set_ref = stream.read_block_ref()?;
 
-        // Emissive color (RGBA) — Bethesda extension for FNV+ (user_version_2 >= 34).
-        let emissive_color = if stream.user_version_2() >= 34 {
+        // Emissive color (RGBA) — Bethesda extension for FNV+.
+        let emissive_color = if stream.variant().has_shader_emissive_color() {
             [
                 stream.read_f32_le()?,
                 stream.read_f32_le()?,
@@ -200,9 +200,9 @@ mod tests {
 
     #[test]
     fn parse_bsshader_oblivion_no_emissive_color() {
-        // Regression: user_version_2 < 34 must NOT read emissive color.
-        let header = make_header(11, 21);
-        let data = build_bsshader_bytes(21);
+        // Regression: Oblivion (user_version=0) must NOT read emissive color.
+        let header = make_header(0, 0);
+        let data = build_bsshader_bytes(0);
         let mut stream = NifStream::new(&data, &header);
 
         let prop = BSShaderPPLightingProperty::parse(&mut stream).unwrap();

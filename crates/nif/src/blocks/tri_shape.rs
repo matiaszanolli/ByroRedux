@@ -86,8 +86,8 @@ impl NiTriShape {
                 let _dirty_flag = stream.read_u8()?;
             }
 
-            // Skyrim SSE+ (user_version_2 >= 130): dedicated shader/alpha property refs
-            if stream.user_version_2() >= 130 {
+            // Fallout 4+ (user_version_2 >= 130): dedicated shader/alpha property refs
+            if stream.variant().has_dedicated_shader_refs() {
                 shader_property_ref = stream.read_block_ref()?;
                 alpha_property_ref = stream.read_block_ref()?;
             }
@@ -171,9 +171,9 @@ fn parse_geometry_data_base(stream: &mut NifStream) -> io::Result<(
     };
 
     // u16 dataFlags is always present in NiGeometryData.
-    // Bethesda extensions (material CRC) only exist in Skyrim+ (user_version >= 12).
+    // Bethesda extensions (material CRC) only exist in Skyrim+.
     let data_flags = stream.read_u16_le()?;
-    if stream.user_version() >= 12 {
+    if stream.variant().has_material_crc() {
         let _material_crc = stream.read_u32_le()?;
     }
 

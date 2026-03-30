@@ -6,20 +6,23 @@
 
 use crate::header::NifHeader;
 use crate::types::{BlockRef, NiColor, NiMatrix3, NiPoint3, NiTransform};
-use crate::version::NifVersion;
+use crate::version::{NifVariant, NifVersion};
 use std::io::{self, Cursor, Read};
 
 /// Binary reader with NIF header context for version-aware parsing.
 pub struct NifStream<'a> {
     cursor: Cursor<&'a [u8]>,
     header: &'a NifHeader,
+    variant: NifVariant,
 }
 
 impl<'a> NifStream<'a> {
     pub fn new(data: &'a [u8], header: &'a NifHeader) -> Self {
+        let variant = NifVariant::detect(header.version, header.user_version, header.user_version_2);
         Self {
             cursor: Cursor::new(data),
             header,
+            variant,
         }
     }
 
@@ -33,6 +36,11 @@ impl<'a> NifStream<'a> {
 
     pub fn user_version_2(&self) -> u32 {
         self.header.user_version_2
+    }
+
+    /// The detected game variant — use this for feature queries instead of raw version numbers.
+    pub fn variant(&self) -> NifVariant {
+        self.variant
     }
 
     pub fn position(&self) -> u64 {
