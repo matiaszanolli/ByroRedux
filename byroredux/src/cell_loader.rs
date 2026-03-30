@@ -162,17 +162,22 @@ pub fn load_cell(
 }
 
 /// Convert Euler angles (radians, Z-up Bethesda convention) to a Y-up quaternion.
+///
+/// Bethesda stores Euler angles as (rx, ry, rz) in a Z-up coordinate system:
+///   rz = rotation around Z (up axis) → yaw in Y-up
+///   rx = rotation around X (right axis) → pitch in Y-up
+///   ry = rotation around Y (forward axis in Z-up) → roll around Z in Y-up
+///
+/// We remap axis meanings and compose in Y-up directly.
 fn euler_zup_to_quat_yup(rx: f32, ry: f32, rz: f32) -> Quat {
-    // Bethesda Euler order: Z * Y * X (extrinsic) in Z-up space.
-    // Build quaternion in Z-up, then rotate the whole thing to Y-up.
-    let qx = Quat::from_rotation_x(rx);
-    let qy = Quat::from_rotation_y(ry);
-    let qz = Quat::from_rotation_z(rz);
-    let zup_quat = qz * qy * qx;
-
-    // Z-up → Y-up rotation: 90° around X (rotates Z axis to Y axis).
-    let to_yup = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
-    to_yup * zup_quat
+    // In Y-up space:
+    //   yaw   = rotation around Y (up)   ← Bethesda rz
+    //   pitch = rotation around X (right) ← Bethesda rx
+    //   roll  = rotation around Z (fwd)   ← Bethesda -ry (sign flip from axis swap)
+    let yaw = Quat::from_rotation_y(rz);
+    let pitch = Quat::from_rotation_x(-rx);
+    let roll = Quat::from_rotation_z(ry);
+    yaw * pitch * roll
 }
 
 /// Get the mesh and texture handles of the most recently spawned entity with MeshHandle.
