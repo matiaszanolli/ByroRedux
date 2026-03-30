@@ -4,35 +4,46 @@ A clean rebuild of the Gamebryo/Creation engine lineage in **Rust + C++**, using
 
 Not a port — a ground-up rebuild that understands the legacy architecture and builds modern equivalents.
 
+![Prospector Saloon from Fallout: New Vegas, rendered in ByroRedux](docs/screenshots/prospector-saloon.png)
+
+*The Prospector Saloon (Goodsprings) loaded from FalloutNV.esm — 822 entities, 821 meshes, 128 textures at 284 FPS.*
+
 ## Current State
 
-Loads and renders real Fallout: New Vegas meshes with their original textures:
+Loads full Fallout: New Vegas interior cells from real game data — ESM records, BSA archives, NIF meshes, DDS textures:
 
 ```bash
-cargo run -- --bsa "Fallout - Meshes.bsa" \
-             --mesh "meshes\clutter\food\beerbottle01.nif" \
-             --textures-bsa "Fallout - Textures.bsa"
+cargo run -- --esm FalloutNV.esm --cell GSProspectorSaloonInterior \
+             --bsa "Fallout - Meshes.bsa" \
+             --textures-bsa "Fallout - Textures.bsa" \
+             --textures-bsa "Fallout - Textures2.bsa"
 ```
+
+Press **Escape** to capture mouse, then **WASD** + mouse to fly around. **Space/Shift** for up/down, **Ctrl** for speed boost.
 
 | Feature | Status |
 |---------|--------|
 | ECS with pluggable storage (SparseSet + Packed) | Working |
-| Vulkan renderer with depth buffer, directional lighting | Working |
-| NIF parser (15 block types, Z-up → Y-up conversion) | Working |
+| Vulkan renderer with depth buffer, directional lighting, alpha blending | Working |
+| ESM parser (CELL, REFR, STAT + 20 record types) | Working |
+| NIF parser (15 block types, Z-up → Y-up, NifVariant) | Working |
 | DDS texture loading (BC1/BC3, mipmaps, per-mesh binding) | Working |
 | BSA v104 archive reader (zlib, embedded file names) | Working |
+| Interior cell loading with placed object transforms | Working |
+| Fly camera (WASD + mouse look) | Working |
+| Debug diagnostics (--debug, --cmd, console commands) | Working |
 | Plugin system with stable Form IDs, conflict resolution | Working |
 | ECS-native scripting (events, timers) | Working |
-| 196 unit tests | Passing |
+| 224 unit tests | Passing |
 
 ## Architecture
 
 ```
-byroredux/            Binary — game loop entry point
+byroredux/            Binary — game loop, cell loader, fly camera
 crates/
-  core/                    ECS, math (glam), types, string interning, form IDs
+  core/                    ECS, math (glam), types, string interning, form IDs, console
   renderer/                Vulkan graphics via ash + gpu-allocator
-  plugin/                  Plugin system, manifests, conflict resolution, legacy bridge
+  plugin/                  Plugin system, ESM parser, manifests, conflict resolution
   nif/                     NIF file parser (Gamebryo .nif binary format)
   bsa/                     BSA archive reader (Bethesda Softworks Archive v104)
   scripting/               ECS-native scripting (events, timers)
@@ -53,11 +64,11 @@ World wraps each storage in `RwLock` so query methods take `&self`, enabling con
 
 Full Vulkan initialization chain via `ash`. No shortcuts:
 
-Instance + validation layers, debug messenger, surface, physical/logical device, swapchain, render pass, graphics pipeline with push constants, framebuffers, command pool/buffers, GPU memory allocation via `gpu-allocator`, per-image synchronization, DDS texture upload (BC-compressed with mipmaps), per-mesh descriptor set binding.
+Instance + validation layers, debug messenger, surface, physical/logical device, swapchain, render pass, dual graphics pipelines (opaque + alpha-blended) with push constants, framebuffers, command pool/buffers, GPU memory allocation via `gpu-allocator`, per-image synchronization, DDS texture upload (BC-compressed with mipmaps), per-mesh descriptor set binding.
 
 ### Asset Pipeline
 
-NIF files are parsed with version-aware binary reading (Gamebryo 20.0.0.3 – 34.1.1.3), scene graphs are flattened into ECS entities with coordinate conversion (Gamebryo Z-up → renderer Y-up), and DDS textures are extracted from BSA archives and uploaded directly to Vulkan as BC-compressed images.
+ESM files are parsed for CELL/REFR/STAT records to locate placed objects with their positions and rotations. NIF files are parsed with version-aware binary reading (NifVariant detection for game-specific quirks), scene graphs flattened into ECS entities with coordinate conversion (Gamebryo Z-up → renderer Y-up). DDS textures are extracted from BSA archives and uploaded directly to Vulkan as BC-compressed images with full mipmap chains.
 
 ## Building
 
@@ -75,10 +86,13 @@ NIF files are parsed with version-aware binary reading (Gamebryo 20.0.0.3 – 34
 cargo build
 cargo run                          # Demo scene with spinning cube
 cargo run -- path/to/mesh.nif      # Render a loose NIF file
-cargo run -- --bsa meshes.bsa \
-             --mesh meshes\foo.nif \
-             --textures-bsa textures.bsa  # Render from BSA archives
-cargo test                         # Run all 196 tests
+cargo run -- --esm FalloutNV.esm \
+             --cell CellEditorID \
+             --bsa "Fallout - Meshes.bsa" \
+             --textures-bsa "Fallout - Textures.bsa"  # Load an interior cell
+cargo run -- --debug               # Show FPS/entity stats in title bar
+cargo run -- --cmd "help"          # Run a console command and exit
+cargo test                         # Run all 224 tests
 ```
 
 ### Shader Compilation
@@ -101,24 +115,14 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 
 | Phase | Status | Milestone |
 |-------|--------|-----------|
-| 1. Hardcoded triangle | Done | Graphics pipeline end-to-end |
-| 2. GPU vertex buffers | Done | Geometry from Rust data via gpu-allocator |
-| 3. ECS-driven rendering | Done | Spinning cube, perspective camera, push constants |
-| 4. Plugin system (core) | Done | Stable Form IDs, FormIdPool, FormIdComponent |
-| 5. Plugin system (data) | Done | Plugin manifests, DataStore, DAG-based conflict resolution |
-| 6. Legacy bridge | Done | ESM/ESP/ESL/ESH Form ID conversion, per-game parser stubs |
-| 7. Depth buffer | Done | Correct occlusion, multiple objects |
-| 8. Texturing | Done | Staging upload, descriptor sets, sampled checkerboard |
-| 9. NIF parser | Done | 15 block types, scene graph walking, version-aware parsing |
-| 10. NIF-to-ECS import | Done | Scene graph flattening, Z-up → Y-up, geometry/material extraction |
-| 11. Real asset loading | Done | FNV meshes, BSA v104 reader, CLI integration |
-| 12. Scripting foundation | Done | ECS-native events, timers, Papyrus VM elimination |
-| 13. Directional lighting | Done | Vertex normals, directional light in fragment shader |
-| 14. DDS textures | Done | DDS parser, TextureRegistry, per-mesh texture binding |
-| 15. Debug & diagnostics | Next | Structured logging, engine stats, console command foundation |
-| 16. Multi-light system | Planned | Point lights, spotlights, light components in ECS |
-| 17. Skyrim SE NIF | Planned | BSLightingShaderProperty, version branching |
-| 18. Animation | Planned | Keyframe playback from .kf files |
+| 1–8 | Done | Graphics foundation, ECS, plugin system, texturing |
+| 9–11 | Done | NIF parser, NIF-to-ECS import, BSA reader, real FNV meshes |
+| 12–13 | Done | ECS-native scripting, directional lighting |
+| 14 | Done | DDS textures, TextureRegistry, per-mesh binding |
+| 15 | Done | Debug diagnostics, console commands, --debug/--cmd CLI |
+| 16 | Done | ESM parser, interior cell loading, fly camera, alpha blending |
+| 17 | Next | RT-first multi-light system (Vulkan ray tracing + rasterized fallback) |
+| 18–20 | Planned | Skyrim SE NIF, BSA v105, animation playback |
 
 See [ROADMAP.md](ROADMAP.md) for the full roadmap with details, known issues, and game compatibility.
 
@@ -134,7 +138,7 @@ See [ROADMAP.md](ROADMAP.md) for the full roadmap with details, known issues, an
 | uuid | Stable plugin identity (UUID v5) |
 | semver | Plugin version parsing |
 | serde + toml | Plugin manifest parsing |
-| flate2 | BSA zlib decompression |
+| flate2 | BSA/ESM zlib decompression |
 | cxx | C++ interop |
 
 ## License
