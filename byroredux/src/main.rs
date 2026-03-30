@@ -77,8 +77,8 @@ fn fly_camera_system(world: &World, dt: f32) {
 
     // Build movement vector from held keys.
     let mut move_dir = Vec3::ZERO;
-    if input.keys_held.contains(&KeyCode::KeyW) { move_dir.z -= 1.0; }
-    if input.keys_held.contains(&KeyCode::KeyS) { move_dir.z += 1.0; }
+    if input.keys_held.contains(&KeyCode::KeyW) { move_dir.z += 1.0; }
+    if input.keys_held.contains(&KeyCode::KeyS) { move_dir.z -= 1.0; }
     if input.keys_held.contains(&KeyCode::KeyA) { move_dir.x -= 1.0; }
     if input.keys_held.contains(&KeyCode::KeyD) { move_dir.x += 1.0; }
     if input.keys_held.contains(&KeyCode::Space) { move_dir.y += 1.0; }
