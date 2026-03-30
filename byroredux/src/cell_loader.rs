@@ -78,9 +78,7 @@ pub fn load_cell(
             }
             None => {
                 stat_miss += 1;
-                if stat_miss <= 5 {
-                    log::debug!("REFR base {:08X} not in STAT table", placed_ref.base_form_id);
-                }
+                log::debug!("REFR base {:08X} not in STAT table", placed_ref.base_form_id);
                 continue;
             }
         };

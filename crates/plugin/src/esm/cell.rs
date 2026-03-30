@@ -74,9 +74,14 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
                 let end = reader.position() + group.total_size as usize - 24;
                 parse_cell_group(&mut reader, end, &mut cells)?;
             }
-            b"STAT" => {
+            // All record types that have a MODL sub-record (NIF model path).
+            // Placed references (REFR) can point to any of these.
+            b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"ACTI" | b"CONT"
+            | b"LIGH" | b"MISC" | b"FLOR" | b"TREE" | b"AMMO" | b"WEAP"
+            | b"ARMO" | b"BOOK" | b"KEYM" | b"ALCH" | b"INGR" | b"NOTE"
+            | b"TACT" | b"IDLM" | b"BNDS" | b"ADDN" | b"TERM" => {
                 let end = reader.position() + group.total_size as usize - 24;
-                parse_stat_group(&mut reader, end, &mut statics)?;
+                parse_modl_group(&mut reader, end, &mut statics)?;
             }
             _ => {
                 reader.skip_group(&group);
@@ -235,23 +240,23 @@ fn parse_refr_group(
     Ok(())
 }
 
-/// Walk the top-level STAT group to collect static object definitions.
-fn parse_stat_group(
+/// Walk a top-level record group and extract any record with a MODL sub-record.
+/// Works for STAT, MSTT, FURN, DOOR, ACTI, CONT, LIGH, MISC, etc.
+fn parse_modl_group(
     reader: &mut EsmReader,
     end: usize,
     statics: &mut HashMap<u32, StaticObject>,
 ) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
-            // STAT top group may contain sub-groups (shouldn't, but handle it).
             let sub = reader.read_group_header()?;
             let sub_end = reader.position() + sub.total_size as usize - 24;
-            parse_stat_group(reader, sub_end, statics)?;
+            parse_modl_group(reader, sub_end, statics)?;
             continue;
         }
 
         let header = reader.read_record_header()?;
-        if &header.record_type == b"STAT" {
+        {
             let subs = reader.read_sub_records(&header)?;
             let mut editor_id = String::new();
             let mut model_path = String::new();
@@ -271,8 +276,6 @@ fn parse_stat_group(
                     model_path,
                 });
             }
-        } else {
-            reader.skip_record(&header);
         }
     }
     Ok(())
@@ -330,7 +333,7 @@ mod tests {
         let gh = reader.read_group_header().unwrap();
         let end = reader.position() + gh.total_size as usize - 24;
         let mut statics = HashMap::new();
-        parse_stat_group(&mut reader, end, &mut statics).unwrap();
+        parse_modl_group(&mut reader, end, &mut statics).unwrap();
 
         assert_eq!(statics.len(), 1);
         let s = statics.get(&0x1234).unwrap();
