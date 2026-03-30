@@ -126,7 +126,7 @@ Usage:
   `cargo run -- path/to/mesh.nif` — render a loose NIF file
   `cargo run -- --bsa path.bsa --mesh meshes\\foo.nif` — extract from BSA and render
   `cargo run -- --bsa meshes.bsa --mesh meshes\\foo.nif --textures-bsa textures.bsa` — with textures
-Next: Multi-light system (M15), Skyrim SE NIF (M16), BSA v105 (M17), animation (M18).
+Next: Debug logging & diagnostics (M15), multi-light system (M16), Skyrim SE NIF (M17), animation (M19).
 
 ## Git Conventions
 

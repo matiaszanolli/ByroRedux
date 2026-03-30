@@ -79,25 +79,50 @@ NiTexturingProperty, NiSourceTexture, NiTimeController, NiExtraData, BSFadeNode,
 
 ## Next Milestones
 
-### M15: Multi-Light System
+### M15: Debug Logging & Diagnostics
+**Status:** Next
+**Scope:** Structured logging infrastructure and runtime diagnostic tools — the foundation for a future scripting console.
+
+**Logging layer:**
+- Structured engine log with categories (render, ecs, nif, bsa, asset) and runtime severity filtering
+- Frame-rate and draw-call counters (replace the current `log_stats_system` with a proper diagnostics resource)
+- Asset load log: track every NIF, DDS, and BSA extraction with timings and sizes
+- Block parse warnings promoted to structured events (currently scattered `log::warn!`)
+
+**Runtime diagnostics:**
+- `EngineStats` resource: FPS, frame time (min/avg/max), draw calls, texture memory, entity count
+- Debug text overlay rendered as screen-space quads (or simple printf-to-title-bar until UI exists)
+- Entity inspector: dump components for a given entity to log
+- `--debug` CLI flag to enable verbose diagnostics at startup
+
+**Console foundation:**
+- `ConsoleCommand` trait: name, description, execute(&World) → String
+- Built-in commands: `stats`, `list_entities`, `list_textures`, `list_meshes`, `toggle_wireframe`
+- Command registry as a World resource — extensible by future systems
+- Input processing deferred to a later UI milestone; for now commands are dispatched from CLI args (`--cmd "stats"`)
+
+**Depends on:** M3 (ECS resources), M14 (TextureRegistry for texture stats)
+**Acceptance:** `cargo run -- --debug` shows FPS/entity/texture stats; `--cmd "list_entities"` prints entity table to log.
+
+### M16: Multi-Light System
 **Status:** Planned
 **Scope:** Point lights, spotlights, multiple directional lights. Light components in ECS. Uniform buffer or SSBO for light array. Forward+ or deferred rendering decision.
 **Depends on:** M13 (directional lighting)
 **Acceptance:** Scene with 3+ light sources of mixed types, correct attenuation.
 
-### M16: Skyrim SE NIF Support
+### M17: Skyrim SE NIF Support
 **Status:** Planned
 **Scope:** BSLightingShaderProperty, BSEffectShaderProperty, BSFadeNode field differences for Skyrim SE NIF version (uv=12, uv2=83–100). Extend version-aware parsing.
 **Depends on:** M9 (NIF parser)
 **Acceptance:** Parse and render a Skyrim SE mesh (e.g., iron sword).
 
-### M17: BSA v105 Support
+### M18: BSA v105 Support
 **Status:** Planned
 **Scope:** Extend BSA reader for v105 format (Skyrim SE). 24-byte folder records, LZ4 compression option.
 **Depends on:** M11 (BSA v104 reader)
 **Acceptance:** Extract and render meshes from Skyrim SE BSA archives.
 
-### M18: Animation Playback
+### M19: Animation Playback
 **Status:** Planned
 **Scope:** Parse .kf files (NiControllerSequence, NiTransformInterpolator, NiTransformData). Keyframe interpolation systems. Animation component + AnimationPlayer system.
 **Depends on:** M9 (NIF parser — controllers already parsed), M4 (Transform component)
@@ -105,20 +130,20 @@ NiTexturingProperty, NiSourceTexture, NiTimeController, NiExtraData, BSFadeNode,
 
 ---
 
-## Medium-Term Roadmap (M19–M24)
+## Medium-Term Roadmap (M20–M25)
 
 | # | Milestone | Scope |
 |---|-----------|-------|
-| M19 | ESM/ESP Binary Parser | Parse at least Skyrim's record format: TES4, GRUP, CELL, REFR, NPC_, STAT. Wire to DataStore. |
-| M20 | Cell Loading | CELL records with position data, lighting templates, placed references. Load a single interior cell. |
-| M21 | BA2 Archive Support | Fallout 4 archive format (General + DX10 variants, LZ4 compression). |
-| M22 | Oblivion NIF Support | Older NIF version (v20.0.0.5), NiTexturingProperty-based materials, different block field layout. |
-| M23 | Parallel System Dispatch | Rayon-based parallel execution in Scheduler. Dependency graph from system read/write declarations. |
-| M24 | Shadow Maps | Depth-only pass from light perspective, shadow sampling in fragment shader. Cascaded for directional. |
+| M20 | ESM/ESP Binary Parser | Parse at least Skyrim's record format: TES4, GRUP, CELL, REFR, NPC_, STAT. Wire to DataStore. |
+| M21 | Cell Loading | CELL records with position data, lighting templates, placed references. Load a single interior cell. |
+| M22 | BA2 Archive Support | Fallout 4 archive format (General + DX10 variants, LZ4 compression). |
+| M23 | Oblivion NIF Support | Older NIF version (v20.0.0.5), NiTexturingProperty-based materials, different block field layout. |
+| M24 | Parallel System Dispatch | Rayon-based parallel execution in Scheduler. Dependency graph from system read/write declarations. |
+| M25 | Shadow Maps | Depth-only pass from light perspective, shadow sampling in fragment shader. Cascaded for directional. |
 
 ---
 
-## Long-Term Vision (M25+)
+## Long-Term Vision (M26+)
 
 | Area | Scope |
 |------|-------|
@@ -150,6 +175,7 @@ NiTexturingProperty, NiSourceTexture, NiTimeController, NiExtraData, BSFadeNode,
 - [ ] No LOD system or frustum culling
 
 ### Engine Gaps
+- [ ] No structured diagnostics or debug console (scattered log::info/warn only)
 - [ ] Scheduler is single-threaded (parallel dispatch designed but not implemented)
 - [ ] No physics or collision
 - [ ] No save/load system
@@ -184,7 +210,7 @@ NiTexturingProperty, NiSourceTexture, NiTimeController, NiExtraData, BSFadeNode,
 
 | Metric | Value |
 |--------|-------|
-| Passing tests | 182 |
+| Passing tests | 196 |
 | Workspace crates | 8 |
 | Completed milestones | 14 |
 | NIF block types | 15 |

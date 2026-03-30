@@ -115,9 +115,10 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 | 12. Scripting foundation | Done | ECS-native events, timers, Papyrus VM elimination |
 | 13. Directional lighting | Done | Vertex normals, directional light in fragment shader |
 | 14. DDS textures | Done | DDS parser, TextureRegistry, per-mesh texture binding |
-| 15. Multi-light system | Next | Point lights, spotlights, light components in ECS |
-| 16. Skyrim SE NIF | Planned | BSLightingShaderProperty, version branching |
-| 17. Animation | Planned | Keyframe playback from .kf files |
+| 15. Debug & diagnostics | Next | Structured logging, engine stats, console command foundation |
+| 16. Multi-light system | Planned | Point lights, spotlights, light components in ECS |
+| 17. Skyrim SE NIF | Planned | BSLightingShaderProperty, version branching |
+| 18. Animation | Planned | Keyframe playback from .kf files |
 
 See [ROADMAP.md](ROADMAP.md) for the full roadmap with details, known issues, and game compatibility.
 
