@@ -8,7 +8,7 @@
 //! and `Vec<u32>` data ready for upload via `MeshRegistry::upload()`.
 
 use crate::blocks::node::NiNode;
-use crate::blocks::properties::{NiMaterialProperty, NiTexturingProperty};
+use crate::blocks::properties::{NiAlphaProperty, NiMaterialProperty, NiTexturingProperty};
 use crate::blocks::shader::{BSShaderPPLightingProperty, BSShaderTextureSet};
 use crate::blocks::texture::NiSourceTexture;
 use crate::blocks::tri_shape::{NiTriShape, NiTriShapeData, NiTriStripsData};
@@ -36,6 +36,8 @@ pub struct ImportedMesh {
     pub texture_path: Option<String>,
     /// Node name from the NIF.
     pub name: Option<String>,
+    /// Whether this mesh uses alpha blending (from NiAlphaProperty).
+    pub has_alpha: bool,
 }
 
 /// Import all renderable meshes from a parsed NIF scene.
@@ -169,6 +171,9 @@ fn extract_mesh(
         [-r[1][0], -r[1][2], r[1][1]], // original -Y row becomes Z row
     ];
 
+    // Check for alpha blending (NiAlphaProperty with blend enabled = bit 0 of flags).
+    let has_alpha = find_alpha_property(scene, shape);
+
     Some(ImportedMesh {
         positions,
         colors,
@@ -180,6 +185,7 @@ fn extract_mesh(
         scale: world_transform.scale,
         name: shape.name.clone(),
         texture_path,
+        has_alpha,
     })
 }
 
@@ -255,6 +261,28 @@ fn find_texture_path(scene: &NifScene, shape: &NiTriShape) -> Option<String> {
         }
     }
     None
+}
+
+/// Check if the shape has alpha blending enabled via NiAlphaProperty.
+///
+/// Searches both the properties list and the dedicated alpha_property_ref.
+/// Returns true if NiAlphaProperty is found with blend enable (bit 0 of flags).
+fn find_alpha_property(scene: &NifScene, shape: &NiTriShape) -> bool {
+    // Check dedicated ref (Skyrim+/FO4).
+    if let Some(idx) = shape.alpha_property_ref.index() {
+        if let Some(alpha) = scene.get_as::<NiAlphaProperty>(idx) {
+            return alpha.flags & 1 != 0;
+        }
+    }
+    // Check properties list (FO3/FNV/Oblivion).
+    for prop_ref in &shape.properties {
+        if let Some(idx) = prop_ref.index() {
+            if let Some(alpha) = scene.get_as::<NiAlphaProperty>(idx) {
+                return alpha.flags & 1 != 0;
+            }
+        }
+    }
+    false
 }
 
 /// Compose parent * child transforms.

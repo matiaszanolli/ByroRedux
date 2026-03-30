@@ -25,10 +25,12 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 /// Marker component for entities that should spin in the demo scene.
 #[derive(Debug, Clone, Copy)]
 struct Spinning;
+impl Component for Spinning { type Storage = SparseSetStorage<Self>; }
 
-impl Component for Spinning {
-    type Storage = SparseSetStorage<Self>;
-}
+/// Marker component for entities that use alpha blending.
+#[derive(Debug, Clone, Copy)]
+struct AlphaBlend;
+impl Component for AlphaBlend { type Storage = SparseSetStorage<Self>; }
 
 /// System names stored as a resource for the `systems` console command.
 struct SystemList(Vec<String>);
@@ -559,6 +561,9 @@ pub(crate) fn load_nif_bytes(
         world.insert(entity, Transform::new(translation, quat, mesh.scale));
         world.insert(entity, MeshHandle(mesh_handle));
         world.insert(entity, TextureHandle(tex_handle));
+        if mesh.has_alpha {
+            world.insert(entity, AlphaBlend);
+        }
 
         log::info!(
             "Loaded NIF mesh '{}': {} verts, {} tris, tex={:?}",
@@ -924,6 +929,7 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>) {
     let mut draw_commands = Vec::new();
     if let Some((tq, mq)) = world.query_2_mut::<Transform, MeshHandle>() {
         let tex_q = world.query::<TextureHandle>();
+        let alpha_q = world.query::<AlphaBlend>();
         for (entity, mesh) in mq.iter() {
             if let Some(transform) = tq.get(entity) {
                 let tex_handle = tex_q
@@ -931,16 +937,21 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>) {
                     .and_then(|q| q.get(entity))
                     .map(|t| t.0)
                     .unwrap_or(0);
+                let alpha_blend = alpha_q
+                    .as_ref()
+                    .map(|q| q.get(entity).is_some())
+                    .unwrap_or(false);
                 draw_commands.push(DrawCommand {
                     mesh_handle: mesh.0,
                     texture_handle: tex_handle,
                     model_matrix: transform.to_matrix().to_cols_array(),
+                    alpha_blend,
                 });
             }
         }
     }
-    // Sort by texture handle to minimize descriptor set rebinds.
-    draw_commands.sort_unstable_by_key(|cmd| cmd.texture_handle);
+    // Sort: opaque first (alpha_blend=false), then by texture to minimize rebinds.
+    draw_commands.sort_unstable_by_key(|cmd| (cmd.alpha_blend, cmd.texture_handle));
 
     (view_proj, draw_commands)
 }

@@ -34,7 +34,7 @@ pub fn create_triangle_pipeline(
     render_pass: vk::RenderPass,
     extent: vk::Extent2D,
     descriptor_set_layout: vk::DescriptorSetLayout,
-) -> Result<(vk::Pipeline, vk::PipelineLayout, vk::ShaderModule, vk::ShaderModule)> {
+) -> Result<(vk::Pipeline, vk::Pipeline, vk::PipelineLayout, vk::ShaderModule, vk::ShaderModule)> {
     let vert_spv = include_bytes!("../../shaders/triangle.vert.spv");
     let frag_spv = include_bytes!("../../shaders/triangle.frag.spv");
 
@@ -125,35 +125,74 @@ pub fn create_triangle_pipeline(
             .context("Failed to create pipeline layout")?
     };
 
-    let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+    let depth_stencil_opaque = vk::PipelineDepthStencilStateCreateInfo::default()
         .depth_test_enable(true)
         .depth_write_enable(true)
         .depth_compare_op(vk::CompareOp::LESS)
         .depth_bounds_test_enable(false)
         .stencil_test_enable(false);
 
-    let pipeline_info = [vk::GraphicsPipelineCreateInfo::default()
-        .stages(&shader_stages)
-        .vertex_input_state(&vertex_input)
-        .input_assembly_state(&input_assembly)
-        .viewport_state(&viewport_state)
-        .rasterization_state(&rasterizer)
-        .multisample_state(&multisampling)
-        .depth_stencil_state(&depth_stencil)
-        .color_blend_state(&color_blending)
-        .dynamic_state(&dynamic_state)
-        .layout(pipeline_layout)
-        .render_pass(render_pass)
-        .subpass(0)];
+    // Alpha blend pipeline: standard src-alpha, one-minus-src-alpha.
+    // Depth test on but depth write OFF (transparent objects shouldn't occlude).
+    let color_blend_alpha = [vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::RGBA)
+        .blend_enable(true)
+        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+        .color_blend_op(vk::BlendOp::ADD)
+        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+        .alpha_blend_op(vk::BlendOp::ADD)];
+    let color_blending_alpha = vk::PipelineColorBlendStateCreateInfo::default()
+        .logic_op_enable(false)
+        .attachments(&color_blend_alpha);
+
+    let depth_stencil_alpha = vk::PipelineDepthStencilStateCreateInfo::default()
+        .depth_test_enable(true)
+        .depth_write_enable(false) // transparent objects don't write depth
+        .depth_compare_op(vk::CompareOp::LESS)
+        .depth_bounds_test_enable(false)
+        .stencil_test_enable(false);
+
+    let pipeline_infos = [
+        // [0] Opaque pipeline.
+        vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisampling)
+            .depth_stencil_state(&depth_stencil_opaque)
+            .color_blend_state(&color_blending)
+            .dynamic_state(&dynamic_state)
+            .layout(pipeline_layout)
+            .render_pass(render_pass)
+            .subpass(0),
+        // [1] Alpha-blended pipeline.
+        vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisampling)
+            .depth_stencil_state(&depth_stencil_alpha)
+            .color_blend_state(&color_blending_alpha)
+            .dynamic_state(&dynamic_state)
+            .layout(pipeline_layout)
+            .render_pass(render_pass)
+            .subpass(0),
+    ];
 
     let pipelines = unsafe {
         device
-            .create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_info, None)
+            .create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_infos, None)
             .map_err(|(_, err)| err)
-            .context("Failed to create graphics pipeline")?
+            .context("Failed to create graphics pipelines")?
     };
 
-    log::info!("Graphics pipeline created (triangle)");
+    log::info!("Graphics pipelines created (opaque + alpha blend)");
 
-    Ok((pipelines[0], pipeline_layout, vert_module, frag_module))
+    Ok((pipelines[0], pipelines[1], pipeline_layout, vert_module, frag_module))
 }

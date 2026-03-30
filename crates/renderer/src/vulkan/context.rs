@@ -24,6 +24,7 @@ pub struct DrawCommand {
     pub mesh_handle: u32,
     pub texture_handle: u32,
     pub model_matrix: [f32; 16],
+    pub alpha_blend: bool,
 }
 
 pub struct VulkanContext {
@@ -40,6 +41,7 @@ pub struct VulkanContext {
     pub mesh_registry: MeshRegistry,
     pub texture_registry: TextureRegistry,
     pipeline: vk::Pipeline,
+    pipeline_alpha: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     vert_module: vk::ShaderModule,
     frag_module: vk::ShaderModule,
@@ -152,7 +154,7 @@ impl VulkanContext {
         )?;
 
         // 12. Graphics pipeline (with depth test + descriptor set layout)
-        let (pipeline_handle, pipeline_layout, vert_module, frag_module) =
+        let (pipeline_handle, pipeline_alpha_handle, pipeline_layout, vert_module, frag_module) =
             pipeline::create_triangle_pipeline(
                 &device,
                 render_pass,
@@ -192,6 +194,7 @@ impl VulkanContext {
             allocator: Some(gpu_allocator),
             render_pass,
             pipeline: pipeline_handle,
+            pipeline_alpha: pipeline_alpha_handle,
             pipeline_layout,
             vert_module,
             frag_module,
@@ -347,10 +350,29 @@ impl VulkanContext {
                 view_proj_bytes,
             );
 
-            // Draw each object with per-mesh texture binding.
+            // Two-pass draw: opaque objects first, then alpha-blended.
             let mut last_texture = u32::MAX;
+            let mut last_alpha = false;
+
             for draw_cmd in draw_commands {
                 if let Some(mesh) = self.mesh_registry.get(draw_cmd.mesh_handle) {
+                    // Switch pipeline when alpha mode changes.
+                    if draw_cmd.alpha_blend != last_alpha {
+                        let pipe = if draw_cmd.alpha_blend {
+                            self.pipeline_alpha
+                        } else {
+                            self.pipeline
+                        };
+                        self.device.cmd_bind_pipeline(
+                            cmd,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            pipe,
+                        );
+                        last_alpha = draw_cmd.alpha_blend;
+                        // Force rebind of texture after pipeline switch.
+                        last_texture = u32::MAX;
+                    }
+
                     // Bind texture descriptor set (skip if same as previous draw).
                     if draw_cmd.texture_handle != last_texture {
                         let desc_set = self.texture_registry.descriptor_set(
@@ -576,6 +598,7 @@ impl Drop for VulkanContext {
                 self.mesh_registry.destroy_all(&self.device, alloc);
             }
             self.device.destroy_pipeline(self.pipeline, None);
+            self.device.destroy_pipeline(self.pipeline_alpha, None);
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
             self.device.destroy_shader_module(self.vert_module, None);
