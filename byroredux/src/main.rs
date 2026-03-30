@@ -8,16 +8,19 @@ use byroredux_core::ecs::{
     ActiveCamera, Camera, Component, DebugStats, DeltaTime, EngineConfig, MeshHandle, Scheduler,
     SparseSetStorage, TextureHandle, TotalTime, Transform, World,
 };
+use byroredux_core::ecs::Resource;
 use byroredux_core::math::{Mat3, Quat, Vec3};
 use byroredux_core::types::Color;
 use byroredux_platform::window::{self, WindowConfig};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::{cube_vertices, quad_vertices, triangle_vertices, Vertex, VulkanContext};
+use std::collections::HashSet;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::window::{Window, WindowId};
+use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::window::{CursorGrabMode, Window, WindowId};
 
 /// Marker component for entities that should spin in the demo scene.
 #[derive(Debug, Clone, Copy)]
@@ -29,7 +32,83 @@ impl Component for Spinning {
 
 /// System names stored as a resource for the `systems` console command.
 struct SystemList(Vec<String>);
-impl byroredux_core::ecs::Resource for SystemList {}
+impl Resource for SystemList {}
+
+/// Tracks keyboard and mouse input state for the fly camera.
+struct InputState {
+    keys_held: HashSet<KeyCode>,
+    /// Yaw (horizontal) and pitch (vertical) in radians.
+    yaw: f32,
+    pitch: f32,
+    mouse_captured: bool,
+    move_speed: f32,
+    look_sensitivity: f32,
+}
+
+impl Resource for InputState {}
+
+impl Default for InputState {
+    fn default() -> Self {
+        Self {
+            keys_held: HashSet::new(),
+            yaw: 0.0,
+            pitch: 0.0,
+            mouse_captured: false,
+            move_speed: 200.0, // Bethesda units per second
+            look_sensitivity: 0.002,
+        }
+    }
+}
+
+/// Fly camera system: WASD + mouse look. Updates the active camera's Transform.
+fn fly_camera_system(world: &World, dt: f32) {
+    let Some(active) = world.try_resource::<ActiveCamera>() else { return };
+    let cam_entity = active.0;
+    drop(active);
+
+    let Some(input) = world.try_resource::<InputState>() else { return };
+    if !input.mouse_captured {
+        return;
+    }
+
+    let speed = input.move_speed * dt;
+    let yaw = input.yaw;
+    let pitch = input.pitch;
+
+    // Build movement vector from held keys.
+    let mut move_dir = Vec3::ZERO;
+    if input.keys_held.contains(&KeyCode::KeyW) { move_dir.z -= 1.0; }
+    if input.keys_held.contains(&KeyCode::KeyS) { move_dir.z += 1.0; }
+    if input.keys_held.contains(&KeyCode::KeyA) { move_dir.x -= 1.0; }
+    if input.keys_held.contains(&KeyCode::KeyD) { move_dir.x += 1.0; }
+    if input.keys_held.contains(&KeyCode::Space) { move_dir.y += 1.0; }
+    if input.keys_held.contains(&KeyCode::ShiftLeft) { move_dir.y -= 1.0; }
+
+    // Speed boost with Ctrl.
+    let boost = if input.keys_held.contains(&KeyCode::ControlLeft) { 3.0 } else { 1.0 };
+    drop(input);
+
+    // Build rotation from yaw/pitch.
+    let rotation = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+
+    if let Some(mut tq) = world.query_mut::<Transform>() {
+        if let Some(transform) = tq.get_mut(cam_entity) {
+            transform.rotation = rotation;
+
+            if move_dir != Vec3::ZERO {
+                let move_dir = move_dir.normalize();
+                // Move relative to camera orientation (but yaw-only for horizontal).
+                let forward = Quat::from_rotation_y(yaw) * -Vec3::Z;
+                let right = Quat::from_rotation_y(yaw) * Vec3::X;
+                let up = Vec3::Y;
+
+                transform.translation += forward * move_dir.z * speed * boost;
+                transform.translation += right * move_dir.x * speed * boost;
+                transform.translation += up * move_dir.y * speed * boost;
+            }
+        }
+    }
+}
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -91,12 +170,14 @@ impl App {
             ..Default::default()
         });
         world.insert_resource(DebugStats::default());
+        world.insert_resource(InputState::default());
 
         // Register scripting component storages.
         byroredux_scripting::register(&mut world);
 
         // Build the system schedule.
         let mut scheduler = Scheduler::new();
+        scheduler.add(fly_camera_system);
         scheduler.add(spin_system);
         scheduler.add(byroredux_scripting::timer_tick_system);
         scheduler.add(log_stats_system);
@@ -228,8 +309,15 @@ impl App {
         self.world.insert(cam, Camera::default());
         self.world.insert_resource(ActiveCamera(cam));
 
+        // Initialize fly camera yaw/pitch from the initial look direction.
+        {
+            let mut input = self.world.resource_mut::<InputState>();
+            input.yaw = forward.x.atan2(-forward.z);
+            input.pitch = forward.y.asin();
+        }
+
         let total_entities = self.world.entity_count();
-        log::info!("Scene ready: {} entities, 1 camera", total_entities);
+        log::info!("Scene ready: {} entities, 1 camera. Press Escape to capture mouse for fly camera.", total_entities);
     }
 
 }
@@ -629,7 +717,58 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let PhysicalKey::Code(code) = event.physical_key {
+                    let mut input = self.world.resource_mut::<InputState>();
+                    match event.state {
+                        ElementState::Pressed => {
+                            // Escape toggles mouse capture.
+                            if code == KeyCode::Escape && !event.repeat {
+                                let captured = !input.mouse_captured;
+                                input.mouse_captured = captured;
+                                drop(input);
+                                if let Some(ref win) = self.window {
+                                    if captured {
+                                        let _ = win.set_cursor_grab(CursorGrabMode::Confined)
+                                            .or_else(|_| win.set_cursor_grab(CursorGrabMode::Locked));
+                                        win.set_cursor_visible(false);
+                                    } else {
+                                        let _ = win.set_cursor_grab(CursorGrabMode::None);
+                                        win.set_cursor_visible(true);
+                                    }
+                                }
+                            } else {
+                                input.keys_held.insert(code);
+                            }
+                        }
+                        ElementState::Released => {
+                            input.keys_held.remove(&code);
+                        }
+                    }
+                }
+            }
             _ => {}
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: DeviceId,
+        event: DeviceEvent,
+    ) {
+        if let DeviceEvent::MouseMotion { delta } = event {
+            let mut input = self.world.resource_mut::<InputState>();
+            if input.mouse_captured {
+                let sensitivity = input.look_sensitivity;
+                input.yaw -= delta.0 as f32 * sensitivity;
+                input.pitch -= delta.1 as f32 * sensitivity;
+                // Clamp pitch to avoid flipping.
+                input.pitch = input.pitch.clamp(
+                    -std::f32::consts::FRAC_PI_2 + 0.01,
+                    std::f32::consts::FRAC_PI_2 - 0.01,
+                );
+            }
         }
     }
 
