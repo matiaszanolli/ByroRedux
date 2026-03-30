@@ -40,17 +40,29 @@ impl NiSourceTexture {
 
         let use_external = stream.read_u8()? != 0;
 
+        // Version >= 20.2.0.7 uses string table for filenames;
+        // older versions use inline sized strings.
+        let use_string_table = stream.version() >= crate::version::NifVersion::V20_2_0_7;
+
         let (filename, pixel_data_ref) = if use_external {
-            let fname = stream.read_sized_string()?;
+            let fname = if use_string_table {
+                stream.read_string()?
+            } else {
+                Some(stream.read_sized_string()?)
+            };
             // Unknown link in newer versions
             if stream.version() >= crate::version::NifVersion(0x0A010000) {
                 let _unknown_ref = stream.read_block_ref()?;
             }
-            (Some(fname), BlockRef::NULL)
+            (fname, BlockRef::NULL)
         } else {
-            // Internal texture — skip unknown byte, read pixel data ref
+            // Internal texture — read unknown string, then pixel data ref
             if stream.version() >= crate::version::NifVersion(0x0A010000) {
-                let _unknown = stream.read_sized_string()?;
+                if use_string_table {
+                    let _unknown = stream.read_string()?;
+                } else {
+                    let _unknown = stream.read_sized_string()?;
+                }
             }
             let pix_ref = stream.read_block_ref()?;
             (None, pix_ref)
@@ -61,14 +73,14 @@ impl NiSourceTexture {
         let alpha_format = stream.read_u32_le()?;
         let is_static = stream.read_u8()? != 0;
 
-        // Direct render flag in newer versions
+        // Direct render flag — 1-byte bool, not NiBool.
         if stream.version() >= crate::version::NifVersion(0x0A010006) {
-            let _direct_render = stream.read_bool()?;
+            let _direct_render = stream.read_byte_bool()?;
         }
 
-        // Persist render data flag (version >= 20.2.0.7)
+        // Persist render data flag (version >= 20.2.0.7) — 1-byte bool.
         if stream.version() >= crate::version::NifVersion::V20_2_0_7 {
-            let _persist_render_data = stream.read_bool()?;
+            let _persist_render_data = stream.read_byte_bool()?;
         }
 
         Ok(Self {

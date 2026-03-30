@@ -92,6 +92,93 @@ impl BSShaderPPLightingProperty {
     }
 }
 
+/// BSShaderNoLightingProperty — Fallout 3/NV no-light shader (e.g. UI elements, effects).
+///
+/// Inheritance: NiProperty → BSShaderProperty → BSShaderLightingProperty
+///              → BSShaderNoLightingProperty.
+///
+/// Instead of a texture set reference, this shader embeds a file name directly
+/// and has falloff parameters for alpha blending.
+#[derive(Debug)]
+pub struct BSShaderNoLightingProperty {
+    pub name: Option<String>,
+    pub extra_data_refs: Vec<BlockRef>,
+    pub controller_ref: BlockRef,
+    pub shader_flags: u16,
+    pub shader_type: u32,
+    pub shader_flags_1: u32,
+    pub shader_flags_2: u32,
+    pub env_map_scale: f32,
+    pub texture_clamp_mode: u32,
+    pub file_name: String,
+    pub falloff_start_angle: f32,
+    pub falloff_stop_angle: f32,
+    pub falloff_start_opacity: f32,
+    pub falloff_stop_opacity: f32,
+}
+
+impl NiObject for BSShaderNoLightingProperty {
+    fn block_type_name(&self) -> &'static str {
+        "BSShaderNoLightingProperty"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BSShaderNoLightingProperty {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        // NiObjectNET base
+        let name = stream.read_string()?;
+        let extra_data_refs = stream.read_block_ref_list()?;
+        let controller_ref = stream.read_block_ref()?;
+
+        // BSShaderProperty fields (BSVER <= 34):
+        let shader_flags = stream.read_u16_le()?;
+        let shader_type = stream.read_u32_le()?;
+        let shader_flags_1 = stream.read_u32_le()?;
+        let shader_flags_2 = stream.read_u32_le()?;
+        let env_map_scale = stream.read_f32_le()?;
+
+        // BSShaderLightingProperty: texture clamp mode
+        let texture_clamp_mode = stream.read_u32_le()?;
+
+        // BSShaderNoLightingProperty: file name (SizedString)
+        let file_name = stream.read_sized_string()?;
+
+        // Falloff parameters (BSVER > 26, which FNV is)
+        let (falloff_start_angle, falloff_stop_angle, falloff_start_opacity, falloff_stop_opacity) =
+            if stream.variant().bsver() > 26 {
+                (
+                    stream.read_f32_le()?,
+                    stream.read_f32_le()?,
+                    stream.read_f32_le()?,
+                    stream.read_f32_le()?,
+                )
+            } else {
+                (0.0, 0.0, 1.0, 0.0)
+            };
+
+        Ok(Self {
+            name,
+            extra_data_refs,
+            controller_ref,
+            shader_flags,
+            shader_type,
+            shader_flags_1,
+            shader_flags_2,
+            env_map_scale,
+            texture_clamp_mode,
+            file_name,
+            falloff_start_angle,
+            falloff_stop_angle,
+            falloff_start_opacity,
+            falloff_stop_opacity,
+        })
+    }
+}
+
 /// BSShaderTextureSet — list of texture file paths for a BSShader.
 ///
 /// Typically 6 textures: diffuse, normal, glow, parallax, env, env mask.

@@ -18,8 +18,11 @@ use tri_shape::{NiTriShape, NiTriShapeData, NiTriStripsData};
 use properties::{NiMaterialProperty, NiAlphaProperty, NiTexturingProperty};
 use texture::NiSourceTexture;
 use extra_data::NiExtraData;
-use controller::NiTimeController;
-use shader::{BSShaderPPLightingProperty, BSShaderTextureSet};
+use controller::{
+    NiTimeController, NiSingleInterpController, NiMaterialColorController,
+    NiMultiTargetTransformController, NiControllerManager, NiControllerSequence,
+};
+use shader::{BSShaderPPLightingProperty, BSShaderNoLightingProperty, BSShaderTextureSet};
 use std::any::Any;
 use std::fmt::Debug;
 use std::io;
@@ -59,7 +62,7 @@ pub fn parse_block(
         "NiNode" | "BSFadeNode" | "BSLeafAnimNode" | "BSTreeNode" => {
             Ok(Box::new(NiNode::parse(stream)?))
         }
-        "NiTriShape" | "BSTriShape" | "NiTriStrips" => {
+        "NiTriShape" | "BSTriShape" | "NiTriStrips" | "BSSegmentedTriShape" => {
             Ok(Box::new(NiTriShape::parse(stream)?))
         }
         "NiTriShapeData" => {
@@ -68,8 +71,11 @@ pub fn parse_block(
         "NiTriStripsData" => {
             Ok(Box::new(NiTriStripsData::parse(stream)?))
         }
-        "BSShaderPPLightingProperty" | "BSShaderNoLightingProperty" => {
+        "BSShaderPPLightingProperty" => {
             Ok(Box::new(BSShaderPPLightingProperty::parse(stream)?))
+        }
+        "BSShaderNoLightingProperty" => {
+            Ok(Box::new(BSShaderNoLightingProperty::parse(stream)?))
         }
         "BSShaderTextureSet" => {
             Ok(Box::new(BSShaderTextureSet::parse(stream)?))
@@ -90,14 +96,31 @@ pub fn parse_block(
         "BSXFlags" | "NiBooleanExtraData" => {
             Ok(Box::new(NiExtraData::parse(stream, type_name)?))
         }
-        "NiTimeController" | "NiTransformController" | "NiVisController" |
-        "NiAlphaController" | "NiTextureTransformController" |
-        "NiMaterialColorController" | "NiMultiTargetTransformController" |
+        // NiSingleInterpController subclasses (base + interpolator ref)
+        "NiTextureTransformController" => {
+            Ok(Box::new(controller::NiTextureTransformController::parse(stream)?))
+        }
+        "NiTransformController" | "NiVisController" | "NiAlphaController" |
         "BSEffectShaderPropertyFloatController" |
         "BSEffectShaderPropertyColorController" |
         "BSLightingShaderPropertyFloatController" |
-        "BSLightingShaderPropertyColorController" |
-        "NiControllerManager" | "NiControllerSequence" => {
+        "BSLightingShaderPropertyColorController" => {
+            Ok(Box::new(NiSingleInterpController::parse(stream)?))
+        }
+        "NiMaterialColorController" => {
+            Ok(Box::new(NiMaterialColorController::parse(stream)?))
+        }
+        "NiMultiTargetTransformController" => {
+            Ok(Box::new(NiMultiTargetTransformController::parse(stream)?))
+        }
+        "NiControllerManager" => {
+            Ok(Box::new(NiControllerManager::parse(stream)?))
+        }
+        "NiControllerSequence" => {
+            Ok(Box::new(NiControllerSequence::parse(stream)?))
+        }
+        // Base NiTimeController fallback for unknown controller subtypes
+        "NiTimeController" => {
             Ok(Box::new(NiTimeController::parse(stream)?))
         }
         _ => {

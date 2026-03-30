@@ -138,9 +138,9 @@ pub struct NiTexturingProperty {
 #[derive(Debug)]
 pub struct TexDesc {
     pub source_ref: BlockRef,
-    pub clamp_mode: u32,
-    pub filter_mode: u32,
-    pub uv_set: u32,
+    /// Packed flags (clamp, filter, UV set) for version >= 20.1.0.3.
+    /// For older versions, these are separate fields packed here for uniformity.
+    pub flags: u16,
 }
 
 impl NiObject for NiTexturingProperty {
@@ -175,9 +175,33 @@ impl NiTexturingProperty {
         let bump_texture = if texture_count > 5 { Self::read_tex_desc(stream)? } else { None };
         let normal_texture = if texture_count > 6 { Self::read_tex_desc(stream)? } else { None };
 
-        // Skip remaining texture slots
-        for _ in 7..texture_count {
+        // Remaining texture slots (parallax, decals) based on texture_count
+        if texture_count > 7 {
+            // Has Parallax Texture (since 20.2.0.5)
             let _ = Self::read_tex_desc(stream)?;
+        }
+        for _ in 8..texture_count {
+            // Decal textures
+            let _ = Self::read_tex_desc(stream)?;
+        }
+
+        // Shader textures (since 10.0.1.0)
+        if stream.version() >= crate::version::NifVersion(0x0A000100) {
+            let num_shader_textures = stream.read_u32_le()?;
+            for _ in 0..num_shader_textures {
+                let has = stream.read_byte_bool()?;
+                if has {
+                    let _source_ref = stream.read_block_ref()?;
+                    if stream.version() >= crate::version::NifVersion(0x14010003) {
+                        let _flags = stream.read_u16_le()?;
+                    } else {
+                        let _clamp = stream.read_u32_le()?;
+                        let _filter = stream.read_u32_le()?;
+                        let _uv_set = stream.read_u32_le()?;
+                    }
+                    let _map_id = stream.read_u32_le()?;
+                }
+            }
         }
 
         Ok(Self {
@@ -197,32 +221,45 @@ impl NiTexturingProperty {
     }
 
     fn read_tex_desc(stream: &mut NifStream) -> io::Result<Option<TexDesc>> {
-        let has = stream.read_bool()?;
+        // "Has Texture" — always a byte bool in NiTexturingProperty,
+        // even for v20.2.0.7 where most other bools are NiBool u32.
+        let has = stream.read_byte_bool()?;
         if !has {
             return Ok(None);
         }
         let source_ref = stream.read_block_ref()?;
-        let clamp_mode = stream.read_u32_le()?;
-        let filter_mode = stream.read_u32_le()?;
-        let uv_set = stream.read_u32_le()?;
 
-        // PS2-specific fields in older versions — skip
-        if stream.version() <= crate::version::NifVersion(0x0A040001) {
-            let _ps2_l = stream.read_u16_le()?;
-            let _ps2_k = stream.read_u16_le()?;
-        }
+        if stream.version() >= crate::version::NifVersion(0x14010003) {
+            // v >= 20.1.0.3: TexDesc uses a packed u16 flags field
+            // (contains clamp mode, filter mode, UV set).
+            let flags = stream.read_u16_le()?;
+            Ok(Some(TexDesc { source_ref, flags }))
+        } else {
+            // Older versions: separate u32 fields + optional transform.
+            let clamp_mode = stream.read_u32_le()?;
+            let filter_mode = stream.read_u32_le()?;
+            let uv_set = stream.read_u32_le()?;
 
-        // Has texture transform (version >= 10.1.0.0)
-        if stream.version() >= crate::version::NifVersion(0x0A010000) {
-            let has_transform = stream.read_bool()?;
-            if has_transform {
-                // Translation (2 floats), tiling (2 floats), w rotation (1 float),
-                // transform type (u32), center offset (2 floats)
-                stream.skip(4 * 5 + 4 + 4 * 2);
+            // PS2-specific fields in older versions — skip
+            if stream.version() <= crate::version::NifVersion(0x0A040001) {
+                let _ps2_l = stream.read_u16_le()?;
+                let _ps2_k = stream.read_u16_le()?;
             }
-        }
 
-        Ok(Some(TexDesc { source_ref, clamp_mode, filter_mode, uv_set }))
+            // Has texture transform (version >= 10.1.0.0, < 20.1.0.3)
+            if stream.version() >= crate::version::NifVersion(0x0A010000) {
+                let has_transform = stream.read_byte_bool()?;
+                if has_transform {
+                    // Translation (2 floats), tiling (2 floats), w rotation (1 float),
+                    // transform type (u32), center offset (2 floats)
+                    stream.skip(4 * 5 + 4 + 4 * 2);
+                }
+            }
+
+            // Pack the old fields into the flags u16 for uniform access.
+            let flags = ((clamp_mode & 0xF) as u16) | (((filter_mode & 0xF) as u16) << 4) | (((uv_set & 0xF) as u16) << 8);
+            Ok(Some(TexDesc { source_ref, flags }))
+        }
     }
 }
 
