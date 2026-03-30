@@ -9,6 +9,7 @@
 //! stable [`FormIdPair`] identity.
 
 pub mod datastore;
+pub mod esm;
 pub mod legacy;
 pub mod manifest;
 pub mod record;

@@ -10,3 +10,5 @@ semver = { workspace = true }
 toml = { workspace = true }
 serde = { workspace = true }
 anyhow = { workspace = true }
+flate2 = { workspace = true }
+log = { workspace = true }

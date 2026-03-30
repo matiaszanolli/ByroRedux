@@ -1,5 +1,7 @@
 //! ByroRedux — ECS-driven game loop with Vulkan rendering.
 
+mod cell_loader;
+
 use anyhow::Result;
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::ecs::{
@@ -180,20 +182,43 @@ impl App {
         self.world.insert(blue_tri, MeshHandle(blue_handle));
         self.world.insert(blue_tri, Spinning);
 
-        // Load NIF from CLI: either a loose file or from a BSA archive.
-        //   cargo run -- path/to/file.nif
-        //   cargo run -- --bsa path.bsa --mesh meshes\foo.nif
-        let nif_count = load_nif_from_args(&mut self.world, ctx);
+        // Load content from CLI: cell, loose NIF, or BSA NIF.
+        let args: Vec<String> = std::env::args().collect();
+        let mut cam_center = Vec3::ZERO;
+        let mut has_nif_content = false;
 
-        // Spawn camera entity looking at the origin.
-        // Pull back for Bethesda-scale meshes (~1 unit ≈ 1.4 cm).
+        // Cell loading mode: --esm <path> --cell <editor_id>
+        if let Some(esm_idx) = args.iter().position(|a| a == "--esm") {
+            if let (Some(esm_path), Some(cell_id)) = (
+                args.get(esm_idx + 1),
+                args.iter().position(|a| a == "--cell").and_then(|i| args.get(i + 1)),
+            ) {
+                let tex_provider = build_texture_provider(&args);
+                match cell_loader::load_cell(esm_path, cell_id, &mut self.world, ctx, &tex_provider) {
+                    Ok(result) => {
+                        cam_center = result.center;
+                        has_nif_content = true;
+                        log::info!("Cell '{}' ready: {} entities", result.cell_name, result.entity_count);
+                    }
+                    Err(e) => log::error!("Failed to load cell: {:#}", e),
+                }
+            } else {
+                log::error!("--esm requires --cell <editor_id>");
+            }
+        } else {
+            // NIF loading mode: loose file or BSA extraction.
+            let nif_count = load_nif_from_args(&mut self.world, ctx);
+            has_nif_content = nif_count > 0;
+        }
+
+        // Spawn camera entity looking at the scene center.
         let cam = self.world.spawn();
-        let cam_pos = if nif_count > 0 {
-            Vec3::new(0.0, 10.0, 30.0)
+        let cam_pos = if has_nif_content {
+            cam_center + Vec3::new(0.0, 100.0, 200.0)
         } else {
             Vec3::new(0.0, 1.5, 4.0)
         };
-        let cam_target = Vec3::ZERO;
+        let cam_target = cam_center;
         let forward = (cam_target - cam_pos).normalize();
         let cam_rotation = Quat::from_rotation_arc(-Vec3::Z, forward);
         self.world.insert(
@@ -203,32 +228,84 @@ impl App {
         self.world.insert(cam, Camera::default());
         self.world.insert_resource(ActiveCamera(cam));
 
-        log::info!(
-            "Scene ready: 1 textured cube, 1 textured quad, 2 triangles, {} NIF meshes, 1 camera",
-            nif_count
-        );
+        let total_entities = self.world.entity_count();
+        log::info!("Scene ready: {} entities, 1 camera", total_entities);
     }
 
 }
 
-/// Provides DDS texture data by searching BSA archives and loose files.
-struct TextureProvider {
-    archives: Vec<byroredux_bsa::BsaArchive>,
+/// Provides file data by searching BSA archives.
+pub(crate) struct TextureProvider {
+    texture_archives: Vec<byroredux_bsa::BsaArchive>,
+    mesh_archives: Vec<byroredux_bsa::BsaArchive>,
 }
 
 impl TextureProvider {
     fn new() -> Self {
-        Self { archives: Vec::new() }
+        Self {
+            texture_archives: Vec::new(),
+            mesh_archives: Vec::new(),
+        }
     }
 
+    /// Extract a texture (DDS) from texture BSAs.
     fn extract(&self, path: &str) -> Option<Vec<u8>> {
-        for archive in &self.archives {
+        for archive in &self.texture_archives {
             if let Ok(data) = archive.extract(path) {
                 return Some(data);
             }
         }
         None
     }
+
+    /// Extract a mesh (NIF) from mesh BSAs.
+    pub(crate) fn extract_mesh(&self, path: &str) -> Option<Vec<u8>> {
+        for archive in &self.mesh_archives {
+            if let Ok(data) = archive.extract(path) {
+                return Some(data);
+            }
+        }
+        None
+    }
+}
+
+/// Build a TextureProvider from CLI arguments.
+fn build_texture_provider(args: &[String]) -> TextureProvider {
+    let mut provider = TextureProvider::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--textures-bsa" => {
+                if let Some(path) = args.get(i + 1) {
+                    match byroredux_bsa::BsaArchive::open(path) {
+                        Ok(a) => {
+                            log::info!("Opened textures BSA: '{}'", path);
+                            provider.texture_archives.push(a);
+                        }
+                        Err(e) => log::warn!("Failed to open textures BSA '{}': {}", path, e),
+                    }
+                    i += 2;
+                    continue;
+                }
+            }
+            "--bsa" => {
+                if let Some(path) = args.get(i + 1) {
+                    match byroredux_bsa::BsaArchive::open(path) {
+                        Ok(a) => {
+                            log::info!("Opened mesh BSA: '{}'", path);
+                            provider.mesh_archives.push(a);
+                        }
+                        Err(e) => log::warn!("Failed to open mesh BSA '{}': {}", path, e),
+                    }
+                    i += 2;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    provider
 }
 
 /// Parse CLI arguments and load NIF data accordingly.
@@ -240,7 +317,7 @@ impl TextureProvider {
 fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> usize {
     let args: Vec<String> = std::env::args().collect();
 
-    // Collect texture BSA archives.
+    // Collect BSA archives.
     let mut tex_provider = TextureProvider::new();
     let mut i = 0;
     while i < args.len() {
@@ -249,7 +326,7 @@ fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> usize {
                 match byroredux_bsa::BsaArchive::open(path) {
                     Ok(a) => {
                         log::info!("Opened textures BSA: '{}'", path);
-                        tex_provider.archives.push(a);
+                        tex_provider.texture_archives.push(a);
                     }
                     Err(e) => log::warn!("Failed to open textures BSA '{}': {}", path, e),
                 }
@@ -258,6 +335,17 @@ fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> usize {
             }
         }
         i += 1;
+    }
+    // The --bsa mesh archive is also added to the provider for cell loading.
+    if let Some(bsa_idx) = args.iter().position(|a| a == "--bsa") {
+        if let Some(bsa_path) = args.get(bsa_idx + 1) {
+            match byroredux_bsa::BsaArchive::open(bsa_path) {
+                Ok(a) => {
+                    tex_provider.mesh_archives.push(a);
+                }
+                Err(_) => {} // Will be reported below in the mesh extraction path.
+            }
+        }
     }
 
     if let Some(bsa_idx) = args.iter().position(|a| a == "--bsa") {
@@ -297,7 +385,7 @@ fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> usize {
 }
 
 /// Parse NIF bytes, import meshes, upload to GPU, load textures, and spawn ECS entities.
-fn load_nif_bytes(
+pub(crate) fn load_nif_bytes(
     world: &mut World,
     ctx: &mut VulkanContext,
     data: &[u8],
