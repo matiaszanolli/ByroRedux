@@ -4,7 +4,7 @@
 //! 4-char type code, data size, flags, and form ID. Records contain
 //! sub-records (type + size + data). Groups contain other records/groups.
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use flate2::read::ZlibDecoder;
 use std::io::Read;
 

@@ -8,14 +8,14 @@
 
 use byroredux_core::ecs::{MeshHandle, TextureHandle, Transform, World};
 use byroredux_core::math::{Quat, Vec3};
-use byroredux_plugin::esm::{self, CellData, EsmCellIndex};
+use byroredux_plugin::esm;
 use byroredux_renderer::VulkanContext;
 use std::collections::HashMap;
-use std::path::Path;
 
 use crate::{load_nif_bytes, TextureProvider};
 
 /// Result of loading a cell.
+#[allow(dead_code)]
 pub struct CellLoadResult {
     pub cell_name: String,
     pub entity_count: usize,
@@ -62,30 +62,43 @@ pub fn load_cell(
     );
 
     // 3. Load each placed reference.
-    let alloc = ctx.allocator.as_ref().unwrap();
     let mut entity_count = 0;
     let mut mesh_cache: HashMap<String, (u32, u32)> = HashMap::new(); // path → (mesh_handle, tex_handle)
     let mut bounds_min = Vec3::splat(f32::INFINITY);
     let mut bounds_max = Vec3::splat(f32::NEG_INFINITY);
 
+    let mut stat_miss = 0u32;
+    let mut stat_hit = 0u32;
     for placed_ref in &cell.references {
         // Resolve base form ID → STAT → model path.
         let stat = match index.statics.get(&placed_ref.base_form_id) {
-            Some(s) => s,
+            Some(s) => {
+                stat_hit += 1;
+                s
+            }
             None => {
-                // Not a STAT — could be FURN, DOOR, MSTT, ACTI, etc. Skip for now.
+                stat_miss += 1;
+                if stat_miss <= 5 {
+                    log::debug!("REFR base {:08X} not in STAT table", placed_ref.base_form_id);
+                }
                 continue;
             }
         };
 
-        let model_path = &stat.model_path;
+        // STAT model paths omit the "meshes\" prefix that BSA paths include.
+        let model_path = if stat.model_path.to_ascii_lowercase().starts_with("meshes\\")
+            || stat.model_path.to_ascii_lowercase().starts_with("meshes/") {
+            stat.model_path.clone()
+        } else {
+            format!("meshes\\{}", stat.model_path)
+        };
 
         // Check mesh cache — don't re-upload the same NIF.
-        let (mesh_handle, tex_handle) = if let Some(&cached) = mesh_cache.get(model_path) {
+        let (mesh_handle, tex_handle) = if let Some(&cached) = mesh_cache.get(&model_path) {
             cached
         } else {
             // Load NIF from BSA.
-            let nif_data = match tex_provider.extract_mesh(model_path) {
+            let nif_data = match tex_provider.extract_mesh(&model_path) {
                 Some(d) => d,
                 None => {
                     log::debug!("NIF not found in BSA: '{}'", model_path);
@@ -94,7 +107,7 @@ pub fn load_cell(
             };
 
             // Parse NIF and upload first mesh (most STATs have one shape).
-            let mesh_count = load_nif_bytes(world, ctx, &nif_data, model_path, tex_provider);
+            let mesh_count = load_nif_bytes(world, ctx, &nif_data, &model_path, tex_provider);
             if mesh_count == 0 {
                 continue;
             }
@@ -137,8 +150,8 @@ pub fn load_cell(
     let center = (bounds_min + bounds_max) * 0.5;
 
     log::info!(
-        "Cell '{}' loaded: {} entities, {} unique meshes, center=[{:.0},{:.0},{:.0}]",
-        cell.editor_id, entity_count, mesh_cache.len(),
+        "Cell '{}' loaded: {} entities, {} unique meshes, {} STAT hits, {} STAT misses, center=[{:.0},{:.0},{:.0}]",
+        cell.editor_id, entity_count, mesh_cache.len(), stat_hit, stat_miss,
         center.x, center.y, center.z,
     );
 

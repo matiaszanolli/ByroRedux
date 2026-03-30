@@ -3,7 +3,7 @@
 //! Walks the GRUP tree to find interior cells, their placed references (REFR),
 //! and resolves base form IDs to static object definitions (STAT) for NIF paths.
 
-use super::reader::{EsmReader, GroupHeader, RecordHeader};
+use super::reader::EsmReader;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
