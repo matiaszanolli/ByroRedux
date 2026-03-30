@@ -1,19 +1,12 @@
-//! ByroRedux — ECS-driven game loop with spinning cube.
+//! ByroRedux — ECS-driven game loop with Vulkan rendering.
 
 use anyhow::Result;
+use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::ecs::{
-    ActiveCamera, Camera, Component, DeltaTime, EngineConfig, MeshHandle, Scheduler,
+    ActiveCamera, Camera, Component, DebugStats, DeltaTime, EngineConfig, MeshHandle, Scheduler,
     SparseSetStorage, TextureHandle, TotalTime, Transform, World,
 };
 use byroredux_core::math::{Mat3, Quat, Vec3};
-
-/// Marker component for entities that should spin in the demo scene.
-#[derive(Debug, Clone, Copy)]
-struct Spinning;
-
-impl Component for Spinning {
-    type Storage = SparseSetStorage<Self>;
-}
 use byroredux_core::types::Color;
 use byroredux_platform::window::{self, WindowConfig};
 use byroredux_renderer::vulkan::context::DrawCommand;
@@ -24,20 +17,53 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
+/// Marker component for entities that should spin in the demo scene.
+#[derive(Debug, Clone, Copy)]
+struct Spinning;
+
+impl Component for Spinning {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// System names stored as a resource for the `systems` console command.
+struct SystemList(Vec<String>);
+impl byroredux_core::ecs::Resource for SystemList {}
+
 fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let debug_mode = args.iter().any(|a| a == "--debug");
+
+    // Set up logging. --debug forces debug level.
+    if debug_mode {
+        std::env::set_var("RUST_LOG", std::env::var("RUST_LOG").unwrap_or("debug".into()));
+    }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     log::info!("ByroRedux starting");
-
-    // Verify C++ bridge is linked.
     log::info!("{}", byroredux_cxx_bridge::ffi::native_hello());
 
-    // Scripting subsystem is initialized per-world in App::new().
+    // Headless --cmd mode: execute command and exit without creating a window.
+    if let Some(cmd_idx) = args.iter().position(|a| a == "--cmd") {
+        let input = args.get(cmd_idx + 1).map(|s| s.as_str()).unwrap_or("help");
+        let mut world = World::new();
+        world.insert_resource(DebugStats::default());
+        world.insert_resource(EngineConfig { debug_logging: true, ..Default::default() });
+        let registry = build_command_registry();
+        world.insert_resource(SystemList(Vec::new()));
+        world.insert_resource(registry);
+        let reg = world.resource::<CommandRegistry>();
+        let output = reg.execute(&world, input);
+        drop(reg);
+        for line in &output.lines {
+            println!("{}", line);
+        }
+        return Ok(());
+    }
 
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::new();
+    let mut app = App::new(debug_mode);
     event_loop.run_app(&mut app)?;
 
     Ok(())
@@ -52,13 +78,17 @@ struct App {
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(debug_mode: bool) -> Self {
         let mut world = World::new();
 
         // Register built-in resources.
         world.insert_resource(DeltaTime(0.0));
         world.insert_resource(TotalTime(0.0));
-        world.insert_resource(EngineConfig::default());
+        world.insert_resource(EngineConfig {
+            debug_logging: debug_mode || cfg!(debug_assertions),
+            ..Default::default()
+        });
+        world.insert_resource(DebugStats::default());
 
         // Register scripting component storages.
         byroredux_scripting::register(&mut world);
@@ -69,6 +99,11 @@ impl App {
         scheduler.add(byroredux_scripting::timer_tick_system);
         scheduler.add(log_stats_system);
         scheduler.add(byroredux_scripting::event_cleanup_system);
+
+        // Store system names + console commands as resources.
+        let system_names: Vec<String> = scheduler.system_names().iter().map(|s| s.to_string()).collect();
+        world.insert_resource(SystemList(system_names));
+        world.insert_resource(build_command_registry());
 
         Self {
             window: None,
@@ -376,17 +411,25 @@ fn spin_system(world: &World, dt: f32) {
     }
 }
 
-/// Logs TotalTime and dt once per second.
+/// Logs engine stats once per second using DebugStats.
 fn log_stats_system(world: &World, _dt: f32) {
+    let config = world.resource::<EngineConfig>();
+    if !config.debug_logging {
+        return;
+    }
+
     let total = world.resource::<TotalTime>().0;
     let dt = world.resource::<DeltaTime>().0;
-
     let prev = total - dt;
+
     if prev < 0.0 || total.floor() != prev.floor() {
-        let config = world.resource::<EngineConfig>();
-        if config.debug_logging {
-            log::info!("[stats] total={:.1}s  dt={:.2}ms", total, dt * 1000.0);
-        }
+        let stats = world.resource::<DebugStats>();
+        log::info!(
+            target: "engine::stats",
+            "fps={:.0} avg={:.0} dt={:.2}ms entities={} meshes={} textures={} draws={}",
+            stats.fps, stats.avg_fps(), stats.frame_time_ms,
+            stats.entity_count, stats.mesh_count, stats.texture_count, stats.draw_call_count,
+        );
     }
 }
 
@@ -467,8 +510,12 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(ref mut ctx) = self.renderer {
-                    // Build view-projection matrix from camera.
                     let (view_proj, draw_commands) = build_render_data(&self.world);
+
+                    // Record draw call count for diagnostics.
+                    world_resource_set::<DebugStats>(&self.world, |s| {
+                        s.draw_call_count = draw_commands.len() as u32;
+                    });
 
                     let color = Color::CORNFLOWER_BLUE;
                     match ctx.draw_frame(color.as_array(), &view_proj, &draw_commands) {
@@ -507,13 +554,114 @@ impl ApplicationHandler for App {
         world_resource_set::<DeltaTime>(&self.world, |r| r.0 = dt);
         world_resource_set::<TotalTime>(&self.world, |r| r.0 += dt);
 
-        // Run all systems (spin, stats).
+        // Update debug stats.
+        {
+            let mut stats = self.world.resource_mut::<DebugStats>();
+            stats.push_frame_time(dt);
+            stats.entity_count = self.world.entity_count() as u32;
+            if let Some(ref ctx) = self.renderer {
+                stats.mesh_count = ctx.mesh_registry.len() as u32;
+                stats.texture_count = ctx.texture_registry.len() as u32;
+            }
+        }
+
+        // Run all systems.
         self.scheduler.run(&self.world, dt);
+
+        // Update window title with stats (throttled: every 16 frames ≈ 4×/sec at 60fps).
+        let config_debug = self.world.resource::<EngineConfig>().debug_logging;
+        if config_debug {
+            let stats = self.world.resource::<DebugStats>();
+            if stats.frame_index() % 16 == 0 {
+                if let Some(ref win) = self.window {
+                    win.set_title(&format!(
+                        "ByroRedux | {:.0} FPS | {:.1}ms | {} entities | {} meshes | {} textures | {} draws",
+                        stats.avg_fps(), stats.frame_time_ms,
+                        stats.entity_count, stats.mesh_count, stats.texture_count, stats.draw_call_count,
+                    ));
+                }
+            }
+        }
 
         if let Some(ref win) = self.window {
             win.request_redraw();
         }
     }
+}
+
+// ── Console commands ────────────────────────────────────────────────────
+
+struct HelpCommand;
+impl ConsoleCommand for HelpCommand {
+    fn name(&self) -> &str { "help" }
+    fn description(&self) -> &str { "List all available commands" }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let registry = world.resource::<CommandRegistry>();
+        let mut lines = vec!["Available commands:".to_string()];
+        for (name, desc) in registry.list() {
+            lines.push(format!("  {:16} {}", name, desc));
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
+struct StatsCommand;
+impl ConsoleCommand for StatsCommand {
+    fn name(&self) -> &str { "stats" }
+    fn description(&self) -> &str { "Show engine performance statistics" }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let stats = world.resource::<DebugStats>();
+        let (min_dt, max_dt) = stats.min_max_frame_time();
+        CommandOutput::lines(vec![
+            format!("FPS:       {:.0} (avg {:.0})", stats.fps, stats.avg_fps()),
+            format!("Frame:     {:.2}ms (min {:.2}ms, max {:.2}ms)", stats.frame_time_ms, min_dt * 1000.0, max_dt * 1000.0),
+            format!("Entities:  {}", stats.entity_count),
+            format!("Meshes:    {}", stats.mesh_count),
+            format!("Textures:  {}", stats.texture_count),
+            format!("Draws:     {}", stats.draw_call_count),
+        ])
+    }
+}
+
+struct EntitiesCommand;
+impl ConsoleCommand for EntitiesCommand {
+    fn name(&self) -> &str { "entities" }
+    fn description(&self) -> &str { "Show entity count and component breakdown" }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let total = world.entity_count();
+        let mut lines = vec![format!("Total entities spawned: {}", total)];
+        lines.push(format!("  Transform:     {}", world.count::<Transform>()));
+        lines.push(format!("  MeshHandle:    {}", world.count::<MeshHandle>()));
+        lines.push(format!("  TextureHandle: {}", world.count::<TextureHandle>()));
+        lines.push(format!("  Camera:        {}", world.count::<Camera>()));
+        CommandOutput::lines(lines)
+    }
+}
+
+struct SystemsCommand;
+impl ConsoleCommand for SystemsCommand {
+    fn name(&self) -> &str { "systems" }
+    fn description(&self) -> &str { "List registered ECS systems" }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        if let Some(list) = world.try_resource::<SystemList>() {
+            let mut lines = vec![format!("Registered systems ({}):", list.0.len())];
+            for (i, name) in list.0.iter().enumerate() {
+                lines.push(format!("  [{}] {}", i, name));
+            }
+            CommandOutput::lines(lines)
+        } else {
+            CommandOutput::line("No system list available")
+        }
+    }
+}
+
+fn build_command_registry() -> CommandRegistry {
+    let mut registry = CommandRegistry::new();
+    registry.register(HelpCommand);
+    registry.register(StatsCommand);
+    registry.register(EntitiesCommand);
+    registry.register(SystemsCommand);
+    registry
 }
 
 /// Build the view-projection matrix and draw command list from ECS queries.

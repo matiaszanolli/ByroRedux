@@ -57,6 +57,10 @@ impl MeshRegistry {
         self.meshes.get(id as usize)
     }
 
+    pub fn len(&self) -> usize {
+        self.meshes.len()
+    }
+
     pub fn destroy_all(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         for mesh in &mut self.meshes {
             mesh.destroy(device, allocator);
