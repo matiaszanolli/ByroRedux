@@ -4,6 +4,27 @@ A clean rebuild of the Gamebryo/Creation engine lineage in **Rust + C++**, using
 
 Not a port — a ground-up rebuild that understands the legacy architecture and builds modern equivalents.
 
+## Current State
+
+Loads and renders real Fallout: New Vegas meshes with their original textures:
+
+```bash
+cargo run -- --bsa "Fallout - Meshes.bsa" \
+             --mesh "meshes\clutter\food\beerbottle01.nif" \
+             --textures-bsa "Fallout - Textures.bsa"
+```
+
+| Feature | Status |
+|---------|--------|
+| ECS with pluggable storage (SparseSet + Packed) | Working |
+| Vulkan renderer with depth buffer, directional lighting | Working |
+| NIF parser (15 block types, Z-up → Y-up conversion) | Working |
+| DDS texture loading (BC1/BC3, mipmaps, per-mesh binding) | Working |
+| BSA v104 archive reader (zlib, embedded file names) | Working |
+| Plugin system with stable Form IDs, conflict resolution | Working |
+| ECS-native scripting (events, timers) | Working |
+| 196 unit tests | Passing |
+
 ## Architecture
 
 ```
@@ -30,19 +51,13 @@ World wraps each storage in `RwLock` so query methods take `&self`, enabling con
 
 ### Renderer
 
-Full Vulkan initialization chain (13 steps) via `ash`. No shortcuts:
+Full Vulkan initialization chain via `ash`. No shortcuts:
 
-Instance + validation layers, debug messenger, surface, physical/logical device, swapchain, render pass, graphics pipeline with push constants, framebuffers, command pool/buffers, GPU memory allocation via `gpu-allocator`, per-image synchronization.
+Instance + validation layers, debug messenger, surface, physical/logical device, swapchain, render pass, graphics pipeline with push constants, framebuffers, command pool/buffers, GPU memory allocation via `gpu-allocator`, per-image synchronization, DDS texture upload (BC-compressed with mipmaps), per-mesh descriptor set binding.
 
-## Current State
+### Asset Pipeline
 
-- ECS with pluggable storage (SparseSet + Packed), system scheduler, resources, string interning
-- Vulkan renderer: graphics pipeline, depth buffer, texturing, directional lighting
-- NIF parser: 15 block types, scene graph flattening, real Fallout New Vegas meshes
-- BSA archive reader: v104 format, zlib decompression, CLI integration
-- Plugin system: stable Form IDs, DAG-based conflict resolution, legacy bridge
-- ECS-native scripting: events, timers, Papyrus VM elimination
-- 167 unit tests
+NIF files are parsed with version-aware binary reading (Gamebryo 20.0.0.3 – 34.1.1.3), scene graphs are flattened into ECS entities with coordinate conversion (Gamebryo Z-up → renderer Y-up), and DDS textures are extracted from BSA archives and uploaded directly to Vulkan as BC-compressed images.
 
 ## Building
 
@@ -58,8 +73,12 @@ Instance + validation layers, debug messenger, surface, physical/logical device,
 
 ```bash
 cargo build
-cargo run        # Opens window with spinning cube
-cargo test       # Run all tests
+cargo run                          # Demo scene with spinning cube
+cargo run -- path/to/mesh.nif      # Render a loose NIF file
+cargo run -- --bsa meshes.bsa \
+             --mesh meshes\foo.nif \
+             --textures-bsa textures.bsa  # Render from BSA archives
+cargo test                         # Run all 196 tests
 ```
 
 ### Shader Compilation
@@ -76,7 +95,7 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 
 - [Engine Documentation](docs/engine/index.md) — architecture, ECS, renderer, game loop
 - [Legacy Gamebryo 2.3 Analysis](docs/legacy/gamebryo-2.3-architecture.md) — class hierarchy, NIF format, compatibility mapping
-- [Development Roadmap](docs/engine/architecture.md)
+- [Development Roadmap](ROADMAP.md) — milestones, game compatibility, known issues
 
 ## Roadmap
 
@@ -91,12 +110,12 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 | 7. Depth buffer | Done | Correct occlusion, multiple objects |
 | 8. Texturing | Done | Staging upload, descriptor sets, sampled checkerboard |
 | 9. NIF parser | Done | 15 block types, scene graph walking, version-aware parsing |
-| 10. NIF-to-ECS import | Done | Scene graph flattening, geometry/material extraction |
+| 10. NIF-to-ECS import | Done | Scene graph flattening, Z-up → Y-up, geometry/material extraction |
 | 11. Real asset loading | Done | FNV meshes, BSA v104 reader, CLI integration |
 | 12. Scripting foundation | Done | ECS-native events, timers, Papyrus VM elimination |
 | 13. Directional lighting | Done | Vertex normals, directional light in fragment shader |
 | 14. DDS textures | Done | DDS parser, TextureRegistry, per-mesh texture binding |
-| 15. Multi-light system | Planned | Point lights, spotlights, light components in ECS |
+| 15. Multi-light system | Next | Point lights, spotlights, light components in ECS |
 | 16. Skyrim SE NIF | Planned | BSLightingShaderProperty, version branching |
 | 17. Animation | Planned | Keyframe playback from .kf files |
 
@@ -114,7 +133,7 @@ See [ROADMAP.md](ROADMAP.md) for the full roadmap with details, known issues, an
 | uuid | Stable plugin identity (UUID v5) |
 | semver | Plugin version parsing |
 | serde + toml | Plugin manifest parsing |
-| image | PNG/texture loading |
+| flate2 | BSA zlib decompression |
 | cxx | C++ interop |
 
 ## License
