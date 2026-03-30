@@ -44,7 +44,7 @@ pub enum NifVariant {
     Morrowind,
     /// Oblivion (NIF 20.0.0.5, user_version < 11)
     Oblivion,
-    /// Fallout 3 / Fallout New Vegas (NIF 20.2.0.7, uv=11, uv2=34)
+    /// Fallout 3 / Fallout New Vegas (NIF 20.2.0.7, uv=11, uv2≤34)
     Fallout3NV,
     /// Skyrim LE (NIF 20.2.0.7, uv=12, uv2=83)
     SkyrimLE,
@@ -52,6 +52,10 @@ pub enum NifVariant {
     SkyrimSE,
     /// Fallout 4 (NIF 20.2.0.7, uv=12, uv2=130)
     Fallout4,
+    /// Fallout 76 (NIF 20.2.0.7, uv=12, uv2=155)
+    Fallout76,
+    /// Starfield (NIF 20.2.0.7, uv=12, uv2≥170)
+    Starfield,
     /// Unknown version — parse with best effort.
     Unknown,
 }
@@ -68,8 +72,25 @@ impl NifVariant {
             (11, uv2) if uv2 <= 34 => Self::Fallout3NV,
             (12, uv2) if uv2 <= 83 => Self::SkyrimLE,
             (12, uv2) if uv2 <= 100 => Self::SkyrimSE,
-            (12, uv2) if uv2 >= 130 => Self::Fallout4,
+            (12, uv2) if uv2 >= 130 && uv2 < 155 => Self::Fallout4,
+            (12, 155) => Self::Fallout76,
+            (12, uv2) if uv2 >= 170 => Self::Starfield,
             _ => Self::Unknown,
+        }
+    }
+
+    /// BSVER value for nif.xml compatibility.
+    /// This is the user_version_2 that nif.xml uses for version conditionals.
+    pub fn bsver(self) -> u32 {
+        match self {
+            Self::Morrowind | Self::Oblivion => 0,
+            Self::Fallout3NV => 34,
+            Self::SkyrimLE => 83,
+            Self::SkyrimSE => 100,
+            Self::Fallout4 => 130,
+            Self::Fallout76 => 155,
+            Self::Starfield => 172,
+            Self::Unknown => 0,
         }
     }
 
@@ -108,9 +129,67 @@ impl NifVariant {
     }
 
     /// Uses BSLightingShaderProperty instead of BSShaderPPLightingProperty.
-    /// Present in Skyrim+ (user_version >= 12).
+    /// Present in Skyrim+ (BSVER >= 83). nif.xml: #SKY_AND_LATER#.
     pub fn uses_bs_lighting_shader(self) -> bool {
-        matches!(self, Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4)
+        matches!(self, Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4 | Self::Fallout76 | Self::Starfield)
+    }
+
+    // ── NiAVObject feature flags (from nif.xml) ───────────────────
+
+    /// NiAVObject has Num Properties + Properties list.
+    /// nif.xml: `#NI_BS_LTE_FO3#` (BSVER ≤ 34). Removed in Skyrim+.
+    pub fn has_properties_list(self) -> bool {
+        matches!(self, Self::Morrowind | Self::Oblivion | Self::Fallout3NV)
+    }
+
+    /// NiAVObject flags field is u32 (BSVER > 26). Older versions use u16.
+    /// nif.xml: flags is uint for BSVER > 26, ushort otherwise.
+    pub fn avobject_flags_u32(self) -> bool {
+        matches!(self, Self::Fallout3NV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4 | Self::Fallout76 | Self::Starfield)
+    }
+
+    // ── NiGeometry feature flags ──────────────────────────────────
+
+    /// NiGeometry has Shader Property + Alpha Property refs.
+    /// nif.xml: `#BS_GT_FO3#` (BSVER > 34). Present in Skyrim+, NOT in FNV.
+    pub fn has_shader_alpha_refs(self) -> bool {
+        matches!(self, Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4 | Self::Fallout76 | Self::Starfield)
+    }
+
+    // ── NiNode feature flags ──────────────────────────────────────
+
+    /// NiNode has Num Effects + Effects list.
+    /// nif.xml: `#NI_BS_LT_FO4#` (BSVER < 130). Present in everything pre-FO4.
+    pub fn has_effects_list(self) -> bool {
+        matches!(self, Self::Morrowind | Self::Oblivion | Self::Fallout3NV | Self::SkyrimLE | Self::SkyrimSE)
+    }
+
+    // ── BSShaderProperty feature flags ────────────────────────────
+
+    /// BSShaderProperty has ShaderType, ShaderFlags, ShaderFlags2, EnvMapScale.
+    /// nif.xml: `#NI_BS_LTE_FO3#` (BSVER ≤ 34). Only FO3/FNV.
+    pub fn has_shader_property_fo3_fields(self) -> bool {
+        matches!(self, Self::Fallout3NV)
+    }
+
+    /// BSLightingShaderProperty uses FO4 shader flag format.
+    /// nif.xml: `#BS_FO4#` (BSVER == 130) or `#BS_FO4_2#` (130-139).
+    pub fn uses_fo4_shader_flags(self) -> bool {
+        matches!(self, Self::Fallout4)
+    }
+
+    /// BSLightingShaderProperty uses FO76/Starfield shader flag format.
+    /// nif.xml: `#BS_GTE_132#`.
+    pub fn uses_fo76_shader_flags(self) -> bool {
+        matches!(self, Self::Fallout76 | Self::Starfield)
+    }
+
+    // ── BSTriShape (SSE+ specific geometry) ───────────────────────
+
+    /// Uses BSTriShape instead of NiTriShape for geometry.
+    /// nif.xml: `#SSE# #FO4# #F76#`. SSE and later.
+    pub fn uses_bs_tri_shape(self) -> bool {
+        matches!(self, Self::SkyrimSE | Self::Fallout4 | Self::Fallout76 | Self::Starfield)
     }
 }
 
@@ -198,6 +277,60 @@ mod tests {
             NifVariant::detect(NifVersion::V20_2_0_7, 12, 130),
             NifVariant::Fallout4,
         );
+    }
+
+    #[test]
+    fn detect_fallout76() {
+        assert_eq!(
+            NifVariant::detect(NifVersion::V20_2_0_7, 12, 155),
+            NifVariant::Fallout76,
+        );
+    }
+
+    #[test]
+    fn detect_starfield() {
+        assert_eq!(
+            NifVariant::detect(NifVersion::V20_2_0_7, 12, 172),
+            NifVariant::Starfield,
+        );
+    }
+
+    #[test]
+    fn bsver_values() {
+        assert_eq!(NifVariant::Fallout3NV.bsver(), 34);
+        assert_eq!(NifVariant::SkyrimLE.bsver(), 83);
+        assert_eq!(NifVariant::SkyrimSE.bsver(), 100);
+        assert_eq!(NifVariant::Fallout4.bsver(), 130);
+        assert_eq!(NifVariant::Fallout76.bsver(), 155);
+    }
+
+    #[test]
+    fn feature_properties_list() {
+        // FNV and earlier have properties list on NiAVObject
+        assert!(NifVariant::Morrowind.has_properties_list());
+        assert!(NifVariant::Oblivion.has_properties_list());
+        assert!(NifVariant::Fallout3NV.has_properties_list());
+        // Skyrim+ removed it
+        assert!(!NifVariant::SkyrimLE.has_properties_list());
+        assert!(!NifVariant::SkyrimSE.has_properties_list());
+        assert!(!NifVariant::Fallout4.has_properties_list());
+    }
+
+    #[test]
+    fn feature_shader_alpha_refs() {
+        // Skyrim+ has dedicated shader/alpha property refs on NiGeometry
+        assert!(!NifVariant::Fallout3NV.has_shader_alpha_refs());
+        assert!(NifVariant::SkyrimLE.has_shader_alpha_refs());
+        assert!(NifVariant::SkyrimSE.has_shader_alpha_refs());
+        assert!(NifVariant::Fallout4.has_shader_alpha_refs());
+    }
+
+    #[test]
+    fn feature_effects_list() {
+        // Everything before FO4 has effects list on NiNode
+        assert!(NifVariant::Fallout3NV.has_effects_list());
+        assert!(NifVariant::SkyrimSE.has_effects_list());
+        assert!(!NifVariant::Fallout4.has_effects_list());
     }
 
     #[test]
