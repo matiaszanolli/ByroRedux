@@ -12,7 +12,7 @@ use byroredux_plugin::esm;
 use byroredux_renderer::VulkanContext;
 use std::collections::HashMap;
 
-use crate::{load_nif_bytes, TextureProvider};
+use crate::TextureProvider;
 
 /// Result of loading a cell.
 #[allow(dead_code)]
@@ -63,7 +63,7 @@ pub fn load_cell(
 
     // 3. Load each placed reference.
     let mut entity_count = 0;
-    let mut mesh_cache: HashMap<String, (u32, u32)> = HashMap::new(); // path → (mesh_handle, tex_handle)
+    let mut mesh_cache: HashMap<String, Vec<u8>> = HashMap::new(); // path → raw NIF bytes
     let mut bounds_min = Vec3::splat(f32::INFINITY);
     let mut bounds_max = Vec3::splat(f32::NEG_INFINITY);
 
@@ -91,58 +91,49 @@ pub fn load_cell(
             format!("meshes\\{}", stat.model_path)
         };
 
-        // Check mesh cache — don't re-upload the same NIF.
-        let (mesh_handle, tex_handle) = if let Some(&cached) = mesh_cache.get(&model_path) {
-            cached
-        } else {
-            // Load NIF from BSA.
-            let nif_data = match tex_provider.extract_mesh(&model_path) {
-                Some(d) => d,
-                None => {
-                    log::debug!("NIF not found in BSA: '{}'", model_path);
-                    continue;
-                }
-            };
-
-            // Parse NIF and upload first mesh (most STATs have one shape).
-            let mesh_count = load_nif_bytes(world, ctx, &nif_data, &model_path, tex_provider);
-            if mesh_count == 0 {
-                continue;
-            }
-
-            // The NIF loader spawned entities — get the last one's handles.
-            // This is a workaround until we have a proper "upload mesh only" API.
-            // For now, we'll record the handles from the NIF loader's entities.
-            let (mh, th) = get_last_mesh_handles(world);
-            mesh_cache.insert(model_path.clone(), (mh, th));
-            (mh, th)
-        };
-
-        // Convert Z-up → Y-up: position (x,y,z) → (x,z,-y), rotation similarly.
-        let pos = Vec3::new(
+        // Convert REFR placement: Z-up → Y-up.
+        let ref_pos = Vec3::new(
             placed_ref.position[0],
             placed_ref.position[2],
             -placed_ref.position[1],
         );
-
-        // Euler rotation: Bethesda stores (rx, ry, rz) in Z-up.
-        // Convert to Y-up quaternion.
-        let rot = euler_zup_to_quat_yup(
+        let ref_rot = euler_zup_to_quat_yup(
             placed_ref.rotation[0],
             placed_ref.rotation[1],
             placed_ref.rotation[2],
         );
+        let ref_scale = placed_ref.scale;
 
         // Update bounds.
-        bounds_min = bounds_min.min(pos);
-        bounds_max = bounds_max.max(pos);
+        bounds_min = bounds_min.min(ref_pos);
+        bounds_max = bounds_max.max(ref_pos);
 
-        // Spawn entity.
-        let entity = world.spawn();
-        world.insert(entity, Transform::new(pos, rot, placed_ref.scale));
-        world.insert(entity, MeshHandle(mesh_handle));
-        world.insert(entity, TextureHandle(tex_handle));
-        entity_count += 1;
+        // For cached NIFs, we need to re-upload the meshes for each placement
+        // because each REFR has its own transform. But we can avoid re-parsing
+        // the NIF by caching the parsed import data.
+        //
+        // For now, load the NIF each time (parsing is fast, GPU upload dominates).
+        // The mesh cache prevents re-loading the same NIF from BSA.
+        let nif_data = match mesh_cache.get(&model_path) {
+            Some(data) => data.clone(),
+            None => {
+                match tex_provider.extract_mesh(&model_path) {
+                    Some(d) => {
+                        mesh_cache.insert(model_path.clone(), d.clone());
+                        d
+                    }
+                    None => {
+                        log::debug!("NIF not found in BSA: '{}'", model_path);
+                        continue;
+                    }
+                }
+            }
+        };
+
+        // Parse NIF, upload meshes, spawn entities with REFR transform applied.
+        let count = load_nif_placed(world, ctx, &nif_data, &model_path, tex_provider,
+                                     ref_pos, ref_rot, ref_scale);
+        entity_count += count;
     }
 
     let center = (bounds_min + bounds_max) * 0.5;
@@ -159,6 +150,100 @@ pub fn load_cell(
         mesh_count: mesh_cache.len(),
         center,
     })
+}
+
+/// Parse a NIF and spawn all its sub-meshes with a parent REFR transform applied.
+///
+/// Each NIF sub-mesh has its own local transform (from the NIF scene graph).
+/// The REFR placement transform is composed on top as the parent.
+fn load_nif_placed(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    nif_data: &[u8],
+    label: &str,
+    tex_provider: &TextureProvider,
+    ref_pos: Vec3,
+    ref_rot: Quat,
+    ref_scale: f32,
+) -> usize {
+    use byroredux_core::math::Mat3;
+    use byroredux_renderer::Vertex;
+
+    let scene = match byroredux_nif::parse_nif(nif_data) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("Failed to parse NIF '{}': {}", label, e);
+            return 0;
+        }
+    };
+
+    let imported = byroredux_nif::import::import_nif(&scene);
+    let alloc = ctx.allocator.as_ref().unwrap();
+    let mut count = 0;
+
+    for mesh in &imported {
+        let num_verts = mesh.positions.len();
+        let vertices: Vec<Vertex> = (0..num_verts)
+            .map(|i| {
+                Vertex::new(
+                    mesh.positions[i],
+                    if i < mesh.colors.len() { mesh.colors[i] } else { [1.0, 1.0, 1.0] },
+                    if i < mesh.normals.len() { mesh.normals[i] } else { [0.0, 1.0, 0.0] },
+                    if i < mesh.uvs.len() { mesh.uvs[i] } else { [0.0, 0.0] },
+                )
+            })
+            .collect();
+
+        let mesh_handle = match ctx.mesh_registry.upload(&ctx.device, alloc, &vertices, &mesh.indices) {
+            Ok(h) => h,
+            Err(e) => {
+                log::warn!("Failed to upload mesh: {}", e);
+                continue;
+            }
+        };
+
+        // Load texture.
+        let tex_handle = match &mesh.texture_path {
+            Some(tex_path) => {
+                if let Some(cached) = ctx.texture_registry.get_by_path(tex_path) {
+                    cached
+                } else if let Some(dds_bytes) = tex_provider.extract(tex_path) {
+                    ctx.texture_registry.load_dds(
+                        &ctx.device, alloc, ctx.graphics_queue, ctx.command_pool,
+                        tex_path, &dds_bytes,
+                    ).unwrap_or_else(|_| ctx.texture_registry.fallback())
+                } else {
+                    ctx.texture_registry.fallback()
+                }
+            }
+            None => ctx.texture_registry.fallback(),
+        };
+
+        // Compose: REFR parent transform * NIF local transform.
+        let nif_rotation = Mat3::from_cols(
+            Vec3::new(mesh.rotation[0][0], mesh.rotation[1][0], mesh.rotation[2][0]),
+            Vec3::new(mesh.rotation[0][1], mesh.rotation[1][1], mesh.rotation[2][1]),
+            Vec3::new(mesh.rotation[0][2], mesh.rotation[1][2], mesh.rotation[2][2]),
+        );
+        let nif_quat = Quat::from_mat3(&nif_rotation);
+        let nif_pos = Vec3::new(mesh.translation[0], mesh.translation[1], mesh.translation[2]);
+
+        // Composed: parent_rot * (parent_scale * child_pos) + parent_pos
+        let final_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
+        let final_rot = ref_rot * nif_quat;
+        let final_scale = ref_scale * mesh.scale;
+
+        let entity = world.spawn();
+        world.insert(entity, Transform::new(final_pos, final_rot, final_scale));
+        world.insert(entity, MeshHandle(mesh_handle));
+        world.insert(entity, TextureHandle(tex_handle));
+        if mesh.has_alpha {
+            world.insert(entity, crate::AlphaBlend);
+        }
+        count += 1;
+    }
+
+    count
 }
 
 /// Convert Euler angles (radians, Z-up Bethesda convention) to a Y-up quaternion.
@@ -180,19 +265,3 @@ fn euler_zup_to_quat_yup(rx: f32, ry: f32, rz: f32) -> Quat {
     yaw * pitch * roll
 }
 
-/// Get the mesh and texture handles of the most recently spawned entity with MeshHandle.
-fn get_last_mesh_handles(world: &World) -> (u32, u32) {
-    let mut last_mesh = 0u32;
-    let mut last_tex = 0u32;
-    if let Some(mq) = world.query::<MeshHandle>() {
-        for (entity, mh) in mq.iter() {
-            last_mesh = mh.0;
-            if let Some(tq) = world.query::<TextureHandle>() {
-                if let Some(th) = tq.get(entity) {
-                    last_tex = th.0;
-                }
-            }
-        }
-    }
-    (last_mesh, last_tex)
-}
