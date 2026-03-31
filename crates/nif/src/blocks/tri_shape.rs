@@ -355,10 +355,13 @@ impl NiTriStripsData {
         let mut triangles = Vec::new();
         for strip in &self.strips {
             for i in 2..strip.len() {
+                // OpenGL/Vulkan strip convention (CCW front face):
+                // Even triangles: standard order. Odd: swap last two to maintain CCW.
+                // D3D convention swaps first two on odd — produces CW instead.
                 let (a, b, c) = if i % 2 == 0 {
                     (strip[i - 2], strip[i - 1], strip[i])
                 } else {
-                    (strip[i - 1], strip[i - 2], strip[i]) // flip winding
+                    (strip[i - 2], strip[i], strip[i - 1])
                 };
                 // Skip degenerate triangles (strip stitching)
                 if a != b && b != c && a != c {

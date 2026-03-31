@@ -2,3 +2,6 @@
 **/*.rs.bk
 *.pdb
 .env
+
+# Third-party dev tools (cloned locally, not tracked)
+/tools/

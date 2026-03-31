@@ -35,14 +35,11 @@ impl Camera {
 
     /// Build a perspective projection matrix (Vulkan clip space: Y-down, Z 0..1).
     pub fn projection_matrix(&self) -> Mat4 {
-        // glam's perspective_rh produces right-handed with Z in [-1, 1].
-        // For Vulkan we need Z in [0, 1] — use perspective_rh with a
-        // correction or use the infinite variant. glam has a dedicated
-        // Vulkan-friendly function when using the right setup.
-        //
-        // Manual Vulkan correction: flip Y and remap Z.
+        // glam's perspective_rh already maps Z to [0, 1] (Vulkan/D3D convention).
+        // Only the Y-flip is needed for Vulkan's inverted Y axis.
+        // Note: the Y-flip reverses apparent triangle winding in clip space —
+        // CW triangles (NIF/D3D) appear CCW after this, matching our front face setting.
         let mut proj = Mat4::perspective_rh(self.fov_y, self.aspect, self.near, self.far);
-        // Vulkan Y is inverted compared to OpenGL.
         proj.col_mut(1).y *= -1.0;
         proj
     }
@@ -65,7 +62,7 @@ impl Default for Camera {
         Self {
             fov_y: std::f32::consts::FRAC_PI_4, // 45°
             near: 0.1,
-            far: 1000.0,
+            far: 50000.0,
             aspect: 16.0 / 9.0,
         }
     }
@@ -90,7 +87,7 @@ mod tests {
         let cam = Camera::default();
         assert!((cam.fov_y - FRAC_PI_4).abs() < 1e-6);
         assert!((cam.near - 0.1).abs() < 1e-6);
-        assert!((cam.far - 1000.0).abs() < 1e-6);
+        assert!((cam.far - 50000.0).abs() < 1e-6);
     }
 
     #[test]

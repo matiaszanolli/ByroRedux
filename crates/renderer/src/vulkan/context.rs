@@ -25,6 +25,7 @@ pub struct DrawCommand {
     pub texture_handle: u32,
     pub model_matrix: [f32; 16],
     pub alpha_blend: bool,
+    pub two_sided: bool,
 }
 
 pub struct VulkanContext {
@@ -42,6 +43,8 @@ pub struct VulkanContext {
     pub texture_registry: TextureRegistry,
     pipeline: vk::Pipeline,
     pipeline_alpha: vk::Pipeline,
+    pipeline_two_sided: vk::Pipeline,
+    pipeline_alpha_two_sided: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     vert_module: vk::ShaderModule,
     frag_module: vk::ShaderModule,
@@ -154,8 +157,7 @@ impl VulkanContext {
         )?;
 
         // 12. Graphics pipeline (with depth test + descriptor set layout)
-        let (pipeline_handle, pipeline_alpha_handle, pipeline_layout, vert_module, frag_module) =
-            pipeline::create_triangle_pipeline(
+        let pipelines = pipeline::create_triangle_pipeline(
                 &device,
                 render_pass,
                 swapchain_state.extent,
@@ -193,11 +195,13 @@ impl VulkanContext {
             swapchain_state,
             allocator: Some(gpu_allocator),
             render_pass,
-            pipeline: pipeline_handle,
-            pipeline_alpha: pipeline_alpha_handle,
-            pipeline_layout,
-            vert_module,
-            frag_module,
+            pipeline: pipelines.opaque,
+            pipeline_alpha: pipelines.alpha,
+            pipeline_two_sided: pipelines.opaque_two_sided,
+            pipeline_alpha_two_sided: pipelines.alpha_two_sided,
+            pipeline_layout: pipelines.layout,
+            vert_module: pipelines.vert_module,
+            frag_module: pipelines.frag_module,
             mesh_registry,
             texture_registry,
             depth_allocation: Some(depth_allocation),
@@ -350,25 +354,27 @@ impl VulkanContext {
                 view_proj_bytes,
             );
 
-            // Two-pass draw: opaque objects first, then alpha-blended.
+            // Draw: opaque first, then alpha-blended. Switch pipeline on mode change.
             let mut last_texture = u32::MAX;
-            let mut last_alpha = false;
+            let mut last_pipeline_key = (false, false); // (alpha_blend, two_sided)
 
             for draw_cmd in draw_commands {
                 if let Some(mesh) = self.mesh_registry.get(draw_cmd.mesh_handle) {
-                    // Switch pipeline when alpha mode changes.
-                    if draw_cmd.alpha_blend != last_alpha {
-                        let pipe = if draw_cmd.alpha_blend {
-                            self.pipeline_alpha
-                        } else {
-                            self.pipeline
+                    // Switch pipeline when rendering mode changes.
+                    let pipeline_key = (draw_cmd.alpha_blend, draw_cmd.two_sided);
+                    if pipeline_key != last_pipeline_key {
+                        let pipe = match pipeline_key {
+                            (false, false) => self.pipeline,
+                            (true,  false) => self.pipeline_alpha,
+                            (false, true)  => self.pipeline_two_sided,
+                            (true,  true)  => self.pipeline_alpha_two_sided,
                         };
                         self.device.cmd_bind_pipeline(
                             cmd,
                             vk::PipelineBindPoint::GRAPHICS,
                             pipe,
                         );
-                        last_alpha = draw_cmd.alpha_blend;
+                        last_pipeline_key = pipeline_key;
                         // Force rebind of texture after pipeline switch.
                         last_texture = u32::MAX;
                     }
@@ -599,6 +605,8 @@ impl Drop for VulkanContext {
             }
             self.device.destroy_pipeline(self.pipeline, None);
             self.device.destroy_pipeline(self.pipeline_alpha, None);
+            self.device.destroy_pipeline(self.pipeline_two_sided, None);
+            self.device.destroy_pipeline(self.pipeline_alpha_two_sided, None);
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
             self.device.destroy_shader_module(self.vert_module, None);

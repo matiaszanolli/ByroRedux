@@ -83,9 +83,19 @@ pub fn load_cell(
             }
         };
 
+        // Skip non-renderable effect meshes (light rays, fog planes, etc.).
+        let model_lower = stat.model_path.to_ascii_lowercase();
+        if model_lower.contains("fxlightrays")
+            || model_lower.contains("fxlight")
+            || model_lower.contains("fxfog")
+        {
+            log::debug!("Skipping FX mesh: '{}'", stat.model_path);
+            continue;
+        }
+
         // STAT model paths omit the "meshes\" prefix that BSA paths include.
-        let model_path = if stat.model_path.to_ascii_lowercase().starts_with("meshes\\")
-            || stat.model_path.to_ascii_lowercase().starts_with("meshes/") {
+        let model_path = if model_lower.starts_with("meshes\\")
+            || model_lower.starts_with("meshes/") {
             stat.model_path.clone()
         } else {
             format!("meshes\\{}", stat.model_path)
@@ -147,11 +157,24 @@ pub fn load_cell(
 
     let center = (bounds_min + bounds_max) * 0.5;
 
+    let dims = bounds_max - bounds_min;
     log::info!(
-        "Cell '{}' loaded: {} entities, {} unique meshes, {} STAT hits, {} STAT misses, center=[{:.0},{:.0},{:.0}]",
+        "Cell '{}' loaded: {} entities, {} unique meshes, {} STAT hits, {} STAT misses",
         cell.editor_id, entity_count, mesh_cache.len(), stat_hit, stat_miss,
+    );
+    log::info!(
+        "  Bounds: min=[{:.0},{:.0},{:.0}] max=[{:.0},{:.0},{:.0}] size=[{:.0},{:.0},{:.0}] center=[{:.0},{:.0},{:.0}]",
+        bounds_min.x, bounds_min.y, bounds_min.z,
+        bounds_max.x, bounds_max.y, bounds_max.z,
+        dims.x, dims.y, dims.z,
         center.x, center.y, center.z,
     );
+    if stat_miss > 0 {
+        log::warn!(
+            "  {} REFR base forms not found in STAT table — run with RUST_LOG=debug for details",
+            stat_miss,
+        );
+    }
 
     Ok(CellLoadResult {
         cell_name: cell.editor_id.clone(),
@@ -175,7 +198,6 @@ fn load_nif_placed(
     ref_rot: Quat,
     ref_scale: f32,
 ) -> usize {
-    use byroredux_core::math::Mat3;
     use byroredux_renderer::Vertex;
 
     let scene = match byroredux_nif::parse_nif(nif_data) {
@@ -244,6 +266,19 @@ fn load_nif_placed(
         let final_rot = ref_rot * nif_quat;
         let final_scale = ref_scale * mesh.scale;
 
+        // Diagnostic: log meshes with significant NIF-internal offsets
+        // (these are wall/structural pieces most likely to show positioning issues)
+        let nif_offset_len = nif_pos.length();
+        if nif_offset_len > 50.0 {
+            log::debug!(
+                "  NIF offset {:.0} for '{}' mesh {:?}: nif_pos=({:.0},{:.0},{:.0}) \
+                 final=({:.0},{:.0},{:.0})",
+                nif_offset_len, label, mesh.name,
+                nif_pos.x, nif_pos.y, nif_pos.z,
+                final_pos.x, final_pos.y, final_pos.z,
+            );
+        }
+
         let entity = world.spawn();
         world.insert(entity, Transform::new(final_pos, final_rot, final_scale));
         world.insert(entity, MeshHandle(mesh_handle));
@@ -262,15 +297,20 @@ fn load_nif_placed(
 
 /// Convert Euler angles (radians, Z-up Bethesda convention) to a Y-up quaternion.
 ///
-/// Bethesda rotation in Z-up: R = Rz(rz) · Ry(ry) · Rx(rx)
+/// Bethesda uses Gamebryo's **clockwise-positive** rotation convention:
+///   R = Rz_cw(rz) · Ry_cw(ry) · Rx_cw(rx)
+///
+/// Since glam uses the standard counter-clockwise convention, each
+/// CW rotation by angle t equals a CCW rotation by -t:
+///   R = Rz_ccw(-rz) · Ry_ccw(-ry) · Rx_ccw(-rx)
 ///
 /// Coordinate change C: (x,y,z)_zup → (x,z,-y)_yup conjugates each:
-///   C · Rx(a) · C^T = Rx(a)    (x → x)
-///   C · Ry(a) · C^T = Rz(-a)   (y → -z)
-///   C · Rz(a) · C^T = Ry(a)    (z → y)
+///   C · Rx(-rx) · C^T = Rx(-rx)     (x → x)
+///   C · Ry(-ry) · C^T = Rz(ry)      (y → -z, double negate)
+///   C · Rz(-rz) · C^T = Ry(-rz)     (z → y)
 ///
-/// Result: R_yup = Ry(rz) · Rz(-ry) · Rx(rx)
+/// Result: R_yup = Ry(-rz) · Rz(ry) · Rx(-rx)
 fn euler_zup_to_quat_yup(rx: f32, ry: f32, rz: f32) -> Quat {
-    Quat::from_rotation_y(rz) * Quat::from_rotation_z(-ry) * Quat::from_rotation_x(rx)
+    Quat::from_rotation_y(-rz) * Quat::from_rotation_z(ry) * Quat::from_rotation_x(-rx)
 }
 

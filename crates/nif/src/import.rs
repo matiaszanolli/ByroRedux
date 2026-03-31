@@ -382,13 +382,78 @@ fn find_two_sided(scene: &NifScene, shape: &NiTriShape) -> bool {
 /// translation = parent.rot * (parent.scale * child.trans) + parent.trans,
 /// scale = parent.scale * child.scale.
 fn compose_transforms(parent: &NiTransform, child: &NiTransform) -> NiTransform {
-    let rot = mul_matrix3(&parent.rotation, &child.rotation);
+    let parent_rot = if is_degenerate_rotation(&parent.rotation) {
+        // SVD-repair and check if the original had meaningful orientation.
+        // Near-zero matrices (e.g. BSFadeNode roots with garbage data) have tiny
+        // singular values — SVD produces an arbitrary rotation that would scatter
+        // child positions. Fall back to identity for those.
+        // Scaled rotations (det >> 1 but valid orientation) get the correct
+        // rotation extracted via SVD.
+        repair_rotation_svd_or_identity(&parent.rotation)
+    } else {
+        parent.rotation
+    };
+
+    let rot = mul_matrix3(&parent_rot, &child.rotation);
     let scaled_child_trans = scale_point(child.translation, parent.scale);
-    let rotated = mul_matrix3_point(&parent.rotation, scaled_child_trans);
+    let rotated = mul_matrix3_point(&parent_rot, scaled_child_trans);
     let translation = add_points(parent.translation, rotated);
     let scale = parent.scale * child.scale;
 
     NiTransform { rotation: rot, translation, scale }
+}
+
+/// Check if a rotation matrix is degenerate (det far from 1.0).
+fn is_degenerate_rotation(m: &NiMatrix3) -> bool {
+    let r = &m.rows;
+    let det = r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
+            - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+            + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
+    (det - 1.0).abs() >= 0.1
+}
+
+/// SVD-repair a degenerate rotation matrix, or return identity if the matrix
+/// has no meaningful orientation (all singular values near zero).
+///
+/// Uses nalgebra SVD: M = U*Σ*Vt → nearest rotation = U*Vt (with det correction).
+/// If the maximum singular value is below a threshold, the matrix is considered
+/// garbage (e.g. BSFadeNode with zeroed rotation) and identity is returned.
+fn repair_rotation_svd_or_identity(m: &NiMatrix3) -> NiMatrix3 {
+    use nalgebra::Matrix3;
+
+    let r = &m.rows;
+    let mat = Matrix3::new(
+        r[0][0], r[0][1], r[0][2],
+        r[1][0], r[1][1], r[1][2],
+        r[2][0], r[2][1], r[2][2],
+    );
+
+    let svd = mat.svd(true, true);
+
+    // If the largest singular value is tiny, the matrix carries no meaningful
+    // orientation — return identity rather than an arbitrary SVD rotation.
+    let max_sv = svd.singular_values.max();
+    if max_sv < 0.01 {
+        return NiMatrix3::default();
+    }
+
+    let u = svd.u.unwrap();
+    let vt = svd.v_t.unwrap();
+    let mut nearest = u * vt;
+
+    if nearest.determinant() < 0.0 {
+        let mut u_fixed = u;
+        u_fixed.column_mut(2).scale_mut(-1.0);
+        nearest = u_fixed * vt;
+    }
+
+    NiMatrix3 {
+        rows: [
+            [nearest[(0, 0)], nearest[(0, 1)], nearest[(0, 2)]],
+            [nearest[(1, 0)], nearest[(1, 1)], nearest[(1, 2)]],
+            [nearest[(2, 0)], nearest[(2, 1)], nearest[(2, 2)]],
+        ],
+    }
 }
 
 fn mul_matrix3(a: &NiMatrix3, b: &NiMatrix3) -> NiMatrix3 {
@@ -420,6 +485,12 @@ fn add_points(a: NiPoint3, b: NiPoint3) -> NiPoint3 {
 }
 
 /// Convert a Z-up NiMatrix3 rotation to a Y-up quaternion [x, y, z, w].
+///
+/// Gamebryo uses a clockwise-positive rotation convention, so its rotation
+/// matrices are the transpose of the standard (CCW) convention. However,
+/// the matrix × point multiplication produces the SAME physical result
+/// regardless of convention — the matrix IS the rotation. So we can
+/// extract a quaternion directly from the NIF matrix without transposing.
 ///
 /// Uses SVD decomposition (via nalgebra) to handle degenerate matrices
 /// that Gamebryo NIF files sometimes contain (rank-deficient, det=0).
@@ -870,5 +941,128 @@ mod tests {
 
         // Original triangle: [0, 1, 2] — winding must be preserved
         assert_eq!(meshes[0].indices, vec![0, 1, 2]);
+    }
+
+    // ── Degenerate rotation regression tests ──────────────────────────
+
+    #[test]
+    fn compose_degenerate_zero_matrix_uses_identity() {
+        // A parent with an all-zero rotation matrix (garbage BSFadeNode data).
+        // Children should pass through with their own transforms intact.
+        let zero_rot = NiMatrix3 {
+            rows: [[0.0; 3]; 3],
+        };
+        let parent = NiTransform {
+            rotation: zero_rot,
+            translation: NiPoint3 { x: 10.0, y: 0.0, z: 0.0 },
+            scale: 1.0,
+        };
+        let child = translated(5.0, 0.0, 0.0);
+        let result = compose_transforms(&parent, &child);
+
+        // With identity fallback: child translation passes through unrotated.
+        assert!((result.translation.x - 15.0).abs() < 1e-4);
+        assert!((result.translation.y).abs() < 1e-4);
+        assert!((result.translation.z).abs() < 1e-4);
+    }
+
+    #[test]
+    fn compose_degenerate_scaled_rotation_uses_svd() {
+        // A parent with a 2x-scaled identity rotation (det=8, degenerate threshold).
+        // SVD should extract the identity rotation and use it for both
+        // rotation composition and translation rotation.
+        let scaled_identity = NiMatrix3 {
+            rows: [
+                [2.0, 0.0, 0.0],
+                [0.0, 2.0, 0.0],
+                [0.0, 0.0, 2.0],
+            ],
+        };
+        let parent = NiTransform {
+            rotation: scaled_identity,
+            translation: NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+            scale: 1.0,
+        };
+        let child = translated(3.0, 4.0, 5.0);
+        let result = compose_transforms(&parent, &child);
+
+        // SVD extracts identity from 2*I → child translation passes through.
+        assert!((result.translation.x - 3.0).abs() < 1e-4);
+        assert!((result.translation.y - 4.0).abs() < 1e-4);
+        assert!((result.translation.z - 5.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn compose_degenerate_scaled_rotation_rotates_child() {
+        // A parent with a 2x-scaled 90° rotation around Z.
+        // det = 8 → degenerate. SVD should extract the 90° Z rotation
+        // and apply it to both rotation and translation.
+        let scaled_rot_z90 = NiMatrix3 {
+            rows: [
+                [0.0, -2.0, 0.0],
+                [2.0,  0.0, 0.0],
+                [0.0,  0.0, 2.0],
+            ],
+        };
+        let parent = NiTransform {
+            rotation: scaled_rot_z90,
+            translation: NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+            scale: 1.0,
+        };
+        // Child at (1, 0, 0). After 90° Z rotation → (0, 1, 0).
+        let child = translated(1.0, 0.0, 0.0);
+        let result = compose_transforms(&parent, &child);
+
+        assert!((result.translation.x).abs() < 1e-4, "x={}", result.translation.x);
+        assert!((result.translation.y - 1.0).abs() < 1e-4, "y={}", result.translation.y);
+        assert!((result.translation.z).abs() < 1e-4, "z={}", result.translation.z);
+    }
+
+    #[test]
+    fn zup_to_yup_90deg_ccw_rotation_around_z() {
+        // A NIF matrix representing 90° CCW around Z-up.
+        // In Gamebryo CW convention this is Rz_cw(-90°), but the physical
+        // rotation is the same — the matrix IS the rotation, convention only
+        // affects angle labeling. After Z→Y conversion: 90° CCW around Y.
+        //
+        // Standard Rz(90°) = [[0,-1,0],[1,0,0],[0,0,1]]
+        // Gamebryo Rz_cw(-90°) = same matrix (CW by -90° = CCW by 90°)
+        let rot_z90 = NiMatrix3 {
+            rows: [
+                [0.0, -1.0, 0.0],
+                [1.0,  0.0, 0.0],
+                [0.0,  0.0, 1.0],
+            ],
+        };
+        let q = zup_matrix_to_yup_quat(&rot_z90);
+        // Expected: 90° CCW around Y → quat (0, sin(45°), 0, cos(45°))
+        let sin45 = std::f32::consts::FRAC_PI_4.sin();
+        let cos45 = std::f32::consts::FRAC_PI_4.cos();
+        assert!(q[0].abs() < 1e-4, "qx={}", q[0]);
+        assert!((q[1].abs() - sin45).abs() < 1e-4, "qy={}", q[1]);
+        assert!(q[2].abs() < 1e-4, "qz={}", q[2]);
+        assert!((q[3].abs() - cos45).abs() < 1e-4, "qw={}", q[3]);
+    }
+
+    #[test]
+    fn zup_to_yup_90deg_ccw_rotation_around_x() {
+        // A NIF matrix representing 90° CCW around X-axis.
+        // Standard Rx(90°) = [[1,0,0],[0,0,-1],[0,1,0]]
+        // After Z→Y: still 90° CCW around X (X axis is unchanged by the conversion).
+        let rot_x90 = NiMatrix3 {
+            rows: [
+                [1.0, 0.0,  0.0],
+                [0.0, 0.0, -1.0],
+                [0.0, 1.0,  0.0],
+            ],
+        };
+        let q = zup_matrix_to_yup_quat(&rot_x90);
+        // Expected: 90° CCW around X → quat (sin(45°), 0, 0, cos(45°))
+        let sin45 = std::f32::consts::FRAC_PI_4.sin();
+        let cos45 = std::f32::consts::FRAC_PI_4.cos();
+        assert!((q[0].abs() - sin45).abs() < 1e-4, "qx={}", q[0]);
+        assert!(q[1].abs() < 1e-4, "qy={}", q[1]);
+        assert!(q[2].abs() < 1e-4, "qz={}", q[2]);
+        assert!((q[3].abs() - cos45).abs() < 1e-4, "qw={}", q[3]);
     }
 }

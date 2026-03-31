@@ -28,13 +28,24 @@ pub fn load_shader_module(device: &ash::Device, spv: &[u8]) -> Result<vk::Shader
     Ok(module)
 }
 
-/// Creates the graphics pipeline with textured rendering.
+/// Pipeline set: opaque, alpha, opaque-two-sided, alpha-two-sided.
+pub struct PipelineSet {
+    pub opaque: vk::Pipeline,
+    pub alpha: vk::Pipeline,
+    pub opaque_two_sided: vk::Pipeline,
+    pub alpha_two_sided: vk::Pipeline,
+    pub layout: vk::PipelineLayout,
+    pub vert_module: vk::ShaderModule,
+    pub frag_module: vk::ShaderModule,
+}
+
+/// Creates the graphics pipelines with textured rendering.
 pub fn create_triangle_pipeline(
     device: &ash::Device,
     render_pass: vk::RenderPass,
     extent: vk::Extent2D,
     descriptor_set_layout: vk::DescriptorSetLayout,
-) -> Result<(vk::Pipeline, vk::Pipeline, vk::PipelineLayout, vk::ShaderModule, vk::ShaderModule)> {
+) -> Result<PipelineSet> {
     let vert_spv = include_bytes!("../../shaders/triangle.vert.spv");
     let frag_spv = include_bytes!("../../shaders/triangle.frag.spv");
 
@@ -83,12 +94,26 @@ pub fn create_triangle_pipeline(
         .viewports(&viewports)
         .scissors(&scissors);
 
+    // Backface culling disabled until NIF winding convention is verified
+    // empirically. The Z-up→Y-up conversion preserves winding (det=+1),
+    // and the projection Y-flip swaps apparent winding in clip space.
+    // Once we confirm NIF winding (CW or CCW), enable BACK culling
+    // with the matching front_face setting.
     let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
         .depth_clamp_enable(false)
         .rasterizer_discard_enable(false)
         .polygon_mode(vk::PolygonMode::FILL)
         .line_width(1.0)
-        .cull_mode(vk::CullModeFlags::BACK)
+        .cull_mode(vk::CullModeFlags::NONE)
+        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+        .depth_bias_enable(false);
+
+    let rasterizer_no_cull = vk::PipelineRasterizationStateCreateInfo::default()
+        .depth_clamp_enable(false)
+        .rasterizer_discard_enable(false)
+        .polygon_mode(vk::PolygonMode::FILL)
+        .line_width(1.0)
+        .cull_mode(vk::CullModeFlags::NONE)
         .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
         .depth_bias_enable(false);
 
@@ -183,6 +208,34 @@ pub fn create_triangle_pipeline(
             .layout(pipeline_layout)
             .render_pass(render_pass)
             .subpass(0),
+        // [2] Opaque two-sided (no backface culling).
+        vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer_no_cull)
+            .multisample_state(&multisampling)
+            .depth_stencil_state(&depth_stencil_opaque)
+            .color_blend_state(&color_blending)
+            .dynamic_state(&dynamic_state)
+            .layout(pipeline_layout)
+            .render_pass(render_pass)
+            .subpass(0),
+        // [3] Alpha-blended two-sided (no backface culling).
+        vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer_no_cull)
+            .multisample_state(&multisampling)
+            .depth_stencil_state(&depth_stencil_alpha)
+            .color_blend_state(&color_blending_alpha)
+            .dynamic_state(&dynamic_state)
+            .layout(pipeline_layout)
+            .render_pass(render_pass)
+            .subpass(0),
     ];
 
     let pipelines = unsafe {
@@ -192,7 +245,15 @@ pub fn create_triangle_pipeline(
             .context("Failed to create graphics pipelines")?
     };
 
-    log::info!("Graphics pipelines created (opaque + alpha blend)");
+    log::info!("Graphics pipelines created (opaque + alpha + two-sided variants)");
 
-    Ok((pipelines[0], pipelines[1], pipeline_layout, vert_module, frag_module))
+    Ok(PipelineSet {
+        opaque: pipelines[0],
+        alpha: pipelines[1],
+        opaque_two_sided: pipelines[2],
+        alpha_two_sided: pipelines[3],
+        layout: pipeline_layout,
+        vert_module,
+        frag_module,
+    })
 }
