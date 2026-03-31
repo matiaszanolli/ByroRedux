@@ -102,6 +102,15 @@ pub fn load_cell(
             placed_ref.rotation[1],
             placed_ref.rotation[2],
         );
+        if placed_ref.rotation[0].abs() > 0.001 || placed_ref.rotation[1].abs() > 0.001 {
+            log::debug!(
+                "REFR base {:08X} '{}' rot=({:.4}, {:.4}, {:.4}) pos=({:.0}, {:.0}, {:.0})",
+                placed_ref.base_form_id,
+                stat.model_path,
+                placed_ref.rotation[0], placed_ref.rotation[1], placed_ref.rotation[2],
+                placed_ref.position[0], placed_ref.position[1], placed_ref.position[2],
+            );
+        }
         let ref_scale = placed_ref.scale;
 
         // Update bounds.
@@ -211,8 +220,12 @@ fn load_nif_placed(
                     ctx.texture_registry.load_dds(
                         &ctx.device, alloc, ctx.graphics_queue, ctx.command_pool,
                         tex_path, &dds_bytes,
-                    ).unwrap_or_else(|_| ctx.texture_registry.fallback())
+                    ).unwrap_or_else(|e| {
+                        log::warn!("Failed to load DDS '{}': {}", tex_path, e);
+                        ctx.texture_registry.fallback()
+                    })
                 } else {
+                    log::debug!("Texture not found in BSA: '{}'", tex_path);
                     ctx.texture_registry.fallback()
                 }
             }
@@ -220,12 +233,10 @@ fn load_nif_placed(
         };
 
         // Compose: REFR parent transform * NIF local transform.
-        let nif_rotation = Mat3::from_cols(
-            Vec3::new(mesh.rotation[0][0], mesh.rotation[1][0], mesh.rotation[2][0]),
-            Vec3::new(mesh.rotation[0][1], mesh.rotation[1][1], mesh.rotation[2][1]),
-            Vec3::new(mesh.rotation[0][2], mesh.rotation[1][2], mesh.rotation[2][2]),
+        // mesh.rotation is already a Y-up quaternion [x,y,z,w] extracted via SVD.
+        let nif_quat = Quat::from_xyzw(
+            mesh.rotation[0], mesh.rotation[1], mesh.rotation[2], mesh.rotation[3],
         );
-        let nif_quat = Quat::from_mat3(&nif_rotation);
         let nif_pos = Vec3::new(mesh.translation[0], mesh.translation[1], mesh.translation[2]);
 
         // Composed: parent_rot * (parent_scale * child_pos) + parent_pos
@@ -240,6 +251,9 @@ fn load_nif_placed(
         if mesh.has_alpha {
             world.insert(entity, crate::AlphaBlend);
         }
+        if mesh.two_sided {
+            world.insert(entity, crate::TwoSided);
+        }
         count += 1;
     }
 
@@ -248,20 +262,15 @@ fn load_nif_placed(
 
 /// Convert Euler angles (radians, Z-up Bethesda convention) to a Y-up quaternion.
 ///
-/// Bethesda stores Euler angles as (rx, ry, rz) in a Z-up coordinate system:
-///   rz = rotation around Z (up axis) → yaw in Y-up
-///   rx = rotation around X (right axis) → pitch in Y-up
-///   ry = rotation around Y (forward axis in Z-up) → roll around Z in Y-up
+/// Bethesda rotation in Z-up: R = Rz(rz) · Ry(ry) · Rx(rx)
 ///
-/// We remap axis meanings and compose in Y-up directly.
+/// Coordinate change C: (x,y,z)_zup → (x,z,-y)_yup conjugates each:
+///   C · Rx(a) · C^T = Rx(a)    (x → x)
+///   C · Ry(a) · C^T = Rz(-a)   (y → -z)
+///   C · Rz(a) · C^T = Ry(a)    (z → y)
+///
+/// Result: R_yup = Ry(rz) · Rz(-ry) · Rx(rx)
 fn euler_zup_to_quat_yup(rx: f32, ry: f32, rz: f32) -> Quat {
-    // In Y-up space:
-    //   yaw   = rotation around Y (up)   ← Bethesda rz
-    //   pitch = rotation around X (right) ← Bethesda rx
-    //   roll  = rotation around Z (fwd)   ← Bethesda -ry (sign flip from axis swap)
-    let yaw = Quat::from_rotation_y(rz);
-    let pitch = Quat::from_rotation_x(-rx);
-    let roll = Quat::from_rotation_z(ry);
-    yaw * pitch * roll
+    Quat::from_rotation_y(rz) * Quat::from_rotation_z(-ry) * Quat::from_rotation_x(rx)
 }
 

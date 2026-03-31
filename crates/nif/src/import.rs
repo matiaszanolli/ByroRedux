@@ -9,7 +9,7 @@
 
 use crate::blocks::node::NiNode;
 use crate::blocks::properties::{NiAlphaProperty, NiMaterialProperty, NiTexturingProperty};
-use crate::blocks::shader::{BSShaderPPLightingProperty, BSShaderTextureSet};
+use crate::blocks::shader::{BSShaderPPLightingProperty, BSShaderNoLightingProperty, BSShaderTextureSet};
 use crate::blocks::texture::NiSourceTexture;
 use crate::blocks::tri_shape::{NiTriShape, NiTriShapeData, NiTriStripsData};
 use crate::scene::NifScene;
@@ -28,9 +28,11 @@ pub struct ImportedMesh {
     pub uvs: Vec<[f32; 2]>,
     /// Triangle indices (u32 for Vulkan compatibility).
     pub indices: Vec<u32>,
-    /// World-space transform (parent chain composed).
+    /// World-space transform (parent chain composed, Y-up).
     pub translation: [f32; 3],
-    pub rotation: [[f32; 3]; 3],
+    /// Rotation as quaternion [x, y, z, w] — extracted via SVD for robustness
+    /// against degenerate NIF matrices. Already in Y-up coordinate system.
+    pub rotation: [f32; 4],
     pub scale: f32,
     /// Texture file path (if a base texture was found).
     pub texture_path: Option<String>,
@@ -38,6 +40,8 @@ pub struct ImportedMesh {
     pub name: Option<String>,
     /// Whether this mesh uses alpha blending (from NiAlphaProperty).
     pub has_alpha: bool,
+    /// Whether this mesh should be rendered two-sided (no backface culling).
+    pub two_sided: bool,
 }
 
 /// Import all renderable meshes from a parsed NIF scene.
@@ -68,6 +72,21 @@ fn walk_node(
 
     // Try as NiNode (scene graph parent)
     if let Some(node) = block.as_any().downcast_ref::<NiNode>() {
+        // Skip hidden nodes (Gamebryo flag bit 0 = hidden).
+        if node.flags & 0x01 != 0 {
+            return;
+        }
+        // Skip editor marker node trees entirely.
+        if let Some(ref name) = node.name {
+            let lower = name.to_ascii_lowercase();
+            if lower.starts_with("editormarker")
+                || lower.starts_with("marker_")
+                || lower == "markerx"
+                || lower.starts_with("marker:")
+            {
+                return;
+            }
+        }
         let world_transform = compose_transforms(parent_transform, &node.transform);
 
         // Process children
@@ -82,6 +101,21 @@ fn walk_node(
     // Try as NiTriShape or NiTriStrips (geometry leaf).
     // NiTriStrips is a type alias for NiTriShape, so both downcast to NiTriShape.
     if let Some(shape) = block.as_any().downcast_ref::<NiTriShape>() {
+        // Skip hidden shapes.
+        if shape.flags & 0x01 != 0 {
+            return;
+        }
+        // Skip editor markers and non-renderable nodes by name.
+        if let Some(ref name) = shape.name {
+            let lower = name.to_ascii_lowercase();
+            if lower.starts_with("editormarker")
+                || lower.starts_with("marker_")
+                || lower == "markerx"
+                || lower.starts_with("marker:")
+            {
+                return;
+            }
+        }
         let world_transform = compose_transforms(parent_transform, &shape.transform);
 
         if let Some(mesh) = extract_mesh(scene, shape, &world_transform) {
@@ -159,20 +193,16 @@ fn extract_mesh(
     // Determine vertex colors: prefer per-vertex colors, then material diffuse, then white
     let (colors, texture_path) = extract_material(scene, shape, &geom);
 
-    // Apply Z-up → Y-up to the entity transform as well.
+    // Apply Z-up → Y-up to the entity transform.
     let t = &world_transform.translation;
-    let r = &world_transform.rotation.rows;
+    let r = &world_transform.rotation;
 
-    // Rotation matrix axis swap: for each row [rx, ry, rz] → [rx, rz, -ry],
-    // and swap row order: row_y ↔ row_z with negation.
-    let converted_rotation = [
-        [r[0][0], r[0][2], -r[0][1]],  // original X row, axes swapped
-        [r[2][0], r[2][2], -r[2][1]],  // original Z row becomes Y row
-        [-r[1][0], -r[1][2], r[1][1]], // original -Y row becomes Z row
-    ];
+    // Convert the Z-up rotation matrix to Y-up, then extract a robust quaternion.
+    let quat = zup_matrix_to_yup_quat(r);
 
     // Check for alpha blending (NiAlphaProperty with blend enabled = bit 0 of flags).
     let has_alpha = find_alpha_property(scene, shape);
+    let two_sided = find_two_sided(scene, shape);
 
     Some(ImportedMesh {
         positions,
@@ -181,11 +211,12 @@ fn extract_mesh(
         uvs,
         indices,
         translation: [t.x, t.z, -t.y],
-        rotation: converted_rotation,
+        rotation: quat,
         scale: world_transform.scale,
         name: shape.name.clone(),
         texture_path,
         has_alpha,
+        two_sided,
     })
 }
 
@@ -259,6 +290,13 @@ fn find_texture_path(scene: &NifScene, shape: &NiTriShape) -> Option<String> {
                 }
             }
         }
+
+        // Bethesda path: BSShaderNoLightingProperty has embedded file_name
+        if let Some(shader_prop) = scene.get_as::<BSShaderNoLightingProperty>(idx) {
+            if !shader_prop.file_name.is_empty() {
+                return Some(shader_prop.file_name.clone());
+            }
+        }
     }
     None
 }
@@ -279,6 +317,59 @@ fn find_alpha_property(scene: &NifScene, shape: &NiTriShape) -> bool {
         if let Some(idx) = prop_ref.index() {
             if let Some(alpha) = scene.get_as::<NiAlphaProperty>(idx) {
                 return alpha.flags & 1 != 0;
+            }
+        }
+    }
+    false
+}
+
+/// Check if the shape requires two-sided rendering (no backface culling).
+///
+/// FO3/FNV: BSShaderPPLightingProperty shader_flags_1 bit 12 (SF_DOUBLE_SIDED = 0x1000).
+/// Oblivion: NiStencilProperty with draw_mode BOTH (3) or CCW_OR_BOTH (0).
+fn find_two_sided(scene: &NifScene, shape: &NiTriShape) -> bool {
+    for prop_ref in &shape.properties {
+        if let Some(idx) = prop_ref.index() {
+            // Bethesda path: BSShaderPPLightingProperty SF_DOUBLE_SIDED flag.
+            if let Some(shader) = scene.get_as::<BSShaderPPLightingProperty>(idx) {
+                if shader.shader_flags_1 & 0x1000 != 0 {
+                    return true;
+                }
+            }
+            // BSShaderNoLightingProperty also has the same flag layout.
+            if let Some(shader) = scene.get_as::<BSShaderNoLightingProperty>(idx) {
+                if shader.shader_flags_1 & 0x1000 != 0 {
+                    return true;
+                }
+            }
+            // Gamebryo path: NiStencilProperty (parsed as NiUnknown for now).
+            // We check the type name and read draw_mode from raw bytes.
+            if let Some(unknown) = scene.get_as::<crate::blocks::NiUnknown>(idx) {
+                if unknown.type_name == "NiStencilProperty" && unknown.data.len() >= 22 {
+                    // NiStencilProperty layout after NiObjectNET base:
+                    // Flags (u16), stencil enabled (u8), stencil function (u32),
+                    // stencil ref (u32), stencil mask (u32), fail action (u32),
+                    // z-fail action (u32), pass action (u32), draw_mode (u32).
+                    // But since we skipped the NiObjectNET fields during parse,
+                    // the data starts after those. For block-size-known parsing,
+                    // the raw data includes everything from the block start.
+                    // Check last 4 bytes group for draw_mode patterns.
+                    // Actually, NiStencilProperty with block size includes NiObjectNET.
+                    // The draw_mode is the last u32 field. Let's read it from end.
+                    let len = unknown.data.len();
+                    if len >= 4 {
+                        let draw_mode = u32::from_le_bytes([
+                            unknown.data[len - 4],
+                            unknown.data[len - 3],
+                            unknown.data[len - 2],
+                            unknown.data[len - 1],
+                        ]);
+                        // draw_mode: 0=CCW_OR_BOTH, 3=BOTH → two-sided
+                        if draw_mode == 0 || draw_mode == 3 {
+                            return true;
+                        }
+                    }
+                }
             }
         }
     }
@@ -326,6 +417,48 @@ fn scale_point(p: NiPoint3, s: f32) -> NiPoint3 {
 
 fn add_points(a: NiPoint3, b: NiPoint3) -> NiPoint3 {
     NiPoint3 { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }
+}
+
+/// Convert a Z-up NiMatrix3 rotation to a Y-up quaternion [x, y, z, w].
+///
+/// Uses SVD decomposition (via nalgebra) to handle degenerate matrices
+/// that Gamebryo NIF files sometimes contain (rank-deficient, det=0).
+/// The nearest valid rotation matrix is extracted as U*Vt from the SVD,
+/// then the Z-up → Y-up coordinate change is applied.
+fn zup_matrix_to_yup_quat(m: &NiMatrix3) -> [f32; 4] {
+    use nalgebra::{Matrix3, UnitQuaternion};
+
+    let r = &m.rows;
+
+    // First apply the Z-up → Y-up axis swap to the rotation matrix:
+    // C: (x,y,z)_zup → (x,z,-y)_yup
+    // R_yup = C * R_zup * C^T
+    // where C swaps rows/columns: row_y ↔ row_z with negation.
+    let yup = Matrix3::new(
+        r[0][0], r[0][2], -r[0][1],    // X row, columns swapped
+        r[2][0], r[2][2], -r[2][1],    // Z row becomes Y row
+        -r[1][0], -r[1][2], r[1][1],   // -Y row becomes Z row
+    );
+
+    // SVD: M = U * Σ * Vt. Nearest rotation = U * Vt (with det correction).
+    let svd = yup.svd(true, true);
+    let u = svd.u.unwrap();
+    let vt = svd.v_t.unwrap();
+    let mut nearest = u * vt;
+
+    // Ensure proper rotation (det = +1), not reflection.
+    if nearest.determinant() < 0.0 {
+        // Flip the sign of the last column of U and recompute.
+        let mut u_fixed = u;
+        u_fixed.column_mut(2).scale_mut(-1.0);
+        nearest = u_fixed * vt;
+    }
+
+    // Extract quaternion from the clean rotation matrix.
+    let rot = nalgebra::Rotation3::from_matrix_unchecked(nearest);
+    let q = UnitQuaternion::from_rotation_matrix(&rot);
+
+    [q.i, q.j, q.k, q.w]
 }
 
 #[cfg(test)]
@@ -715,14 +848,12 @@ mod tests {
         let scene = scene_from_blocks(blocks);
         let meshes = import_nif(&scene);
 
-        let r = &meshes[0].rotation;
-        assert!((r[0][0] - 1.0).abs() < 1e-6);
-        assert!((r[1][1] - 1.0).abs() < 1e-6);
-        assert!((r[2][2] - 1.0).abs() < 1e-6);
-        // Off-diagonals near zero
-        assert!(r[0][1].abs() < 1e-6);
-        assert!(r[0][2].abs() < 1e-6);
-        assert!(r[1][0].abs() < 1e-6);
+        // Identity rotation → quaternion [0, 0, 0, 1]
+        let q = &meshes[0].rotation;
+        assert!(q[0].abs() < 1e-4, "qx={}", q[0]); // x
+        assert!(q[1].abs() < 1e-4, "qy={}", q[1]); // y
+        assert!(q[2].abs() < 1e-4, "qz={}", q[2]); // z
+        assert!((q[3].abs() - 1.0).abs() < 1e-4, "qw={}", q[3]); // w = ±1
     }
 
     #[test]

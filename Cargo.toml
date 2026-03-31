@@ -62,6 +62,9 @@ semver = { version = "1", features = ["serde"] }
 # Compression
 flate2 = "1"
 
+# Linear algebra (robust SVD for degenerate NIF matrices)
+nalgebra = "0.33"
+
 # Image loading
 image = "0.24"
 

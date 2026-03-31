@@ -7,3 +7,4 @@ edition.workspace = true
 byroredux-core = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
+nalgebra = { workspace = true }

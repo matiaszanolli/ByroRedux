@@ -9,7 +9,7 @@ use byroredux_core::ecs::{
     SparseSetStorage, TextureHandle, TotalTime, Transform, World,
 };
 use byroredux_core::ecs::Resource;
-use byroredux_core::math::{Mat3, Quat, Vec3};
+use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::types::Color;
 use byroredux_platform::window::{self, WindowConfig};
 use byroredux_renderer::vulkan::context::DrawCommand;
@@ -31,6 +31,11 @@ impl Component for Spinning { type Storage = SparseSetStorage<Self>; }
 #[derive(Debug, Clone, Copy)]
 struct AlphaBlend;
 impl Component for AlphaBlend { type Storage = SparseSetStorage<Self>; }
+
+/// Marker component for entities that need two-sided rendering (no backface culling).
+#[derive(Debug, Clone, Copy)]
+struct TwoSided;
+impl Component for TwoSided { type Storage = SparseSetStorage<Self>; }
 
 /// System names stored as a resource for the `systems` console command.
 struct SystemList(Vec<String>);
@@ -202,68 +207,6 @@ impl App {
     /// Called once after the renderer is ready — uploads meshes and spawns entities.
     fn setup_scene(&mut self) {
         let ctx = self.renderer.as_mut().unwrap();
-        let alloc = ctx.allocator.as_ref().unwrap();
-
-        // Upload cube mesh.
-        let (verts, idxs) = cube_vertices();
-        let cube_handle = ctx
-            .mesh_registry
-            .upload(&ctx.device, alloc, &verts, &idxs)
-            .expect("Failed to upload cube mesh");
-
-        // Upload a textured quad.
-        let (quad_verts, quad_idxs) = quad_vertices();
-        let quad_handle = ctx
-            .mesh_registry
-            .upload(&ctx.device, alloc, &quad_verts, &quad_idxs)
-            .expect("Failed to upload quad mesh");
-
-        // Upload two triangle meshes with different colors.
-        let (red_verts, red_idxs) = triangle_vertices([1.0, 0.2, 0.2]);
-        let red_handle = ctx
-            .mesh_registry
-            .upload(&ctx.device, alloc, &red_verts, &red_idxs)
-            .expect("Failed to upload red triangle mesh");
-
-        let (blue_verts, blue_idxs) = triangle_vertices([0.2, 0.2, 1.0]);
-        let blue_handle = ctx
-            .mesh_registry
-            .upload(&ctx.device, alloc, &blue_verts, &blue_idxs)
-            .expect("Failed to upload blue triangle mesh");
-
-        // Spawn cube entity (spinning demo).
-        let cube = self.world.spawn();
-        self.world
-            .insert(cube, Transform::from_translation(Vec3::new(-1.5, 0.0, 0.0)));
-        self.world.insert(cube, MeshHandle(cube_handle));
-        self.world.insert(cube, Spinning);
-
-        // Spawn textured quad — checkerboard visible.
-        let quad = self.world.spawn();
-        self.world.insert(
-            quad,
-            Transform::from_translation(Vec3::new(0.0, 0.0, -1.0)),
-        );
-        self.world.insert(quad, MeshHandle(quad_handle));
-        self.world.insert(quad, Spinning);
-
-        // Spawn red triangle — closer to camera (Z = 0.5), offset right.
-        let red_tri = self.world.spawn();
-        self.world.insert(
-            red_tri,
-            Transform::from_translation(Vec3::new(1.5, 0.0, 0.5)),
-        );
-        self.world.insert(red_tri, MeshHandle(red_handle));
-        self.world.insert(red_tri, Spinning);
-
-        // Spawn blue triangle — farther from camera (Z = -0.3), overlapping.
-        let blue_tri = self.world.spawn();
-        self.world.insert(
-            blue_tri,
-            Transform::from_translation(Vec3::new(1.8, 0.0, -0.3)),
-        );
-        self.world.insert(blue_tri, MeshHandle(blue_handle));
-        self.world.insert(blue_tri, Spinning);
 
         // Load content from CLI: cell, loose NIF, or BSA NIF.
         let args: Vec<String> = std::env::args().collect();
@@ -292,6 +235,54 @@ impl App {
             // NIF loading mode: loose file or BSA extraction.
             let nif_count = load_nif_from_args(&mut self.world, ctx);
             has_nif_content = nif_count > 0;
+        }
+
+        // Only spawn demo primitives when no NIF content was loaded.
+        if !has_nif_content {
+            let alloc = ctx.allocator.as_ref().unwrap();
+            let (verts, idxs) = cube_vertices();
+            let cube_handle = ctx
+                .mesh_registry
+                .upload(&ctx.device, alloc, &verts, &idxs)
+                .expect("Failed to upload cube mesh");
+
+            let (quad_verts, quad_idxs) = quad_vertices();
+            let quad_handle = ctx
+                .mesh_registry
+                .upload(&ctx.device, alloc, &quad_verts, &quad_idxs)
+                .expect("Failed to upload quad mesh");
+
+            let (red_verts, red_idxs) = triangle_vertices([1.0, 0.2, 0.2]);
+            let red_handle = ctx
+                .mesh_registry
+                .upload(&ctx.device, alloc, &red_verts, &red_idxs)
+                .expect("Failed to upload red triangle mesh");
+
+            let (blue_verts, blue_idxs) = triangle_vertices([0.2, 0.2, 1.0]);
+            let blue_handle = ctx
+                .mesh_registry
+                .upload(&ctx.device, alloc, &blue_verts, &blue_idxs)
+                .expect("Failed to upload blue triangle mesh");
+
+            let cube = self.world.spawn();
+            self.world.insert(cube, Transform::from_translation(Vec3::new(-1.5, 0.0, 0.0)));
+            self.world.insert(cube, MeshHandle(cube_handle));
+            self.world.insert(cube, Spinning);
+
+            let quad = self.world.spawn();
+            self.world.insert(quad, Transform::from_translation(Vec3::new(0.0, 0.0, -1.0)));
+            self.world.insert(quad, MeshHandle(quad_handle));
+            self.world.insert(quad, Spinning);
+
+            let red_tri = self.world.spawn();
+            self.world.insert(red_tri, Transform::from_translation(Vec3::new(1.5, 0.0, 0.5)));
+            self.world.insert(red_tri, MeshHandle(red_handle));
+            self.world.insert(red_tri, Spinning);
+
+            let blue_tri = self.world.spawn();
+            self.world.insert(blue_tri, Transform::from_translation(Vec3::new(1.8, 0.0, -0.3)));
+            self.world.insert(blue_tri, MeshHandle(blue_handle));
+            self.world.insert(blue_tri, Spinning);
         }
 
         // Spawn camera entity looking at the scene center.
@@ -548,13 +539,11 @@ pub(crate) fn load_nif_bytes(
             None => ctx.texture_registry.fallback(),
         };
 
-        // Convert NiTransform to ECS Transform
-        let rotation = Mat3::from_cols(
-            Vec3::new(mesh.rotation[0][0], mesh.rotation[1][0], mesh.rotation[2][0]),
-            Vec3::new(mesh.rotation[0][1], mesh.rotation[1][1], mesh.rotation[2][1]),
-            Vec3::new(mesh.rotation[0][2], mesh.rotation[1][2], mesh.rotation[2][2]),
+        // Convert NiTransform to ECS Transform.
+        // mesh.rotation is already a Y-up quaternion [x,y,z,w] extracted via SVD.
+        let quat = Quat::from_xyzw(
+            mesh.rotation[0], mesh.rotation[1], mesh.rotation[2], mesh.rotation[3],
         );
-        let quat = Quat::from_mat3(&rotation);
         let translation = Vec3::new(mesh.translation[0], mesh.translation[1], mesh.translation[2]);
 
         let entity = world.spawn();
@@ -563,6 +552,9 @@ pub(crate) fn load_nif_bytes(
         world.insert(entity, TextureHandle(tex_handle));
         if mesh.has_alpha {
             world.insert(entity, AlphaBlend);
+        }
+        if mesh.two_sided {
+            world.insert(entity, TwoSided);
         }
 
         log::info!(
@@ -930,6 +922,7 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>) {
     if let Some((tq, mq)) = world.query_2_mut::<Transform, MeshHandle>() {
         let tex_q = world.query::<TextureHandle>();
         let alpha_q = world.query::<AlphaBlend>();
+        let two_sided_q = world.query::<TwoSided>();
         for (entity, mesh) in mq.iter() {
             if let Some(transform) = tq.get(entity) {
                 let tex_handle = tex_q
@@ -941,17 +934,22 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>) {
                     .as_ref()
                     .map(|q| q.get(entity).is_some())
                     .unwrap_or(false);
+                let two_sided = two_sided_q
+                    .as_ref()
+                    .map(|q| q.get(entity).is_some())
+                    .unwrap_or(false);
                 draw_commands.push(DrawCommand {
                     mesh_handle: mesh.0,
                     texture_handle: tex_handle,
                     model_matrix: transform.to_matrix().to_cols_array(),
                     alpha_blend,
+                    two_sided,
                 });
             }
         }
     }
-    // Sort: opaque first (alpha_blend=false), then by texture to minimize rebinds.
-    draw_commands.sort_unstable_by_key(|cmd| (cmd.alpha_blend, cmd.texture_handle));
+    // Sort: opaque first, then alpha-blended; within each group sort by two_sided then texture.
+    draw_commands.sort_unstable_by_key(|cmd| (cmd.alpha_blend, cmd.two_sided, cmd.texture_handle));
 
     (view_proj, draw_commands)
 }
