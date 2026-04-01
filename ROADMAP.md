@@ -96,23 +96,31 @@ NiTextureTransformController, NiTimeController (base/fallback)
 
 ## Next Milestones
 
-### M19: Full Cell Loading
-**Status:** Next up
-**Scope:** Load all renderable record types from ESM cells: MSTT (moveable statics), DOOR,
-FURN (furniture), CONT (containers), ACTI (activators), LIGH (placed lights) with models.
-Parse lighting templates from CELL record. Support exterior cell grids and cell transitions.
-**Depends on:** M16 (basic cell loading), M18 (Skyrim NIF support)
-**Acceptance:** Multiple FNV interior cells load with all visible objects. Exterior cell grid
-loads at least one worldspace cell.
+### M19: Full Cell Loading — DONE
+**Status:** Complete
+**Scope:** All renderable record types (STAT, MSTT, FURN, DOOR, ACTI, CONT, LIGH, ACHR/NPC_),
+WRLD exterior cell parsing with grid loading, LightSource ECS component, refactored cell loader.
+**Result:** FNV Prospector Saloon: 809 entities. WastelandNV exterior 3x3 grid: 720 entities.
+14 worldspaces, 30096 exterior cells, 17129 base objects parsed from FalloutNV.esm.
 
-### M20: Animation Playback
+### M20: Scaleform/SWF UI System (Ruffle Integration)
+**Status:** Next up
+**Scope:** Integrate Ruffle (Rust Flash Player) as a library for rendering Bethesda's
+Scaleform GFx menus. SWF parsing, ActionScript 2 execution, display list rendering.
+Extend with Scaleform GFx extensions (`_global.gfx` API, image substitution).
+Wire Papyrus↔UI bridge (`Invoke()`, `SetVariable()`, `GetVariable()`).
+Start with a simple menu (e.g. loading screen, HUD health bar).
+**Depends on:** M15 (console/diagnostics)
+**Acceptance:** At least one Bethesda .swf menu file renders in the engine viewport.
+
+### M21: Animation Playback
 **Status:** Planned — controller parsers ready
 **Scope:** Parse .kf files (NiControllerSequence fields already parsed). NiTransformData keyframe
 extraction (linear/bezier/TCB interpolation). AnimationPlayer system. Cycle types (clamp/loop/reverse).
 **Depends on:** M9 (controller parsers), M17 (correct transforms)
 **Acceptance:** FNV mesh plays idle animation from .kf file.
 
-### M21: RT-First Multi-Light System
+### M22: RT-First Multi-Light System
 **Status:** Planned
 **Scope:** Vulkan ray tracing pipeline (VK_KHR_ray_tracing_pipeline), acceleration structures
 (BLAS/TLAS), light ECS components (point/spot/directional/ambient), NIF light extraction,
@@ -122,17 +130,17 @@ shadow rays. Rasterized multi-light fallback for non-RT GPUs.
 
 ---
 
-## Medium-Term Roadmap (M22–M28)
+## Medium-Term Roadmap (M23–M29)
 
 | # | Milestone | Scope |
 |---|-----------|-------|
-| M22 | Full ESM/ESP Parser | NPC_, WEAP, ARMO, LVLI, QUST, DIAL + all record types. Wire to DataStore + conflict resolution. |
-| M23 | Vulkan Compute BLAS | Compute shader infrastructure for batch transforms, coordinate conversion, skinning. Replace nalgebra hot paths. |
-| M24 | Oblivion Support | Older NIF version (v20.0.0.5), NiTexturingProperty materials, BSA v104 variant. |
-| M25 | Fallout 4 / BA2 Support | BA2 archive format (General + DX10 variants, LZ4), NIF uv2=130 changes. |
-| M26 | Parallel System Dispatch | Rayon-based parallel execution in Scheduler. Dependency graph from read/write declarations. |
-| M27 | Physics Foundation | Collision shapes from NIF bhk* blocks, Rapier/custom physics, character controller. |
-| M28 | Skeletal Animation | NiSkinInstance/NiSkinData parsing, bone transforms, GPU skinning via compute shaders. |
+| M23 | Full ESM/ESP Parser | NPC_, WEAP, ARMO, LVLI, QUST, DIAL + all record types. Wire to DataStore + conflict resolution. |
+| M24 | Vulkan Compute BLAS | Compute shader infrastructure for batch transforms, coordinate conversion, skinning. Replace nalgebra hot paths. |
+| M25 | Oblivion Support | Older NIF version (v20.0.0.5), NiTexturingProperty materials, BSA v104 variant. |
+| M26 | Fallout 4 / BA2 Support | BA2 archive format (General + DX10 variants, LZ4), NIF uv2=130 changes. |
+| M27 | Parallel System Dispatch | Rayon-based parallel execution in Scheduler. Dependency graph from read/write declarations. |
+| M28 | Physics Foundation | Collision shapes from NIF bhk* blocks, Rapier/custom physics, character controller. |
+| M29 | Skeletal Animation | NiSkinInstance/NiSkinData parsing, bone transforms, GPU skinning via compute shaders. |
 
 ---
 
