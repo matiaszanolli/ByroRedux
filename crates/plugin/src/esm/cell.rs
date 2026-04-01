@@ -53,12 +53,10 @@ pub struct StaticObject {
 pub struct EsmCellIndex {
     /// Interior cells, keyed by editor ID (lowercase).
     pub cells: HashMap<String, CellData>,
-    /// Exterior cells, keyed by grid coordinates (x, y).
-    pub exterior_cells: HashMap<(i32, i32), CellData>,
+    /// Exterior cells, keyed by (worldspace_name_lowercase, (grid_x, grid_y)).
+    pub exterior_cells: HashMap<String, HashMap<(i32, i32), CellData>>,
     /// All base object records with model paths, keyed by form ID.
     pub statics: HashMap<u32, StaticObject>,
-    /// Worldspace editor ID (first WRLD found).
-    pub worldspace_name: Option<String>,
 }
 
 /// Parse an ESM file and extract cells, worldspaces, and base object definitions.
@@ -74,9 +72,8 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
     );
 
     let mut cells = HashMap::new();
-    let mut exterior_cells = HashMap::new();
+    let mut exterior_cells: HashMap<String, HashMap<(i32, i32), CellData>> = HashMap::new();
     let mut statics = HashMap::new();
-    let mut worldspace_name = None;
 
     // Walk top-level groups.
     while reader.remaining() > 0 {
@@ -95,7 +92,7 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
             }
             b"WRLD" => {
                 let end = reader.position() + group.total_size as usize - 24;
-                parse_wrld_group(&mut reader, end, &mut exterior_cells, &mut worldspace_name)?;
+                parse_wrld_group(&mut reader, end, &mut exterior_cells)?;
             }
             // All record types that have a MODL sub-record (NIF model path).
             // Placed references (REFR/ACHR) can point to any of these.
@@ -113,15 +110,17 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
         }
     }
 
+    let total_exterior: usize = exterior_cells.values().map(|m| m.len()).sum();
+    let wrld_names: Vec<&str> = exterior_cells.keys().map(|s| s.as_str()).collect();
     log::info!(
-        "ESM parsed: {} interior cells, {} exterior cells, {} base objects{}",
-        cells.len(),
-        exterior_cells.len(),
-        statics.len(),
-        worldspace_name.as_ref().map(|n| format!(", worldspace '{}'", n)).unwrap_or_default(),
+        "ESM parsed: {} interior cells, {} exterior cells across {} worldspaces, {} base objects",
+        cells.len(), total_exterior, exterior_cells.len(), statics.len(),
     );
+    if !wrld_names.is_empty() {
+        log::info!("  Worldspaces: {:?}", wrld_names);
+    }
 
-    Ok(EsmCellIndex { cells, exterior_cells, statics, worldspace_name })
+    Ok(EsmCellIndex { cells, exterior_cells, statics })
 }
 
 /// Walk the CELL group hierarchy to find interior cells and their placed references.
@@ -272,18 +271,26 @@ fn parse_refr_group(
 fn parse_wrld_group(
     reader: &mut EsmReader,
     end: usize,
-    exterior_cells: &mut HashMap<(i32, i32), CellData>,
-    worldspace_name: &mut Option<String>,
+    all_exterior_cells: &mut HashMap<String, HashMap<(i32, i32), CellData>>,
 ) -> Result<()> {
+    let mut current_wrld_name: Option<String> = None;
+
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub_group = reader.read_group_header()?;
             let sub_end = reader.position() + sub_group.total_size as usize - 24;
 
             match sub_group.group_type {
-                // World children (type 1), exterior block (4), sub-block (5): recurse.
-                1 | 4 | 5 => {
-                    parse_wrld_children(reader, sub_end, exterior_cells)?;
+                // World children (type 1): contains exterior cell blocks for the current WRLD.
+                1 => {
+                    if let Some(ref name) = current_wrld_name {
+                        let cells = all_exterior_cells
+                            .entry(name.to_ascii_lowercase())
+                            .or_insert_with(HashMap::new);
+                        parse_wrld_children(reader, sub_end, cells)?;
+                    } else {
+                        reader.skip_group(&sub_group);
+                    }
                 }
                 _ => {
                     reader.skip_group(&sub_group);
@@ -298,9 +305,7 @@ fn parse_wrld_group(
                     if &sub.sub_type == b"EDID" {
                         let name = read_zstring(&sub.data);
                         log::info!("Found worldspace: '{}' (form {:08X})", name, header.form_id);
-                        if worldspace_name.is_none() {
-                            *worldspace_name = Some(name);
-                        }
+                        current_wrld_name = Some(name);
                     }
                 }
             } else {

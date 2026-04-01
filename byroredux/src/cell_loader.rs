@@ -89,24 +89,44 @@ pub fn load_exterior_cells(
     log::info!("Parsing ESM '{}' ({:.1} MB)...", esm_path, esm_data.len() as f64 / 1_048_576.0);
     let index = esm::cell::parse_esm_cells(&esm_data)?;
 
-    let wrld_name = index.worldspace_name.as_deref().unwrap_or("(unknown)");
+    // Find the best worldspace. Try common FNV names, then fall back to largest.
+    let wrld_key = {
+        let preferred = ["wastelandnv", "tamriel", "skyrim"];
+        preferred.iter()
+            .find(|&&name| index.exterior_cells.contains_key(name))
+            .map(|s| s.to_string())
+            .or_else(|| {
+                index.exterior_cells.iter()
+                    .max_by_key(|(_, cells)| cells.len())
+                    .map(|(name, _)| name.clone())
+            })
+    };
+
+    let wrld_name = wrld_key.as_deref().unwrap_or("(none)");
     log::info!(
         "Loading exterior cells around ({},{}) radius {} from worldspace '{}'",
         center_x, center_y, radius, wrld_name,
     );
 
+    let wrld_cells = match &wrld_key {
+        Some(key) => index.exterior_cells.get(key),
+        None => None,
+    };
+
     // Collect all references from cells in the grid.
     let mut all_refs = Vec::new();
     let mut cells_loaded = 0u32;
-    for gx in (center_x - radius)..=(center_x + radius) {
-        for gy in (center_y - radius)..=(center_y + radius) {
-            if let Some(cell) = index.exterior_cells.get(&(gx, gy)) {
-                log::info!(
-                    "  Cell ({},{}) '{}': {} references",
-                    gx, gy, cell.editor_id, cell.references.len(),
-                );
-                all_refs.extend_from_slice(&cell.references);
-                cells_loaded += 1;
+    if let Some(cells_map) = wrld_cells {
+        for gx in (center_x - radius)..=(center_x + radius) {
+            for gy in (center_y - radius)..=(center_y + radius) {
+                if let Some(cell) = cells_map.get(&(gx, gy)) {
+                    log::info!(
+                        "  Cell ({},{}) '{}': {} references",
+                        gx, gy, cell.editor_id, cell.references.len(),
+                    );
+                    all_refs.extend_from_slice(&cell.references);
+                    cells_loaded += 1;
+                }
             }
         }
     }
