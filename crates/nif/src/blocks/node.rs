@@ -47,12 +47,23 @@ impl NiNode {
             stream.read_u16_le()? as u32
         };
         let transform = stream.read_ni_transform()?;
-        let properties = stream.read_block_ref_list()?;
+        // Skyrim+ removes the properties list from NiAVObject (BSVER > 34).
+        // Shader/alpha are referenced via dedicated NiGeometry fields instead.
+        let properties = if stream.variant().has_properties_list() {
+            stream.read_block_ref_list()?
+        } else {
+            Vec::new()
+        };
         let collision_ref = stream.read_block_ref()?;
 
         // NiNode-specific fields
         let children = stream.read_block_ref_list()?;
-        let effects = stream.read_block_ref_list()?;
+        // FO4+ removes the effects list from NiNode (BSVER >= 130).
+        let effects = if stream.variant().has_effects_list() {
+            stream.read_block_ref_list()?
+        } else {
+            Vec::new()
+        };
 
         Ok(Self {
             name,

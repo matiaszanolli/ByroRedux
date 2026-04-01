@@ -6,9 +6,13 @@ use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
-/// A BSA v104 archive opened for reading.
+/// A BSA v104/v105 archive opened for reading.
+///
+/// v104: Fallout 3, Fallout NV, Skyrim LE (16-byte folder records, zlib compression)
+/// v105: Skyrim SE, Fallout 4 (24-byte folder records, LZ4 compression, u64 offsets)
 pub struct BsaArchive {
     path: std::path::PathBuf,
+    version: u32,
     compressed_by_default: bool,
     /// When set (flag 0x100), each file's data starts with a bstring name prefix to skip.
     embed_file_names: bool,
@@ -44,10 +48,10 @@ impl BsaArchive {
         }
 
         let version = u32::from_le_bytes(header[4..8].try_into().unwrap());
-        if version != 104 {
+        if version != 104 && version != 105 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("unsupported BSA version {} (expected 104)", version),
+                format!("unsupported BSA version {} (expected 104 or 105)", version),
             ));
         }
 
@@ -77,14 +81,17 @@ impl BsaArchive {
             compressed_by_default
         );
 
-        // -- Folder Records (16 bytes each) -------------------------------------
+        // -- Folder Records (16 bytes v104 / 24 bytes v105) ----------------------
+        // v104: [hash:u64, count:u32, offset:u32]
+        // v105: [hash:u64, count:u32, _padding:u32, offset:u64]
+        let folder_record_size: usize = if version == 105 { 24 } else { 16 };
         let mut folder_records = Vec::with_capacity(folder_count);
         for _ in 0..folder_count {
-            let mut rec = [0u8; 16];
-            reader.read_exact(&mut rec)?;
+            let mut rec = [0u8; 24];
+            reader.read_exact(&mut rec[..folder_record_size])?;
             let _hash = u64::from_le_bytes(rec[0..8].try_into().unwrap());
             let count = u32::from_le_bytes(rec[8..12].try_into().unwrap()) as usize;
-            let _offset = u32::from_le_bytes(rec[12..16].try_into().unwrap());
+            // v105 has padding at [12..16] and u64 offset at [16..24]; we don't use offset.
             folder_records.push(count);
         }
 
@@ -159,6 +166,7 @@ impl BsaArchive {
 
         Ok(BsaArchive {
             path: path.to_path_buf(),
+            version,
             compressed_by_default,
             embed_file_names,
             files,
@@ -223,10 +231,18 @@ impl BsaArchive {
             let mut compressed = vec![0u8; compressed_len];
             reader.read_exact(&mut compressed)?;
 
-            // Decompress with zlib
-            let mut decoder = ZlibDecoder::new(&compressed[..]);
-            let mut decompressed = Vec::with_capacity(original_size);
-            decoder.read_to_end(&mut decompressed)?;
+            // v104 uses zlib, v105 uses LZ4 frame format.
+            let decompressed = if self.version >= 105 {
+                let mut decoder = lz4_flex::frame::FrameDecoder::new(&compressed[..]);
+                let mut buf = Vec::with_capacity(original_size);
+                decoder.read_to_end(&mut buf)?;
+                buf
+            } else {
+                let mut decoder = ZlibDecoder::new(&compressed[..]);
+                let mut buf = Vec::with_capacity(original_size);
+                decoder.read_to_end(&mut buf)?;
+                buf
+            };
 
             Ok(decompressed)
         } else {

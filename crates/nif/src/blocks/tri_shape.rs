@@ -59,7 +59,12 @@ impl NiTriShape {
             stream.read_u16_le()? as u32
         };
         let transform = stream.read_ni_transform()?;
-        let properties = stream.read_block_ref_list()?;
+        // Skyrim+ removes the properties list from NiAVObject (BSVER > 34).
+        let properties = if stream.variant().has_properties_list() {
+            stream.read_block_ref_list()?
+        } else {
+            Vec::new()
+        };
         let collision_ref = stream.read_block_ref()?;
 
         // NiGeometry fields
@@ -86,8 +91,9 @@ impl NiTriShape {
                 let _dirty_flag = stream.read_u8()?;
             }
 
-            // Fallout 4+ (user_version_2 >= 130): dedicated shader/alpha property refs
-            if stream.variant().has_dedicated_shader_refs() {
+            // Skyrim+ (BSVER > 34): dedicated shader/alpha property refs.
+            // These replace the properties list that was removed from NiAVObject.
+            if stream.variant().has_shader_alpha_refs() {
                 shader_property_ref = stream.read_block_ref()?;
                 alpha_property_ref = stream.read_block_ref()?;
             }
@@ -120,6 +126,243 @@ impl NiTriShape {
 
 /// NiTriStrips — identical serialization to NiTriShape (both are NiGeometry).
 pub type NiTriStrips = NiTriShape;
+
+/// BSTriShape — Skyrim SE+ geometry with embedded vertex data.
+///
+/// Unlike NiTriShape which references separate NiTriShapeData, BSTriShape
+/// packs vertex positions, UVs, normals, tangents, and colors directly
+/// into the block using a vertex descriptor bitfield.
+///
+/// Skyrim SE uses BSVertexDataSSE format (full-precision f32 positions).
+/// FO4+ uses BSVertexData (half-float positions by default).
+#[derive(Debug)]
+pub struct BsTriShape {
+    pub name: Option<String>,
+    pub extra_data_refs: Vec<BlockRef>,
+    pub controller_ref: BlockRef,
+    pub flags: u32,
+    pub transform: NiTransform,
+    pub collision_ref: BlockRef,
+    pub center: NiPoint3,
+    pub radius: f32,
+    pub skin_ref: BlockRef,
+    pub shader_property_ref: BlockRef,
+    pub alpha_property_ref: BlockRef,
+    pub vertex_desc: u64,
+    pub num_triangles: u32,
+    pub num_vertices: u16,
+    /// Vertex positions (f32 × 3, already decoded from packed format).
+    pub vertices: Vec<NiPoint3>,
+    /// UV coordinates (decoded from half-float).
+    pub uvs: Vec<[f32; 2]>,
+    /// Normals (decoded from byte-normalized [0,255] → [-1,1]).
+    pub normals: Vec<NiPoint3>,
+    /// Vertex colors (RGBA normalized to [0,1]).
+    pub vertex_colors: Vec<[f32; 4]>,
+    /// Triangle indices.
+    pub triangles: Vec<[u16; 3]>,
+}
+
+impl NiObject for BsTriShape {
+    fn block_type_name(&self) -> &'static str {
+        "BSTriShape"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Vertex attribute flags from BSVertexDesc bits [44:55].
+const VF_VERTEX: u16 = 0x001;
+const VF_UVS: u16 = 0x002;
+const VF_NORMALS: u16 = 0x008;
+const VF_TANGENTS: u16 = 0x010;
+const VF_VERTEX_COLORS: u16 = 0x020;
+const VF_SKINNED: u16 = 0x040;
+const VF_EYE_DATA: u16 = 0x100;
+
+impl BsTriShape {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        // NiObjectNET base
+        let name = stream.read_string()?;
+        let extra_data_refs = stream.read_block_ref_list()?;
+        let controller_ref = stream.read_block_ref()?;
+
+        // NiAVObject: flags, transform, NO properties list (Skyrim+), collision
+        let flags = stream.read_u32_le()?;
+        let transform = stream.read_ni_transform()?;
+        let collision_ref = stream.read_block_ref()?;
+
+        // BSTriShape-specific: bounding sphere
+        let center = stream.read_ni_point3()?;
+        let radius = stream.read_f32_le()?;
+
+        // Refs
+        let skin_ref = stream.read_block_ref()?;
+        let shader_property_ref = stream.read_block_ref()?;
+        let alpha_property_ref = stream.read_block_ref()?;
+
+        // Vertex descriptor bitfield
+        let vertex_desc = stream.read_u64_le()?;
+        let vertex_attrs = ((vertex_desc >> 44) & 0xFFF) as u16;
+        let vertex_size_quads = (vertex_desc & 0xF) as usize; // size in units of 4 bytes
+
+        // Triangle and vertex counts
+        let num_triangles = if stream.variant().bsver() >= 130 {
+            stream.read_u32_le()?
+        } else {
+            stream.read_u16_le()? as u32
+        };
+        let num_vertices = stream.read_u16_le()?;
+        let data_size = stream.read_u32_le()?;
+
+        let mut vertices = Vec::new();
+        let mut uvs = Vec::new();
+        let mut normals = Vec::new();
+        let mut vertex_colors = Vec::new();
+        let mut triangles = Vec::new();
+
+        if data_size > 0 {
+            let vertex_size_bytes = vertex_size_quads * 4;
+
+            // Parse each vertex from the packed format.
+            for _ in 0..num_vertices {
+                let vert_start = stream.position();
+
+                // Position (Vector3 = 3 × f32)
+                if vertex_attrs & VF_VERTEX != 0 {
+                    let pos = stream.read_ni_point3()?;
+                    vertices.push(pos);
+                    // Bitangent X (f32) if tangents, else Unused W (u32)
+                    let _bitangent_x_or_w = stream.read_f32_le()?;
+                }
+
+                // UV (HalfTexCoord = 2 × f16)
+                if vertex_attrs & VF_UVS != 0 {
+                    let u = half_to_f32(stream.read_u16_le()?);
+                    let v = half_to_f32(stream.read_u16_le()?);
+                    uvs.push([u, v]);
+                }
+
+                // Normal (ByteVector3 = 3 × u8 + bitangent Y as i8)
+                if vertex_attrs & VF_NORMALS != 0 {
+                    let nx = byte_to_normal(stream.read_u8()?);
+                    let ny = byte_to_normal(stream.read_u8()?);
+                    let nz = byte_to_normal(stream.read_u8()?);
+                    let _bitangent_y = stream.read_u8()?;
+                    normals.push(NiPoint3 { x: nx, y: ny, z: nz });
+                }
+
+                // Tangent (ByteVector3 + bitangent Z)
+                if vertex_attrs & VF_TANGENTS != 0 && vertex_attrs & VF_NORMALS != 0 {
+                    stream.skip(4); // 3 bytes tangent + 1 byte bitangent Z
+                }
+
+                // Vertex colors (RGBA as 4 × u8)
+                if vertex_attrs & VF_VERTEX_COLORS != 0 {
+                    let r = stream.read_u8()? as f32 / 255.0;
+                    let g = stream.read_u8()? as f32 / 255.0;
+                    let b = stream.read_u8()? as f32 / 255.0;
+                    let a = stream.read_u8()? as f32 / 255.0;
+                    vertex_colors.push([r, g, b, a]);
+                }
+
+                // Skinning data (4 × f16 weights + 4 × u8 indices)
+                if vertex_attrs & VF_SKINNED != 0 {
+                    stream.skip(12); // 8 bytes weights + 4 bytes indices
+                }
+
+                // Eye data (f32)
+                if vertex_attrs & VF_EYE_DATA != 0 {
+                    stream.skip(4);
+                }
+
+                // Ensure we consumed exactly vertex_size_bytes
+                let consumed = (stream.position() - vert_start) as usize;
+                if consumed != vertex_size_bytes {
+                    stream.skip((vertex_size_bytes - consumed) as u64);
+                }
+            }
+
+            // Triangle indices
+            for _ in 0..num_triangles {
+                let a = stream.read_u16_le()?;
+                let b = stream.read_u16_le()?;
+                let c = stream.read_u16_le()?;
+                triangles.push([a, b, c]);
+            }
+
+            // Skyrim SE: particle data (skip)
+            if stream.variant().bsver() < 130 {
+                let particle_data_size = stream.read_u32_le()?;
+                if particle_data_size > 0 {
+                    // particle vertices (num_vertices × 6 bytes) + particle normals + particle triangles
+                    let skip_bytes = (num_vertices as u64) * 6 // half-float positions
+                        + (num_vertices as u64) * 6 // half-float normals
+                        + (num_triangles as u64) * 6; // triangle indices
+                    stream.skip(skip_bytes);
+                }
+            }
+        }
+
+        Ok(Self {
+            name,
+            extra_data_refs,
+            controller_ref,
+            flags,
+            transform,
+            collision_ref,
+            center,
+            radius,
+            skin_ref,
+            shader_property_ref,
+            alpha_property_ref,
+            vertex_desc,
+            num_triangles,
+            num_vertices,
+            vertices,
+            uvs,
+            normals,
+            vertex_colors,
+            triangles,
+        })
+    }
+}
+
+/// Convert IEEE 754 half-precision float (u16) to f32.
+fn half_to_f32(h: u16) -> f32 {
+    let sign = ((h >> 15) & 1) as u32;
+    let exp = ((h >> 10) & 0x1F) as u32;
+    let mantissa = (h & 0x3FF) as u32;
+
+    if exp == 0 {
+        if mantissa == 0 {
+            return f32::from_bits(sign << 31);
+        }
+        // Subnormal: normalize
+        let mut m = mantissa;
+        let mut e = 0i32;
+        while m & 0x400 == 0 {
+            m <<= 1;
+            e -= 1;
+        }
+        m &= 0x3FF;
+        let f_exp = (127 - 15 + 1 + e) as u32;
+        return f32::from_bits((sign << 31) | (f_exp << 23) | (m << 13));
+    }
+    if exp == 31 {
+        // Inf/NaN
+        return f32::from_bits((sign << 31) | (0xFF << 23) | (mantissa << 13));
+    }
+    let f_exp = exp + (127 - 15);
+    f32::from_bits((sign << 31) | (f_exp << 23) | (mantissa << 13))
+}
+
+/// Convert a byte-normalized value [0, 255] to [-1.0, 1.0].
+fn byte_to_normal(b: u8) -> f32 {
+    (b as f32 / 127.5) - 1.0
+}
 
 /// The actual geometry data: vertices, normals, UVs, and triangle indices.
 #[derive(Debug)]

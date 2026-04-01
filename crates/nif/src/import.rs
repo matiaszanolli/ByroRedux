@@ -9,9 +9,12 @@
 
 use crate::blocks::node::NiNode;
 use crate::blocks::properties::{NiAlphaProperty, NiMaterialProperty, NiTexturingProperty};
-use crate::blocks::shader::{BSShaderPPLightingProperty, BSShaderNoLightingProperty, BSShaderTextureSet};
+use crate::blocks::shader::{
+    BSShaderPPLightingProperty, BSShaderNoLightingProperty, BSShaderTextureSet,
+    BSLightingShaderProperty, BSEffectShaderProperty,
+};
 use crate::blocks::texture::NiSourceTexture;
-use crate::blocks::tri_shape::{NiTriShape, NiTriShapeData, NiTriStripsData};
+use crate::blocks::tri_shape::{NiTriShape, NiTriShapeData, NiTriStripsData, BsTriShape};
 use crate::scene::NifScene;
 use crate::types::{NiMatrix3, NiPoint3, NiTransform};
 
@@ -122,6 +125,28 @@ fn walk_node(
             out.push(mesh);
         }
     }
+
+    // Try as BsTriShape (Skyrim SE+ self-contained geometry).
+    if let Some(shape) = block.as_any().downcast_ref::<BsTriShape>() {
+        if shape.flags & 0x01 != 0 {
+            return;
+        }
+        if let Some(ref name) = shape.name {
+            let lower = name.to_ascii_lowercase();
+            if lower.starts_with("editormarker")
+                || lower.starts_with("marker_")
+                || lower == "markerx"
+                || lower.starts_with("marker:")
+            {
+                return;
+            }
+        }
+        let world_transform = compose_transforms(parent_transform, &shape.transform);
+
+        if let Some(mesh) = extract_bs_tri_shape(scene, shape, &world_transform) {
+            out.push(mesh);
+        }
+    }
 }
 
 /// Intermediate geometry data extracted from either NiTriShapeData or NiTriStripsData.
@@ -220,6 +245,105 @@ fn extract_mesh(
     })
 }
 
+/// Extract an ImportedMesh from a BsTriShape (Skyrim SE+ self-contained geometry).
+///
+/// BsTriShape embeds vertex data directly — no separate data block needed.
+fn extract_bs_tri_shape(
+    scene: &NifScene,
+    shape: &BsTriShape,
+    world_transform: &NiTransform,
+) -> Option<ImportedMesh> {
+    if shape.vertices.is_empty() || shape.triangles.is_empty() {
+        return None;
+    }
+
+    // Convert positions: Gamebryo Z-up → renderer Y-up
+    let positions: Vec<[f32; 3]> = shape.vertices.iter()
+        .map(|v| [v.x, v.z, -v.y])
+        .collect();
+
+    let indices: Vec<u32> = shape.triangles.iter()
+        .flat_map(|tri| [tri[0] as u32, tri[1] as u32, tri[2] as u32])
+        .collect();
+
+    let normals: Vec<[f32; 3]> = if !shape.normals.is_empty() {
+        shape.normals.iter().map(|n| [n.x, n.z, -n.y]).collect()
+    } else {
+        vec![[0.0, 1.0, 0.0]; positions.len()]
+    };
+
+    let uvs = shape.uvs.clone();
+
+    // Vertex colors
+    let colors: Vec<[f32; 3]> = if !shape.vertex_colors.is_empty() {
+        shape.vertex_colors.iter().map(|c| [c[0], c[1], c[2]]).collect()
+    } else {
+        vec![[1.0, 1.0, 1.0]; positions.len()]
+    };
+
+    // Find texture via shader_property_ref → BSLightingShaderProperty → BSShaderTextureSet.
+    let texture_path = find_texture_path_bs_tri_shape(scene, shape);
+
+    // Check alpha via dedicated alpha_property_ref.
+    let has_alpha = if let Some(idx) = shape.alpha_property_ref.index() {
+        scene.get_as::<NiAlphaProperty>(idx)
+            .map(|a| a.flags & 1 != 0)
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    // Check two-sided via BSLightingShaderProperty shader_flags_2.
+    let two_sided = if let Some(idx) = shape.shader_property_ref.index() {
+        scene.get_as::<BSLightingShaderProperty>(idx)
+            .map(|s| s.shader_flags_2 & 0x10 != 0)
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    let t = &world_transform.translation;
+    let quat = zup_matrix_to_yup_quat(&world_transform.rotation);
+
+    Some(ImportedMesh {
+        positions,
+        colors,
+        normals,
+        uvs,
+        indices,
+        translation: [t.x, t.z, -t.y],
+        rotation: quat,
+        scale: world_transform.scale,
+        name: shape.name.clone(),
+        texture_path,
+        has_alpha,
+        two_sided,
+    })
+}
+
+/// Find texture path for BsTriShape via its shader_property_ref.
+fn find_texture_path_bs_tri_shape(scene: &NifScene, shape: &BsTriShape) -> Option<String> {
+    if let Some(idx) = shape.shader_property_ref.index() {
+        if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
+            if let Some(ts_idx) = shader.texture_set_ref.index() {
+                if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
+                    if let Some(path) = tex_set.textures.first() {
+                        if !path.is_empty() {
+                            return Some(path.clone());
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(shader) = scene.get_as::<BSEffectShaderProperty>(idx) {
+            if !shader.source_texture.is_empty() {
+                return Some(shader.source_texture.clone());
+            }
+        }
+    }
+    None
+}
+
 /// Extract vertex colors and texture path from the shape's properties.
 fn extract_material(
     scene: &NifScene,
@@ -255,9 +379,34 @@ fn extract_material(
 
 /// Walk the shape's properties to find the base texture filename.
 ///
-/// Checks NiTexturingProperty → NiSourceTexture (Gamebryo path) and
-/// BSShaderPPLightingProperty → BSShaderTextureSet (Bethesda FO3/FNV path).
+/// Checks multiple shader property formats:
+/// - NiTexturingProperty → NiSourceTexture (Gamebryo/Oblivion)
+/// - BSShaderPPLightingProperty → BSShaderTextureSet (FO3/FNV)
+/// - BSShaderNoLightingProperty (FO3/FNV effects)
+/// - BSLightingShaderProperty → BSShaderTextureSet (Skyrim+, via dedicated ref)
+/// - BSEffectShaderProperty (Skyrim+ effects, via dedicated ref)
 fn find_texture_path(scene: &NifScene, shape: &NiTriShape) -> Option<String> {
+    // Skyrim+ path: dedicated shader_property_ref → BSLightingShaderProperty or BSEffectShaderProperty
+    if let Some(idx) = shape.shader_property_ref.index() {
+        if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
+            if let Some(ts_idx) = shader.texture_set_ref.index() {
+                if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
+                    if let Some(path) = tex_set.textures.first() {
+                        if !path.is_empty() {
+                            return Some(path.clone());
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(shader) = scene.get_as::<BSEffectShaderProperty>(idx) {
+            if !shader.source_texture.is_empty() {
+                return Some(shader.source_texture.clone());
+            }
+        }
+    }
+
+    // FO3/FNV/Oblivion path: search properties list
     for prop_ref in &shape.properties {
         let idx = match prop_ref.index() {
             Some(i) => i,
@@ -281,7 +430,6 @@ fn find_texture_path(scene: &NifScene, shape: &NiTriShape) -> Option<String> {
         if let Some(shader_prop) = scene.get_as::<BSShaderPPLightingProperty>(idx) {
             if let Some(ts_idx) = shader_prop.texture_set_ref.index() {
                 if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
-                    // textures[0] is the diffuse texture
                     if let Some(path) = tex_set.textures.first() {
                         if !path.is_empty() {
                             return Some(path.clone());
@@ -326,8 +474,17 @@ fn find_alpha_property(scene: &NifScene, shape: &NiTriShape) -> bool {
 /// Check if the shape requires two-sided rendering (no backface culling).
 ///
 /// FO3/FNV: BSShaderPPLightingProperty shader_flags_1 bit 12 (SF_DOUBLE_SIDED = 0x1000).
+/// Skyrim+: BSLightingShaderProperty shader_flags_2 bit 4 (SLSF2_DOUBLE_SIDED = 0x10).
 /// Oblivion: NiStencilProperty with draw_mode BOTH (3) or CCW_OR_BOTH (0).
 fn find_two_sided(scene: &NifScene, shape: &NiTriShape) -> bool {
+    // Skyrim+: check dedicated shader property ref.
+    if let Some(idx) = shape.shader_property_ref.index() {
+        if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
+            if shader.shader_flags_2 & 0x10 != 0 {
+                return true;
+            }
+        }
+    }
     for prop_ref in &shape.properties {
         if let Some(idx) = prop_ref.index() {
             // Bethesda path: BSShaderPPLightingProperty SF_DOUBLE_SIDED flag.

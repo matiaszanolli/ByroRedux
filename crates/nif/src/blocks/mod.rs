@@ -22,7 +22,10 @@ use controller::{
     NiTimeController, NiSingleInterpController, NiMaterialColorController,
     NiMultiTargetTransformController, NiControllerManager, NiControllerSequence,
 };
-use shader::{BSShaderPPLightingProperty, BSShaderNoLightingProperty, BSShaderTextureSet};
+use shader::{
+    BSShaderPPLightingProperty, BSShaderNoLightingProperty, BSShaderTextureSet,
+    BSLightingShaderProperty, BSEffectShaderProperty,
+};
 use std::any::Any;
 use std::fmt::Debug;
 use std::io;
@@ -62,8 +65,11 @@ pub fn parse_block(
         "NiNode" | "BSFadeNode" | "BSLeafAnimNode" | "BSTreeNode" => {
             Ok(Box::new(NiNode::parse(stream)?))
         }
-        "NiTriShape" | "BSTriShape" | "NiTriStrips" | "BSSegmentedTriShape" => {
+        "NiTriShape" | "NiTriStrips" | "BSSegmentedTriShape" => {
             Ok(Box::new(NiTriShape::parse(stream)?))
+        }
+        "BSTriShape" | "BSMeshLODTriShape" => {
+            Ok(Box::new(tri_shape::BsTriShape::parse(stream)?))
         }
         "NiTriShapeData" => {
             Ok(Box::new(NiTriShapeData::parse(stream)?))
@@ -79,6 +85,12 @@ pub fn parse_block(
         }
         "BSShaderTextureSet" => {
             Ok(Box::new(BSShaderTextureSet::parse(stream)?))
+        }
+        "BSLightingShaderProperty" => {
+            Ok(Box::new(BSLightingShaderProperty::parse(stream)?))
+        }
+        "BSEffectShaderProperty" => {
+            Ok(Box::new(BSEffectShaderProperty::parse(stream)?))
         }
         "NiMaterialProperty" => {
             Ok(Box::new(NiMaterialProperty::parse(stream)?))

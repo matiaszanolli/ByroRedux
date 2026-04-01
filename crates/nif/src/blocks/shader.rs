@@ -1,7 +1,8 @@
-//! Bethesda shader property blocks — BSShaderPPLightingProperty, BSShaderTextureSet.
+//! Bethesda shader property blocks.
 //!
-//! These are Fallout 3 / New Vegas shader properties. They replace
-//! NiMaterialProperty + NiTexturingProperty for Bethesda's rendering pipeline.
+//! - BSShaderPPLightingProperty / BSShaderNoLightingProperty — Fallout 3/NV
+//! - BSLightingShaderProperty / BSEffectShaderProperty — Skyrim+
+//! - BSShaderTextureSet — shared texture path list (all games)
 
 use crate::stream::NifStream;
 use crate::types::BlockRef;
@@ -209,6 +210,232 @@ impl BSShaderTextureSet {
         }
 
         Ok(Self { textures })
+    }
+}
+
+/// BSLightingShaderProperty — Skyrim+ per-pixel lighting shader.
+///
+/// Inheritance: NiObjectNET → NiProperty → BSShaderProperty → BSLightingShaderProperty.
+/// Replaces BSShaderPPLightingProperty starting with Skyrim (BSVER >= 83).
+///
+/// For Skyrim LE/SE, BSShaderProperty base adds no fields (its FO3-only fields
+/// are skipped). The shader type is a Skyrim-specific field read before the name
+/// in NiObjectNET (per nif.xml `onlyT` condition).
+#[derive(Debug)]
+pub struct BSLightingShaderProperty {
+    pub shader_type: u32,
+    pub name: Option<String>,
+    pub extra_data_refs: Vec<BlockRef>,
+    pub controller_ref: BlockRef,
+    pub shader_flags_1: u32,
+    pub shader_flags_2: u32,
+    pub uv_offset: [f32; 2],
+    pub uv_scale: [f32; 2],
+    pub texture_set_ref: BlockRef,
+    pub emissive_color: [f32; 3],
+    pub emissive_multiple: f32,
+    pub texture_clamp_mode: u32,
+    pub alpha: f32,
+    pub refraction_strength: f32,
+    pub glossiness: f32,
+    pub specular_color: [f32; 3],
+    pub specular_strength: f32,
+    pub lighting_effect_1: f32,
+    pub lighting_effect_2: f32,
+}
+
+impl NiObject for BSLightingShaderProperty {
+    fn block_type_name(&self) -> &'static str {
+        "BSLightingShaderProperty"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BSLightingShaderProperty {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        // NiObjectNET: shader type comes BEFORE name for BSLightingShaderProperty
+        // (nif.xml onlyT="BSLightingShaderProperty", BSVER 83-130).
+        let shader_type = if stream.variant().bsver() >= 83 && stream.variant().bsver() <= 130 {
+            stream.read_u32_le()?
+        } else {
+            0
+        };
+
+        // NiObjectNET base
+        let name = stream.read_string()?;
+        let extra_data_refs = stream.read_block_ref_list()?;
+        let controller_ref = stream.read_block_ref()?;
+
+        // BSShaderProperty base: empty for Skyrim+ (FO3-only fields are BSVER <= 34).
+
+        // BSLightingShaderProperty fields.
+        // Shader flags — Skyrim format (BSVER < 130). FO4+ uses different flag format.
+        let (shader_flags_1, shader_flags_2) = if !stream.variant().uses_fo4_shader_flags()
+            && !stream.variant().uses_fo76_shader_flags()
+        {
+            (stream.read_u32_le()?, stream.read_u32_le()?)
+        } else {
+            // FO4/FO76 flags: not supported yet, skip via block size adjustment.
+            (0, 0)
+        };
+
+        let uv_offset = [stream.read_f32_le()?, stream.read_f32_le()?];
+        let uv_scale = [stream.read_f32_le()?, stream.read_f32_le()?];
+        let texture_set_ref = stream.read_block_ref()?;
+        let emissive_color = [stream.read_f32_le()?, stream.read_f32_le()?, stream.read_f32_le()?];
+        let emissive_multiple = stream.read_f32_le()?;
+
+        // Root Material (NiFixedString) — FO4+ only (BSVER >= 130).
+        if stream.variant().bsver() >= 130 {
+            let _root_material = stream.read_string()?;
+        }
+
+        let texture_clamp_mode = stream.read_u32_le()?;
+        let alpha = stream.read_f32_le()?;
+        let refraction_strength = stream.read_f32_le()?;
+
+        // Glossiness (Skyrim) or Smoothness (FO4+).
+        let glossiness = stream.read_f32_le()?;
+
+        let specular_color = [stream.read_f32_le()?, stream.read_f32_le()?, stream.read_f32_le()?];
+        let specular_strength = stream.read_f32_le()?;
+
+        // Lighting effects — Skyrim only (BSVER < 130).
+        let (lighting_effect_1, lighting_effect_2) = if stream.variant().bsver() < 130 {
+            (stream.read_f32_le()?, stream.read_f32_le()?)
+        } else {
+            (0.0, 0.0)
+        };
+
+        // Remaining shader-type-specific fields (env map scale, skin tint, parallax,
+        // eye cubemap, etc.) are skipped — the block size check in parse_nif will
+        // adjust the stream position.
+
+        Ok(Self {
+            shader_type,
+            name,
+            extra_data_refs,
+            controller_ref,
+            shader_flags_1,
+            shader_flags_2,
+            uv_offset,
+            uv_scale,
+            texture_set_ref,
+            emissive_color,
+            emissive_multiple,
+            texture_clamp_mode,
+            alpha,
+            refraction_strength,
+            glossiness,
+            specular_color,
+            specular_strength,
+            lighting_effect_1,
+            lighting_effect_2,
+        })
+    }
+}
+
+/// BSEffectShaderProperty — Skyrim+ effect/VFX shader.
+///
+/// Unlike BSLightingShaderProperty, this shader embeds a source texture
+/// filename as a sized string rather than referencing a BSShaderTextureSet.
+#[derive(Debug)]
+pub struct BSEffectShaderProperty {
+    pub name: Option<String>,
+    pub extra_data_refs: Vec<BlockRef>,
+    pub controller_ref: BlockRef,
+    pub shader_flags_1: u32,
+    pub shader_flags_2: u32,
+    pub uv_offset: [f32; 2],
+    pub uv_scale: [f32; 2],
+    pub source_texture: String,
+    pub texture_clamp_mode: u8,
+    pub falloff_start_angle: f32,
+    pub falloff_stop_angle: f32,
+    pub falloff_start_opacity: f32,
+    pub falloff_stop_opacity: f32,
+    pub emissive_color: [f32; 4],
+    pub emissive_multiple: f32,
+}
+
+impl NiObject for BSEffectShaderProperty {
+    fn block_type_name(&self) -> &'static str {
+        "BSEffectShaderProperty"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BSEffectShaderProperty {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        // NiObjectNET base
+        let name = stream.read_string()?;
+        let extra_data_refs = stream.read_block_ref_list()?;
+        let controller_ref = stream.read_block_ref()?;
+
+        // Shader flags — Skyrim format (BSVER < 130).
+        let (shader_flags_1, shader_flags_2) = if !stream.variant().uses_fo4_shader_flags()
+            && !stream.variant().uses_fo76_shader_flags()
+        {
+            (stream.read_u32_le()?, stream.read_u32_le()?)
+        } else {
+            (0, 0)
+        };
+
+        let uv_offset = [stream.read_f32_le()?, stream.read_f32_le()?];
+        let uv_scale = [stream.read_f32_le()?, stream.read_f32_le()?];
+
+        // Source texture as sized string (NOT a texture set reference).
+        let source_texture = stream.read_sized_string()?;
+
+        // 4 bytes packed: texture_clamp_mode(u8), lighting_influence(u8),
+        // env_map_min_lod(u8), unused(u8).
+        let texture_clamp_mode = stream.read_u8()?;
+        let _lighting_influence = stream.read_u8()?;
+        let _env_map_min_lod = stream.read_u8()?;
+        let _unused = stream.read_u8()?;
+
+        let falloff_start_angle = stream.read_f32_le()?;
+        let falloff_stop_angle = stream.read_f32_le()?;
+        let falloff_start_opacity = stream.read_f32_le()?;
+        let falloff_stop_opacity = stream.read_f32_le()?;
+
+        // FO76+ has refraction power here — skip for Skyrim.
+        if stream.variant().uses_fo76_shader_flags() {
+            let _refraction_power = stream.read_f32_le()?;
+        }
+
+        let emissive_color = [
+            stream.read_f32_le()?, stream.read_f32_le()?,
+            stream.read_f32_le()?, stream.read_f32_le()?,
+        ];
+        let emissive_multiple = stream.read_f32_le()?;
+
+        // Remaining fields (soft falloff depth, greyscale texture, env/normal/mask
+        // textures for FO4+, etc.) are skipped — block size check adjusts stream.
+
+        Ok(Self {
+            name,
+            extra_data_refs,
+            controller_ref,
+            shader_flags_1,
+            shader_flags_2,
+            uv_offset,
+            uv_scale,
+            source_texture,
+            texture_clamp_mode,
+            falloff_start_angle,
+            falloff_stop_angle,
+            falloff_start_opacity,
+            falloff_stop_opacity,
+            emissive_color,
+            emissive_multiple,
+        })
     }
 }
 

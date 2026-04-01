@@ -97,9 +97,9 @@ mod tests {
         buf.extend_from_slice(b"Gamebryo File Format, Version 20.2.0.7\n");
         buf.extend_from_slice(&0x14020007u32.to_le_bytes()); // version
         buf.push(1); // little-endian
-        buf.extend_from_slice(&12u32.to_le_bytes()); // user_version
+        buf.extend_from_slice(&11u32.to_le_bytes()); // user_version (FNV)
         buf.extend_from_slice(&1u32.to_le_bytes()); // num_blocks = 1
-        buf.extend_from_slice(&83u32.to_le_bytes()); // user_version_2
+        buf.extend_from_slice(&34u32.to_le_bytes()); // user_version_2 (FNV)
 
         // Short strings (author, process, export)
         buf.push(1); buf.push(0);

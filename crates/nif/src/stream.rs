@@ -82,6 +82,12 @@ impl<'a> NifStream<'a> {
         Ok(i32::from_le_bytes(buf))
     }
 
+    pub fn read_u64_le(&mut self) -> io::Result<u64> {
+        let mut buf = [0u8; 8];
+        self.cursor.read_exact(&mut buf)?;
+        Ok(u64::from_le_bytes(buf))
+    }
+
     pub fn read_f32_le(&mut self) -> io::Result<f32> {
         let mut buf = [0u8; 4];
         self.cursor.read_exact(&mut buf)?;
