@@ -3,7 +3,7 @@
 A clean Rust + C++ rebuild of the Gamebryo/Creation engine lineage with Vulkan rendering.
 This document tracks completed milestones, current capabilities, planned work, and known gaps.
 
-Last updated: 2026-03-30
+Last updated: 2026-03-31
 
 ---
 
@@ -12,17 +12,19 @@ Last updated: 2026-03-30
 | Command | Description |
 |---------|-------------|
 | `cargo run -- --esm FalloutNV.esm --cell GSProspectorSaloonInterior --bsa Meshes.bsa --textures-bsa Textures.bsa --textures-bsa Textures2.bsa` | Load and render a full FNV interior cell with real DDS textures |
+| `cargo run -- --bsa "Skyrim - Meshes0.bsa" --mesh meshes\clutter\ingredients\sweetroll01.nif --textures-bsa "Skyrim - Textures3.bsa"` | Load and render a Skyrim SE mesh with textures from BSA v105 |
 | `cargo run -- path/to/mesh.nif` | Load and render a loose NIF file |
-| `cargo run -- --bsa path.bsa --mesh meshes\foo.nif --textures-bsa textures.bsa` | Extract from BSA and render with textures |
 | `cargo run -- --cmd help` | Run a console command at startup |
-| `cargo test` | 233 passing tests across all crates |
+| `cargo test` | 244 passing tests across all crates |
 
-Fallout New Vegas interior cells load from ESM with placed objects (REFR → STAT), real DDS textures
-from BSA archives, vertex normals, directional lighting, alpha blending, fly camera (WASD + mouse),
-and per-frame debug stats (FPS, entity/mesh/texture counts). 818 entities at 283 FPS on RTX 4070 Ti.
+**Fallout New Vegas:** Interior cells load from ESM with placed objects (REFR → STAT), real DDS textures
+from BSA v104 archives, correct coordinate transforms (Gamebryo CW rotation convention),
+directional lighting, alpha blending, fly camera (WASD + mouse),
+and per-frame debug stats. 781 entities at 334 FPS on RTX 4070 Ti.
 
-**Known rendering issues:** Degenerate NIF rotation matrices cause wall offsets in room shell meshes.
-Editor markers and light ray effects render when they shouldn't. See M17 for the fix plan.
+**Skyrim SE:** Individual meshes load from BSA v105 (LZ4 decompression), BSTriShape geometry
+with packed vertex data, BSLightingShaderProperty/BSEffectShaderProperty shaders,
+DDS textures. Sweetroll renders at 1615 FPS.
 
 ---
 
@@ -56,16 +58,18 @@ Editor markers and light ray effects render when they shouldn't. See M17 for the
 
 | # | Milestone | Scope | Tests |
 |---|-----------|-------|-------|
-| M9 | NIF Parser | Header parsing, 20+ block types, NifVariant enum (8 games), nif.xml reference, version-aware parsing | 71 |
+| M9 | NIF Parser | Header parsing, 25+ block types, NifVariant enum (8 games), nif.xml reference, version-aware parsing | 76 |
 | M10 | NIF-to-ECS Import | Scene graph flattening, Z-up→Y-up conversion, geometry/material/normal extraction, strip-to-triangle | — |
-| M11 | Real Asset Loading | BSA v104 reader (list, extract, zlib), CLI (loose files + BSA + textures-bsa) | 2 |
+| M11 | Real Asset Loading | BSA v104/v105 reader (list, extract, zlib + LZ4), CLI (loose files + BSA + textures-bsa) | 2 |
 
-**NIF block types supported:** NiNode, BSFadeNode, NiTriShape, NiTriStrips, NiTriShapeData,
-NiTriStripsData, BSShaderPPLightingProperty, BSShaderNoLightingProperty, BSShaderTextureSet,
+**NIF block types supported:** NiNode, BSFadeNode, BSLeafAnimNode, BSTreeNode, NiTriShape,
+NiTriStrips, NiTriShapeData, NiTriStripsData, BSTriShape,
+BSShaderPPLightingProperty, BSShaderNoLightingProperty, BSLightingShaderProperty,
+BSEffectShaderProperty, BSShaderTextureSet,
 NiMaterialProperty, NiAlphaProperty, NiTexturingProperty, NiSourceTexture, NiExtraData,
 NiControllerSequence, NiControllerManager, NiMultiTargetTransformController,
 NiMaterialColorController, NiTransformController, NiVisController, NiTextureTransformController,
-NiTimeController (base/fallback)
+NiTextureTransformController, NiTimeController (base/fallback)
 
 ### Phase 5 — Scripting Foundation (M12)
 
@@ -81,54 +85,25 @@ NiTimeController (base/fallback)
 | M15 | Debug Logging & Diagnostics | DebugStats resource, ConsoleCommand trait, built-in commands, `--debug`/`--cmd` CLI | 11 |
 | M16 | ESM Parser & Cell Loading | ESM binary parser (23 record types), CELL/REFR/STAT loading, Prospector Saloon demo, fly camera, alpha blending | — |
 
----
+### Phase 7 — Geometry & Multi-Game (M17–M18)
 
-## Current: Geometry Correctness (M17)
-
-### M17: Robust Transform Pipeline & Scene Correctness
-**Status:** In progress — root cause identified
-**Priority:** CRITICAL — blocks all visual work
-
-**Problem:** FNV room shell NIF files contain degenerate rotation matrices (rank-deficient, determinant=0).
-`glam::Quat::from_mat3()` produces garbage for these. Walls render offset/misaligned. Additionally,
-editor markers and light ray effects render when they shouldn't.
-
-**Scope:**
-1. **nalgebra integration** — Add `nalgebra` to workspace for robust SVD decomposition of NIF matrices.
-   Extract nearest valid rotation from rank-deficient matrices. Replace `Quat::from_mat3()` in import
-   and cell loader with SVD-based decomposition.
-2. **Mesh filtering** — Skip editor markers (`EditorMarker`, `MarkerX`, `Marker_Audio`), idle markers,
-   and audio markers during NIF import. Filter by node name prefix or NIF extra data flags.
-3. **Effect mesh handling** — Identify and skip/defer volumetric light effects (`IndFXLightRays*.NIF`)
-   that require additive blending (not yet supported).
-4. **NiTexturingProperty final fixes** — Resolve remaining 43 byte-count warnings (1-byte off for most,
-   3 meshes with texture transforms).
-5. **Vulkan compute foundation** — Design the compute shader infrastructure for future batch transform
-   processing. nalgebra is the CPU reference; Vulkan compute is the long-term target.
-
-**Depends on:** M16 (demo scene to evaluate against)
-**Acceptance:** Prospector Saloon renders with correct wall/floor/ceiling alignment, no editor markers,
-no light ray artifacts. All NIF parser warnings resolved.
+| # | Milestone | Scope | Tests |
+|---|-----------|-------|-------|
+| M17 | Coordinate System Fix | Gamebryo CW rotation convention, SVD degenerate matrix repair, editor marker filtering, coordinate system docs | 8 |
+| M18 | Skyrim SE NIF Support | BSTriShape parser, BSLightingShaderProperty, BSEffectShaderProperty, BSA v105 (LZ4), NiAVObject conditionals | — |
 
 ---
 
 ## Next Milestones
 
-### M18: Skyrim SE NIF Support
-**Status:** Planned — nif.xml feature flags ready
-**Scope:** Wire `NifVariant` feature flags into NiAVObject (no properties list for Skyrim+),
-NiGeometry (shader/alpha refs), NiNode (no effects for FO4+). Add BSLightingShaderProperty parser
-and BSEffectShaderProperty parser. Extend BSA reader for v105 (24-byte folder records).
-**Depends on:** M17 (correct transforms), M9 (NIF parser)
-**Acceptance:** Parse and render Skyrim SE sweetroll and iron sword from BSA.
-
-### M19: RT-First Multi-Light System
-**Status:** Planned
-**Scope:** Vulkan ray tracing pipeline (VK_KHR_ray_tracing_pipeline), acceleration structures
-(BLAS/TLAS), light ECS components (point/spot/directional/ambient), NIF light extraction,
-shadow rays. Rasterized multi-light fallback for non-RT GPUs.
-**Depends on:** M17 (correct geometry), M13 (directional lighting)
-**Acceptance:** RT-lit Prospector Saloon with multiple light types and shadows.
+### M19: Full Cell Loading
+**Status:** Next up
+**Scope:** Load all renderable record types from ESM cells: MSTT (moveable statics), DOOR,
+FURN (furniture), CONT (containers), ACTI (activators), LIGH (placed lights) with models.
+Parse lighting templates from CELL record. Support exterior cell grids and cell transitions.
+**Depends on:** M16 (basic cell loading), M18 (Skyrim NIF support)
+**Acceptance:** Multiple FNV interior cells load with all visible objects. Exterior cell grid
+loads at least one worldspace cell.
 
 ### M20: Animation Playback
 **Status:** Planned — controller parsers ready
@@ -137,12 +112,13 @@ extraction (linear/bezier/TCB interpolation). AnimationPlayer system. Cycle type
 **Depends on:** M9 (controller parsers), M17 (correct transforms)
 **Acceptance:** FNV mesh plays idle animation from .kf file.
 
-### M21: Full Cell Loading
+### M21: RT-First Multi-Light System
 **Status:** Planned
-**Scope:** Load all renderable record types (MSTT, DOOR, FURN, CONT, ACTI with models, LIGH placement).
-Lighting templates from CELL record. Exterior cell grids. Cell transition support.
-**Depends on:** M16 (basic cell loading), M19 (lighting)
-**Acceptance:** Multiple FNV interior cells load with all visible objects and proper lighting.
+**Scope:** Vulkan ray tracing pipeline (VK_KHR_ray_tracing_pipeline), acceleration structures
+(BLAS/TLAS), light ECS components (point/spot/directional/ambient), NIF light extraction,
+shadow rays. Rasterized multi-light fallback for non-RT GPUs.
+**Depends on:** M17 (correct geometry), M13 (directional lighting), M19 (LIGH placement)
+**Acceptance:** RT-lit Prospector Saloon with multiple light types and shadows.
 
 ---
 
@@ -177,19 +153,20 @@ Lighting templates from CELL record. Exterior cell grids. Cell transition suppor
 
 ## Known Issues and Gaps
 
-### Geometry (blocking — M17)
-- [ ] Degenerate NIF rotation matrices → SVD decomposition needed (nalgebra)
-- [ ] Editor markers render (EditorMarker, MarkerX, Marker_Audio)
-- [ ] Light ray effect meshes render as opaque white (IndFXLightRays)
+### Geometry
+- [x] ~~Degenerate NIF rotation matrices~~ → SVD decomposition (M17)
+- [x] ~~Gamebryo CW rotation convention~~ → Euler angle sign fix (M17)
+- [x] ~~Editor markers render~~ → filtered by name prefix (M17)
+- [x] ~~Light ray effect meshes render~~ → FX mesh filtering (M17)
 - [ ] 43 remaining NiTexturingProperty byte-count warnings
-- [ ] Back-face culling incorrect for some room shell meshes
+- [ ] Backface culling disabled pending winding verification (confirmed CCW from Skyrim data)
 
 ### Parser Gaps
 - [ ] Legacy ESM/ESP parsers are stubs for Morrowind, Oblivion, Skyrim, FO4
 - [x] ~~NIF parser warnings: 274~~ → 43 remaining (84% fixed)
 - [ ] NIF material properties beyond diffuse not wired to renderer
 - [ ] Animation controllers parsed but not executed (.kf files)
-- [ ] Only BSA v104 supported (not v105 Skyrim SE, not BA2 FO4)
+- [x] ~~Only BSA v104 supported~~ → v105 with LZ4 added (M18)
 - [ ] Cell loader only handles STAT record type (not MSTT, DOOR, FURN, etc.)
 
 ### Renderer Gaps
@@ -215,9 +192,9 @@ Lighting templates from CELL record. Exterior cell grids. Cell transition suppor
 
 | Tier | Games | NIF | Archive | ESM | Cell Loading |
 |------|-------|-----|---------|-----|-------------|
-| 1 — Working | Fallout: New Vegas | Working (20+ blocks) | BSA v104 ✓ | 23 record types | Interior cells ✓ |
+| 1 — Working | Fallout: New Vegas | Working (25+ blocks) | BSA v104 ✓ | 23 record types | Interior cells ✓ |
 | 1 — Working | Fallout 3 | Untested (likely works) | BSA v104 (likely) | Likely works | Likely works |
-| 2 — Next | Skyrim SE | Feature flags ready | v105 extraction works | Stub | — |
+| 2 — Working | Skyrim SE | BSTriShape + BSLightingShader ✓ | BSA v105 ✓ (LZ4) | Stub | Individual meshes ✓ |
 | 3 — Planned | Oblivion | Variant defined | v104 variant | Stub | — |
 | 4 — Future | Fallout 4 | Variant defined | BA2 needed | Stub | — |
 | 5 — Future | Fallout 76 | Variant defined | BA2 needed | — | — |
@@ -238,6 +215,7 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 | Scripting | ECS-native (no VM) | Eliminates Papyrus queue latency, stack serialization, orphaned stacks |
 | Plugin identity | Content-addressed Form IDs | Eliminates load order dependency, slot limits |
 | Legacy compat | Parse data, don't emulate engine | Better results, clean room, no copyright issues |
+| Coordinate system | Z-up→Y-up with CW angle negation | Documented in docs/engine/coordinate-system.md |
 
 ---
 
@@ -245,12 +223,12 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Metric | Value |
 |--------|-------|
-| Passing tests | 233 |
+| Passing tests | 244 |
 | Workspace crates | 8 |
-| Completed milestones | 16 (M1–M16) |
-| NIF block types | 22 |
+| Completed milestones | 18 (M1–M18) |
+| NIF block types | 27 |
 | NifVariant games | 8 (Morrowind → Starfield) |
-| Supported archive formats | BSA v104 |
+| Supported archive formats | BSA v104, BSA v105 |
 | Primary language | Rust (2021 edition) |
 | Renderer | Vulkan 1.3 via ash |
 | Target platform | Linux-first (Wayland + X11) |
@@ -267,11 +245,11 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 | `byroredux-renderer` | M1, M2, M4, M7, M8, M13, M14 | 13 |
 | `byroredux-platform` | M1 (windowing) | — |
 | `byroredux-plugin` | M5, M6 | 50 |
-| `byroredux-nif` | M9, M10 | 71 |
-| `byroredux-bsa` | M11 | 2 |
+| `byroredux-nif` | M9, M10, M17, M18 | 76 |
+| `byroredux-bsa` | M11, M18 | 2 |
 | `byroredux-scripting` | M12 | 8 |
 | `byroredux-cxx-bridge` | Cross-cutting | — |
-| `byroredux` (binary) | M4, M11, M14, M15, M16 | — |
+| `byroredux` (binary) | M4, M11, M14, M15, M16, M17 | — |
 
 ---
 
@@ -284,4 +262,5 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 | FNV game data | Steam library | Primary test content |
 | Skyrim SE game data | Steam library | Secondary test content |
 | Creation Kit wiki | uesp.net | Record type documentation |
-| Memory system | `.claude/projects/.../memory/` | 27 documented engine systems |
+| Coordinate system docs | `docs/engine/coordinate-system.md` | Transform pipeline, CW convention, winding chain |
+| Memory system | `.claude/projects/.../memory/` | 38 documented engine systems |
