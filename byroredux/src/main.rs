@@ -213,12 +213,14 @@ impl App {
         let mut cam_center = Vec3::ZERO;
         let mut has_nif_content = false;
 
-        // Cell loading mode: --esm <path> --cell <editor_id>
+        // Cell loading mode: --esm <path> --cell <editor_id> OR --wrld <name> --grid <x>,<y>
         if let Some(esm_idx) = args.iter().position(|a| a == "--esm") {
-            if let (Some(esm_path), Some(cell_id)) = (
-                args.get(esm_idx + 1),
-                args.iter().position(|a| a == "--cell").and_then(|i| args.get(i + 1)),
-            ) {
+            let esm_path = args.get(esm_idx + 1).cloned();
+            let cell_id = args.iter().position(|a| a == "--cell").and_then(|i| args.get(i + 1)).cloned();
+            let grid_str = args.iter().position(|a| a == "--grid").and_then(|i| args.get(i + 1)).cloned();
+
+            if let (Some(ref esm_path), Some(ref cell_id)) = (&esm_path, &cell_id) {
+                // Interior cell mode
                 let tex_provider = build_texture_provider(&args);
                 match cell_loader::load_cell(esm_path, cell_id, &mut self.world, ctx, &tex_provider) {
                     Ok(result) => {
@@ -228,8 +230,20 @@ impl App {
                     }
                     Err(e) => log::error!("Failed to load cell: {:#}", e),
                 }
+            } else if let (Some(ref esm_path), Some(ref grid)) = (&esm_path, &grid_str) {
+                // Exterior cell mode: --esm <path> --grid <x>,<y>
+                let (cx, cy) = parse_grid_coords(grid);
+                let tex_provider = build_texture_provider(&args);
+                match cell_loader::load_exterior_cells(esm_path, cx, cy, 1, &mut self.world, ctx, &tex_provider) {
+                    Ok(result) => {
+                        cam_center = result.center;
+                        has_nif_content = true;
+                        log::info!("Exterior '{}' ready: {} entities", result.cell_name, result.entity_count);
+                    }
+                    Err(e) => log::error!("Failed to load exterior cells: {:#}", e),
+                }
             } else {
-                log::error!("--esm requires --cell <editor_id>");
+                log::error!("--esm requires either --cell <editor_id> or --grid <x>,<y>");
             }
         } else {
             // NIF loading mode: loose file or BSA extraction.
@@ -347,6 +361,19 @@ impl TextureProvider {
             }
         }
         None
+    }
+}
+
+/// Parse grid coordinates from a "x,y" string.
+fn parse_grid_coords(s: &str) -> (i32, i32) {
+    let parts: Vec<&str> = s.split(',').collect();
+    if parts.len() == 2 {
+        let x = parts[0].trim().parse::<i32>().unwrap_or(0);
+        let y = parts[1].trim().parse::<i32>().unwrap_or(0);
+        (x, y)
+    } else {
+        log::warn!("Invalid grid format '{}', using (0,0)", s);
+        (0, 0)
     }
 }
 

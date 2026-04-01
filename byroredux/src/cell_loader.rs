@@ -1,12 +1,10 @@
-//! Cell scene loader — loads an FNV interior cell from ESM + BSA into ECS entities.
+//! Cell scene loader — loads cells from ESM + BSA into ECS entities.
 //!
-//! Given a cell editor ID, this module:
-//! 1. Parses the ESM file to find the cell and its placed references
-//! 2. Resolves each reference's base form ID to a STAT record (NIF path)
-//! 3. Loads each NIF from the BSA, uploads meshes + textures
-//! 4. Spawns ECS entities with correct world-space transforms
+//! Supports both interior cells (by editor ID) and exterior cells (by grid coords).
+//! Resolves placed references (REFR/ACHR) to base objects, loads NIFs,
+//! and spawns ECS entities with correct world-space transforms.
 
-use byroredux_core::ecs::{MeshHandle, TextureHandle, Transform, World};
+use byroredux_core::ecs::{LightSource, MeshHandle, TextureHandle, Transform, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::VulkanContext;
@@ -61,16 +59,99 @@ pub fn load_cell(
         cell.editor_id, cell.form_id, cell.references.len(),
     );
 
-    // 3. Load each placed reference.
+    // 3. Load placed references.
+    let result = load_references(
+        &cell.references, &index, world, ctx, tex_provider,
+        &cell.editor_id,
+    );
+
+    Ok(CellLoadResult {
+        cell_name: cell.editor_id.clone(),
+        entity_count: result.entity_count,
+        mesh_count: result.mesh_count,
+        center: result.center,
+    })
+}
+
+/// Load a 3x3 grid of exterior cells from a worldspace.
+pub fn load_exterior_cells(
+    esm_path: &str,
+    center_x: i32,
+    center_y: i32,
+    radius: i32,
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+) -> anyhow::Result<CellLoadResult> {
+    let esm_data = std::fs::read(esm_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read ESM '{}': {}", esm_path, e))?;
+
+    log::info!("Parsing ESM '{}' ({:.1} MB)...", esm_path, esm_data.len() as f64 / 1_048_576.0);
+    let index = esm::cell::parse_esm_cells(&esm_data)?;
+
+    let wrld_name = index.worldspace_name.as_deref().unwrap_or("(unknown)");
+    log::info!(
+        "Loading exterior cells around ({},{}) radius {} from worldspace '{}'",
+        center_x, center_y, radius, wrld_name,
+    );
+
+    // Collect all references from cells in the grid.
+    let mut all_refs = Vec::new();
+    let mut cells_loaded = 0u32;
+    for gx in (center_x - radius)..=(center_x + radius) {
+        for gy in (center_y - radius)..=(center_y + radius) {
+            if let Some(cell) = index.exterior_cells.get(&(gx, gy)) {
+                log::info!(
+                    "  Cell ({},{}) '{}': {} references",
+                    gx, gy, cell.editor_id, cell.references.len(),
+                );
+                all_refs.extend_from_slice(&cell.references);
+                cells_loaded += 1;
+            }
+        }
+    }
+
+    let grid_size = (radius * 2 + 1) as u32;
+    log::info!(
+        "Found {}/{} cells in {}x{} grid",
+        cells_loaded, grid_size * grid_size, grid_size, grid_size,
+    );
+
+    let label = format!("exterior({},{})", center_x, center_y);
+    let result = load_references(&all_refs, &index, world, ctx, tex_provider, &label);
+
+    Ok(CellLoadResult {
+        cell_name: format!("{} ({},{})", wrld_name, center_x, center_y),
+        entity_count: result.entity_count,
+        mesh_count: result.mesh_count,
+        center: result.center,
+    })
+}
+
+/// Result of loading references from one or more cells.
+struct RefLoadResult {
+    entity_count: usize,
+    mesh_count: usize,
+    center: Vec3,
+}
+
+/// Shared reference-loading pipeline: resolve base forms, load NIFs, spawn entities.
+fn load_references(
+    refs: &[esm::cell::PlacedRef],
+    index: &esm::cell::EsmCellIndex,
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    label: &str,
+) -> RefLoadResult {
     let mut entity_count = 0;
-    let mut mesh_cache: HashMap<String, Vec<u8>> = HashMap::new(); // path → raw NIF bytes
+    let mut mesh_cache: HashMap<String, Vec<u8>> = HashMap::new();
     let mut bounds_min = Vec3::splat(f32::INFINITY);
     let mut bounds_max = Vec3::splat(f32::NEG_INFINITY);
 
     let mut stat_miss = 0u32;
     let mut stat_hit = 0u32;
-    for placed_ref in &cell.references {
-        // Resolve base form ID → STAT → model path.
+    for placed_ref in refs {
         let stat = match index.statics.get(&placed_ref.base_form_id) {
             Some(s) => {
                 stat_hit += 1;
@@ -78,27 +159,9 @@ pub fn load_cell(
             }
             None => {
                 stat_miss += 1;
-                log::debug!("REFR base {:08X} not in STAT table", placed_ref.base_form_id);
+                log::debug!("REFR base {:08X} not in statics table", placed_ref.base_form_id);
                 continue;
             }
-        };
-
-        // Skip non-renderable effect meshes (light rays, fog planes, etc.).
-        let model_lower = stat.model_path.to_ascii_lowercase();
-        if model_lower.contains("fxlightrays")
-            || model_lower.contains("fxlight")
-            || model_lower.contains("fxfog")
-        {
-            log::debug!("Skipping FX mesh: '{}'", stat.model_path);
-            continue;
-        }
-
-        // STAT model paths omit the "meshes\" prefix that BSA paths include.
-        let model_path = if model_lower.starts_with("meshes\\")
-            || model_lower.starts_with("meshes/") {
-            stat.model_path.clone()
-        } else {
-            format!("meshes\\{}", stat.model_path)
         };
 
         // Convert REFR placement: Z-up → Y-up.
@@ -112,27 +175,43 @@ pub fn load_cell(
             placed_ref.rotation[1],
             placed_ref.rotation[2],
         );
-        if placed_ref.rotation[0].abs() > 0.001 || placed_ref.rotation[1].abs() > 0.001 {
-            log::debug!(
-                "REFR base {:08X} '{}' rot=({:.4}, {:.4}, {:.4}) pos=({:.0}, {:.0}, {:.0})",
-                placed_ref.base_form_id,
-                stat.model_path,
-                placed_ref.rotation[0], placed_ref.rotation[1], placed_ref.rotation[2],
-                placed_ref.position[0], placed_ref.position[1], placed_ref.position[2],
-            );
-        }
         let ref_scale = placed_ref.scale;
 
         // Update bounds.
         bounds_min = bounds_min.min(ref_pos);
         bounds_max = bounds_max.max(ref_pos);
 
-        // For cached NIFs, we need to re-upload the meshes for each placement
-        // because each REFR has its own transform. But we can avoid re-parsing
-        // the NIF by caching the parsed import data.
-        //
-        // For now, load the NIF each time (parsing is fast, GPU upload dominates).
-        // The mesh cache prevents re-loading the same NIF from BSA.
+        // Spawn light-only entities (LIGH with no mesh).
+        if stat.model_path.is_empty() {
+            if let Some(ref ld) = stat.light_data {
+                let entity = world.spawn();
+                world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
+                world.insert(entity, LightSource {
+                    radius: ld.radius,
+                    color: ld.color,
+                    flags: ld.flags,
+                });
+                entity_count += 1;
+            }
+            continue;
+        }
+
+        // Skip non-renderable effect meshes.
+        let model_lower = stat.model_path.to_ascii_lowercase();
+        if model_lower.contains("fxlightrays")
+            || model_lower.contains("fxlight")
+            || model_lower.contains("fxfog")
+        {
+            continue;
+        }
+
+        let model_path = if model_lower.starts_with("meshes\\")
+            || model_lower.starts_with("meshes/") {
+            stat.model_path.clone()
+        } else {
+            format!("meshes\\{}", stat.model_path)
+        };
+
         let nif_data = match mesh_cache.get(&model_path) {
             Some(data) => data.clone(),
             None => {
@@ -149,18 +228,18 @@ pub fn load_cell(
             }
         };
 
-        // Parse NIF, upload meshes, spawn entities with REFR transform applied.
-        let count = load_nif_placed(world, ctx, &nif_data, &model_path, tex_provider,
-                                     ref_pos, ref_rot, ref_scale);
+        let count = load_nif_placed(
+            world, ctx, &nif_data, &model_path, tex_provider,
+            ref_pos, ref_rot, ref_scale, stat.light_data.as_ref(),
+        );
         entity_count += count;
     }
 
     let center = (bounds_min + bounds_max) * 0.5;
-
     let dims = bounds_max - bounds_min;
     log::info!(
-        "Cell '{}' loaded: {} entities, {} unique meshes, {} STAT hits, {} STAT misses",
-        cell.editor_id, entity_count, mesh_cache.len(), stat_hit, stat_miss,
+        "'{}' loaded: {} entities, {} unique meshes, {} hits, {} misses",
+        label, entity_count, mesh_cache.len(), stat_hit, stat_miss,
     );
     log::info!(
         "  Bounds: min=[{:.0},{:.0},{:.0}] max=[{:.0},{:.0},{:.0}] size=[{:.0},{:.0},{:.0}] center=[{:.0},{:.0},{:.0}]",
@@ -171,17 +250,16 @@ pub fn load_cell(
     );
     if stat_miss > 0 {
         log::warn!(
-            "  {} REFR base forms not found in STAT table — run with RUST_LOG=debug for details",
+            "  {} base forms not found in statics table — run with RUST_LOG=debug for details",
             stat_miss,
         );
     }
 
-    Ok(CellLoadResult {
-        cell_name: cell.editor_id.clone(),
+    RefLoadResult {
         entity_count,
         mesh_count: mesh_cache.len(),
         center,
-    })
+    }
 }
 
 /// Parse a NIF and spawn all its sub-meshes with a parent REFR transform applied.
@@ -197,6 +275,7 @@ fn load_nif_placed(
     ref_pos: Vec3,
     ref_rot: Quat,
     ref_scale: f32,
+    light_data: Option<&esm::cell::LightData>,
 ) -> usize {
     use byroredux_renderer::Vertex;
 
@@ -288,6 +367,13 @@ fn load_nif_placed(
         }
         if mesh.two_sided {
             world.insert(entity, crate::TwoSided);
+        }
+        if let Some(ld) = light_data {
+            world.insert(entity, LightSource {
+                radius: ld.radius,
+                color: ld.color,
+                flags: ld.flags,
+            });
         }
         count += 1;
     }

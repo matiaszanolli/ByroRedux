@@ -1,21 +1,25 @@
 //! Cell, placed reference, and static object extraction from ESM files.
 //!
-//! Walks the GRUP tree to find interior cells, their placed references (REFR),
-//! and resolves base form IDs to static object definitions (STAT) for NIF paths.
+//! Walks the GRUP tree to find interior cells, exterior cells (from WRLD),
+//! their placed references (REFR + ACHR), and resolves base form IDs to
+//! static/object definitions for NIF paths.
 
 use super::reader::EsmReader;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
-/// An interior cell with its placed object references.
+/// A cell (interior or exterior) with its placed object references.
 #[derive(Debug)]
 pub struct CellData {
     pub form_id: u32,
     pub editor_id: String,
     pub references: Vec<PlacedRef>,
+    pub is_interior: bool,
+    /// Grid coordinates for exterior cells (None for interior).
+    pub grid: Option<(i32, i32)>,
 }
 
-/// A placed object reference within a cell.
+/// A placed object reference within a cell (REFR or ACHR).
 #[derive(Debug, Clone)]
 pub struct PlacedRef {
     pub base_form_id: u32,
@@ -26,24 +30,38 @@ pub struct PlacedRef {
     pub scale: f32,
 }
 
-/// A static object base form with its NIF model path.
+/// Light-specific data extracted from LIGH record DATA subrecord.
+#[derive(Debug, Clone)]
+pub struct LightData {
+    pub radius: f32,
+    pub color: [f32; 3],
+    pub flags: u32,
+}
+
+/// A base form with its NIF model path (STAT, MSTT, FURN, DOOR, LIGH, NPC_, etc.).
 #[derive(Debug, Clone)]
 pub struct StaticObject {
     pub form_id: u32,
     pub editor_id: String,
     pub model_path: String,
+    /// Light properties (only populated for LIGH records).
+    pub light_data: Option<LightData>,
 }
 
 /// Result of parsing an ESM file for cell loading.
 #[derive(Debug)]
 pub struct EsmCellIndex {
-    /// All interior cells found, keyed by editor ID (lowercase).
+    /// Interior cells, keyed by editor ID (lowercase).
     pub cells: HashMap<String, CellData>,
-    /// All STAT records, keyed by form ID.
+    /// Exterior cells, keyed by grid coordinates (x, y).
+    pub exterior_cells: HashMap<(i32, i32), CellData>,
+    /// All base object records with model paths, keyed by form ID.
     pub statics: HashMap<u32, StaticObject>,
+    /// Worldspace editor ID (first WRLD found).
+    pub worldspace_name: Option<String>,
 }
 
-/// Parse an ESM file and extract all interior cells and static object definitions.
+/// Parse an ESM file and extract cells, worldspaces, and base object definitions.
 pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
     let mut reader = EsmReader::new(data);
     let file_header = reader.read_file_header()
@@ -56,12 +74,13 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
     );
 
     let mut cells = HashMap::new();
+    let mut exterior_cells = HashMap::new();
     let mut statics = HashMap::new();
+    let mut worldspace_name = None;
 
     // Walk top-level groups.
     while reader.remaining() > 0 {
         if !reader.is_group() {
-            // Skip non-group records at top level (shouldn't happen, but defensive).
             let header = reader.read_record_header()?;
             reader.skip_record(&header);
             continue;
@@ -74,12 +93,17 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
                 let end = reader.position() + group.total_size as usize - 24;
                 parse_cell_group(&mut reader, end, &mut cells)?;
             }
+            b"WRLD" => {
+                let end = reader.position() + group.total_size as usize - 24;
+                parse_wrld_group(&mut reader, end, &mut exterior_cells, &mut worldspace_name)?;
+            }
             // All record types that have a MODL sub-record (NIF model path).
-            // Placed references (REFR) can point to any of these.
+            // Placed references (REFR/ACHR) can point to any of these.
             b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"ACTI" | b"CONT"
             | b"LIGH" | b"MISC" | b"FLOR" | b"TREE" | b"AMMO" | b"WEAP"
             | b"ARMO" | b"BOOK" | b"KEYM" | b"ALCH" | b"INGR" | b"NOTE"
-            | b"TACT" | b"IDLM" | b"BNDS" | b"ADDN" | b"TERM" => {
+            | b"TACT" | b"IDLM" | b"BNDS" | b"ADDN" | b"TERM"
+            | b"NPC_" => {
                 let end = reader.position() + group.total_size as usize - 24;
                 parse_modl_group(&mut reader, end, &mut statics)?;
             }
@@ -90,12 +114,14 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
     }
 
     log::info!(
-        "ESM parsed: {} interior cells, {} static objects",
+        "ESM parsed: {} interior cells, {} exterior cells, {} base objects{}",
         cells.len(),
+        exterior_cells.len(),
         statics.len(),
+        worldspace_name.as_ref().map(|n| format!(", worldspace '{}'", n)).unwrap_or_default(),
     );
 
-    Ok(EsmCellIndex { cells, statics })
+    Ok(EsmCellIndex { cells, exterior_cells, statics, worldspace_name })
 }
 
 /// Walk the CELL group hierarchy to find interior cells and their placed references.
@@ -155,6 +181,8 @@ fn parse_cell_group(
                         form_id: header.form_id,
                         editor_id: editor_id.clone(),
                         references: Vec::new(),
+                        is_interior: true,
+                        grid: None,
                     });
                     current_cell = Some((header.form_id, editor_id));
                 } else {
@@ -184,7 +212,7 @@ fn parse_refr_group(
         }
 
         let header = reader.read_record_header()?;
-        if &header.record_type == b"REFR" {
+        if &header.record_type == b"REFR" || &header.record_type == b"ACHR" {
             let subs = reader.read_sub_records(&header)?;
             let mut base_form_id = 0u32;
             let mut position = [0.0f32; 3];
@@ -233,8 +261,128 @@ fn parse_refr_group(
                 });
             }
         } else {
-            // Skip non-REFR records (ACHR, PGRE, PMIS, etc.)
+            // Skip other record types (PGRE, PMIS, LAND, NAVM, etc.)
             reader.skip_record(&header);
+        }
+    }
+    Ok(())
+}
+
+/// Walk the WRLD group hierarchy to find exterior cells and their placed references.
+fn parse_wrld_group(
+    reader: &mut EsmReader,
+    end: usize,
+    exterior_cells: &mut HashMap<(i32, i32), CellData>,
+    worldspace_name: &mut Option<String>,
+) -> Result<()> {
+    while reader.position() < end && reader.remaining() > 0 {
+        if reader.is_group() {
+            let sub_group = reader.read_group_header()?;
+            let sub_end = reader.position() + sub_group.total_size as usize - 24;
+
+            match sub_group.group_type {
+                // World children (type 1), exterior block (4), sub-block (5): recurse.
+                1 | 4 | 5 => {
+                    parse_wrld_children(reader, sub_end, exterior_cells)?;
+                }
+                _ => {
+                    reader.skip_group(&sub_group);
+                }
+            }
+        } else {
+            // WRLD record — extract worldspace name.
+            let header = reader.read_record_header()?;
+            if &header.record_type == b"WRLD" {
+                let subs = reader.read_sub_records(&header)?;
+                for sub in &subs {
+                    if &sub.sub_type == b"EDID" {
+                        let name = read_zstring(&sub.data);
+                        log::info!("Found worldspace: '{}' (form {:08X})", name, header.form_id);
+                        if worldspace_name.is_none() {
+                            *worldspace_name = Some(name);
+                        }
+                    }
+                }
+            } else {
+                reader.skip_record(&header);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Walk exterior cell hierarchy within a worldspace (group types 1, 4, 5).
+fn parse_wrld_children(
+    reader: &mut EsmReader,
+    end: usize,
+    exterior_cells: &mut HashMap<(i32, i32), CellData>,
+) -> Result<()> {
+    let mut current_cell: Option<(i32, i32)> = None;
+
+    while reader.position() < end && reader.remaining() > 0 {
+        if reader.is_group() {
+            let sub_group = reader.read_group_header()?;
+            let sub_end = reader.position() + sub_group.total_size as usize - 24;
+
+            match sub_group.group_type {
+                // Exterior block (4) and sub-block (5): recurse.
+                4 | 5 => {
+                    parse_wrld_children(reader, sub_end, exterior_cells)?;
+                }
+                // Cell children (6=temporary, 8=persistent, 9=visible distant).
+                6 | 8 | 9 => {
+                    if let Some(grid) = current_cell {
+                        let mut refs = Vec::new();
+                        parse_refr_group(reader, sub_end, &mut refs)?;
+                        if let Some(cell) = exterior_cells.get_mut(&grid) {
+                            cell.references.extend(refs);
+                        }
+                    } else {
+                        reader.skip_group(&sub_group);
+                    }
+                }
+                _ => {
+                    reader.skip_group(&sub_group);
+                }
+            }
+        } else {
+            let header = reader.read_record_header()?;
+            if &header.record_type == b"CELL" {
+                let subs = reader.read_sub_records(&header)?;
+                let mut editor_id = String::new();
+                let mut grid = None;
+
+                for sub in &subs {
+                    match &sub.sub_type {
+                        b"EDID" => editor_id = read_zstring(&sub.data),
+                        b"XCLC" if sub.data.len() >= 8 => {
+                            let grid_x = i32::from_le_bytes([
+                                sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                            ]);
+                            let grid_y = i32::from_le_bytes([
+                                sub.data[4], sub.data[5], sub.data[6], sub.data[7],
+                            ]);
+                            grid = Some((grid_x, grid_y));
+                        }
+                        _ => {}
+                    }
+                }
+
+                if let Some(g) = grid {
+                    exterior_cells.insert(g, CellData {
+                        form_id: header.form_id,
+                        editor_id,
+                        references: Vec::new(),
+                        is_interior: false,
+                        grid: Some(g),
+                    });
+                    current_cell = Some(g);
+                } else {
+                    current_cell = None;
+                }
+            } else {
+                reader.skip_record(&header);
+            }
         }
     }
     Ok(())
@@ -257,23 +405,45 @@ fn parse_modl_group(
 
         let header = reader.read_record_header()?;
         {
+            let is_ligh = &header.record_type == b"LIGH";
             let subs = reader.read_sub_records(&header)?;
             let mut editor_id = String::new();
             let mut model_path = String::new();
+            let mut light_data = None;
 
             for sub in &subs {
                 match &sub.sub_type {
                     b"EDID" => editor_id = read_zstring(&sub.data),
                     b"MODL" => model_path = read_zstring(&sub.data),
+                    b"DATA" if is_ligh && sub.data.len() >= 12 => {
+                        // LIGH DATA: time(u32), radius(u32), color(RGBA u8×4), flags(u32), ...
+                        let radius = u32::from_le_bytes([
+                            sub.data[4], sub.data[5], sub.data[6], sub.data[7],
+                        ]) as f32;
+                        let r = sub.data[8] as f32 / 255.0;
+                        let g = sub.data[9] as f32 / 255.0;
+                        let b = sub.data[10] as f32 / 255.0;
+                        let flags = if sub.data.len() >= 16 {
+                            u32::from_le_bytes([
+                                sub.data[12], sub.data[13], sub.data[14], sub.data[15],
+                            ])
+                        } else {
+                            0
+                        };
+                        light_data = Some(LightData { radius, color: [r, g, b], flags });
+                    }
                     _ => {}
                 }
             }
 
-            if !model_path.is_empty() {
+            // Insert if we have a model path, or if it's a LIGH with light data
+            // (some lights have no mesh — they're just point lights).
+            if !model_path.is_empty() || light_data.is_some() {
                 statics.insert(header.form_id, StaticObject {
                     form_id: header.form_id,
                     editor_id,
                     model_path,
+                    light_data,
                 });
             }
         }
