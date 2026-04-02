@@ -9,7 +9,7 @@ use crate::blocks::interpolator::{
     FloatKey, KeyGroup, KeyType, NiTransformData, NiTransformInterpolator, Vec3Key,
 };
 use crate::scene::NifScene;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 // ── Public animation types ────────────────────────────────────────────
 
@@ -200,10 +200,8 @@ fn convert_vec3_keys(group: &KeyGroup<Vec3Key>) -> (Vec<TranslationKey>, KeyType
 fn convert_quat_keys(data: &NiTransformData) -> (Vec<RotationKey>, KeyType) {
     let rotation_type = data.rotation_type.unwrap_or(KeyType::Linear);
 
-    // XYZ euler rotations not supported yet — would need euler→quat conversion
     if rotation_type == KeyType::XyzRotation {
-        log::warn!("XYZ euler rotation keys not yet supported, skipping rotation channel");
-        return (Vec::new(), KeyType::Linear);
+        return convert_xyz_euler_keys(data);
     }
 
     let keys = data
@@ -216,6 +214,137 @@ fn convert_quat_keys(data: &NiTransformData) -> (Vec<RotationKey>, KeyType) {
         })
         .collect();
     (keys, rotation_type)
+}
+
+/// Convert XYZ euler rotation key groups to quaternion keys.
+///
+/// Each axis has its own `KeyGroup<FloatKey>` with potentially different key counts
+/// and interpolation types. We collect all unique timestamps, sample each axis at
+/// each time, compose the euler angles into a quaternion, and apply Z-up→Y-up conversion.
+fn convert_xyz_euler_keys(data: &NiTransformData) -> (Vec<RotationKey>, KeyType) {
+    let Some(ref xyz) = data.xyz_rotations else {
+        return (Vec::new(), KeyType::Linear);
+    };
+
+    // Collect all unique timestamps across all 3 axes using ordered floats.
+    let mut times = BTreeSet::new();
+    for axis_group in xyz {
+        for key in &axis_group.keys {
+            times.insert(OrderedF32(key.time));
+        }
+    }
+
+    if times.is_empty() {
+        return (Vec::new(), KeyType::Linear);
+    }
+
+    let keys: Vec<RotationKey> = times
+        .iter()
+        .map(|&OrderedF32(time)| {
+            let x = sample_float_key_group(&xyz[0], time);
+            let y = sample_float_key_group(&xyz[1], time);
+            let z = sample_float_key_group(&xyz[2], time);
+
+            // Gamebryo euler angles are in radians, Z-up coordinate system.
+            // Compose euler → quaternion in Gamebryo space, then convert to Y-up.
+            // Gamebryo uses XYZ intrinsic euler order.
+            let qw = euler_to_quat_wxyz(x, y, z);
+            let yup = zup_to_yup_quat(qw);
+
+            RotationKey {
+                time,
+                value: yup,
+                tbc: None, // Euler→quat bakes interpolation; SLERP between samples
+            }
+        })
+        .collect();
+
+    // Output as Linear (SLERP between the pre-composed quaternion samples)
+    (keys, KeyType::Linear)
+}
+
+/// Linearly sample a float key group at a given time.
+/// Supports Linear, Quadratic (Hermite), and TBC interpolation.
+fn sample_float_key_group(group: &KeyGroup<FloatKey>, time: f32) -> f32 {
+    let keys = &group.keys;
+    if keys.is_empty() {
+        return 0.0;
+    }
+    if keys.len() == 1 || time <= keys[0].time {
+        return keys[0].value;
+    }
+    if time >= keys.last().unwrap().time {
+        return keys.last().unwrap().value;
+    }
+
+    // Binary search for bracketing pair.
+    let mut lo = 0;
+    let mut hi = keys.len() - 1;
+    while lo + 1 < hi {
+        let mid = (lo + hi) / 2;
+        if keys[mid].time <= time {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+
+    let k0 = &keys[lo];
+    let k1 = &keys[hi];
+    let dt = k1.time - k0.time;
+    let t = if dt > 0.0 { (time - k0.time) / dt } else { 0.0 };
+
+    match group.key_type {
+        KeyType::Linear => k0.value + (k1.value - k0.value) * t,
+        KeyType::Quadratic => {
+            let t2 = t * t;
+            let t3 = t2 * t;
+            let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+            let h10 = t3 - 2.0 * t2 + t;
+            let h01 = -2.0 * t3 + 3.0 * t2;
+            let h11 = t3 - t2;
+            h00 * k0.value + h10 * k0.tangent_forward * dt
+                + h01 * k1.value + h11 * k1.tangent_backward * dt
+        }
+        KeyType::Tbc | KeyType::XyzRotation => {
+            // TBC: fall back to linear for euler axis sampling (rare edge case)
+            k0.value + (k1.value - k0.value) * t
+        }
+    }
+}
+
+/// Convert XYZ intrinsic euler angles (radians) to quaternion (w, x, y, z).
+fn euler_to_quat_wxyz(x: f32, y: f32, z: f32) -> [f32; 4] {
+    let (sx, cx) = (x * 0.5).sin_cos();
+    let (sy, cy) = (y * 0.5).sin_cos();
+    let (sz, cz) = (z * 0.5).sin_cos();
+
+    // XYZ intrinsic rotation composition
+    let w = cx * cy * cz - sx * sy * sz;
+    let qx = sx * cy * cz + cx * sy * sz;
+    let qy = cx * sy * cz - sx * cy * sz;
+    let qz = cx * cy * sz + sx * sy * cz;
+
+    [w, qx, qy, qz]
+}
+
+/// Wrapper for f32 that implements Ord for use in BTreeSet.
+/// NaN-safe: treats NaN as equal and less than all values.
+#[derive(Clone, Copy, PartialEq)]
+struct OrderedF32(f32);
+
+impl Eq for OrderedF32 {}
+
+impl PartialOrd for OrderedF32 {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrderedF32 {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
 }
 
 fn convert_float_keys(group: &KeyGroup<FloatKey>) -> (Vec<ScaleKey>, KeyType) {
@@ -267,5 +396,130 @@ mod tests {
         };
         let clips = import_kf(&scene);
         assert!(clips.is_empty());
+    }
+
+    #[test]
+    fn euler_to_quat_identity() {
+        // All angles zero → identity quaternion (w=1, x=0, y=0, z=0)
+        let [w, x, y, z] = euler_to_quat_wxyz(0.0, 0.0, 0.0);
+        assert!((w - 1.0).abs() < 1e-6);
+        assert!(x.abs() < 1e-6);
+        assert!(y.abs() < 1e-6);
+        assert!(z.abs() < 1e-6);
+    }
+
+    #[test]
+    fn euler_to_quat_90_deg_x() {
+        use std::f32::consts::FRAC_PI_2;
+        // 90° around X: quat = (cos(45°), sin(45°), 0, 0) = (~0.707, ~0.707, 0, 0)
+        let [w, x, y, z] = euler_to_quat_wxyz(FRAC_PI_2, 0.0, 0.0);
+        let s = FRAC_PI_2.sin() * 0.5_f32.sqrt(); // sin(45°)
+        let c = FRAC_PI_2.cos() * 0.5_f32.sqrt(); // cos(45°) — but let's just check magnitude
+        assert!((w * w + x * x + y * y + z * z - 1.0).abs() < 1e-5, "quaternion should be unit");
+        assert!(x > 0.5, "x component should be dominant for X rotation");
+        assert!(y.abs() < 1e-5);
+        assert!(z.abs() < 1e-5);
+    }
+
+    #[test]
+    fn euler_to_quat_90_deg_y() {
+        use std::f32::consts::FRAC_PI_2;
+        let [w, x, y, z] = euler_to_quat_wxyz(0.0, FRAC_PI_2, 0.0);
+        assert!((w * w + x * x + y * y + z * z - 1.0).abs() < 1e-5);
+        assert!(x.abs() < 1e-5);
+        assert!(y > 0.5, "y component should be dominant for Y rotation");
+        assert!(z.abs() < 1e-5);
+    }
+
+    #[test]
+    fn euler_to_quat_90_deg_z() {
+        use std::f32::consts::FRAC_PI_2;
+        let [w, x, y, z] = euler_to_quat_wxyz(0.0, 0.0, FRAC_PI_2);
+        assert!((w * w + x * x + y * y + z * z - 1.0).abs() < 1e-5);
+        assert!(x.abs() < 1e-5);
+        assert!(y.abs() < 1e-5);
+        assert!(z > 0.5, "z component should be dominant for Z rotation");
+    }
+
+    #[test]
+    fn sample_float_key_group_linear() {
+        let group = KeyGroup {
+            key_type: KeyType::Linear,
+            keys: vec![
+                FloatKey { time: 0.0, value: 0.0, tangent_forward: 0.0, tangent_backward: 0.0, tbc: None },
+                FloatKey { time: 1.0, value: 1.0, tangent_forward: 0.0, tangent_backward: 0.0, tbc: None },
+            ],
+        };
+        assert!((sample_float_key_group(&group, 0.5) - 0.5).abs() < 1e-5);
+        assert!((sample_float_key_group(&group, 0.0) - 0.0).abs() < 1e-5);
+        assert!((sample_float_key_group(&group, 1.0) - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn sample_float_key_group_empty() {
+        let group = KeyGroup {
+            key_type: KeyType::Linear,
+            keys: vec![],
+        };
+        assert_eq!(sample_float_key_group(&group, 0.5), 0.0);
+    }
+
+    #[test]
+    fn sample_float_key_group_single() {
+        let group = KeyGroup {
+            key_type: KeyType::Linear,
+            keys: vec![
+                FloatKey { time: 0.5, value: 42.0, tangent_forward: 0.0, tangent_backward: 0.0, tbc: None },
+            ],
+        };
+        assert_eq!(sample_float_key_group(&group, 0.0), 42.0);
+        assert_eq!(sample_float_key_group(&group, 1.0), 42.0);
+    }
+
+    #[test]
+    fn convert_xyz_euler_keys_produces_rotation_keys() {
+        use std::f32::consts::FRAC_PI_2;
+        // Create NiTransformData with XYZ euler rotation keys:
+        // At t=0: all angles 0 (identity)
+        // At t=1: 90° around X
+        let x_keys = KeyGroup {
+            key_type: KeyType::Linear,
+            keys: vec![
+                FloatKey { time: 0.0, value: 0.0, tangent_forward: 0.0, tangent_backward: 0.0, tbc: None },
+                FloatKey { time: 1.0, value: FRAC_PI_2, tangent_forward: 0.0, tangent_backward: 0.0, tbc: None },
+            ],
+        };
+        let empty_keys = KeyGroup {
+            key_type: KeyType::Linear,
+            keys: vec![
+                FloatKey { time: 0.0, value: 0.0, tangent_forward: 0.0, tangent_backward: 0.0, tbc: None },
+                FloatKey { time: 1.0, value: 0.0, tangent_forward: 0.0, tangent_backward: 0.0, tbc: None },
+            ],
+        };
+
+        let data = NiTransformData {
+            rotation_type: Some(KeyType::XyzRotation),
+            rotation_keys: Vec::new(),
+            xyz_rotations: Some([x_keys, empty_keys.clone(), empty_keys]),
+            translations: KeyGroup { key_type: KeyType::Linear, keys: Vec::new() },
+            scales: KeyGroup { key_type: KeyType::Linear, keys: Vec::new() },
+        };
+
+        let (keys, key_type) = convert_xyz_euler_keys(&data);
+        assert_eq!(key_type, KeyType::Linear);
+        assert_eq!(keys.len(), 2, "should have 2 rotation keys (one per unique timestamp)");
+
+        // First key (t=0): identity → after Z-up to Y-up, glam format (x, y, z, w)
+        let k0 = &keys[0];
+        assert!((k0.time).abs() < 1e-5);
+        // Identity quat in glam: (0, 0, 0, 1)
+        assert!((k0.value[3] - 1.0).abs() < 1e-4, "w should be ~1 for identity: {:?}", k0.value);
+
+        // Second key (t=1): 90° around X in Z-up, then converted to Y-up
+        let k1 = &keys[1];
+        assert!((k1.time - 1.0).abs() < 1e-5);
+        // Should be a unit quaternion
+        let len_sq = k1.value.iter().map(|v| v * v).sum::<f32>();
+        assert!((len_sq - 1.0).abs() < 1e-4, "quaternion should be unit: {:?}", k1.value);
     }
 }
