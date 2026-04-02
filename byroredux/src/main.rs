@@ -5,14 +5,17 @@ mod cell_loader;
 use anyhow::Result;
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::animation::{
-    advance_time, sample_rotation, sample_scale, sample_translation,
-    AnimationClip, AnimationClipRegistry, AnimationPlayer, CycleType, KeyType,
+    advance_time, sample_bool_channel, sample_color_channel, sample_float_channel,
+    sample_rotation, sample_scale, sample_translation,
+    AnimationClip, AnimationClipRegistry, AnimationPlayer,
+    AnimBoolKey, AnimColorKey, AnimFloatKey,
+    BoolChannel, ColorChannel, ColorTarget, CycleType, FloatChannel, FloatTarget, KeyType,
     RotationKey, ScaleKey, TransformChannel, TranslationKey,
 };
 use byroredux_core::ecs::{
-    ActiveCamera, Camera, Children, Component, DebugStats, DeltaTime, EngineConfig,
-    GlobalTransform, MeshHandle, Name, Parent, Scheduler, SparseSetStorage, TextureHandle,
-    TotalTime, Transform, World,
+    ActiveCamera, AnimatedAlpha, AnimatedColor, AnimatedVisibility, Camera, Children, Component,
+    DebugStats, DeltaTime, EngineConfig, GlobalTransform, MeshHandle, Name, Parent, Scheduler,
+    SparseSetStorage, TextureHandle, TotalTime, Transform, World,
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::Resource;
@@ -167,23 +170,66 @@ fn animation_system(world: &World, dt: f32) {
         let current_time = player.local_time;
         drop(player_query);
 
-        // Apply each channel to the corresponding named entity.
-        let mut transform_query = world.query_mut::<Transform>().unwrap();
-        for (channel_name, channel) in &clip.channels {
-            let Some(&target_entity) = name_to_entity.get(channel_name) else {
-                continue;
-            };
-            let Some(transform) = transform_query.get_mut(target_entity) else {
-                continue;
-            };
-            if let Some(pos) = sample_translation(channel, current_time) {
-                transform.translation = pos;
+        // Apply transform channels.
+        {
+            let mut transform_query = world.query_mut::<Transform>().unwrap();
+            for (channel_name, channel) in &clip.channels {
+                let Some(&target_entity) = name_to_entity.get(channel_name) else {
+                    continue;
+                };
+                let Some(transform) = transform_query.get_mut(target_entity) else {
+                    continue;
+                };
+                if let Some(pos) = sample_translation(channel, current_time) {
+                    transform.translation = pos;
+                }
+                if let Some(rot) = sample_rotation(channel, current_time) {
+                    transform.rotation = rot;
+                }
+                if let Some(scale) = sample_scale(channel, current_time) {
+                    transform.scale = scale;
+                }
             }
-            if let Some(rot) = sample_rotation(channel, current_time) {
-                transform.rotation = rot;
+        }
+
+        // Apply float channels (alpha, UV params, shader floats).
+        for (channel_name, channel) in &clip.float_channels {
+            let Some(&target_entity) = name_to_entity.get(channel_name) else { continue };
+            let value = sample_float_channel(channel, current_time);
+            if channel.target == FloatTarget::Alpha {
+                if let Some(mut aq) = world.query_mut::<AnimatedAlpha>() {
+                    if let Some(a) = aq.get_mut(target_entity) {
+                        a.0 = value;
+                    } else {
+                        drop(aq);
+                        // Can't insert during system — would need &mut World.
+                        // Components should be pre-attached during import.
+                    }
+                }
             }
-            if let Some(scale) = sample_scale(channel, current_time) {
-                transform.scale = scale;
+            // UV and shader float channels are logged but not yet wired to rendering
+            // (would require UvTransform / shader uniform components).
+        }
+
+        // Apply color channels.
+        for (channel_name, channel) in &clip.color_channels {
+            let Some(&target_entity) = name_to_entity.get(channel_name) else { continue };
+            let value = sample_color_channel(channel, current_time);
+            if let Some(mut cq) = world.query_mut::<AnimatedColor>() {
+                if let Some(c) = cq.get_mut(target_entity) {
+                    c.0 = value;
+                }
+            }
+        }
+
+        // Apply bool (visibility) channels.
+        for (channel_name, channel) in &clip.bool_channels {
+            let Some(&target_entity) = name_to_entity.get(channel_name) else { continue };
+            let value = sample_bool_channel(channel, current_time);
+            if let Some(mut vq) = world.query_mut::<AnimatedVisibility>() {
+                if let Some(v) = vq.get_mut(target_entity) {
+                    v.0 = value;
+                }
             }
         }
     }
@@ -1280,7 +1326,15 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>) {
         let tex_q = world.query::<TextureHandle>();
         let alpha_q = world.query::<AlphaBlend>();
         let two_sided_q = world.query::<TwoSided>();
+        let vis_q = world.query::<AnimatedVisibility>();
         for (entity, mesh) in mq.iter() {
+            // Skip entities hidden by animation.
+            let visible = vis_q.as_ref()
+                .and_then(|q| q.get(entity))
+                .map(|v| v.0)
+                .unwrap_or(true);
+            if !visible { continue; }
+
             if let Some(transform) = tq.get(entity) {
                 let tex_handle = tex_q
                     .as_ref()
@@ -1402,11 +1456,52 @@ fn convert_nif_clip(nif: &byroredux_nif::anim::AnimationClip) -> AnimationClip {
         })
         .collect();
 
+    let convert_float_target = |t: na::FloatTarget| match t {
+        na::FloatTarget::Alpha => FloatTarget::Alpha,
+        na::FloatTarget::UvOffsetU => FloatTarget::UvOffsetU,
+        na::FloatTarget::UvOffsetV => FloatTarget::UvOffsetV,
+        na::FloatTarget::UvScaleU => FloatTarget::UvScaleU,
+        na::FloatTarget::UvScaleV => FloatTarget::UvScaleV,
+        na::FloatTarget::UvRotation => FloatTarget::UvRotation,
+        na::FloatTarget::ShaderFloat => FloatTarget::ShaderFloat,
+    };
+
+    let convert_color_target = |t: na::ColorTarget| match t {
+        na::ColorTarget::Diffuse => ColorTarget::Diffuse,
+        na::ColorTarget::Ambient => ColorTarget::Ambient,
+        na::ColorTarget::Specular => ColorTarget::Specular,
+        na::ColorTarget::Emissive => ColorTarget::Emissive,
+        na::ColorTarget::ShaderColor => ColorTarget::ShaderColor,
+    };
+
+    let float_channels = nif.float_channels.iter()
+        .map(|(name, ch)| (name.clone(), FloatChannel {
+            target: convert_float_target(ch.target),
+            keys: ch.keys.iter().map(|k| AnimFloatKey { time: k.time, value: k.value }).collect(),
+        }))
+        .collect();
+
+    let color_channels = nif.color_channels.iter()
+        .map(|(name, ch)| (name.clone(), ColorChannel {
+            target: convert_color_target(ch.target),
+            keys: ch.keys.iter().map(|k| AnimColorKey { time: k.time, value: Vec3::from_array(k.value) }).collect(),
+        }))
+        .collect();
+
+    let bool_channels = nif.bool_channels.iter()
+        .map(|(name, ch)| (name.clone(), BoolChannel {
+            keys: ch.keys.iter().map(|k| AnimBoolKey { time: k.time, value: k.value }).collect(),
+        }))
+        .collect();
+
     AnimationClip {
         name: nif.name.clone(),
         duration: nif.duration,
         cycle_type,
         frequency: nif.frequency,
         channels,
+        float_channels,
+        color_channels,
+        bool_channels,
     }
 }

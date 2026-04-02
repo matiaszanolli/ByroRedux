@@ -1,5 +1,6 @@
 //! Built-in engine components.
 
+pub mod animated;
 pub mod camera;
 pub mod form_id;
 pub mod global_transform;
@@ -10,6 +11,7 @@ pub mod name;
 pub mod texture;
 pub mod transform;
 
+pub use animated::{AnimatedAlpha, AnimatedColor, AnimatedVisibility};
 pub use camera::{ActiveCamera, Camera};
 pub use form_id::FormIdComponent;
 pub use global_transform::GlobalTransform;

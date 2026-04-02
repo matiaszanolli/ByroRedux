@@ -68,6 +68,71 @@ pub struct TransformChannel {
     pub scale_type: KeyType,
 }
 
+// ── Non-transform channel types ───────────────────────────────────────
+
+/// What a float channel targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FloatTarget {
+    Alpha,
+    UvOffsetU,
+    UvOffsetV,
+    UvScaleU,
+    UvScaleV,
+    UvRotation,
+    ShaderFloat,
+}
+
+/// What a color channel targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ColorTarget {
+    Diffuse,
+    Ambient,
+    Specular,
+    Emissive,
+    ShaderColor,
+}
+
+/// A float keyframe (alpha, UV params, shader floats).
+#[derive(Debug, Clone, Copy)]
+pub struct AnimFloatKey {
+    pub time: f32,
+    pub value: f32,
+}
+
+/// A color keyframe (RGB).
+#[derive(Debug, Clone, Copy)]
+pub struct AnimColorKey {
+    pub time: f32,
+    pub value: Vec3,
+}
+
+/// A bool keyframe (visibility).
+#[derive(Debug, Clone, Copy)]
+pub struct AnimBoolKey {
+    pub time: f32,
+    pub value: bool,
+}
+
+/// Float animation channel.
+#[derive(Debug, Clone)]
+pub struct FloatChannel {
+    pub target: FloatTarget,
+    pub keys: Vec<AnimFloatKey>,
+}
+
+/// Color animation channel.
+#[derive(Debug, Clone)]
+pub struct ColorChannel {
+    pub target: ColorTarget,
+    pub keys: Vec<AnimColorKey>,
+}
+
+/// Visibility animation channel.
+#[derive(Debug, Clone)]
+pub struct BoolChannel {
+    pub keys: Vec<AnimBoolKey>,
+}
+
 /// A complete animation clip (one per NiControllerSequence).
 #[derive(Debug, Clone)]
 pub struct AnimationClip {
@@ -77,6 +142,12 @@ pub struct AnimationClip {
     pub frequency: f32,
     /// Map from node name to its transform animation channel.
     pub channels: HashMap<String, TransformChannel>,
+    /// Float channels: (node_name, channel).
+    pub float_channels: Vec<(String, FloatChannel)>,
+    /// Color channels: (node_name, channel).
+    pub color_channels: Vec<(String, ColorChannel)>,
+    /// Bool channels: (node_name, channel).
+    pub bool_channels: Vec<(String, BoolChannel)>,
 }
 
 // ── AnimationClipRegistry (Resource) ──────────────────────────────────
@@ -387,6 +458,48 @@ pub fn sample_scale(channel: &TransformChannel, time: f32) -> Option<f32> {
     }
 }
 
+/// Sample a float channel at a given time.
+pub fn sample_float_channel(channel: &FloatChannel, time: f32) -> f32 {
+    let keys = &channel.keys;
+    if keys.is_empty() { return 0.0; }
+    if keys.len() == 1 || time <= keys[0].time { return keys[0].value; }
+    if time >= keys.last().unwrap().time { return keys.last().unwrap().value; }
+
+    let times: Vec<f32> = keys.iter().map(|k| k.time).collect();
+    let (i0, i1, t) = find_key_pair(&times, time);
+    if i0 == i1 { return keys[i0].value; }
+    keys[i0].value + (keys[i1].value - keys[i0].value) * t
+}
+
+/// Sample a color channel at a given time (linear interpolation).
+pub fn sample_color_channel(channel: &ColorChannel, time: f32) -> Vec3 {
+    let keys = &channel.keys;
+    if keys.is_empty() { return Vec3::ONE; }
+    if keys.len() == 1 || time <= keys[0].time { return keys[0].value; }
+    if time >= keys.last().unwrap().time { return keys.last().unwrap().value; }
+
+    let times: Vec<f32> = keys.iter().map(|k| k.time).collect();
+    let (i0, i1, t) = find_key_pair(&times, time);
+    if i0 == i1 { return keys[i0].value; }
+    keys[i0].value.lerp(keys[i1].value, t)
+}
+
+/// Sample a bool channel at a given time (step — no interpolation).
+pub fn sample_bool_channel(channel: &BoolChannel, time: f32) -> bool {
+    let keys = &channel.keys;
+    if keys.is_empty() { return true; }
+    // Step function: use the last key whose time <= current time.
+    let mut result = keys[0].value;
+    for key in keys {
+        if key.time <= time {
+            result = key.value;
+        } else {
+            break;
+        }
+    }
+    result
+}
+
 /// Advance the animation time according to the cycle type.
 pub fn advance_time(
     player: &mut AnimationPlayer,
@@ -573,6 +686,9 @@ mod tests {
             cycle_type: CycleType::Loop,
             frequency: 1.0,
             channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
         };
         let mut player = AnimationPlayer::new(0);
         advance_time(&mut player, &clip, 0.6);
@@ -590,6 +706,9 @@ mod tests {
             cycle_type: CycleType::Clamp,
             frequency: 1.0,
             channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
         };
         let mut player = AnimationPlayer::new(0);
         advance_time(&mut player, &clip, 2.0);
@@ -604,6 +723,9 @@ mod tests {
             cycle_type: CycleType::Reverse,
             frequency: 1.0,
             channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
         };
         let mut player = AnimationPlayer::new(0);
         advance_time(&mut player, &clip, 0.8);
@@ -626,6 +748,9 @@ mod tests {
             cycle_type: CycleType::Loop,
             frequency: 1.0,
             channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
         };
         let handle = reg.add(clip);
         assert_eq!(handle, 0);

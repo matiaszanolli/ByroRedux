@@ -6,7 +6,8 @@
 
 use crate::blocks::controller::{ControlledBlock, NiControllerSequence};
 use crate::blocks::interpolator::{
-    FloatKey, KeyGroup, KeyType, NiTransformData, NiTransformInterpolator, Vec3Key,
+    FloatKey, KeyGroup, KeyType, NiBoolInterpolator, NiFloatData, NiFloatInterpolator,
+    NiPoint3Interpolator, NiPosData, NiTransformData, NiTransformInterpolator, Vec3Key,
 };
 use crate::scene::NifScene;
 use std::collections::{BTreeSet, HashMap};
@@ -75,6 +76,81 @@ pub struct ScaleKey {
     pub tbc: Option<[f32; 3]>,
 }
 
+/// What a float animation channel targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FloatTarget {
+    /// Material alpha (NiAlphaController).
+    Alpha,
+    /// UV offset U (NiTextureTransformController, operation=0).
+    UvOffsetU,
+    /// UV offset V (operation=1).
+    UvOffsetV,
+    /// UV scale U (operation=2).
+    UvScaleU,
+    /// UV scale V (operation=3).
+    UvScaleV,
+    /// UV rotation (operation=4).
+    UvRotation,
+    /// Shader float property (BSEffectShader/BSLightingShader float controllers).
+    ShaderFloat,
+}
+
+/// What a color animation channel targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ColorTarget {
+    /// Diffuse color (NiMaterialColorController, target_color=0).
+    Diffuse,
+    /// Ambient color (target_color=1).
+    Ambient,
+    /// Specular color (target_color=2).
+    Specular,
+    /// Emissive color (target_color=3).
+    Emissive,
+    /// Shader color property.
+    ShaderColor,
+}
+
+/// A float keyframe for non-transform channels.
+#[derive(Debug, Clone, Copy)]
+pub struct AnimFloatKey {
+    pub time: f32,
+    pub value: f32,
+}
+
+/// A color keyframe (RGB).
+#[derive(Debug, Clone, Copy)]
+pub struct AnimColorKey {
+    pub time: f32,
+    pub value: [f32; 3],
+}
+
+/// A bool keyframe (visibility).
+#[derive(Debug, Clone, Copy)]
+pub struct AnimBoolKey {
+    pub time: f32,
+    pub value: bool,
+}
+
+/// A float animation channel (alpha, UV params, shader floats).
+#[derive(Debug, Clone)]
+pub struct FloatChannel {
+    pub target: FloatTarget,
+    pub keys: Vec<AnimFloatKey>,
+}
+
+/// A color animation channel (material/shader colors).
+#[derive(Debug, Clone)]
+pub struct ColorChannel {
+    pub target: ColorTarget,
+    pub keys: Vec<AnimColorKey>,
+}
+
+/// A visibility animation channel.
+#[derive(Debug, Clone)]
+pub struct BoolChannel {
+    pub keys: Vec<AnimBoolKey>,
+}
+
 /// A complete animation clip extracted from one NiControllerSequence.
 #[derive(Debug, Clone)]
 pub struct AnimationClip {
@@ -84,6 +160,12 @@ pub struct AnimationClip {
     pub frequency: f32,
     /// Map from node name to its transform animation channel.
     pub channels: HashMap<String, TransformChannel>,
+    /// Float channels keyed by (node_name, target).
+    pub float_channels: Vec<(String, FloatChannel)>,
+    /// Color channels keyed by (node_name, target).
+    pub color_channels: Vec<(String, ColorChannel)>,
+    /// Bool (visibility) channels keyed by node_name.
+    pub bool_channels: Vec<(String, BoolChannel)>,
 }
 
 // ── Coordinate conversion helpers ─────────────────────────────────────
@@ -119,7 +201,11 @@ pub fn import_kf(scene: &NifScene) -> Vec<AnimationClip> {
         };
 
         let clip = import_sequence(scene, seq);
-        if !clip.channels.is_empty() {
+        let has_data = !clip.channels.is_empty()
+            || !clip.float_channels.is_empty()
+            || !clip.color_channels.is_empty()
+            || !clip.bool_channels.is_empty();
+        if has_data {
             clips.push(clip);
         }
     }
@@ -133,20 +219,57 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
     let cycle_type = CycleType::from_u32(seq.cycle_type);
     let frequency = seq.frequency;
     let mut channels = HashMap::new();
+    let mut float_channels = Vec::new();
+    let mut color_channels = Vec::new();
+    let mut bool_channels = Vec::new();
 
     for cb in &seq.controlled_blocks {
-        // Only handle NiTransformController channels for M21
         let controller_type = cb.controller_type.as_deref().unwrap_or("");
-        if controller_type != "NiTransformController" {
-            continue;
-        }
-
         let Some(node_name) = cb.node_name.as_ref() else {
             continue;
         };
 
-        if let Some(channel) = extract_transform_channel(scene, cb) {
-            channels.insert(node_name.clone(), channel);
+        match controller_type {
+            "NiTransformController" => {
+                if let Some(channel) = extract_transform_channel(scene, cb) {
+                    channels.insert(node_name.clone(), channel);
+                }
+            }
+            "NiMaterialColorController" => {
+                if let Some(ch) = extract_color_channel(scene, cb) {
+                    color_channels.push((node_name.clone(), ch));
+                }
+            }
+            "NiAlphaController" => {
+                if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::Alpha) {
+                    float_channels.push((node_name.clone(), ch));
+                }
+            }
+            "NiVisController" => {
+                if let Some(ch) = extract_bool_channel(scene, cb) {
+                    bool_channels.push((node_name.clone(), ch));
+                }
+            }
+            "NiTextureTransformController" => {
+                if let Some(ch) = extract_texture_transform_channel(scene, cb) {
+                    float_channels.push((node_name.clone(), ch));
+                }
+            }
+            "BSEffectShaderPropertyFloatController"
+            | "BSLightingShaderPropertyFloatController" => {
+                if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::ShaderFloat) {
+                    float_channels.push((node_name.clone(), ch));
+                }
+            }
+            "BSEffectShaderPropertyColorController"
+            | "BSLightingShaderPropertyColorController" => {
+                if let Some(ch) = extract_shader_color_channel(scene, cb) {
+                    color_channels.push((node_name.clone(), ch));
+                }
+            }
+            _ => {
+                log::debug!("Skipping unsupported controller type: '{}'", controller_type);
+            }
         }
     }
 
@@ -156,6 +279,9 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
         cycle_type,
         frequency,
         channels,
+        float_channels,
+        color_channels,
+        bool_channels,
     }
 }
 
@@ -180,6 +306,128 @@ fn extract_transform_channel(
         scale_keys,
         scale_type,
     })
+}
+
+/// Extract a float channel from a NiFloatInterpolator → NiFloatData.
+fn extract_float_channel(
+    scene: &NifScene,
+    cb: &ControlledBlock,
+    target: FloatTarget,
+) -> Option<FloatChannel> {
+    let interp_idx = cb.interpolator_ref.index()?;
+    let interp = scene.get_as::<NiFloatInterpolator>(interp_idx)?;
+    let data_idx = interp.data_ref.index()?;
+    let data = scene.get_as::<NiFloatData>(data_idx)?;
+
+    let keys: Vec<AnimFloatKey> = data.keys.keys.iter()
+        .map(|k| AnimFloatKey { time: k.time, value: k.value })
+        .collect();
+
+    if keys.is_empty() { return None; }
+    Some(FloatChannel { target, keys })
+}
+
+/// Extract a color channel from NiPoint3Interpolator → NiPosData.
+/// Used by NiMaterialColorController.
+fn extract_color_channel(
+    scene: &NifScene,
+    cb: &ControlledBlock,
+) -> Option<ColorChannel> {
+    let interp_idx = cb.interpolator_ref.index()?;
+    let interp = scene.get_as::<NiPoint3Interpolator>(interp_idx)?;
+    let data_idx = interp.data_ref.index()?;
+    let data = scene.get_as::<NiPosData>(data_idx)?;
+
+    let keys: Vec<AnimColorKey> = data.keys.keys.iter()
+        .map(|k| AnimColorKey { time: k.time, value: k.value })
+        .collect();
+
+    // Determine which material color slot from the controller.
+    // The controller block is referenced by cb.controller_ref but we access it
+    // via property_type field. NiMaterialColorController.target_color:
+    // 0=diffuse, 1=ambient, 2=specular, 3=emissive
+    // We'd need to look up the controller block to get target_color.
+    // For now, default to Diffuse (most common).
+    let target = cb.controller_ref.index()
+        .and_then(|idx| scene.get_as::<crate::blocks::controller::NiMaterialColorController>(idx))
+        .map(|ctrl| match ctrl.target_color {
+            1 => ColorTarget::Ambient,
+            2 => ColorTarget::Specular,
+            3 => ColorTarget::Emissive,
+            _ => ColorTarget::Diffuse,
+        })
+        .unwrap_or(ColorTarget::Diffuse);
+
+    if keys.is_empty() { return None; }
+    Some(ColorChannel { target, keys })
+}
+
+/// Extract a shader color channel from NiPoint3Interpolator → NiPosData.
+fn extract_shader_color_channel(
+    scene: &NifScene,
+    cb: &ControlledBlock,
+) -> Option<ColorChannel> {
+    let interp_idx = cb.interpolator_ref.index()?;
+    let interp = scene.get_as::<NiPoint3Interpolator>(interp_idx)?;
+    let data_idx = interp.data_ref.index()?;
+    let data = scene.get_as::<NiPosData>(data_idx)?;
+
+    let keys: Vec<AnimColorKey> = data.keys.keys.iter()
+        .map(|k| AnimColorKey { time: k.time, value: k.value })
+        .collect();
+
+    if keys.is_empty() { return None; }
+    Some(ColorChannel { target: ColorTarget::ShaderColor, keys })
+}
+
+/// Extract a bool (visibility) channel from NiBoolInterpolator.
+fn extract_bool_channel(
+    scene: &NifScene,
+    cb: &ControlledBlock,
+) -> Option<BoolChannel> {
+    let interp_idx = cb.interpolator_ref.index()?;
+    let interp = scene.get_as::<NiBoolInterpolator>(interp_idx)?;
+
+    // NiBoolInterpolator may have inline data or reference NiBoolData.
+    // For simple vis controllers, the interpolator itself has the value.
+    // If it references data, extract keys from there.
+    if let Some(data_idx) = interp.data_ref.index() {
+        if let Some(data) = scene.get_as::<crate::blocks::interpolator::NiBoolData>(data_idx) {
+            let keys: Vec<AnimBoolKey> = data.keys.keys.iter()
+                .map(|k| AnimBoolKey { time: k.time, value: k.value > 0.5 })
+                .collect();
+            if !keys.is_empty() {
+                return Some(BoolChannel { keys });
+            }
+        }
+    }
+
+    // Fallback: single constant value from the interpolator.
+    Some(BoolChannel {
+        keys: vec![AnimBoolKey { time: 0.0, value: interp.value }],
+    })
+}
+
+/// Extract a texture transform float channel.
+/// Maps NiTextureTransformController.operation to the appropriate FloatTarget.
+fn extract_texture_transform_channel(
+    scene: &NifScene,
+    cb: &ControlledBlock,
+) -> Option<FloatChannel> {
+    // Determine target from the controller's operation field.
+    let target = cb.controller_ref.index()
+        .and_then(|idx| scene.get_as::<crate::blocks::controller::NiTextureTransformController>(idx))
+        .map(|ctrl| match ctrl.operation {
+            0 => FloatTarget::UvOffsetU,
+            1 => FloatTarget::UvOffsetV,
+            2 => FloatTarget::UvScaleU,
+            3 => FloatTarget::UvScaleV,
+            4 => FloatTarget::UvRotation,
+            _ => FloatTarget::UvOffsetU,
+        })
+        .unwrap_or(FloatTarget::UvOffsetU);
+
+    extract_float_channel(scene, cb, target)
 }
 
 fn convert_vec3_keys(group: &KeyGroup<Vec3Key>) -> (Vec<TranslationKey>, KeyType) {
