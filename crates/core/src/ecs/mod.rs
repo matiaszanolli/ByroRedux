@@ -16,7 +16,10 @@ pub mod storage;
 pub mod system;
 pub mod world;
 
-pub use components::{ActiveCamera, Camera, LightSource, MeshHandle, Name, TextureHandle, Transform};
+pub use components::{
+    ActiveCamera, Camera, Children, GlobalTransform, LightSource, MeshHandle, Name, Parent,
+    TextureHandle, Transform,
+};
 pub use packed::PackedStorage;
 pub use query::{QueryRead, QueryWrite};
 pub use resource::{Resource, ResourceRead, ResourceWrite};

@@ -1,8 +1,8 @@
-//! NIF-to-ECS import — converts a parsed NifScene into flat meshes.
+//! NIF-to-ECS import — converts a parsed NifScene into meshes and nodes.
 //!
-//! Walks the NiNode scene graph tree, accumulating world-space transforms,
-//! and produces one `ImportedMesh` per NiTriShape leaf. The scene graph
-//! hierarchy is discarded — ECS is flat.
+//! Walks the NiNode scene graph tree, preserving hierarchy as `ImportedNode`
+//! entries with parent indices. Produces `ImportedMesh` per geometry leaf and
+//! `ImportedNode` per NiNode. Transforms are local (relative to parent).
 //!
 //! The output is GPU-agnostic: `ImportedMesh` contains plain `Vec<Vertex>`
 //! and `Vec<u32>` data ready for upload via `MeshRegistry::upload()`.
@@ -18,6 +18,20 @@ use crate::blocks::tri_shape::{NiTriShape, NiTriShapeData, NiTriStripsData, BsTr
 use crate::scene::NifScene;
 use crate::types::{NiMatrix3, NiPoint3, NiTransform};
 
+/// A scene graph node (NiNode) extracted from a NIF file.
+#[derive(Debug)]
+pub struct ImportedNode {
+    /// Node name from the NIF (e.g., "Bip01 Head", "Scene Root").
+    pub name: Option<String>,
+    /// Local-space translation (Y-up), relative to parent.
+    pub translation: [f32; 3],
+    /// Local-space rotation as quaternion [x, y, z, w] (Y-up).
+    pub rotation: [f32; 4],
+    pub scale: f32,
+    /// Index into `ImportedScene.nodes` for this node's parent, or None for root.
+    pub parent_node: Option<usize>,
+}
+
 /// A mesh extracted from a NIF file, ready for GPU upload.
 #[derive(Debug)]
 pub struct ImportedMesh {
@@ -31,10 +45,9 @@ pub struct ImportedMesh {
     pub uvs: Vec<[f32; 2]>,
     /// Triangle indices (u32 for Vulkan compatibility).
     pub indices: Vec<u32>,
-    /// World-space transform (parent chain composed, Y-up).
+    /// Local-space translation (Y-up), relative to parent node.
     pub translation: [f32; 3],
-    /// Rotation as quaternion [x, y, z, w] — extracted via SVD for robustness
-    /// against degenerate NIF matrices. Already in Y-up coordinate system.
+    /// Local-space rotation as quaternion [x, y, z, w] (Y-up).
     pub rotation: [f32; 4],
     pub scale: f32,
     /// Texture file path (if a base texture was found).
@@ -45,13 +58,42 @@ pub struct ImportedMesh {
     pub has_alpha: bool,
     /// Whether this mesh should be rendered two-sided (no backface culling).
     pub two_sided: bool,
+    /// Index into `ImportedScene.nodes` for this mesh's parent node, or None.
+    pub parent_node: Option<usize>,
 }
 
-/// Import all renderable meshes from a parsed NIF scene.
+/// A fully imported NIF scene with hierarchy preserved.
+#[derive(Debug)]
+pub struct ImportedScene {
+    /// Scene graph nodes (NiNode hierarchy).
+    pub nodes: Vec<ImportedNode>,
+    /// Leaf geometry meshes.
+    pub meshes: Vec<ImportedMesh>,
+}
+
+/// Import all renderable meshes from a parsed NIF scene, preserving hierarchy.
 ///
-/// Returns one `ImportedMesh` per NiTriShape found in the scene graph.
-/// The meshes have world-space transforms computed by composing parent
-/// node transforms down the tree.
+/// Returns an `ImportedScene` with nodes (NiNode hierarchy) and meshes (geometry leaves).
+/// Transforms are local-space (relative to parent). Use the parent indices
+/// to rebuild the hierarchy in the ECS.
+pub fn import_nif_scene(scene: &NifScene) -> ImportedScene {
+    let mut imported = ImportedScene {
+        nodes: Vec::new(),
+        meshes: Vec::new(),
+    };
+
+    let Some(root_idx) = scene.root_index else {
+        return imported;
+    };
+
+    walk_node_hierarchical(scene, root_idx, None, &mut imported);
+    imported
+}
+
+/// Backward-compatible flat import (used by cell loader where hierarchy is unnecessary).
+///
+/// Returns one `ImportedMesh` per NiTriShape with world-space transforms
+/// (parent chain composed). Meshes have `parent_node: None`.
 pub fn import_nif(scene: &NifScene) -> Vec<ImportedMesh> {
     let mut meshes = Vec::new();
 
@@ -59,13 +101,74 @@ pub fn import_nif(scene: &NifScene) -> Vec<ImportedMesh> {
         return meshes;
     };
 
-    // Start recursive walk from the root with identity transform.
-    walk_node(scene, root_idx, &NiTransform::default(), &mut meshes);
+    walk_node_flat(scene, root_idx, &NiTransform::default(), &mut meshes);
     meshes
 }
 
-/// Recursively walk the scene graph, accumulating transforms.
-fn walk_node(
+/// Recursively walk the scene graph, preserving hierarchy.
+/// NiNodes become ImportedNode entries; geometry becomes ImportedMesh with parent_node set.
+fn walk_node_hierarchical(
+    scene: &NifScene,
+    block_idx: usize,
+    parent_node_idx: Option<usize>,
+    out: &mut ImportedScene,
+) {
+    let Some(block) = scene.get(block_idx) else { return };
+
+    if let Some(node) = block.as_any().downcast_ref::<NiNode>() {
+        if node.flags & 0x01 != 0 {
+            return;
+        }
+        if is_editor_marker(node.name.as_deref()) {
+            return;
+        }
+
+        // Convert this node's LOCAL transform to Y-up.
+        let t = &node.transform.translation;
+        let quat = zup_matrix_to_yup_quat(&node.transform.rotation);
+
+        let this_node_idx = out.nodes.len();
+        out.nodes.push(ImportedNode {
+            name: node.name.clone(),
+            translation: [t.x, t.z, -t.y],
+            rotation: quat,
+            scale: node.transform.scale,
+            parent_node: parent_node_idx,
+        });
+
+        for child_ref in &node.children {
+            if let Some(idx) = child_ref.index() {
+                walk_node_hierarchical(scene, idx, Some(this_node_idx), out);
+            }
+        }
+        return;
+    }
+
+    if let Some(shape) = block.as_any().downcast_ref::<NiTriShape>() {
+        if shape.flags & 0x01 != 0 { return; }
+        if is_editor_marker(shape.name.as_deref()) { return; }
+
+        if let Some(mesh) = extract_mesh_local(scene, shape) {
+            let mut mesh = mesh;
+            mesh.parent_node = parent_node_idx;
+            out.meshes.push(mesh);
+        }
+    }
+
+    if let Some(shape) = block.as_any().downcast_ref::<BsTriShape>() {
+        if shape.flags & 0x01 != 0 { return; }
+        if is_editor_marker(shape.name.as_deref()) { return; }
+
+        if let Some(mesh) = extract_bs_tri_shape_local(scene, shape) {
+            let mut mesh = mesh;
+            mesh.parent_node = parent_node_idx;
+            out.meshes.push(mesh);
+        }
+    }
+}
+
+/// Recursively walk the scene graph, accumulating world-space transforms (flat, no hierarchy).
+fn walk_node_flat(
     scene: &NifScene,
     block_idx: usize,
     parent_transform: &NiTransform,
@@ -73,52 +176,26 @@ fn walk_node(
 ) {
     let Some(block) = scene.get(block_idx) else { return };
 
-    // Try as NiNode (scene graph parent)
     if let Some(node) = block.as_any().downcast_ref::<NiNode>() {
-        // Skip hidden nodes (Gamebryo flag bit 0 = hidden).
         if node.flags & 0x01 != 0 {
             return;
         }
-        // Skip editor marker node trees entirely.
-        if let Some(ref name) = node.name {
-            let lower = name.to_ascii_lowercase();
-            if lower.starts_with("editormarker")
-                || lower.starts_with("marker_")
-                || lower == "markerx"
-                || lower.starts_with("marker:")
-            {
-                return;
-            }
+        if is_editor_marker(node.name.as_deref()) {
+            return;
         }
         let world_transform = compose_transforms(parent_transform, &node.transform);
 
-        // Process children
         for child_ref in &node.children {
             if let Some(idx) = child_ref.index() {
-                walk_node(scene, idx, &world_transform, out);
+                walk_node_flat(scene, idx, &world_transform, out);
             }
         }
         return;
     }
 
-    // Try as NiTriShape or NiTriStrips (geometry leaf).
-    // NiTriStrips is a type alias for NiTriShape, so both downcast to NiTriShape.
     if let Some(shape) = block.as_any().downcast_ref::<NiTriShape>() {
-        // Skip hidden shapes.
-        if shape.flags & 0x01 != 0 {
-            return;
-        }
-        // Skip editor markers and non-renderable nodes by name.
-        if let Some(ref name) = shape.name {
-            let lower = name.to_ascii_lowercase();
-            if lower.starts_with("editormarker")
-                || lower.starts_with("marker_")
-                || lower == "markerx"
-                || lower.starts_with("marker:")
-            {
-                return;
-            }
-        }
+        if shape.flags & 0x01 != 0 { return; }
+        if is_editor_marker(shape.name.as_deref()) { return; }
         let world_transform = compose_transforms(parent_transform, &shape.transform);
 
         if let Some(mesh) = extract_mesh(scene, shape, &world_transform) {
@@ -126,27 +203,25 @@ fn walk_node(
         }
     }
 
-    // Try as BsTriShape (Skyrim SE+ self-contained geometry).
     if let Some(shape) = block.as_any().downcast_ref::<BsTriShape>() {
-        if shape.flags & 0x01 != 0 {
-            return;
-        }
-        if let Some(ref name) = shape.name {
-            let lower = name.to_ascii_lowercase();
-            if lower.starts_with("editormarker")
-                || lower.starts_with("marker_")
-                || lower == "markerx"
-                || lower.starts_with("marker:")
-            {
-                return;
-            }
-        }
+        if shape.flags & 0x01 != 0 { return; }
+        if is_editor_marker(shape.name.as_deref()) { return; }
         let world_transform = compose_transforms(parent_transform, &shape.transform);
 
         if let Some(mesh) = extract_bs_tri_shape(scene, shape, &world_transform) {
             out.push(mesh);
         }
     }
+}
+
+/// Check if a node name is an editor marker that should be skipped.
+fn is_editor_marker(name: Option<&str>) -> bool {
+    let Some(name) = name else { return false };
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("editormarker")
+        || lower.starts_with("marker_")
+        || lower == "markerx"
+        || lower.starts_with("marker:")
 }
 
 /// Intermediate geometry data extracted from either NiTriShapeData or NiTriStripsData.
@@ -242,7 +317,17 @@ fn extract_mesh(
         texture_path,
         has_alpha,
         two_sided,
+        parent_node: None,
     })
+}
+
+/// Extract an ImportedMesh with local transform (for hierarchical import).
+fn extract_mesh_local(
+    scene: &NifScene,
+    shape: &NiTriShape,
+) -> Option<ImportedMesh> {
+    // Pass shape's own transform as the "world" transform — extract_mesh converts it to Y-up.
+    extract_mesh(scene, shape, &shape.transform)
 }
 
 /// Extract an ImportedMesh from a BsTriShape (Skyrim SE+ self-contained geometry).
@@ -318,7 +403,16 @@ fn extract_bs_tri_shape(
         texture_path,
         has_alpha,
         two_sided,
+        parent_node: None,
     })
+}
+
+/// Extract a BsTriShape with local transform (for hierarchical import).
+fn extract_bs_tri_shape_local(
+    scene: &NifScene,
+    shape: &BsTriShape,
+) -> Option<ImportedMesh> {
+    extract_bs_tri_shape(scene, shape, &shape.transform)
 }
 
 /// Find texture path for BsTriShape via its shader_property_ref.

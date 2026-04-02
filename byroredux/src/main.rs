@@ -10,9 +10,11 @@ use byroredux_core::animation::{
     RotationKey, ScaleKey, TransformChannel, TranslationKey,
 };
 use byroredux_core::ecs::{
-    ActiveCamera, Camera, Component, DebugStats, DeltaTime, EngineConfig, MeshHandle, Name,
-    Scheduler, SparseSetStorage, TextureHandle, TotalTime, Transform, World,
+    ActiveCamera, Camera, Children, Component, DebugStats, DeltaTime, EngineConfig,
+    GlobalTransform, MeshHandle, Name, Parent, Scheduler, SparseSetStorage, TextureHandle,
+    TotalTime, Transform, World,
 };
+use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::Resource;
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::StringPool;
@@ -187,6 +189,93 @@ fn animation_system(world: &World, dt: f32) {
     }
 }
 
+/// Transform propagation system: computes GlobalTransform from local Transform + parent chain.
+///
+/// For root entities (no Parent), GlobalTransform = Transform.
+/// For child entities, GlobalTransform = parent.GlobalTransform ∘ child.Transform.
+/// Must run after animation_system and before rendering.
+fn transform_propagation_system(world: &World, _dt: f32) {
+    // Phase 1: update all root entities (no Parent) — GlobalTransform = Transform.
+    let Some(tq) = world.query::<Transform>() else { return };
+    let parent_q = world.query::<Parent>();
+
+    // Collect root entities (have Transform but no Parent).
+    let roots: Vec<EntityId> = tq.iter()
+        .filter(|(entity, _)| {
+            parent_q.as_ref()
+                .map(|pq| pq.get(*entity).is_none())
+                .unwrap_or(true)
+        })
+        .map(|(entity, _)| entity)
+        .collect();
+    drop(tq);
+    drop(parent_q);
+
+    // Update root GlobalTransforms.
+    {
+        let tq = world.query::<Transform>().unwrap();
+        let mut gq = match world.query_mut::<GlobalTransform>() {
+            Some(q) => q,
+            None => return,
+        };
+        for entity in &roots {
+            if let Some(t) = tq.get(*entity) {
+                if let Some(g) = gq.get_mut(*entity) {
+                    g.translation = t.translation;
+                    g.rotation = t.rotation;
+                    g.scale = t.scale;
+                }
+            }
+        }
+    }
+
+    // Phase 2: propagate to children using BFS.
+    let children_q = world.query::<Children>();
+    let Some(ref cq) = children_q else { return };
+
+    let mut queue: Vec<EntityId> = Vec::new();
+    for &root in &roots {
+        if let Some(children) = cq.get(root) {
+            queue.extend_from_slice(&children.0);
+        }
+    }
+
+    while let Some(entity) = queue.pop() {
+        // Read parent's GlobalTransform and this entity's local Transform.
+        let parent_q = world.query::<Parent>().unwrap();
+        let Some(parent) = parent_q.get(entity) else { continue };
+        let parent_id = parent.0;
+        drop(parent_q);
+
+        let gq_read = world.query::<GlobalTransform>().unwrap();
+        let Some(parent_global) = gq_read.get(parent_id) else { continue };
+        let parent_global = *parent_global; // Copy to release borrow.
+        drop(gq_read);
+
+        let tq = world.query::<Transform>().unwrap();
+        let local = tq.get(entity).copied().unwrap_or(Transform::IDENTITY);
+        drop(tq);
+
+        let composed = GlobalTransform::compose(
+            &parent_global,
+            local.translation,
+            local.rotation,
+            local.scale,
+        );
+
+        let mut gq_write = world.query_mut::<GlobalTransform>().unwrap();
+        if let Some(g) = gq_write.get_mut(entity) {
+            *g = composed;
+        }
+        drop(gq_write);
+
+        // Enqueue this entity's children.
+        if let Some(children) = cq.get(entity) {
+            queue.extend_from_slice(&children.0);
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let debug_mode = args.iter().any(|a| a == "--debug");
@@ -261,6 +350,7 @@ impl App {
         let mut scheduler = Scheduler::new();
         scheduler.add(fly_camera_system);
         scheduler.add(animation_system);
+        scheduler.add(transform_propagation_system);
         scheduler.add(spin_system);
         scheduler.add(byroredux_scripting::timer_tick_system);
         scheduler.add(log_stats_system);
@@ -396,21 +486,25 @@ impl App {
 
             let cube = self.world.spawn();
             self.world.insert(cube, Transform::from_translation(Vec3::new(-1.5, 0.0, 0.0)));
+            self.world.insert(cube, GlobalTransform::IDENTITY);
             self.world.insert(cube, MeshHandle(cube_handle));
             self.world.insert(cube, Spinning);
 
             let quad = self.world.spawn();
             self.world.insert(quad, Transform::from_translation(Vec3::new(0.0, 0.0, -1.0)));
+            self.world.insert(quad, GlobalTransform::IDENTITY);
             self.world.insert(quad, MeshHandle(quad_handle));
             self.world.insert(quad, Spinning);
 
             let red_tri = self.world.spawn();
             self.world.insert(red_tri, Transform::from_translation(Vec3::new(1.5, 0.0, 0.5)));
+            self.world.insert(red_tri, GlobalTransform::IDENTITY);
             self.world.insert(red_tri, MeshHandle(red_handle));
             self.world.insert(red_tri, Spinning);
 
             let blue_tri = self.world.spawn();
             self.world.insert(blue_tri, Transform::from_translation(Vec3::new(1.8, 0.0, -0.3)));
+            self.world.insert(blue_tri, GlobalTransform::IDENTITY);
             self.world.insert(blue_tri, MeshHandle(blue_handle));
             self.world.insert(blue_tri, Spinning);
         }
@@ -425,10 +519,8 @@ impl App {
         let cam_target = cam_center;
         let forward = (cam_target - cam_pos).normalize();
         let cam_rotation = Quat::from_rotation_arc(-Vec3::Z, forward);
-        self.world.insert(
-            cam,
-            Transform::new(cam_pos, cam_rotation, 1.0),
-        );
+        self.world.insert(cam, Transform::new(cam_pos, cam_rotation, 1.0));
+        self.world.insert(cam, GlobalTransform::new(cam_pos, cam_rotation, 1.0));
         self.world.insert(cam, Camera::default());
         self.world.insert_resource(ActiveCamera(cam));
 
@@ -652,7 +744,7 @@ fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> usize {
     }
 }
 
-/// Parse NIF bytes, import meshes, upload to GPU, load textures, and spawn ECS entities.
+/// Parse NIF bytes, import meshes with hierarchy, upload to GPU, and spawn ECS entities.
 pub(crate) fn load_nif_bytes(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -668,12 +760,42 @@ pub(crate) fn load_nif_bytes(
         }
     };
 
-    let imported = byroredux_nif::import::import_nif(&scene);
-    let alloc = ctx.allocator.as_ref().unwrap();
-    let mut count = 0;
+    let imported = byroredux_nif::import::import_nif_scene(&scene);
 
-    for mesh in &imported {
-        // Build renderer Vertex array from imported data
+    // Phase 1: Spawn node entities (NiNode hierarchy).
+    // node_index → EntityId mapping.
+    let mut node_entities: Vec<EntityId> = Vec::with_capacity(imported.nodes.len());
+    for node in &imported.nodes {
+        let quat = Quat::from_xyzw(node.rotation[0], node.rotation[1], node.rotation[2], node.rotation[3]);
+        let translation = Vec3::new(node.translation[0], node.translation[1], node.translation[2]);
+
+        let entity = world.spawn();
+        world.insert(entity, Transform::new(translation, quat, node.scale));
+        world.insert(entity, GlobalTransform::IDENTITY);
+
+        if let Some(ref name) = node.name {
+            let mut pool = world.resource_mut::<StringPool>();
+            let sym = pool.intern(name);
+            drop(pool);
+            world.insert(entity, Name(sym));
+        }
+
+        node_entities.push(entity);
+    }
+
+    // Phase 2: Set up Parent/Children relationships for nodes.
+    for (node_idx, node) in imported.nodes.iter().enumerate() {
+        if let Some(parent_idx) = node.parent_node {
+            let child_entity = node_entities[node_idx];
+            let parent_entity = node_entities[parent_idx];
+            world.insert(child_entity, Parent(parent_entity));
+            add_child(world, parent_entity, child_entity);
+        }
+    }
+
+    // Phase 3: Spawn mesh entities with parent links.
+    let mut count = 0;
+    for mesh in &imported.meshes {
         let num_verts = mesh.positions.len();
         let vertices: Vec<Vertex> = (0..num_verts)
             .map(|i| {
@@ -686,6 +808,7 @@ pub(crate) fn load_nif_bytes(
             })
             .collect();
 
+        let alloc = ctx.allocator.as_ref().unwrap();
         let mesh_handle = match ctx.mesh_registry.upload(&ctx.device, alloc, &vertices, &mesh.indices) {
             Ok(h) => h,
             Err(e) => {
@@ -694,40 +817,8 @@ pub(crate) fn load_nif_bytes(
             }
         };
 
-        // Load DDS texture if the mesh has a texture path.
-        let tex_handle = match &mesh.texture_path {
-            Some(tex_path) => {
-                // Check cache first.
-                if let Some(cached) = ctx.texture_registry.get_by_path(tex_path) {
-                    cached
-                } else if let Some(dds_bytes) = tex_provider.extract(tex_path) {
-                    match ctx.texture_registry.load_dds(
-                        &ctx.device,
-                        alloc,
-                        ctx.graphics_queue,
-                        ctx.command_pool,
-                        tex_path,
-                        &dds_bytes,
-                    ) {
-                        Ok(h) => {
-                            log::info!("Loaded DDS texture: '{}'", tex_path);
-                            h
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to load DDS '{}': {}", tex_path, e);
-                            ctx.texture_registry.fallback()
-                        }
-                    }
-                } else {
-                    log::debug!("Texture not found in BSA: '{}'", tex_path);
-                    ctx.texture_registry.fallback()
-                }
-            }
-            None => ctx.texture_registry.fallback(),
-        };
+        let tex_handle = resolve_texture(ctx, tex_provider, mesh.texture_path.as_deref());
 
-        // Convert NiTransform to ECS Transform.
-        // mesh.rotation is already a Y-up quaternion [x,y,z,w] extracted via SVD.
         let quat = Quat::from_xyzw(
             mesh.rotation[0], mesh.rotation[1], mesh.rotation[2], mesh.rotation[3],
         );
@@ -735,6 +826,7 @@ pub(crate) fn load_nif_bytes(
 
         let entity = world.spawn();
         world.insert(entity, Transform::new(translation, quat, mesh.scale));
+        world.insert(entity, GlobalTransform::IDENTITY);
         world.insert(entity, MeshHandle(mesh_handle));
         world.insert(entity, TextureHandle(tex_handle));
         if mesh.has_alpha {
@@ -743,12 +835,18 @@ pub(crate) fn load_nif_bytes(
         if mesh.two_sided {
             world.insert(entity, TwoSided);
         }
-        // Attach Name component for animation targeting.
         if let Some(ref name) = mesh.name {
             let mut pool = world.resource_mut::<StringPool>();
             let sym = pool.intern(name);
             drop(pool);
             world.insert(entity, Name(sym));
+        }
+
+        // Set up parent relationship.
+        if let Some(parent_idx) = mesh.parent_node {
+            let parent_entity = node_entities[parent_idx];
+            world.insert(entity, Parent(parent_entity));
+            add_child(world, parent_entity, entity);
         }
 
         log::info!(
@@ -761,8 +859,40 @@ pub(crate) fn load_nif_bytes(
         count += 1;
     }
 
-    log::info!("Imported {} meshes from '{}'", count, label);
-    count
+    log::info!("Imported {} nodes + {} meshes from '{}'", imported.nodes.len(), count, label);
+    count + imported.nodes.len()
+}
+
+/// Resolve a texture path to a texture handle, with BSA lookup and caching.
+fn resolve_texture(
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    tex_path: Option<&str>,
+) -> u32 {
+    let Some(tex_path) = tex_path else {
+        return ctx.texture_registry.fallback();
+    };
+    if let Some(cached) = ctx.texture_registry.get_by_path(tex_path) {
+        return cached;
+    }
+    if let Some(dds_bytes) = tex_provider.extract(tex_path) {
+        let alloc = ctx.allocator.as_ref().unwrap();
+        match ctx.texture_registry.load_dds(
+            &ctx.device, alloc, ctx.graphics_queue, ctx.command_pool,
+            tex_path, &dds_bytes,
+        ) {
+            Ok(h) => {
+                log::info!("Loaded DDS texture: '{}'", tex_path);
+                return h;
+            }
+            Err(e) => {
+                log::warn!("Failed to load DDS '{}': {}", tex_path, e);
+            }
+        }
+    } else {
+        log::debug!("Texture not found in BSA: '{}'", tex_path);
+    }
+    ctx.texture_registry.fallback()
 }
 
 /// Rotates only entities marked with the Spinning component.
@@ -1143,10 +1273,10 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>) {
         Mat4::IDENTITY.to_cols_array()
     };
 
-    // Collect draw commands from entities with (Transform, MeshHandle).
+    // Collect draw commands from entities with (GlobalTransform, MeshHandle).
     // TextureHandle is optional — entities without one use the fallback (0).
     let mut draw_commands = Vec::new();
-    if let Some((tq, mq)) = world.query_2_mut::<Transform, MeshHandle>() {
+    if let Some((tq, mq)) = world.query_2_mut::<GlobalTransform, MeshHandle>() {
         let tex_q = world.query::<TextureHandle>();
         let alpha_q = world.query::<AlphaBlend>();
         let two_sided_q = world.query::<TwoSided>();
@@ -1179,6 +1309,20 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>) {
     draw_commands.sort_unstable_by_key(|cmd| (cmd.alpha_blend, cmd.two_sided, cmd.texture_handle));
 
     (view_proj, draw_commands)
+}
+
+/// Add a child entity to a parent's Children component, creating it if needed.
+fn add_child(world: &mut World, parent: EntityId, child: EntityId) {
+    let has_children = world.query::<Children>()
+        .map(|q| q.get(parent).is_some())
+        .unwrap_or(false);
+
+    if has_children {
+        let mut cq = world.query_mut::<Children>().unwrap();
+        cq.get_mut(parent).unwrap().0.push(child);
+    } else {
+        world.insert(parent, Children(vec![child]));
+    }
 }
 
 fn world_resource_set<R: byroredux_core::ecs::Resource>(

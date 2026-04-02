@@ -4,7 +4,7 @@
 //! Resolves placed references (REFR/ACHR) to base objects, loads NIFs,
 //! and spawns ECS entities with correct world-space transforms.
 
-use byroredux_core::ecs::{LightSource, MeshHandle, TextureHandle, Transform, World};
+use byroredux_core::ecs::{GlobalTransform, LightSource, MeshHandle, TextureHandle, Transform, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::VulkanContext;
@@ -206,6 +206,7 @@ fn load_references(
             if let Some(ref ld) = stat.light_data {
                 let entity = world.spawn();
                 world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
+                world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
                 world.insert(entity, LightSource {
                     radius: ld.radius,
                     color: ld.color,
@@ -380,6 +381,7 @@ fn load_nif_placed(
 
         let entity = world.spawn();
         world.insert(entity, Transform::new(final_pos, final_rot, final_scale));
+        world.insert(entity, GlobalTransform::new(final_pos, final_rot, final_scale));
         world.insert(entity, MeshHandle(mesh_handle));
         world.insert(entity, TextureHandle(tex_handle));
         if mesh.has_alpha {
