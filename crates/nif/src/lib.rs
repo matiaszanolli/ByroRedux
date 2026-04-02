@@ -12,6 +12,7 @@
 //! }
 //! ```
 
+pub mod anim;
 pub mod blocks;
 pub mod header;
 pub mod import;

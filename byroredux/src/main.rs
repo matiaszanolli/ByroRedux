@@ -4,12 +4,18 @@ mod cell_loader;
 
 use anyhow::Result;
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
+use byroredux_core::animation::{
+    advance_time, sample_rotation, sample_scale, sample_translation,
+    AnimationClip, AnimationClipRegistry, AnimationPlayer, CycleType, KeyType,
+    RotationKey, ScaleKey, TransformChannel, TranslationKey,
+};
 use byroredux_core::ecs::{
-    ActiveCamera, Camera, Component, DebugStats, DeltaTime, EngineConfig, MeshHandle, Scheduler,
-    SparseSetStorage, TextureHandle, TotalTime, Transform, World,
+    ActiveCamera, Camera, Component, DebugStats, DeltaTime, EngineConfig, MeshHandle, Name,
+    Scheduler, SparseSetStorage, TextureHandle, TotalTime, Transform, World,
 };
 use byroredux_core::ecs::Resource;
 use byroredux_core::math::{Quat, Vec3};
+use byroredux_core::string::StringPool;
 use byroredux_core::types::Color;
 use byroredux_platform::window::{self, WindowConfig};
 use byroredux_renderer::vulkan::context::DrawCommand;
@@ -118,6 +124,69 @@ fn fly_camera_system(world: &World, dt: f32) {
     }
 }
 
+/// Animation system: advances AnimationPlayer time and applies interpolated
+/// transforms to named entities that match the clip's channel names.
+fn animation_system(world: &World, dt: f32) {
+    // Read the clip registry (immutable).
+    let Some(registry) = world.try_resource::<AnimationClipRegistry>() else { return };
+    if registry.is_empty() {
+        return;
+    }
+    let Some(pool) = world.try_resource::<StringPool>() else { return };
+
+    // Build name→entity lookup from all named entities.
+    let name_query = match world.query::<Name>() {
+        Some(q) => q,
+        None => return,
+    };
+    let mut name_to_entity = std::collections::HashMap::new();
+    for (entity, name_comp) in name_query.iter() {
+        if let Some(s) = pool.resolve(name_comp.0) {
+            name_to_entity.insert(s.to_string(), entity);
+        }
+    }
+    drop(name_query);
+    drop(pool);
+
+    // Iterate all animation players and apply.
+    let Some(player_query) = world.query_mut::<AnimationPlayer>() else { return };
+    let entities_with_players: Vec<_> = player_query.iter().map(|(e, _)| e).collect();
+    drop(player_query);
+
+    for entity in entities_with_players {
+        // Get the player, advance time, then apply channels.
+        let mut player_query = world.query_mut::<AnimationPlayer>().unwrap();
+        let player = player_query.get_mut(entity).unwrap();
+
+        let clip_handle = player.clip_handle;
+        let Some(clip) = registry.get(clip_handle) else { continue };
+
+        advance_time(player, clip, dt);
+        let current_time = player.local_time;
+        drop(player_query);
+
+        // Apply each channel to the corresponding named entity.
+        let mut transform_query = world.query_mut::<Transform>().unwrap();
+        for (channel_name, channel) in &clip.channels {
+            let Some(&target_entity) = name_to_entity.get(channel_name) else {
+                continue;
+            };
+            let Some(transform) = transform_query.get_mut(target_entity) else {
+                continue;
+            };
+            if let Some(pos) = sample_translation(channel, current_time) {
+                transform.translation = pos;
+            }
+            if let Some(rot) = sample_rotation(channel, current_time) {
+                transform.rotation = rot;
+            }
+            if let Some(scale) = sample_scale(channel, current_time) {
+                transform.scale = scale;
+            }
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let debug_mode = args.iter().any(|a| a == "--debug");
@@ -182,6 +251,8 @@ impl App {
         });
         world.insert_resource(DebugStats::default());
         world.insert_resource(InputState::default());
+        world.insert_resource(StringPool::new());
+        world.insert_resource(AnimationClipRegistry::new());
 
         // Register scripting component storages.
         byroredux_scripting::register(&mut world);
@@ -189,6 +260,7 @@ impl App {
         // Build the system schedule.
         let mut scheduler = Scheduler::new();
         scheduler.add(fly_camera_system);
+        scheduler.add(animation_system);
         scheduler.add(spin_system);
         scheduler.add(byroredux_scripting::timer_tick_system);
         scheduler.add(log_stats_system);
@@ -255,6 +327,44 @@ impl App {
             // NIF loading mode: loose file or BSA extraction.
             let nif_count = load_nif_from_args(&mut self.world, ctx);
             has_nif_content = nif_count > 0;
+        }
+
+        // Animation: --kf <path> loads a .kf file and starts playback.
+        if let Some(kf_idx) = args.iter().position(|a| a == "--kf") {
+            if let Some(kf_path) = args.get(kf_idx + 1).cloned() {
+                match std::fs::read(&kf_path) {
+                    Ok(kf_data) => {
+                        match byroredux_nif::parse_nif(&kf_data) {
+                            Ok(kf_scene) => {
+                                let nif_clips = byroredux_nif::anim::import_kf(&kf_scene);
+                                if nif_clips.is_empty() {
+                                    log::warn!("No animation clips found in '{}'", kf_path);
+                                } else {
+                                    let mut registry = self.world.resource_mut::<AnimationClipRegistry>();
+                                    for nif_clip in &nif_clips {
+                                        let clip = convert_nif_clip(nif_clip);
+                                        let handle = registry.add(clip);
+                                        log::info!(
+                                            "Loaded animation clip '{}' ({:.2}s, {} channels) → handle {}",
+                                            nif_clip.name, nif_clip.duration,
+                                            nif_clip.channels.len(), handle,
+                                        );
+                                    }
+                                    let first_handle = registry.len() as u32 - nif_clips.len() as u32;
+                                    drop(registry);
+
+                                    // Spawn an AnimationPlayer for the first clip.
+                                    let player_entity = self.world.spawn();
+                                    self.world.insert(player_entity, AnimationPlayer::new(first_handle));
+                                    log::info!("Animation playback started (clip handle {})", first_handle);
+                                }
+                            }
+                            Err(e) => log::error!("Failed to parse KF '{}': {}", kf_path, e),
+                        }
+                    }
+                    Err(e) => log::error!("Failed to read KF '{}': {}", kf_path, e),
+                }
+            }
         }
 
         // Only spawn demo primitives when no NIF content was loaded.
@@ -632,6 +742,13 @@ pub(crate) fn load_nif_bytes(
         }
         if mesh.two_sided {
             world.insert(entity, TwoSided);
+        }
+        // Attach Name component for animation targeting.
+        if let Some(ref name) = mesh.name {
+            let mut pool = world.resource_mut::<StringPool>();
+            let sym = pool.intern(name);
+            drop(pool);
+            world.insert(entity, Name(sym));
         }
 
         log::info!(
@@ -1070,4 +1187,82 @@ fn world_resource_set<R: byroredux_core::ecs::Resource>(
 ) {
     let mut guard = world.resource_mut::<R>();
     f(&mut guard);
+}
+
+/// Convert a NIF animation clip (byroredux_nif types) to a core animation clip (glam types).
+fn convert_nif_clip(nif: &byroredux_nif::anim::AnimationClip) -> AnimationClip {
+    use byroredux_nif::anim as na;
+
+    let cycle_type = match nif.cycle_type {
+        na::CycleType::Clamp => CycleType::Clamp,
+        na::CycleType::Loop => CycleType::Loop,
+        na::CycleType::Reverse => CycleType::Reverse,
+    };
+
+    let channels = nif
+        .channels
+        .iter()
+        .map(|(name, ch)| {
+            let convert_key_type = |kt: byroredux_nif::blocks::interpolator::KeyType| match kt {
+                byroredux_nif::blocks::interpolator::KeyType::Linear => KeyType::Linear,
+                byroredux_nif::blocks::interpolator::KeyType::Quadratic => KeyType::Quadratic,
+                byroredux_nif::blocks::interpolator::KeyType::Tbc => KeyType::Tbc,
+                byroredux_nif::blocks::interpolator::KeyType::XyzRotation => KeyType::Linear,
+            };
+
+            let translation_keys = ch
+                .translation_keys
+                .iter()
+                .map(|k| TranslationKey {
+                    time: k.time,
+                    value: Vec3::from_array(k.value),
+                    forward: Vec3::from_array(k.forward),
+                    backward: Vec3::from_array(k.backward),
+                    tbc: k.tbc,
+                })
+                .collect();
+
+            let rotation_keys = ch
+                .rotation_keys
+                .iter()
+                .map(|k| RotationKey {
+                    time: k.time,
+                    value: Quat::from_xyzw(k.value[0], k.value[1], k.value[2], k.value[3]),
+                    tbc: k.tbc,
+                })
+                .collect();
+
+            let scale_keys = ch
+                .scale_keys
+                .iter()
+                .map(|k| ScaleKey {
+                    time: k.time,
+                    value: k.value,
+                    forward: k.forward,
+                    backward: k.backward,
+                    tbc: k.tbc,
+                })
+                .collect();
+
+            (
+                name.clone(),
+                TransformChannel {
+                    translation_keys,
+                    translation_type: convert_key_type(ch.translation_type),
+                    rotation_keys,
+                    rotation_type: convert_key_type(ch.rotation_type),
+                    scale_keys,
+                    scale_type: convert_key_type(ch.scale_type),
+                },
+            )
+        })
+        .collect();
+
+    AnimationClip {
+        name: nif.name.clone(),
+        duration: nif.duration,
+        cycle_type,
+        frequency: nif.frequency,
+        channels,
+    }
 }

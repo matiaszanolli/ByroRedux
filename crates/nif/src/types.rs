@@ -78,6 +78,26 @@ impl Default for NiTransform {
     }
 }
 
+/// Quaternion transform: translation + quaternion rotation + scale.
+/// Used by NiTransformInterpolator (animation keyframe poses).
+/// Quaternion stored as (w, x, y, z) matching Gamebryo's NiQuatTransform serialization.
+#[derive(Debug, Clone, Copy)]
+pub struct NiQuatTransform {
+    pub translation: NiPoint3,
+    pub rotation: [f32; 4], // w, x, y, z
+    pub scale: f32,
+}
+
+impl Default for NiQuatTransform {
+    fn default() -> Self {
+        Self {
+            translation: NiPoint3::default(),
+            rotation: [1.0, 0.0, 0.0, 0.0], // identity quaternion (w=1)
+            scale: 1.0,
+        }
+    }
+}
+
 /// A reference to another block in the NIF file, by index.
 /// `u32::MAX` (0xFFFFFFFF) is the null reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

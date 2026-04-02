@@ -124,7 +124,7 @@ Detailed analysis in `docs/legacy/`.
 ## Development Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for the full roadmap with milestones, known issues, and game compatibility.
-Current: 20 milestones complete (M1–M20). Can load FNV meshes with real DDS textures.
+Current: 21 milestones complete (M1–M21). Can load FNV meshes with real DDS textures and play .kf animations.
 Usage:
   `cargo run -- path/to/mesh.nif` — render a loose NIF file
   `cargo run -- --bsa path.bsa --mesh meshes\\foo.nif` — extract from BSA and render

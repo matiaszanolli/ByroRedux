@@ -11,6 +11,7 @@ pub mod texture;
 pub mod extra_data;
 pub mod controller;
 pub mod shader;
+pub mod interpolator;
 
 use crate::stream::NifStream;
 use node::NiNode;
@@ -25,6 +26,10 @@ use controller::{
 use shader::{
     BSShaderPPLightingProperty, BSShaderNoLightingProperty, BSShaderTextureSet,
     BSLightingShaderProperty, BSEffectShaderProperty,
+};
+use interpolator::{
+    NiTransformInterpolator, NiTransformData, NiFloatInterpolator, NiFloatData,
+    NiPoint3Interpolator, NiPosData, NiTextKeyExtraData, NiBoolInterpolator, NiBoolData,
 };
 use std::any::Any;
 use std::fmt::Debug;
@@ -130,6 +135,34 @@ pub fn parse_block(
         }
         "NiControllerSequence" => {
             Ok(Box::new(NiControllerSequence::parse(stream)?))
+        }
+        // Interpolator blocks (animation keyframe data)
+        "NiTransformInterpolator" | "BSRotAccumTransfInterpolator" => {
+            Ok(Box::new(NiTransformInterpolator::parse(stream)?))
+        }
+        "NiTransformData" | "NiKeyframeData" => {
+            Ok(Box::new(NiTransformData::parse(stream)?))
+        }
+        "NiFloatInterpolator" => {
+            Ok(Box::new(NiFloatInterpolator::parse(stream)?))
+        }
+        "NiFloatData" => {
+            Ok(Box::new(NiFloatData::parse(stream)?))
+        }
+        "NiPoint3Interpolator" => {
+            Ok(Box::new(NiPoint3Interpolator::parse(stream)?))
+        }
+        "NiPosData" => {
+            Ok(Box::new(NiPosData::parse(stream)?))
+        }
+        "NiBoolInterpolator" => {
+            Ok(Box::new(NiBoolInterpolator::parse(stream)?))
+        }
+        "NiBoolData" => {
+            Ok(Box::new(NiBoolData::parse(stream)?))
+        }
+        "NiTextKeyExtraData" => {
+            Ok(Box::new(NiTextKeyExtraData::parse(stream)?))
         }
         // Base NiTimeController fallback for unknown controller subtypes
         "NiTimeController" => {

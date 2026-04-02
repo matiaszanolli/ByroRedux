@@ -5,7 +5,7 @@
 //! handled in one place rather than scattered through block parsers.
 
 use crate::header::NifHeader;
-use crate::types::{BlockRef, NiColor, NiMatrix3, NiPoint3, NiTransform};
+use crate::types::{BlockRef, NiColor, NiMatrix3, NiPoint3, NiQuatTransform, NiTransform};
 use crate::version::{NifVariant, NifVersion};
 use std::io::{self, Cursor, Read};
 
@@ -212,6 +212,21 @@ impl<'a> NifStream<'a> {
             }
         }
         Ok(NiMatrix3 { rows })
+    }
+
+    /// Read an NiQuatTransform: translation (3 floats), rotation (4 floats: w,x,y,z), scale (1 float).
+    pub fn read_ni_quat_transform(&mut self) -> io::Result<NiQuatTransform> {
+        let translation = self.read_ni_point3()?;
+        let w = self.read_f32_le()?;
+        let x = self.read_f32_le()?;
+        let y = self.read_f32_le()?;
+        let z = self.read_f32_le()?;
+        let scale = self.read_f32_le()?;
+        Ok(NiQuatTransform {
+            translation,
+            rotation: [w, x, y, z],
+            scale,
+        })
     }
 
     pub fn read_ni_transform(&mut self) -> io::Result<NiTransform> {

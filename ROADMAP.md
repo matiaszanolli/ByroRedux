@@ -3,7 +3,7 @@
 A clean Rust + C++ rebuild of the Gamebryo/Creation engine lineage with Vulkan rendering.
 This document tracks completed milestones, current capabilities, planned work, and known gaps.
 
-Last updated: 2026-03-31
+Last updated: 2026-04-02
 
 ---
 
@@ -16,7 +16,8 @@ Last updated: 2026-03-31
 | `cargo run -- path/to/mesh.nif` | Load and render a loose NIF file |
 | `cargo run -- --cmd help` | Run a console command at startup |
 | `cargo run -- --swf path/to/menu.swf` | Load and render a Skyrim SE SWF menu overlay |
-| `cargo test` | 244 passing tests across all crates |
+| `cargo run -- path/to/mesh.nif --kf path/to/anim.kf` | Play a .kf animation on a loaded NIF mesh |
+| `cargo test` | 269 passing tests across all crates |
 
 **Fallout New Vegas:** Interior cells load from ESM with placed objects (REFR → STAT), real DDS textures
 from BSA v104 archives, correct coordinate transforms (Gamebryo CW rotation convention),
@@ -70,7 +71,10 @@ BSEffectShaderProperty, BSShaderTextureSet,
 NiMaterialProperty, NiAlphaProperty, NiTexturingProperty, NiSourceTexture, NiExtraData,
 NiControllerSequence, NiControllerManager, NiMultiTargetTransformController,
 NiMaterialColorController, NiTransformController, NiVisController, NiTextureTransformController,
-NiTextureTransformController, NiTimeController (base/fallback)
+NiTimeController (base/fallback),
+NiTransformInterpolator, BSRotAccumTransfInterpolator, NiTransformData, NiKeyframeData,
+NiFloatInterpolator, NiFloatData, NiPoint3Interpolator, NiPosData,
+NiBoolInterpolator, NiBoolData, NiTextKeyExtraData
 
 ### Phase 5 — Scripting Foundation (M12)
 
@@ -115,12 +119,21 @@ RGBA pixel readback. CPU-bridge architecture: Ruffle wgpu → pixel buffer → V
 Dynamic texture update pipeline with device-wait-idle sync. Clean shutdown.
 **Future:** Scaleform GFx stubs (`_global.gfx`), Papyrus↔UI bridge, input routing, font loading.
 
-### M21: Animation Playback
-**Status:** Planned — controller parsers ready
-**Scope:** Parse .kf files (NiControllerSequence fields already parsed). NiTransformData keyframe
-extraction (linear/bezier/TCB interpolation). AnimationPlayer system. Cycle types (clamp/loop/reverse).
-**Depends on:** M9 (controller parsers), M17 (correct transforms)
-**Acceptance:** FNV mesh plays idle animation from .kf file.
+### M21: Animation Playback — DONE
+**Status:** Complete
+**Scope:** Full keyframe animation pipeline: NiTransformInterpolator/NiTransformData/NiFloatInterpolator/
+NiFloatData/NiPoint3Interpolator/NiPosData/NiBoolInterpolator/NiBoolData/NiTextKeyExtraData block
+parsers. KeyGroup parsing with Linear/Quadratic/TBC/XyzRotation key types. AnimationClip import
+from .kf files via `import_kf()`. Interpolation engine with linear lerp, SLERP (quaternion),
+cubic Hermite (quadratic tangents), and Kochanek-Bartels (TBC) splines. AnimationClipRegistry
+resource, AnimationPlayer ECS component, animation_system with per-frame time advance and
+name-based entity targeting. Cycle types: Clamp, Loop, Reverse (ping-pong). Z-up to Y-up
+coordinate conversion for keyframe data. StringPool-based Name components on imported meshes.
+**Result:** `--kf <path>` CLI loads .kf animation and plays it on named mesh entities.
+269 tests passing (25 new). 10 new NIF block types parsed.
+**Future:** XYZ euler rotation keys (#1), scene graph hierarchy (#2), non-transform channels (#3),
+animation blending (#4), BSA KF loading (#5), NiControllerManager (#6), text key events (#7),
+root motion (#8), name collision fix (#9), name lookup caching (#10). Skeletal animation in M29.
 
 ### M22: RT-First Multi-Light System
 **Status:** Planned
@@ -175,9 +188,9 @@ shadow rays. Rasterized multi-light fallback for non-RT GPUs.
 - [ ] Legacy ESM/ESP parsers are stubs for Morrowind, Oblivion, Skyrim, FO4
 - [x] ~~NIF parser warnings: 274~~ → 43 remaining (84% fixed)
 - [ ] NIF material properties beyond diffuse not wired to renderer
-- [ ] Animation controllers parsed but not executed (.kf files)
+- [x] ~~Animation controllers parsed but not executed~~ → full .kf playback pipeline (M21)
 - [x] ~~Only BSA v104 supported~~ → v105 with LZ4 added (M18)
-- [ ] Cell loader only handles STAT record type (not MSTT, DOOR, FURN, etc.)
+- [x] ~~Cell loader only handles STAT~~ → all renderable types (M19)
 
 ### Renderer Gaps
 - [ ] No shadow maps or ray tracing
@@ -233,10 +246,10 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Metric | Value |
 |--------|-------|
-| Passing tests | 244 |
+| Passing tests | 269 |
 | Workspace crates | 9 |
-| Completed milestones | 20 (M1–M20) |
-| NIF block types | 27 |
+| Completed milestones | 21 (M1–M21) |
+| NIF block types | 37 |
 | NifVariant games | 8 (Morrowind → Starfield) |
 | Supported archive formats | BSA v104, BSA v105 |
 | Primary language | Rust (2021 edition) |
@@ -251,11 +264,11 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Crate | Milestones | Tests |
 |-------|------------|-------|
-| `byroredux-core` | M3 (ECS), M5 (Form IDs) | 92 |
+| `byroredux-core` | M3 (ECS), M5 (Form IDs), M21 (Animation) | 106 |
 | `byroredux-renderer` | M1, M2, M4, M7, M8, M13, M14 | 13 |
 | `byroredux-platform` | M1 (windowing) | — |
 | `byroredux-plugin` | M5, M6 | 50 |
-| `byroredux-nif` | M9, M10, M17, M18 | 76 |
+| `byroredux-nif` | M9, M10, M17, M18, M21 | 87 |
 | `byroredux-bsa` | M11, M18 | 2 |
 | `byroredux-scripting` | M12 | 8 |
 | `byroredux-ui` | M20 (Ruffle/SWF) | — |
