@@ -138,3 +138,16 @@ pub fn quad_vertices() -> (Vec<Vertex>, Vec<u32>) {
     let indices = vec![0, 1, 2, 2, 3, 0];
     (vertices, indices)
 }
+
+/// Fullscreen quad in NDC (clip space [-1,1]), for UI overlay compositing.
+/// No transforms needed — vertices pass through directly to clip space.
+pub fn fullscreen_quad_vertices() -> (Vec<Vertex>, Vec<u32>) {
+    let vertices = vec![
+        Vertex::new([-1.0, -1.0, 0.0], [1.0, 1.0, 1.0], [0.0, 0.0, 1.0], [0.0, 1.0]),
+        Vertex::new([ 1.0, -1.0, 0.0], [1.0, 1.0, 1.0], [0.0, 0.0, 1.0], [1.0, 1.0]),
+        Vertex::new([ 1.0,  1.0, 0.0], [1.0, 1.0, 1.0], [0.0, 0.0, 1.0], [1.0, 0.0]),
+        Vertex::new([-1.0,  1.0, 0.0], [1.0, 1.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0]),
+    ];
+    let indices = vec![0, 1, 2, 2, 3, 0];
+    (vertices, indices)
+}

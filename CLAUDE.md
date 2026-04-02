@@ -61,6 +61,9 @@ crates/
     src/blocks/              Block parsers: NiNode, NiTriShape/Strips, NiTriShapeData/StripsData, properties, BSShader, textures
     src/import.rs            NIF-to-ECS import: scene graph flattening, geometry/transform conversion
     src/scene.rs             NifScene: parsed block collection with downcasting
+  ui/                       Scaleform/SWF UI (Ruffle integration)
+    src/lib.rs               UiManager resource, SWF loading
+    src/player.rs            SwfPlayer — Ruffle wrapper, offscreen wgpu rendering, pixel readback
   scripting/                 ECS-native scripting (events, timers)
     src/events.rs            Transient marker components: ActivateEvent, HitEvent, TimerExpired
     src/timer.rs             ScriptTimer component + timer_tick_system
@@ -121,12 +124,12 @@ Detailed analysis in `docs/legacy/`.
 ## Development Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for the full roadmap with milestones, known issues, and game compatibility.
-Current: 14 milestones complete (M1–M14). Can load FNV meshes with real DDS textures.
+Current: 20 milestones complete (M1–M20). Can load FNV meshes with real DDS textures.
 Usage:
   `cargo run -- path/to/mesh.nif` — render a loose NIF file
   `cargo run -- --bsa path.bsa --mesh meshes\\foo.nif` — extract from BSA and render
   `cargo run -- --bsa meshes.bsa --mesh meshes\\foo.nif --textures-bsa textures.bsa` — with textures
-Next: Debug logging & diagnostics (M15), multi-light system (M16), Skyrim SE NIF (M17), animation (M19).
+Next: Animation playback (M21), RT multi-light system (M22).
 
 ## Git Conventions
 

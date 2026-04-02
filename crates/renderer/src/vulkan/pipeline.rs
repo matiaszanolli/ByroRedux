@@ -257,3 +257,122 @@ pub fn create_triangle_pipeline(
         frag_module,
     })
 }
+
+/// Creates the UI overlay pipeline (no depth, no lighting, alpha blend).
+///
+/// Uses the same pipeline layout as the scene pipelines (push constants +
+/// descriptor set for texture sampler). The UI vertex shader ignores push
+/// constants — vertices are already in NDC clip space.
+pub fn create_ui_pipeline(
+    device: &ash::Device,
+    render_pass: vk::RenderPass,
+    extent: vk::Extent2D,
+    pipeline_layout: vk::PipelineLayout,
+) -> Result<(vk::Pipeline, vk::ShaderModule, vk::ShaderModule)> {
+    let vert_spv = include_bytes!("../../shaders/ui.vert.spv");
+    let frag_spv = include_bytes!("../../shaders/ui.frag.spv");
+
+    let vert_module = load_shader_module(device, vert_spv)?;
+    let frag_module = load_shader_module(device, frag_spv)?;
+
+    let entry_point = c"main";
+
+    let shader_stages = [
+        vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(vert_module)
+            .name(entry_point),
+        vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(frag_module)
+            .name(entry_point),
+    ];
+
+    let binding_descriptions = [Vertex::binding_description()];
+    let attribute_descriptions = Vertex::attribute_descriptions();
+    let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+        .vertex_binding_descriptions(&binding_descriptions)
+        .vertex_attribute_descriptions(&attribute_descriptions);
+
+    let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+        .primitive_restart_enable(false);
+
+    let viewports = [vk::Viewport {
+        x: 0.0,
+        y: 0.0,
+        width: extent.width as f32,
+        height: extent.height as f32,
+        min_depth: 0.0,
+        max_depth: 1.0,
+    }];
+    let scissors = [vk::Rect2D {
+        offset: vk::Offset2D { x: 0, y: 0 },
+        extent,
+    }];
+    let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+        .viewports(&viewports)
+        .scissors(&scissors);
+
+    let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+        .depth_clamp_enable(false)
+        .rasterizer_discard_enable(false)
+        .polygon_mode(vk::PolygonMode::FILL)
+        .line_width(1.0)
+        .cull_mode(vk::CullModeFlags::NONE)
+        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+        .depth_bias_enable(false);
+
+    let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
+        .sample_shading_enable(false)
+        .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+
+    // No depth test — UI renders on top of everything.
+    let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+        .depth_test_enable(false)
+        .depth_write_enable(false)
+        .stencil_test_enable(false);
+
+    // Alpha blending for UI transparency.
+    let color_blend_attachment = [vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::RGBA)
+        .blend_enable(true)
+        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+        .color_blend_op(vk::BlendOp::ADD)
+        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+        .alpha_blend_op(vk::BlendOp::ADD)];
+    let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
+        .logic_op_enable(false)
+        .attachments(&color_blend_attachment);
+
+    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+    let dynamic_state =
+        vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+
+    let pipeline_info = [vk::GraphicsPipelineCreateInfo::default()
+        .stages(&shader_stages)
+        .vertex_input_state(&vertex_input)
+        .input_assembly_state(&input_assembly)
+        .viewport_state(&viewport_state)
+        .rasterization_state(&rasterizer)
+        .multisample_state(&multisampling)
+        .depth_stencil_state(&depth_stencil)
+        .color_blend_state(&color_blending)
+        .dynamic_state(&dynamic_state)
+        .layout(pipeline_layout)
+        .render_pass(render_pass)
+        .subpass(0)];
+
+    let pipelines = unsafe {
+        device
+            .create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_info, None)
+            .map_err(|(_, err)| err)
+            .context("Failed to create UI pipeline")?
+    };
+
+    log::info!("UI overlay pipeline created");
+
+    Ok((pipelines[0], vert_module, frag_module))
+}

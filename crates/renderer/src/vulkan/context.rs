@@ -45,9 +45,14 @@ pub struct VulkanContext {
     pipeline_alpha: vk::Pipeline,
     pipeline_two_sided: vk::Pipeline,
     pipeline_alpha_two_sided: vk::Pipeline,
+    pipeline_ui: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     vert_module: vk::ShaderModule,
     frag_module: vk::ShaderModule,
+    ui_vert_module: vk::ShaderModule,
+    ui_frag_module: vk::ShaderModule,
+    /// Mesh handle for the fullscreen quad used by UI overlay.
+    pub ui_quad_handle: Option<u32>,
     render_pass: vk::RenderPass,
     swapchain_state: SwapchainState,
 
@@ -164,6 +169,14 @@ impl VulkanContext {
                 texture_registry.descriptor_set_layout,
             )?;
 
+        // 13. UI overlay pipeline (no depth, alpha blend, passthrough shaders)
+        let (pipeline_ui, ui_vert_module, ui_frag_module) = pipeline::create_ui_pipeline(
+            &device,
+            render_pass,
+            swapchain_state.extent,
+            pipelines.layout,
+        )?;
+
         // 14. Mesh registry (empty — meshes uploaded by the application)
         let mesh_registry = MeshRegistry::new();
 
@@ -199,9 +212,13 @@ impl VulkanContext {
             pipeline_alpha: pipelines.alpha,
             pipeline_two_sided: pipelines.opaque_two_sided,
             pipeline_alpha_two_sided: pipelines.alpha_two_sided,
+            pipeline_ui,
             pipeline_layout: pipelines.layout,
             vert_module: pipelines.vert_module,
             frag_module: pipelines.frag_module,
+            ui_vert_module,
+            ui_frag_module,
+            ui_quad_handle: None,
             mesh_registry,
             texture_registry,
             depth_allocation: Some(depth_allocation),
@@ -224,6 +241,7 @@ impl VulkanContext {
         clear_color: [f32; 4],
         view_proj: &[f32; 16],
         draw_commands: &[DrawCommand],
+        ui_texture_handle: Option<u32>,
     ) -> Result<bool> {
         let frame = self.current_frame;
 
@@ -425,6 +443,70 @@ impl VulkanContext {
                 }
             }
 
+            // UI overlay: draw a fullscreen quad with the Ruffle-rendered texture.
+            if let (Some(ui_tex), Some(ui_quad)) = (ui_texture_handle, self.ui_quad_handle) {
+                if let Some(mesh) = self.mesh_registry.get(ui_quad) {
+                    self.device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        self.pipeline_ui,
+                    );
+
+                    let desc_set = self.texture_registry.descriptor_set(
+                        ui_tex,
+                        image_index as usize,
+                    );
+                    self.device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        self.pipeline_layout,
+                        0,
+                        &[desc_set],
+                        &[],
+                    );
+
+                    // Push identity matrices (required by pipeline layout, ignored by UI shader).
+                    let identity: [f32; 16] = [
+                        1.0, 0.0, 0.0, 0.0,
+                        0.0, 1.0, 0.0, 0.0,
+                        0.0, 0.0, 1.0, 0.0,
+                        0.0, 0.0, 0.0, 1.0,
+                    ];
+                    let identity_bytes: &[u8] = std::slice::from_raw_parts(
+                        identity.as_ptr() as *const u8,
+                        64,
+                    );
+                    self.device.cmd_push_constants(
+                        cmd,
+                        self.pipeline_layout,
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        identity_bytes,
+                    );
+                    self.device.cmd_push_constants(
+                        cmd,
+                        self.pipeline_layout,
+                        vk::ShaderStageFlags::VERTEX,
+                        64,
+                        identity_bytes,
+                    );
+
+                    self.device.cmd_bind_vertex_buffers(
+                        cmd,
+                        0,
+                        &[mesh.vertex_buffer.buffer],
+                        &[0],
+                    );
+                    self.device.cmd_bind_index_buffer(
+                        cmd,
+                        mesh.index_buffer.buffer,
+                        0,
+                        vk::IndexType::UINT32,
+                    );
+                    self.device.cmd_draw_indexed(cmd, mesh.index_count, 1, 0, 0, 0);
+                }
+            }
+
             self.device.cmd_end_render_pass(cmd);
             self.device
                 .end_command_buffer(cmd)
@@ -481,6 +563,27 @@ impl VulkanContext {
         self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
 
         Ok(suboptimal || present_suboptimal)
+    }
+
+    /// Register the fullscreen quad mesh for UI overlay rendering.
+    /// Call this once after creating the context.
+    pub fn register_ui_quad(&mut self) -> Result<()> {
+        let (vertices, indices) = crate::mesh::fullscreen_quad_vertices();
+        let allocator = self.allocator.as_ref().expect("allocator missing");
+        let handle = self.mesh_registry.upload(
+            &self.device,
+            allocator,
+            &vertices,
+            &indices,
+        )?;
+        self.ui_quad_handle = Some(handle);
+        log::info!("UI fullscreen quad registered (mesh handle {})", handle);
+        Ok(())
+    }
+
+    /// Get the current swapchain extent (viewport dimensions).
+    pub fn swapchain_extent(&self) -> (u32, u32) {
+        (self.swapchain_state.extent.width, self.swapchain_state.extent.height)
     }
 
     /// Recreate the swapchain after a resize or suboptimal present.
@@ -607,10 +710,13 @@ impl Drop for VulkanContext {
             self.device.destroy_pipeline(self.pipeline_alpha, None);
             self.device.destroy_pipeline(self.pipeline_two_sided, None);
             self.device.destroy_pipeline(self.pipeline_alpha_two_sided, None);
+            self.device.destroy_pipeline(self.pipeline_ui, None);
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
             self.device.destroy_shader_module(self.vert_module, None);
             self.device.destroy_shader_module(self.frag_module, None);
+            self.device.destroy_shader_module(self.ui_vert_module, None);
+            self.device.destroy_shader_module(self.ui_frag_module, None);
             self.device.destroy_render_pass(self.render_pass, None);
             self.swapchain_state.destroy(&self.device);
             // Drop the allocator before destroying the device.

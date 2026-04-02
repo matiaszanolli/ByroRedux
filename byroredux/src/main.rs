@@ -14,6 +14,7 @@ use byroredux_core::types::Color;
 use byroredux_platform::window::{self, WindowConfig};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::{cube_vertices, quad_vertices, triangle_vertices, Vertex, VulkanContext};
+use byroredux_ui::UiManager;
 use std::collections::HashSet;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
@@ -163,6 +164,9 @@ struct App {
     world: World,
     scheduler: Scheduler,
     last_frame: Instant,
+    ui_manager: Option<UiManager>,
+    /// Texture handle for the UI overlay (registered in the texture registry).
+    ui_texture_handle: Option<u32>,
 }
 
 impl App {
@@ -201,6 +205,8 @@ impl App {
             world,
             scheduler,
             last_frame: Instant::now(),
+            ui_manager: None,
+            ui_texture_handle: None,
         }
     }
 
@@ -325,6 +331,50 @@ impl App {
 
         let total_entities = self.world.entity_count();
         log::info!("Scene ready: {} entities, 1 camera. Press Escape to capture mouse for fly camera.", total_entities);
+
+        // Register the fullscreen quad mesh for UI overlay.
+        if let Err(e) = ctx.register_ui_quad() {
+            log::error!("Failed to register UI quad: {e:#}");
+        }
+
+        // UI: --swf <path> loads a SWF menu overlay.
+        if let Some(swf_idx) = args.iter().position(|a| a == "--swf") {
+            if let Some(swf_path) = args.get(swf_idx + 1) {
+                match std::fs::read(swf_path) {
+                    Ok(swf_data) => {
+                        let (w, h) = ctx.swapchain_extent();
+                        let mut ui = UiManager::new(w, h);
+                        match ui.load_swf(&swf_data, swf_path) {
+                            Ok(()) => {
+                                // Create the initial UI texture (transparent black).
+                                let pixels = vec![0u8; (w * h * 4) as usize];
+                                let allocator = ctx.allocator.as_ref().unwrap();
+                                match ctx.texture_registry.register_rgba(
+                                    &ctx.device,
+                                    allocator,
+                                    ctx.graphics_queue,
+                                    ctx.command_pool,
+                                    w,
+                                    h,
+                                    &pixels,
+                                ) {
+                                    Ok(handle) => {
+                                        self.ui_texture_handle = Some(handle);
+                                        log::info!("UI texture registered (handle {})", handle);
+                                    }
+                                    Err(e) => log::error!("Failed to register UI texture: {e:#}"),
+                                }
+                                self.ui_manager = Some(ui);
+                            }
+                            Err(e) => log::error!("Failed to load SWF '{}': {e:#}", swf_path),
+                        }
+                    }
+                    Err(e) => log::error!("Failed to read SWF file '{}': {e}", swf_path),
+                }
+            } else {
+                log::error!("--swf requires a file path");
+            }
+        }
     }
 
 }
@@ -717,8 +767,41 @@ impl ApplicationHandler for App {
                         s.draw_call_count = draw_commands.len() as u32;
                     });
 
+                    // Tick and render the UI overlay (Ruffle SWF player).
+                    let mut ui_tex = None;
+                    if let Some(ref mut ui) = self.ui_manager {
+                        let dt = self.world.try_resource::<DeltaTime>()
+                            .map(|d| d.0 as f64)
+                            .unwrap_or(1.0 / 60.0);
+                        let ui_w = ui.width;
+                        let ui_h = ui.height;
+                        ui.tick(dt);
+
+                        if let Some(pixels) = ui.render() {
+                            if let Some(handle) = self.ui_texture_handle {
+                                let allocator = ctx.allocator.as_ref().unwrap();
+                                if let Err(e) = ctx.texture_registry.update_rgba(
+                                    &ctx.device,
+                                    allocator,
+                                    ctx.graphics_queue,
+                                    ctx.command_pool,
+                                    handle,
+                                    ui_w,
+                                    ui_h,
+                                    pixels,
+                                ) {
+                                    log::error!("UI texture update failed: {e:#}");
+                                }
+                                ui_tex = Some(handle);
+                            }
+                        } else if self.ui_texture_handle.is_some() {
+                            // Not dirty, but still draw the last frame.
+                            ui_tex = self.ui_texture_handle;
+                        }
+                    }
+
                     let color = Color::CORNFLOWER_BLUE;
-                    match ctx.draw_frame(color.as_array(), &view_proj, &draw_commands) {
+                    match ctx.draw_frame(color.as_array(), &view_proj, &draw_commands, ui_tex) {
                         Ok(needs_recreate) => {
                             if needs_recreate {
                                 if let Some(ref win) = self.window {

@@ -8,6 +8,7 @@ members = [
     "crates/scripting",
     "crates/cxx-bridge",
     "crates/bsa",
+    "crates/ui",
     "byroredux",
 ]
 resolver = "2"
@@ -27,6 +28,7 @@ byroredux-scripting = { path = "crates/scripting" }
 byroredux-nif = { path = "crates/nif" }
 byroredux-bsa = { path = "crates/bsa" }
 byroredux-cxx-bridge = { path = "crates/cxx-bridge" }
+byroredux-ui = { path = "crates/ui" }
 
 # Vulkan / GPU
 ash = "0.38"

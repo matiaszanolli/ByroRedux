@@ -1,0 +1,28 @@
+[package]
+name = "byroredux-ui"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+byroredux-core = { workspace = true }
+
+# Ruffle — Rust Flash player (git, pinned to nightly-2026-03-28)
+ruffle_core = { git = "https://github.com/ruffle-rs/ruffle", rev = "0dde9813b47fa6b3a202dc497704009334677de1", default-features = false }
+ruffle_render = { git = "https://github.com/ruffle-rs/ruffle", rev = "0dde9813b47fa6b3a202dc497704009334677de1" }
+ruffle_render_wgpu = { git = "https://github.com/ruffle-rs/ruffle", rev = "0dde9813b47fa6b3a202dc497704009334677de1" }
+ruffle_video_software = { git = "https://github.com/ruffle-rs/ruffle", rev = "0dde9813b47fa6b3a202dc497704009334677de1" }
+swf = { git = "https://github.com/ruffle-rs/ruffle", rev = "0dde9813b47fa6b3a202dc497704009334677de1" }
+
+# wgpu (re-exported by ruffle_render_wgpu, but needed for type references)
+wgpu = "27"
+
+# Async executor for wgpu device creation
+futures = "0.3"
+
+# Image types (RgbaImage from capture_frame)
+image = { version = "0.25", default-features = false }
+
+# Error handling
+anyhow.workspace = true
+log.workspace = true

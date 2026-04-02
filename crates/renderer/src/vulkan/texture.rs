@@ -265,7 +265,7 @@ impl Texture {
                 .context("Failed to create texture sampler")?
         };
 
-        log::info!("Texture uploaded: {}x{} RGBA", width, height);
+        log::debug!("Texture uploaded: {}x{} RGBA", width, height);
 
         Ok(Self {
             image,

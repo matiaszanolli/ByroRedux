@@ -142,6 +142,85 @@ impl TextureRegistry {
         entry.descriptor_sets[image_index]
     }
 
+    /// Register an RGBA texture directly (not from a DDS file or path).
+    /// Returns a handle that can be used with `update_rgba` for dynamic updates.
+    pub fn register_rgba(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        queue: vk::Queue,
+        command_pool: vk::CommandPool,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> Result<TextureHandle> {
+        let texture = Texture::from_rgba(device, allocator, queue, command_pool, width, height, pixels)
+            .context("Failed to create dynamic RGBA texture")?;
+
+        let sets = self.allocate_and_write_sets(device, &texture)?;
+        let handle = self.textures.len() as TextureHandle;
+
+        self.textures.push(TextureEntry {
+            texture,
+            descriptor_sets: sets,
+        });
+
+        Ok(handle)
+    }
+
+    /// Replace the texture data for an existing handle with new RGBA pixels.
+    /// Destroys the old texture and creates a new one at the same handle slot.
+    ///
+    /// Note: waits for device idle before destroying the old texture to avoid
+    /// use-after-free on in-flight frames. This is correct but not optimal —
+    /// a persistent staging buffer approach would avoid the stall.
+    pub fn update_rgba(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        queue: vk::Queue,
+        command_pool: vk::CommandPool,
+        handle: TextureHandle,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> Result<()> {
+        // Wait for all in-flight frames to finish using the old texture.
+        unsafe {
+            device.device_wait_idle().context("device_wait_idle before texture update")?;
+        }
+
+        let entry = &mut self.textures[handle as usize];
+
+        // Destroy the old texture (image + allocation).
+        entry.texture.destroy(device, allocator);
+
+        // Create a new texture with the updated pixels.
+        entry.texture = Texture::from_rgba(device, allocator, queue, command_pool, width, height, pixels)
+            .context("Failed to update dynamic RGBA texture")?;
+
+        // Re-write the existing descriptor sets to point to the new image.
+        let image_info = vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(entry.texture.image_view)
+            .sampler(entry.texture.sampler);
+
+        for &set in &entry.descriptor_sets {
+            let write = vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(0)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(std::slice::from_ref(&image_info));
+
+            unsafe {
+                device.update_descriptor_sets(&[write], &[]);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Number of loaded textures (including fallback).
     pub fn len(&self) -> usize {
         self.textures.len()

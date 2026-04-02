@@ -12,6 +12,7 @@ byroredux-nif = { workspace = true }
 byroredux-bsa = { workspace = true }
 byroredux-plugin = { workspace = true }
 byroredux-cxx-bridge = { workspace = true }
+byroredux-ui = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
 anyhow = { workspace = true }

@@ -15,6 +15,7 @@ Last updated: 2026-03-31
 | `cargo run -- --bsa "Skyrim - Meshes0.bsa" --mesh meshes\clutter\ingredients\sweetroll01.nif --textures-bsa "Skyrim - Textures3.bsa"` | Load and render a Skyrim SE mesh with textures from BSA v105 |
 | `cargo run -- path/to/mesh.nif` | Load and render a loose NIF file |
 | `cargo run -- --cmd help` | Run a console command at startup |
+| `cargo run -- --swf path/to/menu.swf` | Load and render a Skyrim SE SWF menu overlay |
 | `cargo test` | 244 passing tests across all crates |
 
 **Fallout New Vegas:** Interior cells load from ESM with placed objects (REFR → STAT), real DDS textures
@@ -103,15 +104,16 @@ WRLD exterior cell parsing with grid loading, LightSource ECS component, refacto
 **Result:** FNV Prospector Saloon: 809 entities. WastelandNV exterior 3x3 grid: 720 entities.
 14 worldspaces, 30096 exterior cells, 17129 base objects parsed from FalloutNV.esm.
 
-### M20: Scaleform/SWF UI System (Ruffle Integration)
-**Status:** Next up
-**Scope:** Integrate Ruffle (Rust Flash Player) as a library for rendering Bethesda's
-Scaleform GFx menus. SWF parsing, ActionScript 2 execution, display list rendering.
-Extend with Scaleform GFx extensions (`_global.gfx` API, image substitution).
-Wire Papyrus↔UI bridge (`Invoke()`, `SetVariable()`, `GetVariable()`).
-Start with a simple menu (e.g. loading screen, HUD health bar).
-**Depends on:** M15 (console/diagnostics)
-**Acceptance:** At least one Bethesda .swf menu file renders in the engine viewport.
+### M20: Scaleform/SWF UI System (Ruffle Integration) — DONE
+**Status:** Complete
+**Scope:** Ruffle (Rust Flash player) integrated as a library for Bethesda Scaleform GFx menu
+rendering. New `crates/ui/` crate wrapping Ruffle's Player with offscreen wgpu rendering and
+RGBA pixel readback. CPU-bridge architecture: Ruffle wgpu → pixel buffer → Vulkan texture upload
+→ fullscreen quad overlay with UI-specific pipeline (no depth, alpha blend, passthrough shaders).
+**Result:** Skyrim SE SWF menus (fadermenu, loadingmenu, messagebox) load and render via
+`--swf <path>` CLI. All are AS2/Flash v15, parsed and executed by Ruffle with zero GFx stubs needed.
+Dynamic texture update pipeline with device-wait-idle sync. Clean shutdown.
+**Future:** Scaleform GFx stubs (`_global.gfx`), Papyrus↔UI bridge, input routing, font loading.
 
 ### M21: Animation Playback
 **Status:** Planned — controller parsers ready
@@ -153,7 +155,7 @@ shadow rays. Rasterized multi-light fallback for non-RT GPUs.
 | Quests & Dialogue | Quest stages, conditions (~300 functions), dialogue trees, Story Manager |
 | Save/Load | Serialize world state, change forms, cosave format |
 | Audio | Sound descriptors, 3D spatial audio, music system |
-| UI | Menu system, HUD, mod configuration (Ruffle for SWF compat or custom) |
+| UI | Scaleform GFx stubs, Papyrus↔UI bridge, input routing, font loading, all 34 menus |
 | Modding | Full plugin loading: discover, sort, merge, resolve conflicts |
 | Scripting | Full ECS-native scripting: 136 event types, condition system, perk entry points |
 
@@ -191,7 +193,7 @@ shadow rays. Rasterized multi-light fallback for non-RT GPUs.
 - [ ] No physics or collision
 - [ ] No save/load system
 - [ ] No audio subsystem
-- [ ] No UI/menu system
+- [x] ~~No UI/menu system~~ → Ruffle SWF integration (M20)
 - [ ] No navmesh or AI
 
 ---
@@ -232,8 +234,8 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 | Metric | Value |
 |--------|-------|
 | Passing tests | 244 |
-| Workspace crates | 8 |
-| Completed milestones | 18 (M1–M18) |
+| Workspace crates | 9 |
+| Completed milestones | 20 (M1–M20) |
 | NIF block types | 27 |
 | NifVariant games | 8 (Morrowind → Starfield) |
 | Supported archive formats | BSA v104, BSA v105 |
@@ -256,6 +258,7 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 | `byroredux-nif` | M9, M10, M17, M18 | 76 |
 | `byroredux-bsa` | M11, M18 | 2 |
 | `byroredux-scripting` | M12 | 8 |
+| `byroredux-ui` | M20 (Ruffle/SWF) | — |
 | `byroredux-cxx-bridge` | Cross-cutting | — |
 | `byroredux` (binary) | M4, M11, M14, M15, M16, M17 | — |
 
