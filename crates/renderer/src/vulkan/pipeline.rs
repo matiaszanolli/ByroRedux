@@ -109,6 +109,20 @@ pub fn create_triangle_pipeline(
         .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
         .depth_bias_enable(false);
 
+    // Alpha pipeline rasterizer: depth bias pushes decal geometry toward camera
+    // to prevent Z-fighting with the surface beneath (labels, papers, etc.).
+    let rasterizer_alpha = vk::PipelineRasterizationStateCreateInfo::default()
+        .depth_clamp_enable(false)
+        .rasterizer_discard_enable(false)
+        .polygon_mode(vk::PolygonMode::FILL)
+        .line_width(1.0)
+        .cull_mode(vk::CullModeFlags::NONE)
+        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+        .depth_bias_enable(true)
+        .depth_bias_constant_factor(-2.0)
+        .depth_bias_slope_factor(-2.0)
+        .depth_bias_clamp(0.0);
+
     let rasterizer_no_cull = vk::PipelineRasterizationStateCreateInfo::default()
         .depth_clamp_enable(false)
         .rasterizer_discard_enable(false)
@@ -117,6 +131,18 @@ pub fn create_triangle_pipeline(
         .cull_mode(vk::CullModeFlags::NONE)
         .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
         .depth_bias_enable(false);
+
+    let rasterizer_no_cull_alpha = vk::PipelineRasterizationStateCreateInfo::default()
+        .depth_clamp_enable(false)
+        .rasterizer_discard_enable(false)
+        .polygon_mode(vk::PolygonMode::FILL)
+        .line_width(1.0)
+        .cull_mode(vk::CullModeFlags::NONE)
+        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+        .depth_bias_enable(true)
+        .depth_bias_constant_factor(-2.0)
+        .depth_bias_slope_factor(-2.0)
+        .depth_bias_clamp(0.0);
 
     let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
         .sample_shading_enable(false)
@@ -195,13 +221,13 @@ pub fn create_triangle_pipeline(
             .layout(pipeline_layout)
             .render_pass(render_pass)
             .subpass(0),
-        // [1] Alpha-blended pipeline.
+        // [1] Alpha-blended pipeline (with depth bias for decals).
         vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
             .vertex_input_state(&vertex_input)
             .input_assembly_state(&input_assembly)
             .viewport_state(&viewport_state)
-            .rasterization_state(&rasterizer)
+            .rasterization_state(&rasterizer_alpha)
             .multisample_state(&multisampling)
             .depth_stencil_state(&depth_stencil_alpha)
             .color_blend_state(&color_blending_alpha)
@@ -223,13 +249,13 @@ pub fn create_triangle_pipeline(
             .layout(pipeline_layout)
             .render_pass(render_pass)
             .subpass(0),
-        // [3] Alpha-blended two-sided (no backface culling).
+        // [3] Alpha-blended two-sided (no backface culling, with depth bias).
         vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
             .vertex_input_state(&vertex_input)
             .input_assembly_state(&input_assembly)
             .viewport_state(&viewport_state)
-            .rasterization_state(&rasterizer_no_cull)
+            .rasterization_state(&rasterizer_no_cull_alpha)
             .multisample_state(&multisampling)
             .depth_stencil_state(&depth_stencil_alpha)
             .color_blend_state(&color_blending_alpha)
