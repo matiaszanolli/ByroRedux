@@ -236,11 +236,10 @@ impl AccelerationManager {
             });
         }
 
-        if instances.is_empty() {
-            return Ok(());
-        }
-
         let instance_count = instances.len() as u32;
+
+        // Even with 0 instances, we build a valid (empty) TLAS so the
+        // descriptor set binding is always valid for the shader.
 
         // Create/resize instance buffer if needed.
         let need_new_tlas = self.tlas.is_none()

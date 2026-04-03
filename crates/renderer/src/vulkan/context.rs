@@ -377,9 +377,12 @@ impl VulkanContext {
                             &[],
                             &[],
                         );
-                        // Write TLAS to descriptor set.
+                        // Write TLAS to ALL frame descriptor sets (both frames-in-flight
+                        // share the same TLAS object, and each set must be initialized).
                         if let Some(tlas_handle) = accel.tlas_handle() {
-                            self.scene_buffers.write_tlas(&self.device, frame, tlas_handle);
+                            for f in 0..MAX_FRAMES_IN_FLIGHT {
+                                self.scene_buffers.write_tlas(&self.device, f, tlas_handle);
+                            }
                         }
                     }
                 }
