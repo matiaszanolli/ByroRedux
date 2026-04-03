@@ -523,7 +523,8 @@ impl VulkanContext {
                     // Depth bias: decal meshes (flagged via NIF shader properties)
                     // get pushed toward camera to prevent Z-fighting.
                     let bias = if draw_cmd.is_decal { -8.0_f32 } else { 0.0 };
-                    self.device.cmd_set_depth_bias(cmd, bias, -4.0, 0.0);
+                    // Args: constant_factor, slope_factor, clamp (0 = no clamp)
+                    self.device.cmd_set_depth_bias(cmd, bias, if draw_cmd.is_decal { -2.0 } else { 0.0 }, 0.0);
 
                     // Push model matrix (bytes 64..128).
                     let model_bytes: &[u8] = std::slice::from_raw_parts(

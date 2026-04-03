@@ -6,8 +6,9 @@ use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
-/// A BSA v104/v105 archive opened for reading.
+/// A BSA v103/v104/v105 archive opened for reading.
 ///
+/// v103: Oblivion (16-byte folder records, zlib compression)
 /// v104: Fallout 3, Fallout NV, Skyrim LE (16-byte folder records, zlib compression)
 /// v105: Skyrim SE, Fallout 4 (24-byte folder records, LZ4 compression, u64 offsets)
 pub struct BsaArchive {
@@ -48,10 +49,10 @@ impl BsaArchive {
         }
 
         let version = u32::from_le_bytes(header[4..8].try_into().unwrap());
-        if version != 104 && version != 105 {
+        if version != 103 && version != 104 && version != 105 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("unsupported BSA version {} (expected 104 or 105)", version),
+                format!("unsupported BSA version {} (expected 103, 104, or 105)", version),
             ));
         }
 
