@@ -8,12 +8,35 @@
       "Bash(glslc --version)",
       "Bash(glslangValidator --version)",
       "Bash(glslangValidator -V triangle.vert -o triangle.vert.spv)",
-      "Bash(glslangValidator -V triangle.frag -o triangle.frag.spv)"
+      "Bash(glslangValidator -V triangle.frag -o triangle.frag.spv)",
+      "Bash(git commit:*)",
+      "Bash(stream\" on texture BSAs:*)",
+      "Bash(grep -l \"#\\\\[cfg\\(test\\)\\\\]\" /mnt/data/src/gamebyro-redux/crates/nif/src/blocks/*.rs)",
+      "Bash(cargo run:*)",
+      "Bash(grep -E \"Cell ''''|ESM parsed|Scene ready|stats\" /tmp/byro_cell4.log)",
+      "Bash(tee /tmp/saloon_log.txt)",
+      "Bash(sed -n '3716,3780p' /tmp/nif.xml)",
+      "Bash(sed -n '4193,4260p' /tmp/nif.xml)",
+      "Bash(sed -n '5229,5280p' /tmp/nif.xml)",
+      "Bash(sed -n '6233,6260p' /tmp/nif.xml)",
+      "Bash(dpkg -l)",
+      "Bash(sudo apt-get:*)",
+      "Bash(qmake NifSkope.pro)",
+      "Bash(SKY=\"/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data\")",
+      "Bash(FNV=\"/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data\")",
+      "WebFetch(domain:crates.io)",
+      "WebFetch(domain:ruffle.rs)",
+      "WebSearch",
+      "Bash(rustup show:*)",
+      "Bash(sh -s -- -y --default-toolchain stable)",
+      "Bash(glslangValidator -V ui.vert -o ui.vert.spv)",
+      "Bash(glslangValidator -V ui.frag -o ui.frag.spv)"
     ],
     "additionalDirectories": [
       "/mnt/data/src/gamebyro-redux/.claude",
       "/home/matias/.claude/plans",
-      "/mnt/data/src/gamebyro-redux/docs/engine"
+      "/mnt/data/src/gamebyro-redux/docs/engine",
+      "/tmp"
     ]
   }
 }

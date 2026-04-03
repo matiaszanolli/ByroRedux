@@ -20,7 +20,7 @@ use byroredux_core::ecs::{
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::Resource;
 use byroredux_core::math::{Quat, Vec3};
-use byroredux_core::string::StringPool;
+use byroredux_core::string::{FixedString, StringPool};
 use byroredux_core::types::Color;
 use byroredux_platform::window::{self, WindowConfig};
 use byroredux_renderer::vulkan::context::DrawCommand;
@@ -52,6 +52,23 @@ impl Component for TwoSided { type Storage = SparseSetStorage<Self>; }
 /// System names stored as a resource for the `systems` console command.
 struct SystemList(Vec<String>);
 impl Resource for SystemList {}
+
+/// Cached name→entity mapping for the animation system.
+/// Rebuilt only when the entity count changes (no per-frame allocations).
+struct NameIndex {
+    map: std::collections::HashMap<FixedString, EntityId>,
+    generation: u32,
+}
+impl Resource for NameIndex {}
+
+impl NameIndex {
+    fn new() -> Self {
+        Self {
+            map: std::collections::HashMap::new(),
+            generation: u32::MAX, // Force rebuild on first use.
+        }
+    }
+}
 
 /// Tracks keyboard and mouse input state for the fly camera.
 struct InputState {
@@ -137,21 +154,31 @@ fn animation_system(world: &World, dt: f32) {
     if registry.is_empty() {
         return;
     }
-    let Some(pool) = world.try_resource::<StringPool>() else { return };
 
-    // Build name→entity lookup from all named entities.
-    let name_query = match world.query::<Name>() {
-        Some(q) => q,
-        None => return,
-    };
-    let mut name_to_entity = std::collections::HashMap::new();
-    for (entity, name_comp) in name_query.iter() {
-        if let Some(s) = pool.resolve(name_comp.0) {
-            name_to_entity.insert(s.to_string(), entity);
+    // Rebuild name→entity index only when entities have been added.
+    let current_gen = world.entity_count() as u32;
+    {
+        let needs_rebuild = world.try_resource::<NameIndex>()
+            .map(|idx| idx.generation != current_gen)
+            .unwrap_or(true);
+        if needs_rebuild {
+            let name_query = match world.query::<Name>() {
+                Some(q) => q,
+                None => return,
+            };
+            let mut new_map = std::collections::HashMap::new();
+            for (entity, name_comp) in name_query.iter() {
+                new_map.insert(name_comp.0, entity);
+            }
+            drop(name_query);
+            let mut idx = world.resource_mut::<NameIndex>();
+            idx.map = new_map;
+            idx.generation = current_gen;
         }
     }
-    drop(name_query);
-    drop(pool);
+
+    let Some(pool) = world.try_resource::<StringPool>() else { return };
+    let name_index = world.try_resource::<NameIndex>().unwrap();
 
     // Iterate all animation players and apply.
     let Some(player_query) = world.query_mut::<AnimationPlayer>() else { return };
@@ -174,9 +201,8 @@ fn animation_system(world: &World, dt: f32) {
         {
             let mut transform_query = world.query_mut::<Transform>().unwrap();
             for (channel_name, channel) in &clip.channels {
-                let Some(&target_entity) = name_to_entity.get(channel_name) else {
-                    continue;
-                };
+                let Some(sym) = pool.get(channel_name) else { continue };
+                let Some(&target_entity) = name_index.map.get(&sym) else { continue };
                 let Some(transform) = transform_query.get_mut(target_entity) else {
                     continue;
                 };
@@ -194,7 +220,8 @@ fn animation_system(world: &World, dt: f32) {
 
         // Apply float channels (alpha, UV params, shader floats).
         for (channel_name, channel) in &clip.float_channels {
-            let Some(&target_entity) = name_to_entity.get(channel_name) else { continue };
+            let Some(sym) = pool.get(channel_name) else { continue };
+            let Some(&target_entity) = name_index.map.get(&sym) else { continue };
             let value = sample_float_channel(channel, current_time);
             if channel.target == FloatTarget::Alpha {
                 if let Some(mut aq) = world.query_mut::<AnimatedAlpha>() {
@@ -213,7 +240,8 @@ fn animation_system(world: &World, dt: f32) {
 
         // Apply color channels.
         for (channel_name, channel) in &clip.color_channels {
-            let Some(&target_entity) = name_to_entity.get(channel_name) else { continue };
+            let Some(sym) = pool.get(channel_name) else { continue };
+            let Some(&target_entity) = name_index.map.get(&sym) else { continue };
             let value = sample_color_channel(channel, current_time);
             if let Some(mut cq) = world.query_mut::<AnimatedColor>() {
                 if let Some(c) = cq.get_mut(target_entity) {
@@ -224,7 +252,8 @@ fn animation_system(world: &World, dt: f32) {
 
         // Apply bool (visibility) channels.
         for (channel_name, channel) in &clip.bool_channels {
-            let Some(&target_entity) = name_to_entity.get(channel_name) else { continue };
+            let Some(sym) = pool.get(channel_name) else { continue };
+            let Some(&target_entity) = name_index.map.get(&sym) else { continue };
             let value = sample_bool_channel(channel, current_time);
             if let Some(mut vq) = world.query_mut::<AnimatedVisibility>() {
                 if let Some(v) = vq.get_mut(target_entity) {
@@ -388,6 +417,7 @@ impl App {
         world.insert_resource(InputState::default());
         world.insert_resource(StringPool::new());
         world.insert_resource(AnimationClipRegistry::new());
+        world.insert_resource(NameIndex::new());
 
         // Register scripting component storages.
         byroredux_scripting::register(&mut world);
