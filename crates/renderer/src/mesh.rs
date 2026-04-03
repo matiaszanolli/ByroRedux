@@ -4,6 +4,7 @@ use crate::vertex::Vertex;
 use crate::vulkan::allocator::SharedAllocator;
 use crate::vulkan::buffer::GpuBuffer;
 use anyhow::Result;
+use ash::vk;
 
 /// A mesh stored on the GPU: vertex + index buffers and index count.
 pub struct GpuMesh {
@@ -32,15 +33,21 @@ impl MeshRegistry {
     }
 
     /// Upload a mesh to the GPU and return its handle ID.
+    ///
+    /// Uses a staging buffer to place geometry in DEVICE_LOCAL memory.
     pub fn upload(
         &mut self,
         device: &ash::Device,
         allocator: &SharedAllocator,
+        queue: vk::Queue,
+        command_pool: vk::CommandPool,
         vertices: &[Vertex],
         indices: &[u32],
     ) -> Result<u32> {
-        let vertex_buffer = GpuBuffer::create_vertex_buffer(device, allocator, vertices)?;
-        let index_buffer = GpuBuffer::create_index_buffer(device, allocator, indices)?;
+        let vertex_buffer =
+            GpuBuffer::create_vertex_buffer(device, allocator, queue, command_pool, vertices)?;
+        let index_buffer =
+            GpuBuffer::create_index_buffer(device, allocator, queue, command_pool, indices)?;
         let index_count = indices.len() as u32;
 
         let id = self.meshes.len() as u32;

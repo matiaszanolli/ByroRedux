@@ -591,7 +591,7 @@ impl Texture {
 }
 
 /// Execute a one-time-submit command buffer: allocate, record, submit, wait, free.
-fn with_one_time_commands<F: FnOnce(vk::CommandBuffer)>(
+pub(crate) fn with_one_time_commands<F: FnOnce(vk::CommandBuffer)>(
     device: &ash::Device,
     queue: vk::Queue,
     pool: vk::CommandPool,

@@ -582,6 +582,8 @@ impl VulkanContext {
         let handle = self.mesh_registry.upload(
             &self.device,
             allocator,
+            self.graphics_queue,
+            self.command_pool,
             &vertices,
             &indices,
         )?;
