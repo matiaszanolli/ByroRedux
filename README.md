@@ -4,7 +4,7 @@ A clean rebuild of the Gamebryo/Creation engine lineage in **Rust + C++**, using
 
 Not a port — a ground-up rebuild that understands the legacy architecture and builds modern equivalents.
 
-![Prospector Saloon from Fallout: New Vegas, rendered in ByroRedux](docs/screenshots/prospector-saloon.png)
+![*Prospector Saloon* from Fallout: New Vegas, rendered in ByroRedux](docs/screenshots/prospector-saloon.png)
 
 *The Prospector Saloon (Goodsprings) loaded from FalloutNV.esm — 809 entities, real DDS textures, directional lighting, alpha blending at 334 FPS on RTX 4070 Ti.*
 
