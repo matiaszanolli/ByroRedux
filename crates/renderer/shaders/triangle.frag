@@ -34,8 +34,8 @@ void main() {
     vec3 normal = normalize(fragNormal);
     bool rtEnabled = sceneFlags.x > 0.5;
 
-    // Ambient base.
-    vec3 totalLight = vec3(0.05);
+    // Ambient base — enough to see geometry in unlit corners.
+    vec3 totalLight = vec3(0.08);
 
     if (lightCount == 0) {
         // Fallback: single directional light when no lights are placed.
@@ -55,12 +55,16 @@ void main() {
             float atten;
 
             if (lightType < 0.5) {
-                // Point light.
+                // Point light — smooth inverse-square falloff with radius cutoff.
                 toLight = lightPos - fragWorldPos;
                 dist = length(toLight);
                 lightDir = toLight / max(dist, 0.001);
-                atten = clamp(1.0 - dist / max(radius, 0.001), 0.0, 1.0);
-                atten *= atten;
+                // Windowed inverse-square: physically plausible, smooth cutoff at radius.
+                // Based on UE4/Frostbite falloff: 1/(1 + (d/r)^2) * smooth_window
+                float ratio = dist / max(radius, 0.001);
+                float ratio2 = ratio * ratio;
+                float window = max(1.0 - ratio2 * ratio2, 0.0);  // smooth cutoff
+                atten = window * window / (1.0 + ratio2 * 4.0);  // inverse-square core
             } else if (lightType < 1.5) {
                 // Spot light.
                 toLight = lightPos - fragWorldPos;
@@ -68,8 +72,10 @@ void main() {
                 lightDir = toLight / max(dist, 0.001);
                 vec3 spotDir = normalize(lights[i].direction_angle.xyz);
                 float spotAngle = lights[i].direction_angle.w;
-                atten = clamp(1.0 - dist / max(radius, 0.001), 0.0, 1.0);
-                atten *= atten;
+                float ratio = dist / max(radius, 0.001);
+                float ratio2 = ratio * ratio;
+                float window = max(1.0 - ratio2 * ratio2, 0.0);
+                atten = window * window / (1.0 + ratio2 * 4.0);
                 float spotFactor = dot(-lightDir, spotDir);
                 atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
             } else {
