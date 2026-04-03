@@ -325,7 +325,7 @@ fn load_nif_placed(
             })
             .collect();
 
-        let mesh_handle = match ctx.mesh_registry.upload(&ctx.device, alloc, &ctx.graphics_queue, ctx.command_pool, &vertices, &mesh.indices) {
+        let mesh_handle = match ctx.mesh_registry.upload(&ctx.device, alloc, &ctx.graphics_queue, ctx.command_pool, &vertices, &mesh.indices, ctx.device_caps.ray_query_supported) {
             Ok(h) => h,
             Err(e) => {
                 log::warn!("Failed to upload mesh: {}", e);

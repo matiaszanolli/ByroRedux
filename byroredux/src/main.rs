@@ -636,27 +636,28 @@ impl App {
             let (verts, idxs) = cube_vertices();
             let queue = &ctx.graphics_queue;
             let pool = ctx.command_pool;
+            let rt = ctx.device_caps.ray_query_supported;
             let cube_handle = ctx
                 .mesh_registry
-                .upload(&ctx.device, alloc, queue, pool, &verts, &idxs)
+                .upload(&ctx.device, alloc, queue, pool, &verts, &idxs, rt)
                 .expect("Failed to upload cube mesh");
 
             let (quad_verts, quad_idxs) = quad_vertices();
             let quad_handle = ctx
                 .mesh_registry
-                .upload(&ctx.device, alloc, queue, pool, &quad_verts, &quad_idxs)
+                .upload(&ctx.device, alloc, queue, pool, &quad_verts, &quad_idxs, rt)
                 .expect("Failed to upload quad mesh");
 
             let (red_verts, red_idxs) = triangle_vertices([1.0, 0.2, 0.2]);
             let red_handle = ctx
                 .mesh_registry
-                .upload(&ctx.device, alloc, queue, pool, &red_verts, &red_idxs)
+                .upload(&ctx.device, alloc, queue, pool, &red_verts, &red_idxs, rt)
                 .expect("Failed to upload red triangle mesh");
 
             let (blue_verts, blue_idxs) = triangle_vertices([0.2, 0.2, 1.0]);
             let blue_handle = ctx
                 .mesh_registry
-                .upload(&ctx.device, alloc, queue, pool, &blue_verts, &blue_idxs)
+                .upload(&ctx.device, alloc, queue, pool, &blue_verts, &blue_idxs, rt)
                 .expect("Failed to upload blue triangle mesh");
 
             let cube = self.world.spawn();
@@ -985,13 +986,16 @@ pub(crate) fn load_nif_bytes(
             .collect();
 
         let alloc = ctx.allocator.as_ref().unwrap();
-        let mesh_handle = match ctx.mesh_registry.upload(&ctx.device, alloc, &ctx.graphics_queue, ctx.command_pool, &vertices, &mesh.indices) {
+        let mesh_handle = match ctx.mesh_registry.upload(&ctx.device, alloc, &ctx.graphics_queue, ctx.command_pool, &vertices, &mesh.indices, ctx.device_caps.ray_query_supported) {
             Ok(h) => h,
             Err(e) => {
                 log::warn!("Failed to upload NIF mesh '{}': {}", mesh.name.as_deref().unwrap_or("?"), e);
                 continue;
             }
         };
+
+        // Build BLAS for RT shadow rays.
+        ctx.build_blas_for_mesh(mesh_handle, num_verts as u32, mesh.indices.len() as u32);
 
         let tex_handle = resolve_texture(ctx, tex_provider, mesh.texture_path.as_deref());
 

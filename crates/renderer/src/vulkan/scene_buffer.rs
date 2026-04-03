@@ -60,7 +60,7 @@ pub struct SceneBuffers {
 
 impl SceneBuffers {
     /// Create scene buffers and descriptor infrastructure.
-    pub fn new(device: &ash::Device, allocator: &SharedAllocator) -> Result<Self> {
+    pub fn new(device: &ash::Device, allocator: &SharedAllocator, rt_enabled: bool) -> Result<Self> {
         // Calculate buffer sizes.
         let light_buf_size = (std::mem::size_of::<LightHeader>()
             + std::mem::size_of::<GpuLight>() * MAX_LIGHTS) as vk::DeviceSize;
@@ -85,7 +85,7 @@ impl SceneBuffers {
         }
 
         // Descriptor set layout: set 1.
-        let bindings = [
+        let mut bindings = vec![
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
@@ -97,6 +97,15 @@ impl SceneBuffers {
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
+        if rt_enabled {
+            bindings.push(
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(2)
+                    .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            );
+        }
         let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
         let descriptor_set_layout = unsafe {
             device
@@ -105,7 +114,7 @@ impl SceneBuffers {
         };
 
         // Descriptor pool.
-        let pool_sizes = [
+        let mut pool_sizes = vec![
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
                 descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
@@ -115,6 +124,12 @@ impl SceneBuffers {
                 descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
             },
         ];
+        if rt_enabled {
+            pool_sizes.push(vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+                descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
+            });
+        }
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(&pool_sizes)
             .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
@@ -224,6 +239,29 @@ impl SceneBuffers {
     /// Get the descriptor set for the current frame-in-flight.
     pub fn descriptor_set(&self, frame_index: usize) -> vk::DescriptorSet {
         self.descriptor_sets[frame_index]
+    }
+
+    /// Update the TLAS acceleration structure in the descriptor set for a given frame.
+    pub fn write_tlas(
+        &self,
+        device: &ash::Device,
+        frame_index: usize,
+        tlas: vk::AccelerationStructureKHR,
+    ) {
+        let accel_structs = [tlas];
+        let mut accel_write = vk::WriteDescriptorSetAccelerationStructureKHR::default()
+            .acceleration_structures(&accel_structs);
+
+        let write = vk::WriteDescriptorSet::default()
+            .dst_set(self.descriptor_sets[frame_index])
+            .dst_binding(2)
+            .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+            .descriptor_count(1)
+            .push_next(&mut accel_write);
+
+        unsafe {
+            device.update_descriptor_sets(&[write], &[]);
+        }
     }
 
     /// Destroy all resources.

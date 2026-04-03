@@ -5,6 +5,7 @@ use super::debug;
 use super::device::{self, QueueFamilyIndices};
 use super::instance;
 use super::pipeline;
+use super::acceleration::AccelerationManager;
 use super::scene_buffer;
 use super::surface;
 use super::swapchain::{self, SwapchainState};
@@ -44,6 +45,7 @@ pub struct VulkanContext {
     pub mesh_registry: MeshRegistry,
     pub texture_registry: TextureRegistry,
     pub scene_buffers: scene_buffer::SceneBuffers,
+    pub accel_manager: Option<AccelerationManager>,
     pipeline: vk::Pipeline,
     pipeline_alpha: vk::Pipeline,
     pipeline_two_sided: vk::Pipeline,
@@ -68,6 +70,7 @@ pub struct VulkanContext {
     pub present_queue: vk::Queue,
     pub queue_indices: QueueFamilyIndices,
     pub device: ash::Device,
+    pub device_caps: device::DeviceCapabilities,
     pub physical_device: vk::PhysicalDevice,
 
     surface: vk::SurfaceKHR,
@@ -119,18 +122,18 @@ impl VulkanContext {
         let vk_surface =
             surface::create_surface(&entry, &vk_instance, display_handle, window_handle)?;
 
-        // 5. Physical device
-        let (physical_device, queue_indices) =
+        // 5. Physical device + capability probe
+        let (physical_device, queue_indices, device_caps) =
             device::pick_physical_device(&vk_instance, &surface_loader, vk_surface)?;
 
-        // 6. Logical device + queues
+        // 6. Logical device + queues (enables RT extensions when available)
         let (device, raw_graphics_queue, present_queue) =
-            device::create_logical_device(&vk_instance, physical_device, queue_indices)?;
+            device::create_logical_device(&vk_instance, physical_device, queue_indices, &device_caps)?;
         let graphics_queue = Mutex::new(raw_graphics_queue);
 
-        // 7. GPU allocator
+        // 7. GPU allocator (buffer_device_address required for RT acceleration structures)
         let gpu_allocator =
-            allocator::create_allocator(&vk_instance, &device, physical_device)?;
+            allocator::create_allocator(&vk_instance, &device, physical_device, device_caps.ray_query_supported)?;
 
         // 8. Swapchain
         let swapchain_state = swapchain::create_swapchain(
@@ -171,8 +174,15 @@ impl VulkanContext {
             fallback_texture,
         )?;
 
-        // 12. Scene buffers (light SSBO + camera UBO, descriptor set 1)
-        let scene_buffers = scene_buffer::SceneBuffers::new(&device, &gpu_allocator)?;
+        // 12. Scene buffers (light SSBO + camera UBO + optional TLAS, descriptor set 1)
+        let scene_buffers = scene_buffer::SceneBuffers::new(&device, &gpu_allocator, device_caps.ray_query_supported)?;
+
+        // 12b. Acceleration manager (RT only)
+        let accel_manager = if device_caps.ray_query_supported {
+            Some(AccelerationManager::new(&vk_instance, &device))
+        } else {
+            None
+        };
 
         // 13. Graphics pipeline (with depth test + descriptor set layouts for set 0 + set 1)
         let pipelines = pipeline::create_triangle_pipeline(
@@ -216,6 +226,7 @@ impl VulkanContext {
             surface: vk_surface,
             physical_device,
             device,
+            device_caps,
             queue_indices,
             graphics_queue,
             present_queue,
@@ -236,6 +247,7 @@ impl VulkanContext {
             mesh_registry,
             texture_registry,
             scene_buffers,
+            accel_manager,
             depth_allocation: Some(depth_allocation),
             depth_image,
             depth_image_view,
@@ -345,6 +357,35 @@ impl VulkanContext {
             })
             .clear_values(&clear_values);
 
+        // Build TLAS if RT is available (before render pass).
+        unsafe {
+            if let Some(ref mut accel) = self.accel_manager {
+                if let Some(alloc) = self.allocator.as_ref() {
+                    if let Err(e) = accel.build_tlas(&self.device, alloc, cmd, draw_commands) {
+                        log::warn!("TLAS build failed: {e}");
+                    } else {
+                        // Memory barrier: TLAS build → fragment shader read.
+                        let barrier = vk::MemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
+                            .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR);
+                        self.device.cmd_pipeline_barrier(
+                            cmd,
+                            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                            vk::PipelineStageFlags::FRAGMENT_SHADER,
+                            vk::DependencyFlags::empty(),
+                            &[barrier],
+                            &[],
+                            &[],
+                        );
+                        // Write TLAS to descriptor set.
+                        if let Some(tlas_handle) = accel.tlas_handle() {
+                            self.scene_buffers.write_tlas(&self.device, frame, tlas_handle);
+                        }
+                    }
+                }
+            }
+        }
+
         unsafe {
             self.device.cmd_begin_render_pass(
                 cmd,
@@ -394,9 +435,10 @@ impl VulkanContext {
             // Upload scene data (lights + camera) and bind descriptor set 1.
             self.scene_buffers.upload_lights(frame, lights)
                 .unwrap_or_else(|e| log::warn!("Failed to upload lights: {e}"));
+            let rt_flag = if self.device_caps.ray_query_supported { 1.0 } else { 0.0 };
             let camera = scene_buffer::GpuCamera {
                 position: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
-                flags: [0.0, 0.0, 0.0, 0.0], // RT disabled for Phase A
+                flags: [rt_flag, 0.0, 0.0, 0.0],
             };
             self.scene_buffers.upload_camera(frame, &camera)
                 .unwrap_or_else(|e| log::warn!("Failed to upload camera: {e}"));
@@ -609,6 +651,19 @@ impl VulkanContext {
         Ok(suboptimal || present_suboptimal)
     }
 
+    /// Build a BLAS for a mesh (RT only). Call after uploading a mesh.
+    pub fn build_blas_for_mesh(&mut self, mesh_handle: u32, vertex_count: u32, index_count: u32) {
+        let Some(ref mut accel) = self.accel_manager else { return };
+        let Some(mesh) = self.mesh_registry.get(mesh_handle) else { return };
+        let allocator = self.allocator.as_ref().expect("allocator missing");
+        if let Err(e) = accel.build_blas(
+            &self.device, allocator, &self.graphics_queue, self.command_pool,
+            mesh_handle, mesh, vertex_count, index_count,
+        ) {
+            log::warn!("BLAS build failed for mesh {}: {e}", mesh_handle);
+        }
+    }
+
     /// Register the fullscreen quad mesh for UI overlay rendering.
     /// Call this once after creating the context.
     pub fn register_ui_quad(&mut self) -> Result<()> {
@@ -621,6 +676,7 @@ impl VulkanContext {
             self.command_pool,
             &vertices,
             &indices,
+            false, // UI quad doesn't need RT
         )?;
         self.ui_quad_handle = Some(handle);
         log::info!("UI fullscreen quad registered (mesh handle {})", handle);
@@ -775,10 +831,13 @@ impl Drop for VulkanContext {
             for &fb in &self.framebuffers {
                 self.device.destroy_framebuffer(fb, None);
             }
-            // Destroy texture registry (all textures + descriptor pool/layout).
+            // Destroy texture registry, scene buffers, and acceleration structures.
             if let Some(ref alloc) = self.allocator {
                 self.texture_registry.destroy(&self.device, alloc);
                 self.scene_buffers.destroy(&self.device, alloc);
+                if let Some(ref mut accel) = self.accel_manager {
+                    accel.destroy(&self.device, alloc);
+                }
             }
 
             // Destroy depth resources before the allocator.

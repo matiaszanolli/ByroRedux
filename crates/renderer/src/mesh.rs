@@ -43,11 +43,12 @@ impl MeshRegistry {
         command_pool: vk::CommandPool,
         vertices: &[Vertex],
         indices: &[u32],
+        rt_enabled: bool,
     ) -> Result<u32> {
         let vertex_buffer =
-            GpuBuffer::create_vertex_buffer(device, allocator, queue, command_pool, vertices)?;
+            GpuBuffer::create_vertex_buffer(device, allocator, queue, command_pool, vertices, rt_enabled)?;
         let index_buffer =
-            GpuBuffer::create_index_buffer(device, allocator, queue, command_pool, indices)?;
+            GpuBuffer::create_index_buffer(device, allocator, queue, command_pool, indices, rt_enabled)?;
         let index_count = indices.len() as u32;
 
         let id = self.meshes.len() as u32;

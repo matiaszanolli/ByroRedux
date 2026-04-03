@@ -1,4 +1,5 @@
-#version 450
+#version 460
+#extension GL_EXT_ray_query : enable
 
 layout(location = 0) in vec3 fragColor;
 layout(location = 1) in vec2 fragUV;
@@ -23,14 +24,17 @@ layout(std430, set = 1, binding = 0) readonly buffer LightBuffer {
 
 layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 cameraPos;   // xyz = world position
-    vec4 sceneFlags;  // x = RT enabled, yzw = reserved
+    vec4 sceneFlags;  // x = RT enabled (1.0), yzw = reserved
 };
+
+layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
 
 void main() {
     vec4 texColor = texture(texSampler, fragUV);
     vec3 normal = normalize(fragNormal);
+    bool rtEnabled = sceneFlags.x > 0.5;
 
-    // Ambient base — minimal so unlit areas aren't fully black.
+    // Ambient base.
     vec3 totalLight = vec3(0.05);
 
     if (lightCount == 0) {
@@ -45,40 +49,59 @@ void main() {
             vec3 lightColor = lights[i].color_type.rgb;
             float lightType = lights[i].color_type.w;
 
+            vec3 toLight;
+            float dist;
+            vec3 lightDir;
+            float atten;
+
             if (lightType < 0.5) {
                 // Point light.
-                vec3 toLight = lightPos - fragWorldPos;
-                float dist = length(toLight);
-                vec3 lightDir = toLight / max(dist, 0.001);
-
-                // Attenuation: smooth falloff within radius.
-                float atten = clamp(1.0 - dist / max(radius, 0.001), 0.0, 1.0);
-                atten *= atten; // Quadratic falloff.
-
-                float NdotL = max(dot(normal, lightDir), 0.0);
-                totalLight += lightColor * NdotL * atten;
+                toLight = lightPos - fragWorldPos;
+                dist = length(toLight);
+                lightDir = toLight / max(dist, 0.001);
+                atten = clamp(1.0 - dist / max(radius, 0.001), 0.0, 1.0);
+                atten *= atten;
             } else if (lightType < 1.5) {
-                // Spot light (not yet used, placeholder).
-                vec3 toLight = lightPos - fragWorldPos;
-                float dist = length(toLight);
-                vec3 lightDir = toLight / max(dist, 0.001);
+                // Spot light.
+                toLight = lightPos - fragWorldPos;
+                dist = length(toLight);
+                lightDir = toLight / max(dist, 0.001);
                 vec3 spotDir = normalize(lights[i].direction_angle.xyz);
                 float spotAngle = lights[i].direction_angle.w;
-
-                float atten = clamp(1.0 - dist / max(radius, 0.001), 0.0, 1.0);
+                atten = clamp(1.0 - dist / max(radius, 0.001), 0.0, 1.0);
                 atten *= atten;
-
                 float spotFactor = dot(-lightDir, spotDir);
-                spotFactor = clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
-
-                float NdotL = max(dot(normal, lightDir), 0.0);
-                totalLight += lightColor * NdotL * atten * spotFactor;
+                atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
             } else {
                 // Directional light.
-                vec3 lightDir = normalize(lights[i].direction_angle.xyz);
-                float NdotL = max(dot(normal, lightDir), 0.0);
-                totalLight += lightColor * NdotL;
+                lightDir = normalize(lights[i].direction_angle.xyz);
+                dist = 10000.0;
+                atten = 1.0;
             }
+
+            float NdotL = max(dot(normal, lightDir), 0.0);
+
+            // RT shadow ray (when enabled).
+            float shadow = 1.0;
+            if (rtEnabled && NdotL > 0.0) {
+                rayQueryEXT rayQuery;
+                rayQueryInitializeEXT(
+                    rayQuery,
+                    topLevelAS,
+                    gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+                    0xFF,
+                    fragWorldPos + normal * 0.05,  // bias to avoid self-intersection
+                    0.001,                          // tmin
+                    lightDir,                       // direction
+                    dist - 0.1                      // tmax
+                );
+                rayQueryProceedEXT(rayQuery);
+                if (rayQueryGetIntersectionTypeEXT(rayQuery, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+                    shadow = 0.0;
+                }
+            }
+
+            totalLight += lightColor * NdotL * atten * shadow;
         }
     }
 

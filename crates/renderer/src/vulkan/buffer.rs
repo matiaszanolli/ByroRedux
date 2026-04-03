@@ -19,41 +19,55 @@ pub struct GpuBuffer {
 
 impl GpuBuffer {
     /// Create a vertex buffer in DEVICE_LOCAL memory via staging upload.
+    /// When `rt_enabled` is true, adds usage flags needed for BLAS builds.
     pub fn create_vertex_buffer<T: Copy>(
         device: &ash::Device,
         allocator: &SharedAllocator,
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
         data: &[T],
+        rt_enabled: bool,
     ) -> Result<Self> {
         let size = (std::mem::size_of::<T>() * data.len()) as vk::DeviceSize;
+        let mut usage = vk::BufferUsageFlags::VERTEX_BUFFER;
+        if rt_enabled {
+            usage |= vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
+        }
         Self::create_device_local_buffer(
             device,
             allocator,
             queue,
             command_pool,
             size,
-            vk::BufferUsageFlags::VERTEX_BUFFER,
+            usage,
             data,
         )
     }
 
     /// Create an index buffer in DEVICE_LOCAL memory via staging upload.
+    /// When `rt_enabled` is true, adds usage flags needed for BLAS builds.
     pub fn create_index_buffer(
         device: &ash::Device,
         allocator: &SharedAllocator,
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
         data: &[u32],
+        rt_enabled: bool,
     ) -> Result<Self> {
         let size = (std::mem::size_of::<u32>() * data.len()) as vk::DeviceSize;
+        let mut usage = vk::BufferUsageFlags::INDEX_BUFFER;
+        if rt_enabled {
+            usage |= vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
+        }
         Self::create_device_local_buffer(
             device,
             allocator,
             queue,
             command_pool,
             size,
-            vk::BufferUsageFlags::INDEX_BUFFER,
+            usage,
             data,
         )
     }

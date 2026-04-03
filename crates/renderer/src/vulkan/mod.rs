@@ -1,3 +1,4 @@
+pub mod acceleration;
 pub mod allocator;
 pub mod buffer;
 pub mod context;

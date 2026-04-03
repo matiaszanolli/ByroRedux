@@ -17,6 +17,7 @@ pub fn create_allocator(
     instance: &ash::Instance,
     device: &ash::Device,
     physical_device: ash::vk::PhysicalDevice,
+    buffer_device_address: bool,
 ) -> Result<SharedAllocator> {
     let allocator = vulkan::Allocator::new(&vulkan::AllocatorCreateDesc {
         instance: instance.clone(),
@@ -27,7 +28,7 @@ pub fn create_allocator(
             log_leaks_on_shutdown: true,
             ..Default::default()
         },
-        buffer_device_address: false,
+        buffer_device_address,
         allocation_sizes: Default::default(),
     })
     .context("Failed to create GPU allocator")?;
