@@ -5,7 +5,7 @@
 
 use crate::ecs::resource::Resource;
 use crate::ecs::sparse_set::SparseSetStorage;
-use crate::ecs::storage::Component;
+use crate::ecs::storage::{Component, EntityId};
 use crate::math::{Quat, Vec3};
 use std::collections::HashMap;
 
@@ -210,6 +210,9 @@ pub struct AnimationPlayer {
     pub speed: f32,
     /// Tracks ping-pong direction for CycleType::Reverse.
     pub reverse_direction: bool,
+    /// Root entity of the subtree to animate. When set, name lookups are
+    /// scoped to this entity's descendants only (no global name collisions).
+    pub root_entity: Option<EntityId>,
 }
 
 impl AnimationPlayer {
@@ -220,7 +223,14 @@ impl AnimationPlayer {
             playing: true,
             speed: 1.0,
             reverse_direction: false,
+            root_entity: None,
         }
+    }
+
+    /// Create a player scoped to a specific entity subtree.
+    pub fn with_root(mut self, root: EntityId) -> Self {
+        self.root_entity = Some(root);
+        self
     }
 }
 
@@ -297,11 +307,13 @@ impl AnimationLayer {
 /// priority level, weighted average is computed. Higher priority overrides lower.
 pub struct AnimationStack {
     pub layers: Vec<AnimationLayer>,
+    /// Root entity of the subtree to animate (scoped name lookup).
+    pub root_entity: Option<EntityId>,
 }
 
 impl AnimationStack {
     pub fn new() -> Self {
-        Self { layers: Vec::new() }
+        Self { layers: Vec::new(), root_entity: None }
     }
 
     /// Play a clip, optionally cross-fading from the current top layer.

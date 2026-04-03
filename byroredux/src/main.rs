@@ -193,11 +193,23 @@ fn animation_system(world: &World, dt: f32) {
         let player = player_query.get_mut(entity).unwrap();
 
         let clip_handle = player.clip_handle;
+        let root_entity_opt = player.root_entity;
         let Some(clip) = registry.get(clip_handle) else { continue };
 
         advance_time(player, clip, dt);
         let current_time = player.local_time;
         drop(player_query);
+
+        // Build scoped or global name→entity lookup.
+        let scoped_map = root_entity_opt.map(|root| build_subtree_name_map(world, root));
+        let resolve_entity = |channel_name: &str| -> Option<EntityId> {
+            let sym = pool.get(channel_name)?;
+            if let Some(ref scoped) = scoped_map {
+                scoped.get(&sym).copied()
+            } else {
+                name_index.map.get(&sym).copied()
+            }
+        };
 
         // Apply transform channels.
         let is_accum_root = |name: &str| -> bool {
@@ -207,8 +219,7 @@ fn animation_system(world: &World, dt: f32) {
             let mut transform_query = world.query_mut::<Transform>().unwrap();
             let mut root_motion = Vec3::ZERO;
             for (channel_name, channel) in &clip.channels {
-                let Some(sym) = pool.get(channel_name) else { continue };
-                let Some(&target_entity) = name_index.map.get(&sym) else { continue };
+                let Some(target_entity) = resolve_entity(channel_name) else { continue };
                 let Some(transform) = transform_query.get_mut(target_entity) else {
                     continue;
                 };
@@ -243,8 +254,7 @@ fn animation_system(world: &World, dt: f32) {
 
         // Apply float channels (alpha, UV params, shader floats).
         for (channel_name, channel) in &clip.float_channels {
-            let Some(sym) = pool.get(channel_name) else { continue };
-            let Some(&target_entity) = name_index.map.get(&sym) else { continue };
+            let Some(target_entity) = resolve_entity(channel_name) else { continue };
             let value = sample_float_channel(channel, current_time);
             if channel.target == FloatTarget::Alpha {
                 if let Some(mut aq) = world.query_mut::<AnimatedAlpha>() {
@@ -263,8 +273,7 @@ fn animation_system(world: &World, dt: f32) {
 
         // Apply color channels.
         for (channel_name, channel) in &clip.color_channels {
-            let Some(sym) = pool.get(channel_name) else { continue };
-            let Some(&target_entity) = name_index.map.get(&sym) else { continue };
+            let Some(target_entity) = resolve_entity(channel_name) else { continue };
             let value = sample_color_channel(channel, current_time);
             if let Some(mut cq) = world.query_mut::<AnimatedColor>() {
                 if let Some(c) = cq.get_mut(target_entity) {
@@ -275,8 +284,7 @@ fn animation_system(world: &World, dt: f32) {
 
         // Apply bool (visibility) channels.
         for (channel_name, channel) in &clip.bool_channels {
-            let Some(sym) = pool.get(channel_name) else { continue };
-            let Some(&target_entity) = name_index.map.get(&sym) else { continue };
+            let Some(target_entity) = resolve_entity(channel_name) else { continue };
             let value = sample_bool_channel(channel, current_time);
             if let Some(mut vq) = world.query_mut::<AnimatedVisibility>() {
                 if let Some(v) = vq.get_mut(target_entity) {
@@ -303,6 +311,17 @@ fn animation_system(world: &World, dt: f32) {
         let sq = world.query::<AnimationStack>().unwrap();
         let stack = sq.get(entity).unwrap();
 
+        // Scoped name lookup for stacks.
+        let stack_scoped_map = stack.root_entity.map(|root| build_subtree_name_map(world, root));
+        let stack_resolve = |channel_name: &str| -> Option<EntityId> {
+            let sym = pool.get(channel_name)?;
+            if let Some(ref scoped) = stack_scoped_map {
+                scoped.get(&sym).copied()
+            } else {
+                name_index.map.get(&sym).copied()
+            }
+        };
+
         // Collect all channel names across all active layers.
         let mut channel_names: Vec<&str> = Vec::new();
         for layer in &stack.layers {
@@ -317,8 +336,7 @@ fn animation_system(world: &World, dt: f32) {
 
         let mut updates: Vec<(EntityId, Vec3, Quat, f32)> = Vec::new();
         for channel_name in &channel_names {
-            let Some(sym) = pool.get(channel_name) else { continue };
-            let Some(&target_entity) = name_index.map.get(&sym) else { continue };
+            let Some(target_entity) = stack_resolve(channel_name) else { continue };
             if let Some((pos, rot, scale)) = sample_blended_transform(stack, &registry, channel_name) {
                 updates.push((target_entity, pos, rot, scale));
             }
@@ -529,6 +547,7 @@ impl App {
         let args: Vec<String> = std::env::args().collect();
         let mut cam_center = Vec3::ZERO;
         let mut has_nif_content = false;
+        let mut nif_root: Option<EntityId> = None;
 
         // Cell loading mode: --esm <path> --cell <editor_id> OR --wrld <name> --grid <x>,<y>
         if let Some(esm_idx) = args.iter().position(|a| a == "--esm") {
@@ -564,8 +583,9 @@ impl App {
             }
         } else {
             // NIF loading mode: loose file or BSA extraction.
-            let (nif_count, nif_root) = load_nif_from_args(&mut self.world, ctx);
+            let (nif_count, loaded_root) = load_nif_from_args(&mut self.world, ctx);
             has_nif_content = nif_count > 0;
+            nif_root = loaded_root;
         }
 
         // Animation: --kf <path> loads a .kf file and starts playback.
