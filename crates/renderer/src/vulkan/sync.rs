@@ -7,11 +7,16 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 /// Per-frame synchronization objects.
 ///
-/// Semaphores are indexed by swapchain image (not frame-in-flight) to
-/// avoid reusing a semaphore that the present engine still holds.
-/// Fences are indexed by frame-in-flight for CPU-side throttling.
+/// `image_available` semaphores are per frame-in-flight — one is signaled
+/// per `acquire_next_image` call and waited on by the same frame's submit.
+///
+/// `render_finished` semaphores are per swapchain image — signaled when
+/// rendering to that image finishes, waited on by the present engine.
+/// Indexing per-image avoids reusing a semaphore the present engine still holds.
+///
+/// Fences are per frame-in-flight for CPU-side throttling.
 pub struct FrameSync {
-    /// One per swapchain image — signaled when image is acquired.
+    /// One per frame-in-flight — signaled when an image is acquired.
     pub image_available: Vec<vk::Semaphore>,
     /// One per swapchain image — signaled when rendering to that image finishes.
     pub render_finished: Vec<vk::Semaphore>,
@@ -20,8 +25,6 @@ pub struct FrameSync {
     /// Maps swapchain image index → which in_flight fence was last used.
     /// Prevents submitting work for an image that's still being rendered.
     pub images_in_flight: Vec<vk::Fence>,
-    /// Number of semaphores (= swapchain image count).
-    semaphore_count: usize,
 }
 
 pub fn create_sync_objects(
@@ -31,16 +34,22 @@ pub fn create_sync_objects(
     let semaphore_info = vk::SemaphoreCreateInfo::default();
     let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
 
-    // One semaphore pair per swapchain image.
-    let mut image_available = Vec::with_capacity(swapchain_image_count);
-    let mut render_finished = Vec::with_capacity(swapchain_image_count);
-    for _ in 0..swapchain_image_count {
+    // One acquire semaphore per frame-in-flight.
+    let mut image_available = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    for _ in 0..MAX_FRAMES_IN_FLIGHT {
         unsafe {
             image_available.push(
                 device
                     .create_semaphore(&semaphore_info, None)
                     .context("Failed to create image_available semaphore")?,
             );
+        }
+    }
+
+    // One render-finished semaphore per swapchain image.
+    let mut render_finished = Vec::with_capacity(swapchain_image_count);
+    for _ in 0..swapchain_image_count {
+        unsafe {
             render_finished.push(
                 device
                     .create_semaphore(&semaphore_info, None)
@@ -74,22 +83,54 @@ pub fn create_sync_objects(
         render_finished,
         in_flight,
         images_in_flight,
-        semaphore_count: swapchain_image_count,
     })
 }
 
 impl FrameSync {
-    pub fn reset_image_fences(&mut self, swapchain_image_count: usize) {
+    /// Recreate per-image sync state for a new swapchain image count.
+    ///
+    /// Destroys and recreates `render_finished` semaphores and resets
+    /// `images_in_flight` tracking. Must be called after `device_wait_idle`
+    /// to ensure no semaphore is in use.
+    pub unsafe fn recreate_for_swapchain(
+        &mut self,
+        device: &ash::Device,
+        swapchain_image_count: usize,
+    ) -> Result<()> {
+        // Destroy old per-image semaphores.
+        for &sem in &self.render_finished {
+            device.destroy_semaphore(sem, None);
+        }
+
+        // Create new ones matching the new image count.
+        let semaphore_info = vk::SemaphoreCreateInfo::default();
+        let mut render_finished = Vec::with_capacity(swapchain_image_count);
+        for _ in 0..swapchain_image_count {
+            render_finished.push(
+                device
+                    .create_semaphore(&semaphore_info, None)
+                    .context("Failed to create render_finished semaphore")?,
+            );
+        }
+        self.render_finished = render_finished;
         self.images_in_flight = vec![vk::Fence::null(); swapchain_image_count];
+
+        log::info!(
+            "Sync objects recreated for {} swapchain images",
+            swapchain_image_count,
+        );
+        Ok(())
     }
 
     pub unsafe fn destroy(&self, device: &ash::Device) {
-        for i in 0..self.semaphore_count {
-            device.destroy_semaphore(self.image_available[i], None);
-            device.destroy_semaphore(self.render_finished[i], None);
+        for &sem in &self.image_available {
+            device.destroy_semaphore(sem, None);
         }
-        for i in 0..MAX_FRAMES_IN_FLIGHT {
-            device.destroy_fence(self.in_flight[i], None);
+        for &sem in &self.render_finished {
+            device.destroy_semaphore(sem, None);
+        }
+        for &fence in &self.in_flight {
+            device.destroy_fence(fence, None);
         }
     }
 }

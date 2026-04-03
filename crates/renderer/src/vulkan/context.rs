@@ -592,7 +592,7 @@ impl VulkanContext {
             self.device.device_wait_idle().context("device_wait_idle")?;
         }
 
-        // Destroy old framebuffers, depth resources, render pass, swapchain views.
+        // Destroy old framebuffers, depth resources, swapchain views.
         unsafe {
             for &fb in &self.framebuffers {
                 self.device.destroy_framebuffer(fb, None);
@@ -609,6 +609,13 @@ impl VulkanContext {
                     .expect("Failed to free depth allocation");
             }
             self.device.destroy_image(self.depth_image, None);
+
+            // Destroy old pipelines before the render pass they reference.
+            self.device.destroy_pipeline(self.pipeline, None);
+            self.device.destroy_pipeline(self.pipeline_alpha, None);
+            self.device.destroy_pipeline(self.pipeline_two_sided, None);
+            self.device.destroy_pipeline(self.pipeline_alpha_two_sided, None);
+            self.device.destroy_pipeline(self.pipeline_ui, None);
 
             self.device.destroy_render_pass(self.render_pass, None);
             self.swapchain_state.destroy(&self.device);
@@ -636,6 +643,37 @@ impl VulkanContext {
         self.render_pass =
             create_render_pass(&self.device, self.swapchain_state.format.format)?;
 
+        // Recreate pipelines against the new render pass.
+        let pipelines = pipeline::create_triangle_pipeline(
+            &self.device,
+            self.render_pass,
+            self.swapchain_state.extent,
+            self.texture_registry.descriptor_set_layout,
+        )?;
+        // Pipeline layout and shader modules are unchanged — destroy the
+        // redundant copies that create_triangle_pipeline just created.
+        unsafe {
+            self.device.destroy_pipeline_layout(pipelines.layout, None);
+            self.device.destroy_shader_module(pipelines.vert_module, None);
+            self.device.destroy_shader_module(pipelines.frag_module, None);
+        }
+        self.pipeline = pipelines.opaque;
+        self.pipeline_alpha = pipelines.alpha;
+        self.pipeline_two_sided = pipelines.opaque_two_sided;
+        self.pipeline_alpha_two_sided = pipelines.alpha_two_sided;
+
+        let (new_ui_pipeline, ui_vert, ui_frag) = pipeline::create_ui_pipeline(
+            &self.device,
+            self.render_pass,
+            self.swapchain_state.extent,
+            self.pipeline_layout,
+        )?;
+        unsafe {
+            self.device.destroy_shader_module(ui_vert, None);
+            self.device.destroy_shader_module(ui_frag, None);
+        }
+        self.pipeline_ui = new_ui_pipeline;
+
         // Recreate descriptor sets for existing textures (new swapchain image count).
         self.texture_registry.recreate_descriptor_sets(
             &self.device,
@@ -660,9 +698,11 @@ impl VulkanContext {
             self.swapchain_state.images.len(),
         )?;
 
-        // Reset per-image fence tracking for the new swapchain.
-        self.frame_sync
-            .reset_image_fences(self.swapchain_state.images.len());
+        // Recreate per-image semaphores and fence tracking for the new swapchain.
+        unsafe {
+            self.frame_sync
+                .recreate_for_swapchain(&self.device, self.swapchain_state.images.len())?;
+        }
 
         log::info!(
             "Swapchain recreated: {}x{}",
