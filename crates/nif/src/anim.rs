@@ -162,6 +162,9 @@ pub struct AnimationClip {
     pub frequency: f32,
     /// Default weight from NiControllerSequence (0.0–1.0).
     pub weight: f32,
+    /// Accumulation root node name — horizontal translation on this node
+    /// is extracted as root motion delta rather than applied as animation.
+    pub accum_root_name: Option<String>,
     /// Map from node name to its transform animation channel.
     pub channels: HashMap<String, TransformChannel>,
     /// Float channels keyed by (node_name, target).
@@ -223,6 +226,7 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
     let cycle_type = CycleType::from_u32(seq.cycle_type);
     let frequency = seq.frequency;
     let weight = seq.weight;
+    let accum_root_name = seq.accum_root_name.clone();
     let mut channels = HashMap::new();
     let mut float_channels = Vec::new();
     let mut color_channels = Vec::new();
@@ -285,6 +289,7 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
         cycle_type,
         frequency,
         weight,
+        accum_root_name,
         channels,
         float_channels,
         color_channels,

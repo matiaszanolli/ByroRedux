@@ -7,8 +7,9 @@ use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::animation::{
     advance_stack, advance_time, sample_blended_transform,
     sample_bool_channel, sample_color_channel, sample_float_channel,
-    sample_rotation, sample_scale, sample_translation,
+    sample_rotation, sample_scale, sample_translation, split_root_motion,
     AnimationClip, AnimationClipRegistry, AnimationPlayer, AnimationStack,
+    RootMotionDelta,
     AnimBoolKey, AnimColorKey, AnimFloatKey,
     BoolChannel, ColorChannel, ColorTarget, CycleType, FloatChannel, FloatTarget, KeyType,
     RotationKey, ScaleKey, TransformChannel, TranslationKey,
@@ -199,8 +200,12 @@ fn animation_system(world: &World, dt: f32) {
         drop(player_query);
 
         // Apply transform channels.
+        let is_accum_root = |name: &str| -> bool {
+            clip.accum_root_name.as_deref() == Some(name)
+        };
         {
             let mut transform_query = world.query_mut::<Transform>().unwrap();
+            let mut root_motion = Vec3::ZERO;
             for (channel_name, channel) in &clip.channels {
                 let Some(sym) = pool.get(channel_name) else { continue };
                 let Some(&target_entity) = name_index.map.get(&sym) else { continue };
@@ -208,13 +213,30 @@ fn animation_system(world: &World, dt: f32) {
                     continue;
                 };
                 if let Some(pos) = sample_translation(channel, current_time) {
-                    transform.translation = pos;
+                    if is_accum_root(channel_name) {
+                        // Split: vertical → animation, horizontal → root motion delta.
+                        let (anim_pos, delta) = split_root_motion(pos);
+                        transform.translation = anim_pos;
+                        root_motion += delta;
+                    } else {
+                        transform.translation = pos;
+                    }
                 }
                 if let Some(rot) = sample_rotation(channel, current_time) {
                     transform.rotation = rot;
                 }
                 if let Some(scale) = sample_scale(channel, current_time) {
                     transform.scale = scale;
+                }
+            }
+            drop(transform_query);
+
+            // Write root motion delta to the player entity.
+            if root_motion != Vec3::ZERO {
+                if let Some(mut rmq) = world.query_mut::<RootMotionDelta>() {
+                    if let Some(rm) = rmq.get_mut(entity) {
+                        rm.0 = root_motion;
+                    }
                 }
             }
         }
@@ -1582,6 +1604,7 @@ fn convert_nif_clip(nif: &byroredux_nif::anim::AnimationClip) -> AnimationClip {
         cycle_type,
         frequency: nif.frequency,
         weight: nif.weight,
+        accum_root_name: nif.accum_root_name.clone(),
         channels,
         float_channels,
         color_channels,

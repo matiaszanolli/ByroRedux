@@ -144,6 +144,9 @@ pub struct AnimationClip {
     pub frequency: f32,
     /// Default weight from NiControllerSequence (0.0–1.0).
     pub weight: f32,
+    /// Accumulation root node name — horizontal translation on this node
+    /// is extracted as root motion delta rather than applied as animation.
+    pub accum_root_name: Option<String>,
     /// Map from node name to its transform animation channel.
     pub channels: HashMap<String, TransformChannel>,
     /// Float channels: (node_name, channel).
@@ -337,6 +340,28 @@ impl AnimationStack {
 
 impl Component for AnimationStack {
     type Storage = SparseSetStorage<Self>;
+}
+
+/// Per-frame root motion displacement extracted from the accumulation root node.
+///
+/// Horizontal (XZ) translation from the accum root's animation channel is stored
+/// here instead of being applied to the node's Transform. A character controller
+/// or physics system reads this to move the entity through the world.
+pub struct RootMotionDelta(pub Vec3);
+
+impl Component for RootMotionDelta {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// Extract root motion from a translation sample.
+///
+/// Returns (animation_translation, root_motion_delta):
+/// - animation_translation: vertical (Y) component preserved, horizontal zeroed
+/// - root_motion_delta: horizontal (XZ) components, vertical zeroed
+pub fn split_root_motion(translation: Vec3) -> (Vec3, Vec3) {
+    let anim = Vec3::new(0.0, translation.y, 0.0);
+    let delta = Vec3::new(translation.x, 0.0, translation.z);
+    (anim, delta)
 }
 
 /// Advance all layers in a stack, handling blend-in/out timing.
@@ -941,6 +966,7 @@ mod tests {
             cycle_type: CycleType::Loop,
             frequency: 1.0,
             weight: 1.0,
+            accum_root_name: None,
             channels: HashMap::new(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
@@ -962,6 +988,7 @@ mod tests {
             cycle_type: CycleType::Clamp,
             frequency: 1.0,
             weight: 1.0,
+            accum_root_name: None,
             channels: HashMap::new(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
@@ -980,6 +1007,7 @@ mod tests {
             cycle_type: CycleType::Reverse,
             frequency: 1.0,
             weight: 1.0,
+            accum_root_name: None,
             channels: HashMap::new(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
@@ -1006,6 +1034,7 @@ mod tests {
             cycle_type: CycleType::Loop,
             frequency: 1.0,
             weight: 1.0,
+            accum_root_name: None,
             channels: HashMap::new(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
