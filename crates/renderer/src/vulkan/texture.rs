@@ -590,6 +590,17 @@ impl Texture {
     }
 }
 
+impl Drop for Texture {
+    fn drop(&mut self) {
+        if self.allocation.is_some() {
+            log::warn!(
+                "Texture dropped without destroy() — VkImage, VkImageView, VkSampler, and GPU allocation leaked"
+            );
+            debug_assert!(false, "Texture leaked: call destroy() before dropping");
+        }
+    }
+}
+
 /// Execute a one-time-submit command buffer: allocate, record, submit, wait, free.
 ///
 /// The queue `Mutex` is locked only for the submit+wait, not during recording.

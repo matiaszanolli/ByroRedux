@@ -188,3 +188,14 @@ impl GpuBuffer {
         })
     }
 }
+
+impl Drop for GpuBuffer {
+    fn drop(&mut self) {
+        if self.allocation.is_some() {
+            log::warn!(
+                "GpuBuffer dropped without destroy() — VkBuffer and GPU allocation leaked"
+            );
+            debug_assert!(false, "GpuBuffer leaked: call destroy() before dropping");
+        }
+    }
+}
