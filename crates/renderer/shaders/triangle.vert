@@ -18,6 +18,7 @@ void main() {
     gl_Position = pc.viewProj * pc.model * vec4(inPosition, 1.0);
     fragColor = inColor;
     fragUV = inUV;
-    // Transform normal by model matrix (upper 3x3, ignoring translation)
-    fragNormal = mat3(pc.model) * inNormal;
+    // Transform normal by inverse-transpose of the model matrix upper 3x3.
+    // Correct for non-uniform scale (mat3(model) alone distorts normals).
+    fragNormal = transpose(inverse(mat3(pc.model))) * inNormal;
 }
