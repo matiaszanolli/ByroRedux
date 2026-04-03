@@ -56,6 +56,8 @@ pub struct SceneBuffers {
     pub descriptor_set_layout: vk::DescriptorSetLayout,
     /// One descriptor set per frame-in-flight.
     pub descriptor_sets: Vec<vk::DescriptorSet>,
+    /// Tracks whether the TLAS binding has been written for each frame.
+    pub tlas_written: Vec<bool>,
 }
 
 impl SceneBuffers {
@@ -192,6 +194,7 @@ impl SceneBuffers {
             descriptor_pool,
             descriptor_set_layout,
             descriptor_sets,
+            tlas_written: vec![false; MAX_FRAMES_IN_FLIGHT],
         })
     }
 
@@ -243,11 +246,12 @@ impl SceneBuffers {
 
     /// Update the TLAS acceleration structure in the descriptor set for a given frame.
     pub fn write_tlas(
-        &self,
+        &mut self,
         device: &ash::Device,
         frame_index: usize,
         tlas: vk::AccelerationStructureKHR,
     ) {
+        self.tlas_written[frame_index] = true;
         let accel_structs = [tlas];
         let mut accel_write = vk::WriteDescriptorSetAccelerationStructureKHR::default()
             .acceleration_structures(&accel_structs);

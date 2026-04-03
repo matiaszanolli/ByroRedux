@@ -177,9 +177,29 @@ impl VulkanContext {
         // 12. Scene buffers (light SSBO + camera UBO + optional TLAS, descriptor set 1)
         let scene_buffers = scene_buffer::SceneBuffers::new(&device, &gpu_allocator, device_caps.ray_query_supported)?;
 
-        // 12b. Acceleration manager (RT only)
+        // 12b. Acceleration manager (RT only) — build empty TLAS so descriptors are valid
+        let mut scene_buffers = scene_buffers;
         let accel_manager = if device_caps.ray_query_supported {
-            Some(AccelerationManager::new(&vk_instance, &device))
+            let mut accel = AccelerationManager::new(&vk_instance, &device);
+            // Build an empty TLAS via one-time command buffer so all descriptor sets
+            // have a valid acceleration structure from frame 0.
+            {
+                let empty_draws: Vec<DrawCommand> = Vec::new();
+                super::texture::with_one_time_commands(
+                    &device,
+                    &graphics_queue,
+                    command_pool,
+                    |cmd| unsafe {
+                        let _ = accel.build_tlas(&device, &gpu_allocator, cmd, &empty_draws);
+                    },
+                )?;
+                if let Some(tlas_handle) = accel.tlas_handle() {
+                    for f in 0..MAX_FRAMES_IN_FLIGHT {
+                        scene_buffers.write_tlas(&device, f, tlas_handle);
+                    }
+                }
+            }
+            Some(accel)
         } else {
             None
         };
@@ -377,12 +397,10 @@ impl VulkanContext {
                             &[],
                             &[],
                         );
-                        // Write TLAS to ALL frame descriptor sets (both frames-in-flight
-                        // share the same TLAS object, and each set must be initialized).
+                        // Write TLAS to this frame's descriptor set. Only safe to update
+                        // the current frame's set (the fence guarantees it's not pending).
                         if let Some(tlas_handle) = accel.tlas_handle() {
-                            for f in 0..MAX_FRAMES_IN_FLIGHT {
-                                self.scene_buffers.write_tlas(&self.device, f, tlas_handle);
-                            }
+                            self.scene_buffers.write_tlas(&self.device, frame, tlas_handle);
                         }
                     }
                 }
@@ -438,7 +456,8 @@ impl VulkanContext {
             // Upload scene data (lights + camera) and bind descriptor set 1.
             self.scene_buffers.upload_lights(frame, lights)
                 .unwrap_or_else(|e| log::warn!("Failed to upload lights: {e}"));
-            let rt_flag = if self.device_caps.ray_query_supported { 1.0 } else { 0.0 };
+            let rt_flag = if self.device_caps.ray_query_supported
+                && self.scene_buffers.tlas_written[frame] { 1.0 } else { 0.0 };
             let camera = scene_buffer::GpuCamera {
                 position: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
                 flags: [rt_flag, 0.0, 0.0, 0.0],
