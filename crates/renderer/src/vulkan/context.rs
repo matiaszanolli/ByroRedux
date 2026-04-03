@@ -765,8 +765,16 @@ impl Drop for VulkanContext {
             // Allocator which we drop — running its cleanup while the device
             // is still alive.
             if let Some(alloc_arc) = self.allocator.take() {
-                if let Ok(mutex) = std::sync::Arc::try_unwrap(alloc_arc) {
-                    drop(mutex.into_inner().expect("allocator lock poisoned"));
+                match std::sync::Arc::try_unwrap(alloc_arc) {
+                    Ok(mutex) => drop(mutex.into_inner().expect("allocator lock poisoned")),
+                    Err(arc) => {
+                        log::error!(
+                            "GPU allocator has {} outstanding references — \
+                             leaking allocator to avoid use-after-free on device destroy",
+                            std::sync::Arc::strong_count(&arc),
+                        );
+                        debug_assert!(false, "GPU allocator leaked: outstanding Arc references");
+                    }
                 }
             }
             self.device.destroy_device(None);
