@@ -92,6 +92,9 @@ impl VulkanContext {
         window_size: [u32; 2],
     ) -> Result<Self> {
         // 1. Entry
+        // SAFETY: Loads the Vulkan shared library (libvulkan.so / vulkan-1.dll).
+        // Must be called before any other Vulkan function. The Entry must
+        // outlive all objects created through it (guaranteed by struct field order).
         let entry = unsafe { ash::Entry::load().context("Failed to load Vulkan loader")? };
         log::info!("Vulkan loader ready");
 
@@ -360,6 +363,8 @@ impl VulkanContext {
             self.device.cmd_set_scissor(cmd, 0, &scissors);
 
             // Push viewProj matrix (first 64 bytes of push constants).
+            // SAFETY: [f32; 16] is 64 bytes, properly aligned, and the
+            // reference is valid for the duration of cmd_push_constants.
             let view_proj_bytes: &[u8] = std::slice::from_raw_parts(
                 view_proj.as_ptr() as *const u8,
                 64,
@@ -415,6 +420,8 @@ impl VulkanContext {
                     }
 
                     // Push model matrix (bytes 64..128).
+                    // SAFETY: [f32; 16] is 64 bytes, properly aligned, and the
+                    // reference is valid for the duration of cmd_push_constants.
                     let model_bytes: &[u8] = std::slice::from_raw_parts(
                         draw_cmd.model_matrix.as_ptr() as *const u8,
                         64,
@@ -472,6 +479,8 @@ impl VulkanContext {
                         0.0, 0.0, 1.0, 0.0,
                         0.0, 0.0, 0.0, 1.0,
                     ];
+                    // SAFETY: [f32; 16] is 64 bytes, properly aligned, and the
+                    // reference is valid for the duration of cmd_push_constants.
                     let identity_bytes: &[u8] = std::slice::from_raw_parts(
                         identity.as_ptr() as *const u8,
                         64,
@@ -715,6 +724,9 @@ impl VulkanContext {
 
 impl Drop for VulkanContext {
     fn drop(&mut self) {
+        // SAFETY: device_wait_idle ensures all GPU work is complete before
+        // destroying resources. Destruction follows reverse-creation order
+        // to satisfy Vulkan object lifetime requirements.
         unsafe {
             let _ = self.device.device_wait_idle();
 

@@ -64,6 +64,9 @@ impl GpuBuffer {
             .mapped_slice_mut()
             .context("Buffer memory is not mapped")?;
 
+        // SAFETY: T: Copy guarantees no padding/drop concerns. The pointer is
+        // valid and aligned (from a live slice), and size_of_val gives the
+        // exact byte length. The borrow is bounded by this function scope.
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
         };
