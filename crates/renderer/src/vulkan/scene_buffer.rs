@@ -32,7 +32,7 @@ pub struct GpuLight {
 pub struct GpuCamera {
     /// xyz = world position, w = unused.
     pub position: [f32; 4],
-    /// x = 1.0 if RT shadows enabled, yzw = reserved.
+    /// x = RT enabled (1.0), y/z/w = ambient light color (RGB).
     pub flags: [f32; 4],
 }
 

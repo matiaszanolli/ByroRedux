@@ -20,6 +20,8 @@ pub struct CellLoadResult {
     pub mesh_count: usize,
     /// Bounding box center of all placed objects (Y-up, for camera positioning).
     pub center: Vec3,
+    /// Interior cell lighting (ambient + directional).
+    pub lighting: Option<byroredux_plugin::esm::cell::CellLighting>,
 }
 
 /// Load an interior cell by editor ID.
@@ -65,11 +67,14 @@ pub fn load_cell(
         &cell.editor_id,
     );
 
+    log::info!("Cell lighting: {:?}", cell.lighting);
+
     Ok(CellLoadResult {
         cell_name: cell.editor_id.clone(),
         entity_count: result.entity_count,
         mesh_count: result.mesh_count,
         center: result.center,
+        lighting: cell.lighting.clone(),
     })
 }
 
@@ -145,6 +150,7 @@ pub fn load_exterior_cells(
         entity_count: result.entity_count,
         mesh_count: result.mesh_count,
         center: result.center,
+        lighting: None,
     })
 }
 

@@ -24,7 +24,7 @@ layout(std430, set = 1, binding = 0) readonly buffer LightBuffer {
 
 layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 cameraPos;   // xyz = world position
-    vec4 sceneFlags;  // x = RT enabled (1.0), yzw = reserved
+    vec4 sceneFlags;  // x = RT enabled (1.0), yzw = ambient color (RGB)
 };
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
@@ -34,8 +34,8 @@ void main() {
     vec3 normal = normalize(fragNormal);
     bool rtEnabled = sceneFlags.x > 0.5;
 
-    // Ambient base — enough to see geometry in unlit corners.
-    vec3 totalLight = vec3(0.08);
+    // Ambient base from cell lighting (or default).
+    vec3 totalLight = sceneFlags.yzw;
 
     if (lightCount == 0) {
         // Fallback: single directional light when no lights are placed.

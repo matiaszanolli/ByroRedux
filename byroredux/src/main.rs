@@ -55,6 +55,15 @@ impl Component for TwoSided { type Storage = SparseSetStorage<Self>; }
 struct SystemList(Vec<String>);
 impl Resource for SystemList {}
 
+/// Cell lighting from the ESM (ambient + directional).
+struct CellLightingRes {
+    ambient: [f32; 3],
+    directional_color: [f32; 3],
+    /// Direction vector in Y-up space (computed from rotation).
+    directional_dir: [f32; 3],
+}
+impl Resource for CellLightingRes {}
+
 /// Cached name→entity mapping for the animation system.
 /// Rebuilt only when the entity count changes (no per-frame allocations).
 struct NameIndex {
@@ -562,6 +571,25 @@ impl App {
                     Ok(result) => {
                         cam_center = result.center;
                         has_nif_content = true;
+                        // Store cell lighting for the renderer.
+                        if let Some(ref lit) = result.lighting {
+                            let (rx, ry) = (lit.directional_rotation[0], lit.directional_rotation[1]);
+                            // Convert Euler XY rotation to direction vector (Z-up → Y-up).
+                            let dir_z_up = [
+                                ry.cos() * rx.cos(),
+                                ry.cos() * rx.sin(),
+                                -ry.sin(),
+                            ];
+                            // Z-up to Y-up: (x, y, z) → (x, z, -y)
+                            let dir = [dir_z_up[0], dir_z_up[2], -dir_z_up[1]];
+                            self.world.insert_resource(CellLightingRes {
+                                ambient: lit.ambient,
+                                directional_color: lit.directional_color,
+                                directional_dir: dir,
+                            });
+                            log::info!("Cell lighting: ambient={:?} directional={:?} dir={:?}",
+                                lit.ambient, lit.directional_color, dir);
+                        }
                         log::info!("Cell '{}' ready: {} entities", result.cell_name, result.entity_count);
                     }
                     Err(e) => log::error!("Failed to load cell: {:#}", e),
@@ -1188,7 +1216,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(ref mut ctx) = self.renderer {
-                    let (view_proj, draw_commands, gpu_lights, camera_pos) = build_render_data(&self.world);
+                    let (view_proj, draw_commands, gpu_lights, camera_pos, ambient) = build_render_data(&self.world);
 
                     // Record draw call count for diagnostics.
                     world_resource_set::<DebugStats>(&self.world, |s| {
@@ -1229,7 +1257,7 @@ impl ApplicationHandler for App {
                     }
 
                     let color = Color::CORNFLOWER_BLUE;
-                    match ctx.draw_frame(color.as_array(), &view_proj, &draw_commands, &gpu_lights, camera_pos, ui_tex) {
+                    match ctx.draw_frame(color.as_array(), &view_proj, &draw_commands, &gpu_lights, camera_pos, ambient, ui_tex) {
                         Ok(needs_recreate) => {
                             if needs_recreate {
                                 if let Some(ref win) = self.window {
@@ -1427,7 +1455,7 @@ fn build_command_registry() -> CommandRegistry {
 }
 
 /// Build the view-projection matrix and draw command list from ECS queries.
-fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>, Vec<byroredux_renderer::GpuLight>, [f32; 3]) {
+fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>, Vec<byroredux_renderer::GpuLight>, [f32; 3], [f32; 3]) {
     use byroredux_core::math::Mat4;
 
     // Get camera view-projection.
@@ -1499,6 +1527,17 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>, Vec<byrored
 
     // Collect lights from ECS.
     let mut gpu_lights = Vec::new();
+
+    // Add cell directional light (primary interior illumination).
+    if let Some(cell_lit) = world.try_resource::<CellLightingRes>() {
+        gpu_lights.push(byroredux_renderer::GpuLight {
+            position_radius: [0.0, 0.0, 0.0, 0.0],
+            color_type: [cell_lit.directional_color[0], cell_lit.directional_color[1], cell_lit.directional_color[2], 2.0], // 2 = directional
+            direction_angle: [cell_lit.directional_dir[0], cell_lit.directional_dir[1], cell_lit.directional_dir[2], 0.0],
+        });
+    }
+
+    // Add placed point lights from LIGH records.
     if let Some((tq, lq)) = world.query_2_mut::<GlobalTransform, LightSource>() {
         for (entity, light) in lq.iter() {
             if let Some(t) = tq.get(entity) {
@@ -1534,7 +1573,12 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>, Vec<byrored
         [0.0; 3]
     };
 
-    (view_proj, draw_commands, gpu_lights, camera_pos)
+    // Cell ambient color (or default).
+    let ambient = world.try_resource::<CellLightingRes>()
+        .map(|l| l.ambient)
+        .unwrap_or([0.08, 0.08, 0.08]);
+
+    (view_proj, draw_commands, gpu_lights, camera_pos, ambient)
 }
 
 /// Build a scoped name→entity map by walking the subtree rooted at `root`.

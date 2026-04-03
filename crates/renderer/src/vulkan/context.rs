@@ -290,6 +290,7 @@ impl VulkanContext {
         draw_commands: &[DrawCommand],
         lights: &[scene_buffer::GpuLight],
         camera_pos: [f32; 3],
+        ambient_color: [f32; 3],
         ui_texture_handle: Option<u32>,
     ) -> Result<bool> {
         let frame = self.current_frame;
@@ -460,7 +461,7 @@ impl VulkanContext {
                 && self.scene_buffers.tlas_written[frame] { 1.0 } else { 0.0 };
             let camera = scene_buffer::GpuCamera {
                 position: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
-                flags: [rt_flag, 0.0, 0.0, 0.0],
+                flags: [rt_flag, ambient_color[0], ambient_color[1], ambient_color[2]],
             };
             self.scene_buffers.upload_camera(frame, &camera)
                 .unwrap_or_else(|e| log::warn!("Failed to upload camera: {e}"));

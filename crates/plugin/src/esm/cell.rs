@@ -8,6 +8,17 @@ use super::reader::EsmReader;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
+/// Interior cell lighting from XCLL subrecord.
+#[derive(Debug, Clone)]
+pub struct CellLighting {
+    /// Ambient light color (RGB 0–1).
+    pub ambient: [f32; 3],
+    /// Directional light color (RGB 0–1).
+    pub directional_color: [f32; 3],
+    /// Directional light rotation (Euler XY in radians, converted to direction vector).
+    pub directional_rotation: [f32; 2],
+}
+
 /// A cell (interior or exterior) with its placed object references.
 #[derive(Debug)]
 pub struct CellData {
@@ -17,6 +28,8 @@ pub struct CellData {
     pub is_interior: bool,
     /// Grid coordinates for exterior cells (None for interior).
     pub grid: Option<(i32, i32)>,
+    /// Interior cell lighting (from XCLL subrecord).
+    pub lighting: Option<CellLighting>,
 }
 
 /// A placed object reference within a cell (REFR or ACHR).
@@ -165,11 +178,38 @@ fn parse_cell_group(
                 let subs = reader.read_sub_records(&header)?;
                 let mut editor_id = String::new();
                 let mut is_interior = false;
+                let mut lighting = None;
 
                 for sub in &subs {
                     match &sub.sub_type {
                         b"EDID" => editor_id = read_zstring(&sub.data),
                         b"DATA" if sub.data.len() >= 1 => is_interior = sub.data[0] & 1 != 0,
+                        b"XCLL" if sub.data.len() >= 36 => {
+                            // XCLL: ambient (RGBA 4 bytes) + directional (RGBA 4 bytes)
+                            //       + fog (RGBA 4 bytes) + fog near/far (2x f32)
+                            //       + directional rotation XY (2x i32 mapped to radians)
+                            //       + directional fade (f32)
+                            let ambient_r = sub.data[0] as f32 / 255.0;
+                            let ambient_g = sub.data[1] as f32 / 255.0;
+                            let ambient_b = sub.data[2] as f32 / 255.0;
+                            let dir_r = sub.data[4] as f32 / 255.0;
+                            let dir_g = sub.data[5] as f32 / 255.0;
+                            let dir_b = sub.data[6] as f32 / 255.0;
+                            // Directional rotation at bytes 24-31 (two i32 in hundredths of degrees)
+                            let rot_x = if sub.data.len() >= 28 {
+                                let raw = i32::from_le_bytes([sub.data[24], sub.data[25], sub.data[26], sub.data[27]]);
+                                (raw as f32 / 100.0).to_radians()
+                            } else { 0.0 };
+                            let rot_y = if sub.data.len() >= 32 {
+                                let raw = i32::from_le_bytes([sub.data[28], sub.data[29], sub.data[30], sub.data[31]]);
+                                (raw as f32 / 100.0).to_radians()
+                            } else { 0.0 };
+                            lighting = Some(CellLighting {
+                                ambient: [ambient_r, ambient_g, ambient_b],
+                                directional_color: [dir_r, dir_g, dir_b],
+                                directional_rotation: [rot_x, rot_y],
+                            });
+                        }
                         _ => {}
                     }
                 }
@@ -182,6 +222,7 @@ fn parse_cell_group(
                         references: Vec::new(),
                         is_interior: true,
                         grid: None,
+                        lighting: lighting.clone(),
                     });
                     current_cell = Some((header.form_id, editor_id));
                 } else {
@@ -380,6 +421,7 @@ fn parse_wrld_children(
                         references: Vec::new(),
                         is_interior: false,
                         grid: Some(g),
+                        lighting: None,
                     });
                     current_cell = Some(g);
                 } else {
