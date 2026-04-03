@@ -45,6 +45,8 @@ pub struct TransformChannel {
     pub rotation_type: KeyType,
     pub scale_keys: Vec<ScaleKey>,
     pub scale_type: KeyType,
+    /// Per-channel priority from ControlledBlock (0 = lowest).
+    pub priority: u8,
 }
 
 /// Translation keyframe in engine space (already converted from Z-up to Y-up).
@@ -158,6 +160,8 @@ pub struct AnimationClip {
     pub duration: f32,
     pub cycle_type: CycleType,
     pub frequency: f32,
+    /// Default weight from NiControllerSequence (0.0–1.0).
+    pub weight: f32,
     /// Map from node name to its transform animation channel.
     pub channels: HashMap<String, TransformChannel>,
     /// Float channels keyed by (node_name, target).
@@ -218,6 +222,7 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
     let duration = seq.stop_time - seq.start_time;
     let cycle_type = CycleType::from_u32(seq.cycle_type);
     let frequency = seq.frequency;
+    let weight = seq.weight;
     let mut channels = HashMap::new();
     let mut float_channels = Vec::new();
     let mut color_channels = Vec::new();
@@ -231,7 +236,8 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
 
         match controller_type {
             "NiTransformController" => {
-                if let Some(channel) = extract_transform_channel(scene, cb) {
+                if let Some(mut channel) = extract_transform_channel(scene, cb) {
+                    channel.priority = cb.priority;
                     channels.insert(node_name.clone(), channel);
                 }
             }
@@ -278,6 +284,7 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
         duration,
         cycle_type,
         frequency,
+        weight,
         channels,
         float_channels,
         color_channels,
@@ -305,6 +312,7 @@ fn extract_transform_channel(
         rotation_type,
         scale_keys,
         scale_type,
+        priority: 0, // Will be overwritten by import_sequence with cb.priority.
     })
 }
 

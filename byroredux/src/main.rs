@@ -5,9 +5,10 @@ mod cell_loader;
 use anyhow::Result;
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::animation::{
-    advance_time, sample_bool_channel, sample_color_channel, sample_float_channel,
+    advance_stack, advance_time, sample_blended_transform,
+    sample_bool_channel, sample_color_channel, sample_float_channel,
     sample_rotation, sample_scale, sample_translation,
-    AnimationClip, AnimationClipRegistry, AnimationPlayer,
+    AnimationClip, AnimationClipRegistry, AnimationPlayer, AnimationStack,
     AnimBoolKey, AnimColorKey, AnimFloatKey,
     BoolChannel, ColorChannel, ColorTarget, CycleType, FloatChannel, FloatTarget, KeyType,
     RotationKey, ScaleKey, TransformChannel, TranslationKey,
@@ -259,6 +260,56 @@ fn animation_system(world: &World, dt: f32) {
                 if let Some(v) = vq.get_mut(target_entity) {
                     v.0 = value;
                 }
+            }
+        }
+    }
+
+    // ── AnimationStack processing (multi-layer blending) ──────────────
+    let Some(stack_query) = world.query_mut::<AnimationStack>() else { return };
+    let stack_entities: Vec<_> = stack_query.iter().map(|(e, _)| e).collect();
+    drop(stack_query);
+
+    for entity in stack_entities {
+        // Advance all layers.
+        {
+            let mut sq = world.query_mut::<AnimationStack>().unwrap();
+            let stack = sq.get_mut(entity).unwrap();
+            advance_stack(stack, &registry, dt);
+        }
+
+        // Sample blended transforms for each channel name.
+        let sq = world.query::<AnimationStack>().unwrap();
+        let stack = sq.get(entity).unwrap();
+
+        // Collect all channel names across all active layers.
+        let mut channel_names: Vec<&str> = Vec::new();
+        for layer in &stack.layers {
+            if let Some(clip) = registry.get(layer.clip_handle) {
+                for name in clip.channels.keys() {
+                    channel_names.push(name.as_str());
+                }
+            }
+        }
+        channel_names.sort_unstable();
+        channel_names.dedup();
+
+        let mut updates: Vec<(EntityId, Vec3, Quat, f32)> = Vec::new();
+        for channel_name in &channel_names {
+            let Some(sym) = pool.get(channel_name) else { continue };
+            let Some(&target_entity) = name_index.map.get(&sym) else { continue };
+            if let Some((pos, rot, scale)) = sample_blended_transform(stack, &registry, channel_name) {
+                updates.push((target_entity, pos, rot, scale));
+            }
+        }
+        drop(sq);
+
+        // Apply blended transforms.
+        let mut tq = world.query_mut::<Transform>().unwrap();
+        for (target, pos, rot, scale) in updates {
+            if let Some(transform) = tq.get_mut(target) {
+                transform.translation = pos;
+                transform.rotation = rot;
+                transform.scale = scale;
             }
         }
     }
@@ -1481,6 +1532,7 @@ fn convert_nif_clip(nif: &byroredux_nif::anim::AnimationClip) -> AnimationClip {
                     rotation_type: convert_key_type(ch.rotation_type),
                     scale_keys,
                     scale_type: convert_key_type(ch.scale_type),
+                    priority: ch.priority,
                 },
             )
         })
@@ -1529,6 +1581,7 @@ fn convert_nif_clip(nif: &byroredux_nif::anim::AnimationClip) -> AnimationClip {
         duration: nif.duration,
         cycle_type,
         frequency: nif.frequency,
+        weight: nif.weight,
         channels,
         float_channels,
         color_channels,
