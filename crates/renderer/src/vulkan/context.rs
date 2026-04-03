@@ -518,10 +518,11 @@ impl VulkanContext {
                         last_texture = draw_cmd.texture_handle;
                     }
 
-                    // Depth bias: small overlay meshes (decals, carpets, labels)
-                    // get negative bias to win Z-fighting with the surface beneath.
-                    let tri_count = mesh.index_count / 3;
-                    let bias = if tri_count <= 500 { -4.0_f32 } else { 0.0 };
+                    // Depth bias: all meshes get a negative bias inversely proportional
+                    // to their triangle count. Smaller meshes (labels, decals, carpets)
+                    // get more bias and win Z-fighting against larger surfaces (walls, floors).
+                    let tri_count = (mesh.index_count / 3).max(1) as f32;
+                    let bias = -1000.0 / tri_count;
                     self.device.cmd_set_depth_bias(cmd, bias, 0.0, 0.0);
 
                     // Push model matrix (bytes 64..128).
