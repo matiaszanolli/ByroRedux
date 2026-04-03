@@ -184,26 +184,31 @@ fn parse_cell_group(
                     match &sub.sub_type {
                         b"EDID" => editor_id = read_zstring(&sub.data),
                         b"DATA" if sub.data.len() >= 1 => is_interior = sub.data[0] & 1 != 0,
-                        b"XCLL" if sub.data.len() >= 36 => {
-                            // XCLL: ambient (RGBA 4 bytes) + directional (RGBA 4 bytes)
-                            //       + fog (RGBA 4 bytes) + fog near/far (2x f32)
-                            //       + directional rotation XY (2x i32 mapped to radians)
-                            //       + directional fade (f32)
+                        b"XCLL" if sub.data.len() >= 28 => {
+                            // FNV XCLL layout:
+                            //   0-3:   Ambient RGBA (4 bytes)
+                            //   4-7:   Directional RGBA (4 bytes)
+                            //   8-11:  Fog color near RGBA (4 bytes)
+                            //   12-15: Fog near (f32)
+                            //   16-19: Fog far (f32)
+                            //   20-23: Directional rotation X (i32, degrees)
+                            //   24-27: Directional rotation Y (i32, degrees)
+                            //   28-31: Directional fade (f32)
                             let ambient_r = sub.data[0] as f32 / 255.0;
                             let ambient_g = sub.data[1] as f32 / 255.0;
                             let ambient_b = sub.data[2] as f32 / 255.0;
                             let dir_r = sub.data[4] as f32 / 255.0;
                             let dir_g = sub.data[5] as f32 / 255.0;
                             let dir_b = sub.data[6] as f32 / 255.0;
-                            // Directional rotation at bytes 24-31 (two i32 in hundredths of degrees)
-                            let rot_x = if sub.data.len() >= 28 {
+                            // Directional rotation at bytes 20-27 (two i32, degrees)
+                            let rot_x = {
+                                let raw = i32::from_le_bytes([sub.data[20], sub.data[21], sub.data[22], sub.data[23]]);
+                                (raw as f32).to_radians()
+                            };
+                            let rot_y = {
                                 let raw = i32::from_le_bytes([sub.data[24], sub.data[25], sub.data[26], sub.data[27]]);
-                                (raw as f32 / 100.0).to_radians()
-                            } else { 0.0 };
-                            let rot_y = if sub.data.len() >= 32 {
-                                let raw = i32::from_le_bytes([sub.data[28], sub.data[29], sub.data[30], sub.data[31]]);
-                                (raw as f32 / 100.0).to_radians()
-                            } else { 0.0 };
+                                (raw as f32).to_radians()
+                            };
                             lighting = Some(CellLighting {
                                 ambient: [ambient_r, ambient_g, ambient_b],
                                 directional_color: [dir_r, dir_g, dir_b],
