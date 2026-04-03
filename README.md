@@ -6,11 +6,11 @@ Not a port — a ground-up rebuild that understands the legacy architecture and 
 
 ![*Prospector Saloon* from Fallout: New Vegas, rendered in ByroRedux](docs/screenshots/prospector-saloon.png)
 
-*The Prospector Saloon (Goodsprings) loaded from FalloutNV.esm — 809 entities, real DDS textures, directional lighting, alpha blending at 334 FPS on RTX 4070 Ti.*
+*The Prospector Saloon (Goodsprings) loaded from FalloutNV.esm — 789 entities, RT multi-light with shadows, cell interior XCLL lighting at 85 FPS on RTX 4070 Ti.*
 
 ## Current State
 
-**21 milestones complete.** Loads full Fallout: New Vegas interior/exterior cells and Skyrim SE meshes from real game data. Plays .kf animations with full scene graph hierarchy.
+**22 milestones complete (M1–M22).** Loads full Fallout: New Vegas interior/exterior cells and Skyrim SE meshes with RT ray-traced shadows. Multi-light rendering with cell ambient/directional from ESM. Animation playback with scene graph hierarchy. Currently overhauling the NIF parser for Oblivion-through-Starfield support (N23 series).
 
 ```bash
 # FNV interior cell
@@ -36,14 +36,14 @@ Press **Escape** to capture mouse, then **WASD** + mouse to fly around. **Space/
 | Feature | Status |
 |---------|--------|
 | ECS with pluggable storage (SparseSet + Packed), hierarchy (Parent/Children) | Working |
-| Vulkan renderer with depth, directional lighting, alpha blending, GlobalTransform | Working |
-| ESM parser (CELL, REFR, STAT, MSTT, FURN, DOOR, ACTI, CONT, LIGH + 23 record types) | Working |
-| NIF parser (37 block types, Z-up → Y-up, NifVariant for 8 games) | Working |
+| Vulkan RT renderer with multi-light SSBO, ray query shadows, cell XCLL lighting | Working |
+| ESM parser (CELL, REFR, STAT, MSTT, FURN, DOOR, ACTI, CONT, LIGH, XCLL + 23 types) | Working |
+| NIF parser (48 block types, Z-up → Y-up, NifVariant for 8 games, decal detection) | Working |
 | DDS texture loading (BC1/BC3/BC5 + DX10, mipmaps, per-mesh binding) | Working |
-| BSA v104 + v105 archive reader (zlib + LZ4) | Working |
+| BSA v103 + v104 + v105 archive reader (Oblivion/FO3/FNV/Skyrim LE/SE) | Working |
 | Interior + exterior cell loading with placed object transforms | Working |
-| Animation playback (.kf files, linear/Hermite/TBC interpolation, 8 controller types) | Working |
-| Scene graph hierarchy with transform propagation | Working |
+| Animation playback (.kf files, linear/Hermite/TBC, 8 controller types, blending stack) | Working |
+| Scene graph hierarchy (Parent/Children) with transform propagation | Working |
 | Skyrim SE NIF support (BSTriShape, BSLightingShader, packed vertices) | Working |
 | Scaleform/SWF UI system (Ruffle integration, offscreen wgpu→Vulkan bridge) | Working |
 | Fly camera (WASD + mouse look) | Working |
@@ -61,7 +61,7 @@ crates/
   renderer/                Vulkan graphics via ash + gpu-allocator
   plugin/                  Plugin system, ESM parser, manifests, conflict resolution
   nif/                     NIF file parser + animation importer (.nif/.kf)
-  bsa/                     BSA archive reader (v104 + v105 with LZ4)
+  bsa/                     BSA archive reader (v103/v104/v105)
   ui/                      Scaleform/SWF UI system (Ruffle integration)
   scripting/               ECS-native scripting (events, timers)
   platform/                Windowing via winit (Linux-first)
@@ -79,13 +79,13 @@ World wraps each storage in `RwLock` so query methods take `&self`, enabling con
 
 ### Renderer
 
-Full Vulkan initialization chain via `ash`. No shortcuts:
+Vulkan 1.3 via `ash` with RT ray query extensions:
 
-Instance + validation layers, debug messenger, surface, physical/logical device, swapchain, render pass, dual graphics pipelines (opaque + alpha-blended) with push constants, framebuffers, command pool/buffers, GPU memory allocation via `gpu-allocator`, per-image synchronization, DDS texture upload (BC-compressed with mipmaps), per-mesh descriptor set binding.
+Instance + validation layers, debug messenger, surface, physical/logical device (with VK_KHR_acceleration_structure + VK_KHR_ray_query when available), swapchain, render pass, 4 graphics pipelines (opaque/alpha × culled/two-sided) with dynamic depth bias, per-frame SSBO for light array + UBO for camera/ambient, BLAS per mesh + TLAS rebuilt per frame, push constants (viewProj + model), DDS texture upload (BC-compressed with mipmaps), per-mesh descriptor set binding. Graceful fallback on non-RT GPUs.
 
 ### Asset Pipeline
 
-ESM files are parsed for CELL/REFR/STAT records (23 record types) to locate placed objects with their positions and rotations. NIF files are parsed with version-aware binary reading (NifVariant detection for 8 game variants), scene graph hierarchy preserved as Parent/Children entities with local transforms. DDS textures extracted from BSA archives, uploaded to Vulkan as BC-compressed images with full mipmap chains.
+ESM files are parsed for CELL/REFR/STAT records (23 record types) to locate placed objects with positions and rotations. Interior cell lighting parsed from XCLL subrecords (ambient + directional). NIF files parsed with version-aware binary reading (NifVariant detection for 8 game variants, 48 block types), scene graph hierarchy preserved as Parent/Children entities with local transforms. Decal geometry detected via NIF shader flags for proper depth bias. DDS textures extracted from BSA v103/v104/v105 archives, uploaded to Vulkan as BC-compressed images with full mipmap chains.
 
 ### Animation
 
@@ -139,16 +139,17 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 | Phase | Status | Milestone |
 |-------|--------|-----------|
 | M1–M8 | Done | Graphics foundation, ECS, plugin system, depth, texturing |
-| M9–M11 | Done | NIF parser (37 block types), NIF-to-ECS import, BSA v104+v105 reader |
-| M12–M13 | Done | ECS-native scripting, directional lighting |
-| M14–M16 | Done | DDS textures, debug diagnostics, ESM parser + cell loading |
-| M17–M18 | Done | Coordinate system fix, Skyrim SE NIF support (BSTriShape, BSLightingShader) |
-| M19 | Done | Full cell loading — all renderable record types, WRLD exterior cells |
-| M20 | Done | Scaleform/SWF UI system (Ruffle integration) |
-| M21 | Done | Animation playback — .kf parsing, interpolation engine, 8 controller types |
-| M22 | Next | RT-first multi-light system (Vulkan ray tracing + rasterized fallback) |
+| M9–M11 | Done | NIF parser, NIF-to-ECS import, BSA v103/v104/v105 reader |
+| M12–M16 | Done | Scripting, lighting, DDS textures, ESM parser, cell loading |
+| M17–M18 | Done | Coordinate system fix, Skyrim SE NIF (BSTriShape, BSLightingShader) |
+| M19–M20 | Done | Full cell loading (WRLD exterior), Scaleform/SWF UI (Ruffle) |
+| M21 | Done | Animation playback — .kf parsing, interpolation, blending stack |
+| M22 | Done | RT multi-light — SSBO lights, ray query shadows, cell XCLL lighting |
+| **N23** | **Active** | **NIF parser overhaul — Oblivion through Starfield (10 sub-milestones)** |
 
-See [ROADMAP.md](ROADMAP.md) for the full roadmap with details, known issues, and game compatibility.
+**Current focus: N23 (NIF correctness).** Trait-based class hierarchy, per-game shader completeness, skinning, collision, particles. Target: ~130 block types across 8 games, up from 48.
+
+See [ROADMAP.md](ROADMAP.md) for the full roadmap with N23 sub-milestones and game compatibility.
 
 ## Dependencies
 

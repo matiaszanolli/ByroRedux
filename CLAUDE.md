@@ -7,7 +7,7 @@ Long-term goal: load and render content from Gamebryo/Creation-era games.
 
 ```bash
 cargo check                    # Type check (fast)
-cargo test -p byroredux-core    # Run ECS/core tests (81 tests)
+cargo test -p byroredux-core    # Run ECS/core tests (111 tests)
 cargo test                     # Full workspace tests
 cargo run                      # Launch engine (spinning cube demo)
 cargo build --release          # Release build
@@ -27,8 +27,11 @@ byroredux/              Binary — game loop, scene setup, systems
 crates/
   core/                      ECS, math (glam), types, string interning, form IDs
     src/ecs/                 World, Component, Storage, Query, System, Scheduler, Resource
-    src/ecs/components/      Transform, Camera, MeshHandle, Name, FormIdComponent
+    src/ecs/components/      Transform, GlobalTransform, Parent, Children, Camera, MeshHandle, Name,
+                             FormIdComponent, LightSource, AnimatedVisibility/Alpha/Color
     src/ecs/resources.rs     DeltaTime, TotalTime, EngineConfig
+    src/animation.rs         Interpolation engine, AnimationClip, AnimationPlayer, AnimationStack,
+                             AnimationClipRegistry, RootMotionDelta, blending, sampling
     src/form_id.rs           FormId, PluginId, LocalFormId, FormIdPair, FormIdPool
     src/string/              StringPool, FixedString
   plugin/                    Plugin system — manifests, records, DataStore, conflict resolution
@@ -43,7 +46,8 @@ crates/
       tes5.rs                Skyrim parser stub
       fo4.rs                 Fallout 4 parser stub
   renderer/                  Vulkan graphics (ash, gpu-allocator, image)
-    src/vulkan/              context, pipeline, device, swapchain, sync, allocator, buffer
+    src/vulkan/              context, pipeline, device, swapchain, sync, allocator, buffer,
+                             scene_buffer (SSBO/UBO), acceleration (BLAS/TLAS)
     src/vulkan/texture.rs    Texture upload (RGBA + BC-compressed DDS, staging, layout transitions)
     src/vulkan/dds.rs        DDS header parser (BC1/BC3/BC5, FourCC + DX10 extended, mip sizes)
     src/texture_registry.rs  TextureRegistry (path→handle cache, per-texture descriptor sets)
@@ -59,7 +63,8 @@ crates/
     src/types.rs             NiPoint3, NiMatrix3, NiTransform, NiColor, BlockRef
     src/stream.rs            NifStream: version-aware binary reader
     src/blocks/              Block parsers: NiNode, NiTriShape/Strips, NiTriShapeData/StripsData, properties, BSShader, textures
-    src/import.rs            NIF-to-ECS import: scene graph flattening, geometry/transform conversion
+    src/import.rs            NIF-to-ECS import: hierarchy preservation, geometry/transform conversion
+    src/anim.rs              KF animation import: clips, channels, coordinate conversion
     src/scene.rs             NifScene: parsed block collection with downcasting
   ui/                       Scaleform/SWF UI (Ruffle integration)
     src/lib.rs               UiManager resource, SWF loading
@@ -124,12 +129,16 @@ Detailed analysis in `docs/legacy/`.
 ## Development Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for the full roadmap with milestones, known issues, and game compatibility.
-Current: 21 milestones complete (M1–M21). Can load FNV meshes with real DDS textures and play .kf animations.
+Current: 22 milestones complete (M1–M22). RT multi-light with ray query shadows, animation with
+blending stack, scene graph hierarchy, cell XCLL lighting, decal detection, BSA v103 (Oblivion).
+Active: N23 series — NIF parser overhaul for Oblivion through Starfield (10 sub-milestones).
 Usage:
   `cargo run -- path/to/mesh.nif` — render a loose NIF file
+  `cargo run -- mesh.nif --kf anim.kf` — play animation on a mesh
   `cargo run -- --bsa path.bsa --mesh meshes\\foo.nif` — extract from BSA and render
   `cargo run -- --bsa meshes.bsa --mesh meshes\\foo.nif --textures-bsa textures.bsa` — with textures
-Next: Animation playback (M21), RT multi-light system (M22).
+  `cargo run -- --esm FalloutNV.esm --cell CellID --bsa Meshes.bsa --textures-bsa Textures.bsa` — cell
+Next: N23.1 (trait hierarchy), N23.2 (shader completeness), N23.3 (Oblivion NIF support).
 
 ## Git Conventions
 
