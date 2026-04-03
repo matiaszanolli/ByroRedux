@@ -100,6 +100,8 @@ pub fn create_triangle_pipeline(
     // and the projection Y-flip swaps apparent winding in clip space.
     // Once we confirm NIF winding (CW or CCW), enable BACK culling
     // with the matching front_face setting.
+    // All pipelines enable depth bias (set dynamically per-draw to resolve Z-fighting
+    // for coplanar geometry: carpets on floors, labels on bottles, papers on desks).
     let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
         .depth_clamp_enable(false)
         .rasterizer_discard_enable(false)
@@ -107,21 +109,7 @@ pub fn create_triangle_pipeline(
         .line_width(1.0)
         .cull_mode(vk::CullModeFlags::NONE)
         .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-        .depth_bias_enable(false);
-
-    // Alpha pipeline rasterizer: depth bias pushes decal geometry toward camera
-    // to prevent Z-fighting with the surface beneath (labels, papers, etc.).
-    let rasterizer_alpha = vk::PipelineRasterizationStateCreateInfo::default()
-        .depth_clamp_enable(false)
-        .rasterizer_discard_enable(false)
-        .polygon_mode(vk::PolygonMode::FILL)
-        .line_width(1.0)
-        .cull_mode(vk::CullModeFlags::NONE)
-        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-        .depth_bias_enable(true)
-        .depth_bias_constant_factor(-2.0)
-        .depth_bias_slope_factor(-2.0)
-        .depth_bias_clamp(0.0);
+        .depth_bias_enable(true);
 
     let rasterizer_no_cull = vk::PipelineRasterizationStateCreateInfo::default()
         .depth_clamp_enable(false)
@@ -130,19 +118,7 @@ pub fn create_triangle_pipeline(
         .line_width(1.0)
         .cull_mode(vk::CullModeFlags::NONE)
         .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-        .depth_bias_enable(false);
-
-    let rasterizer_no_cull_alpha = vk::PipelineRasterizationStateCreateInfo::default()
-        .depth_clamp_enable(false)
-        .rasterizer_discard_enable(false)
-        .polygon_mode(vk::PolygonMode::FILL)
-        .line_width(1.0)
-        .cull_mode(vk::CullModeFlags::NONE)
-        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-        .depth_bias_enable(true)
-        .depth_bias_constant_factor(-2.0)
-        .depth_bias_slope_factor(-2.0)
-        .depth_bias_clamp(0.0);
+        .depth_bias_enable(true);
 
     let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
         .sample_shading_enable(false)
@@ -157,7 +133,7 @@ pub fn create_triangle_pipeline(
         .attachments(&color_blend_attachment);
 
     // Use dynamic viewport/scissor so we don't need to recreate the pipeline on resize.
-    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR, vk::DynamicState::DEPTH_BIAS];
     let dynamic_state =
         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
@@ -221,13 +197,13 @@ pub fn create_triangle_pipeline(
             .layout(pipeline_layout)
             .render_pass(render_pass)
             .subpass(0),
-        // [1] Alpha-blended pipeline (with depth bias for decals).
+        // [1] Alpha-blended pipeline.
         vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
             .vertex_input_state(&vertex_input)
             .input_assembly_state(&input_assembly)
             .viewport_state(&viewport_state)
-            .rasterization_state(&rasterizer_alpha)
+            .rasterization_state(&rasterizer)
             .multisample_state(&multisampling)
             .depth_stencil_state(&depth_stencil_alpha)
             .color_blend_state(&color_blending_alpha)
@@ -249,13 +225,13 @@ pub fn create_triangle_pipeline(
             .layout(pipeline_layout)
             .render_pass(render_pass)
             .subpass(0),
-        // [3] Alpha-blended two-sided (no backface culling, with depth bias).
+        // [3] Alpha-blended two-sided (no backface culling).
         vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
             .vertex_input_state(&vertex_input)
             .input_assembly_state(&input_assembly)
             .viewport_state(&viewport_state)
-            .rasterization_state(&rasterizer_no_cull_alpha)
+            .rasterization_state(&rasterizer_no_cull)
             .multisample_state(&multisampling)
             .depth_stencil_state(&depth_stencil_alpha)
             .color_blend_state(&color_blending_alpha)
@@ -374,7 +350,7 @@ pub fn create_ui_pipeline(
         .logic_op_enable(false)
         .attachments(&color_blend_attachment);
 
-    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR, vk::DynamicState::DEPTH_BIAS];
     let dynamic_state =
         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 

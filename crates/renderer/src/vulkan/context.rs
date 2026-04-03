@@ -518,9 +518,13 @@ impl VulkanContext {
                         last_texture = draw_cmd.texture_handle;
                     }
 
+                    // Depth bias: small overlay meshes (decals, carpets, labels)
+                    // get negative bias to win Z-fighting with the surface beneath.
+                    let tri_count = mesh.index_count / 3;
+                    let bias = if tri_count <= 500 { -4.0_f32 } else { 0.0 };
+                    self.device.cmd_set_depth_bias(cmd, bias, 0.0, 0.0);
+
                     // Push model matrix (bytes 64..128).
-                    // SAFETY: [f32; 16] is 64 bytes, properly aligned, and the
-                    // reference is valid for the duration of cmd_push_constants.
                     let model_bytes: &[u8] = std::slice::from_raw_parts(
                         draw_cmd.model_matrix.as_ptr() as *const u8,
                         64,
