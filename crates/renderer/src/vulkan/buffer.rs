@@ -22,7 +22,7 @@ impl GpuBuffer {
     pub fn create_vertex_buffer<T: Copy>(
         device: &ash::Device,
         allocator: &SharedAllocator,
-        queue: vk::Queue,
+        queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
         data: &[T],
     ) -> Result<Self> {
@@ -42,7 +42,7 @@ impl GpuBuffer {
     pub fn create_index_buffer(
         device: &ash::Device,
         allocator: &SharedAllocator,
-        queue: vk::Queue,
+        queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
         data: &[u32],
     ) -> Result<Self> {
@@ -79,7 +79,7 @@ impl GpuBuffer {
     fn create_device_local_buffer<T: Copy>(
         device: &ash::Device,
         allocator: &SharedAllocator,
-        queue: vk::Queue,
+        queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,

@@ -28,7 +28,7 @@ impl Texture {
     pub fn from_rgba(
         device: &ash::Device,
         allocator: &SharedAllocator,
-        queue: vk::Queue,
+        queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
         width: u32,
         height: u32,
@@ -282,7 +282,7 @@ impl Texture {
     pub fn from_bc(
         device: &ash::Device,
         allocator: &SharedAllocator,
-        queue: vk::Queue,
+        queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
         meta: &super::dds::DdsMetadata,
         pixel_data: &[u8],
@@ -548,7 +548,7 @@ impl Texture {
     pub fn from_dds(
         device: &ash::Device,
         allocator: &SharedAllocator,
-        queue: vk::Queue,
+        queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
         dds_bytes: &[u8],
     ) -> Result<Self> {
@@ -591,9 +591,11 @@ impl Texture {
 }
 
 /// Execute a one-time-submit command buffer: allocate, record, submit, wait, free.
+///
+/// The queue `Mutex` is locked only for the submit+wait, not during recording.
 pub(crate) fn with_one_time_commands<F: FnOnce(vk::CommandBuffer)>(
     device: &ash::Device,
-    queue: vk::Queue,
+    queue: &std::sync::Mutex<vk::Queue>,
     pool: vk::CommandPool,
     f: F,
 ) -> Result<()> {
@@ -628,11 +630,12 @@ pub(crate) fn with_one_time_commands<F: FnOnce(vk::CommandBuffer)>(
     let submit_info = vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cmd));
 
     unsafe {
+        let q = *queue.lock().expect("graphics queue lock poisoned");
         device
-            .queue_submit(queue, &[submit_info], vk::Fence::null())
+            .queue_submit(q, &[submit_info], vk::Fence::null())
             .context("submit one-time commands")?;
         device
-            .queue_wait_idle(queue)
+            .queue_wait_idle(q)
             .context("wait for one-time commands")?;
         device.free_command_buffers(pool, &[cmd]);
     }

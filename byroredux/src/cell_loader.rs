@@ -325,7 +325,7 @@ fn load_nif_placed(
             })
             .collect();
 
-        let mesh_handle = match ctx.mesh_registry.upload(&ctx.device, alloc, ctx.graphics_queue, ctx.command_pool, &vertices, &mesh.indices) {
+        let mesh_handle = match ctx.mesh_registry.upload(&ctx.device, alloc, &ctx.graphics_queue, ctx.command_pool, &vertices, &mesh.indices) {
             Ok(h) => h,
             Err(e) => {
                 log::warn!("Failed to upload mesh: {}", e);
@@ -340,7 +340,7 @@ fn load_nif_placed(
                     cached
                 } else if let Some(dds_bytes) = tex_provider.extract(tex_path) {
                     ctx.texture_registry.load_dds(
-                        &ctx.device, alloc, ctx.graphics_queue, ctx.command_pool,
+                        &ctx.device, alloc, &ctx.graphics_queue, ctx.command_pool,
                         tex_path, &dds_bytes,
                     ).unwrap_or_else(|e| {
                         log::warn!("Failed to load DDS '{}': {}", tex_path, e);

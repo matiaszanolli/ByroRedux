@@ -16,6 +16,7 @@ use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 use gpu_allocator::MemoryLocation;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+use std::sync::Mutex;
 
 const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
 
@@ -58,7 +59,10 @@ pub struct VulkanContext {
 
     pub allocator: Option<SharedAllocator>,
 
-    pub graphics_queue: vk::Queue,
+    /// Graphics queue, wrapped in a Mutex for Vulkan-required external
+    /// synchronization (VUID-vkQueueSubmit-queue-00893). All queue
+    /// submissions (draw_frame, texture/buffer uploads) must lock this.
+    pub graphics_queue: Mutex<vk::Queue>,
     pub present_queue: vk::Queue,
     pub queue_indices: QueueFamilyIndices,
     pub device: ash::Device,
@@ -118,8 +122,9 @@ impl VulkanContext {
             device::pick_physical_device(&vk_instance, &surface_loader, vk_surface)?;
 
         // 6. Logical device + queues
-        let (device, graphics_queue, present_queue) =
+        let (device, raw_graphics_queue, present_queue) =
             device::create_logical_device(&vk_instance, physical_device, queue_indices)?;
+        let graphics_queue = Mutex::new(raw_graphics_queue);
 
         // 7. GPU allocator
         let gpu_allocator =
@@ -151,7 +156,7 @@ impl VulkanContext {
         let fallback_texture = Texture::from_rgba(
             &device,
             &gpu_allocator,
-            graphics_queue,
+            &graphics_queue,
             command_pool,
             256,
             256,
@@ -540,9 +545,10 @@ impl VulkanContext {
             .signal_semaphores(&signal_semaphores);
 
         unsafe {
+            let queue = *self.graphics_queue.lock().expect("graphics queue lock poisoned");
             self.device
                 .queue_submit(
-                    self.graphics_queue,
+                    queue,
                     &[submit_info],
                     self.frame_sync.in_flight[frame],
                 )
@@ -582,7 +588,7 @@ impl VulkanContext {
         let handle = self.mesh_registry.upload(
             &self.device,
             allocator,
-            self.graphics_queue,
+            &self.graphics_queue,
             self.command_pool,
             &vertices,
             &indices,

@@ -564,7 +564,7 @@ impl App {
             }
         } else {
             // NIF loading mode: loose file or BSA extraction.
-            let nif_count = load_nif_from_args(&mut self.world, ctx);
+            let (nif_count, nif_root) = load_nif_from_args(&mut self.world, ctx);
             has_nif_content = nif_count > 0;
         }
 
@@ -592,9 +592,13 @@ impl App {
                                     let first_handle = registry.len() as u32 - nif_clips.len() as u32;
                                     drop(registry);
 
-                                    // Spawn an AnimationPlayer for the first clip.
+                                    // Spawn an AnimationPlayer scoped to the NIF subtree.
                                     let player_entity = self.world.spawn();
-                                    self.world.insert(player_entity, AnimationPlayer::new(first_handle));
+                                    let mut player = AnimationPlayer::new(first_handle);
+                                    if let Some(root) = nif_root {
+                                        player.root_entity = Some(root);
+                                    }
+                                    self.world.insert(player_entity, player);
                                     log::info!("Animation playback started (clip handle {})", first_handle);
                                 }
                             }
@@ -610,7 +614,7 @@ impl App {
         if !has_nif_content {
             let alloc = ctx.allocator.as_ref().unwrap();
             let (verts, idxs) = cube_vertices();
-            let queue = ctx.graphics_queue;
+            let queue = &ctx.graphics_queue;
             let pool = ctx.command_pool;
             let cube_handle = ctx
                 .mesh_registry
@@ -705,7 +709,7 @@ impl App {
                                 match ctx.texture_registry.register_rgba(
                                     &ctx.device,
                                     allocator,
-                                    ctx.graphics_queue,
+                                    &ctx.graphics_queue,
                                     ctx.command_pool,
                                     w,
                                     h,
@@ -825,7 +829,7 @@ fn build_texture_provider(args: &[String]) -> TextureProvider {
 ///   `cargo run -- path/to/file.nif` — loose NIF file
 ///   `cargo run -- --bsa meshes.bsa --mesh meshes\foo.nif` — extract from BSA
 ///   `cargo run -- --bsa meshes.bsa --mesh meshes\foo.nif --textures-bsa textures.bsa`
-fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> usize {
+fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> (usize, Option<EntityId>) {
     let args: Vec<String> = std::env::args().collect();
 
     // Collect BSA archives.
@@ -863,51 +867,52 @@ fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> usize {
         // BSA mode: --bsa <archive> --mesh <path_in_archive>
         let bsa_path = match args.get(bsa_idx + 1) {
             Some(p) => p,
-            None => { log::error!("--bsa requires an archive path"); return 0; }
+            None => { log::error!("--bsa requires an archive path"); return (0, None); }
         };
         let mesh_path = match args.iter().position(|a| a == "--mesh").and_then(|i| args.get(i + 1)) {
             Some(p) => p,
-            None => { log::error!("--bsa requires --mesh <path>"); return 0; }
+            None => { log::error!("--bsa requires --mesh <path>"); return (0, None); }
         };
 
         let archive = match byroredux_bsa::BsaArchive::open(bsa_path) {
             Ok(a) => a,
-            Err(e) => { log::error!("Failed to open BSA '{}': {}", bsa_path, e); return 0; }
+            Err(e) => { log::error!("Failed to open BSA '{}': {}", bsa_path, e); return (0, None); }
         };
         let data = match archive.extract(mesh_path) {
             Ok(d) => d,
-            Err(e) => { log::error!("Failed to extract '{}': {}", mesh_path, e); return 0; }
+            Err(e) => { log::error!("Failed to extract '{}': {}", mesh_path, e); return (0, None); }
         };
         log::info!("Extracted {} bytes from BSA '{}'", data.len(), mesh_path);
         load_nif_bytes(world, ctx, &data, mesh_path, &tex_provider)
     } else if let Some(nif_path) = args.get(1) {
         if nif_path.starts_with("--") {
-            return 0; // Skip flags that aren't NIF paths
+            return (0, None); // Skip flags that aren't NIF paths
         }
         // Loose file mode: <path.nif>
         let data = match std::fs::read(nif_path) {
             Ok(d) => d,
-            Err(e) => { log::error!("Failed to read NIF file '{}': {}", nif_path, e); return 0; }
+            Err(e) => { log::error!("Failed to read NIF file '{}': {}", nif_path, e); return (0, None); }
         };
         load_nif_bytes(world, ctx, &data, nif_path, &tex_provider)
     } else {
-        0
+        (0, None)
     }
 }
 
 /// Parse NIF bytes, import meshes with hierarchy, upload to GPU, and spawn ECS entities.
+/// Returns (entity_count, root_entity).
 pub(crate) fn load_nif_bytes(
     world: &mut World,
     ctx: &mut VulkanContext,
     data: &[u8],
     label: &str,
     tex_provider: &TextureProvider,
-) -> usize {
+) -> (usize, Option<EntityId>) {
     let scene = match byroredux_nif::parse_nif(data) {
         Ok(s) => s,
         Err(e) => {
             log::error!("Failed to parse NIF '{}': {}", label, e);
-            return 0;
+            return (0, None);
         }
     };
 
@@ -960,7 +965,7 @@ pub(crate) fn load_nif_bytes(
             .collect();
 
         let alloc = ctx.allocator.as_ref().unwrap();
-        let mesh_handle = match ctx.mesh_registry.upload(&ctx.device, alloc, ctx.graphics_queue, ctx.command_pool, &vertices, &mesh.indices) {
+        let mesh_handle = match ctx.mesh_registry.upload(&ctx.device, alloc, &ctx.graphics_queue, ctx.command_pool, &vertices, &mesh.indices) {
             Ok(h) => h,
             Err(e) => {
                 log::warn!("Failed to upload NIF mesh '{}': {}", mesh.name.as_deref().unwrap_or("?"), e);
@@ -1010,8 +1015,9 @@ pub(crate) fn load_nif_bytes(
         count += 1;
     }
 
+    let root = node_entities.first().copied();
     log::info!("Imported {} nodes + {} meshes from '{}'", imported.nodes.len(), count, label);
-    count + imported.nodes.len()
+    (count + imported.nodes.len(), root)
 }
 
 /// Resolve a texture path to a texture handle, with BSA lookup and caching.
@@ -1029,7 +1035,7 @@ fn resolve_texture(
     if let Some(dds_bytes) = tex_provider.extract(tex_path) {
         let alloc = ctx.allocator.as_ref().unwrap();
         match ctx.texture_registry.load_dds(
-            &ctx.device, alloc, ctx.graphics_queue, ctx.command_pool,
+            &ctx.device, alloc, &ctx.graphics_queue, ctx.command_pool,
             tex_path, &dds_bytes,
         ) {
             Ok(h) => {
@@ -1181,7 +1187,7 @@ impl ApplicationHandler for App {
                                 if let Err(e) = ctx.texture_registry.update_rgba(
                                     &ctx.device,
                                     allocator,
-                                    ctx.graphics_queue,
+                                    &ctx.graphics_queue,
                                     ctx.command_pool,
                                     handle,
                                     ui_w,
@@ -1468,6 +1474,42 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>) {
     draw_commands.sort_unstable_by_key(|cmd| (cmd.alpha_blend, cmd.two_sided, cmd.texture_handle));
 
     (view_proj, draw_commands)
+}
+
+/// Build a scoped name→entity map by walking the subtree rooted at `root`.
+fn build_subtree_name_map(
+    world: &World,
+    root: EntityId,
+) -> std::collections::HashMap<FixedString, EntityId> {
+    let mut map = std::collections::HashMap::new();
+
+    // Include the root itself.
+    if let Some(nq) = world.query::<Name>() {
+        if let Some(name) = nq.get(root) {
+            map.insert(name.0, root);
+        }
+    }
+
+    // BFS through children.
+    let children_q = world.query::<Children>();
+    let name_q = world.query::<Name>();
+    let Some(ref cq) = children_q else { return map };
+
+    let mut queue = vec![root];
+    while let Some(entity) = queue.pop() {
+        if let Some(children) = cq.get(entity) {
+            for &child in &children.0 {
+                if let Some(ref nq) = name_q {
+                    if let Some(name) = nq.get(child) {
+                        map.insert(name.0, child);
+                    }
+                }
+                queue.push(child);
+            }
+        }
+    }
+
+    map
 }
 
 /// Add a child entity to a parent's Children component, creating it if needed.

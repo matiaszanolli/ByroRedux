@@ -39,7 +39,7 @@ impl MeshRegistry {
         &mut self,
         device: &ash::Device,
         allocator: &SharedAllocator,
-        queue: vk::Queue,
+        queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
         vertices: &[Vertex],
         indices: &[u32],
