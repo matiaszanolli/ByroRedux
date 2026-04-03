@@ -51,6 +51,11 @@ impl Component for AlphaBlend { type Storage = SparseSetStorage<Self>; }
 struct TwoSided;
 impl Component for TwoSided { type Storage = SparseSetStorage<Self>; }
 
+/// Marker component for decal geometry (renders on top of coplanar surfaces).
+#[derive(Debug, Clone, Copy)]
+struct Decal;
+impl Component for Decal { type Storage = SparseSetStorage<Self>; }
+
 /// System names stored as a resource for the `systems` console command.
 struct SystemList(Vec<String>);
 impl Resource for SystemList {}
@@ -1043,6 +1048,9 @@ pub(crate) fn load_nif_bytes(
         if mesh.two_sided {
             world.insert(entity, TwoSided);
         }
+        if mesh.is_decal {
+            world.insert(entity, Decal);
+        }
         if let Some(ref name) = mesh.name {
             let mut pool = world.resource_mut::<StringPool>();
             let sym = pool.intern(name);
@@ -1489,6 +1497,7 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>, Vec<byrored
         let tex_q = world.query::<TextureHandle>();
         let alpha_q = world.query::<AlphaBlend>();
         let two_sided_q = world.query::<TwoSided>();
+        let decal_q = world.query::<Decal>();
         let vis_q = world.query::<AnimatedVisibility>();
         for (entity, mesh) in mq.iter() {
             // Skip entities hidden by animation.
@@ -1512,18 +1521,23 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>, Vec<byrored
                     .as_ref()
                     .map(|q| q.get(entity).is_some())
                     .unwrap_or(false);
+                let is_decal = decal_q.as_ref()
+                    .map(|q| q.get(entity).is_some())
+                    .unwrap_or(false);
                 draw_commands.push(DrawCommand {
                     mesh_handle: mesh.0,
                     texture_handle: tex_handle,
                     model_matrix: transform.to_matrix().to_cols_array(),
                     alpha_blend,
                     two_sided,
+                    is_decal,
                 });
             }
         }
     }
     // Sort: opaque first, then alpha-blended; within each group sort by two_sided then texture.
-    draw_commands.sort_unstable_by_key(|cmd| (cmd.alpha_blend, cmd.two_sided, cmd.texture_handle));
+    // Sort: opaque → decal → alpha; decals drawn after base geometry at same depth.
+    draw_commands.sort_unstable_by_key(|cmd| (cmd.alpha_blend, cmd.is_decal, cmd.two_sided, cmd.texture_handle));
 
     // Collect lights from ECS.
     let mut gpu_lights = Vec::new();

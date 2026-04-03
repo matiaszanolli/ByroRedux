@@ -402,6 +402,9 @@ fn load_nif_placed(
         if mesh.two_sided {
             world.insert(entity, crate::TwoSided);
         }
+        if mesh.is_decal {
+            world.insert(entity, crate::Decal);
+        }
         if let Some(ld) = light_data {
             world.insert(entity, LightSource {
                 radius: ld.radius,

@@ -58,6 +58,8 @@ pub struct ImportedMesh {
     pub has_alpha: bool,
     /// Whether this mesh should be rendered two-sided (no backface culling).
     pub two_sided: bool,
+    /// Whether this mesh is a decal (should render on top of coplanar surfaces).
+    pub is_decal: bool,
     /// Index into `ImportedScene.nodes` for this mesh's parent node, or None.
     pub parent_node: Option<usize>,
 }
@@ -317,6 +319,7 @@ fn extract_mesh(
         texture_path,
         has_alpha,
         two_sided,
+        is_decal: find_decal(scene, shape),
         parent_node: None,
     })
 }
@@ -403,6 +406,7 @@ fn extract_bs_tri_shape(
         texture_path,
         has_alpha,
         two_sided,
+        is_decal: find_decal_bs(scene, shape),
         parent_node: None,
     })
 }
@@ -621,6 +625,63 @@ fn find_two_sided(scene: &NifScene, shape: &NiTriShape) -> bool {
                         }
                     }
                 }
+            }
+        }
+    }
+    false
+}
+
+/// Check if a shape is decal geometry (should render on top of coplanar surfaces).
+///
+/// FO3/FNV: BSShaderPPLightingProperty shader_flags_1:
+///   Bit 26 (0x04000000) = Decal Single Pass
+///   Bit 27 (0x08000000) = Dynamic Decal Single Pass
+/// BSShaderPPLightingProperty shader_flags_2:
+///   Bit 21 (0x00200000) = Alpha Decal
+///
+/// Skyrim+: BSLightingShaderProperty shader_flags_1 same bit layout.
+fn find_decal(scene: &NifScene, shape: &NiTriShape) -> bool {
+    const DECAL_SINGLE_PASS: u32 = 0x04000000;
+    const DYNAMIC_DECAL: u32 = 0x08000000;
+    const ALPHA_DECAL_F2: u32 = 0x00200000;
+
+    // Skyrim+: dedicated shader property ref.
+    if let Some(idx) = shape.shader_property_ref.index() {
+        if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
+            if shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 {
+                return true;
+            }
+        }
+    }
+    // FO3/FNV: properties list.
+    for prop_ref in &shape.properties {
+        if let Some(idx) = prop_ref.index() {
+            if let Some(shader) = scene.get_as::<BSShaderPPLightingProperty>(idx) {
+                if shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0
+                    || shader.shader_flags_2 & ALPHA_DECAL_F2 != 0
+                {
+                    return true;
+                }
+            }
+            if let Some(shader) = scene.get_as::<BSShaderNoLightingProperty>(idx) {
+                if shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if a BsTriShape is decal geometry (Skyrim+).
+fn find_decal_bs(scene: &NifScene, shape: &BsTriShape) -> bool {
+    const DECAL_SINGLE_PASS: u32 = 0x04000000;
+    const DYNAMIC_DECAL: u32 = 0x08000000;
+
+    if let Some(idx) = shape.shader_property_ref.index() {
+        if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
+            if shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 {
+                return true;
             }
         }
     }

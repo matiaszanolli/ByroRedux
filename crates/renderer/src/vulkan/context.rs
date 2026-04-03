@@ -29,6 +29,8 @@ pub struct DrawCommand {
     pub model_matrix: [f32; 16],
     pub alpha_blend: bool,
     pub two_sided: bool,
+    /// Decal geometry — renders on top of coplanar surfaces via depth bias.
+    pub is_decal: bool,
 }
 
 pub struct VulkanContext {
@@ -518,12 +520,10 @@ impl VulkanContext {
                         last_texture = draw_cmd.texture_handle;
                     }
 
-                    // Depth bias: all meshes get a negative bias inversely proportional
-                    // to their triangle count. Smaller meshes (labels, decals, carpets)
-                    // get more bias and win Z-fighting against larger surfaces (walls, floors).
-                    let tri_count = (mesh.index_count / 3).max(1) as f32;
-                    let bias = -1000.0 / tri_count;
-                    self.device.cmd_set_depth_bias(cmd, bias, 0.0, 0.0);
+                    // Depth bias: decal meshes (flagged via NIF shader properties)
+                    // get pushed toward camera to prevent Z-fighting.
+                    let bias = if draw_cmd.is_decal { -8.0_f32 } else { 0.0 };
+                    self.device.cmd_set_depth_bias(cmd, bias, -4.0, 0.0);
 
                     // Push model matrix (bytes 64..128).
                     let model_bytes: &[u8] = std::slice::from_raw_parts(
