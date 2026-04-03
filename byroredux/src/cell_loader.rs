@@ -309,7 +309,6 @@ fn load_nif_placed(
     };
 
     let imported = byroredux_nif::import::import_nif(&scene);
-    let alloc = ctx.allocator.as_ref().unwrap();
     let mut count = 0;
 
     for mesh in &imported {
@@ -325,13 +324,19 @@ fn load_nif_placed(
             })
             .collect();
 
-        let mesh_handle = match ctx.mesh_registry.upload(&ctx.device, alloc, &ctx.graphics_queue, ctx.command_pool, &vertices, &mesh.indices, ctx.device_caps.ray_query_supported) {
-            Ok(h) => h,
-            Err(e) => {
-                log::warn!("Failed to upload mesh: {}", e);
-                continue;
+        let mesh_handle = {
+            let alloc = ctx.allocator.as_ref().unwrap();
+            match ctx.mesh_registry.upload(&ctx.device, alloc, &ctx.graphics_queue, ctx.command_pool, &vertices, &mesh.indices, ctx.device_caps.ray_query_supported) {
+                Ok(h) => h,
+                Err(e) => {
+                    log::warn!("Failed to upload mesh: {}", e);
+                    continue;
+                }
             }
         };
+
+        // Build BLAS for RT shadow rays.
+        ctx.build_blas_for_mesh(mesh_handle, num_verts as u32, mesh.indices.len() as u32);
 
         // Load texture.
         let tex_handle = match &mesh.texture_path {
@@ -339,6 +344,7 @@ fn load_nif_placed(
                 if let Some(cached) = ctx.texture_registry.get_by_path(tex_path) {
                     cached
                 } else if let Some(dds_bytes) = tex_provider.extract(tex_path) {
+                    let alloc = ctx.allocator.as_ref().unwrap();
                     ctx.texture_registry.load_dds(
                         &ctx.device, alloc, &ctx.graphics_queue, ctx.command_pool,
                         tex_path, &dds_bytes,

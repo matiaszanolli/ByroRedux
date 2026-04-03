@@ -1511,6 +1511,18 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>, Vec<byrored
         }
     }
 
+    // Log light count once.
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static LOGGED: AtomicBool = AtomicBool::new(false);
+        if !LOGGED.swap(true, Ordering::Relaxed) {
+            log::info!("Lights collected: {} (first 3: {:?})",
+                gpu_lights.len(),
+                gpu_lights.iter().take(3).map(|l| (l.position_radius, l.color_type)).collect::<Vec<_>>(),
+            );
+        }
+    }
+
     // Camera position.
     let camera_pos = if let Some(active) = world.try_resource::<ActiveCamera>() {
         let cam_entity = active.0;
