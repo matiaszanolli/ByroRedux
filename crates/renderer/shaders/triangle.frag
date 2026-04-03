@@ -3,23 +3,84 @@
 layout(location = 0) in vec3 fragColor;
 layout(location = 1) in vec2 fragUV;
 layout(location = 2) in vec3 fragNormal;
+layout(location = 3) in vec3 fragWorldPos;
 
 layout(location = 0) out vec4 outColor;
 
 layout(set = 0, binding = 0) uniform sampler2D texSampler;
 
+struct GpuLight {
+    vec4 position_radius;  // xyz = position, w = radius
+    vec4 color_type;       // rgb = color, w = type (0=point, 1=spot, 2=directional)
+    vec4 direction_angle;  // xyz = direction, w = spot angle cosine
+};
+
+layout(std430, set = 1, binding = 0) readonly buffer LightBuffer {
+    uint lightCount;
+    uint _pad0, _pad1, _pad2;
+    GpuLight lights[];
+};
+
+layout(set = 1, binding = 1) uniform CameraUBO {
+    vec4 cameraPos;   // xyz = world position
+    vec4 sceneFlags;  // x = RT enabled, yzw = reserved
+};
+
 void main() {
     vec4 texColor = texture(texSampler, fragUV);
-
-    // Basic directional light
-    vec3 lightDir = normalize(vec3(0.4, 0.8, 0.5));
     vec3 normal = normalize(fragNormal);
-    float NdotL = max(dot(normal, lightDir), 0.0);
 
-    // Ambient + diffuse
-    float ambient = 0.2;
-    float diffuse = 0.8 * NdotL;
-    float lighting = ambient + diffuse;
+    // Ambient base — minimal so unlit areas aren't fully black.
+    vec3 totalLight = vec3(0.05);
 
-    outColor = vec4(texColor.rgb * fragColor * lighting, texColor.a);
+    if (lightCount == 0) {
+        // Fallback: single directional light when no lights are placed.
+        vec3 lightDir = normalize(vec3(0.4, 0.8, 0.5));
+        float NdotL = max(dot(normal, lightDir), 0.0);
+        totalLight = vec3(0.2) + vec3(0.8) * NdotL;
+    } else {
+        for (uint i = 0; i < lightCount; i++) {
+            vec3 lightPos = lights[i].position_radius.xyz;
+            float radius = lights[i].position_radius.w;
+            vec3 lightColor = lights[i].color_type.rgb;
+            float lightType = lights[i].color_type.w;
+
+            if (lightType < 0.5) {
+                // Point light.
+                vec3 toLight = lightPos - fragWorldPos;
+                float dist = length(toLight);
+                vec3 lightDir = toLight / max(dist, 0.001);
+
+                // Attenuation: smooth falloff within radius.
+                float atten = clamp(1.0 - dist / max(radius, 0.001), 0.0, 1.0);
+                atten *= atten; // Quadratic falloff.
+
+                float NdotL = max(dot(normal, lightDir), 0.0);
+                totalLight += lightColor * NdotL * atten;
+            } else if (lightType < 1.5) {
+                // Spot light (not yet used, placeholder).
+                vec3 toLight = lightPos - fragWorldPos;
+                float dist = length(toLight);
+                vec3 lightDir = toLight / max(dist, 0.001);
+                vec3 spotDir = normalize(lights[i].direction_angle.xyz);
+                float spotAngle = lights[i].direction_angle.w;
+
+                float atten = clamp(1.0 - dist / max(radius, 0.001), 0.0, 1.0);
+                atten *= atten;
+
+                float spotFactor = dot(-lightDir, spotDir);
+                spotFactor = clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
+
+                float NdotL = max(dot(normal, lightDir), 0.0);
+                totalLight += lightColor * NdotL * atten * spotFactor;
+            } else {
+                // Directional light.
+                vec3 lightDir = normalize(lights[i].direction_angle.xyz);
+                float NdotL = max(dot(normal, lightDir), 0.0);
+                totalLight += lightColor * NdotL;
+            }
+        }
+    }
+
+    outColor = vec4(texColor.rgb * fragColor * totalLight, texColor.a);
 }

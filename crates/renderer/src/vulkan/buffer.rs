@@ -58,6 +58,64 @@ impl GpuBuffer {
         )
     }
 
+    /// Create a host-visible buffer for per-frame CPU writes (no staging needed).
+    /// Used for SSBO/UBO data that changes every frame.
+    pub fn create_host_visible(
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+    ) -> Result<Self> {
+        let buffer_info = vk::BufferCreateInfo::default()
+            .size(size)
+            .usage(usage)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        let buffer = unsafe {
+            device
+                .create_buffer(&buffer_info, None)
+                .context("Failed to create host-visible buffer")?
+        };
+
+        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+
+        let allocation = allocator
+            .lock()
+            .expect("allocator lock poisoned")
+            .allocate(&vulkan::AllocationCreateDesc {
+                name: "host_visible_buffer",
+                requirements,
+                location: MemoryLocation::CpuToGpu,
+                linear: true,
+                allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
+            })
+            .context("Failed to allocate host-visible memory")?;
+
+        unsafe {
+            device
+                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
+                .context("Failed to bind host-visible buffer")?;
+        }
+
+        Ok(Self {
+            buffer,
+            size,
+            allocation: Some(allocation),
+        })
+    }
+
+    /// Write data to a host-visible buffer's mapped memory.
+    pub fn write_mapped<T: Copy>(&mut self, data: &[T]) -> Result<()> {
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
+        };
+        let alloc = self.allocation.as_mut().context("Buffer has no allocation")?;
+        let mapped = alloc.mapped_slice_mut().context("Buffer not mapped")?;
+        let len = bytes.len().min(mapped.len());
+        mapped[..len].copy_from_slice(&bytes[..len]);
+        Ok(())
+    }
+
     /// Destroy the buffer and free its GPU memory.
     /// Must be called before the device is destroyed.
     pub fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {

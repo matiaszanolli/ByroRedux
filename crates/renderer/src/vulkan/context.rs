@@ -5,6 +5,7 @@ use super::debug;
 use super::device::{self, QueueFamilyIndices};
 use super::instance;
 use super::pipeline;
+use super::scene_buffer;
 use super::surface;
 use super::swapchain::{self, SwapchainState};
 use super::sync::{self, FrameSync, MAX_FRAMES_IN_FLIGHT};
@@ -42,6 +43,7 @@ pub struct VulkanContext {
     depth_allocation: Option<vk_alloc::Allocation>,
     pub mesh_registry: MeshRegistry,
     pub texture_registry: TextureRegistry,
+    pub scene_buffers: scene_buffer::SceneBuffers,
     pipeline: vk::Pipeline,
     pipeline_alpha: vk::Pipeline,
     pipeline_two_sided: vk::Pipeline,
@@ -169,12 +171,16 @@ impl VulkanContext {
             fallback_texture,
         )?;
 
-        // 12. Graphics pipeline (with depth test + descriptor set layout)
+        // 12. Scene buffers (light SSBO + camera UBO, descriptor set 1)
+        let scene_buffers = scene_buffer::SceneBuffers::new(&device, &gpu_allocator)?;
+
+        // 13. Graphics pipeline (with depth test + descriptor set layouts for set 0 + set 1)
         let pipelines = pipeline::create_triangle_pipeline(
                 &device,
                 render_pass,
                 swapchain_state.extent,
                 texture_registry.descriptor_set_layout,
+                scene_buffers.descriptor_set_layout,
             )?;
 
         // 13. UI overlay pipeline (no depth, alpha blend, passthrough shaders)
@@ -229,6 +235,7 @@ impl VulkanContext {
             ui_quad_handle: None,
             mesh_registry,
             texture_registry,
+            scene_buffers,
             depth_allocation: Some(depth_allocation),
             depth_image,
             depth_image_view,
@@ -249,6 +256,8 @@ impl VulkanContext {
         clear_color: [f32; 4],
         view_proj: &[f32; 16],
         draw_commands: &[DrawCommand],
+        lights: &[scene_buffer::GpuLight],
+        camera_pos: [f32; 3],
         ui_texture_handle: Option<u32>,
     ) -> Result<bool> {
         let frame = self.current_frame;
@@ -380,6 +389,26 @@ impl VulkanContext {
                 vk::ShaderStageFlags::VERTEX,
                 0,
                 view_proj_bytes,
+            );
+
+            // Upload scene data (lights + camera) and bind descriptor set 1.
+            self.scene_buffers.upload_lights(frame, lights)
+                .unwrap_or_else(|e| log::warn!("Failed to upload lights: {e}"));
+            let camera = scene_buffer::GpuCamera {
+                position: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
+                flags: [0.0, 0.0, 0.0, 0.0], // RT disabled for Phase A
+            };
+            self.scene_buffers.upload_camera(frame, &camera)
+                .unwrap_or_else(|e| log::warn!("Failed to upload camera: {e}"));
+
+            let scene_set = self.scene_buffers.descriptor_set(frame);
+            self.device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                1, // set 1
+                &[scene_set],
+                &[],
             );
 
             // Draw: opaque first, then alpha-blended. Switch pipeline on mode change.
@@ -666,6 +695,7 @@ impl VulkanContext {
             self.render_pass,
             self.swapchain_state.extent,
             self.texture_registry.descriptor_set_layout,
+            self.scene_buffers.descriptor_set_layout,
         )?;
         // Pipeline layout and shader modules are unchanged — destroy the
         // redundant copies that create_triangle_pipeline just created.
@@ -748,6 +778,7 @@ impl Drop for VulkanContext {
             // Destroy texture registry (all textures + descriptor pool/layout).
             if let Some(ref alloc) = self.allocator {
                 self.texture_registry.destroy(&self.device, alloc);
+                self.scene_buffers.destroy(&self.device, alloc);
             }
 
             // Destroy depth resources before the allocator.

@@ -45,6 +45,7 @@ pub fn create_triangle_pipeline(
     render_pass: vk::RenderPass,
     extent: vk::Extent2D,
     descriptor_set_layout: vk::DescriptorSetLayout,
+    scene_set_layout: vk::DescriptorSetLayout,
 ) -> Result<PipelineSet> {
     let vert_spv = include_bytes!("../../shaders/triangle.vert.spv");
     let frag_spv = include_bytes!("../../shaders/triangle.frag.spv");
@@ -140,7 +141,7 @@ pub fn create_triangle_pipeline(
         offset: 0,
         size: 128, // 2 * sizeof(mat4)
     }];
-    let set_layouts = [descriptor_set_layout];
+    let set_layouts = [descriptor_set_layout, scene_set_layout];
     let layout_info = vk::PipelineLayoutCreateInfo::default()
         .set_layouts(&set_layouts)
         .push_constant_ranges(&push_constant_ranges);

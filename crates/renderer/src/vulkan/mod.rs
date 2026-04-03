@@ -1,6 +1,7 @@
 pub mod allocator;
 pub mod buffer;
 pub mod context;
+pub mod scene_buffer;
 pub mod dds;
 pub mod debug;
 pub mod descriptors;

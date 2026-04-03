@@ -16,8 +16,8 @@ use byroredux_core::animation::{
 };
 use byroredux_core::ecs::{
     ActiveCamera, AnimatedAlpha, AnimatedColor, AnimatedVisibility, Camera, Children, Component,
-    DebugStats, DeltaTime, EngineConfig, GlobalTransform, MeshHandle, Name, Parent, Scheduler,
-    SparseSetStorage, TextureHandle, TotalTime, Transform, World,
+    DebugStats, DeltaTime, EngineConfig, GlobalTransform, LightSource, MeshHandle, Name, Parent,
+    Scheduler, SparseSetStorage, TextureHandle, TotalTime, Transform, World,
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::Resource;
@@ -1184,7 +1184,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(ref mut ctx) = self.renderer {
-                    let (view_proj, draw_commands) = build_render_data(&self.world);
+                    let (view_proj, draw_commands, gpu_lights, camera_pos) = build_render_data(&self.world);
 
                     // Record draw call count for diagnostics.
                     world_resource_set::<DebugStats>(&self.world, |s| {
@@ -1225,7 +1225,7 @@ impl ApplicationHandler for App {
                     }
 
                     let color = Color::CORNFLOWER_BLUE;
-                    match ctx.draw_frame(color.as_array(), &view_proj, &draw_commands, ui_tex) {
+                    match ctx.draw_frame(color.as_array(), &view_proj, &draw_commands, &gpu_lights, camera_pos, ui_tex) {
                         Ok(needs_recreate) => {
                             if needs_recreate {
                                 if let Some(ref win) = self.window {
@@ -1423,7 +1423,7 @@ fn build_command_registry() -> CommandRegistry {
 }
 
 /// Build the view-projection matrix and draw command list from ECS queries.
-fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>) {
+fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>, Vec<byroredux_renderer::GpuLight>, [f32; 3]) {
     use byroredux_core::math::Mat4;
 
     // Get camera view-projection.
@@ -1493,7 +1493,32 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>) {
     // Sort: opaque first, then alpha-blended; within each group sort by two_sided then texture.
     draw_commands.sort_unstable_by_key(|cmd| (cmd.alpha_blend, cmd.two_sided, cmd.texture_handle));
 
-    (view_proj, draw_commands)
+    // Collect lights from ECS.
+    let mut gpu_lights = Vec::new();
+    if let Some((tq, lq)) = world.query_2_mut::<GlobalTransform, LightSource>() {
+        for (entity, light) in lq.iter() {
+            if let Some(t) = tq.get(entity) {
+                gpu_lights.push(byroredux_renderer::GpuLight {
+                    position_radius: [t.translation.x, t.translation.y, t.translation.z, light.radius],
+                    color_type: [light.color[0], light.color[1], light.color[2], 0.0], // 0 = point
+                    direction_angle: [0.0, 0.0, 0.0, 0.0],
+                });
+            }
+        }
+    }
+
+    // Camera position.
+    let camera_pos = if let Some(active) = world.try_resource::<ActiveCamera>() {
+        let cam_entity = active.0;
+        drop(active);
+        let tq = world.query::<Transform>();
+        tq.and_then(|q| q.get(cam_entity).map(|t| [t.translation.x, t.translation.y, t.translation.z]))
+            .unwrap_or([0.0; 3])
+    } else {
+        [0.0; 3]
+    };
+
+    (view_proj, draw_commands, gpu_lights, camera_pos)
 }
 
 /// Build a scoped name→entity map by walking the subtree rooted at `root`.
