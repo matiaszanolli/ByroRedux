@@ -22,11 +22,14 @@ pub trait System: Send + Sync {
 /// Blanket impl: any `Fn(&World, f32) + Send + Sync` is a System.
 ///
 /// ```ignore
-/// scheduler.add(|world: &World, dt: f32| {
-///     // system logic here
-/// });
+/// // Stateless closure:
+/// scheduler.add(|world: &World, dt: f32| { /* ... */ });
+///
+/// // Stateful closure (FnMut — captures mutable state):
+/// let mut counter = 0u32;
+/// scheduler.add(move |_world: &World, _dt: f32| { counter += 1; });
 /// ```
-impl<F: Fn(&World, f32) + Send + Sync> System for F {
+impl<F: FnMut(&World, f32) + Send + Sync> System for F {
     fn run(&mut self, world: &World, dt: f32) {
         self(world, dt);
     }
