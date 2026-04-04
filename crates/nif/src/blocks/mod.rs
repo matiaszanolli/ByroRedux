@@ -76,7 +76,7 @@ pub fn parse_block(
     block_size: Option<u32>,
 ) -> io::Result<Box<dyn NiObject>> {
     match type_name {
-        "NiNode" | "BSFadeNode" | "BSLeafAnimNode" | "BSTreeNode" => {
+        "NiNode" | "BSFadeNode" | "BSLeafAnimNode" | "BSTreeNode" | "BSMultiBoundNode" => {
             Ok(Box::new(NiNode::parse(stream)?))
         }
         "NiTriShape" | "NiTriStrips" | "BSSegmentedTriShape" => {

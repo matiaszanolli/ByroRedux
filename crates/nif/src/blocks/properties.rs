@@ -129,10 +129,25 @@ impl NiTexturingProperty {
         let gloss_texture = if texture_count > 3 { Self::read_tex_desc(stream)? } else { None };
         let glow_texture = if texture_count > 4 { Self::read_tex_desc(stream)? } else { None };
         let bump_texture = if texture_count > 5 { Self::read_tex_desc(stream)? } else { None };
+        // nif.xml: bump texture has 3 extra fields after TexDesc.
+        if bump_texture.is_some() {
+            let _luma_scale = stream.read_f32_le()?;
+            let _luma_offset = stream.read_f32_le()?;
+            // Bump Map Matrix: 2x2 floats (Matrix22)
+            let _m00 = stream.read_f32_le()?;
+            let _m01 = stream.read_f32_le()?;
+            let _m10 = stream.read_f32_le()?;
+            let _m11 = stream.read_f32_le()?;
+        }
         let normal_texture = if texture_count > 6 { Self::read_tex_desc(stream)? } else { None };
 
         if texture_count > 7 {
-            let _ = Self::read_tex_desc(stream)?;
+            // Parallax texture (slot 7).
+            let parallax = Self::read_tex_desc(stream)?;
+            // nif.xml: Parallax Offset float after parallax TexDesc.
+            if parallax.is_some() {
+                let _parallax_offset = stream.read_f32_le()?;
+            }
         }
         for _ in 8..texture_count {
             let _ = Self::read_tex_desc(stream)?;

@@ -9,7 +9,6 @@
 
 use crate::stream::NifStream;
 use crate::types::{BlockRef, NiTransform};
-use crate::version::NifVersion;
 use std::io;
 
 /// NiObjectNET base class fields: name, extra data refs, controller ref.
@@ -57,8 +56,8 @@ impl NiAVObjectData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
 
-        // Flags: u32 for version >= 20.2.0.7, u16 for older (Oblivion).
-        let flags = if stream.version() >= NifVersion::V20_2_0_7 {
+        // Flags: u32 for bsver > 26 (FO3+), u16 for older (Oblivion and non-Bethesda).
+        let flags = if stream.variant().avobject_flags_u32() {
             stream.read_u32_le()?
         } else {
             stream.read_u16_le()? as u32

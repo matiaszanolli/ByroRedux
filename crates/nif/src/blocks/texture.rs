@@ -59,7 +59,8 @@ impl NiSourceTexture {
         let alpha_format = stream.read_u32_le()?;
         let is_static = stream.read_u8()? != 0;
 
-        if stream.version() >= crate::version::NifVersion(0x0A010006) {
+        // nif.xml: Direct Render since 10.1.0.103 (0x0A010067), NOT 10.1.0.6.
+        if stream.version() >= crate::version::NifVersion(0x0A010067) {
             let _direct_render = stream.read_byte_bool()?;
         }
 

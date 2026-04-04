@@ -24,10 +24,16 @@ pub struct BSShaderPPLightingProperty {
     pub shader: BSShaderPropertyData,
     pub texture_clamp_mode: u32,
     pub texture_set_ref: BlockRef,
-    pub emissive_color: [f32; 4],
+    /// Refraction strength (0.0–1.0). Present when bsver >= 15.
+    pub refraction_strength: f32,
+    /// Refraction fire period. Present when bsver >= 15.
+    pub refraction_fire_period: i32,
+    /// Parallax max passes. Present when bsver >= 24.
+    pub parallax_max_passes: f32,
+    /// Parallax scale. Present when bsver >= 24.
+    pub parallax_scale: f32,
 }
 
-// Backward-compatible field access for import.rs.
 impl BSShaderPPLightingProperty {
     pub fn shader_flags_1(&self) -> u32 { self.shader.shader_flags_1 }
     pub fn shader_flags_2(&self) -> u32 { self.shader.shader_flags_2 }
@@ -44,13 +50,26 @@ impl BSShaderPPLightingProperty {
         let (shader, texture_clamp_mode) = BSShaderPropertyData::parse_fo3(stream)?;
         let texture_set_ref = stream.read_block_ref()?;
 
-        let emissive_color = if stream.variant().has_shader_emissive_color() {
-            [stream.read_f32_le()?, stream.read_f32_le()?, stream.read_f32_le()?, stream.read_f32_le()?]
+        // nif.xml: Refraction Strength (f32) + Refraction Fire Period (i32) for bsver >= 15.
+        let bsver = stream.variant().bsver();
+        let (refraction_strength, refraction_fire_period) = if bsver >= 15 {
+            (stream.read_f32_le()?, stream.read_i32_le()?)
         } else {
-            [0.0, 0.0, 0.0, 1.0]
+            (0.0, 0)
         };
 
-        Ok(Self { net, shader, texture_clamp_mode, texture_set_ref, emissive_color })
+        // nif.xml: Parallax Max Passes (f32) + Parallax Scale (f32) for bsver >= 24.
+        let (parallax_max_passes, parallax_scale) = if bsver >= 24 {
+            (stream.read_f32_le()?, stream.read_f32_le()?)
+        } else {
+            (4.0, 1.0)
+        };
+
+        Ok(Self {
+            net, shader, texture_clamp_mode, texture_set_ref,
+            refraction_strength, refraction_fire_period,
+            parallax_max_passes, parallax_scale,
+        })
     }
 }
 
@@ -391,45 +410,50 @@ mod tests {
         data.extend_from_slice(&3u32.to_le_bytes());
         // texture_set_ref (i32)
         data.extend_from_slice(&5i32.to_le_bytes());
-        // emissive_color (4×f32) — only if user_version_2 >= 34
-        if user_version_2 >= 34 {
-            data.extend_from_slice(&0.1f32.to_le_bytes());
-            data.extend_from_slice(&0.2f32.to_le_bytes());
-            data.extend_from_slice(&0.3f32.to_le_bytes());
-            data.extend_from_slice(&0.9f32.to_le_bytes());
+        // Refraction/parallax fields — bsver >= 15 reads refraction, bsver >= 24 adds parallax.
+        // FNV: bsver=34, so both are present. Oblivion: bsver=0, so neither.
+        if user_version_2 >= 15 {
+            data.extend_from_slice(&0.5f32.to_le_bytes()); // refraction_strength
+            data.extend_from_slice(&10i32.to_le_bytes());  // refraction_fire_period
+        }
+        if user_version_2 >= 24 {
+            data.extend_from_slice(&4.0f32.to_le_bytes()); // parallax_max_passes
+            data.extend_from_slice(&1.5f32.to_le_bytes()); // parallax_scale
         }
         data
     }
 
     #[test]
-    fn parse_bsshader_fnv_reads_emissive_color() {
-        // Regression: user_version_2 >= 34 (FNV) must read 4 extra floats for emissive color.
+    fn parse_bsshader_fnv_reads_refraction_parallax() {
+        // FNV (bsver=34): reads refraction (bsver>=15) + parallax (bsver>=24) = 16 bytes.
         let header = make_header(11, 34);
         let data = build_bsshader_bytes(34);
         let mut stream = NifStream::new(&data, &header);
 
         let prop = BSShaderPPLightingProperty::parse(&mut stream).unwrap();
         assert_eq!(prop.texture_set_ref.index(), Some(5));
-        assert!((prop.emissive_color[0] - 0.1).abs() < 1e-6);
-        assert!((prop.emissive_color[1] - 0.2).abs() < 1e-6);
-        assert!((prop.emissive_color[2] - 0.3).abs() < 1e-6);
-        assert!((prop.emissive_color[3] - 0.9).abs() < 1e-6);
-        // All data consumed: 38 base + 16 emissive = 54 bytes
+        assert!((prop.refraction_strength - 0.5).abs() < 1e-6);
+        assert_eq!(prop.refraction_fire_period, 10);
+        assert!((prop.parallax_max_passes - 4.0).abs() < 1e-6);
+        assert!((prop.parallax_scale - 1.5).abs() < 1e-6);
+        // All data consumed: 38 base + 16 refraction/parallax = 54 bytes
         assert_eq!(stream.position(), 54);
     }
 
     #[test]
-    fn parse_bsshader_oblivion_no_emissive_color() {
-        // Regression: Oblivion (user_version=0) must NOT read emissive color.
+    fn parse_bsshader_oblivion_no_extra_fields() {
+        // Oblivion (bsver=0): no refraction or parallax fields.
         let header = make_header(0, 0);
         let data = build_bsshader_bytes(0);
         let mut stream = NifStream::new(&data, &header);
 
         let prop = BSShaderPPLightingProperty::parse(&mut stream).unwrap();
         assert_eq!(prop.texture_set_ref.index(), Some(5));
-        // Default emissive color
-        assert_eq!(prop.emissive_color, [0.0, 0.0, 0.0, 1.0]);
-        // Only 38 bytes consumed (no emissive)
+        assert_eq!(prop.refraction_strength, 0.0);
+        assert_eq!(prop.refraction_fire_period, 0);
+        assert!((prop.parallax_max_passes - 4.0).abs() < 1e-6); // defaults
+        assert!((prop.parallax_scale - 1.0).abs() < 1e-6);
+        // Only 38 bytes consumed (no extras)
         assert_eq!(stream.position(), 38);
     }
 }

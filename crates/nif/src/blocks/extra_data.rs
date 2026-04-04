@@ -44,7 +44,8 @@ impl NiExtraData {
                 integer_value = Some(stream.read_u32_le()?);
             }
             "NiBooleanExtraData" => {
-                integer_value = Some(stream.read_u32_le()?);
+                // nif.xml: Boolean Data is type "byte" (1 byte), NOT u32.
+                integer_value = Some(stream.read_u8()? as u32);
             }
             "NiBinaryExtraData" => {
                 let size = stream.read_u32_le()? as usize;
