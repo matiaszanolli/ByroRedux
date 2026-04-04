@@ -20,8 +20,11 @@ void main() {
     gl_Position = pc.viewProj * worldPos;
     fragColor = inColor;
     fragUV = inUV;
-    // Transform normal by inverse-transpose of the model matrix upper 3x3.
-    // Correct for non-uniform scale (mat3(model) alone distorts normals).
-    fragNormal = transpose(inverse(mat3(pc.model))) * inNormal;
+    // Transform normal by model's upper 3x3. For uniform scale (our
+    // Transform uses f32 scale), this is equivalent to inverse-transpose.
+    // Guard against zero-scale meshes (NIF placeholders, animated transitions)
+    // where mat3(model) is degenerate and normalize() would produce NaN.
+    vec3 n = mat3(pc.model) * inNormal;
+    fragNormal = (dot(n, n) > 0.0) ? normalize(n) : vec3(0.0, 1.0, 0.0);
     fragWorldPos = worldPos.xyz;
 }
