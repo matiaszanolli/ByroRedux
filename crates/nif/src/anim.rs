@@ -556,6 +556,7 @@ fn sample_float_key_group(group: &KeyGroup<FloatKey>, time: f32) -> f32 {
     let t = if dt > 0.0 { (time - k0.time) / dt } else { 0.0 };
 
     match group.key_type {
+        KeyType::Constant => k0.value, // Step: hold value until next key
         KeyType::Linear => k0.value + (k1.value - k0.value) * t,
         KeyType::Quadratic => {
             let t2 = t * t;

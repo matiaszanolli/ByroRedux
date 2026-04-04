@@ -1672,6 +1672,7 @@ fn convert_nif_clip(nif: &byroredux_nif::anim::AnimationClip) -> AnimationClip {
                 byroredux_nif::blocks::interpolator::KeyType::Quadratic => KeyType::Quadratic,
                 byroredux_nif::blocks::interpolator::KeyType::Tbc => KeyType::Tbc,
                 byroredux_nif::blocks::interpolator::KeyType::XyzRotation => KeyType::Linear,
+                byroredux_nif::blocks::interpolator::KeyType::Constant => KeyType::Linear,
             };
 
             let translation_keys = ch

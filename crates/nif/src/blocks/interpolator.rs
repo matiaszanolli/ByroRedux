@@ -20,6 +20,8 @@ pub enum KeyType {
     Quadratic = 2,
     Tbc = 3,
     XyzRotation = 4,
+    /// Step/constant interpolation — value holds until next key. Used by NiBoolData.
+    Constant = 5,
 }
 
 impl KeyType {
@@ -29,6 +31,7 @@ impl KeyType {
             2 => Ok(Self::Quadratic),
             3 => Ok(Self::Tbc),
             4 => Ok(Self::XyzRotation),
+            5 => Ok(Self::Constant),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("unknown KeyType: {}", v),
@@ -91,7 +94,7 @@ impl KeyGroup<FloatKey> {
             let mut tangent_backward = 0.0;
             let mut tbc = None;
             match key_type {
-                KeyType::Linear => {}
+                KeyType::Linear | KeyType::Constant => {}
                 KeyType::Quadratic => {
                     tangent_forward = stream.read_f32_le()?;
                     tangent_backward = stream.read_f32_le()?;
@@ -142,7 +145,7 @@ impl KeyGroup<Vec3Key> {
             let mut tangent_backward = [0.0; 3];
             let mut tbc = None;
             match key_type {
-                KeyType::Linear => {}
+                KeyType::Linear | KeyType::Constant => {}
                 KeyType::Quadratic => {
                     tangent_forward = [
                         stream.read_f32_le()?,
@@ -452,9 +455,9 @@ impl NiObject for NiBoolInterpolator {
 
 impl NiBoolInterpolator {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // Bool value is stored as a u8 in pre-20.2 and u32 in 20.2+
-        // nif.xml says "NiBoolInterpolator" has: bool_value (NiBool), data_ref
-        let value = stream.read_bool()?;
+        // nif.xml: NiBoolInterpolator.bool_value is type "bool" (1 byte),
+        // NOT "NiBool" (version-dependent u32/u8). Always a single byte.
+        let value = stream.read_byte_bool()?;
         let data_ref = stream.read_block_ref()?;
         Ok(Self { value, data_ref })
     }
