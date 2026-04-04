@@ -105,7 +105,100 @@ NiBoolInterpolator, NiBoolData, NiTextKeyExtraData.
 
 ---
 
-## Next Milestones
+## NIF Parser Overhaul (N23 — Priority 0, Active)
+
+The NIF binary format is the foundation of all visual content. Correct parsing across all
+games (Oblivion through Starfield) must come before renderer features.
+
+### N23.1: Trait Hierarchy and Base Class Extraction — DONE
+**Status:** Complete
+**Scope:** Refactored flat block structs into composable base class hierarchy:
+NiObjectNETData, NiAVObjectData (with parse_no_properties() for BSTriShape),
+BSShaderPropertyData. Consumer traits: HasObjectNET, HasAVObject, HasShaderRefs.
+Also fixed via `/audit-nif --game fnv` (7 bugs): NiBoolInterpolator bool size,
+KeyType::Constant, NiBooleanExtraData, BSShaderPPLightingProperty refraction/parallax,
+NiTexturingProperty bump map fields (root cause of stream position warnings),
+parallax offset, BSMultiBoundNode dispatch, version thresholds.
+**Result:** 11 blocks migrated. Base class parsing deduplicated (11→1, 3→1, 4→1).
+Net -211 lines. 95 NIF tests, 282 workspace tests. 11 audit commands.
+
+### N23.2: BSLightingShaderProperty Completeness
+**Status:** Planned
+**Scope:** Parse all 14 shader-type-specific trailing fields (env map, skin tint,
+parallax, eye cubemap, multilayer, etc.). Fix FO4 shader flags. BSEffectShaderProperty
+remaining fields for FO4+.
+**Block count:** 0 new (fixes 2 existing types) | **Games:** Skyrim LE/SE, FO4
+
+### N23.3: Oblivion Support
+**Status:** Planned
+**Scope:** NIF v20.0.0.5 (no block sizes, inline strings). +15 block types:
+NiStencilProperty, NiSpecularProperty, NiVertexColorProperty, NiZBufferProperty,
+NiWireframeProperty, NiDitherProperty, NiShadeProperty, NiGeomMorpherController,
+NiMorphData, NiPixelData, NiSkinInstance, NiSkinData, NiSkinPartition,
+RootCollisionNode, NiStringPalette. NiTexturingProperty → NiSourceTexture materials.
+**Block count:** +15 (total ~63) | **Games:** Oblivion
+
+### N23.4: Fallout 3/NV Validation
+**Status:** Planned
+**Scope:** +8 block types: BSMultiBound(Node/AABB/OBB), BSOrderedNode, BSValueNode,
+BSDecalPlacementVectorExtraData, BSBound. Validate 20+ FNV NIFs, 10+ FO3 NIFs.
+**Block count:** +8 (total ~71) | **Games:** FO3, FNV
+
+### N23.5: Skinning and Dismemberment
+**Status:** Planned
+**Scope:** NiSkinInstance, NiSkinData, NiSkinPartition, BSDismemberSkinInstance,
+BSSkin::Instance + BSSkin::BoneData (FO4+). HasSkinning trait. bone_weights/indices
+in ImportedMesh.
+**Block count:** +6 (total ~77) | **Games:** All (characters)
+
+### N23.6: Collision (Havok)
+**Status:** Planned
+**Scope:** ~20 bhk blocks: CollisionObject, RigidBody/T, MoppBvTreeShape,
+CompressedMeshShape, Box/Sphere/Capsule/ConvexVertices, ListShape, TransformShape,
+constraints (Ragdoll/Hinge/LimitedHinge/BallAndSocket). HasCollision trait.
+**Block count:** +20 (total ~97) | **Games:** Oblivion through Skyrim SE
+
+### N23.7: Fallout 4 Support
+**Status:** Planned
+**Scope:** BSTriShape half-float positions, BSSubIndexTriShape, BSClothExtraData,
+BSConnectPoint, BSBehaviorGraphExtraData, BSInvMarker, .bgsm material paths.
+**Block count:** +8 (total ~105) | **Games:** Fallout 4
+
+### N23.8: Particle Systems
+**Status:** Planned
+**Scope:** NiParticleSystem, NiPSysData, ~15 modifier/emitter subclasses.
+Parse-only — no rendering.
+**Block count:** +18 (total ~123) | **Games:** All (effects)
+
+### N23.9: Fallout 76 and Starfield
+**Status:** Planned
+**Scope:** FO76 shader stopcond, BSGeometry, BSMaterial, extended flags.
+Starfield: BSGeometrySegmentData, material paths.
+**Block count:** +7-10 (total ~130+) | **Games:** FO76, Starfield
+
+### N23.10: Test Infrastructure
+**Status:** Planned (parallel)
+**Scope:** Per-game integration tests, `nif-stats` binary, configurable asset paths.
+**Acceptance:** 95%+ parse success rate per game.
+
+### N23 Summary
+
+| # | Milestone | Blocks | Total | Status |
+|---|-----------|--------|-------|--------|
+| N23.1 | Trait hierarchy + FNV audit | 0 | ~49 | **DONE** |
+| N23.2 | Shader completeness | 0 | ~49 | Planned |
+| N23.3 | Oblivion | +15 | ~64 | Planned |
+| N23.4 | FO3/FNV validation | +8 | ~72 | Planned |
+| N23.5 | Skinning | +6 | ~78 | Planned |
+| N23.6 | Collision | +20 | ~98 | Planned |
+| N23.7 | Fallout 4 | +8 | ~106 | Planned |
+| N23.8 | Particles | +18 | ~124 | Planned |
+| N23.9 | FO76/Starfield | +7 | ~131 | Planned |
+| N23.10 | Test infra | 0 | ~131 | Planned |
+
+---
+
+## Completed Milestones (M1–M22)
 
 ### M19: Full Cell Loading — DONE
 **Status:** Complete
@@ -141,161 +234,13 @@ coordinate conversion for keyframe data. StringPool-based Name components on imp
 animation blending (#4), BSA KF loading (#5), NiControllerManager (#6), text key events (#7),
 root motion (#8), name collision fix (#9), name lookup caching (#10). Skeletal animation in M29.
 
-### M22: RT-First Multi-Light System — IN PROGRESS (halted for NIF priority)
-**Status:** Phase A+B landed, halted for NIF correctness priority
+### M22: RT-First Multi-Light System — DONE (polish deferred)
+**Status:** Phase A+B landed. Polish deferred for NIF correctness priority.
 **Scope:** SSBO multi-light rendering (Phase A), RT shadow rays via VK_KHR_ray_query (Phase B).
 Cell interior XCLL lighting (ambient + directional), windowed inverse-square attenuation.
 BLAS per mesh, TLAS rebuilt per frame, dynamic depth bias for NIF-flagged decals.
-**Result:** Prospector Saloon renders with 25 point lights + directional + RT shadows at 85 FPS.
-**Remaining:** Shadow quality (soft shadows, penumbra), emissive mesh bypass, lighting tuning.
-**Halted:** NIF parser correctness is now P0 — correct geometry is prerequisite for correct lighting.
-
----
-
-## NIF Parser Overhaul (N23 — Priority 0)
-
-The NIF binary format is the foundation of all visual content. Correct parsing across all
-games (Oblivion through Starfield) must come before renderer features. This replaces the
-previous M23-M29 medium-term roadmap with a focused NIF correctness effort.
-
-### N23.1: Trait Hierarchy and Base Class Extraction — DONE
-**Status:** Complete
-**Scope:** Refactored flat block structs into composable base class hierarchy:
-NiObjectNETData (name, extra_data_refs, controller_ref), NiAVObjectData (flags,
-transform, properties, collision_ref) with parse_no_properties() variant for BSTriShape,
-BSShaderPropertyData (shader_flags, type, flags_1/2, env_map_scale).
-Consumer traits: HasObjectNET, HasAVObject, HasShaderRefs. NiObject extended with
-as_object_net(), as_av_object(), as_shader_refs() upcasts.
-Also fixed via `/audit-nif --game fnv` (7 bugs):
-NiBoolInterpolator bool size (u32→u8), KeyType::Constant, NiBooleanExtraData (u32→u8),
-BSShaderPPLightingProperty refraction/parallax fields (was reading wrong emissive_color),
-NiTexturingProperty bump map fields (luma scale/offset/matrix22 — root cause of all stream
-position warnings), parallax offset, BSMultiBoundNode dispatch, version threshold fixes.
-**Result:** 11 blocks migrated. NiObjectNET parsing in 1 location (was 11). NiAVObject
-parsing in 1 location (was 3). BSShaderProperty parsing in 1 location (was 4).
-Net -211 lines removed. 95 NIF tests, 282 workspace tests passing.
-Audit infrastructure: 11 audit commands (was 6), including /audit-nif, /audit-performance,
-/audit-regression, /audit-incremental, /audit-concurrency.
-
-### N23.2: BSLightingShaderProperty Completeness
-**Status:** Planned
-**Scope:** Parse all 14 shader-type-specific trailing fields in BSLightingShaderProperty (env map,
-skin tint, parallax, eye cubemap, multilayer, etc.). Fix FO4 shader flags (currently zeroed).
-Parse BSEffectShaderProperty remaining fields for FO4+. Implement BSShaderPropertyBase for
-proper inheritance of shader_type/flags across all versions.
-**Depends on:** N23.1
-**Block count:** 0 new (fixes incomplete parsing of 2 existing types)
-**Acceptance:** Stream position matches block_size for all shader types — no more "adjusting
-position" warnings. FO4 shader flags non-zero. Unit tests per shader subtype.
-
-### N23.3: Oblivion Support
-**Status:** Planned
-**Scope:** Handle NIF v20.0.0.5 (no block sizes, inline strings). Add ~15 block types:
-NiStencilProperty, NiSpecularProperty, NiVertexColorProperty, NiZBufferProperty,
-NiWireframeProperty, NiDitherProperty, NiShadeProperty, NiGeomMorpherController,
-NiMorphData, NiPixelData, NiSkinInstance, NiSkinData, NiSkinPartition,
-RootCollisionNode, NiStringPalette. Handle NiTexturingProperty → NiSourceTexture
-texture path extraction for Oblivion materials.
-**Depends on:** N23.1
-**Block count:** +15 (total ~63)
-**Acceptance:** 5+ diverse Oblivion NIFs parse without errors. Import produces correct meshes.
-
-### N23.4: Fallout 3 Validation and FO3-Specific Blocks
-**Status:** Planned
-**Scope:** Add FO3-specific block types: BSMultiBoundNode, BSMultiBound, BSMultiBoundAABB/OBB,
-BSOrderedNode, BSValueNode, BSDecalPlacementVectorExtraData, BSBound. Validate FNV parsing
-against 20+ diverse NIFs. Fix NiTexturingProperty edge cases.
-**Depends on:** N23.3
-**Block count:** +8 (total ~71)
-**Acceptance:** 20+ FNV NIFs parse without stream position warnings. 10+ FO3 NIFs parse clean.
-
-### N23.5: Skinning and Dismemberment
-**Status:** Planned
-**Scope:** Full skinning for characters/creatures across all games. NiSkinInstance (bone refs,
-root bone, partition ref), NiSkinData (per-bone transforms, vertex weights), NiSkinPartition
-(GPU-friendly partitions), BSDismemberSkinInstance (Skyrim+ body part flags), BSSkin::Instance
-+ BSSkin::BoneData (FO4+ format). HasSkinning consumer trait. ImportedMesh gains bone_weights,
-bone_indices, bone_names, inverse_bind_matrices.
-**Depends on:** N23.3
-**Block count:** +6 (total ~77)
-**Acceptance:** Skinned NIFs from Oblivion, Skyrim, and FO4 parse with correct bone counts/weights.
-
-### N23.6: Collision (Havok)
-**Status:** Planned
-**Scope:** Parse bhk collision blocks: bhkCollisionObject, bhkRigidBody/T, bhkMoppBvTreeShape,
-bhkCompressedMeshShape/Data, bhkPackedNiTriStripsShape, hkPackedNiTriStripsData,
-bhkBoxShape/SphereShape/CapsuleShape/ConvexVerticesShape, bhkListShape,
-bhkTransformShape/ConvexTransformShape, bhkRagdollConstraint/HingeConstraint/
-LimitedHingeConstraint/BallAndSocketConstraint. HasCollision consumer trait.
-Havok scale factor (6.9969 Oblivion, 7.0 Skyrim).
-**Depends on:** N23.3
-**Block count:** +20 (total ~97)
-**Acceptance:** Oblivion static with box collision, Skyrim clutter with MOPP, ragdoll skeleton.
-
-### N23.7: Fallout 4 Support
-**Status:** Planned
-**Scope:** Complete BSTriShape for FO4: half-float positions, u32 triangle count, vertex
-descriptor differences. BSSubIndexTriShape (segmented geometry), BSClothExtraData,
-BSConnectPoint::Parents/Children, BSBehaviorGraphExtraData, BSInvMarker. FO4 material
-system: root_material string → .bgsm path. Verify FO4 shader flags from N23.2.
-**Depends on:** N23.2, N23.5
-**Block count:** +8 (total ~105)
-**Acceptance:** 20+ FO4 NIFs parse without errors (statics, weapons, armor, furniture).
-
-### N23.8: Particle Systems
-**Status:** Planned
-**Scope:** NiParticleSystem, BSStripParticleSystem, NiPSysData, BSStripPSysData,
-NiPSysModifier subclasses (Gravity, Position, Bound, Rotation, Color),
-BSPSysScaleModifier, BSPSysSimpleColorModifier, NiPSysEmitter subclasses
-(Mesh, Box, Sphere, Cylinder), NiPSysEmitterCtlr, NiPSysModifierActiveCtlr.
-Parse-only — no rendering at this stage.
-**Depends on:** N23.4
-**Block count:** +18 (total ~123)
-**Acceptance:** Magic effect NIFs (Skyrim), torch NIFs (FNV), weather particles (FO4) parse clean.
-
-### N23.9: Fallout 76 and Starfield
-**Status:** Planned
-**Scope:** FO76 (BSVER 155): shader stopcond, BSGeometry base class, BSMaterial references,
-extended shader flags. Starfield (BSVER 170+): further BSGeometry changes, mesh format,
-material path references, BSGeometrySegmentData. Updated nif.xml or reverse engineering needed.
-**Depends on:** N23.7
-**Block count:** +7-10 (total ~130+)
-**Acceptance:** 10+ FO76 NIFs parse clean. Starfield NIFs if test assets available.
-
-### N23.10: Test Infrastructure and Validation Suite
-**Status:** Planned (parallel with N23.3+)
-**Scope:** Formalized integration test framework. Per-game test modules in `crates/nif/tests/`.
-Configurable test asset directory (env var BYROREDUX_TEST_ASSETS). `nif-stats` binary for
-corpus analysis (parse rate, block type frequency, unknown block histogram). Property-based
-testing for version/variant consistency.
-**Acceptance:** Test suite in CI (skipped without assets). 95%+ parse success rate per game.
-
-### N23 Dependency Graph
-
-```
-N23.1 (Trait hierarchy)
-  ├── N23.2 (Shaders) ──── N23.7 (FO4) ──── N23.9 (FO76/Starfield)
-  ├── N23.3 (Oblivion)
-  │     ├── N23.4 (FO3/FNV) ──── N23.8 (Particles)
-  │     ├── N23.5 (Skinning)
-  │     └── N23.6 (Collision)
-  └── N23.10 (Test infra — parallel)
-```
-
-### N23 Summary Table
-
-| # | Milestone | New Blocks | Cumulative | Primary Game |
-|---|-----------|-----------|------------|-------------|
-| N23.1 | Trait hierarchy | 0 | ~48 | **DONE** |
-| N23.2 | Shader completeness | 0 | ~48 | Skyrim/FO4 |
-| N23.3 | Oblivion | +15 | ~63 | Oblivion |
-| N23.4 | FO3/FNV validation | +8 | ~71 | FO3, FNV |
-| N23.5 | Skinning | +6 | ~77 | All (characters) |
-| N23.6 | Collision | +20 | ~97 | All (physics) |
-| N23.7 | Fallout 4 | +8 | ~105 | Fallout 4 |
-| N23.8 | Particles | +18 | ~123 | All (effects) |
-| N23.9 | FO76/Starfield | +7 | ~130 | FO76, Starfield |
-| N23.10 | Test infra | 0 | ~130 | All (validation) |
+**Result:** Prospector Saloon: 25 point lights + directional + RT shadows at 85 FPS.
+**Deferred:** Soft shadows, emissive mesh bypass, lighting tuning (resumes after N23).
 
 ---
 
@@ -335,7 +280,7 @@ N23.1 (Trait hierarchy)
 - [x] ~~Gamebryo CW rotation convention~~ → Euler angle sign fix (M17)
 - [x] ~~Editor markers render~~ → filtered by name prefix (M17)
 - [x] ~~Light ray effect meshes render~~ → FX mesh filtering (M17)
-- [ ] 43 remaining NiTexturingProperty byte-count warnings
+- [x] ~~43 NiTexturingProperty byte-count warnings~~ → bump map fields + parallax offset fixed (N23.1)
 - [ ] Backface culling disabled pending winding verification (confirmed CCW from Skyrim data)
 
 ### Parser Gaps
