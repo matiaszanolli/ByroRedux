@@ -353,11 +353,8 @@ pub fn create_ui_pipeline(
         .logic_op_enable(false)
         .attachments(&color_blend_attachment);
 
-    let dynamic_states = [
-        vk::DynamicState::VIEWPORT,
-        vk::DynamicState::SCISSOR,
-        vk::DynamicState::DEPTH_BIAS,
-    ];
+    // No DEPTH_BIAS — UI pipeline has depth_bias_enable(false).
+    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
     let dynamic_state =
         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
