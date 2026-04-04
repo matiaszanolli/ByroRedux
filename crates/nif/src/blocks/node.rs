@@ -5,6 +5,8 @@
 
 use crate::stream::NifStream;
 use crate::types::{BlockRef, NiTransform};
+use super::base::NiAVObjectData;
+use super::traits::{HasAVObject, HasObjectNET};
 use super::NiObject;
 use std::any::Any;
 use std::io;
@@ -12,15 +14,27 @@ use std::io;
 /// Scene graph node (NiNode, BSFadeNode, etc.).
 #[derive(Debug)]
 pub struct NiNode {
-    pub name: Option<String>,
-    pub extra_data_refs: Vec<BlockRef>,
-    pub controller_ref: BlockRef,
-    pub flags: u32,
-    pub transform: NiTransform,
-    pub properties: Vec<BlockRef>,
-    pub collision_ref: BlockRef,
+    /// NiObjectNET + NiAVObject base fields.
+    pub av: NiAVObjectData,
+    /// NiNode-specific: child node/geometry references.
     pub children: Vec<BlockRef>,
+    /// NiNode-specific: dynamic effect references (removed in FO4+).
     pub effects: Vec<BlockRef>,
+
+    // Public accessors for backward compatibility with existing code
+    // that accesses fields directly. These will be removed once all
+    // consumers migrate to trait-based access.
+}
+
+// Convenience accessors for direct field access (backward compat).
+impl NiNode {
+    pub fn name(&self) -> Option<&str> { self.av.net.name.as_deref() }
+    pub fn flags(&self) -> u32 { self.av.flags }
+    pub fn transform(&self) -> &NiTransform { &self.av.transform }
+    pub fn collision_ref(&self) -> BlockRef { self.av.collision_ref }
+    pub fn properties(&self) -> &[BlockRef] { &self.av.properties }
+    pub fn extra_data_refs(&self) -> &[BlockRef] { &self.av.net.extra_data_refs }
+    pub fn controller_ref(&self) -> BlockRef { self.av.net.controller_ref }
 }
 
 impl NiObject for NiNode {
@@ -31,30 +45,27 @@ impl NiObject for NiNode {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    fn as_object_net(&self) -> Option<&dyn HasObjectNET> { Some(self) }
+    fn as_av_object(&self) -> Option<&dyn HasAVObject> { Some(self) }
+}
+
+impl HasObjectNET for NiNode {
+    fn name(&self) -> Option<&str> { self.av.net.name.as_deref() }
+    fn extra_data_refs(&self) -> &[BlockRef] { &self.av.net.extra_data_refs }
+    fn controller_ref(&self) -> BlockRef { self.av.net.controller_ref }
+}
+
+impl HasAVObject for NiNode {
+    fn flags(&self) -> u32 { self.av.flags }
+    fn transform(&self) -> &NiTransform { &self.av.transform }
+    fn properties(&self) -> &[BlockRef] { &self.av.properties }
+    fn collision_ref(&self) -> BlockRef { self.av.collision_ref }
 }
 
 impl NiNode {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // NiObjectNET fields
-        let name = stream.read_string()?;
-        let extra_data_refs = stream.read_block_ref_list()?;
-        let controller_ref = stream.read_block_ref()?;
-
-        // NiAVObject fields
-        let flags = if stream.version() >= crate::version::NifVersion::V20_2_0_7 {
-            stream.read_u32_le()?
-        } else {
-            stream.read_u16_le()? as u32
-        };
-        let transform = stream.read_ni_transform()?;
-        // Skyrim+ removes the properties list from NiAVObject (BSVER > 34).
-        // Shader/alpha are referenced via dedicated NiGeometry fields instead.
-        let properties = if stream.variant().has_properties_list() {
-            stream.read_block_ref_list()?
-        } else {
-            Vec::new()
-        };
-        let collision_ref = stream.read_block_ref()?;
+        let av = NiAVObjectData::parse(stream)?;
 
         // NiNode-specific fields
         let children = stream.read_block_ref_list()?;
@@ -66,13 +77,7 @@ impl NiNode {
         };
 
         Ok(Self {
-            name,
-            extra_data_refs,
-            controller_ref,
-            flags,
-            transform,
-            properties,
-            collision_ref,
+            av,
             children,
             effects,
         })

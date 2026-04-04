@@ -37,20 +37,20 @@ fn main() {
 
         // Try as NiNode
         if let Some(node) = block.as_any().downcast_ref::<byroredux_nif::blocks::node::NiNode>() {
-            println!(" name={:?}", node.name);
-            println!("  flags: 0x{:04X}", node.flags);
-            dump_transform(&node.transform);
+            println!(" name={:?}", node.av.net.name);
+            println!("  flags: 0x{:04X}", node.av.flags);
+            dump_transform(&node.av.transform);
             println!("  children: {:?}", node.children.iter()
                 .map(|r| format!("{:?}", r.index()))
                 .collect::<Vec<_>>());
         }
         // Try as NiTriShape
         else if let Some(shape) = block.as_any().downcast_ref::<byroredux_nif::blocks::tri_shape::NiTriShape>() {
-            println!(" name={:?}", shape.name);
-            println!("  flags: 0x{:04X}", shape.flags);
-            dump_transform(&shape.transform);
+            println!(" name={:?}", shape.av.net.name);
+            println!("  flags: 0x{:04X}", shape.av.flags);
+            dump_transform(&shape.av.transform);
             println!("  data_ref: {:?}", shape.data_ref.index());
-            println!("  properties: {:?}", shape.properties.iter()
+            println!("  properties: {:?}", shape.av.properties.iter()
                 .map(|r| format!("{:?}", r.index()))
                 .collect::<Vec<_>>());
         }

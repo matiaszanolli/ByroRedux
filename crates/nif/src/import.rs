@@ -118,23 +118,23 @@ fn walk_node_hierarchical(
     let Some(block) = scene.get(block_idx) else { return };
 
     if let Some(node) = block.as_any().downcast_ref::<NiNode>() {
-        if node.flags & 0x01 != 0 {
+        if node.av.flags & 0x01 != 0 {
             return;
         }
-        if is_editor_marker(node.name.as_deref()) {
+        if is_editor_marker(node.av.net.name.as_deref()) {
             return;
         }
 
         // Convert this node's LOCAL transform to Y-up.
-        let t = &node.transform.translation;
-        let quat = zup_matrix_to_yup_quat(&node.transform.rotation);
+        let t = &node.av.transform.translation;
+        let quat = zup_matrix_to_yup_quat(&node.av.transform.rotation);
 
         let this_node_idx = out.nodes.len();
         out.nodes.push(ImportedNode {
-            name: node.name.clone(),
+            name: node.av.net.name.clone(),
             translation: [t.x, t.z, -t.y],
             rotation: quat,
-            scale: node.transform.scale,
+            scale: node.av.transform.scale,
             parent_node: parent_node_idx,
         });
 
@@ -147,8 +147,8 @@ fn walk_node_hierarchical(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<NiTriShape>() {
-        if shape.flags & 0x01 != 0 { return; }
-        if is_editor_marker(shape.name.as_deref()) { return; }
+        if shape.av.flags & 0x01 != 0 { return; }
+        if is_editor_marker(shape.av.net.name.as_deref()) { return; }
 
         if let Some(mesh) = extract_mesh_local(scene, shape) {
             let mut mesh = mesh;
@@ -158,8 +158,8 @@ fn walk_node_hierarchical(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<BsTriShape>() {
-        if shape.flags & 0x01 != 0 { return; }
-        if is_editor_marker(shape.name.as_deref()) { return; }
+        if shape.av.flags & 0x01 != 0 { return; }
+        if is_editor_marker(shape.av.net.name.as_deref()) { return; }
 
         if let Some(mesh) = extract_bs_tri_shape_local(scene, shape) {
             let mut mesh = mesh;
@@ -179,13 +179,13 @@ fn walk_node_flat(
     let Some(block) = scene.get(block_idx) else { return };
 
     if let Some(node) = block.as_any().downcast_ref::<NiNode>() {
-        if node.flags & 0x01 != 0 {
+        if node.av.flags & 0x01 != 0 {
             return;
         }
-        if is_editor_marker(node.name.as_deref()) {
+        if is_editor_marker(node.av.net.name.as_deref()) {
             return;
         }
-        let world_transform = compose_transforms(parent_transform, &node.transform);
+        let world_transform = compose_transforms(parent_transform, &node.av.transform);
 
         for child_ref in &node.children {
             if let Some(idx) = child_ref.index() {
@@ -196,9 +196,9 @@ fn walk_node_flat(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<NiTriShape>() {
-        if shape.flags & 0x01 != 0 { return; }
-        if is_editor_marker(shape.name.as_deref()) { return; }
-        let world_transform = compose_transforms(parent_transform, &shape.transform);
+        if shape.av.flags & 0x01 != 0 { return; }
+        if is_editor_marker(shape.av.net.name.as_deref()) { return; }
+        let world_transform = compose_transforms(parent_transform, &shape.av.transform);
 
         if let Some(mesh) = extract_mesh(scene, shape, &world_transform) {
             out.push(mesh);
@@ -206,9 +206,9 @@ fn walk_node_flat(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<BsTriShape>() {
-        if shape.flags & 0x01 != 0 { return; }
-        if is_editor_marker(shape.name.as_deref()) { return; }
-        let world_transform = compose_transforms(parent_transform, &shape.transform);
+        if shape.av.flags & 0x01 != 0 { return; }
+        if is_editor_marker(shape.av.net.name.as_deref()) { return; }
+        let world_transform = compose_transforms(parent_transform, &shape.av.transform);
 
         if let Some(mesh) = extract_bs_tri_shape(scene, shape, &world_transform) {
             out.push(mesh);
@@ -315,7 +315,7 @@ fn extract_mesh(
         translation: [t.x, t.z, -t.y],
         rotation: quat,
         scale: world_transform.scale,
-        name: shape.name.clone(),
+        name: shape.av.net.name.clone(),
         texture_path,
         has_alpha,
         two_sided,
@@ -330,7 +330,7 @@ fn extract_mesh_local(
     shape: &NiTriShape,
 ) -> Option<ImportedMesh> {
     // Pass shape's own transform as the "world" transform — extract_mesh converts it to Y-up.
-    extract_mesh(scene, shape, &shape.transform)
+    extract_mesh(scene, shape, &shape.av.transform)
 }
 
 /// Extract an ImportedMesh from a BsTriShape (Skyrim SE+ self-contained geometry).
@@ -402,7 +402,7 @@ fn extract_bs_tri_shape(
         translation: [t.x, t.z, -t.y],
         rotation: quat,
         scale: world_transform.scale,
-        name: shape.name.clone(),
+        name: shape.av.net.name.clone(),
         texture_path,
         has_alpha,
         two_sided,
@@ -416,7 +416,7 @@ fn extract_bs_tri_shape_local(
     scene: &NifScene,
     shape: &BsTriShape,
 ) -> Option<ImportedMesh> {
-    extract_bs_tri_shape(scene, shape, &shape.transform)
+    extract_bs_tri_shape(scene, shape, &shape.av.transform)
 }
 
 /// Find texture path for BsTriShape via its shader_property_ref.
@@ -461,7 +461,7 @@ fn extract_material(
 
     // Search properties for NiMaterialProperty
     let mut diffuse = [1.0f32; 3]; // default white
-    for prop_ref in &shape.properties {
+    for prop_ref in &shape.av.properties {
         if let Some(idx) = prop_ref.index() {
             if let Some(mat) = scene.get_as::<NiMaterialProperty>(idx) {
                 diffuse = [mat.diffuse.r, mat.diffuse.g, mat.diffuse.b];
@@ -505,7 +505,7 @@ fn find_texture_path(scene: &NifScene, shape: &NiTriShape) -> Option<String> {
     }
 
     // FO3/FNV/Oblivion path: search properties list
-    for prop_ref in &shape.properties {
+    for prop_ref in &shape.av.properties {
         let idx = match prop_ref.index() {
             Some(i) => i,
             None => continue,
@@ -559,7 +559,7 @@ fn find_alpha_property(scene: &NifScene, shape: &NiTriShape) -> bool {
         }
     }
     // Check properties list (FO3/FNV/Oblivion).
-    for prop_ref in &shape.properties {
+    for prop_ref in &shape.av.properties {
         if let Some(idx) = prop_ref.index() {
             if let Some(alpha) = scene.get_as::<NiAlphaProperty>(idx) {
                 return alpha.flags & 1 != 0;
@@ -583,7 +583,7 @@ fn find_two_sided(scene: &NifScene, shape: &NiTriShape) -> bool {
             }
         }
     }
-    for prop_ref in &shape.properties {
+    for prop_ref in &shape.av.properties {
         if let Some(idx) = prop_ref.index() {
             // Bethesda path: BSShaderPPLightingProperty SF_DOUBLE_SIDED flag.
             if let Some(shader) = scene.get_as::<BSShaderPPLightingProperty>(idx) {
@@ -654,7 +654,7 @@ fn find_decal(scene: &NifScene, shape: &NiTriShape) -> bool {
         }
     }
     // FO3/FNV: properties list.
-    for prop_ref in &shape.properties {
+    for prop_ref in &shape.av.properties {
         if let Some(idx) = prop_ref.index() {
             if let Some(shader) = scene.get_as::<BSShaderPPLightingProperty>(idx) {
                 if shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0
@@ -889,14 +889,19 @@ mod tests {
     }
 
     fn make_ni_node(transform: NiTransform, children: Vec<BlockRef>) -> NiNode {
+        use crate::blocks::base::{NiObjectNETData, NiAVObjectData};
         NiNode {
-            name: Some("TestNode".to_string()),
-            extra_data_refs: Vec::new(),
-            controller_ref: BlockRef::NULL,
-            flags: 0,
-            transform,
-            properties: Vec::new(),
-            collision_ref: BlockRef::NULL,
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: Some("TestNode".to_string()),
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef::NULL,
+                },
+                flags: 0,
+                transform,
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
             children,
             effects: Vec::new(),
         }
@@ -908,14 +913,19 @@ mod tests {
         data_ref: u32,
         properties: Vec<BlockRef>,
     ) -> NiTriShape {
+        use crate::blocks::base::{NiObjectNETData, NiAVObjectData};
         NiTriShape {
-            name: Some(name.to_string()),
-            extra_data_refs: Vec::new(),
-            controller_ref: BlockRef::NULL,
-            flags: 0,
-            transform,
-            properties,
-            collision_ref: BlockRef::NULL,
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: Some(name.to_string()),
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef::NULL,
+                },
+                flags: 0,
+                transform,
+                properties,
+                collision_ref: BlockRef::NULL,
+            },
             data_ref: BlockRef(data_ref),
             skin_instance_ref: BlockRef::NULL,
             shader_property_ref: BlockRef::NULL,

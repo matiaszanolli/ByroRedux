@@ -4,6 +4,7 @@
 //! header's block type table. This module maps those names to parsers
 //! and provides the NiObject trait that all parsed blocks implement.
 
+pub mod base;
 pub mod node;
 pub mod tri_shape;
 pub mod properties;
@@ -12,6 +13,7 @@ pub mod extra_data;
 pub mod controller;
 pub mod shader;
 pub mod interpolator;
+pub mod traits;
 
 use crate::stream::NifStream;
 use node::NiNode;
@@ -39,6 +41,13 @@ use std::io;
 pub trait NiObject: Debug + Send + Sync {
     fn block_type_name(&self) -> &'static str;
     fn as_any(&self) -> &dyn Any;
+
+    /// Upcast to NiObjectNET if this block has name/extra_data/controller.
+    fn as_object_net(&self) -> Option<&dyn traits::HasObjectNET> { None }
+    /// Upcast to NiAVObject if this block has transform/flags/collision.
+    fn as_av_object(&self) -> Option<&dyn traits::HasAVObject> { None }
+    /// Upcast to shader refs if this block provides shader/alpha property refs.
+    fn as_shader_refs(&self) -> Option<&dyn traits::HasShaderRefs> { None }
 }
 
 /// A parsed block that we don't have a specific parser for.

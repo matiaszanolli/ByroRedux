@@ -7,7 +7,8 @@
 use crate::stream::NifStream;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
 use crate::version::NifVersion;
-use super::NiObject;
+use super::base::NiAVObjectData;
+use super::{traits, NiObject};
 use std::any::Any;
 use std::io;
 
@@ -17,55 +18,55 @@ use std::io;
 /// identical serialization (both inherit NiGeometry).
 #[derive(Debug)]
 pub struct NiTriShape {
-    pub name: Option<String>,
-    pub extra_data_refs: Vec<BlockRef>,
-    pub controller_ref: BlockRef,
-    pub flags: u32,
-    pub transform: NiTransform,
-    pub properties: Vec<BlockRef>,
-    pub collision_ref: BlockRef,
+    /// NiObjectNET + NiAVObject base fields.
+    pub av: NiAVObjectData,
+    // NiGeometry fields
     pub data_ref: BlockRef,
     pub skin_instance_ref: BlockRef,
-    /// Skyrim+ (user_version_2 >= 130): dedicated shader property ref.
+    /// Skyrim+ (BSVER > 34): dedicated shader property ref.
     pub shader_property_ref: BlockRef,
-    /// Skyrim+ (user_version_2 >= 130): dedicated alpha property ref.
+    /// Skyrim+ (BSVER > 34): dedicated alpha property ref.
     pub alpha_property_ref: BlockRef,
-    /// Material names from NiGeometry material array (pre-Skyrim SSE).
     pub num_materials: u32,
     pub active_material_index: u32,
+}
+
+// Backward-compatible field access.
+impl NiTriShape {
+    pub fn name_str(&self) -> Option<&str> { self.av.net.name.as_deref() }
 }
 
 impl NiObject for NiTriShape {
     fn block_type_name(&self) -> &'static str {
         "NiTriShape"
     }
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_object_net(&self) -> Option<&dyn traits::HasObjectNET> { Some(self) }
+    fn as_av_object(&self) -> Option<&dyn traits::HasAVObject> { Some(self) }
+    fn as_shader_refs(&self) -> Option<&dyn traits::HasShaderRefs> { Some(self) }
+}
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+impl traits::HasObjectNET for NiTriShape {
+    fn name(&self) -> Option<&str> { self.av.net.name.as_deref() }
+    fn extra_data_refs(&self) -> &[BlockRef] { &self.av.net.extra_data_refs }
+    fn controller_ref(&self) -> BlockRef { self.av.net.controller_ref }
+}
+
+impl traits::HasAVObject for NiTriShape {
+    fn flags(&self) -> u32 { self.av.flags }
+    fn transform(&self) -> &NiTransform { &self.av.transform }
+    fn properties(&self) -> &[BlockRef] { &self.av.properties }
+    fn collision_ref(&self) -> BlockRef { self.av.collision_ref }
+}
+
+impl traits::HasShaderRefs for NiTriShape {
+    fn shader_property_ref(&self) -> BlockRef { self.shader_property_ref }
+    fn alpha_property_ref(&self) -> BlockRef { self.alpha_property_ref }
 }
 
 impl NiTriShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // NiObjectNET fields
-        let name = stream.read_string()?;
-        let extra_data_refs = stream.read_block_ref_list()?;
-        let controller_ref = stream.read_block_ref()?;
-
-        // NiAVObject fields
-        let flags = if stream.version() >= NifVersion::V20_2_0_7 {
-            stream.read_u32_le()?
-        } else {
-            stream.read_u16_le()? as u32
-        };
-        let transform = stream.read_ni_transform()?;
-        // Skyrim+ removes the properties list from NiAVObject (BSVER > 34).
-        let properties = if stream.variant().has_properties_list() {
-            stream.read_block_ref_list()?
-        } else {
-            Vec::new()
-        };
-        let collision_ref = stream.read_block_ref()?;
+        let av = NiAVObjectData::parse(stream)?;
 
         // NiGeometry fields
         let data_ref = stream.read_block_ref()?;
@@ -77,28 +78,22 @@ impl NiTriShape {
         let mut active_material_index = 0u32;
 
         if stream.version() >= NifVersion(0x14020005) {
-            // v20.2.0.5+ : material array format
             num_materials = stream.read_u32_le()?;
             for _ in 0..num_materials {
-                let _mat_name_idx = stream.read_u32_le()?;  // string table index
+                let _mat_name_idx = stream.read_u32_le()?;
                 let _mat_extra_data = stream.read_u32_le()?;
             }
             active_material_index = stream.read_u32_le()?;
 
             if stream.version() >= NifVersion::V20_2_0_7 {
-                // Material needs update default flag.
-                // Bethesda serializes this as u8 (not NiBool u32).
                 let _dirty_flag = stream.read_u8()?;
             }
 
-            // Skyrim+ (BSVER > 34): dedicated shader/alpha property refs.
-            // These replace the properties list that was removed from NiAVObject.
             if stream.variant().has_shader_alpha_refs() {
                 shader_property_ref = stream.read_block_ref()?;
                 alpha_property_ref = stream.read_block_ref()?;
             }
         } else {
-            // Pre-20.2.0.5: hasShader format
             let has_shader = stream.read_bool()?;
             if has_shader {
                 let _shader_name = stream.read_sized_string()?;
@@ -107,13 +102,7 @@ impl NiTriShape {
         }
 
         Ok(Self {
-            name,
-            extra_data_refs,
-            controller_ref,
-            flags,
-            transform,
-            properties,
-            collision_ref,
+            av,
             data_ref,
             skin_instance_ref,
             shader_property_ref,
@@ -137,12 +126,8 @@ pub type NiTriStrips = NiTriShape;
 /// FO4+ uses BSVertexData (half-float positions by default).
 #[derive(Debug)]
 pub struct BsTriShape {
-    pub name: Option<String>,
-    pub extra_data_refs: Vec<BlockRef>,
-    pub controller_ref: BlockRef,
-    pub flags: u32,
-    pub transform: NiTransform,
-    pub collision_ref: BlockRef,
+    /// NiObjectNET + NiAVObject base (no properties list).
+    pub av: NiAVObjectData,
     pub center: NiPoint3,
     pub radius: f32,
     pub skin_ref: BlockRef,
@@ -151,15 +136,10 @@ pub struct BsTriShape {
     pub vertex_desc: u64,
     pub num_triangles: u32,
     pub num_vertices: u16,
-    /// Vertex positions (f32 × 3, already decoded from packed format).
     pub vertices: Vec<NiPoint3>,
-    /// UV coordinates (decoded from half-float).
     pub uvs: Vec<[f32; 2]>,
-    /// Normals (decoded from byte-normalized [0,255] → [-1,1]).
     pub normals: Vec<NiPoint3>,
-    /// Vertex colors (RGBA normalized to [0,1]).
     pub vertex_colors: Vec<[f32; 4]>,
-    /// Triangle indices.
     pub triangles: Vec<[u16; 3]>,
 }
 
@@ -167,10 +147,28 @@ impl NiObject for BsTriShape {
     fn block_type_name(&self) -> &'static str {
         "BSTriShape"
     }
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_object_net(&self) -> Option<&dyn traits::HasObjectNET> { Some(self) }
+    fn as_av_object(&self) -> Option<&dyn traits::HasAVObject> { Some(self) }
+    fn as_shader_refs(&self) -> Option<&dyn traits::HasShaderRefs> { Some(self) }
+}
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+impl traits::HasObjectNET for BsTriShape {
+    fn name(&self) -> Option<&str> { self.av.net.name.as_deref() }
+    fn extra_data_refs(&self) -> &[BlockRef] { &self.av.net.extra_data_refs }
+    fn controller_ref(&self) -> BlockRef { self.av.net.controller_ref }
+}
+
+impl traits::HasAVObject for BsTriShape {
+    fn flags(&self) -> u32 { self.av.flags }
+    fn transform(&self) -> &NiTransform { &self.av.transform }
+    fn properties(&self) -> &[BlockRef] { &[] } // BSTriShape never has properties
+    fn collision_ref(&self) -> BlockRef { self.av.collision_ref }
+}
+
+impl traits::HasShaderRefs for BsTriShape {
+    fn shader_property_ref(&self) -> BlockRef { self.shader_property_ref }
+    fn alpha_property_ref(&self) -> BlockRef { self.alpha_property_ref }
 }
 
 /// Vertex attribute flags from BSVertexDesc bits [44:55].
@@ -184,15 +182,7 @@ const VF_EYE_DATA: u16 = 0x100;
 
 impl BsTriShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // NiObjectNET base
-        let name = stream.read_string()?;
-        let extra_data_refs = stream.read_block_ref_list()?;
-        let controller_ref = stream.read_block_ref()?;
-
-        // NiAVObject: flags, transform, NO properties list (Skyrim+), collision
-        let flags = stream.read_u32_le()?;
-        let transform = stream.read_ni_transform()?;
-        let collision_ref = stream.read_block_ref()?;
+        let av = NiAVObjectData::parse_no_properties(stream)?;
 
         // BSTriShape-specific: bounding sphere
         let center = stream.read_ni_point3()?;
@@ -307,12 +297,7 @@ impl BsTriShape {
         }
 
         Ok(Self {
-            name,
-            extra_data_refs,
-            controller_ref,
-            flags,
-            transform,
-            collision_ref,
+            av,
             center,
             radius,
             skin_ref,

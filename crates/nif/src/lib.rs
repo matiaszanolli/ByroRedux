@@ -178,16 +178,16 @@ mod tests {
 
         // Downcast and verify fields
         let node = scene.get_as::<blocks::node::NiNode>(0).unwrap();
-        assert_eq!(node.name, Some("SceneRoot".to_string()));
-        assert_eq!(node.flags, 14);
-        assert_eq!(node.transform.translation.x, 1.0);
-        assert_eq!(node.transform.translation.y, 2.0);
-        assert_eq!(node.transform.translation.z, 3.0);
-        assert_eq!(node.transform.scale, 1.0);
+        assert_eq!(node.av.net.name, Some("SceneRoot".to_string()));
+        assert_eq!(node.av.flags, 14);
+        assert_eq!(node.av.transform.translation.x, 1.0);
+        assert_eq!(node.av.transform.translation.y, 2.0);
+        assert_eq!(node.av.transform.translation.z, 3.0);
+        assert_eq!(node.av.transform.scale, 1.0);
         assert!(node.children.is_empty());
         assert!(node.effects.is_empty());
-        assert!(node.controller_ref.is_null());
-        assert!(node.collision_ref.is_null());
+        assert!(node.av.net.controller_ref.is_null());
+        assert!(node.av.collision_ref.is_null());
     }
 
     #[test]
