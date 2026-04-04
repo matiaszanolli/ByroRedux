@@ -13,10 +13,13 @@ Save details to `.claude/issues/$ARGUMENTS/ISSUE.md`.
 
 ## Phase 2: Classify Domain
 Based on issue content, classify:
-- **renderer** → Vulkan, pipeline, GPU memory, sync, shaders
+- **renderer** → Vulkan, pipeline, GPU memory, sync, shaders, RT acceleration
 - **ecs** → Storage, queries, world, systems, resources, components
+- **nif** → NIF parsing, block types, version handling, import pipeline
+- **animation** → Keyframe parsing, interpolation, blending, animation system
+- **bsa** → BSA/BA2 archive reading, extraction, decompression
+- **esm** → ESM record parsing, cell loading, XCLL lighting
 - **platform** → Windowing, input, OS abstractions
-- **nif** → NIF parsing, legacy format loading
 - **cxx** → C++ interop
 - **binary** → Game loop, scene setup, demo code
 
@@ -36,14 +39,24 @@ Follow project conventions from CLAUDE.md.
 
 ## Phase 6: Verify
 ```bash
-cargo test -p byroredux-core
+cargo test
 cargo check
 ```
-All 68+ tests must pass.
+All 282+ tests must pass. Zero warnings.
 
-## Phase 7: Commit & Close
+## Phase 7: Completeness Checks
+Before committing, verify:
+- [ ] **UNSAFE**: Any new unsafe blocks have safety comments
+- [ ] **SIBLING**: Same bug pattern checked in related files
+- [ ] **DROP**: Vulkan object lifecycle correct (destroy-before-parent)
+- [ ] **TESTS**: Regression test added if applicable
+
+## Phase 8: Commit & Close
 Commit with conventional message referencing the issue:
 ```
 Fix #<number>: <description>
 ```
-Close the issue: `gh issue close $ARGUMENTS --comment "Fixed in <commit-hash>"`
+Close the issue:
+```bash
+gh issue close $ARGUMENTS --repo matiaszanolli/ByroRedux --comment "Fixed in <commit-hash>"
+```

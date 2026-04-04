@@ -7,33 +7,65 @@ argument-hint: "--preset <name>"
 
 ## Presets
 
+### `--preset quick`
+Fast sanity check after changes (< 10 min):
+1. `/audit-incremental --commits 5`
+
 ### `--preset pre-release`
 Run before tagging a release:
 1. `/audit-safety`
 2. `/audit-renderer`
 3. `/audit-ecs`
+4. `/audit-regression --limit 20`
 
-### `--preset comprehensive`
-Full audit coverage:
-1. `/audit-renderer`
-2. `/audit-ecs`
-3. `/audit-safety`
-4. `/audit-legacy-compat`
+### `--preset nif-deep`
+After NIF parser changes (N23 work):
+1. `/audit-nif --game fnv`
+2. `/audit-safety`
+3. `/audit-incremental --commits 10`
 
 ### `--preset renderer-deep`
 After significant renderer changes:
 1. `/audit-renderer`
-2. `/audit-safety` (focused on unsafe + Vulkan)
+2. `/audit-performance --focus 1,2,3`
+3. `/audit-concurrency --focus 2,3`
 
-### `--preset pre-nif`
-Before starting NIF loader work:
-1. `/audit-legacy-compat`
-2. `/audit-ecs` (verify component infrastructure is ready)
+### `--preset comprehensive`
+Full audit coverage (longest — run monthly or before major milestones):
+1. `/audit-renderer`
+2. `/audit-ecs`
+3. `/audit-safety`
+4. `/audit-nif`
+5. `/audit-performance`
+6. `/audit-concurrency`
+7. `/audit-legacy-compat`
+8. `/audit-regression`
+
+### `--preset nif-all-games`
+Test NIF parser against all available game data:
+1. `/audit-nif --game fnv`
+2. `/audit-nif --game skyrim`
+3. `/audit-nif --game oblivion`
+4. `/audit-nif --game fo4`
 
 ## Execution
 
 1. Parse the `--preset` argument from `$ARGUMENTS`
-2. Launch each audit as a **background agent** (they write independent reports)
-3. Max 3 concurrent agents
+2. `mkdir -p /tmp/audit`
+3. Launch each audit as a **background agent** (max 3 concurrent)
 4. Each writes to `docs/audits/AUDIT_<TYPE>_<TODAY>.md`
-5. When all complete, summarize: which audits ran, finding counts by severity
+5. When all complete, produce a summary:
+
+```markdown
+# Audit Suite Summary — <preset> — <date>
+
+| Audit | Findings | CRITICAL | HIGH | MEDIUM | LOW | Report |
+|-------|----------|----------|------|--------|-----|--------|
+| Safety | 3 | 0 | 1 | 2 | 0 | AUDIT_SAFETY_... |
+| ...   | ... | ... | ... | ... | ... | ... |
+
+Total: X findings (C critical, H high, M medium, L low)
+```
+
+6. If any CRITICAL findings, warn prominently
+7. Suggest: `/audit-publish docs/audits/AUDIT_<TYPE>_<TODAY>.md` for each report with findings
