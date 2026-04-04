@@ -336,7 +336,7 @@ impl AccelerationManager {
         let tlas = self.tlas.as_mut().unwrap();
 
         // Write instances to buffer.
-        tlas.instance_buffer.write_mapped(&instances)?;
+        tlas.instance_buffer.write_mapped(device, &instances)?;
 
         let instance_address = device.get_buffer_device_address(
             &vk::BufferDeviceAddressInfo::default().buffer(tlas.instance_buffer.buffer),

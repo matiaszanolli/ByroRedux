@@ -152,7 +152,13 @@ impl GpuBuffer {
     }
 
     /// Write data to a host-visible buffer's mapped memory.
-    pub fn write_mapped<T: Copy>(&mut self, data: &[T]) -> Result<()> {
+    ///
+    /// If the allocation is not HOST_COHERENT, an explicit flush is
+    /// performed to make the write visible to the GPU.
+    pub fn write_mapped<T: Copy>(&mut self, device: &ash::Device, data: &[T]) -> Result<()> {
+        // SAFETY: T: Copy guarantees no padding/drop concerns. The pointer is
+        // valid and aligned (from a live slice), and size_of_val gives the
+        // exact byte length.
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
         };
@@ -160,9 +166,31 @@ impl GpuBuffer {
             .allocation
             .as_mut()
             .context("Buffer has no allocation")?;
+
+        let is_coherent = alloc
+            .memory_properties()
+            .contains(vk::MemoryPropertyFlags::HOST_COHERENT);
+
         let mapped = alloc.mapped_slice_mut().context("Buffer not mapped")?;
         let len = bytes.len().min(mapped.len());
         mapped[..len].copy_from_slice(&bytes[..len]);
+
+        // Flush explicitly if the memory is not HOST_COHERENT.
+        if !is_coherent {
+            // SAFETY: alloc.memory() returns the VkDeviceMemory backing this
+            // allocation, which is valid and mapped (verified above). The flush
+            // range covers the allocation's offset with WHOLE_SIZE.
+            unsafe {
+                let range = vk::MappedMemoryRange::default()
+                    .memory(alloc.memory())
+                    .offset(alloc.offset())
+                    .size(vk::WHOLE_SIZE);
+                device
+                    .flush_mapped_memory_ranges(&[range])
+                    .context("Failed to flush mapped memory")?;
+            }
+        }
+
         Ok(())
     }
 

@@ -465,7 +465,7 @@ impl VulkanContext {
 
             // Upload scene data (lights + camera) and bind descriptor set 1.
             self.scene_buffers
-                .upload_lights(frame, lights)
+                .upload_lights(&self.device, frame, lights)
                 .unwrap_or_else(|e| log::warn!("Failed to upload lights: {e}"));
             let rt_flag =
                 if self.device_caps.ray_query_supported && self.scene_buffers.tlas_written[frame] {
@@ -483,7 +483,7 @@ impl VulkanContext {
                 ],
             };
             self.scene_buffers
-                .upload_camera(frame, &camera)
+                .upload_camera(&self.device, frame, &camera)
                 .unwrap_or_else(|e| log::warn!("Failed to upload camera: {e}"));
 
             let scene_set = self.scene_buffers.descriptor_set(frame);

@@ -204,7 +204,12 @@ impl SceneBuffers {
     }
 
     /// Upload light data for the current frame-in-flight.
-    pub fn upload_lights(&mut self, frame_index: usize, lights: &[GpuLight]) -> Result<()> {
+    pub fn upload_lights(
+        &mut self,
+        device: &ash::Device,
+        frame_index: usize,
+        lights: &[GpuLight],
+    ) -> Result<()> {
         let count = lights.len().min(MAX_LIGHTS);
         let header = LightHeader {
             count: count as u32,
@@ -236,12 +241,17 @@ impl SceneBuffers {
             }
         }
 
-        self.light_buffers[frame_index].write_mapped(&data)
+        self.light_buffers[frame_index].write_mapped(device, &data)
     }
 
     /// Upload camera data for the current frame-in-flight.
-    pub fn upload_camera(&mut self, frame_index: usize, camera: &GpuCamera) -> Result<()> {
-        self.camera_buffers[frame_index].write_mapped(std::slice::from_ref(camera))
+    pub fn upload_camera(
+        &mut self,
+        device: &ash::Device,
+        frame_index: usize,
+        camera: &GpuCamera,
+    ) -> Result<()> {
+        self.camera_buffers[frame_index].write_mapped(device, std::slice::from_ref(camera))
     }
 
     /// Get the descriptor set for the current frame-in-flight.
