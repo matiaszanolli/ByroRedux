@@ -587,13 +587,13 @@ fn find_two_sided(scene: &NifScene, shape: &NiTriShape) -> bool {
         if let Some(idx) = prop_ref.index() {
             // Bethesda path: BSShaderPPLightingProperty SF_DOUBLE_SIDED flag.
             if let Some(shader) = scene.get_as::<BSShaderPPLightingProperty>(idx) {
-                if shader.shader_flags_1 & 0x1000 != 0 {
+                if shader.shader.shader_flags_1 & 0x1000 != 0 {
                     return true;
                 }
             }
             // BSShaderNoLightingProperty also has the same flag layout.
             if let Some(shader) = scene.get_as::<BSShaderNoLightingProperty>(idx) {
-                if shader.shader_flags_1 & 0x1000 != 0 {
+                if shader.shader.shader_flags_1 & 0x1000 != 0 {
                     return true;
                 }
             }
@@ -657,14 +657,14 @@ fn find_decal(scene: &NifScene, shape: &NiTriShape) -> bool {
     for prop_ref in &shape.av.properties {
         if let Some(idx) = prop_ref.index() {
             if let Some(shader) = scene.get_as::<BSShaderPPLightingProperty>(idx) {
-                if shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0
-                    || shader.shader_flags_2 & ALPHA_DECAL_F2 != 0
+                if shader.shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0
+                    || shader.shader.shader_flags_2 & ALPHA_DECAL_F2 != 0
                 {
                     return true;
                 }
             }
             if let Some(shader) = scene.get_as::<BSShaderNoLightingProperty>(idx) {
-                if shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 {
+                if shader.shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 {
                     return true;
                 }
             }
@@ -1080,9 +1080,11 @@ mod tests {
 
         // Block 0: root, Block 1: shape (props→[3]), Block 2: data, Block 3: material
         let mat = NiMaterialProperty {
-            name: None,
-            extra_data_refs: Vec::new(),
-            controller_ref: BlockRef::NULL,
+            net: crate::blocks::base::NiObjectNETData {
+                name: None,
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
             ambient: NiColor { r: 0.2, g: 0.2, b: 0.2 },
             diffuse: NiColor { r: 0.8, g: 0.4, b: 0.2 },
             specular: NiColor::default(),

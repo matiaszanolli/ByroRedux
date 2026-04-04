@@ -6,6 +6,7 @@
 
 use crate::stream::NifStream;
 use crate::types::BlockRef;
+use super::base::{NiObjectNETData, BSShaderPropertyData};
 use super::NiObject;
 use std::any::Any;
 use std::io;
@@ -19,77 +20,37 @@ use std::io;
 /// containing the actual texture file paths.
 #[derive(Debug)]
 pub struct BSShaderPPLightingProperty {
-    pub name: Option<String>,
-    pub extra_data_refs: Vec<BlockRef>,
-    pub controller_ref: BlockRef,
-    pub shader_flags: u16,
-    pub shader_type: u32,
-    pub shader_flags_1: u32,
-    pub shader_flags_2: u32,
-    pub env_map_scale: f32,
+    pub net: NiObjectNETData,
+    pub shader: BSShaderPropertyData,
     pub texture_clamp_mode: u32,
     pub texture_set_ref: BlockRef,
-    /// Emissive color (RGBA). Present when user_version_2 >= 34 (FNV+).
     pub emissive_color: [f32; 4],
 }
 
-impl NiObject for BSShaderPPLightingProperty {
-    fn block_type_name(&self) -> &'static str {
-        "BSShaderPPLightingProperty"
-    }
+// Backward-compatible field access for import.rs.
+impl BSShaderPPLightingProperty {
+    pub fn shader_flags_1(&self) -> u32 { self.shader.shader_flags_1 }
+    pub fn shader_flags_2(&self) -> u32 { self.shader.shader_flags_2 }
+}
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+impl NiObject for BSShaderPPLightingProperty {
+    fn block_type_name(&self) -> &'static str { "BSShaderPPLightingProperty" }
+    fn as_any(&self) -> &dyn Any { self }
 }
 
 impl BSShaderPPLightingProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // NiObjectNET base
-        let name = stream.read_string()?;
-        let extra_data_refs = stream.read_block_ref_list()?;
-        let controller_ref = stream.read_block_ref()?;
-
-        // NiProperty::LoadBinary reads nothing.
-
-        // BSShaderProperty fields:
-        let shader_flags = stream.read_u16_le()?;
-        let shader_type = stream.read_u32_le()?;
-        let shader_flags_1 = stream.read_u32_le()?;
-        let shader_flags_2 = stream.read_u32_le()?;
-        let env_map_scale = stream.read_f32_le()?;
-
-        // BSShaderLightingProperty: texture clamp mode
-        let texture_clamp_mode = stream.read_u32_le()?;
-
-        // BSShaderPPLightingProperty: texture set reference
+        let net = NiObjectNETData::parse(stream)?;
+        let (shader, texture_clamp_mode) = BSShaderPropertyData::parse_fo3(stream)?;
         let texture_set_ref = stream.read_block_ref()?;
 
-        // Emissive color (RGBA) — Bethesda extension for FNV+.
         let emissive_color = if stream.variant().has_shader_emissive_color() {
-            [
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-            ]
+            [stream.read_f32_le()?, stream.read_f32_le()?, stream.read_f32_le()?, stream.read_f32_le()?]
         } else {
             [0.0, 0.0, 0.0, 1.0]
         };
 
-        Ok(Self {
-            name,
-            extra_data_refs,
-            controller_ref,
-            shader_flags,
-            shader_type,
-            shader_flags_1,
-            shader_flags_2,
-            env_map_scale,
-            texture_clamp_mode,
-            texture_set_ref,
-            emissive_color,
-        })
+        Ok(Self { net, shader, texture_clamp_mode, texture_set_ref, emissive_color })
     }
 }
 
@@ -102,14 +63,8 @@ impl BSShaderPPLightingProperty {
 /// and has falloff parameters for alpha blending.
 #[derive(Debug)]
 pub struct BSShaderNoLightingProperty {
-    pub name: Option<String>,
-    pub extra_data_refs: Vec<BlockRef>,
-    pub controller_ref: BlockRef,
-    pub shader_flags: u16,
-    pub shader_type: u32,
-    pub shader_flags_1: u32,
-    pub shader_flags_2: u32,
-    pub env_map_scale: f32,
+    pub net: NiObjectNETData,
+    pub shader: BSShaderPropertyData,
     pub texture_clamp_mode: u32,
     pub file_name: String,
     pub falloff_start_angle: f32,
@@ -118,64 +73,31 @@ pub struct BSShaderNoLightingProperty {
     pub falloff_stop_opacity: f32,
 }
 
-impl NiObject for BSShaderNoLightingProperty {
-    fn block_type_name(&self) -> &'static str {
-        "BSShaderNoLightingProperty"
-    }
+impl BSShaderNoLightingProperty {
+    pub fn shader_flags_1(&self) -> u32 { self.shader.shader_flags_1 }
+}
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+impl NiObject for BSShaderNoLightingProperty {
+    fn block_type_name(&self) -> &'static str { "BSShaderNoLightingProperty" }
+    fn as_any(&self) -> &dyn Any { self }
 }
 
 impl BSShaderNoLightingProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // NiObjectNET base
-        let name = stream.read_string()?;
-        let extra_data_refs = stream.read_block_ref_list()?;
-        let controller_ref = stream.read_block_ref()?;
-
-        // BSShaderProperty fields (BSVER <= 34):
-        let shader_flags = stream.read_u16_le()?;
-        let shader_type = stream.read_u32_le()?;
-        let shader_flags_1 = stream.read_u32_le()?;
-        let shader_flags_2 = stream.read_u32_le()?;
-        let env_map_scale = stream.read_f32_le()?;
-
-        // BSShaderLightingProperty: texture clamp mode
-        let texture_clamp_mode = stream.read_u32_le()?;
-
-        // BSShaderNoLightingProperty: file name (SizedString)
+        let net = NiObjectNETData::parse(stream)?;
+        let (shader, texture_clamp_mode) = BSShaderPropertyData::parse_fo3(stream)?;
         let file_name = stream.read_sized_string()?;
 
-        // Falloff parameters (BSVER > 26, which FNV is)
         let (falloff_start_angle, falloff_stop_angle, falloff_start_opacity, falloff_stop_opacity) =
             if stream.variant().bsver() > 26 {
-                (
-                    stream.read_f32_le()?,
-                    stream.read_f32_le()?,
-                    stream.read_f32_le()?,
-                    stream.read_f32_le()?,
-                )
+                (stream.read_f32_le()?, stream.read_f32_le()?, stream.read_f32_le()?, stream.read_f32_le()?)
             } else {
                 (0.0, 0.0, 1.0, 0.0)
             };
 
         Ok(Self {
-            name,
-            extra_data_refs,
-            controller_ref,
-            shader_flags,
-            shader_type,
-            shader_flags_1,
-            shader_flags_2,
-            env_map_scale,
-            texture_clamp_mode,
-            file_name,
-            falloff_start_angle,
-            falloff_stop_angle,
-            falloff_start_opacity,
-            falloff_stop_opacity,
+            net, shader, texture_clamp_mode, file_name,
+            falloff_start_angle, falloff_stop_angle, falloff_start_opacity, falloff_stop_opacity,
         })
     }
 }
@@ -224,9 +146,7 @@ impl BSShaderTextureSet {
 #[derive(Debug)]
 pub struct BSLightingShaderProperty {
     pub shader_type: u32,
-    pub name: Option<String>,
-    pub extra_data_refs: Vec<BlockRef>,
-    pub controller_ref: BlockRef,
+    pub net: NiObjectNETData,
     pub shader_flags_1: u32,
     pub shader_flags_2: u32,
     pub uv_offset: [f32; 2],
@@ -264,12 +184,7 @@ impl BSLightingShaderProperty {
             0
         };
 
-        // NiObjectNET base
-        let name = stream.read_string()?;
-        let extra_data_refs = stream.read_block_ref_list()?;
-        let controller_ref = stream.read_block_ref()?;
-
-        // BSShaderProperty base: empty for Skyrim+ (FO3-only fields are BSVER <= 34).
+        let net = NiObjectNETData::parse(stream)?;
 
         // BSLightingShaderProperty fields.
         // Shader flags — Skyrim format (BSVER < 130). FO4+ uses different flag format.
@@ -316,9 +231,7 @@ impl BSLightingShaderProperty {
 
         Ok(Self {
             shader_type,
-            name,
-            extra_data_refs,
-            controller_ref,
+            net,
             shader_flags_1,
             shader_flags_2,
             uv_offset,
@@ -344,9 +257,7 @@ impl BSLightingShaderProperty {
 /// filename as a sized string rather than referencing a BSShaderTextureSet.
 #[derive(Debug)]
 pub struct BSEffectShaderProperty {
-    pub name: Option<String>,
-    pub extra_data_refs: Vec<BlockRef>,
-    pub controller_ref: BlockRef,
+    pub net: NiObjectNETData,
     pub shader_flags_1: u32,
     pub shader_flags_2: u32,
     pub uv_offset: [f32; 2],
@@ -373,10 +284,7 @@ impl NiObject for BSEffectShaderProperty {
 
 impl BSEffectShaderProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // NiObjectNET base
-        let name = stream.read_string()?;
-        let extra_data_refs = stream.read_block_ref_list()?;
-        let controller_ref = stream.read_block_ref()?;
+        let net = NiObjectNETData::parse(stream)?;
 
         // Shader flags — Skyrim format (BSVER < 130).
         let (shader_flags_1, shader_flags_2) = if !stream.variant().uses_fo4_shader_flags()
@@ -420,9 +328,7 @@ impl BSEffectShaderProperty {
         // textures for FO4+, etc.) are skipped — block size check adjusts stream.
 
         Ok(Self {
-            name,
-            extra_data_refs,
-            controller_ref,
+            net,
             shader_flags_1,
             shader_flags_2,
             uv_offset,

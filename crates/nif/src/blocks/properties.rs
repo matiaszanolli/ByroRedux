@@ -4,7 +4,8 @@
 //! the scene graph unless overridden.
 
 use crate::stream::NifStream;
-use crate::types::{BlockRef, NiColor};
+use crate::types::NiColor;
+use super::base::NiObjectNETData;
 use super::NiObject;
 use std::any::Any;
 use std::io;
@@ -12,39 +13,25 @@ use std::io;
 /// Material properties (ambient, diffuse, specular, emissive colors).
 #[derive(Debug)]
 pub struct NiMaterialProperty {
-    pub name: Option<String>,
-    pub extra_data_refs: Vec<BlockRef>,
-    pub controller_ref: BlockRef,
+    pub net: NiObjectNETData,
     pub ambient: NiColor,
     pub diffuse: NiColor,
     pub specular: NiColor,
     pub emissive: NiColor,
     pub shininess: f32,
     pub alpha: f32,
-    /// Emissive multiplier. Present when user_version_2 >= 27 (FO3/FNV+).
     pub emissive_mult: f32,
 }
 
 impl NiObject for NiMaterialProperty {
-    fn block_type_name(&self) -> &'static str {
-        "NiMaterialProperty"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+    fn block_type_name(&self) -> &'static str { "NiMaterialProperty" }
+    fn as_any(&self) -> &dyn Any { self }
 }
 
 impl NiMaterialProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // NiObjectNET
-        let name = stream.read_string()?;
-        let extra_data_refs = stream.read_block_ref_list()?;
-        let controller_ref = stream.read_block_ref()?;
+        let net = NiObjectNETData::parse(stream)?;
 
-        // NiProperty::LoadBinary reads NOTHING — pure pass-through to NiObjectNET.
-
-        // Bethesda optimization (FO3/FNV+): ambient and diffuse are omitted.
         let bethesda_compact = stream.variant().compact_material();
 
         let ambient = if bethesda_compact {
@@ -63,7 +50,6 @@ impl NiMaterialProperty {
         let shininess = stream.read_f32_le()?;
         let alpha = stream.read_f32_le()?;
 
-        // Emissive multiplier — Bethesda extension (FO3/FNV+).
         let emissive_mult = if stream.variant().has_emissive_mult() {
             stream.read_f32_le()?
         } else {
@@ -71,16 +57,8 @@ impl NiMaterialProperty {
         };
 
         Ok(Self {
-            name,
-            extra_data_refs,
-            controller_ref,
-            ambient,
-            diffuse,
-            specular,
-            emissive,
-            shininess,
-            alpha,
-            emissive_mult,
+            net, ambient, diffuse, specular, emissive,
+            shininess, alpha, emissive_mult,
         })
     }
 }
@@ -88,41 +66,29 @@ impl NiMaterialProperty {
 /// Alpha blending property.
 #[derive(Debug)]
 pub struct NiAlphaProperty {
-    pub name: Option<String>,
-    pub extra_data_refs: Vec<BlockRef>,
-    pub controller_ref: BlockRef,
+    pub net: NiObjectNETData,
     pub flags: u16,
     pub threshold: u8,
 }
 
 impl NiObject for NiAlphaProperty {
-    fn block_type_name(&self) -> &'static str {
-        "NiAlphaProperty"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+    fn block_type_name(&self) -> &'static str { "NiAlphaProperty" }
+    fn as_any(&self) -> &dyn Any { self }
 }
 
 impl NiAlphaProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let name = stream.read_string()?;
-        let extra_data_refs = stream.read_block_ref_list()?;
-        let controller_ref = stream.read_block_ref()?;
+        let net = NiObjectNETData::parse(stream)?;
         let flags = stream.read_u16_le()?;
         let threshold = stream.read_u8()?;
-
-        Ok(Self { name, extra_data_refs, controller_ref, flags, threshold })
+        Ok(Self { net, flags, threshold })
     }
 }
 
 /// Texture mapping property — references NiSourceTexture blocks.
 #[derive(Debug)]
 pub struct NiTexturingProperty {
-    pub name: Option<String>,
-    pub extra_data_refs: Vec<BlockRef>,
-    pub controller_ref: BlockRef,
+    pub net: NiObjectNETData,
     pub flags: u16,
     pub texture_count: u32,
     pub base_texture: Option<TexDesc>,
@@ -137,30 +103,20 @@ pub struct NiTexturingProperty {
 /// Description of a single texture slot.
 #[derive(Debug)]
 pub struct TexDesc {
-    pub source_ref: BlockRef,
-    /// Packed flags (clamp, filter, UV set) for version >= 20.1.0.3.
-    /// For older versions, these are separate fields packed here for uniformity.
+    pub source_ref: crate::types::BlockRef,
     pub flags: u16,
 }
 
 impl NiObject for NiTexturingProperty {
-    fn block_type_name(&self) -> &'static str {
-        "NiTexturingProperty"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+    fn block_type_name(&self) -> &'static str { "NiTexturingProperty" }
+    fn as_any(&self) -> &dyn Any { self }
 }
 
 impl NiTexturingProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let name = stream.read_string()?;
-        let extra_data_refs = stream.read_block_ref_list()?;
-        let controller_ref = stream.read_block_ref()?;
+        let net = NiObjectNETData::parse(stream)?;
         let flags = stream.read_u16_le()?;
 
-        // Apply mode (present in older versions)
         if stream.version() < crate::version::NifVersion::V20_2_0_7 {
             let _apply_mode = stream.read_u32_le()?;
         }
@@ -175,17 +131,13 @@ impl NiTexturingProperty {
         let bump_texture = if texture_count > 5 { Self::read_tex_desc(stream)? } else { None };
         let normal_texture = if texture_count > 6 { Self::read_tex_desc(stream)? } else { None };
 
-        // Remaining texture slots (parallax, decals) based on texture_count
         if texture_count > 7 {
-            // Has Parallax Texture (since 20.2.0.5)
             let _ = Self::read_tex_desc(stream)?;
         }
         for _ in 8..texture_count {
-            // Decal textures
             let _ = Self::read_tex_desc(stream)?;
         }
 
-        // Shader textures (since 10.0.1.0)
         if stream.version() >= crate::version::NifVersion(0x0A000100) {
             let num_shader_textures = stream.read_u32_le()?;
             for _ in 0..num_shader_textures {
@@ -205,24 +157,13 @@ impl NiTexturingProperty {
         }
 
         Ok(Self {
-            name,
-            extra_data_refs,
-            controller_ref,
-            flags,
-            texture_count,
-            base_texture,
-            dark_texture,
-            detail_texture,
-            gloss_texture,
-            glow_texture,
-            bump_texture,
-            normal_texture,
+            net, flags, texture_count,
+            base_texture, dark_texture, detail_texture, gloss_texture,
+            glow_texture, bump_texture, normal_texture,
         })
     }
 
     fn read_tex_desc(stream: &mut NifStream) -> io::Result<Option<TexDesc>> {
-        // "Has Texture" — always a byte bool in NiTexturingProperty,
-        // even for v20.2.0.7 where most other bools are NiBool u32.
         let has = stream.read_byte_bool()?;
         if !has {
             return Ok(None);
@@ -230,33 +171,25 @@ impl NiTexturingProperty {
         let source_ref = stream.read_block_ref()?;
 
         if stream.version() >= crate::version::NifVersion(0x14010003) {
-            // v >= 20.1.0.3: TexDesc uses a packed u16 flags field
-            // (contains clamp mode, filter mode, UV set).
             let flags = stream.read_u16_le()?;
             Ok(Some(TexDesc { source_ref, flags }))
         } else {
-            // Older versions: separate u32 fields + optional transform.
             let clamp_mode = stream.read_u32_le()?;
             let filter_mode = stream.read_u32_le()?;
             let uv_set = stream.read_u32_le()?;
 
-            // PS2-specific fields in older versions — skip
             if stream.version() <= crate::version::NifVersion(0x0A040001) {
                 let _ps2_l = stream.read_u16_le()?;
                 let _ps2_k = stream.read_u16_le()?;
             }
 
-            // Has texture transform (version >= 10.1.0.0, < 20.1.0.3)
             if stream.version() >= crate::version::NifVersion(0x0A010000) {
                 let has_transform = stream.read_byte_bool()?;
                 if has_transform {
-                    // Translation (2 floats), tiling (2 floats), w rotation (1 float),
-                    // transform type (u32), center offset (2 floats)
                     stream.skip(4 * 5 + 4 + 4 * 2);
                 }
             }
 
-            // Pack the old fields into the flags u16 for uniform access.
             let flags = ((clamp_mode & 0xF) as u16) | (((filter_mode & 0xF) as u16) << 4) | (((uv_set & 0xF) as u16) << 8);
             Ok(Some(TexDesc { source_ref, flags }))
         }
@@ -292,97 +225,69 @@ mod tests {
         buf.extend_from_slice(&b.to_le_bytes());
     }
 
-    /// Build NiMaterialProperty bytes for the classic (Oblivion) format:
-    /// ambient + diffuse + specular + emissive + shininess + alpha.
     fn build_material_oblivion() -> Vec<u8> {
         let mut data = Vec::new();
-        // NiObjectNET: name, extra_data count=0, controller=-1
         data.extend_from_slice(&0i32.to_le_bytes());
         data.extend_from_slice(&0u32.to_le_bytes());
         data.extend_from_slice(&(-1i32).to_le_bytes());
-        // ambient (0.2, 0.2, 0.2)
         write_color(&mut data, 0.2, 0.2, 0.2);
-        // diffuse (0.8, 0.6, 0.4)
         write_color(&mut data, 0.8, 0.6, 0.4);
-        // specular
         write_color(&mut data, 1.0, 1.0, 1.0);
-        // emissive
         write_color(&mut data, 0.0, 0.0, 0.0);
-        // shininess
         data.extend_from_slice(&25.0f32.to_le_bytes());
-        // alpha
         data.extend_from_slice(&1.0f32.to_le_bytes());
         data
     }
 
-    /// Build NiMaterialProperty bytes for the FNV format:
-    /// no ambient/diffuse, + emissive_mult.
     fn build_material_fnv() -> Vec<u8> {
         let mut data = Vec::new();
-        // NiObjectNET: name, extra_data count=0, controller=-1
         data.extend_from_slice(&0i32.to_le_bytes());
         data.extend_from_slice(&0u32.to_le_bytes());
         data.extend_from_slice(&(-1i32).to_le_bytes());
-        // NO ambient, NO diffuse (Bethesda optimization)
-        // specular (0.5, 0.5, 0.5)
         write_color(&mut data, 0.5, 0.5, 0.5);
-        // emissive (0.1, 0.0, 0.0)
         write_color(&mut data, 0.1, 0.0, 0.0);
-        // shininess
         data.extend_from_slice(&10.0f32.to_le_bytes());
-        // alpha
         data.extend_from_slice(&0.8f32.to_le_bytes());
-        // emissive_mult
         data.extend_from_slice(&2.5f32.to_le_bytes());
         data
     }
 
     #[test]
     fn parse_material_oblivion_reads_ambient_diffuse() {
-        // Regression: Oblivion (user_version < 11) reads all 4 colors.
         let header = make_header(0, 0);
         let data = build_material_oblivion();
         let mut stream = NifStream::new(&data, &header);
-
         let mat = NiMaterialProperty::parse(&mut stream).unwrap();
         assert!((mat.ambient.r - 0.2).abs() < 1e-6);
         assert!((mat.diffuse.r - 0.8).abs() < 1e-6);
         assert!((mat.diffuse.g - 0.6).abs() < 1e-6);
         assert!((mat.shininess - 25.0).abs() < 1e-6);
-        assert!((mat.emissive_mult - 1.0).abs() < 1e-6); // default
+        assert!((mat.emissive_mult - 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn parse_material_fnv_skips_ambient_diffuse() {
-        // Regression: FNV (user_version=11, user_version_2=34) skips ambient/diffuse.
         let header = make_header(11, 34);
         let data = build_material_fnv();
         let expected_len = data.len();
         let mut stream = NifStream::new(&data, &header);
-
         let mat = NiMaterialProperty::parse(&mut stream).unwrap();
-        // Ambient and diffuse should be defaults (not read from stream)
         assert!((mat.ambient.r - 0.5).abs() < 1e-6);
         assert!((mat.diffuse.r - 0.5).abs() < 1e-6);
-        // Specular should be read from stream
         assert!((mat.specular.r - 0.5).abs() < 1e-6);
         assert!((mat.emissive.r - 0.1).abs() < 1e-6);
         assert!((mat.shininess - 10.0).abs() < 1e-6);
         assert!((mat.alpha - 0.8).abs() < 1e-6);
         assert!((mat.emissive_mult - 2.5).abs() < 1e-6);
-        // All bytes consumed
         assert_eq!(stream.position() as usize, expected_len);
     }
 
     #[test]
     fn parse_material_fo3_also_skips_ambient_diffuse() {
-        // Fallout 3 (uv=11, uv2=34) uses the same compact format as FNV.
         let header = make_header(11, 34);
         let data = build_material_fnv();
         let mut stream = NifStream::new(&data, &header);
-
         let mat = NiMaterialProperty::parse(&mut stream).unwrap();
-        // Ambient/diffuse are defaults (not read from stream)
         assert!((mat.ambient.r - 0.5).abs() < 1e-6);
         assert!((mat.diffuse.r - 0.5).abs() < 1e-6);
         assert!((mat.emissive_mult - 2.5).abs() < 1e-6);
