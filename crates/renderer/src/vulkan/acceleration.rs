@@ -335,8 +335,28 @@ impl AccelerationManager {
 
         let tlas = self.tlas.as_mut().unwrap();
 
-        // Write instances to buffer.
+        // Write instances to buffer (host write).
         tlas.instance_buffer.write_mapped(device, &instances)?;
+
+        // Barrier: ensure host write to instance buffer is visible to the
+        // AS build command that reads it. Required by Vulkan spec —
+        // host writes are not automatically visible to device commands.
+        let barrier = vk::BufferMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::HOST_WRITE)
+            .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR)
+            .buffer(tlas.instance_buffer.buffer)
+            .offset(0)
+            .size(vk::WHOLE_SIZE);
+
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::HOST,
+            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[barrier],
+            &[],
+        );
 
         let instance_address = device.get_buffer_device_address(
             &vk::BufferDeviceAddressInfo::default().buffer(tlas.instance_buffer.buffer),
