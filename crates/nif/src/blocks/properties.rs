@@ -203,18 +203,18 @@ impl NiTexturingProperty {
                 let _parallax_offset = stream.read_f32_le()?;
             }
         }
-        // Decal texture slots. For v20.2.0.5+ (FNV), nif.xml gates each decal
-        // at count > 8, > 9, > 10, > 11. In practice, Bethesda serializes
-        // (texture_count - 7) decal has-booleans (with TexDesc if true).
+        // Decal texture slots. nif.xml gates each decal at count > 8, > 9, > 10, > 11.
+        // Slots 0-7 (base through parallax) are already consumed above, so decals
+        // start at slot 8: num_decals = texture_count - 8.
         if stream.version() >= crate::version::NifVersion(0x14020005) {
-            // v20.2.0.5+: decals start after slot 7 (parallax)
-            let num_decals = texture_count.saturating_sub(7);
+            // v20.2.0.5+: slots 0-7 consumed (base..parallax)
+            let num_decals = texture_count.saturating_sub(8);
             for _ in 0..num_decals {
                 let _ = Self::read_tex_desc(stream)?;
             }
         } else {
-            // Pre-20.2.0.5: decals start after slot 6 (normal)
-            let num_decals = texture_count.saturating_sub(6);
+            // Pre-20.2.0.5: slots 0-6 consumed (base..normal), no parallax slot
+            let num_decals = texture_count.saturating_sub(7);
             for _ in 0..num_decals {
                 let _ = Self::read_tex_desc(stream)?;
             }
