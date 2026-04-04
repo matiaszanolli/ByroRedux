@@ -557,6 +557,16 @@ mod tests {
         let _ = world.query_2_mut::<Health, Health>();
     }
 
+    #[test]
+    #[should_panic(expected = "must be different component types")]
+    fn query_2_mut_mut_same_type_panics() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+
+        let _ = world.query_2_mut_mut::<Health, Health>();
+    }
+
     // ── Iteration ───────────────────────────────────────────────────────
 
     #[test]
