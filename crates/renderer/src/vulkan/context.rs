@@ -67,7 +67,10 @@ pub struct VulkanContext {
     /// synchronization (VUID-vkQueueSubmit-queue-00893). All queue
     /// submissions (draw_frame, texture/buffer uploads) must lock this.
     pub graphics_queue: Mutex<vk::Queue>,
-    pub present_queue: vk::Queue,
+    /// Present queue, also Mutex-wrapped for Vulkan external synchronization
+    /// (VUID-vkQueuePresentKHR-pPresentInfo-06329). May alias the graphics
+    /// queue when both use the same queue family (common on desktop GPUs).
+    pub present_queue: Mutex<vk::Queue>,
     pub queue_indices: QueueFamilyIndices,
     pub device: ash::Device,
     pub device_caps: device::DeviceCapabilities,
@@ -131,13 +134,14 @@ impl VulkanContext {
         let depth_format = find_depth_format(&vk_instance, physical_device)?;
 
         // 7. Logical device + queues (enables RT extensions when available)
-        let (device, raw_graphics_queue, present_queue) = device::create_logical_device(
+        let (device, raw_graphics_queue, raw_present_queue) = device::create_logical_device(
             &vk_instance,
             physical_device,
             queue_indices,
             &device_caps,
         )?;
         let graphics_queue = Mutex::new(raw_graphics_queue);
+        let present_queue = Mutex::new(raw_present_queue);
 
         // 7. GPU allocator (buffer_device_address required for RT acceleration structures)
         let gpu_allocator = allocator::create_allocator(
@@ -669,10 +673,11 @@ impl VulkanContext {
             .image_indices(&image_indices);
 
         let present_suboptimal = unsafe {
+            let pq = self.present_queue.lock().expect("present queue lock poisoned");
             match self
                 .swapchain_state
                 .swapchain_loader
-                .queue_present(self.present_queue, &present_info)
+                .queue_present(*pq, &present_info)
             {
                 Ok(suboptimal) => suboptimal,
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => true,
