@@ -54,8 +54,16 @@ impl World {
     }
 
     /// Remove a component from an entity.
+    /// Returns `None` if the entity doesn't have this component or if
+    /// no storage exists for this type (avoids creating empty storage).
     pub fn remove<T: Component>(&mut self, entity: EntityId) -> Option<T> {
-        self.storage_write::<T>().remove(entity)
+        let storage = self
+            .storages
+            .get_mut(&TypeId::of::<T>())?
+            .get_mut()
+            .expect("storage lock poisoned")
+            .downcast_mut::<T::Storage>()?;
+        storage.remove(entity)
     }
 
     /// Get an immutable reference to an entity's component.
@@ -77,8 +85,15 @@ impl World {
     }
 
     /// Get a mutable reference to an entity's component.
+    /// Returns `None` if no storage exists for this type (avoids creating empty storage).
     pub fn get_mut<T: Component>(&mut self, entity: EntityId) -> Option<&mut T> {
-        self.storage_write::<T>().get_mut(entity)
+        let storage = self
+            .storages
+            .get_mut(&TypeId::of::<T>())?
+            .get_mut()
+            .expect("storage lock poisoned")
+            .downcast_mut::<T::Storage>()?;
+        storage.get_mut(entity)
     }
 
     /// Check if an entity has a specific component.
@@ -910,5 +925,25 @@ mod tests {
 
         let pool = world.resource::<StringPool>();
         assert_eq!(pool.resolve(sym), Some("asset/texture.png"));
+    }
+
+    // ── Regression: remove/get_mut must not create empty storage (#39) ──
+
+    #[test]
+    fn remove_nonexistent_does_not_create_storage() {
+        let mut world = World::new();
+        // Remove a component type that was never inserted.
+        assert!(world.remove::<Health>(0).is_none());
+        // query should still return None (no storage created).
+        assert!(world.query::<Health>().is_none());
+    }
+
+    #[test]
+    fn get_mut_nonexistent_does_not_create_storage() {
+        let mut world = World::new();
+        // get_mut on a type that was never inserted.
+        assert!(world.get_mut::<Health>(0).is_none());
+        // query should still return None.
+        assert!(world.query::<Health>().is_none());
     }
 }
