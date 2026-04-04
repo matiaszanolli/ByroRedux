@@ -353,7 +353,11 @@ fn load_nif_placed(
     use byroredux_renderer::Vertex;
 
     let scene = match byroredux_nif::parse_nif(nif_data) {
-        Ok(s) => s,
+        Ok(s) => {
+            // Temporary: log NIF path for block-level warning correlation
+            log::debug!("Parsed NIF '{}': {} blocks", label, s.len());
+            s
+        }
         Err(e) => {
             log::warn!("Failed to parse NIF '{}': {}", label, e);
             return 0;

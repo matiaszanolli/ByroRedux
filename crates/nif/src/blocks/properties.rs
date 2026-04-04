@@ -261,6 +261,15 @@ impl NiTexturingProperty {
 
         if stream.version() >= crate::version::NifVersion(0x14010003) {
             let flags = stream.read_u16_le()?;
+            // nif.xml: Has Texture Transform (bool) since 10.1.0.0, NO until — present in ALL modern versions.
+            if stream.version() >= crate::version::NifVersion(0x0A010000) {
+                let has_transform = stream.read_byte_bool()?;
+                if has_transform {
+                    // Translation (2 floats) + Scale (2 floats) + Rotation (1 float)
+                    // + Transform Method (u32) + Center (2 floats) = 32 bytes
+                    stream.skip(4 * 2 + 4 * 2 + 4 + 4 + 4 * 2);
+                }
+            }
             Ok(Some(TexDesc { source_ref, flags }))
         } else {
             let clamp_mode = stream.read_u32_le()?;
