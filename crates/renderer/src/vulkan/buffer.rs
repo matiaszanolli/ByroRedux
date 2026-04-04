@@ -102,6 +102,55 @@ impl GpuBuffer {
         })
     }
 
+    /// Create a DEVICE_LOCAL buffer without initial data.
+    ///
+    /// Used for GPU-only buffers that are populated by device commands
+    /// (e.g. acceleration structure result/scratch buffers). Not
+    /// host-visible — cannot be mapped or written from CPU.
+    pub fn create_device_local_uninit(
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+    ) -> Result<Self> {
+        let buffer_info = vk::BufferCreateInfo::default()
+            .size(size)
+            .usage(usage)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        let buffer = unsafe {
+            device
+                .create_buffer(&buffer_info, None)
+                .context("Failed to create device-local buffer")?
+        };
+
+        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+
+        let allocation = allocator
+            .lock()
+            .expect("allocator lock poisoned")
+            .allocate(&vulkan::AllocationCreateDesc {
+                name: "device_local_buffer",
+                requirements,
+                location: MemoryLocation::GpuOnly,
+                linear: true,
+                allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
+            })
+            .context("Failed to allocate device-local memory")?;
+
+        unsafe {
+            device
+                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
+                .context("Failed to bind device-local buffer")?;
+        }
+
+        Ok(Self {
+            buffer,
+            size,
+            allocation: Some(allocation),
+        })
+    }
+
     /// Write data to a host-visible buffer's mapped memory.
     pub fn write_mapped<T: Copy>(&mut self, data: &[T]) -> Result<()> {
         let bytes: &[u8] = unsafe {

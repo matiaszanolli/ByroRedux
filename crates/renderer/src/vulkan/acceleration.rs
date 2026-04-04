@@ -110,8 +110,8 @@ impl AccelerationManager {
             );
         };
 
-        // Allocate result buffer.
-        let result_buffer = GpuBuffer::create_host_visible(
+        // Allocate result buffer in DEVICE_LOCAL memory (GPU-built, GPU-read only).
+        let result_buffer = GpuBuffer::create_device_local_uninit(
             device,
             allocator,
             sizes.acceleration_structure_size,
@@ -131,8 +131,8 @@ impl AccelerationManager {
                 .context("Failed to create BLAS")?
         };
 
-        // Allocate scratch buffer.
-        let mut scratch = GpuBuffer::create_host_visible(
+        // Allocate scratch buffer in DEVICE_LOCAL memory (GPU-only during build).
+        let mut scratch = GpuBuffer::create_device_local_uninit(
             device,
             allocator,
             sizes.build_scratch_size,
@@ -294,7 +294,8 @@ impl AccelerationManager {
                 &mut sizes,
             );
 
-            let tlas_buffer = GpuBuffer::create_host_visible(
+            // DEVICE_LOCAL: GPU-built, GPU-read during ray queries.
+            let tlas_buffer = GpuBuffer::create_device_local_uninit(
                 device,
                 allocator,
                 sizes.acceleration_structure_size,
@@ -316,7 +317,8 @@ impl AccelerationManager {
             if let Some(mut old_scratch) = self.scratch_buffer.take() {
                 old_scratch.destroy(device, allocator);
             }
-            self.scratch_buffer = Some(GpuBuffer::create_host_visible(
+            // DEVICE_LOCAL: GPU-only scratch space during TLAS build.
+            self.scratch_buffer = Some(GpuBuffer::create_device_local_uninit(
                 device,
                 allocator,
                 sizes.build_scratch_size,
