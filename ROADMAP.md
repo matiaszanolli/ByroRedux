@@ -3,7 +3,7 @@
 A clean Rust + C++ rebuild of the Gamebryo/Creation engine lineage with Vulkan rendering.
 This document tracks completed milestones, current capabilities, planned work, and known gaps.
 
-Last updated: 2026-04-03
+Last updated: 2026-04-04
 
 ---
 
@@ -17,12 +17,13 @@ Last updated: 2026-04-03
 | `cargo run -- --cmd help` | Run a console command at startup |
 | `cargo run -- --swf path/to/menu.swf` | Load and render a Skyrim SE SWF menu overlay |
 | `cargo run -- path/to/mesh.nif --kf path/to/anim.kf` | Play a .kf animation on a loaded NIF mesh |
-| `cargo test` | 269 passing tests across all crates |
+| `cargo test` | 282 passing tests across all crates |
 
 **Fallout New Vegas:** Interior cells load from ESM with placed objects (REFR → STAT), real DDS textures
 from BSA v104 archives, correct coordinate transforms (Gamebryo CW rotation convention),
-directional lighting, alpha blending, fly camera (WASD + mouse),
-and per-frame debug stats. 781 entities at 334 FPS on RTX 4070 Ti.
+RT multi-light with ray query shadows, cell XCLL interior lighting (ambient + directional),
+alpha blending with NIF decal detection, fly camera (WASD + mouse),
+and per-frame debug stats. 789 entities at 85 FPS (RT) on RTX 4070 Ti.
 
 **Skyrim SE:** Individual meshes load from BSA v105 (LZ4 decompression), BSTriShape geometry
 with packed vertex data, BSLightingShaderProperty/BSEffectShaderProperty shaders,
@@ -152,15 +153,18 @@ The NIF binary format is the foundation of all visual content. Correct parsing a
 games (Oblivion through Starfield) must come before renderer features. This replaces the
 previous M23-M29 medium-term roadmap with a focused NIF correctness effort.
 
-### N23.1: Trait Hierarchy and Base Class Extraction
-**Status:** Planned
-**Scope:** Refactor the flat block struct architecture into a trait-based hierarchy mirroring
-Gamebryo's class tree. Extract duplicated NiObjectNET/NiAVObject parsing into composable base
-structs. Add consumer traits (HasTransform, HasShaderProperty, HasGeometryData, HasTexturePaths)
-so importers don't need `downcast_ref` chains. Remove all `as_any()` usage from `import.rs`.
-**Block count:** 0 new (pure refactor of existing ~48 block types)
-**Acceptance:** All existing tests pass. No `downcast_ref` in import.rs. Base class fields parsed
-in exactly one location each.
+### N23.1: Trait Hierarchy and Base Class Extraction — DONE
+**Status:** Complete
+**Scope:** Refactored flat block structs into composable base class hierarchy:
+NiObjectNETData (name, extra_data_refs, controller_ref), NiAVObjectData (flags,
+transform, properties, collision_ref) with parse_no_properties() variant for BSTriShape,
+BSShaderPropertyData (shader_flags, type, flags_1/2, env_map_scale).
+Consumer traits: HasObjectNET, HasAVObject, HasShaderRefs. NiObject extended with
+as_object_net(), as_av_object(), as_shader_refs() upcasts.
+Also fixed: NiBoolInterpolator bool size (u32→u8), KeyType::Constant (step interpolation).
+**Result:** 11 blocks migrated. NiObjectNET parsing in 1 location (was 11). NiAVObject
+parsing in 1 location (was 3). BSShaderProperty parsing in 1 location (was 4).
+Net -211 lines removed. 282 tests passing.
 
 ### N23.2: BSLightingShaderProperty Completeness
 **Status:** Planned
@@ -271,7 +275,7 @@ N23.1 (Trait hierarchy)
 
 | # | Milestone | New Blocks | Cumulative | Primary Game |
 |---|-----------|-----------|------------|-------------|
-| N23.1 | Trait hierarchy | 0 | ~48 | All (refactor) |
+| N23.1 | Trait hierarchy | 0 | ~48 | **DONE** |
 | N23.2 | Shader completeness | 0 | ~48 | Skyrim/FO4 |
 | N23.3 | Oblivion | +15 | ~63 | Oblivion |
 | N23.4 | FO3/FNV validation | +8 | ~71 | FO3, FNV |
@@ -325,15 +329,20 @@ N23.1 (Trait hierarchy)
 
 ### Parser Gaps
 - [ ] Legacy ESM/ESP parsers are stubs for Morrowind, Oblivion, Skyrim, FO4
-- [x] ~~NIF parser warnings: 274~~ → 43 remaining (84% fixed)
+- [x] ~~NIF parser warnings: 274~~ → NiBoolInterpolator and KeyType::Constant fixed (N23.1)
 - [ ] NIF material properties beyond diffuse not wired to renderer
 - [x] ~~Animation controllers parsed but not executed~~ → full .kf playback pipeline (M21)
-- [x] ~~Only BSA v104 supported~~ → v105 with LZ4 added (M18)
+- [x] ~~Only BSA v104 supported~~ → v103/v104/v105 (M18, Oblivion BSA open)
 - [x] ~~Cell loader only handles STAT~~ → all renderable types (M19)
+- [ ] BSA v103 (Oblivion) decompression not yet working
+- [ ] BSLightingShaderProperty trailing fields per shader type not parsed (N23.2)
+- [ ] No skinning blocks (NiSkinInstance/NiSkinData) — N23.5
+- [ ] No collision blocks (bhk*) — N23.6
+- [ ] No BA2 reader for FO4/FO76/Starfield — N23.7+
 
 ### Renderer Gaps
-- [ ] No shadow maps or ray tracing
-- [ ] No multi-light system (single hardcoded directional light)
+- [x] ~~No shadow maps or ray tracing~~ → RT ray query shadows (M22)
+- [x] ~~No multi-light system~~ → SSBO multi-light + cell XCLL lighting (M22)
 - [ ] No transparency sorting for alpha-blended meshes
 - [ ] No skinned mesh rendering (skeletal animation)
 - [ ] No LOD system or frustum culling
@@ -354,13 +363,13 @@ N23.1 (Trait hierarchy)
 
 | Tier | Games | NIF | Archive | ESM | Cell Loading |
 |------|-------|-----|---------|-----|-------------|
-| 1 — Working | Fallout: New Vegas | Working (25+ blocks) | BSA v104 ✓ | 23 record types | Interior cells ✓ |
-| 1 — Working | Fallout 3 | Untested (likely works) | BSA v104 (likely) | Likely works | Likely works |
-| 2 — Working | Skyrim SE | BSTriShape + BSLightingShader ✓ | BSA v105 ✓ (LZ4) | Stub | Individual meshes ✓ |
-| 3 — Planned | Oblivion | Variant defined | v104 variant | Stub | — |
-| 4 — Future | Fallout 4 | Variant defined | BA2 needed | Stub | — |
-| 5 — Future | Fallout 76 | Variant defined | BA2 needed | — | — |
-| 6 — Future | Starfield | Variant defined | BA2 needed | — | — |
+| 1 — Working | Fallout: New Vegas | 48 blocks, RT shadows, XCLL | BSA v104 ✓ | 23 record types + XCLL | Interior + exterior ✓ |
+| 1 — Working | Fallout 3 | Untested (same as FNV) | BSA v104 ✓ | Likely works | Likely works |
+| 2 — Partial | Skyrim SE | BSTriShape + BSLightingShader | BSA v105 ✓ (LZ4) | Stub | Individual meshes ✓ |
+| 3 — Planned | Oblivion | Variant defined | BSA v103 (opens, decompression WIP) | Stub | — |
+| 4 — Future | Fallout 4 | Shader flags WIP | BA2 (BTDX v1) needed | Stub | — |
+| 5 — Future | Fallout 76 | stopcond needed | BA2 (BTDX v1) needed | — | — |
+| 6 — Future | Starfield | No spec | BA2 (BTDX v2) needed | — | — |
 
 **NifVariant enum covers all 8 game variants** with semantic feature flags (has_properties_list,
 has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shader, uses_bs_tri_shape).
@@ -385,10 +394,10 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Metric | Value |
 |--------|-------|
-| Passing tests | 269 |
+| Passing tests | 282 |
 | Workspace crates | 9 |
 | Completed milestones | 22 (M1–M22 Phase A+B) |
-| NIF block types | 37 |
+| NIF block types | 48 |
 | NifVariant games | 8 (Morrowind → Starfield) |
 | Supported archive formats | BSA v104, BSA v105 |
 | Primary language | Rust (2021 edition) |
@@ -403,11 +412,11 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Crate | Milestones | Tests |
 |-------|------------|-------|
-| `byroredux-core` | M3 (ECS), M5 (Form IDs), M21 (Animation) | 106 |
+| `byroredux-core` | M3 (ECS), M5 (Form IDs), M21 (Animation) | 111 |
 | `byroredux-renderer` | M1, M2, M4, M7, M8, M13, M14 | 13 |
 | `byroredux-platform` | M1 (windowing) | — |
 | `byroredux-plugin` | M5, M6 | 50 |
-| `byroredux-nif` | M9, M10, M17, M18, M21 | 87 |
+| `byroredux-nif` | M9, M10, M17, M18, M21, N23.1 | 95 |
 | `byroredux-bsa` | M11, M18 | 2 |
 | `byroredux-scripting` | M12 | 8 |
 | `byroredux-ui` | M20 (Ruffle/SWF) | — |
