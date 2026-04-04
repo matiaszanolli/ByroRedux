@@ -982,17 +982,21 @@ fn create_render_pass(device: &ash::Device, color_format: vk::Format) -> Result<
         .color_attachments(&color_refs)
         .depth_stencil_attachment(&depth_ref);
 
+    // Include LATE_FRAGMENT_TESTS because the fragment shader uses `discard`,
+    // which can defer depth writes to the late fragment test stage per spec.
     let dependency = vk::SubpassDependency::default()
         .src_subpass(vk::SUBPASS_EXTERNAL)
         .dst_subpass(0)
         .src_stage_mask(
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
-                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
         )
         .src_access_mask(vk::AccessFlags::empty())
         .dst_stage_mask(
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
-                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
         )
         .dst_access_mask(
             vk::AccessFlags::COLOR_ATTACHMENT_WRITE
