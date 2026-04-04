@@ -31,6 +31,13 @@ layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
 
 void main() {
     vec4 texColor = texture(texSampler, fragUV);
+
+    // Alpha test: discard fully transparent fragments (alpha < threshold).
+    // This handles glass, fences, foliage, and other alpha-tested geometry.
+    if (texColor.a < 0.1) {
+        discard;
+    }
+
     vec3 normal = normalize(fragNormal);
     bool rtEnabled = sceneFlags.x > 0.5;
 
