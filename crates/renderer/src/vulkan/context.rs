@@ -20,8 +20,6 @@ use gpu_allocator::MemoryLocation;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::sync::Mutex;
 
-const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
-
 /// A single draw command: which mesh to draw, with what texture, and what model matrix.
 pub struct DrawCommand {
     pub mesh_handle: u32,
@@ -74,6 +72,7 @@ pub struct VulkanContext {
     pub device: ash::Device,
     pub device_caps: device::DeviceCapabilities,
     pub physical_device: vk::PhysicalDevice,
+    depth_format: vk::Format,
 
     surface: vk::SurfaceKHR,
     surface_loader: ash::khr::surface::Instance,
@@ -128,7 +127,10 @@ impl VulkanContext {
         let (physical_device, queue_indices, device_caps) =
             device::pick_physical_device(&vk_instance, &surface_loader, vk_surface)?;
 
-        // 6. Logical device + queues (enables RT extensions when available)
+        // 6. Query supported depth format
+        let depth_format = find_depth_format(&vk_instance, physical_device)?;
+
+        // 7. Logical device + queues (enables RT extensions when available)
         let (device, raw_graphics_queue, present_queue) = device::create_logical_device(
             &vk_instance,
             physical_device,
@@ -156,12 +158,12 @@ impl VulkanContext {
             window_size,
         )?;
 
-        // 8. Depth resources
+        // 9. Depth resources
         let (depth_image, depth_image_view, depth_allocation) =
-            create_depth_resources(&device, &gpu_allocator, swapchain_state.extent)?;
+            create_depth_resources(&device, &gpu_allocator, swapchain_state.extent, depth_format)?;
 
-        // 9. Render pass (color + depth)
-        let render_pass = create_render_pass(&device, swapchain_state.format.format)?;
+        // 10. Render pass (color + depth)
+        let render_pass = create_render_pass(&device, swapchain_state.format.format, depth_format)?;
 
         // 10. Command pool (needed for texture upload one-time commands)
         let command_pool = create_command_pool(&device, queue_indices.graphics)?;
@@ -258,6 +260,7 @@ impl VulkanContext {
             surface_loader,
             surface: vk_surface,
             physical_device,
+            depth_format,
             device,
             device_caps,
             queue_indices,
@@ -782,12 +785,17 @@ impl VulkanContext {
             &self.device,
             self.allocator.as_ref().expect("allocator missing"),
             self.swapchain_state.extent,
+            self.depth_format,
         )?;
         self.depth_image = depth_image;
         self.depth_image_view = depth_image_view;
         self.depth_allocation = Some(depth_allocation);
 
-        self.render_pass = create_render_pass(&self.device, self.swapchain_state.format.format)?;
+        self.render_pass = create_render_pass(
+            &self.device,
+            self.swapchain_state.format.format,
+            self.depth_format,
+        )?;
 
         // Recreate pipelines against the new render pass.
         let pipelines = pipeline::create_triangle_pipeline(
@@ -945,7 +953,44 @@ impl Drop for VulkanContext {
 
 // ── Helper functions ────────────────────────────────────────────────────
 
-fn create_render_pass(device: &ash::Device, color_format: vk::Format) -> Result<vk::RenderPass> {
+/// Query the physical device for a supported depth format.
+///
+/// Tries formats in preference order: D32_SFLOAT (best precision) →
+/// D32_SFLOAT_S8_UINT → D24_UNORM_S8_UINT → D16_UNORM (last resort).
+/// Returns the first format that supports OPTIMAL_TILING with
+/// DEPTH_STENCIL_ATTACHMENT.
+fn find_depth_format(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+) -> Result<vk::Format> {
+    let candidates = [
+        vk::Format::D32_SFLOAT,
+        vk::Format::D32_SFLOAT_S8_UINT,
+        vk::Format::D24_UNORM_S8_UINT,
+        vk::Format::D16_UNORM,
+    ];
+
+    for &format in &candidates {
+        let props =
+            unsafe { instance.get_physical_device_format_properties(physical_device, format) };
+
+        if props
+            .optimal_tiling_features
+            .contains(vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT)
+        {
+            log::info!("Depth format selected: {:?}", format);
+            return Ok(format);
+        }
+    }
+
+    anyhow::bail!("No supported depth format found (tried D32, D32S8, D24S8, D16)")
+}
+
+fn create_render_pass(
+    device: &ash::Device,
+    color_format: vk::Format,
+    depth_format: vk::Format,
+) -> Result<vk::RenderPass> {
     let color_attachment = vk::AttachmentDescription::default()
         .format(color_format)
         .samples(vk::SampleCountFlags::TYPE_1)
@@ -957,7 +1002,7 @@ fn create_render_pass(device: &ash::Device, color_format: vk::Format) -> Result<
         .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
 
     let depth_attachment = vk::AttachmentDescription::default()
-        .format(DEPTH_FORMAT)
+        .format(depth_format)
         .samples(vk::SampleCountFlags::TYPE_1)
         .load_op(vk::AttachmentLoadOp::CLEAR)
         .store_op(vk::AttachmentStoreOp::STORE)
@@ -1054,10 +1099,11 @@ fn create_depth_resources(
     device: &ash::Device,
     allocator: &SharedAllocator,
     extent: vk::Extent2D,
+    depth_format: vk::Format,
 ) -> Result<(vk::Image, vk::ImageView, vk_alloc::Allocation)> {
     let image_info = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
-        .format(DEPTH_FORMAT)
+        .format(depth_format)
         .extent(vk::Extent3D {
             width: extent.width,
             height: extent.height,
@@ -1100,7 +1146,7 @@ fn create_depth_resources(
     let view_info = vk::ImageViewCreateInfo::default()
         .image(image)
         .view_type(vk::ImageViewType::TYPE_2D)
-        .format(DEPTH_FORMAT)
+        .format(depth_format)
         .subresource_range(vk::ImageSubresourceRange {
             aspect_mask: vk::ImageAspectFlags::DEPTH,
             base_mip_level: 0,
@@ -1116,9 +1162,10 @@ fn create_depth_resources(
     };
 
     log::info!(
-        "Depth buffer created: {}x{} D32_SFLOAT",
+        "Depth buffer created: {}x{} {:?}",
         extent.width,
-        extent.height
+        extent.height,
+        depth_format
     );
     Ok((image, view, allocation))
 }
