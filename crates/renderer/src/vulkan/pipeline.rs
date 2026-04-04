@@ -95,22 +95,21 @@ pub fn create_triangle_pipeline(
         .viewports(&viewports)
         .scissors(&scissors);
 
-    // Backface culling disabled until NIF winding convention is verified
-    // empirically. The Z-up→Y-up conversion preserves winding (det=+1),
-    // and the projection Y-flip swaps apparent winding in clip space.
-    // Once we confirm NIF winding (CW or CCW), enable BACK culling
-    // with the matching front_face setting.
-    // All pipelines enable depth bias (set dynamically per-draw to resolve Z-fighting
-    // for coplanar geometry: carpets on floors, labels on bottles, papers on desks).
+    // NIF/D3D uses CW winding. The projection Y-flip in camera.rs reverses
+    // apparent winding in clip space, so CW triangles appear CCW after
+    // projection. front_face=CCW + cull_mode=BACK is therefore correct.
+    // All pipelines enable depth bias (set dynamically per-draw to resolve
+    // Z-fighting for coplanar geometry like decals).
     let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
         .depth_clamp_enable(false)
         .rasterizer_discard_enable(false)
         .polygon_mode(vk::PolygonMode::FILL)
         .line_width(1.0)
-        .cull_mode(vk::CullModeFlags::NONE)
+        .cull_mode(vk::CullModeFlags::BACK)
         .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
         .depth_bias_enable(true);
 
+    // Two-sided rasterizer for meshes flagged as double-sided (foliage, glass, etc.).
     let rasterizer_no_cull = vk::PipelineRasterizationStateCreateInfo::default()
         .depth_clamp_enable(false)
         .rasterizer_discard_enable(false)
