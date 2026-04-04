@@ -21,7 +21,7 @@ pub use components::{
     GlobalTransform, LightSource, MeshHandle, Name, Parent, TextureHandle, Transform,
 };
 pub use packed::PackedStorage;
-pub use query::{QueryRead, QueryWrite};
+pub use query::{ComponentRef, QueryRead, QueryWrite};
 pub use resource::{Resource, ResourceRead, ResourceWrite};
 pub use resources::{DebugStats, DeltaTime, EngineConfig, TotalTime};
 pub use scheduler::Scheduler;

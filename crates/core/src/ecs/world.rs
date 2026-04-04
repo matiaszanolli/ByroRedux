@@ -7,7 +7,7 @@
 //! so multiple queries can be held simultaneously across different component
 //! types without fighting the borrow checker.
 
-use super::query::{QueryRead, QueryWrite};
+use super::query::{ComponentRef, QueryRead, QueryWrite};
 use super::resource::{Resource, ResourceRead, ResourceWrite};
 use super::storage::{Component, ComponentStorage, EntityId};
 use std::any::{Any, TypeId};
@@ -68,20 +68,16 @@ impl World {
 
     /// Get an immutable reference to an entity's component.
     ///
+    /// Returns a [`ComponentRef`](super::query::ComponentRef) that holds the
+    /// read lock and derefs to `&T`. The lock is held for the lifetime of
+    /// the returned wrapper, preventing mutation through `query_mut()`.
+    ///
     /// For holding references across multiple component types, use
     /// [`query`](Self::query) / [`query_mut`](Self::query_mut) instead.
-    pub fn get<T: Component>(&self, entity: EntityId) -> Option<&T> {
+    pub fn get<T: Component>(&self, entity: EntityId) -> Option<ComponentRef<'_, T>> {
         let lock = self.storages.get(&TypeId::of::<T>())?;
         let guard = lock.read().expect("storage lock poisoned");
-        let storage = guard
-            .downcast_ref::<T::Storage>()
-            .expect("storage type mismatch");
-        let ptr = storage.get(entity)? as *const T;
-        // SAFETY: We have &self which prevents any &mut self calls (insert,
-        // remove, etc). The RwLock read guard prevents write-lock acquisition
-        // through the query API. The pointer is valid for 'self because the
-        // storage allocation won't move or be freed while &self is held.
-        Some(unsafe { &*ptr })
+        ComponentRef::new(guard, entity)
     }
 
     /// Get a mutable reference to an entity's component.

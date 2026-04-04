@@ -150,3 +150,53 @@ impl<T: Component> DerefMut for QueryWrite<'_, T> {
         self.storage_mut()
     }
 }
+
+// ── ComponentRef: guard-owning single-component reference ───────────────
+
+/// An immutable reference to a single component, backed by a `RwLockReadGuard`.
+///
+/// Returned by [`World::get()`](super::world::World::get). Holds the read
+/// lock for the component's storage, ensuring the reference remains valid
+/// for the lifetime of this wrapper. Derefs to `&T`.
+///
+/// This replaces the previous unsound pattern where `World::get()` dropped
+/// the guard and returned a raw pointer — see issue #35.
+pub struct ComponentRef<'w, T: Component> {
+    guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>,
+    entity: EntityId,
+    _marker: PhantomData<T>,
+}
+
+impl<'w, T: Component> ComponentRef<'w, T> {
+    pub(crate) fn new(
+        guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>,
+        entity: EntityId,
+    ) -> Option<Self> {
+        // Verify the entity has the component before constructing.
+        let storage = guard
+            .downcast_ref::<T::Storage>()
+            .expect("storage type mismatch");
+        if storage.contains(entity) {
+            Some(Self {
+                guard,
+                entity,
+                _marker: PhantomData,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+impl<T: Component> Deref for ComponentRef<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        // The entity's presence was verified in new(). The guard is held,
+        // so the storage cannot be mutated. This unwrap is safe.
+        self.guard
+            .downcast_ref::<T::Storage>()
+            .expect("storage type mismatch")
+            .get(self.entity)
+            .expect("component removed (bug: guard should prevent this)")
+    }
+}
