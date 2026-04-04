@@ -10,11 +10,11 @@
 use crate::blocks::node::NiNode;
 use crate::blocks::properties::{NiAlphaProperty, NiMaterialProperty, NiTexturingProperty};
 use crate::blocks::shader::{
-    BSShaderPPLightingProperty, BSShaderNoLightingProperty, BSShaderTextureSet,
-    BSLightingShaderProperty, BSEffectShaderProperty,
+    BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
+    BSShaderPPLightingProperty, BSShaderTextureSet,
 };
 use crate::blocks::texture::NiSourceTexture;
-use crate::blocks::tri_shape::{NiTriShape, NiTriShapeData, NiTriStripsData, BsTriShape};
+use crate::blocks::tri_shape::{BsTriShape, NiTriShape, NiTriShapeData, NiTriStripsData};
 use crate::scene::NifScene;
 use crate::types::{NiMatrix3, NiPoint3, NiTransform};
 
@@ -115,7 +115,9 @@ fn walk_node_hierarchical(
     parent_node_idx: Option<usize>,
     out: &mut ImportedScene,
 ) {
-    let Some(block) = scene.get(block_idx) else { return };
+    let Some(block) = scene.get(block_idx) else {
+        return;
+    };
 
     if let Some(node) = block.as_any().downcast_ref::<NiNode>() {
         if node.av.flags & 0x01 != 0 {
@@ -147,8 +149,12 @@ fn walk_node_hierarchical(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<NiTriShape>() {
-        if shape.av.flags & 0x01 != 0 { return; }
-        if is_editor_marker(shape.av.net.name.as_deref()) { return; }
+        if shape.av.flags & 0x01 != 0 {
+            return;
+        }
+        if is_editor_marker(shape.av.net.name.as_deref()) {
+            return;
+        }
 
         if let Some(mesh) = extract_mesh_local(scene, shape) {
             let mut mesh = mesh;
@@ -158,8 +164,12 @@ fn walk_node_hierarchical(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<BsTriShape>() {
-        if shape.av.flags & 0x01 != 0 { return; }
-        if is_editor_marker(shape.av.net.name.as_deref()) { return; }
+        if shape.av.flags & 0x01 != 0 {
+            return;
+        }
+        if is_editor_marker(shape.av.net.name.as_deref()) {
+            return;
+        }
 
         if let Some(mesh) = extract_bs_tri_shape_local(scene, shape) {
             let mut mesh = mesh;
@@ -176,7 +186,9 @@ fn walk_node_flat(
     parent_transform: &NiTransform,
     out: &mut Vec<ImportedMesh>,
 ) {
-    let Some(block) = scene.get(block_idx) else { return };
+    let Some(block) = scene.get(block_idx) else {
+        return;
+    };
 
     if let Some(node) = block.as_any().downcast_ref::<NiNode>() {
         if node.av.flags & 0x01 != 0 {
@@ -196,8 +208,12 @@ fn walk_node_flat(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<NiTriShape>() {
-        if shape.av.flags & 0x01 != 0 { return; }
-        if is_editor_marker(shape.av.net.name.as_deref()) { return; }
+        if shape.av.flags & 0x01 != 0 {
+            return;
+        }
+        if is_editor_marker(shape.av.net.name.as_deref()) {
+            return;
+        }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
 
         if let Some(mesh) = extract_mesh(scene, shape, &world_transform) {
@@ -206,8 +222,12 @@ fn walk_node_flat(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<BsTriShape>() {
-        if shape.av.flags & 0x01 != 0 { return; }
-        if is_editor_marker(shape.av.net.name.as_deref()) { return; }
+        if shape.av.flags & 0x01 != 0 {
+            return;
+        }
+        if is_editor_marker(shape.av.net.name.as_deref()) {
+            return;
+        }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
 
         if let Some(mesh) = extract_bs_tri_shape(scene, shape, &world_transform) {
@@ -270,13 +290,13 @@ fn extract_mesh(
     }
 
     // Convert positions: Gamebryo Z-up → renderer Y-up: (x,y,z) → (x,z,-y)
-    let positions: Vec<[f32; 3]> = geom.vertices.iter()
-        .map(|v| [v.x, v.z, -v.y])
-        .collect();
+    let positions: Vec<[f32; 3]> = geom.vertices.iter().map(|v| [v.x, v.z, -v.y]).collect();
 
     // Convert indices (u16 → u32). Winding order preserved — the Z-up → Y-up
     // transform is a proper rotation (det=+1), not a reflection.
-    let indices: Vec<u32> = geom.triangles.iter()
+    let indices: Vec<u32> = geom
+        .triangles
+        .iter()
         .flat_map(|tri| [tri[0] as u32, tri[1] as u32, tri[2] as u32])
         .collect();
 
@@ -288,9 +308,7 @@ fn extract_mesh(
     };
 
     // Get UVs from first UV set (if available)
-    let uvs = geom.uv_sets.first()
-        .cloned()
-        .unwrap_or_default();
+    let uvs = geom.uv_sets.first().cloned().unwrap_or_default();
 
     // Determine vertex colors: prefer per-vertex colors, then material diffuse, then white
     let (colors, texture_path) = extract_material(scene, shape, &geom);
@@ -325,10 +343,7 @@ fn extract_mesh(
 }
 
 /// Extract an ImportedMesh with local transform (for hierarchical import).
-fn extract_mesh_local(
-    scene: &NifScene,
-    shape: &NiTriShape,
-) -> Option<ImportedMesh> {
+fn extract_mesh_local(scene: &NifScene, shape: &NiTriShape) -> Option<ImportedMesh> {
     // Pass shape's own transform as the "world" transform — extract_mesh converts it to Y-up.
     extract_mesh(scene, shape, &shape.av.transform)
 }
@@ -346,11 +361,11 @@ fn extract_bs_tri_shape(
     }
 
     // Convert positions: Gamebryo Z-up → renderer Y-up
-    let positions: Vec<[f32; 3]> = shape.vertices.iter()
-        .map(|v| [v.x, v.z, -v.y])
-        .collect();
+    let positions: Vec<[f32; 3]> = shape.vertices.iter().map(|v| [v.x, v.z, -v.y]).collect();
 
-    let indices: Vec<u32> = shape.triangles.iter()
+    let indices: Vec<u32> = shape
+        .triangles
+        .iter()
         .flat_map(|tri| [tri[0] as u32, tri[1] as u32, tri[2] as u32])
         .collect();
 
@@ -364,7 +379,11 @@ fn extract_bs_tri_shape(
 
     // Vertex colors
     let colors: Vec<[f32; 3]> = if !shape.vertex_colors.is_empty() {
-        shape.vertex_colors.iter().map(|c| [c[0], c[1], c[2]]).collect()
+        shape
+            .vertex_colors
+            .iter()
+            .map(|c| [c[0], c[1], c[2]])
+            .collect()
     } else {
         vec![[1.0, 1.0, 1.0]; positions.len()]
     };
@@ -374,7 +393,8 @@ fn extract_bs_tri_shape(
 
     // Check alpha via dedicated alpha_property_ref.
     let has_alpha = if let Some(idx) = shape.alpha_property_ref.index() {
-        scene.get_as::<NiAlphaProperty>(idx)
+        scene
+            .get_as::<NiAlphaProperty>(idx)
             .map(|a| a.flags & 1 != 0)
             .unwrap_or(false)
     } else {
@@ -383,7 +403,8 @@ fn extract_bs_tri_shape(
 
     // Check two-sided via BSLightingShaderProperty shader_flags_2.
     let two_sided = if let Some(idx) = shape.shader_property_ref.index() {
-        scene.get_as::<BSLightingShaderProperty>(idx)
+        scene
+            .get_as::<BSLightingShaderProperty>(idx)
             .map(|s| s.shader_flags_2 & 0x10 != 0)
             .unwrap_or(false)
     } else {
@@ -412,10 +433,7 @@ fn extract_bs_tri_shape(
 }
 
 /// Extract a BsTriShape with local transform (for hierarchical import).
-fn extract_bs_tri_shape_local(
-    scene: &NifScene,
-    shape: &BsTriShape,
-) -> Option<ImportedMesh> {
+fn extract_bs_tri_shape_local(scene: &NifScene, shape: &BsTriShape) -> Option<ImportedMesh> {
     extract_bs_tri_shape(scene, shape, &shape.av.transform)
 }
 
@@ -452,7 +470,9 @@ fn extract_material(
 
     // Per-vertex colors take priority
     if !data.vertex_colors.is_empty() {
-        let colors = data.vertex_colors.iter()
+        let colors = data
+            .vertex_colors
+            .iter()
             .map(|c| [c[0], c[1], c[2]]) // drop alpha
             .collect();
         let tex = find_texture_path(scene, shape);
@@ -712,15 +732,19 @@ fn compose_transforms(parent: &NiTransform, child: &NiTransform) -> NiTransform 
     let translation = add_points(parent.translation, rotated);
     let scale = parent.scale * child.scale;
 
-    NiTransform { rotation: rot, translation, scale }
+    NiTransform {
+        rotation: rot,
+        translation,
+        scale,
+    }
 }
 
 /// Check if a rotation matrix is degenerate (det far from 1.0).
 fn is_degenerate_rotation(m: &NiMatrix3) -> bool {
     let r = &m.rows;
     let det = r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
-            - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
-            + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
+        - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+        + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
     (det - 1.0).abs() >= 0.1
 }
 
@@ -735,9 +759,7 @@ fn repair_rotation_svd_or_identity(m: &NiMatrix3) -> NiMatrix3 {
 
     let r = &m.rows;
     let mat = Matrix3::new(
-        r[0][0], r[0][1], r[0][2],
-        r[1][0], r[1][1], r[1][2],
-        r[2][0], r[2][1], r[2][2],
+        r[0][0], r[0][1], r[0][2], r[1][0], r[1][1], r[1][2], r[2][0], r[2][1], r[2][2],
     );
 
     let svd = mat.svd(true, true);
@@ -789,11 +811,19 @@ fn mul_matrix3_point(m: &NiMatrix3, p: NiPoint3) -> NiPoint3 {
 }
 
 fn scale_point(p: NiPoint3, s: f32) -> NiPoint3 {
-    NiPoint3 { x: p.x * s, y: p.y * s, z: p.z * s }
+    NiPoint3 {
+        x: p.x * s,
+        y: p.y * s,
+        z: p.z * s,
+    }
 }
 
 fn add_points(a: NiPoint3, b: NiPoint3) -> NiPoint3 {
-    NiPoint3 { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }
+    NiPoint3 {
+        x: a.x + b.x,
+        y: a.y + b.y,
+        z: a.z + b.z,
+    }
 }
 
 /// Convert a Z-up NiMatrix3 rotation to a Y-up quaternion [x, y, z, w].
@@ -818,9 +848,9 @@ fn zup_matrix_to_yup_quat(m: &NiMatrix3) -> [f32; 4] {
     // R_yup = C * R_zup * C^T
     // where C swaps rows/columns: row_y ↔ row_z with negation.
     let yup = Matrix3::new(
-        r[0][0], r[0][2], -r[0][1],    // X row, columns swapped
-        r[2][0], r[2][2], -r[2][1],    // Z row becomes Y row
-        -r[1][0], -r[1][2], r[1][1],   // -Y row becomes Z row
+        r[0][0], r[0][2], -r[0][1], // X row, columns swapped
+        r[2][0], r[2][2], -r[2][1], // Z row becomes Y row
+        -r[1][0], -r[1][2], r[1][1], // -Y row becomes Z row
     );
 
     // SVD: M = U * Σ * Vt. Nearest rotation = U * Vt (with det correction).
@@ -871,16 +901,44 @@ mod tests {
     fn make_tri_shape_data() -> NiTriShapeData {
         NiTriShapeData {
             vertices: vec![
-                NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
-                NiPoint3 { x: 1.0, y: 0.0, z: 0.0 },
-                NiPoint3 { x: 0.0, y: 1.0, z: 0.0 },
+                NiPoint3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                NiPoint3 {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                NiPoint3 {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
             ],
             normals: vec![
-                NiPoint3 { x: 0.0, y: 0.0, z: 1.0 },
-                NiPoint3 { x: 0.0, y: 0.0, z: 1.0 },
-                NiPoint3 { x: 0.0, y: 0.0, z: 1.0 },
+                NiPoint3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                },
+                NiPoint3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                },
+                NiPoint3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                },
             ],
-            center: NiPoint3 { x: 0.33, y: 0.33, z: 0.0 },
+            center: NiPoint3 {
+                x: 0.33,
+                y: 0.33,
+                z: 0.0,
+            },
             radius: 1.0,
             vertex_colors: Vec::new(),
             uv_sets: vec![vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]],
@@ -889,7 +947,7 @@ mod tests {
     }
 
     fn make_ni_node(transform: NiTransform, children: Vec<BlockRef>) -> NiNode {
-        use crate::blocks::base::{NiObjectNETData, NiAVObjectData};
+        use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
         NiNode {
             av: NiAVObjectData {
                 net: NiObjectNETData {
@@ -913,7 +971,7 @@ mod tests {
         data_ref: u32,
         properties: Vec<BlockRef>,
     ) -> NiTriShape {
-        use crate::blocks::base::{NiObjectNETData, NiAVObjectData};
+        use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
         NiTriShape {
             av: NiAVObjectData {
                 net: NiObjectNETData {
@@ -952,7 +1010,12 @@ mod tests {
         // Block 2: NiTriShapeData
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
             Box::new(make_ni_node(identity_transform(), vec![BlockRef(1)])),
-            Box::new(make_ni_tri_shape("Triangle", identity_transform(), 2, Vec::new())),
+            Box::new(make_ni_tri_shape(
+                "Triangle",
+                identity_transform(),
+                2,
+                Vec::new(),
+            )),
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
@@ -974,7 +1037,12 @@ mod tests {
         // Root node translated by (10, 0, 0), child shape at identity
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
             Box::new(make_ni_node(translated(10.0, 0.0, 0.0), vec![BlockRef(1)])),
-            Box::new(make_ni_tri_shape("Mesh", identity_transform(), 2, Vec::new())),
+            Box::new(make_ni_tri_shape(
+                "Mesh",
+                identity_transform(),
+                2,
+                Vec::new(),
+            )),
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
@@ -995,7 +1063,12 @@ mod tests {
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
             Box::new(make_ni_node(translated(5.0, 0.0, 0.0), vec![BlockRef(1)])),
             Box::new(make_ni_node(translated(0.0, 3.0, 0.0), vec![BlockRef(2)])),
-            Box::new(make_ni_tri_shape("Deep", identity_transform(), 3, Vec::new())),
+            Box::new(make_ni_tri_shape(
+                "Deep",
+                identity_transform(),
+                3,
+                Vec::new(),
+            )),
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
@@ -1011,9 +1084,16 @@ mod tests {
     #[test]
     fn import_composes_scale() {
         // Root scale 2.0, shape at (1, 0, 0) with scale 3.0
-        let root_transform = NiTransform { scale: 2.0, ..NiTransform::default() };
+        let root_transform = NiTransform {
+            scale: 2.0,
+            ..NiTransform::default()
+        };
         let shape_transform = NiTransform {
-            translation: NiPoint3 { x: 1.0, y: 0.0, z: 0.0 },
+            translation: NiPoint3 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
             scale: 3.0,
             ..NiTransform::default()
         };
@@ -1038,10 +1118,23 @@ mod tests {
     fn import_multiple_shapes() {
         // Root → [shape0 (data→2), shape1 (data→3)]
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
-            Box::new(make_ni_node(identity_transform(), vec![BlockRef(1), BlockRef(3)])),
-            Box::new(make_ni_tri_shape("A", translated(1.0, 0.0, 0.0), 2, Vec::new())),
+            Box::new(make_ni_node(
+                identity_transform(),
+                vec![BlockRef(1), BlockRef(3)],
+            )),
+            Box::new(make_ni_tri_shape(
+                "A",
+                translated(1.0, 0.0, 0.0),
+                2,
+                Vec::new(),
+            )),
             Box::new(make_tri_shape_data()),
-            Box::new(make_ni_tri_shape("B", translated(-1.0, 0.0, 0.0), 4, Vec::new())),
+            Box::new(make_ni_tri_shape(
+                "B",
+                translated(-1.0, 0.0, 0.0),
+                4,
+                Vec::new(),
+            )),
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
@@ -1063,7 +1156,12 @@ mod tests {
 
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
             Box::new(make_ni_node(identity_transform(), vec![BlockRef(1)])),
-            Box::new(make_ni_tri_shape("Colored", identity_transform(), 2, Vec::new())),
+            Box::new(make_ni_tri_shape(
+                "Colored",
+                identity_transform(),
+                2,
+                Vec::new(),
+            )),
             Box::new(data),
         ];
         let scene = scene_from_blocks(blocks);
@@ -1085,10 +1183,22 @@ mod tests {
                 extra_data_refs: Vec::new(),
                 controller_ref: BlockRef::NULL,
             },
-            ambient: NiColor { r: 0.2, g: 0.2, b: 0.2 },
-            diffuse: NiColor { r: 0.8, g: 0.4, b: 0.2 },
+            ambient: NiColor {
+                r: 0.2,
+                g: 0.2,
+                b: 0.2,
+            },
+            diffuse: NiColor {
+                r: 0.8,
+                g: 0.4,
+                b: 0.2,
+            },
             specular: NiColor::default(),
-            emissive: NiColor { r: 0.0, g: 0.0, b: 0.0 },
+            emissive: NiColor {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+            },
             shininess: 10.0,
             alpha: 1.0,
             emissive_mult: 1.0,
@@ -1096,7 +1206,12 @@ mod tests {
 
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
             Box::new(make_ni_node(identity_transform(), vec![BlockRef(1)])),
-            Box::new(make_ni_tri_shape("Mat", identity_transform(), 2, vec![BlockRef(3)])),
+            Box::new(make_ni_tri_shape(
+                "Mat",
+                identity_transform(),
+                2,
+                vec![BlockRef(3)],
+            )),
             Box::new(make_tri_shape_data()),
             Box::new(mat),
         ];
@@ -1115,7 +1230,12 @@ mod tests {
     fn import_defaults_to_white_without_material() {
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
             Box::new(make_ni_node(identity_transform(), vec![BlockRef(1)])),
-            Box::new(make_ni_tri_shape("NoMat", identity_transform(), 2, Vec::new())),
+            Box::new(make_ni_tri_shape(
+                "NoMat",
+                identity_transform(),
+                2,
+                Vec::new(),
+            )),
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
@@ -1169,7 +1289,12 @@ mod tests {
         // After conversion: (0,0,0), (1,0,0), (0,0,-1)
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
             Box::new(make_ni_node(identity_transform(), vec![BlockRef(1)])),
-            Box::new(make_ni_tri_shape("Test", identity_transform(), 2, Vec::new())),
+            Box::new(make_ni_tri_shape(
+                "Test",
+                identity_transform(),
+                2,
+                Vec::new(),
+            )),
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
@@ -1187,7 +1312,12 @@ mod tests {
         // After conversion: (0, 1, 0) — pointing up in Y-up
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
             Box::new(make_ni_node(identity_transform(), vec![BlockRef(1)])),
-            Box::new(make_ni_tri_shape("Test", identity_transform(), 2, Vec::new())),
+            Box::new(make_ni_tri_shape(
+                "Test",
+                identity_transform(),
+                2,
+                Vec::new(),
+            )),
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
@@ -1210,9 +1340,9 @@ mod tests {
         let scene = scene_from_blocks(blocks);
         let meshes = import_nif(&scene);
 
-        assert!((meshes[0].translation[0]).abs() < 1e-6);       // X unchanged
+        assert!((meshes[0].translation[0]).abs() < 1e-6); // X unchanged
         assert!((meshes[0].translation[1] - 5.0).abs() < 1e-6); // Z→Y
-        assert!((meshes[0].translation[2]).abs() < 1e-6);        // Y→-Z (was 0)
+        assert!((meshes[0].translation[2]).abs() < 1e-6); // Y→-Z (was 0)
     }
 
     #[test]
@@ -1221,7 +1351,12 @@ mod tests {
         // NIF translation (0, 7, 0) → Y-up (0, 0, -7)
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
             Box::new(make_ni_node(translated(0.0, 7.0, 0.0), vec![BlockRef(1)])),
-            Box::new(make_ni_tri_shape("Fwd", identity_transform(), 2, Vec::new())),
+            Box::new(make_ni_tri_shape(
+                "Fwd",
+                identity_transform(),
+                2,
+                Vec::new(),
+            )),
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
@@ -1257,7 +1392,12 @@ mod tests {
         // so triangle winding order must stay the same.
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
             Box::new(make_ni_node(identity_transform(), vec![BlockRef(1)])),
-            Box::new(make_ni_tri_shape("Wind", identity_transform(), 2, Vec::new())),
+            Box::new(make_ni_tri_shape(
+                "Wind",
+                identity_transform(),
+                2,
+                Vec::new(),
+            )),
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
@@ -1278,7 +1418,11 @@ mod tests {
         };
         let parent = NiTransform {
             rotation: zero_rot,
-            translation: NiPoint3 { x: 10.0, y: 0.0, z: 0.0 },
+            translation: NiPoint3 {
+                x: 10.0,
+                y: 0.0,
+                z: 0.0,
+            },
             scale: 1.0,
         };
         let child = translated(5.0, 0.0, 0.0);
@@ -1296,15 +1440,15 @@ mod tests {
         // SVD should extract the identity rotation and use it for both
         // rotation composition and translation rotation.
         let scaled_identity = NiMatrix3 {
-            rows: [
-                [2.0, 0.0, 0.0],
-                [0.0, 2.0, 0.0],
-                [0.0, 0.0, 2.0],
-            ],
+            rows: [[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]],
         };
         let parent = NiTransform {
             rotation: scaled_identity,
-            translation: NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+            translation: NiPoint3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
             scale: 1.0,
         };
         let child = translated(3.0, 4.0, 5.0);
@@ -1322,24 +1466,36 @@ mod tests {
         // det = 8 → degenerate. SVD should extract the 90° Z rotation
         // and apply it to both rotation and translation.
         let scaled_rot_z90 = NiMatrix3 {
-            rows: [
-                [0.0, -2.0, 0.0],
-                [2.0,  0.0, 0.0],
-                [0.0,  0.0, 2.0],
-            ],
+            rows: [[0.0, -2.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 2.0]],
         };
         let parent = NiTransform {
             rotation: scaled_rot_z90,
-            translation: NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+            translation: NiPoint3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
             scale: 1.0,
         };
         // Child at (1, 0, 0). After 90° Z rotation → (0, 1, 0).
         let child = translated(1.0, 0.0, 0.0);
         let result = compose_transforms(&parent, &child);
 
-        assert!((result.translation.x).abs() < 1e-4, "x={}", result.translation.x);
-        assert!((result.translation.y - 1.0).abs() < 1e-4, "y={}", result.translation.y);
-        assert!((result.translation.z).abs() < 1e-4, "z={}", result.translation.z);
+        assert!(
+            (result.translation.x).abs() < 1e-4,
+            "x={}",
+            result.translation.x
+        );
+        assert!(
+            (result.translation.y - 1.0).abs() < 1e-4,
+            "y={}",
+            result.translation.y
+        );
+        assert!(
+            (result.translation.z).abs() < 1e-4,
+            "z={}",
+            result.translation.z
+        );
     }
 
     #[test]
@@ -1352,11 +1508,7 @@ mod tests {
         // Standard Rz(90°) = [[0,-1,0],[1,0,0],[0,0,1]]
         // Gamebryo Rz_cw(-90°) = same matrix (CW by -90° = CCW by 90°)
         let rot_z90 = NiMatrix3 {
-            rows: [
-                [0.0, -1.0, 0.0],
-                [1.0,  0.0, 0.0],
-                [0.0,  0.0, 1.0],
-            ],
+            rows: [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
         };
         let q = zup_matrix_to_yup_quat(&rot_z90);
         // Expected: 90° CCW around Y → quat (0, sin(45°), 0, cos(45°))
@@ -1374,11 +1526,7 @@ mod tests {
         // Standard Rx(90°) = [[1,0,0],[0,0,-1],[0,1,0]]
         // After Z→Y: still 90° CCW around X (X axis is unchanged by the conversion).
         let rot_x90 = NiMatrix3 {
-            rows: [
-                [1.0, 0.0,  0.0],
-                [0.0, 0.0, -1.0],
-                [0.0, 1.0,  0.0],
-            ],
+            rows: [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]],
         };
         let q = zup_matrix_to_yup_quat(&rot_x90);
         // Expected: 90° CCW around X → quat (sin(45°), 0, 0, cos(45°))

@@ -80,14 +80,15 @@ impl DependencyResolver {
     /// deepest dependent wins (`DepthResolved`). Otherwise, the lowest
     /// `PluginId` wins (`TieBreak`).
     pub fn resolve_winner(&self, plugins: &[PluginId]) -> (PluginId, ConflictResolution) {
-        assert!(!plugins.is_empty(), "resolve_winner called with empty slice");
+        assert!(
+            !plugins.is_empty(),
+            "resolve_winner called with empty slice"
+        );
 
         if plugins.len() == 1 {
             return (
                 plugins[0],
-                ConflictResolution::DepthResolved {
-                    winner: plugins[0],
-                },
+                ConflictResolution::DepthResolved { winner: plugins[0] },
             );
         }
 
@@ -117,17 +118,11 @@ impl DependencyResolver {
         if overlap > 0 {
             // Winner depends on at least one other plugin in the set —
             // this is an intentional override.
-            (
-                winner,
-                ConflictResolution::DepthResolved { winner },
-            )
+            (winner, ConflictResolution::DepthResolved { winner })
         } else {
             // No dependency relationship — deterministic tiebreak.
             let winner = *plugins.iter().min().unwrap();
-            (
-                winner,
-                ConflictResolution::TieBreak { winner },
-            )
+            (winner, ConflictResolution::TieBreak { winner })
         }
     }
 }
@@ -167,10 +162,7 @@ mod tests {
     #[test]
     fn depth_resolved_winner() {
         // B depends on A, both touch the same record → B wins
-        let manifests = vec![
-            manifest("A.esm", &[]),
-            manifest("B.esm", &["A.esm"]),
-        ];
+        let manifests = vec![manifest("A.esm", &[]), manifest("B.esm", &["A.esm"])];
         let resolver = DependencyResolver::new(&manifests);
 
         let plugins = vec![
@@ -180,16 +172,16 @@ mod tests {
         let (winner, resolution) = resolver.resolve_winner(&plugins);
 
         assert_eq!(winner, PluginId::from_filename("B.esm"));
-        assert!(matches!(resolution, ConflictResolution::DepthResolved { .. }));
+        assert!(matches!(
+            resolution,
+            ConflictResolution::DepthResolved { .. }
+        ));
     }
 
     #[test]
     fn tiebreak_no_dependency() {
         // A and B are independent — tiebreak by UUID order
-        let manifests = vec![
-            manifest("A.esm", &[]),
-            manifest("B.esm", &[]),
-        ];
+        let manifests = vec![manifest("A.esm", &[]), manifest("B.esm", &[])];
         let resolver = DependencyResolver::new(&manifests);
 
         let plugins = vec![
@@ -222,15 +214,15 @@ mod tests {
         let (winner, resolution) = resolver.resolve_winner(&plugins);
 
         assert_eq!(winner, PluginId::from_filename("C.esm"));
-        assert!(matches!(resolution, ConflictResolution::DepthResolved { .. }));
+        assert!(matches!(
+            resolution,
+            ConflictResolution::DepthResolved { .. }
+        ));
     }
 
     #[test]
     fn tiebreak_is_deterministic() {
-        let manifests = vec![
-            manifest("X.esm", &[]),
-            manifest("Y.esm", &[]),
-        ];
+        let manifests = vec![manifest("X.esm", &[]), manifest("Y.esm", &[])];
         let resolver = DependencyResolver::new(&manifests);
 
         let plugins = vec![

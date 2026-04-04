@@ -62,10 +62,15 @@ pub struct SceneBuffers {
 
 impl SceneBuffers {
     /// Create scene buffers and descriptor infrastructure.
-    pub fn new(device: &ash::Device, allocator: &SharedAllocator, rt_enabled: bool) -> Result<Self> {
+    pub fn new(
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        rt_enabled: bool,
+    ) -> Result<Self> {
         // Calculate buffer sizes.
         let light_buf_size = (std::mem::size_of::<LightHeader>()
-            + std::mem::size_of::<GpuLight>() * MAX_LIGHTS) as vk::DeviceSize;
+            + std::mem::size_of::<GpuLight>() * MAX_LIGHTS)
+            as vk::DeviceSize;
         let camera_buf_size = std::mem::size_of::<GpuCamera>() as vk::DeviceSize;
 
         // Create per-frame buffers.

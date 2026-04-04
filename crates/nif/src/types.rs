@@ -21,7 +21,11 @@ pub struct NiColor {
 
 impl Default for NiColor {
     fn default() -> Self {
-        Self { r: 1.0, g: 1.0, b: 1.0 }
+        Self {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+        }
     }
 }
 
@@ -36,7 +40,12 @@ pub struct NiColorA {
 
 impl Default for NiColorA {
     fn default() -> Self {
-        Self { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }
+        Self {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        }
     }
 }
 
@@ -50,11 +59,7 @@ pub struct NiMatrix3 {
 impl Default for NiMatrix3 {
     fn default() -> Self {
         Self {
-            rows: [
-                [1.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0],
-                [0.0, 0.0, 1.0],
-            ],
+            rows: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         }
     }
 }
@@ -111,7 +116,11 @@ impl BlockRef {
     }
 
     pub fn index(self) -> Option<usize> {
-        if self.is_null() { None } else { Some(self.0 as usize) }
+        if self.is_null() {
+            None
+        } else {
+            Some(self.0 as usize)
+        }
     }
 }
 

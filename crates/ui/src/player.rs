@@ -39,18 +39,15 @@ impl SwfPlayer {
             .map_err(|e| anyhow!("Failed to parse SWF: {e}"))?;
 
         // Create wgpu instance and device (headless, no surface).
-        let instance = create_wgpu_instance(
+        let instance =
+            create_wgpu_instance(wgpu::Backends::VULKAN, wgpu::BackendOptions::default());
+        let (adapter, device, queue) = futures::executor::block_on(request_adapter_and_device(
             wgpu::Backends::VULKAN,
-            wgpu::BackendOptions::default(),
-        );
-        let (adapter, device, queue) =
-            futures::executor::block_on(request_adapter_and_device(
-                wgpu::Backends::VULKAN,
-                &instance,
-                None,
-                wgpu::PowerPreference::HighPerformance,
-            ))
-            .map_err(|e| anyhow!("Failed to create wgpu device: {e}"))?;
+            &instance,
+            None,
+            wgpu::PowerPreference::HighPerformance,
+        ))
+        .map_err(|e| anyhow!("Failed to create wgpu device: {e}"))?;
 
         let descriptors = Arc::new(Descriptors::new(instance, adapter, device, queue));
 

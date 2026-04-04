@@ -6,10 +6,10 @@
 //!
 //! This replaces Papyrus's `StartTimer(time, id)` → `OnTimer(id)` flow.
 
+use crate::events::TimerExpired;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
-use crate::events::TimerExpired;
 
 /// A countdown timer attached to an entity.
 #[derive(Debug, Clone, Copy)]
@@ -26,7 +26,9 @@ impl Component for ScriptTimer {
 
 /// System: tick all ScriptTimer components, fire TimerExpired when done.
 pub fn timer_tick_system(world: &World, dt: f32) {
-    let Some(mut timers) = world.query_mut::<ScriptTimer>() else { return };
+    let Some(mut timers) = world.query_mut::<ScriptTimer>() else {
+        return;
+    };
 
     // Collect expired timers (can't mutate two storages while iterating one)
     let mut expired: Vec<(EntityId, u32)> = Vec::new();
@@ -46,7 +48,9 @@ pub fn timer_tick_system(world: &World, dt: f32) {
 
     // Insert TimerExpired markers
     if !expired.is_empty() {
-        let Some(mut markers) = world.query_mut::<TimerExpired>() else { return };
+        let Some(mut markers) = world.query_mut::<TimerExpired>() else {
+            return;
+        };
         for (entity, timer_id) in expired {
             markers.insert(entity, TimerExpired { timer_id });
         }
@@ -56,8 +60,8 @@ pub fn timer_tick_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byroredux_core::ecs::world::World;
     use crate::events::TimerExpired;
+    use byroredux_core::ecs::world::World;
 
     fn setup_world() -> World {
         let mut world = World::new();
@@ -69,7 +73,13 @@ mod tests {
     fn timer_fires_after_duration() {
         let mut world = setup_world();
         let e = world.spawn();
-        world.insert(e, ScriptTimer { id: 42, remaining: 1.0 });
+        world.insert(
+            e,
+            ScriptTimer {
+                id: 42,
+                remaining: 1.0,
+            },
+        );
 
         // Frame 1: 0.5s elapsed — timer still running
         timer_tick_system(&world, 0.5);
@@ -89,7 +99,13 @@ mod tests {
     fn timer_zero_duration_fires_immediately() {
         let mut world = setup_world();
         let e = world.spawn();
-        world.insert(e, ScriptTimer { id: 1, remaining: 0.0 });
+        world.insert(
+            e,
+            ScriptTimer {
+                id: 1,
+                remaining: 0.0,
+            },
+        );
 
         timer_tick_system(&world, 0.016);
         assert!(!world.has::<ScriptTimer>(e));
@@ -101,8 +117,20 @@ mod tests {
         let mut world = setup_world();
         let a = world.spawn();
         let b = world.spawn();
-        world.insert(a, ScriptTimer { id: 10, remaining: 0.5 });
-        world.insert(b, ScriptTimer { id: 20, remaining: 1.5 });
+        world.insert(
+            a,
+            ScriptTimer {
+                id: 10,
+                remaining: 0.5,
+            },
+        );
+        world.insert(
+            b,
+            ScriptTimer {
+                id: 20,
+                remaining: 1.5,
+            },
+        );
 
         // After 0.6s: a fires, b still running
         timer_tick_system(&world, 0.6);
@@ -124,7 +152,13 @@ mod tests {
     fn cleanup_removes_expired_markers() {
         let mut world = setup_world();
         let e = world.spawn();
-        world.insert(e, ScriptTimer { id: 1, remaining: 0.0 });
+        world.insert(
+            e,
+            ScriptTimer {
+                id: 1,
+                remaining: 0.0,
+            },
+        );
 
         timer_tick_system(&world, 0.016);
         assert!(world.has::<TimerExpired>(e));

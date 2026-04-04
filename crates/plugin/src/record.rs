@@ -70,10 +70,8 @@ impl Record {
     ///
     /// If a component of the same type was already present, it is replaced.
     pub fn add_component<T: Component + Clone + Send + Sync + 'static>(&mut self, data: T) {
-        self.components.insert(
-            TypeId::of::<T>(),
-            Box::new(ErasedComponent { data }),
-        );
+        self.components
+            .insert(TypeId::of::<T>(), Box::new(ErasedComponent { data }));
     }
 
     /// Spawn this record as a live entity in the [`World`].

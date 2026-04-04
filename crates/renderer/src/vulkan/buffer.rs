@@ -34,15 +34,7 @@ impl GpuBuffer {
             usage |= vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
         }
-        Self::create_device_local_buffer(
-            device,
-            allocator,
-            queue,
-            command_pool,
-            size,
-            usage,
-            data,
-        )
+        Self::create_device_local_buffer(device, allocator, queue, command_pool, size, usage, data)
     }
 
     /// Create an index buffer in DEVICE_LOCAL memory via staging upload.
@@ -61,15 +53,7 @@ impl GpuBuffer {
             usage |= vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
         }
-        Self::create_device_local_buffer(
-            device,
-            allocator,
-            queue,
-            command_pool,
-            size,
-            usage,
-            data,
-        )
+        Self::create_device_local_buffer(device, allocator, queue, command_pool, size, usage, data)
     }
 
     /// Create a host-visible buffer for per-frame CPU writes (no staging needed).
@@ -123,7 +107,10 @@ impl GpuBuffer {
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
         };
-        let alloc = self.allocation.as_mut().context("Buffer has no allocation")?;
+        let alloc = self
+            .allocation
+            .as_mut()
+            .context("Buffer has no allocation")?;
         let mapped = alloc.mapped_slice_mut().context("Buffer not mapped")?;
         let len = bytes.len().min(mapped.len());
         mapped[..len].copy_from_slice(&bytes[..len]);
@@ -185,7 +172,11 @@ impl GpuBuffer {
 
         unsafe {
             device
-                .bind_buffer_memory(staging_buffer, staging_alloc.memory(), staging_alloc.offset())
+                .bind_buffer_memory(
+                    staging_buffer,
+                    staging_alloc.memory(),
+                    staging_alloc.offset(),
+                )
                 .context("Failed to bind staging buffer")?;
         }
 
@@ -264,9 +255,7 @@ impl GpuBuffer {
 impl Drop for GpuBuffer {
     fn drop(&mut self) {
         if self.allocation.is_some() {
-            log::warn!(
-                "GpuBuffer dropped without destroy() — VkBuffer and GPU allocation leaked"
-            );
+            log::warn!("GpuBuffer dropped without destroy() — VkBuffer and GPU allocation leaked");
             debug_assert!(false, "GpuBuffer leaked: call destroy() before dropping");
         }
     }

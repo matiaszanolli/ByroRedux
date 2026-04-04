@@ -46,10 +46,16 @@ pub fn pick_physical_device(
     }
 
     for &device in &devices {
-        if let Some((indices, caps)) = is_device_suitable(instance, surface_loader, surface, device)? {
+        if let Some((indices, caps)) =
+            is_device_suitable(instance, surface_loader, surface, device)?
+        {
             let props = unsafe { instance.get_physical_device_properties(device) };
             let name = unsafe { CStr::from_ptr(props.device_name.as_ptr()) };
-            log::info!("Selected GPU: {:?} (ray query: {})", name, caps.ray_query_supported);
+            log::info!(
+                "Selected GPU: {:?} (ray query: {})",
+                name,
+                caps.ray_query_supported
+            );
             return Ok((device, indices, caps));
         }
     }
@@ -87,8 +93,7 @@ fn is_device_suitable(
     let ray_query_supported = RT_EXTENSIONS.iter().all(|ext| has_extension(ext));
 
     // Find queue families.
-    let queue_families =
-        unsafe { instance.get_physical_device_queue_family_properties(device) };
+    let queue_families = unsafe { instance.get_physical_device_queue_family_properties(device) };
 
     let mut graphics = None;
     let mut present = None;
@@ -117,8 +122,13 @@ fn is_device_suitable(
 
     match (graphics, present) {
         (Some(g), Some(p)) => Ok(Some((
-            QueueFamilyIndices { graphics: g, present: p },
-            DeviceCapabilities { ray_query_supported },
+            QueueFamilyIndices {
+                graphics: g,
+                present: p,
+            },
+            DeviceCapabilities {
+                ray_query_supported,
+            },
         ))),
         _ => Ok(None),
     }
@@ -156,7 +166,9 @@ pub fn create_logical_device(
         for ext in RT_EXTENSIONS {
             extensions.push(ext.as_ptr());
         }
-        log::info!("Enabling RT extensions: acceleration_structure, ray_query, deferred_host_operations");
+        log::info!(
+            "Enabling RT extensions: acceleration_structure, ray_query, deferred_host_operations"
+        );
     }
 
     // Feature chain for RT (pNext).
@@ -166,8 +178,8 @@ pub fn create_logical_device(
     let mut accel_features = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
         .acceleration_structure(caps.ray_query_supported);
 
-    let mut ray_query_features = vk::PhysicalDeviceRayQueryFeaturesKHR::default()
-        .ray_query(caps.ray_query_supported);
+    let mut ray_query_features =
+        vk::PhysicalDeviceRayQueryFeaturesKHR::default().ray_query(caps.ray_query_supported);
 
     let create_info = if caps.ray_query_supported {
         vk::DeviceCreateInfo::default()

@@ -16,7 +16,12 @@ pub struct Vertex {
 
 impl Vertex {
     pub const fn new(position: [f32; 3], color: [f32; 3], normal: [f32; 3], uv: [f32; 2]) -> Self {
-        Self { position, color, normal, uv }
+        Self {
+            position,
+            color,
+            normal,
+            uv,
+        }
     }
 
     /// How vertex data is read from the buffer (stride, rate).

@@ -53,16 +53,16 @@ pub fn create_swapchain(
     }
 
     let queue_family_indices = [indices.graphics, indices.present];
-    let (sharing_mode, queue_family_index_count, p_indices) =
-        if indices.graphics != indices.present {
-            (
-                vk::SharingMode::CONCURRENT,
-                2,
-                queue_family_indices.as_ptr(),
-            )
-        } else {
-            (vk::SharingMode::EXCLUSIVE, 0, std::ptr::null())
-        };
+    let (sharing_mode, queue_family_index_count, p_indices) = if indices.graphics != indices.present
+    {
+        (
+            vk::SharingMode::CONCURRENT,
+            2,
+            queue_family_indices.as_ptr(),
+        )
+    } else {
+        (vk::SharingMode::EXCLUSIVE, 0, std::ptr::null())
+    };
 
     let create_info = vk::SwapchainCreateInfoKHR {
         surface,

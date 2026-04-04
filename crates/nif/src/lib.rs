@@ -24,9 +24,9 @@ pub mod version;
 use blocks::{parse_block, NiObject};
 use header::NifHeader;
 use scene::NifScene;
-use stream::NifStream;
 use std::io;
 use std::sync::Arc;
+use stream::NifStream;
 
 /// Parse a NIF file from raw bytes.
 ///
@@ -34,8 +34,12 @@ use std::sync::Arc;
 pub fn parse_nif(data: &[u8]) -> io::Result<NifScene> {
     // Phase 1: Parse header
     let (header, block_data_offset) = NifHeader::parse(data)?;
-    log::debug!("NIF version {}, {} blocks, {} strings",
-        header.version, header.num_blocks, header.strings.len());
+    log::debug!(
+        "NIF version {}, {} blocks, {} strings",
+        header.version,
+        header.num_blocks,
+        header.strings.len()
+    );
 
     // Phase 2: Parse blocks
     let block_data = &data[block_data_offset..];
@@ -43,28 +47,38 @@ pub fn parse_nif(data: &[u8]) -> io::Result<NifScene> {
     let mut blocks: Vec<Arc<dyn NiObject>> = Vec::with_capacity(header.num_blocks as usize);
 
     for i in 0..header.num_blocks as usize {
-        let type_name = header.block_type_name(i)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData,
-                format!("block {} has no type name", i)))?;
+        let type_name = header.block_type_name(i).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("block {} has no type name", i),
+            )
+        })?;
 
         let block_size = header.block_sizes.get(i).copied();
         let start_pos = stream.position();
 
-        let block = parse_block(type_name, &mut stream, block_size)
-            .map_err(|e| {
-                let consumed = stream.position() - start_pos;
-                io::Error::new(e.kind(), format!(
+        let block = parse_block(type_name, &mut stream, block_size).map_err(|e| {
+            let consumed = stream.position() - start_pos;
+            io::Error::new(
+                e.kind(),
+                format!(
                     "block {} '{}' (size {:?}, offset {}, consumed {}): {}",
                     i, type_name, block_size, start_pos, consumed, e
-                ))
-            })?;
+                ),
+            )
+        })?;
 
         // Verify we consumed exactly block_size bytes (if known)
         if let Some(size) = block_size {
             let consumed = stream.position() - start_pos;
             if consumed != size as u64 {
-                log::warn!("Block {} '{}': expected {} bytes, consumed {}. Adjusting position.",
-                    i, type_name, size, consumed);
+                log::warn!(
+                    "Block {} '{}': expected {} bytes, consumed {}. Adjusting position.",
+                    i,
+                    type_name,
+                    size,
+                    consumed
+                );
                 stream.set_position(start_pos + size as u64);
             }
         }
@@ -75,9 +89,10 @@ pub fn parse_nif(data: &[u8]) -> io::Result<NifScene> {
     // Phase 3: Identify root
     let root_index = if !blocks.is_empty() {
         // Root is typically the first NiNode block
-        blocks.iter().position(|b| {
-            matches!(b.block_type_name(), "NiNode")
-        }).or(Some(0))
+        blocks
+            .iter()
+            .position(|b| matches!(b.block_type_name(), "NiNode"))
+            .or(Some(0))
     } else {
         None
     };
@@ -103,9 +118,12 @@ mod tests {
         buf.extend_from_slice(&34u32.to_le_bytes()); // user_version_2 (FNV)
 
         // Short strings (author, process, export)
-        buf.push(1); buf.push(0);
-        buf.push(1); buf.push(0);
-        buf.push(1); buf.push(0);
+        buf.push(1);
+        buf.push(0);
+        buf.push(1);
+        buf.push(0);
+        buf.push(1);
+        buf.push(0);
 
         // Block types: 1 type "NiNode"
         buf.extend_from_slice(&1u16.to_le_bytes());
@@ -201,9 +219,12 @@ mod tests {
         buf.extend_from_slice(&0u32.to_le_bytes()); // num_blocks = 0
         buf.extend_from_slice(&83u32.to_le_bytes()); // user_version_2
 
-        buf.push(1); buf.push(0); // author
-        buf.push(1); buf.push(0); // process
-        buf.push(1); buf.push(0); // export
+        buf.push(1);
+        buf.push(0); // author
+        buf.push(1);
+        buf.push(0); // process
+        buf.push(1);
+        buf.push(0); // export
 
         buf.extend_from_slice(&0u16.to_le_bytes()); // num_block_types
         buf.extend_from_slice(&0u32.to_le_bytes()); // num_strings
@@ -225,9 +246,12 @@ mod tests {
         buf.extend_from_slice(&1u32.to_le_bytes()); // 1 block
         buf.extend_from_slice(&83u32.to_le_bytes());
 
-        buf.push(1); buf.push(0);
-        buf.push(1); buf.push(0);
-        buf.push(1); buf.push(0);
+        buf.push(1);
+        buf.push(0);
+        buf.push(1);
+        buf.push(0);
+        buf.push(1);
+        buf.push(0);
 
         // 1 block type: "BSUnknownFutureType"
         buf.extend_from_slice(&1u16.to_le_bytes());
@@ -284,20 +308,30 @@ mod tests {
         assert_eq!(scene.len(), 12, "FNV bottle should have 12 blocks");
 
         let meshes = import::import_nif(&scene);
-        assert!(!meshes.is_empty(), "should import at least one mesh from bottle");
+        assert!(
+            !meshes.is_empty(),
+            "should import at least one mesh from bottle"
+        );
 
         let m = &meshes[0];
         assert!(!m.positions.is_empty(), "mesh should have vertices");
         assert!(!m.indices.is_empty(), "mesh should have indices");
-        eprintln!("Bottle mesh: {} verts, {} indices, texture={:?}",
-            m.positions.len(), m.indices.len(), m.texture_path);
+        eprintln!(
+            "Bottle mesh: {} verts, {} indices, texture={:?}",
+            m.positions.len(),
+            m.indices.len(),
+            m.texture_path
+        );
         eprintln!("  translation: {:?}", m.translation);
         eprintln!("  scale: {}", m.scale);
         eprintln!("  scale: {}", m.scale);
         // Vertex bounds
         let (mut min, mut max) = (m.positions[0], m.positions[0]);
         for p in &m.positions {
-            for i in 0..3 { min[i] = min[i].min(p[i]); max[i] = max[i].max(p[i]); }
+            for i in 0..3 {
+                min[i] = min[i].min(p[i]);
+                max[i] = max[i].max(p[i]);
+            }
         }
         eprintln!("  vertex bounds: min={:?} max={:?}", min, max);
     }
@@ -317,7 +351,10 @@ mod tests {
         assert_eq!(scene.len(), 18, "FNV sign should have 18 blocks");
 
         let meshes = import::import_nif(&scene);
-        assert!(!meshes.is_empty(), "should import at least one mesh from sign");
+        assert!(
+            !meshes.is_empty(),
+            "should import at least one mesh from sign"
+        );
         eprintln!("Sign: {} meshes imported", meshes.len());
     }
 
@@ -334,8 +371,14 @@ mod tests {
         let scene = parse_nif(&data).expect("parse_nif should succeed on FNV rock");
 
         let meshes = import::import_nif(&scene);
-        assert!(!meshes.is_empty(), "should import at least one mesh from rock");
-        eprintln!("Rock: {} meshes, first has {} verts",
-            meshes.len(), meshes[0].positions.len());
+        assert!(
+            !meshes.is_empty(),
+            "should import at least one mesh from rock"
+        );
+        eprintln!(
+            "Rock: {} meshes, first has {} verts",
+            meshes.len(),
+            meshes[0].positions.len()
+        );
     }
 }

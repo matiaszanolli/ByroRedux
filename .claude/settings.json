@@ -30,13 +30,17 @@
       "Bash(rustup show:*)",
       "Bash(sh -s -- -y --default-toolchain stable)",
       "Bash(glslangValidator -V ui.vert -o ui.vert.spv)",
-      "Bash(glslangValidator -V ui.frag -o ui.frag.spv)"
+      "Bash(glslangValidator -V ui.frag -o ui.frag.spv)",
+      "Bash(sed -i 's/return 0; \\\\/\\\\/ Skip flags/return \\(0, None\\); \\\\/\\\\/ Skip flags/' byroredux/src/main.rs)",
+      "Bash(sed -i '/^        \\(0, None\\)$/!s/^        0$/        \\(0, None\\)/' byroredux/src/main.rs)",
+      "Bash(glslangValidator -V triangle.frag -o triangle.frag.spv --target-env spirv1.4)"
     ],
     "additionalDirectories": [
       "/mnt/data/src/gamebyro-redux/.claude",
       "/home/matias/.claude/plans",
       "/mnt/data/src/gamebyro-redux/docs/engine",
-      "/tmp"
+      "/tmp",
+      "/mnt/data/src/gamebyro-redux/.claude/issues"
     ]
   }
 }

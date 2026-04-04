@@ -52,7 +52,10 @@ impl BsaArchive {
         if version != 103 && version != 104 && version != 105 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("unsupported BSA version {} (expected 103, 104, or 105)", version),
+                format!(
+                    "unsupported BSA version {} (expected 103, 104, or 105)",
+                    version
+                ),
             ));
         }
 
@@ -360,17 +363,22 @@ mod tests {
     #[test]
     #[ignore]
     fn texture_bsa_extract_dds() {
-        let tex_bsa = "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data/Fallout - Textures.bsa";
+        let tex_bsa =
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data/Fallout - Textures.bsa";
         if !Path::new(tex_bsa).exists() {
             return;
         }
         let archive = BsaArchive::open(tex_bsa).unwrap();
         eprintln!("Textures BSA: {} files", archive.file_count());
 
-        assert!(archive.contains(r"textures\clutter\food\beerbottle.dds"),
-                "should contain beerbottle texture");
+        assert!(
+            archive.contains(r"textures\clutter\food\beerbottle.dds"),
+            "should contain beerbottle texture"
+        );
 
-        let data = archive.extract(r"textures\clutter\food\beerbottle.dds").unwrap();
+        let data = archive
+            .extract(r"textures\clutter\food\beerbottle.dds")
+            .unwrap();
         eprintln!("Extracted {} bytes, first 4: {:?}", data.len(), &data[..4]);
         assert_eq!(&data[..4], b"DDS ", "should start with DDS magic");
     }

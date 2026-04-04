@@ -18,7 +18,8 @@ pub struct NifStream<'a> {
 
 impl<'a> NifStream<'a> {
     pub fn new(data: &'a [u8], header: &'a NifHeader) -> Self {
-        let variant = NifVariant::detect(header.version, header.user_version, header.user_version_2);
+        let variant =
+            NifVariant::detect(header.version, header.user_version, header.user_version_2);
         Self {
             cursor: Cursor::new(data),
             header,
@@ -268,10 +269,10 @@ mod tests {
     fn read_primitives() {
         let header = test_header(NifVersion::V20_2_0_7);
         let data: Vec<u8> = vec![
-            0x42,                               // u8: 0x42
-            0x34, 0x12,                          // u16le: 0x1234
-            0x78, 0x56, 0x34, 0x12,              // u32le: 0x12345678
-            0x00, 0x00, 0x80, 0x3F,              // f32le: 1.0
+            0x42, // u8: 0x42
+            0x34, 0x12, // u16le: 0x1234
+            0x78, 0x56, 0x34, 0x12, // u32le: 0x12345678
+            0x00, 0x00, 0x80, 0x3F, // f32le: 1.0
         ];
         let mut stream = NifStream::new(&data, &header);
 
@@ -286,8 +287,8 @@ mod tests {
     fn read_block_ref_valid_and_null() {
         let header = test_header(NifVersion::V20_2_0_7);
         let data: Vec<u8> = vec![
-            0x05, 0x00, 0x00, 0x00,              // i32: 5 (valid ref)
-            0xFF, 0xFF, 0xFF, 0xFF,              // i32: -1 (null ref)
+            0x05, 0x00, 0x00, 0x00, // i32: 5 (valid ref)
+            0xFF, 0xFF, 0xFF, 0xFF, // i32: -1 (null ref)
         ];
         let mut stream = NifStream::new(&data, &header);
 
@@ -302,9 +303,9 @@ mod tests {
     fn read_block_ref_list() {
         let header = test_header(NifVersion::V20_2_0_7);
         let data: Vec<u8> = vec![
-            0x02, 0x00, 0x00, 0x00,              // count: 2
-            0x00, 0x00, 0x00, 0x00,              // ref 0
-            0x03, 0x00, 0x00, 0x00,              // ref 3
+            0x02, 0x00, 0x00, 0x00, // count: 2
+            0x00, 0x00, 0x00, 0x00, // ref 0
+            0x03, 0x00, 0x00, 0x00, // ref 3
         ];
         let mut stream = NifStream::new(&data, &header);
 
@@ -319,8 +320,8 @@ mod tests {
         // Version >= 20.1.0.3 reads from string table
         let header = test_header(NifVersion::V20_2_0_7);
         let data: Vec<u8> = vec![
-            0x01, 0x00, 0x00, 0x00,              // string table index 1
-            0xFF, 0xFF, 0xFF, 0xFF,              // index -1 (null)
+            0x01, 0x00, 0x00, 0x00, // string table index 1
+            0xFF, 0xFF, 0xFF, 0xFF, // index -1 (null)
         ];
         let mut stream = NifStream::new(&data, &header);
 
@@ -333,9 +334,9 @@ mod tests {
         // Version < 20.1.0.3 reads length-prefixed inline
         let header = test_header(NifVersion(0x0A000100)); // 10.0.1.0
         let data: Vec<u8> = vec![
-            0x04, 0x00, 0x00, 0x00,              // length: 4
-            b't', b'e', b's', b't',              // "test"
-            0x00, 0x00, 0x00, 0x00,              // length: 0 (null string)
+            0x04, 0x00, 0x00, 0x00, // length: 4
+            b't', b'e', b's', b't', // "test"
+            0x00, 0x00, 0x00, 0x00, // length: 0 (null string)
         ];
         let mut stream = NifStream::new(&data, &header);
 
@@ -350,7 +351,8 @@ mod tests {
             1.0f32.to_le_bytes(),
             2.0f32.to_le_bytes(),
             3.0f32.to_le_bytes(),
-        ].concat();
+        ]
+        .concat();
         let mut stream = NifStream::new(&data, &header);
 
         let p = stream.read_ni_point3().unwrap();
@@ -425,7 +427,9 @@ mod tests {
         let header = test_header(NifVersion::V20_2_0_7);
         let mut data = Vec::new();
         // Translation: (0, 0, 0)
-        for _ in 0..3 { data.extend_from_slice(&0.0f32.to_le_bytes()); }
+        for _ in 0..3 {
+            data.extend_from_slice(&0.0f32.to_le_bytes());
+        }
         // Rotation: 90° around Z (in row-major): [[0,-1,0],[1,0,0],[0,0,1]]
         for v in &[0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0f32] {
             data.extend_from_slice(&v.to_le_bytes());

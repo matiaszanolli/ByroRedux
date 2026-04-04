@@ -91,27 +91,46 @@ impl<'a> EsmReader<'a> {
 
     /// Read a record header (24 bytes).
     pub fn read_record_header(&mut self) -> Result<RecordHeader> {
-        ensure!(self.remaining() >= RECORD_HEADER_SIZE, "Truncated record header");
+        ensure!(
+            self.remaining() >= RECORD_HEADER_SIZE,
+            "Truncated record header"
+        );
         let record_type = self.read_bytes_4();
         let data_size = self.read_u32();
         let flags = self.read_u32();
         let form_id = self.read_u32();
         // Skip vc_info (u16) + vc_unknown (u16) + version (u16) + unknown (u16)
         self.skip(8);
-        Ok(RecordHeader { record_type, data_size, flags, form_id })
+        Ok(RecordHeader {
+            record_type,
+            data_size,
+            flags,
+            form_id,
+        })
     }
 
     /// Read a group header (24 bytes). Caller must verify peek_type == "GRUP" first.
     pub fn read_group_header(&mut self) -> Result<GroupHeader> {
-        ensure!(self.remaining() >= GROUP_HEADER_SIZE, "Truncated group header");
+        ensure!(
+            self.remaining() >= GROUP_HEADER_SIZE,
+            "Truncated group header"
+        );
         let typ = self.read_bytes_4();
-        ensure!(&typ == b"GRUP", "Expected GRUP, got {:?}", std::str::from_utf8(&typ));
+        ensure!(
+            &typ == b"GRUP",
+            "Expected GRUP, got {:?}",
+            std::str::from_utf8(&typ)
+        );
         let total_size = self.read_u32();
         let label = self.read_bytes_4();
         let group_type = self.read_u32();
         // Skip vc_info (u16) + vc_unknown (u16) + version (u16) + unknown (u16)
         self.skip(8);
-        Ok(GroupHeader { label, group_type, total_size })
+        Ok(GroupHeader {
+            label,
+            group_type,
+            total_size,
+        })
     }
 
     /// Read the sub-records within a record's data section.
@@ -124,13 +143,17 @@ impl<'a> EsmReader<'a> {
             ensure!(header.data_size >= 4, "Compressed record too small");
             let decompressed_size = self.read_u32() as usize;
             let compressed_len = header.data_size as usize - 4;
-            ensure!(self.remaining() >= compressed_len, "Truncated compressed data");
+            ensure!(
+                self.remaining() >= compressed_len,
+                "Truncated compressed data"
+            );
             let compressed = &self.data[self.pos..self.pos + compressed_len];
             self.pos += compressed_len;
 
             let mut decoder = ZlibDecoder::new(compressed);
             let mut decompressed = Vec::with_capacity(decompressed_size);
-            decoder.read_to_end(&mut decompressed)
+            decoder
+                .read_to_end(&mut decompressed)
                 .context("Failed to decompress ESM record")?;
             decompressed
         } else {
@@ -151,7 +174,8 @@ impl<'a> EsmReader<'a> {
                 raw_data[sub_pos + 2],
                 raw_data[sub_pos + 3],
             ];
-            let sub_size = u16::from_le_bytes([raw_data[sub_pos + 4], raw_data[sub_pos + 5]]) as usize;
+            let sub_size =
+                u16::from_le_bytes([raw_data[sub_pos + 4], raw_data[sub_pos + 5]]) as usize;
             sub_pos += 6;
 
             if sub_pos + sub_size > raw_data.len() {
@@ -200,9 +224,8 @@ impl<'a> EsmReader<'a> {
         for sub in &subs {
             match &sub.sub_type {
                 b"HEDR" if sub.data.len() >= 12 => {
-                    record_count = u32::from_le_bytes([
-                        sub.data[4], sub.data[5], sub.data[6], sub.data[7],
-                    ]);
+                    record_count =
+                        u32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]);
                 }
                 b"MAST" => {
                     // Null-terminated string.
@@ -213,7 +236,10 @@ impl<'a> EsmReader<'a> {
             }
         }
 
-        Ok(FileHeader { master_files: masters, record_count })
+        Ok(FileHeader {
+            master_files: masters,
+            record_count,
+        })
     }
 
     // ── Primitives ──────────────────────────────────────────────────
@@ -291,10 +317,7 @@ mod tests {
         let data = build_record(
             b"STAT",
             0x100,
-            &[
-                (b"EDID", b"TestStatic\0"),
-                (b"MODL", b"meshes\\test.nif\0"),
-            ],
+            &[(b"EDID", b"TestStatic\0"), (b"MODL", b"meshes\\test.nif\0")],
         );
         let mut reader = EsmReader::new(&data);
         let header = reader.read_record_header().unwrap();
@@ -347,8 +370,8 @@ mod tests {
                 (b"HEDR", &{
                     let mut d = Vec::new();
                     d.extend_from_slice(&1.0f32.to_le_bytes()); // version
-                    d.extend_from_slice(&42u32.to_le_bytes());  // record count
-                    d.extend_from_slice(&0u32.to_le_bytes());   // next object id
+                    d.extend_from_slice(&42u32.to_le_bytes()); // record count
+                    d.extend_from_slice(&0u32.to_le_bytes()); // next object id
                     d
                 }),
                 (b"MAST", b"FalloutNV.esm\0"),

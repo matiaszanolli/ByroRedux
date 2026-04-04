@@ -83,28 +83,24 @@ impl World {
 
     /// Check if an entity has a specific component.
     pub fn has<T: Component>(&self, entity: EntityId) -> bool {
-        self.storages
-            .get(&TypeId::of::<T>())
-            .is_some_and(|lock| {
-                let guard = lock.read().expect("storage lock poisoned");
-                guard
-                    .downcast_ref::<T::Storage>()
-                    .expect("storage type mismatch")
-                    .contains(entity)
-            })
+        self.storages.get(&TypeId::of::<T>()).is_some_and(|lock| {
+            let guard = lock.read().expect("storage lock poisoned");
+            guard
+                .downcast_ref::<T::Storage>()
+                .expect("storage type mismatch")
+                .contains(entity)
+        })
     }
 
     /// Returns the number of entities that have component `T`.
     pub fn count<T: Component>(&self) -> usize {
-        self.storages
-            .get(&TypeId::of::<T>())
-            .map_or(0, |lock| {
-                let guard = lock.read().expect("storage lock poisoned");
-                guard
-                    .downcast_ref::<T::Storage>()
-                    .expect("storage type mismatch")
-                    .len()
-            })
+        self.storages.get(&TypeId::of::<T>()).map_or(0, |lock| {
+            let guard = lock.read().expect("storage lock poisoned");
+            guard
+                .downcast_ref::<T::Storage>()
+                .expect("storage type mismatch")
+                .len()
+        })
     }
 
     /// Returns the next entity id that will be assigned.
@@ -499,8 +495,7 @@ mod tests {
         world.insert(e, Velocity { dx: 5.0, dy: 3.0 });
 
         {
-            let (q_pos, mut q_vel) =
-                world.query_2_mut::<Position, Velocity>().unwrap();
+            let (q_pos, mut q_vel) = world.query_2_mut::<Position, Velocity>().unwrap();
 
             let pos = q_pos.get(e).unwrap();
             let vel = q_vel.get_mut(e).unwrap();
@@ -521,8 +516,7 @@ mod tests {
         world.insert(e, Velocity { dx: 10.0, dy: 20.0 });
 
         {
-            let (mut q_pos, mut q_vel) =
-                world.query_2_mut_mut::<Position, Velocity>().unwrap();
+            let (mut q_pos, mut q_vel) = world.query_2_mut_mut::<Position, Velocity>().unwrap();
 
             let vel = q_vel.get(e).unwrap();
             let dx = vel.dx;
@@ -609,8 +603,7 @@ mod tests {
         world.insert(e2, Velocity { dx: 3.0, dy: 4.0 });
 
         {
-            let (q_vel, mut q_pos) =
-                world.query_2_mut::<Velocity, Position>().unwrap();
+            let (q_vel, mut q_pos) = world.query_2_mut::<Velocity, Position>().unwrap();
 
             // Iterate the smaller set (velocity), look up in the larger.
             for (entity, vel) in q_vel.iter() {

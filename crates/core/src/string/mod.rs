@@ -17,7 +17,9 @@ pub struct StringPool(string_interner::StringInterner<string_interner::backend::
 
 impl StringPool {
     pub fn new() -> Self {
-        Self(string_interner::StringInterner::<string_interner::backend::StringBackend>::new())
+        Self(string_interner::StringInterner::<
+            string_interner::backend::StringBackend,
+        >::new())
     }
 
     /// Intern a string, returning its symbol. If the string was already

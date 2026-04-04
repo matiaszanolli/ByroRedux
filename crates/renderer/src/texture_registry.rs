@@ -154,8 +154,16 @@ impl TextureRegistry {
         height: u32,
         pixels: &[u8],
     ) -> Result<TextureHandle> {
-        let texture = Texture::from_rgba(device, allocator, queue, command_pool, width, height, pixels)
-            .context("Failed to create dynamic RGBA texture")?;
+        let texture = Texture::from_rgba(
+            device,
+            allocator,
+            queue,
+            command_pool,
+            width,
+            height,
+            pixels,
+        )
+        .context("Failed to create dynamic RGBA texture")?;
 
         let sets = self.allocate_and_write_sets(device, &texture)?;
         let handle = self.textures.len() as TextureHandle;
@@ -187,7 +195,9 @@ impl TextureRegistry {
     ) -> Result<()> {
         // Wait for all in-flight frames to finish using the old texture.
         unsafe {
-            device.device_wait_idle().context("device_wait_idle before texture update")?;
+            device
+                .device_wait_idle()
+                .context("device_wait_idle before texture update")?;
         }
 
         let entry = &mut self.textures[handle as usize];
@@ -196,8 +206,16 @@ impl TextureRegistry {
         entry.texture.destroy(device, allocator);
 
         // Create a new texture with the updated pixels.
-        entry.texture = Texture::from_rgba(device, allocator, queue, command_pool, width, height, pixels)
-            .context("Failed to update dynamic RGBA texture")?;
+        entry.texture = Texture::from_rgba(
+            device,
+            allocator,
+            queue,
+            command_pool,
+            width,
+            height,
+            pixels,
+        )
+        .context("Failed to update dynamic RGBA texture")?;
 
         // Re-write the existing descriptor sets to point to the new image.
         let image_info = vk::DescriptorImageInfo::default()

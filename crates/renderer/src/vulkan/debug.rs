@@ -52,7 +52,9 @@ unsafe extern "system" fn debug_callback(
         if data.p_message.is_null() {
             "(no message)"
         } else {
-            CStr::from_ptr(data.p_message).to_str().unwrap_or("(utf8 error)")
+            CStr::from_ptr(data.p_message)
+                .to_str()
+                .unwrap_or("(utf8 error)")
         }
     };
 

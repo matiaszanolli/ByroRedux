@@ -4,10 +4,10 @@
 //! Parsed enough to advance the stream correctly; actual animation
 //! interpretation comes later.
 
+use super::NiObject;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
 use crate::version::NifVersion;
-use super::NiObject;
 use std::any::Any;
 use std::io;
 
@@ -35,8 +35,13 @@ impl NiTimeControllerBase {
         let stop_time = stream.read_f32_le()?;
         let target_ref = stream.read_block_ref()?;
         Ok(Self {
-            next_controller_ref, flags, frequency, phase,
-            start_time, stop_time, target_ref,
+            next_controller_ref,
+            flags,
+            frequency,
+            phase,
+            start_time,
+            stop_time,
+            target_ref,
         })
     }
 }
@@ -53,12 +58,16 @@ impl NiObject for NiTimeController {
     fn block_type_name(&self) -> &'static str {
         "NiTimeController"
     }
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl NiTimeController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        Ok(Self { base: NiTimeControllerBase::parse(stream)? })
+        Ok(Self {
+            base: NiTimeControllerBase::parse(stream)?,
+        })
     }
 }
 
@@ -80,7 +89,9 @@ impl NiObject for NiSingleInterpController {
     fn block_type_name(&self) -> &'static str {
         "NiSingleInterpController"
     }
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl NiSingleInterpController {
@@ -92,7 +103,10 @@ impl NiSingleInterpController {
         } else {
             BlockRef::NULL
         };
-        Ok(Self { base, interpolator_ref })
+        Ok(Self {
+            base,
+            interpolator_ref,
+        })
     }
 }
 
@@ -110,7 +124,9 @@ impl NiObject for NiMaterialColorController {
     fn block_type_name(&self) -> &'static str {
         "NiMaterialColorController"
     }
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl NiMaterialColorController {
@@ -123,7 +139,11 @@ impl NiMaterialColorController {
         };
         // MaterialColor enum (ushort since 10.1.0.0)
         let target_color = stream.read_u16_le()?;
-        Ok(Self { base, interpolator_ref, target_color })
+        Ok(Self {
+            base,
+            interpolator_ref,
+            target_color,
+        })
     }
 }
 
@@ -144,7 +164,9 @@ impl NiObject for NiTextureTransformController {
     fn block_type_name(&self) -> &'static str {
         "NiTextureTransformController"
     }
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl NiTextureTransformController {
@@ -158,7 +180,13 @@ impl NiTextureTransformController {
         let shader_map = stream.read_byte_bool()?;
         let texture_slot = stream.read_u32_le()?;
         let operation = stream.read_u32_le()?;
-        Ok(Self { base, interpolator_ref, shader_map, texture_slot, operation })
+        Ok(Self {
+            base,
+            interpolator_ref,
+            shader_map,
+            texture_slot,
+            operation,
+        })
     }
 }
 
@@ -176,7 +204,9 @@ impl NiObject for NiMultiTargetTransformController {
     fn block_type_name(&self) -> &'static str {
         "NiMultiTargetTransformController"
     }
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl NiMultiTargetTransformController {
@@ -187,7 +217,10 @@ impl NiMultiTargetTransformController {
         for _ in 0..num_extra_targets {
             extra_targets.push(stream.read_block_ref()?);
         }
-        Ok(Self { base, extra_targets })
+        Ok(Self {
+            base,
+            extra_targets,
+        })
     }
 }
 
@@ -206,7 +239,9 @@ impl NiObject for NiControllerManager {
     fn block_type_name(&self) -> &'static str {
         "NiControllerManager"
     }
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl NiControllerManager {
@@ -220,7 +255,12 @@ impl NiControllerManager {
             sequence_refs.push(stream.read_block_ref()?);
         }
         let object_palette_ref = stream.read_block_ref()?;
-        Ok(Self { base, cumulative, sequence_refs, object_palette_ref })
+        Ok(Self {
+            base,
+            cumulative,
+            sequence_refs,
+            object_palette_ref,
+        })
     }
 }
 
@@ -262,7 +302,9 @@ impl NiObject for NiControllerSequence {
     fn block_type_name(&self) -> &'static str {
         "NiControllerSequence"
     }
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl NiControllerSequence {
@@ -285,20 +327,21 @@ impl NiControllerSequence {
             let interpolator_ref = stream.read_block_ref()?;
             let controller_ref = stream.read_block_ref()?;
             // Priority byte (BSVER > 0, i.e. any Bethesda game)
-            let priority = if bsver > 0 {
-                stream.read_u8()?
-            } else {
-                0
-            };
+            let priority = if bsver > 0 { stream.read_u8()? } else { 0 };
             let node_name = stream.read_string()?;
             let property_type = stream.read_string()?;
             let controller_type = stream.read_string()?;
             let controller_id = stream.read_string()?;
             let interpolator_id = stream.read_string()?;
             controlled_blocks.push(ControlledBlock {
-                interpolator_ref, controller_ref, priority,
-                node_name, property_type, controller_type,
-                controller_id, interpolator_id,
+                interpolator_ref,
+                controller_ref,
+                priority,
+                node_name,
+                property_type,
+                controller_type,
+                controller_id,
+                interpolator_id,
             });
         }
 
@@ -325,9 +368,17 @@ impl NiControllerSequence {
         };
 
         Ok(Self {
-            name, controlled_blocks, array_grow_by,
-            weight, text_keys_ref, cycle_type, frequency,
-            start_time, stop_time, manager_ref, accum_root_name,
+            name,
+            controlled_blocks,
+            array_grow_by,
+            weight,
+            text_keys_ref,
+            cycle_type,
+            frequency,
+            start_time,
+            stop_time,
+            manager_ref,
+            accum_root_name,
             anim_note_refs,
         })
     }
@@ -473,7 +524,7 @@ mod tests {
         data.extend_from_slice(&1.0f32.to_le_bytes()); // stop_time
         data.extend_from_slice(&(-1i32).to_le_bytes()); // manager_ref
         data.extend_from_slice(&(-1i32).to_le_bytes()); // accum_root_name
-        // anim note arrays (BSVER > 28 = yes for FNV)
+                                                        // anim note arrays (BSVER > 28 = yes for FNV)
         data.extend_from_slice(&0u16.to_le_bytes()); // num_anim_note_arrays
         let expected_len = data.len();
 

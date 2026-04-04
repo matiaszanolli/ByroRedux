@@ -52,10 +52,18 @@ pub struct DdsMetadata {
 
 /// Parse a DDS file header and return metadata.
 pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
-    ensure!(data.len() >= HEADER_SIZE, "DDS file too small ({} bytes)", data.len());
+    ensure!(
+        data.len() >= HEADER_SIZE,
+        "DDS file too small ({} bytes)",
+        data.len()
+    );
 
     let magic = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-    ensure!(magic == DDS_MAGIC, "Not a DDS file (bad magic: {:#010x})", magic);
+    ensure!(
+        magic == DDS_MAGIC,
+        "Not a DDS file (bad magic: {:#010x})",
+        magic
+    );
 
     // DDS_HEADER starts at offset 4
     let height = read_u32(data, 12);
@@ -100,7 +108,11 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
     } else if pf_flags & DDPF_RGB != 0 {
         // Uncompressed RGBA
         let bpp = pf_rgb_bit_count;
-        ensure!(bpp == 32, "Unsupported uncompressed DDS: {} bpp (only 32-bit RGBA supported)", bpp);
+        ensure!(
+            bpp == 32,
+            "Unsupported uncompressed DDS: {} bpp (only 32-bit RGBA supported)",
+            bpp
+        );
         let format = if pf_flags & DDPF_ALPHAPIXELS != 0 {
             vk::Format::R8G8B8A8_SRGB
         } else {
@@ -140,7 +152,13 @@ pub fn mip_size(width: u32, height: u32, mip_level: u32, block_size: u32, compre
 pub fn total_data_size(meta: &DdsMetadata) -> u64 {
     let mut total = 0u64;
     for mip in 0..meta.mip_count {
-        total += mip_size(meta.width, meta.height, mip, meta.block_size, meta.compressed) as u64;
+        total += mip_size(
+            meta.width,
+            meta.height,
+            mip,
+            meta.block_size,
+            meta.compressed,
+        ) as u64;
     }
     total
 }
@@ -202,7 +220,7 @@ mod tests {
     /// Build a minimal valid DDS header for testing.
     fn make_dds_header(width: u32, height: u32, mip_count: u32, fourcc: &[u8; 4]) -> Vec<u8> {
         let mut buf = vec![0u8; HEADER_SIZE + 256]; // header + some fake pixel data
-        // Magic
+                                                    // Magic
         buf[0..4].copy_from_slice(b"DDS ");
         // DDS_HEADER.dwSize = 124
         buf[4..8].copy_from_slice(&124u32.to_le_bytes());

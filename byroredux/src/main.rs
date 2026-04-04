@@ -3,24 +3,22 @@
 mod cell_loader;
 
 use anyhow::Result;
-use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::animation::{
-    advance_stack, advance_time, sample_blended_transform,
-    sample_bool_channel, sample_color_channel, sample_float_channel,
-    sample_rotation, sample_scale, sample_translation, split_root_motion,
-    AnimationClip, AnimationClipRegistry, AnimationPlayer, AnimationStack,
-    RootMotionDelta,
-    AnimBoolKey, AnimColorKey, AnimFloatKey,
-    BoolChannel, ColorChannel, ColorTarget, CycleType, FloatChannel, FloatTarget, KeyType,
-    RotationKey, ScaleKey, TransformChannel, TranslationKey,
+    advance_stack, advance_time, sample_blended_transform, sample_bool_channel,
+    sample_color_channel, sample_float_channel, sample_rotation, sample_scale, sample_translation,
+    split_root_motion, AnimBoolKey, AnimColorKey, AnimFloatKey, AnimationClip,
+    AnimationClipRegistry, AnimationPlayer, AnimationStack, BoolChannel, ColorChannel, ColorTarget,
+    CycleType, FloatChannel, FloatTarget, KeyType, RootMotionDelta, RotationKey, ScaleKey,
+    TransformChannel, TranslationKey,
 };
+use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
+use byroredux_core::ecs::storage::EntityId;
+use byroredux_core::ecs::Resource;
 use byroredux_core::ecs::{
     ActiveCamera, AnimatedAlpha, AnimatedColor, AnimatedVisibility, Camera, Children, Component,
     DebugStats, DeltaTime, EngineConfig, GlobalTransform, LightSource, MeshHandle, Name, Parent,
     Scheduler, SparseSetStorage, TextureHandle, TotalTime, Transform, World,
 };
-use byroredux_core::ecs::storage::EntityId;
-use byroredux_core::ecs::Resource;
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::{FixedString, StringPool};
 use byroredux_core::types::Color;
@@ -39,22 +37,30 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 /// Marker component for entities that should spin in the demo scene.
 #[derive(Debug, Clone, Copy)]
 struct Spinning;
-impl Component for Spinning { type Storage = SparseSetStorage<Self>; }
+impl Component for Spinning {
+    type Storage = SparseSetStorage<Self>;
+}
 
 /// Marker component for entities that use alpha blending.
 #[derive(Debug, Clone, Copy)]
 struct AlphaBlend;
-impl Component for AlphaBlend { type Storage = SparseSetStorage<Self>; }
+impl Component for AlphaBlend {
+    type Storage = SparseSetStorage<Self>;
+}
 
 /// Marker component for entities that need two-sided rendering (no backface culling).
 #[derive(Debug, Clone, Copy)]
 struct TwoSided;
-impl Component for TwoSided { type Storage = SparseSetStorage<Self>; }
+impl Component for TwoSided {
+    type Storage = SparseSetStorage<Self>;
+}
 
 /// Marker component for decal geometry (renders on top of coplanar surfaces).
 #[derive(Debug, Clone, Copy)]
 struct Decal;
-impl Component for Decal { type Storage = SparseSetStorage<Self>; }
+impl Component for Decal {
+    type Storage = SparseSetStorage<Self>;
+}
 
 /// System names stored as a resource for the `systems` console command.
 struct SystemList(Vec<String>);
@@ -114,11 +120,15 @@ impl Default for InputState {
 
 /// Fly camera system: WASD + mouse look. Updates the active camera's Transform.
 fn fly_camera_system(world: &World, dt: f32) {
-    let Some(active) = world.try_resource::<ActiveCamera>() else { return };
+    let Some(active) = world.try_resource::<ActiveCamera>() else {
+        return;
+    };
     let cam_entity = active.0;
     drop(active);
 
-    let Some(input) = world.try_resource::<InputState>() else { return };
+    let Some(input) = world.try_resource::<InputState>() else {
+        return;
+    };
     if !input.mouse_captured {
         return;
     }
@@ -129,15 +139,31 @@ fn fly_camera_system(world: &World, dt: f32) {
 
     // Build movement vector from held keys.
     let mut move_dir = Vec3::ZERO;
-    if input.keys_held.contains(&KeyCode::KeyW) { move_dir.z += 1.0; }
-    if input.keys_held.contains(&KeyCode::KeyS) { move_dir.z -= 1.0; }
-    if input.keys_held.contains(&KeyCode::KeyA) { move_dir.x -= 1.0; }
-    if input.keys_held.contains(&KeyCode::KeyD) { move_dir.x += 1.0; }
-    if input.keys_held.contains(&KeyCode::Space) { move_dir.y += 1.0; }
-    if input.keys_held.contains(&KeyCode::ShiftLeft) { move_dir.y -= 1.0; }
+    if input.keys_held.contains(&KeyCode::KeyW) {
+        move_dir.z += 1.0;
+    }
+    if input.keys_held.contains(&KeyCode::KeyS) {
+        move_dir.z -= 1.0;
+    }
+    if input.keys_held.contains(&KeyCode::KeyA) {
+        move_dir.x -= 1.0;
+    }
+    if input.keys_held.contains(&KeyCode::KeyD) {
+        move_dir.x += 1.0;
+    }
+    if input.keys_held.contains(&KeyCode::Space) {
+        move_dir.y += 1.0;
+    }
+    if input.keys_held.contains(&KeyCode::ShiftLeft) {
+        move_dir.y -= 1.0;
+    }
 
     // Speed boost with Ctrl.
-    let boost = if input.keys_held.contains(&KeyCode::ControlLeft) { 3.0 } else { 1.0 };
+    let boost = if input.keys_held.contains(&KeyCode::ControlLeft) {
+        3.0
+    } else {
+        1.0
+    };
     drop(input);
 
     // Build rotation from yaw/pitch.
@@ -166,7 +192,9 @@ fn fly_camera_system(world: &World, dt: f32) {
 /// transforms to named entities that match the clip's channel names.
 fn animation_system(world: &World, dt: f32) {
     // Read the clip registry (immutable).
-    let Some(registry) = world.try_resource::<AnimationClipRegistry>() else { return };
+    let Some(registry) = world.try_resource::<AnimationClipRegistry>() else {
+        return;
+    };
     if registry.is_empty() {
         return;
     }
@@ -174,7 +202,8 @@ fn animation_system(world: &World, dt: f32) {
     // Rebuild name→entity index only when entities have been added.
     let current_gen = world.entity_count() as u32;
     {
-        let needs_rebuild = world.try_resource::<NameIndex>()
+        let needs_rebuild = world
+            .try_resource::<NameIndex>()
             .map(|idx| idx.generation != current_gen)
             .unwrap_or(true);
         if needs_rebuild {
@@ -193,11 +222,15 @@ fn animation_system(world: &World, dt: f32) {
         }
     }
 
-    let Some(pool) = world.try_resource::<StringPool>() else { return };
+    let Some(pool) = world.try_resource::<StringPool>() else {
+        return;
+    };
     let name_index = world.try_resource::<NameIndex>().unwrap();
 
     // Iterate all animation players and apply.
-    let Some(player_query) = world.query_mut::<AnimationPlayer>() else { return };
+    let Some(player_query) = world.query_mut::<AnimationPlayer>() else {
+        return;
+    };
     let entities_with_players: Vec<_> = player_query.iter().map(|(e, _)| e).collect();
     drop(player_query);
 
@@ -208,7 +241,9 @@ fn animation_system(world: &World, dt: f32) {
 
         let clip_handle = player.clip_handle;
         let root_entity_opt = player.root_entity;
-        let Some(clip) = registry.get(clip_handle) else { continue };
+        let Some(clip) = registry.get(clip_handle) else {
+            continue;
+        };
 
         advance_time(player, clip, dt);
         let current_time = player.local_time;
@@ -226,14 +261,14 @@ fn animation_system(world: &World, dt: f32) {
         };
 
         // Apply transform channels.
-        let is_accum_root = |name: &str| -> bool {
-            clip.accum_root_name.as_deref() == Some(name)
-        };
+        let is_accum_root = |name: &str| -> bool { clip.accum_root_name.as_deref() == Some(name) };
         {
             let mut transform_query = world.query_mut::<Transform>().unwrap();
             let mut root_motion = Vec3::ZERO;
             for (channel_name, channel) in &clip.channels {
-                let Some(target_entity) = resolve_entity(channel_name) else { continue };
+                let Some(target_entity) = resolve_entity(channel_name) else {
+                    continue;
+                };
                 let Some(transform) = transform_query.get_mut(target_entity) else {
                     continue;
                 };
@@ -268,7 +303,9 @@ fn animation_system(world: &World, dt: f32) {
 
         // Apply float channels (alpha, UV params, shader floats).
         for (channel_name, channel) in &clip.float_channels {
-            let Some(target_entity) = resolve_entity(channel_name) else { continue };
+            let Some(target_entity) = resolve_entity(channel_name) else {
+                continue;
+            };
             let value = sample_float_channel(channel, current_time);
             if channel.target == FloatTarget::Alpha {
                 if let Some(mut aq) = world.query_mut::<AnimatedAlpha>() {
@@ -287,7 +324,9 @@ fn animation_system(world: &World, dt: f32) {
 
         // Apply color channels.
         for (channel_name, channel) in &clip.color_channels {
-            let Some(target_entity) = resolve_entity(channel_name) else { continue };
+            let Some(target_entity) = resolve_entity(channel_name) else {
+                continue;
+            };
             let value = sample_color_channel(channel, current_time);
             if let Some(mut cq) = world.query_mut::<AnimatedColor>() {
                 if let Some(c) = cq.get_mut(target_entity) {
@@ -298,7 +337,9 @@ fn animation_system(world: &World, dt: f32) {
 
         // Apply bool (visibility) channels.
         for (channel_name, channel) in &clip.bool_channels {
-            let Some(target_entity) = resolve_entity(channel_name) else { continue };
+            let Some(target_entity) = resolve_entity(channel_name) else {
+                continue;
+            };
             let value = sample_bool_channel(channel, current_time);
             if let Some(mut vq) = world.query_mut::<AnimatedVisibility>() {
                 if let Some(v) = vq.get_mut(target_entity) {
@@ -309,7 +350,9 @@ fn animation_system(world: &World, dt: f32) {
     }
 
     // ── AnimationStack processing (multi-layer blending) ──────────────
-    let Some(stack_query) = world.query_mut::<AnimationStack>() else { return };
+    let Some(stack_query) = world.query_mut::<AnimationStack>() else {
+        return;
+    };
     let stack_entities: Vec<_> = stack_query.iter().map(|(e, _)| e).collect();
     drop(stack_query);
 
@@ -326,7 +369,9 @@ fn animation_system(world: &World, dt: f32) {
         let stack = sq.get(entity).unwrap();
 
         // Scoped name lookup for stacks.
-        let stack_scoped_map = stack.root_entity.map(|root| build_subtree_name_map(world, root));
+        let stack_scoped_map = stack
+            .root_entity
+            .map(|root| build_subtree_name_map(world, root));
         let stack_resolve = |channel_name: &str| -> Option<EntityId> {
             let sym = pool.get(channel_name)?;
             if let Some(ref scoped) = stack_scoped_map {
@@ -350,8 +395,12 @@ fn animation_system(world: &World, dt: f32) {
 
         let mut updates: Vec<(EntityId, Vec3, Quat, f32)> = Vec::new();
         for channel_name in &channel_names {
-            let Some(target_entity) = stack_resolve(channel_name) else { continue };
-            if let Some((pos, rot, scale)) = sample_blended_transform(stack, &registry, channel_name) {
+            let Some(target_entity) = stack_resolve(channel_name) else {
+                continue;
+            };
+            if let Some((pos, rot, scale)) =
+                sample_blended_transform(stack, &registry, channel_name)
+            {
                 updates.push((target_entity, pos, rot, scale));
             }
         }
@@ -376,13 +425,17 @@ fn animation_system(world: &World, dt: f32) {
 /// Must run after animation_system and before rendering.
 fn transform_propagation_system(world: &World, _dt: f32) {
     // Phase 1: update all root entities (no Parent) — GlobalTransform = Transform.
-    let Some(tq) = world.query::<Transform>() else { return };
+    let Some(tq) = world.query::<Transform>() else {
+        return;
+    };
     let parent_q = world.query::<Parent>();
 
     // Collect root entities (have Transform but no Parent).
-    let roots: Vec<EntityId> = tq.iter()
+    let roots: Vec<EntityId> = tq
+        .iter()
         .filter(|(entity, _)| {
-            parent_q.as_ref()
+            parent_q
+                .as_ref()
                 .map(|pq| pq.get(*entity).is_none())
                 .unwrap_or(true)
         })
@@ -423,12 +476,16 @@ fn transform_propagation_system(world: &World, _dt: f32) {
     while let Some(entity) = queue.pop() {
         // Read parent's GlobalTransform and this entity's local Transform.
         let parent_q = world.query::<Parent>().unwrap();
-        let Some(parent) = parent_q.get(entity) else { continue };
+        let Some(parent) = parent_q.get(entity) else {
+            continue;
+        };
         let parent_id = parent.0;
         drop(parent_q);
 
         let gq_read = world.query::<GlobalTransform>().unwrap();
-        let Some(parent_global) = gq_read.get(parent_id) else { continue };
+        let Some(parent_global) = gq_read.get(parent_id) else {
+            continue;
+        };
         let parent_global = *parent_global; // Copy to release borrow.
         drop(gq_read);
 
@@ -462,7 +519,10 @@ fn main() -> Result<()> {
 
     // Set up logging. --debug forces debug level.
     if debug_mode {
-        std::env::set_var("RUST_LOG", std::env::var("RUST_LOG").unwrap_or("debug".into()));
+        std::env::set_var(
+            "RUST_LOG",
+            std::env::var("RUST_LOG").unwrap_or("debug".into()),
+        );
     }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -474,7 +534,10 @@ fn main() -> Result<()> {
         let input = args.get(cmd_idx + 1).map(|s| s.as_str()).unwrap_or("help");
         let mut world = World::new();
         world.insert_resource(DebugStats::default());
-        world.insert_resource(EngineConfig { debug_logging: true, ..Default::default() });
+        world.insert_resource(EngineConfig {
+            debug_logging: true,
+            ..Default::default()
+        });
         let registry = build_command_registry();
         world.insert_resource(SystemList(Vec::new()));
         world.insert_resource(registry);
@@ -538,7 +601,11 @@ impl App {
         scheduler.add(byroredux_scripting::event_cleanup_system);
 
         // Store system names + console commands as resources.
-        let system_names: Vec<String> = scheduler.system_names().iter().map(|s| s.to_string()).collect();
+        let system_names: Vec<String> = scheduler
+            .system_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         world.insert_resource(SystemList(system_names));
         world.insert_resource(build_command_registry());
 
@@ -566,25 +633,31 @@ impl App {
         // Cell loading mode: --esm <path> --cell <editor_id> OR --wrld <name> --grid <x>,<y>
         if let Some(esm_idx) = args.iter().position(|a| a == "--esm") {
             let esm_path = args.get(esm_idx + 1).cloned();
-            let cell_id = args.iter().position(|a| a == "--cell").and_then(|i| args.get(i + 1)).cloned();
-            let grid_str = args.iter().position(|a| a == "--grid").and_then(|i| args.get(i + 1)).cloned();
+            let cell_id = args
+                .iter()
+                .position(|a| a == "--cell")
+                .and_then(|i| args.get(i + 1))
+                .cloned();
+            let grid_str = args
+                .iter()
+                .position(|a| a == "--grid")
+                .and_then(|i| args.get(i + 1))
+                .cloned();
 
             if let (Some(ref esm_path), Some(ref cell_id)) = (&esm_path, &cell_id) {
                 // Interior cell mode
                 let tex_provider = build_texture_provider(&args);
-                match cell_loader::load_cell(esm_path, cell_id, &mut self.world, ctx, &tex_provider) {
+                match cell_loader::load_cell(esm_path, cell_id, &mut self.world, ctx, &tex_provider)
+                {
                     Ok(result) => {
                         cam_center = result.center;
                         has_nif_content = true;
                         // Store cell lighting for the renderer.
                         if let Some(ref lit) = result.lighting {
-                            let (rx, ry) = (lit.directional_rotation[0], lit.directional_rotation[1]);
+                            let (rx, ry) =
+                                (lit.directional_rotation[0], lit.directional_rotation[1]);
                             // Convert Euler XY rotation to direction vector (Z-up → Y-up).
-                            let dir_z_up = [
-                                ry.cos() * rx.cos(),
-                                ry.cos() * rx.sin(),
-                                -ry.sin(),
-                            ];
+                            let dir_z_up = [ry.cos() * rx.cos(), ry.cos() * rx.sin(), -ry.sin()];
                             // Z-up to Y-up: (x, y, z) → (x, z, -y)
                             let dir = [dir_z_up[0], dir_z_up[2], -dir_z_up[1]];
                             self.world.insert_resource(CellLightingRes {
@@ -592,10 +665,18 @@ impl App {
                                 directional_color: lit.directional_color,
                                 directional_dir: dir,
                             });
-                            log::info!("Cell lighting: ambient={:?} directional={:?} dir={:?}",
-                                lit.ambient, lit.directional_color, dir);
+                            log::info!(
+                                "Cell lighting: ambient={:?} directional={:?} dir={:?}",
+                                lit.ambient,
+                                lit.directional_color,
+                                dir
+                            );
                         }
-                        log::info!("Cell '{}' ready: {} entities", result.cell_name, result.entity_count);
+                        log::info!(
+                            "Cell '{}' ready: {} entities",
+                            result.cell_name,
+                            result.entity_count
+                        );
                     }
                     Err(e) => log::error!("Failed to load cell: {:#}", e),
                 }
@@ -603,11 +684,23 @@ impl App {
                 // Exterior cell mode: --esm <path> --grid <x>,<y>
                 let (cx, cy) = parse_grid_coords(grid);
                 let tex_provider = build_texture_provider(&args);
-                match cell_loader::load_exterior_cells(esm_path, cx, cy, 1, &mut self.world, ctx, &tex_provider) {
+                match cell_loader::load_exterior_cells(
+                    esm_path,
+                    cx,
+                    cy,
+                    1,
+                    &mut self.world,
+                    ctx,
+                    &tex_provider,
+                ) {
                     Ok(result) => {
                         cam_center = result.center;
                         has_nif_content = true;
-                        log::info!("Exterior '{}' ready: {} entities", result.cell_name, result.entity_count);
+                        log::info!(
+                            "Exterior '{}' ready: {} entities",
+                            result.cell_name,
+                            result.entity_count
+                        );
                     }
                     Err(e) => log::error!("Failed to load exterior cells: {:#}", e),
                 }
@@ -632,7 +725,8 @@ impl App {
                                 if nif_clips.is_empty() {
                                     log::warn!("No animation clips found in '{}'", kf_path);
                                 } else {
-                                    let mut registry = self.world.resource_mut::<AnimationClipRegistry>();
+                                    let mut registry =
+                                        self.world.resource_mut::<AnimationClipRegistry>();
                                     for nif_clip in &nif_clips {
                                         let clip = convert_nif_clip(nif_clip);
                                         let handle = registry.add(clip);
@@ -642,7 +736,8 @@ impl App {
                                             nif_clip.channels.len(), handle,
                                         );
                                     }
-                                    let first_handle = registry.len() as u32 - nif_clips.len() as u32;
+                                    let first_handle =
+                                        registry.len() as u32 - nif_clips.len() as u32;
                                     drop(registry);
 
                                     // Spawn an AnimationPlayer scoped to the NIF subtree.
@@ -652,7 +747,10 @@ impl App {
                                         player.root_entity = Some(root);
                                     }
                                     self.world.insert(player_entity, player);
-                                    log::info!("Animation playback started (clip handle {})", first_handle);
+                                    log::info!(
+                                        "Animation playback started (clip handle {})",
+                                        first_handle
+                                    );
                                 }
                             }
                             Err(e) => log::error!("Failed to parse KF '{}': {}", kf_path, e),
@@ -694,25 +792,33 @@ impl App {
                 .expect("Failed to upload blue triangle mesh");
 
             let cube = self.world.spawn();
-            self.world.insert(cube, Transform::from_translation(Vec3::new(-1.5, 0.0, 0.0)));
+            self.world
+                .insert(cube, Transform::from_translation(Vec3::new(-1.5, 0.0, 0.0)));
             self.world.insert(cube, GlobalTransform::IDENTITY);
             self.world.insert(cube, MeshHandle(cube_handle));
             self.world.insert(cube, Spinning);
 
             let quad = self.world.spawn();
-            self.world.insert(quad, Transform::from_translation(Vec3::new(0.0, 0.0, -1.0)));
+            self.world
+                .insert(quad, Transform::from_translation(Vec3::new(0.0, 0.0, -1.0)));
             self.world.insert(quad, GlobalTransform::IDENTITY);
             self.world.insert(quad, MeshHandle(quad_handle));
             self.world.insert(quad, Spinning);
 
             let red_tri = self.world.spawn();
-            self.world.insert(red_tri, Transform::from_translation(Vec3::new(1.5, 0.0, 0.5)));
+            self.world.insert(
+                red_tri,
+                Transform::from_translation(Vec3::new(1.5, 0.0, 0.5)),
+            );
             self.world.insert(red_tri, GlobalTransform::IDENTITY);
             self.world.insert(red_tri, MeshHandle(red_handle));
             self.world.insert(red_tri, Spinning);
 
             let blue_tri = self.world.spawn();
-            self.world.insert(blue_tri, Transform::from_translation(Vec3::new(1.8, 0.0, -0.3)));
+            self.world.insert(
+                blue_tri,
+                Transform::from_translation(Vec3::new(1.8, 0.0, -0.3)),
+            );
             self.world.insert(blue_tri, GlobalTransform::IDENTITY);
             self.world.insert(blue_tri, MeshHandle(blue_handle));
             self.world.insert(blue_tri, Spinning);
@@ -728,8 +834,10 @@ impl App {
         let cam_target = cam_center;
         let forward = (cam_target - cam_pos).normalize();
         let cam_rotation = Quat::from_rotation_arc(-Vec3::Z, forward);
-        self.world.insert(cam, Transform::new(cam_pos, cam_rotation, 1.0));
-        self.world.insert(cam, GlobalTransform::new(cam_pos, cam_rotation, 1.0));
+        self.world
+            .insert(cam, Transform::new(cam_pos, cam_rotation, 1.0));
+        self.world
+            .insert(cam, GlobalTransform::new(cam_pos, cam_rotation, 1.0));
         self.world.insert(cam, Camera::default());
         self.world.insert_resource(ActiveCamera(cam));
 
@@ -741,7 +849,10 @@ impl App {
         }
 
         let total_entities = self.world.entity_count();
-        log::info!("Scene ready: {} entities, 1 camera. Press Escape to capture mouse for fly camera.", total_entities);
+        log::info!(
+            "Scene ready: {} entities, 1 camera. Press Escape to capture mouse for fly camera.",
+            total_entities
+        );
 
         // Register the fullscreen quad mesh for UI overlay.
         if let Err(e) = ctx.register_ui_quad() {
@@ -787,7 +898,6 @@ impl App {
             }
         }
     }
-
 }
 
 /// Provides file data by searching BSA archives.
@@ -921,20 +1031,36 @@ fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> (usize, Opt
         // BSA mode: --bsa <archive> --mesh <path_in_archive>
         let bsa_path = match args.get(bsa_idx + 1) {
             Some(p) => p,
-            None => { log::error!("--bsa requires an archive path"); return (0, None); }
+            None => {
+                log::error!("--bsa requires an archive path");
+                return (0, None);
+            }
         };
-        let mesh_path = match args.iter().position(|a| a == "--mesh").and_then(|i| args.get(i + 1)) {
+        let mesh_path = match args
+            .iter()
+            .position(|a| a == "--mesh")
+            .and_then(|i| args.get(i + 1))
+        {
             Some(p) => p,
-            None => { log::error!("--bsa requires --mesh <path>"); return (0, None); }
+            None => {
+                log::error!("--bsa requires --mesh <path>");
+                return (0, None);
+            }
         };
 
         let archive = match byroredux_bsa::BsaArchive::open(bsa_path) {
             Ok(a) => a,
-            Err(e) => { log::error!("Failed to open BSA '{}': {}", bsa_path, e); return (0, None); }
+            Err(e) => {
+                log::error!("Failed to open BSA '{}': {}", bsa_path, e);
+                return (0, None);
+            }
         };
         let data = match archive.extract(mesh_path) {
             Ok(d) => d,
-            Err(e) => { log::error!("Failed to extract '{}': {}", mesh_path, e); return (0, None); }
+            Err(e) => {
+                log::error!("Failed to extract '{}': {}", mesh_path, e);
+                return (0, None);
+            }
         };
         log::info!("Extracted {} bytes from BSA '{}'", data.len(), mesh_path);
         load_nif_bytes(world, ctx, &data, mesh_path, &tex_provider)
@@ -945,7 +1071,10 @@ fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> (usize, Opt
         // Loose file mode: <path.nif>
         let data = match std::fs::read(nif_path) {
             Ok(d) => d,
-            Err(e) => { log::error!("Failed to read NIF file '{}': {}", nif_path, e); return (0, None); }
+            Err(e) => {
+                log::error!("Failed to read NIF file '{}': {}", nif_path, e);
+                return (0, None);
+            }
         };
         load_nif_bytes(world, ctx, &data, nif_path, &tex_provider)
     } else {
@@ -976,8 +1105,17 @@ pub(crate) fn load_nif_bytes(
     // node_index → EntityId mapping.
     let mut node_entities: Vec<EntityId> = Vec::with_capacity(imported.nodes.len());
     for node in &imported.nodes {
-        let quat = Quat::from_xyzw(node.rotation[0], node.rotation[1], node.rotation[2], node.rotation[3]);
-        let translation = Vec3::new(node.translation[0], node.translation[1], node.translation[2]);
+        let quat = Quat::from_xyzw(
+            node.rotation[0],
+            node.rotation[1],
+            node.rotation[2],
+            node.rotation[3],
+        );
+        let translation = Vec3::new(
+            node.translation[0],
+            node.translation[1],
+            node.translation[2],
+        );
 
         let entity = world.spawn();
         world.insert(entity, Transform::new(translation, quat, node.scale));
@@ -1011,18 +1149,42 @@ pub(crate) fn load_nif_bytes(
             .map(|i| {
                 Vertex::new(
                     mesh.positions[i],
-                    if i < mesh.colors.len() { mesh.colors[i] } else { [1.0, 1.0, 1.0] },
-                    if i < mesh.normals.len() { mesh.normals[i] } else { [0.0, 1.0, 0.0] },
-                    if i < mesh.uvs.len() { mesh.uvs[i] } else { [0.0, 0.0] },
+                    if i < mesh.colors.len() {
+                        mesh.colors[i]
+                    } else {
+                        [1.0, 1.0, 1.0]
+                    },
+                    if i < mesh.normals.len() {
+                        mesh.normals[i]
+                    } else {
+                        [0.0, 1.0, 0.0]
+                    },
+                    if i < mesh.uvs.len() {
+                        mesh.uvs[i]
+                    } else {
+                        [0.0, 0.0]
+                    },
                 )
             })
             .collect();
 
         let alloc = ctx.allocator.as_ref().unwrap();
-        let mesh_handle = match ctx.mesh_registry.upload(&ctx.device, alloc, &ctx.graphics_queue, ctx.command_pool, &vertices, &mesh.indices, ctx.device_caps.ray_query_supported) {
+        let mesh_handle = match ctx.mesh_registry.upload(
+            &ctx.device,
+            alloc,
+            &ctx.graphics_queue,
+            ctx.command_pool,
+            &vertices,
+            &mesh.indices,
+            ctx.device_caps.ray_query_supported,
+        ) {
             Ok(h) => h,
             Err(e) => {
-                log::warn!("Failed to upload NIF mesh '{}': {}", mesh.name.as_deref().unwrap_or("?"), e);
+                log::warn!(
+                    "Failed to upload NIF mesh '{}': {}",
+                    mesh.name.as_deref().unwrap_or("?"),
+                    e
+                );
                 continue;
             }
         };
@@ -1033,9 +1195,16 @@ pub(crate) fn load_nif_bytes(
         let tex_handle = resolve_texture(ctx, tex_provider, mesh.texture_path.as_deref());
 
         let quat = Quat::from_xyzw(
-            mesh.rotation[0], mesh.rotation[1], mesh.rotation[2], mesh.rotation[3],
+            mesh.rotation[0],
+            mesh.rotation[1],
+            mesh.rotation[2],
+            mesh.rotation[3],
         );
-        let translation = Vec3::new(mesh.translation[0], mesh.translation[1], mesh.translation[2]);
+        let translation = Vec3::new(
+            mesh.translation[0],
+            mesh.translation[1],
+            mesh.translation[2],
+        );
 
         let entity = world.spawn();
         world.insert(entity, Transform::new(translation, quat, mesh.scale));
@@ -1076,7 +1245,12 @@ pub(crate) fn load_nif_bytes(
     }
 
     let root = node_entities.first().copied();
-    log::info!("Imported {} nodes + {} meshes from '{}'", imported.nodes.len(), count, label);
+    log::info!(
+        "Imported {} nodes + {} meshes from '{}'",
+        imported.nodes.len(),
+        count,
+        label
+    );
     (count + imported.nodes.len(), root)
 }
 
@@ -1095,8 +1269,12 @@ fn resolve_texture(
     if let Some(dds_bytes) = tex_provider.extract(tex_path) {
         let alloc = ctx.allocator.as_ref().unwrap();
         match ctx.texture_registry.load_dds(
-            &ctx.device, alloc, &ctx.graphics_queue, ctx.command_pool,
-            tex_path, &dds_bytes,
+            &ctx.device,
+            alloc,
+            &ctx.graphics_queue,
+            ctx.command_pool,
+            tex_path,
+            &dds_bytes,
         ) {
             Ok(h) => {
                 log::info!("Loaded DDS texture: '{}'", tex_path);
@@ -1117,8 +1295,7 @@ fn spin_system(world: &World, dt: f32) {
     if let Some((sq, mut tq)) = world.query_2_mut::<Spinning, Transform>() {
         for (entity, _) in sq.iter() {
             if let Some(transform) = tq.get_mut(entity) {
-                let rotation =
-                    Quat::from_rotation_y(dt * 1.0) * Quat::from_rotation_x(dt * 0.3);
+                let rotation = Quat::from_rotation_y(dt * 1.0) * Quat::from_rotation_x(dt * 0.3);
                 transform.rotation = rotation * transform.rotation;
             }
         }
@@ -1224,7 +1401,8 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(ref mut ctx) = self.renderer {
-                    let (view_proj, draw_commands, gpu_lights, camera_pos, ambient) = build_render_data(&self.world);
+                    let (view_proj, draw_commands, gpu_lights, camera_pos, ambient) =
+                        build_render_data(&self.world);
 
                     // Record draw call count for diagnostics.
                     world_resource_set::<DebugStats>(&self.world, |s| {
@@ -1234,7 +1412,9 @@ impl ApplicationHandler for App {
                     // Tick and render the UI overlay (Ruffle SWF player).
                     let mut ui_tex = None;
                     if let Some(ref mut ui) = self.ui_manager {
-                        let dt = self.world.try_resource::<DeltaTime>()
+                        let dt = self
+                            .world
+                            .try_resource::<DeltaTime>()
                             .map(|d| d.0 as f64)
                             .unwrap_or(1.0 / 60.0);
                         let ui_w = ui.width;
@@ -1265,7 +1445,15 @@ impl ApplicationHandler for App {
                     }
 
                     let color = Color::CORNFLOWER_BLUE;
-                    match ctx.draw_frame(color.as_array(), &view_proj, &draw_commands, &gpu_lights, camera_pos, ambient, ui_tex) {
+                    match ctx.draw_frame(
+                        color.as_array(),
+                        &view_proj,
+                        &draw_commands,
+                        &gpu_lights,
+                        camera_pos,
+                        ambient,
+                        ui_tex,
+                    ) {
                         Ok(needs_recreate) => {
                             if needs_recreate {
                                 if let Some(ref win) = self.window {
@@ -1300,8 +1488,10 @@ impl ApplicationHandler for App {
                                 drop(input);
                                 if let Some(ref win) = self.window {
                                     if captured {
-                                        let _ = win.set_cursor_grab(CursorGrabMode::Confined)
-                                            .or_else(|_| win.set_cursor_grab(CursorGrabMode::Locked));
+                                        let _ =
+                                            win.set_cursor_grab(CursorGrabMode::Confined).or_else(
+                                                |_| win.set_cursor_grab(CursorGrabMode::Locked),
+                                            );
                                         win.set_cursor_visible(false);
                                     } else {
                                         let _ = win.set_cursor_grab(CursorGrabMode::None);
@@ -1391,8 +1581,12 @@ impl ApplicationHandler for App {
 
 struct HelpCommand;
 impl ConsoleCommand for HelpCommand {
-    fn name(&self) -> &str { "help" }
-    fn description(&self) -> &str { "List all available commands" }
+    fn name(&self) -> &str {
+        "help"
+    }
+    fn description(&self) -> &str {
+        "List all available commands"
+    }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
         let registry = world.resource::<CommandRegistry>();
         let mut lines = vec!["Available commands:".to_string()];
@@ -1405,14 +1599,23 @@ impl ConsoleCommand for HelpCommand {
 
 struct StatsCommand;
 impl ConsoleCommand for StatsCommand {
-    fn name(&self) -> &str { "stats" }
-    fn description(&self) -> &str { "Show engine performance statistics" }
+    fn name(&self) -> &str {
+        "stats"
+    }
+    fn description(&self) -> &str {
+        "Show engine performance statistics"
+    }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
         let stats = world.resource::<DebugStats>();
         let (min_dt, max_dt) = stats.min_max_frame_time();
         CommandOutput::lines(vec![
             format!("FPS:       {:.0} (avg {:.0})", stats.fps, stats.avg_fps()),
-            format!("Frame:     {:.2}ms (min {:.2}ms, max {:.2}ms)", stats.frame_time_ms, min_dt * 1000.0, max_dt * 1000.0),
+            format!(
+                "Frame:     {:.2}ms (min {:.2}ms, max {:.2}ms)",
+                stats.frame_time_ms,
+                min_dt * 1000.0,
+                max_dt * 1000.0
+            ),
             format!("Entities:  {}", stats.entity_count),
             format!("Meshes:    {}", stats.mesh_count),
             format!("Textures:  {}", stats.texture_count),
@@ -1423,14 +1626,21 @@ impl ConsoleCommand for StatsCommand {
 
 struct EntitiesCommand;
 impl ConsoleCommand for EntitiesCommand {
-    fn name(&self) -> &str { "entities" }
-    fn description(&self) -> &str { "Show entity count and component breakdown" }
+    fn name(&self) -> &str {
+        "entities"
+    }
+    fn description(&self) -> &str {
+        "Show entity count and component breakdown"
+    }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
         let total = world.entity_count();
         let mut lines = vec![format!("Total entities spawned: {}", total)];
         lines.push(format!("  Transform:     {}", world.count::<Transform>()));
         lines.push(format!("  MeshHandle:    {}", world.count::<MeshHandle>()));
-        lines.push(format!("  TextureHandle: {}", world.count::<TextureHandle>()));
+        lines.push(format!(
+            "  TextureHandle: {}",
+            world.count::<TextureHandle>()
+        ));
         lines.push(format!("  Camera:        {}", world.count::<Camera>()));
         CommandOutput::lines(lines)
     }
@@ -1438,8 +1648,12 @@ impl ConsoleCommand for EntitiesCommand {
 
 struct SystemsCommand;
 impl ConsoleCommand for SystemsCommand {
-    fn name(&self) -> &str { "systems" }
-    fn description(&self) -> &str { "List registered ECS systems" }
+    fn name(&self) -> &str {
+        "systems"
+    }
+    fn description(&self) -> &str {
+        "List registered ECS systems"
+    }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
         if let Some(list) = world.try_resource::<SystemList>() {
             let mut lines = vec![format!("Registered systems ({}):", list.0.len())];
@@ -1463,7 +1677,15 @@ fn build_command_registry() -> CommandRegistry {
 }
 
 /// Build the view-projection matrix and draw command list from ECS queries.
-fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>, Vec<byroredux_renderer::GpuLight>, [f32; 3], [f32; 3]) {
+fn build_render_data(
+    world: &World,
+) -> (
+    [f32; 16],
+    Vec<DrawCommand>,
+    Vec<byroredux_renderer::GpuLight>,
+    [f32; 3],
+    [f32; 3],
+) {
     use byroredux_core::math::Mat4;
 
     // Get camera view-projection.
@@ -1501,11 +1723,14 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>, Vec<byrored
         let vis_q = world.query::<AnimatedVisibility>();
         for (entity, mesh) in mq.iter() {
             // Skip entities hidden by animation.
-            let visible = vis_q.as_ref()
+            let visible = vis_q
+                .as_ref()
                 .and_then(|q| q.get(entity))
                 .map(|v| v.0)
                 .unwrap_or(true);
-            if !visible { continue; }
+            if !visible {
+                continue;
+            }
 
             if let Some(transform) = tq.get(entity) {
                 let tex_handle = tex_q
@@ -1521,7 +1746,8 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>, Vec<byrored
                     .as_ref()
                     .map(|q| q.get(entity).is_some())
                     .unwrap_or(false);
-                let is_decal = decal_q.as_ref()
+                let is_decal = decal_q
+                    .as_ref()
                     .map(|q| q.get(entity).is_some())
                     .unwrap_or(false);
                 draw_commands.push(DrawCommand {
@@ -1537,7 +1763,14 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>, Vec<byrored
     }
     // Sort: opaque first, then alpha-blended; within each group sort by two_sided then texture.
     // Sort: opaque → decal → alpha; decals drawn after base geometry at same depth.
-    draw_commands.sort_unstable_by_key(|cmd| (cmd.alpha_blend, cmd.is_decal, cmd.two_sided, cmd.texture_handle));
+    draw_commands.sort_unstable_by_key(|cmd| {
+        (
+            cmd.alpha_blend,
+            cmd.is_decal,
+            cmd.two_sided,
+            cmd.texture_handle,
+        )
+    });
 
     // Collect lights from ECS.
     let mut gpu_lights = Vec::new();
@@ -1546,8 +1779,18 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>, Vec<byrored
     if let Some(cell_lit) = world.try_resource::<CellLightingRes>() {
         gpu_lights.push(byroredux_renderer::GpuLight {
             position_radius: [0.0, 0.0, 0.0, 0.0],
-            color_type: [cell_lit.directional_color[0], cell_lit.directional_color[1], cell_lit.directional_color[2], 2.0], // 2 = directional
-            direction_angle: [cell_lit.directional_dir[0], cell_lit.directional_dir[1], cell_lit.directional_dir[2], 0.0],
+            color_type: [
+                cell_lit.directional_color[0],
+                cell_lit.directional_color[1],
+                cell_lit.directional_color[2],
+                2.0,
+            ], // 2 = directional
+            direction_angle: [
+                cell_lit.directional_dir[0],
+                cell_lit.directional_dir[1],
+                cell_lit.directional_dir[2],
+                0.0,
+            ],
         });
     }
 
@@ -1556,7 +1799,12 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>, Vec<byrored
         for (entity, light) in lq.iter() {
             if let Some(t) = tq.get(entity) {
                 gpu_lights.push(byroredux_renderer::GpuLight {
-                    position_radius: [t.translation.x, t.translation.y, t.translation.z, light.radius],
+                    position_radius: [
+                        t.translation.x,
+                        t.translation.y,
+                        t.translation.z,
+                        light.radius,
+                    ],
                     color_type: [light.color[0], light.color[1], light.color[2], 0.0], // 0 = point
                     direction_angle: [0.0, 0.0, 0.0, 0.0],
                 });
@@ -1569,9 +1817,14 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>, Vec<byrored
         use std::sync::atomic::{AtomicBool, Ordering};
         static LOGGED: AtomicBool = AtomicBool::new(false);
         if !LOGGED.swap(true, Ordering::Relaxed) {
-            log::info!("Lights collected: {} (first 3: {:?})",
+            log::info!(
+                "Lights collected: {} (first 3: {:?})",
                 gpu_lights.len(),
-                gpu_lights.iter().take(3).map(|l| (l.position_radius, l.color_type)).collect::<Vec<_>>(),
+                gpu_lights
+                    .iter()
+                    .take(3)
+                    .map(|l| (l.position_radius, l.color_type))
+                    .collect::<Vec<_>>(),
             );
         }
     }
@@ -1581,14 +1834,18 @@ fn build_render_data(world: &World) -> ([f32; 16], Vec<DrawCommand>, Vec<byrored
         let cam_entity = active.0;
         drop(active);
         let tq = world.query::<Transform>();
-        tq.and_then(|q| q.get(cam_entity).map(|t| [t.translation.x, t.translation.y, t.translation.z]))
-            .unwrap_or([0.0; 3])
+        tq.and_then(|q| {
+            q.get(cam_entity)
+                .map(|t| [t.translation.x, t.translation.y, t.translation.z])
+        })
+        .unwrap_or([0.0; 3])
     } else {
         [0.0; 3]
     };
 
     // Cell ambient color (or default).
-    let ambient = world.try_resource::<CellLightingRes>()
+    let ambient = world
+        .try_resource::<CellLightingRes>()
         .map(|l| l.ambient)
         .unwrap_or([0.08, 0.08, 0.08]);
 
@@ -1633,7 +1890,8 @@ fn build_subtree_name_map(
 
 /// Add a child entity to a parent's Children component, creating it if needed.
 fn add_child(world: &mut World, parent: EntityId, child: EntityId) {
-    let has_children = world.query::<Children>()
+    let has_children = world
+        .query::<Children>()
         .map(|q| q.get(parent).is_some())
         .unwrap_or(false);
 
@@ -1645,10 +1903,7 @@ fn add_child(world: &mut World, parent: EntityId, child: EntityId) {
     }
 }
 
-fn world_resource_set<R: byroredux_core::ecs::Resource>(
-    world: &World,
-    f: impl FnOnce(&mut R),
-) {
+fn world_resource_set<R: byroredux_core::ecs::Resource>(world: &World, f: impl FnOnce(&mut R)) {
     let mut guard = world.resource_mut::<R>();
     f(&mut guard);
 }
@@ -1742,24 +1997,66 @@ fn convert_nif_clip(nif: &byroredux_nif::anim::AnimationClip) -> AnimationClip {
         na::ColorTarget::ShaderColor => ColorTarget::ShaderColor,
     };
 
-    let float_channels = nif.float_channels.iter()
-        .map(|(name, ch)| (name.clone(), FloatChannel {
-            target: convert_float_target(ch.target),
-            keys: ch.keys.iter().map(|k| AnimFloatKey { time: k.time, value: k.value }).collect(),
-        }))
+    let float_channels = nif
+        .float_channels
+        .iter()
+        .map(|(name, ch)| {
+            (
+                name.clone(),
+                FloatChannel {
+                    target: convert_float_target(ch.target),
+                    keys: ch
+                        .keys
+                        .iter()
+                        .map(|k| AnimFloatKey {
+                            time: k.time,
+                            value: k.value,
+                        })
+                        .collect(),
+                },
+            )
+        })
         .collect();
 
-    let color_channels = nif.color_channels.iter()
-        .map(|(name, ch)| (name.clone(), ColorChannel {
-            target: convert_color_target(ch.target),
-            keys: ch.keys.iter().map(|k| AnimColorKey { time: k.time, value: Vec3::from_array(k.value) }).collect(),
-        }))
+    let color_channels = nif
+        .color_channels
+        .iter()
+        .map(|(name, ch)| {
+            (
+                name.clone(),
+                ColorChannel {
+                    target: convert_color_target(ch.target),
+                    keys: ch
+                        .keys
+                        .iter()
+                        .map(|k| AnimColorKey {
+                            time: k.time,
+                            value: Vec3::from_array(k.value),
+                        })
+                        .collect(),
+                },
+            )
+        })
         .collect();
 
-    let bool_channels = nif.bool_channels.iter()
-        .map(|(name, ch)| (name.clone(), BoolChannel {
-            keys: ch.keys.iter().map(|k| AnimBoolKey { time: k.time, value: k.value }).collect(),
-        }))
+    let bool_channels = nif
+        .bool_channels
+        .iter()
+        .map(|(name, ch)| {
+            (
+                name.clone(),
+                BoolChannel {
+                    keys: ch
+                        .keys
+                        .iter()
+                        .map(|k| AnimBoolKey {
+                            time: k.time,
+                            value: k.value,
+                        })
+                        .collect(),
+                },
+            )
+        })
         .collect();
 
     AnimationClip {

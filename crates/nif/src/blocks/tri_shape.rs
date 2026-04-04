@@ -4,11 +4,11 @@
 //! block containing vertex positions, normals, UV coordinates, and triangle
 //! index lists.
 
+use super::base::NiAVObjectData;
+use super::{traits, NiObject};
 use crate::stream::NifStream;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
 use crate::version::NifVersion;
-use super::base::NiAVObjectData;
-use super::{traits, NiObject};
 use std::any::Any;
 use std::io;
 
@@ -33,35 +33,63 @@ pub struct NiTriShape {
 
 // Backward-compatible field access.
 impl NiTriShape {
-    pub fn name_str(&self) -> Option<&str> { self.av.net.name.as_deref() }
+    pub fn name_str(&self) -> Option<&str> {
+        self.av.net.name.as_deref()
+    }
 }
 
 impl NiObject for NiTriShape {
     fn block_type_name(&self) -> &'static str {
         "NiTriShape"
     }
-    fn as_any(&self) -> &dyn Any { self }
-    fn as_object_net(&self) -> Option<&dyn traits::HasObjectNET> { Some(self) }
-    fn as_av_object(&self) -> Option<&dyn traits::HasAVObject> { Some(self) }
-    fn as_shader_refs(&self) -> Option<&dyn traits::HasShaderRefs> { Some(self) }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_object_net(&self) -> Option<&dyn traits::HasObjectNET> {
+        Some(self)
+    }
+    fn as_av_object(&self) -> Option<&dyn traits::HasAVObject> {
+        Some(self)
+    }
+    fn as_shader_refs(&self) -> Option<&dyn traits::HasShaderRefs> {
+        Some(self)
+    }
 }
 
 impl traits::HasObjectNET for NiTriShape {
-    fn name(&self) -> Option<&str> { self.av.net.name.as_deref() }
-    fn extra_data_refs(&self) -> &[BlockRef] { &self.av.net.extra_data_refs }
-    fn controller_ref(&self) -> BlockRef { self.av.net.controller_ref }
+    fn name(&self) -> Option<&str> {
+        self.av.net.name.as_deref()
+    }
+    fn extra_data_refs(&self) -> &[BlockRef] {
+        &self.av.net.extra_data_refs
+    }
+    fn controller_ref(&self) -> BlockRef {
+        self.av.net.controller_ref
+    }
 }
 
 impl traits::HasAVObject for NiTriShape {
-    fn flags(&self) -> u32 { self.av.flags }
-    fn transform(&self) -> &NiTransform { &self.av.transform }
-    fn properties(&self) -> &[BlockRef] { &self.av.properties }
-    fn collision_ref(&self) -> BlockRef { self.av.collision_ref }
+    fn flags(&self) -> u32 {
+        self.av.flags
+    }
+    fn transform(&self) -> &NiTransform {
+        &self.av.transform
+    }
+    fn properties(&self) -> &[BlockRef] {
+        &self.av.properties
+    }
+    fn collision_ref(&self) -> BlockRef {
+        self.av.collision_ref
+    }
 }
 
 impl traits::HasShaderRefs for NiTriShape {
-    fn shader_property_ref(&self) -> BlockRef { self.shader_property_ref }
-    fn alpha_property_ref(&self) -> BlockRef { self.alpha_property_ref }
+    fn shader_property_ref(&self) -> BlockRef {
+        self.shader_property_ref
+    }
+    fn alpha_property_ref(&self) -> BlockRef {
+        self.alpha_property_ref
+    }
 }
 
 impl NiTriShape {
@@ -147,28 +175,54 @@ impl NiObject for BsTriShape {
     fn block_type_name(&self) -> &'static str {
         "BSTriShape"
     }
-    fn as_any(&self) -> &dyn Any { self }
-    fn as_object_net(&self) -> Option<&dyn traits::HasObjectNET> { Some(self) }
-    fn as_av_object(&self) -> Option<&dyn traits::HasAVObject> { Some(self) }
-    fn as_shader_refs(&self) -> Option<&dyn traits::HasShaderRefs> { Some(self) }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_object_net(&self) -> Option<&dyn traits::HasObjectNET> {
+        Some(self)
+    }
+    fn as_av_object(&self) -> Option<&dyn traits::HasAVObject> {
+        Some(self)
+    }
+    fn as_shader_refs(&self) -> Option<&dyn traits::HasShaderRefs> {
+        Some(self)
+    }
 }
 
 impl traits::HasObjectNET for BsTriShape {
-    fn name(&self) -> Option<&str> { self.av.net.name.as_deref() }
-    fn extra_data_refs(&self) -> &[BlockRef] { &self.av.net.extra_data_refs }
-    fn controller_ref(&self) -> BlockRef { self.av.net.controller_ref }
+    fn name(&self) -> Option<&str> {
+        self.av.net.name.as_deref()
+    }
+    fn extra_data_refs(&self) -> &[BlockRef] {
+        &self.av.net.extra_data_refs
+    }
+    fn controller_ref(&self) -> BlockRef {
+        self.av.net.controller_ref
+    }
 }
 
 impl traits::HasAVObject for BsTriShape {
-    fn flags(&self) -> u32 { self.av.flags }
-    fn transform(&self) -> &NiTransform { &self.av.transform }
-    fn properties(&self) -> &[BlockRef] { &[] } // BSTriShape never has properties
-    fn collision_ref(&self) -> BlockRef { self.av.collision_ref }
+    fn flags(&self) -> u32 {
+        self.av.flags
+    }
+    fn transform(&self) -> &NiTransform {
+        &self.av.transform
+    }
+    fn properties(&self) -> &[BlockRef] {
+        &[]
+    } // BSTriShape never has properties
+    fn collision_ref(&self) -> BlockRef {
+        self.av.collision_ref
+    }
 }
 
 impl traits::HasShaderRefs for BsTriShape {
-    fn shader_property_ref(&self) -> BlockRef { self.shader_property_ref }
-    fn alpha_property_ref(&self) -> BlockRef { self.alpha_property_ref }
+    fn shader_property_ref(&self) -> BlockRef {
+        self.shader_property_ref
+    }
+    fn alpha_property_ref(&self) -> BlockRef {
+        self.alpha_property_ref
+    }
 }
 
 /// Vertex attribute flags from BSVertexDesc bits [44:55].
@@ -241,7 +295,11 @@ impl BsTriShape {
                     let ny = byte_to_normal(stream.read_u8()?);
                     let nz = byte_to_normal(stream.read_u8()?);
                     let _bitangent_y = stream.read_u8()?;
-                    normals.push(NiPoint3 { x: nx, y: ny, z: nz });
+                    normals.push(NiPoint3 {
+                        x: nx,
+                        y: ny,
+                        z: nz,
+                    });
                 }
 
                 // Tangent (ByteVector3 + bitangent Z)
@@ -373,13 +431,15 @@ impl NiObject for NiTriShapeData {
 
 /// Parse the NiGeometryData base class fields shared by NiTriShapeData and NiTriStripsData.
 /// Returns (vertices, data_flags, normals, center, radius, vertex_colors, uv_sets).
-fn parse_geometry_data_base(stream: &mut NifStream) -> io::Result<(
-    Vec<NiPoint3>,   // vertices
-    u16,             // data_flags
-    Vec<NiPoint3>,   // normals
-    NiPoint3,        // center
-    f32,             // radius
-    Vec<[f32; 4]>,   // vertex_colors
+fn parse_geometry_data_base(
+    stream: &mut NifStream,
+) -> io::Result<(
+    Vec<NiPoint3>,      // vertices
+    u16,                // data_flags
+    Vec<NiPoint3>,      // normals
+    NiPoint3,           // center
+    f32,                // radius
+    Vec<[f32; 4]>,      // vertex_colors
     Vec<Vec<[f32; 2]>>, // uv_sets
 )> {
     let _group_id = stream.read_i32_le()?; // usually 0
@@ -465,7 +525,15 @@ fn parse_geometry_data_base(stream: &mut NifStream) -> io::Result<(
         let _additional_data_ref = stream.read_block_ref()?;
     }
 
-    Ok((vertices, data_flags, normals, center, radius, vertex_colors, uv_sets))
+    Ok((
+        vertices,
+        data_flags,
+        normals,
+        center,
+        radius,
+        vertex_colors,
+        uv_sets,
+    ))
 }
 
 impl NiTriShapeData {

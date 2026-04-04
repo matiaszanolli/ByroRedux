@@ -89,9 +89,7 @@ impl AccelerationManager {
         let geometry = vk::AccelerationStructureGeometryKHR::default()
             .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
             .flags(vk::GeometryFlagsKHR::OPAQUE)
-            .geometry(vk::AccelerationStructureGeometryDataKHR {
-                triangles,
-            });
+            .geometry(vk::AccelerationStructureGeometryDataKHR { triangles });
 
         let primitive_count = index_count / 3;
 
@@ -217,9 +215,7 @@ impl AccelerationManager {
             let m = &draw_cmd.model_matrix;
             let transform = vk::TransformMatrixKHR {
                 matrix: [
-                    m[0], m[4], m[8],  m[12],
-                    m[1], m[5], m[9],  m[13],
-                    m[2], m[6], m[10], m[14],
+                    m[0], m[4], m[8], m[12], m[1], m[5], m[9], m[13], m[2], m[6], m[10], m[14],
                 ],
             };
 
@@ -242,8 +238,8 @@ impl AccelerationManager {
         // descriptor set binding is always valid for the shader.
 
         // Create/resize instance buffer if needed.
-        let need_new_tlas = self.tlas.is_none()
-            || self.tlas.as_ref().unwrap().max_instances < instance_count;
+        let need_new_tlas =
+            self.tlas.is_none() || self.tlas.as_ref().unwrap().max_instances < instance_count;
 
         if need_new_tlas {
             // Destroy old TLAS.
@@ -370,8 +366,8 @@ impl AccelerationManager {
                 device_address: scratch_address,
             });
 
-        let range = vk::AccelerationStructureBuildRangeInfoKHR::default()
-            .primitive_count(instance_count);
+        let range =
+            vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(instance_count);
 
         self.accel_loader.cmd_build_acceleration_structures(
             cmd,

@@ -116,11 +116,7 @@ mod tests {
 
     #[test]
     fn combined_transform() {
-        let t = Transform::new(
-            Vec3::new(10.0, 0.0, 0.0),
-            Quat::IDENTITY,
-            3.0,
-        );
+        let t = Transform::new(Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 3.0);
         let m = t.to_matrix();
         // Point at origin should end up at (10, 0, 0) after transform.
         let result = m.transform_point3(Vec3::ZERO);

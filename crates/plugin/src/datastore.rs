@@ -101,8 +101,7 @@ impl DataStore {
                 );
             } else {
                 // Multiple providers — resolve.
-                let plugin_ids: Vec<PluginId> =
-                    entries.iter().map(|(pid, _)| *pid).collect();
+                let plugin_ids: Vec<PluginId> = entries.iter().map(|(pid, _)| *pid).collect();
 
                 let (winner, resolution) = resolver.resolve_winner(&plugin_ids);
 
@@ -112,8 +111,7 @@ impl DataStore {
                     .position(|(pid, _)| *pid == winner)
                     .expect("winner must be in entries");
                 let (source, record) = entries.swap_remove(winner_idx);
-                let overridden_by: Vec<PluginId> =
-                    entries.iter().map(|(pid, _)| *pid).collect();
+                let overridden_by: Vec<PluginId> = entries.iter().map(|(pid, _)| *pid).collect();
 
                 self.conflicts.push(Conflict {
                     form_id,

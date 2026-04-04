@@ -14,7 +14,9 @@ pub struct CommandOutput {
 
 impl CommandOutput {
     pub fn line(msg: impl Into<String>) -> Self {
-        Self { lines: vec![msg.into()] }
+        Self {
+            lines: vec![msg.into()],
+        }
     }
 
     pub fn lines(lines: Vec<String>) -> Self {
@@ -22,7 +24,9 @@ impl CommandOutput {
     }
 
     pub fn error(msg: impl Into<String>) -> Self {
-        Self { lines: vec![format!("Error: {}", msg.into())] }
+        Self {
+            lines: vec![format!("Error: {}", msg.into())],
+        }
     }
 }
 
@@ -78,7 +82,10 @@ impl CommandRegistry {
             }
         }
 
-        CommandOutput::error(format!("Unknown command '{}'. Type 'help' for a list.", name))
+        CommandOutput::error(format!(
+            "Unknown command '{}'. Type 'help' for a list.",
+            name
+        ))
     }
 
     /// List all registered commands as (name, description) pairs.
@@ -106,8 +113,12 @@ mod tests {
     struct EchoCommand;
 
     impl ConsoleCommand for EchoCommand {
-        fn name(&self) -> &str { "echo" }
-        fn description(&self) -> &str { "Echoes the input" }
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn description(&self) -> &str {
+            "Echoes the input"
+        }
         fn execute(&self, _world: &World, args: &str) -> CommandOutput {
             CommandOutput::line(format!("Echo: {}", args))
         }
@@ -116,8 +127,12 @@ mod tests {
     struct CountCommand;
 
     impl ConsoleCommand for CountCommand {
-        fn name(&self) -> &str { "count" }
-        fn description(&self) -> &str { "Returns a fixed count" }
+        fn name(&self) -> &str {
+            "count"
+        }
+        fn description(&self) -> &str {
+            "Returns a fixed count"
+        }
         fn execute(&self, _world: &World, _args: &str) -> CommandOutput {
             CommandOutput::line("42")
         }

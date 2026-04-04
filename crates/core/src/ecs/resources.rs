@@ -93,7 +93,11 @@ impl DebugStats {
         }
         let sum: f32 = self.frame_times[..self.frame_count].iter().sum();
         let avg_dt = sum / self.frame_count as f32;
-        if avg_dt > 0.0 { 1.0 / avg_dt } else { 0.0 }
+        if avg_dt > 0.0 {
+            1.0 / avg_dt
+        } else {
+            0.0
+        }
     }
 
     /// Min and max frame times (seconds) over the rolling window.

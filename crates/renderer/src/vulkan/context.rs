@@ -1,11 +1,11 @@
 //! Top-level Vulkan context that owns the entire graphics state.
 
+use super::acceleration::AccelerationManager;
 use super::allocator::{self, SharedAllocator};
 use super::debug;
 use super::device::{self, QueueFamilyIndices};
 use super::instance;
 use super::pipeline;
-use super::acceleration::AccelerationManager;
 use super::scene_buffer;
 use super::surface;
 use super::swapchain::{self, SwapchainState};
@@ -129,13 +129,21 @@ impl VulkanContext {
             device::pick_physical_device(&vk_instance, &surface_loader, vk_surface)?;
 
         // 6. Logical device + queues (enables RT extensions when available)
-        let (device, raw_graphics_queue, present_queue) =
-            device::create_logical_device(&vk_instance, physical_device, queue_indices, &device_caps)?;
+        let (device, raw_graphics_queue, present_queue) = device::create_logical_device(
+            &vk_instance,
+            physical_device,
+            queue_indices,
+            &device_caps,
+        )?;
         let graphics_queue = Mutex::new(raw_graphics_queue);
 
         // 7. GPU allocator (buffer_device_address required for RT acceleration structures)
-        let gpu_allocator =
-            allocator::create_allocator(&vk_instance, &device, physical_device, device_caps.ray_query_supported)?;
+        let gpu_allocator = allocator::create_allocator(
+            &vk_instance,
+            &device,
+            physical_device,
+            device_caps.ray_query_supported,
+        )?;
 
         // 8. Swapchain
         let swapchain_state = swapchain::create_swapchain(
@@ -177,7 +185,11 @@ impl VulkanContext {
         )?;
 
         // 12. Scene buffers (light SSBO + camera UBO + optional TLAS, descriptor set 1)
-        let scene_buffers = scene_buffer::SceneBuffers::new(&device, &gpu_allocator, device_caps.ray_query_supported)?;
+        let scene_buffers = scene_buffer::SceneBuffers::new(
+            &device,
+            &gpu_allocator,
+            device_caps.ray_query_supported,
+        )?;
 
         // 12b. Acceleration manager (RT only) — build empty TLAS so descriptors are valid
         let mut scene_buffers = scene_buffers;
@@ -208,12 +220,12 @@ impl VulkanContext {
 
         // 13. Graphics pipeline (with depth test + descriptor set layouts for set 0 + set 1)
         let pipelines = pipeline::create_triangle_pipeline(
-                &device,
-                render_pass,
-                swapchain_state.extent,
-                texture_registry.descriptor_set_layout,
-                scene_buffers.descriptor_set_layout,
-            )?;
+            &device,
+            render_pass,
+            swapchain_state.extent,
+            texture_registry.descriptor_set_layout,
+            scene_buffers.descriptor_set_layout,
+        )?;
 
         // 13. UI overlay pipeline (no depth, alpha blend, passthrough shaders)
         let (pipeline_ui, ui_vert_module, ui_frag_module) = pipeline::create_ui_pipeline(
@@ -235,8 +247,7 @@ impl VulkanContext {
             allocate_command_buffers(&device, command_pool, swapchain_state.images.len())?;
 
         // 17. Sync objects
-        let frame_sync =
-            sync::create_sync_objects(&device, swapchain_state.images.len())?;
+        let frame_sync = sync::create_sync_objects(&device, swapchain_state.images.len())?;
 
         log::info!("Vulkan context fully initialized");
 
@@ -403,7 +414,8 @@ impl VulkanContext {
                         // Write TLAS to this frame's descriptor set. Only safe to update
                         // the current frame's set (the fence guarantees it's not pending).
                         if let Some(tlas_handle) = accel.tlas_handle() {
-                            self.scene_buffers.write_tlas(&self.device, frame, tlas_handle);
+                            self.scene_buffers
+                                .write_tlas(&self.device, frame, tlas_handle);
                         }
                     }
                 }
@@ -411,18 +423,12 @@ impl VulkanContext {
         }
 
         unsafe {
-            self.device.cmd_begin_render_pass(
-                cmd,
-                &render_pass_begin,
-                vk::SubpassContents::INLINE,
-            );
+            self.device
+                .cmd_begin_render_pass(cmd, &render_pass_begin, vk::SubpassContents::INLINE);
 
             // Bind the graphics pipeline.
-            self.device.cmd_bind_pipeline(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline,
-            );
+            self.device
+                .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
 
             // Set dynamic viewport and scissor.
             let viewports = [vk::Viewport {
@@ -444,10 +450,8 @@ impl VulkanContext {
             // Push viewProj matrix (first 64 bytes of push constants).
             // SAFETY: [f32; 16] is 64 bytes, properly aligned, and the
             // reference is valid for the duration of cmd_push_constants.
-            let view_proj_bytes: &[u8] = std::slice::from_raw_parts(
-                view_proj.as_ptr() as *const u8,
-                64,
-            );
+            let view_proj_bytes: &[u8] =
+                std::slice::from_raw_parts(view_proj.as_ptr() as *const u8, 64);
             self.device.cmd_push_constants(
                 cmd,
                 self.pipeline_layout,
@@ -457,15 +461,26 @@ impl VulkanContext {
             );
 
             // Upload scene data (lights + camera) and bind descriptor set 1.
-            self.scene_buffers.upload_lights(frame, lights)
+            self.scene_buffers
+                .upload_lights(frame, lights)
                 .unwrap_or_else(|e| log::warn!("Failed to upload lights: {e}"));
-            let rt_flag = if self.device_caps.ray_query_supported
-                && self.scene_buffers.tlas_written[frame] { 1.0 } else { 0.0 };
+            let rt_flag =
+                if self.device_caps.ray_query_supported && self.scene_buffers.tlas_written[frame] {
+                    1.0
+                } else {
+                    0.0
+                };
             let camera = scene_buffer::GpuCamera {
                 position: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
-                flags: [rt_flag, ambient_color[0], ambient_color[1], ambient_color[2]],
+                flags: [
+                    rt_flag,
+                    ambient_color[0],
+                    ambient_color[1],
+                    ambient_color[2],
+                ],
             };
-            self.scene_buffers.upload_camera(frame, &camera)
+            self.scene_buffers
+                .upload_camera(frame, &camera)
                 .unwrap_or_else(|e| log::warn!("Failed to upload camera: {e}"));
 
             let scene_set = self.scene_buffers.descriptor_set(frame);
@@ -489,15 +504,12 @@ impl VulkanContext {
                     if pipeline_key != last_pipeline_key {
                         let pipe = match pipeline_key {
                             (false, false) => self.pipeline,
-                            (true,  false) => self.pipeline_alpha,
-                            (false, true)  => self.pipeline_two_sided,
-                            (true,  true)  => self.pipeline_alpha_two_sided,
+                            (true, false) => self.pipeline_alpha,
+                            (false, true) => self.pipeline_two_sided,
+                            (true, true) => self.pipeline_alpha_two_sided,
                         };
-                        self.device.cmd_bind_pipeline(
-                            cmd,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            pipe,
-                        );
+                        self.device
+                            .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipe);
                         last_pipeline_key = pipeline_key;
                         // Force rebind of texture after pipeline switch.
                         last_texture = u32::MAX;
@@ -505,10 +517,9 @@ impl VulkanContext {
 
                     // Bind texture descriptor set (skip if same as previous draw).
                     if draw_cmd.texture_handle != last_texture {
-                        let desc_set = self.texture_registry.descriptor_set(
-                            draw_cmd.texture_handle,
-                            image_index as usize,
-                        );
+                        let desc_set = self
+                            .texture_registry
+                            .descriptor_set(draw_cmd.texture_handle, image_index as usize);
                         self.device.cmd_bind_descriptor_sets(
                             cmd,
                             vk::PipelineBindPoint::GRAPHICS,
@@ -524,13 +535,16 @@ impl VulkanContext {
                     // get pushed toward camera to prevent Z-fighting.
                     let bias = if draw_cmd.is_decal { -8.0_f32 } else { 0.0 };
                     // Args: constant_factor, slope_factor, clamp (0 = no clamp)
-                    self.device.cmd_set_depth_bias(cmd, bias, if draw_cmd.is_decal { -2.0 } else { 0.0 }, 0.0);
+                    self.device.cmd_set_depth_bias(
+                        cmd,
+                        bias,
+                        if draw_cmd.is_decal { -2.0 } else { 0.0 },
+                        0.0,
+                    );
 
                     // Push model matrix (bytes 64..128).
-                    let model_bytes: &[u8] = std::slice::from_raw_parts(
-                        draw_cmd.model_matrix.as_ptr() as *const u8,
-                        64,
-                    );
+                    let model_bytes: &[u8] =
+                        std::slice::from_raw_parts(draw_cmd.model_matrix.as_ptr() as *const u8, 64);
                     self.device.cmd_push_constants(
                         cmd,
                         self.pipeline_layout,
@@ -539,19 +553,16 @@ impl VulkanContext {
                         model_bytes,
                     );
 
-                    self.device.cmd_bind_vertex_buffers(
-                        cmd,
-                        0,
-                        &[mesh.vertex_buffer.buffer],
-                        &[0],
-                    );
+                    self.device
+                        .cmd_bind_vertex_buffers(cmd, 0, &[mesh.vertex_buffer.buffer], &[0]);
                     self.device.cmd_bind_index_buffer(
                         cmd,
                         mesh.index_buffer.buffer,
                         0,
                         vk::IndexType::UINT32,
                     );
-                    self.device.cmd_draw_indexed(cmd, mesh.index_count, 1, 0, 0, 0);
+                    self.device
+                        .cmd_draw_indexed(cmd, mesh.index_count, 1, 0, 0, 0);
                 }
             }
 
@@ -564,10 +575,9 @@ impl VulkanContext {
                         self.pipeline_ui,
                     );
 
-                    let desc_set = self.texture_registry.descriptor_set(
-                        ui_tex,
-                        image_index as usize,
-                    );
+                    let desc_set = self
+                        .texture_registry
+                        .descriptor_set(ui_tex, image_index as usize);
                     self.device.cmd_bind_descriptor_sets(
                         cmd,
                         vk::PipelineBindPoint::GRAPHICS,
@@ -579,17 +589,13 @@ impl VulkanContext {
 
                     // Push identity matrices (required by pipeline layout, ignored by UI shader).
                     let identity: [f32; 16] = [
-                        1.0, 0.0, 0.0, 0.0,
-                        0.0, 1.0, 0.0, 0.0,
-                        0.0, 0.0, 1.0, 0.0,
-                        0.0, 0.0, 0.0, 1.0,
+                        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+                        1.0,
                     ];
                     // SAFETY: [f32; 16] is 64 bytes, properly aligned, and the
                     // reference is valid for the duration of cmd_push_constants.
-                    let identity_bytes: &[u8] = std::slice::from_raw_parts(
-                        identity.as_ptr() as *const u8,
-                        64,
-                    );
+                    let identity_bytes: &[u8] =
+                        std::slice::from_raw_parts(identity.as_ptr() as *const u8, 64);
                     self.device.cmd_push_constants(
                         cmd,
                         self.pipeline_layout,
@@ -605,19 +611,16 @@ impl VulkanContext {
                         identity_bytes,
                     );
 
-                    self.device.cmd_bind_vertex_buffers(
-                        cmd,
-                        0,
-                        &[mesh.vertex_buffer.buffer],
-                        &[0],
-                    );
+                    self.device
+                        .cmd_bind_vertex_buffers(cmd, 0, &[mesh.vertex_buffer.buffer], &[0]);
                     self.device.cmd_bind_index_buffer(
                         cmd,
                         mesh.index_buffer.buffer,
                         0,
                         vk::IndexType::UINT32,
                     );
-                    self.device.cmd_draw_indexed(cmd, mesh.index_count, 1, 0, 0, 0);
+                    self.device
+                        .cmd_draw_indexed(cmd, mesh.index_count, 1, 0, 0, 0);
                 }
             }
 
@@ -645,13 +648,12 @@ impl VulkanContext {
             .signal_semaphores(&signal_semaphores);
 
         unsafe {
-            let queue = *self.graphics_queue.lock().expect("graphics queue lock poisoned");
+            let queue = *self
+                .graphics_queue
+                .lock()
+                .expect("graphics queue lock poisoned");
             self.device
-                .queue_submit(
-                    queue,
-                    &[submit_info],
-                    self.frame_sync.in_flight[frame],
-                )
+                .queue_submit(queue, &[submit_info], self.frame_sync.in_flight[frame])
                 .context("queue_submit")?;
         }
 
@@ -682,12 +684,22 @@ impl VulkanContext {
 
     /// Build a BLAS for a mesh (RT only). Call after uploading a mesh.
     pub fn build_blas_for_mesh(&mut self, mesh_handle: u32, vertex_count: u32, index_count: u32) {
-        let Some(ref mut accel) = self.accel_manager else { return };
-        let Some(mesh) = self.mesh_registry.get(mesh_handle) else { return };
+        let Some(ref mut accel) = self.accel_manager else {
+            return;
+        };
+        let Some(mesh) = self.mesh_registry.get(mesh_handle) else {
+            return;
+        };
         let allocator = self.allocator.as_ref().expect("allocator missing");
         if let Err(e) = accel.build_blas(
-            &self.device, allocator, &self.graphics_queue, self.command_pool,
-            mesh_handle, mesh, vertex_count, index_count,
+            &self.device,
+            allocator,
+            &self.graphics_queue,
+            self.command_pool,
+            mesh_handle,
+            mesh,
+            vertex_count,
+            index_count,
         ) {
             log::warn!("BLAS build failed for mesh {}: {e}", mesh_handle);
         }
@@ -714,7 +726,10 @@ impl VulkanContext {
 
     /// Get the current swapchain extent (viewport dimensions).
     pub fn swapchain_extent(&self) -> (u32, u32) {
-        (self.swapchain_state.extent.width, self.swapchain_state.extent.height)
+        (
+            self.swapchain_state.extent.width,
+            self.swapchain_state.extent.height,
+        )
     }
 
     /// Recreate the swapchain after a resize or suboptimal present.
@@ -745,7 +760,8 @@ impl VulkanContext {
             self.device.destroy_pipeline(self.pipeline, None);
             self.device.destroy_pipeline(self.pipeline_alpha, None);
             self.device.destroy_pipeline(self.pipeline_two_sided, None);
-            self.device.destroy_pipeline(self.pipeline_alpha_two_sided, None);
+            self.device
+                .destroy_pipeline(self.pipeline_alpha_two_sided, None);
             self.device.destroy_pipeline(self.pipeline_ui, None);
 
             self.device.destroy_render_pass(self.render_pass, None);
@@ -771,8 +787,7 @@ impl VulkanContext {
         self.depth_image_view = depth_image_view;
         self.depth_allocation = Some(depth_allocation);
 
-        self.render_pass =
-            create_render_pass(&self.device, self.swapchain_state.format.format)?;
+        self.render_pass = create_render_pass(&self.device, self.swapchain_state.format.format)?;
 
         // Recreate pipelines against the new render pass.
         let pipelines = pipeline::create_triangle_pipeline(
@@ -786,8 +801,10 @@ impl VulkanContext {
         // redundant copies that create_triangle_pipeline just created.
         unsafe {
             self.device.destroy_pipeline_layout(pipelines.layout, None);
-            self.device.destroy_shader_module(pipelines.vert_module, None);
-            self.device.destroy_shader_module(pipelines.frag_module, None);
+            self.device
+                .destroy_shader_module(pipelines.vert_module, None);
+            self.device
+                .destroy_shader_module(pipelines.frag_module, None);
         }
         self.pipeline = pipelines.opaque;
         self.pipeline_alpha = pipelines.alpha;
@@ -807,10 +824,8 @@ impl VulkanContext {
         self.pipeline_ui = new_ui_pipeline;
 
         // Recreate descriptor sets for existing textures (new swapchain image count).
-        self.texture_registry.recreate_descriptor_sets(
-            &self.device,
-            self.swapchain_state.images.len() as u32,
-        )?;
+        self.texture_registry
+            .recreate_descriptor_sets(&self.device, self.swapchain_state.images.len() as u32)?;
 
         self.framebuffers = create_framebuffers(
             &self.device,
@@ -888,7 +903,8 @@ impl Drop for VulkanContext {
             self.device.destroy_pipeline(self.pipeline, None);
             self.device.destroy_pipeline(self.pipeline_alpha, None);
             self.device.destroy_pipeline(self.pipeline_two_sided, None);
-            self.device.destroy_pipeline(self.pipeline_alpha_two_sided, None);
+            self.device
+                .destroy_pipeline(self.pipeline_alpha_two_sided, None);
             self.device.destroy_pipeline(self.pipeline_ui, None);
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);

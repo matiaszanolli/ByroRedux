@@ -93,9 +93,30 @@ mod tests {
     #[test]
     fn insert_maintains_sort_order() {
         let mut s = PackedStorage::<Transform>::default();
-        s.insert(10, Transform { x: 10.0, y: 0.0, z: 0.0 });
-        s.insert(3, Transform { x: 3.0, y: 0.0, z: 0.0 });
-        s.insert(7, Transform { x: 7.0, y: 0.0, z: 0.0 });
+        s.insert(
+            10,
+            Transform {
+                x: 10.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        );
+        s.insert(
+            3,
+            Transform {
+                x: 3.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        );
+        s.insert(
+            7,
+            Transform {
+                x: 7.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        );
 
         let entities: Vec<_> = s.iter().map(|(e, _)| e).collect();
         assert_eq!(entities, vec![3, 7, 10]);
@@ -104,8 +125,22 @@ mod tests {
     #[test]
     fn overwrite() {
         let mut s = PackedStorage::<Transform>::default();
-        s.insert(5, Transform { x: 1.0, y: 0.0, z: 0.0 });
-        s.insert(5, Transform { x: 99.0, y: 0.0, z: 0.0 });
+        s.insert(
+            5,
+            Transform {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        );
+        s.insert(
+            5,
+            Transform {
+                x: 99.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        );
         assert_eq!(s.get(5).unwrap().x, 99.0);
         assert_eq!(s.len(), 1);
     }
@@ -113,9 +148,30 @@ mod tests {
     #[test]
     fn remove_middle() {
         let mut s = PackedStorage::<Transform>::default();
-        s.insert(1, Transform { x: 1.0, y: 0.0, z: 0.0 });
-        s.insert(5, Transform { x: 5.0, y: 0.0, z: 0.0 });
-        s.insert(9, Transform { x: 9.0, y: 0.0, z: 0.0 });
+        s.insert(
+            1,
+            Transform {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        );
+        s.insert(
+            5,
+            Transform {
+                x: 5.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        );
+        s.insert(
+            9,
+            Transform {
+                x: 9.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        );
 
         let removed = s.remove(5).unwrap();
         assert_eq!(removed.x, 5.0);
@@ -138,7 +194,14 @@ mod tests {
         let mut s = PackedStorage::<Transform>::default();
         // Insert out of order.
         for id in [20, 5, 15, 1, 10] {
-            s.insert(id, Transform { x: id as f32, y: 0.0, z: 0.0 });
+            s.insert(
+                id,
+                Transform {
+                    x: id as f32,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            );
         }
 
         let pairs: Vec<_> = s.iter().map(|(e, t)| (e, t.x as u32)).collect();
@@ -148,8 +211,22 @@ mod tests {
     #[test]
     fn iter_mut_modify() {
         let mut s = PackedStorage::<Transform>::default();
-        s.insert(0, Transform { x: 1.0, y: 2.0, z: 3.0 });
-        s.insert(1, Transform { x: 4.0, y: 5.0, z: 6.0 });
+        s.insert(
+            0,
+            Transform {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            },
+        );
+        s.insert(
+            1,
+            Transform {
+                x: 4.0,
+                y: 5.0,
+                z: 6.0,
+            },
+        );
 
         for (_, t) in s.iter_mut() {
             t.x *= -1.0;

@@ -313,7 +313,10 @@ pub struct AnimationStack {
 
 impl AnimationStack {
     pub fn new() -> Self {
-        Self { layers: Vec::new(), root_entity: None }
+        Self {
+            layers: Vec::new(),
+            root_entity: None,
+        }
     }
 
     /// Play a clip, optionally cross-fading from the current top layer.
@@ -377,15 +380,15 @@ pub fn split_root_motion(translation: Vec3) -> (Vec3, Vec3) {
 }
 
 /// Advance all layers in a stack, handling blend-in/out timing.
-pub fn advance_stack(
-    stack: &mut AnimationStack,
-    registry: &AnimationClipRegistry,
-    dt: f32,
-) {
+pub fn advance_stack(stack: &mut AnimationStack, registry: &AnimationClipRegistry, dt: f32) {
     for layer in &mut stack.layers {
-        if !layer.playing { continue; }
+        if !layer.playing {
+            continue;
+        }
 
-        let Some(clip) = registry.get(layer.clip_handle) else { continue };
+        let Some(clip) = registry.get(layer.clip_handle) else {
+            continue;
+        };
 
         // Advance animation time.
         let delta = dt * layer.speed * clip.frequency;
@@ -449,16 +452,24 @@ pub fn sample_blended_transform(
 
     for layer in &stack.layers {
         let ew = layer.effective_weight();
-        if ew < 0.001 { continue; }
+        if ew < 0.001 {
+            continue;
+        }
 
-        let Some(clip) = registry.get(layer.clip_handle) else { continue };
-        let Some(channel) = clip.channels.get(channel_name) else { continue };
+        let Some(clip) = registry.get(layer.clip_handle) else {
+            continue;
+        };
+        let Some(channel) = clip.channels.get(channel_name) else {
+            continue;
+        };
 
         let t = sample_translation(channel, layer.local_time);
         let r = sample_rotation(channel, layer.local_time);
         let s = sample_scale(channel, layer.local_time);
 
-        if t.is_none() && r.is_none() && s.is_none() { continue; }
+        if t.is_none() && r.is_none() && s.is_none() {
+            continue;
+        }
 
         samples.push((
             channel.priority,
@@ -469,7 +480,9 @@ pub fn sample_blended_transform(
         ));
     }
 
-    if samples.is_empty() { return None; }
+    if samples.is_empty() {
+        return None;
+    }
 
     // Find the highest priority present.
     let max_priority = samples.iter().map(|s| s.0).max().unwrap();
@@ -483,7 +496,9 @@ pub fn sample_blended_transform(
 
     // Weighted blend.
     let total_weight: f32 = top.iter().map(|s| s.1).sum();
-    if total_weight < 0.001 { return None; }
+    if total_weight < 0.001 {
+        return None;
+    }
 
     let mut blended_pos = Vec3::ZERO;
     let mut blended_scale = 0.0f32;
@@ -617,9 +632,18 @@ pub fn sample_translation(channel: &TransformChannel, time: f32) -> Option<Vec3>
             let (h00, h10, h01, h11) = hermite(t);
             let dt = k1.time - k0.time;
             Some(Vec3::new(
-                h00 * k0.value.x + h10 * k0.forward.x * dt + h01 * k1.value.x + h11 * k1.backward.x * dt,
-                h00 * k0.value.y + h10 * k0.forward.y * dt + h01 * k1.value.y + h11 * k1.backward.y * dt,
-                h00 * k0.value.z + h10 * k0.forward.z * dt + h01 * k1.value.z + h11 * k1.backward.z * dt,
+                h00 * k0.value.x
+                    + h10 * k0.forward.x * dt
+                    + h01 * k1.value.x
+                    + h11 * k1.backward.x * dt,
+                h00 * k0.value.y
+                    + h10 * k0.forward.y * dt
+                    + h01 * k1.value.y
+                    + h11 * k1.backward.y * dt,
+                h00 * k0.value.z
+                    + h10 * k0.forward.z * dt
+                    + h01 * k1.value.z
+                    + h11 * k1.backward.z * dt,
             ))
         }
         KeyType::Tbc => {
@@ -728,7 +752,9 @@ pub fn sample_scale(channel: &TransformChannel, time: f32) -> Option<f32> {
                 prev,
                 (k0.time, k0.value),
                 Some((k1.time, k1.value)),
-                tbc0[0], tbc0[1], tbc0[2],
+                tbc0[0],
+                tbc0[1],
+                tbc0[2],
             );
 
             let tbc1 = k1.tbc.unwrap_or([0.0, 0.0, 0.0]);
@@ -736,7 +762,9 @@ pub fn sample_scale(channel: &TransformChannel, time: f32) -> Option<f32> {
                 Some((k0.time, k0.value)),
                 (k1.time, k1.value),
                 next,
-                tbc1[0], tbc1[1], tbc1[2],
+                tbc1[0],
+                tbc1[1],
+                tbc1[2],
             );
 
             let (h00, h10, h01, h11) = hermite(t);
@@ -749,33 +777,51 @@ pub fn sample_scale(channel: &TransformChannel, time: f32) -> Option<f32> {
 /// Sample a float channel at a given time.
 pub fn sample_float_channel(channel: &FloatChannel, time: f32) -> f32 {
     let keys = &channel.keys;
-    if keys.is_empty() { return 0.0; }
-    if keys.len() == 1 || time <= keys[0].time { return keys[0].value; }
-    if time >= keys.last().unwrap().time { return keys.last().unwrap().value; }
+    if keys.is_empty() {
+        return 0.0;
+    }
+    if keys.len() == 1 || time <= keys[0].time {
+        return keys[0].value;
+    }
+    if time >= keys.last().unwrap().time {
+        return keys.last().unwrap().value;
+    }
 
     let times: Vec<f32> = keys.iter().map(|k| k.time).collect();
     let (i0, i1, t) = find_key_pair(&times, time);
-    if i0 == i1 { return keys[i0].value; }
+    if i0 == i1 {
+        return keys[i0].value;
+    }
     keys[i0].value + (keys[i1].value - keys[i0].value) * t
 }
 
 /// Sample a color channel at a given time (linear interpolation).
 pub fn sample_color_channel(channel: &ColorChannel, time: f32) -> Vec3 {
     let keys = &channel.keys;
-    if keys.is_empty() { return Vec3::ONE; }
-    if keys.len() == 1 || time <= keys[0].time { return keys[0].value; }
-    if time >= keys.last().unwrap().time { return keys.last().unwrap().value; }
+    if keys.is_empty() {
+        return Vec3::ONE;
+    }
+    if keys.len() == 1 || time <= keys[0].time {
+        return keys[0].value;
+    }
+    if time >= keys.last().unwrap().time {
+        return keys.last().unwrap().value;
+    }
 
     let times: Vec<f32> = keys.iter().map(|k| k.time).collect();
     let (i0, i1, t) = find_key_pair(&times, time);
-    if i0 == i1 { return keys[i0].value; }
+    if i0 == i1 {
+        return keys[i0].value;
+    }
     keys[i0].value.lerp(keys[i1].value, t)
 }
 
 /// Sample a bool channel at a given time (step — no interpolation).
 pub fn sample_bool_channel(channel: &BoolChannel, time: f32) -> bool {
     let keys = &channel.keys;
-    if keys.is_empty() { return true; }
+    if keys.is_empty() {
+        return true;
+    }
     // Step function: use the last key whose time <= current time.
     let mut result = keys[0].value;
     for key in keys {
@@ -789,11 +835,7 @@ pub fn sample_bool_channel(channel: &BoolChannel, time: f32) -> bool {
 }
 
 /// Advance the animation time according to the cycle type.
-pub fn advance_time(
-    player: &mut AnimationPlayer,
-    clip: &AnimationClip,
-    dt: f32,
-) {
+pub fn advance_time(player: &mut AnimationPlayer, clip: &AnimationClip, dt: f32) {
     if !player.playing {
         return;
     }
@@ -1075,8 +1117,20 @@ mod tests {
             rotation_keys: Vec::new(),
             rotation_type: KeyType::Linear,
             scale_keys: vec![
-                ScaleKey { time: 0.0, value: 1.0, forward: 0.0, backward: 0.0, tbc: None },
-                ScaleKey { time: 1.0, value: 3.0, forward: 0.0, backward: 0.0, tbc: None },
+                ScaleKey {
+                    time: 0.0,
+                    value: 1.0,
+                    forward: 0.0,
+                    backward: 0.0,
+                    tbc: None,
+                },
+                ScaleKey {
+                    time: 1.0,
+                    value: 3.0,
+                    forward: 0.0,
+                    backward: 0.0,
+                    tbc: None,
+                },
             ],
             scale_type: KeyType::Linear,
             priority: 0,

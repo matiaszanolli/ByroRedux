@@ -4,7 +4,9 @@
 //! Resolves placed references (REFR/ACHR) to base objects, loads NIFs,
 //! and spawns ECS entities with correct world-space transforms.
 
-use byroredux_core::ecs::{GlobalTransform, LightSource, MeshHandle, TextureHandle, Transform, World};
+use byroredux_core::ecs::{
+    GlobalTransform, LightSource, MeshHandle, TextureHandle, Transform, World,
+};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::VulkanContext;
@@ -38,32 +40,45 @@ pub fn load_cell(
     let esm_data = std::fs::read(esm_path)
         .map_err(|e| anyhow::anyhow!("Failed to read ESM '{}': {}", esm_path, e))?;
 
-    log::info!("Parsing ESM '{}' ({:.1} MB)...", esm_path, esm_data.len() as f64 / 1_048_576.0);
+    log::info!(
+        "Parsing ESM '{}' ({:.1} MB)...",
+        esm_path,
+        esm_data.len() as f64 / 1_048_576.0
+    );
     let index = esm::cell::parse_esm_cells(&esm_data)?;
 
     // 2. Find the cell.
     let cell_key = cell_editor_id.to_ascii_lowercase();
-    let cell = index.cells.get(&cell_key)
-        .ok_or_else(|| {
-            // List available cells for debugging.
-            let available: Vec<&str> = index.cells.values()
-                .take(20)
-                .map(|c| c.editor_id.as_str())
-                .collect();
-            anyhow::anyhow!(
-                "Cell '{}' not found. {} interior cells available. Examples: {:?}",
-                cell_editor_id, index.cells.len(), available,
-            )
-        })?;
+    let cell = index.cells.get(&cell_key).ok_or_else(|| {
+        // List available cells for debugging.
+        let available: Vec<&str> = index
+            .cells
+            .values()
+            .take(20)
+            .map(|c| c.editor_id.as_str())
+            .collect();
+        anyhow::anyhow!(
+            "Cell '{}' not found. {} interior cells available. Examples: {:?}",
+            cell_editor_id,
+            index.cells.len(),
+            available,
+        )
+    })?;
 
     log::info!(
         "Loading cell '{}' (form {:08X}): {} placed references",
-        cell.editor_id, cell.form_id, cell.references.len(),
+        cell.editor_id,
+        cell.form_id,
+        cell.references.len(),
     );
 
     // 3. Load placed references.
     let result = load_references(
-        &cell.references, &index, world, ctx, tex_provider,
+        &cell.references,
+        &index,
+        world,
+        ctx,
+        tex_provider,
         &cell.editor_id,
     );
 
@@ -91,17 +106,24 @@ pub fn load_exterior_cells(
     let esm_data = std::fs::read(esm_path)
         .map_err(|e| anyhow::anyhow!("Failed to read ESM '{}': {}", esm_path, e))?;
 
-    log::info!("Parsing ESM '{}' ({:.1} MB)...", esm_path, esm_data.len() as f64 / 1_048_576.0);
+    log::info!(
+        "Parsing ESM '{}' ({:.1} MB)...",
+        esm_path,
+        esm_data.len() as f64 / 1_048_576.0
+    );
     let index = esm::cell::parse_esm_cells(&esm_data)?;
 
     // Find the best worldspace. Try common FNV names, then fall back to largest.
     let wrld_key = {
         let preferred = ["wastelandnv", "tamriel", "skyrim"];
-        preferred.iter()
+        preferred
+            .iter()
             .find(|&&name| index.exterior_cells.contains_key(name))
             .map(|s| s.to_string())
             .or_else(|| {
-                index.exterior_cells.iter()
+                index
+                    .exterior_cells
+                    .iter()
                     .max_by_key(|(_, cells)| cells.len())
                     .map(|(name, _)| name.clone())
             })
@@ -110,7 +132,10 @@ pub fn load_exterior_cells(
     let wrld_name = wrld_key.as_deref().unwrap_or("(none)");
     log::info!(
         "Loading exterior cells around ({},{}) radius {} from worldspace '{}'",
-        center_x, center_y, radius, wrld_name,
+        center_x,
+        center_y,
+        radius,
+        wrld_name,
     );
 
     let wrld_cells = match &wrld_key {
@@ -127,7 +152,10 @@ pub fn load_exterior_cells(
                 if let Some(cell) = cells_map.get(&(gx, gy)) {
                     log::info!(
                         "  Cell ({},{}) '{}': {} references",
-                        gx, gy, cell.editor_id, cell.references.len(),
+                        gx,
+                        gy,
+                        cell.editor_id,
+                        cell.references.len(),
                     );
                     all_refs.extend_from_slice(&cell.references);
                     cells_loaded += 1;
@@ -139,7 +167,10 @@ pub fn load_exterior_cells(
     let grid_size = (radius * 2 + 1) as u32;
     log::info!(
         "Found {}/{} cells in {}x{} grid",
-        cells_loaded, grid_size * grid_size, grid_size, grid_size,
+        cells_loaded,
+        grid_size * grid_size,
+        grid_size,
+        grid_size,
     );
 
     let label = format!("exterior({},{})", center_x, center_y);
@@ -185,7 +216,10 @@ fn load_references(
             }
             None => {
                 stat_miss += 1;
-                log::debug!("REFR base {:08X} not in statics table", placed_ref.base_form_id);
+                log::debug!(
+                    "REFR base {:08X} not in statics table",
+                    placed_ref.base_form_id
+                );
                 continue;
             }
         };
@@ -213,11 +247,14 @@ fn load_references(
                 let entity = world.spawn();
                 world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
                 world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
-                world.insert(entity, LightSource {
-                    radius: ld.radius,
-                    color: ld.color,
-                    flags: ld.flags,
-                });
+                world.insert(
+                    entity,
+                    LightSource {
+                        radius: ld.radius,
+                        color: ld.color,
+                        flags: ld.flags,
+                    },
+                );
                 entity_count += 1;
             }
             continue;
@@ -232,32 +269,37 @@ fn load_references(
             continue;
         }
 
-        let model_path = if model_lower.starts_with("meshes\\")
-            || model_lower.starts_with("meshes/") {
-            stat.model_path.clone()
-        } else {
-            format!("meshes\\{}", stat.model_path)
-        };
+        let model_path =
+            if model_lower.starts_with("meshes\\") || model_lower.starts_with("meshes/") {
+                stat.model_path.clone()
+            } else {
+                format!("meshes\\{}", stat.model_path)
+            };
 
         let nif_data = match mesh_cache.get(&model_path) {
             Some(data) => data.clone(),
-            None => {
-                match tex_provider.extract_mesh(&model_path) {
-                    Some(d) => {
-                        mesh_cache.insert(model_path.clone(), d.clone());
-                        d
-                    }
-                    None => {
-                        log::debug!("NIF not found in BSA: '{}'", model_path);
-                        continue;
-                    }
+            None => match tex_provider.extract_mesh(&model_path) {
+                Some(d) => {
+                    mesh_cache.insert(model_path.clone(), d.clone());
+                    d
                 }
-            }
+                None => {
+                    log::debug!("NIF not found in BSA: '{}'", model_path);
+                    continue;
+                }
+            },
         };
 
         let count = load_nif_placed(
-            world, ctx, &nif_data, &model_path, tex_provider,
-            ref_pos, ref_rot, ref_scale, stat.light_data.as_ref(),
+            world,
+            ctx,
+            &nif_data,
+            &model_path,
+            tex_provider,
+            ref_pos,
+            ref_rot,
+            ref_scale,
+            stat.light_data.as_ref(),
         );
         entity_count += count;
     }
@@ -266,7 +308,11 @@ fn load_references(
     let dims = bounds_max - bounds_min;
     log::info!(
         "'{}' loaded: {} entities, {} unique meshes, {} hits, {} misses",
-        label, entity_count, mesh_cache.len(), stat_hit, stat_miss,
+        label,
+        entity_count,
+        mesh_cache.len(),
+        stat_hit,
+        stat_miss,
     );
     log::info!(
         "  Bounds: min=[{:.0},{:.0},{:.0}] max=[{:.0},{:.0},{:.0}] size=[{:.0},{:.0},{:.0}] center=[{:.0},{:.0},{:.0}]",
@@ -323,16 +369,36 @@ fn load_nif_placed(
             .map(|i| {
                 Vertex::new(
                     mesh.positions[i],
-                    if i < mesh.colors.len() { mesh.colors[i] } else { [1.0, 1.0, 1.0] },
-                    if i < mesh.normals.len() { mesh.normals[i] } else { [0.0, 1.0, 0.0] },
-                    if i < mesh.uvs.len() { mesh.uvs[i] } else { [0.0, 0.0] },
+                    if i < mesh.colors.len() {
+                        mesh.colors[i]
+                    } else {
+                        [1.0, 1.0, 1.0]
+                    },
+                    if i < mesh.normals.len() {
+                        mesh.normals[i]
+                    } else {
+                        [0.0, 1.0, 0.0]
+                    },
+                    if i < mesh.uvs.len() {
+                        mesh.uvs[i]
+                    } else {
+                        [0.0, 0.0]
+                    },
                 )
             })
             .collect();
 
         let mesh_handle = {
             let alloc = ctx.allocator.as_ref().unwrap();
-            match ctx.mesh_registry.upload(&ctx.device, alloc, &ctx.graphics_queue, ctx.command_pool, &vertices, &mesh.indices, ctx.device_caps.ray_query_supported) {
+            match ctx.mesh_registry.upload(
+                &ctx.device,
+                alloc,
+                &ctx.graphics_queue,
+                ctx.command_pool,
+                &vertices,
+                &mesh.indices,
+                ctx.device_caps.ray_query_supported,
+            ) {
                 Ok(h) => h,
                 Err(e) => {
                     log::warn!("Failed to upload mesh: {}", e);
@@ -351,13 +417,19 @@ fn load_nif_placed(
                     cached
                 } else if let Some(dds_bytes) = tex_provider.extract(tex_path) {
                     let alloc = ctx.allocator.as_ref().unwrap();
-                    ctx.texture_registry.load_dds(
-                        &ctx.device, alloc, &ctx.graphics_queue, ctx.command_pool,
-                        tex_path, &dds_bytes,
-                    ).unwrap_or_else(|e| {
-                        log::warn!("Failed to load DDS '{}': {}", tex_path, e);
-                        ctx.texture_registry.fallback()
-                    })
+                    ctx.texture_registry
+                        .load_dds(
+                            &ctx.device,
+                            alloc,
+                            &ctx.graphics_queue,
+                            ctx.command_pool,
+                            tex_path,
+                            &dds_bytes,
+                        )
+                        .unwrap_or_else(|e| {
+                            log::warn!("Failed to load DDS '{}': {}", tex_path, e);
+                            ctx.texture_registry.fallback()
+                        })
                 } else {
                     log::debug!("Texture not found in BSA: '{}'", tex_path);
                     ctx.texture_registry.fallback()
@@ -369,9 +441,16 @@ fn load_nif_placed(
         // Compose: REFR parent transform * NIF local transform.
         // mesh.rotation is already a Y-up quaternion [x,y,z,w] extracted via SVD.
         let nif_quat = Quat::from_xyzw(
-            mesh.rotation[0], mesh.rotation[1], mesh.rotation[2], mesh.rotation[3],
+            mesh.rotation[0],
+            mesh.rotation[1],
+            mesh.rotation[2],
+            mesh.rotation[3],
         );
-        let nif_pos = Vec3::new(mesh.translation[0], mesh.translation[1], mesh.translation[2]);
+        let nif_pos = Vec3::new(
+            mesh.translation[0],
+            mesh.translation[1],
+            mesh.translation[2],
+        );
 
         // Composed: parent_rot * (parent_scale * child_pos) + parent_pos
         let final_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
@@ -385,15 +464,24 @@ fn load_nif_placed(
             log::debug!(
                 "  NIF offset {:.0} for '{}' mesh {:?}: nif_pos=({:.0},{:.0},{:.0}) \
                  final=({:.0},{:.0},{:.0})",
-                nif_offset_len, label, mesh.name,
-                nif_pos.x, nif_pos.y, nif_pos.z,
-                final_pos.x, final_pos.y, final_pos.z,
+                nif_offset_len,
+                label,
+                mesh.name,
+                nif_pos.x,
+                nif_pos.y,
+                nif_pos.z,
+                final_pos.x,
+                final_pos.y,
+                final_pos.z,
             );
         }
 
         let entity = world.spawn();
         world.insert(entity, Transform::new(final_pos, final_rot, final_scale));
-        world.insert(entity, GlobalTransform::new(final_pos, final_rot, final_scale));
+        world.insert(
+            entity,
+            GlobalTransform::new(final_pos, final_rot, final_scale),
+        );
         world.insert(entity, MeshHandle(mesh_handle));
         world.insert(entity, TextureHandle(tex_handle));
         if mesh.has_alpha {
@@ -406,11 +494,14 @@ fn load_nif_placed(
             world.insert(entity, crate::Decal);
         }
         if let Some(ld) = light_data {
-            world.insert(entity, LightSource {
-                radius: ld.radius,
-                color: ld.color,
-                flags: ld.flags,
-            });
+            world.insert(
+                entity,
+                LightSource {
+                    radius: ld.radius,
+                    color: ld.color,
+                    flags: ld.flags,
+                },
+            );
         }
         count += 1;
     }
@@ -436,4 +527,3 @@ fn load_nif_placed(
 fn euler_zup_to_quat_yup(rx: f32, ry: f32, rz: f32) -> Quat {
     Quat::from_rotation_y(-rz) * Quat::from_rotation_z(ry) * Quat::from_rotation_x(-rx)
 }
-

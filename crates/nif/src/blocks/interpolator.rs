@@ -4,9 +4,9 @@
 //! NiTransformInterpolator → NiTransformData (position/rotation/scale keys)
 //! NiFloatInterpolator → NiFloatData (single-channel float keys)
 
+use super::NiObject;
 use crate::stream::NifStream;
 use crate::types::{BlockRef, NiQuatTransform};
-use super::NiObject;
 use std::any::Any;
 use std::io;
 
@@ -290,7 +290,10 @@ impl NiTransformInterpolator {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let transform = stream.read_ni_quat_transform()?;
         let data_ref = stream.read_block_ref()?;
-        Ok(Self { transform, data_ref })
+        Ok(Self {
+            transform,
+            data_ref,
+        })
     }
 }
 
@@ -623,7 +626,9 @@ mod tests {
 
         // Key 0: time=0.0, pos=(0,0,0)
         data.extend_from_slice(&0.0f32.to_le_bytes());
-        for _ in 0..3 { data.extend_from_slice(&0.0f32.to_le_bytes()); }
+        for _ in 0..3 {
+            data.extend_from_slice(&0.0f32.to_le_bytes());
+        }
 
         // Key 1: time=1.0, pos=(10,20,30)
         data.extend_from_slice(&1.0f32.to_le_bytes());

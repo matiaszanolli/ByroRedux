@@ -3,10 +3,10 @@
 //! Properties are attached to NiAVObject nodes and propagate down
 //! the scene graph unless overridden.
 
-use crate::stream::NifStream;
-use crate::types::NiColor;
 use super::base::NiObjectNETData;
 use super::NiObject;
+use crate::stream::NifStream;
+use crate::types::NiColor;
 use std::any::Any;
 use std::io;
 
@@ -24,8 +24,12 @@ pub struct NiMaterialProperty {
 }
 
 impl NiObject for NiMaterialProperty {
-    fn block_type_name(&self) -> &'static str { "NiMaterialProperty" }
-    fn as_any(&self) -> &dyn Any { self }
+    fn block_type_name(&self) -> &'static str {
+        "NiMaterialProperty"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl NiMaterialProperty {
@@ -35,12 +39,20 @@ impl NiMaterialProperty {
         let bethesda_compact = stream.variant().compact_material();
 
         let ambient = if bethesda_compact {
-            NiColor { r: 0.5, g: 0.5, b: 0.5 }
+            NiColor {
+                r: 0.5,
+                g: 0.5,
+                b: 0.5,
+            }
         } else {
             stream.read_ni_color()?
         };
         let diffuse = if bethesda_compact {
-            NiColor { r: 0.5, g: 0.5, b: 0.5 }
+            NiColor {
+                r: 0.5,
+                g: 0.5,
+                b: 0.5,
+            }
         } else {
             stream.read_ni_color()?
         };
@@ -57,8 +69,14 @@ impl NiMaterialProperty {
         };
 
         Ok(Self {
-            net, ambient, diffuse, specular, emissive,
-            shininess, alpha, emissive_mult,
+            net,
+            ambient,
+            diffuse,
+            specular,
+            emissive,
+            shininess,
+            alpha,
+            emissive_mult,
         })
     }
 }
@@ -72,8 +90,12 @@ pub struct NiAlphaProperty {
 }
 
 impl NiObject for NiAlphaProperty {
-    fn block_type_name(&self) -> &'static str { "NiAlphaProperty" }
-    fn as_any(&self) -> &dyn Any { self }
+    fn block_type_name(&self) -> &'static str {
+        "NiAlphaProperty"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl NiAlphaProperty {
@@ -81,7 +103,11 @@ impl NiAlphaProperty {
         let net = NiObjectNETData::parse(stream)?;
         let flags = stream.read_u16_le()?;
         let threshold = stream.read_u8()?;
-        Ok(Self { net, flags, threshold })
+        Ok(Self {
+            net,
+            flags,
+            threshold,
+        })
     }
 }
 
@@ -108,8 +134,12 @@ pub struct TexDesc {
 }
 
 impl NiObject for NiTexturingProperty {
-    fn block_type_name(&self) -> &'static str { "NiTexturingProperty" }
-    fn as_any(&self) -> &dyn Any { self }
+    fn block_type_name(&self) -> &'static str {
+        "NiTexturingProperty"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl NiTexturingProperty {
@@ -124,11 +154,31 @@ impl NiTexturingProperty {
         let texture_count = stream.read_u32_le()?;
 
         let base_texture = Self::read_tex_desc(stream)?;
-        let dark_texture = if texture_count > 1 { Self::read_tex_desc(stream)? } else { None };
-        let detail_texture = if texture_count > 2 { Self::read_tex_desc(stream)? } else { None };
-        let gloss_texture = if texture_count > 3 { Self::read_tex_desc(stream)? } else { None };
-        let glow_texture = if texture_count > 4 { Self::read_tex_desc(stream)? } else { None };
-        let bump_texture = if texture_count > 5 { Self::read_tex_desc(stream)? } else { None };
+        let dark_texture = if texture_count > 1 {
+            Self::read_tex_desc(stream)?
+        } else {
+            None
+        };
+        let detail_texture = if texture_count > 2 {
+            Self::read_tex_desc(stream)?
+        } else {
+            None
+        };
+        let gloss_texture = if texture_count > 3 {
+            Self::read_tex_desc(stream)?
+        } else {
+            None
+        };
+        let glow_texture = if texture_count > 4 {
+            Self::read_tex_desc(stream)?
+        } else {
+            None
+        };
+        let bump_texture = if texture_count > 5 {
+            Self::read_tex_desc(stream)?
+        } else {
+            None
+        };
         // nif.xml: bump texture has 3 extra fields after TexDesc.
         if bump_texture.is_some() {
             let _luma_scale = stream.read_f32_le()?;
@@ -139,7 +189,11 @@ impl NiTexturingProperty {
             let _m10 = stream.read_f32_le()?;
             let _m11 = stream.read_f32_le()?;
         }
-        let normal_texture = if texture_count > 6 { Self::read_tex_desc(stream)? } else { None };
+        let normal_texture = if texture_count > 6 {
+            Self::read_tex_desc(stream)?
+        } else {
+            None
+        };
 
         if texture_count > 7 {
             // Parallax texture (slot 7).
@@ -172,9 +226,16 @@ impl NiTexturingProperty {
         }
 
         Ok(Self {
-            net, flags, texture_count,
-            base_texture, dark_texture, detail_texture, gloss_texture,
-            glow_texture, bump_texture, normal_texture,
+            net,
+            flags,
+            texture_count,
+            base_texture,
+            dark_texture,
+            detail_texture,
+            gloss_texture,
+            glow_texture,
+            bump_texture,
+            normal_texture,
         })
     }
 
@@ -205,7 +266,9 @@ impl NiTexturingProperty {
                 }
             }
 
-            let flags = ((clamp_mode & 0xF) as u16) | (((filter_mode & 0xF) as u16) << 4) | (((uv_set & 0xF) as u16) << 8);
+            let flags = ((clamp_mode & 0xF) as u16)
+                | (((filter_mode & 0xF) as u16) << 4)
+                | (((uv_set & 0xF) as u16) << 8);
             Ok(Some(TexDesc { source_ref, flags }))
         }
     }

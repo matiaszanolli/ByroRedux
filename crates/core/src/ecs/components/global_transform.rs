@@ -45,7 +45,12 @@ impl GlobalTransform {
     }
 
     /// Compose a parent's global transform with a child's local transform.
-    pub fn compose(parent: &GlobalTransform, local_translation: Vec3, local_rotation: Quat, local_scale: f32) -> Self {
+    pub fn compose(
+        parent: &GlobalTransform,
+        local_translation: Vec3,
+        local_rotation: Quat,
+        local_scale: f32,
+    ) -> Self {
         Self {
             translation: parent.translation + parent.rotation * (parent.scale * local_translation),
             rotation: parent.rotation * local_rotation,
@@ -78,14 +83,16 @@ mod tests {
     #[test]
     fn compose_translation_only() {
         let parent = GlobalTransform::new(Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
-        let child = GlobalTransform::compose(&parent, Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        let child =
+            GlobalTransform::compose(&parent, Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
         assert!((child.translation.x - 15.0).abs() < 1e-5);
     }
 
     #[test]
     fn compose_with_scale() {
         let parent = GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 2.0);
-        let child = GlobalTransform::compose(&parent, Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        let child =
+            GlobalTransform::compose(&parent, Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
         // Parent scale 2.0 * child local offset 5.0 = 10.0
         assert!((child.translation.x - 10.0).abs() < 1e-5);
         assert!((child.scale - 2.0).abs() < 1e-5);
@@ -93,13 +100,10 @@ mod tests {
 
     #[test]
     fn compose_with_rotation() {
-        let parent = GlobalTransform::new(
-            Vec3::ZERO,
-            Quat::from_rotation_y(FRAC_PI_2),
-            1.0,
-        );
+        let parent = GlobalTransform::new(Vec3::ZERO, Quat::from_rotation_y(FRAC_PI_2), 1.0);
         // Child at (1, 0, 0) local → parent rotates 90° around Y → (0, 0, -1) world
-        let child = GlobalTransform::compose(&parent, Vec3::new(1.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        let child =
+            GlobalTransform::compose(&parent, Vec3::new(1.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
         assert!(child.translation.x.abs() < 1e-4);
         assert!((child.translation.z + 1.0).abs() < 1e-4);
     }

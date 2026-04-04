@@ -38,15 +38,21 @@ impl NifHeader {
     /// Returns the header and the byte offset where block data begins.
     pub fn parse(data: &[u8]) -> io::Result<(Self, usize)> {
         // Phase 1: Parse ASCII header line
-        let header_line_end = data.iter().position(|&b| b == b'\n')
+        let header_line_end = data
+            .iter()
+            .position(|&b| b == b'\n')
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no header line found"))?;
         let header_line = std::str::from_utf8(&data[..header_line_end])
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "non-UTF8 header line"))?;
 
         // Validate it's a Gamebryo/NetImmerse file
-        if !header_line.contains("Gamebryo File Format") && !header_line.contains("NetImmerse File Format") {
-            return Err(io::Error::new(io::ErrorKind::InvalidData,
-                format!("unrecognized NIF header: {header_line}")));
+        if !header_line.contains("Gamebryo File Format")
+            && !header_line.contains("NetImmerse File Format")
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unrecognized NIF header: {header_line}"),
+            ));
         }
 
         let mut cursor = Cursor::new(data);
@@ -145,19 +151,22 @@ impl NifHeader {
 
         let offset = cursor.position() as usize;
 
-        Ok((NifHeader {
-            version,
-            little_endian,
-            user_version,
-            user_version_2,
-            num_blocks,
-            block_types,
-            block_type_indices,
-            block_sizes,
-            strings,
-            max_string_length,
-            num_groups,
-        }, offset))
+        Ok((
+            NifHeader {
+                version,
+                little_endian,
+                user_version,
+                user_version_2,
+                num_blocks,
+                block_types,
+                block_type_indices,
+                block_sizes,
+                strings,
+                max_string_length,
+                num_groups,
+            },
+            offset,
+        ))
     }
 
     /// Get the type name of a block by its index.
@@ -237,9 +246,12 @@ mod tests {
 
         // short strings: author, process_script, export_script
         // (version >= 10.0.1.0 && user_version >= 10, user_version_2 > 0)
-        buf.push(1); buf.push(0); // author: 1 byte, null terminator
-        buf.push(1); buf.push(0); // process_script
-        buf.push(1); buf.push(0); // export_script
+        buf.push(1);
+        buf.push(0); // author: 1 byte, null terminator
+        buf.push(1);
+        buf.push(0); // process_script
+        buf.push(1);
+        buf.push(0); // export_script
 
         // u16: num_block_types = 0 (version >= 10.0.1.0)
         buf.extend_from_slice(&0u16.to_le_bytes());
@@ -288,9 +300,12 @@ mod tests {
         buf.extend_from_slice(&83u32.to_le_bytes()); // user_version_2
 
         // Author/process/export short strings
-        buf.push(1); buf.push(0);
-        buf.push(1); buf.push(0);
-        buf.push(1); buf.push(0);
+        buf.push(1);
+        buf.push(0);
+        buf.push(1);
+        buf.push(0);
+        buf.push(1);
+        buf.push(0);
 
         // Block types: 2 types
         buf.extend_from_slice(&2u16.to_le_bytes());
@@ -312,7 +327,7 @@ mod tests {
         // String table: 2 strings
         buf.extend_from_slice(&2u32.to_le_bytes()); // num_strings
         buf.extend_from_slice(&6u32.to_le_bytes()); // max_string_length
-        // "Scene" (sized string)
+                                                    // "Scene" (sized string)
         buf.extend_from_slice(&5u32.to_le_bytes());
         buf.extend_from_slice(b"Scene");
         // "Mesh01" (sized string)
@@ -351,7 +366,7 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(b"NetImmerse File Format, Version 4.0.0.2\n");
         buf.extend_from_slice(&0x04000002u32.to_le_bytes()); // version 4.0.0.2
-        // num_blocks (no user_version for this old version)
+                                                             // num_blocks (no user_version for this old version)
         buf.extend_from_slice(&0u32.to_le_bytes());
 
         let (header, _) = NifHeader::parse(&buf).unwrap();

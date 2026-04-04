@@ -3,8 +3,8 @@
 //! These carry metadata (BSXFlags, names, integers, binary blobs).
 //! We parse the most common ones and skip unknown subtypes.
 
-use crate::stream::NifStream;
 use super::NiObject;
+use crate::stream::NifStream;
 use std::any::Any;
 use std::io;
 

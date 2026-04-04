@@ -1,9 +1,9 @@
 //! NiSourceTexture — texture file reference.
 
-use crate::stream::NifStream;
-use crate::types::BlockRef;
 use super::base::NiObjectNETData;
 use super::NiObject;
+use crate::stream::NifStream;
+use crate::types::BlockRef;
 use std::any::Any;
 use std::io;
 
@@ -21,8 +21,12 @@ pub struct NiSourceTexture {
 }
 
 impl NiObject for NiSourceTexture {
-    fn block_type_name(&self) -> &'static str { "NiSourceTexture" }
-    fn as_any(&self) -> &dyn Any { self }
+    fn block_type_name(&self) -> &'static str {
+        "NiSourceTexture"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl NiSourceTexture {
@@ -69,8 +73,14 @@ impl NiSourceTexture {
         }
 
         Ok(Self {
-            net, use_external, filename, pixel_data_ref,
-            pixel_layout, use_mipmaps, alpha_format, is_static,
+            net,
+            use_external,
+            filename,
+            pixel_data_ref,
+            pixel_layout,
+            use_mipmaps,
+            alpha_format,
+            is_static,
         })
     }
 }

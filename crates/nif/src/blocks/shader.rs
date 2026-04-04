@@ -4,10 +4,10 @@
 //! - BSLightingShaderProperty / BSEffectShaderProperty — Skyrim+
 //! - BSShaderTextureSet — shared texture path list (all games)
 
+use super::base::{BSShaderPropertyData, NiObjectNETData};
+use super::NiObject;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
-use super::base::{NiObjectNETData, BSShaderPropertyData};
-use super::NiObject;
 use std::any::Any;
 use std::io;
 
@@ -35,13 +35,21 @@ pub struct BSShaderPPLightingProperty {
 }
 
 impl BSShaderPPLightingProperty {
-    pub fn shader_flags_1(&self) -> u32 { self.shader.shader_flags_1 }
-    pub fn shader_flags_2(&self) -> u32 { self.shader.shader_flags_2 }
+    pub fn shader_flags_1(&self) -> u32 {
+        self.shader.shader_flags_1
+    }
+    pub fn shader_flags_2(&self) -> u32 {
+        self.shader.shader_flags_2
+    }
 }
 
 impl NiObject for BSShaderPPLightingProperty {
-    fn block_type_name(&self) -> &'static str { "BSShaderPPLightingProperty" }
-    fn as_any(&self) -> &dyn Any { self }
+    fn block_type_name(&self) -> &'static str {
+        "BSShaderPPLightingProperty"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl BSShaderPPLightingProperty {
@@ -66,9 +74,14 @@ impl BSShaderPPLightingProperty {
         };
 
         Ok(Self {
-            net, shader, texture_clamp_mode, texture_set_ref,
-            refraction_strength, refraction_fire_period,
-            parallax_max_passes, parallax_scale,
+            net,
+            shader,
+            texture_clamp_mode,
+            texture_set_ref,
+            refraction_strength,
+            refraction_fire_period,
+            parallax_max_passes,
+            parallax_scale,
         })
     }
 }
@@ -93,12 +106,18 @@ pub struct BSShaderNoLightingProperty {
 }
 
 impl BSShaderNoLightingProperty {
-    pub fn shader_flags_1(&self) -> u32 { self.shader.shader_flags_1 }
+    pub fn shader_flags_1(&self) -> u32 {
+        self.shader.shader_flags_1
+    }
 }
 
 impl NiObject for BSShaderNoLightingProperty {
-    fn block_type_name(&self) -> &'static str { "BSShaderNoLightingProperty" }
-    fn as_any(&self) -> &dyn Any { self }
+    fn block_type_name(&self) -> &'static str {
+        "BSShaderNoLightingProperty"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl BSShaderNoLightingProperty {
@@ -109,14 +128,25 @@ impl BSShaderNoLightingProperty {
 
         let (falloff_start_angle, falloff_stop_angle, falloff_start_opacity, falloff_stop_opacity) =
             if stream.variant().bsver() > 26 {
-                (stream.read_f32_le()?, stream.read_f32_le()?, stream.read_f32_le()?, stream.read_f32_le()?)
+                (
+                    stream.read_f32_le()?,
+                    stream.read_f32_le()?,
+                    stream.read_f32_le()?,
+                    stream.read_f32_le()?,
+                )
             } else {
                 (0.0, 0.0, 1.0, 0.0)
             };
 
         Ok(Self {
-            net, shader, texture_clamp_mode, file_name,
-            falloff_start_angle, falloff_stop_angle, falloff_start_opacity, falloff_stop_opacity,
+            net,
+            shader,
+            texture_clamp_mode,
+            file_name,
+            falloff_start_angle,
+            falloff_stop_angle,
+            falloff_start_opacity,
+            falloff_stop_opacity,
         })
     }
 }
@@ -219,7 +249,11 @@ impl BSLightingShaderProperty {
         let uv_offset = [stream.read_f32_le()?, stream.read_f32_le()?];
         let uv_scale = [stream.read_f32_le()?, stream.read_f32_le()?];
         let texture_set_ref = stream.read_block_ref()?;
-        let emissive_color = [stream.read_f32_le()?, stream.read_f32_le()?, stream.read_f32_le()?];
+        let emissive_color = [
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+        ];
         let emissive_multiple = stream.read_f32_le()?;
 
         // Root Material (NiFixedString) — FO4+ only (BSVER >= 130).
@@ -234,7 +268,11 @@ impl BSLightingShaderProperty {
         // Glossiness (Skyrim) or Smoothness (FO4+).
         let glossiness = stream.read_f32_le()?;
 
-        let specular_color = [stream.read_f32_le()?, stream.read_f32_le()?, stream.read_f32_le()?];
+        let specular_color = [
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+        ];
         let specular_strength = stream.read_f32_le()?;
 
         // Lighting effects — Skyrim only (BSVER < 130).
@@ -338,8 +376,10 @@ impl BSEffectShaderProperty {
         }
 
         let emissive_color = [
-            stream.read_f32_le()?, stream.read_f32_le()?,
-            stream.read_f32_le()?, stream.read_f32_le()?,
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
         ];
         let emissive_multiple = stream.read_f32_le()?;
 
@@ -414,7 +454,7 @@ mod tests {
         // FNV: bsver=34, so both are present. Oblivion: bsver=0, so neither.
         if user_version_2 >= 15 {
             data.extend_from_slice(&0.5f32.to_le_bytes()); // refraction_strength
-            data.extend_from_slice(&10i32.to_le_bytes());  // refraction_fire_period
+            data.extend_from_slice(&10i32.to_le_bytes()); // refraction_fire_period
         }
         if user_version_2 >= 24 {
             data.extend_from_slice(&4.0f32.to_le_bytes()); // parallax_max_passes

@@ -21,15 +21,30 @@ impl NifVersion {
     /// Skyrim / Fallout 4
     pub const V20_2_0_7_SSE: Self = Self(0x14020007);
 
-    pub fn major(self) -> u8 { (self.0 >> 24) as u8 }
-    pub fn minor(self) -> u8 { (self.0 >> 16) as u8 }
-    pub fn patch(self) -> u8 { (self.0 >> 8) as u8 }
-    pub fn build(self) -> u8 { self.0 as u8 }
+    pub fn major(self) -> u8 {
+        (self.0 >> 24) as u8
+    }
+    pub fn minor(self) -> u8 {
+        (self.0 >> 16) as u8
+    }
+    pub fn patch(self) -> u8 {
+        (self.0 >> 8) as u8
+    }
+    pub fn build(self) -> u8 {
+        self.0 as u8
+    }
 }
 
 impl fmt::Display for NifVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}.{}.{}", self.major(), self.minor(), self.patch(), self.build())
+        write!(
+            f,
+            "{}.{}.{}.{}",
+            self.major(),
+            self.minor(),
+            self.patch(),
+            self.build()
+        )
     }
 }
 
@@ -101,19 +116,28 @@ impl NifVariant {
     /// Bethesda compact material: ambient/diffuse omitted from NiMaterialProperty.
     /// Present in FO3/FNV+ (user_version >= 11, user_version_2 > 21).
     pub fn compact_material(self) -> bool {
-        matches!(self, Self::Fallout3NV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4)
+        matches!(
+            self,
+            Self::Fallout3NV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4
+        )
     }
 
     /// NiMaterialProperty has an emissive multiplier float after alpha.
     /// Present in FO3/FNV+ (user_version_2 >= 27).
     pub fn has_emissive_mult(self) -> bool {
-        matches!(self, Self::Fallout3NV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4)
+        matches!(
+            self,
+            Self::Fallout3NV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4
+        )
     }
 
     /// BSShaderPPLightingProperty has emissive color (4×f32) after texture set ref.
     /// Present in FNV+ (user_version_2 >= 34).
     pub fn has_shader_emissive_color(self) -> bool {
-        matches!(self, Self::Fallout3NV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4)
+        matches!(
+            self,
+            Self::Fallout3NV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4
+        )
     }
 
     /// NiTriShape has dedicated shader_property_ref and alpha_property_ref fields.
@@ -131,7 +155,10 @@ impl NifVariant {
     /// Uses BSLightingShaderProperty instead of BSShaderPPLightingProperty.
     /// Present in Skyrim+ (BSVER >= 83). nif.xml: #SKY_AND_LATER#.
     pub fn uses_bs_lighting_shader(self) -> bool {
-        matches!(self, Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4 | Self::Fallout76 | Self::Starfield)
+        matches!(
+            self,
+            Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4 | Self::Fallout76 | Self::Starfield
+        )
     }
 
     // ── NiAVObject feature flags (from nif.xml) ───────────────────
@@ -145,7 +172,15 @@ impl NifVariant {
     /// NiAVObject flags field is u32 (BSVER > 26). Older versions use u16.
     /// nif.xml: flags is uint for BSVER > 26, ushort otherwise.
     pub fn avobject_flags_u32(self) -> bool {
-        matches!(self, Self::Fallout3NV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4 | Self::Fallout76 | Self::Starfield)
+        matches!(
+            self,
+            Self::Fallout3NV
+                | Self::SkyrimLE
+                | Self::SkyrimSE
+                | Self::Fallout4
+                | Self::Fallout76
+                | Self::Starfield
+        )
     }
 
     // ── NiGeometry feature flags ──────────────────────────────────
@@ -153,7 +188,10 @@ impl NifVariant {
     /// NiGeometry has Shader Property + Alpha Property refs.
     /// nif.xml: `#BS_GT_FO3#` (BSVER > 34). Present in Skyrim+, NOT in FNV.
     pub fn has_shader_alpha_refs(self) -> bool {
-        matches!(self, Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4 | Self::Fallout76 | Self::Starfield)
+        matches!(
+            self,
+            Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4 | Self::Fallout76 | Self::Starfield
+        )
     }
 
     // ── NiNode feature flags ──────────────────────────────────────
@@ -161,7 +199,10 @@ impl NifVariant {
     /// NiNode has Num Effects + Effects list.
     /// nif.xml: `#NI_BS_LT_FO4#` (BSVER < 130). Present in everything pre-FO4.
     pub fn has_effects_list(self) -> bool {
-        matches!(self, Self::Morrowind | Self::Oblivion | Self::Fallout3NV | Self::SkyrimLE | Self::SkyrimSE)
+        matches!(
+            self,
+            Self::Morrowind | Self::Oblivion | Self::Fallout3NV | Self::SkyrimLE | Self::SkyrimSE
+        )
     }
 
     // ── BSShaderProperty feature flags ────────────────────────────
@@ -189,7 +230,10 @@ impl NifVariant {
     /// Uses BSTriShape instead of NiTriShape for geometry.
     /// nif.xml: `#SSE# #FO4# #F76#`. SSE and later.
     pub fn uses_bs_tri_shape(self) -> bool {
-        matches!(self, Self::SkyrimSE | Self::Fallout4 | Self::Fallout76 | Self::Starfield)
+        matches!(
+            self,
+            Self::SkyrimSE | Self::Fallout4 | Self::Fallout76 | Self::Starfield
+        )
     }
 }
 

@@ -54,8 +54,8 @@ impl Default for Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ecs::sparse_set::SparseSetStorage;
     use crate::ecs::packed::PackedStorage;
+    use crate::ecs::sparse_set::SparseSetStorage;
     use crate::ecs::storage::Component;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
@@ -65,12 +65,18 @@ mod tests {
         type Storage = SparseSetStorage<Self>;
     }
 
-    struct Position { x: f32, y: f32 }
+    struct Position {
+        x: f32,
+        y: f32,
+    }
     impl Component for Position {
         type Storage = PackedStorage<Self>;
     }
 
-    struct Velocity { dx: f32, dy: f32 }
+    struct Velocity {
+        dx: f32,
+        dy: f32,
+    }
     impl Component for Velocity {
         type Storage = PackedStorage<Self>;
     }
@@ -169,8 +175,7 @@ mod tests {
 
         // System 1: apply velocity to position.
         scheduler.add(|world: &World, dt: f32| {
-            let (q_vel, mut q_pos) =
-                world.query_2_mut::<Velocity, Position>().unwrap();
+            let (q_vel, mut q_pos) = world.query_2_mut::<Velocity, Position>().unwrap();
             for (entity, vel) in q_vel.iter() {
                 if let Some(pos) = q_pos.get_mut(entity) {
                     pos.x += vel.dx * dt;

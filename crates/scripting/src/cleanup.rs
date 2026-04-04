@@ -4,9 +4,9 @@
 //! events are only visible for one frame. This is the ECS equivalent
 //! of "clearing the event queue."
 
+use crate::events::{ActivateEvent, HitEvent, TimerExpired};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
-use crate::events::{ActivateEvent, HitEvent, TimerExpired};
 
 /// System: remove all transient event marker components.
 ///
@@ -20,7 +20,9 @@ pub fn event_cleanup_system(world: &World, _dt: f32) {
 
 /// Remove all instances of a component type from every entity.
 fn drain_component<T: byroredux_core::ecs::storage::Component>(world: &World) {
-    let Some(mut query) = world.query_mut::<T>() else { return };
+    let Some(mut query) = world.query_mut::<T>() else {
+        return;
+    };
     let entities: Vec<EntityId> = query.iter().map(|(id, _)| id).collect();
     for entity in entities {
         query.remove(entity);
@@ -30,8 +32,8 @@ fn drain_component<T: byroredux_core::ecs::storage::Component>(world: &World) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byroredux_core::ecs::world::World;
     use crate::events::{ActivateEvent, HitEvent, TimerExpired};
+    use byroredux_core::ecs::world::World;
 
     fn setup_world() -> World {
         let mut world = World::new();
@@ -47,11 +49,18 @@ mod tests {
         let c = world.spawn();
 
         world.insert(a, ActivateEvent { activator: 99 });
-        world.insert(b, HitEvent {
-            aggressor: 1, source: 2, projectile: 3,
-            power_attack: false, sneak_attack: false,
-            bash_attack: false, blocked: false,
-        });
+        world.insert(
+            b,
+            HitEvent {
+                aggressor: 1,
+                source: 2,
+                projectile: 3,
+                power_attack: false,
+                sneak_attack: false,
+                bash_attack: false,
+                blocked: false,
+            },
+        );
         world.insert(c, TimerExpired { timer_id: 5 });
 
         event_cleanup_system(&world, 0.0);

@@ -75,7 +75,8 @@ pub struct EsmCellIndex {
 /// Parse an ESM file and extract cells, worldspaces, and base object definitions.
 pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
     let mut reader = EsmReader::new(data);
-    let file_header = reader.read_file_header()
+    let file_header = reader
+        .read_file_header()
         .context("Failed to read ESM file header")?;
 
     log::info!(
@@ -109,11 +110,9 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
             }
             // All record types that have a MODL sub-record (NIF model path).
             // Placed references (REFR/ACHR) can point to any of these.
-            b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"ACTI" | b"CONT"
-            | b"LIGH" | b"MISC" | b"FLOR" | b"TREE" | b"AMMO" | b"WEAP"
-            | b"ARMO" | b"BOOK" | b"KEYM" | b"ALCH" | b"INGR" | b"NOTE"
-            | b"TACT" | b"IDLM" | b"BNDS" | b"ADDN" | b"TERM"
-            | b"NPC_" => {
+            b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"ACTI" | b"CONT" | b"LIGH" | b"MISC"
+            | b"FLOR" | b"TREE" | b"AMMO" | b"WEAP" | b"ARMO" | b"BOOK" | b"KEYM" | b"ALCH"
+            | b"INGR" | b"NOTE" | b"TACT" | b"IDLM" | b"BNDS" | b"ADDN" | b"TERM" | b"NPC_" => {
                 let end = reader.position() + group.total_size as usize - 24;
                 parse_modl_group(&mut reader, end, &mut statics)?;
             }
@@ -127,13 +126,20 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
     let wrld_names: Vec<&str> = exterior_cells.keys().map(|s| s.as_str()).collect();
     log::info!(
         "ESM parsed: {} interior cells, {} exterior cells across {} worldspaces, {} base objects",
-        cells.len(), total_exterior, exterior_cells.len(), statics.len(),
+        cells.len(),
+        total_exterior,
+        exterior_cells.len(),
+        statics.len(),
     );
     if !wrld_names.is_empty() {
         log::info!("  Worldspaces: {:?}", wrld_names);
     }
 
-    Ok(EsmCellIndex { cells, exterior_cells, statics })
+    Ok(EsmCellIndex {
+        cells,
+        exterior_cells,
+        statics,
+    })
 }
 
 /// Walk the CELL group hierarchy to find interior cells and their placed references.
@@ -202,11 +208,21 @@ fn parse_cell_group(
                             let dir_b = sub.data[6] as f32 / 255.0;
                             // Directional rotation at bytes 20-27 (two i32, degrees)
                             let rot_x = {
-                                let raw = i32::from_le_bytes([sub.data[20], sub.data[21], sub.data[22], sub.data[23]]);
+                                let raw = i32::from_le_bytes([
+                                    sub.data[20],
+                                    sub.data[21],
+                                    sub.data[22],
+                                    sub.data[23],
+                                ]);
                                 (raw as f32).to_radians()
                             };
                             let rot_y = {
-                                let raw = i32::from_le_bytes([sub.data[24], sub.data[25], sub.data[26], sub.data[27]]);
+                                let raw = i32::from_le_bytes([
+                                    sub.data[24],
+                                    sub.data[25],
+                                    sub.data[26],
+                                    sub.data[27],
+                                ]);
                                 (raw as f32).to_radians()
                             };
                             lighting = Some(CellLighting {
@@ -221,14 +237,17 @@ fn parse_cell_group(
 
                 if is_interior && !editor_id.is_empty() {
                     let key = editor_id.to_ascii_lowercase();
-                    cells.insert(key, CellData {
-                        form_id: header.form_id,
-                        editor_id: editor_id.clone(),
-                        references: Vec::new(),
-                        is_interior: true,
-                        grid: None,
-                        lighting: lighting.clone(),
-                    });
+                    cells.insert(
+                        key,
+                        CellData {
+                            form_id: header.form_id,
+                            editor_id: editor_id.clone(),
+                            references: Vec::new(),
+                            is_interior: true,
+                            grid: None,
+                            lighting: lighting.clone(),
+                        },
+                    );
                     current_cell = Some((header.form_id, editor_id));
                 } else {
                     current_cell = None;
@@ -242,11 +261,7 @@ fn parse_cell_group(
 }
 
 /// Parse REFR records within a cell children group.
-fn parse_refr_group(
-    reader: &mut EsmReader,
-    end: usize,
-    refs: &mut Vec<PlacedRef>,
-) -> Result<()> {
+fn parse_refr_group(reader: &mut EsmReader, end: usize, refs: &mut Vec<PlacedRef>) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             // Nested groups within cell children — recurse to find REFR records.
@@ -268,7 +283,10 @@ fn parse_refr_group(
                 match &sub.sub_type {
                     b"NAME" if sub.data.len() >= 4 => {
                         base_form_id = u32::from_le_bytes([
-                            sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                            sub.data[0],
+                            sub.data[1],
+                            sub.data[2],
+                            sub.data[3],
                         ]);
                     }
                     b"DATA" if sub.data.len() >= 24 => {
@@ -276,21 +294,28 @@ fn parse_refr_group(
                         for i in 0..3 {
                             let off = i * 4;
                             position[i] = f32::from_le_bytes([
-                                sub.data[off], sub.data[off + 1],
-                                sub.data[off + 2], sub.data[off + 3],
+                                sub.data[off],
+                                sub.data[off + 1],
+                                sub.data[off + 2],
+                                sub.data[off + 3],
                             ]);
                         }
                         for i in 0..3 {
                             let off = 12 + i * 4;
                             rotation[i] = f32::from_le_bytes([
-                                sub.data[off], sub.data[off + 1],
-                                sub.data[off + 2], sub.data[off + 3],
+                                sub.data[off],
+                                sub.data[off + 1],
+                                sub.data[off + 2],
+                                sub.data[off + 3],
                             ]);
                         }
                     }
                     b"XSCL" if sub.data.len() >= 4 => {
                         scale = f32::from_le_bytes([
-                            sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                            sub.data[0],
+                            sub.data[1],
+                            sub.data[2],
+                            sub.data[3],
                         ]);
                     }
                     _ => {}
@@ -408,10 +433,16 @@ fn parse_wrld_children(
                         b"EDID" => editor_id = read_zstring(&sub.data),
                         b"XCLC" if sub.data.len() >= 8 => {
                             let grid_x = i32::from_le_bytes([
-                                sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                                sub.data[0],
+                                sub.data[1],
+                                sub.data[2],
+                                sub.data[3],
                             ]);
                             let grid_y = i32::from_le_bytes([
-                                sub.data[4], sub.data[5], sub.data[6], sub.data[7],
+                                sub.data[4],
+                                sub.data[5],
+                                sub.data[6],
+                                sub.data[7],
                             ]);
                             grid = Some((grid_x, grid_y));
                         }
@@ -420,14 +451,17 @@ fn parse_wrld_children(
                 }
 
                 if let Some(g) = grid {
-                    exterior_cells.insert(g, CellData {
-                        form_id: header.form_id,
-                        editor_id,
-                        references: Vec::new(),
-                        is_interior: false,
-                        grid: Some(g),
-                        lighting: None,
-                    });
+                    exterior_cells.insert(
+                        g,
+                        CellData {
+                            form_id: header.form_id,
+                            editor_id,
+                            references: Vec::new(),
+                            is_interior: false,
+                            grid: Some(g),
+                            lighting: None,
+                        },
+                    );
                     current_cell = Some(g);
                 } else {
                     current_cell = None;
@@ -470,19 +504,29 @@ fn parse_modl_group(
                     b"DATA" if is_ligh && sub.data.len() >= 12 => {
                         // LIGH DATA: time(u32), radius(u32), color(RGBA u8×4), flags(u32), ...
                         let radius = u32::from_le_bytes([
-                            sub.data[4], sub.data[5], sub.data[6], sub.data[7],
+                            sub.data[4],
+                            sub.data[5],
+                            sub.data[6],
+                            sub.data[7],
                         ]) as f32;
                         let r = sub.data[8] as f32 / 255.0;
                         let g = sub.data[9] as f32 / 255.0;
                         let b = sub.data[10] as f32 / 255.0;
                         let flags = if sub.data.len() >= 16 {
                             u32::from_le_bytes([
-                                sub.data[12], sub.data[13], sub.data[14], sub.data[15],
+                                sub.data[12],
+                                sub.data[13],
+                                sub.data[14],
+                                sub.data[15],
                             ])
                         } else {
                             0
                         };
-                        light_data = Some(LightData { radius, color: [r, g, b], flags });
+                        light_data = Some(LightData {
+                            radius,
+                            color: [r, g, b],
+                            flags,
+                        });
                     }
                     _ => {}
                 }
@@ -491,12 +535,15 @@ fn parse_modl_group(
             // Insert if we have a model path, or if it's a LIGH with light data
             // (some lights have no mesh — they're just point lights).
             if !model_path.is_empty() || light_data.is_some() {
-                statics.insert(header.form_id, StaticObject {
-                    form_id: header.form_id,
-                    editor_id,
-                    model_path,
-                    light_data,
-                });
+                statics.insert(
+                    header.form_id,
+                    StaticObject {
+                        form_id: header.form_id,
+                        editor_id,
+                        model_path,
+                        light_data,
+                    },
+                );
             }
         }
     }
@@ -511,8 +558,8 @@ fn read_zstring(data: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::reader::EsmReader;
+    use super::*;
 
     // Helper: build minimal STAT record bytes.
     fn build_stat_record(form_id: u32, editor_id: &str, model_path: &str) -> Vec<u8> {
@@ -577,10 +624,10 @@ mod tests {
         sub_data.extend_from_slice(&100.0f32.to_le_bytes()); // pos x
         sub_data.extend_from_slice(&200.0f32.to_le_bytes()); // pos y
         sub_data.extend_from_slice(&300.0f32.to_le_bytes()); // pos z
-        sub_data.extend_from_slice(&0.0f32.to_le_bytes());   // rot x
-        sub_data.extend_from_slice(&1.57f32.to_le_bytes());  // rot y
-        sub_data.extend_from_slice(&0.0f32.to_le_bytes());   // rot z
-        // XSCL
+        sub_data.extend_from_slice(&0.0f32.to_le_bytes()); // rot x
+        sub_data.extend_from_slice(&1.57f32.to_le_bytes()); // rot y
+        sub_data.extend_from_slice(&0.0f32.to_le_bytes()); // rot z
+                                                           // XSCL
         sub_data.extend_from_slice(b"XSCL");
         sub_data.extend_from_slice(&4u16.to_le_bytes());
         sub_data.extend_from_slice(&2.0f32.to_le_bytes());
@@ -623,21 +670,40 @@ mod tests {
         eprintln!("Static objects: {}", index.statics.len());
 
         // Should have hundreds of interior cells and thousands of statics.
-        assert!(index.cells.len() > 100, "Expected >100 cells, got {}", index.cells.len());
-        assert!(index.statics.len() > 1000, "Expected >1000 statics, got {}", index.statics.len());
+        assert!(
+            index.cells.len() > 100,
+            "Expected >100 cells, got {}",
+            index.cells.len()
+        );
+        assert!(
+            index.statics.len() > 1000,
+            "Expected >1000 statics, got {}",
+            index.statics.len()
+        );
 
         // Check which cells have refs.
-        let cells_with_refs = index.cells.values().filter(|c| !c.references.is_empty()).count();
+        let cells_with_refs = index
+            .cells
+            .values()
+            .filter(|c| !c.references.is_empty())
+            .count();
         eprintln!("Cells with refs: {}", cells_with_refs);
 
         // Check the Prospector Saloon specifically.
         let saloon = index.cells.get("gsprospectorsalooninterior").unwrap();
         eprintln!("Saloon: {} refs", saloon.references.len());
-        assert!(saloon.references.len() > 100, "Saloon should have >100 refs");
+        assert!(
+            saloon.references.len() > 100,
+            "Saloon should have >100 refs"
+        );
 
         // Look for the Prospector Saloon.
-        let saloon_keys: Vec<&str> = index.cells.keys()
-            .filter(|k| k.contains("goodsprings") || k.contains("saloon") || k.contains("prospector"))
+        let saloon_keys: Vec<&str> = index
+            .cells
+            .keys()
+            .filter(|k| {
+                k.contains("goodsprings") || k.contains("saloon") || k.contains("prospector")
+            })
             .map(|k| k.as_str())
             .collect();
         eprintln!("Goodsprings/saloon cells: {:?}", saloon_keys);

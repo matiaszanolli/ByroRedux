@@ -265,20 +265,21 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
                     float_channels.push((node_name.clone(), ch));
                 }
             }
-            "BSEffectShaderPropertyFloatController"
-            | "BSLightingShaderPropertyFloatController" => {
+            "BSEffectShaderPropertyFloatController" | "BSLightingShaderPropertyFloatController" => {
                 if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::ShaderFloat) {
                     float_channels.push((node_name.clone(), ch));
                 }
             }
-            "BSEffectShaderPropertyColorController"
-            | "BSLightingShaderPropertyColorController" => {
+            "BSEffectShaderPropertyColorController" | "BSLightingShaderPropertyColorController" => {
                 if let Some(ch) = extract_shader_color_channel(scene, cb) {
                     color_channels.push((node_name.clone(), ch));
                 }
             }
             _ => {
-                log::debug!("Skipping unsupported controller type: '{}'", controller_type);
+                log::debug!(
+                    "Skipping unsupported controller type: '{}'",
+                    controller_type
+                );
             }
         }
     }
@@ -297,10 +298,7 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
     }
 }
 
-fn extract_transform_channel(
-    scene: &NifScene,
-    cb: &ControlledBlock,
-) -> Option<TransformChannel> {
+fn extract_transform_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<TransformChannel> {
     let interp_idx = cb.interpolator_ref.index()?;
     let interp = scene.get_as::<NiTransformInterpolator>(interp_idx)?;
     let data_idx = interp.data_ref.index()?;
@@ -332,27 +330,38 @@ fn extract_float_channel(
     let data_idx = interp.data_ref.index()?;
     let data = scene.get_as::<NiFloatData>(data_idx)?;
 
-    let keys: Vec<AnimFloatKey> = data.keys.keys.iter()
-        .map(|k| AnimFloatKey { time: k.time, value: k.value })
+    let keys: Vec<AnimFloatKey> = data
+        .keys
+        .keys
+        .iter()
+        .map(|k| AnimFloatKey {
+            time: k.time,
+            value: k.value,
+        })
         .collect();
 
-    if keys.is_empty() { return None; }
+    if keys.is_empty() {
+        return None;
+    }
     Some(FloatChannel { target, keys })
 }
 
 /// Extract a color channel from NiPoint3Interpolator → NiPosData.
 /// Used by NiMaterialColorController.
-fn extract_color_channel(
-    scene: &NifScene,
-    cb: &ControlledBlock,
-) -> Option<ColorChannel> {
+fn extract_color_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<ColorChannel> {
     let interp_idx = cb.interpolator_ref.index()?;
     let interp = scene.get_as::<NiPoint3Interpolator>(interp_idx)?;
     let data_idx = interp.data_ref.index()?;
     let data = scene.get_as::<NiPosData>(data_idx)?;
 
-    let keys: Vec<AnimColorKey> = data.keys.keys.iter()
-        .map(|k| AnimColorKey { time: k.time, value: k.value })
+    let keys: Vec<AnimColorKey> = data
+        .keys
+        .keys
+        .iter()
+        .map(|k| AnimColorKey {
+            time: k.time,
+            value: k.value,
+        })
         .collect();
 
     // Determine which material color slot from the controller.
@@ -361,7 +370,9 @@ fn extract_color_channel(
     // 0=diffuse, 1=ambient, 2=specular, 3=emissive
     // We'd need to look up the controller block to get target_color.
     // For now, default to Diffuse (most common).
-    let target = cb.controller_ref.index()
+    let target = cb
+        .controller_ref
+        .index()
         .and_then(|idx| scene.get_as::<crate::blocks::controller::NiMaterialColorController>(idx))
         .map(|ctrl| match ctrl.target_color {
             1 => ColorTarget::Ambient,
@@ -371,33 +382,40 @@ fn extract_color_channel(
         })
         .unwrap_or(ColorTarget::Diffuse);
 
-    if keys.is_empty() { return None; }
+    if keys.is_empty() {
+        return None;
+    }
     Some(ColorChannel { target, keys })
 }
 
 /// Extract a shader color channel from NiPoint3Interpolator → NiPosData.
-fn extract_shader_color_channel(
-    scene: &NifScene,
-    cb: &ControlledBlock,
-) -> Option<ColorChannel> {
+fn extract_shader_color_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<ColorChannel> {
     let interp_idx = cb.interpolator_ref.index()?;
     let interp = scene.get_as::<NiPoint3Interpolator>(interp_idx)?;
     let data_idx = interp.data_ref.index()?;
     let data = scene.get_as::<NiPosData>(data_idx)?;
 
-    let keys: Vec<AnimColorKey> = data.keys.keys.iter()
-        .map(|k| AnimColorKey { time: k.time, value: k.value })
+    let keys: Vec<AnimColorKey> = data
+        .keys
+        .keys
+        .iter()
+        .map(|k| AnimColorKey {
+            time: k.time,
+            value: k.value,
+        })
         .collect();
 
-    if keys.is_empty() { return None; }
-    Some(ColorChannel { target: ColorTarget::ShaderColor, keys })
+    if keys.is_empty() {
+        return None;
+    }
+    Some(ColorChannel {
+        target: ColorTarget::ShaderColor,
+        keys,
+    })
 }
 
 /// Extract a bool (visibility) channel from NiBoolInterpolator.
-fn extract_bool_channel(
-    scene: &NifScene,
-    cb: &ControlledBlock,
-) -> Option<BoolChannel> {
+fn extract_bool_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<BoolChannel> {
     let interp_idx = cb.interpolator_ref.index()?;
     let interp = scene.get_as::<NiBoolInterpolator>(interp_idx)?;
 
@@ -406,8 +424,14 @@ fn extract_bool_channel(
     // If it references data, extract keys from there.
     if let Some(data_idx) = interp.data_ref.index() {
         if let Some(data) = scene.get_as::<crate::blocks::interpolator::NiBoolData>(data_idx) {
-            let keys: Vec<AnimBoolKey> = data.keys.keys.iter()
-                .map(|k| AnimBoolKey { time: k.time, value: k.value > 0.5 })
+            let keys: Vec<AnimBoolKey> = data
+                .keys
+                .keys
+                .iter()
+                .map(|k| AnimBoolKey {
+                    time: k.time,
+                    value: k.value > 0.5,
+                })
                 .collect();
             if !keys.is_empty() {
                 return Some(BoolChannel { keys });
@@ -417,7 +441,10 @@ fn extract_bool_channel(
 
     // Fallback: single constant value from the interpolator.
     Some(BoolChannel {
-        keys: vec![AnimBoolKey { time: 0.0, value: interp.value }],
+        keys: vec![AnimBoolKey {
+            time: 0.0,
+            value: interp.value,
+        }],
     })
 }
 
@@ -428,8 +455,12 @@ fn extract_texture_transform_channel(
     cb: &ControlledBlock,
 ) -> Option<FloatChannel> {
     // Determine target from the controller's operation field.
-    let target = cb.controller_ref.index()
-        .and_then(|idx| scene.get_as::<crate::blocks::controller::NiTextureTransformController>(idx))
+    let target = cb
+        .controller_ref
+        .index()
+        .and_then(|idx| {
+            scene.get_as::<crate::blocks::controller::NiTextureTransformController>(idx)
+        })
         .map(|ctrl| match ctrl.operation {
             0 => FloatTarget::UvOffsetU,
             1 => FloatTarget::UvOffsetV,
@@ -565,8 +596,10 @@ fn sample_float_key_group(group: &KeyGroup<FloatKey>, time: f32) -> f32 {
             let h10 = t3 - 2.0 * t2 + t;
             let h01 = -2.0 * t3 + 3.0 * t2;
             let h11 = t3 - t2;
-            h00 * k0.value + h10 * k0.tangent_forward * dt
-                + h01 * k1.value + h11 * k1.tangent_backward * dt
+            h00 * k0.value
+                + h10 * k0.tangent_forward * dt
+                + h01 * k1.value
+                + h11 * k1.tangent_backward * dt
         }
         KeyType::Tbc | KeyType::XyzRotation => {
             // TBC: fall back to linear for euler axis sampling (rare edge case)
@@ -677,7 +710,10 @@ mod tests {
         let [w, x, y, z] = euler_to_quat_wxyz(FRAC_PI_2, 0.0, 0.0);
         let s = FRAC_PI_2.sin() * 0.5_f32.sqrt(); // sin(45°)
         let c = FRAC_PI_2.cos() * 0.5_f32.sqrt(); // cos(45°) — but let's just check magnitude
-        assert!((w * w + x * x + y * y + z * z - 1.0).abs() < 1e-5, "quaternion should be unit");
+        assert!(
+            (w * w + x * x + y * y + z * z - 1.0).abs() < 1e-5,
+            "quaternion should be unit"
+        );
         assert!(x > 0.5, "x component should be dominant for X rotation");
         assert!(y.abs() < 1e-5);
         assert!(z.abs() < 1e-5);
@@ -708,8 +744,20 @@ mod tests {
         let group = KeyGroup {
             key_type: KeyType::Linear,
             keys: vec![
-                FloatKey { time: 0.0, value: 0.0, tangent_forward: 0.0, tangent_backward: 0.0, tbc: None },
-                FloatKey { time: 1.0, value: 1.0, tangent_forward: 0.0, tangent_backward: 0.0, tbc: None },
+                FloatKey {
+                    time: 0.0,
+                    value: 0.0,
+                    tangent_forward: 0.0,
+                    tangent_backward: 0.0,
+                    tbc: None,
+                },
+                FloatKey {
+                    time: 1.0,
+                    value: 1.0,
+                    tangent_forward: 0.0,
+                    tangent_backward: 0.0,
+                    tbc: None,
+                },
             ],
         };
         assert!((sample_float_key_group(&group, 0.5) - 0.5).abs() < 1e-5);
@@ -730,9 +778,13 @@ mod tests {
     fn sample_float_key_group_single() {
         let group = KeyGroup {
             key_type: KeyType::Linear,
-            keys: vec![
-                FloatKey { time: 0.5, value: 42.0, tangent_forward: 0.0, tangent_backward: 0.0, tbc: None },
-            ],
+            keys: vec![FloatKey {
+                time: 0.5,
+                value: 42.0,
+                tangent_forward: 0.0,
+                tangent_backward: 0.0,
+                tbc: None,
+            }],
         };
         assert_eq!(sample_float_key_group(&group, 0.0), 42.0);
         assert_eq!(sample_float_key_group(&group, 1.0), 42.0);
@@ -747,15 +799,39 @@ mod tests {
         let x_keys = KeyGroup {
             key_type: KeyType::Linear,
             keys: vec![
-                FloatKey { time: 0.0, value: 0.0, tangent_forward: 0.0, tangent_backward: 0.0, tbc: None },
-                FloatKey { time: 1.0, value: FRAC_PI_2, tangent_forward: 0.0, tangent_backward: 0.0, tbc: None },
+                FloatKey {
+                    time: 0.0,
+                    value: 0.0,
+                    tangent_forward: 0.0,
+                    tangent_backward: 0.0,
+                    tbc: None,
+                },
+                FloatKey {
+                    time: 1.0,
+                    value: FRAC_PI_2,
+                    tangent_forward: 0.0,
+                    tangent_backward: 0.0,
+                    tbc: None,
+                },
             ],
         };
         let empty_keys = KeyGroup {
             key_type: KeyType::Linear,
             keys: vec![
-                FloatKey { time: 0.0, value: 0.0, tangent_forward: 0.0, tangent_backward: 0.0, tbc: None },
-                FloatKey { time: 1.0, value: 0.0, tangent_forward: 0.0, tangent_backward: 0.0, tbc: None },
+                FloatKey {
+                    time: 0.0,
+                    value: 0.0,
+                    tangent_forward: 0.0,
+                    tangent_backward: 0.0,
+                    tbc: None,
+                },
+                FloatKey {
+                    time: 1.0,
+                    value: 0.0,
+                    tangent_forward: 0.0,
+                    tangent_backward: 0.0,
+                    tbc: None,
+                },
             ],
         };
 
@@ -763,25 +839,43 @@ mod tests {
             rotation_type: Some(KeyType::XyzRotation),
             rotation_keys: Vec::new(),
             xyz_rotations: Some([x_keys, empty_keys.clone(), empty_keys]),
-            translations: KeyGroup { key_type: KeyType::Linear, keys: Vec::new() },
-            scales: KeyGroup { key_type: KeyType::Linear, keys: Vec::new() },
+            translations: KeyGroup {
+                key_type: KeyType::Linear,
+                keys: Vec::new(),
+            },
+            scales: KeyGroup {
+                key_type: KeyType::Linear,
+                keys: Vec::new(),
+            },
         };
 
         let (keys, key_type) = convert_xyz_euler_keys(&data);
         assert_eq!(key_type, KeyType::Linear);
-        assert_eq!(keys.len(), 2, "should have 2 rotation keys (one per unique timestamp)");
+        assert_eq!(
+            keys.len(),
+            2,
+            "should have 2 rotation keys (one per unique timestamp)"
+        );
 
         // First key (t=0): identity → after Z-up to Y-up, glam format (x, y, z, w)
         let k0 = &keys[0];
         assert!((k0.time).abs() < 1e-5);
         // Identity quat in glam: (0, 0, 0, 1)
-        assert!((k0.value[3] - 1.0).abs() < 1e-4, "w should be ~1 for identity: {:?}", k0.value);
+        assert!(
+            (k0.value[3] - 1.0).abs() < 1e-4,
+            "w should be ~1 for identity: {:?}",
+            k0.value
+        );
 
         // Second key (t=1): 90° around X in Z-up, then converted to Y-up
         let k1 = &keys[1];
         assert!((k1.time - 1.0).abs() < 1e-5);
         // Should be a unit quaternion
         let len_sq = k1.value.iter().map(|v| v * v).sum::<f32>();
-        assert!((len_sq - 1.0).abs() < 1e-4, "quaternion should be unit: {:?}", k1.value);
+        assert!(
+            (len_sq - 1.0).abs() < 1e-4,
+            "quaternion should be unit: {:?}",
+            k1.value
+        );
     }
 }

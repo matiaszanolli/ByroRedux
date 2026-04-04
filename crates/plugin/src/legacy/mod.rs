@@ -122,9 +122,9 @@ pub struct LegacyLoadOrder {
 impl LegacyLoadOrder {
     pub fn new() -> Self {
         Self {
-            slots: vec![None; 0xFD], // 0x00 through 0xFC
+            slots: vec![None; 0xFD],       // 0x00 through 0xFC
             esl_slots: vec![None; 0x1000], // 0x000 through 0xFFF
-            esh_slots: vec![None; 0x100], // 0x00 through 0xFF
+            esh_slots: vec![None; 0x100],  // 0x00 through 0xFF
         }
     }
 
@@ -145,7 +145,10 @@ impl LegacyLoadOrder {
     /// # Panics
     /// Panics if `index > 0xFFF`.
     pub fn register_esl(&mut self, index: u16, filename: &str) {
-        assert!(index <= 0xFFF, "ESL index 0x{index:03X} out of range (max 0xFFF)");
+        assert!(
+            index <= 0xFFF,
+            "ESL index 0x{index:03X} out of range (max 0xFFF)"
+        );
         self.esl_slots[index as usize] = Some(PluginId::from_filename(filename));
     }
 

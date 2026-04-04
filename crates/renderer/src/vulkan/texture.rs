@@ -329,7 +329,11 @@ impl Texture {
 
         unsafe {
             device
-                .bind_buffer_memory(staging_buffer, staging_alloc.memory(), staging_alloc.offset())
+                .bind_buffer_memory(
+                    staging_buffer,
+                    staging_alloc.memory(),
+                    staging_alloc.offset(),
+                )
                 .context("Failed to bind BC staging buffer")?;
         }
 
@@ -387,7 +391,13 @@ impl Texture {
         for mip in 0..meta.mip_count {
             let mip_w = (meta.width >> mip).max(1);
             let mip_h = (meta.height >> mip).max(1);
-            let mip_bytes = dds::mip_size(meta.width, meta.height, mip, meta.block_size, meta.compressed);
+            let mip_bytes = dds::mip_size(
+                meta.width,
+                meta.height,
+                mip,
+                meta.block_size,
+                meta.compressed,
+            );
 
             regions.push(vk::BufferImageCopy {
                 buffer_offset,
@@ -621,8 +631,8 @@ pub(crate) fn with_one_time_commands<F: FnOnce(vk::CommandBuffer)>(
             .context("Failed to allocate one-time command buffer")?[0]
     };
 
-    let begin_info = vk::CommandBufferBeginInfo::default()
-        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+    let begin_info =
+        vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
     unsafe {
         device

@@ -43,7 +43,12 @@ impl UiManager {
         self.player = Some(player);
         self.menu_name = name.to_string();
         self.visible = true;
-        log::info!("Loaded SWF menu '{}' ({}x{})", name, self.width, self.height);
+        log::info!(
+            "Loaded SWF menu '{}' ({}x{})",
+            name,
+            self.width,
+            self.height
+        );
         Ok(())
     }
 
