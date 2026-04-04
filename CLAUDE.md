@@ -138,7 +138,8 @@ Usage:
   `cargo run -- --bsa path.bsa --mesh meshes\\foo.nif` — extract from BSA and render
   `cargo run -- --bsa meshes.bsa --mesh meshes\\foo.nif --textures-bsa textures.bsa` — with textures
   `cargo run -- --esm FalloutNV.esm --cell CellID --bsa Meshes.bsa --textures-bsa Textures.bsa` — cell
-Next: N23.1 (trait hierarchy), N23.2 (shader completeness), N23.3 (Oblivion NIF support).
+Done: N23.1 (trait hierarchy + FNV audit fixes — 7 parser bugs fixed).
+Next: N23.2 (shader trailing fields), N23.4 (FNV validation), N23.3 (Oblivion).
 
 ## Git Conventions
 

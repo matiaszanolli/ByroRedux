@@ -38,7 +38,7 @@ Press **Escape** to capture mouse, then **WASD** + mouse to fly around. **Space/
 | ECS with pluggable storage (SparseSet + Packed), hierarchy (Parent/Children) | Working |
 | Vulkan RT renderer with multi-light SSBO, ray query shadows, cell XCLL lighting | Working |
 | ESM parser (CELL, REFR, STAT, MSTT, FURN, DOOR, ACTI, CONT, LIGH, XCLL + 23 types) | Working |
-| NIF parser (48 block types, Z-up → Y-up, NifVariant for 8 games, decal detection) | Working |
+| NIF parser (49 block type names, trait hierarchy, NifVariant for 8 games, decal detection) | Working |
 | DDS texture loading (BC1/BC3/BC5 + DX10, mipmaps, per-mesh binding) | Working |
 | BSA v103 + v104 + v105 archive reader (Oblivion/FO3/FNV/Skyrim LE/SE) | Working |
 | Interior + exterior cell loading with placed object transforms | Working |
@@ -147,7 +147,7 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 | M22 | Done | RT multi-light — SSBO lights, ray query shadows, cell XCLL lighting |
 | **N23** | **Active** | **NIF parser overhaul — Oblivion through Starfield (10 sub-milestones)** |
 
-**Current focus: N23 (NIF correctness).** Trait-based class hierarchy, per-game shader completeness, skinning, collision, particles. Target: ~130 block types across 8 games, up from 48.
+**Current focus: N23 (NIF correctness).** N23.1 done (trait hierarchy, 7 FNV parser bugs fixed via audit). Target: ~130 block types across 8 games, up from 49.
 
 See [ROADMAP.md](ROADMAP.md) for the full roadmap with N23 sub-milestones and game compatibility.
 

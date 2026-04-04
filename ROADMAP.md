@@ -65,17 +65,22 @@ DDS textures. Sweetroll renders at 1615 FPS.
 | M10 | NIF-to-ECS Import | Scene graph flattening, Z-up→Y-up conversion, geometry/material/normal extraction, strip-to-triangle | — |
 | M11 | Real Asset Loading | BSA v104/v105 reader (list, extract, zlib + LZ4), CLI (loose files + BSA + textures-bsa) | 2 |
 
-**NIF block types supported:** NiNode, BSFadeNode, BSLeafAnimNode, BSTreeNode, NiTriShape,
-NiTriStrips, NiTriShapeData, NiTriStripsData, BSTriShape,
-BSShaderPPLightingProperty, BSShaderNoLightingProperty, BSLightingShaderProperty,
-BSEffectShaderProperty, BSShaderTextureSet,
-NiMaterialProperty, NiAlphaProperty, NiTexturingProperty, NiSourceTexture, NiExtraData,
-NiControllerSequence, NiControllerManager, NiMultiTargetTransformController,
-NiMaterialColorController, NiTransformController, NiVisController, NiTextureTransformController,
-NiTimeController (base/fallback),
-NiTransformInterpolator, BSRotAccumTransfInterpolator, NiTransformData, NiKeyframeData,
+**NIF block types supported (49 type names → 30 parser structs):**
+Nodes: NiNode, BSFadeNode, BSLeafAnimNode, BSTreeNode, BSMultiBoundNode.
+Geometry: NiTriShape, NiTriStrips, BSSegmentedTriShape, BSTriShape, BSMeshLODTriShape.
+Geometry Data: NiTriShapeData, NiTriStripsData.
+Shaders: BSShaderPPLightingProperty (with refraction/parallax), BSShaderNoLightingProperty,
+BSLightingShaderProperty, BSEffectShaderProperty, BSShaderTextureSet.
+Properties: NiMaterialProperty, NiAlphaProperty, NiTexturingProperty (with bump map/parallax fields).
+Textures: NiSourceTexture.
+Extra Data: NiStringExtraData, NiBinaryExtraData, NiIntegerExtraData, BSXFlags, NiBooleanExtraData.
+Controllers: NiTimeController, NiSingleInterpController, NiMaterialColorController,
+NiMultiTargetTransformController, NiControllerManager, NiControllerSequence,
+NiTextureTransformController, NiTransformController, NiVisController, NiAlphaController,
+BSEffectShaderProperty{Float,Color}Controller, BSLightingShaderProperty{Float,Color}Controller.
+Interpolators: NiTransformInterpolator, BSRotAccumTransfInterpolator, NiTransformData/NiKeyframeData,
 NiFloatInterpolator, NiFloatData, NiPoint3Interpolator, NiPosData,
-NiBoolInterpolator, NiBoolData, NiTextKeyExtraData
+NiBoolInterpolator, NiBoolData, NiTextKeyExtraData.
 
 ### Phase 5 — Scripting Foundation (M12)
 
@@ -161,10 +166,16 @@ transform, properties, collision_ref) with parse_no_properties() variant for BST
 BSShaderPropertyData (shader_flags, type, flags_1/2, env_map_scale).
 Consumer traits: HasObjectNET, HasAVObject, HasShaderRefs. NiObject extended with
 as_object_net(), as_av_object(), as_shader_refs() upcasts.
-Also fixed: NiBoolInterpolator bool size (u32→u8), KeyType::Constant (step interpolation).
+Also fixed via `/audit-nif --game fnv` (7 bugs):
+NiBoolInterpolator bool size (u32→u8), KeyType::Constant, NiBooleanExtraData (u32→u8),
+BSShaderPPLightingProperty refraction/parallax fields (was reading wrong emissive_color),
+NiTexturingProperty bump map fields (luma scale/offset/matrix22 — root cause of all stream
+position warnings), parallax offset, BSMultiBoundNode dispatch, version threshold fixes.
 **Result:** 11 blocks migrated. NiObjectNET parsing in 1 location (was 11). NiAVObject
 parsing in 1 location (was 3). BSShaderProperty parsing in 1 location (was 4).
-Net -211 lines removed. 282 tests passing.
+Net -211 lines removed. 95 NIF tests, 282 workspace tests passing.
+Audit infrastructure: 11 audit commands (was 6), including /audit-nif, /audit-performance,
+/audit-regression, /audit-incremental, /audit-concurrency.
 
 ### N23.2: BSLightingShaderProperty Completeness
 **Status:** Planned
