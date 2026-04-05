@@ -429,6 +429,31 @@ impl VulkanContext {
             }
         }
 
+        // Upload scene data (lights + camera) BEFORE the render pass begins.
+        // These are host mapped writes — valid anywhere, but cleaner outside
+        // the render pass recording block.
+        self.scene_buffers
+            .upload_lights(&self.device, frame, lights)
+            .unwrap_or_else(|e| log::warn!("Failed to upload lights: {e}"));
+        let rt_flag =
+            if self.device_caps.ray_query_supported && self.scene_buffers.tlas_written[frame] {
+                1.0
+            } else {
+                0.0
+            };
+        let camera = scene_buffer::GpuCamera {
+            position: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
+            flags: [
+                rt_flag,
+                ambient_color[0],
+                ambient_color[1],
+                ambient_color[2],
+            ],
+        };
+        self.scene_buffers
+            .upload_camera(&self.device, frame, &camera)
+            .unwrap_or_else(|e| log::warn!("Failed to upload camera: {e}"));
+
         unsafe {
             self.device
                 .cmd_begin_render_pass(cmd, &render_pass_begin, vk::SubpassContents::INLINE);
@@ -467,29 +492,7 @@ impl VulkanContext {
                 view_proj_bytes,
             );
 
-            // Upload scene data (lights + camera) and bind descriptor set 1.
-            self.scene_buffers
-                .upload_lights(&self.device, frame, lights)
-                .unwrap_or_else(|e| log::warn!("Failed to upload lights: {e}"));
-            let rt_flag =
-                if self.device_caps.ray_query_supported && self.scene_buffers.tlas_written[frame] {
-                    1.0
-                } else {
-                    0.0
-                };
-            let camera = scene_buffer::GpuCamera {
-                position: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
-                flags: [
-                    rt_flag,
-                    ambient_color[0],
-                    ambient_color[1],
-                    ambient_color[2],
-                ],
-            };
-            self.scene_buffers
-                .upload_camera(&self.device, frame, &camera)
-                .unwrap_or_else(|e| log::warn!("Failed to upload camera: {e}"));
-
+            // Bind scene descriptor set (lights + camera SSBOs/UBOs).
             let scene_set = self.scene_buffers.descriptor_set(frame);
             self.device.cmd_bind_descriptor_sets(
                 cmd,
