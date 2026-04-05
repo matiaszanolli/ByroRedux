@@ -309,6 +309,51 @@ impl World {
         ResourceWrite::new(guard)
     }
 
+    /// Mutable access to two different resources with TypeId-sorted lock ordering.
+    ///
+    /// Prevents deadlocks when two systems each need two resources in different order.
+    /// Same pattern as `query_2_mut` for component storages.
+    ///
+    /// # Panics
+    /// Panics if `A` and `B` are the same type (would deadlock), or if either
+    /// resource was never inserted.
+    pub fn resource_2_mut<A: Resource, B: Resource>(
+        &self,
+    ) -> (ResourceWrite<'_, A>, ResourceWrite<'_, B>) {
+        assert_ne!(
+            TypeId::of::<A>(),
+            TypeId::of::<B>(),
+            "resource_2_mut: A and B must be different resource types"
+        );
+
+        let lock_a = self.resources.get(&TypeId::of::<A>()).unwrap_or_else(|| {
+            panic!(
+                "Resource `{}` not found — call world.insert_resource() first",
+                std::any::type_name::<A>()
+            )
+        });
+        let lock_b = self.resources.get(&TypeId::of::<B>()).unwrap_or_else(|| {
+            panic!(
+                "Resource `{}` not found — call world.insert_resource() first",
+                std::any::type_name::<B>()
+            )
+        });
+
+        let id_a = TypeId::of::<A>();
+        let id_b = TypeId::of::<B>();
+
+        // Always lock in TypeId order to prevent deadlocks.
+        if id_a < id_b {
+            let guard_a = lock_a.write().expect("resource lock poisoned");
+            let guard_b = lock_b.write().expect("resource lock poisoned");
+            (ResourceWrite::new(guard_a), ResourceWrite::new(guard_b))
+        } else {
+            let guard_b = lock_b.write().expect("resource lock poisoned");
+            let guard_a = lock_a.write().expect("resource lock poisoned");
+            (ResourceWrite::new(guard_a), ResourceWrite::new(guard_b))
+        }
+    }
+
     /// Try to read a resource, returning `None` if it doesn't exist.
     pub fn try_resource<R: Resource>(&self) -> Option<ResourceRead<'_, R>> {
         let lock = self.resources.get(&TypeId::of::<R>())?;
@@ -983,5 +1028,55 @@ mod tests {
         assert!(world.get_mut::<Health>(0).is_none());
         // query should still return None.
         assert!(world.query::<Health>().is_none());
+    }
+
+    // ── resource_2_mut tests ────────────────────────────────────────
+
+    struct ResA(f32);
+    impl Resource for ResA {}
+    struct ResB(f32);
+    impl Resource for ResB {}
+
+    #[test]
+    fn resource_2_mut_both_writable() {
+        let mut world = World::new();
+        world.insert_resource(ResA(1.0));
+        world.insert_resource(ResB(2.0));
+
+        {
+            let (mut a, mut b) = world.resource_2_mut::<ResA, ResB>();
+            a.0 += 10.0;
+            b.0 += 20.0;
+        }
+
+        let a = world.resource::<ResA>();
+        let b = world.resource::<ResB>();
+        assert!((a.0 - 11.0).abs() < 1e-6);
+        assert!((b.0 - 22.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn resource_2_mut_reverse_order_same_result() {
+        let mut world = World::new();
+        world.insert_resource(ResA(1.0));
+        world.insert_resource(ResB(2.0));
+
+        // Acquire in reverse generic order — lock ordering should still prevent deadlock.
+        let (mut b, mut a) = world.resource_2_mut::<ResB, ResA>();
+        b.0 = 99.0;
+        a.0 = 88.0;
+        drop(b);
+        drop(a);
+
+        assert!((world.resource::<ResA>().0 - 88.0).abs() < 1e-6);
+        assert!((world.resource::<ResB>().0 - 99.0).abs() < 1e-6);
+    }
+
+    #[test]
+    #[should_panic(expected = "must be different resource types")]
+    fn resource_2_mut_same_type_panics() {
+        let mut world = World::new();
+        world.insert_resource(ResA(1.0));
+        let _ = world.resource_2_mut::<ResA, ResA>();
     }
 }
