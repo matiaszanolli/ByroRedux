@@ -1408,6 +1408,7 @@ impl ApplicationHandler for App {
                 self.window = Some(win);
                 self.last_frame = Instant::now();
                 self.setup_scene();
+                self.renderer.as_ref().unwrap().log_memory_usage();
                 log::info!("Engine ready — entering game loop");
             }
             Err(e) => {

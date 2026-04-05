@@ -757,6 +757,13 @@ impl VulkanContext {
         )
     }
 
+    /// Log current GPU memory allocation statistics.
+    pub fn log_memory_usage(&self) {
+        if let Some(ref alloc) = self.allocator {
+            super::allocator::log_memory_usage(alloc);
+        }
+    }
+
     /// Recreate the swapchain after a resize or suboptimal present.
     pub fn recreate_swapchain(&mut self, window_size: [u32; 2]) -> Result<()> {
         unsafe {

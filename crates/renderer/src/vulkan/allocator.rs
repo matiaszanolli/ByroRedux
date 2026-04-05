@@ -36,3 +36,35 @@ pub fn create_allocator(
     log::info!("GPU allocator created");
     Ok(Arc::new(Mutex::new(allocator)))
 }
+
+/// Log current GPU memory allocation statistics.
+///
+/// Queries the gpu_allocator report for total allocated/reserved bytes.
+/// Logs at INFO if usage is normal, WARN if allocated > budget_warn_threshold.
+pub fn log_memory_usage(allocator: &SharedAllocator) {
+    let alloc = allocator.lock().expect("allocator lock poisoned");
+    let report = alloc.generate_report();
+    let allocated_mb = report.total_allocated_bytes as f64 / (1024.0 * 1024.0);
+    let reserved_mb = report.total_reserved_bytes as f64 / (1024.0 * 1024.0);
+    let num_allocs = report.allocations.len();
+    let num_blocks = report.blocks.len();
+
+    log::info!(
+        "GPU memory: {:.1} MB allocated / {:.1} MB reserved ({} allocations, {} blocks)",
+        allocated_mb,
+        reserved_mb,
+        num_allocs,
+        num_blocks
+    );
+
+    // Warn if allocated exceeds a conservative threshold (2 GB).
+    // Real budget tracking via VK_EXT_memory_budget deferred to streaming milestone.
+    const WARN_THRESHOLD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+    if report.total_allocated_bytes > WARN_THRESHOLD_BYTES {
+        log::warn!(
+            "GPU memory usage high: {:.1} MB allocated (threshold: {} MB)",
+            allocated_mb,
+            WARN_THRESHOLD_BYTES / (1024 * 1024)
+        );
+    }
+}
