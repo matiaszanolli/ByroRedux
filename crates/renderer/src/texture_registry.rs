@@ -4,18 +4,22 @@ use crate::vulkan::allocator::SharedAllocator;
 use crate::vulkan::texture::Texture;
 use anyhow::{Context, Result};
 use ash::vk;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// Handle into the TextureRegistry (mirrors MeshHandle pattern).
 pub type TextureHandle = u32;
 
+/// Maximum frames in flight — textures must survive this many frames after replacement.
+const MAX_FRAMES_IN_FLIGHT: usize = 2;
+
 struct TextureEntry {
     texture: Texture,
     descriptor_sets: Vec<vk::DescriptorSet>,
-    /// Previous texture awaiting deferred destruction. Kept alive for one
-    /// extra frame so in-flight command buffers can finish using it.
-    /// Destroyed on the NEXT update_rgba call (≥1 frame later).
-    pending_destroy: Option<Texture>,
+    /// Ring of replaced textures awaiting deferred destruction.
+    /// Textures are pushed on each update_rgba call and only destroyed
+    /// when the ring exceeds MAX_FRAMES_IN_FLIGHT entries, guaranteeing
+    /// no in-flight command buffer still references them.
+    pending_destroy: VecDeque<Texture>,
 }
 
 /// Registry mapping texture paths to GPU-resident textures with cached descriptor sets.
@@ -122,7 +126,7 @@ impl TextureRegistry {
         self.textures.push(TextureEntry {
             texture: fallback_texture,
             descriptor_sets: sets,
-            pending_destroy: None,
+            pending_destroy: VecDeque::new(),
         });
         self.fallback_handle = 0;
         Ok(())
@@ -160,7 +164,7 @@ impl TextureRegistry {
         self.textures.push(TextureEntry {
             texture,
             descriptor_sets: sets,
-            pending_destroy: None,
+            pending_destroy: VecDeque::new(),
         });
         self.path_map.insert(normalized, handle);
 
@@ -213,7 +217,7 @@ impl TextureRegistry {
         self.textures.push(TextureEntry {
             texture,
             descriptor_sets: sets,
-            pending_destroy: None,
+            pending_destroy: VecDeque::new(),
         });
 
         Ok(handle)
@@ -237,13 +241,15 @@ impl TextureRegistry {
     ) -> Result<()> {
         let entry = &mut self.textures[handle as usize];
 
-        // Destroy the texture from TWO updates ago (safe — at least 2 frames
-        // have passed since it was last referenced by a command buffer).
-        if let Some(mut old) = entry.pending_destroy.take() {
-            old.destroy(device, allocator);
+        // Drain textures old enough that no in-flight command buffer references them.
+        // With MAX_FRAMES_IN_FLIGHT=2, we keep the 2 most recent replacements alive.
+        while entry.pending_destroy.len() >= MAX_FRAMES_IN_FLIGHT {
+            if let Some(mut old) = entry.pending_destroy.pop_front() {
+                old.destroy(device, allocator);
+            }
         }
 
-        // Move current texture to pending (will be destroyed on next update).
+        // Move current texture to pending ring, swap in the new one.
         let mut prev = Texture::from_rgba(
             device,
             allocator,
@@ -256,7 +262,7 @@ impl TextureRegistry {
         )
         .context("Failed to create updated dynamic RGBA texture")?;
         std::mem::swap(&mut entry.texture, &mut prev);
-        entry.pending_destroy = Some(prev);
+        entry.pending_destroy.push_back(prev);
 
         // Re-write the existing descriptor sets to point to the new image.
         let image_info = vk::DescriptorImageInfo::default()
@@ -340,7 +346,7 @@ impl TextureRegistry {
     /// Destroy all textures, descriptor pool, and layout.
     pub fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         for entry in &mut self.textures {
-            if let Some(mut pending) = entry.pending_destroy.take() {
+            for mut pending in entry.pending_destroy.drain(..) {
                 pending.destroy(device, allocator);
             }
             entry.texture.destroy(device, allocator);
