@@ -12,6 +12,7 @@ pub mod node;
 pub mod palette;
 pub mod properties;
 pub mod shader;
+pub mod skin;
 pub mod texture;
 pub mod traits;
 pub mod tri_shape;
@@ -37,6 +38,7 @@ use shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
     BSShaderPPLightingProperty, BSShaderTextureSet,
 };
+use skin::{BsDismemberSkinInstance, NiSkinData, NiSkinInstance, NiSkinPartition};
 use std::any::Any;
 use std::fmt::Debug;
 use std::io;
@@ -108,6 +110,11 @@ pub fn parse_block(
         "NiZBufferProperty" => Ok(Box::new(NiZBufferProperty::parse(stream)?)),
         "NiTexturingProperty" => Ok(Box::new(NiTexturingProperty::parse(stream)?)),
         "NiSourceTexture" => Ok(Box::new(NiSourceTexture::parse(stream)?)),
+        // Skinning blocks
+        "NiSkinInstance" => Ok(Box::new(NiSkinInstance::parse(stream)?)),
+        "BSDismemberSkinInstance" => Ok(Box::new(BsDismemberSkinInstance::parse(stream)?)),
+        "NiSkinData" => Ok(Box::new(NiSkinData::parse(stream)?)),
+        "NiSkinPartition" => Ok(Box::new(NiSkinPartition::parse(stream)?)),
         "NiStringExtraData" | "NiBinaryExtraData" | "NiIntegerExtraData" | "BSXFlags"
         | "NiBooleanExtraData" => Ok(Box::new(NiExtraData::parse(stream, type_name)?)),
         // NiSingleInterpController subclasses (base + interpolator ref)
