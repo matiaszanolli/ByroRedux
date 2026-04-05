@@ -278,7 +278,8 @@ pub fn parse_block(
                 Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "unknown block type '{}' and no block size available to skip",
+                        "unknown block type '{}' and no block size available to skip \
+                        (Oblivion v20.0.0.5 NIFs require dedicated parsers for every block type)",
                         type_name
                     ),
                 ))

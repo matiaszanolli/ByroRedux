@@ -45,6 +45,14 @@ pub fn parse_nif(data: &[u8]) -> io::Result<NifScene> {
     let mut stream = NifStream::new(block_data, &header);
     let mut blocks: Vec<Box<dyn NiObject>> = Vec::with_capacity(header.num_blocks as usize);
 
+    if header.block_sizes.is_empty() && header.num_blocks > 0 {
+        log::debug!(
+            "NIF v{} has no block sizes — all {} block parsers must be byte-perfect (no recovery on error)",
+            header.version,
+            header.num_blocks
+        );
+    }
+
     for i in 0..header.num_blocks as usize {
         let type_name = header.block_type_name(i).ok_or_else(|| {
             io::Error::new(
@@ -58,11 +66,16 @@ pub fn parse_nif(data: &[u8]) -> io::Result<NifScene> {
 
         let block = parse_block(type_name, &mut stream, block_size).map_err(|e| {
             let consumed = stream.position() - start_pos;
+            let recovery_note = if block_size.is_none() {
+                " [NO BLOCK SIZE — Oblivion NIF cannot recover from parse errors]"
+            } else {
+                ""
+            };
             io::Error::new(
                 e.kind(),
                 format!(
-                    "block {} '{}' (size {:?}, offset {}, consumed {}): {}",
-                    i, type_name, block_size, start_pos, consumed, e
+                    "block {} '{}' (size {:?}, offset {}, consumed {}): {}{}",
+                    i, type_name, block_size, start_pos, consumed, e, recovery_note
                 ),
             )
         })?;
