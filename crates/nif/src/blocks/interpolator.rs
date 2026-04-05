@@ -720,3 +720,183 @@ mod tests {
         assert_eq!(stream.position(), 12);
     }
 }
+
+// ── NiBlendInterpolator family ──────────────────────────────────────
+
+/// An entry in the blend interpolator's weighted array.
+#[derive(Debug)]
+pub struct InterpBlendItem {
+    pub interpolator_ref: BlockRef,
+    pub weight: f32,
+    pub normalized_weight: f32,
+    pub priority: u8,
+    pub ease_spinner: f32,
+}
+
+/// NiBlendInterpolator base data (abstract in Gamebryo, concrete in our parser).
+///
+/// Used by NiControllerManager for NIF-level animation blending between
+/// sequences. Manager-controlled mode (flag bit 0) is the common case
+/// for Bethesda games — most optional fields are absent.
+#[derive(Debug)]
+pub struct NiBlendInterpolator {
+    pub flags: u8,
+    pub array_size: u8,
+    pub weight_threshold: f32,
+    pub manager_controlled: bool,
+    pub interp_count: u8,
+    pub single_index: u8,
+    pub items: Vec<InterpBlendItem>,
+}
+
+impl NiBlendInterpolator {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let flags = stream.read_u8()?;
+        let array_size = stream.read_u8()?;
+        let weight_threshold = stream.read_f32_le()?;
+
+        let manager_controlled = flags & 1 != 0;
+
+        let mut interp_count = 0u8;
+        let mut single_index = 0u8;
+        let mut items = Vec::new();
+
+        if !manager_controlled {
+            interp_count = stream.read_u8()?;
+            single_index = stream.read_u8()?;
+            let _high_priority = stream.read_u8()? as i8;
+            let _next_high_priority = stream.read_u8()? as i8;
+            let _single_time = stream.read_f32_le()?;
+            let _high_weights_sum = stream.read_f32_le()?;
+            let _next_high_weights_sum = stream.read_f32_le()?;
+            let _high_ease_spinner = stream.read_f32_le()?;
+
+            items.reserve(array_size as usize);
+            for _ in 0..array_size {
+                let interpolator_ref = stream.read_block_ref()?;
+                let weight = stream.read_f32_le()?;
+                let normalized_weight = stream.read_f32_le()?;
+                let priority = stream.read_u8()?;
+                let ease_spinner = stream.read_f32_le()?;
+                items.push(InterpBlendItem {
+                    interpolator_ref,
+                    weight,
+                    normalized_weight,
+                    priority,
+                    ease_spinner,
+                });
+            }
+        }
+
+        Ok(Self {
+            flags,
+            array_size,
+            weight_threshold,
+            manager_controlled,
+            interp_count,
+            single_index,
+            items,
+        })
+    }
+}
+
+/// NiBlendTransformInterpolator — blends NiQuatTransform values.
+/// No additional fields beyond NiBlendInterpolator for version >= 10.1.0.110.
+#[derive(Debug)]
+pub struct NiBlendTransformInterpolator {
+    pub base: NiBlendInterpolator,
+}
+
+impl NiObject for NiBlendTransformInterpolator {
+    fn block_type_name(&self) -> &'static str {
+        "NiBlendTransformInterpolator"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiBlendTransformInterpolator {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        Ok(Self {
+            base: NiBlendInterpolator::parse(stream)?,
+        })
+    }
+}
+
+/// NiBlendFloatInterpolator — blends float values.
+#[derive(Debug)]
+pub struct NiBlendFloatInterpolator {
+    pub base: NiBlendInterpolator,
+    pub value: f32,
+}
+
+impl NiObject for NiBlendFloatInterpolator {
+    fn block_type_name(&self) -> &'static str {
+        "NiBlendFloatInterpolator"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiBlendFloatInterpolator {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiBlendInterpolator::parse(stream)?;
+        let value = stream.read_f32_le()?;
+        Ok(Self { base, value })
+    }
+}
+
+/// NiBlendPoint3Interpolator — blends NiPoint3 (Vec3) values.
+#[derive(Debug)]
+pub struct NiBlendPoint3Interpolator {
+    pub base: NiBlendInterpolator,
+    pub value: [f32; 3],
+}
+
+impl NiObject for NiBlendPoint3Interpolator {
+    fn block_type_name(&self) -> &'static str {
+        "NiBlendPoint3Interpolator"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiBlendPoint3Interpolator {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiBlendInterpolator::parse(stream)?;
+        let x = stream.read_f32_le()?;
+        let y = stream.read_f32_le()?;
+        let z = stream.read_f32_le()?;
+        Ok(Self {
+            base,
+            value: [x, y, z],
+        })
+    }
+}
+
+/// NiBlendBoolInterpolator — blends bool values.
+#[derive(Debug)]
+pub struct NiBlendBoolInterpolator {
+    pub base: NiBlendInterpolator,
+    pub value: u8,
+}
+
+impl NiObject for NiBlendBoolInterpolator {
+    fn block_type_name(&self) -> &'static str {
+        "NiBlendBoolInterpolator"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiBlendBoolInterpolator {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiBlendInterpolator::parse(stream)?;
+        let value = stream.read_u8()?;
+        Ok(Self { base, value })
+    }
+}

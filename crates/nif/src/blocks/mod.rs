@@ -23,8 +23,10 @@ use controller::{
 };
 use extra_data::NiExtraData;
 use interpolator::{
-    NiBoolData, NiBoolInterpolator, NiFloatData, NiFloatInterpolator, NiPoint3Interpolator,
-    NiPosData, NiTextKeyExtraData, NiTransformData, NiTransformInterpolator,
+    NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendPoint3Interpolator,
+    NiBlendTransformInterpolator, NiBoolData, NiBoolInterpolator, NiFloatData,
+    NiFloatInterpolator, NiPoint3Interpolator, NiPosData, NiTextKeyExtraData,
+    NiTransformData, NiTransformInterpolator,
 };
 use node::NiNode;
 use properties::{NiAlphaProperty, NiMaterialProperty, NiTexturingProperty};
@@ -137,6 +139,19 @@ pub fn parse_block(
         "NiBoolInterpolator" => Ok(Box::new(NiBoolInterpolator::parse(stream)?)),
         "NiBoolData" => Ok(Box::new(NiBoolData::parse(stream)?)),
         "NiTextKeyExtraData" => Ok(Box::new(NiTextKeyExtraData::parse(stream)?)),
+        // Blend interpolators (NiControllerManager animation blending)
+        "NiBlendTransformInterpolator" => {
+            Ok(Box::new(NiBlendTransformInterpolator::parse(stream)?))
+        }
+        "NiBlendFloatInterpolator" => {
+            Ok(Box::new(NiBlendFloatInterpolator::parse(stream)?))
+        }
+        "NiBlendPoint3Interpolator" => {
+            Ok(Box::new(NiBlendPoint3Interpolator::parse(stream)?))
+        }
+        "NiBlendBoolInterpolator" => {
+            Ok(Box::new(NiBlendBoolInterpolator::parse(stream)?))
+        }
         // Base NiTimeController fallback for unknown controller subtypes
         "NiTimeController" => Ok(Box::new(NiTimeController::parse(stream)?)),
         _ => {
