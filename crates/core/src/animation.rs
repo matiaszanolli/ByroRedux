@@ -445,81 +445,93 @@ pub fn advance_stack(stack: &mut AnimationStack, registry: &AnimationClipRegistr
 ///
 /// Layers with higher priority override lower. Within the same priority,
 /// weighted average is used. Returns None if no layer has data for this node.
+///
+/// Zero-allocation: uses inline iteration instead of collecting into Vecs.
 pub fn sample_blended_transform(
     stack: &AnimationStack,
     registry: &AnimationClipRegistry,
     channel_name: &str,
 ) -> Option<(Vec3, Quat, f32)> {
-    // Collect (priority, weight, translation, rotation, scale) from each layer.
-    let mut samples: Vec<(u8, f32, Vec3, Quat, f32)> = Vec::new();
-
+    // Pass 1: find max priority among layers that have data for this channel.
+    let mut max_priority: Option<u8> = None;
     for layer in &stack.layers {
-        let ew = layer.effective_weight();
-        if ew < 0.001 {
+        if layer.effective_weight() < 0.001 {
             continue;
         }
-
         let Some(clip) = registry.get(layer.clip_handle) else {
             continue;
         };
         let Some(channel) = clip.channels.get(channel_name) else {
             continue;
         };
-
         let t = sample_translation(channel, layer.local_time);
         let r = sample_rotation(channel, layer.local_time);
         let s = sample_scale(channel, layer.local_time);
-
         if t.is_none() && r.is_none() && s.is_none() {
             continue;
         }
-
-        samples.push((
-            channel.priority,
-            ew,
-            t.unwrap_or(Vec3::ZERO),
-            r.unwrap_or(Quat::IDENTITY),
-            s.unwrap_or(1.0),
-        ));
+        max_priority = Some(max_priority.map_or(channel.priority, |p: u8| p.max(channel.priority)));
     }
+    let max_priority = max_priority?;
 
-    if samples.is_empty() {
-        return None;
+    // Pass 2: compute total weight for layers at max_priority.
+    let mut total_weight = 0.0f32;
+    for layer in &stack.layers {
+        let ew = layer.effective_weight();
+        if ew < 0.001 {
+            continue;
+        }
+        let Some(clip) = registry.get(layer.clip_handle) else {
+            continue;
+        };
+        let Some(channel) = clip.channels.get(channel_name) else {
+            continue;
+        };
+        if channel.priority != max_priority {
+            continue;
+        }
+        total_weight += ew;
     }
-
-    // Find the highest priority present.
-    let max_priority = samples.iter().map(|s| s.0).max().unwrap();
-
-    // Filter to only highest-priority samples and blend by weight.
-    let top: Vec<_> = samples.iter().filter(|s| s.0 == max_priority).collect();
-
-    if top.len() == 1 {
-        return Some((top[0].2, top[0].3, top[0].4));
-    }
-
-    // Weighted blend.
-    let total_weight: f32 = top.iter().map(|s| s.1).sum();
     if total_weight < 0.001 {
         return None;
     }
 
+    // Pass 3: blend transforms from max_priority layers.
     let mut blended_pos = Vec3::ZERO;
+    let mut blended_rot = Quat::IDENTITY;
     let mut blended_scale = 0.0f32;
-    let mut blended_rot = top[0].3; // Start from first, slerp toward others.
     let mut accumulated_weight = 0.0f32;
 
-    for sample in &top {
-        let w = sample.1 / total_weight;
-        blended_pos += sample.2 * w;
-        blended_scale += sample.4 * w;
+    for layer in &stack.layers {
+        let ew = layer.effective_weight();
+        if ew < 0.001 {
+            continue;
+        }
+        let Some(clip) = registry.get(layer.clip_handle) else {
+            continue;
+        };
+        let Some(channel) = clip.channels.get(channel_name) else {
+            continue;
+        };
+        if channel.priority != max_priority {
+            continue;
+        }
+
+        let t = sample_translation(channel, layer.local_time).unwrap_or(Vec3::ZERO);
+        let r = sample_rotation(channel, layer.local_time).unwrap_or(Quat::IDENTITY);
+        let s = sample_scale(channel, layer.local_time).unwrap_or(1.0);
+
+        let w = ew / total_weight;
+        blended_pos += t * w;
+        blended_scale += s * w;
 
         // Incremental SLERP for rotation blending.
         if accumulated_weight < 0.001 {
-            blended_rot = sample.3;
+            blended_rot = r;
         } else {
-            let t = w / (accumulated_weight + w);
-            let q = sample.3;
-            blended_rot = blended_rot.slerp(if blended_rot.dot(q) < 0.0 { -q } else { q }, t);
+            let interp = w / (accumulated_weight + w);
+            blended_rot =
+                blended_rot.slerp(if blended_rot.dot(r) < 0.0 { -r } else { r }, interp);
         }
         accumulated_weight += w;
     }
