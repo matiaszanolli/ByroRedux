@@ -14,7 +14,7 @@ pub mod events;
 pub mod timer;
 
 pub use cleanup::event_cleanup_system;
-pub use events::{ActivateEvent, HitEvent, TimerExpired};
+pub use events::{ActivateEvent, AnimationTextKeyEvent, HitEvent, TimerExpired};
 pub use timer::{timer_tick_system, ScriptTimer};
 
 use byroredux_core::ecs::world::World;
@@ -27,6 +27,7 @@ pub fn register(world: &mut World) {
     world.register::<ActivateEvent>();
     world.register::<HitEvent>();
     world.register::<TimerExpired>();
+    world.register::<AnimationTextKeyEvent>();
     world.register::<ScriptTimer>();
     log::info!("Scripting subsystem initialized (ECS events + timers)");
 }

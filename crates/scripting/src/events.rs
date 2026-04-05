@@ -50,3 +50,23 @@ pub struct TimerExpired {
 impl Component for TimerExpired {
     type Storage = SparseSetStorage<Self>;
 }
+
+/// Fired when an animation text key is crossed during playback.
+///
+/// Text keys are timed markers in .kf files (e.g., "hit", "sound: wpn_swing",
+/// "FootLeft", "FootRight", "start", "end"). They fire each time the
+/// animation's local time crosses the key's timestamp, including on loop.
+///
+/// Systems can query for this component to trigger sounds, hit detection,
+/// footstep effects, or state transitions.
+#[derive(Debug, Clone)]
+pub struct AnimationTextKeyEvent {
+    /// The text key label from the NIF (e.g., "hit", "sound: wpn_swing").
+    pub label: String,
+    /// The clip time at which this event was defined.
+    pub time: f32,
+}
+
+impl Component for AnimationTextKeyEvent {
+    type Storage = SparseSetStorage<Self>;
+}

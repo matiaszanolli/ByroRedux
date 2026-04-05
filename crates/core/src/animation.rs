@@ -155,6 +155,9 @@ pub struct AnimationClip {
     pub color_channels: Vec<(String, ColorChannel)>,
     /// Bool channels: (node_name, channel).
     pub bool_channels: Vec<(String, BoolChannel)>,
+    /// Text key events: (time, label). Imported from NiTextKeyExtraData.
+    /// Emitted as transient ECS markers when crossed during playback.
+    pub text_keys: Vec<(f32, String)>,
 }
 
 // ── AnimationClipRegistry (Resource) ──────────────────────────────────
@@ -873,6 +876,43 @@ pub fn advance_time(player: &mut AnimationPlayer, clip: &AnimationClip, dt: f32)
     }
 }
 
+/// Collect text key events that were crossed between `prev_time` and `curr_time`.
+///
+/// For looping animations, handles wrap-around: if time went from 4.8 to 0.3
+/// in a 5-second clip, events in [4.8, 5.0] and [0.0, 0.3] both fire.
+///
+/// Returns the labels of all crossed text keys.
+pub fn collect_text_key_events(
+    clip: &AnimationClip,
+    prev_time: f32,
+    curr_time: f32,
+) -> Vec<String> {
+    if clip.text_keys.is_empty() {
+        return Vec::new();
+    }
+
+    let mut events = Vec::new();
+
+    if curr_time >= prev_time {
+        // Normal forward progression (no wrap).
+        for (t, label) in &clip.text_keys {
+            if *t > prev_time && *t <= curr_time {
+                events.push(label.clone());
+            }
+        }
+    } else {
+        // Loop wrap-around: prev_time > curr_time.
+        // Fire events in [prev_time, duration] and [0, curr_time].
+        for (t, label) in &clip.text_keys {
+            if *t > prev_time || *t <= curr_time {
+                events.push(label.clone());
+            }
+        }
+    }
+
+    events
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1025,6 +1065,7 @@ mod tests {
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
+            text_keys: Vec::new(),
         };
         let mut player = AnimationPlayer::new(0);
         advance_time(&mut player, &clip, 0.6);
@@ -1047,6 +1088,7 @@ mod tests {
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
+            text_keys: Vec::new(),
         };
         let mut player = AnimationPlayer::new(0);
         advance_time(&mut player, &clip, 2.0);
@@ -1066,6 +1108,7 @@ mod tests {
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
+            text_keys: Vec::new(),
         };
         let mut player = AnimationPlayer::new(0);
         advance_time(&mut player, &clip, 0.8);
@@ -1093,11 +1136,88 @@ mod tests {
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
+            text_keys: Vec::new(),
         };
         let handle = reg.add(clip);
         assert_eq!(handle, 0);
         assert_eq!(reg.len(), 1);
         assert_eq!(reg.get(0).unwrap().name, "idle");
+    }
+
+    #[test]
+    fn text_key_forward_crossing() {
+        let clip = AnimationClip {
+            name: "test".into(),
+            duration: 2.0,
+            cycle_type: CycleType::Loop,
+            frequency: 1.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            text_keys: vec![
+                (0.5, "hit".into()),
+                (1.0, "sound: swing".into()),
+                (1.5, "end".into()),
+            ],
+        };
+
+        // Cross the first key.
+        let events = collect_text_key_events(&clip, 0.3, 0.6);
+        assert_eq!(events, vec!["hit"]);
+
+        // Cross two keys at once.
+        let events = collect_text_key_events(&clip, 0.4, 1.1);
+        assert_eq!(events, vec!["hit", "sound: swing"]);
+
+        // No crossing.
+        let events = collect_text_key_events(&clip, 0.1, 0.4);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn text_key_loop_wrap() {
+        let clip = AnimationClip {
+            name: "test".into(),
+            duration: 2.0,
+            cycle_type: CycleType::Loop,
+            frequency: 1.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            text_keys: vec![
+                (0.2, "start".into()),
+                (1.8, "end".into()),
+            ],
+        };
+
+        // Loop wrap: prev=1.7, curr=0.3 → fires "end" (>1.7) and "start" (<=0.3).
+        let events = collect_text_key_events(&clip, 1.7, 0.3);
+        assert_eq!(events, vec!["start", "end"]);
+    }
+
+    #[test]
+    fn text_key_empty_clip() {
+        let clip = AnimationClip {
+            name: "test".into(),
+            duration: 1.0,
+            cycle_type: CycleType::Clamp,
+            frequency: 1.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            text_keys: Vec::new(),
+        };
+        let events = collect_text_key_events(&clip, 0.0, 1.0);
+        assert!(events.is_empty());
     }
 
     #[test]

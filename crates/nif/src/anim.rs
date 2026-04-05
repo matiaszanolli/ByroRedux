@@ -5,6 +5,7 @@
 //! are decoupled from the NIF block graph.
 
 use crate::blocks::controller::{ControlledBlock, NiControllerManager, NiControllerSequence};
+use crate::blocks::interpolator::NiTextKeyExtraData;
 use crate::blocks::interpolator::{
     FloatKey, KeyGroup, KeyType, NiBoolInterpolator, NiFloatData, NiFloatInterpolator,
     NiPoint3Interpolator, NiPosData, NiTransformData, NiTransformInterpolator, Vec3Key,
@@ -173,6 +174,9 @@ pub struct AnimationClip {
     pub color_channels: Vec<(String, ColorChannel)>,
     /// Bool (visibility) channels keyed by node_name.
     pub bool_channels: Vec<(String, BoolChannel)>,
+    /// Text key events: (time, label). Imported from NiTextKeyExtraData.
+    /// Emitted as transient ECS markers when crossed during playback.
+    pub text_keys: Vec<(f32, String)>,
 }
 
 // ── Coordinate conversion helpers ─────────────────────────────────────
@@ -334,6 +338,22 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
         }
     }
 
+    // Import text keys from NiTextKeyExtraData if referenced.
+    let text_keys = seq
+        .text_keys_ref
+        .index()
+        .and_then(|idx| scene.get_as::<NiTextKeyExtraData>(idx))
+        .map(|tkd| tkd.text_keys.clone())
+        .unwrap_or_default();
+
+    if !text_keys.is_empty() {
+        log::debug!(
+            "Imported {} text keys for sequence '{}'",
+            text_keys.len(),
+            name
+        );
+    }
+
     AnimationClip {
         name,
         duration,
@@ -345,6 +365,7 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
         float_channels,
         color_channels,
         bool_channels,
+        text_keys,
     }
 }
 

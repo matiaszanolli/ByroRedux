@@ -2070,5 +2070,6 @@ fn convert_nif_clip(nif: &byroredux_nif::anim::AnimationClip) -> AnimationClip {
         float_channels,
         color_channels,
         bool_channels,
+        text_keys: nif.text_keys.clone(),
     }
 }
