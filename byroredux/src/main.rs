@@ -423,92 +423,99 @@ fn animation_system(world: &World, dt: f32) {
 /// For root entities (no Parent), GlobalTransform = Transform.
 /// For child entities, GlobalTransform = parent.GlobalTransform ∘ child.Transform.
 /// Must run after animation_system and before rendering.
-fn transform_propagation_system(world: &World, _dt: f32) {
-    // Phase 1: update all root entities (no Parent) — GlobalTransform = Transform.
-    let Some(tq) = world.query::<Transform>() else {
-        return;
-    };
-    let parent_q = world.query::<Parent>();
+/// Create the transform propagation system with reusable scratch buffers.
+///
+/// Returns a closure (FnMut) that captures `roots` and `queue` Vecs,
+/// clearing and reusing them each frame instead of allocating new ones.
+fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + Sync {
+    let mut roots: Vec<EntityId> = Vec::new();
+    let mut queue: Vec<EntityId> = Vec::new();
 
-    // Collect root entities (have Transform but no Parent).
-    let roots: Vec<EntityId> = tq
-        .iter()
-        .filter(|(entity, _)| {
-            parent_q
-                .as_ref()
-                .map(|pq| pq.get(*entity).is_none())
-                .unwrap_or(true)
-        })
-        .map(|(entity, _)| entity)
-        .collect();
-    drop(tq);
-    drop(parent_q);
+    move |world: &World, _dt: f32| {
+        roots.clear();
+        queue.clear();
 
-    // Update root GlobalTransforms.
-    {
-        let tq = world.query::<Transform>().unwrap();
-        let mut gq = match world.query_mut::<GlobalTransform>() {
-            Some(q) => q,
-            None => return,
-        };
-        for entity in &roots {
-            if let Some(t) = tq.get(*entity) {
-                if let Some(g) = gq.get_mut(*entity) {
-                    g.translation = t.translation;
-                    g.rotation = t.rotation;
-                    g.scale = t.scale;
+        // Phase 1: find root entities (have Transform but no Parent).
+        {
+            let Some(tq) = world.query::<Transform>() else {
+                return;
+            };
+            let parent_q = world.query::<Parent>();
+
+            for (entity, _) in tq.iter() {
+                let is_root = parent_q
+                    .as_ref()
+                    .map(|pq| pq.get(entity).is_none())
+                    .unwrap_or(true);
+                if is_root {
+                    roots.push(entity);
                 }
             }
         }
-    }
 
-    // Phase 2: propagate to children using BFS.
-    let children_q = world.query::<Children>();
-    let Some(ref cq) = children_q else { return };
-
-    let mut queue: Vec<EntityId> = Vec::new();
-    for &root in &roots {
-        if let Some(children) = cq.get(root) {
-            queue.extend_from_slice(&children.0);
+        // Update root GlobalTransforms.
+        {
+            let tq = world.query::<Transform>().unwrap();
+            let mut gq = match world.query_mut::<GlobalTransform>() {
+                Some(q) => q,
+                None => return,
+            };
+            for &entity in &roots {
+                if let Some(t) = tq.get(entity) {
+                    if let Some(g) = gq.get_mut(entity) {
+                        g.translation = t.translation;
+                        g.rotation = t.rotation;
+                        g.scale = t.scale;
+                    }
+                }
+            }
         }
-    }
 
-    while let Some(entity) = queue.pop() {
-        // Read parent's GlobalTransform and this entity's local Transform.
-        let parent_q = world.query::<Parent>().unwrap();
-        let Some(parent) = parent_q.get(entity) else {
-            continue;
-        };
-        let parent_id = parent.0;
-        drop(parent_q);
+        // Phase 2: propagate to children using BFS.
+        let children_q = world.query::<Children>();
+        let Some(ref cq) = children_q else { return };
 
-        let gq_read = world.query::<GlobalTransform>().unwrap();
-        let Some(parent_global) = gq_read.get(parent_id) else {
-            continue;
-        };
-        let parent_global = *parent_global; // Copy to release borrow.
-        drop(gq_read);
-
-        let tq = world.query::<Transform>().unwrap();
-        let local = tq.get(entity).copied().unwrap_or(Transform::IDENTITY);
-        drop(tq);
-
-        let composed = GlobalTransform::compose(
-            &parent_global,
-            local.translation,
-            local.rotation,
-            local.scale,
-        );
-
-        let mut gq_write = world.query_mut::<GlobalTransform>().unwrap();
-        if let Some(g) = gq_write.get_mut(entity) {
-            *g = composed;
+        for &root in &roots {
+            if let Some(children) = cq.get(root) {
+                queue.extend_from_slice(&children.0);
+            }
         }
-        drop(gq_write);
 
-        // Enqueue this entity's children.
-        if let Some(children) = cq.get(entity) {
-            queue.extend_from_slice(&children.0);
+        while let Some(entity) = queue.pop() {
+            let parent_q = world.query::<Parent>().unwrap();
+            let Some(parent) = parent_q.get(entity) else {
+                continue;
+            };
+            let parent_id = parent.0;
+            drop(parent_q);
+
+            let gq_read = world.query::<GlobalTransform>().unwrap();
+            let Some(parent_global) = gq_read.get(parent_id) else {
+                continue;
+            };
+            let parent_global = *parent_global;
+            drop(gq_read);
+
+            let tq = world.query::<Transform>().unwrap();
+            let local = tq.get(entity).copied().unwrap_or(Transform::IDENTITY);
+            drop(tq);
+
+            let composed = GlobalTransform::compose(
+                &parent_global,
+                local.translation,
+                local.rotation,
+                local.scale,
+            );
+
+            let mut gq_write = world.query_mut::<GlobalTransform>().unwrap();
+            if let Some(g) = gq_write.get_mut(entity) {
+                *g = composed;
+            }
+            drop(gq_write);
+
+            if let Some(children) = cq.get(entity) {
+                queue.extend_from_slice(&children.0);
+            }
         }
     }
 }
@@ -594,7 +601,7 @@ impl App {
         let mut scheduler = Scheduler::new();
         scheduler.add(fly_camera_system);
         scheduler.add(animation_system);
-        scheduler.add(transform_propagation_system);
+        scheduler.add(make_transform_propagation_system());
         scheduler.add(spin_system);
         scheduler.add(byroredux_scripting::timer_tick_system);
         scheduler.add(log_stats_system);
