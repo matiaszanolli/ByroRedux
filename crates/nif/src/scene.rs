@@ -1,13 +1,12 @@
 //! NifScene — resolved scene graph after linking.
 
 use crate::blocks::NiObject;
-use std::sync::Arc;
 
 /// A fully parsed and linked NIF file.
 #[derive(Debug)]
 pub struct NifScene {
     /// All parsed blocks in file order.
-    pub blocks: Vec<Arc<dyn NiObject>>,
+    pub blocks: Vec<Box<dyn NiObject>>,
     /// Index of the root block (typically first NiNode).
     pub root_index: Option<usize>,
 }

@@ -835,9 +835,7 @@ mod tests {
 
     /// Helper: build a minimal NifScene with the given blocks.
     fn scene_from_blocks(blocks: Vec<Box<dyn crate::blocks::NiObject>>) -> NifScene {
-        use std::sync::Arc;
         let root_index = if blocks.is_empty() { None } else { Some(0) };
-        let blocks = blocks.into_iter().map(|b| Arc::from(b)).collect();
         NifScene { blocks, root_index }
     }
 

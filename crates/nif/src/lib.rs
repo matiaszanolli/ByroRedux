@@ -25,7 +25,6 @@ use blocks::{parse_block, NiObject};
 use header::NifHeader;
 use scene::NifScene;
 use std::io;
-use std::sync::Arc;
 use stream::NifStream;
 
 /// Parse a NIF file from raw bytes.
@@ -44,7 +43,7 @@ pub fn parse_nif(data: &[u8]) -> io::Result<NifScene> {
     // Phase 2: Parse blocks
     let block_data = &data[block_data_offset..];
     let mut stream = NifStream::new(block_data, &header);
-    let mut blocks: Vec<Arc<dyn NiObject>> = Vec::with_capacity(header.num_blocks as usize);
+    let mut blocks: Vec<Box<dyn NiObject>> = Vec::with_capacity(header.num_blocks as usize);
 
     for i in 0..header.num_blocks as usize {
         let type_name = header.block_type_name(i).ok_or_else(|| {
@@ -83,7 +82,7 @@ pub fn parse_nif(data: &[u8]) -> io::Result<NifScene> {
             }
         }
 
-        blocks.push(Arc::from(block));
+        blocks.push(block);
     }
 
     // Phase 3: Identify root
