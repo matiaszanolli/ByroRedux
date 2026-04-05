@@ -166,10 +166,12 @@ Usage:
   `cargo run -- --bsa path.bsa --mesh meshes\\foo.nif` — extract from BSA and render
   `cargo run -- --bsa meshes.bsa --mesh meshes\\foo.nif --textures-bsa textures.bsa` — with textures
   `cargo run -- --esm FalloutNV.esm --cell CellID --bsa Meshes.bsa --textures-bsa Textures.bsa` — cell
-Done: N23.1 (trait hierarchy), N23.2 (shader trailing fields), N23.4 (FO3/FNV block types),
-N23.5 partial (skinning parsers), N23.6 skip (30 Havok types), N23.3 partial (8/15 Oblivion).
-WorldBound component, StagingPool, resource_2_mut lock ordering, safety audit fixes.
-Next: N23.3 remaining (Oblivion — NiPixelData), N23.7 (FO4), N23.8 (particles).
+Done: N23.1 (trait hierarchy + FNV audit), N23.2 (shader trailing fields),
+N23.3 (Oblivion block types — all 15), N23.4 (FO3/FNV validation — 0 parse failures),
+N23.5 (6 skinning parsers), N23.6 (30 Havok skip). 119 type names (89 parsed + 30 skip).
+FO3 Megaton: 1609 entities. FNV Prospector Saloon: 0 warnings. BSA KF loading (#5 fixed).
+Renderer audit (20 findings → #21-#34). ECS audit (10 findings → #35-#43).
+Next: N23.7 (FO4 — BA2 reader + half-float vertex), N23.8 (particles), N23.10 (test infra).
 
 ## Git Conventions
 

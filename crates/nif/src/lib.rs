@@ -64,38 +64,45 @@ pub fn parse_nif(data: &[u8]) -> io::Result<NifScene> {
         let block_size = header.block_sizes.get(i).copied();
         let start_pos = stream.position();
 
-        let block = parse_block(type_name, &mut stream, block_size).map_err(|e| {
-            let consumed = stream.position() - start_pos;
-            let recovery_note = if block_size.is_none() {
-                " [NO BLOCK SIZE — Oblivion NIF cannot recover from parse errors]"
-            } else {
-                ""
-            };
-            io::Error::new(
-                e.kind(),
-                format!(
-                    "block {} '{}' (size {:?}, offset {}, consumed {}): {}{}",
-                    i, type_name, block_size, start_pos, consumed, e, recovery_note
-                ),
-            )
-        })?;
-
-        // Verify we consumed exactly block_size bytes (if known)
-        if let Some(size) = block_size {
-            let consumed = stream.position() - start_pos;
-            if consumed != size as u64 {
+        match parse_block(type_name, &mut stream, block_size) {
+            Ok(block) => {
+                // Verify we consumed exactly block_size bytes (if known)
+                if let Some(size) = block_size {
+                    let consumed = stream.position() - start_pos;
+                    if consumed != size as u64 {
+                        log::warn!(
+                            "Block {} '{}': expected {} bytes, consumed {}. Adjusting position.",
+                            i,
+                            type_name,
+                            size,
+                            consumed
+                        );
+                        stream.set_position(start_pos + size as u64);
+                    }
+                }
+                blocks.push(block);
+            }
+            Err(e) => {
+                let consumed = stream.position() - start_pos;
+                if block_size.is_some() {
+                    // With block_size, this is a hard error — block sizes guarantee recovery
+                    return Err(io::Error::new(
+                        e.kind(),
+                        format!(
+                            "block {} '{}' (size {:?}, offset {}, consumed {}): {}",
+                            i, type_name, block_size, start_pos, consumed, e
+                        ),
+                    ));
+                }
+                // Without block_size (Oblivion), stop parsing but keep blocks parsed so far.
+                // This allows geometry blocks to be imported even when collision blocks fail.
                 log::warn!(
-                    "Block {} '{}': expected {} bytes, consumed {}. Adjusting position.",
-                    i,
-                    type_name,
-                    size,
-                    consumed
+                    "Block {} '{}' (offset {}, consumed {}): {} — stopping parse, keeping {} blocks",
+                    i, type_name, start_pos, consumed, e, blocks.len()
                 );
-                stream.set_position(start_pos + size as u64);
+                break;
             }
         }
-
-        blocks.push(block);
     }
 
     // Phase 3: Identify root

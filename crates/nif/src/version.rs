@@ -14,9 +14,11 @@ impl NifVersion {
     // Well-known versions
     /// Morrowind era
     pub const V4_0_0_2: Self = Self(0x04000002);
-    /// Oblivion / Fallout 3
+    /// Oblivion (v20.0.0.4 — most common Oblivion version)
+    pub const V20_0_0_4: Self = Self(0x14000004);
+    /// Oblivion (v20.0.0.5 — some Oblivion NIFs)
     pub const V20_0_0_5: Self = Self(0x14000005);
-    /// Oblivion (common)
+    /// Fallout 3+ (v20.2.0.7)
     pub const V20_2_0_7: Self = Self(0x14020007);
     /// Skyrim / Fallout 4
     pub const V20_2_0_7_SSE: Self = Self(0x14020007);
@@ -81,9 +83,9 @@ impl NifVariant {
         if version.0 <= 0x04000002 {
             return Self::Morrowind;
         }
-        // V20.0.0.5 is exclusively Oblivion — no other game uses this NIF version.
-        // Check before the uv/uv2 match to avoid misidentifying edge-case exports.
-        if version == NifVersion::V20_0_0_5 {
+        // V20.0.0.4 and V20.0.0.5 are exclusively Oblivion — no other game uses these.
+        // Check before the uv/uv2 match to avoid misidentifying as FO3/FNV.
+        if version == NifVersion::V20_0_0_4 || version == NifVersion::V20_0_0_5 {
             return Self::Oblivion;
         }
         // V20.2.0.7+ — disambiguate by user_version and user_version_2 (BSVER).
@@ -289,7 +291,12 @@ mod tests {
 
     #[test]
     fn detect_oblivion() {
-        // Standard Oblivion: v20.0.0.5, uv=0, uv2=0
+        // Standard Oblivion v20.0.0.4: most common Oblivion NIF version
+        assert_eq!(
+            NifVariant::detect(NifVersion::V20_0_0_4, 11, 11),
+            NifVariant::Oblivion,
+        );
+        // Standard Oblivion v20.0.0.5
         assert_eq!(
             NifVariant::detect(NifVersion::V20_0_0_5, 0, 0),
             NifVariant::Oblivion,
@@ -303,6 +310,15 @@ mod tests {
 
     #[test]
     fn detect_oblivion_edge_cases() {
+        // v20.0.0.4 is always Oblivion regardless of user_version/user_version_2
+        assert_eq!(
+            NifVariant::detect(NifVersion::V20_0_0_4, 0, 0),
+            NifVariant::Oblivion,
+        );
+        assert_eq!(
+            NifVariant::detect(NifVersion::V20_0_0_4, 11, 34),
+            NifVariant::Oblivion,
+        );
         // v20.0.0.5 is always Oblivion regardless of user_version/user_version_2
         assert_eq!(
             NifVariant::detect(NifVersion::V20_0_0_5, 11, 34),

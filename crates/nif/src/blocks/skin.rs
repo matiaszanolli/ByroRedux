@@ -181,7 +181,7 @@ impl NiSkinPartition {
         let num_partitions = stream.read_u32_le()? as usize;
 
         // SSE (bsver==100): global vertex data before partitions.
-        let bsver = stream.variant().bsver();
+        let bsver = stream.bsver();
         if bsver == 100 {
             let data_size = stream.read_u32_le()?;
             let _vertex_size = stream.read_u32_le()?;

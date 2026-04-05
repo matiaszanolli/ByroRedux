@@ -44,6 +44,13 @@ impl<'a> NifStream<'a> {
         self.variant
     }
 
+    /// Actual BSVER from the header (user_version_2).
+    /// Use this for fine-grained binary format decisions instead of the variant's
+    /// hardcoded bsver(), which represents the "typical" value for that game.
+    pub fn bsver(&self) -> u32 {
+        self.header.user_version_2
+    }
+
     pub fn position(&self) -> u64 {
         self.cursor.position()
     }

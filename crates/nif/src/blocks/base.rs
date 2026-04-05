@@ -56,8 +56,10 @@ impl NiAVObjectData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
 
-        // Flags: u32 for bsver > 26 (FO3+), u16 for older (Oblivion and non-Bethesda).
-        let flags = if stream.variant().avobject_flags_u32() {
+        // Flags: u32 for BSVER > 26 (FO3+), u16 for older (Oblivion and non-Bethesda).
+        // Use actual BSVER from header, not the variant's hardcoded value, to handle
+        // transitional versions (e.g., Oblivion files with uv=11, bsver=11).
+        let flags = if stream.bsver() > 26 {
             stream.read_u32_le()?
         } else {
             stream.read_u16_le()? as u32

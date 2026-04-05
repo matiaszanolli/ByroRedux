@@ -59,7 +59,7 @@ impl BSShaderPPLightingProperty {
         let texture_set_ref = stream.read_block_ref()?;
 
         // nif.xml: Refraction Strength (f32) + Refraction Fire Period (i32) for bsver >= 15.
-        let bsver = stream.variant().bsver();
+        let bsver = stream.bsver();
         let (refraction_strength, refraction_fire_period) = if bsver >= 15 {
             (stream.read_f32_le()?, stream.read_i32_le()?)
         } else {
@@ -127,7 +127,7 @@ impl BSShaderNoLightingProperty {
         let file_name = stream.read_sized_string()?;
 
         let (falloff_start_angle, falloff_stop_angle, falloff_start_opacity, falloff_stop_opacity) =
-            if stream.variant().bsver() > 26 {
+            if stream.bsver() > 26 {
                 (
                     stream.read_f32_le()?,
                     stream.read_f32_le()?,
@@ -289,7 +289,7 @@ impl BSLightingShaderProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         // NiObjectNET: shader type comes BEFORE name for BSLightingShaderProperty
         // (nif.xml onlyT="BSLightingShaderProperty", BSVER 83-130).
-        let shader_type = if stream.variant().bsver() >= 83 && stream.variant().bsver() <= 130 {
+        let shader_type = if stream.bsver() >= 83 && stream.bsver() <= 130 {
             stream.read_u32_le()?
         } else {
             0
@@ -317,7 +317,7 @@ impl BSLightingShaderProperty {
         let emissive_multiple = stream.read_f32_le()?;
 
         // Root Material (NiFixedString) — FO4+ only (BSVER >= 130).
-        if stream.variant().bsver() >= 130 {
+        if stream.bsver() >= 130 {
             let _root_material = stream.read_string()?;
         }
 
@@ -336,14 +336,14 @@ impl BSLightingShaderProperty {
         let specular_strength = stream.read_f32_le()?;
 
         // Lighting effects — Skyrim only (BSVER < 130).
-        let (lighting_effect_1, lighting_effect_2) = if stream.variant().bsver() < 130 {
+        let (lighting_effect_1, lighting_effect_2) = if stream.bsver() < 130 {
             (stream.read_f32_le()?, stream.read_f32_le()?)
         } else {
             (0.0, 0.0)
         };
 
         // FO4+ common fields before shader-type-specific data.
-        let bsver = stream.variant().bsver();
+        let bsver = stream.bsver();
         let (subsurface_rolloff, rimlight_power, backlight_power) = if bsver >= 130 && bsver < 140 {
             let sub = stream.read_f32_le()?;
             let rim = stream.read_f32_le()?;
@@ -691,7 +691,7 @@ impl BSEffectShaderProperty {
         let greyscale_texture = stream.read_sized_string()?;
 
         // FO4+ additional textures (BSVER >= 130).
-        let bsver = stream.variant().bsver();
+        let bsver = stream.bsver();
         let (env_map_texture, normal_texture, env_mask_texture, env_map_scale) = if bsver >= 130 {
             let env = stream.read_sized_string()?;
             let norm = stream.read_sized_string()?;

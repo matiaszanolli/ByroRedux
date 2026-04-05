@@ -68,7 +68,9 @@ impl BsaArchive {
         let include_dir_names = archive_flags & 1 != 0;
         let include_file_names = archive_flags & 2 != 0;
         let compressed_by_default = archive_flags & 4 != 0;
-        let embed_file_names = archive_flags & 0x100 != 0;
+        // Bit 0x100 means "embed file names" only in v104+ (FO3/Skyrim).
+        // Oblivion v103 uses different flag semantics for bits 7-10.
+        let embed_file_names = version >= 104 && archive_flags & 0x100 != 0;
 
         if !include_dir_names || !include_file_names {
             return Err(io::Error::new(

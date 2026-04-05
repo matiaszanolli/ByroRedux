@@ -321,7 +321,7 @@ impl NiControllerSequence {
         };
 
         // ControlledBlock array
-        let bsver = stream.variant().bsver();
+        let bsver = stream.bsver();
         let mut controlled_blocks = Vec::with_capacity(num_controlled_blocks);
         for _ in 0..num_controlled_blocks {
             let interpolator_ref = stream.read_block_ref()?;

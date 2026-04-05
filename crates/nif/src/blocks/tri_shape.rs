@@ -255,7 +255,7 @@ impl BsTriShape {
         let vertex_size_quads = (vertex_desc & 0xF) as usize; // size in units of 4 bytes
 
         // Triangle and vertex counts
-        let num_triangles = if stream.variant().bsver() >= 130 {
+        let num_triangles = if stream.bsver() >= 130 {
             stream.read_u32_le()?
         } else {
             stream.read_u16_le()? as u32
@@ -282,7 +282,7 @@ impl BsTriShape {
                 // FO4+ (BSVER >= 130): bit VF_FULL_PRECISION selects precision.
                 if vertex_attrs & VF_VERTEX != 0 {
                     let full_precision =
-                        stream.variant().bsver() < 130 || vertex_attrs & VF_FULL_PRECISION != 0;
+                        stream.bsver() < 130 || vertex_attrs & VF_FULL_PRECISION != 0;
                     if full_precision {
                         let pos = stream.read_ni_point3()?;
                         vertices.push(pos);
@@ -357,7 +357,7 @@ impl BsTriShape {
             }
 
             // Skyrim SE: particle data (skip)
-            if stream.variant().bsver() < 130 {
+            if stream.bsver() < 130 {
                 let particle_data_size = stream.read_u32_le()?;
                 if particle_data_size > 0 {
                     // particle vertices (num_vertices × 6 bytes) + particle normals + particle triangles
