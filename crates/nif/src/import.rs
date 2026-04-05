@@ -320,9 +320,8 @@ fn extract_mesh(
     // Convert the Z-up rotation matrix to Y-up, then extract a robust quaternion.
     let quat = zup_matrix_to_yup_quat(r);
 
-    // Check for alpha blending (NiAlphaProperty with blend enabled = bit 0 of flags).
-    let has_alpha = find_alpha_property(scene, shape);
-    let two_sided = find_two_sided(scene, shape);
+    // Single-pass material property extraction (alpha, two-sided, decal).
+    let mat = extract_material_info(scene, shape);
 
     Some(ImportedMesh {
         positions,
@@ -335,9 +334,9 @@ fn extract_mesh(
         scale: world_transform.scale,
         name: shape.av.net.name.clone(),
         texture_path,
-        has_alpha,
-        two_sided,
-        is_decal: find_decal(scene, shape),
+        has_alpha: mat.alpha_blend,
+        two_sided: mat.two_sided,
+        is_decal: mat.is_decal,
         parent_node: None,
     })
 }
@@ -495,142 +494,128 @@ fn extract_material(
     (colors, tex)
 }
 
-/// Walk the shape's properties to find the base texture filename.
+/// Material properties extracted from a NiTriShape's property list in a single pass.
 ///
-/// Checks multiple shader property formats:
-/// - NiTexturingProperty → NiSourceTexture (Gamebryo/Oblivion)
-/// - BSShaderPPLightingProperty → BSShaderTextureSet (FO3/FNV)
-/// - BSShaderNoLightingProperty (FO3/FNV effects)
-/// - BSLightingShaderProperty → BSShaderTextureSet (Skyrim+, via dedicated ref)
-/// - BSEffectShaderProperty (Skyrim+ effects, via dedicated ref)
-fn find_texture_path(scene: &NifScene, shape: &NiTriShape) -> Option<String> {
-    // Skyrim+ path: dedicated shader_property_ref → BSLightingShaderProperty or BSEffectShaderProperty
+/// Replaces four independent property-list iterations with one.
+#[derive(Debug, Default)]
+struct MaterialInfo {
+    texture_path: Option<String>,
+    alpha_blend: bool,
+    two_sided: bool,
+    is_decal: bool,
+}
+
+const DECAL_SINGLE_PASS: u32 = 0x04000000;
+const DYNAMIC_DECAL: u32 = 0x08000000;
+const ALPHA_DECAL_F2: u32 = 0x00200000;
+const SF_DOUBLE_SIDED: u32 = 0x1000;
+
+/// Extract all material properties from a NiTriShape in a single pass.
+///
+/// Checks both dedicated refs (Skyrim+) and the properties list (FO3/FNV/Oblivion).
+fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> MaterialInfo {
+    let mut info = MaterialInfo::default();
+
+    // Skyrim+: dedicated shader_property_ref
     if let Some(idx) = shape.shader_property_ref.index() {
         if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
             if let Some(ts_idx) = shader.texture_set_ref.index() {
                 if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
                     if let Some(path) = tex_set.textures.first() {
                         if !path.is_empty() {
-                            return Some(path.clone());
+                            info.texture_path = Some(path.clone());
                         }
                     }
                 }
+            }
+            if shader.shader_flags_2 & 0x10 != 0 {
+                info.two_sided = true;
+            }
+            if shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 {
+                info.is_decal = true;
             }
         }
         if let Some(shader) = scene.get_as::<BSEffectShaderProperty>(idx) {
-            if !shader.source_texture.is_empty() {
-                return Some(shader.source_texture.clone());
+            if info.texture_path.is_none() && !shader.source_texture.is_empty() {
+                info.texture_path = Some(shader.source_texture.clone());
             }
         }
     }
 
-    // FO3/FNV/Oblivion path: search properties list
-    for prop_ref in &shape.av.properties {
-        let idx = match prop_ref.index() {
-            Some(i) => i,
-            None => continue,
-        };
-
-        // Gamebryo path: NiTexturingProperty → NiSourceTexture
-        if let Some(tex_prop) = scene.get_as::<NiTexturingProperty>(idx) {
-            if let Some(ref base) = tex_prop.base_texture {
-                if let Some(src_idx) = base.source_ref.index() {
-                    if let Some(src_tex) = scene.get_as::<NiSourceTexture>(src_idx) {
-                        if src_tex.filename.is_some() {
-                            return src_tex.filename.clone();
-                        }
-                    }
-                }
-            }
-        }
-
-        // Bethesda path: BSShaderPPLightingProperty → BSShaderTextureSet
-        if let Some(shader_prop) = scene.get_as::<BSShaderPPLightingProperty>(idx) {
-            if let Some(ts_idx) = shader_prop.texture_set_ref.index() {
-                if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
-                    if let Some(path) = tex_set.textures.first() {
-                        if !path.is_empty() {
-                            return Some(path.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        // Bethesda path: BSShaderNoLightingProperty has embedded file_name
-        if let Some(shader_prop) = scene.get_as::<BSShaderNoLightingProperty>(idx) {
-            if !shader_prop.file_name.is_empty() {
-                return Some(shader_prop.file_name.clone());
-            }
-        }
-    }
-    None
-}
-
-/// Check if the shape has alpha blending enabled via NiAlphaProperty.
-///
-/// Searches both the properties list and the dedicated alpha_property_ref.
-/// Returns true if NiAlphaProperty is found with blend enable (bit 0 of flags).
-fn find_alpha_property(scene: &NifScene, shape: &NiTriShape) -> bool {
-    // Check dedicated ref (Skyrim+/FO4).
+    // Skyrim+: dedicated alpha_property_ref
     if let Some(idx) = shape.alpha_property_ref.index() {
         if let Some(alpha) = scene.get_as::<NiAlphaProperty>(idx) {
-            return alpha.flags & 1 != 0;
-        }
-    }
-    // Check properties list (FO3/FNV/Oblivion).
-    for prop_ref in &shape.av.properties {
-        if let Some(idx) = prop_ref.index() {
-            if let Some(alpha) = scene.get_as::<NiAlphaProperty>(idx) {
-                return alpha.flags & 1 != 0;
+            if alpha.flags & 1 != 0 {
+                info.alpha_blend = true;
             }
         }
     }
-    false
-}
 
-/// Check if the shape requires two-sided rendering (no backface culling).
-///
-/// FO3/FNV: BSShaderPPLightingProperty shader_flags_1 bit 12 (SF_DOUBLE_SIDED = 0x1000).
-/// Skyrim+: BSLightingShaderProperty shader_flags_2 bit 4 (SLSF2_DOUBLE_SIDED = 0x10).
-/// Oblivion: NiStencilProperty with draw_mode BOTH (3) or CCW_OR_BOTH (0).
-fn find_two_sided(scene: &NifScene, shape: &NiTriShape) -> bool {
-    // Skyrim+: check dedicated shader property ref.
-    if let Some(idx) = shape.shader_property_ref.index() {
-        if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
-            if shader.shader_flags_2 & 0x10 != 0 {
-                return true;
+    // FO3/FNV/Oblivion: single pass over properties list
+    for prop_ref in &shape.av.properties {
+        let Some(idx) = prop_ref.index() else {
+            continue;
+        };
+
+        if !info.alpha_blend {
+            if let Some(alpha) = scene.get_as::<NiAlphaProperty>(idx) {
+                if alpha.flags & 1 != 0 {
+                    info.alpha_blend = true;
+                }
             }
         }
-    }
-    for prop_ref in &shape.av.properties {
-        if let Some(idx) = prop_ref.index() {
-            // Bethesda path: BSShaderPPLightingProperty SF_DOUBLE_SIDED flag.
-            if let Some(shader) = scene.get_as::<BSShaderPPLightingProperty>(idx) {
-                if shader.shader.shader_flags_1 & 0x1000 != 0 {
-                    return true;
+
+        if info.texture_path.is_none() {
+            if let Some(tex_prop) = scene.get_as::<NiTexturingProperty>(idx) {
+                if let Some(ref base) = tex_prop.base_texture {
+                    if let Some(src_idx) = base.source_ref.index() {
+                        if let Some(src_tex) = scene.get_as::<NiSourceTexture>(src_idx) {
+                            if src_tex.filename.is_some() {
+                                info.texture_path = src_tex.filename.clone();
+                            }
+                        }
+                    }
                 }
             }
-            // BSShaderNoLightingProperty also has the same flag layout.
-            if let Some(shader) = scene.get_as::<BSShaderNoLightingProperty>(idx) {
-                if shader.shader.shader_flags_1 & 0x1000 != 0 {
-                    return true;
+        }
+
+        if let Some(shader) = scene.get_as::<BSShaderPPLightingProperty>(idx) {
+            if info.texture_path.is_none() {
+                if let Some(ts_idx) = shader.texture_set_ref.index() {
+                    if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
+                        if let Some(path) = tex_set.textures.first() {
+                            if !path.is_empty() {
+                                info.texture_path = Some(path.clone());
+                            }
+                        }
+                    }
                 }
             }
-            // Gamebryo path: NiStencilProperty (parsed as NiUnknown for now).
-            // We check the type name and read draw_mode from raw bytes.
+            if shader.shader.shader_flags_1 & SF_DOUBLE_SIDED != 0 {
+                info.two_sided = true;
+            }
+            if shader.shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0
+                || shader.shader.shader_flags_2 & ALPHA_DECAL_F2 != 0
+            {
+                info.is_decal = true;
+            }
+        }
+
+        if let Some(shader) = scene.get_as::<BSShaderNoLightingProperty>(idx) {
+            if info.texture_path.is_none() && !shader.file_name.is_empty() {
+                info.texture_path = Some(shader.file_name.clone());
+            }
+            if shader.shader.shader_flags_1 & SF_DOUBLE_SIDED != 0 {
+                info.two_sided = true;
+            }
+            if shader.shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 {
+                info.is_decal = true;
+            }
+        }
+
+        if !info.two_sided {
             if let Some(unknown) = scene.get_as::<crate::blocks::NiUnknown>(idx) {
-                if unknown.type_name == "NiStencilProperty" && unknown.data.len() >= 22 {
-                    // NiStencilProperty layout after NiObjectNET base:
-                    // Flags (u16), stencil enabled (u8), stencil function (u32),
-                    // stencil ref (u32), stencil mask (u32), fail action (u32),
-                    // z-fail action (u32), pass action (u32), draw_mode (u32).
-                    // But since we skipped the NiObjectNET fields during parse,
-                    // the data starts after those. For block-size-known parsing,
-                    // the raw data includes everything from the block start.
-                    // Check last 4 bytes group for draw_mode patterns.
-                    // Actually, NiStencilProperty with block size includes NiObjectNET.
-                    // The draw_mode is the last u32 field. Let's read it from end.
+                if unknown.type_name == "NiStencilProperty" {
                     let len = unknown.data.len();
                     if len >= 4 {
                         let draw_mode = u32::from_le_bytes([
@@ -639,58 +624,21 @@ fn find_two_sided(scene: &NifScene, shape: &NiTriShape) -> bool {
                             unknown.data[len - 2],
                             unknown.data[len - 1],
                         ]);
-                        // draw_mode: 0=CCW_OR_BOTH, 3=BOTH → two-sided
                         if draw_mode == 0 || draw_mode == 3 {
-                            return true;
+                            info.two_sided = true;
                         }
                     }
                 }
             }
         }
     }
-    false
+
+    info
 }
 
-/// Check if a shape is decal geometry (should render on top of coplanar surfaces).
-///
-/// FO3/FNV: BSShaderPPLightingProperty shader_flags_1:
-///   Bit 26 (0x04000000) = Decal Single Pass
-///   Bit 27 (0x08000000) = Dynamic Decal Single Pass
-/// BSShaderPPLightingProperty shader_flags_2:
-///   Bit 21 (0x00200000) = Alpha Decal
-///
-/// Skyrim+: BSLightingShaderProperty shader_flags_1 same bit layout.
-fn find_decal(scene: &NifScene, shape: &NiTriShape) -> bool {
-    const DECAL_SINGLE_PASS: u32 = 0x04000000;
-    const DYNAMIC_DECAL: u32 = 0x08000000;
-    const ALPHA_DECAL_F2: u32 = 0x00200000;
-
-    // Skyrim+: dedicated shader property ref.
-    if let Some(idx) = shape.shader_property_ref.index() {
-        if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
-            if shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 {
-                return true;
-            }
-        }
-    }
-    // FO3/FNV: properties list.
-    for prop_ref in &shape.av.properties {
-        if let Some(idx) = prop_ref.index() {
-            if let Some(shader) = scene.get_as::<BSShaderPPLightingProperty>(idx) {
-                if shader.shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0
-                    || shader.shader.shader_flags_2 & ALPHA_DECAL_F2 != 0
-                {
-                    return true;
-                }
-            }
-            if let Some(shader) = scene.get_as::<BSShaderNoLightingProperty>(idx) {
-                if shader.shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 {
-                    return true;
-                }
-            }
-        }
-    }
-    false
+/// Texture path only — delegates to extract_material_info.
+fn find_texture_path(scene: &NifScene, shape: &NiTriShape) -> Option<String> {
+    extract_material_info(scene, shape).texture_path
 }
 
 /// Check if a BsTriShape is decal geometry (Skyrim+).
