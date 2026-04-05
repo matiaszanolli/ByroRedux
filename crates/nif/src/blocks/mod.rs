@@ -166,6 +166,58 @@ pub fn parse_block(
         }
         // Base NiTimeController fallback for unknown controller subtypes
         "NiTimeController" => Ok(Box::new(NiTimeController::parse(stream)?)),
+        // Havok collision blocks — skip via block_size (no rendering use).
+        // On FO3+ (v20.2.0.7) block_size is always available.
+        // On Oblivion (v20.0.0.5) these will fall through to the hard error
+        // since block sizes aren't in the header — full Havok parsers needed
+        // for Oblivion collision support (future milestone).
+        "bhkCollisionObject"
+        | "bhkBlendCollisionObject"
+        | "bhkSPCollisionObject"
+        | "bhkRigidBody"
+        | "bhkRigidBodyT"
+        | "bhkSimpleShapePhantom"
+        | "bhkMoppBvTreeShape"
+        | "bhkCompressedMeshShape"
+        | "bhkCompressedMeshShapeData"
+        | "bhkConvexVerticesShape"
+        | "bhkBoxShape"
+        | "bhkSphereShape"
+        | "bhkCapsuleShape"
+        | "bhkListShape"
+        | "bhkNiTriStripsShape"
+        | "bhkPackedNiTriStripsShape"
+        | "hkPackedNiTriStripsData"
+        | "bhkTransformShape"
+        | "bhkConvexTransformShape"
+        | "bhkMalleableConstraint"
+        | "bhkRagdollConstraint"
+        | "bhkLimitedHingeConstraint"
+        | "bhkHingeConstraint"
+        | "bhkBallAndSocketConstraint"
+        | "bhkStiffSpringConstraint"
+        | "bhkPrismaticConstraint"
+        | "NiCollisionObject"
+        | "bhkNPCollisionObject"
+        | "bhkPhysicsSystem"
+        | "bhkRagdollSystem" => {
+            // These are recognized but not parsed — skip via block_size.
+            if let Some(size) = block_size {
+                let data = stream.read_bytes(size as usize)?;
+                Ok(Box::new(NiUnknown {
+                    type_name: type_name.to_string(),
+                    data,
+                }))
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Havok collision block '{}' requires block_size to skip (Oblivion NIFs need dedicated parsers)",
+                        type_name
+                    ),
+                ))
+            }
+        }
         _ => {
             // Unknown block type — skip it if we know the size
             if let Some(size) = block_size {
