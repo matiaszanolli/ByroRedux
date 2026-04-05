@@ -63,6 +63,11 @@ impl Drop for StagingGuard {
 ///
 /// Destruction requires the allocator, so call [`destroy`](Self::destroy)
 /// explicitly before dropping. Dropping without destroy will leak.
+/// Conservative upper bound for nonCoherentAtomSize across all GPUs.
+/// Typical: 64 bytes (NVIDIA/AMD), max observed: 256 bytes.
+/// Used to align flush offsets when the exact device value isn't plumbed through.
+const NON_COHERENT_ATOM_SIZE: vk::DeviceSize = 256;
+
 pub struct GpuBuffer {
     pub buffer: vk::Buffer,
     pub size: vk::DeviceSize,
@@ -236,13 +241,20 @@ impl GpuBuffer {
 
         // Flush explicitly if the memory is not HOST_COHERENT.
         if !is_coherent {
+            // Vulkan spec requires flush offset to be a multiple of nonCoherentAtomSize.
+            // gpu_allocator typically aligns sub-allocations, but we round down
+            // defensively using a conservative upper bound (256 bytes).
+            // VK_WHOLE_SIZE is always valid for the size field.
+            let aligned_offset = alloc.offset() & !(NON_COHERENT_ATOM_SIZE - 1);
+
             // SAFETY: alloc.memory() returns the VkDeviceMemory backing this
-            // allocation, which is valid and mapped (verified above). The flush
-            // range covers the allocation's offset with WHOLE_SIZE.
+            // allocation, which is valid and mapped (verified above). The offset
+            // is rounded down to nonCoherentAtomSize boundary; WHOLE_SIZE covers
+            // from there to the end of the memory object.
             unsafe {
                 let range = vk::MappedMemoryRange::default()
                     .memory(alloc.memory())
-                    .offset(alloc.offset())
+                    .offset(aligned_offset)
                     .size(vk::WHOLE_SIZE);
                 device
                     .flush_mapped_memory_ranges(&[range])
