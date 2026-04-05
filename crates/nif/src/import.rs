@@ -253,7 +253,7 @@ struct GeomData<'a> {
     normals: &'a [NiPoint3],
     vertex_colors: &'a [[f32; 4]],
     uv_sets: &'a [Vec<[f32; 2]>],
-    triangles: Vec<[u16; 3]>,
+    triangles: std::borrow::Cow<'a, [[u16; 3]]>,
 }
 
 /// Extract an ImportedMesh from an NiTriShape and its referenced data block.
@@ -271,7 +271,7 @@ fn extract_mesh(
             normals: &data.normals,
             vertex_colors: &data.vertex_colors,
             uv_sets: &data.uv_sets,
-            triangles: data.triangles.clone(),
+            triangles: std::borrow::Cow::Borrowed(&data.triangles),
         }
     } else if let Some(data) = scene.get_as::<NiTriStripsData>(data_idx) {
         GeomData {
@@ -279,7 +279,7 @@ fn extract_mesh(
             normals: &data.normals,
             vertex_colors: &data.vertex_colors,
             uv_sets: &data.uv_sets,
-            triangles: data.to_triangles(),
+            triangles: std::borrow::Cow::Owned(data.to_triangles()),
         }
     } else {
         return None;
