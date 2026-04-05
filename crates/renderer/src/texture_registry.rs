@@ -25,6 +25,7 @@ pub struct TextureRegistry {
     descriptor_pool: vk::DescriptorPool,
     pub descriptor_set_layout: vk::DescriptorSetLayout,
     swapchain_image_count: u32,
+    max_textures: u32,
 }
 
 impl TextureRegistry {
@@ -77,6 +78,7 @@ impl TextureRegistry {
             descriptor_pool,
             descriptor_set_layout,
             swapchain_image_count,
+            max_textures,
         };
 
         // Register fallback as handle 0.
@@ -259,8 +261,7 @@ impl TextureRegistry {
         }
 
         // Create new pool.
-        let max_textures = 1024u32;
-        let total_sets = max_textures * new_swapchain_image_count;
+        let total_sets = self.max_textures * new_swapchain_image_count;
         let pool_size = vk::DescriptorPoolSize {
             ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
             descriptor_count: total_sets,
