@@ -36,6 +36,10 @@ impl NiObject for NiMaterialProperty {
 impl NiMaterialProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
+        // NiMaterialProperty flags: since 3.0, until 10.0.1.2 (NOT present in Oblivion+).
+        if stream.version() <= NifVersion(0x0A000102) {
+            let _flags = stream.read_u16_le()?;
+        }
 
         let bethesda_compact = stream.variant().compact_material();
 
@@ -146,9 +150,19 @@ impl NiObject for NiTexturingProperty {
 impl NiTexturingProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
-        let flags = stream.read_u16_le()?;
 
-        if stream.version() < crate::version::NifVersion::V20_2_0_7 {
+        // Flags: ushort until 10.0.1.2, TexturingFlags since 20.1.0.2.
+        // Gap: versions 10.0.1.3 through 20.1.0.1 have NO flags field.
+        let flags = if stream.version() <= NifVersion(0x0A000102)
+            || stream.version() >= NifVersion(0x14010002)
+        {
+            stream.read_u16_le()?
+        } else {
+            0
+        };
+
+        // Apply Mode: since 3.3.0.13, until 20.1.0.1.
+        if stream.version() <= NifVersion(0x14010001) {
             let _apply_mode = stream.read_u32_le()?;
         }
 
@@ -331,6 +345,7 @@ mod tests {
         data.extend_from_slice(&0i32.to_le_bytes());
         data.extend_from_slice(&0u32.to_le_bytes());
         data.extend_from_slice(&(-1i32).to_le_bytes());
+        // No NiProperty flags — until 10.0.1.2, tests use v20.2.0.7
         write_color(&mut data, 0.2, 0.2, 0.2);
         write_color(&mut data, 0.8, 0.6, 0.4);
         write_color(&mut data, 1.0, 1.0, 1.0);
@@ -345,6 +360,7 @@ mod tests {
         data.extend_from_slice(&0i32.to_le_bytes());
         data.extend_from_slice(&0u32.to_le_bytes());
         data.extend_from_slice(&(-1i32).to_le_bytes());
+        // No NiProperty flags — until 10.0.1.2, FNV is v20.2.0.7
         write_color(&mut data, 0.5, 0.5, 0.5);
         write_color(&mut data, 0.1, 0.0, 0.0);
         data.extend_from_slice(&10.0f32.to_le_bytes());

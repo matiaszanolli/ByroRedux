@@ -5,6 +5,7 @@
 //! and provides the NiObject trait that all parsed blocks implement.
 
 pub mod base;
+pub mod collision;
 pub mod controller;
 pub mod extra_data;
 pub mod interpolator;
@@ -19,6 +20,12 @@ pub mod traits;
 pub mod tri_shape;
 
 use crate::stream::NifStream;
+use collision::{
+    BhkBoxShape, BhkCapsuleShape, BhkCollisionObject, BhkConvexVerticesShape, BhkCylinderShape,
+    BhkListShape, BhkMoppBvTreeShape, BhkNiTriStripsShape, BhkPackedNiTriStripsShape,
+    BhkRigidBody, BhkSimpleShapePhantom, BhkSphereShape, BhkTransformShape,
+    HkPackedNiTriStripsData,
+};
 use controller::{
     NiControllerManager, NiControllerSequence, NiGeomMorpherController, NiMaterialColorController,
     NiMorphData, NiMultiTargetTransformController, NiSingleInterpController, NiTimeController,
@@ -203,30 +210,29 @@ pub fn parse_block(
         "NiBlendBoolInterpolator" => Ok(Box::new(NiBlendBoolInterpolator::parse(stream)?)),
         // Base NiTimeController fallback for unknown controller subtypes
         "NiTimeController" => Ok(Box::new(NiTimeController::parse(stream)?)),
-        // Havok collision blocks — skip via block_size (no rendering use).
-        // On FO3+ (v20.2.0.7) block_size is always available.
-        // On Oblivion (v20.0.0.5) these will fall through to the hard error
-        // since block sizes aren't in the header — full Havok parsers needed
-        // for Oblivion collision support (future milestone).
-        "bhkCollisionObject"
-        | "bhkBlendCollisionObject"
-        | "bhkSPCollisionObject"
-        | "bhkRigidBody"
-        | "bhkRigidBodyT"
-        | "bhkSimpleShapePhantom"
-        | "bhkMoppBvTreeShape"
-        | "bhkCompressedMeshShape"
+        // ── Havok collision blocks (fully parsed) ────────────────────
+        "bhkCollisionObject" | "bhkBlendCollisionObject" | "bhkSPCollisionObject" => {
+            Ok(Box::new(BhkCollisionObject::parse(stream)?))
+        }
+        "bhkRigidBody" | "bhkRigidBodyT" => Ok(Box::new(BhkRigidBody::parse(stream)?)),
+        "bhkSimpleShapePhantom" => Ok(Box::new(BhkSimpleShapePhantom::parse(stream)?)),
+        "bhkMoppBvTreeShape" => Ok(Box::new(BhkMoppBvTreeShape::parse(stream)?)),
+        "bhkBoxShape" => Ok(Box::new(BhkBoxShape::parse(stream)?)),
+        "bhkSphereShape" => Ok(Box::new(BhkSphereShape::parse(stream)?)),
+        "bhkCapsuleShape" => Ok(Box::new(BhkCapsuleShape::parse(stream)?)),
+        "bhkCylinderShape" => Ok(Box::new(BhkCylinderShape::parse(stream)?)),
+        "bhkConvexVerticesShape" => Ok(Box::new(BhkConvexVerticesShape::parse(stream)?)),
+        "bhkListShape" => Ok(Box::new(BhkListShape::parse(stream)?)),
+        "bhkTransformShape" | "bhkConvexTransformShape" => {
+            Ok(Box::new(BhkTransformShape::parse(stream)?))
+        }
+        "bhkNiTriStripsShape" => Ok(Box::new(BhkNiTriStripsShape::parse(stream)?)),
+        "bhkPackedNiTriStripsShape" => Ok(Box::new(BhkPackedNiTriStripsShape::parse(stream)?)),
+        "hkPackedNiTriStripsData" => Ok(Box::new(HkPackedNiTriStripsData::parse(stream)?)),
+        // Havok blocks that remain skip-only (constraints, systems, compressed mesh).
+        // Constraints deferred to M28 (physics joints). Compressed mesh deferred (Skyrim+).
+        "bhkCompressedMeshShape"
         | "bhkCompressedMeshShapeData"
-        | "bhkConvexVerticesShape"
-        | "bhkBoxShape"
-        | "bhkSphereShape"
-        | "bhkCapsuleShape"
-        | "bhkListShape"
-        | "bhkNiTriStripsShape"
-        | "bhkPackedNiTriStripsShape"
-        | "hkPackedNiTriStripsData"
-        | "bhkTransformShape"
-        | "bhkConvexTransformShape"
         | "bhkMalleableConstraint"
         | "bhkRagdollConstraint"
         | "bhkLimitedHingeConstraint"
@@ -238,7 +244,6 @@ pub fn parse_block(
         | "bhkNPCollisionObject"
         | "bhkPhysicsSystem"
         | "bhkRagdollSystem" => {
-            // These are recognized but not parsed — skip via block_size.
             if let Some(size) = block_size {
                 let data = stream.read_bytes(size as usize)?;
                 Ok(Box::new(NiUnknown {
@@ -249,7 +254,7 @@ pub fn parse_block(
                 Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "Havok collision block '{}' requires block_size to skip (Oblivion NIFs need dedicated parsers)",
+                        "Havok block '{}' requires block_size to skip",
                         type_name
                     ),
                 ))

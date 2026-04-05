@@ -66,6 +66,11 @@ pub fn parse_nif(data: &[u8]) -> io::Result<NifScene> {
 
         match parse_block(type_name, &mut stream, block_size) {
             Ok(block) => {
+                let consumed = stream.position() - start_pos;
+                log::trace!(
+                    "Block {} '{}': offset {}, consumed {} bytes",
+                    i, type_name, start_pos, consumed
+                );
                 // Verify we consumed exactly block_size bytes (if known)
                 if let Some(size) = block_size {
                     let consumed = stream.position() - start_pos;

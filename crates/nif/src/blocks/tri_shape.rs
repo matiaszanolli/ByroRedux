@@ -121,11 +121,13 @@ impl NiTriShape {
                 shader_property_ref = stream.read_block_ref()?;
                 alpha_property_ref = stream.read_block_ref()?;
             }
-        } else {
+        } else if stream.version() <= NifVersion(0x14010003) {
+            // NiGeometry Has Shader + Shader Name + Shader Extra Data
+            // (since 10.0.1.0, until 20.1.0.3 — present in Oblivion v20.0.0.4).
             let has_shader = stream.read_bool()?;
             if has_shader {
                 let _shader_name = stream.read_sized_string()?;
-                let _implementation = stream.read_u32_le()?;
+                let _implementation = stream.read_i32_le()?;
             }
         }
 
