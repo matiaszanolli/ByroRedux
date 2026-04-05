@@ -738,48 +738,58 @@ impl App {
         }
 
         // Animation: --kf <path> loads a .kf file and starts playback.
+        // Tries BSA extraction first (KF files live in mesh BSAs), falls back to loose file.
         if let Some(kf_idx) = args.iter().position(|a| a == "--kf") {
             if let Some(kf_path) = args.get(kf_idx + 1).cloned() {
-                match std::fs::read(&kf_path) {
-                    Ok(kf_data) => {
-                        match byroredux_nif::parse_nif(&kf_data) {
-                            Ok(kf_scene) => {
-                                let nif_clips = byroredux_nif::anim::import_kf(&kf_scene);
-                                if nif_clips.is_empty() {
-                                    log::warn!("No animation clips found in '{}'", kf_path);
-                                } else {
-                                    let mut registry =
-                                        self.world.resource_mut::<AnimationClipRegistry>();
-                                    for nif_clip in &nif_clips {
-                                        let clip = convert_nif_clip(nif_clip);
-                                        let handle = registry.add(clip);
-                                        log::info!(
-                                            "Loaded animation clip '{}' ({:.2}s, {} channels) → handle {}",
-                                            nif_clip.name, nif_clip.duration,
-                                            nif_clip.channels.len(), handle,
-                                        );
-                                    }
-                                    let first_handle =
-                                        registry.len() as u32 - nif_clips.len() as u32;
-                                    drop(registry);
-
-                                    // Spawn an AnimationPlayer scoped to the NIF subtree.
-                                    let player_entity = self.world.spawn();
-                                    let mut player = AnimationPlayer::new(first_handle);
-                                    if let Some(root) = nif_root {
-                                        player.root_entity = Some(root);
-                                    }
-                                    self.world.insert(player_entity, player);
+                let kf_provider = build_texture_provider(&args);
+                let kf_data = kf_provider
+                    .extract_mesh(&kf_path)
+                    .map(|data| {
+                        log::info!("Extracted KF from BSA: '{}'", kf_path);
+                        data
+                    })
+                    .or_else(|| {
+                        std::fs::read(&kf_path)
+                            .map_err(|e| log::error!("Failed to read KF '{}': {}", kf_path, e))
+                            .ok()
+                    });
+                if let Some(kf_data) = kf_data {
+                    match byroredux_nif::parse_nif(&kf_data) {
+                        Ok(kf_scene) => {
+                            let nif_clips = byroredux_nif::anim::import_kf(&kf_scene);
+                            if nif_clips.is_empty() {
+                                log::warn!("No animation clips found in '{}'", kf_path);
+                            } else {
+                                let mut registry =
+                                    self.world.resource_mut::<AnimationClipRegistry>();
+                                for nif_clip in &nif_clips {
+                                    let clip = convert_nif_clip(nif_clip);
+                                    let handle = registry.add(clip);
                                     log::info!(
-                                        "Animation playback started (clip handle {})",
-                                        first_handle
+                                        "Loaded animation clip '{}' ({:.2}s, {} channels) → handle {}",
+                                        nif_clip.name, nif_clip.duration,
+                                        nif_clip.channels.len(), handle,
                                     );
                                 }
+                                let first_handle =
+                                    registry.len() as u32 - nif_clips.len() as u32;
+                                drop(registry);
+
+                                // Spawn an AnimationPlayer scoped to the NIF subtree.
+                                let player_entity = self.world.spawn();
+                                let mut player = AnimationPlayer::new(first_handle);
+                                if let Some(root) = nif_root {
+                                    player.root_entity = Some(root);
+                                }
+                                self.world.insert(player_entity, player);
+                                log::info!(
+                                    "Animation playback started (clip handle {})",
+                                    first_handle
+                                );
                             }
-                            Err(e) => log::error!("Failed to parse KF '{}': {}", kf_path, e),
                         }
+                        Err(e) => log::error!("Failed to parse KF '{}': {}", kf_path, e),
                     }
-                    Err(e) => log::error!("Failed to read KF '{}': {}", kf_path, e),
                 }
             }
         }
