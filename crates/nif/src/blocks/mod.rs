@@ -30,8 +30,8 @@ use interpolator::{
 };
 use node::NiNode;
 use properties::{
-    NiAlphaProperty, NiMaterialProperty, NiStencilProperty, NiTexturingProperty,
-    NiVertexColorProperty, NiZBufferProperty,
+    NiAlphaProperty, NiFlagProperty, NiMaterialProperty, NiStencilProperty,
+    NiStringPalette, NiTexturingProperty, NiVertexColorProperty, NiZBufferProperty,
 };
 use shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
@@ -89,7 +89,8 @@ pub fn parse_block(
     block_size: Option<u32>,
 ) -> io::Result<Box<dyn NiObject>> {
     match type_name {
-        "NiNode" | "BSFadeNode" | "BSLeafAnimNode" | "BSTreeNode" | "BSMultiBoundNode" => {
+        "NiNode" | "BSFadeNode" | "BSLeafAnimNode" | "BSTreeNode" | "BSMultiBoundNode"
+        | "RootCollisionNode" => {
             Ok(Box::new(NiNode::parse(stream)?))
         }
         "NiTriShape" | "NiTriStrips" | "BSSegmentedTriShape" => {
@@ -109,6 +110,20 @@ pub fn parse_block(
         "NiZBufferProperty" => Ok(Box::new(NiZBufferProperty::parse(stream)?)),
         "NiVertexColorProperty" => Ok(Box::new(NiVertexColorProperty::parse(stream)?)),
         "NiTexturingProperty" => Ok(Box::new(NiTexturingProperty::parse(stream)?)),
+        // Simple flag-only properties (Oblivion)
+        "NiSpecularProperty" => {
+            Ok(Box::new(NiFlagProperty::parse(stream, "NiSpecularProperty")?))
+        }
+        "NiWireframeProperty" => {
+            Ok(Box::new(NiFlagProperty::parse(stream, "NiWireframeProperty")?))
+        }
+        "NiDitherProperty" => {
+            Ok(Box::new(NiFlagProperty::parse(stream, "NiDitherProperty")?))
+        }
+        "NiShadeProperty" => {
+            Ok(Box::new(NiFlagProperty::parse(stream, "NiShadeProperty")?))
+        }
+        "NiStringPalette" => Ok(Box::new(NiStringPalette::parse(stream)?)),
         "NiSourceTexture" => Ok(Box::new(NiSourceTexture::parse(stream)?)),
         // Skinning blocks
         "NiSkinInstance" => Ok(Box::new(NiSkinInstance::parse(stream)?)),

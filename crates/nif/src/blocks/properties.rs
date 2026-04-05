@@ -393,6 +393,142 @@ mod tests {
         assert!((mat.diffuse.r - 0.5).abs() < 1e-6);
         assert!((mat.emissive_mult - 2.5).abs() < 1e-6);
     }
+
+    fn build_flag_property_bytes() -> Vec<u8> {
+        let mut data = Vec::new();
+        // NiObjectNET: name (string table index 0)
+        data.extend_from_slice(&0i32.to_le_bytes());
+        // extra_data_refs: count=0
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // controller_ref: -1
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // flags: u16 (bit 0 = enabled)
+        data.extend_from_slice(&1u16.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn parse_flag_property_specular() {
+        let header = make_header(11, 34);
+        let data = build_flag_property_bytes();
+        let mut stream = NifStream::new(&data, &header);
+        let prop = NiFlagProperty::parse(&mut stream, "NiSpecularProperty").unwrap();
+        assert_eq!(prop.block_type_name(), "NiSpecularProperty");
+        assert!(prop.enabled());
+        assert_eq!(prop.flags, 1);
+        assert_eq!(stream.position() as usize, data.len());
+    }
+
+    #[test]
+    fn parse_flag_property_wireframe_disabled() {
+        let header = make_header(11, 34);
+        let mut data = Vec::new();
+        data.extend_from_slice(&0i32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes()); // bit 0 = 0 → disabled
+        let mut stream = NifStream::new(&data, &header);
+        let prop = NiFlagProperty::parse(&mut stream, "NiWireframeProperty").unwrap();
+        assert!(!prop.enabled());
+    }
+
+    #[test]
+    fn parse_string_palette() {
+        let header = make_header(11, 34);
+        let mut data = Vec::new();
+        let palette_str = "Bip01\0Bip01 Head\0Bip01 L Hand\0";
+        data.extend_from_slice(&(palette_str.len() as u32).to_le_bytes());
+        data.extend_from_slice(palette_str.as_bytes());
+        data.extend_from_slice(&(palette_str.len() as u32).to_le_bytes()); // redundant length
+        let mut stream = NifStream::new(&data, &header);
+        let pal = NiStringPalette::parse(&mut stream).unwrap();
+        assert_eq!(pal.get_string(0), Some("Bip01"));
+        assert_eq!(pal.get_string(6), Some("Bip01 Head"));
+        assert_eq!(pal.get_string(17), Some("Bip01 L Hand"));
+        assert_eq!(pal.get_string(999), None);
+        assert_eq!(stream.position() as usize, data.len());
+    }
+}
+
+// ── Simple flag-only properties (Oblivion) ──────────────────────────
+
+/// Generic flag-only NiProperty subclass.
+///
+/// NiSpecularProperty, NiWireframeProperty, NiDitherProperty, NiShadeProperty
+/// all have identical binary layout: NiObjectNET + flags(u16).
+/// This struct is shared; `block_type_name` is set at construction time.
+#[derive(Debug)]
+pub struct NiFlagProperty {
+    pub net: NiObjectNETData,
+    pub flags: u16,
+    type_name: &'static str,
+}
+
+impl NiObject for NiFlagProperty {
+    fn block_type_name(&self) -> &'static str {
+        self.type_name
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiFlagProperty {
+    pub fn parse(stream: &mut NifStream, type_name: &'static str) -> io::Result<Self> {
+        let net = NiObjectNETData::parse(stream)?;
+        let flags = stream.read_u16_le()?;
+        Ok(Self {
+            net,
+            flags,
+            type_name,
+        })
+    }
+
+    /// Bit 0 of flags — the universal enable/disable toggle for flag properties.
+    pub fn enabled(&self) -> bool {
+        self.flags & 1 != 0
+    }
+}
+
+// ── NiStringPalette ─────────────────────────────────────────────────
+
+/// String palette used by Oblivion .kf animation files.
+///
+/// Contains a single null-separated string buffer that NiControllerSequence
+/// ControlledBlock entries index into via byte offsets.
+#[derive(Debug)]
+pub struct NiStringPalette {
+    pub palette: String,
+}
+
+impl NiObject for NiStringPalette {
+    fn block_type_name(&self) -> &'static str {
+        "NiStringPalette"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiStringPalette {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let palette = stream.read_sized_string()?;
+        let _length = stream.read_u32_le()?; // redundant length field
+        Ok(Self { palette })
+    }
+
+    /// Look up a string by byte offset into the palette.
+    pub fn get_string(&self, offset: u32) -> Option<&str> {
+        let start = offset as usize;
+        if start >= self.palette.len() {
+            return None;
+        }
+        let end = self.palette[start..]
+            .find('\0')
+            .map(|i| start + i)
+            .unwrap_or(self.palette.len());
+        Some(&self.palette[start..end])
+    }
 }
 
 // ── NiVertexColorProperty ────────────────────────────────────────────
