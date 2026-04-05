@@ -38,7 +38,7 @@ Press **Escape** to capture mouse, then **WASD** + mouse to fly around. **Space/
 | ECS with pluggable storage (SparseSet + Packed), hierarchy (Parent/Children) | Working |
 | Vulkan RT renderer with multi-light SSBO, ray query shadows, cell XCLL lighting | Working |
 | ESM parser (CELL, REFR, STAT, MSTT, FURN, DOOR, ACTI, CONT, LIGH, XCLL + 23 types) | Working |
-| NIF parser (107 block types, shader trailing fields, skinning, multi-bound, Havok skip) | Working |
+| NIF parser (117 block types, FO4 half-float + shader trailing, full skinning, Havok skip) | Working |
 | DDS texture loading (BC1/BC3/BC5 + DX10, mipmaps, shared sampler cache) | Working |
 | BSA v103 + v104 + v105 archive reader (Oblivion/FO3/FNV/Skyrim LE/SE) | Working |
 | Interior + exterior cell loading with placed object transforms | Working |
@@ -55,7 +55,7 @@ Press **Escape** to capture mouse, then **WASD** + mouse to fly around. **Space/
 | Material component (emissive, specular, glossiness, UV, normal map) | Working |
 | WorldBound component (bounding sphere for frustum culling / spatial queries) | Working |
 | StagingPool for reusable GPU upload buffers | Working |
-| 312 unit tests | Passing |
+| 315 unit tests | Passing |
 
 ## Architecture
 
@@ -124,7 +124,7 @@ cargo run -- --esm FalloutNV.esm \
              --textures-bsa "Fallout - Textures.bsa"  # Load an interior cell
 cargo run -- --swf menu.swf        # Render a Scaleform SWF menu
 cargo run -- --debug               # Show FPS/entity stats in title bar
-cargo test                         # Run all 312 tests
+cargo test                         # Run all 315 tests
 ```
 
 ### Shader Compilation
@@ -148,9 +148,9 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 | Metric | Value |
 |--------|-------|
 | Rust source files | 100 |
-| Lines of Rust | ~26,800 |
-| Unit tests | 312 |
-| Commits | 161 |
+| Lines of Rust | ~28,100 |
+| Unit tests | 315 |
+| Commits | 174 |
 | Workspace crates | 10 |
 
 ## Dependencies
