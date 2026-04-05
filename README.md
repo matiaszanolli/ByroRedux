@@ -10,7 +10,7 @@ Not a port — a ground-up rebuild that understands the legacy architecture and 
 
 ## Current State
 
-**22 milestones complete (M1–M22).** Loads full Fallout: New Vegas interior/exterior cells and Skyrim SE meshes with RT ray-traced shadows. Multi-light rendering with cell ambient/directional from ESM. Animation playback with scene graph hierarchy. Currently overhauling the NIF parser for Oblivion-through-Starfield support (N23 series).
+**22 milestones complete (M1–M22).** Loads full Fallout: New Vegas interior/exterior cells and Skyrim SE meshes with RT ray-traced shadows. Multi-light rendering with cell ambient/directional from ESM. Animation playback with scene graph hierarchy. NIF parser overhaul in progress (N23 series) — skinning, Havok collision, blend interpolators, vertex color/stencil/zbuffer properties, and Material ECS component now landed.
 
 ```bash
 # FNV interior cell
@@ -38,7 +38,7 @@ Press **Escape** to capture mouse, then **WASD** + mouse to fly around. **Space/
 | ECS with pluggable storage (SparseSet + Packed), hierarchy (Parent/Children) | Working |
 | Vulkan RT renderer with multi-light SSBO, ray query shadows, cell XCLL lighting | Working |
 | ESM parser (CELL, REFR, STAT, MSTT, FURN, DOOR, ACTI, CONT, LIGH, XCLL + 23 types) | Working |
-| NIF parser (49 block types, trait hierarchy, NifVariant for 8 games, decal detection) | Working |
+| NIF parser (94 block types, trait hierarchy, NifVariant for 8 games, skinning, Havok skip) | Working |
 | DDS texture loading (BC1/BC3/BC5 + DX10, mipmaps, shared sampler cache) | Working |
 | BSA v103 + v104 + v105 archive reader (Oblivion/FO3/FNV/Skyrim LE/SE) | Working |
 | Interior + exterior cell loading with placed object transforms | Working |
@@ -52,7 +52,8 @@ Press **Escape** to capture mouse, then **WASD** + mouse to fly around. **Space/
 | Fly camera (WASD + mouse look) | Working |
 | Plugin system with stable Form IDs, conflict resolution | Working |
 | ECS-native scripting (events, timers) | Working |
-| 288 unit tests | Passing |
+| Material component (emissive, specular, glossiness, UV, normal map) | Working |
+| 290 unit tests | Passing |
 
 ## Architecture
 
@@ -96,7 +97,7 @@ Vulkan 1.3 via `ash` with RT ray query extensions:
 
 ### Asset Pipeline
 
-ESM files parsed for CELL/REFR/STAT records (23 record types). Interior cell lighting from XCLL subrecords. NIF files parsed with version-aware binary reading (NifVariant for 8 game variants, 49+ block types). Scene graph hierarchy preserved as Parent/Children entities. Single-pass material property extraction. DDS textures from BSA v103/v104/v105 archives with BC-compressed mipmap chains. NiControllerManager embedded animation discovery with text key event emission.
+ESM files parsed for CELL/REFR/STAT records (23 record types). Interior cell lighting from XCLL subrecords. NIF files parsed with version-aware binary reading (NifVariant for 8 game variants, 94 registered block types including 30 Havok collision blocks). Skinning blocks fully parsed (NiSkinInstance/Data/Partition, BsDismemberSkinInstance). Scene graph hierarchy preserved as Parent/Children entities. Single-pass material property extraction into Material ECS component (emissive, specular, glossiness, UV, normal map). DDS textures from BSA v103/v104/v105 archives with BC-compressed mipmap chains. NiControllerManager embedded animation discovery with text key event emission.
 
 ## Building
 
@@ -121,7 +122,7 @@ cargo run -- --esm FalloutNV.esm \
              --textures-bsa "Fallout - Textures.bsa"  # Load an interior cell
 cargo run -- --swf menu.swf        # Render a Scaleform SWF menu
 cargo run -- --debug               # Show FPS/entity stats in title bar
-cargo test                         # Run all 288 tests
+cargo test                         # Run all 290 tests
 ```
 
 ### Shader Compilation
@@ -144,10 +145,10 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 
 | Metric | Value |
 |--------|-------|
-| Rust source files | 97 |
-| Lines of Rust | ~24,400 |
-| Unit tests | 288 |
-| Commits | 132 |
+| Rust source files | 98 |
+| Lines of Rust | ~25,400 |
+| Unit tests | 290 |
+| Commits | 147 |
 | Workspace crates | 10 |
 
 ## Dependencies

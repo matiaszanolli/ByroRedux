@@ -131,15 +131,16 @@ Detailed analysis in `docs/legacy/`.
 See [ROADMAP.md](ROADMAP.md) for the full roadmap with milestones, known issues, and game compatibility.
 Current: 22 milestones complete (M1–M22). RT multi-light with ray query shadows, animation with
 blending stack, scene graph hierarchy, cell XCLL lighting, decal detection, BSA v103 (Oblivion).
-Active: N23 series — NIF parser overhaul for Oblivion through Starfield (10 sub-milestones).
+Active: N23 series — NIF parser overhaul for Oblivion through Starfield (94 block types registered).
 Usage:
   `cargo run -- path/to/mesh.nif` — render a loose NIF file
   `cargo run -- mesh.nif --kf anim.kf` — play animation on a mesh
   `cargo run -- --bsa path.bsa --mesh meshes\\foo.nif` — extract from BSA and render
   `cargo run -- --bsa meshes.bsa --mesh meshes\\foo.nif --textures-bsa textures.bsa` — with textures
   `cargo run -- --esm FalloutNV.esm --cell CellID --bsa Meshes.bsa --textures-bsa Textures.bsa` — cell
-Done: N23.1 (trait hierarchy + FNV audit fixes — 7 parser bugs fixed).
-Next: N23.2 (shader trailing fields), N23.4 (FNV validation), N23.3 (Oblivion).
+Done: N23.1 (trait hierarchy + FNV audit fixes), N23.5 partial (skinning parsers),
+N23.6 skip (30 Havok types), N23.3 partial (8/15 Oblivion blocks), Material component.
+Next: N23.2 (shader trailing fields), N23.3 remaining (Oblivion), N23.4 (FNV validation).
 
 ## Git Conventions
 
