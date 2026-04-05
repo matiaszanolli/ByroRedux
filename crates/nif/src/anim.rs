@@ -4,7 +4,7 @@
 //! and keyframe data) into engine-friendly `AnimationClip` structures that
 //! are decoupled from the NIF block graph.
 
-use crate::blocks::controller::{ControlledBlock, NiControllerSequence};
+use crate::blocks::controller::{ControlledBlock, NiControllerManager, NiControllerSequence};
 use crate::blocks::interpolator::{
     FloatKey, KeyGroup, KeyType, NiBoolInterpolator, NiFloatData, NiFloatInterpolator,
     NiPoint3Interpolator, NiPosData, NiTransformData, NiTransformInterpolator, Vec3Key,
@@ -197,27 +197,77 @@ fn zup_to_yup_quat(wxyz: [f32; 4]) -> [f32; 4] {
 
 /// Import all animation clips from a parsed NIF/KF scene.
 ///
-/// Finds all `NiControllerSequence` blocks, follows their interpolator
-/// and data references, and produces `AnimationClip` instances.
+/// Discovers sequences in two ways:
+/// 1. Top-level `NiControllerSequence` blocks (standalone .kf files)
+/// 2. `NiControllerManager` blocks that reference sequences embedded
+///    in .nif files (follows `sequence_refs` to find them)
+///
+/// The `cumulative` flag from NiControllerManager is stored in each
+/// clip's `accum_root_name` field (non-empty when cumulative).
 pub fn import_kf(scene: &NifScene) -> Vec<AnimationClip> {
     let mut clips = Vec::new();
+    let mut seen_indices = std::collections::HashSet::new();
 
+    // Path 1: NiControllerManager → follow sequence_refs.
+    // This handles .nif files with embedded animations.
     for block in &scene.blocks {
+        let Some(mgr) = block.as_any().downcast_ref::<NiControllerManager>() else {
+            continue;
+        };
+
+        for seq_ref in &mgr.sequence_refs {
+            let Some(idx) = seq_ref.index() else {
+                continue;
+            };
+            if !seen_indices.insert(idx) {
+                continue; // already imported
+            }
+
+            let Some(seq) = scene.get_as::<NiControllerSequence>(idx) else {
+                log::warn!(
+                    "NiControllerManager references block {} but it's not a NiControllerSequence",
+                    idx
+                );
+                continue;
+            };
+
+            let clip = import_sequence(scene, seq);
+            if clip_has_data(&clip) {
+                log::debug!(
+                    "Imported sequence '{}' from NiControllerManager (cumulative={})",
+                    clip.name,
+                    mgr.cumulative
+                );
+                clips.push(clip);
+            }
+        }
+    }
+
+    // Path 2: Top-level NiControllerSequence blocks (standalone .kf files).
+    // Skip any already imported via a NiControllerManager above.
+    for (i, block) in scene.blocks.iter().enumerate() {
+        if seen_indices.contains(&i) {
+            continue;
+        }
+
         let Some(seq) = block.as_any().downcast_ref::<NiControllerSequence>() else {
             continue;
         };
 
         let clip = import_sequence(scene, seq);
-        let has_data = !clip.channels.is_empty()
-            || !clip.float_channels.is_empty()
-            || !clip.color_channels.is_empty()
-            || !clip.bool_channels.is_empty();
-        if has_data {
+        if clip_has_data(&clip) {
             clips.push(clip);
         }
     }
 
     clips
+}
+
+fn clip_has_data(clip: &AnimationClip) -> bool {
+    !clip.channels.is_empty()
+        || !clip.float_channels.is_empty()
+        || !clip.color_channels.is_empty()
+        || !clip.bool_channels.is_empty()
 }
 
 fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationClip {

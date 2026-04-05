@@ -9,6 +9,7 @@ pub mod controller;
 pub mod extra_data;
 pub mod interpolator;
 pub mod node;
+pub mod palette;
 pub mod properties;
 pub mod shader;
 pub mod texture;
@@ -121,6 +122,9 @@ pub fn parse_block(
         }
         "NiControllerManager" => Ok(Box::new(NiControllerManager::parse(stream)?)),
         "NiControllerSequence" => Ok(Box::new(NiControllerSequence::parse(stream)?)),
+        "NiDefaultAVObjectPalette" => {
+            Ok(Box::new(palette::NiDefaultAVObjectPalette::parse(stream)?))
+        }
         // Interpolator blocks (animation keyframe data)
         "NiTransformInterpolator" | "BSRotAccumTransfInterpolator" => {
             Ok(Box::new(NiTransformInterpolator::parse(stream)?))
