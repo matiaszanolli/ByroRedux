@@ -230,6 +230,18 @@ pub enum ShaderTypeData {
     },
 }
 
+/// FO4+ wetness parameters (BSSPWetnessParams).
+#[derive(Debug, Clone)]
+pub struct WetnessParams {
+    pub spec_scale: f32,
+    pub spec_power: f32,
+    pub min_var: f32,
+    /// Only present for BSVER == 130 (not FO76+).
+    pub env_map_scale: f32,
+    pub fresnel_power: f32,
+    pub metalness: f32,
+}
+
 /// BSLightingShaderProperty — Skyrim+ per-pixel lighting shader.
 ///
 /// Inheritance: NiObjectNET → NiProperty → BSShaderProperty → BSLightingShaderProperty.
@@ -257,6 +269,19 @@ pub struct BSLightingShaderProperty {
     pub specular_strength: f32,
     pub lighting_effect_1: f32,
     pub lighting_effect_2: f32,
+    // ── FO4+ common fields (BSVER >= 130) ────────────────────────
+    /// Subsurface rolloff (BSVER 130–139).
+    pub subsurface_rolloff: f32,
+    /// Rimlight power (BSVER 130–139).
+    pub rimlight_power: f32,
+    /// Backlight power (BSVER 130–139, only if rimlight < FLT_MAX).
+    pub backlight_power: f32,
+    /// Grayscale to palette scale (BSVER >= 130).
+    pub grayscale_to_palette_scale: f32,
+    /// Fresnel power (BSVER >= 130).
+    pub fresnel_power: f32,
+    /// Wetness parameters (BSVER >= 130).
+    pub wetness: Option<WetnessParams>,
     /// Shader-type-specific trailing fields (env map, skin tint, eye cubemap, etc.).
     pub shader_type_data: ShaderTypeData,
 }
@@ -328,12 +353,63 @@ impl BSLightingShaderProperty {
             (0.0, 0.0)
         };
 
-        // Shader-type-specific trailing fields (Skyrim LE/SE only, BSVER < 130).
-        // FO4+ has additional common fields before these — deferred to N23.2 Phase 2.
-        let shader_type_data = if stream.variant().bsver() < 130 {
+        // FO4+ common fields before shader-type-specific data.
+        let bsver = stream.variant().bsver();
+        let (subsurface_rolloff, rimlight_power, backlight_power) = if bsver >= 130 && bsver < 140 {
+            let sub = stream.read_f32_le()?;
+            let rim = stream.read_f32_le()?;
+            // Backlight only present if rimlight < FLT_MAX (~3.4e38).
+            let back = if rim < f32::MAX {
+                stream.read_f32_le()?
+            } else {
+                0.0
+            };
+            (sub, rim, back)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+
+        let grayscale_to_palette_scale = if bsver >= 130 {
+            stream.read_f32_le()?
+        } else {
+            0.0
+        };
+
+        let fresnel_power = if bsver >= 130 {
+            stream.read_f32_le()?
+        } else {
+            0.0
+        };
+
+        let wetness = if bsver >= 130 {
+            let spec_scale = stream.read_f32_le()?;
+            let spec_power = stream.read_f32_le()?;
+            let min_var = stream.read_f32_le()?;
+            let env_map_scale = if bsver == 130 {
+                stream.read_f32_le()?
+            } else {
+                0.0
+            };
+            let fresnel = stream.read_f32_le()?;
+            let metalness = stream.read_f32_le()?;
+            // BSVER > 130 has Unknown 1; BSVER == 155 has Unknown 2 — skip via block_size.
+            Some(WetnessParams {
+                spec_scale,
+                spec_power,
+                min_var,
+                env_map_scale,
+                fresnel_power: fresnel,
+                metalness,
+            })
+        } else {
+            None
+        };
+
+        // Shader-type-specific trailing fields.
+        let shader_type_data = if bsver < 130 {
             parse_shader_type_data(stream, shader_type)?
         } else {
-            ShaderTypeData::None
+            parse_shader_type_data_fo4(stream, shader_type, bsver)?
         };
 
         Ok(Self {
@@ -354,6 +430,12 @@ impl BSLightingShaderProperty {
             specular_strength,
             lighting_effect_1,
             lighting_effect_2,
+            subsurface_rolloff,
+            rimlight_power,
+            backlight_power,
+            grayscale_to_palette_scale,
+            fresnel_power,
+            wetness,
             shader_type_data,
         })
     }
@@ -438,6 +520,95 @@ fn parse_shader_type_data(stream: &mut NifStream, shader_type: u32) -> io::Resul
             })
         }
         // Types 0,2,3,4,8,9,10,12,13,15,17,18,19,20 have no trailing fields.
+        _ => Ok(ShaderTypeData::None),
+    }
+}
+
+/// Parse FO4+ shader-type-specific trailing fields.
+/// Same types as Skyrim but type 1 (EnvironmentMap) adds two bools (BSVER 130–139)
+/// and type 5 (SkinTint) adds a skin tint alpha float (BSVER 130–139).
+fn parse_shader_type_data_fo4(
+    stream: &mut NifStream,
+    shader_type: u32,
+    bsver: u32,
+) -> io::Result<ShaderTypeData> {
+    match shader_type {
+        1 => {
+            let env_map_scale = stream.read_f32_le()?;
+            // FO4-specific: SSR bools (BSVER 130–139).
+            if bsver >= 130 && bsver < 140 {
+                let _use_ssr = stream.read_byte_bool()?;
+                let _wetness_use_ssr = stream.read_byte_bool()?;
+            }
+            Ok(ShaderTypeData::EnvironmentMap { env_map_scale })
+        }
+        5 => {
+            let skin_tint_color = [
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+            ];
+            // FO4-specific: skin tint alpha (BSVER 130–139).
+            if bsver >= 130 && bsver < 140 {
+                let _skin_tint_alpha = stream.read_f32_le()?;
+            }
+            Ok(ShaderTypeData::SkinTint { skin_tint_color })
+        }
+        // All other types same as Skyrim.
+        6 => {
+            let hair_tint_color = [
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+            ];
+            Ok(ShaderTypeData::HairTint { hair_tint_color })
+        }
+        7 => {
+            let max_passes = stream.read_f32_le()?;
+            let scale = stream.read_f32_le()?;
+            Ok(ShaderTypeData::ParallaxOcc { max_passes, scale })
+        }
+        11 => {
+            let inner_layer_thickness = stream.read_f32_le()?;
+            let refraction_scale = stream.read_f32_le()?;
+            let inner_layer_texture_scale = [stream.read_f32_le()?, stream.read_f32_le()?];
+            let envmap_strength = stream.read_f32_le()?;
+            Ok(ShaderTypeData::MultiLayerParallax {
+                inner_layer_thickness,
+                refraction_scale,
+                inner_layer_texture_scale,
+                envmap_strength,
+            })
+        }
+        14 => {
+            let sparkle_parameters = [
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+            ];
+            Ok(ShaderTypeData::SparkleSnow {
+                sparkle_parameters,
+            })
+        }
+        16 => {
+            let eye_cubemap_scale = stream.read_f32_le()?;
+            let left_eye_reflection_center = [
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+            ];
+            let right_eye_reflection_center = [
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+            ];
+            Ok(ShaderTypeData::EyeEnvmap {
+                eye_cubemap_scale,
+                left_eye_reflection_center,
+                right_eye_reflection_center,
+            })
+        }
         _ => Ok(ShaderTypeData::None),
     }
 }
@@ -892,6 +1063,113 @@ mod tests {
         assert!((prop.soft_falloff_depth - 5.0).abs() < 1e-6);
         assert_eq!(prop.greyscale_texture, "tex/grey.dds");
         assert!(prop.env_map_texture.is_empty()); // Not FO4+
+        assert_eq!(stream.position(), data.len() as u64);
+    }
+
+    fn make_fo4_header() -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 12,
+            user_version_2: 130,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: vec!["FO4Shader".to_string()],
+            max_string_length: 9,
+            num_groups: 0,
+        }
+    }
+
+    /// Build FO4 BSLightingShaderProperty bytes (BSVER=130, shader_type=1 env map).
+    fn build_bs_lighting_fo4_env_map() -> Vec<u8> {
+        let mut data = Vec::new();
+        // shader_type (read before NiObjectNET for BSVER 83-130)
+        data.extend_from_slice(&1u32.to_le_bytes()); // EnvironmentMap
+        // NiObjectNET: name (string table index 0)
+        data.extend_from_slice(&0i32.to_le_bytes());
+        // extra_data_refs: count=0
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // controller_ref: -1
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // shader_flags_1, shader_flags_2 (FO4 reads u32 pair)
+        data.extend_from_slice(&0x80000000u32.to_le_bytes());
+        data.extend_from_slice(&0x00000010u32.to_le_bytes());
+        // uv_offset, uv_scale
+        for v in [0.0f32, 0.0, 1.0, 1.0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // texture_set_ref
+        data.extend_from_slice(&3i32.to_le_bytes());
+        // emissive_color (3x f32)
+        for v in [0.0f32, 0.5, 1.0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // emissive_multiple
+        data.extend_from_slice(&2.0f32.to_le_bytes());
+        // Root Material (FO4+: NiFixedString = string table index)
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // no root material
+        // texture_clamp_mode
+        data.extend_from_slice(&3u32.to_le_bytes());
+        // alpha
+        data.extend_from_slice(&0.8f32.to_le_bytes());
+        // refraction_strength
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        // glossiness (called "smoothness" in FO4, same f32)
+        data.extend_from_slice(&0.5f32.to_le_bytes());
+        // specular_color (3x f32)
+        for v in [1.0f32, 0.9, 0.8] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // specular_strength
+        data.extend_from_slice(&1.5f32.to_le_bytes());
+        // lighting_effect_1, lighting_effect_2 — NOT present for BSVER >= 130
+        // (the parser skips these with (0.0, 0.0))
+        // FO4 common fields:
+        data.extend_from_slice(&0.3f32.to_le_bytes()); // subsurface_rolloff
+        data.extend_from_slice(&2.5f32.to_le_bytes()); // rimlight_power (< FLT_MAX → has backlight)
+        data.extend_from_slice(&1.0f32.to_le_bytes()); // backlight_power
+        data.extend_from_slice(&0.7f32.to_le_bytes()); // grayscale_to_palette_scale
+        data.extend_from_slice(&5.0f32.to_le_bytes()); // fresnel_power
+        // WetnessParams (BSVER=130: 6 floats, env_map_scale present)
+        for v in [0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // Shader type 1 trailing: env_map_scale + 2 bools (FO4 BSVER 130)
+        data.extend_from_slice(&0.75f32.to_le_bytes()); // env_map_scale
+        data.push(1u8); // use_ssr (bool)
+        data.push(0u8); // wetness_use_ssr (bool)
+        data
+    }
+
+    #[test]
+    fn parse_bs_lighting_fo4_env_map_with_wetness() {
+        let header = make_fo4_header();
+        let data = build_bs_lighting_fo4_env_map();
+        let mut stream = NifStream::new(&data, &header);
+
+        let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
+        assert_eq!(prop.shader_type, 1);
+        assert_eq!(prop.shader_flags_1, 0x80000000); // FO4 flags read correctly
+        assert!((prop.glossiness - 0.5).abs() < 1e-6); // "smoothness" in FO4
+        assert!((prop.subsurface_rolloff - 0.3).abs() < 1e-6);
+        assert!((prop.rimlight_power - 2.5).abs() < 1e-6);
+        assert!((prop.backlight_power - 1.0).abs() < 1e-6);
+        assert!((prop.grayscale_to_palette_scale - 0.7).abs() < 1e-6);
+        assert!((prop.fresnel_power - 5.0).abs() < 1e-6);
+        // Wetness params
+        let w = prop.wetness.as_ref().unwrap();
+        assert!((w.spec_scale - 0.1).abs() < 1e-6);
+        assert!((w.env_map_scale - 0.4).abs() < 1e-6); // BSVER=130 has this
+        assert!((w.metalness - 0.6).abs() < 1e-6);
+        // Shader type data: EnvironmentMap
+        match prop.shader_type_data {
+            ShaderTypeData::EnvironmentMap { env_map_scale } => {
+                assert!((env_map_scale - 0.75).abs() < 1e-6);
+            }
+            _ => panic!("expected EnvironmentMap"),
+        }
         assert_eq!(stream.position(), data.len() as u64);
     }
 }
