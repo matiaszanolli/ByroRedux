@@ -29,6 +29,8 @@ pub struct Material {
     pub uv_scale: [f32; 2],
     /// Material alpha/transparency (0.0 = fully transparent, 1.0 = opaque).
     pub alpha: f32,
+    /// Environment map reflection scale (shader type 1).
+    pub env_map_scale: f32,
     /// Normal map texture path (if available).
     pub normal_map: Option<String>,
 }
@@ -44,6 +46,7 @@ impl Default for Material {
             uv_offset: [0.0, 0.0],
             uv_scale: [1.0, 1.0],
             alpha: 1.0,
+            env_map_scale: 1.0,
             normal_map: None,
         }
     }

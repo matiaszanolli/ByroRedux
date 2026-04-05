@@ -1255,6 +1255,7 @@ pub(crate) fn load_nif_bytes(
                 uv_offset: mesh.uv_offset,
                 uv_scale: mesh.uv_scale,
                 alpha: mesh.mat_alpha,
+                env_map_scale: mesh.env_map_scale,
                 normal_map: mesh.normal_map.clone(),
             },
         );

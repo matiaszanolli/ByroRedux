@@ -13,7 +13,7 @@ use crate::blocks::properties::{
 };
 use crate::blocks::shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
-    BSShaderPPLightingProperty, BSShaderTextureSet,
+    BSShaderPPLightingProperty, BSShaderTextureSet, ShaderTypeData,
 };
 use crate::blocks::texture::NiSourceTexture;
 use crate::blocks::tri_shape::{BsTriShape, NiTriShape, NiTriShapeData, NiTriStripsData};
@@ -80,6 +80,8 @@ pub struct ImportedMesh {
     pub uv_scale: [f32; 2],
     /// Material alpha/transparency.
     pub mat_alpha: f32,
+    /// Environment map reflection scale (from shader type 1).
+    pub env_map_scale: f32,
     /// Index into `ImportedScene.nodes` for this mesh's parent node, or None.
     pub parent_node: Option<usize>,
 }
@@ -366,6 +368,7 @@ fn extract_mesh(
         uv_offset: mat.uv_offset,
         uv_scale: mat.uv_scale,
         mat_alpha: mat.alpha,
+        env_map_scale: mat.env_map_scale,
         parent_node: None,
     })
 }
@@ -453,6 +456,7 @@ fn extract_bs_tri_shape(
         uv_scale,
         mat_alpha,
         normal_map,
+        env_map_scale,
     ) = if let Some(idx) = shape.shader_property_ref.index() {
         if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
             let nm = shader
@@ -461,6 +465,11 @@ fn extract_bs_tri_shape(
                 .and_then(|ts_idx| scene.get_as::<BSShaderTextureSet>(ts_idx))
                 .and_then(|ts| ts.textures.get(1).cloned())
                 .filter(|s| !s.is_empty());
+            let ems = if let ShaderTypeData::EnvironmentMap { env_map_scale } = shader.shader_type_data {
+                env_map_scale
+            } else {
+                1.0
+            };
             (
                 shader.emissive_color,
                 shader.emissive_multiple,
@@ -471,15 +480,16 @@ fn extract_bs_tri_shape(
                 shader.uv_scale,
                 shader.alpha,
                 nm,
+                ems,
             )
         } else {
             (
-                [0.0; 3], 1.0, [1.0; 3], 1.0, 80.0, [0.0; 2], [1.0; 2], 1.0, None,
+                [0.0; 3], 1.0, [1.0; 3], 1.0, 80.0, [0.0; 2], [1.0; 2], 1.0, None, 1.0,
             )
         }
     } else {
         (
-            [0.0; 3], 1.0, [1.0; 3], 1.0, 80.0, [0.0; 2], [1.0; 2], 1.0, None,
+            [0.0; 3], 1.0, [1.0; 3], 1.0, 80.0, [0.0; 2], [1.0; 2], 1.0, None, 1.0,
         )
     };
 
@@ -506,6 +516,7 @@ fn extract_bs_tri_shape(
         uv_offset,
         uv_scale,
         mat_alpha,
+        env_map_scale,
         parent_node: None,
     })
 }
@@ -591,6 +602,8 @@ struct MaterialInfo {
     uv_offset: [f32; 2],
     uv_scale: [f32; 2],
     alpha: f32,
+    /// Environment map scale from shader type 1 (EnvironmentMap).
+    env_map_scale: f32,
     has_material_data: bool,
 }
 
@@ -610,6 +623,7 @@ impl Default for MaterialInfo {
             uv_offset: [0.0, 0.0],
             uv_scale: [1.0, 1.0],
             alpha: 1.0,
+            env_map_scale: 1.0,
             has_material_data: false,
         }
     }
@@ -659,6 +673,9 @@ fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> MaterialInfo {
             info.uv_offset = shader.uv_offset;
             info.uv_scale = shader.uv_scale;
             info.alpha = shader.alpha;
+            if let ShaderTypeData::EnvironmentMap { env_map_scale } = shader.shader_type_data {
+                info.env_map_scale = env_map_scale;
+            }
             info.has_material_data = true;
         }
         if let Some(shader) = scene.get_as::<BSEffectShaderProperty>(idx) {
