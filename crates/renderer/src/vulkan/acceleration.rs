@@ -242,8 +242,16 @@ impl AccelerationManager {
             self.tlas.is_none() || self.tlas.as_ref().unwrap().max_instances < instance_count;
 
         if need_new_tlas {
-            // Destroy old TLAS.
+            // Destroy old TLAS. device_wait_idle is needed because the old
+            // TLAS may be referenced by an in-flight command buffer from
+            // another frame slot. This is rare — initial capacity of 4096
+            // covers most scenes without resize.
             if let Some(mut old) = self.tlas.take() {
+                log::warn!(
+                    "TLAS resize: {} → {} instances (GPU stall — consider increasing initial capacity)",
+                    old.max_instances,
+                    instance_count,
+                );
                 device.device_wait_idle().ok();
                 self.accel_loader
                     .destroy_acceleration_structure(old.accel, None);
@@ -251,8 +259,10 @@ impl AccelerationManager {
                 old.instance_buffer.destroy(device, allocator);
             }
 
-            // Create instance buffer.
-            let padded_count = (instance_count as usize).next_power_of_two().max(64);
+            // Pre-size generously to avoid future resizes. 4096 covers
+            // most interior cells (~200-800) and exterior cells (~1000-3000).
+            // Growth: 2x current requirement, minimum 4096.
+            let padded_count = ((instance_count as usize) * 2).max(4096);
             let padded_size = (std::mem::size_of::<vk::AccelerationStructureInstanceKHR>()
                 * padded_count) as vk::DeviceSize;
 
