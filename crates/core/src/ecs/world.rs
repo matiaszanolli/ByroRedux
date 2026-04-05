@@ -49,7 +49,16 @@ impl World {
 
     /// Attach a component to an entity. Overwrites if already present.
     /// Creates the storage for this component type if it doesn't exist yet.
+    ///
+    /// # Panics (debug only)
+    /// Panics if `entity` was never returned by `spawn()`.
     pub fn insert<T: Component>(&mut self, entity: EntityId, component: T) {
+        debug_assert!(
+            entity < self.next_entity,
+            "insert(): entity {} was never spawned (next_entity_id = {})",
+            entity,
+            self.next_entity,
+        );
         self.storage_write::<T>().insert(entity, component);
     }
 
@@ -956,6 +965,15 @@ mod tests {
         assert!(world.remove::<Health>(0).is_none());
         // query should still return None (no storage created).
         assert!(world.query::<Health>().is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "was never spawned")]
+    #[cfg(debug_assertions)]
+    fn insert_unspawned_entity_panics_debug() {
+        let mut world = World::new();
+        // Entity 999 was never spawned — should panic in debug mode.
+        world.insert(999, Health(100.0));
     }
 
     #[test]
