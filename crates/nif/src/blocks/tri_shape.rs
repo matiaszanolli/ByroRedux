@@ -261,11 +261,12 @@ impl BsTriShape {
         let num_vertices = stream.read_u16_le()?;
         let data_size = stream.read_u32_le()?;
 
-        let mut vertices = Vec::new();
-        let mut uvs = Vec::new();
-        let mut normals = Vec::new();
-        let mut vertex_colors = Vec::new();
-        let mut triangles = Vec::new();
+        let nv = num_vertices as usize;
+        let mut vertices = Vec::with_capacity(nv);
+        let mut uvs = Vec::with_capacity(nv);
+        let mut normals = Vec::with_capacity(nv);
+        let mut vertex_colors = Vec::with_capacity(nv);
+        let mut triangles = Vec::with_capacity(num_triangles as usize);
 
         if data_size > 0 {
             let vertex_size_bytes = vertex_size_quads * 4;
