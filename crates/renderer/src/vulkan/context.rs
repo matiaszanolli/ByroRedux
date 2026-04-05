@@ -173,6 +173,11 @@ impl VulkanContext {
         let command_pool = create_command_pool(&device, queue_indices.graphics)?;
 
         // 11. Texture registry with checkerboard fallback
+        let mut texture_registry = TextureRegistry::new(
+            &device,
+            swapchain_state.images.len() as u32,
+            1024,
+        )?;
         let checkerboard = super::texture::generate_checkerboard(256, 256, 32);
         let fallback_texture = Texture::from_rgba(
             &device,
@@ -182,13 +187,9 @@ impl VulkanContext {
             256,
             256,
             &checkerboard,
+            texture_registry.shared_sampler,
         )?;
-        let texture_registry = TextureRegistry::new(
-            &device,
-            swapchain_state.images.len() as u32,
-            1024,
-            fallback_texture,
-        )?;
+        texture_registry.set_fallback(&device, fallback_texture)?;
 
         // 12. Scene buffers (light SSBO + camera UBO + optional TLAS, descriptor set 1)
         let scene_buffers = scene_buffer::SceneBuffers::new(

@@ -24,19 +24,18 @@ pub struct TextureRegistry {
     fallback_handle: TextureHandle,
     descriptor_pool: vk::DescriptorPool,
     pub descriptor_set_layout: vk::DescriptorSetLayout,
+    /// Shared sampler for all textures (LINEAR/REPEAT, max LOD clamped by image).
+    pub shared_sampler: vk::Sampler,
     swapchain_image_count: u32,
     max_textures: u32,
 }
 
 impl TextureRegistry {
-    /// Create a new texture registry.
-    ///
-    /// Registers `fallback_texture` as handle 0 (used when texture loading fails or no path given).
+    /// Create a new texture registry (no fallback yet — call `set_fallback` after).
     pub fn new(
         device: &ash::Device,
         swapchain_image_count: u32,
         max_textures: u32,
-        fallback_texture: Texture,
     ) -> Result<Self> {
         // Descriptor set layout: binding 0 = combined image sampler, fragment stage.
         let binding = vk::DescriptorSetLayoutBinding::default()
@@ -71,22 +70,38 @@ impl TextureRegistry {
                 .context("Failed to create texture descriptor pool")?
         };
 
-        let mut registry = Self {
+        // Shared sampler: LINEAR/REPEAT with max_lod high enough for any mip chain.
+        // The actual image's mip count naturally clamps sampling.
+        let sampler_info = vk::SamplerCreateInfo::default()
+            .mag_filter(vk::Filter::LINEAR)
+            .min_filter(vk::Filter::LINEAR)
+            .address_mode_u(vk::SamplerAddressMode::REPEAT)
+            .address_mode_v(vk::SamplerAddressMode::REPEAT)
+            .address_mode_w(vk::SamplerAddressMode::REPEAT)
+            .anisotropy_enable(false)
+            .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
+            .unnormalized_coordinates(false)
+            .compare_enable(false)
+            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+            .min_lod(0.0)
+            .max_lod(16.0);
+
+        let shared_sampler = unsafe {
+            device
+                .create_sampler(&sampler_info, None)
+                .context("Failed to create shared texture sampler")?
+        };
+
+        let registry = Self {
             textures: Vec::new(),
             path_map: HashMap::new(),
             fallback_handle: 0,
             descriptor_pool,
             descriptor_set_layout,
+            shared_sampler,
             swapchain_image_count,
             max_textures,
         };
-
-        // Register fallback as handle 0.
-        let sets = registry.allocate_and_write_sets(device, &fallback_texture)?;
-        registry.textures.push(TextureEntry {
-            texture: fallback_texture,
-            descriptor_sets: sets,
-        });
 
         log::info!(
             "TextureRegistry created: pool for {} textures × {} swapchain images",
@@ -95,6 +110,17 @@ impl TextureRegistry {
         );
 
         Ok(registry)
+    }
+
+    /// Register the fallback texture as handle 0. Must be called once after new().
+    pub fn set_fallback(&mut self, device: &ash::Device, fallback_texture: Texture) -> Result<()> {
+        let sets = self.allocate_and_write_sets(device, &fallback_texture)?;
+        self.textures.push(TextureEntry {
+            texture: fallback_texture,
+            descriptor_sets: sets,
+        });
+        self.fallback_handle = 0;
+        Ok(())
     }
 
     /// Load a DDS texture from raw bytes, or return a cached handle if the path is already loaded.
@@ -113,8 +139,9 @@ impl TextureRegistry {
             return Ok(handle);
         }
 
-        let texture = Texture::from_dds(device, allocator, queue, command_pool, dds_bytes)
-            .with_context(|| format!("Failed to load DDS texture '{}'", path))?;
+        let texture =
+            Texture::from_dds(device, allocator, queue, command_pool, dds_bytes, self.shared_sampler)
+                .with_context(|| format!("Failed to load DDS texture '{}'", path))?;
 
         let sets = self.allocate_and_write_sets(device, &texture)?;
         let handle = self.textures.len() as TextureHandle;
@@ -164,6 +191,7 @@ impl TextureRegistry {
             width,
             height,
             pixels,
+            self.shared_sampler,
         )
         .context("Failed to create dynamic RGBA texture")?;
 
@@ -216,6 +244,7 @@ impl TextureRegistry {
             width,
             height,
             pixels,
+            self.shared_sampler,
         )
         .context("Failed to update dynamic RGBA texture")?;
 
@@ -307,6 +336,7 @@ impl TextureRegistry {
         self.path_map.clear();
 
         unsafe {
+            device.destroy_sampler(self.shared_sampler, None);
             device.destroy_descriptor_pool(self.descriptor_pool, None);
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
         }

@@ -24,7 +24,7 @@ impl Texture {
     /// 4. Copy staging buffer → image
     /// 5. Transition layout: TRANSFER_DST_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
     /// 6. Destroy staging buffer
-    /// 7. Create image view + sampler
+    /// 7. Create image view (sampler provided externally)
     pub fn from_rgba(
         device: &ash::Device,
         allocator: &SharedAllocator,
@@ -33,6 +33,7 @@ impl Texture {
         width: u32,
         height: u32,
         pixels: &[u8],
+        sampler: vk::Sampler,
     ) -> Result<Self> {
         assert_eq!(
             pixels.len(),
@@ -246,25 +247,6 @@ impl Texture {
                 .context("Failed to create texture image view")?
         };
 
-        // 8. Sampler.
-        let sampler_info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::LINEAR)
-            .min_filter(vk::Filter::LINEAR)
-            .address_mode_u(vk::SamplerAddressMode::REPEAT)
-            .address_mode_v(vk::SamplerAddressMode::REPEAT)
-            .address_mode_w(vk::SamplerAddressMode::REPEAT)
-            .anisotropy_enable(false)
-            .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
-            .unnormalized_coordinates(false)
-            .compare_enable(false)
-            .mipmap_mode(vk::SamplerMipmapMode::LINEAR);
-
-        let sampler = unsafe {
-            device
-                .create_sampler(&sampler_info, None)
-                .context("Failed to create texture sampler")?
-        };
-
         log::debug!("Texture uploaded: {}x{} RGBA", width, height);
 
         Ok(Self {
@@ -286,6 +268,7 @@ impl Texture {
         command_pool: vk::CommandPool,
         meta: &super::dds::DdsMetadata,
         pixel_data: &[u8],
+        sampler: vk::Sampler,
     ) -> Result<Self> {
         use super::dds;
 
@@ -515,27 +498,6 @@ impl Texture {
                 .context("Failed to create BC texture image view")?
         };
 
-        // 8. Sampler with mip support.
-        let sampler_info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::LINEAR)
-            .min_filter(vk::Filter::LINEAR)
-            .address_mode_u(vk::SamplerAddressMode::REPEAT)
-            .address_mode_v(vk::SamplerAddressMode::REPEAT)
-            .address_mode_w(vk::SamplerAddressMode::REPEAT)
-            .anisotropy_enable(false)
-            .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
-            .unnormalized_coordinates(false)
-            .compare_enable(false)
-            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
-            .min_lod(0.0)
-            .max_lod(meta.mip_count as f32);
-
-        let sampler = unsafe {
-            device
-                .create_sampler(&sampler_info, None)
-                .context("Failed to create BC texture sampler")?
-        };
-
         log::info!(
             "BC texture uploaded: {}x{}, {:?}, {} mips",
             meta.width,
@@ -561,30 +523,26 @@ impl Texture {
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
         dds_bytes: &[u8],
+        sampler: vk::Sampler,
     ) -> Result<Self> {
         let meta = super::dds::parse_dds(dds_bytes)?;
         let pixel_data = &dds_bytes[meta.data_offset..];
 
         if meta.compressed {
-            Self::from_bc(device, allocator, queue, command_pool, &meta, pixel_data)
+            Self::from_bc(device, allocator, queue, command_pool, &meta, pixel_data, sampler)
         } else {
-            // Uncompressed RGBA — use existing from_rgba path
             Self::from_rgba(
-                device,
-                allocator,
-                queue,
-                command_pool,
-                meta.width,
-                meta.height,
-                pixel_data,
+                device, allocator, queue, command_pool, meta.width, meta.height, pixel_data, sampler,
             )
         }
     }
 
     /// Destroy the texture and free GPU memory.
+    ///
+    /// Does NOT destroy the sampler — it's shared across all textures
+    /// and owned by TextureRegistry.
     pub fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         unsafe {
-            device.destroy_sampler(self.sampler, None);
             device.destroy_image_view(self.image_view, None);
         }
         if let Some(alloc) = self.allocation.take() {
