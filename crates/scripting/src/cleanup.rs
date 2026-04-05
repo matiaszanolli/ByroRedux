@@ -33,7 +33,7 @@ fn drain_component<T: byroredux_core::ecs::storage::Component>(world: &World) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{ActivateEvent, AnimationTextKeyEvent, HitEvent, TimerExpired};
+    use crate::events::{ActivateEvent, HitEvent, TimerExpired};
     use byroredux_core::ecs::world::World;
 
     fn setup_world() -> World {

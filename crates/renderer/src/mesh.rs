@@ -51,7 +51,7 @@ impl MeshRegistry {
             command_pool,
             vertices,
             rt_enabled,
-            staging_pool.as_mut().map(|p| &mut **p),
+            staging_pool.as_deref_mut(),
         )?;
         let index_buffer = GpuBuffer::create_index_buffer(
             device,
