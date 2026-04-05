@@ -42,7 +42,10 @@ use shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
     BSShaderPPLightingProperty, BSShaderTextureSet,
 };
-use skin::{BsDismemberSkinInstance, NiSkinData, NiSkinInstance, NiSkinPartition};
+use skin::{
+    BsDismemberSkinInstance, BsSkinBoneData, BsSkinInstance, NiSkinData, NiSkinInstance,
+    NiSkinPartition,
+};
 use std::any::Any;
 use std::fmt::Debug;
 use std::io;
@@ -146,6 +149,8 @@ pub fn parse_block(
         "BSDismemberSkinInstance" => Ok(Box::new(BsDismemberSkinInstance::parse(stream)?)),
         "NiSkinData" => Ok(Box::new(NiSkinData::parse(stream)?)),
         "NiSkinPartition" => Ok(Box::new(NiSkinPartition::parse(stream)?)),
+        "BSSkin::Instance" => Ok(Box::new(BsSkinInstance::parse(stream)?)),
+        "BSSkin::BoneData" => Ok(Box::new(BsSkinBoneData::parse(stream)?)),
         "NiStringExtraData" | "NiBinaryExtraData" | "NiIntegerExtraData" | "BSXFlags"
         | "NiBooleanExtraData" => Ok(Box::new(NiExtraData::parse(stream, type_name)?)),
         "BSBound" => Ok(Box::new(BsBound::parse(stream)?)),

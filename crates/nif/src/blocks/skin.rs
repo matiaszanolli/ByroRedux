@@ -212,3 +212,120 @@ impl BsDismemberSkinInstance {
         Ok(Self { base, partitions })
     }
 }
+
+// ── BSSkin::Instance (FO4+ skinning) ────────────────────────────────
+
+/// FO4+ skin instance — replaces NiSkinInstance for BSTriShape meshes.
+///
+/// Key differences: no skin partition ref (partition data is in BSTriShape),
+/// adds per-bone non-uniform scales, skeleton root is first field.
+#[derive(Debug)]
+pub struct BsSkinInstance {
+    pub skeleton_root_ref: BlockRef,
+    pub bone_data_ref: BlockRef,
+    pub bone_refs: Vec<BlockRef>,
+    pub scales: Vec<[f32; 3]>,
+}
+
+impl NiObject for BsSkinInstance {
+    fn block_type_name(&self) -> &'static str {
+        "BSSkin::Instance"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsSkinInstance {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let skeleton_root_ref = stream.read_block_ref()?;
+        let bone_data_ref = stream.read_block_ref()?;
+        let num_bones = stream.read_u32_le()? as usize;
+        let mut bone_refs = Vec::with_capacity(num_bones);
+        for _ in 0..num_bones {
+            bone_refs.push(stream.read_block_ref()?);
+        }
+        let num_scales = stream.read_u32_le()? as usize;
+        let mut scales = Vec::with_capacity(num_scales);
+        for _ in 0..num_scales {
+            scales.push([
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+            ]);
+        }
+        Ok(Self {
+            skeleton_root_ref,
+            bone_data_ref,
+            bone_refs,
+            scales,
+        })
+    }
+}
+
+// ── BSSkin::BoneData (FO4+ bone transforms) ─────────────────────────
+
+/// Per-bone transform for FO4+ skinning.
+#[derive(Debug)]
+pub struct BsSkinBoneTrans {
+    /// Bounding sphere: center (3 floats) + radius (1 float).
+    pub bounding_sphere: [f32; 4],
+    /// Bone-to-skin rotation matrix (3x3).
+    pub rotation: [[f32; 3]; 3],
+    /// Bone-to-skin translation.
+    pub translation: [f32; 3],
+    /// Bone scale.
+    pub scale: f32,
+}
+
+/// FO4+ bone data — replaces NiSkinData for BSTriShape meshes.
+///
+/// Simpler than NiSkinData: no overall skin transform, no per-vertex weights
+/// (weights are stored in BSTriShape vertex buffer as bone indices + weights).
+#[derive(Debug)]
+pub struct BsSkinBoneData {
+    pub bones: Vec<BsSkinBoneTrans>,
+}
+
+impl NiObject for BsSkinBoneData {
+    fn block_type_name(&self) -> &'static str {
+        "BSSkin::BoneData"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsSkinBoneData {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let num_bones = stream.read_u32_le()? as usize;
+        let mut bones = Vec::with_capacity(num_bones);
+        for _ in 0..num_bones {
+            let bounding_sphere = [
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+            ];
+            let mut rotation = [[0.0f32; 3]; 3];
+            for row in &mut rotation {
+                for val in row.iter_mut() {
+                    *val = stream.read_f32_le()?;
+                }
+            }
+            let translation = [
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+            ];
+            let scale = stream.read_f32_le()?;
+            bones.push(BsSkinBoneTrans {
+                bounding_sphere,
+                rotation,
+                translation,
+                scale,
+            });
+        }
+        Ok(Self { bones })
+    }
+}
