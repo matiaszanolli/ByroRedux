@@ -46,6 +46,7 @@ pub struct VulkanContext {
     pub texture_registry: TextureRegistry,
     pub scene_buffers: scene_buffer::SceneBuffers,
     pub accel_manager: Option<AccelerationManager>,
+    pipeline_cache: vk::PipelineCache,
     pipeline: vk::Pipeline,
     pipeline_alpha: vk::Pipeline,
     pipeline_two_sided: vk::Pipeline,
@@ -226,21 +227,26 @@ impl VulkanContext {
             None
         };
 
-        // 13. Graphics pipeline (with depth test + descriptor set layouts for set 0 + set 1)
+        // 13. Pipeline cache (load from disk if available)
+        let pipeline_cache = load_or_create_pipeline_cache(&device)?;
+
+        // 14. Graphics pipeline (with depth test + descriptor set layouts for set 0 + set 1)
         let pipelines = pipeline::create_triangle_pipeline(
             &device,
             render_pass,
             swapchain_state.extent,
             texture_registry.descriptor_set_layout,
             scene_buffers.descriptor_set_layout,
+            pipeline_cache,
         )?;
 
-        // 13. UI overlay pipeline (no depth, alpha blend, passthrough shaders)
+        // 15. UI overlay pipeline (no depth, alpha blend, passthrough shaders)
         let (pipeline_ui, ui_vert_module, ui_frag_module) = pipeline::create_ui_pipeline(
             &device,
             render_pass,
             swapchain_state.extent,
             pipelines.layout,
+            pipeline_cache,
         )?;
 
         // 14. Mesh registry (empty — meshes uploaded by the application)
@@ -275,6 +281,7 @@ impl VulkanContext {
             swapchain_state,
             allocator: Some(gpu_allocator),
             render_pass,
+            pipeline_cache,
             pipeline: pipelines.opaque,
             pipeline_alpha: pipelines.alpha,
             pipeline_two_sided: pipelines.opaque_two_sided,
@@ -829,6 +836,7 @@ impl VulkanContext {
             self.swapchain_state.extent,
             self.texture_registry.descriptor_set_layout,
             self.scene_buffers.descriptor_set_layout,
+            self.pipeline_cache,
         )?;
         // Pipeline layout and shader modules are unchanged — destroy the
         // redundant copies that create_triangle_pipeline just created.
@@ -849,6 +857,7 @@ impl VulkanContext {
             self.render_pass,
             self.swapchain_state.extent,
             self.pipeline_layout,
+            self.pipeline_cache,
         )?;
         unsafe {
             self.device.destroy_shader_module(ui_vert, None);
@@ -945,6 +954,10 @@ impl Drop for VulkanContext {
             self.device.destroy_shader_module(self.frag_module, None);
             self.device.destroy_shader_module(self.ui_vert_module, None);
             self.device.destroy_shader_module(self.ui_frag_module, None);
+            // Save pipeline cache to disk before destroying.
+            save_pipeline_cache(&self.device, self.pipeline_cache);
+            self.device
+                .destroy_pipeline_cache(self.pipeline_cache, None);
             self.device.destroy_render_pass(self.render_pass, None);
             self.swapchain_state.destroy(&self.device);
             // Drop the allocator before destroying the device.
@@ -1228,4 +1241,51 @@ fn allocate_command_buffers(
 
     log::info!("{} command buffers allocated", count);
     Ok(buffers)
+}
+
+const PIPELINE_CACHE_PATH: &str = "pipeline_cache.bin";
+
+/// Load pipeline cache data from disk, or create an empty cache.
+fn load_or_create_pipeline_cache(device: &ash::Device) -> Result<vk::PipelineCache> {
+    let initial_data = std::fs::read(PIPELINE_CACHE_PATH).unwrap_or_default();
+
+    let create_info = if initial_data.is_empty() {
+        log::info!("Creating empty pipeline cache");
+        vk::PipelineCacheCreateInfo::default()
+    } else {
+        log::info!(
+            "Loading pipeline cache from disk ({} bytes)",
+            initial_data.len()
+        );
+        vk::PipelineCacheCreateInfo::default().initial_data(&initial_data)
+    };
+
+    let cache = unsafe {
+        device
+            .create_pipeline_cache(&create_info, None)
+            .context("Failed to create pipeline cache")?
+    };
+
+    Ok(cache)
+}
+
+/// Save pipeline cache data to disk. Best-effort — logs warnings on failure.
+fn save_pipeline_cache(device: &ash::Device, cache: vk::PipelineCache) {
+    // SAFETY: get_pipeline_cache_data returns a Vec<u8> copy of the cache.
+    // The cache handle is valid (not yet destroyed).
+    let data = unsafe {
+        match device.get_pipeline_cache_data(cache) {
+            Ok(data) => data,
+            Err(e) => {
+                log::warn!("Failed to get pipeline cache data: {:?}", e);
+                return;
+            }
+        }
+    };
+
+    if let Err(e) = std::fs::write(PIPELINE_CACHE_PATH, &data) {
+        log::warn!("Failed to save pipeline cache to disk: {}", e);
+    } else {
+        log::info!("Pipeline cache saved ({} bytes)", data.len());
+    }
 }

@@ -46,6 +46,7 @@ pub fn create_triangle_pipeline(
     extent: vk::Extent2D,
     descriptor_set_layout: vk::DescriptorSetLayout,
     scene_set_layout: vk::DescriptorSetLayout,
+    pipeline_cache: vk::PipelineCache,
 ) -> Result<PipelineSet> {
     let vert_spv = include_bytes!("../../shaders/triangle.vert.spv");
     let frag_spv = include_bytes!("../../shaders/triangle.frag.spv");
@@ -246,7 +247,7 @@ pub fn create_triangle_pipeline(
 
     let pipelines = unsafe {
         device
-            .create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_infos, None)
+            .create_graphics_pipelines(pipeline_cache, &pipeline_infos, None)
             .map_err(|(_, err)| err)
             .context("Failed to create graphics pipelines")?
     };
@@ -274,6 +275,7 @@ pub fn create_ui_pipeline(
     render_pass: vk::RenderPass,
     extent: vk::Extent2D,
     pipeline_layout: vk::PipelineLayout,
+    pipeline_cache: vk::PipelineCache,
 ) -> Result<(vk::Pipeline, vk::ShaderModule, vk::ShaderModule)> {
     let vert_spv = include_bytes!("../../shaders/ui.vert.spv");
     let frag_spv = include_bytes!("../../shaders/ui.frag.spv");
@@ -374,7 +376,7 @@ pub fn create_ui_pipeline(
 
     let pipelines = unsafe {
         device
-            .create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_info, None)
+            .create_graphics_pipelines(pipeline_cache, &pipeline_info, None)
             .map_err(|(_, err)| err)
             .context("Failed to create UI pipeline")?
     };
