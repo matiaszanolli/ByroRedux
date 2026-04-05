@@ -834,41 +834,26 @@ impl VulkanContext {
             self.depth_format,
         )?;
 
-        // Recreate pipelines against the new render pass.
-        let pipelines = pipeline::create_triangle_pipeline(
+        // Recreate pipelines against the new render pass, reusing existing layout.
+        let pipelines = pipeline::recreate_triangle_pipelines(
             &self.device,
             self.render_pass,
             self.swapchain_state.extent,
-            self.texture_registry.descriptor_set_layout,
-            self.scene_buffers.descriptor_set_layout,
             self.pipeline_cache,
+            self.pipeline_layout,
         )?;
-        // Pipeline layout and shader modules are unchanged — destroy the
-        // redundant copies that create_triangle_pipeline just created.
-        unsafe {
-            self.device.destroy_pipeline_layout(pipelines.layout, None);
-            self.device
-                .destroy_shader_module(pipelines.vert_module, None);
-            self.device
-                .destroy_shader_module(pipelines.frag_module, None);
-        }
         self.pipeline = pipelines.opaque;
         self.pipeline_alpha = pipelines.alpha;
         self.pipeline_two_sided = pipelines.opaque_two_sided;
         self.pipeline_alpha_two_sided = pipelines.alpha_two_sided;
 
-        let (new_ui_pipeline, ui_vert, ui_frag) = pipeline::create_ui_pipeline(
+        self.pipeline_ui = pipeline::recreate_ui_pipeline(
             &self.device,
             self.render_pass,
             self.swapchain_state.extent,
             self.pipeline_layout,
             self.pipeline_cache,
         )?;
-        unsafe {
-            self.device.destroy_shader_module(ui_vert, None);
-            self.device.destroy_shader_module(ui_frag, None);
-        }
-        self.pipeline_ui = new_ui_pipeline;
 
         // Recreate descriptor sets for existing textures (new swapchain image count).
         self.texture_registry

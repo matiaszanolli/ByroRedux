@@ -48,6 +48,46 @@ pub fn create_triangle_pipeline(
     scene_set_layout: vk::DescriptorSetLayout,
     pipeline_cache: vk::PipelineCache,
 ) -> Result<PipelineSet> {
+    create_triangle_pipeline_with_layout(
+        device,
+        render_pass,
+        extent,
+        pipeline_cache,
+        None, // create new layout
+        descriptor_set_layout,
+        scene_set_layout,
+    )
+}
+
+/// Recreate triangle pipelines reusing an existing pipeline layout.
+/// Avoids redundant layout + shader module create/destroy on resize.
+pub fn recreate_triangle_pipelines(
+    device: &ash::Device,
+    render_pass: vk::RenderPass,
+    extent: vk::Extent2D,
+    pipeline_cache: vk::PipelineCache,
+    existing_layout: vk::PipelineLayout,
+) -> Result<PipelineSet> {
+    create_triangle_pipeline_with_layout(
+        device,
+        render_pass,
+        extent,
+        pipeline_cache,
+        Some(existing_layout),
+        vk::DescriptorSetLayout::null(), // unused when layout is provided
+        vk::DescriptorSetLayout::null(),
+    )
+}
+
+fn create_triangle_pipeline_with_layout(
+    device: &ash::Device,
+    render_pass: vk::RenderPass,
+    extent: vk::Extent2D,
+    pipeline_cache: vk::PipelineCache,
+    existing_layout: Option<vk::PipelineLayout>,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    scene_set_layout: vk::DescriptorSetLayout,
+) -> Result<PipelineSet> {
     let vert_spv = include_bytes!("../../shaders/triangle.vert.spv");
     let frag_spv = include_bytes!("../../shaders/triangle.frag.spv");
 
@@ -147,14 +187,19 @@ pub fn create_triangle_pipeline(
         offset: 0,
         size: 128, // 2 * sizeof(mat4)
     }];
-    let set_layouts = [descriptor_set_layout, scene_set_layout];
-    let layout_info = vk::PipelineLayoutCreateInfo::default()
-        .set_layouts(&set_layouts)
-        .push_constant_ranges(&push_constant_ranges);
-    let pipeline_layout = unsafe {
-        device
-            .create_pipeline_layout(&layout_info, None)
-            .context("Failed to create pipeline layout")?
+    let (pipeline_layout, owns_layout) = if let Some(layout) = existing_layout {
+        (layout, false)
+    } else {
+        let set_layouts = [descriptor_set_layout, scene_set_layout];
+        let layout_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(&set_layouts)
+            .push_constant_ranges(&push_constant_ranges);
+        let layout = unsafe {
+            device
+                .create_pipeline_layout(&layout_info, None)
+                .context("Failed to create pipeline layout")?
+        };
+        (layout, true)
     };
 
     let depth_stencil_opaque = vk::PipelineDepthStencilStateCreateInfo::default()
@@ -254,14 +299,23 @@ pub fn create_triangle_pipeline(
 
     log::info!("Graphics pipelines created (opaque + alpha + two-sided variants)");
 
+    // When reusing an existing layout, destroy shader modules now — they're
+    // compiled into the pipeline objects and no longer needed.
+    if !owns_layout {
+        unsafe {
+            device.destroy_shader_module(vert_module, None);
+            device.destroy_shader_module(frag_module, None);
+        }
+    }
+
     Ok(PipelineSet {
         opaque: pipelines[0],
         alpha: pipelines[1],
         opaque_two_sided: pipelines[2],
         alpha_two_sided: pipelines[3],
         layout: pipeline_layout,
-        vert_module,
-        frag_module,
+        vert_module: if owns_layout { vert_module } else { vk::ShaderModule::null() },
+        frag_module: if owns_layout { frag_module } else { vk::ShaderModule::null() },
     })
 }
 
@@ -384,4 +438,22 @@ pub fn create_ui_pipeline(
     log::info!("UI overlay pipeline created");
 
     Ok((pipelines[0], vert_module, frag_module))
+}
+
+/// Recreate the UI pipeline, destroying shader modules immediately after creation.
+/// Used during swapchain recreation — avoids returning modules just to destroy them.
+pub fn recreate_ui_pipeline(
+    device: &ash::Device,
+    render_pass: vk::RenderPass,
+    extent: vk::Extent2D,
+    pipeline_layout: vk::PipelineLayout,
+    pipeline_cache: vk::PipelineCache,
+) -> Result<vk::Pipeline> {
+    let (pipeline, vert, frag) =
+        create_ui_pipeline(device, render_pass, extent, pipeline_layout, pipeline_cache)?;
+    unsafe {
+        device.destroy_shader_module(vert, None);
+        device.destroy_shader_module(frag, None);
+    }
+    Ok(pipeline)
 }
