@@ -7,8 +7,106 @@ use ash::vk;
 use gpu_allocator::vulkan;
 use gpu_allocator::MemoryLocation;
 
-/// RAII guard for staging buffer + allocation.
-/// Ensures cleanup on early return from device-local upload paths.
+/// Pool of reusable staging buffers to avoid per-upload allocate/free cycles.
+///
+/// On a cell load with 500 meshes + 200 textures, this eliminates ~1200
+/// staging buffer creation/destruction cycles through gpu_allocator.
+pub struct StagingPool {
+    /// Available staging buffers sorted by size (ascending).
+    free_list: Vec<StagingEntry>,
+    device: ash::Device,
+    allocator: SharedAllocator,
+}
+
+struct StagingEntry {
+    buffer: vk::Buffer,
+    allocation: vulkan::Allocation,
+    capacity: vk::DeviceSize,
+}
+
+impl StagingPool {
+    pub fn new(device: ash::Device, allocator: SharedAllocator) -> Self {
+        Self {
+            free_list: Vec::new(),
+            device,
+            allocator,
+        }
+    }
+
+    /// Acquire a mapped staging buffer with at least `size` bytes.
+    /// Returns a reused buffer from the pool or creates a new one.
+    pub fn acquire(&mut self, size: vk::DeviceSize) -> Result<(vk::Buffer, vulkan::Allocation)> {
+        // Find the smallest free buffer that fits.
+        if let Some(idx) = self.free_list.iter().position(|e| e.capacity >= size) {
+            let entry = self.free_list.remove(idx);
+            return Ok((entry.buffer, entry.allocation));
+        }
+
+        // No suitable buffer — create a new one.
+        let buffer_info = vk::BufferCreateInfo::default()
+            .size(size)
+            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        let buffer = unsafe {
+            self.device
+                .create_buffer(&buffer_info, None)
+                .context("Failed to create staging buffer")?
+        };
+
+        let reqs = unsafe { self.device.get_buffer_memory_requirements(buffer) };
+
+        let allocation = self
+            .allocator
+            .lock()
+            .expect("allocator lock poisoned")
+            .allocate(&vulkan::AllocationCreateDesc {
+                name: "staging_pool",
+                requirements: reqs,
+                location: MemoryLocation::CpuToGpu,
+                linear: true,
+                allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
+            })
+            .context("Failed to allocate staging memory")?;
+
+        unsafe {
+            self.device
+                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
+                .context("Failed to bind staging buffer")?;
+        }
+
+        Ok((buffer, allocation))
+    }
+
+    /// Return a staging buffer to the pool for reuse.
+    pub fn release(&mut self, buffer: vk::Buffer, allocation: vulkan::Allocation, capacity: vk::DeviceSize) {
+        // Insert sorted by capacity for best-fit search.
+        let pos = self.free_list.partition_point(|e| e.capacity < capacity);
+        self.free_list.insert(pos, StagingEntry {
+            buffer,
+            allocation,
+            capacity,
+        });
+    }
+
+    /// Destroy all pooled staging buffers. Call before device destruction.
+    pub fn destroy(&mut self) {
+        for entry in self.free_list.drain(..) {
+            unsafe {
+                // SAFETY: buffer was created by this device, not yet destroyed.
+                self.device.destroy_buffer(entry.buffer, None);
+            }
+            self.allocator
+                .lock()
+                .expect("allocator lock poisoned")
+                .free(entry.allocation)
+                .expect("Failed to free staging allocation");
+        }
+    }
+}
+
+/// RAII guard for a staging buffer. Destroys on drop if not explicitly released.
+/// Used to ensure cleanup on early return from upload paths.
 pub(crate) struct StagingGuard {
     pub buffer: vk::Buffer,
     pub allocation: Option<vulkan::Allocation>,
@@ -84,6 +182,7 @@ impl GpuBuffer {
         command_pool: vk::CommandPool,
         data: &[T],
         rt_enabled: bool,
+        staging_pool: Option<&mut StagingPool>,
     ) -> Result<Self> {
         let size = (std::mem::size_of::<T>() * data.len()) as vk::DeviceSize;
         let mut usage = vk::BufferUsageFlags::VERTEX_BUFFER;
@@ -91,7 +190,7 @@ impl GpuBuffer {
             usage |= vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
         }
-        Self::create_device_local_buffer(device, allocator, queue, command_pool, size, usage, data)
+        Self::create_device_local_buffer(device, allocator, queue, command_pool, size, usage, data, staging_pool)
     }
 
     /// Create an index buffer in DEVICE_LOCAL memory via staging upload.
@@ -103,6 +202,7 @@ impl GpuBuffer {
         command_pool: vk::CommandPool,
         data: &[u32],
         rt_enabled: bool,
+        staging_pool: Option<&mut StagingPool>,
     ) -> Result<Self> {
         let size = (std::mem::size_of::<u32>() * data.len()) as vk::DeviceSize;
         let mut usage = vk::BufferUsageFlags::INDEX_BUFFER;
@@ -110,7 +210,7 @@ impl GpuBuffer {
             usage |= vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
         }
-        Self::create_device_local_buffer(device, allocator, queue, command_pool, size, usage, data)
+        Self::create_device_local_buffer(device, allocator, queue, command_pool, size, usage, data, staging_pool)
     }
 
     /// Create a host-visible buffer for per-frame CPU writes (no staging needed).
@@ -291,42 +391,44 @@ impl GpuBuffer {
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
         data: &[T],
+        staging_pool: Option<&mut StagingPool>,
     ) -> Result<Self> {
-        // 1. Create and fill the staging buffer (HOST_VISIBLE).
-        let staging_info = vk::BufferCreateInfo::default()
-            .size(size)
-            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        // 1. Acquire staging buffer — from pool (reuse) or create fresh.
+        let (staging_buffer, mut staging_alloc) = if let Some(pool) = staging_pool {
+            pool.acquire(size)?
+        } else {
+            let staging_info = vk::BufferCreateInfo::default()
+                .size(size)
+                .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-        let staging_buffer = unsafe {
-            device
-                .create_buffer(&staging_info, None)
-                .context("Failed to create staging buffer")?
+            let buf = unsafe {
+                device
+                    .create_buffer(&staging_info, None)
+                    .context("Failed to create staging buffer")?
+            };
+
+            let reqs = unsafe { device.get_buffer_memory_requirements(buf) };
+
+            let alloc = allocator
+                .lock()
+                .expect("allocator lock poisoned")
+                .allocate(&vulkan::AllocationCreateDesc {
+                    name: "buffer_staging",
+                    requirements: reqs,
+                    location: MemoryLocation::CpuToGpu,
+                    linear: true,
+                    allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
+                })
+                .context("Failed to allocate staging memory")?;
+
+            unsafe {
+                device
+                    .bind_buffer_memory(buf, alloc.memory(), alloc.offset())
+                    .context("Failed to bind staging buffer")?;
+            }
+            (buf, alloc)
         };
-
-        let staging_reqs = unsafe { device.get_buffer_memory_requirements(staging_buffer) };
-
-        let mut staging_alloc = allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .allocate(&vulkan::AllocationCreateDesc {
-                name: "buffer_staging",
-                requirements: staging_reqs,
-                location: MemoryLocation::CpuToGpu,
-                linear: true,
-                allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
-            })
-            .context("Failed to allocate staging memory")?;
-
-        unsafe {
-            device
-                .bind_buffer_memory(
-                    staging_buffer,
-                    staging_alloc.memory(),
-                    staging_alloc.offset(),
-                )
-                .context("Failed to bind staging buffer")?;
-        }
 
         // SAFETY: T: Copy guarantees no padding/drop concerns. The pointer is
         // valid and aligned (from a live slice), and size_of_val gives the

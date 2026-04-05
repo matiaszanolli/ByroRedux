@@ -2,7 +2,7 @@
 
 use crate::vertex::Vertex;
 use crate::vulkan::allocator::SharedAllocator;
-use crate::vulkan::buffer::GpuBuffer;
+use crate::vulkan::buffer::{GpuBuffer, StagingPool};
 use anyhow::Result;
 use ash::vk;
 
@@ -42,6 +42,7 @@ impl MeshRegistry {
         vertices: &[Vertex],
         indices: &[u32],
         rt_enabled: bool,
+        mut staging_pool: Option<&mut StagingPool>,
     ) -> Result<u32> {
         let vertex_buffer = GpuBuffer::create_vertex_buffer(
             device,
@@ -50,6 +51,7 @@ impl MeshRegistry {
             command_pool,
             vertices,
             rt_enabled,
+            staging_pool.as_mut().map(|p| &mut **p),
         )?;
         let index_buffer = GpuBuffer::create_index_buffer(
             device,
@@ -58,6 +60,7 @@ impl MeshRegistry {
             command_pool,
             indices,
             rt_enabled,
+            staging_pool,
         )?;
         let index_count = indices.len() as u32;
 

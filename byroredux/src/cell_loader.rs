@@ -402,6 +402,7 @@ fn load_nif_placed(
                 &vertices,
                 &mesh.indices,
                 ctx.device_caps.ray_query_supported,
+                None,
             ) {
                 Ok(h) => h,
                 Err(e) => {

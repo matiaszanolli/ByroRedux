@@ -793,25 +793,25 @@ impl App {
             let rt = ctx.device_caps.ray_query_supported;
             let cube_handle = ctx
                 .mesh_registry
-                .upload(&ctx.device, alloc, queue, pool, &verts, &idxs, rt)
+                .upload(&ctx.device, alloc, queue, pool, &verts, &idxs, rt, None)
                 .expect("Failed to upload cube mesh");
 
             let (quad_verts, quad_idxs) = quad_vertices();
             let quad_handle = ctx
                 .mesh_registry
-                .upload(&ctx.device, alloc, queue, pool, &quad_verts, &quad_idxs, rt)
+                .upload(&ctx.device, alloc, queue, pool, &quad_verts, &quad_idxs, rt, None)
                 .expect("Failed to upload quad mesh");
 
             let (red_verts, red_idxs) = triangle_vertices([1.0, 0.2, 0.2]);
             let red_handle = ctx
                 .mesh_registry
-                .upload(&ctx.device, alloc, queue, pool, &red_verts, &red_idxs, rt)
+                .upload(&ctx.device, alloc, queue, pool, &red_verts, &red_idxs, rt, None)
                 .expect("Failed to upload red triangle mesh");
 
             let (blue_verts, blue_idxs) = triangle_vertices([0.2, 0.2, 1.0]);
             let blue_handle = ctx
                 .mesh_registry
-                .upload(&ctx.device, alloc, queue, pool, &blue_verts, &blue_idxs, rt)
+                .upload(&ctx.device, alloc, queue, pool, &blue_verts, &blue_idxs, rt, None)
                 .expect("Failed to upload blue triangle mesh");
 
             let cube = self.world.spawn();
@@ -1200,6 +1200,7 @@ pub(crate) fn load_nif_bytes(
             &vertices,
             &mesh.indices,
             ctx.device_caps.ray_query_supported,
+            None,
         ) {
             Ok(h) => h,
             Err(e) => {
