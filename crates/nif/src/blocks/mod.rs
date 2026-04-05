@@ -30,7 +30,8 @@ use interpolator::{
 };
 use node::NiNode;
 use properties::{
-    NiAlphaProperty, NiMaterialProperty, NiStencilProperty, NiTexturingProperty, NiZBufferProperty,
+    NiAlphaProperty, NiMaterialProperty, NiStencilProperty, NiTexturingProperty,
+    NiVertexColorProperty, NiZBufferProperty,
 };
 use shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
@@ -106,6 +107,7 @@ pub fn parse_block(
         "NiAlphaProperty" => Ok(Box::new(NiAlphaProperty::parse(stream)?)),
         "NiStencilProperty" => Ok(Box::new(NiStencilProperty::parse(stream)?)),
         "NiZBufferProperty" => Ok(Box::new(NiZBufferProperty::parse(stream)?)),
+        "NiVertexColorProperty" => Ok(Box::new(NiVertexColorProperty::parse(stream)?)),
         "NiTexturingProperty" => Ok(Box::new(NiTexturingProperty::parse(stream)?)),
         "NiSourceTexture" => Ok(Box::new(NiSourceTexture::parse(stream)?)),
         // Skinning blocks

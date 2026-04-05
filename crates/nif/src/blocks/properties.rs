@@ -395,6 +395,52 @@ mod tests {
     }
 }
 
+// ── NiVertexColorProperty ────────────────────────────────────────────
+
+/// Controls how vertex colors interact with material/lighting.
+///
+/// `vertex_mode`: 0 = SOURCE_IGNORE, 1 = SOURCE_EMISSIVE, 2 = SOURCE_AMB_DIFF (default)
+/// `lighting_mode`: 0 = LIGHTING_E, 1 = LIGHTING_E_A_D (default)
+#[derive(Debug)]
+pub struct NiVertexColorProperty {
+    pub net: NiObjectNETData,
+    pub flags: u16,
+    pub vertex_mode: u32,
+    pub lighting_mode: u32,
+}
+
+impl NiObject for NiVertexColorProperty {
+    fn block_type_name(&self) -> &'static str {
+        "NiVertexColorProperty"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiVertexColorProperty {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let net = NiObjectNETData::parse(stream)?;
+        let flags = stream.read_u16_le()?;
+
+        let (vertex_mode, lighting_mode) = if stream.version() <= NifVersion::V20_0_0_5 {
+            (stream.read_u32_le()?, stream.read_u32_le()?)
+        } else {
+            // FO3+: packed in flags. bits 4-5 = vertex_mode, bits 3 = lighting_mode.
+            let vm = ((flags >> 4) & 0x3) as u32;
+            let lm = ((flags >> 3) & 0x1) as u32;
+            (vm, lm)
+        };
+
+        Ok(Self {
+            net,
+            flags,
+            vertex_mode,
+            lighting_mode,
+        })
+    }
+}
+
 // ── NiStencilProperty ────────────────────────────────────────────────
 
 /// Controls stencil testing and face culling (two-sided rendering).
