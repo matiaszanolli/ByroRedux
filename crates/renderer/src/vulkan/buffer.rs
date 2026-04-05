@@ -172,6 +172,13 @@ impl GpuBuffer {
             .contains(vk::MemoryPropertyFlags::HOST_COHERENT);
 
         let mapped = alloc.mapped_slice_mut().context("Buffer not mapped")?;
+        if bytes.len() > mapped.len() {
+            log::warn!(
+                "write_mapped: data ({} bytes) exceeds buffer capacity ({} bytes) — truncating",
+                bytes.len(),
+                mapped.len()
+            );
+        }
         let len = bytes.len().min(mapped.len());
         mapped[..len].copy_from_slice(&bytes[..len]);
 
