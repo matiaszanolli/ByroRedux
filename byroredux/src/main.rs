@@ -16,8 +16,8 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::Resource;
 use byroredux_core::ecs::{
     ActiveCamera, AnimatedAlpha, AnimatedColor, AnimatedVisibility, Camera, Children, Component,
-    DebugStats, DeltaTime, EngineConfig, GlobalTransform, LightSource, MeshHandle, Name, Parent,
-    Scheduler, SparseSetStorage, TextureHandle, TotalTime, Transform, World,
+    DebugStats, DeltaTime, EngineConfig, GlobalTransform, LightSource, Material, MeshHandle, Name,
+    Parent, Scheduler, SparseSetStorage, TextureHandle, TotalTime, Transform, World,
 };
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::{FixedString, StringPool};
@@ -1243,6 +1243,22 @@ pub(crate) fn load_nif_bytes(
         if mesh.is_decal {
             world.insert(entity, Decal);
         }
+        // Attach material data (specular, emissive, glossiness, UV transform, etc.)
+        world.insert(
+            entity,
+            Material {
+                emissive_color: mesh.emissive_color,
+                emissive_mult: mesh.emissive_mult,
+                specular_color: mesh.specular_color,
+                specular_strength: mesh.specular_strength,
+                glossiness: mesh.glossiness,
+                uv_offset: mesh.uv_offset,
+                uv_scale: mesh.uv_scale,
+                alpha: mesh.mat_alpha,
+                normal_map: mesh.normal_map.clone(),
+            },
+        );
+
         if let Some(ref name) = mesh.name {
             let mut pool = world.resource_mut::<StringPool>();
             let sym = pool.intern(name);

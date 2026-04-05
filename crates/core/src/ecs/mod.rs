@@ -18,7 +18,7 @@ pub mod world;
 
 pub use components::{
     ActiveCamera, AnimatedAlpha, AnimatedColor, AnimatedVisibility, Camera, Children,
-    GlobalTransform, LightSource, MeshHandle, Name, Parent, TextureHandle, Transform,
+    GlobalTransform, LightSource, Material, MeshHandle, Name, Parent, TextureHandle, Transform,
 };
 pub use packed::PackedStorage;
 pub use query::{ComponentRef, QueryRead, QueryWrite};

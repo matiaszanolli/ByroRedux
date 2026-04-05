@@ -60,6 +60,24 @@ pub struct ImportedMesh {
     pub two_sided: bool,
     /// Whether this mesh is a decal (should render on top of coplanar surfaces).
     pub is_decal: bool,
+    /// Normal map texture path (if found in shader texture set).
+    pub normal_map: Option<String>,
+    /// Emissive color (RGB, linear).
+    pub emissive_color: [f32; 3],
+    /// Emissive intensity multiplier.
+    pub emissive_mult: f32,
+    /// Specular highlight color (RGB, linear).
+    pub specular_color: [f32; 3],
+    /// Specular intensity multiplier.
+    pub specular_strength: f32,
+    /// Glossiness / smoothness.
+    pub glossiness: f32,
+    /// UV texture coordinate offset [u, v].
+    pub uv_offset: [f32; 2],
+    /// UV texture coordinate scale [u, v].
+    pub uv_scale: [f32; 2],
+    /// Material alpha/transparency.
+    pub mat_alpha: f32,
     /// Index into `ImportedScene.nodes` for this mesh's parent node, or None.
     pub parent_node: Option<usize>,
 }
@@ -337,6 +355,15 @@ fn extract_mesh(
         has_alpha: mat.alpha_blend,
         two_sided: mat.two_sided,
         is_decal: mat.is_decal,
+        normal_map: mat.normal_map,
+        emissive_color: mat.emissive_color,
+        emissive_mult: mat.emissive_mult,
+        specular_color: mat.specular_color,
+        specular_strength: mat.specular_strength,
+        glossiness: mat.glossiness,
+        uv_offset: mat.uv_offset,
+        uv_scale: mat.uv_scale,
+        mat_alpha: mat.alpha,
         parent_node: None,
     })
 }
@@ -413,6 +440,27 @@ fn extract_bs_tri_shape(
     let t = &world_transform.translation;
     let quat = zup_matrix_to_yup_quat(&world_transform.rotation);
 
+    // Extract material data from BSLightingShaderProperty (if present).
+    let (emissive_color, emissive_mult, specular_color, specular_strength, glossiness, uv_offset, uv_scale, mat_alpha, normal_map) =
+        if let Some(idx) = shape.shader_property_ref.index() {
+            if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
+                let nm = shader.texture_set_ref.index()
+                    .and_then(|ts_idx| scene.get_as::<BSShaderTextureSet>(ts_idx))
+                    .and_then(|ts| ts.textures.get(1).cloned())
+                    .filter(|s| !s.is_empty());
+                (
+                    shader.emissive_color, shader.emissive_multiple,
+                    shader.specular_color, shader.specular_strength,
+                    shader.glossiness, shader.uv_offset, shader.uv_scale,
+                    shader.alpha, nm,
+                )
+            } else {
+                ([0.0; 3], 1.0, [1.0; 3], 1.0, 80.0, [0.0; 2], [1.0; 2], 1.0, None)
+            }
+        } else {
+            ([0.0; 3], 1.0, [1.0; 3], 1.0, 80.0, [0.0; 2], [1.0; 2], 1.0, None)
+        };
+
     Some(ImportedMesh {
         positions,
         colors,
@@ -427,6 +475,15 @@ fn extract_bs_tri_shape(
         has_alpha,
         two_sided,
         is_decal: find_decal_bs(scene, shape),
+        normal_map,
+        emissive_color,
+        emissive_mult,
+        specular_color,
+        specular_strength,
+        glossiness,
+        uv_offset,
+        uv_scale,
+        mat_alpha,
         parent_node: None,
     })
 }
@@ -497,12 +554,43 @@ fn extract_material(
 /// Material properties extracted from a NiTriShape's property list in a single pass.
 ///
 /// Replaces four independent property-list iterations with one.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct MaterialInfo {
     texture_path: Option<String>,
+    normal_map: Option<String>,
     alpha_blend: bool,
     two_sided: bool,
     is_decal: bool,
+    emissive_color: [f32; 3],
+    emissive_mult: f32,
+    specular_color: [f32; 3],
+    specular_strength: f32,
+    glossiness: f32,
+    uv_offset: [f32; 2],
+    uv_scale: [f32; 2],
+    alpha: f32,
+    has_material_data: bool,
+}
+
+impl Default for MaterialInfo {
+    fn default() -> Self {
+        Self {
+            texture_path: None,
+            normal_map: None,
+            alpha_blend: false,
+            two_sided: false,
+            is_decal: false,
+            emissive_color: [0.0, 0.0, 0.0],
+            emissive_mult: 1.0,
+            specular_color: [1.0, 1.0, 1.0],
+            specular_strength: 1.0,
+            glossiness: 80.0,
+            uv_offset: [0.0, 0.0],
+            uv_scale: [1.0, 1.0],
+            alpha: 1.0,
+            has_material_data: false,
+        }
+    }
 }
 
 const DECAL_SINGLE_PASS: u32 = 0x04000000;
@@ -526,6 +614,12 @@ fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> MaterialInfo {
                             info.texture_path = Some(path.clone());
                         }
                     }
+                    // Normal map is textures[1] in BSShaderTextureSet.
+                    if let Some(normal) = tex_set.textures.get(1) {
+                        if !normal.is_empty() {
+                            info.normal_map = Some(normal.clone());
+                        }
+                    }
                 }
             }
             if shader.shader_flags_2 & 0x10 != 0 {
@@ -534,10 +628,31 @@ fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> MaterialInfo {
             if shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 {
                 info.is_decal = true;
             }
+            // Capture rich material data.
+            info.emissive_color = shader.emissive_color;
+            info.emissive_mult = shader.emissive_multiple;
+            info.specular_color = shader.specular_color;
+            info.specular_strength = shader.specular_strength;
+            info.glossiness = shader.glossiness;
+            info.uv_offset = shader.uv_offset;
+            info.uv_scale = shader.uv_scale;
+            info.alpha = shader.alpha;
+            info.has_material_data = true;
         }
         if let Some(shader) = scene.get_as::<BSEffectShaderProperty>(idx) {
             if info.texture_path.is_none() && !shader.source_texture.is_empty() {
                 info.texture_path = Some(shader.source_texture.clone());
+            }
+            if !info.has_material_data {
+                info.emissive_color = [
+                    shader.emissive_color[0],
+                    shader.emissive_color[1],
+                    shader.emissive_color[2],
+                ];
+                info.emissive_mult = shader.emissive_multiple;
+                info.uv_offset = shader.uv_offset;
+                info.uv_scale = shader.uv_scale;
+                info.has_material_data = true;
             }
         }
     }
@@ -562,6 +677,18 @@ fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> MaterialInfo {
                 if alpha.flags & 1 != 0 {
                     info.alpha_blend = true;
                 }
+            }
+        }
+
+        // NiMaterialProperty — capture specular/emissive/shininess/alpha.
+        if !info.has_material_data {
+            if let Some(mat) = scene.get_as::<NiMaterialProperty>(idx) {
+                info.specular_color = [mat.specular.r, mat.specular.g, mat.specular.b];
+                info.emissive_color = [mat.emissive.r, mat.emissive.g, mat.emissive.b];
+                info.glossiness = mat.shininess;
+                info.alpha = mat.alpha;
+                info.emissive_mult = mat.emissive_mult;
+                info.has_material_data = true;
             }
         }
 
