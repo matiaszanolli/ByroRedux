@@ -248,10 +248,17 @@ impl World {
 
     // ── Resource API ─────────────────────────────────────────────────────
 
-    /// Insert a global resource. Overwrites if already present.
-    pub fn insert_resource<R: Resource>(&mut self, resource: R) {
-        self.resources
+    /// Insert a global resource. Returns the previous value if one existed.
+    pub fn insert_resource<R: Resource>(&mut self, resource: R) -> Option<R> {
+        let old = self
+            .resources
             .insert(TypeId::of::<R>(), RwLock::new(Box::new(resource)));
+        old.and_then(|lock| {
+            lock.into_inner()
+                .ok()
+                .and_then(|boxed| boxed.downcast::<R>().ok())
+                .map(|b| *b)
+        })
     }
 
     /// Remove a global resource, returning it if it existed.
@@ -731,10 +738,14 @@ mod tests {
     }
 
     #[test]
-    fn resource_overwrite() {
+    fn resource_overwrite_returns_old() {
         let mut world = World::new();
-        world.insert_resource(DeltaTime(0.016));
-        world.insert_resource(DeltaTime(0.033));
+        let first = world.insert_resource(DeltaTime(0.016));
+        assert!(first.is_none()); // no previous value
+
+        let second = world.insert_resource(DeltaTime(0.033));
+        assert!(second.is_some());
+        assert!((second.unwrap().0 - 0.016).abs() < f32::EPSILON);
 
         let dt = world.resource::<DeltaTime>();
         assert!((dt.0 - 0.033).abs() < f32::EPSILON);
