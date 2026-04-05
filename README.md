@@ -38,7 +38,7 @@ Press **Escape** to capture mouse, then **WASD** + mouse to fly around. **Space/
 | ECS with pluggable storage (SparseSet + Packed), hierarchy (Parent/Children) | Working |
 | Vulkan RT renderer with multi-light SSBO, ray query shadows, cell XCLL lighting | Working |
 | ESM parser (CELL, REFR, STAT, MSTT, FURN, DOOR, ACTI, CONT, LIGH, XCLL + 23 types) | Working |
-| NIF parser (94 block types, trait hierarchy, NifVariant for 8 games, skinning, Havok skip) | Working |
+| NIF parser (107 block types, shader trailing fields, skinning, multi-bound, Havok skip) | Working |
 | DDS texture loading (BC1/BC3/BC5 + DX10, mipmaps, shared sampler cache) | Working |
 | BSA v103 + v104 + v105 archive reader (Oblivion/FO3/FNV/Skyrim LE/SE) | Working |
 | Interior + exterior cell loading with placed object transforms | Working |
@@ -53,7 +53,9 @@ Press **Escape** to capture mouse, then **WASD** + mouse to fly around. **Space/
 | Plugin system with stable Form IDs, conflict resolution | Working |
 | ECS-native scripting (events, timers) | Working |
 | Material component (emissive, specular, glossiness, UV, normal map) | Working |
-| 290 unit tests | Passing |
+| WorldBound component (bounding sphere for frustum culling / spatial queries) | Working |
+| StagingPool for reusable GPU upload buffers | Working |
+| 312 unit tests | Passing |
 
 ## Architecture
 
@@ -97,7 +99,7 @@ Vulkan 1.3 via `ash` with RT ray query extensions:
 
 ### Asset Pipeline
 
-ESM files parsed for CELL/REFR/STAT records (23 record types). Interior cell lighting from XCLL subrecords. NIF files parsed with version-aware binary reading (NifVariant for 8 game variants, 94 registered block types including 30 Havok collision blocks). Skinning blocks fully parsed (NiSkinInstance/Data/Partition, BsDismemberSkinInstance). Scene graph hierarchy preserved as Parent/Children entities. Single-pass material property extraction into Material ECS component (emissive, specular, glossiness, UV, normal map). DDS textures from BSA v103/v104/v105 archives with BC-compressed mipmap chains. NiControllerManager embedded animation discovery with text key event emission.
+ESM files parsed for CELL/REFR/STAT records (23 record types). Interior cell lighting from XCLL subrecords. NIF files parsed with version-aware binary reading (NifVariant for 8 game variants, 107 registered block types including 30 Havok collision blocks). Shader-type trailing fields fully parsed (env map, skin/hair tint, parallax, eye cubemap). Skinning blocks fully parsed (NiSkinInstance/Data/Partition, BsDismemberSkinInstance). Multi-bound spatial volumes (BSMultiBound/AABB/OBB). Scene graph hierarchy preserved as Parent/Children entities. Single-pass material property extraction into Material ECS component (emissive, specular, glossiness, UV, normal map, env map scale). DDS textures from BSA v103/v104/v105 archives with BC-compressed mipmap chains. StagingPool for reusable GPU upload buffers. NiControllerManager embedded animation discovery with text key event emission.
 
 ## Building
 
@@ -122,7 +124,7 @@ cargo run -- --esm FalloutNV.esm \
              --textures-bsa "Fallout - Textures.bsa"  # Load an interior cell
 cargo run -- --swf menu.swf        # Render a Scaleform SWF menu
 cargo run -- --debug               # Show FPS/entity stats in title bar
-cargo test                         # Run all 290 tests
+cargo test                         # Run all 312 tests
 ```
 
 ### Shader Compilation
@@ -145,10 +147,10 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 
 | Metric | Value |
 |--------|-------|
-| Rust source files | 98 |
-| Lines of Rust | ~25,400 |
-| Unit tests | 290 |
-| Commits | 147 |
+| Rust source files | 100 |
+| Lines of Rust | ~26,800 |
+| Unit tests | 312 |
+| Commits | 161 |
 | Workspace crates | 10 |
 
 ## Dependencies

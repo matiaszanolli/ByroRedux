@@ -3,7 +3,7 @@
 A clean Rust + C++ rebuild of the Gamebryo/Creation engine lineage with Vulkan rendering.
 This document tracks completed milestones, current capabilities, planned work, and known gaps.
 
-Last updated: 2026-04-05
+Last updated: 2026-04-05 (session 2)
 
 ---
 
@@ -17,7 +17,7 @@ Last updated: 2026-04-05
 | `cargo run -- --cmd help` | Run a console command at startup |
 | `cargo run -- --swf path/to/menu.swf` | Load and render a Skyrim SE SWF menu overlay |
 | `cargo run -- path/to/mesh.nif --kf path/to/anim.kf` | Play a .kf animation on a loaded NIF mesh |
-| `cargo test` | 290 passing tests across all crates |
+| `cargo test` | 312 passing tests across all crates |
 
 **Fallout New Vegas:** Interior cells load from ESM with placed objects (REFR → STAT), real DDS textures
 from BSA v104 archives, correct coordinate transforms (Gamebryo CW rotation convention),
@@ -131,11 +131,12 @@ Post-N23.1 additions: NiVertexColorProperty, NiStencilProperty, NiZBufferPropert
 NiGeomMorpherController, NiMorphData, NiBlend*Interpolator family, NiSkinInstance/Data/Partition,
 BsDismemberSkinInstance, NiDefaultAVObjectPalette, 30 Havok collision types, Material ECS component.
 
-### N23.2: BSLightingShaderProperty Completeness
-**Status:** Planned
-**Scope:** Parse all 14 shader-type-specific trailing fields (env map, skin tint,
-parallax, eye cubemap, multilayer, etc.). Fix FO4 shader flags. BSEffectShaderProperty
-remaining fields for FO4+.
+### N23.2: BSLightingShaderProperty Completeness — DONE
+**Status:** Complete
+**Scope:** ShaderTypeData enum with 8 variants (EnvironmentMap, SkinTint, HairTint,
+ParallaxOcc, MultiLayerParallax, SparkleSnow, EyeEnvmap, None). Skyrim LE/SE trailing
+fields fully parsed. BSEffectShaderProperty: soft_falloff_depth, greyscale_texture,
+lighting_influence, env_map_min_lod, FO4+ textures (env/normal/mask + scale).
 **Block count:** 0 new (fixes 2 existing types) | **Games:** Skyrim LE/SE, FO4
 
 ### N23.3: Oblivion Support
@@ -148,11 +149,11 @@ NiPixelData, RootCollisionNode, NiStringPalette.
 NiTexturingProperty → NiSourceTexture materials. Oblivion variant detection (#83).
 **Block count:** +7 remaining (8 already done) | **Games:** Oblivion
 
-### N23.4: Fallout 3/NV Validation
-**Status:** Planned
-**Scope:** +8 block types: BSMultiBound(Node/AABB/OBB), BSOrderedNode, BSValueNode,
-BSDecalPlacementVectorExtraData, BSBound. Validate 20+ FNV NIFs, 10+ FO3 NIFs.
-**Block count:** +8 (total ~71) | **Games:** FO3, FNV
+### N23.4: Fallout 3/NV Validation — DONE (block types)
+**Status:** Block types complete, real-file validation deferred to test assets
+**Scope:** +7 block types: BSMultiBound, BSMultiBoundAABB, BSMultiBoundOBB,
+BSOrderedNode, BSValueNode, BSDecalPlacementVectorExtraData, BSBound.
+**Block count:** +7 (total 107) | **Games:** FO3, FNV
 
 ### N23.5: Skinning and Dismemberment — PARTIALLY DONE
 **Status:** Parsers landed, GPU skinning deferred
@@ -198,17 +199,17 @@ Starfield: BSGeometrySegmentData, material paths.
 | # | Milestone | Blocks | Total | Status |
 |---|-----------|--------|-------|--------|
 | N23.1 | Trait hierarchy + FNV audit | 0 | ~49 | **DONE** |
-| N23.2 | Shader completeness | 0 | ~49 | Planned |
+| N23.2 | Shader completeness | 0 | ~49 | **DONE** |
 | N23.3 | Oblivion | +7 remaining | ~71 | **Partial** (8/15 done) |
-| N23.4 | FO3/FNV validation | +8 | ~79 | Planned |
-| N23.5 | Skinning | +2 remaining | ~81 | **Partial** (4/6 done) |
-| N23.6 | Collision (skip) | 30 skip | ~94 | **DONE** (skip; full parse → M28) |
-| N23.7 | Fallout 4 | +8 | ~102 | Planned |
-| N23.8 | Particles | +18 | ~120 | Planned |
-| N23.9 | FO76/Starfield | +7 | ~127 | Planned |
-| N23.10 | Test infra | 0 | ~127 | Planned |
+| N23.4 | FO3/FNV validation | +7 | ~78 | **DONE** (block types) |
+| N23.5 | Skinning | +2 remaining | ~80 | **Partial** (4/6 done) |
+| N23.6 | Collision (skip) | 30 skip | ~107 | **DONE** (skip; full parse → M28) |
+| N23.7 | Fallout 4 | +8 | ~115 | Planned |
+| N23.8 | Particles | +18 | ~133 | Planned |
+| N23.9 | FO76/Starfield | +7 | ~140 | Planned |
+| N23.10 | Test infra | 0 | ~140 | Planned |
 
-**Current registered type names: 94** (64 parsed + 30 Havok skip)
+**Current registered type names: 107** (77 parsed + 30 Havok skip)
 
 ---
 
@@ -333,7 +334,7 @@ BLAS per mesh, TLAS rebuilt per frame, dynamic depth bias for NIF-flagged decals
 
 | Tier | Games | NIF | Archive | ESM | Cell Loading |
 |------|-------|-----|---------|-----|-------------|
-| 1 — Working | Fallout: New Vegas | 64 parsed + 30 Havok skip, RT shadows, XCLL | BSA v104 ✓ | 23 record types + XCLL | Interior + exterior ✓ |
+| 1 — Working | Fallout: New Vegas | 77 parsed + 30 Havok skip, RT shadows, XCLL | BSA v104 ✓ | 23 record types + XCLL | Interior + exterior ✓ |
 | 1 — Working | Fallout 3 | Untested (same as FNV) | BSA v104 ✓ | Likely works | Likely works |
 | 2 — Partial | Skyrim SE | BSTriShape + BSLightingShader | BSA v105 ✓ (LZ4) | Stub | Individual meshes ✓ |
 | 3 — Planned | Oblivion | Variant defined | BSA v103 (opens, decompression WIP) | Stub | — |
@@ -364,10 +365,10 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Metric | Value |
 |--------|-------|
-| Passing tests | 290 |
+| Passing tests | 312 |
 | Workspace crates | 10 |
 | Completed milestones | 22 (M1–M22 Phase A+B) |
-| NIF block types | 94 (64 parsed + 30 Havok skip) |
+| NIF block types | 107 (77 parsed + 30 Havok skip) |
 | NifVariant games | 8 (Morrowind → Starfield) |
 | Supported archive formats | BSA v104, BSA v105 |
 | Primary language | Rust (2021 edition) |
