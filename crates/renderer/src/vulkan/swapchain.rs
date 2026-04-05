@@ -15,6 +15,9 @@ pub struct SwapchainState {
 }
 
 /// Queries surface capabilities and picks the best format, present mode, and extent.
+/// `old_swapchain`: pass the previous swapchain handle for atomic handoff
+/// during recreation (avoids flicker on some platforms). Pass `null()` for
+/// initial creation.
 pub fn create_swapchain(
     instance: &ash::Instance,
     device: &ash::Device,
@@ -23,6 +26,7 @@ pub fn create_swapchain(
     surface: vk::SurfaceKHR,
     indices: QueueFamilyIndices,
     window_size: [u32; 2],
+    old_swapchain: vk::SwapchainKHR,
 ) -> Result<SwapchainState> {
     let capabilities = unsafe {
         surface_loader
@@ -79,7 +83,7 @@ pub fn create_swapchain(
         composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
         present_mode,
         clipped: vk::TRUE,
-        old_swapchain: vk::SwapchainKHR::null(),
+        old_swapchain,
         ..Default::default()
     };
 

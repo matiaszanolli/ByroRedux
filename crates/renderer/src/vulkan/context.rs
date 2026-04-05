@@ -160,6 +160,7 @@ impl VulkanContext {
             vk_surface,
             queue_indices,
             window_size,
+            vk::SwapchainKHR::null(), // no old swapchain on initial creation
         )?;
 
         // 9. Depth resources
@@ -777,8 +778,13 @@ impl VulkanContext {
             self.device.destroy_pipeline(self.pipeline_ui, None);
 
             self.device.destroy_render_pass(self.render_pass, None);
-            self.swapchain_state.destroy(&self.device);
+            // Destroy old image views (but keep the old swapchain handle for handoff).
+            for &view in &self.swapchain_state.image_views {
+                self.device.destroy_image_view(view, None);
+            }
         }
+
+        let old_swapchain = self.swapchain_state.swapchain;
 
         self.swapchain_state = swapchain::create_swapchain(
             &self.instance,
@@ -788,7 +794,17 @@ impl VulkanContext {
             self.surface,
             self.queue_indices,
             window_size,
+            old_swapchain, // atomic handoff — avoids flicker during resize
         )?;
+
+        // Destroy the retired old swapchain now that the new one is active.
+        if old_swapchain != vk::SwapchainKHR::null() {
+            unsafe {
+                self.swapchain_state
+                    .swapchain_loader
+                    .destroy_swapchain(old_swapchain, None);
+            }
+        }
 
         let (depth_image, depth_image_view, depth_allocation) = create_depth_resources(
             &self.device,
