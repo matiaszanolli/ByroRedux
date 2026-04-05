@@ -94,9 +94,16 @@ void main() {
 
             float NdotL = max(dot(normal, lightDir), 0.0);
 
+            // Skip lights with zero contribution (back-facing or beyond radius).
+            // Avoids expensive ray queries for lights that won't affect the result.
+            float contribution = NdotL * atten;
+            if (contribution < 0.001) {
+                continue;
+            }
+
             // RT shadow ray (when enabled).
             float shadow = 1.0;
-            if (rtEnabled && NdotL > 0.0) {
+            if (rtEnabled) {
                 rayQueryEXT rayQuery;
                 rayQueryInitializeEXT(
                     rayQuery,
