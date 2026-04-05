@@ -50,6 +50,8 @@ pub fn pick_physical_device(
             is_device_suitable(instance, surface_loader, surface, device)?
         {
             let props = unsafe { instance.get_physical_device_properties(device) };
+            // SAFETY: device_name is a fixed-size [c_char; 256] array null-terminated by the
+            // Vulkan driver. The pointer is valid for the lifetime of `props` (stack-local).
             let name = unsafe { CStr::from_ptr(props.device_name.as_ptr()) };
             log::info!(
                 "Selected GPU: {:?} (ray query: {})",
@@ -77,6 +79,8 @@ fn is_device_suitable(
 
     let has_extension = |name: &CStr| -> bool {
         available_extensions.iter().any(|ext| {
+            // SAFETY: extension_name is a fixed-size null-terminated [c_char; 256]
+            // from the Vulkan driver. Pointer valid for lifetime of `ext` (in Vec).
             let ext_name = unsafe { CStr::from_ptr(ext.extension_name.as_ptr()) };
             ext_name == name
         })

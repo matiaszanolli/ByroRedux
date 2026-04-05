@@ -223,6 +223,9 @@ impl SceneBuffers {
         let mut data = vec![0u8; total_size];
 
         // Write header.
+        // SAFETY: `data` is freshly allocated with `total_size` bytes (>= header_size).
+        // `LightHeader` is `#[repr(C)]` and contains only plain f32/u32 fields, so
+        // reading its bytes is well-defined. Source and destination don't overlap.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 &header as *const LightHeader as *const u8,
@@ -232,6 +235,9 @@ impl SceneBuffers {
         }
         // Write lights.
         if count > 0 {
+            // SAFETY: `data` has `header_size + light_size * count` bytes. We write
+            // at offset `header_size` for exactly `light_size * count` bytes.
+            // `GpuLight` is `#[repr(C)]` with plain f32 fields. No overlap with header region.
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     lights.as_ptr() as *const u8,

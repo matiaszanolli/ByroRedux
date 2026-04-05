@@ -66,7 +66,9 @@ impl AccelerationManager {
     ) -> Result<()> {
         let vertex_stride = std::mem::size_of::<Vertex>() as vk::DeviceSize;
 
-        // Get buffer device addresses.
+        // SAFETY: get_buffer_device_address requires the buffer was created with
+        // SHADER_DEVICE_ADDRESS. Our vertex/index buffers are created with this flag.
+        // The returned u64 address is valid for the buffer's lifetime.
         let vertex_address = unsafe {
             device.get_buffer_device_address(
                 &vk::BufferDeviceAddressInfo::default().buffer(mesh.vertex_buffer.buffer),
@@ -78,6 +80,8 @@ impl AccelerationManager {
             )
         };
 
+        // SAFETY: DeviceOrHostAddressConstKHR is a union — we initialize the
+        // device_address field because we're using device-local buffers (not host pointers).
         let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
             .vertex_format(vk::Format::R32G32B32_SFLOAT)
             .vertex_data(vk::DeviceOrHostAddressConstKHR {
@@ -154,6 +158,7 @@ impl AccelerationManager {
             )?);
         }
 
+        // SAFETY: scratch buffer was just created with SHADER_DEVICE_ADDRESS flag.
         let scratch_address = unsafe {
             device.get_buffer_device_address(
                 &vk::BufferDeviceAddressInfo::default()
@@ -162,6 +167,7 @@ impl AccelerationManager {
         };
 
         // Build the BLAS via one-time command buffer.
+        // SAFETY: DeviceOrHostAddressKHR union — device_address field used for device builds.
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
             .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
@@ -232,6 +238,9 @@ impl AccelerationManager {
                 ],
             };
 
+            // SAFETY: AccelerationStructureReferenceKHR is a union — device_handle field
+            // is used because our BLAS is on-device (not host-built). The address was
+            // obtained from get_acceleration_structure_device_address after BLAS creation.
             instances.push(vk::AccelerationStructureInstanceKHR {
                 transform,
                 instance_custom_index_and_mask: vk::Packed24_8::new(0, 0xFF),
