@@ -536,3 +536,121 @@ mod tests {
         assert!(seq.text_keys_ref.is_null());
     }
 }
+
+// ── NiGeomMorpherController ──────────────────────────────────────────
+
+/// Morph target controller — drives facial animation and mesh deformation.
+///
+/// References NiMorphData (vertex deltas per morph target) and an array
+/// of interpolators that control the blend weights over time.
+#[derive(Debug)]
+pub struct NiGeomMorpherController {
+    pub base: NiTimeControllerBase,
+    pub morpher_flags: u16,
+    pub data_ref: BlockRef,
+    pub always_update: u8,
+    pub interpolator_weights: Vec<MorphWeight>,
+}
+
+/// An interpolator reference + weight for morph blending.
+#[derive(Debug)]
+pub struct MorphWeight {
+    pub interpolator_ref: BlockRef,
+    pub weight: f32,
+}
+
+impl NiObject for NiGeomMorpherController {
+    fn block_type_name(&self) -> &'static str {
+        "NiGeomMorpherController"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiGeomMorpherController {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiTimeControllerBase::parse(stream)?;
+        let morpher_flags = stream.read_u16_le()?;
+        let data_ref = stream.read_block_ref()?;
+        let always_update = stream.read_u8()?;
+        let num_interpolators = stream.read_u32_le()? as usize;
+
+        let mut interpolator_weights = Vec::with_capacity(num_interpolators);
+        for _ in 0..num_interpolators {
+            let interpolator_ref = stream.read_block_ref()?;
+            let weight = stream.read_f32_le()?;
+            interpolator_weights.push(MorphWeight {
+                interpolator_ref,
+                weight,
+            });
+        }
+
+        Ok(Self {
+            base,
+            morpher_flags,
+            data_ref,
+            always_update,
+            interpolator_weights,
+        })
+    }
+}
+
+// ── NiMorphData ──────────────────────────────────────────────────────
+
+/// A single morph target: name + vertex deltas.
+#[derive(Debug)]
+pub struct MorphTarget {
+    /// Name of this morph frame (e.g., "Blink", "JawOpen").
+    pub name: Option<String>,
+    /// Vertex position deltas (one per mesh vertex).
+    pub vectors: Vec<[f32; 3]>,
+}
+
+/// Morph target data — vertex deltas for facial animation.
+#[derive(Debug)]
+pub struct NiMorphData {
+    pub num_vertices: u32,
+    pub relative_targets: u8,
+    pub morphs: Vec<MorphTarget>,
+}
+
+impl NiObject for NiMorphData {
+    fn block_type_name(&self) -> &'static str {
+        "NiMorphData"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiMorphData {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let num_morphs = stream.read_u32_le()? as usize;
+        let num_vertices = stream.read_u32_le()?;
+        let relative_targets = stream.read_u8()?;
+
+        let mut morphs = Vec::with_capacity(num_morphs);
+        for _ in 0..num_morphs {
+            // Frame name (string table indexed for version >= 10.1.0.106).
+            let name = stream.read_string()?;
+
+            // Vertex position deltas.
+            let mut vectors = Vec::with_capacity(num_vertices as usize);
+            for _ in 0..num_vertices {
+                let x = stream.read_f32_le()?;
+                let y = stream.read_f32_le()?;
+                let z = stream.read_f32_le()?;
+                vectors.push([x, y, z]);
+            }
+
+            morphs.push(MorphTarget { name, vectors });
+        }
+
+        Ok(Self {
+            num_vertices,
+            relative_targets,
+            morphs,
+        })
+    }
+}

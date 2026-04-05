@@ -19,8 +19,8 @@ pub mod tri_shape;
 
 use crate::stream::NifStream;
 use controller::{
-    NiControllerManager, NiControllerSequence, NiMaterialColorController,
-    NiMultiTargetTransformController, NiSingleInterpController, NiTimeController,
+    NiControllerManager, NiControllerSequence, NiGeomMorpherController, NiMaterialColorController,
+    NiMorphData, NiMultiTargetTransformController, NiSingleInterpController, NiTimeController,
 };
 use extra_data::NiExtraData;
 use interpolator::{
@@ -134,6 +134,8 @@ pub fn parse_block(
         "NiMultiTargetTransformController" => {
             Ok(Box::new(NiMultiTargetTransformController::parse(stream)?))
         }
+        "NiGeomMorpherController" => Ok(Box::new(NiGeomMorpherController::parse(stream)?)),
+        "NiMorphData" => Ok(Box::new(NiMorphData::parse(stream)?)),
         "NiControllerManager" => Ok(Box::new(NiControllerManager::parse(stream)?)),
         "NiControllerSequence" => Ok(Box::new(NiControllerSequence::parse(stream)?)),
         "NiDefaultAVObjectPalette" => {
