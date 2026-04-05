@@ -208,7 +208,7 @@ fn animation_system(world: &World, dt: f32) {
     > = std::collections::HashMap::new();
 
     // Rebuild name→entity index only when entities have been added.
-    let current_gen = world.next_entity_id() as u32;
+    let current_gen = world.next_entity_id();
     {
         let needs_rebuild = world
             .try_resource::<NameIndex>()
@@ -266,7 +266,7 @@ fn animation_system(world: &World, dt: f32) {
         });
         let resolve_entity = |channel_name: &str| -> Option<EntityId> {
             let sym = pool.get(channel_name)?;
-            if let Some(ref scoped) = scoped_map {
+            if let Some(scoped) = scoped_map {
                 scoped.get(&sym).copied()
             } else {
                 name_index.map.get(&sym).copied()
@@ -390,7 +390,7 @@ fn animation_system(world: &World, dt: f32) {
         });
         let stack_resolve = |channel_name: &str| -> Option<EntityId> {
             let sym = pool.get(channel_name)?;
-            if let Some(ref scoped) = stack_scoped_map {
+            if let Some(scoped) = stack_scoped_map {
                 scoped.get(&sym).copied()
             } else {
                 name_index.map.get(&sym).copied()
@@ -1585,7 +1585,7 @@ impl ApplicationHandler for App {
         {
             let mut stats = self.world.resource_mut::<DebugStats>();
             stats.push_frame_time(dt);
-            stats.entity_count = self.world.next_entity_id() as u32;
+            stats.entity_count = self.world.next_entity_id();
             if let Some(ref ctx) = self.renderer {
                 stats.mesh_count = ctx.mesh_registry.len() as u32;
                 stats.texture_count = ctx.texture_registry.len() as u32;
@@ -1599,7 +1599,7 @@ impl ApplicationHandler for App {
         let config_debug = self.world.resource::<EngineConfig>().debug_logging;
         if config_debug {
             let stats = self.world.resource::<DebugStats>();
-            if stats.frame_index() % 16 == 0 {
+            if stats.frame_index().is_multiple_of(16) {
                 if let Some(ref win) = self.window {
                     win.set_title(&format!(
                         "ByroRedux | {:.0} FPS | {:.1}ms | {} entities | {} meshes | {} textures | {} draws",
