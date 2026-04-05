@@ -81,15 +81,23 @@ impl NifVariant {
         if version.0 <= 0x04000002 {
             return Self::Morrowind;
         }
+        // V20.0.0.5 is exclusively Oblivion — no other game uses this NIF version.
+        // Check before the uv/uv2 match to avoid misidentifying edge-case exports.
+        if version == NifVersion::V20_0_0_5 {
+            return Self::Oblivion;
+        }
+        // V20.2.0.7+ — disambiguate by user_version and user_version_2 (BSVER).
         match (user_version, user_version_2) {
-            (_, 0) if version == NifVersion::V20_0_0_5 => Self::Oblivion,
+            // user_version < 11: Oblivion exports on v20.2.0.7 (NifSkope, older tools)
             (uv, _) if uv < 11 => Self::Oblivion,
             (11, uv2) if uv2 <= 34 => Self::Fallout3NV,
             (12, uv2) if uv2 <= 83 => Self::SkyrimLE,
             (12, uv2) if uv2 <= 100 => Self::SkyrimSE,
-            (12, uv2) if uv2 >= 130 && uv2 < 155 => Self::Fallout4,
-            (12, 155) => Self::Fallout76,
-            (12, uv2) if uv2 >= 170 => Self::Starfield,
+            // 101-129: unknown gap, treat as SkyrimSE (closest known)
+            (12, uv2) if uv2 < 130 => Self::SkyrimSE,
+            (12, uv2) if uv2 < 155 => Self::Fallout4,
+            (12, uv2) if uv2 < 170 => Self::Fallout76,
+            (12, _) => Self::Starfield,
             _ => Self::Unknown,
         }
     }
@@ -281,13 +289,61 @@ mod tests {
 
     #[test]
     fn detect_oblivion() {
+        // Standard Oblivion: v20.0.0.5, uv=0, uv2=0
         assert_eq!(
             NifVariant::detect(NifVersion::V20_0_0_5, 0, 0),
             NifVariant::Oblivion,
         );
+        // Oblivion on v20.2.0.7 with low user_version
         assert_eq!(
             NifVariant::detect(NifVersion::V20_2_0_7, 10, 0),
             NifVariant::Oblivion,
+        );
+    }
+
+    #[test]
+    fn detect_oblivion_edge_cases() {
+        // v20.0.0.5 is always Oblivion regardless of user_version/user_version_2
+        assert_eq!(
+            NifVariant::detect(NifVersion::V20_0_0_5, 11, 34),
+            NifVariant::Oblivion,
+        );
+        assert_eq!(
+            NifVariant::detect(NifVersion::V20_0_0_5, 12, 100),
+            NifVariant::Oblivion,
+        );
+        assert_eq!(
+            NifVariant::detect(NifVersion::V20_0_0_5, 0, 25),
+            NifVariant::Oblivion,
+        );
+        // v20.2.0.7 with user_version=0 (NifSkope export)
+        assert_eq!(
+            NifVariant::detect(NifVersion::V20_2_0_7, 0, 0),
+            NifVariant::Oblivion,
+        );
+        // v20.2.0.7 with user_version=10 (some Oblivion mods)
+        assert_eq!(
+            NifVariant::detect(NifVersion::V20_2_0_7, 10, 25),
+            NifVariant::Oblivion,
+        );
+    }
+
+    #[test]
+    fn detect_gap_ranges() {
+        // BSVER 101-129 (between SkyrimSE and FO4) → SkyrimSE
+        assert_eq!(
+            NifVariant::detect(NifVersion::V20_2_0_7, 12, 110),
+            NifVariant::SkyrimSE,
+        );
+        // BSVER 156-169 (between FO76 and Starfield) → FO76
+        assert_eq!(
+            NifVariant::detect(NifVersion::V20_2_0_7, 12, 160),
+            NifVariant::Fallout76,
+        );
+        // BSVER 170+ → Starfield
+        assert_eq!(
+            NifVariant::detect(NifVersion::V20_2_0_7, 12, 200),
+            NifVariant::Starfield,
         );
     }
 
