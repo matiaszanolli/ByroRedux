@@ -12,7 +12,8 @@ use byroredux_plugin::esm;
 use byroredux_renderer::VulkanContext;
 use std::collections::HashMap;
 
-use crate::TextureProvider;
+use crate::asset_provider::TextureProvider;
+use crate::components::{AlphaBlend, Decal, TwoSided};
 
 /// Result of loading a cell.
 #[allow(dead_code)]
@@ -490,13 +491,13 @@ fn load_nif_placed(
         world.insert(entity, MeshHandle(mesh_handle));
         world.insert(entity, TextureHandle(tex_handle));
         if mesh.has_alpha {
-            world.insert(entity, crate::AlphaBlend);
+            world.insert(entity, AlphaBlend);
         }
         if mesh.two_sided {
-            world.insert(entity, crate::TwoSided);
+            world.insert(entity, TwoSided);
         }
         if mesh.is_decal {
-            world.insert(entity, crate::Decal);
+            world.insert(entity, Decal);
         }
         if let Some(ld) = light_data {
             world.insert(

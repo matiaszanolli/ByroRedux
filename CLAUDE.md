@@ -24,14 +24,30 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 
 ```
 byroredux/              Binary — game loop, scene setup, systems
+  src/main.rs              App struct, ApplicationHandler (winit event loop), main()
+  src/components.rs        Marker components (Spinning, AlphaBlend, TwoSided, Decal) + app resources
+  src/systems.rs           ECS systems: fly camera, animation, transform propagation, spin, stats
+  src/scene.rs             Scene setup, NIF loading (load_nif_bytes, load_nif_from_args)
+  src/asset_provider.rs    TextureProvider, BSA texture/mesh extraction, resolve_texture
+  src/render.rs            Per-frame render data collection (build_render_data)
+  src/anim_convert.rs      NIF→core animation clip conversion, subtree name map
+  src/commands.rs           Console commands (help, stats, entities, systems)
+  src/helpers.rs            add_child, world_resource_set utilities
+  src/cell_loader.rs        ESM cell loading (interior + exterior)
 crates/
   core/                      ECS, math (glam), types, string interning, form IDs
     src/ecs/                 World, Component, Storage, Query, System, Scheduler, Resource
     src/ecs/components/      Transform, GlobalTransform, Parent, Children, Camera, MeshHandle, Name,
                              FormIdComponent, LightSource, AnimatedVisibility/Alpha/Color
     src/ecs/resources.rs     DeltaTime, TotalTime, EngineConfig
-    src/animation.rs         Interpolation engine, AnimationClip, AnimationPlayer, AnimationStack,
-                             AnimationClipRegistry, RootMotionDelta, blending, sampling
+    src/animation/           Animation engine (split into submodules)
+      types.rs               CycleType, KeyType, key structs, channels, AnimationClip
+      registry.rs            AnimationClipRegistry (Resource)
+      player.rs              AnimationPlayer (Component), advance_time()
+      stack.rs               AnimationLayer, AnimationStack, advance_stack(), sample_blended_transform()
+      root_motion.rs         RootMotionDelta, split_root_motion()
+      interpolation.rs       find_key_pair, hermite, TBC tangents, sample_translation/rotation/scale/float/color/bool
+      text_events.rs         collect_text_key_events()
     src/form_id.rs           FormId, PluginId, LocalFormId, FormIdPair, FormIdPool
     src/string/              StringPool, FixedString
   plugin/                    Plugin system — manifests, records, DataStore, conflict resolution
@@ -46,8 +62,14 @@ crates/
       tes5.rs                Skyrim parser stub
       fo4.rs                 Fallout 4 parser stub
   renderer/                  Vulkan graphics (ash, gpu-allocator, image)
-    src/vulkan/              context, pipeline, device, swapchain, sync, allocator, buffer,
+    src/vulkan/              pipeline, device, swapchain, sync, allocator, buffer,
                              scene_buffer (SSBO/UBO), acceleration (BLAS/TLAS)
+    src/vulkan/context/      VulkanContext (split into submodules)
+      mod.rs                 Struct definition (54 fields), new(), Drop (reverse-order teardown)
+      draw.rs                draw_frame() — per-frame command recording + submission
+      resize.rs              recreate_swapchain() — window resize handler
+      resources.rs           build_blas_for_mesh, register_ui_quad, swapchain_extent, log_memory_usage
+      helpers.rs             find_depth_format, create_render_pass, create_framebuffers, etc.
     src/vulkan/texture.rs    Texture upload (RGBA + BC-compressed DDS, staging, layout transitions)
     src/vulkan/dds.rs        DDS header parser (BC1/BC3/BC5, FourCC + DX10 extended, mip sizes)
     src/texture_registry.rs  TextureRegistry (path→handle cache, per-texture descriptor sets)
@@ -63,7 +85,13 @@ crates/
     src/types.rs             NiPoint3, NiMatrix3, NiTransform, NiColor, BlockRef
     src/stream.rs            NifStream: version-aware binary reader
     src/blocks/              Block parsers: NiNode, NiTriShape/Strips, NiTriShapeData/StripsData, properties, BSShader, textures
-    src/import.rs            NIF-to-ECS import: hierarchy preservation, geometry/transform conversion
+    src/import/              NIF-to-ECS import (split into submodules)
+      mod.rs                 ImportedNode/Mesh/Scene types, import_nif_scene(), import_nif()
+      walk.rs                Hierarchical + flat scene graph traversal
+      mesh.rs                NiTriShape + BsTriShape geometry extraction
+      material.rs            MaterialInfo, texture/alpha/decal property extraction
+      transform.rs           Transform composition, degenerate rotation SVD repair
+      coord.rs               Z-up (Gamebryo) → Y-up (renderer) quaternion conversion
     src/anim.rs              KF animation import: clips, channels, coordinate conversion
     src/scene.rs             NifScene: parsed block collection with downcasting
   ui/                       Scaleform/SWF UI (Ruffle integration)
