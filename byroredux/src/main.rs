@@ -199,6 +199,14 @@ fn animation_system(world: &World, dt: f32) {
         return;
     }
 
+    // Per-frame cache of subtree name maps — built once per unique root entity,
+    // reused across all animated entities sharing that root. Avoids rebuilding
+    // the HashMap + BFS walk for every AnimationPlayer/Stack each frame.
+    let mut subtree_cache: std::collections::HashMap<
+        EntityId,
+        std::collections::HashMap<FixedString, EntityId>,
+    > = std::collections::HashMap::new();
+
     // Rebuild name→entity index only when entities have been added.
     let current_gen = world.next_entity_id() as u32;
     {
@@ -249,8 +257,13 @@ fn animation_system(world: &World, dt: f32) {
         let current_time = player.local_time;
         drop(player_query);
 
-        // Build scoped or global name→entity lookup.
-        let scoped_map = root_entity_opt.map(|root| build_subtree_name_map(world, root));
+        // Scoped name lookup — cached per root entity.
+        let scoped_map = root_entity_opt.map(|root| {
+            subtree_cache
+                .entry(root)
+                .or_insert_with(|| build_subtree_name_map(world, root))
+                as &std::collections::HashMap<FixedString, EntityId>
+        });
         let resolve_entity = |channel_name: &str| -> Option<EntityId> {
             let sym = pool.get(channel_name)?;
             if let Some(ref scoped) = scoped_map {
@@ -368,10 +381,13 @@ fn animation_system(world: &World, dt: f32) {
         let sq = world.query::<AnimationStack>().unwrap();
         let stack = sq.get(entity).unwrap();
 
-        // Scoped name lookup for stacks.
-        let stack_scoped_map = stack
-            .root_entity
-            .map(|root| build_subtree_name_map(world, root));
+        // Scoped name lookup for stacks — cached per root entity.
+        let stack_scoped_map = stack.root_entity.map(|root| {
+            subtree_cache
+                .entry(root)
+                .or_insert_with(|| build_subtree_name_map(world, root))
+                as &std::collections::HashMap<FixedString, EntityId>
+        });
         let stack_resolve = |channel_name: &str| -> Option<EntityId> {
             let sym = pool.get(channel_name)?;
             if let Some(ref scoped) = stack_scoped_map {
