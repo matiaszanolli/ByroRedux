@@ -23,7 +23,10 @@ use controller::{
     NiControllerManager, NiControllerSequence, NiGeomMorpherController, NiMaterialColorController,
     NiMorphData, NiMultiTargetTransformController, NiSingleInterpController, NiTimeController,
 };
-use extra_data::{BsBound, BsDecalPlacementVectorExtraData, NiExtraData};
+use extra_data::{
+    BsBehaviorGraphExtraData, BsBound, BsClothExtraData, BsConnectPointChildren,
+    BsConnectPointParents, BsDecalPlacementVectorExtraData, BsInvMarker, NiExtraData,
+};
 use multibound::{BsMultiBound, BsMultiBoundAABB, BsMultiBoundOBB};
 use interpolator::{
     NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendPoint3Interpolator,
@@ -104,7 +107,9 @@ pub fn parse_block(
         "NiTriShape" | "NiTriStrips" | "BSSegmentedTriShape" => {
             Ok(Box::new(NiTriShape::parse(stream)?))
         }
-        "BSTriShape" | "BSMeshLODTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse(stream)?)),
+        "BSTriShape" | "BSMeshLODTriShape" | "BSSubIndexTriShape" => {
+            Ok(Box::new(tri_shape::BsTriShape::parse(stream)?))
+        }
         "NiTriShapeData" => Ok(Box::new(NiTriShapeData::parse(stream)?)),
         "NiTriStripsData" => Ok(Box::new(NiTriStripsData::parse(stream)?)),
         "BSShaderPPLightingProperty" => Ok(Box::new(BSShaderPPLightingProperty::parse(stream)?)),
@@ -144,6 +149,11 @@ pub fn parse_block(
         "BSDecalPlacementVectorExtraData" => {
             Ok(Box::new(BsDecalPlacementVectorExtraData::parse(stream)?))
         }
+        "BSBehaviorGraphExtraData" => Ok(Box::new(BsBehaviorGraphExtraData::parse(stream)?)),
+        "BSInvMarker" => Ok(Box::new(BsInvMarker::parse(stream)?)),
+        "BSClothExtraData" => Ok(Box::new(BsClothExtraData::parse(stream)?)),
+        "BSConnectPoint::Parents" => Ok(Box::new(BsConnectPointParents::parse(stream)?)),
+        "BSConnectPoint::Children" => Ok(Box::new(BsConnectPointChildren::parse(stream)?)),
         // NiSingleInterpController subclasses (base + interpolator ref)
         "NiTextureTransformController" => Ok(Box::new(
             controller::NiTextureTransformController::parse(stream)?,

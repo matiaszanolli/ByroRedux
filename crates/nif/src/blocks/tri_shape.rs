@@ -233,6 +233,8 @@ const VF_TANGENTS: u16 = 0x010;
 const VF_VERTEX_COLORS: u16 = 0x020;
 const VF_SKINNED: u16 = 0x040;
 const VF_EYE_DATA: u16 = 0x100;
+/// FO4+: full-precision vertex positions (bit 10). When clear, positions are half-float.
+const VF_FULL_PRECISION: u16 = 0x400;
 
 impl BsTriShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -275,12 +277,24 @@ impl BsTriShape {
             for _ in 0..num_vertices {
                 let vert_start = stream.position();
 
-                // Position (Vector3 = 3 × f32)
+                // Position: full-precision (3×f32 + f32) or half-precision (3×f16 + u16).
+                // SSE (BSVER < 130): always full-precision.
+                // FO4+ (BSVER >= 130): bit VF_FULL_PRECISION selects precision.
                 if vertex_attrs & VF_VERTEX != 0 {
-                    let pos = stream.read_ni_point3()?;
-                    vertices.push(pos);
-                    // Bitangent X (f32) if tangents, else Unused W (u32)
-                    let _bitangent_x_or_w = stream.read_f32_le()?;
+                    let full_precision = stream.variant().bsver() < 130
+                        || vertex_attrs & VF_FULL_PRECISION != 0;
+                    if full_precision {
+                        let pos = stream.read_ni_point3()?;
+                        vertices.push(pos);
+                        let _bitangent_x_or_w = stream.read_f32_le()?;
+                    } else {
+                        // Half-float positions (FO4 default)
+                        let x = half_to_f32(stream.read_u16_le()?);
+                        let y = half_to_f32(stream.read_u16_le()?);
+                        let z = half_to_f32(stream.read_u16_le()?);
+                        vertices.push(NiPoint3 { x, y, z });
+                        let _bitangent_x_or_w = stream.read_u16_le()?;
+                    }
                 }
 
                 // UV (HalfTexCoord = 2 × f16)

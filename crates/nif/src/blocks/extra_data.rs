@@ -174,3 +174,200 @@ impl BsDecalPlacementVectorExtraData {
         })
     }
 }
+
+// ── BSBehaviorGraphExtraData ───────────────────────────────────────
+
+/// Behavior graph reference for Havok animation behavior files.
+/// Present on characters and animated objects (Skyrim+).
+#[derive(Debug)]
+pub struct BsBehaviorGraphExtraData {
+    pub name: Option<String>,
+    pub behaviour_graph_file: Option<String>,
+    pub controls_base_skeleton: bool,
+}
+
+impl NiObject for BsBehaviorGraphExtraData {
+    fn block_type_name(&self) -> &'static str {
+        "BSBehaviorGraphExtraData"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsBehaviorGraphExtraData {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let name = stream.read_string()?;
+        let behaviour_graph_file = stream.read_string()?;
+        let controls_base_skeleton = stream.read_u32_le()? != 0;
+        Ok(Self {
+            name,
+            behaviour_graph_file,
+            controls_base_skeleton,
+        })
+    }
+}
+
+// ── BSInvMarker ────────────────────────────────────────────────────
+
+/// Inventory display marker — rotation and zoom for in-menu 3D preview.
+/// Rotation values are radians × 1000 stored as u16.
+#[derive(Debug)]
+pub struct BsInvMarker {
+    pub name: Option<String>,
+    pub rotation_x: u16,
+    pub rotation_y: u16,
+    pub rotation_z: u16,
+    pub zoom: f32,
+}
+
+impl NiObject for BsInvMarker {
+    fn block_type_name(&self) -> &'static str {
+        "BSInvMarker"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsInvMarker {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let name = stream.read_string()?;
+        let rotation_x = stream.read_u16_le()?;
+        let rotation_y = stream.read_u16_le()?;
+        let rotation_z = stream.read_u16_le()?;
+        let zoom = stream.read_f32_le()?;
+        Ok(Self {
+            name,
+            rotation_x,
+            rotation_y,
+            rotation_z,
+            zoom,
+        })
+    }
+}
+
+// ── BSClothExtraData ───────────────────────────────────────────────
+
+/// Havok cloth simulation data (opaque binary blob). FO4+.
+#[derive(Debug)]
+pub struct BsClothExtraData {
+    pub name: Option<String>,
+    pub data: Vec<u8>,
+}
+
+impl NiObject for BsClothExtraData {
+    fn block_type_name(&self) -> &'static str {
+        "BSClothExtraData"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsClothExtraData {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let name = stream.read_string()?;
+        let length = stream.read_u32_le()? as usize;
+        let data = stream.read_bytes(length)?;
+        Ok(Self { name, data })
+    }
+}
+
+// ── BSConnectPoint::Parents ────────────────────────────────────────
+
+/// Workshop connection point definition. FO4+.
+#[derive(Debug)]
+pub struct ConnectPointData {
+    pub parent: String,
+    pub name: String,
+    pub rotation: [f32; 4],
+    pub translation: [f32; 3],
+    pub scale: f32,
+}
+
+#[derive(Debug)]
+pub struct BsConnectPointParents {
+    pub name: Option<String>,
+    pub connect_points: Vec<ConnectPointData>,
+}
+
+impl NiObject for BsConnectPointParents {
+    fn block_type_name(&self) -> &'static str {
+        "BSConnectPoint::Parents"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsConnectPointParents {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let name = stream.read_string()?;
+        let count = stream.read_u32_le()? as usize;
+        let mut connect_points = Vec::with_capacity(count);
+        for _ in 0..count {
+            let parent = stream.read_sized_string()?;
+            let cp_name = stream.read_sized_string()?;
+            let rotation = [
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+            ];
+            let translation = [
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+            ];
+            let scale = stream.read_f32_le()?;
+            connect_points.push(ConnectPointData {
+                parent,
+                name: cp_name,
+                rotation,
+                translation,
+                scale,
+            });
+        }
+        Ok(Self {
+            name,
+            connect_points,
+        })
+    }
+}
+
+// ── BSConnectPoint::Children ───────────────────────────────────────
+
+/// Workshop connection point child references. FO4+.
+#[derive(Debug)]
+pub struct BsConnectPointChildren {
+    pub name: Option<String>,
+    pub skinned: bool,
+    pub point_names: Vec<String>,
+}
+
+impl NiObject for BsConnectPointChildren {
+    fn block_type_name(&self) -> &'static str {
+        "BSConnectPoint::Children"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsConnectPointChildren {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let name = stream.read_string()?;
+        let skinned = stream.read_u32_le()? != 0;
+        let count = stream.read_u32_le()? as usize;
+        let mut point_names = Vec::with_capacity(count);
+        for _ in 0..count {
+            point_names.push(stream.read_sized_string()?);
+        }
+        Ok(Self {
+            name,
+            skinned,
+            point_names,
+        })
+    }
+}

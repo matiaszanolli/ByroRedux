@@ -284,13 +284,11 @@ impl BSLightingShaderProperty {
         let net = NiObjectNETData::parse(stream)?;
 
         // BSLightingShaderProperty fields.
-        // Shader flags — Skyrim format (BSVER < 130). FO4+ uses different flag format.
-        let (shader_flags_1, shader_flags_2) = if !stream.variant().uses_fo4_shader_flags()
-            && !stream.variant().uses_fo76_shader_flags()
-        {
+        // Shader flags — u32 pair for Skyrim and FO4. FO76+ uses a different format.
+        let (shader_flags_1, shader_flags_2) = if !stream.variant().uses_fo76_shader_flags() {
             (stream.read_u32_le()?, stream.read_u32_le()?)
         } else {
-            // FO4/FO76 flags: not supported yet, skip via block size adjustment.
+            // FO76/Starfield: variable-length flag arrays — skip via block size adjustment.
             (0, 0)
         };
 
@@ -491,12 +489,11 @@ impl BSEffectShaderProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
 
-        // Shader flags — Skyrim format (BSVER < 130).
-        let (shader_flags_1, shader_flags_2) = if !stream.variant().uses_fo4_shader_flags()
-            && !stream.variant().uses_fo76_shader_flags()
-        {
+        // Shader flags — u32 pair for Skyrim and FO4. FO76+ uses a different format.
+        let (shader_flags_1, shader_flags_2) = if !stream.variant().uses_fo76_shader_flags() {
             (stream.read_u32_le()?, stream.read_u32_le()?)
         } else {
+            // FO76/Starfield: variable-length flag arrays — skip via block size adjustment.
             (0, 0)
         };
 
