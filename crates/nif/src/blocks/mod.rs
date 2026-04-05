@@ -8,6 +8,7 @@ pub mod base;
 pub mod controller;
 pub mod extra_data;
 pub mod interpolator;
+pub mod multibound;
 pub mod node;
 pub mod palette;
 pub mod properties;
@@ -22,13 +23,14 @@ use controller::{
     NiControllerManager, NiControllerSequence, NiGeomMorpherController, NiMaterialColorController,
     NiMorphData, NiMultiTargetTransformController, NiSingleInterpController, NiTimeController,
 };
-use extra_data::NiExtraData;
+use extra_data::{BsBound, BsDecalPlacementVectorExtraData, NiExtraData};
+use multibound::{BsMultiBound, BsMultiBoundAABB, BsMultiBoundOBB};
 use interpolator::{
     NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendPoint3Interpolator,
     NiBlendTransformInterpolator, NiBoolData, NiBoolInterpolator, NiFloatData, NiFloatInterpolator,
     NiPoint3Interpolator, NiPosData, NiTextKeyExtraData, NiTransformData, NiTransformInterpolator,
 };
-use node::NiNode;
+use node::{BsOrderedNode, BsValueNode, NiNode};
 use properties::{
     NiAlphaProperty, NiFlagProperty, NiMaterialProperty, NiStencilProperty,
     NiStringPalette, NiTexturingProperty, NiVertexColorProperty, NiZBufferProperty,
@@ -93,6 +95,12 @@ pub fn parse_block(
         | "RootCollisionNode" => {
             Ok(Box::new(NiNode::parse(stream)?))
         }
+        "BSOrderedNode" => Ok(Box::new(BsOrderedNode::parse(stream)?)),
+        "BSValueNode" => Ok(Box::new(BsValueNode::parse(stream)?)),
+        // Multi-bound spatial volumes
+        "BSMultiBound" => Ok(Box::new(BsMultiBound::parse(stream)?)),
+        "BSMultiBoundAABB" => Ok(Box::new(BsMultiBoundAABB::parse(stream)?)),
+        "BSMultiBoundOBB" => Ok(Box::new(BsMultiBoundOBB::parse(stream)?)),
         "NiTriShape" | "NiTriStrips" | "BSSegmentedTriShape" => {
             Ok(Box::new(NiTriShape::parse(stream)?))
         }
@@ -132,6 +140,10 @@ pub fn parse_block(
         "NiSkinPartition" => Ok(Box::new(NiSkinPartition::parse(stream)?)),
         "NiStringExtraData" | "NiBinaryExtraData" | "NiIntegerExtraData" | "BSXFlags"
         | "NiBooleanExtraData" => Ok(Box::new(NiExtraData::parse(stream, type_name)?)),
+        "BSBound" => Ok(Box::new(BsBound::parse(stream)?)),
+        "BSDecalPlacementVectorExtraData" => {
+            Ok(Box::new(BsDecalPlacementVectorExtraData::parse(stream)?))
+        }
         // NiSingleInterpController subclasses (base + interpolator ref)
         "NiTextureTransformController" => Ok(Box::new(
             controller::NiTextureTransformController::parse(stream)?,

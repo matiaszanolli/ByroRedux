@@ -114,3 +114,90 @@ impl NiNode {
         })
     }
 }
+
+// ── BSOrderedNode ──────────────────────────────────────────────────
+
+/// BSOrderedNode — NiNode subclass with alpha sort bound for draw ordering.
+///
+/// Used by FO3/FNV for transparent object sorting within a node hierarchy.
+#[derive(Debug)]
+pub struct BsOrderedNode {
+    pub base: NiNode,
+    /// Alpha sort bounding sphere: [x, y, z, radius].
+    pub alpha_sort_bound: [f32; 4],
+    /// Whether the bound is static (doesn't update with animation).
+    pub is_static_bound: bool,
+}
+
+impl NiObject for BsOrderedNode {
+    fn block_type_name(&self) -> &'static str {
+        "BSOrderedNode"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_object_net(&self) -> Option<&dyn HasObjectNET> {
+        Some(&self.base)
+    }
+    fn as_av_object(&self) -> Option<&dyn HasAVObject> {
+        Some(&self.base)
+    }
+}
+
+impl BsOrderedNode {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiNode::parse(stream)?;
+        let alpha_sort_bound = [
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+        ];
+        let is_static_bound = stream.read_u8()? != 0;
+        Ok(Self {
+            base,
+            alpha_sort_bound,
+            is_static_bound,
+        })
+    }
+}
+
+// ── BSValueNode ────────────────────────────────────────────────────
+
+/// BSValueNode — NiNode subclass with an integer value and flags.
+///
+/// Used by FO3/FNV for attaching numeric metadata to scene graph nodes.
+#[derive(Debug)]
+pub struct BsValueNode {
+    pub base: NiNode,
+    pub value: u32,
+    pub value_flags: u8,
+}
+
+impl NiObject for BsValueNode {
+    fn block_type_name(&self) -> &'static str {
+        "BSValueNode"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_object_net(&self) -> Option<&dyn HasObjectNET> {
+        Some(&self.base)
+    }
+    fn as_av_object(&self) -> Option<&dyn HasAVObject> {
+        Some(&self.base)
+    }
+}
+
+impl BsValueNode {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiNode::parse(stream)?;
+        let value = stream.read_u32_le()?;
+        let value_flags = stream.read_u8()?;
+        Ok(Self {
+            base,
+            value,
+            value_flags,
+        })
+    }
+}
