@@ -635,6 +635,25 @@ impl NiMorphData {
             // Frame name (string table indexed for version >= 10.1.0.106).
             let name = stream.read_string()?;
 
+            // Legacy float key group — per nif.xml, each morph frame serializes
+            // a KeyGroup<float> between the name and vertex deltas.
+            let num_keys = stream.read_u32_le()?;
+            if num_keys > 0 {
+                let interpolation = stream.read_u32_le()?;
+                // Key size depends on interpolation type:
+                // 1 (LINEAR) = time(f32) + value(f32) = 8 bytes
+                // 2 (QUADRATIC) = time + value + forward + backward = 16 bytes
+                // 3 (TBC) = time + value + tension + bias + continuity = 20 bytes
+                // 5 (CONSTANT) = time + value = 8 bytes
+                let key_size: u64 = match interpolation {
+                    1 | 5 => 8,
+                    2 => 16,
+                    3 => 20,
+                    _ => 8, // fallback
+                };
+                stream.skip(key_size * num_keys as u64);
+            }
+
             // Vertex position deltas.
             let mut vectors = Vec::with_capacity(num_vertices as usize);
             for _ in 0..num_vertices {
