@@ -114,8 +114,11 @@ impl World {
         })
     }
 
-    /// Returns the next entity id that will be assigned.
-    pub fn entity_count(&self) -> EntityId {
+    /// Returns the next entity id that will be assigned (monotonic high-water mark).
+    ///
+    /// This is NOT a count of live entities — it's the next ID that
+    /// `spawn()` will return. Entity IDs are never reused.
+    pub fn next_entity_id(&self) -> EntityId {
         self.next_entity
     }
 

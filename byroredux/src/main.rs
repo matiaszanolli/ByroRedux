@@ -200,7 +200,7 @@ fn animation_system(world: &World, dt: f32) {
     }
 
     // Rebuild name→entity index only when entities have been added.
-    let current_gen = world.entity_count() as u32;
+    let current_gen = world.next_entity_id() as u32;
     {
         let needs_rebuild = world
             .try_resource::<NameIndex>()
@@ -848,7 +848,7 @@ impl App {
             input.pitch = forward.y.asin();
         }
 
-        let total_entities = self.world.entity_count();
+        let total_entities = self.world.next_entity_id();
         log::info!(
             "Scene ready: {} entities, 1 camera. Press Escape to capture mouse for fly camera.",
             total_entities
@@ -1546,7 +1546,7 @@ impl ApplicationHandler for App {
         {
             let mut stats = self.world.resource_mut::<DebugStats>();
             stats.push_frame_time(dt);
-            stats.entity_count = self.world.entity_count() as u32;
+            stats.entity_count = self.world.next_entity_id() as u32;
             if let Some(ref ctx) = self.renderer {
                 stats.mesh_count = ctx.mesh_registry.len() as u32;
                 stats.texture_count = ctx.texture_registry.len() as u32;
@@ -1633,7 +1633,7 @@ impl ConsoleCommand for EntitiesCommand {
         "Show entity count and component breakdown"
     }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
-        let total = world.entity_count();
+        let total = world.next_entity_id();
         let mut lines = vec![format!("Total entities spawned: {}", total)];
         lines.push(format!("  Transform:     {}", world.count::<Transform>()));
         lines.push(format!("  MeshHandle:    {}", world.count::<MeshHandle>()));
