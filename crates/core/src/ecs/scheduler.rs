@@ -22,7 +22,16 @@ impl Scheduler {
     /// Add a system to the end of the execution list.
     ///
     /// Systems run in the order they are added.
+    /// Warns if a system with the same name is already registered.
     pub fn add<S: System + 'static>(&mut self, system: S) -> &mut Self {
+        let name = system.name().to_string();
+        if self.systems.iter().any(|s| s.name() == name) {
+            log::warn!(
+                "Scheduler: duplicate system name '{}' (index {})",
+                name,
+                self.systems.len()
+            );
+        }
         self.systems.push(Box::new(system));
         self
     }
