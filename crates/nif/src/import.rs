@@ -443,25 +443,45 @@ fn extract_bs_tri_shape(
     let quat = zup_matrix_to_yup_quat(&world_transform.rotation);
 
     // Extract material data from BSLightingShaderProperty (if present).
-    let (emissive_color, emissive_mult, specular_color, specular_strength, glossiness, uv_offset, uv_scale, mat_alpha, normal_map) =
-        if let Some(idx) = shape.shader_property_ref.index() {
-            if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
-                let nm = shader.texture_set_ref.index()
-                    .and_then(|ts_idx| scene.get_as::<BSShaderTextureSet>(ts_idx))
-                    .and_then(|ts| ts.textures.get(1).cloned())
-                    .filter(|s| !s.is_empty());
-                (
-                    shader.emissive_color, shader.emissive_multiple,
-                    shader.specular_color, shader.specular_strength,
-                    shader.glossiness, shader.uv_offset, shader.uv_scale,
-                    shader.alpha, nm,
-                )
-            } else {
-                ([0.0; 3], 1.0, [1.0; 3], 1.0, 80.0, [0.0; 2], [1.0; 2], 1.0, None)
-            }
+    let (
+        emissive_color,
+        emissive_mult,
+        specular_color,
+        specular_strength,
+        glossiness,
+        uv_offset,
+        uv_scale,
+        mat_alpha,
+        normal_map,
+    ) = if let Some(idx) = shape.shader_property_ref.index() {
+        if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
+            let nm = shader
+                .texture_set_ref
+                .index()
+                .and_then(|ts_idx| scene.get_as::<BSShaderTextureSet>(ts_idx))
+                .and_then(|ts| ts.textures.get(1).cloned())
+                .filter(|s| !s.is_empty());
+            (
+                shader.emissive_color,
+                shader.emissive_multiple,
+                shader.specular_color,
+                shader.specular_strength,
+                shader.glossiness,
+                shader.uv_offset,
+                shader.uv_scale,
+                shader.alpha,
+                nm,
+            )
         } else {
-            ([0.0; 3], 1.0, [1.0; 3], 1.0, 80.0, [0.0; 2], [1.0; 2], 1.0, None)
-        };
+            (
+                [0.0; 3], 1.0, [1.0; 3], 1.0, 80.0, [0.0; 2], [1.0; 2], 1.0, None,
+            )
+        }
+    } else {
+        (
+            [0.0; 3], 1.0, [1.0; 3], 1.0, 80.0, [0.0; 2], [1.0; 2], 1.0, None,
+        )
+    };
 
     Some(ImportedMesh {
         positions,

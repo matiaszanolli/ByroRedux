@@ -144,9 +144,15 @@ impl TextureRegistry {
             return Ok(handle);
         }
 
-        let texture =
-            Texture::from_dds(device, allocator, queue, command_pool, dds_bytes, self.shared_sampler)
-                .with_context(|| format!("Failed to load DDS texture '{}'", path))?;
+        let texture = Texture::from_dds(
+            device,
+            allocator,
+            queue,
+            command_pool,
+            dds_bytes,
+            self.shared_sampler,
+        )
+        .with_context(|| format!("Failed to load DDS texture '{}'", path))?;
 
         let sets = self.allocate_and_write_sets(device, &texture)?;
         let handle = self.textures.len() as TextureHandle;
@@ -239,7 +245,14 @@ impl TextureRegistry {
 
         // Move current texture to pending (will be destroyed on next update).
         let mut prev = Texture::from_rgba(
-            device, allocator, queue, command_pool, width, height, pixels, self.shared_sampler,
+            device,
+            allocator,
+            queue,
+            command_pool,
+            width,
+            height,
+            pixels,
+            self.shared_sampler,
         )
         .context("Failed to create updated dynamic RGBA texture")?;
         std::mem::swap(&mut entry.texture, &mut prev);

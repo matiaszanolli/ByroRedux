@@ -529,10 +529,25 @@ impl Texture {
         let pixel_data = &dds_bytes[meta.data_offset..];
 
         if meta.compressed {
-            Self::from_bc(device, allocator, queue, command_pool, &meta, pixel_data, sampler)
+            Self::from_bc(
+                device,
+                allocator,
+                queue,
+                command_pool,
+                &meta,
+                pixel_data,
+                sampler,
+            )
         } else {
             Self::from_rgba(
-                device, allocator, queue, command_pool, meta.width, meta.height, pixel_data, sampler,
+                device,
+                allocator,
+                queue,
+                command_pool,
+                meta.width,
+                meta.height,
+                pixel_data,
+                sampler,
             )
         }
     }

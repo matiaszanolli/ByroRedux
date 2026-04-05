@@ -530,8 +530,7 @@ pub fn sample_blended_transform(
             blended_rot = r;
         } else {
             let interp = w / (accumulated_weight + w);
-            blended_rot =
-                blended_rot.slerp(if blended_rot.dot(r) < 0.0 { -r } else { r }, interp);
+            blended_rot = blended_rot.slerp(if blended_rot.dot(r) < 0.0 { -r } else { r }, interp);
         }
         accumulated_weight += w;
     }
@@ -1202,10 +1201,7 @@ mod tests {
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
-            text_keys: vec![
-                (0.2, "start".into()),
-                (1.8, "end".into()),
-            ],
+            text_keys: vec![(0.2, "start".into()), (1.8, "end".into())],
         };
 
         // Loop wrap: prev=1.7, curr=0.3 → fires "end" (>1.7) and "start" (<=0.3).

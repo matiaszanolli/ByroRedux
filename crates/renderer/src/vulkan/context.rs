@@ -165,8 +165,12 @@ impl VulkanContext {
         )?;
 
         // 9. Depth resources
-        let (depth_image, depth_image_view, depth_allocation) =
-            create_depth_resources(&device, &gpu_allocator, swapchain_state.extent, depth_format)?;
+        let (depth_image, depth_image_view, depth_allocation) = create_depth_resources(
+            &device,
+            &gpu_allocator,
+            swapchain_state.extent,
+            depth_format,
+        )?;
 
         // 10. Render pass (color + depth)
         let render_pass = create_render_pass(&device, swapchain_state.format.format, depth_format)?;
@@ -175,11 +179,8 @@ impl VulkanContext {
         let command_pool = create_command_pool(&device, queue_indices.graphics)?;
 
         // 11. Texture registry with checkerboard fallback
-        let mut texture_registry = TextureRegistry::new(
-            &device,
-            swapchain_state.images.len() as u32,
-            1024,
-        )?;
+        let mut texture_registry =
+            TextureRegistry::new(&device, swapchain_state.images.len() as u32, 1024)?;
         let checkerboard = super::texture::generate_checkerboard(256, 256, 32);
         let fallback_texture = Texture::from_rgba(
             &device,
@@ -556,9 +557,9 @@ impl VulkanContext {
                     // Args: constant_factor, clamp, slope_factor
                     self.device.cmd_set_depth_bias(
                         cmd,
-                        bias,                                          // constant_factor
-                        0.0,                                           // clamp (0 = disabled)
-                        if draw_cmd.is_decal { -2.0 } else { 0.0 },   // slope_factor
+                        bias,                                       // constant_factor
+                        0.0,                                        // clamp (0 = disabled)
+                        if draw_cmd.is_decal { -2.0 } else { 0.0 }, // slope_factor
                     );
 
                     // Push model matrix (bytes 64..128).
@@ -685,7 +686,10 @@ impl VulkanContext {
             .image_indices(&image_indices);
 
         let present_suboptimal = unsafe {
-            let pq = self.present_queue.lock().expect("present queue lock poisoned");
+            let pq = self
+                .present_queue
+                .lock()
+                .expect("present queue lock poisoned");
             match self
                 .swapchain_state
                 .swapchain_loader

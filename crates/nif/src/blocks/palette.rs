@@ -3,9 +3,9 @@
 //! Used by NiControllerManager to bind animation sequences to scene
 //! graph objects by name.
 
-use crate::NiObject;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
+use crate::NiObject;
 use std::any::Any;
 use std::io;
 

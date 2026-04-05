@@ -25,14 +25,12 @@ use controller::{
 use extra_data::NiExtraData;
 use interpolator::{
     NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendPoint3Interpolator,
-    NiBlendTransformInterpolator, NiBoolData, NiBoolInterpolator, NiFloatData,
-    NiFloatInterpolator, NiPoint3Interpolator, NiPosData, NiTextKeyExtraData,
-    NiTransformData, NiTransformInterpolator,
+    NiBlendTransformInterpolator, NiBoolData, NiBoolInterpolator, NiFloatData, NiFloatInterpolator,
+    NiPoint3Interpolator, NiPosData, NiTextKeyExtraData, NiTransformData, NiTransformInterpolator,
 };
 use node::NiNode;
 use properties::{
-    NiAlphaProperty, NiMaterialProperty, NiStencilProperty, NiTexturingProperty,
-    NiZBufferProperty,
+    NiAlphaProperty, NiMaterialProperty, NiStencilProperty, NiTexturingProperty, NiZBufferProperty,
 };
 use shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
@@ -155,15 +153,9 @@ pub fn parse_block(
         "NiBlendTransformInterpolator" => {
             Ok(Box::new(NiBlendTransformInterpolator::parse(stream)?))
         }
-        "NiBlendFloatInterpolator" => {
-            Ok(Box::new(NiBlendFloatInterpolator::parse(stream)?))
-        }
-        "NiBlendPoint3Interpolator" => {
-            Ok(Box::new(NiBlendPoint3Interpolator::parse(stream)?))
-        }
-        "NiBlendBoolInterpolator" => {
-            Ok(Box::new(NiBlendBoolInterpolator::parse(stream)?))
-        }
+        "NiBlendFloatInterpolator" => Ok(Box::new(NiBlendFloatInterpolator::parse(stream)?)),
+        "NiBlendPoint3Interpolator" => Ok(Box::new(NiBlendPoint3Interpolator::parse(stream)?)),
+        "NiBlendBoolInterpolator" => Ok(Box::new(NiBlendBoolInterpolator::parse(stream)?)),
         // Base NiTimeController fallback for unknown controller subtypes
         "NiTimeController" => Ok(Box::new(NiTimeController::parse(stream)?)),
         // Havok collision blocks — skip via block_size (no rendering use).

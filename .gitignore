@@ -5,3 +5,4 @@
 
 # Third-party dev tools (cloned locally, not tracked)
 /tools/
+pipeline_cache.bin
