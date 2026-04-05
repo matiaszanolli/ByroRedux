@@ -591,6 +591,10 @@ struct App {
     ui_manager: Option<UiManager>,
     /// Texture handle for the UI overlay (registered in the texture registry).
     ui_texture_handle: Option<u32>,
+    /// Reusable per-frame draw command buffer (cleared each frame, allocation retained).
+    draw_commands: Vec<DrawCommand>,
+    /// Reusable per-frame light buffer (cleared each frame, allocation retained).
+    gpu_lights: Vec<byroredux_renderer::GpuLight>,
 }
 
 impl App {
@@ -640,6 +644,8 @@ impl App {
             last_frame: Instant::now(),
             ui_manager: None,
             ui_texture_handle: None,
+            draw_commands: Vec::new(),
+            gpu_lights: Vec::new(),
         }
     }
 
@@ -1453,12 +1459,12 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(ref mut ctx) = self.renderer {
-                    let (view_proj, draw_commands, gpu_lights, camera_pos, ambient) =
-                        build_render_data(&self.world);
+                    let (view_proj, camera_pos, ambient) =
+                        build_render_data(&self.world, &mut self.draw_commands, &mut self.gpu_lights);
 
                     // Record draw call count for diagnostics.
                     world_resource_set::<DebugStats>(&self.world, |s| {
-                        s.draw_call_count = draw_commands.len() as u32;
+                        s.draw_call_count = self.draw_commands.len() as u32;
                     });
 
                     // Tick and render the UI overlay (Ruffle SWF player).
@@ -1500,8 +1506,8 @@ impl ApplicationHandler for App {
                     match ctx.draw_frame(
                         color.as_array(),
                         &view_proj,
-                        &draw_commands,
-                        &gpu_lights,
+                        &self.draw_commands,
+                        &self.gpu_lights,
                         camera_pos,
                         ambient,
                         ui_tex,
@@ -1731,14 +1737,13 @@ fn build_command_registry() -> CommandRegistry {
 /// Build the view-projection matrix and draw command list from ECS queries.
 fn build_render_data(
     world: &World,
-) -> (
-    [f32; 16],
-    Vec<DrawCommand>,
-    Vec<byroredux_renderer::GpuLight>,
-    [f32; 3],
-    [f32; 3],
-) {
+    draw_commands: &mut Vec<DrawCommand>,
+    gpu_lights: &mut Vec<byroredux_renderer::GpuLight>,
+) -> ([f32; 16], [f32; 3], [f32; 3]) {
     use byroredux_core::math::Mat4;
+
+    draw_commands.clear();
+    gpu_lights.clear();
 
     // Get camera view-projection.
     let view_proj = if let Some(active) = world.try_resource::<ActiveCamera>() {
@@ -1766,7 +1771,6 @@ fn build_render_data(
 
     // Collect draw commands from entities with (GlobalTransform, MeshHandle).
     // TextureHandle is optional — entities without one use the fallback (0).
-    let mut draw_commands = Vec::new();
     if let Some((tq, mq)) = world.query_2_mut::<GlobalTransform, MeshHandle>() {
         let tex_q = world.query::<TextureHandle>();
         let alpha_q = world.query::<AlphaBlend>();
@@ -1825,7 +1829,6 @@ fn build_render_data(
     });
 
     // Collect lights from ECS.
-    let mut gpu_lights = Vec::new();
 
     // Add cell directional light (primary interior illumination).
     if let Some(cell_lit) = world.try_resource::<CellLightingRes>() {
@@ -1901,7 +1904,7 @@ fn build_render_data(
         .map(|l| l.ambient)
         .unwrap_or([0.08, 0.08, 0.08]);
 
-    (view_proj, draw_commands, gpu_lights, camera_pos, ambient)
+    (view_proj, camera_pos, ambient)
 }
 
 /// Build a scoped name→entity map by walking the subtree rooted at `root`.
