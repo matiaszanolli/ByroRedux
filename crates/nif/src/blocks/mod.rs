@@ -211,9 +211,10 @@ pub fn parse_block(
         // Base NiTimeController fallback for unknown controller subtypes
         "NiTimeController" => Ok(Box::new(NiTimeController::parse(stream)?)),
         // ── Havok collision blocks (fully parsed) ────────────────────
-        "bhkCollisionObject" | "bhkBlendCollisionObject" | "bhkSPCollisionObject" => {
-            Ok(Box::new(BhkCollisionObject::parse(stream)?))
+        "bhkCollisionObject" | "bhkSPCollisionObject" => {
+            Ok(Box::new(BhkCollisionObject::parse(stream, false)?))
         }
+        "bhkBlendCollisionObject" => Ok(Box::new(BhkCollisionObject::parse(stream, true)?)),
         "bhkRigidBody" | "bhkRigidBodyT" => Ok(Box::new(BhkRigidBody::parse(stream)?)),
         "bhkSimpleShapePhantom" => Ok(Box::new(BhkSimpleShapePhantom::parse(stream)?)),
         "bhkMoppBvTreeShape" => Ok(Box::new(BhkMoppBvTreeShape::parse(stream)?)),

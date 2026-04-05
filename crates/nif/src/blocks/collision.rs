@@ -32,10 +32,15 @@ impl NiObject for BhkCollisionObject {
 }
 
 impl BhkCollisionObject {
-    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+    pub fn parse(stream: &mut NifStream, is_blend: bool) -> io::Result<Self> {
         let target_ref = stream.read_block_ref()?;
         let flags = stream.read_u16_le()?;
         let body_ref = stream.read_block_ref()?;
+        // bhkBlendCollisionObject adds heirGain(f32) + velGain(f32) = 8 bytes.
+        if is_blend {
+            let _heir_gain = stream.read_f32_le()?;
+            let _vel_gain = stream.read_f32_le()?;
+        }
         Ok(Self {
             target_ref,
             flags,
