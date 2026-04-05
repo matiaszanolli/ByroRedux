@@ -29,7 +29,10 @@ use interpolator::{
     NiTransformData, NiTransformInterpolator,
 };
 use node::NiNode;
-use properties::{NiAlphaProperty, NiMaterialProperty, NiTexturingProperty};
+use properties::{
+    NiAlphaProperty, NiMaterialProperty, NiStencilProperty, NiTexturingProperty,
+    NiZBufferProperty,
+};
 use shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
     BSShaderPPLightingProperty, BSShaderTextureSet,
@@ -101,6 +104,8 @@ pub fn parse_block(
         "BSEffectShaderProperty" => Ok(Box::new(BSEffectShaderProperty::parse(stream)?)),
         "NiMaterialProperty" => Ok(Box::new(NiMaterialProperty::parse(stream)?)),
         "NiAlphaProperty" => Ok(Box::new(NiAlphaProperty::parse(stream)?)),
+        "NiStencilProperty" => Ok(Box::new(NiStencilProperty::parse(stream)?)),
+        "NiZBufferProperty" => Ok(Box::new(NiZBufferProperty::parse(stream)?)),
         "NiTexturingProperty" => Ok(Box::new(NiTexturingProperty::parse(stream)?)),
         "NiSourceTexture" => Ok(Box::new(NiSourceTexture::parse(stream)?)),
         "NiStringExtraData" | "NiBinaryExtraData" | "NiIntegerExtraData" | "BSXFlags"

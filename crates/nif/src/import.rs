@@ -8,7 +8,9 @@
 //! and `Vec<u32>` data ready for upload via `MeshRegistry::upload()`.
 
 use crate::blocks::node::NiNode;
-use crate::blocks::properties::{NiAlphaProperty, NiMaterialProperty, NiTexturingProperty};
+use crate::blocks::properties::{
+    NiAlphaProperty, NiMaterialProperty, NiStencilProperty, NiTexturingProperty,
+};
 use crate::blocks::shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
     BSShaderPPLightingProperty, BSShaderTextureSet,
@@ -740,21 +742,11 @@ fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> MaterialInfo {
             }
         }
 
+        // NiStencilProperty — proper parser replaces NiUnknown heuristic.
         if !info.two_sided {
-            if let Some(unknown) = scene.get_as::<crate::blocks::NiUnknown>(idx) {
-                if unknown.type_name == "NiStencilProperty" {
-                    let len = unknown.data.len();
-                    if len >= 4 {
-                        let draw_mode = u32::from_le_bytes([
-                            unknown.data[len - 4],
-                            unknown.data[len - 3],
-                            unknown.data[len - 2],
-                            unknown.data[len - 1],
-                        ]);
-                        if draw_mode == 0 || draw_mode == 3 {
-                            info.two_sided = true;
-                        }
-                    }
+            if let Some(stencil) = scene.get_as::<NiStencilProperty>(idx) {
+                if stencil.is_two_sided() {
+                    info.two_sided = true;
                 }
             }
         }

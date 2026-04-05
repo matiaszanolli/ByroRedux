@@ -7,6 +7,7 @@ use super::base::NiObjectNETData;
 use super::NiObject;
 use crate::stream::NifStream;
 use crate::types::NiColor;
+use crate::version::NifVersion;
 use std::any::Any;
 use std::io;
 
@@ -391,5 +392,158 @@ mod tests {
         assert!((mat.ambient.r - 0.5).abs() < 1e-6);
         assert!((mat.diffuse.r - 0.5).abs() < 1e-6);
         assert!((mat.emissive_mult - 2.5).abs() < 1e-6);
+    }
+}
+
+// ── NiStencilProperty ────────────────────────────────────────────────
+
+/// Controls stencil testing and face culling (two-sided rendering).
+///
+/// Version-aware: Oblivion uses expanded fields, FO3+ packs into flags.
+/// The key field for rendering is `draw_mode`:
+///   0 = CCW_OR_BOTH (application default, treated as BOTH)
+///   1 = CCW (standard backface cull)
+///   2 = CW
+///   3 = BOTH (double-sided)
+#[derive(Debug)]
+pub struct NiStencilProperty {
+    pub net: NiObjectNETData,
+    pub flags: u16,
+    pub stencil_enabled: bool,
+    pub stencil_function: u32,
+    pub stencil_ref: u32,
+    pub stencil_mask: u32,
+    pub fail_action: u32,
+    pub z_fail_action: u32,
+    pub pass_action: u32,
+    pub draw_mode: u32,
+}
+
+impl NiObject for NiStencilProperty {
+    fn block_type_name(&self) -> &'static str {
+        "NiStencilProperty"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiStencilProperty {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let net = NiObjectNETData::parse(stream)?;
+
+        if stream.version() <= NifVersion::V20_0_0_5 {
+            // Oblivion format: expanded fields.
+            let stencil_enabled = stream.read_u8()? != 0;
+            let stencil_function = stream.read_u32_le()?;
+            let stencil_ref = stream.read_u32_le()?;
+            let stencil_mask = stream.read_u32_le()?;
+            let fail_action = stream.read_u32_le()?;
+            let z_fail_action = stream.read_u32_le()?;
+            let pass_action = stream.read_u32_le()?;
+            let draw_mode = stream.read_u32_le()?;
+
+            Ok(Self {
+                net,
+                flags: 0,
+                stencil_enabled,
+                stencil_function,
+                stencil_ref,
+                stencil_mask,
+                fail_action,
+                z_fail_action,
+                pass_action,
+                draw_mode,
+            })
+        } else {
+            // FO3/FNV/Skyrim format: packed flags.
+            let flags = stream.read_u16_le()?;
+            let stencil_ref = stream.read_u32_le()?;
+            let stencil_mask = stream.read_u32_le()?;
+
+            // Unpack from flags:
+            // bit 0: stencil enable
+            // bits 1-3: fail action
+            // bits 4-6: z-fail action
+            // bits 7-9: pass action
+            // bits 10-11: draw mode
+            // bits 12-14: stencil function
+            let stencil_enabled = flags & 1 != 0;
+            let fail_action = ((flags >> 1) & 0x7) as u32;
+            let z_fail_action = ((flags >> 4) & 0x7) as u32;
+            let pass_action = ((flags >> 7) & 0x7) as u32;
+            let draw_mode = ((flags >> 10) & 0x3) as u32;
+            let stencil_function = ((flags >> 12) & 0x7) as u32;
+
+            Ok(Self {
+                net,
+                flags,
+                stencil_enabled,
+                stencil_function,
+                stencil_ref,
+                stencil_mask,
+                fail_action,
+                z_fail_action,
+                pass_action,
+                draw_mode,
+            })
+        }
+    }
+
+    /// Returns true if draw_mode indicates double-sided rendering.
+    pub fn is_two_sided(&self) -> bool {
+        // 0 = CCW_OR_BOTH (app default → treat as BOTH), 3 = BOTH
+        self.draw_mode == 0 || self.draw_mode == 3
+    }
+}
+
+// ── NiZBufferProperty ────────────────────────────────────────────────
+
+/// Controls depth (Z-buffer) testing and writing.
+///
+/// flags bit 0: z-buffer test enable
+/// flags bit 1: z-buffer write enable
+/// bits 2-5: test function (on Oblivion, separate field instead)
+#[derive(Debug)]
+pub struct NiZBufferProperty {
+    pub net: NiObjectNETData,
+    pub flags: u16,
+    pub z_test_enabled: bool,
+    pub z_write_enabled: bool,
+    pub z_function: u32,
+}
+
+impl NiObject for NiZBufferProperty {
+    fn block_type_name(&self) -> &'static str {
+        "NiZBufferProperty"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiZBufferProperty {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let net = NiObjectNETData::parse(stream)?;
+        let flags = stream.read_u16_le()?;
+
+        let z_test_enabled = flags & 1 != 0;
+        let z_write_enabled = flags & 2 != 0;
+
+        let z_function = if stream.version() <= NifVersion::V20_0_0_5 {
+            // Oblivion: separate field.
+            stream.read_u32_le()?
+        } else {
+            // FO3+: packed in flags bits 2-5.
+            ((flags >> 2) & 0xF) as u32
+        };
+
+        Ok(Self {
+            net,
+            flags,
+            z_test_enabled,
+            z_write_enabled,
+            z_function,
+        })
     }
 }
