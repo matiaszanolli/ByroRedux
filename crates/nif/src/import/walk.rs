@@ -5,6 +5,7 @@ use crate::blocks::tri_shape::{BsTriShape, NiTriShape};
 use crate::scene::NifScene;
 use crate::types::NiTransform;
 
+use super::collision::extract_collision;
 use super::coord::zup_matrix_to_yup_quat;
 use super::mesh::{
     extract_bs_tri_shape, extract_bs_tri_shape_local, extract_mesh, extract_mesh_local,
@@ -36,6 +37,9 @@ pub(super) fn walk_node_hierarchical(
         let t = &node.av.transform.translation;
         let quat = zup_matrix_to_yup_quat(&node.av.transform.rotation);
 
+        // Extract collision data if this node has a collision_ref.
+        let collision = extract_collision(scene, node.av.collision_ref);
+
         let this_node_idx = out.nodes.len();
         out.nodes.push(ImportedNode {
             name: node.av.net.name.clone(),
@@ -43,6 +47,7 @@ pub(super) fn walk_node_hierarchical(
             rotation: quat,
             scale: node.av.transform.scale,
             parent_node: parent_node_idx,
+            collision,
         });
 
         for child_ref in &node.children {

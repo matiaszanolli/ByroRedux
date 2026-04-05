@@ -442,6 +442,19 @@ pub(crate) fn load_nif_bytes(
             world.insert(entity, Name(sym));
         }
 
+        // Attach collision data if present.
+        if let Some((ref shape, ref body)) = node.collision {
+            log::info!(
+                "Collision attached to '{}': {:?} motion={:?} mass={:.1}",
+                node.name.as_deref().unwrap_or("?"),
+                std::mem::discriminant(shape),
+                body.motion_type,
+                body.mass,
+            );
+            world.insert(entity, shape.clone());
+            world.insert(entity, body.clone());
+        }
+
         node_entities.push(entity);
     }
 

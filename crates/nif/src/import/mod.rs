@@ -7,12 +7,14 @@
 //! The output is GPU-agnostic: `ImportedMesh` contains plain `Vec<Vertex>`
 //! and `Vec<u32>` data ready for upload via `MeshRegistry::upload()`.
 
+pub mod collision;
 mod coord;
 mod material;
 mod mesh;
 mod transform;
 mod walk;
 
+use byroredux_core::ecs::components::collision::{CollisionShape, RigidBodyData};
 use crate::scene::NifScene;
 use crate::types::NiTransform;
 
@@ -28,6 +30,8 @@ pub struct ImportedNode {
     pub scale: f32,
     /// Index into `ImportedScene.nodes` for this node's parent, or None for root.
     pub parent_node: Option<usize>,
+    /// Collision shape and rigid body data (from bhkCollisionObject chain).
+    pub collision: Option<(CollisionShape, RigidBodyData)>,
 }
 
 /// A mesh extracted from a NIF file, ready for GPU upload.

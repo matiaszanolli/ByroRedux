@@ -2,6 +2,7 @@
 
 pub mod animated;
 pub mod camera;
+pub mod collision;
 pub mod form_id;
 pub mod global_transform;
 pub mod hierarchy;
@@ -15,6 +16,7 @@ pub mod world_bound;
 
 pub use animated::{AnimatedAlpha, AnimatedColor, AnimatedVisibility};
 pub use camera::{ActiveCamera, Camera};
+pub use collision::{CollisionShape, MotionType, RigidBodyData};
 pub use form_id::FormIdComponent;
 pub use global_transform::GlobalTransform;
 pub use hierarchy::{Children, Parent};
