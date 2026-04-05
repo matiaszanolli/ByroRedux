@@ -7,6 +7,58 @@ use ash::vk;
 use gpu_allocator::vulkan;
 use gpu_allocator::MemoryLocation;
 
+/// RAII guard for staging buffer + allocation.
+/// Ensures cleanup on early return from device-local upload paths.
+pub(crate) struct StagingGuard {
+    pub buffer: vk::Buffer,
+    pub allocation: Option<vulkan::Allocation>,
+    device: ash::Device,
+    allocator: SharedAllocator,
+}
+
+impl StagingGuard {
+    pub fn new(
+        buffer: vk::Buffer,
+        allocation: vulkan::Allocation,
+        device: ash::Device,
+        allocator: SharedAllocator,
+    ) -> Self {
+        Self {
+            buffer,
+            allocation: Some(allocation),
+            device,
+            allocator,
+        }
+    }
+
+    /// Consume the guard, destroying staging resources.
+    pub fn destroy(mut self) {
+        self.cleanup();
+    }
+
+    fn cleanup(&mut self) {
+        unsafe {
+            // SAFETY: buffer was created by this device and has not been destroyed yet.
+            self.device.destroy_buffer(self.buffer, None);
+        }
+        if let Some(alloc) = self.allocation.take() {
+            self.allocator
+                .lock()
+                .expect("allocator lock poisoned")
+                .free(alloc)
+                .expect("Failed to free staging allocation");
+        }
+    }
+}
+
+impl Drop for StagingGuard {
+    fn drop(&mut self) {
+        if self.allocation.is_some() {
+            self.cleanup();
+        }
+    }
+}
+
 /// A GPU buffer with its backing allocation.
 ///
 /// Destruction requires the allocator, so call [`destroy`](Self::destroy)
@@ -276,6 +328,14 @@ impl GpuBuffer {
             .context("Staging buffer not mapped")?[..bytes.len()]
             .copy_from_slice(bytes);
 
+        // Wrap staging resources in RAII guard — ensures cleanup on early return.
+        let staging = StagingGuard::new(
+            staging_buffer,
+            staging_alloc,
+            device.clone(),
+            allocator.clone(),
+        );
+
         // 2. Create the device-local buffer (GPU_ONLY).
         let buffer_info = vk::BufferCreateInfo::default()
             .size(size)
@@ -315,18 +375,11 @@ impl GpuBuffer {
             size,
         };
         with_one_time_commands(device, queue, command_pool, |cmd| unsafe {
-            device.cmd_copy_buffer(cmd, staging_buffer, buffer, &[copy_region]);
+            device.cmd_copy_buffer(cmd, staging.buffer, buffer, &[copy_region]);
         })?;
 
-        // 4. Free staging resources.
-        unsafe {
-            device.destroy_buffer(staging_buffer, None);
-        }
-        allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .free(staging_alloc)
-            .expect("Failed to free staging allocation");
+        // 4. Free staging resources (guard ensures cleanup even on error above).
+        staging.destroy();
 
         Ok(Self {
             buffer,

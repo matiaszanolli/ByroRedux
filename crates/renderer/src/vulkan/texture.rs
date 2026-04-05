@@ -1,6 +1,7 @@
 //! GPU texture: image upload via staging buffer, layout transitions, sampler.
 
 use super::allocator::SharedAllocator;
+use super::buffer::StagingGuard;
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
@@ -84,6 +85,14 @@ impl Texture {
             .mapped_slice_mut()
             .context("Staging buffer not mapped")?[..pixels.len()]
             .copy_from_slice(pixels);
+
+        // Wrap staging in RAII guard — ensures cleanup on early return.
+        let staging = StagingGuard::new(
+            staging_buffer,
+            staging_alloc,
+            device.clone(),
+            allocator.clone(),
+        );
 
         // 2. Device-local image.
         let image_info = vk::ImageCreateInfo::default()
@@ -181,7 +190,7 @@ impl Texture {
             unsafe {
                 device.cmd_copy_buffer_to_image(
                     cmd,
-                    staging_buffer,
+                    staging.buffer,
                     image,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     &[region],
@@ -218,15 +227,8 @@ impl Texture {
             }
         })?;
 
-        // 6. Destroy staging buffer.
-        unsafe {
-            device.destroy_buffer(staging_buffer, None);
-        }
-        allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .free(staging_alloc)
-            .context("Failed to free staging allocation")?;
+        // 6. Destroy staging buffer (guard ensures cleanup even on error above).
+        staging.destroy();
 
         // 7. Image view.
         let view_info = vk::ImageViewCreateInfo::default()
@@ -324,6 +326,14 @@ impl Texture {
             .mapped_slice_mut()
             .context("BC staging buffer not mapped")?[..total_size as usize]
             .copy_from_slice(&pixel_data[..total_size as usize]);
+
+        // Wrap staging in RAII guard — ensures cleanup on early return.
+        let staging = StagingGuard::new(
+            staging_buffer,
+            staging_alloc,
+            device.clone(),
+            allocator.clone(),
+        );
 
         // 2. Device-local image.
         let image_info = vk::ImageCreateInfo::default()
@@ -433,7 +443,7 @@ impl Texture {
 
                 device.cmd_copy_buffer_to_image(
                     cmd,
-                    staging_buffer,
+                    staging.buffer,
                     image,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     &regions,
@@ -469,15 +479,8 @@ impl Texture {
             }
         })?;
 
-        // 6. Destroy staging.
-        unsafe {
-            device.destroy_buffer(staging_buffer, None);
-        }
-        allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .free(staging_alloc)
-            .context("Failed to free BC staging allocation")?;
+        // 6. Destroy staging (guard ensures cleanup even on error above).
+        staging.destroy();
 
         // 7. Image view.
         let view_info = vk::ImageViewCreateInfo::default()
