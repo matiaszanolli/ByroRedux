@@ -33,14 +33,22 @@
       "Bash(glslangValidator -V ui.frag -o ui.frag.spv)",
       "Bash(sed -i 's/return 0; \\\\/\\\\/ Skip flags/return \\(0, None\\); \\\\/\\\\/ Skip flags/' byroredux/src/main.rs)",
       "Bash(sed -i '/^        \\(0, None\\)$/!s/^        0$/        \\(0, None\\)/' byroredux/src/main.rs)",
-      "Bash(glslangValidator -V triangle.frag -o triangle.frag.spv --target-env spirv1.4)"
+      "Bash(glslangValidator -V triangle.frag -o triangle.frag.spv --target-env spirv1.4)",
+      "Read(//mnt/data/src/gamebyro-redux/**)",
+      "Bash(cargo doc:*)",
+      "Bash(rg \"generate_report\\\\|report\\\\|memory_budget\\\\|total_bytes\" /mnt/data/src/gamebyro-redux/target/debug/.fingerprint/gpu-allocator*)",
+      "Bash(rg \"generate_report\" ~/.cargo/registry/src/*/gpu-allocator-*/src/)",
+      "Bash(rg \"struct AllocatorReport\" ~/.cargo/registry/src/*/gpu-allocator-0.27.0/src/)",
+      "Bash(rg \"total_reserved_bytes\\\\|total_allocated_bytes\" ~/.cargo/registry/src/*/gpu-allocator-0.27.0/src/)"
     ],
     "additionalDirectories": [
       "/mnt/data/src/gamebyro-redux/.claude",
       "/home/matias/.claude/plans",
       "/mnt/data/src/gamebyro-redux/docs/engine",
       "/tmp",
-      "/mnt/data/src/gamebyro-redux/.claude/issues"
+      "/mnt/data/src/gamebyro-redux/.claude/issues",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/34",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/43"
     ]
   }
 }

@@ -465,11 +465,12 @@ fn extract_bs_tri_shape(
                 .and_then(|ts_idx| scene.get_as::<BSShaderTextureSet>(ts_idx))
                 .and_then(|ts| ts.textures.get(1).cloned())
                 .filter(|s| !s.is_empty());
-            let ems = if let ShaderTypeData::EnvironmentMap { env_map_scale } = shader.shader_type_data {
-                env_map_scale
-            } else {
-                1.0
-            };
+            let ems =
+                if let ShaderTypeData::EnvironmentMap { env_map_scale } = shader.shader_type_data {
+                    env_map_scale
+                } else {
+                    1.0
+                };
             (
                 shader.emissive_color,
                 shader.emissive_multiple,

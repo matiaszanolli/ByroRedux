@@ -172,7 +172,11 @@ impl NiPixelData {
                 let width = stream.read_u32_le()?;
                 let height = stream.read_u32_le()?;
                 let offset = stream.read_u32_le()?;
-                mipmaps.push(MipMapInfo { width, height, offset });
+                mipmaps.push(MipMapInfo {
+                    width,
+                    height,
+                    offset,
+                });
             }
             let num_pixels = stream.read_u32_le()? as usize;
             let pixel_data = stream.read_bytes(num_pixels)?;
@@ -249,7 +253,11 @@ impl NiPixelData {
             let width = stream.read_u32_le()?;
             let height = stream.read_u32_le()?;
             let offset = stream.read_u32_le()?;
-            mipmaps.push(MipMapInfo { width, height, offset });
+            mipmaps.push(MipMapInfo {
+                width,
+                height,
+                offset,
+            });
         }
 
         let num_pixels = stream.read_u32_le()? as usize;
@@ -304,15 +312,15 @@ mod tests {
 
         // NiPixelFormat: pixel_format
         data.extend_from_slice(&1u32.to_le_bytes()); // RGBA
-        // New layout (v20.0.0.5 >= 10.4.0.2): bits_per_pixel(u8), renderer_hint(u32),
-        // extra_data(u32), flags(u8), tiling(u32)
+                                                     // New layout (v20.0.0.5 >= 10.4.0.2): bits_per_pixel(u8), renderer_hint(u32),
+                                                     // extra_data(u32), flags(u8), tiling(u32)
         data.push(32u8); // bits_per_pixel
         data.extend_from_slice(&0u32.to_le_bytes()); // renderer_hint
         data.extend_from_slice(&0u32.to_le_bytes()); // extra_data
         data.push(0u8); // flags
         data.extend_from_slice(&0u32.to_le_bytes()); // tiling
-        // No sRGB (v20.0.0.5 < 20.3.0.4)
-        // 4 channels: each is (type:u32, convention:u32, bits:u8, signed:bool=u8)
+                                                     // No sRGB (v20.0.0.5 < 20.3.0.4)
+                                                     // 4 channels: each is (type:u32, convention:u32, bits:u8, signed:bool=u8)
         for _ in 0..4 {
             data.extend_from_slice(&0u32.to_le_bytes()); // component type
             data.extend_from_slice(&0u32.to_le_bytes()); // convention
@@ -323,16 +331,18 @@ mod tests {
         data.extend_from_slice(&(-1i32).to_le_bytes()); // palette_ref (NULL)
         data.extend_from_slice(&1u32.to_le_bytes()); // num_mipmaps
         data.extend_from_slice(&4u32.to_le_bytes()); // bytes_per_pixel
-        // MipMap[0]: width, height, offset
+                                                     // MipMap[0]: width, height, offset
         data.extend_from_slice(&2u32.to_le_bytes()); // width
         data.extend_from_slice(&2u32.to_le_bytes()); // height
         data.extend_from_slice(&0u32.to_le_bytes()); // offset
-        // num_pixels (total bytes)
+                                                     // num_pixels (total bytes)
         data.extend_from_slice(&16u32.to_le_bytes()); // 2×2×4 = 16 bytes
-        // num_faces
+                                                      // num_faces
         data.extend_from_slice(&1u32.to_le_bytes());
         // pixel_data: 16 bytes of RGBA
-        data.extend_from_slice(&[255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 128, 128, 128, 255]);
+        data.extend_from_slice(&[
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 128, 128, 128, 255,
+        ]);
 
         let mut stream = NifStream::new(&data, &header);
         let pix = NiPixelData::parse(&mut stream).unwrap();

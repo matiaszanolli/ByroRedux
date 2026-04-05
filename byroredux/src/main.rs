@@ -777,8 +777,7 @@ impl App {
                                         nif_clip.channels.len(), handle,
                                     );
                                 }
-                                let first_handle =
-                                    registry.len() as u32 - nif_clips.len() as u32;
+                                let first_handle = registry.len() as u32 - nif_clips.len() as u32;
                                 drop(registry);
 
                                 // Spawn an AnimationPlayer scoped to the NIF subtree.
@@ -815,19 +814,46 @@ impl App {
             let (quad_verts, quad_idxs) = quad_vertices();
             let quad_handle = ctx
                 .mesh_registry
-                .upload(&ctx.device, alloc, queue, pool, &quad_verts, &quad_idxs, rt, None)
+                .upload(
+                    &ctx.device,
+                    alloc,
+                    queue,
+                    pool,
+                    &quad_verts,
+                    &quad_idxs,
+                    rt,
+                    None,
+                )
                 .expect("Failed to upload quad mesh");
 
             let (red_verts, red_idxs) = triangle_vertices([1.0, 0.2, 0.2]);
             let red_handle = ctx
                 .mesh_registry
-                .upload(&ctx.device, alloc, queue, pool, &red_verts, &red_idxs, rt, None)
+                .upload(
+                    &ctx.device,
+                    alloc,
+                    queue,
+                    pool,
+                    &red_verts,
+                    &red_idxs,
+                    rt,
+                    None,
+                )
                 .expect("Failed to upload red triangle mesh");
 
             let (blue_verts, blue_idxs) = triangle_vertices([0.2, 0.2, 1.0]);
             let blue_handle = ctx
                 .mesh_registry
-                .upload(&ctx.device, alloc, queue, pool, &blue_verts, &blue_idxs, rt, None)
+                .upload(
+                    &ctx.device,
+                    alloc,
+                    queue,
+                    pool,
+                    &blue_verts,
+                    &blue_idxs,
+                    rt,
+                    None,
+                )
                 .expect("Failed to upload blue triangle mesh");
 
             let cube = self.world.spawn();
@@ -1459,8 +1485,11 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(ref mut ctx) = self.renderer {
-                    let (view_proj, camera_pos, ambient) =
-                        build_render_data(&self.world, &mut self.draw_commands, &mut self.gpu_lights);
+                    let (view_proj, camera_pos, ambient) = build_render_data(
+                        &self.world,
+                        &mut self.draw_commands,
+                        &mut self.gpu_lights,
+                    );
 
                     // Record draw call count for diagnostics.
                     world_resource_set::<DebugStats>(&self.world, |s| {

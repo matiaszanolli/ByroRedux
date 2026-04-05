@@ -79,14 +79,22 @@ impl StagingPool {
     }
 
     /// Return a staging buffer to the pool for reuse.
-    pub fn release(&mut self, buffer: vk::Buffer, allocation: vulkan::Allocation, capacity: vk::DeviceSize) {
+    pub fn release(
+        &mut self,
+        buffer: vk::Buffer,
+        allocation: vulkan::Allocation,
+        capacity: vk::DeviceSize,
+    ) {
         // Insert sorted by capacity for best-fit search.
         let pos = self.free_list.partition_point(|e| e.capacity < capacity);
-        self.free_list.insert(pos, StagingEntry {
-            buffer,
-            allocation,
-            capacity,
-        });
+        self.free_list.insert(
+            pos,
+            StagingEntry {
+                buffer,
+                allocation,
+                capacity,
+            },
+        );
     }
 
     /// Destroy all pooled staging buffers. Call before device destruction.
@@ -190,7 +198,16 @@ impl GpuBuffer {
             usage |= vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
         }
-        Self::create_device_local_buffer(device, allocator, queue, command_pool, size, usage, data, staging_pool)
+        Self::create_device_local_buffer(
+            device,
+            allocator,
+            queue,
+            command_pool,
+            size,
+            usage,
+            data,
+            staging_pool,
+        )
     }
 
     /// Create an index buffer in DEVICE_LOCAL memory via staging upload.
@@ -210,7 +227,16 @@ impl GpuBuffer {
             usage |= vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
         }
-        Self::create_device_local_buffer(device, allocator, queue, command_pool, size, usage, data, staging_pool)
+        Self::create_device_local_buffer(
+            device,
+            allocator,
+            queue,
+            command_pool,
+            size,
+            usage,
+            data,
+            staging_pool,
+        )
     }
 
     /// Create a host-visible buffer for per-frame CPU writes (no staging needed).

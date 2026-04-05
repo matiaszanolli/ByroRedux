@@ -281,8 +281,8 @@ impl BsTriShape {
                 // SSE (BSVER < 130): always full-precision.
                 // FO4+ (BSVER >= 130): bit VF_FULL_PRECISION selects precision.
                 if vertex_attrs & VF_VERTEX != 0 {
-                    let full_precision = stream.variant().bsver() < 130
-                        || vertex_attrs & VF_FULL_PRECISION != 0;
+                    let full_precision =
+                        stream.variant().bsver() < 130 || vertex_attrs & VF_FULL_PRECISION != 0;
                     if full_precision {
                         let pos = stream.read_ni_point3()?;
                         vertices.push(pos);

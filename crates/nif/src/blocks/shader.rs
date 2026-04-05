@@ -195,22 +195,13 @@ pub enum ShaderTypeData {
     /// 8–10 (Landscape), 12–13 (Tree/LOD), 15 (LOD HD), 17–19 (Cloud/Noise).
     None,
     /// Type 1: Environment Map.
-    EnvironmentMap {
-        env_map_scale: f32,
-    },
+    EnvironmentMap { env_map_scale: f32 },
     /// Type 5: Skin Tint.
-    SkinTint {
-        skin_tint_color: [f32; 3],
-    },
+    SkinTint { skin_tint_color: [f32; 3] },
     /// Type 6: Hair Tint.
-    HairTint {
-        hair_tint_color: [f32; 3],
-    },
+    HairTint { hair_tint_color: [f32; 3] },
     /// Type 7: Parallax Occlusion.
-    ParallaxOcc {
-        max_passes: f32,
-        scale: f32,
-    },
+    ParallaxOcc { max_passes: f32, scale: f32 },
     /// Type 11: Multi-Layer Parallax.
     MultiLayerParallax {
         inner_layer_thickness: f32,
@@ -219,9 +210,7 @@ pub enum ShaderTypeData {
         envmap_strength: f32,
     },
     /// Type 14: Sparkle Snow.
-    SparkleSnow {
-        sparkle_parameters: [f32; 4],
-    },
+    SparkleSnow { sparkle_parameters: [f32; 4] },
     /// Type 16: Eye Environment Map.
     EyeEnvmap {
         eye_cubemap_scale: f32,
@@ -496,9 +485,7 @@ fn parse_shader_type_data(stream: &mut NifStream, shader_type: u32) -> io::Resul
                 stream.read_f32_le()?,
                 stream.read_f32_le()?,
             ];
-            Ok(ShaderTypeData::SparkleSnow {
-                sparkle_parameters,
-            })
+            Ok(ShaderTypeData::SparkleSnow { sparkle_parameters })
         }
         16 => {
             // Eye Environment Map
@@ -587,9 +574,7 @@ fn parse_shader_type_data_fo4(
                 stream.read_f32_le()?,
                 stream.read_f32_le()?,
             ];
-            Ok(ShaderTypeData::SparkleSnow {
-                sparkle_parameters,
-            })
+            Ok(ShaderTypeData::SparkleSnow { sparkle_parameters })
         }
         16 => {
             let eye_cubemap_scale = stream.read_f32_le()?;
@@ -869,7 +854,7 @@ mod tests {
         // shader_flags_1, shader_flags_2
         data.extend_from_slice(&0x80000000u32.to_le_bytes());
         data.extend_from_slice(&0x00000010u32.to_le_bytes()); // two-sided flag
-        // uv_offset (2x f32)
+                                                              // uv_offset (2x f32)
         data.extend_from_slice(&0.0f32.to_le_bytes());
         data.extend_from_slice(&0.0f32.to_le_bytes());
         // uv_scale (2x f32)
@@ -960,7 +945,7 @@ mod tests {
     fn parse_bs_lighting_eye_envmap_trailing() {
         let header = make_skyrim_header();
         let mut data = build_bs_lighting_common(16); // shader_type=16 (EyeEnvmap)
-        // eye_cubemap_scale
+                                                     // eye_cubemap_scale
         data.extend_from_slice(&1.2f32.to_le_bytes());
         // left_eye_reflection_center (3x f32)
         data.extend_from_slice(&(-0.05f32).to_le_bytes());
@@ -1087,7 +1072,7 @@ mod tests {
         let mut data = Vec::new();
         // shader_type (read before NiObjectNET for BSVER 83-130)
         data.extend_from_slice(&1u32.to_le_bytes()); // EnvironmentMap
-        // NiObjectNET: name (string table index 0)
+                                                     // NiObjectNET: name (string table index 0)
         data.extend_from_slice(&0i32.to_le_bytes());
         // extra_data_refs: count=0
         data.extend_from_slice(&0u32.to_le_bytes());
@@ -1110,7 +1095,7 @@ mod tests {
         data.extend_from_slice(&2.0f32.to_le_bytes());
         // Root Material (FO4+: NiFixedString = string table index)
         data.extend_from_slice(&(-1i32).to_le_bytes()); // no root material
-        // texture_clamp_mode
+                                                        // texture_clamp_mode
         data.extend_from_slice(&3u32.to_le_bytes());
         // alpha
         data.extend_from_slice(&0.8f32.to_le_bytes());
@@ -1132,7 +1117,7 @@ mod tests {
         data.extend_from_slice(&1.0f32.to_le_bytes()); // backlight_power
         data.extend_from_slice(&0.7f32.to_le_bytes()); // grayscale_to_palette_scale
         data.extend_from_slice(&5.0f32.to_le_bytes()); // fresnel_power
-        // WetnessParams (BSVER=130: 6 floats, env_map_scale present)
+                                                       // WetnessParams (BSVER=130: 6 floats, env_map_scale present)
         for v in [0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6] {
             data.extend_from_slice(&v.to_le_bytes());
         }

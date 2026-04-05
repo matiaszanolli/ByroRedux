@@ -314,8 +314,16 @@ fn create_triangle_pipeline_with_layout(
         opaque_two_sided: pipelines[2],
         alpha_two_sided: pipelines[3],
         layout: pipeline_layout,
-        vert_module: if owns_layout { vert_module } else { vk::ShaderModule::null() },
-        frag_module: if owns_layout { frag_module } else { vk::ShaderModule::null() },
+        vert_module: if owns_layout {
+            vert_module
+        } else {
+            vk::ShaderModule::null()
+        },
+        frag_module: if owns_layout {
+            frag_module
+        } else {
+            vk::ShaderModule::null()
+        },
     })
 }
 

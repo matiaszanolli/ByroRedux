@@ -27,16 +27,16 @@ use extra_data::{
     BsBehaviorGraphExtraData, BsBound, BsClothExtraData, BsConnectPointChildren,
     BsConnectPointParents, BsDecalPlacementVectorExtraData, BsInvMarker, NiExtraData,
 };
-use multibound::{BsMultiBound, BsMultiBoundAABB, BsMultiBoundOBB};
 use interpolator::{
     NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendPoint3Interpolator,
     NiBlendTransformInterpolator, NiBoolData, NiBoolInterpolator, NiFloatData, NiFloatInterpolator,
     NiPoint3Interpolator, NiPosData, NiTextKeyExtraData, NiTransformData, NiTransformInterpolator,
 };
+use multibound::{BsMultiBound, BsMultiBoundAABB, BsMultiBoundOBB};
 use node::{BsOrderedNode, BsValueNode, NiNode};
 use properties::{
-    NiAlphaProperty, NiFlagProperty, NiMaterialProperty, NiStencilProperty,
-    NiStringPalette, NiTexturingProperty, NiVertexColorProperty, NiZBufferProperty,
+    NiAlphaProperty, NiFlagProperty, NiMaterialProperty, NiStencilProperty, NiStringPalette,
+    NiTexturingProperty, NiVertexColorProperty, NiZBufferProperty,
 };
 use shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
@@ -98,9 +98,7 @@ pub fn parse_block(
 ) -> io::Result<Box<dyn NiObject>> {
     match type_name {
         "NiNode" | "BSFadeNode" | "BSLeafAnimNode" | "BSTreeNode" | "BSMultiBoundNode"
-        | "RootCollisionNode" => {
-            Ok(Box::new(NiNode::parse(stream)?))
-        }
+        | "RootCollisionNode" => Ok(Box::new(NiNode::parse(stream)?)),
         "BSOrderedNode" => Ok(Box::new(BsOrderedNode::parse(stream)?)),
         "BSValueNode" => Ok(Box::new(BsValueNode::parse(stream)?)),
         // Multi-bound spatial volumes
@@ -127,18 +125,16 @@ pub fn parse_block(
         "NiVertexColorProperty" => Ok(Box::new(NiVertexColorProperty::parse(stream)?)),
         "NiTexturingProperty" => Ok(Box::new(NiTexturingProperty::parse(stream)?)),
         // Simple flag-only properties (Oblivion)
-        "NiSpecularProperty" => {
-            Ok(Box::new(NiFlagProperty::parse(stream, "NiSpecularProperty")?))
-        }
-        "NiWireframeProperty" => {
-            Ok(Box::new(NiFlagProperty::parse(stream, "NiWireframeProperty")?))
-        }
-        "NiDitherProperty" => {
-            Ok(Box::new(NiFlagProperty::parse(stream, "NiDitherProperty")?))
-        }
-        "NiShadeProperty" => {
-            Ok(Box::new(NiFlagProperty::parse(stream, "NiShadeProperty")?))
-        }
+        "NiSpecularProperty" => Ok(Box::new(NiFlagProperty::parse(
+            stream,
+            "NiSpecularProperty",
+        )?)),
+        "NiWireframeProperty" => Ok(Box::new(NiFlagProperty::parse(
+            stream,
+            "NiWireframeProperty",
+        )?)),
+        "NiDitherProperty" => Ok(Box::new(NiFlagProperty::parse(stream, "NiDitherProperty")?)),
+        "NiShadeProperty" => Ok(Box::new(NiFlagProperty::parse(stream, "NiShadeProperty")?)),
         "NiStringPalette" => Ok(Box::new(NiStringPalette::parse(stream)?)),
         "NiSourceTexture" => Ok(Box::new(NiSourceTexture::parse(stream)?)),
         "NiPixelData" | "NiPersistentSrcTextureRendererData" => {
