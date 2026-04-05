@@ -791,32 +791,38 @@ fn zup_matrix_to_yup_quat(m: &NiMatrix3) -> [f32; 4] {
 
     let r = &m.rows;
 
-    // First apply the Z-up → Y-up axis swap to the rotation matrix:
+    // Apply the Z-up → Y-up axis swap to the rotation matrix:
     // C: (x,y,z)_zup → (x,z,-y)_yup
     // R_yup = C * R_zup * C^T
-    // where C swaps rows/columns: row_y ↔ row_z with negation.
     let yup = Matrix3::new(
         r[0][0], r[0][2], -r[0][1], // X row, columns swapped
         r[2][0], r[2][2], -r[2][1], // Z row becomes Y row
         -r[1][0], -r[1][2], r[1][1], // -Y row becomes Z row
     );
 
-    // SVD: M = U * Σ * Vt. Nearest rotation = U * Vt (with det correction).
-    let svd = yup.svd(true, true);
-    let u = svd.u.unwrap();
-    let vt = svd.v_t.unwrap();
-    let mut nearest = u * vt;
+    // Fast path: if det ≈ 1.0, the matrix is already a valid rotation and
+    // we can extract the quaternion directly. This is the common case (~99%
+    // of NIF matrices). SVD is only needed for degenerate matrices (zeroed
+    // BSFadeNode rotations, scaled/sheared matrices from bad exports).
+    let det = yup.determinant();
+    let rotation_matrix = if (det - 1.0).abs() < 0.1 {
+        yup
+    } else {
+        // Degenerate — SVD repair: M = U*Σ*Vt → nearest rotation = U*Vt.
+        let svd = yup.svd(true, true);
+        let u = svd.u.unwrap();
+        let vt = svd.v_t.unwrap();
+        let mut nearest = u * vt;
 
-    // Ensure proper rotation (det = +1), not reflection.
-    if nearest.determinant() < 0.0 {
-        // Flip the sign of the last column of U and recompute.
-        let mut u_fixed = u;
-        u_fixed.column_mut(2).scale_mut(-1.0);
-        nearest = u_fixed * vt;
-    }
+        if nearest.determinant() < 0.0 {
+            let mut u_fixed = u;
+            u_fixed.column_mut(2).scale_mut(-1.0);
+            nearest = u_fixed * vt;
+        }
+        nearest
+    };
 
-    // Extract quaternion from the clean rotation matrix.
-    let rot = nalgebra::Rotation3::from_matrix_unchecked(nearest);
+    let rot = nalgebra::Rotation3::from_matrix_unchecked(rotation_matrix);
     let q = UnitQuaternion::from_rotation_matrix(&rot);
 
     [q.i, q.j, q.k, q.w]
