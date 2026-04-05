@@ -627,13 +627,20 @@ pub(crate) fn with_one_time_commands<F: FnOnce(vk::CommandBuffer)>(
     let submit_info = vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cmd));
 
     unsafe {
+        // Use a dedicated fence instead of queue_wait_idle — waits only for
+        // this submission, not the entire queue. Avoids serializing other
+        // queue work during texture streaming or BLAS builds.
+        let fence = device
+            .create_fence(&vk::FenceCreateInfo::default(), None)
+            .context("create one-time fence")?;
         let q = *queue.lock().expect("graphics queue lock poisoned");
         device
-            .queue_submit(q, &[submit_info], vk::Fence::null())
+            .queue_submit(q, &[submit_info], fence)
             .context("submit one-time commands")?;
         device
-            .queue_wait_idle(q)
+            .wait_for_fences(&[fence], true, u64::MAX)
             .context("wait for one-time commands")?;
+        device.destroy_fence(fence, None);
         device.free_command_buffers(pool, &[cmd]);
     }
 
