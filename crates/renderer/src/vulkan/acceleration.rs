@@ -34,7 +34,10 @@ pub struct AccelerationManager {
     /// One BLAS per mesh in MeshRegistry (indexed by mesh handle).
     blas_entries: Vec<Option<BlasEntry>>,
     pub tlas: Option<TlasState>,
+    /// Persisted TLAS scratch buffer (reused across rebuilds).
     scratch_buffer: Option<GpuBuffer>,
+    /// Persisted BLAS scratch buffer (reused across builds, grows to high-water mark).
+    blas_scratch_buffer: Option<GpuBuffer>,
 }
 
 impl AccelerationManager {
@@ -45,6 +48,7 @@ impl AccelerationManager {
             blas_entries: Vec::new(),
             tlas: None,
             scratch_buffer: None,
+            blas_scratch_buffer: None,
         }
     }
 
@@ -131,17 +135,29 @@ impl AccelerationManager {
                 .context("Failed to create BLAS")?
         };
 
-        // Allocate scratch buffer in DEVICE_LOCAL memory (GPU-only during build).
-        let mut scratch = GpuBuffer::create_device_local_uninit(
-            device,
-            allocator,
-            sizes.build_scratch_size,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-        )?;
+        // Reuse persisted BLAS scratch buffer; only reallocate if the current
+        // one is too small for this build.
+        let need_new_scratch = self
+            .blas_scratch_buffer
+            .as_ref()
+            .map_or(true, |b| b.size < sizes.build_scratch_size);
+
+        if need_new_scratch {
+            if let Some(mut old) = self.blas_scratch_buffer.take() {
+                old.destroy(device, allocator);
+            }
+            self.blas_scratch_buffer = Some(GpuBuffer::create_device_local_uninit(
+                device,
+                allocator,
+                sizes.build_scratch_size,
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            )?);
+        }
 
         let scratch_address = unsafe {
             device.get_buffer_device_address(
-                &vk::BufferDeviceAddressInfo::default().buffer(scratch.buffer),
+                &vk::BufferDeviceAddressInfo::default()
+                    .buffer(self.blas_scratch_buffer.as_ref().unwrap().buffer),
             )
         };
 
@@ -177,10 +193,7 @@ impl AccelerationManager {
             )
         };
 
-        // Free scratch.
-        scratch.destroy(device, allocator);
-
-        // Store BLAS entry.
+        // Store BLAS entry (scratch buffer is retained for next build).
         let handle = mesh_handle as usize;
         while self.blas_entries.len() <= handle {
             self.blas_entries.push(None);
@@ -431,6 +444,9 @@ impl AccelerationManager {
             tlas.instance_buffer.destroy(device, allocator);
         }
         if let Some(mut scratch) = self.scratch_buffer.take() {
+            scratch.destroy(device, allocator);
+        }
+        if let Some(mut scratch) = self.blas_scratch_buffer.take() {
             scratch.destroy(device, allocator);
         }
     }
