@@ -12,6 +12,7 @@ pub mod interpolator;
 pub mod multibound;
 pub mod node;
 pub mod palette;
+pub mod particle;
 pub mod properties;
 pub mod shader;
 pub mod skin;
@@ -210,6 +211,130 @@ pub fn parse_block(
         "NiBlendBoolInterpolator" => Ok(Box::new(NiBlendBoolInterpolator::parse(stream)?)),
         // Base NiTimeController fallback for unknown controller subtypes
         "NiTimeController" => Ok(Box::new(NiTimeController::parse(stream)?)),
+        // ── Particle system blocks ──────────────────────────────────
+        // Geometry nodes
+        "NiParticles" => Ok(Box::new(particle::parse_particle_system(stream, "NiParticles")?)),
+        "NiParticleSystem" | "NiMeshParticleSystem" => {
+            Ok(Box::new(particle::parse_particle_system(stream, type_name)?))
+        }
+        "BSStripParticleSystem" => {
+            Ok(Box::new(particle::parse_strip_particle_system(stream)?))
+        }
+        "BSMasterParticleSystem" => {
+            Ok(Box::new(particle::parse_master_particle_system(stream)?))
+        }
+        // Data blocks
+        "NiParticlesData" | "NiPSysData" | "NiMeshPSysData" | "BSStripPSysData" => {
+            Ok(Box::new(particle::parse_particles_data(stream, type_name)?))
+        }
+        "NiPSysEmitterCtlrData" => {
+            Ok(Box::new(particle::parse_emitter_ctlr_data(stream)?))
+        }
+        // Modifiers
+        "NiPSysPositionModifier" => {
+            Ok(Box::new(particle::parse_modifier_only(stream, "NiPSysPositionModifier")?))
+        }
+        "NiPSysAgeDeathModifier" => {
+            Ok(Box::new(particle::parse_age_death_modifier(stream)?))
+        }
+        "NiPSysBombModifier" => Ok(Box::new(particle::parse_bomb_modifier(stream)?)),
+        "NiPSysBoundUpdateModifier" => {
+            Ok(Box::new(particle::parse_bound_update_modifier(stream)?))
+        }
+        "NiPSysColliderManager" => Ok(Box::new(particle::parse_collider_manager(stream)?)),
+        "NiPSysColorModifier" => Ok(Box::new(particle::parse_color_modifier(stream)?)),
+        "NiPSysDragModifier" => Ok(Box::new(particle::parse_drag_modifier(stream)?)),
+        "NiPSysGravityModifier" => Ok(Box::new(particle::parse_gravity_modifier(stream)?)),
+        "NiPSysGrowFadeModifier" => {
+            Ok(Box::new(particle::parse_grow_fade_modifier(stream)?))
+        }
+        "NiPSysRotationModifier" => {
+            Ok(Box::new(particle::parse_rotation_modifier(stream)?))
+        }
+        "NiPSysSpawnModifier" => Ok(Box::new(particle::parse_spawn_modifier(stream)?)),
+        "NiPSysMeshUpdateModifier" => {
+            Ok(Box::new(particle::parse_mesh_update_modifier(stream, "NiPSysMeshUpdateModifier")?))
+        }
+        "BSPSysHavokUpdateModifier" => {
+            Ok(Box::new(particle::parse_havok_update_modifier(stream)?))
+        }
+        "BSParentVelocityModifier" => {
+            Ok(Box::new(particle::parse_float_modifier(stream, "BSParentVelocityModifier")?))
+        }
+        "BSWindModifier" => {
+            Ok(Box::new(particle::parse_float_modifier(stream, "BSWindModifier")?))
+        }
+        "BSPSysInheritVelocityModifier" => {
+            Ok(Box::new(particle::parse_inherit_velocity_modifier(stream)?))
+        }
+        "BSPSysRecycleBoundModifier" => {
+            Ok(Box::new(particle::parse_recycle_bound_modifier(stream)?))
+        }
+        "BSPSysSubTexModifier" => Ok(Box::new(particle::parse_sub_tex_modifier(stream)?)),
+        "BSPSysLODModifier" => Ok(Box::new(particle::parse_lod_modifier(stream)?)),
+        "BSPSysScaleModifier" => Ok(Box::new(particle::parse_scale_modifier(stream)?)),
+        "BSPSysSimpleColorModifier" => {
+            Ok(Box::new(particle::parse_simple_color_modifier(stream)?))
+        }
+        "BSPSysStripUpdateModifier" => {
+            Ok(Box::new(particle::parse_strip_update_modifier(stream)?))
+        }
+        // Emitters
+        "NiPSysBoxEmitter" => Ok(Box::new(particle::parse_box_emitter(stream)?)),
+        "NiPSysCylinderEmitter" => Ok(Box::new(particle::parse_cylinder_emitter(stream)?)),
+        "NiPSysSphereEmitter" => Ok(Box::new(particle::parse_sphere_emitter(stream)?)),
+        "BSPSysArrayEmitter" => Ok(Box::new(particle::parse_array_emitter(stream)?)),
+        "NiPSysMeshEmitter" => Ok(Box::new(particle::parse_mesh_emitter(stream)?)),
+        // Colliders
+        "NiPSysPlanarCollider" => Ok(Box::new(particle::parse_planar_collider(stream)?)),
+        "NiPSysSphericalCollider" => {
+            Ok(Box::new(particle::parse_spherical_collider(stream)?))
+        }
+        // Field modifiers
+        "NiPSysVortexFieldModifier" | "NiPSysGravityFieldModifier" => {
+            Ok(Box::new(particle::parse_field_modifier_vec3(stream, type_name)?))
+        }
+        "NiPSysDragFieldModifier" => {
+            Ok(Box::new(particle::parse_drag_field_modifier(stream)?))
+        }
+        "NiPSysTurbulenceFieldModifier" => {
+            Ok(Box::new(particle::parse_turbulence_field_modifier(stream)?))
+        }
+        "NiPSysAirFieldModifier" => {
+            Ok(Box::new(particle::parse_air_field_modifier(stream)?))
+        }
+        "NiPSysRadialFieldModifier" => {
+            Ok(Box::new(particle::parse_radial_field_modifier(stream)?))
+        }
+        // Controllers
+        "NiPSysUpdateCtlr" | "NiPSysResetOnLoopCtlr" => {
+            Ok(Box::new(particle::parse_time_controller(stream, type_name)?))
+        }
+        "NiPSysEmitterCtlr" => Ok(Box::new(particle::parse_emitter_ctlr(stream)?)),
+        "BSPSysMultiTargetEmitterCtlr" => {
+            Ok(Box::new(particle::parse_multi_target_emitter_ctlr(stream)?))
+        }
+        "NiPSysModifierActiveCtlr"
+        | "NiPSysEmitterDeclinationCtlr"
+        | "NiPSysEmitterDeclinationVarCtlr"
+        | "NiPSysEmitterInitialRadiusCtlr"
+        | "NiPSysEmitterLifeSpanCtlr"
+        | "NiPSysEmitterSpeedCtlr"
+        | "NiPSysGravityStrengthCtlr"
+        | "NiPSysInitialRotSpeedCtlr"
+        | "NiPSysInitialRotSpeedVarCtlr"
+        | "NiPSysInitialRotAngleCtlr"
+        | "NiPSysInitialRotAngleVarCtlr"
+        | "NiPSysEmitterPlanarAngleCtlr"
+        | "NiPSysEmitterPlanarAngleVarCtlr"
+        | "NiPSysFieldMagnitudeCtlr"
+        | "NiPSysFieldAttenuationCtlr"
+        | "NiPSysFieldMaxDistanceCtlr"
+        | "NiPSysAirFieldAirFrictionCtlr"
+        | "NiPSysAirFieldInheritVelocityCtlr"
+        | "NiPSysAirFieldSpreadCtlr" => {
+            Ok(Box::new(particle::parse_modifier_ctlr(stream, type_name)?))
+        }
         // ── Havok collision blocks (fully parsed) ────────────────────
         "bhkCollisionObject" | "bhkSPCollisionObject" => {
             Ok(Box::new(BhkCollisionObject::parse(stream, false)?))

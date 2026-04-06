@@ -448,7 +448,7 @@ impl NiObject for NiTriShapeData {
 
 /// Parse the NiGeometryData base class fields shared by NiTriShapeData and NiTriStripsData.
 /// Returns (vertices, data_flags, normals, center, radius, vertex_colors, uv_sets).
-fn parse_geometry_data_base(
+pub(crate) fn parse_geometry_data_base(
     stream: &mut NifStream,
 ) -> io::Result<(
     Vec<NiPoint3>,      // vertices
