@@ -40,6 +40,15 @@ pub fn parse_nif(data: &[u8]) -> io::Result<NifScene> {
         header.strings.len()
     );
 
+    // Validate endianness — we only support little-endian (all PC game content).
+    // Big-endian NIFs (Xbox 360 console ports) would produce silently wrong data.
+    if !header.little_endian {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Big-endian NIF files are not supported (console format)",
+        ));
+    }
+
     // Phase 2: Parse blocks
     let block_data = &data[block_data_offset..];
     let mut stream = NifStream::new(block_data, &header);
