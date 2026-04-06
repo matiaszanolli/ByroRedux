@@ -61,9 +61,17 @@ NiShader, Texturing, Frame_Rendering_System, NiFloodgate, and Learn sections.
 8. **"NonAccum" root motion detection** — Accumulation root identified by child named
    `parent_name + " NonAccum"`. Needed for proper root motion extraction.
 
+### HIGH Priority (Oblivion Rendering)
+
+9. **Extract all NiTexturingProperty slots** — dark/glow/normal/gloss/bump into MaterialInfo.
+   Currently only reads base_texture. Critical for proper Oblivion rendering.
+
+10. **NiAlphaProperty blend mode decoding** — bits 1-4 (src), 5-8 (dst), 9 (test enable),
+    10-12 (test func). Alpha-test-only objects should render in opaque pass.
+
 ### LOW Priority
 
-9. **NiDataStream RTTI delimiter** — Type names can contain a delimiter character for
+11. **NiDataStream RTTI delimiter** — Type names can contain a delimiter character for
    polymorphic class arguments. Not relevant for Bethesda NIFs.
 
 7. **PostProcessFunction callbacks** — Can convert object types at load time. Explains
@@ -74,6 +82,28 @@ NiShader, Texturing, Frame_Rendering_System, NiFloodgate, and Learn sections.
 
 9. **NiPS* (new particle system)** — v2.5+ replacement for NiPSys*. Only needed for
    non-Bethesda Gamebryo content (Civilization IV, etc.).
+
+## Shader/Texturing Findings
+
+### NiTexturingProperty (Oblivion Rendering Gaps)
+- We only extract base_texture (slot 0) from NiTexturingProperty
+- Missing: dark_texture (lightmap), glow_texture (emissive), normal_texture,
+  gloss_texture, bump_texture — all needed for proper Oblivion rendering
+- apply_mode field is read but discarded (REPLACE/DECAL/MODULATE)
+- NiTextureEffect block not parsed (projected environment maps)
+- Per-slot UV transforms parsed but discarded (needed for UV animation)
+- ShaderMap array parsed but discarded (Oblivion custom shaders)
+
+### NiAlphaProperty (Rendering Correctness)
+- Only bit 0 (blend enable) currently checked
+- Missing: bits 1-4 (src blend), 5-8 (dst blend), 9 (test enable), 10-12 (test func)
+- Alpha-test-only objects (test=on, blend=off) should render in opaque pass — significant perf
+- threshold field parsed but not used in rendering
+
+### Embedded Textures
+- NiSourceTexture with use_external=false has NiPixelData ref
+- Parser works, but rendering path never uses embedded pixel data
+- Some Oblivion NIFs have baked-in textures — would show as missing texture
 
 ## Key Texture Slot Reference
 
