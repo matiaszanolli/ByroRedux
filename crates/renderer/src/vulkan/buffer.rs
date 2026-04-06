@@ -174,6 +174,23 @@ impl Drop for StagingGuard {
 /// Used to align flush offsets when the exact device value isn't plumbed through.
 const NON_COHERENT_ATOM_SIZE: vk::DeviceSize = 256;
 
+/// Compute a `(offset, size)` pair that fully covers `[offset, offset+size)`
+/// and satisfies `VkMappedMemoryRange` alignment requirements: offset rounded
+/// down and size rounded up to `NON_COHERENT_ATOM_SIZE`.
+///
+/// Used instead of `VK_WHOLE_SIZE` so flushes don't extend past the
+/// gpu-allocator sub-allocation into unrelated memory.
+fn aligned_flush_range(
+    offset: vk::DeviceSize,
+    size: vk::DeviceSize,
+) -> (vk::DeviceSize, vk::DeviceSize) {
+    let aligned_offset = offset & !(NON_COHERENT_ATOM_SIZE - 1);
+    let extra = offset - aligned_offset;
+    let unaligned_size = extra + size;
+    let aligned_size = (unaligned_size + NON_COHERENT_ATOM_SIZE - 1) & !(NON_COHERENT_ATOM_SIZE - 1);
+    (aligned_offset, aligned_size)
+}
+
 pub struct GpuBuffer {
     pub buffer: vk::Buffer,
     pub size: vk::DeviceSize,
@@ -357,12 +374,16 @@ impl GpuBuffer {
             .contains(vk::MemoryPropertyFlags::HOST_COHERENT);
 
         if !is_coherent {
-            let aligned_offset = alloc.offset() & !(NON_COHERENT_ATOM_SIZE - 1);
+            let (aligned_offset, aligned_size) = aligned_flush_range(alloc.offset(), alloc.size());
+            // SAFETY: alloc.memory() is valid and mapped. The range is contained
+            // within this allocation's slice of the parent VkDeviceMemory: offset
+            // is rounded down and size rounded up to nonCoherentAtomSize, which
+            // gpu-allocator already pads sub-allocations to.
             unsafe {
                 let range = vk::MappedMemoryRange::default()
                     .memory(alloc.memory())
                     .offset(aligned_offset)
-                    .size(vk::WHOLE_SIZE);
+                    .size(aligned_size);
                 device
                     .flush_mapped_memory_ranges(&[range])
                     .context("Failed to flush mapped memory")?;
@@ -404,21 +425,22 @@ impl GpuBuffer {
 
         // Flush explicitly if the memory is not HOST_COHERENT.
         if !is_coherent {
-            // Vulkan spec requires flush offset to be a multiple of nonCoherentAtomSize.
-            // gpu_allocator typically aligns sub-allocations, but we round down
-            // defensively using a conservative upper bound (256 bytes).
-            // VK_WHOLE_SIZE is always valid for the size field.
-            let aligned_offset = alloc.offset() & !(NON_COHERENT_ATOM_SIZE - 1);
+            // Vulkan spec requires both offset and size to be multiples of
+            // nonCoherentAtomSize (or size == VK_WHOLE_SIZE). Using
+            // VK_WHOLE_SIZE here would over-flush past this sub-allocation
+            // into unrelated memory; instead bound the range to this
+            // allocation only, rounding outward to atom size.
+            let (aligned_offset, aligned_size) = aligned_flush_range(alloc.offset(), alloc.size());
 
             // SAFETY: alloc.memory() returns the VkDeviceMemory backing this
-            // allocation, which is valid and mapped (verified above). The offset
-            // is rounded down to nonCoherentAtomSize boundary; WHOLE_SIZE covers
-            // from there to the end of the memory object.
+            // allocation, which is valid and mapped (verified above). The
+            // range is contained within this allocation's region of the parent
+            // memory object — gpu-allocator pads sub-allocations to atom size.
             unsafe {
                 let range = vk::MappedMemoryRange::default()
                     .memory(alloc.memory())
                     .offset(aligned_offset)
-                    .size(vk::WHOLE_SIZE);
+                    .size(aligned_size);
                 device
                     .flush_mapped_memory_ranges(&[range])
                     .context("Failed to flush mapped memory")?;
@@ -572,5 +594,63 @@ impl Drop for GpuBuffer {
             log::warn!("GpuBuffer dropped without destroy() — VkBuffer and GPU allocation leaked");
             debug_assert!(false, "GpuBuffer leaked: call destroy() before dropping");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aligned_flush_range_already_aligned() {
+        // Offset and size both already on atom boundary.
+        let (off, sz) = aligned_flush_range(512, 1024);
+        assert_eq!(off, 512);
+        assert_eq!(sz, 1024);
+        assert!(sz % NON_COHERENT_ATOM_SIZE == 0);
+    }
+
+    #[test]
+    fn aligned_flush_range_unaligned_offset() {
+        // Offset 100 → rounds down to 0; size grows to cover original end.
+        let (off, sz) = aligned_flush_range(100, 200);
+        assert_eq!(off, 0);
+        // Original range: [100, 300). Aligned: [0, ?), size must be >= 300.
+        assert!(off + sz >= 300);
+        assert!(sz % NON_COHERENT_ATOM_SIZE == 0);
+    }
+
+    #[test]
+    fn aligned_flush_range_unaligned_size() {
+        // Offset aligned, size 300 → rounds up to 512.
+        let (off, sz) = aligned_flush_range(0, 300);
+        assert_eq!(off, 0);
+        assert_eq!(sz, 512);
+    }
+
+    #[test]
+    fn aligned_flush_range_small_allocation() {
+        // 48-byte allocation at offset 0 → rounds size up to 256.
+        let (off, sz) = aligned_flush_range(0, 48);
+        assert_eq!(off, 0);
+        assert_eq!(sz, NON_COHERENT_ATOM_SIZE);
+    }
+
+    #[test]
+    fn aligned_flush_range_offset_inside_atom() {
+        // Offset 50, size 50 → covers [50, 100). Aligned: [0, 256).
+        let (off, sz) = aligned_flush_range(50, 50);
+        assert_eq!(off, 0);
+        assert_eq!(sz, NON_COHERENT_ATOM_SIZE);
+        assert!(off + sz >= 100);
+    }
+
+    #[test]
+    fn aligned_flush_range_does_not_use_whole_size() {
+        // Whatever the input, the result must be a finite size — never WHOLE_SIZE.
+        let (_, sz) = aligned_flush_range(0, 1);
+        assert_ne!(sz, vk::WHOLE_SIZE);
+        let (_, sz) = aligned_flush_range(1024 * 1024, 4096);
+        assert_ne!(sz, vk::WHOLE_SIZE);
     }
 }
