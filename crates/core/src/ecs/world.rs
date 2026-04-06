@@ -15,6 +15,29 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+/// Panic with a type-aware message when a component storage lock is poisoned.
+/// Helps trace the cascade back to the original panicking system.
+#[cold]
+#[inline(never)]
+fn storage_lock_poisoned<T: Component>() -> ! {
+    panic!(
+        "Storage `{}` RwLock is poisoned — a system panicked while holding this lock. \
+         Check the test or system that ran before this panic.",
+        std::any::type_name::<T>()
+    );
+}
+
+/// Panic with a type-aware message when a resource lock is poisoned.
+#[cold]
+#[inline(never)]
+fn resource_lock_poisoned<R: Resource>() -> ! {
+    panic!(
+        "Resource `{}` RwLock is poisoned — a system panicked while holding this lock. \
+         Check the test or system that ran before this panic.",
+        std::any::type_name::<R>()
+    );
+}
+
 pub struct World {
     storages: HashMap<TypeId, RwLock<Box<dyn Any + Send + Sync>>>,
     resources: HashMap<TypeId, RwLock<Box<dyn Any + Send + Sync>>>,
@@ -71,7 +94,7 @@ impl World {
             .storages
             .get_mut(&TypeId::of::<T>())?
             .get_mut()
-            .expect("storage lock poisoned")
+            .unwrap_or_else(|_| storage_lock_poisoned::<T>())
             .downcast_mut::<T::Storage>()?;
         storage.remove(entity)
     }
@@ -88,7 +111,7 @@ impl World {
         let type_id = TypeId::of::<T>();
         let lock = self.storages.get(&type_id)?;
         lock_tracker::track_read(type_id, std::any::type_name::<T>());
-        let guard = lock.read().expect("storage lock poisoned");
+        let guard = lock.read().unwrap_or_else(|_| storage_lock_poisoned::<T>());
         match ComponentRef::new(guard, entity, type_id) {
             Some(cr) => Some(cr),
             None => {
@@ -105,7 +128,7 @@ impl World {
             .storages
             .get_mut(&TypeId::of::<T>())?
             .get_mut()
-            .expect("storage lock poisoned")
+            .unwrap_or_else(|_| storage_lock_poisoned::<T>())
             .downcast_mut::<T::Storage>()?;
         storage.get_mut(entity)
     }
@@ -115,7 +138,7 @@ impl World {
         self.storages.get(&TypeId::of::<T>()).is_some_and(|lock| {
             let type_id = TypeId::of::<T>();
             lock_tracker::track_read(type_id, std::any::type_name::<T>());
-            let guard = lock.read().expect("storage lock poisoned");
+            let guard = lock.read().unwrap_or_else(|_| storage_lock_poisoned::<T>());
             let result = guard
                 .downcast_ref::<T::Storage>()
                 .expect("storage type mismatch")
@@ -131,7 +154,7 @@ impl World {
         self.storages.get(&TypeId::of::<T>()).map_or(0, |lock| {
             let type_id = TypeId::of::<T>();
             lock_tracker::track_read(type_id, std::any::type_name::<T>());
-            let guard = lock.read().expect("storage lock poisoned");
+            let guard = lock.read().unwrap_or_else(|_| storage_lock_poisoned::<T>());
             let result = guard
                 .downcast_ref::<T::Storage>()
                 .expect("storage type mismatch")
@@ -192,7 +215,7 @@ impl World {
         let type_id = TypeId::of::<T>();
         let lock = self.storages.get(&type_id)?;
         lock_tracker::track_read(type_id, std::any::type_name::<T>());
-        let guard = lock.read().expect("storage lock poisoned");
+        let guard = lock.read().unwrap_or_else(|_| storage_lock_poisoned::<T>());
         Some(QueryRead::new(guard, type_id))
     }
 
@@ -204,7 +227,7 @@ impl World {
         let type_id = TypeId::of::<T>();
         let lock = self.storages.get(&type_id)?;
         lock_tracker::track_write(type_id, std::any::type_name::<T>());
-        let guard = lock.write().expect("storage lock poisoned");
+        let guard = lock.write().unwrap_or_else(|_| storage_lock_poisoned::<T>());
         Some(QueryWrite::new(guard, type_id))
     }
 
@@ -237,12 +260,12 @@ impl World {
 
         // Always lock in TypeId order to prevent deadlocks.
         if id_a < id_b {
-            let guard_a = lock_a.read().expect("lock poisoned");
-            let guard_b = lock_b.write().expect("lock poisoned");
+            let guard_a = lock_a.read().unwrap_or_else(|_| storage_lock_poisoned::<A>());
+            let guard_b = lock_b.write().unwrap_or_else(|_| storage_lock_poisoned::<B>());
             Some((QueryRead::new(guard_a, id_a), QueryWrite::new(guard_b, id_b)))
         } else {
-            let guard_b = lock_b.write().expect("lock poisoned");
-            let guard_a = lock_a.read().expect("lock poisoned");
+            let guard_b = lock_b.write().unwrap_or_else(|_| storage_lock_poisoned::<B>());
+            let guard_a = lock_a.read().unwrap_or_else(|_| storage_lock_poisoned::<A>());
             Some((QueryRead::new(guard_a, id_a), QueryWrite::new(guard_b, id_b)))
         }
     }
@@ -274,12 +297,12 @@ impl World {
         lock_tracker::track_write(id_b, std::any::type_name::<B>());
 
         if id_a < id_b {
-            let guard_a = lock_a.write().expect("lock poisoned");
-            let guard_b = lock_b.write().expect("lock poisoned");
+            let guard_a = lock_a.write().unwrap_or_else(|_| storage_lock_poisoned::<A>());
+            let guard_b = lock_b.write().unwrap_or_else(|_| storage_lock_poisoned::<B>());
             Some((QueryWrite::new(guard_a, id_a), QueryWrite::new(guard_b, id_b)))
         } else {
-            let guard_b = lock_b.write().expect("lock poisoned");
-            let guard_a = lock_a.write().expect("lock poisoned");
+            let guard_b = lock_b.write().unwrap_or_else(|_| storage_lock_poisoned::<B>());
+            let guard_a = lock_a.write().unwrap_or_else(|_| storage_lock_poisoned::<A>());
             Some((QueryWrite::new(guard_a, id_a), QueryWrite::new(guard_b, id_b)))
         }
     }
@@ -302,7 +325,7 @@ impl World {
     /// Remove a global resource, returning it if it existed.
     pub fn remove_resource<R: Resource>(&mut self) -> Option<R> {
         let lock = self.resources.remove(&TypeId::of::<R>())?;
-        let boxed = lock.into_inner().expect("resource lock poisoned");
+        let boxed = lock.into_inner().unwrap_or_else(|_| resource_lock_poisoned::<R>());
         Some(*boxed.downcast::<R>().expect("resource type mismatch"))
     }
 
@@ -320,7 +343,7 @@ impl World {
             )
         });
         lock_tracker::track_read(type_id, std::any::type_name::<R>());
-        let guard = lock.read().expect("resource lock poisoned");
+        let guard = lock.read().unwrap_or_else(|_| resource_lock_poisoned::<R>());
         ResourceRead::new(guard, type_id)
     }
 
@@ -338,7 +361,7 @@ impl World {
             )
         });
         lock_tracker::track_write(type_id, std::any::type_name::<R>());
-        let guard = lock.write().expect("resource lock poisoned");
+        let guard = lock.write().unwrap_or_else(|_| resource_lock_poisoned::<R>());
         ResourceWrite::new(guard, type_id)
     }
 
@@ -380,12 +403,12 @@ impl World {
 
         // Always lock in TypeId order to prevent deadlocks.
         if id_a < id_b {
-            let guard_a = lock_a.write().expect("resource lock poisoned");
-            let guard_b = lock_b.write().expect("resource lock poisoned");
+            let guard_a = lock_a.write().unwrap_or_else(|_| resource_lock_poisoned::<A>());
+            let guard_b = lock_b.write().unwrap_or_else(|_| resource_lock_poisoned::<B>());
             (ResourceWrite::new(guard_a, id_a), ResourceWrite::new(guard_b, id_b))
         } else {
-            let guard_b = lock_b.write().expect("resource lock poisoned");
-            let guard_a = lock_a.write().expect("resource lock poisoned");
+            let guard_b = lock_b.write().unwrap_or_else(|_| resource_lock_poisoned::<B>());
+            let guard_a = lock_a.write().unwrap_or_else(|_| resource_lock_poisoned::<A>());
             (ResourceWrite::new(guard_a, id_a), ResourceWrite::new(guard_b, id_b))
         }
     }
@@ -395,7 +418,7 @@ impl World {
         let type_id = TypeId::of::<R>();
         let lock = self.resources.get(&type_id)?;
         lock_tracker::track_read(type_id, std::any::type_name::<R>());
-        let guard = lock.read().expect("resource lock poisoned");
+        let guard = lock.read().unwrap_or_else(|_| resource_lock_poisoned::<R>());
         Some(ResourceRead::new(guard, type_id))
     }
 
@@ -404,7 +427,7 @@ impl World {
         let type_id = TypeId::of::<R>();
         let lock = self.resources.get(&type_id)?;
         lock_tracker::track_write(type_id, std::any::type_name::<R>());
-        let guard = lock.write().expect("resource lock poisoned");
+        let guard = lock.write().unwrap_or_else(|_| resource_lock_poisoned::<R>());
         Some(ResourceWrite::new(guard, type_id))
     }
 
@@ -416,7 +439,7 @@ impl World {
             .entry(TypeId::of::<T>())
             .or_insert_with(|| RwLock::new(Box::new(T::Storage::default())))
             .get_mut()
-            .expect("storage lock poisoned")
+            .unwrap_or_else(|_| storage_lock_poisoned::<T>())
             .downcast_mut::<T::Storage>()
             .expect("storage type mismatch (bug in World)")
     }
@@ -1220,5 +1243,71 @@ mod tests {
 
         let _write = world.query_mut::<Health>().unwrap();
         let _ = world.has::<Health>(e); // deadlock → panic
+    }
+
+    // ── Poisoned-lock cascade reporting (issue #95) ─────────────────────
+
+    #[test]
+    fn poisoned_storage_lock_panics_with_type_name() {
+        use std::sync::Arc;
+
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+        let world = Arc::new(world);
+
+        // Poison the Health storage from another thread.
+        let w = Arc::clone(&world);
+        let _ = std::thread::spawn(move || {
+            let _q = w.query_mut::<Health>().unwrap();
+            panic!("intentional panic to poison the lock");
+        })
+        .join();
+
+        // Now any access to Health from this thread should surface a
+        // type-aware panic — not the generic "lock poisoned".
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = world.query::<Health>();
+        }));
+        let err = result.expect_err("expected poisoned-lock panic");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("Health") && msg.contains("poisoned"),
+            "panic message should name the component type and mention poisoning, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn poisoned_resource_lock_panics_with_type_name() {
+        use std::sync::Arc;
+
+        let mut world = World::new();
+        world.insert_resource(ResA(42.0));
+        let world = Arc::new(world);
+
+        let w = Arc::clone(&world);
+        let _ = std::thread::spawn(move || {
+            let _r = w.resource_mut::<ResA>();
+            panic!("intentional panic to poison the lock");
+        })
+        .join();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = world.try_resource::<ResA>();
+        }));
+        let err = result.expect_err("expected poisoned-lock panic");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("ResA") && msg.contains("poisoned"),
+            "panic message should name the resource type and mention poisoning, got: {msg}"
+        );
     }
 }
