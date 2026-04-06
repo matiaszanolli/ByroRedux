@@ -224,8 +224,8 @@ impl VulkanContext {
                         self.device
                             .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipe);
                         last_pipeline_key = pipeline_key;
-                        // Force rebind of texture after pipeline switch.
-                        last_texture = u32::MAX;
+                        // Descriptor set 0 (texture) is preserved across compatible
+                        // pipeline switches per Vulkan spec 14.2.2 — no rebind needed.
                     }
 
                     // Bind texture descriptor set (skip if same as previous draw).
