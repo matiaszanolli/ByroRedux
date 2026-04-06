@@ -342,13 +342,16 @@ fn resolve_compressed_mesh(data: &BhkCompressedMeshShapeData) -> Option<Collisio
             all_verts.push(havok_to_engine(x, y, z) * HAVOK_SCALE);
         }
 
+        // Havok chunk indices reference into the flat u16 vertex component array
+        // (pre-multiplied by 3). Since we store vertices as [u16; 3] triples,
+        // divide each index by 3 to get the vertex triple index.
         if chunk.strips.is_empty() {
             // Plain triangle list: every 3 indices = 1 triangle.
             let mut i = 0;
             while i + 2 < chunk.indices.len() {
-                let a = chunk.indices[i] as u32 + base;
-                let b = chunk.indices[i + 1] as u32 + base;
-                let c = chunk.indices[i + 2] as u32 + base;
+                let a = chunk.indices[i] as u32 / 3 + base;
+                let b = chunk.indices[i + 1] as u32 / 3 + base;
+                let c = chunk.indices[i + 2] as u32 / 3 + base;
                 if a != b && b != c && a != c {
                     all_indices.push([a, b, c]);
                 }
@@ -368,9 +371,9 @@ fn resolve_compressed_mesh(data: &BhkCompressedMeshShapeData) -> Option<Collisio
                     };
                     if a != b && b != c && a != c {
                         all_indices.push([
-                            a as u32 + base,
-                            b as u32 + base,
-                            c as u32 + base,
+                            a as u32 / 3 + base,
+                            b as u32 / 3 + base,
+                            c as u32 / 3 + base,
                         ]);
                     }
                 }
