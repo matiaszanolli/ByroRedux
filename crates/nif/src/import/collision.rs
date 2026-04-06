@@ -32,7 +32,25 @@ pub fn extract_collision(
     let body_idx = coll_obj.body_ref.index()?;
     let body = scene.get_as::<BhkRigidBody>(body_idx)?;
 
-    let shape = resolve_shape(scene, body.shape_ref)?;
+    let mut shape = resolve_shape(scene, body.shape_ref)?;
+
+    // Apply rigid body center-of-mass offset and orientation to the shape.
+    // Static architecture typically has zero offset; dynamic objects (crates,
+    // bottles, ragdoll bones) have non-trivial transforms.
+    let body_translation = havok_to_engine(
+        body.translation[0],
+        body.translation[1],
+        body.translation[2],
+    ) * HAVOK_SCALE;
+    let body_rotation = havok_quat_to_engine(body.rotation);
+
+    let has_offset = body_translation.length_squared() > 1e-6
+        || (body_rotation - Quat::IDENTITY).length_squared() > 1e-6;
+    if has_offset {
+        shape = CollisionShape::Compound {
+            children: vec![(body_translation, body_rotation, Box::new(shape))],
+        };
+    }
 
     let motion_type = match body.motion_type {
         1 | 2 | 3 => MotionType::Dynamic,
@@ -236,6 +254,12 @@ fn resolve_packed_mesh(data: &HkPackedNiTriStripsData) -> Option<CollisionShape>
 /// Convert Havok Z-up coordinates to engine Y-up: (x, z, -y).
 fn havok_to_engine(x: f32, y: f32, z: f32) -> Vec3 {
     Vec3::new(x, z, -y)
+}
+
+/// Convert a Havok quaternion [x, y, z, w] from Z-up to Y-up engine space.
+fn havok_quat_to_engine(q: [f32; 4]) -> Quat {
+    // Havok quat is (x, y, z, w) in Z-up. Apply Z-up→Y-up: swap y↔z, negate new z.
+    Quat::from_xyzw(q[0], q[2], -q[1], q[3])
 }
 
 /// Decompose a Havok 4x4 matrix into (translation, rotation) in engine space.
