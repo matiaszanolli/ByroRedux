@@ -194,6 +194,8 @@ impl VulkanContext {
             );
 
             // Bind scene descriptor set (lights + camera SSBOs/UBOs).
+            // Indexed by `frame` (frame-in-flight, 0..MAX_FRAMES_IN_FLIGHT) because
+            // scene data is double-buffered per frame, not per swapchain image.
             let scene_set = self.scene_buffers.descriptor_set(frame);
             self.device.cmd_bind_descriptor_sets(
                 cmd,
@@ -227,6 +229,9 @@ impl VulkanContext {
                     }
 
                     // Bind texture descriptor set (skip if same as previous draw).
+                    // Indexed by `image_index` (swapchain image) because texture sets
+                    // are allocated per-image to avoid write-after-read hazards across
+                    // frames that may reference different swapchain images.
                     if draw_cmd.texture_handle != last_texture {
                         let desc_set = self
                             .texture_registry
