@@ -39,7 +39,9 @@
       "Bash(rg \"generate_report\\\\|report\\\\|memory_budget\\\\|total_bytes\" /mnt/data/src/gamebyro-redux/target/debug/.fingerprint/gpu-allocator*)",
       "Bash(rg \"generate_report\" ~/.cargo/registry/src/*/gpu-allocator-*/src/)",
       "Bash(rg \"struct AllocatorReport\" ~/.cargo/registry/src/*/gpu-allocator-0.27.0/src/)",
-      "Bash(rg \"total_reserved_bytes\\\\|total_allocated_bytes\" ~/.cargo/registry/src/*/gpu-allocator-0.27.0/src/)"
+      "Bash(rg \"total_reserved_bytes\\\\|total_allocated_bytes\" ~/.cargo/registry/src/*/gpu-allocator-0.27.0/src/)",
+      "Bash(cargo clippy:*)",
+      "Bash(mkdir -p .claude/issues/120)"
     ],
     "additionalDirectories": [
       "/mnt/data/src/gamebyro-redux/.claude",
@@ -48,7 +50,11 @@
       "/tmp",
       "/mnt/data/src/gamebyro-redux/.claude/issues",
       "/mnt/data/src/gamebyro-redux/.claude/issues/34",
-      "/mnt/data/src/gamebyro-redux/.claude/issues/43"
+      "/mnt/data/src/gamebyro-redux/.claude/issues/43",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/118",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/130",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/121",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/123"
     ]
   }
 }
