@@ -195,8 +195,8 @@ pub(super) fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> Mat
                 if let Some(ref base) = tex_prop.base_texture {
                     if let Some(src_idx) = base.source_ref.index() {
                         if let Some(src_tex) = scene.get_as::<NiSourceTexture>(src_idx) {
-                            if src_tex.filename.is_some() {
-                                info.texture_path = src_tex.filename.clone();
+                            if let Some(ref f) = src_tex.filename {
+                                info.texture_path = Some(f.to_string());
                             }
                         }
                     }

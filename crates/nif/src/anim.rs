@@ -275,12 +275,16 @@ fn clip_has_data(clip: &AnimationClip) -> bool {
 }
 
 fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationClip {
-    let name = seq.name.clone().unwrap_or_else(|| "unnamed".to_string());
+    let name = seq
+        .name
+        .as_deref()
+        .map(str::to_string)
+        .unwrap_or_else(|| "unnamed".to_string());
     let duration = seq.stop_time - seq.start_time;
     let cycle_type = CycleType::from_u32(seq.cycle_type);
     let frequency = seq.frequency;
     let weight = seq.weight;
-    let accum_root_name = seq.accum_root_name.clone();
+    let accum_root_name = seq.accum_root_name.as_deref().map(str::to_string);
     let mut channels = HashMap::new();
     let mut float_channels = Vec::new();
     let mut color_channels = Vec::new();
@@ -296,37 +300,37 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
             "NiTransformController" => {
                 if let Some(mut channel) = extract_transform_channel(scene, cb) {
                     channel.priority = cb.priority;
-                    channels.insert(node_name.clone(), channel);
+                    channels.insert(node_name.to_string(), channel);
                 }
             }
             "NiMaterialColorController" => {
                 if let Some(ch) = extract_color_channel(scene, cb) {
-                    color_channels.push((node_name.clone(), ch));
+                    color_channels.push((node_name.to_string(), ch));
                 }
             }
             "NiAlphaController" => {
                 if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::Alpha) {
-                    float_channels.push((node_name.clone(), ch));
+                    float_channels.push((node_name.to_string(), ch));
                 }
             }
             "NiVisController" => {
                 if let Some(ch) = extract_bool_channel(scene, cb) {
-                    bool_channels.push((node_name.clone(), ch));
+                    bool_channels.push((node_name.to_string(), ch));
                 }
             }
             "NiTextureTransformController" => {
                 if let Some(ch) = extract_texture_transform_channel(scene, cb) {
-                    float_channels.push((node_name.clone(), ch));
+                    float_channels.push((node_name.to_string(), ch));
                 }
             }
             "BSEffectShaderPropertyFloatController" | "BSLightingShaderPropertyFloatController" => {
                 if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::ShaderFloat) {
-                    float_channels.push((node_name.clone(), ch));
+                    float_channels.push((node_name.to_string(), ch));
                 }
             }
             "BSEffectShaderPropertyColorController" | "BSLightingShaderPropertyColorController" => {
                 if let Some(ch) = extract_shader_color_channel(scene, cb) {
-                    color_channels.push((node_name.clone(), ch));
+                    color_channels.push((node_name.to_string(), ch));
                 }
             }
             _ => {

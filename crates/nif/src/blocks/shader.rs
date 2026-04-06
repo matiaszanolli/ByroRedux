@@ -738,6 +738,7 @@ mod tests {
     use crate::header::NifHeader;
     use crate::stream::NifStream;
     use crate::version::NifVersion;
+    use std::sync::Arc;
 
     fn make_header(user_version: u32, user_version_2: u32) -> NifHeader {
         NifHeader {
@@ -749,7 +750,7 @@ mod tests {
             block_types: Vec::new(),
             block_type_indices: Vec::new(),
             block_sizes: Vec::new(),
-            strings: vec!["ShaderProp".to_string()],
+            strings: vec![Arc::from("ShaderProp")],
             max_string_length: 10,
             num_groups: 0,
         }
@@ -835,7 +836,7 @@ mod tests {
             block_types: Vec::new(),
             block_type_indices: Vec::new(),
             block_sizes: Vec::new(),
-            strings: vec!["TestShader".to_string()],
+            strings: vec![Arc::from("TestShader")],
             max_string_length: 10,
             num_groups: 0,
         }
@@ -1062,7 +1063,7 @@ mod tests {
             block_types: Vec::new(),
             block_type_indices: Vec::new(),
             block_sizes: Vec::new(),
-            strings: vec!["FO4Shader".to_string()],
+            strings: vec![Arc::from("FO4Shader")],
             max_string_length: 9,
             num_groups: 0,
         }

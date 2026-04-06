@@ -10,6 +10,7 @@ use crate::types::BlockRef;
 use crate::version::NifVersion;
 use std::any::Any;
 use std::io;
+use std::sync::Arc;
 
 // ── NiTimeController base ──────────────────────────────────────────────
 
@@ -273,17 +274,17 @@ pub struct ControlledBlock {
     pub interpolator_ref: BlockRef,
     pub controller_ref: BlockRef,
     pub priority: u8,
-    pub node_name: Option<String>,
-    pub property_type: Option<String>,
-    pub controller_type: Option<String>,
-    pub controller_id: Option<String>,
-    pub interpolator_id: Option<String>,
+    pub node_name: Option<Arc<str>>,
+    pub property_type: Option<Arc<str>>,
+    pub controller_type: Option<Arc<str>>,
+    pub controller_id: Option<Arc<str>>,
+    pub interpolator_id: Option<Arc<str>>,
 }
 
 #[derive(Debug)]
 pub struct NiControllerSequence {
     // NiSequence fields
-    pub name: Option<String>,
+    pub name: Option<Arc<str>>,
     pub controlled_blocks: Vec<ControlledBlock>,
     pub array_grow_by: u32,
     // NiControllerSequence fields
@@ -294,7 +295,7 @@ pub struct NiControllerSequence {
     pub start_time: f32,
     pub stop_time: f32,
     pub manager_ref: BlockRef,
-    pub accum_root_name: Option<String>,
+    pub accum_root_name: Option<Arc<str>>,
     pub anim_note_refs: Vec<BlockRef>,
 }
 
@@ -401,7 +402,7 @@ mod tests {
             block_types: Vec::new(),
             block_type_indices: Vec::new(),
             block_sizes: Vec::new(),
-            strings: vec!["TestName".to_string()],
+            strings: vec![Arc::from("TestName")],
             max_string_length: 8,
             num_groups: 0,
         }
@@ -531,7 +532,7 @@ mod tests {
         let mut stream = NifStream::new(&data, &header);
         let seq = NiControllerSequence::parse(&mut stream).unwrap();
         assert_eq!(stream.position() as usize, expected_len);
-        assert_eq!(seq.name, Some("TestName".to_string()));
+        assert_eq!(seq.name.as_deref(), Some("TestName"));
         assert_eq!(seq.controlled_blocks.len(), 0);
         assert!(seq.text_keys_ref.is_null());
     }
@@ -602,7 +603,7 @@ impl NiGeomMorpherController {
 #[derive(Debug)]
 pub struct MorphTarget {
     /// Name of this morph frame (e.g., "Blink", "JawOpen").
-    pub name: Option<String>,
+    pub name: Option<Arc<str>>,
     /// Vertex position deltas (one per mesh vertex).
     pub vectors: Vec<[f32; 3]>,
 }

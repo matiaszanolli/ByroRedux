@@ -248,7 +248,7 @@ mod tests {
         crate::blocks::node::NiNode {
             av: NiAVObjectData {
                 net: NiObjectNETData {
-                    name: Some("TestNode".to_string()),
+                    name: Some(std::sync::Arc::from("TestNode")),
                     extra_data_refs: Vec::new(),
                     controller_ref: BlockRef::NULL,
                 },
@@ -272,7 +272,7 @@ mod tests {
         crate::blocks::tri_shape::NiTriShape {
             av: NiAVObjectData {
                 net: NiObjectNETData {
-                    name: Some(name.to_string()),
+                    name: Some(std::sync::Arc::from(name)),
                     extra_data_refs: Vec::new(),
                     controller_ref: BlockRef::NULL,
                 },

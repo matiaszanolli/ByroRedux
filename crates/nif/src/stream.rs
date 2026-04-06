@@ -8,6 +8,7 @@ use crate::header::NifHeader;
 use crate::types::{BlockRef, NiColor, NiMatrix3, NiPoint3, NiQuatTransform, NiTransform};
 use crate::version::{NifVariant, NifVersion};
 use std::io::{self, Cursor, Read};
+use std::sync::Arc;
 
 /// Binary reader with NIF header context for version-aware parsing.
 pub struct NifStream<'a> {
@@ -133,9 +134,13 @@ impl<'a> NifStream<'a> {
     /// Read a string. Format depends on version:
     /// - Pre-20.1: length-prefixed (u32 length + bytes)
     /// - 20.1+: string table index (u32 → header.strings[index])
-    pub fn read_string(&mut self) -> io::Result<Option<String>> {
+    ///
+    /// Returns `Arc<str>` so that string-table reads (the common path on
+    /// 20.1+ files) are a cheap pointer copy + atomic increment, not a
+    /// fresh allocation. The legacy length-prefixed path allocates once.
+    pub fn read_string(&mut self) -> io::Result<Option<Arc<str>>> {
         if self.header.version >= NifVersion(0x14010003) {
-            // String table index
+            // String table index — Arc::clone is just a refcount bump.
             let idx = self.read_i32_le()?;
             if idx < 0 {
                 Ok(None)
@@ -143,13 +148,14 @@ impl<'a> NifStream<'a> {
                 Ok(self.header.strings.get(idx as usize).cloned())
             }
         } else {
-            // Length-prefixed inline string
+            // Length-prefixed inline string (Morrowind / pre-20.1).
             let len = self.read_u32_le()? as usize;
             if len == 0 {
                 return Ok(None);
             }
             let bytes = self.read_bytes(len)?;
-            Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+            let s = String::from_utf8_lossy(&bytes);
+            Ok(Some(Arc::from(s.as_ref())))
         }
     }
 
@@ -266,7 +272,7 @@ mod tests {
             block_types: Vec::new(),
             block_type_indices: Vec::new(),
             block_sizes: Vec::new(),
-            strings: vec!["hello".to_string(), "world".to_string()],
+            strings: vec![Arc::from("hello"), Arc::from("world")],
             max_string_length: 5,
             num_groups: 0,
         }
@@ -332,7 +338,7 @@ mod tests {
         ];
         let mut stream = NifStream::new(&data, &header);
 
-        assert_eq!(stream.read_string().unwrap(), Some("world".to_string()));
+        assert_eq!(stream.read_string().unwrap().as_deref(), Some("world"));
         assert_eq!(stream.read_string().unwrap(), None);
     }
 
@@ -347,7 +353,7 @@ mod tests {
         ];
         let mut stream = NifStream::new(&data, &header);
 
-        assert_eq!(stream.read_string().unwrap(), Some("test".to_string()));
+        assert_eq!(stream.read_string().unwrap().as_deref(), Some("test"));
         assert_eq!(stream.read_string().unwrap(), None);
     }
 

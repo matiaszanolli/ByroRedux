@@ -290,7 +290,7 @@ mod tests {
 
         // Downcast and verify fields
         let node = scene.get_as::<blocks::node::NiNode>(0).unwrap();
-        assert_eq!(node.av.net.name, Some("SceneRoot".to_string()));
+        assert_eq!(node.av.net.name.as_deref(), Some("SceneRoot"));
         assert_eq!(node.av.flags, 14);
         assert_eq!(node.av.transform.translation.x, 1.0);
         assert_eq!(node.av.transform.translation.y, 2.0);

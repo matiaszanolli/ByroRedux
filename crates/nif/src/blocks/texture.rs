@@ -8,13 +8,14 @@ use crate::types::BlockRef;
 use crate::version::NifVersion;
 use std::any::Any;
 use std::io;
+use std::sync::Arc;
 
 /// Reference to an external texture file or embedded pixel data.
 #[derive(Debug)]
 pub struct NiSourceTexture {
     pub net: NiObjectNETData,
     pub use_external: bool,
-    pub filename: Option<String>,
+    pub filename: Option<Arc<str>>,
     pub pixel_data_ref: BlockRef,
     pub pixel_layout: u32,
     pub use_mipmaps: u32,
@@ -39,10 +40,10 @@ impl NiSourceTexture {
         let use_string_table = stream.version() >= crate::version::NifVersion::V20_2_0_7;
 
         let (filename, pixel_data_ref) = if use_external {
-            let fname = if use_string_table {
+            let fname: Option<Arc<str>> = if use_string_table {
                 stream.read_string()?
             } else {
-                Some(stream.read_sized_string()?)
+                Some(Arc::from(stream.read_sized_string()?))
             };
             if stream.version() >= crate::version::NifVersion(0x0A010000) {
                 let _unknown_ref = stream.read_block_ref()?;

@@ -10,6 +10,7 @@
 use crate::stream::NifStream;
 use crate::types::{BlockRef, NiTransform};
 use std::io;
+use std::sync::Arc;
 
 /// NiObjectNET base class fields: name, extra data refs, controller ref.
 ///
@@ -17,7 +18,7 @@ use std::io;
 /// Previously duplicated across 11 parsers.
 #[derive(Debug, Clone)]
 pub struct NiObjectNETData {
-    pub name: Option<String>,
+    pub name: Option<Arc<str>>,
     pub extra_data_refs: Vec<BlockRef>,
     pub controller_ref: BlockRef,
 }

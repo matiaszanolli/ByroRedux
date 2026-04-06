@@ -5,6 +5,7 @@
 
 use crate::version::NifVersion;
 use std::io::{self, Cursor, Read};
+use std::sync::Arc;
 
 /// Parsed NIF file header.
 #[derive(Debug, Clone)]
@@ -26,7 +27,9 @@ pub struct NifHeader {
     /// Byte size of each serialized block.
     pub block_sizes: Vec<u32>,
     /// Global string table (referenced by string-table-indexed fields).
-    pub strings: Vec<String>,
+    /// Stored as `Arc<str>` so block parsers can clone references cheaply
+    /// (atomic increment) instead of allocating a fresh String per read.
+    pub strings: Vec<Arc<str>>,
     /// Maximum string length in the string table.
     pub max_string_length: u32,
     /// Number of object groups (for deferred loading).
@@ -126,9 +129,9 @@ impl NifHeader {
         let (strings, max_string_length) = if version >= NifVersion(0x14010003) {
             let num_strings = read_u32_le(&mut cursor)? as usize;
             let max_len = read_u32_le(&mut cursor)?;
-            let mut strs = Vec::with_capacity(num_strings);
+            let mut strs: Vec<Arc<str>> = Vec::with_capacity(num_strings);
             for _ in 0..num_strings {
-                strs.push(read_sized_string(&mut cursor)?);
+                strs.push(Arc::from(read_sized_string(&mut cursor)?));
             }
             (strs, max_len)
         } else {
@@ -343,7 +346,9 @@ mod tests {
         assert_eq!(header.block_types, vec!["NiNode", "NiTriShape"]);
         assert_eq!(header.block_type_indices, vec![0, 1]);
         assert_eq!(header.block_sizes, vec![100, 200]);
-        assert_eq!(header.strings, vec!["Scene", "Mesh01"]);
+        assert_eq!(header.strings.len(), 2);
+        assert_eq!(&*header.strings[0], "Scene");
+        assert_eq!(&*header.strings[1], "Mesh01");
         assert_eq!(header.max_string_length, 6);
 
         assert_eq!(header.block_type_name(0), Some("NiNode"));

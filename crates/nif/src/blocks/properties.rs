@@ -317,6 +317,7 @@ mod tests {
     use crate::header::NifHeader;
     use crate::stream::NifStream;
     use crate::version::NifVersion;
+    use std::sync::Arc;
 
     fn make_header(user_version: u32, user_version_2: u32) -> NifHeader {
         NifHeader {
@@ -328,7 +329,7 @@ mod tests {
             block_types: Vec::new(),
             block_type_indices: Vec::new(),
             block_sizes: Vec::new(),
-            strings: vec!["Material".to_string()],
+            strings: vec![Arc::from("Material")],
             max_string_length: 8,
             num_groups: 0,
         }

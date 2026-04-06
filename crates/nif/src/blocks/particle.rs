@@ -11,6 +11,7 @@ use crate::stream::NifStream;
 use crate::types::BlockRef;
 use std::any::Any;
 use std::io;
+use std::sync::Arc;
 
 // ── NiPSysModifier base ────────────────────────────────────────────
 
@@ -18,7 +19,7 @@ use std::io;
 /// name(string) + order(u32) + target(ptr/i32) + active(bool)
 #[derive(Debug)]
 pub struct NiPSysModifierBase {
-    pub name: Option<String>,
+    pub name: Option<Arc<str>>,
     pub order: u32,
     pub target_ref: BlockRef,
     pub active: bool,

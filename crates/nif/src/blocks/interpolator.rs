@@ -9,6 +9,7 @@ use crate::stream::NifStream;
 use crate::types::{BlockRef, NiQuatTransform};
 use std::any::Any;
 use std::io;
+use std::sync::Arc;
 
 // ── Key types ─────────────────────────────────────────────────────────
 
@@ -407,7 +408,7 @@ impl NiPosData {
 /// Text keys embedded in animation files — event markers like "start", "end", "hit".
 #[derive(Debug)]
 pub struct NiTextKeyExtraData {
-    pub name: Option<String>,
+    pub name: Option<Arc<str>>,
     pub text_keys: Vec<(f32, String)>,
 }
 
@@ -431,7 +432,10 @@ impl NiTextKeyExtraData {
         let mut text_keys = Vec::with_capacity(num_text_keys as usize);
         for _ in 0..num_text_keys {
             let time = stream.read_f32_le()?;
-            let text = stream.read_string()?.unwrap_or_default();
+            let text = stream
+                .read_string()?
+                .map(|s| s.to_string())
+                .unwrap_or_default();
             text_keys.push((time, text));
         }
         Ok(Self { name, text_keys })
@@ -534,7 +538,7 @@ mod tests {
             block_types: Vec::new(),
             block_type_indices: Vec::new(),
             block_sizes: Vec::new(),
-            strings: vec!["TestName".to_string(), "start".to_string()],
+            strings: vec![Arc::from("TestName"), Arc::from("start")],
             max_string_length: 8,
             num_groups: 0,
         }
@@ -697,7 +701,7 @@ mod tests {
 
         let mut stream = NifStream::new(&data, &header);
         let tk = NiTextKeyExtraData::parse(&mut stream).unwrap();
-        assert_eq!(tk.name, Some("TestName".to_string()));
+        assert_eq!(tk.name.as_deref(), Some("TestName"));
         assert_eq!(tk.text_keys.len(), 1);
         assert_eq!(tk.text_keys[0].0, 0.0);
         assert_eq!(tk.text_keys[0].1, "start");

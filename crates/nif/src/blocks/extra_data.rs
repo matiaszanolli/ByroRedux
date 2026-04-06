@@ -7,13 +7,14 @@ use super::NiObject;
 use crate::stream::NifStream;
 use std::any::Any;
 use std::io;
+use std::sync::Arc;
 
 /// Generic extra data — covers NiStringExtraData, NiIntegerExtraData, etc.
 #[derive(Debug)]
 pub struct NiExtraData {
     pub type_name: String,
-    pub name: Option<String>,
-    pub string_value: Option<String>,
+    pub name: Option<Arc<str>>,
+    pub string_value: Option<Arc<str>>,
     pub integer_value: Option<u32>,
     pub binary_data: Option<Vec<u8>>,
 }
@@ -73,7 +74,7 @@ impl NiExtraData {
 /// Attached to root nodes for object-level bounding volume queries.
 #[derive(Debug)]
 pub struct BsBound {
-    pub name: Option<String>,
+    pub name: Option<Arc<str>>,
     pub center: [f32; 3],
     pub dimensions: [f32; 3],
 }
@@ -124,7 +125,7 @@ pub struct DecalVectorBlock {
 /// point/normal pairs defining where decals are projected onto geometry.
 #[derive(Debug)]
 pub struct BsDecalPlacementVectorExtraData {
-    pub name: Option<String>,
+    pub name: Option<Arc<str>>,
     pub float_value: f32,
     pub vector_blocks: Vec<DecalVectorBlock>,
 }
@@ -181,8 +182,8 @@ impl BsDecalPlacementVectorExtraData {
 /// Present on characters and animated objects (Skyrim+).
 #[derive(Debug)]
 pub struct BsBehaviorGraphExtraData {
-    pub name: Option<String>,
-    pub behaviour_graph_file: Option<String>,
+    pub name: Option<Arc<str>>,
+    pub behaviour_graph_file: Option<Arc<str>>,
     pub controls_base_skeleton: bool,
 }
 
@@ -214,7 +215,7 @@ impl BsBehaviorGraphExtraData {
 /// Rotation values are radians × 1000 stored as u16.
 #[derive(Debug)]
 pub struct BsInvMarker {
-    pub name: Option<String>,
+    pub name: Option<Arc<str>>,
     pub rotation_x: u16,
     pub rotation_y: u16,
     pub rotation_z: u16,
@@ -252,7 +253,7 @@ impl BsInvMarker {
 /// Havok cloth simulation data (opaque binary blob). FO4+.
 #[derive(Debug)]
 pub struct BsClothExtraData {
-    pub name: Option<String>,
+    pub name: Option<Arc<str>>,
     pub data: Vec<u8>,
 }
 
@@ -288,7 +289,7 @@ pub struct ConnectPointData {
 
 #[derive(Debug)]
 pub struct BsConnectPointParents {
-    pub name: Option<String>,
+    pub name: Option<Arc<str>>,
     pub connect_points: Vec<ConnectPointData>,
 }
 
@@ -341,7 +342,7 @@ impl BsConnectPointParents {
 /// Workshop connection point child references. FO4+.
 #[derive(Debug)]
 pub struct BsConnectPointChildren {
-    pub name: Option<String>,
+    pub name: Option<Arc<str>>,
     pub skinned: bool,
     pub point_names: Vec<String>,
 }
