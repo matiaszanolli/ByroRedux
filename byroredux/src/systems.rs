@@ -141,23 +141,44 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
     let entities_with_players: Vec<_> = player_query.iter().map(|(e, _)| e).collect();
     drop(player_query);
 
-    for entity in entities_with_players {
-        // Get the player, advance time, then apply channels.
+    // Phase 1: Advance all players and collect playback state.
+    // Single lock acquisition for AnimationPlayer, held for the entire batch.
+    struct PlaybackState {
+        entity: EntityId,
+        clip_handle: u32,
+        root_entity: Option<EntityId>,
+        current_time: f32,
+    }
+    let mut playback_states = Vec::with_capacity(entities_with_players.len());
+    {
         let mut player_query = world.query_mut::<AnimationPlayer>().unwrap();
-        let player = player_query.get_mut(entity).unwrap();
+        for &entity in &entities_with_players {
+            let player = player_query.get_mut(entity).unwrap();
+            let clip_handle = player.clip_handle;
+            let root_entity_opt = player.root_entity;
+            let Some(clip) = registry.get(clip_handle) else {
+                continue;
+            };
+            advance_time(player, clip, dt);
+            playback_states.push(PlaybackState {
+                entity,
+                clip_handle,
+                root_entity: root_entity_opt,
+                current_time: player.local_time,
+            });
+        }
+    } // AnimationPlayer lock released here
 
-        let clip_handle = player.clip_handle;
-        let root_entity_opt = player.root_entity;
-        let Some(clip) = registry.get(clip_handle) else {
+    // Phase 2: Apply channels using pre-computed playback state.
+    for ps in &playback_states {
+        let entity = ps.entity;
+        let Some(clip) = registry.get(ps.clip_handle) else {
             continue;
         };
-
-        advance_time(player, clip, dt);
-        let current_time = player.local_time;
-        drop(player_query);
+        let current_time = ps.current_time;
 
         // Scoped name lookup — cached per root entity.
-        let scoped_map = root_entity_opt.map(|root| {
+        let scoped_map = ps.root_entity.map(|root| {
             subtree_cache
                 .entry(root)
                 .or_insert_with(|| build_subtree_name_map(world, root))
@@ -214,48 +235,49 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         }
 
         // Apply float channels (alpha, UV params, shader floats).
-        for (channel_name, channel) in &clip.float_channels {
-            let Some(target_entity) = resolve_entity(channel_name) else {
-                continue;
-            };
-            let value = sample_float_channel(channel, current_time);
-            if channel.target == FloatTarget::Alpha {
-                if let Some(mut aq) = world.query_mut::<AnimatedAlpha>() {
-                    if let Some(a) = aq.get_mut(target_entity) {
-                        a.0 = value;
-                    } else {
-                        drop(aq);
-                        // Can't insert during system — would need &mut World.
-                        // Components should be pre-attached during import.
+        // Hold lock for entire channel batch instead of per-channel.
+        if !clip.float_channels.is_empty() {
+            if let Some(mut aq) = world.query_mut::<AnimatedAlpha>() {
+                for (channel_name, channel) in &clip.float_channels {
+                    let Some(target_entity) = resolve_entity(channel_name) else {
+                        continue;
+                    };
+                    let value = sample_float_channel(channel, current_time);
+                    if channel.target == FloatTarget::Alpha {
+                        if let Some(a) = aq.get_mut(target_entity) {
+                            a.0 = value;
+                        }
                     }
                 }
             }
-            // UV and shader float channels are logged but not yet wired to rendering
-            // (would require UvTransform / shader uniform components).
         }
 
-        // Apply color channels.
-        for (channel_name, channel) in &clip.color_channels {
-            let Some(target_entity) = resolve_entity(channel_name) else {
-                continue;
-            };
-            let value = sample_color_channel(channel, current_time);
+        // Apply color channels — single lock for entire batch.
+        if !clip.color_channels.is_empty() {
             if let Some(mut cq) = world.query_mut::<AnimatedColor>() {
-                if let Some(c) = cq.get_mut(target_entity) {
-                    c.0 = value;
+                for (channel_name, channel) in &clip.color_channels {
+                    let Some(target_entity) = resolve_entity(channel_name) else {
+                        continue;
+                    };
+                    let value = sample_color_channel(channel, current_time);
+                    if let Some(c) = cq.get_mut(target_entity) {
+                        c.0 = value;
+                    }
                 }
             }
         }
 
-        // Apply bool (visibility) channels.
-        for (channel_name, channel) in &clip.bool_channels {
-            let Some(target_entity) = resolve_entity(channel_name) else {
-                continue;
-            };
-            let value = sample_bool_channel(channel, current_time);
+        // Apply bool (visibility) channels — single lock for entire batch.
+        if !clip.bool_channels.is_empty() {
             if let Some(mut vq) = world.query_mut::<AnimatedVisibility>() {
-                if let Some(v) = vq.get_mut(target_entity) {
-                    v.0 = value;
+                for (channel_name, channel) in &clip.bool_channels {
+                    let Some(target_entity) = resolve_entity(channel_name) else {
+                        continue;
+                    };
+                    let value = sample_bool_channel(channel, current_time);
+                    if let Some(v) = vq.get_mut(target_entity) {
+                        v.0 = value;
+                    }
                 }
             }
         }
