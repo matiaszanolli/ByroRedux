@@ -334,6 +334,43 @@ impl GpuBuffer {
         })
     }
 
+    /// Get the mapped memory slice for direct writes (no intermediate Vec).
+    /// Call `flush_if_needed()` after writing to ensure GPU visibility.
+    pub fn mapped_slice_mut(&mut self) -> Result<&mut [u8]> {
+        let alloc = self
+            .allocation
+            .as_mut()
+            .context("Buffer has no allocation")?;
+        alloc.mapped_slice_mut().context("Buffer not mapped")
+    }
+
+    /// Flush mapped memory if not HOST_COHERENT. Call after direct writes
+    /// via `mapped_slice_mut()` to ensure GPU visibility.
+    pub fn flush_if_needed(&mut self, device: &ash::Device) -> Result<()> {
+        let alloc = self
+            .allocation
+            .as_ref()
+            .context("Buffer has no allocation")?;
+
+        let is_coherent = alloc
+            .memory_properties()
+            .contains(vk::MemoryPropertyFlags::HOST_COHERENT);
+
+        if !is_coherent {
+            let aligned_offset = alloc.offset() & !(NON_COHERENT_ATOM_SIZE - 1);
+            unsafe {
+                let range = vk::MappedMemoryRange::default()
+                    .memory(alloc.memory())
+                    .offset(aligned_offset)
+                    .size(vk::WHOLE_SIZE);
+                device
+                    .flush_mapped_memory_ranges(&[range])
+                    .context("Failed to flush mapped memory")?;
+            }
+        }
+        Ok(())
+    }
+
     /// Write data to a host-visible buffer's mapped memory.
     ///
     /// If the allocation is not HOST_COHERENT, an explicit flush is

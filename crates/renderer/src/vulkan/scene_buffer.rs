@@ -216,38 +216,31 @@ impl SceneBuffers {
             _pad: [0; 3],
         };
 
-        // Build combined byte buffer: header + light array.
         let header_size = std::mem::size_of::<LightHeader>();
         let light_size = std::mem::size_of::<GpuLight>();
-        let total_size = header_size + light_size * count;
-        let mut data = vec![0u8; total_size];
 
-        // Write header.
-        // SAFETY: `data` is freshly allocated with `total_size` bytes (>= header_size).
-        // `LightHeader` is `#[repr(C)]` and contains only plain f32/u32 fields, so
-        // reading its bytes is well-defined. Source and destination don't overlap.
+        // Write directly to mapped GPU memory — no intermediate Vec allocation.
+        let buf = &mut self.light_buffers[frame_index];
+        let mapped = buf.mapped_slice_mut()?;
+
+        // SAFETY: LightHeader and GpuLight are #[repr(C)] with plain f32/u32 fields.
+        // mapped buffer is sized for MAX_LIGHTS. No overlap between header and light regions.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 &header as *const LightHeader as *const u8,
-                data.as_mut_ptr(),
+                mapped.as_mut_ptr(),
                 header_size,
             );
-        }
-        // Write lights.
-        if count > 0 {
-            // SAFETY: `data` has `header_size + light_size * count` bytes. We write
-            // at offset `header_size` for exactly `light_size * count` bytes.
-            // `GpuLight` is `#[repr(C)]` with plain f32 fields. No overlap with header region.
-            unsafe {
+            if count > 0 {
                 std::ptr::copy_nonoverlapping(
                     lights.as_ptr() as *const u8,
-                    data.as_mut_ptr().add(header_size),
+                    mapped.as_mut_ptr().add(header_size),
                     light_size * count,
                 );
             }
         }
 
-        self.light_buffers[frame_index].write_mapped(device, &data)
+        buf.flush_if_needed(device)
     }
 
     /// Upload camera data for the current frame-in-flight.
