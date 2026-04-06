@@ -103,14 +103,14 @@ impl<'a> NifStream<'a> {
     }
 
     /// Read a NiBool (version-dependent size).
-    /// Post-Oblivion (>= 20.2.0.7): u32. Pre-Oblivion: u8.
-    /// Used for NiNode children, NiTriBasedGeom, etc.
+    /// Per nif.xml: NiBool is u32 for version >= 4.1.0.1, u8 for older.
+    /// Covers Oblivion (20.0.0.5) through Starfield (20.2.0.7+).
     pub fn read_bool(&mut self) -> io::Result<bool> {
-        if self.header.version >= NifVersion::V20_2_0_7 {
-            // Post-Oblivion: NiBool is u32
+        if self.header.version >= NifVersion(0x04010001) {
+            // 4.1.0.1+: NiBool is u32
             Ok(self.read_u32_le()? != 0)
         } else {
-            // Pre-Oblivion: NiBool is u8
+            // Pre-4.1.0.1: NiBool is u8
             Ok(self.read_u8()? != 0)
         }
     }
@@ -377,8 +377,15 @@ mod tests {
         assert!(stream.read_bool().unwrap());
         assert_eq!(stream.position(), 4); // consumed 4 bytes
 
-        // v10.0.1.0: bool is u8
-        let header_old = test_header(NifVersion(0x0A000100));
+        // v20.0.0.5 (Oblivion): bool is u32 (>= 4.1.0.1 threshold)
+        let header_oblivion = test_header(NifVersion::V20_0_0_5);
+        let data_oblivion: Vec<u8> = vec![0x01, 0x00, 0x00, 0x00];
+        let mut stream = NifStream::new(&data_oblivion, &header_oblivion);
+        assert!(stream.read_bool().unwrap());
+        assert_eq!(stream.position(), 4); // consumed 4 bytes, NOT 1
+
+        // v4.0.0.2 (Morrowind): bool is u8 (< 4.1.0.1 threshold)
+        let header_old = test_header(NifVersion::V4_0_0_2);
         let data_old: Vec<u8> = vec![0x01];
         let mut stream = NifStream::new(&data_old, &header_old);
         assert!(stream.read_bool().unwrap());
