@@ -7,6 +7,7 @@
 //! so multiple queries can be held simultaneously across different component
 //! types without fighting the borrow checker.
 
+use super::lock_tracker;
 use super::query::{ComponentRef, QueryRead, QueryWrite};
 use super::resource::{Resource, ResourceRead, ResourceWrite};
 use super::storage::{Component, ComponentStorage, EntityId};
@@ -84,9 +85,17 @@ impl World {
     /// For holding references across multiple component types, use
     /// [`query`](Self::query) / [`query_mut`](Self::query_mut) instead.
     pub fn get<T: Component>(&self, entity: EntityId) -> Option<ComponentRef<'_, T>> {
-        let lock = self.storages.get(&TypeId::of::<T>())?;
+        let type_id = TypeId::of::<T>();
+        let lock = self.storages.get(&type_id)?;
+        lock_tracker::track_read(type_id, std::any::type_name::<T>());
         let guard = lock.read().expect("storage lock poisoned");
-        ComponentRef::new(guard, entity)
+        match ComponentRef::new(guard, entity, type_id) {
+            Some(cr) => Some(cr),
+            None => {
+                lock_tracker::untrack_read(type_id);
+                None
+            }
+        }
     }
 
     /// Get a mutable reference to an entity's component.
@@ -104,22 +113,32 @@ impl World {
     /// Check if an entity has a specific component.
     pub fn has<T: Component>(&self, entity: EntityId) -> bool {
         self.storages.get(&TypeId::of::<T>()).is_some_and(|lock| {
+            let type_id = TypeId::of::<T>();
+            lock_tracker::track_read(type_id, std::any::type_name::<T>());
             let guard = lock.read().expect("storage lock poisoned");
-            guard
+            let result = guard
                 .downcast_ref::<T::Storage>()
                 .expect("storage type mismatch")
-                .contains(entity)
+                .contains(entity);
+            drop(guard);
+            lock_tracker::untrack_read(type_id);
+            result
         })
     }
 
     /// Returns the number of entities that have component `T`.
     pub fn count<T: Component>(&self) -> usize {
         self.storages.get(&TypeId::of::<T>()).map_or(0, |lock| {
+            let type_id = TypeId::of::<T>();
+            lock_tracker::track_read(type_id, std::any::type_name::<T>());
             let guard = lock.read().expect("storage lock poisoned");
-            guard
+            let result = guard
                 .downcast_ref::<T::Storage>()
                 .expect("storage type mismatch")
-                .len()
+                .len();
+            drop(guard);
+            lock_tracker::untrack_read(type_id);
+            result
         })
     }
 
@@ -170,9 +189,11 @@ impl World {
     /// (storage was never created). Use `register::<T>()` during
     /// setup if you need guaranteed access.
     pub fn query<T: Component>(&self) -> Option<QueryRead<'_, T>> {
-        let lock = self.storages.get(&TypeId::of::<T>())?;
+        let type_id = TypeId::of::<T>();
+        let lock = self.storages.get(&type_id)?;
+        lock_tracker::track_read(type_id, std::any::type_name::<T>());
         let guard = lock.read().expect("storage lock poisoned");
-        Some(QueryRead::new(guard))
+        Some(QueryRead::new(guard, type_id))
     }
 
     /// Acquire a mutable query for a single component type.
@@ -180,9 +201,11 @@ impl World {
     /// Returns `None` if no entity has ever had this component.
     /// Only one `QueryWrite` can exist per component type at a time.
     pub fn query_mut<T: Component>(&self) -> Option<QueryWrite<'_, T>> {
-        let lock = self.storages.get(&TypeId::of::<T>())?;
+        let type_id = TypeId::of::<T>();
+        let lock = self.storages.get(&type_id)?;
+        lock_tracker::track_write(type_id, std::any::type_name::<T>());
         let guard = lock.write().expect("storage lock poisoned");
-        Some(QueryWrite::new(guard))
+        Some(QueryWrite::new(guard, type_id))
     }
 
     /// Acquire a read query and a write query for two different component
@@ -203,21 +226,24 @@ impl World {
             "query_2_mut: A and B must be different component types"
         );
 
-        let lock_a = self.storages.get(&TypeId::of::<A>())?;
-        let lock_b = self.storages.get(&TypeId::of::<B>())?;
-
         let id_a = TypeId::of::<A>();
         let id_b = TypeId::of::<B>();
+
+        let lock_a = self.storages.get(&id_a)?;
+        let lock_b = self.storages.get(&id_b)?;
+
+        lock_tracker::track_read(id_a, std::any::type_name::<A>());
+        lock_tracker::track_write(id_b, std::any::type_name::<B>());
 
         // Always lock in TypeId order to prevent deadlocks.
         if id_a < id_b {
             let guard_a = lock_a.read().expect("lock poisoned");
             let guard_b = lock_b.write().expect("lock poisoned");
-            Some((QueryRead::new(guard_a), QueryWrite::new(guard_b)))
+            Some((QueryRead::new(guard_a, id_a), QueryWrite::new(guard_b, id_b)))
         } else {
             let guard_b = lock_b.write().expect("lock poisoned");
             let guard_a = lock_a.read().expect("lock poisoned");
-            Some((QueryRead::new(guard_a), QueryWrite::new(guard_b)))
+            Some((QueryRead::new(guard_a, id_a), QueryWrite::new(guard_b, id_b)))
         }
     }
 
@@ -238,20 +264,23 @@ impl World {
             "query_2_mut_mut: A and B must be different component types"
         );
 
-        let lock_a = self.storages.get(&TypeId::of::<A>())?;
-        let lock_b = self.storages.get(&TypeId::of::<B>())?;
-
         let id_a = TypeId::of::<A>();
         let id_b = TypeId::of::<B>();
+
+        let lock_a = self.storages.get(&id_a)?;
+        let lock_b = self.storages.get(&id_b)?;
+
+        lock_tracker::track_write(id_a, std::any::type_name::<A>());
+        lock_tracker::track_write(id_b, std::any::type_name::<B>());
 
         if id_a < id_b {
             let guard_a = lock_a.write().expect("lock poisoned");
             let guard_b = lock_b.write().expect("lock poisoned");
-            Some((QueryWrite::new(guard_a), QueryWrite::new(guard_b)))
+            Some((QueryWrite::new(guard_a, id_a), QueryWrite::new(guard_b, id_b)))
         } else {
             let guard_b = lock_b.write().expect("lock poisoned");
             let guard_a = lock_a.write().expect("lock poisoned");
-            Some((QueryWrite::new(guard_a), QueryWrite::new(guard_b)))
+            Some((QueryWrite::new(guard_a, id_a), QueryWrite::new(guard_b, id_b)))
         }
     }
 
@@ -283,14 +312,16 @@ impl World {
     /// Panics if the resource was never inserted. The panic message
     /// includes the type name for easy debugging.
     pub fn resource<R: Resource>(&self) -> ResourceRead<'_, R> {
-        let lock = self.resources.get(&TypeId::of::<R>()).unwrap_or_else(|| {
+        let type_id = TypeId::of::<R>();
+        let lock = self.resources.get(&type_id).unwrap_or_else(|| {
             panic!(
                 "Resource `{}` not found — call world.insert_resource() first",
                 std::any::type_name::<R>()
             )
         });
+        lock_tracker::track_read(type_id, std::any::type_name::<R>());
         let guard = lock.read().expect("resource lock poisoned");
-        ResourceRead::new(guard)
+        ResourceRead::new(guard, type_id)
     }
 
     /// Mutable access to a resource (takes `&self`).
@@ -299,14 +330,16 @@ impl World {
     /// Panics if the resource was never inserted. The panic message
     /// includes the type name for easy debugging.
     pub fn resource_mut<R: Resource>(&self) -> ResourceWrite<'_, R> {
-        let lock = self.resources.get(&TypeId::of::<R>()).unwrap_or_else(|| {
+        let type_id = TypeId::of::<R>();
+        let lock = self.resources.get(&type_id).unwrap_or_else(|| {
             panic!(
                 "Resource `{}` not found — call world.insert_resource() first",
                 std::any::type_name::<R>()
             )
         });
+        lock_tracker::track_write(type_id, std::any::type_name::<R>());
         let guard = lock.write().expect("resource lock poisoned");
-        ResourceWrite::new(guard)
+        ResourceWrite::new(guard, type_id)
     }
 
     /// Mutable access to two different resources with TypeId-sorted lock ordering.
@@ -326,46 +359,53 @@ impl World {
             "resource_2_mut: A and B must be different resource types"
         );
 
-        let lock_a = self.resources.get(&TypeId::of::<A>()).unwrap_or_else(|| {
+        let id_a = TypeId::of::<A>();
+        let id_b = TypeId::of::<B>();
+
+        let lock_a = self.resources.get(&id_a).unwrap_or_else(|| {
             panic!(
                 "Resource `{}` not found — call world.insert_resource() first",
                 std::any::type_name::<A>()
             )
         });
-        let lock_b = self.resources.get(&TypeId::of::<B>()).unwrap_or_else(|| {
+        let lock_b = self.resources.get(&id_b).unwrap_or_else(|| {
             panic!(
                 "Resource `{}` not found — call world.insert_resource() first",
                 std::any::type_name::<B>()
             )
         });
 
-        let id_a = TypeId::of::<A>();
-        let id_b = TypeId::of::<B>();
+        lock_tracker::track_write(id_a, std::any::type_name::<A>());
+        lock_tracker::track_write(id_b, std::any::type_name::<B>());
 
         // Always lock in TypeId order to prevent deadlocks.
         if id_a < id_b {
             let guard_a = lock_a.write().expect("resource lock poisoned");
             let guard_b = lock_b.write().expect("resource lock poisoned");
-            (ResourceWrite::new(guard_a), ResourceWrite::new(guard_b))
+            (ResourceWrite::new(guard_a, id_a), ResourceWrite::new(guard_b, id_b))
         } else {
             let guard_b = lock_b.write().expect("resource lock poisoned");
             let guard_a = lock_a.write().expect("resource lock poisoned");
-            (ResourceWrite::new(guard_a), ResourceWrite::new(guard_b))
+            (ResourceWrite::new(guard_a, id_a), ResourceWrite::new(guard_b, id_b))
         }
     }
 
     /// Try to read a resource, returning `None` if it doesn't exist.
     pub fn try_resource<R: Resource>(&self) -> Option<ResourceRead<'_, R>> {
-        let lock = self.resources.get(&TypeId::of::<R>())?;
+        let type_id = TypeId::of::<R>();
+        let lock = self.resources.get(&type_id)?;
+        lock_tracker::track_read(type_id, std::any::type_name::<R>());
         let guard = lock.read().expect("resource lock poisoned");
-        Some(ResourceRead::new(guard))
+        Some(ResourceRead::new(guard, type_id))
     }
 
     /// Try to write a resource, returning `None` if it doesn't exist.
     pub fn try_resource_mut<R: Resource>(&self) -> Option<ResourceWrite<'_, R>> {
-        let lock = self.resources.get(&TypeId::of::<R>())?;
+        let type_id = TypeId::of::<R>();
+        let lock = self.resources.get(&type_id)?;
+        lock_tracker::track_write(type_id, std::any::type_name::<R>());
         let guard = lock.write().expect("resource lock poisoned");
-        Some(ResourceWrite::new(guard))
+        Some(ResourceWrite::new(guard, type_id))
     }
 
     // ── Internal ────────────────────────────────────────────────────────
@@ -1078,5 +1118,107 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(ResA(1.0));
         let _ = world.resource_2_mut::<ResA, ResA>();
+    }
+
+    // ── Deadlock detection (debug-only) ────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "ECS deadlock detected")]
+    fn query_read_then_write_same_type_panics() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+
+        let _read = world.query::<Health>().unwrap();
+        let _write = world.query_mut::<Health>(); // deadlock → panic
+    }
+
+    #[test]
+    #[should_panic(expected = "ECS deadlock detected")]
+    fn query_write_then_read_same_type_panics() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+
+        let _write = world.query_mut::<Health>().unwrap();
+        let _read = world.query::<Health>(); // deadlock → panic
+    }
+
+    #[test]
+    #[should_panic(expected = "ECS deadlock detected")]
+    fn query_write_then_write_same_type_panics() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+
+        let _w1 = world.query_mut::<Health>().unwrap();
+        let _w2 = world.query_mut::<Health>(); // deadlock → panic
+    }
+
+    #[test]
+    #[should_panic(expected = "ECS deadlock detected")]
+    fn resource_read_then_write_same_type_panics() {
+        let mut world = World::new();
+        world.insert_resource(ResA(42.0));
+
+        let _read = world.try_resource::<ResA>().unwrap();
+        let _write = world.resource_mut::<ResA>(); // deadlock → panic
+    }
+
+    #[test]
+    #[should_panic(expected = "ECS deadlock detected")]
+    fn resource_write_then_read_same_type_panics() {
+        let mut world = World::new();
+        world.insert_resource(ResA(42.0));
+
+        let _write = world.resource_mut::<ResA>();
+        let _read = world.resource::<ResA>(); // deadlock → panic
+    }
+
+    #[test]
+    fn query_read_then_write_different_types_ok() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+        world.insert(e, Position { x: 1.0, y: 2.0 });
+
+        let _read = world.query::<Health>().unwrap();
+        let _write = world.query_mut::<Position>().unwrap();
+        // No panic — different types.
+    }
+
+    #[test]
+    fn sequential_query_after_drop_ok() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+
+        {
+            let _write = world.query_mut::<Health>().unwrap();
+        }
+        // Write dropped — read should succeed.
+        let _read = world.query::<Health>().unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "ECS deadlock detected")]
+    fn get_then_query_mut_same_type_panics() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+
+        let _ref = world.get::<Health>(e).unwrap();
+        let _write = world.query_mut::<Health>(); // deadlock → panic
+    }
+
+    #[test]
+    #[should_panic(expected = "ECS deadlock detected")]
+    fn has_while_holding_write_panics() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+
+        let _write = world.query_mut::<Health>().unwrap();
+        let _ = world.has::<Health>(e); // deadlock → panic
     }
 }

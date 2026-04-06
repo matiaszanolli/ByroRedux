@@ -3,7 +3,8 @@
 //! Same RwLock guard pattern as QueryRead/QueryWrite. A developer
 //! who knows QueryRead will immediately understand ResourceRead.
 
-use std::any::Any;
+use super::lock_tracker;
+use std::any::{Any, TypeId};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::{RwLockReadGuard, RwLockWriteGuard};
@@ -15,15 +16,31 @@ pub trait Resource: 'static + Send + Sync {}
 /// Multiple `ResourceRead`s can coexist, even for the same type.
 pub struct ResourceRead<'w, R: Resource> {
     guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>,
+    type_id: TypeId,
     _marker: PhantomData<R>,
 }
 
 impl<'w, R: Resource> ResourceRead<'w, R> {
-    pub(crate) fn new(guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>) -> Self {
+    /// Caller must have already called `lock_tracker::track_read` before
+    /// acquiring the RwLock guard.
+    pub(crate) fn new(guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>, type_id: TypeId) -> Self {
         Self {
             guard,
+            type_id,
             _marker: PhantomData,
         }
+    }
+}
+
+impl<R: Resource> Drop for ResourceRead<'_, R> {
+    fn drop(&mut self) {
+        lock_tracker::untrack_read(self.type_id);
+    }
+}
+
+impl<R: Resource> Drop for ResourceWrite<'_, R> {
+    fn drop(&mut self) {
+        lock_tracker::untrack_write(self.type_id);
     }
 }
 
@@ -40,13 +57,17 @@ impl<R: Resource> Deref for ResourceRead<'_, R> {
 /// Only one `ResourceWrite` can exist per resource type at a time.
 pub struct ResourceWrite<'w, R: Resource> {
     guard: RwLockWriteGuard<'w, Box<dyn Any + Send + Sync>>,
+    type_id: TypeId,
     _marker: PhantomData<R>,
 }
 
 impl<'w, R: Resource> ResourceWrite<'w, R> {
-    pub(crate) fn new(guard: RwLockWriteGuard<'w, Box<dyn Any + Send + Sync>>) -> Self {
+    /// Caller must have already called `lock_tracker::track_write` before
+    /// acquiring the RwLock guard.
+    pub(crate) fn new(guard: RwLockWriteGuard<'w, Box<dyn Any + Send + Sync>>, type_id: TypeId) -> Self {
         Self {
             guard,
+            type_id,
             _marker: PhantomData,
         }
     }

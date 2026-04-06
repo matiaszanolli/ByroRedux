@@ -8,8 +8,9 @@
 //! Multi-component queries acquire locks sorted by `TypeId` to prevent
 //! deadlocks — regardless of declaration order in user code.
 
+use super::lock_tracker;
 use super::storage::{Component, ComponentStorage, EntityId};
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::RwLockReadGuard;
@@ -21,13 +22,17 @@ use std::sync::RwLockWriteGuard;
 /// for the same component type.
 pub struct QueryRead<'w, T: Component> {
     guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>,
+    type_id: TypeId,
     _marker: PhantomData<T>,
 }
 
 impl<'w, T: Component> QueryRead<'w, T> {
-    pub(crate) fn new(guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>) -> Self {
+    /// Create a new read query. Caller must have already called
+    /// `lock_tracker::track_read` before acquiring the RwLock guard.
+    pub(crate) fn new(guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>, type_id: TypeId) -> Self {
         Self {
             guard,
+            type_id,
             _marker: PhantomData,
         }
     }
@@ -67,13 +72,17 @@ impl<'w, T: Component> QueryRead<'w, T> {
 /// will block until this is dropped.
 pub struct QueryWrite<'w, T: Component> {
     guard: RwLockWriteGuard<'w, Box<dyn Any + Send + Sync>>,
+    type_id: TypeId,
     _marker: PhantomData<T>,
 }
 
 impl<'w, T: Component> QueryWrite<'w, T> {
-    pub(crate) fn new(guard: RwLockWriteGuard<'w, Box<dyn Any + Send + Sync>>) -> Self {
+    /// Create a new write query. Caller must have already called
+    /// `lock_tracker::track_write` before acquiring the RwLock guard.
+    pub(crate) fn new(guard: RwLockWriteGuard<'w, Box<dyn Any + Send + Sync>>, type_id: TypeId) -> Self {
         Self {
             guard,
+            type_id,
             _marker: PhantomData,
         }
     }
@@ -129,6 +138,20 @@ impl<'w, T: Component> QueryWrite<'w, T> {
     }
 }
 
+// ── Drop: untrack locks ─────────────────────────────────────────────────
+
+impl<T: Component> Drop for QueryRead<'_, T> {
+    fn drop(&mut self) {
+        lock_tracker::untrack_read(self.type_id);
+    }
+}
+
+impl<T: Component> Drop for QueryWrite<'_, T> {
+    fn drop(&mut self) {
+        lock_tracker::untrack_write(self.type_id);
+    }
+}
+
 // ── Deref for ergonomic read access on QueryWrite ───────────────────────
 
 impl<T: Component> Deref for QueryRead<'_, T> {
@@ -164,13 +187,19 @@ impl<T: Component> DerefMut for QueryWrite<'_, T> {
 pub struct ComponentRef<'w, T: Component> {
     guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>,
     entity: EntityId,
+    type_id: TypeId,
     _marker: PhantomData<T>,
 }
 
 impl<'w, T: Component> ComponentRef<'w, T> {
+    /// Create a new component reference. Caller must have already called
+    /// `lock_tracker::track_read` before acquiring the RwLock guard.
+    /// Returns `None` if the entity doesn't have this component — caller
+    /// must call `lock_tracker::untrack_read` in that case.
     pub(crate) fn new(
         guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>,
         entity: EntityId,
+        type_id: TypeId,
     ) -> Option<Self> {
         // Verify the entity has the component before constructing.
         let storage = guard
@@ -180,11 +209,18 @@ impl<'w, T: Component> ComponentRef<'w, T> {
             Some(Self {
                 guard,
                 entity,
+                type_id,
                 _marker: PhantomData,
             })
         } else {
             None
         }
+    }
+}
+
+impl<T: Component> Drop for ComponentRef<'_, T> {
+    fn drop(&mut self) {
+        lock_tracker::untrack_read(self.type_id);
     }
 }
 

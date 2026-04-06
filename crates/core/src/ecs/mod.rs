@@ -6,6 +6,7 @@
 //! - [`PackedStorage`] — sorted by entity, cache-friendly iteration (opt-in)
 
 pub mod components;
+mod lock_tracker;
 pub mod packed;
 pub mod query;
 pub mod resource;
