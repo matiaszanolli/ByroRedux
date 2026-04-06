@@ -22,10 +22,10 @@ pub mod tri_shape;
 
 use crate::stream::NifStream;
 use collision::{
-    BhkBoxShape, BhkCapsuleShape, BhkCollisionObject, BhkConvexVerticesShape, BhkCylinderShape,
-    BhkListShape, BhkMoppBvTreeShape, BhkNiTriStripsShape, BhkPackedNiTriStripsShape,
-    BhkRigidBody, BhkSimpleShapePhantom, BhkSphereShape, BhkTransformShape,
-    HkPackedNiTriStripsData,
+    BhkBoxShape, BhkCapsuleShape, BhkCollisionObject, BhkCompressedMeshShape,
+    BhkCompressedMeshShapeData, BhkConvexVerticesShape, BhkCylinderShape, BhkListShape,
+    BhkMoppBvTreeShape, BhkNiTriStripsShape, BhkPackedNiTriStripsShape, BhkRigidBody,
+    BhkSimpleShapePhantom, BhkSphereShape, BhkTransformShape, HkPackedNiTriStripsData,
 };
 use controller::{
     NiControllerManager, NiControllerSequence, NiGeomMorpherController, NiMaterialColorController,
@@ -355,11 +355,13 @@ pub fn parse_block(
         "bhkNiTriStripsShape" => Ok(Box::new(BhkNiTriStripsShape::parse(stream)?)),
         "bhkPackedNiTriStripsShape" => Ok(Box::new(BhkPackedNiTriStripsShape::parse(stream)?)),
         "hkPackedNiTriStripsData" => Ok(Box::new(HkPackedNiTriStripsData::parse(stream)?)),
-        // Havok blocks that remain skip-only (constraints, systems, compressed mesh).
-        // Constraints deferred to M28 (physics joints). Compressed mesh deferred (Skyrim+).
-        "bhkCompressedMeshShape"
-        | "bhkCompressedMeshShapeData"
-        | "bhkMalleableConstraint"
+        "bhkCompressedMeshShape" => Ok(Box::new(BhkCompressedMeshShape::parse(stream)?)),
+        "bhkCompressedMeshShapeData" => {
+            Ok(Box::new(BhkCompressedMeshShapeData::parse(stream)?))
+        }
+        // Havok blocks that remain skip-only (constraints, systems).
+        // Constraints deferred to M28 (physics joints).
+        "bhkMalleableConstraint"
         | "bhkRagdollConstraint"
         | "bhkLimitedHingeConstraint"
         | "bhkHingeConstraint"

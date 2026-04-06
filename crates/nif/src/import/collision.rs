@@ -167,6 +167,13 @@ fn resolve_shape(scene: &NifScene, shape_ref: BlockRef) -> Option<CollisionShape
         return resolve_packed_mesh(data);
     }
 
+    // Compressed mesh (Skyrim+) — resolve via data ref.
+    if let Some(s) = block.as_any().downcast_ref::<BhkCompressedMeshShape>() {
+        let data_idx = s.data_ref.index()?;
+        let data = scene.get_as::<BhkCompressedMeshShapeData>(data_idx)?;
+        return resolve_compressed_mesh(data);
+    }
+
     // Phantom (trigger volume) — resolve inner shape.
     if let Some(s) = block.as_any().downcast_ref::<BhkSimpleShapePhantom>() {
         return resolve_shape(scene, s.shape_ref);
@@ -292,4 +299,88 @@ fn decompose_havok_matrix(m: &[[f32; 4]; 4]) -> (Vec3, Quat) {
     let rotation = Quat::from_mat3(&mat);
 
     (translation, rotation)
+}
+
+/// Convert bhkCompressedMeshShapeData into a TriMesh.
+///
+/// Merges big tris (full-precision) and chunk tris (quantized, strip-based)
+/// into a single vertex/index buffer in engine space.
+fn resolve_compressed_mesh(data: &BhkCompressedMeshShapeData) -> Option<CollisionShape> {
+    let mut all_verts = Vec::new();
+    let mut all_indices = Vec::new();
+
+    // 1. Big tris — full-precision vertices.
+    if !data.big_tris.is_empty() {
+        let base = all_verts.len() as u32;
+        for v in &data.big_verts {
+            all_verts.push(havok_to_engine(v[0], v[1], v[2]) * HAVOK_SCALE);
+        }
+        for tri in &data.big_tris {
+            all_indices.push([
+                tri.v1 as u32 + base,
+                tri.v2 as u32 + base,
+                tri.v3 as u32 + base,
+            ]);
+        }
+    }
+
+    // 2. Chunks — quantized vertices + triangle strips.
+    for chunk in &data.chunks {
+        let base = all_verts.len() as u32;
+        let tx = chunk.translation[0];
+        let ty = chunk.translation[1];
+        let tz = chunk.translation[2];
+
+        for qv in &chunk.vertices {
+            let x = tx + qv[0] as f32 / 1000.0;
+            let y = ty + qv[1] as f32 / 1000.0;
+            let z = tz + qv[2] as f32 / 1000.0;
+            all_verts.push(havok_to_engine(x, y, z) * HAVOK_SCALE);
+        }
+
+        if chunk.strips.is_empty() {
+            // Plain triangle list: every 3 indices = 1 triangle.
+            let mut i = 0;
+            while i + 2 < chunk.indices.len() {
+                let a = chunk.indices[i] as u32 + base;
+                let b = chunk.indices[i + 1] as u32 + base;
+                let c = chunk.indices[i + 2] as u32 + base;
+                if a != b && b != c && a != c {
+                    all_indices.push([a, b, c]);
+                }
+                i += 3;
+            }
+        } else {
+            // Triangle strips: convert each strip to triangles.
+            let mut idx_offset = 0usize;
+            for &strip_len in &chunk.strips {
+                let end = idx_offset + strip_len as usize;
+                let strip = &chunk.indices[idx_offset..end.min(chunk.indices.len())];
+                for j in 2..strip.len() {
+                    let (a, b, c) = if j % 2 == 0 {
+                        (strip[j - 2], strip[j - 1], strip[j])
+                    } else {
+                        (strip[j - 1], strip[j - 2], strip[j])
+                    };
+                    if a != b && b != c && a != c {
+                        all_indices.push([
+                            a as u32 + base,
+                            b as u32 + base,
+                            c as u32 + base,
+                        ]);
+                    }
+                }
+                idx_offset = end;
+            }
+        }
+    }
+
+    if all_verts.is_empty() {
+        return None;
+    }
+
+    Some(CollisionShape::TriMesh {
+        vertices: all_verts,
+        indices: all_indices,
+    })
 }
