@@ -159,19 +159,18 @@ Detailed analysis in `docs/legacy/`.
 See [ROADMAP.md](ROADMAP.md) for the full roadmap with milestones, known issues, and game compatibility.
 Current: 22 milestones complete (M1–M22). RT multi-light with ray query shadows, animation with
 blending stack, scene graph hierarchy, cell XCLL lighting, decal detection, BSA v103 (Oblivion).
-Active: N23 series — NIF parser overhaul for Oblivion through Starfield (107 block types registered).
+Active: N23 series — NIF parser overhaul (186 block types, 8/10 milestones done).
 Usage:
   `cargo run -- path/to/mesh.nif` — render a loose NIF file
   `cargo run -- mesh.nif --kf anim.kf` — play animation on a mesh
   `cargo run -- --bsa path.bsa --mesh meshes\\foo.nif` — extract from BSA and render
   `cargo run -- --bsa meshes.bsa --mesh meshes\\foo.nif --textures-bsa textures.bsa` — with textures
   `cargo run -- --esm FalloutNV.esm --cell CellID --bsa Meshes.bsa --textures-bsa Textures.bsa` — cell
-Done: N23.1 (trait hierarchy + FNV audit), N23.2 (shader trailing fields),
-N23.3 (Oblivion block types — all 15), N23.4 (FO3/FNV validation — 0 parse failures),
-N23.5 (6 skinning parsers), N23.6 (30 Havok skip). 119 type names (89 parsed + 30 skip).
-FO3 Megaton: 1609 entities. FNV Prospector Saloon: 0 warnings. BSA KF loading (#5 fixed).
-Renderer audit (20 findings → #21-#34). ECS audit (10 findings → #35-#43).
-Next: N23.7 (FO4 — BA2 reader + half-float vertex), N23.8 (particles), N23.10 (test infra).
+Done: N23.1–N23.8 all complete. 186 type names (156 parsed + 30 Havok skip).
+Key: ~48 particle types, bhkCompressedMeshShape (Skyrim collision), FO4 half-float + shader
+wetness, all 6 skinning blocks, full NiSkinPartition, NiPixelData, NiMorphData legacy keys.
+Collision import with Havok→engine transform. Normal map from BSShaderPPLighting (FO3/FNV).
+Next: N23.9 (FO76/Starfield), N23.10 (test infra), BA2 archive reader.
 
 ## Git Conventions
 

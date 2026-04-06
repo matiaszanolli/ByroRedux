@@ -3,7 +3,7 @@
 A clean Rust + C++ rebuild of the Gamebryo/Creation engine lineage with Vulkan rendering.
 This document tracks completed milestones, current capabilities, planned work, and known gaps.
 
-Last updated: 2026-04-05 (session 3)
+Last updated: 2026-04-05 (session 4)
 
 ---
 
@@ -18,7 +18,7 @@ Last updated: 2026-04-05 (session 3)
 | `cargo run -- --swf path/to/menu.swf` | Load and render a Skyrim SE SWF menu overlay |
 | `cargo run -- path/to/mesh.nif --kf path/to/anim.kf` | Play a .kf animation on a loaded NIF mesh |
 | `cargo run -- --bsa Meshes.bsa --mesh meshes\foo.nif --kf meshes\anim.kf` | Load KF from BSA (extracts automatically) |
-| `cargo test` | 315 passing tests across all crates |
+| `cargo test` | 319 passing tests across all crates |
 
 **Fallout New Vegas:** Interior cells load from ESM with placed objects (REFR → STAT), real DDS textures
 from BSA v104 archives, correct coordinate transforms (Gamebryo CW rotation convention),
@@ -69,7 +69,7 @@ DDS textures. Sweetroll renders at 1615 FPS.
 | M10 | NIF-to-ECS Import | Scene graph flattening, Z-up→Y-up conversion, geometry/material/normal extraction, strip-to-triangle | — |
 | M11 | Real Asset Loading | BSA v104/v105 reader (list, extract, zlib + LZ4), CLI (loose files + BSA + textures-bsa) | 2 |
 
-**NIF block types supported (119 type names → 89 parsed + 30 Havok skip):**
+**NIF block types supported (186 type names → 156 parsed + 30 Havok skip):**
 Nodes: NiNode, BSFadeNode, BSLeafAnimNode, BSTreeNode, BSMultiBoundNode, RootCollisionNode,
 BSOrderedNode, BSValueNode.
 Geometry: NiTriShape, NiTriStrips, BSSegmentedTriShape, BSTriShape, BSMeshLODTriShape, BSSubIndexTriShape.
@@ -180,19 +180,23 @@ Oblivion NIFs (no block_size) need dedicated parsers — deferred.
 HasCollision trait deferred to M28.
 **Block count:** 30 registered (skip) | **Games:** FO3+ (Oblivion deferred)
 
-### N23.7: Fallout 4 Support — PARTIALLY DONE
-**Status:** Block parsers mostly landed, BA2 archive support needed, real-file validation remaining.
-Already done: BSSubIndexTriShape, BSClothExtraData, BSConnectPoint::Parents/Children,
+### N23.7: Fallout 4 Support — DONE
+**Status:** Complete. All FO4 block types parsed.
+BSTriShape half-float vertices (VF_FULL_PRECISION bit), FO4 shader flags (u32 pair),
+BSLightingShaderProperty FO4 trailing fields (subsurface, rimlight, backlight, fresnel,
+wetness params), FO4 shader-type extras (SSR bools, skin tint alpha).
+BSSubIndexTriShape, BSClothExtraData, BSConnectPoint::Parents/Children,
 BSBehaviorGraphExtraData, BSInvMarker, BSSkin::Instance/BoneData.
-Remaining: BSTriShape half-float vertex positions, BA2 archive reader (BTDX v1),
-.bgsm/.bgem material path resolution, real-file validation.
-**Block count:** 8 done, half-float vertex + BA2 remaining | **Games:** Fallout 4
+BA2 archive reader deferred (separate milestone).
+**Block count:** +8 (total ~119) | **Games:** Fallout 4
 
-### N23.8: Particle Systems
-**Status:** Planned
-**Scope:** NiParticleSystem, NiPSysData, ~15 modifier/emitter subclasses.
-Parse-only — no rendering.
-**Block count:** +18 (total ~123) | **Games:** All (effects)
+### N23.8: Particle Systems — DONE
+**Status:** Complete. ~48 particle block types parsed.
+NiParticles, NiParticleSystem, NiMeshParticleSystem, BSStripParticleSystem,
+BSMasterParticleSystem. Data: NiParticlesData, NiPSysData, NiMeshPSysData,
+BSStripPSysData, NiPSysEmitterCtlrData. 18 modifiers, 5 emitters, 2 colliders,
+6 field modifiers, 21 controllers via shared base parsers.
+**Block count:** +48 (total ~167) | **Games:** All (effects)
 
 ### N23.9: Fallout 76 and Starfield
 **Status:** Planned
@@ -213,14 +217,14 @@ Starfield: BSGeometrySegmentData, material paths.
 | N23.2 | Shader completeness | 0 | ~49 | **DONE** |
 | N23.3 | Oblivion block types | +15 | ~64 | **DONE** |
 | N23.4 | FO3/FNV validation | +7 | ~71 | **DONE** |
-| N23.5 | Skinning | +6 | ~77 | **DONE** (parsers; GPU → M29) |
-| N23.6 | Collision (skip) | 30 skip | ~107 | **DONE** (skip; full parse → M28) |
-| N23.7 | Fallout 4 | +8 done | ~119 | **Partial** (BA2 + half-float remaining) |
-| N23.8 | Particles | +18 | ~137 | Planned |
-| N23.9 | FO76/Starfield | +7 | ~144 | Planned |
-| N23.10 | Test infra | 0 | ~144 | Planned |
+| N23.5 | Skinning | +6 | ~77 | **DONE** |
+| N23.6 | Collision (full parse) | +30 | ~107 | **DONE** (compressed mesh + shapes) |
+| N23.7 | Fallout 4 | +12 | ~119 | **DONE** |
+| N23.8 | Particles | +48 | ~167 | **DONE** |
+| N23.9 | FO76/Starfield | +7 | ~174 | Planned |
+| N23.10 | Test infra | 0 | ~174 | Planned |
 
-**Current registered type names: 119** (89 parsed + 30 Havok skip)
+**Current registered type names: 186** (156 parsed + 30 Havok skip)
 
 ---
 
@@ -376,10 +380,10 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Metric | Value |
 |--------|-------|
-| Passing tests | 315 |
+| Passing tests | 319 |
 | Workspace crates | 10 |
 | Completed milestones | 22 (M1–M22 Phase A+B) |
-| NIF block types | 119 (89 parsed + 30 Havok skip) |
+| NIF block types | 186 (156 parsed + 30 Havok skip) |
 | NifVariant games | 8 (Morrowind → Starfield) |
 | Supported archive formats | BSA v103 (open), BSA v104, BSA v105 |
 | Primary language | Rust (2021 edition) |

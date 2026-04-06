@@ -42,7 +42,7 @@ Follow project conventions from CLAUDE.md.
 cargo test
 cargo check
 ```
-All 312+ tests must pass. Zero warnings.
+All 319+ tests must pass. Zero warnings.
 
 ## Phase 7: Completeness Checks
 Before committing, verify:
