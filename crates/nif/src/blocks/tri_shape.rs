@@ -343,10 +343,20 @@ impl BsTriShape {
                     stream.skip(4);
                 }
 
-                // Ensure we consumed exactly vertex_size_bytes
+                // Ensure we consumed exactly vertex_size_bytes.
+                // Guard against underflow: if consumed > vertex_size_bytes (malformed
+                // vertex descriptor), report an error instead of wrapping to a huge skip.
                 let consumed = (stream.position() - vert_start) as usize;
-                if consumed != vertex_size_bytes {
+                if consumed < vertex_size_bytes {
                     stream.skip((vertex_size_bytes - consumed) as u64);
+                } else if consumed > vertex_size_bytes {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "BsTriShape vertex consumed {} bytes but descriptor says {}",
+                            consumed, vertex_size_bytes
+                        ),
+                    ));
                 }
             }
 
