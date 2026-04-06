@@ -1000,8 +1000,12 @@ impl BhkCompressedMeshShapeData {
             let _reference = stream.read_u16_le()?;
             let transform_index = stream.read_u16_le()?;
 
-            // Vertices: count * 3 u16 values
-            let num_vertices = stream.read_u32_le()? as usize;
+            // Vertices: nif.xml Num Vertices is the count of u16 values (not triples).
+            // Divide by 3 to get the number of (x, y, z) vertex positions.
+            // Confirmed via Havok source: Chunk::m_vertices is hkArray<hkUint16>,
+            // count = actual_vertices * 3.
+            let num_vertex_components = stream.read_u32_le()? as usize;
+            let num_vertices = num_vertex_components / 3;
             let mut vertices = Vec::with_capacity(num_vertices);
             for _ in 0..num_vertices {
                 vertices.push([

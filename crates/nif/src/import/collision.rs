@@ -325,6 +325,10 @@ fn resolve_compressed_mesh(data: &BhkCompressedMeshShapeData) -> Option<Collisio
     }
 
     // 2. Chunks — quantized vertices + triangle strips.
+    // Dequantization: world_pos = chunk.offset + (u16_vertex * error)
+    // Confirmed via Havok source: Chunk::decompressVertex takes m_error parameter.
+    // error is typically 0.001 but can vary per mesh.
+    let error = data.error;
     for chunk in &data.chunks {
         let base = all_verts.len() as u32;
         let tx = chunk.translation[0];
@@ -332,9 +336,9 @@ fn resolve_compressed_mesh(data: &BhkCompressedMeshShapeData) -> Option<Collisio
         let tz = chunk.translation[2];
 
         for qv in &chunk.vertices {
-            let x = tx + qv[0] as f32 / 1000.0;
-            let y = ty + qv[1] as f32 / 1000.0;
-            let z = tz + qv[2] as f32 / 1000.0;
+            let x = tx + qv[0] as f32 * error;
+            let y = ty + qv[1] as f32 * error;
+            let z = tz + qv[2] as f32 * error;
             all_verts.push(havok_to_engine(x, y, z) * HAVOK_SCALE);
         }
 
