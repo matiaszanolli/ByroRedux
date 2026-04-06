@@ -205,12 +205,20 @@ pub(super) fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> Mat
         }
 
         if let Some(shader) = scene.get_as::<BSShaderPPLightingProperty>(idx) {
-            if info.texture_path.is_none() {
-                if let Some(ts_idx) = shader.texture_set_ref.index() {
-                    if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
+            if let Some(ts_idx) = shader.texture_set_ref.index() {
+                if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
+                    if info.texture_path.is_none() {
                         if let Some(path) = tex_set.textures.first() {
                             if !path.is_empty() {
                                 info.texture_path = Some(path.clone());
+                            }
+                        }
+                    }
+                    // Normal map is textures[1] in BSShaderTextureSet (same layout as Skyrim).
+                    if info.normal_map.is_none() {
+                        if let Some(normal) = tex_set.textures.get(1) {
+                            if !normal.is_empty() {
+                                info.normal_map = Some(normal.clone());
                             }
                         }
                     }
