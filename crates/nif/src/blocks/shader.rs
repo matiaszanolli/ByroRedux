@@ -347,8 +347,9 @@ impl BSLightingShaderProperty {
         let (subsurface_rolloff, rimlight_power, backlight_power) = if bsver >= 130 && bsver < 140 {
             let sub = stream.read_f32_le()?;
             let rim = stream.read_f32_le()?;
-            // Backlight only present if rimlight < FLT_MAX (~3.4e38).
-            let back = if rim < f32::MAX {
+            // Backlight only present if rimlight is not the FLT_MAX sentinel.
+            // Use 3.0e38 threshold (below 3.4028235e38) to handle float precision.
+            let back = if rim < 3.0e38 {
                 stream.read_f32_le()?
             } else {
                 0.0
