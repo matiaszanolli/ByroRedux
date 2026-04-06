@@ -365,8 +365,23 @@ fn load_nif_placed(
         }
     };
 
-    let imported = byroredux_nif::import::import_nif(&scene);
+    let (imported, collisions) = byroredux_nif::import::import_nif_with_collision(&scene);
     let mut count = 0;
+
+    // Spawn collision entities from NiNode collision data.
+    for coll in &collisions {
+        let nif_pos = Vec3::new(coll.translation[0], coll.translation[1], coll.translation[2]);
+        let nif_quat = Quat::from_xyzw(coll.rotation[0], coll.rotation[1], coll.rotation[2], coll.rotation[3]);
+        let final_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
+        let final_rot = ref_rot * nif_quat;
+        let final_scale = ref_scale * coll.scale;
+
+        let entity = world.spawn();
+        world.insert(entity, Transform::new(final_pos, final_rot, final_scale));
+        world.insert(entity, GlobalTransform::new(final_pos, final_rot, final_scale));
+        world.insert(entity, coll.shape.clone());
+        world.insert(entity, coll.body.clone());
+    }
 
     for mesh in &imported {
         let num_verts = mesh.positions.len();

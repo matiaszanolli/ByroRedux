@@ -18,6 +18,21 @@ use byroredux_core::ecs::components::collision::{CollisionShape, RigidBodyData};
 use crate::scene::NifScene;
 use crate::types::NiTransform;
 
+/// Collision data extracted from a NiNode, positioned in world space.
+///
+/// Used by the flat import path to return collision alongside geometry,
+/// since the flat path doesn't produce ImportedNode hierarchy.
+#[derive(Debug)]
+pub struct ImportedCollision {
+    /// World-space translation (Y-up).
+    pub translation: [f32; 3],
+    /// World-space rotation as quaternion [x, y, z, w] (Y-up).
+    pub rotation: [f32; 4],
+    pub scale: f32,
+    pub shape: CollisionShape,
+    pub body: RigidBodyData,
+}
+
 /// A scene graph node (NiNode) extracted from a NIF file.
 #[derive(Debug)]
 pub struct ImportedNode {
@@ -125,8 +140,33 @@ pub fn import_nif(scene: &NifScene) -> Vec<ImportedMesh> {
         return meshes;
     };
 
-    walk::walk_node_flat(scene, root_idx, &NiTransform::default(), &mut meshes);
+    walk::walk_node_flat(scene, root_idx, &NiTransform::default(), &mut meshes, None);
     meshes
+}
+
+/// Flat import with collision data.
+///
+/// Like `import_nif()`, returns world-space meshes (flat, no hierarchy).
+/// Additionally extracts collision shapes from NiNodes, returning them
+/// in world space alongside the geometry.
+pub fn import_nif_with_collision(
+    scene: &NifScene,
+) -> (Vec<ImportedMesh>, Vec<ImportedCollision>) {
+    let mut meshes = Vec::new();
+    let mut collisions = Vec::new();
+
+    let Some(root_idx) = scene.root_index else {
+        return (meshes, collisions);
+    };
+
+    walk::walk_node_flat(
+        scene,
+        root_idx,
+        &NiTransform::default(),
+        &mut meshes,
+        Some(&mut collisions),
+    );
+    (meshes, collisions)
 }
 
 #[cfg(test)]
