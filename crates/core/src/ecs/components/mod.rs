@@ -11,6 +11,7 @@ pub mod material;
 pub mod mesh;
 pub mod name;
 pub mod texture;
+pub mod scene_flags;
 pub mod transform;
 pub mod world_bound;
 
@@ -24,6 +25,7 @@ pub use light::LightSource;
 pub use material::Material;
 pub use mesh::MeshHandle;
 pub use name::Name;
+pub use scene_flags::SceneFlags;
 pub use texture::TextureHandle;
 pub use transform::Transform;
 pub use world_bound::WorldBound;
