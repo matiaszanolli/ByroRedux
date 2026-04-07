@@ -110,6 +110,24 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         );
     }
 
+    // Pre-Gamebryo NetImmerse files (NIF v < 5.0.0.1, e.g. Oblivion's
+    // marker_*.nif debug placeholders) inline each block's type name as a
+    // sized string instead of using a global block-type table. We don't
+    // currently parse those files (nothing in the engine consumes them —
+    // editor markers are filtered out by name elsewhere) but we shouldn't
+    // hard-fail on them either: return an empty scene so callers and tests
+    // see them as a successful parse with zero blocks.
+    if header.block_types.is_empty() && header.num_blocks > 0 {
+        log::debug!(
+            "NIF v{} has no block-type table (pre-Gamebryo); returning empty scene",
+            header.version
+        );
+        return Ok(NifScene {
+            blocks: Vec::new(),
+            root_index: None,
+        });
+    }
+
     for i in 0..header.num_blocks as usize {
         let type_name = header.block_type_name(i).ok_or_else(|| {
             io::Error::new(

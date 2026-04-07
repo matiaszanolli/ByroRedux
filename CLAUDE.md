@@ -175,9 +175,10 @@ Collision import with Havok→engine transform. Normal map from BSShaderPPLighti
 FO76/Starfield shader blocks: CRC32 flag arrays, Luminance/Translucency, stopcond on BGSM name.
 Test infra: nif_stats example + per-game integration tests + graceful per-block parse recovery.
 M26: BA2 reader (BTDX v1/v2/v3/v7/v8, GNRL + DX10) + NIF header BSStreamHeader fix for FO4/FO76.
-Full-archive parse rates: FNV/FO3/SkyrimSE/FO4/FO76/Starfield 100%, Oblivion 99.14%.
-Total: 177k NIFs parse cleanly across 7 Bethesda games.
-Next: BSA v103 decompression (unblocks Oblivion), Starfield v3 DX10 textures, M24 ESM parser.
+M26+: Oblivion → 100% via header user_version threshold fix (10.0.1.0 → 10.0.1.8),
+      BSStreamHeader for v10.0.1.2 / user_version>=3, and pre-Gamebryo empty-scene fallback.
+Full-archive parse rates: ALL 7 games at 100% (177,286 NIFs). Oblivion was 99.13%.
+Next: Starfield v3 DX10 textures, M24 ESM parser, M28 physics.
 
 ## Git Conventions
 

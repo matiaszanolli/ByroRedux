@@ -1,7 +1,11 @@
 //! Quick BA2 sanity probe — open an archive and extract the first 3 files.
 //! Used during M26 development; can be removed later.
 
-use byroredux_bsa::Ba2Archive;
+// Despite the name, this debug example also handles BSA archives so we can
+// poke at Oblivion v103 files alongside BA2 v1+. Use the file extension to
+// route between BsaArchive and Ba2Archive.
+
+use byroredux_bsa::{Ba2Archive, BsaArchive};
 
 fn main() {
     let _ = env_logger::builder()

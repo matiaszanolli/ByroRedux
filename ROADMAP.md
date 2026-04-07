@@ -351,6 +351,34 @@ Starfield DX10 textures (BA2 v3) deferred — chunk layout differs.
 
 Combined: **177,217 NIFs** parse cleanly across the entire Bethesda lineage.
 
+### M26 follow-up (Oblivion → 100%)
+
+The post-M26 follow-up rooted out three more bugs in the NIF header parser
+that were holding Oblivion below 100%:
+
+- `user_version` was being read for any file ≥ 10.0.1.0, but per nif.xml
+  it only exists from 10.0.1.8 onward. Older NetImmerse files (a chunk
+  of Oblivion's content like `meshes/creatures/minotaur/horn*.nif`) had
+  their `num_blocks` field shifted by 4 bytes and blew up downstream.
+- `BSStreamHeader` was gated on `user_version >= 10`, but Oblivion's
+  10.0.1.2 content (the original Bethesda Gamebryo era) has the
+  metadata struct unconditionally and uses a completely different
+  `BSVER` value (3, not 11). The condition is now `version == 10.0.1.2
+  || user_version >= 3`, matching nif.xml's `#BSSTREAMHEADER#` macro.
+- The remaining six failures were `meshes/marker_*.nif` debug placeholders
+  in NIF v3.3.0.13 (pre-Gamebryo NetImmerse). These files inline each
+  block's type name as a sized string instead of using a global block-type
+  table, which we don't currently parse. They are filtered out by the
+  M17 marker name filter at render time anyway, so we now return an
+  empty `NifScene` with a debug log when the type table is empty —
+  matching N23.10's "soft fail and keep going" philosophy.
+
+| Game     | Before  | After      |
+|----------|---------|------------|
+| Oblivion | 99.13%  | **100.00%** |
+
+All seven supported games now sit at 100% on the full mesh archive sweep.
+
 **Deferred:** Starfield BA2 v3 DX10 textures (different per-chunk layout
 than FO4 v7 — record padding doesn't match `0xBAADF00D`). The archive
 opens correctly and the directory parses, only `extract` for textures

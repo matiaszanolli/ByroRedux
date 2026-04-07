@@ -72,8 +72,13 @@ impl NifHeader {
             true // older files are always little-endian
         };
 
-        // User version (present in version >= 10.0.1.0)
-        let user_version = if version >= NifVersion(0x0A000100) {
+        // User version (present in version >= 10.0.1.8 per nif.xml).
+        // Older NetImmerse files (10.0.1.0–10.0.1.7) — including a chunk of
+        // Oblivion's leftover content like meshes/creatures/minotaur/horn*.nif
+        // — go directly from `version` to `num_blocks` with no `user_version`
+        // field, so reading one would corrupt num_blocks and blow up the
+        // block parser with "failed to fill whole buffer".
+        let user_version = if version >= NifVersion(0x0A000108) {
             read_u32_le(&mut cursor)?
         } else {
             0
@@ -81,23 +86,24 @@ impl NifHeader {
 
         let num_blocks = read_u32_le(&mut cursor)?;
 
-        // User version 2 / BS version (Bethesda-specific, version >= 10.0.1.0 with user_version >= 10)
-        let user_version_2 = if version >= NifVersion(0x0A000100) && user_version >= 10 {
+        // BSStreamHeader presence — per nif.xml `#BSSTREAMHEADER#`:
+        //   - v10.0.1.2 always has it (it was the first Bethesda Gamebryo)
+        //   - Other versions only have it when user_version >= 3
+        // The struct itself reads:
+        //   BS Version    u32                                 (== `user_version_2`)
+        //   Author        ExportString
+        //   Unknown Int   u32,           only if BS Version > 130   (FO76, Starfield)
+        //   Process Script ExportString, only if BS Version < 131  (≤ FO4)
+        //   Export Script ExportString
+        //   Max Filepath  ExportString, only if BS Version >= 103  (FO4+)
+        let has_bs_stream_header =
+            version == NifVersion(0x0A000102) || user_version >= 3;
+        let user_version_2 = if has_bs_stream_header {
             read_u32_le(&mut cursor)?
         } else {
             0
         };
-
-        // BSStreamHeader (Bethesda metadata between basic header and block type table).
-        // Per nif.xml `BSStreamHeader`:
-        //   Author        ExportString
-        //   Unknown Int   uint,         only if BS Version > 130   (FO76, Starfield)
-        //   Process Script ExportString, only if BS Version < 131  (≤ FO4)
-        //   Export Script ExportString
-        //   Max Filepath  ExportString, only if BS Version >= 103  (FO4+)
-        //
-        // Pre-Bethesda files (user_version < 10) skip the whole struct.
-        if version >= NifVersion(0x0A000100) && user_version >= 10 {
+        if has_bs_stream_header {
             let _author = read_short_string(&mut cursor)?;
             if user_version_2 > 130 {
                 let _unknown_int = read_u32_le(&mut cursor)?;
