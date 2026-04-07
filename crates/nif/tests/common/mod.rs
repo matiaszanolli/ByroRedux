@@ -36,7 +36,7 @@
 
 #![allow(dead_code)] // Not every helper is used by every test file.
 
-use byroredux_bsa::BsaArchive;
+use byroredux_bsa::{Ba2Archive, BsaArchive};
 use std::path::{Path, PathBuf};
 
 /// Games we have real test content for.
@@ -46,6 +46,16 @@ pub enum Game {
     Fallout3,
     FalloutNV,
     SkyrimSE,
+    Fallout4,
+    Fallout76,
+    Starfield,
+}
+
+/// Which archive format the game's mesh archive uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveKind {
+    Bsa,
+    Ba2,
 }
 
 impl Game {
@@ -55,6 +65,9 @@ impl Game {
             Game::Fallout3 => "BYROREDUX_FO3_DATA",
             Game::FalloutNV => "BYROREDUX_FNV_DATA",
             Game::SkyrimSE => "BYROREDUX_SKYRIMSE_DATA",
+            Game::Fallout4 => "BYROREDUX_FO4_DATA",
+            Game::Fallout76 => "BYROREDUX_FO76_DATA",
+            Game::Starfield => "BYROREDUX_STARFIELD_DATA",
         }
     }
 
@@ -68,6 +81,9 @@ impl Game {
             Game::Fallout3 => PathBuf::from(format!("{base}/Fallout 3 goty/Data")),
             Game::FalloutNV => PathBuf::from(format!("{base}/Fallout New Vegas/Data")),
             Game::SkyrimSE => PathBuf::from(format!("{base}/Skyrim Special Edition/Data")),
+            Game::Fallout4 => PathBuf::from(format!("{base}/Fallout 4/Data")),
+            Game::Fallout76 => PathBuf::from(format!("{base}/Fallout76/Data")),
+            Game::Starfield => PathBuf::from(format!("{base}/Starfield/Data")),
         }
     }
 
@@ -78,6 +94,19 @@ impl Game {
             Game::Fallout3 => "Fallout - Meshes.bsa",
             Game::FalloutNV => "Fallout - Meshes.bsa",
             Game::SkyrimSE => "Skyrim - Meshes0.bsa",
+            Game::Fallout4 => "Fallout4 - Meshes.ba2",
+            Game::Fallout76 => "SeventySix - Meshes.ba2",
+            Game::Starfield => "Starfield - Meshes01.ba2",
+        }
+    }
+
+    pub fn archive_kind(self) -> ArchiveKind {
+        match self {
+            Game::Oblivion
+            | Game::Fallout3
+            | Game::FalloutNV
+            | Game::SkyrimSE => ArchiveKind::Bsa,
+            Game::Fallout4 | Game::Fallout76 | Game::Starfield => ArchiveKind::Ba2,
         }
     }
 
@@ -87,6 +116,39 @@ impl Game {
             Game::Fallout3 => "Fallout 3",
             Game::FalloutNV => "Fallout New Vegas",
             Game::SkyrimSE => "Skyrim SE",
+            Game::Fallout4 => "Fallout 4",
+            Game::Fallout76 => "Fallout 76",
+            Game::Starfield => "Starfield",
+        }
+    }
+}
+
+/// Either a BSA or a BA2 archive, exposing a unified file-list / extract API
+/// so test code doesn't need to branch on the format.
+pub enum MeshArchive {
+    Bsa(BsaArchive),
+    Ba2(Ba2Archive),
+}
+
+impl MeshArchive {
+    pub fn file_count(&self) -> usize {
+        match self {
+            MeshArchive::Bsa(a) => a.file_count(),
+            MeshArchive::Ba2(a) => a.file_count(),
+        }
+    }
+
+    pub fn list_files(&self) -> Vec<String> {
+        match self {
+            MeshArchive::Bsa(a) => a.list_files().into_iter().map(|s| s.to_string()).collect(),
+            MeshArchive::Ba2(a) => a.list_files().into_iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    pub fn extract(&self, path: &str) -> std::io::Result<Vec<u8>> {
+        match self {
+            MeshArchive::Bsa(a) => a.extract(path),
+            MeshArchive::Ba2(a) => a.extract(path),
         }
     }
 }
@@ -119,8 +181,9 @@ pub fn game_data_dir(game: Game) -> Option<PathBuf> {
     None
 }
 
-/// Open the primary mesh archive for a game if present.
-pub fn open_mesh_archive(game: Game) -> Option<BsaArchive> {
+/// Open the primary mesh archive for a game if present. Picks BSA or BA2
+/// based on the game's `archive_kind`.
+pub fn open_mesh_archive(game: Game) -> Option<MeshArchive> {
     let data = game_data_dir(game)?;
     let archive_path = data.join(game.mesh_archive());
     if !archive_path.is_file() {
@@ -131,7 +194,11 @@ pub fn open_mesh_archive(game: Game) -> Option<BsaArchive> {
         );
         return None;
     }
-    match BsaArchive::open(&archive_path) {
+    let result = match game.archive_kind() {
+        ArchiveKind::Bsa => BsaArchive::open(&archive_path).map(MeshArchive::Bsa),
+        ArchiveKind::Ba2 => Ba2Archive::open(&archive_path).map(MeshArchive::Ba2),
+    };
+    match result {
         Ok(a) => Some(a),
         Err(e) => {
             eprintln!(
@@ -204,19 +271,14 @@ impl ParseStats {
     }
 }
 
-/// Parse every NIF inside a BSA archive and collect stats. If `limit` is
-/// `Some(n)`, only the first `n` NIFs are parsed (useful for quick smoke
-/// checks; pass `None` for a full run).
-pub fn parse_all_nifs_in_bsa(archive: &BsaArchive, limit: Option<usize>) -> ParseStats {
+/// Parse every NIF inside a mesh archive (BSA or BA2) and collect stats.
+/// If `limit` is `Some(n)`, only the first `n` NIFs are parsed.
+pub fn parse_all_nifs_in_archive(archive: &MeshArchive, limit: Option<usize>) -> ParseStats {
     let mut stats = ParseStats::default();
     let files: Vec<String> = archive
         .list_files()
-        .iter()
-        .filter(|p| {
-            let lower = p.to_ascii_lowercase();
-            lower.ends_with(".nif")
-        })
-        .map(|s| s.to_string())
+        .into_iter()
+        .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
         .collect();
 
     let iter: Box<dyn Iterator<Item = &String>> = match limit {

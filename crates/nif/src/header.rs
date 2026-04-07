@@ -88,13 +88,26 @@ impl NifHeader {
             0
         };
 
-        // Author/process/export info strings (version >= 10.0.1.0 with user_version >= 10)
+        // BSStreamHeader (Bethesda metadata between basic header and block type table).
+        // Per nif.xml `BSStreamHeader`:
+        //   Author        ExportString
+        //   Unknown Int   uint,         only if BS Version > 130   (FO76, Starfield)
+        //   Process Script ExportString, only if BS Version < 131  (≤ FO4)
+        //   Export Script ExportString
+        //   Max Filepath  ExportString, only if BS Version >= 103  (FO4+)
+        //
+        // Pre-Bethesda files (user_version < 10) skip the whole struct.
         if version >= NifVersion(0x0A000100) && user_version >= 10 {
             let _author = read_short_string(&mut cursor)?;
-            // In some Bethesda versions, there may be process/export strings too
-            if user_version_2 > 0 {
+            if user_version_2 > 130 {
+                let _unknown_int = read_u32_le(&mut cursor)?;
+            }
+            if user_version_2 < 131 {
                 let _process_script = read_short_string(&mut cursor)?;
-                let _export_script = read_short_string(&mut cursor)?;
+            }
+            let _export_script = read_short_string(&mut cursor)?;
+            if user_version_2 >= 103 {
+                let _max_filepath = read_short_string(&mut cursor)?;
             }
         }
 

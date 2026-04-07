@@ -8,3 +8,6 @@ log = { workspace = true }
 thiserror = { workspace = true }
 flate2 = { workspace = true }
 lz4_flex = { workspace = true }
+
+[dev-dependencies]
+env_logger = { workspace = true }

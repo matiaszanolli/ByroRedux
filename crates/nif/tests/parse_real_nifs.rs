@@ -14,7 +14,7 @@
 
 mod common;
 
-use common::{open_mesh_archive, parse_all_nifs_in_bsa, Game};
+use common::{open_mesh_archive, parse_all_nifs_in_archive, Game};
 
 /// Acceptance threshold per N23.10. A game is considered "supported" when
 /// at least this fraction of its mesh NIFs parse without error.
@@ -32,7 +32,7 @@ fn run_game(game: Game, limit: Option<usize>) {
         archive.file_count()
     );
 
-    let stats = parse_all_nifs_in_bsa(&archive, limit);
+    let stats = parse_all_nifs_in_archive(&archive, limit);
     stats.print_summary(game.label());
 
     assert!(
@@ -77,6 +77,27 @@ fn parse_rate_oblivion() {
     run_game(Game::Oblivion, None);
 }
 
+#[test]
+#[ignore]
+fn parse_rate_fallout_4() {
+    run_game(Game::Fallout4, None);
+}
+
+#[test]
+#[ignore]
+fn parse_rate_fallout_76() {
+    run_game(Game::Fallout76, None);
+}
+
+#[test]
+#[ignore]
+fn parse_rate_starfield() {
+    // Starfield meshes use BA2 v2 GNRL with the 32-byte header extension.
+    // Texture archives (BA2 v3 DX10) use a different chunk layout that's
+    // not yet supported and is tracked separately.
+    run_game(Game::Starfield, None);
+}
+
 /// Smoke subset — runs the first 50 NIFs from each available game in one
 /// test so `cargo test -- --ignored` gives a fast signal without waiting
 /// for the full per-game sweep. Useful during parser refactors.
@@ -88,11 +109,14 @@ fn parse_rate_smoke_all_games() {
         Game::Fallout3,
         Game::SkyrimSE,
         Game::Oblivion,
+        Game::Fallout4,
+        Game::Fallout76,
+        Game::Starfield,
     ] {
         let Some(archive) = open_mesh_archive(game) else {
             continue;
         };
-        let stats = parse_all_nifs_in_bsa(&archive, Some(50));
+        let stats = parse_all_nifs_in_archive(&archive, Some(50));
         stats.print_summary(&format!("{} (smoke)", game.label()));
         if stats.total > 0 {
             assert!(

@@ -14,7 +14,7 @@
 //!
 //! Exit code is non-zero when parse success rate drops below 95%.
 
-use byroredux_bsa::BsaArchive;
+use byroredux_bsa::{Ba2Archive, BsaArchive};
 use byroredux_nif::parse_nif;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -188,6 +188,34 @@ fn process_bsa(stats: &mut Stats, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn process_ba2(stats: &mut Stats, path: &Path) -> Result<(), String> {
+    let archive = Ba2Archive::open(path).map_err(|e| format!("open BA2: {e}"))?;
+    eprintln!(
+        "opened {} (BA2 v{} {:?}, {} files)",
+        path.display(),
+        archive.version(),
+        archive.variant(),
+        archive.file_count()
+    );
+    let nif_files: Vec<String> = archive
+        .list_files()
+        .iter()
+        .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
+        .map(|s| s.to_string())
+        .collect();
+    eprintln!("  → {} .nif entries", nif_files.len());
+    for (i, nif_path) in nif_files.iter().enumerate() {
+        if i > 0 && i.is_multiple_of(500) {
+            eprintln!("  progress: {}/{}", i, nif_files.len());
+        }
+        match archive.extract(nif_path) {
+            Ok(bytes) => process_bytes(stats, nif_path.clone(), &bytes),
+            Err(e) => stats.record_failure(nif_path.clone(), format!("extract: {e}")),
+        }
+    }
+    Ok(())
+}
+
 fn main() {
     // Optional env_logger init so --verbose parse messages surface.
     let _ = env_logger::builder()
@@ -210,18 +238,25 @@ fn main() {
     }
 
     if path.is_file() {
-        let is_bsa = path
+        let ext = path
             .extension()
             .and_then(|s| s.to_str())
-            .map(|s| s.eq_ignore_ascii_case("bsa"))
-            .unwrap_or(false);
-        if is_bsa {
-            if let Err(e) = process_bsa(&mut stats, &path) {
-                eprintln!("error: {}", e);
-                std::process::exit(2);
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        match ext.as_str() {
+            "bsa" => {
+                if let Err(e) = process_bsa(&mut stats, &path) {
+                    eprintln!("error: {}", e);
+                    std::process::exit(2);
+                }
             }
-        } else {
-            process_file(&mut stats, &path);
+            "ba2" => {
+                if let Err(e) = process_ba2(&mut stats, &path) {
+                    eprintln!("error: {}", e);
+                    std::process::exit(2);
+                }
+            }
+            _ => process_file(&mut stats, &path),
         }
     } else if path.is_dir() {
         process_dir(&mut stats, &path);

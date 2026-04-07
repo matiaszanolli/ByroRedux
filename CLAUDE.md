@@ -76,8 +76,10 @@ crates/
     src/mesh.rs              MeshRegistry, cube/triangle/quad geometry helpers
     src/vertex.rs            Vertex (position + color + normal + UV), 4 attribute descriptions
     shaders/                 GLSL → SPIR-V (pre-compiled, include_bytes!)
-  bsa/                       BSA archive reader (Bethesda Softworks Archive v104)
-    src/archive.rs           BsaArchive: open, list, extract (zlib decompression)
+  bsa/                       BSA + BA2 archive readers (Bethesda Softworks Archive)
+    src/archive.rs           BsaArchive: BSA v103/v104/v105 (Oblivion → Skyrim SE)
+    src/ba2.rs               Ba2Archive: BTDX v1/v2/v3/v7/v8 (FO4, FO76, Starfield),
+                             GNRL + DX10 with reconstructed DDS headers
   platform/                  Windowing (winit), raw handles
   nif/                       NIF file parser (Gamebryo .nif binary format)
     src/header.rs            NifHeader, version-aware header parsing
@@ -172,8 +174,10 @@ wetness, all 6 skinning blocks, full NiSkinPartition, NiPixelData, NiMorphData l
 Collision import with Havok→engine transform. Normal map from BSShaderPPLighting (FO3/FNV).
 FO76/Starfield shader blocks: CRC32 flag arrays, Luminance/Translucency, stopcond on BGSM name.
 Test infra: nif_stats example + per-game integration tests + graceful per-block parse recovery.
-Parse rates on full archive sweeps: FNV/FO3/SkyrimSE 100%, Oblivion 99.14%.
-Next: BA2 archive reader (unblocks FO4/76/Starfield), BSA v103 decompression (unblocks Oblivion).
+M26: BA2 reader (BTDX v1/v2/v3/v7/v8, GNRL + DX10) + NIF header BSStreamHeader fix for FO4/FO76.
+Full-archive parse rates: FNV/FO3/SkyrimSE/FO4/FO76/Starfield 100%, Oblivion 99.14%.
+Total: 177k NIFs parse cleanly across 7 Bethesda games.
+Next: BSA v103 decompression (unblocks Oblivion), Starfield v3 DX10 textures, M24 ESM parser.
 
 ## Git Conventions
 

@@ -311,6 +311,53 @@ BLAS per mesh, TLAS rebuilt per frame, dynamic depth bias for NIF-flagged decals
 
 ---
 
+## M26: BA2 Archive Support — DONE
+
+**Status:** Complete for FO4 / FO76 / Starfield meshes and FO4 textures.
+Starfield DX10 textures (BA2 v3) deferred — chunk layout differs.
+
+**Scope:**
+- New `Ba2Archive` reader covering BTDX versions 1, 2, 3, 7, and 8 with the
+  `GNRL` (general) and `DX10` (texture) variants. The version numbering is
+  non-monotonic across games — v1 is the original FO4/FO76 layout, v2/v3
+  are Starfield (with an 8-byte header extension), and v7/v8 are FO4 Next
+  Gen patches that revert to the v1 24-byte header.
+- DX10 texture extraction reconstructs a complete `.dds` byte stream
+  (148-byte DDS+DX10 header + assembled mip chunks) since BA2 does not
+  store the DDS header itself — pixel data is keyed only by `dxgi_format`,
+  width, height, and mip count on the record.
+- Side-fix: the NIF header parser's `BSStreamHeader` reading was wrong for
+  FO4 and FO76 — it always read three short strings (author, process,
+  export) regardless of `BS Version`. Per `nif.xml`, BSVER > 130 has an
+  extra `Unknown Int u32` after Author and **drops** the Process Script,
+  and BSVER ≥ 103 adds a `Max Filepath` short string. Without the fix the
+  string-table cursor desyncs and every FO4/FO76 NIF fails to parse.
+- `tests/common` grows a unified `MeshArchive` enum so integration tests
+  do not branch on BSA vs BA2, plus FO4 / FO76 / Starfield entries with
+  BA2 paths and the `BYROREDUX_FO4_DATA` / `BYROREDUX_FO76_DATA` /
+  `BYROREDUX_STARFIELD_DATA` env-var overrides.
+
+**Result:** Full-archive parse rates across **seven** Bethesda games:
+
+| Game              | NIFs parsed       | Rate    |
+|-------------------|-------------------|---------|
+| Fallout New Vegas | 14881 / 14881     | 100.00% |
+| Fallout 3         | 10989 / 10989     | 100.00% |
+| Skyrim SE         | 18862 / 18862     | 100.00% |
+| Oblivion          | 7963 / 8032       | 99.14%  |
+| **Fallout 4**     | **34995 / 34995** | **100.00%** |
+| **Fallout 76**    | **58469 / 58469** | **100.00%** |
+| **Starfield**     | **31058 / 31058** | **100.00%** |
+
+Combined: **177,217 NIFs** parse cleanly across the entire Bethesda lineage.
+
+**Deferred:** Starfield BA2 v3 DX10 textures (different per-chunk layout
+than FO4 v7 — record padding doesn't match `0xBAADF00D`). The archive
+opens correctly and the directory parses, only `extract` for textures
+returns errors. NIF/mesh extraction is unaffected.
+
+---
+
 ## Deferred Roadmap (post-N23)
 
 | # | Milestone | Scope |
@@ -318,7 +365,7 @@ BLAS per mesh, TLAS rebuilt per frame, dynamic depth bias for NIF-flagged decals
 | M22+ | RT Lighting Polish | Soft shadows, emissive bypass, lighting tuning (resumes after NIF correctness) |
 | M24 | Full ESM/ESP Parser | NPC_, WEAP, ARMO, LVLI, QUST, DIAL + all record types |
 | M25 | Vulkan Compute | Batch transforms, coordinate conversion, GPU skinning |
-| M26 | BA2 Archive Support | Fallout 4/76 BA2 format (General + DX10 variants, LZ4) |
+| M26 | BA2 Archive Support | **DONE** — see below |
 | M27 | Parallel System Dispatch | Rayon-based parallel ECS execution |
 | M28 | Physics Foundation | Rapier/custom physics, character controller (uses N23.6 collision data) |
 | M29 | Skeletal Animation | GPU skinning via compute shaders (uses N23.5 skin data) |
