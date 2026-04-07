@@ -130,13 +130,7 @@ pub(super) fn walk_node_flat(
 
         for child_ref in &node.children {
             if let Some(idx) = child_ref.index() {
-                walk_node_flat(
-                    scene,
-                    idx,
-                    &world_transform,
-                    out,
-                    collisions.as_deref_mut(),
-                );
+                walk_node_flat(scene, idx, &world_transform, out, collisions.as_deref_mut());
             }
         }
         return;

@@ -227,7 +227,9 @@ impl World {
         let type_id = TypeId::of::<T>();
         let lock = self.storages.get(&type_id)?;
         lock_tracker::track_write(type_id, std::any::type_name::<T>());
-        let guard = lock.write().unwrap_or_else(|_| storage_lock_poisoned::<T>());
+        let guard = lock
+            .write()
+            .unwrap_or_else(|_| storage_lock_poisoned::<T>());
         Some(QueryWrite::new(guard, type_id))
     }
 
@@ -260,13 +262,27 @@ impl World {
 
         // Always lock in TypeId order to prevent deadlocks.
         if id_a < id_b {
-            let guard_a = lock_a.read().unwrap_or_else(|_| storage_lock_poisoned::<A>());
-            let guard_b = lock_b.write().unwrap_or_else(|_| storage_lock_poisoned::<B>());
-            Some((QueryRead::new(guard_a, id_a), QueryWrite::new(guard_b, id_b)))
+            let guard_a = lock_a
+                .read()
+                .unwrap_or_else(|_| storage_lock_poisoned::<A>());
+            let guard_b = lock_b
+                .write()
+                .unwrap_or_else(|_| storage_lock_poisoned::<B>());
+            Some((
+                QueryRead::new(guard_a, id_a),
+                QueryWrite::new(guard_b, id_b),
+            ))
         } else {
-            let guard_b = lock_b.write().unwrap_or_else(|_| storage_lock_poisoned::<B>());
-            let guard_a = lock_a.read().unwrap_or_else(|_| storage_lock_poisoned::<A>());
-            Some((QueryRead::new(guard_a, id_a), QueryWrite::new(guard_b, id_b)))
+            let guard_b = lock_b
+                .write()
+                .unwrap_or_else(|_| storage_lock_poisoned::<B>());
+            let guard_a = lock_a
+                .read()
+                .unwrap_or_else(|_| storage_lock_poisoned::<A>());
+            Some((
+                QueryRead::new(guard_a, id_a),
+                QueryWrite::new(guard_b, id_b),
+            ))
         }
     }
 
@@ -297,13 +313,27 @@ impl World {
         lock_tracker::track_write(id_b, std::any::type_name::<B>());
 
         if id_a < id_b {
-            let guard_a = lock_a.write().unwrap_or_else(|_| storage_lock_poisoned::<A>());
-            let guard_b = lock_b.write().unwrap_or_else(|_| storage_lock_poisoned::<B>());
-            Some((QueryWrite::new(guard_a, id_a), QueryWrite::new(guard_b, id_b)))
+            let guard_a = lock_a
+                .write()
+                .unwrap_or_else(|_| storage_lock_poisoned::<A>());
+            let guard_b = lock_b
+                .write()
+                .unwrap_or_else(|_| storage_lock_poisoned::<B>());
+            Some((
+                QueryWrite::new(guard_a, id_a),
+                QueryWrite::new(guard_b, id_b),
+            ))
         } else {
-            let guard_b = lock_b.write().unwrap_or_else(|_| storage_lock_poisoned::<B>());
-            let guard_a = lock_a.write().unwrap_or_else(|_| storage_lock_poisoned::<A>());
-            Some((QueryWrite::new(guard_a, id_a), QueryWrite::new(guard_b, id_b)))
+            let guard_b = lock_b
+                .write()
+                .unwrap_or_else(|_| storage_lock_poisoned::<B>());
+            let guard_a = lock_a
+                .write()
+                .unwrap_or_else(|_| storage_lock_poisoned::<A>());
+            Some((
+                QueryWrite::new(guard_a, id_a),
+                QueryWrite::new(guard_b, id_b),
+            ))
         }
     }
 
@@ -325,7 +355,9 @@ impl World {
     /// Remove a global resource, returning it if it existed.
     pub fn remove_resource<R: Resource>(&mut self) -> Option<R> {
         let lock = self.resources.remove(&TypeId::of::<R>())?;
-        let boxed = lock.into_inner().unwrap_or_else(|_| resource_lock_poisoned::<R>());
+        let boxed = lock
+            .into_inner()
+            .unwrap_or_else(|_| resource_lock_poisoned::<R>());
         Some(*boxed.downcast::<R>().expect("resource type mismatch"))
     }
 
@@ -343,7 +375,9 @@ impl World {
             )
         });
         lock_tracker::track_read(type_id, std::any::type_name::<R>());
-        let guard = lock.read().unwrap_or_else(|_| resource_lock_poisoned::<R>());
+        let guard = lock
+            .read()
+            .unwrap_or_else(|_| resource_lock_poisoned::<R>());
         ResourceRead::new(guard, type_id)
     }
 
@@ -361,7 +395,9 @@ impl World {
             )
         });
         lock_tracker::track_write(type_id, std::any::type_name::<R>());
-        let guard = lock.write().unwrap_or_else(|_| resource_lock_poisoned::<R>());
+        let guard = lock
+            .write()
+            .unwrap_or_else(|_| resource_lock_poisoned::<R>());
         ResourceWrite::new(guard, type_id)
     }
 
@@ -403,13 +439,27 @@ impl World {
 
         // Always lock in TypeId order to prevent deadlocks.
         if id_a < id_b {
-            let guard_a = lock_a.write().unwrap_or_else(|_| resource_lock_poisoned::<A>());
-            let guard_b = lock_b.write().unwrap_or_else(|_| resource_lock_poisoned::<B>());
-            (ResourceWrite::new(guard_a, id_a), ResourceWrite::new(guard_b, id_b))
+            let guard_a = lock_a
+                .write()
+                .unwrap_or_else(|_| resource_lock_poisoned::<A>());
+            let guard_b = lock_b
+                .write()
+                .unwrap_or_else(|_| resource_lock_poisoned::<B>());
+            (
+                ResourceWrite::new(guard_a, id_a),
+                ResourceWrite::new(guard_b, id_b),
+            )
         } else {
-            let guard_b = lock_b.write().unwrap_or_else(|_| resource_lock_poisoned::<B>());
-            let guard_a = lock_a.write().unwrap_or_else(|_| resource_lock_poisoned::<A>());
-            (ResourceWrite::new(guard_a, id_a), ResourceWrite::new(guard_b, id_b))
+            let guard_b = lock_b
+                .write()
+                .unwrap_or_else(|_| resource_lock_poisoned::<B>());
+            let guard_a = lock_a
+                .write()
+                .unwrap_or_else(|_| resource_lock_poisoned::<A>());
+            (
+                ResourceWrite::new(guard_a, id_a),
+                ResourceWrite::new(guard_b, id_b),
+            )
         }
     }
 
@@ -418,7 +468,9 @@ impl World {
         let type_id = TypeId::of::<R>();
         let lock = self.resources.get(&type_id)?;
         lock_tracker::track_read(type_id, std::any::type_name::<R>());
-        let guard = lock.read().unwrap_or_else(|_| resource_lock_poisoned::<R>());
+        let guard = lock
+            .read()
+            .unwrap_or_else(|_| resource_lock_poisoned::<R>());
         Some(ResourceRead::new(guard, type_id))
     }
 
@@ -427,7 +479,9 @@ impl World {
         let type_id = TypeId::of::<R>();
         let lock = self.resources.get(&type_id)?;
         lock_tracker::track_write(type_id, std::any::type_name::<R>());
-        let guard = lock.write().unwrap_or_else(|_| resource_lock_poisoned::<R>());
+        let guard = lock
+            .write()
+            .unwrap_or_else(|_| resource_lock_poisoned::<R>());
         Some(ResourceWrite::new(guard, type_id))
     }
 

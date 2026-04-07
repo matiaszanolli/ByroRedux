@@ -110,12 +110,11 @@ impl NiObject for NiPSysBlock {
 // ── Modifier parsers ────────────────────────────────────────────────
 
 /// Parse a modifier with only the base fields (NiPSysPositionModifier, etc.).
-pub fn parse_modifier_only(
-    stream: &mut NifStream,
-    type_name: &str,
-) -> io::Result<NiPSysBlock> {
+pub fn parse_modifier_only(stream: &mut NifStream, type_name: &str) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
-    Ok(NiPSysBlock { original_type: type_name.to_string() })
+    Ok(NiPSysBlock {
+        original_type: type_name.to_string(),
+    })
 }
 
 /// NiPSysAgeDeathModifier: base + spawn_on_death(bool) + spawn_modifier_ref(ref)
@@ -254,7 +253,9 @@ pub fn parse_mesh_update_modifier(
     for _ in 0..num_meshes {
         let _mesh_ref = stream.read_block_ref()?;
     }
-    Ok(NiPSysBlock { original_type: type_name.to_string() })
+    Ok(NiPSysBlock {
+        original_type: type_name.to_string(),
+    })
 }
 
 /// BSPSysHavokUpdateModifier: NiPSysMeshUpdateModifier + modifier_ref(ref)
@@ -271,13 +272,12 @@ pub fn parse_havok_update_modifier(stream: &mut NifStream) -> io::Result<NiPSysB
 }
 
 /// BSParentVelocityModifier / BSWindModifier: base + damping(f32)
-pub fn parse_float_modifier(
-    stream: &mut NifStream,
-    type_name: &str,
-) -> io::Result<NiPSysBlock> {
+pub fn parse_float_modifier(stream: &mut NifStream, type_name: &str) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     let _value = stream.read_f32_le()?;
-    Ok(NiPSysBlock { original_type: type_name.to_string() })
+    Ok(NiPSysBlock {
+        original_type: type_name.to_string(),
+    })
 }
 
 /// BSPSysInheritVelocityModifier: base + inherit_object(ptr) + 3 floats
@@ -434,7 +434,9 @@ pub fn parse_field_modifier_vec3(
     let _base = NiPSysModifierBase::parse(stream)?;
     skip_field_modifier_base(stream)?;
     stream.skip(12); // direction vec3
-    Ok(NiPSysBlock { original_type: type_name.to_string() })
+    Ok(NiPSysBlock {
+        original_type: type_name.to_string(),
+    })
 }
 
 /// NiPSysDragFieldModifier: field_base + use_direction(bool) + direction(vec3)
@@ -486,25 +488,23 @@ pub fn parse_radial_field_modifier(stream: &mut NifStream) -> io::Result<NiPSysB
 // ── Controller parsers ──────────────────────────────────────────────
 
 /// NiPSysUpdateCtlr / NiPSysResetOnLoopCtlr: just NiTimeController base.
-pub fn parse_time_controller(
-    stream: &mut NifStream,
-    type_name: &str,
-) -> io::Result<NiPSysBlock> {
+pub fn parse_time_controller(stream: &mut NifStream, type_name: &str) -> io::Result<NiPSysBlock> {
     let _base = NiTimeControllerBase::parse(stream)?;
-    Ok(NiPSysBlock { original_type: type_name.to_string() })
+    Ok(NiPSysBlock {
+        original_type: type_name.to_string(),
+    })
 }
 
 /// NiPSysModifierCtlr chain: NiSingleInterpController + modifier_name(string).
 /// Used by NiPSysEmitterCtlr (+ visibility_interpolator_ref) and all
 /// NiPSysModifier*Ctlr aliases (no additional fields).
-pub fn parse_modifier_ctlr(
-    stream: &mut NifStream,
-    type_name: &str,
-) -> io::Result<NiPSysBlock> {
+pub fn parse_modifier_ctlr(stream: &mut NifStream, type_name: &str) -> io::Result<NiPSysBlock> {
     let _base = NiTimeControllerBase::parse(stream)?;
     let _interpolator_ref = stream.read_block_ref()?; // NiSingleInterpController
     let _modifier_name = stream.read_string()?; // NiPSysModifierCtlr
-    Ok(NiPSysBlock { original_type: type_name.to_string() })
+    Ok(NiPSysBlock {
+        original_type: type_name.to_string(),
+    })
 }
 
 /// NiPSysEmitterCtlr: modifier_ctlr + visibility_interpolator_ref(ref)
@@ -541,10 +541,7 @@ pub fn parse_multi_target_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiP
 /// NiParticles / NiParticleSystem / NiMeshParticleSystem:
 /// These inherit NiGeometry (same as NiTriShape). Parse NiAVObject + data/skin refs.
 /// NiParticleSystem adds: world_space(bool) + num_modifiers(u32) + modifier_refs[N].
-pub fn parse_particle_system(
-    stream: &mut NifStream,
-    type_name: &str,
-) -> io::Result<NiPSysBlock> {
+pub fn parse_particle_system(stream: &mut NifStream, type_name: &str) -> io::Result<NiPSysBlock> {
     use super::base::NiAVObjectData;
 
     let _av = NiAVObjectData::parse(stream)?;
@@ -568,7 +565,9 @@ pub fn parse_particle_system(
         }
     }
 
-    Ok(NiPSysBlock { original_type: type_name.to_string() })
+    Ok(NiPSysBlock {
+        original_type: type_name.to_string(),
+    })
 }
 
 // ── BSStripParticleSystem (FO3+): same as NiParticleSystem ──────────
@@ -585,10 +584,7 @@ pub fn parse_strip_particle_system(stream: &mut NifStream) -> io::Result<NiPSysB
 /// NiParticlesData / NiPSysData / NiMeshPSysData / BSStripPSysData:
 /// These inherit NiGeometryData (complex, variable-length).
 /// Reuses the existing geometry data base parser then reads particle-specific fields.
-pub fn parse_particles_data(
-    stream: &mut NifStream,
-    type_name: &str,
-) -> io::Result<NiPSysBlock> {
+pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Result<NiPSysBlock> {
     // NiGeometryData base (shared with NiTriShapeData).
     let (_verts, _flags, _normals, _center, _radius, _colors, _uvs) =
         super::tri_shape::parse_geometry_data_base(stream)?;
@@ -664,7 +660,9 @@ pub fn parse_particles_data(
         let _do_z_prepass = stream.read_byte_bool()?;
     }
 
-    Ok(NiPSysBlock { original_type: type_name.to_string() })
+    Ok(NiPSysBlock {
+        original_type: type_name.to_string(),
+    })
 }
 
 /// NiPSysEmitterCtlrData: KeyGroup<float> (visibility keys) + num(u32) + byte_key array.

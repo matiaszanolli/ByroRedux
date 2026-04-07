@@ -14,9 +14,9 @@ mod mesh;
 mod transform;
 mod walk;
 
-use byroredux_core::ecs::components::collision::{CollisionShape, RigidBodyData};
 use crate::scene::NifScene;
 use crate::types::NiTransform;
+use byroredux_core::ecs::components::collision::{CollisionShape, RigidBodyData};
 
 /// Collision data extracted from a NiNode, positioned in world space.
 ///
@@ -149,9 +149,7 @@ pub fn import_nif(scene: &NifScene) -> Vec<ImportedMesh> {
 /// Like `import_nif()`, returns world-space meshes (flat, no hierarchy).
 /// Additionally extracts collision shapes from NiNodes, returning them
 /// in world space alongside the geometry.
-pub fn import_nif_with_collision(
-    scene: &NifScene,
-) -> (Vec<ImportedMesh>, Vec<ImportedCollision>) {
+pub fn import_nif_with_collision(scene: &NifScene) -> (Vec<ImportedMesh>, Vec<ImportedCollision>) {
     let mut meshes = Vec::new();
     let mut collisions = Vec::new();
 

@@ -146,16 +146,13 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord]) -> NpcRecord {
             b"CNTO" if sub.data.len() >= 8 => {
                 record.inventory.push(NpcInventoryEntry {
                     item_form_id: read_u32_at(&sub.data, 0).unwrap_or(0),
-                    count: i32::from_le_bytes([
-                        sub.data[4],
-                        sub.data[5],
-                        sub.data[6],
-                        sub.data[7],
-                    ]),
+                    count: i32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]),
                 });
             }
             b"PKID" if sub.data.len() >= 4 => {
-                record.ai_packages.push(read_u32_at(&sub.data, 0).unwrap_or(0));
+                record
+                    .ai_packages
+                    .push(read_u32_at(&sub.data, 0).unwrap_or(0));
             }
             b"INAM" if sub.data.len() >= 4 => {
                 record.death_item_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
@@ -248,8 +245,7 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord]) -> ClassRecord {
                 // Skip flags + services + skill/level/teaches bytes (16 + 4 = 20).
                 // Attribute weights start at offset 28.
                 for i in 0..7 {
-                    record.attribute_weights[i] =
-                        sub.data.get(28 + i).copied().unwrap_or(0);
+                    record.attribute_weights[i] = sub.data.get(28 + i).copied().unwrap_or(0);
                 }
             }
             _ => {}
@@ -280,17 +276,9 @@ pub fn parse_fact(form_id: u32, subs: &[SubRecord]) -> FactionRecord {
             // XNAM: relation entry — other faction (u32) + modifier (i32) + reaction (u32)
             b"XNAM" if sub.data.len() >= 8 => {
                 let other = read_u32_at(&sub.data, 0).unwrap_or(0);
-                let modifier = i32::from_le_bytes([
-                    sub.data[4],
-                    sub.data[5],
-                    sub.data[6],
-                    sub.data[7],
-                ]);
-                let combat = if sub.data.len() >= 12 {
-                    sub.data[8]
-                } else {
-                    0
-                };
+                let modifier =
+                    i32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]);
+                let combat = if sub.data.len() >= 12 { sub.data[8] } else { 0 };
                 record.relations.push(FactionRelation {
                     other_faction: other,
                     modifier,

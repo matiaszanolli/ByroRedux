@@ -245,10 +245,7 @@ impl Ba2Archive {
 }
 
 /// Read `count` 36-byte GNRL file records.
-fn read_general_records(
-    reader: &mut BufReader<File>,
-    count: usize,
-) -> io::Result<Vec<Ba2Entry>> {
+fn read_general_records(reader: &mut BufReader<File>, count: usize) -> io::Result<Vec<Ba2Entry>> {
     let mut out = Vec::with_capacity(count);
     let mut rec = [0u8; 36];
     for _ in 0..count {
@@ -396,7 +393,14 @@ fn extract_dx10(
     }
 
     // Reconstruct a DDS header in front of the pixel data.
-    let mut dds = build_dds_header(dxgi_format, width, height, num_mips, is_cubemap, &pixel_data);
+    let mut dds = build_dds_header(
+        dxgi_format,
+        width,
+        height,
+        num_mips,
+        is_cubemap,
+        &pixel_data,
+    );
     dds.extend_from_slice(&pixel_data);
     Ok(dds)
 }
@@ -487,7 +491,11 @@ fn build_dds_header(
     // DX10 extended header (20 bytes)
     hdr.extend_from_slice(&(dxgi_format as u32).to_le_bytes());
     hdr.extend_from_slice(&D3D10_RESOURCE_DIMENSION_TEXTURE2D.to_le_bytes());
-    let misc_flag = if is_cubemap { D3D10_MISC_TEXTURECUBE } else { 0 };
+    let misc_flag = if is_cubemap {
+        D3D10_MISC_TEXTURECUBE
+    } else {
+        0
+    };
     hdr.extend_from_slice(&misc_flag.to_le_bytes());
     hdr.extend_from_slice(&1u32.to_le_bytes()); // arraySize
     hdr.extend_from_slice(&0u32.to_le_bytes()); // miscFlags2
@@ -502,13 +510,13 @@ fn build_dds_header(
 fn linear_size_for(dxgi_format: u8, width: u32, height: u32, total_bytes: usize) -> u32 {
     // DXGI formats we encounter in Bethesda BA2s. Block sizes per 4x4 block.
     let block_bytes: Option<u32> = match dxgi_format {
-        71 | 72 => Some(8),   // BC1_UNORM / BC1_UNORM_SRGB
-        74 | 75 => Some(16),  // BC2_UNORM / BC2_UNORM_SRGB
-        77 | 78 => Some(16),  // BC3_UNORM / BC3_UNORM_SRGB
-        80 | 81 => Some(8),   // BC4_UNORM / BC4_SNORM
-        83 | 84 => Some(16),  // BC5_UNORM / BC5_SNORM
-        95 | 96 => Some(16),  // BC6H
-        98 | 99 => Some(16),  // BC7_UNORM / BC7_UNORM_SRGB
+        71 | 72 => Some(8),  // BC1_UNORM / BC1_UNORM_SRGB
+        74 | 75 => Some(16), // BC2_UNORM / BC2_UNORM_SRGB
+        77 | 78 => Some(16), // BC3_UNORM / BC3_UNORM_SRGB
+        80 | 81 => Some(8),  // BC4_UNORM / BC4_SNORM
+        83 | 84 => Some(16), // BC5_UNORM / BC5_SNORM
+        95 | 96 => Some(16), // BC6H
+        98 | 99 => Some(16), // BC7_UNORM / BC7_UNORM_SRGB
         _ => None,
     };
 
@@ -538,10 +546,7 @@ mod tests {
             normalize_path("Meshes/Interiors/Test.nif"),
             "meshes\\interiors\\test.nif"
         );
-        assert_eq!(
-            normalize_path("MESHES\\foo.NIF"),
-            "meshes\\foo.nif"
-        );
+        assert_eq!(normalize_path("MESHES\\foo.NIF"), "meshes\\foo.nif");
     }
 
     #[test]
@@ -579,7 +584,7 @@ mod tests {
         // Width/height
         assert_eq!(u32::from_le_bytes(hdr[12..16].try_into().unwrap()), 256); // height
         assert_eq!(u32::from_le_bytes(hdr[16..20].try_into().unwrap()), 256); // width
-        // mip count
+                                                                              // mip count
         assert_eq!(u32::from_le_bytes(hdr[28..32].try_into().unwrap()), 9);
         // FourCC at offset 84 should be "DX10"
         assert_eq!(&hdr[84..88], b"DX10");

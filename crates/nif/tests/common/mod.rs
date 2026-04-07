@@ -102,10 +102,7 @@ impl Game {
 
     pub fn archive_kind(self) -> ArchiveKind {
         match self {
-            Game::Oblivion
-            | Game::Fallout3
-            | Game::FalloutNV
-            | Game::SkyrimSE => ArchiveKind::Bsa,
+            Game::Oblivion | Game::Fallout3 | Game::FalloutNV | Game::SkyrimSE => ArchiveKind::Bsa,
             Game::Fallout4 | Game::Fallout76 | Game::Starfield => ArchiveKind::Ba2,
         }
     }
@@ -187,11 +184,7 @@ pub fn open_mesh_archive(game: Game) -> Option<MeshArchive> {
     let data = game_data_dir(game)?;
     let archive_path = data.join(game.mesh_archive());
     if !archive_path.is_file() {
-        eprintln!(
-            "[{}] skipping: {:?} not found",
-            game.label(),
-            archive_path
-        );
+        eprintln!("[{}] skipping: {:?} not found", game.label(), archive_path);
         return None;
     }
     let result = match game.archive_kind() {

@@ -187,7 +187,8 @@ fn aligned_flush_range(
     let aligned_offset = offset & !(NON_COHERENT_ATOM_SIZE - 1);
     let extra = offset - aligned_offset;
     let unaligned_size = extra + size;
-    let aligned_size = (unaligned_size + NON_COHERENT_ATOM_SIZE - 1) & !(NON_COHERENT_ATOM_SIZE - 1);
+    let aligned_size =
+        (unaligned_size + NON_COHERENT_ATOM_SIZE - 1) & !(NON_COHERENT_ATOM_SIZE - 1);
     (aligned_offset, aligned_size)
 }
 

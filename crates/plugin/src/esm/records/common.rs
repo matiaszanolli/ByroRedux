@@ -17,7 +17,9 @@ pub fn read_zstring(data: &[u8]) -> String {
 
 /// Find a sub-record by 4-char type code and return its data slice.
 pub fn find_sub<'a>(subs: &'a [SubRecord], code: &[u8; 4]) -> Option<&'a [u8]> {
-    subs.iter().find(|s| &s.sub_type == code).map(|s| s.data.as_slice())
+    subs.iter()
+        .find(|s| &s.sub_type == code)
+        .map(|s| s.data.as_slice())
 }
 
 /// Read a sub-record as a null-terminated string. Returns `None` if absent.

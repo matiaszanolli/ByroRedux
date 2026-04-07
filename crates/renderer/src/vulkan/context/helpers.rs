@@ -262,9 +262,7 @@ pub(super) fn allocate_command_buffers(
 const PIPELINE_CACHE_PATH: &str = "pipeline_cache.bin";
 
 /// Load pipeline cache data from disk, or create an empty cache.
-pub(super) fn load_or_create_pipeline_cache(
-    device: &ash::Device,
-) -> Result<vk::PipelineCache> {
+pub(super) fn load_or_create_pipeline_cache(device: &ash::Device) -> Result<vk::PipelineCache> {
     let initial_data = std::fs::read(PIPELINE_CACHE_PATH).unwrap_or_default();
 
     let create_info = if initial_data.is_empty() {

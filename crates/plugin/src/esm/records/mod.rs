@@ -19,16 +19,16 @@ pub mod global;
 pub mod items;
 
 pub use actor::{
-    parse_clas, parse_fact, parse_npc, parse_race, ClassRecord, FactionMembership,
-    FactionRecord, FactionRelation, NpcInventoryEntry, NpcRecord, RaceRecord,
+    parse_clas, parse_fact, parse_npc, parse_race, ClassRecord, FactionMembership, FactionRecord,
+    FactionRelation, NpcInventoryEntry, NpcRecord, RaceRecord,
 };
 pub use container::{
     parse_cont, parse_leveled_list, ContainerRecord, InventoryEntry, LeveledEntry, LeveledList,
 };
 pub use global::{parse_glob, parse_gmst, GameSetting, GlobalRecord, SettingValue};
 pub use items::{
-    parse_alch, parse_ammo, parse_armo, parse_book, parse_ingr, parse_keym, parse_misc,
-    parse_note, parse_weap, ItemKind, ItemRecord,
+    parse_alch, parse_ammo, parse_armo, parse_book, parse_ingr, parse_keym, parse_misc, parse_note,
+    parse_weap, ItemKind, ItemRecord,
 };
 
 use super::cell::{parse_esm_cells, EsmCellIndex};
@@ -140,10 +140,14 @@ pub fn parse_esm(data: &[u8]) -> Result<EsmIndex> {
                 index.containers.insert(fid, parse_cont(fid, subs));
             })?,
             b"LVLI" => extract_records(&mut reader, end, b"LVLI", &mut |fid, subs| {
-                index.leveled_items.insert(fid, parse_leveled_list(fid, subs));
+                index
+                    .leveled_items
+                    .insert(fid, parse_leveled_list(fid, subs));
             })?,
             b"LVLN" => extract_records(&mut reader, end, b"LVLN", &mut |fid, subs| {
-                index.leveled_npcs.insert(fid, parse_leveled_list(fid, subs));
+                index
+                    .leveled_npcs
+                    .insert(fid, parse_leveled_list(fid, subs));
             })?,
             // Actors and supporting records.
             b"NPC_" => extract_records(&mut reader, end, b"NPC_", &mut |fid, subs| {
@@ -262,19 +266,16 @@ mod tests {
     fn extract_records_walks_one_group() {
         let mut subs: Vec<(&[u8; 4], Vec<u8>)> = Vec::new();
         subs.push((b"EDID", b"TestWeap\0".to_vec()));
-        subs.push((
-            b"DATA",
-            {
-                let mut d = Vec::new();
-                d.extend_from_slice(&100u32.to_le_bytes()); // value
-                d.extend_from_slice(&0u32.to_le_bytes()); // health
-                d.extend_from_slice(&2.0f32.to_le_bytes()); // weight
-                d.extend_from_slice(&20u16.to_le_bytes()); // damage
-                d.push(8); // clip
-                d.push(0);
-                d
-            },
-        ));
+        subs.push((b"DATA", {
+            let mut d = Vec::new();
+            d.extend_from_slice(&100u32.to_le_bytes()); // value
+            d.extend_from_slice(&0u32.to_le_bytes()); // health
+            d.extend_from_slice(&2.0f32.to_le_bytes()); // weight
+            d.extend_from_slice(&20u16.to_le_bytes()); // damage
+            d.push(8); // clip
+            d.push(0);
+            d
+        }));
         let record = build_record(b"WEAP", 0xCAFE, &subs);
         let group = wrap_group(b"WEAP", &record);
 
@@ -288,7 +289,9 @@ mod tests {
         let weap = index.items.get(&0xCAFE).expect("WEAP indexed");
         assert_eq!(weap.common.editor_id, "TestWeap");
         match weap.kind {
-            ItemKind::Weapon { damage, clip_size, .. } => {
+            ItemKind::Weapon {
+                damage, clip_size, ..
+            } => {
                 assert_eq!(damage, 20);
                 assert_eq!(clip_size, 8);
             }
@@ -410,27 +413,33 @@ mod tests {
     #[test]
     fn esm_index_total_counts_all_categories() {
         let mut idx = EsmIndex::default();
-        idx.items.insert(1, ItemRecord {
-            form_id: 1,
-            common: Default::default(),
-            kind: ItemKind::Misc,
-        });
-        idx.npcs.insert(2, NpcRecord {
-            form_id: 2,
-            editor_id: String::new(),
-            full_name: String::new(),
-            model_path: String::new(),
-            race_form_id: 0,
-            class_form_id: 0,
-            voice_form_id: 0,
-            factions: Vec::new(),
-            inventory: Vec::new(),
-            ai_packages: Vec::new(),
-            death_item_form_id: 0,
-            level: 1,
-            disposition_base: 50,
-            acbs_flags: 0,
-        });
+        idx.items.insert(
+            1,
+            ItemRecord {
+                form_id: 1,
+                common: Default::default(),
+                kind: ItemKind::Misc,
+            },
+        );
+        idx.npcs.insert(
+            2,
+            NpcRecord {
+                form_id: 2,
+                editor_id: String::new(),
+                full_name: String::new(),
+                model_path: String::new(),
+                race_form_id: 0,
+                class_form_id: 0,
+                voice_form_id: 0,
+                factions: Vec::new(),
+                inventory: Vec::new(),
+                ai_packages: Vec::new(),
+                death_item_form_id: 0,
+                level: 1,
+                disposition_base: 50,
+                acbs_flags: 0,
+            },
+        );
         assert_eq!(idx.total(), 2);
     }
 }

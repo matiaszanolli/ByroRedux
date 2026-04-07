@@ -11,9 +11,7 @@ use crate::blocks::tri_shape::NiTriStripsData;
 use crate::scene::NifScene;
 use crate::types::BlockRef;
 
-use byroredux_core::ecs::components::collision::{
-    CollisionShape, MotionType, RigidBodyData,
-};
+use byroredux_core::ecs::components::collision::{CollisionShape, MotionType, RigidBodyData};
 use byroredux_core::math::{Quat, Vec3};
 
 /// Default Havok-to-Gamebryo scale factor (7.0 for all Bethesda games).

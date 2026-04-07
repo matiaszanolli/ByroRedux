@@ -213,57 +213,48 @@ pub fn parse_block(
         "NiTimeController" => Ok(Box::new(NiTimeController::parse(stream)?)),
         // ── Particle system blocks ──────────────────────────────────
         // Geometry nodes
-        "NiParticles" => Ok(Box::new(particle::parse_particle_system(stream, "NiParticles")?)),
-        "NiParticleSystem" | "NiMeshParticleSystem" => {
-            Ok(Box::new(particle::parse_particle_system(stream, type_name)?))
-        }
-        "BSStripParticleSystem" => {
-            Ok(Box::new(particle::parse_strip_particle_system(stream)?))
-        }
-        "BSMasterParticleSystem" => {
-            Ok(Box::new(particle::parse_master_particle_system(stream)?))
-        }
+        "NiParticles" => Ok(Box::new(particle::parse_particle_system(
+            stream,
+            "NiParticles",
+        )?)),
+        "NiParticleSystem" | "NiMeshParticleSystem" => Ok(Box::new(
+            particle::parse_particle_system(stream, type_name)?,
+        )),
+        "BSStripParticleSystem" => Ok(Box::new(particle::parse_strip_particle_system(stream)?)),
+        "BSMasterParticleSystem" => Ok(Box::new(particle::parse_master_particle_system(stream)?)),
         // Data blocks
         "NiParticlesData" | "NiPSysData" | "NiMeshPSysData" | "BSStripPSysData" => {
             Ok(Box::new(particle::parse_particles_data(stream, type_name)?))
         }
-        "NiPSysEmitterCtlrData" => {
-            Ok(Box::new(particle::parse_emitter_ctlr_data(stream)?))
-        }
+        "NiPSysEmitterCtlrData" => Ok(Box::new(particle::parse_emitter_ctlr_data(stream)?)),
         // Modifiers
-        "NiPSysPositionModifier" => {
-            Ok(Box::new(particle::parse_modifier_only(stream, "NiPSysPositionModifier")?))
-        }
-        "NiPSysAgeDeathModifier" => {
-            Ok(Box::new(particle::parse_age_death_modifier(stream)?))
-        }
+        "NiPSysPositionModifier" => Ok(Box::new(particle::parse_modifier_only(
+            stream,
+            "NiPSysPositionModifier",
+        )?)),
+        "NiPSysAgeDeathModifier" => Ok(Box::new(particle::parse_age_death_modifier(stream)?)),
         "NiPSysBombModifier" => Ok(Box::new(particle::parse_bomb_modifier(stream)?)),
-        "NiPSysBoundUpdateModifier" => {
-            Ok(Box::new(particle::parse_bound_update_modifier(stream)?))
-        }
+        "NiPSysBoundUpdateModifier" => Ok(Box::new(particle::parse_bound_update_modifier(stream)?)),
         "NiPSysColliderManager" => Ok(Box::new(particle::parse_collider_manager(stream)?)),
         "NiPSysColorModifier" => Ok(Box::new(particle::parse_color_modifier(stream)?)),
         "NiPSysDragModifier" => Ok(Box::new(particle::parse_drag_modifier(stream)?)),
         "NiPSysGravityModifier" => Ok(Box::new(particle::parse_gravity_modifier(stream)?)),
-        "NiPSysGrowFadeModifier" => {
-            Ok(Box::new(particle::parse_grow_fade_modifier(stream)?))
-        }
-        "NiPSysRotationModifier" => {
-            Ok(Box::new(particle::parse_rotation_modifier(stream)?))
-        }
+        "NiPSysGrowFadeModifier" => Ok(Box::new(particle::parse_grow_fade_modifier(stream)?)),
+        "NiPSysRotationModifier" => Ok(Box::new(particle::parse_rotation_modifier(stream)?)),
         "NiPSysSpawnModifier" => Ok(Box::new(particle::parse_spawn_modifier(stream)?)),
-        "NiPSysMeshUpdateModifier" => {
-            Ok(Box::new(particle::parse_mesh_update_modifier(stream, "NiPSysMeshUpdateModifier")?))
-        }
-        "BSPSysHavokUpdateModifier" => {
-            Ok(Box::new(particle::parse_havok_update_modifier(stream)?))
-        }
-        "BSParentVelocityModifier" => {
-            Ok(Box::new(particle::parse_float_modifier(stream, "BSParentVelocityModifier")?))
-        }
-        "BSWindModifier" => {
-            Ok(Box::new(particle::parse_float_modifier(stream, "BSWindModifier")?))
-        }
+        "NiPSysMeshUpdateModifier" => Ok(Box::new(particle::parse_mesh_update_modifier(
+            stream,
+            "NiPSysMeshUpdateModifier",
+        )?)),
+        "BSPSysHavokUpdateModifier" => Ok(Box::new(particle::parse_havok_update_modifier(stream)?)),
+        "BSParentVelocityModifier" => Ok(Box::new(particle::parse_float_modifier(
+            stream,
+            "BSParentVelocityModifier",
+        )?)),
+        "BSWindModifier" => Ok(Box::new(particle::parse_float_modifier(
+            stream,
+            "BSWindModifier",
+        )?)),
         "BSPSysInheritVelocityModifier" => {
             Ok(Box::new(particle::parse_inherit_velocity_modifier(stream)?))
         }
@@ -273,12 +264,8 @@ pub fn parse_block(
         "BSPSysSubTexModifier" => Ok(Box::new(particle::parse_sub_tex_modifier(stream)?)),
         "BSPSysLODModifier" => Ok(Box::new(particle::parse_lod_modifier(stream)?)),
         "BSPSysScaleModifier" => Ok(Box::new(particle::parse_scale_modifier(stream)?)),
-        "BSPSysSimpleColorModifier" => {
-            Ok(Box::new(particle::parse_simple_color_modifier(stream)?))
-        }
-        "BSPSysStripUpdateModifier" => {
-            Ok(Box::new(particle::parse_strip_update_modifier(stream)?))
-        }
+        "BSPSysSimpleColorModifier" => Ok(Box::new(particle::parse_simple_color_modifier(stream)?)),
+        "BSPSysStripUpdateModifier" => Ok(Box::new(particle::parse_strip_update_modifier(stream)?)),
         // Emitters
         "NiPSysBoxEmitter" => Ok(Box::new(particle::parse_box_emitter(stream)?)),
         "NiPSysCylinderEmitter" => Ok(Box::new(particle::parse_cylinder_emitter(stream)?)),
@@ -287,29 +274,21 @@ pub fn parse_block(
         "NiPSysMeshEmitter" => Ok(Box::new(particle::parse_mesh_emitter(stream)?)),
         // Colliders
         "NiPSysPlanarCollider" => Ok(Box::new(particle::parse_planar_collider(stream)?)),
-        "NiPSysSphericalCollider" => {
-            Ok(Box::new(particle::parse_spherical_collider(stream)?))
-        }
+        "NiPSysSphericalCollider" => Ok(Box::new(particle::parse_spherical_collider(stream)?)),
         // Field modifiers
-        "NiPSysVortexFieldModifier" | "NiPSysGravityFieldModifier" => {
-            Ok(Box::new(particle::parse_field_modifier_vec3(stream, type_name)?))
-        }
-        "NiPSysDragFieldModifier" => {
-            Ok(Box::new(particle::parse_drag_field_modifier(stream)?))
-        }
+        "NiPSysVortexFieldModifier" | "NiPSysGravityFieldModifier" => Ok(Box::new(
+            particle::parse_field_modifier_vec3(stream, type_name)?,
+        )),
+        "NiPSysDragFieldModifier" => Ok(Box::new(particle::parse_drag_field_modifier(stream)?)),
         "NiPSysTurbulenceFieldModifier" => {
             Ok(Box::new(particle::parse_turbulence_field_modifier(stream)?))
         }
-        "NiPSysAirFieldModifier" => {
-            Ok(Box::new(particle::parse_air_field_modifier(stream)?))
-        }
-        "NiPSysRadialFieldModifier" => {
-            Ok(Box::new(particle::parse_radial_field_modifier(stream)?))
-        }
+        "NiPSysAirFieldModifier" => Ok(Box::new(particle::parse_air_field_modifier(stream)?)),
+        "NiPSysRadialFieldModifier" => Ok(Box::new(particle::parse_radial_field_modifier(stream)?)),
         // Controllers
-        "NiPSysUpdateCtlr" | "NiPSysResetOnLoopCtlr" => {
-            Ok(Box::new(particle::parse_time_controller(stream, type_name)?))
-        }
+        "NiPSysUpdateCtlr" | "NiPSysResetOnLoopCtlr" => Ok(Box::new(
+            particle::parse_time_controller(stream, type_name)?,
+        )),
         "NiPSysEmitterCtlr" => Ok(Box::new(particle::parse_emitter_ctlr(stream)?)),
         "BSPSysMultiTargetEmitterCtlr" => {
             Ok(Box::new(particle::parse_multi_target_emitter_ctlr(stream)?))
@@ -356,9 +335,7 @@ pub fn parse_block(
         "bhkPackedNiTriStripsShape" => Ok(Box::new(BhkPackedNiTriStripsShape::parse(stream)?)),
         "hkPackedNiTriStripsData" => Ok(Box::new(HkPackedNiTriStripsData::parse(stream)?)),
         "bhkCompressedMeshShape" => Ok(Box::new(BhkCompressedMeshShape::parse(stream)?)),
-        "bhkCompressedMeshShapeData" => {
-            Ok(Box::new(BhkCompressedMeshShapeData::parse(stream)?))
-        }
+        "bhkCompressedMeshShapeData" => Ok(Box::new(BhkCompressedMeshShapeData::parse(stream)?)),
         // Havok blocks that remain skip-only (constraints, systems).
         // Constraints deferred to M28 (physics joints).
         "bhkMalleableConstraint"
@@ -381,10 +358,7 @@ pub fn parse_block(
             } else {
                 Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!(
-                        "Havok block '{}' requires block_size to skip",
-                        type_name
-                    ),
+                    format!("Havok block '{}' requires block_size to skip", type_name),
                 ))
             }
         }

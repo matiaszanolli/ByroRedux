@@ -96,8 +96,7 @@ impl NifHeader {
         //   Process Script ExportString, only if BS Version < 131  (≤ FO4)
         //   Export Script ExportString
         //   Max Filepath  ExportString, only if BS Version >= 103  (FO4+)
-        let has_bs_stream_header =
-            version == NifVersion(0x0A000102) || user_version >= 3;
+        let has_bs_stream_header = version == NifVersion(0x0A000102) || user_version >= 3;
         let user_version_2 = if has_bs_stream_header {
             read_u32_le(&mut cursor)?
         } else {

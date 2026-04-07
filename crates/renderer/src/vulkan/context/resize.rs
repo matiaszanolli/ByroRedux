@@ -1,7 +1,9 @@
 //! Swapchain recreation after window resize or suboptimal present.
 
-use super::helpers::{allocate_command_buffers, create_depth_resources, create_framebuffers, create_render_pass};
 use super::super::{pipeline, swapchain};
+use super::helpers::{
+    allocate_command_buffers, create_depth_resources, create_framebuffers, create_render_pass,
+};
 use super::VulkanContext;
 use anyhow::{Context, Result};
 use ash::vk;

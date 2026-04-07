@@ -157,7 +157,10 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                 let consumed = stream.position() - start_pos;
                 log::trace!(
                     "Block {} '{}': offset {}, consumed {} bytes",
-                    i, type_name, start_pos, consumed
+                    i,
+                    type_name,
+                    start_pos,
+                    consumed
                 );
                 // Verify we consumed exactly block_size bytes (if known)
                 if let Some(size) = block_size {

@@ -12,7 +12,9 @@ use byroredux_renderer::{cube_vertices, quad_vertices, triangle_vertices, Vertex
 use byroredux_ui::UiManager;
 
 use crate::anim_convert::convert_nif_clip;
-use crate::asset_provider::{build_texture_provider, parse_grid_coords, resolve_texture, TextureProvider};
+use crate::asset_provider::{
+    build_texture_provider, parse_grid_coords, resolve_texture, TextureProvider,
+};
 use crate::cell_loader;
 use crate::components::{AlphaBlend, CellLightingRes, Decal, InputState, Spinning, TwoSided};
 use crate::helpers::add_child;
@@ -149,10 +151,7 @@ pub(crate) fn setup_scene(
                                 player.root_entity = Some(root);
                             }
                             world.insert(player_entity, player);
-                            log::info!(
-                                "Animation playback started (clip handle {})",
-                                first_handle
-                            );
+                            log::info!("Animation playback started (clip handle {})", first_handle);
                         }
                     }
                     Err(e) => log::error!("Failed to parse KF '{}': {}", kf_path, e),
@@ -177,7 +176,14 @@ pub(crate) fn setup_scene(
         let quad_handle = ctx
             .mesh_registry
             .upload(
-                &ctx.device, alloc, queue, pool, &quad_verts, &quad_idxs, rt, None,
+                &ctx.device,
+                alloc,
+                queue,
+                pool,
+                &quad_verts,
+                &quad_idxs,
+                rt,
+                None,
             )
             .expect("Failed to upload quad mesh");
 
@@ -185,7 +191,14 @@ pub(crate) fn setup_scene(
         let red_handle = ctx
             .mesh_registry
             .upload(
-                &ctx.device, alloc, queue, pool, &red_verts, &red_idxs, rt, None,
+                &ctx.device,
+                alloc,
+                queue,
+                pool,
+                &red_verts,
+                &red_idxs,
+                rt,
+                None,
             )
             .expect("Failed to upload red triangle mesh");
 
@@ -193,7 +206,14 @@ pub(crate) fn setup_scene(
         let blue_handle = ctx
             .mesh_registry
             .upload(
-                &ctx.device, alloc, queue, pool, &blue_verts, &blue_idxs, rt, None,
+                &ctx.device,
+                alloc,
+                queue,
+                pool,
+                &blue_verts,
+                &blue_idxs,
+                rt,
+                None,
             )
             .expect("Failed to upload blue triangle mesh");
 

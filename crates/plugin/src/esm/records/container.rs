@@ -75,12 +75,8 @@ pub fn parse_cont(form_id: u32, subs: &[SubRecord]) -> ContainerRecord {
             // CNTO: item form ID (u32) + count (i32)
             b"CNTO" if sub.data.len() >= 8 => {
                 let item_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
-                let count = i32::from_le_bytes([
-                    sub.data[4],
-                    sub.data[5],
-                    sub.data[6],
-                    sub.data[7],
-                ]);
+                let count =
+                    i32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]);
                 record.contents.push(InventoryEntry {
                     item_form_id,
                     count,
@@ -121,8 +117,7 @@ pub fn parse_leveled_list(form_id: u32, subs: &[SubRecord]) -> LeveledList {
             b"LVLF" if !sub.data.is_empty() => record.flags = sub.data[0],
             // LVLO: level(u16) + pad(u16) + form_id(u32) + count(u16) + pad(u16)
             b"LVLO" if sub.data.len() >= 12 => {
-                let level =
-                    u16::from_le_bytes([sub.data[0], sub.data[1]]);
+                let level = u16::from_le_bytes([sub.data[0], sub.data[1]]);
                 let entry_form = read_u32_at(&sub.data, 4).unwrap_or(0);
                 let count = u16::from_le_bytes([sub.data[8], sub.data[9]]);
                 record.entries.push(LeveledEntry {

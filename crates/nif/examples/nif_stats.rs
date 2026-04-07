@@ -51,10 +51,7 @@ impl Stats {
         self.total += 1;
         // Group errors by their first line — avoids per-file message noise.
         let group_key = err.lines().next().unwrap_or(&err).to_string();
-        self.failure_groups
-            .entry(group_key)
-            .or_default()
-            .push(path);
+        self.failure_groups.entry(group_key).or_default().push(path);
     }
 
     fn success_rate(&self) -> f64 {
@@ -68,19 +65,13 @@ impl Stats {
     fn print(&self) {
         println!();
         println!("─── Parse stats ──────────────────────────────────────────────");
-        println!(
-            "  total:    {:>6}",
-            self.total
-        );
+        println!("  total:    {:>6}", self.total);
         println!(
             "  ok:       {:>6}  ({:.2}%)",
             self.ok,
             self.success_rate() * 100.0
         );
-        println!(
-            "  failures: {:>6}",
-            self.total - self.ok
-        );
+        println!("  failures: {:>6}", self.total - self.ok);
 
         if !self.block_histogram.is_empty() {
             let mut sorted: Vec<(&String, &usize)> = self.block_histogram.iter().collect();
@@ -114,10 +105,7 @@ impl Stats {
 fn process_bytes(stats: &mut Stats, label: String, bytes: &[u8]) {
     match parse_nif(bytes) {
         Ok(scene) => {
-            let names = scene
-                .blocks
-                .iter()
-                .map(|b| b.block_type_name().to_string());
+            let names = scene.blocks.iter().map(|b| b.block_type_name().to_string());
             stats.record_success(names);
         }
         Err(e) => {
@@ -164,11 +152,7 @@ fn process_dir(stats: &mut Stats, root: &Path) {
 
 fn process_bsa(stats: &mut Stats, path: &Path) -> Result<(), String> {
     let archive = BsaArchive::open(path).map_err(|e| format!("open BSA: {e}"))?;
-    eprintln!(
-        "opened {} ({} files)",
-        path.display(),
-        archive.file_count()
-    );
+    eprintln!("opened {} ({} files)", path.display(), archive.file_count());
     let nif_files: Vec<String> = archive
         .list_files()
         .iter()

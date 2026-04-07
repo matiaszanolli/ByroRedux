@@ -29,7 +29,10 @@ pub struct QueryRead<'w, T: Component> {
 impl<'w, T: Component> QueryRead<'w, T> {
     /// Create a new read query. Caller must have already called
     /// `lock_tracker::track_read` before acquiring the RwLock guard.
-    pub(crate) fn new(guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>, type_id: TypeId) -> Self {
+    pub(crate) fn new(
+        guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>,
+        type_id: TypeId,
+    ) -> Self {
         Self {
             guard,
             type_id,
@@ -79,7 +82,10 @@ pub struct QueryWrite<'w, T: Component> {
 impl<'w, T: Component> QueryWrite<'w, T> {
     /// Create a new write query. Caller must have already called
     /// `lock_tracker::track_write` before acquiring the RwLock guard.
-    pub(crate) fn new(guard: RwLockWriteGuard<'w, Box<dyn Any + Send + Sync>>, type_id: TypeId) -> Self {
+    pub(crate) fn new(
+        guard: RwLockWriteGuard<'w, Box<dyn Any + Send + Sync>>,
+        type_id: TypeId,
+    ) -> Self {
         Self {
             guard,
             type_id,

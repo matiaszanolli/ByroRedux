@@ -183,10 +183,7 @@ mod tests {
 
     #[test]
     fn gmst_string_via_prefix() {
-        let subs = vec![
-            sub(b"EDID", b"sTalkAlt\0"),
-            sub(b"DATA", b"Talk\0"),
-        ];
+        let subs = vec![sub(b"EDID", b"sTalkAlt\0"), sub(b"DATA", b"Talk\0")];
         let g = parse_gmst(0x22, &subs);
         assert_eq!(g.value, SettingValue::String("Talk".into()));
     }

@@ -511,7 +511,7 @@ impl BhkMoppBvTreeShape {
         let scale = stream.read_f32_le()?;
         let data_size = stream.read_u32_le()? as usize;
         let origin = read_vec4(stream)?; // since 10.1.0.0 (always present)
-        // Build Type: only for BSVER > 34 (FO3+ only)
+                                         // Build Type: only for BSVER > 34 (FO3+ only)
         if stream.bsver() > 34 {
             let _build_type = stream.read_u8()?;
         }

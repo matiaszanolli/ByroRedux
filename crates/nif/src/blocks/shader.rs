@@ -1580,19 +1580,28 @@ mod tests {
         let mut stream = NifStream::new(&data, &header);
 
         let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
-        assert!(!prop.material_reference, "stopcond should not fire for empty name");
+        assert!(
+            !prop.material_reference,
+            "stopcond should not fire for empty name"
+        );
         assert_eq!(prop.shader_type, 0); // FO76 Default
         assert!(prop.sf1_crcs.is_empty());
         assert!(prop.sf2_crcs.is_empty());
         assert!((prop.glossiness - 0.6).abs() < 1e-6);
         assert!((prop.grayscale_to_palette_scale - 0.4).abs() < 1e-6);
         assert!((prop.fresnel_power - 4.2).abs() < 1e-6);
-        let w = prop.wetness.as_ref().expect("wetness present for BSVER 155");
+        let w = prop
+            .wetness
+            .as_ref()
+            .expect("wetness present for BSVER 155");
         assert!((w.spec_scale - 0.11).abs() < 1e-6);
         assert_eq!(w.env_map_scale, 0.0); // not read for BSVER != 130
         assert!((w.unknown_1 - 0.66).abs() < 1e-6);
         assert!((w.unknown_2 - 0.77).abs() < 1e-6);
-        let lum = prop.luminance.as_ref().expect("luminance present for BSVER 155");
+        let lum = prop
+            .luminance
+            .as_ref()
+            .expect("luminance present for BSVER 155");
         assert!((lum.lum_emittance - 100.0).abs() < 1e-6);
         assert!((lum.exposure_offset - 13.5).abs() < 1e-6);
         assert!((lum.final_exposure_max - 3.0).abs() < 1e-6);
@@ -1674,9 +1683,9 @@ mod tests {
         // SF1 array
         data.extend_from_slice(&1563274220u32.to_le_bytes()); // CAST_SHADOWS
         data.extend_from_slice(&759557230u32.to_le_bytes()); // TWO_SIDED
-        // SF2 array
+                                                             // SF2 array
         data.extend_from_slice(&348504749u32.to_le_bytes()); // VERTEXCOLORS
-        // uv_offset, uv_scale
+                                                             // uv_offset, uv_scale
         for v in [0.0f32, 0.0, 1.0, 1.0] {
             data.extend_from_slice(&v.to_le_bytes());
         }

@@ -34,9 +34,7 @@ pub enum ItemKind {
         topic_form: u32,
     },
     /// INGR: edible ingredient (rare in FNV; common in older TES games).
-    Ingredient {
-        magic_effects: Vec<u32>,
-    },
+    Ingredient { magic_effects: Vec<u32> },
     /// ALCH: consumable / aid (Stimpaks, food, drugs). FNV uses this for nearly
     /// all consumables.
     Aid {

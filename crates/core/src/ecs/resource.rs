@@ -23,7 +23,10 @@ pub struct ResourceRead<'w, R: Resource> {
 impl<'w, R: Resource> ResourceRead<'w, R> {
     /// Caller must have already called `lock_tracker::track_read` before
     /// acquiring the RwLock guard.
-    pub(crate) fn new(guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>, type_id: TypeId) -> Self {
+    pub(crate) fn new(
+        guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>,
+        type_id: TypeId,
+    ) -> Self {
         Self {
             guard,
             type_id,
@@ -64,7 +67,10 @@ pub struct ResourceWrite<'w, R: Resource> {
 impl<'w, R: Resource> ResourceWrite<'w, R> {
     /// Caller must have already called `lock_tracker::track_write` before
     /// acquiring the RwLock guard.
-    pub(crate) fn new(guard: RwLockWriteGuard<'w, Box<dyn Any + Send + Sync>>, type_id: TypeId) -> Self {
+    pub(crate) fn new(
+        guard: RwLockWriteGuard<'w, Box<dyn Any + Send + Sync>>,
+        type_id: TypeId,
+    ) -> Self {
         Self {
             guard,
             type_id,

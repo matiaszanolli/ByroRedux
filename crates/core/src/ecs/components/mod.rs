@@ -10,8 +10,8 @@ pub mod light;
 pub mod material;
 pub mod mesh;
 pub mod name;
-pub mod texture;
 pub mod scene_flags;
+pub mod texture;
 pub mod transform;
 pub mod world_bound;
 

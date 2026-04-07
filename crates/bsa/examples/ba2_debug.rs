@@ -12,7 +12,9 @@ fn main() {
         .filter_level(log::LevelFilter::Trace)
         .try_init();
 
-    let path = std::env::args().nth(1).expect("usage: ba2_debug <path.ba2>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: ba2_debug <path.ba2>");
     let archive = Ba2Archive::open(&path).unwrap();
     println!(
         "BA2 v{} {:?}, {} files",
@@ -52,7 +54,13 @@ fn main() {
             let preview: String = d
                 .iter()
                 .take(80)
-                .map(|b| if (32..=126).contains(b) { *b as char } else { '.' })
+                .map(|b| {
+                    if (32..=126).contains(b) {
+                        *b as char
+                    } else {
+                        '.'
+                    }
+                })
                 .collect();
             println!("  preview: {}", preview);
             std::fs::write("/tmp/ba2_probe.nif", &d).unwrap();

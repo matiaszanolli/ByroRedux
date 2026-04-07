@@ -8,8 +8,8 @@ use byroredux_core::animation::{
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
-    ActiveCamera, AnimatedAlpha, AnimatedColor, AnimatedVisibility, Children,
-    DebugStats, DeltaTime, EngineConfig, GlobalTransform, Name, Parent, TotalTime, Transform, World,
+    ActiveCamera, AnimatedAlpha, AnimatedColor, AnimatedVisibility, Children, DebugStats,
+    DeltaTime, EngineConfig, GlobalTransform, Name, Parent, TotalTime, Transform, World,
 };
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::{FixedString, StringPool};
@@ -53,12 +53,18 @@ pub(crate) fn fly_camera_system(world: &World, dt: f32) {
     if input.keys_held.contains(&winit::keyboard::KeyCode::Space) {
         move_dir.y += 1.0;
     }
-    if input.keys_held.contains(&winit::keyboard::KeyCode::ShiftLeft) {
+    if input
+        .keys_held
+        .contains(&winit::keyboard::KeyCode::ShiftLeft)
+    {
         move_dir.y -= 1.0;
     }
 
     // Speed boost with Ctrl.
-    let boost = if input.keys_held.contains(&winit::keyboard::KeyCode::ControlLeft) {
+    let boost = if input
+        .keys_held
+        .contains(&winit::keyboard::KeyCode::ControlLeft)
+    {
         3.0
     } else {
         1.0
