@@ -172,8 +172,13 @@ pub fn parse_block(
         "NiSkinPartition" => Ok(Box::new(NiSkinPartition::parse(stream)?)),
         "BSSkin::Instance" => Ok(Box::new(BsSkinInstance::parse(stream)?)),
         "BSSkin::BoneData" => Ok(Box::new(BsSkinBoneData::parse(stream)?)),
-        "NiStringExtraData" | "NiBinaryExtraData" | "NiIntegerExtraData" | "BSXFlags"
-        | "NiBooleanExtraData" => Ok(Box::new(NiExtraData::parse(stream, type_name)?)),
+        "NiStringExtraData"
+        | "NiBinaryExtraData"
+        | "NiIntegerExtraData"
+        | "BSXFlags"
+        | "NiBooleanExtraData"
+        | "NiStringsExtraData"
+        | "NiIntegersExtraData" => Ok(Box::new(NiExtraData::parse(stream, type_name)?)),
         "BSBound" => Ok(Box::new(BsBound::parse(stream)?)),
         "BSDecalPlacementVectorExtraData" => {
             Ok(Box::new(BsDecalPlacementVectorExtraData::parse(stream)?))
@@ -548,5 +553,65 @@ mod dispatch_tests {
             .as_any()
             .downcast_ref::<crate::blocks::controller::NiSequenceStreamHelper>()
             .is_some());
+    }
+
+    /// Helper: encode a pre-20.1 inline length-prefixed string (u32 len + bytes).
+    fn inline_string(s: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&(s.len() as u32).to_le_bytes());
+        out.extend_from_slice(s.as_bytes());
+        out
+    }
+
+    /// Regression test for issue #164: array-form extra data.
+    #[test]
+    fn oblivion_strings_and_integers_extra_data_roundtrip() {
+        use crate::blocks::extra_data::NiExtraData;
+
+        let header = oblivion_header();
+
+        // NiStringsExtraData: name(empty) + count(3) + 3 inline strings.
+        let mut strings_bytes = Vec::new();
+        strings_bytes.extend_from_slice(&0u32.to_le_bytes()); // name (empty inline str)
+        strings_bytes.extend_from_slice(&3u32.to_le_bytes()); // count
+        strings_bytes.extend_from_slice(&inline_string("alpha"));
+        strings_bytes.extend_from_slice(&inline_string("beta"));
+        strings_bytes.extend_from_slice(&inline_string("gamma"));
+        let mut stream = NifStream::new(&strings_bytes, &header);
+        let block = parse_block(
+            "NiStringsExtraData",
+            &mut stream,
+            Some(strings_bytes.len() as u32),
+        )
+        .expect("NiStringsExtraData should dispatch");
+        let ed = block
+            .as_any()
+            .downcast_ref::<NiExtraData>()
+            .expect("downcast to NiExtraData");
+        let arr = ed.strings_array.as_ref().expect("strings_array populated");
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[0].as_deref(), Some("alpha"));
+        assert_eq!(arr[1].as_deref(), Some("beta"));
+        assert_eq!(arr[2].as_deref(), Some("gamma"));
+
+        // NiIntegersExtraData: name(empty) + count(2) + two u32s.
+        let mut ints_bytes = Vec::new();
+        ints_bytes.extend_from_slice(&0u32.to_le_bytes()); // name
+        ints_bytes.extend_from_slice(&2u32.to_le_bytes()); // count
+        ints_bytes.extend_from_slice(&42u32.to_le_bytes());
+        ints_bytes.extend_from_slice(&0xDEADBEEFu32.to_le_bytes());
+        let mut stream = NifStream::new(&ints_bytes, &header);
+        let block = parse_block(
+            "NiIntegersExtraData",
+            &mut stream,
+            Some(ints_bytes.len() as u32),
+        )
+        .expect("NiIntegersExtraData should dispatch");
+        let ed = block
+            .as_any()
+            .downcast_ref::<NiExtraData>()
+            .expect("downcast to NiExtraData");
+        let arr = ed.integers_array.as_ref().expect("integers_array populated");
+        assert_eq!(arr, &vec![42u32, 0xDEADBEEF]);
     }
 }

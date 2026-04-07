@@ -17,6 +17,11 @@ pub struct NiExtraData {
     pub string_value: Option<Arc<str>>,
     pub integer_value: Option<u32>,
     pub binary_data: Option<Vec<u8>>,
+    /// Populated for `NiStringsExtraData` — array of string table entries
+    /// carrying e.g. material override lists.
+    pub strings_array: Option<Vec<Option<Arc<str>>>>,
+    /// Populated for `NiIntegersExtraData` — array of 32-bit integers.
+    pub integers_array: Option<Vec<u32>>,
 }
 
 impl NiObject for NiExtraData {
@@ -36,6 +41,8 @@ impl NiExtraData {
         let mut string_value = None;
         let mut integer_value = None;
         let mut binary_data = None;
+        let mut strings_array = None;
+        let mut integers_array = None;
 
         match type_name {
             "NiStringExtraData" => {
@@ -52,6 +59,23 @@ impl NiExtraData {
                 let size = stream.read_u32_le()? as usize;
                 binary_data = Some(stream.read_bytes(size)?);
             }
+            // Array variants — count (u32) followed by N items. See #164.
+            "NiStringsExtraData" => {
+                let count = stream.read_u32_le()? as usize;
+                let mut arr = Vec::with_capacity(count);
+                for _ in 0..count {
+                    arr.push(stream.read_string()?);
+                }
+                strings_array = Some(arr);
+            }
+            "NiIntegersExtraData" => {
+                let count = stream.read_u32_le()? as usize;
+                let mut arr = Vec::with_capacity(count);
+                for _ in 0..count {
+                    arr.push(stream.read_u32_le()?);
+                }
+                integers_array = Some(arr);
+            }
             _ => {
                 // Unknown extra data subtype — can't skip without size
             }
@@ -63,6 +87,8 @@ impl NiExtraData {
             string_value,
             integer_value,
             binary_data,
+            strings_array,
+            integers_array,
         })
     }
 }
