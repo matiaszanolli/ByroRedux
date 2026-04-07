@@ -262,6 +262,14 @@ pub(crate) fn setup_scene(
     world.insert(cam, Camera::default());
     world.insert_resource(ActiveCamera(cam));
 
+    // Attach a dynamic capsule collider so the fly camera collides with
+    // the world. physics_sync_system picks this up in Phase 1 of the
+    // frame after scene setup. Only done when we actually loaded NIF
+    // world content — the primitive demo doesn't need physics.
+    if has_nif_content {
+        world.insert(cam, byroredux_physics::PlayerBody::HUMAN);
+    }
+
     // Initialize fly camera yaw/pitch from the initial look direction.
     {
         let mut input = world.resource_mut::<InputState>();

@@ -3,6 +3,7 @@ members = [
     "crates/core",
     "crates/nif",
     "crates/plugin",
+    "crates/physics",
     "crates/renderer",
     "crates/platform",
     "crates/scripting",
@@ -27,6 +28,7 @@ byroredux-plugin = { path = "crates/plugin" }
 byroredux-scripting = { path = "crates/scripting" }
 byroredux-nif = { path = "crates/nif" }
 byroredux-bsa = { path = "crates/bsa" }
+byroredux-physics = { path = "crates/physics" }
 byroredux-cxx-bridge = { path = "crates/cxx-bridge" }
 byroredux-ui = { path = "crates/ui" }
 
@@ -67,6 +69,9 @@ lz4_flex = "0.11"
 
 # Linear algebra (robust SVD for degenerate NIF matrices)
 nalgebra = "0.33"
+
+# Physics (nalgebra 0.33 ABI matches the workspace pin above)
+rapier3d = { version = "0.22", features = ["simd-stable"] }
 
 # Image loading
 image = "0.24"

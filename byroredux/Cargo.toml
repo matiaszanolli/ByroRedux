@@ -10,6 +10,7 @@ byroredux-platform = { workspace = true }
 byroredux-scripting = { workspace = true }
 byroredux-nif = { workspace = true }
 byroredux-bsa = { workspace = true }
+byroredux-physics = { workspace = true }
 byroredux-plugin = { workspace = true }
 byroredux-cxx-bridge = { workspace = true }
 byroredux-ui = { workspace = true }

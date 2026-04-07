@@ -114,6 +114,11 @@ impl App {
         world.insert_resource(StringPool::new());
         world.insert_resource(AnimationClipRegistry::new());
         world.insert_resource(NameIndex::new());
+        world.insert_resource(byroredux_physics::PhysicsWorld::new());
+
+        // Pre-register component storages that the physics sync system
+        // queries on the first frame (before anything has been inserted).
+        world.register::<byroredux_physics::RapierHandles>();
 
         // Register scripting component storages.
         byroredux_scripting::register(&mut world);
@@ -124,6 +129,7 @@ impl App {
         scheduler.add(animation_system);
         scheduler.add(make_transform_propagation_system());
         scheduler.add(spin_system);
+        scheduler.add(byroredux_physics::physics_sync_system);
         scheduler.add(byroredux_scripting::timer_tick_system);
         scheduler.add(log_stats_system);
         scheduler.add(byroredux_scripting::event_cleanup_system);

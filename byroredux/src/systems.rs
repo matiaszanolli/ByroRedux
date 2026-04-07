@@ -74,20 +74,42 @@ pub(crate) fn fly_camera_system(world: &World, dt: f32) {
     // Build rotation from yaw/pitch.
     let rotation = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
 
-    if let Some(mut tq) = world.query_mut::<Transform>() {
+    // Compute desired world-space move vector (yaw-only, so Y stays level).
+    let move_world = if move_dir != Vec3::ZERO {
+        let dir = move_dir.normalize();
+        let forward = Quat::from_rotation_y(yaw) * -Vec3::Z;
+        let right = Quat::from_rotation_y(yaw) * Vec3::X;
+        let up = Vec3::Y;
+        (forward * dir.z + right * dir.x + up * dir.y) * boost
+    } else {
+        Vec3::ZERO
+    };
+
+    // Branch: physics-driven (camera has RapierHandles) vs free-fly fallback.
+    let has_physics = world
+        .query::<byroredux_physics::RapierHandles>()
+        .map(|q| q.contains(cam_entity))
+        .unwrap_or(false);
+
+    if has_physics {
+        // Always update rotation on the Transform — Rapier Phase 4 only
+        // writes translation/rotation for dynamic bodies, but we want the
+        // rotation to reflect input instantly.
+        if let Some(mut tq) = world.query_mut::<Transform>() {
+            if let Some(transform) = tq.get_mut(cam_entity) {
+                transform.rotation = rotation;
+            }
+        }
+        // Write linear velocity into the Rapier body. `speed` from
+        // InputState is already per-frame — divide out dt to get per-second.
+        let velocity_per_sec = if dt > 0.0 { speed / dt } else { 0.0 };
+        let v = move_world * velocity_per_sec;
+        byroredux_physics::set_linear_velocity(world, cam_entity, v);
+    } else if let Some(mut tq) = world.query_mut::<Transform>() {
         if let Some(transform) = tq.get_mut(cam_entity) {
             transform.rotation = rotation;
-
-            if move_dir != Vec3::ZERO {
-                let move_dir = move_dir.normalize();
-                // Move relative to camera orientation (but yaw-only for horizontal).
-                let forward = Quat::from_rotation_y(yaw) * -Vec3::Z;
-                let right = Quat::from_rotation_y(yaw) * Vec3::X;
-                let up = Vec3::Y;
-
-                transform.translation += forward * move_dir.z * speed * boost;
-                transform.translation += right * move_dir.x * speed * boost;
-                transform.translation += up * move_dir.y * speed * boost;
+            if move_world != Vec3::ZERO {
+                transform.translation += move_world * speed;
             }
         }
     }

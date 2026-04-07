@@ -1,0 +1,11 @@
+[package]
+name = "byroredux-physics"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+byroredux-core = { workspace = true }
+glam = { workspace = true }
+log = { workspace = true }
+nalgebra = { workspace = true }
+rapier3d = { workspace = true }
