@@ -573,8 +573,11 @@ impl GpuBuffer {
             dst_offset: 0,
             size,
         };
-        with_one_time_commands(device, queue, command_pool, |cmd| unsafe {
-            device.cmd_copy_buffer(cmd, staging.buffer, buffer, &[copy_region]);
+        with_one_time_commands(device, queue, command_pool, |cmd| {
+            unsafe {
+                device.cmd_copy_buffer(cmd, staging.buffer, buffer, &[copy_region]);
+            }
+            Ok(())
         })?;
 
         // 4. Free staging resources (guard ensures cleanup even on error above).

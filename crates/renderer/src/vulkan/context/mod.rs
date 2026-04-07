@@ -213,7 +213,9 @@ impl VulkanContext {
                     &graphics_queue,
                     command_pool,
                     |cmd| unsafe {
-                        let _ = accel.build_tlas(&device, &gpu_allocator, cmd, &empty_draws);
+                        accel
+                            .build_tlas(&device, &gpu_allocator, cmd, &empty_draws)
+                            .context("initial empty TLAS build")
                     },
                 )?;
                 if let Some(tlas_handle) = accel.tlas_handle() {

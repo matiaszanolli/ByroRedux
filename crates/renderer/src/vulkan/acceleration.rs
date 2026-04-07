@@ -183,12 +183,15 @@ impl AccelerationManager {
             .primitive_offset(0)
             .first_vertex(0);
 
-        super::texture::with_one_time_commands(device, queue, command_pool, |cmd| unsafe {
-            self.accel_loader.cmd_build_acceleration_structures(
-                cmd,
-                &[build_info],
-                &[std::slice::from_ref(&range_info)],
-            );
+        super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
+            unsafe {
+                self.accel_loader.cmd_build_acceleration_structures(
+                    cmd,
+                    &[build_info],
+                    &[std::slice::from_ref(&range_info)],
+                );
+            }
+            Ok(())
         })?;
 
         // Get the BLAS device address.

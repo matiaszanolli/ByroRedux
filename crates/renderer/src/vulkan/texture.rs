@@ -225,6 +225,7 @@ impl Texture {
                     &[barrier_to_read],
                 );
             }
+            Ok(())
         })?;
 
         // 6. Destroy staging buffer (guard ensures cleanup even on error above).
@@ -477,6 +478,7 @@ impl Texture {
                     &[barrier_to_read],
                 );
             }
+            Ok(())
         })?;
 
         // 6. Destroy staging (guard ensures cleanup even on error above).
@@ -590,12 +592,21 @@ impl Drop for Texture {
 /// Execute a one-time-submit command buffer: allocate, record, submit, wait, free.
 ///
 /// The queue `Mutex` is locked only for the submit+wait, not during recording.
-pub(crate) fn with_one_time_commands<F: FnOnce(vk::CommandBuffer)>(
+/// Run a closure in a one-time-submit command buffer, then wait for completion.
+///
+/// The closure returns `Result<()>` so recording errors (e.g. failed buffer
+/// allocation mid-build) propagate out *without* submitting a partially-
+/// recorded command buffer to the GPU. On closure failure the command buffer
+/// is ended (Vulkan requires that before free) and freed without submission.
+pub(crate) fn with_one_time_commands<F>(
     device: &ash::Device,
     queue: &std::sync::Mutex<vk::Queue>,
     pool: vk::CommandPool,
     f: F,
-) -> Result<()> {
+) -> Result<()>
+where
+    F: FnOnce(vk::CommandBuffer) -> Result<()>,
+{
     let alloc_info = vk::CommandBufferAllocateInfo::default()
         .command_pool(pool)
         .level(vk::CommandBufferLevel::PRIMARY)
@@ -616,7 +627,19 @@ pub(crate) fn with_one_time_commands<F: FnOnce(vk::CommandBuffer)>(
             .context("begin one-time command buffer")?;
     }
 
-    f(cmd);
+    // Run the recording closure. If it fails, end + free the command buffer
+    // (Vulkan spec requires end_command_buffer before free_command_buffers
+    // when the buffer is in the recording state) and propagate the error
+    // *without submitting*.
+    if let Err(e) = f(cmd) {
+        unsafe {
+            // Best-effort end; ignore the result since we're already in an
+            // error path. The buffer is then freed without submission.
+            let _ = device.end_command_buffer(cmd);
+            device.free_command_buffers(pool, &[cmd]);
+        }
+        return Err(e).context("one-time command recording failed; submission aborted");
+    }
 
     unsafe {
         device
