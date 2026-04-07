@@ -198,11 +198,25 @@ BSStripPSysData, NiPSysEmitterCtlrData. 18 modifiers, 5 emitters, 2 colliders,
 6 field modifiers, 21 controllers via shared base parsers.
 **Block count:** +48 (total ~167) | **Games:** All (effects)
 
-### N23.9: Fallout 76 and Starfield
-**Status:** Planned
-**Scope:** FO76 shader stopcond, BSGeometry, BSMaterial, extended flags.
-Starfield: BSGeometrySegmentData, material paths.
-**Block count:** +7-10 (total ~130+) | **Games:** FO76, Starfield
+### N23.9: Fallout 76 and Starfield — DONE (shader blocks)
+**Status:** Shader blocks complete. BSGeometrySegmentData deferred — current
+block_size skip is correct; full parsing only needed when we surface segment
+metadata to rendering (not yet).
+**Scope:** BSLightingShaderProperty and BSEffectShaderProperty extended for
+BSVER >= 132 (CRC32-hashed shader flag arrays replacing the u32 flag pair) and
+BSVER >= 152 (SF2 array). BSVER == 155 (FO76) adds BSShaderType155 dispatch
+with distinct skin/hair tint layouts, BSSPLuminanceParams, BSSPTranslucencyParams,
+BSTextureArray lists, and refraction power (effect shader). WetnessParams
+extended with Unknown 1 (BSVER > 130) and Unknown 2 (BSVER == 155). Stopcond
+short-circuit: when BSVER >= 155 and Name is a non-empty BGSM/BGEM file path,
+return a material-reference stub — the real material lives in the BGSM file
+(out of scope for NIF parsing). BSEffectShaderProperty adds Reflectance,
+Lighting, Emittance, and Emit Gradient textures for FO76.
+**Result:** Both shader blocks now track correct stream positions through
+BSVER 132–170+, preserving block size integrity on Starfield NIFs (where
+material references via Name are the norm). 6 new unit tests exercise the
+FO76 flag-array, trailing, skin-tint, and stopcond paths.
+**Block count:** 0 new (extends 2 existing) | **Games:** FO76, Starfield
 
 ### N23.10: Test Infrastructure
 **Status:** Planned (parallel)
@@ -221,7 +235,7 @@ Starfield: BSGeometrySegmentData, material paths.
 | N23.6 | Collision (full parse) | +30 | ~107 | **DONE** (compressed mesh + shapes) |
 | N23.7 | Fallout 4 | +12 | ~119 | **DONE** |
 | N23.8 | Particles | +48 | ~167 | **DONE** |
-| N23.9 | FO76/Starfield | +7 | ~174 | Planned |
+| N23.9 | FO76/Starfield | 0 | ~167 | **DONE** (shader blocks) |
 | N23.10 | Test infra | 0 | ~174 | Planned |
 
 **Current registered type names: 186** (156 parsed + 30 Havok skip)

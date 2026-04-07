@@ -189,34 +189,39 @@ impl BSShaderTextureSet {
 /// After the common fields, BSLightingShaderProperty has 0–7 additional fields
 /// determined by the `shader_type` value. These carry type-specific rendering
 /// parameters (env map scale, skin tint, parallax, eye cubemap, etc.).
+///
+/// Note: Skyrim/FO4 uses `BSLightingShaderType` enum (type 5=SkinTint, 6=HairTint);
+/// FO76 uses `BSShaderType155` enum (type 4=SkinTint as Color4, 5=HairTint as Color3).
 #[derive(Debug, Clone)]
 pub enum ShaderTypeData {
     /// Type 0 (Default), 2 (Glow), 3 (Parallax), 4 (Face Tint),
     /// 8–10 (Landscape), 12–13 (Tree/LOD), 15 (LOD HD), 17–19 (Cloud/Noise).
     None,
-    /// Type 1: Environment Map.
+    /// Type 1 (Skyrim/FO4): Environment Map.
     EnvironmentMap { env_map_scale: f32 },
-    /// Type 5: Skin Tint.
+    /// Type 5 (Skyrim/FO4): Skin Tint (Color3).
     SkinTint { skin_tint_color: [f32; 3] },
-    /// Type 6: Hair Tint.
+    /// Type 6 (Skyrim/FO4): Hair Tint.
     HairTint { hair_tint_color: [f32; 3] },
-    /// Type 7: Parallax Occlusion.
+    /// Type 7 (Skyrim/FO4): Parallax Occlusion.
     ParallaxOcc { max_passes: f32, scale: f32 },
-    /// Type 11: Multi-Layer Parallax.
+    /// Type 11 (Skyrim/FO4): Multi-Layer Parallax.
     MultiLayerParallax {
         inner_layer_thickness: f32,
         refraction_scale: f32,
         inner_layer_texture_scale: [f32; 2],
         envmap_strength: f32,
     },
-    /// Type 14: Sparkle Snow.
+    /// Type 14 (Skyrim/FO4): Sparkle Snow.
     SparkleSnow { sparkle_parameters: [f32; 4] },
-    /// Type 16: Eye Environment Map.
+    /// Type 16 (Skyrim/FO4): Eye Environment Map.
     EyeEnvmap {
         eye_cubemap_scale: f32,
         left_eye_reflection_center: [f32; 3],
         right_eye_reflection_center: [f32; 3],
     },
+    /// Type 4 (FO76 BSShaderType155): Skin Tint with alpha (Color4).
+    Fo76SkinTint { skin_tint_color: [f32; 4] },
 }
 
 /// FO4+ wetness parameters (BSSPWetnessParams).
@@ -229,6 +234,35 @@ pub struct WetnessParams {
     pub env_map_scale: f32,
     pub fresnel_power: f32,
     pub metalness: f32,
+    /// Present for BSVER > 130.
+    pub unknown_1: f32,
+    /// Present for BSVER == 155 (FO76).
+    pub unknown_2: f32,
+}
+
+/// FO76 luminance parameters (BSSPLuminanceParams).
+#[derive(Debug, Clone, Default)]
+pub struct LuminanceParams {
+    pub lum_emittance: f32,
+    pub exposure_offset: f32,
+    pub final_exposure_min: f32,
+    pub final_exposure_max: f32,
+}
+
+/// FO76 translucency parameters (BSSPTranslucencyParams).
+#[derive(Debug, Clone, Default)]
+pub struct TranslucencyParams {
+    pub subsurface_color: [f32; 3],
+    pub transmissive_scale: f32,
+    pub turbulence: f32,
+    pub thick_object: bool,
+    pub mix_albedo: bool,
+}
+
+/// FO76 texture array entry (BSTextureArray).
+#[derive(Debug, Clone, Default)]
+pub struct BSTextureArray {
+    pub textures: Vec<String>,
 }
 
 /// BSLightingShaderProperty — Skyrim+ per-pixel lighting shader.
@@ -241,10 +275,19 @@ pub struct WetnessParams {
 /// in NiObjectNET (per nif.xml `onlyT` condition).
 #[derive(Debug)]
 pub struct BSLightingShaderProperty {
+    /// Shader type. For BSVER 83–139 this is a BSLightingShaderType (Skyrim/FO4);
+    /// for BSVER == 155 (FO76) this is a BSShaderType155 with different numeric mapping.
     pub shader_type: u32,
     pub net: NiObjectNETData,
+    /// True if stopcond short-circuit fired: BSVER >= 155 and Name is a non-empty
+    /// BGSM file path. Everything else is at defaults; the BGSM file holds the real data.
+    pub material_reference: bool,
     pub shader_flags_1: u32,
     pub shader_flags_2: u32,
+    /// CRC32-hashed shader flag list (BSVER >= 132). Replaces flag pair from BSVER 132 onward.
+    pub sf1_crcs: Vec<u32>,
+    /// Second CRC32-hashed shader flag list (BSVER >= 152).
+    pub sf2_crcs: Vec<u32>,
     pub uv_offset: [f32; 2],
     pub uv_scale: [f32; 2],
     pub texture_set_ref: BlockRef,
@@ -271,8 +314,58 @@ pub struct BSLightingShaderProperty {
     pub fresnel_power: f32,
     /// Wetness parameters (BSVER >= 130).
     pub wetness: Option<WetnessParams>,
+    // ── FO76 trailing fields (BSVER == 155) ──────────────────────
+    /// Luminance parameters (BSVER == 155).
+    pub luminance: Option<LuminanceParams>,
+    /// Whether FO76 translucency is configured (BSVER == 155).
+    pub do_translucency: bool,
+    /// Translucency parameters (BSVER == 155, only if do_translucency).
+    pub translucency: Option<TranslucencyParams>,
+    /// Texture arrays (BSVER == 155).
+    pub texture_arrays: Vec<BSTextureArray>,
     /// Shader-type-specific trailing fields (env map, skin tint, eye cubemap, etc.).
     pub shader_type_data: ShaderTypeData,
+}
+
+impl BSLightingShaderProperty {
+    /// Construct a stub for the FO76+ stopcond short-circuit: when Name is a
+    /// non-empty BGSM path, the block body is absent and all other fields stay
+    /// at defaults. The BGSM file is parsed separately (out of scope for NIF parsing).
+    fn material_reference_stub(net: NiObjectNETData) -> Self {
+        Self {
+            shader_type: 0,
+            net,
+            material_reference: true,
+            shader_flags_1: 0,
+            shader_flags_2: 0,
+            sf1_crcs: Vec::new(),
+            sf2_crcs: Vec::new(),
+            uv_offset: [0.0, 0.0],
+            uv_scale: [1.0, 1.0],
+            texture_set_ref: BlockRef::NULL,
+            emissive_color: [0.0, 0.0, 0.0],
+            emissive_multiple: 1.0,
+            texture_clamp_mode: 3,
+            alpha: 1.0,
+            refraction_strength: 0.0,
+            glossiness: 1.0,
+            specular_color: [1.0, 1.0, 1.0],
+            specular_strength: 1.0,
+            lighting_effect_1: 0.0,
+            lighting_effect_2: 0.0,
+            subsurface_rolloff: 0.0,
+            rimlight_power: 0.0,
+            backlight_power: 0.0,
+            grayscale_to_palette_scale: 1.0,
+            fresnel_power: 5.0,
+            wetness: None,
+            luminance: None,
+            do_translucency: false,
+            translucency: None,
+            texture_arrays: Vec::new(),
+            shader_type_data: ShaderTypeData::None,
+        }
+    }
 }
 
 impl NiObject for BSLightingShaderProperty {
@@ -287,9 +380,13 @@ impl NiObject for BSLightingShaderProperty {
 
 impl BSLightingShaderProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // NiObjectNET: shader type comes BEFORE name for BSLightingShaderProperty
-        // (nif.xml onlyT="BSLightingShaderProperty", BSVER 83-130).
-        let shader_type = if stream.bsver() >= 83 && stream.bsver() <= 130 {
+        let bsver = stream.bsver();
+
+        // NiObjectNET: shader type comes BEFORE name for BSLightingShaderProperty on
+        // Skyrim/FO4 (nif.xml onlyT="BSLightingShaderProperty", BSVER 83-139, enum
+        // BSLightingShaderType). For FO76+ the shader type is part of the niobject
+        // body and typed as BSShaderType155.
+        let legacy_shader_type = if (83..=139).contains(&bsver) {
             stream.read_u32_le()?
         } else {
             0
@@ -297,13 +394,59 @@ impl BSLightingShaderProperty {
 
         let net = NiObjectNETData::parse(stream)?;
 
-        // BSLightingShaderProperty fields.
-        // Shader flags — u32 pair for Skyrim and FO4. FO76+ uses a different format.
-        let (shader_flags_1, shader_flags_2) = if !stream.variant().uses_fo76_shader_flags() {
+        // FO76+ stopcond: if Name is a non-empty BGSM file path, the rest of the
+        // block is absent (the BGSM file holds the real material data). Return
+        // a stub and let block_size skip any trailing padding.
+        if bsver >= 155 {
+            if let Some(name) = net.name.as_deref() {
+                if !name.is_empty() {
+                    return Ok(Self::material_reference_stub(net));
+                }
+            }
+        }
+
+        // Shader flags 1/2 — u32 pair for Skyrim (BSVER < 130) and FO4 stream 130
+        // strictly. BSVER 131+ drops the flag pair and uses Num SF1/SF2 + CRC32
+        // arrays instead.
+        let (shader_flags_1, shader_flags_2) = if bsver < 130 || bsver == 130 {
             (stream.read_u32_le()?, stream.read_u32_le()?)
         } else {
-            // FO76/Starfield: variable-length flag arrays — skip via block size adjustment.
             (0, 0)
+        };
+
+        // FO76 BSShaderType155 field (BSVER == 155 only).
+        let fo76_shader_type = if bsver == 155 {
+            stream.read_u32_le()?
+        } else {
+            0
+        };
+
+        // Num SF1 / Num SF2 (BSVER >= 132 / 152), then both arrays.
+        let mut sf1_crcs = Vec::new();
+        let mut sf2_crcs = Vec::new();
+        if bsver >= 132 {
+            let num_sf1 = stream.read_u32_le()? as usize;
+            let num_sf2 = if bsver >= 152 {
+                stream.read_u32_le()? as usize
+            } else {
+                0
+            };
+            sf1_crcs.reserve(num_sf1);
+            for _ in 0..num_sf1 {
+                sf1_crcs.push(stream.read_u32_le()?);
+            }
+            sf2_crcs.reserve(num_sf2);
+            for _ in 0..num_sf2 {
+                sf2_crcs.push(stream.read_u32_le()?);
+            }
+        }
+
+        // Effective shader type for the downstream dispatch (uses different enums
+        // depending on version).
+        let shader_type = if bsver == 155 {
+            fo76_shader_type
+        } else {
+            legacy_shader_type
         };
 
         let uv_offset = [stream.read_f32_le()?, stream.read_f32_le()?];
@@ -317,7 +460,7 @@ impl BSLightingShaderProperty {
         let emissive_multiple = stream.read_f32_le()?;
 
         // Root Material (NiFixedString) — FO4+ only (BSVER >= 130).
-        if stream.bsver() >= 130 {
+        if bsver >= 130 {
             let _root_material = stream.read_string()?;
         }
 
@@ -336,15 +479,15 @@ impl BSLightingShaderProperty {
         let specular_strength = stream.read_f32_le()?;
 
         // Lighting effects — Skyrim only (BSVER < 130).
-        let (lighting_effect_1, lighting_effect_2) = if stream.bsver() < 130 {
+        let (lighting_effect_1, lighting_effect_2) = if bsver < 130 {
             (stream.read_f32_le()?, stream.read_f32_le()?)
         } else {
             (0.0, 0.0)
         };
 
-        // FO4+ common fields before shader-type-specific data.
-        let bsver = stream.bsver();
-        let (subsurface_rolloff, rimlight_power, backlight_power) = if bsver >= 130 && bsver < 140 {
+        // FO4-only common fields (BS_FO4_2 = BSVER 130–139).
+        let (subsurface_rolloff, rimlight_power, backlight_power) = if (130..=139).contains(&bsver)
+        {
             let sub = stream.read_f32_le()?;
             let rim = stream.read_f32_le()?;
             // Backlight only present if rimlight is not the FLT_MAX sentinel.
@@ -382,7 +525,16 @@ impl BSLightingShaderProperty {
             };
             let fresnel = stream.read_f32_le()?;
             let metalness = stream.read_f32_le()?;
-            // BSVER > 130 has Unknown 1; BSVER == 155 has Unknown 2 — skip via block_size.
+            let unknown_1 = if bsver > 130 {
+                stream.read_f32_le()?
+            } else {
+                0.0
+            };
+            let unknown_2 = if bsver == 155 {
+                stream.read_f32_le()?
+            } else {
+                0.0
+            };
             Some(WetnessParams {
                 spec_scale,
                 spec_power,
@@ -390,13 +542,62 @@ impl BSLightingShaderProperty {
                 env_map_scale,
                 fresnel_power: fresnel,
                 metalness,
+                unknown_1,
+                unknown_2,
             })
         } else {
             None
         };
 
-        // Shader-type-specific trailing fields.
-        let shader_type_data = if bsver < 130 {
+        // FO76 (BSVER == 155) trailing fields.
+        let mut luminance = None;
+        let mut do_translucency = false;
+        let mut translucency = None;
+        let mut texture_arrays: Vec<BSTextureArray> = Vec::new();
+        if bsver == 155 {
+            luminance = Some(LuminanceParams {
+                lum_emittance: stream.read_f32_le()?,
+                exposure_offset: stream.read_f32_le()?,
+                final_exposure_min: stream.read_f32_le()?,
+                final_exposure_max: stream.read_f32_le()?,
+            });
+
+            do_translucency = stream.read_byte_bool()?;
+            if do_translucency {
+                translucency = Some(TranslucencyParams {
+                    subsurface_color: [
+                        stream.read_f32_le()?,
+                        stream.read_f32_le()?,
+                        stream.read_f32_le()?,
+                    ],
+                    transmissive_scale: stream.read_f32_le()?,
+                    turbulence: stream.read_f32_le()?,
+                    thick_object: stream.read_byte_bool()?,
+                    mix_albedo: stream.read_byte_bool()?,
+                });
+            }
+
+            let has_texture_arrays = stream.read_u8()? != 0;
+            if has_texture_arrays {
+                let num_arrays = stream.read_u32_le()? as usize;
+                texture_arrays.reserve(num_arrays);
+                for _ in 0..num_arrays {
+                    let width = stream.read_u32_le()? as usize;
+                    let mut textures = Vec::with_capacity(width);
+                    for _ in 0..width {
+                        textures.push(stream.read_sized_string()?);
+                    }
+                    texture_arrays.push(BSTextureArray { textures });
+                }
+            }
+        }
+
+        // Shader-type-specific trailing fields. For FO76 (BSVER == 155) these use
+        // the BSShaderType155 numeric mapping (type 4 = skin tint Color4, type 5 =
+        // hair tint Color3). For Skyrim/FO4 we keep the existing dispatch.
+        let shader_type_data = if bsver == 155 {
+            parse_shader_type_data_fo76(stream, shader_type)?
+        } else if bsver < 130 {
             parse_shader_type_data(stream, shader_type)?
         } else {
             parse_shader_type_data_fo4(stream, shader_type, bsver)?
@@ -405,8 +606,11 @@ impl BSLightingShaderProperty {
         Ok(Self {
             shader_type,
             net,
+            material_reference: false,
             shader_flags_1,
             shader_flags_2,
+            sf1_crcs,
+            sf2_crcs,
             uv_offset,
             uv_scale,
             texture_set_ref,
@@ -426,6 +630,10 @@ impl BSLightingShaderProperty {
             grayscale_to_palette_scale,
             fresnel_power,
             wetness,
+            luminance,
+            do_translucency,
+            translucency,
+            texture_arrays,
             shader_type_data,
         })
     }
@@ -599,6 +807,38 @@ fn parse_shader_type_data_fo4(
     }
 }
 
+/// Parse FO76 (BSVER == 155) shader-type-specific trailing fields.
+/// The BSShaderType155 enum has a different numeric mapping than BSLightingShaderType:
+/// 4 = Skin Tint (Color4), 5 = Hair Tint (Color3). Other types have no trailing data.
+fn parse_shader_type_data_fo76(
+    stream: &mut NifStream,
+    shader_type: u32,
+) -> io::Result<ShaderTypeData> {
+    match shader_type {
+        4 => {
+            // Skin Tint (Color4 — includes alpha).
+            let skin_tint_color = [
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+            ];
+            Ok(ShaderTypeData::Fo76SkinTint { skin_tint_color })
+        }
+        5 => {
+            // Hair Tint (Color3).
+            let hair_tint_color = [
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+            ];
+            Ok(ShaderTypeData::HairTint { hair_tint_color })
+        }
+        // 0 Default, 2 Glow, 3 Face Tint, 12 Eye Envmap, 17 Terrain — no trailing.
+        _ => Ok(ShaderTypeData::None),
+    }
+}
+
 /// BSEffectShaderProperty — Skyrim+ effect/VFX shader.
 ///
 /// Unlike BSLightingShaderProperty, this shader embeds a source texture
@@ -606,8 +846,15 @@ fn parse_shader_type_data_fo4(
 #[derive(Debug)]
 pub struct BSEffectShaderProperty {
     pub net: NiObjectNETData,
+    /// True if stopcond short-circuit fired: BSVER >= 155 and Name is a non-empty
+    /// BGEM file path. Other fields are at defaults.
+    pub material_reference: bool,
     pub shader_flags_1: u32,
     pub shader_flags_2: u32,
+    /// CRC32-hashed shader flag list (BSVER >= 132).
+    pub sf1_crcs: Vec<u32>,
+    /// Second CRC32-hashed shader flag list (BSVER >= 152).
+    pub sf2_crcs: Vec<u32>,
     pub uv_offset: [f32; 2],
     pub uv_scale: [f32; 2],
     pub source_texture: String,
@@ -618,6 +865,8 @@ pub struct BSEffectShaderProperty {
     pub falloff_stop_angle: f32,
     pub falloff_start_opacity: f32,
     pub falloff_stop_opacity: f32,
+    /// FO76+ refraction power (BSVER == 155).
+    pub refraction_power: f32,
     pub emissive_color: [f32; 4],
     pub emissive_multiple: f32,
     pub soft_falloff_depth: f32,
@@ -630,6 +879,53 @@ pub struct BSEffectShaderProperty {
     pub env_mask_texture: String,
     /// Environment map scale (FO4+ only, BSVER >= 130).
     pub env_map_scale: f32,
+    /// FO76 reflectance texture (BSVER == 155).
+    pub reflectance_texture: String,
+    /// FO76 lighting texture (BSVER == 155).
+    pub lighting_texture: String,
+    /// FO76 emittance color (BSVER == 155).
+    pub emittance_color: [f32; 3],
+    /// FO76 emit gradient texture (BSVER == 155).
+    pub emit_gradient_texture: String,
+    /// FO76 luminance params (BSVER == 155).
+    pub luminance: Option<LuminanceParams>,
+}
+
+impl BSEffectShaderProperty {
+    fn material_reference_stub(net: NiObjectNETData) -> Self {
+        Self {
+            net,
+            material_reference: true,
+            shader_flags_1: 0,
+            shader_flags_2: 0,
+            sf1_crcs: Vec::new(),
+            sf2_crcs: Vec::new(),
+            uv_offset: [0.0, 0.0],
+            uv_scale: [1.0, 1.0],
+            source_texture: String::new(),
+            texture_clamp_mode: 3,
+            lighting_influence: 0,
+            env_map_min_lod: 0,
+            falloff_start_angle: 1.0,
+            falloff_stop_angle: 1.0,
+            falloff_start_opacity: 0.0,
+            falloff_stop_opacity: 0.0,
+            refraction_power: 0.0,
+            emissive_color: [1.0, 1.0, 1.0, 1.0],
+            emissive_multiple: 1.0,
+            soft_falloff_depth: 100.0,
+            greyscale_texture: String::new(),
+            env_map_texture: String::new(),
+            normal_texture: String::new(),
+            env_mask_texture: String::new(),
+            env_map_scale: 1.0,
+            reflectance_texture: String::new(),
+            lighting_texture: String::new(),
+            emittance_color: [0.0, 0.0, 0.0],
+            emit_gradient_texture: String::new(),
+            luminance: None,
+        }
+    }
 }
 
 impl NiObject for BSEffectShaderProperty {
@@ -644,15 +940,44 @@ impl NiObject for BSEffectShaderProperty {
 
 impl BSEffectShaderProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let bsver = stream.bsver();
         let net = NiObjectNETData::parse(stream)?;
 
-        // Shader flags — u32 pair for Skyrim and FO4. FO76+ uses a different format.
-        let (shader_flags_1, shader_flags_2) = if !stream.variant().uses_fo76_shader_flags() {
+        // FO76+ stopcond: non-empty Name means the block is an external BGEM reference.
+        if bsver >= 155 {
+            if let Some(name) = net.name.as_deref() {
+                if !name.is_empty() {
+                    return Ok(Self::material_reference_stub(net));
+                }
+            }
+        }
+
+        // Shader flags 1/2 — u32 pair for Skyrim and FO4 stream 130. BSVER 131+
+        // uses Num SF1/SF2 + CRC32 arrays.
+        let (shader_flags_1, shader_flags_2) = if bsver < 130 || bsver == 130 {
             (stream.read_u32_le()?, stream.read_u32_le()?)
         } else {
-            // FO76/Starfield: variable-length flag arrays — skip via block size adjustment.
             (0, 0)
         };
+
+        let mut sf1_crcs = Vec::new();
+        let mut sf2_crcs = Vec::new();
+        if bsver >= 132 {
+            let num_sf1 = stream.read_u32_le()? as usize;
+            let num_sf2 = if bsver >= 152 {
+                stream.read_u32_le()? as usize
+            } else {
+                0
+            };
+            sf1_crcs.reserve(num_sf1);
+            for _ in 0..num_sf1 {
+                sf1_crcs.push(stream.read_u32_le()?);
+            }
+            sf2_crcs.reserve(num_sf2);
+            for _ in 0..num_sf2 {
+                sf2_crcs.push(stream.read_u32_le()?);
+            }
+        }
 
         let uv_offset = [stream.read_f32_le()?, stream.read_f32_le()?];
         let uv_scale = [stream.read_f32_le()?, stream.read_f32_le()?];
@@ -672,10 +997,12 @@ impl BSEffectShaderProperty {
         let falloff_start_opacity = stream.read_f32_le()?;
         let falloff_stop_opacity = stream.read_f32_le()?;
 
-        // FO76+ has refraction power here — skip for Skyrim.
-        if stream.variant().uses_fo76_shader_flags() {
-            let _refraction_power = stream.read_f32_le()?;
-        }
+        // FO76 refraction power.
+        let refraction_power = if bsver == 155 {
+            stream.read_f32_le()?
+        } else {
+            0.0
+        };
 
         let emissive_color = [
             stream.read_f32_le()?,
@@ -692,7 +1019,6 @@ impl BSEffectShaderProperty {
         let greyscale_texture = stream.read_sized_string()?;
 
         // FO4+ additional textures (BSVER >= 130).
-        let bsver = stream.bsver();
         let (env_map_texture, normal_texture, env_mask_texture, env_map_scale) = if bsver >= 130 {
             let env = stream.read_sized_string()?;
             let norm = stream.read_sized_string()?;
@@ -703,13 +1029,36 @@ impl BSEffectShaderProperty {
             (String::new(), String::new(), String::new(), 0.0)
         };
 
-        // Remaining FO76+ fields (reflectance/lighting/emit textures, luminance)
-        // are skipped — block size check adjusts stream.
+        // FO76 trailing fields.
+        let mut reflectance_texture = String::new();
+        let mut lighting_texture = String::new();
+        let mut emittance_color = [0.0f32; 3];
+        let mut emit_gradient_texture = String::new();
+        let mut luminance = None;
+        if bsver == 155 {
+            reflectance_texture = stream.read_sized_string()?;
+            lighting_texture = stream.read_sized_string()?;
+            emittance_color = [
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+            ];
+            emit_gradient_texture = stream.read_sized_string()?;
+            luminance = Some(LuminanceParams {
+                lum_emittance: stream.read_f32_le()?,
+                exposure_offset: stream.read_f32_le()?,
+                final_exposure_min: stream.read_f32_le()?,
+                final_exposure_max: stream.read_f32_le()?,
+            });
+        }
 
         Ok(Self {
             net,
+            material_reference: false,
             shader_flags_1,
             shader_flags_2,
+            sf1_crcs,
+            sf2_crcs,
             uv_offset,
             uv_scale,
             source_texture,
@@ -720,6 +1069,7 @@ impl BSEffectShaderProperty {
             falloff_stop_angle,
             falloff_start_opacity,
             falloff_stop_opacity,
+            refraction_power,
             emissive_color,
             emissive_multiple,
             soft_falloff_depth,
@@ -728,6 +1078,11 @@ impl BSEffectShaderProperty {
             normal_texture,
             env_mask_texture,
             env_map_scale,
+            reflectance_texture,
+            lighting_texture,
+            emittance_color,
+            emit_gradient_texture,
+            luminance,
         })
     }
 }
@@ -1128,6 +1483,337 @@ mod tests {
         data.push(1u8); // use_ssr (bool)
         data.push(0u8); // wetness_use_ssr (bool)
         data
+    }
+
+    // ── N23.9: FO76/Starfield tests ──────────────────────────────────
+
+    fn make_fo76_header(name: &str) -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 12,
+            user_version_2: 155,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: vec![Arc::from(name)],
+            max_string_length: name.len() as u32,
+            num_groups: 0,
+        }
+    }
+
+    /// Build a BSLightingShaderProperty body with FO76 layout (BSVER=155), empty
+    /// name (so stopcond does NOT fire), shader_type=0 (Default → no trailing),
+    /// empty SF1/SF2 arrays, wetness + luminance, no translucency, no texture arrays.
+    fn build_fo76_bs_lighting_minimal() -> Vec<u8> {
+        let mut data = Vec::new();
+        // NiObjectNET: name = string table index 0 ("")
+        data.extend_from_slice(&0i32.to_le_bytes());
+        // extra_data_refs list: count=0
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // controller_ref = -1
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // BSVER == 155: Shader Type (BSShaderType155) = 0 (Default)
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // Num SF1 = 0 (BSVER >= 132)
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // Num SF2 = 0 (BSVER >= 152)
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // (no SF1/SF2 arrays because lengths are zero)
+        // uv_offset, uv_scale
+        for v in [0.0f32, 0.0, 1.0, 1.0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // texture_set_ref
+        data.extend_from_slice(&5i32.to_le_bytes());
+        // emissive_color (3×f32)
+        for v in [0.1f32, 0.2, 0.3] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // emissive_multiple
+        data.extend_from_slice(&1.5f32.to_le_bytes());
+        // Root Material (NiFixedString, BSVER >= 130): -1
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // texture_clamp_mode
+        data.extend_from_slice(&3u32.to_le_bytes());
+        // alpha
+        data.extend_from_slice(&0.9f32.to_le_bytes());
+        // refraction_strength
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        // smoothness (glossiness in struct)
+        data.extend_from_slice(&0.6f32.to_le_bytes());
+        // specular_color
+        for v in [0.7f32, 0.8, 0.9] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // specular_strength
+        data.extend_from_slice(&1.25f32.to_le_bytes());
+        // (no lighting_effect_1/2 — BSVER >= 130 skips)
+        // (no subsurface/rimlight/backlight — not in BS_FO4_2 range)
+        // grayscale_to_palette_scale
+        data.extend_from_slice(&0.4f32.to_le_bytes());
+        // fresnel_power
+        data.extend_from_slice(&4.2f32.to_le_bytes());
+        // WetnessParams: spec_scale, spec_power, min_var,
+        // (env_map_scale only for BSVER==130, skipped here)
+        // fresnel, metalness, unknown_1 (>130), unknown_2 (==155)
+        for v in [0.11f32, 0.22, 0.33, 0.44, 0.55, 0.66, 0.77] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // FO76 luminance (4×f32)
+        for v in [100.0f32, 13.5, 2.0, 3.0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // Do Translucency = false (1 byte)
+        data.push(0u8);
+        // Has Texture Arrays = false (1 byte)
+        data.push(0u8);
+        // No shader-type trailing for type 0 Default
+        data
+    }
+
+    #[test]
+    fn parse_bs_lighting_fo76_minimal() {
+        let header = make_fo76_header(""); // empty name → stopcond does NOT fire
+        let data = build_fo76_bs_lighting_minimal();
+        let mut stream = NifStream::new(&data, &header);
+
+        let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
+        assert!(!prop.material_reference, "stopcond should not fire for empty name");
+        assert_eq!(prop.shader_type, 0); // FO76 Default
+        assert!(prop.sf1_crcs.is_empty());
+        assert!(prop.sf2_crcs.is_empty());
+        assert!((prop.glossiness - 0.6).abs() < 1e-6);
+        assert!((prop.grayscale_to_palette_scale - 0.4).abs() < 1e-6);
+        assert!((prop.fresnel_power - 4.2).abs() < 1e-6);
+        let w = prop.wetness.as_ref().expect("wetness present for BSVER 155");
+        assert!((w.spec_scale - 0.11).abs() < 1e-6);
+        assert_eq!(w.env_map_scale, 0.0); // not read for BSVER != 130
+        assert!((w.unknown_1 - 0.66).abs() < 1e-6);
+        assert!((w.unknown_2 - 0.77).abs() < 1e-6);
+        let lum = prop.luminance.as_ref().expect("luminance present for BSVER 155");
+        assert!((lum.lum_emittance - 100.0).abs() < 1e-6);
+        assert!((lum.exposure_offset - 13.5).abs() < 1e-6);
+        assert!((lum.final_exposure_max - 3.0).abs() < 1e-6);
+        assert!(!prop.do_translucency);
+        assert!(prop.translucency.is_none());
+        assert!(prop.texture_arrays.is_empty());
+        assert!(matches!(prop.shader_type_data, ShaderTypeData::None));
+        assert_eq!(stream.position(), data.len() as u64);
+    }
+
+    #[test]
+    fn parse_bs_lighting_fo76_stopcond_short_circuits() {
+        // Non-empty name at BSVER >= 155 → stopcond fires, block body is absent.
+        let header = make_fo76_header("materials/weapons/rifle.bgsm");
+        // Only NiObjectNET bytes are present; no shader fields follow.
+        let mut data = Vec::new();
+        // name → string table index 0 (→ "materials/weapons/rifle.bgsm")
+        data.extend_from_slice(&0i32.to_le_bytes());
+        // extra_data_refs count = 0
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // controller_ref = -1
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+
+        let mut stream = NifStream::new(&data, &header);
+        let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
+        assert!(prop.material_reference);
+        assert_eq!(
+            prop.net.name.as_deref(),
+            Some("materials/weapons/rifle.bgsm"),
+        );
+        // Everything else at defaults.
+        assert_eq!(prop.shader_flags_1, 0);
+        assert!(prop.wetness.is_none());
+        assert!(prop.luminance.is_none());
+        // Parser stopped at end of NiObjectNET — no trailing bytes consumed.
+        assert_eq!(stream.position(), data.len() as u64);
+    }
+
+    #[test]
+    fn parse_bs_lighting_fo76_skin_tint_color4() {
+        let header = make_fo76_header("");
+        let mut data = build_fo76_bs_lighting_minimal();
+        // Patch the Shader Type (after 12 bytes NiObjectNET) from 0 → 4 (SkinTint).
+        // Layout: name(4) + extra_count(4) + ctrl(4) = 12, then shader_type u32.
+        let st_off = 12;
+        data[st_off..st_off + 4].copy_from_slice(&4u32.to_le_bytes());
+        // Append Color4 skin tint after the base body.
+        for v in [0.95f32, 0.72, 0.60, 1.0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+
+        let mut stream = NifStream::new(&data, &header);
+        let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
+        match prop.shader_type_data {
+            ShaderTypeData::Fo76SkinTint { skin_tint_color } => {
+                assert!((skin_tint_color[0] - 0.95).abs() < 1e-6);
+                assert!((skin_tint_color[3] - 1.0).abs() < 1e-6);
+            }
+            other => panic!("expected Fo76SkinTint, got {other:?}"),
+        }
+        assert_eq!(stream.position(), data.len() as u64);
+    }
+
+    #[test]
+    fn parse_bs_lighting_fo76_sf1_crcs() {
+        // Build a minimal FO76 body with Num SF1 = 2, Num SF2 = 1.
+        let header = make_fo76_header("");
+        let mut data = Vec::new();
+        // NiObjectNET
+        data.extend_from_slice(&0i32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // Shader Type = 0
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // Num SF1 = 2
+        data.extend_from_slice(&2u32.to_le_bytes());
+        // Num SF2 = 1
+        data.extend_from_slice(&1u32.to_le_bytes());
+        // SF1 array
+        data.extend_from_slice(&1563274220u32.to_le_bytes()); // CAST_SHADOWS
+        data.extend_from_slice(&759557230u32.to_le_bytes()); // TWO_SIDED
+        // SF2 array
+        data.extend_from_slice(&348504749u32.to_le_bytes()); // VERTEXCOLORS
+        // uv_offset, uv_scale
+        for v in [0.0f32, 0.0, 1.0, 1.0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // texture_set_ref
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // emissive_color + mult
+        for _ in 0..4 {
+            data.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        // Root Material
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // texture_clamp_mode, alpha, refraction, smoothness
+        data.extend_from_slice(&3u32.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        // specular_color, specular_strength
+        for _ in 0..3 {
+            data.extend_from_slice(&1.0f32.to_le_bytes());
+        }
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        // grayscale, fresnel
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data.extend_from_slice(&5.0f32.to_le_bytes());
+        // wetness: 7 floats (spec, spec_pow, min_var, fresnel, metal, unk1, unk2)
+        for _ in 0..7 {
+            data.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        // luminance
+        for _ in 0..4 {
+            data.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        // do_translucency=0, has_texture_arrays=0
+        data.push(0u8);
+        data.push(0u8);
+
+        let mut stream = NifStream::new(&data, &header);
+        let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
+        assert_eq!(prop.sf1_crcs, vec![1563274220, 759557230]);
+        assert_eq!(prop.sf2_crcs, vec![348504749]);
+        assert_eq!(stream.position(), data.len() as u64);
+    }
+
+    #[test]
+    fn parse_bs_effect_fo76_trailing_textures() {
+        let header = make_fo76_header("");
+        let mut data = Vec::new();
+        // NiObjectNET
+        data.extend_from_slice(&0i32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // Num SF1 = 0, Num SF2 = 0 (no flag pair for BSVER >= 132)
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // uv_offset, uv_scale
+        for v in [0.0f32, 0.0, 1.0, 1.0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // source_texture
+        let src = b"tex/src.dds";
+        data.extend_from_slice(&(src.len() as u32).to_le_bytes());
+        data.extend_from_slice(src);
+        // clamp, light_infl, min_lod, unused
+        data.extend_from_slice(&[3u8, 255u8, 0u8, 0u8]);
+        // 4 falloff floats
+        for _ in 0..4 {
+            data.extend_from_slice(&1.0f32.to_le_bytes());
+        }
+        // refraction_power (FO76)
+        data.extend_from_slice(&0.25f32.to_le_bytes());
+        // emissive_color (4×f32)
+        for _ in 0..4 {
+            data.extend_from_slice(&1.0f32.to_le_bytes());
+        }
+        // emissive_multiple
+        data.extend_from_slice(&1.5f32.to_le_bytes());
+        // soft_falloff_depth
+        data.extend_from_slice(&50.0f32.to_le_bytes());
+        // greyscale_texture
+        let grey = b"tex/grey.dds";
+        data.extend_from_slice(&(grey.len() as u32).to_le_bytes());
+        data.extend_from_slice(grey);
+        // FO4+ textures (env, normal, mask) + env_map_scale
+        for p in [b"tex/env.dds".as_slice(), b"tex/n.dds", b"tex/m.dds"] {
+            data.extend_from_slice(&(p.len() as u32).to_le_bytes());
+            data.extend_from_slice(p);
+        }
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        // FO76 trailing: reflectance, lighting textures
+        for p in [b"tex/refl.dds".as_slice(), b"tex/lit.dds"] {
+            data.extend_from_slice(&(p.len() as u32).to_le_bytes());
+            data.extend_from_slice(p);
+        }
+        // emittance_color (3×f32)
+        for v in [0.4f32, 0.5, 0.6] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // emit_gradient_texture
+        let grad = b"tex/grad.dds";
+        data.extend_from_slice(&(grad.len() as u32).to_le_bytes());
+        data.extend_from_slice(grad);
+        // luminance (4×f32)
+        for v in [100.0f32, 13.5, 2.0, 3.0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+
+        let mut stream = NifStream::new(&data, &header);
+        let prop = BSEffectShaderProperty::parse(&mut stream).unwrap();
+        assert!(!prop.material_reference);
+        assert!((prop.refraction_power - 0.25).abs() < 1e-6);
+        assert_eq!(prop.source_texture, "tex/src.dds");
+        assert_eq!(prop.env_map_texture, "tex/env.dds");
+        assert_eq!(prop.reflectance_texture, "tex/refl.dds");
+        assert_eq!(prop.lighting_texture, "tex/lit.dds");
+        assert!((prop.emittance_color[1] - 0.5).abs() < 1e-6);
+        assert_eq!(prop.emit_gradient_texture, "tex/grad.dds");
+        let lum = prop.luminance.as_ref().unwrap();
+        assert!((lum.exposure_offset - 13.5).abs() < 1e-6);
+        assert_eq!(stream.position(), data.len() as u64);
+    }
+
+    #[test]
+    fn parse_bs_effect_fo76_stopcond_short_circuits() {
+        let header = make_fo76_header("materials/effects/glow.bgem");
+        let mut data = Vec::new();
+        data.extend_from_slice(&0i32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+
+        let mut stream = NifStream::new(&data, &header);
+        let prop = BSEffectShaderProperty::parse(&mut stream).unwrap();
+        assert!(prop.material_reference);
+        assert_eq!(
+            prop.net.name.as_deref(),
+            Some("materials/effects/glow.bgem"),
+        );
+        assert_eq!(stream.position(), data.len() as u64);
     }
 
     #[test]
