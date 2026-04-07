@@ -113,9 +113,8 @@ pub(crate) fn setup_scene(
             let kf_provider = build_texture_provider(&args);
             let kf_data = kf_provider
                 .extract_mesh(&kf_path)
-                .map(|data| {
+                .inspect(|_| {
                     log::info!("Extracted KF from BSA: '{}'", kf_path);
-                    data
                 })
                 .or_else(|| {
                     std::fs::read(&kf_path)
