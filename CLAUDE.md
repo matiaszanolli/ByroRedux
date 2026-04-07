@@ -178,7 +178,10 @@ M26: BA2 reader (BTDX v1/v2/v3/v7/v8, GNRL + DX10) + NIF header BSStreamHeader f
 M26+: Oblivion → 100% via header user_version threshold fix (10.0.1.0 → 10.0.1.8),
       BSStreamHeader for v10.0.1.2 / user_version>=3, and pre-Gamebryo empty-scene fallback.
 Full-archive parse rates: ALL 7 games at 100% (177,286 NIFs). Oblivion was 99.13%.
-Next: Starfield v3 DX10 textures, M24 ESM parser, M28 physics.
+M24 (Phase 1): records/ module with WEAP/ARMO/AMMO/MISC/KEYM/ALCH/INGR/BOOK/NOTE,
+      CONT, LVLI/LVLN, NPC_, RACE, CLAS, FACT, GLOB, GMST. Real FNV.esm parses to
+      13,684 structured records on top of cells in 0.19s release.
+Next: Starfield v3 DX10 textures, M28 physics, M27 parallel scheduler, M24 Phase 2 (QUST/DIAL/PERK).
 
 ## Git Conventions
 

@@ -6,6 +6,12 @@
 
 pub mod cell;
 pub mod reader;
+pub mod records;
 
 pub use cell::{CellData, EsmCellIndex, PlacedRef, StaticObject};
 pub use reader::{EsmReader, GroupHeader, RecordHeader, SubRecord};
+pub use records::{
+    parse_esm, ClassRecord, ContainerRecord, EsmIndex, FactionRecord, GameSetting, GlobalRecord,
+    InventoryEntry, ItemKind, ItemRecord, LeveledEntry, LeveledList, NpcRecord, RaceRecord,
+    SettingValue,
+};

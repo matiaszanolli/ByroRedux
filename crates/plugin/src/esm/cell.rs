@@ -62,7 +62,7 @@ pub struct StaticObject {
 }
 
 /// Result of parsing an ESM file for cell loading.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct EsmCellIndex {
     /// Interior cells, keyed by editor ID (lowercase).
     pub cells: HashMap<String, CellData>,

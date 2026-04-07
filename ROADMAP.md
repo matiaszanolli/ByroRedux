@@ -386,12 +386,70 @@ returns errors. NIF/mesh extraction is unaffected.
 
 ---
 
+## M24 Phase 1: Full ESM/ESP Record Parser — DONE
+
+**Status:** Phase 1 complete. Item, container, leveled-list, actor, and small
+records (GLOB/GMST) parse cleanly across the full FNV.esm. Quest / dialogue /
+perk / magic-effect semantic structures stay deferred until the systems that
+consume them come online.
+
+**Scope:**
+- New `crates/plugin/src/esm/records/` module organised by category:
+  - `common.rs` — shared sub-record helpers (`read_zstring`, `find_sub`,
+    `read_u32_at`, `CommonItemFields`)
+  - `items.rs` — `ItemRecord` + `ItemKind` enum covering WEAP, ARMO, AMMO,
+    MISC, KEYM, ALCH, INGR, BOOK, NOTE. Type-specific stats are in the enum
+    variant; common name/model/value/weight live on the parent struct.
+  - `container.rs` — `ContainerRecord` (CONT) and shared `LeveledList` for
+    LVLI / LVLN with `InventoryEntry` / `LeveledEntry` rows.
+  - `actor.rs` — `NpcRecord` (NPC_) plus supporting `RaceRecord` (RACE),
+    `ClassRecord` (CLAS), `FactionRecord` (FACT) with `FactionRelation`
+    cross-links.
+  - `global.rs` — `GlobalRecord` (GLOB) and `GameSetting` (GMST) with a
+    typed `SettingValue` enum (Int / Float / Short / String).
+- New `EsmIndex` aggregator that combines the existing `EsmCellIndex` with
+  per-category HashMaps. Top-level `parse_esm()` walks the GRUP tree once
+  per category, dispatching by 4-char record type code, and reuses the
+  existing `parse_esm_cells()` walker for the cell side. Existing callers
+  that only need cells continue to use `parse_esm_cells` unchanged.
+- Side-fix: `EsmCellIndex` now `derives(Default)` so the aggregator can
+  start from `EsmIndex::default()`.
+
+**Result on the real FalloutNV.esm (release build, single ~190 MB pass):**
+
+| Category          | Count |
+|-------------------|------:|
+| Items (W/A/etc.)  | 2 643 |
+| Containers        | 2 478 |
+| Leveled items     | 2 738 |
+| Leveled NPCs      |   365 |
+| NPCs              | 3 816 |
+| Races             |    22 |
+| Classes           |    74 |
+| Factions          |   682 |
+| Globals           |   218 |
+| Game settings     |   648 |
+
+13,684 structured records on top of the existing cell + static extraction,
+parsed in 0.19s release. 14 new unit tests in the records module plus an
+`#[ignore]`d FNV.esm integration test that verifies record counts and
+spot-checks Varmint Rifle / NCR faction.
+
+**Deferred to Phase 2 (when the consuming systems land):**
+- QUST / DIAL / INFO semantic parsing (quest stages, conditions, dialog trees)
+- PERK entry points (~120 types from the Perk Entry Points memory)
+- MGEF / SPEL / ENCH magic effects
+- AVIF actor value definitions (currently referenced as raw form IDs)
+- Dynamic weapon DNAM fields beyond the basic stats block
+
+---
+
 ## Deferred Roadmap (post-N23)
 
 | # | Milestone | Scope |
 |---|-----------|-------|
 | M22+ | RT Lighting Polish | Soft shadows, emissive bypass, lighting tuning (resumes after NIF correctness) |
-| M24 | Full ESM/ESP Parser | NPC_, WEAP, ARMO, LVLI, QUST, DIAL + all record types |
+| M24 | Full ESM/ESP Parser | **DONE (Phase 1)** — see below |
 | M25 | Vulkan Compute | Batch transforms, coordinate conversion, GPU skinning |
 | M26 | BA2 Archive Support | **DONE** — see below |
 | M27 | Parallel System Dispatch | Rayon-based parallel ECS execution |
