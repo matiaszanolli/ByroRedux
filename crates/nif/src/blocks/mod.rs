@@ -121,7 +121,23 @@ pub fn parse_block(
         }
         "NiTriShapeData" => Ok(Box::new(NiTriShapeData::parse(stream)?)),
         "NiTriStripsData" => Ok(Box::new(NiTriStripsData::parse(stream)?)),
-        "BSShaderPPLightingProperty" => Ok(Box::new(BSShaderPPLightingProperty::parse(stream)?)),
+        // All Oblivion-era BSShaderLightingProperty specializations share the
+        // base texture-set + flags layout, so alias them to BSShaderPPLighting.
+        // Specializing the differences (e.g. sky scroll, water reflection) can
+        // come later — for now this unblocks Oblivion exterior cells, which
+        // hard-failed on any of these.
+        "BSShaderPPLightingProperty"
+        | "SkyShaderProperty"
+        | "WaterShaderProperty"
+        | "TallGrassShaderProperty"
+        | "Lighting30ShaderProperty"
+        | "TileShaderProperty"
+        | "HairShaderProperty"
+        | "VolumetricFogShaderProperty"
+        | "DistantLODShaderProperty"
+        | "BSDistantTreeShaderProperty"
+        | "BSSkyShaderProperty"
+        | "BSWaterShaderProperty" => Ok(Box::new(BSShaderPPLightingProperty::parse(stream)?)),
         "BSShaderNoLightingProperty" => Ok(Box::new(BSShaderNoLightingProperty::parse(stream)?)),
         "BSShaderTextureSet" => Ok(Box::new(BSShaderTextureSet::parse(stream)?)),
         "BSLightingShaderProperty" => Ok(Box::new(BSLightingShaderProperty::parse(stream)?)),
@@ -387,6 +403,97 @@ pub fn parse_block(
                     ),
                 ))
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    //! Regression tests for `parse_block` type-name dispatch.
+    //!
+    //! These test that the dispatch table routes Oblivion-era shader
+    //! variants through the right parser — see issue #145.
+    use super::*;
+    use crate::header::NifHeader;
+    use crate::stream::NifStream;
+    use crate::version::NifVersion;
+    use std::sync::Arc;
+
+    /// Build an Oblivion (bsver=0) header with a single string slot.
+    fn oblivion_header() -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_0_0_5,
+            little_endian: true,
+            user_version: 11,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: vec![Arc::from("SkyProp")],
+            max_string_length: 8,
+            num_groups: 0,
+        }
+    }
+
+    /// Minimal Oblivion BSShaderPPLightingProperty-shaped payload: 22 bytes.
+    /// Matches the no-extra-fields path (no refraction/parallax).
+    fn oblivion_bsshader_bytes() -> Vec<u8> {
+        let mut d = Vec::new();
+        // NiObjectNET: name string index
+        d.extend_from_slice(&0i32.to_le_bytes());
+        // extra_data_refs: count=0
+        d.extend_from_slice(&0u32.to_le_bytes());
+        // controller_ref: -1
+        d.extend_from_slice(&(-1i32).to_le_bytes());
+        // BSShaderProperty fields
+        d.extend_from_slice(&0u16.to_le_bytes()); // shader_flags
+        d.extend_from_slice(&1u32.to_le_bytes()); // shader_type
+        d.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_1
+        d.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_2
+        d.extend_from_slice(&1.0f32.to_le_bytes()); // env_map_scale
+        d.extend_from_slice(&3u32.to_le_bytes()); // texture_clamp_mode
+        d.extend_from_slice(&5i32.to_le_bytes()); // texture_set_ref
+        d
+    }
+
+    #[test]
+    fn oblivion_shader_variants_route_to_bsshader_pp_lighting() {
+        // Every specialized variant named in issue #145 must dispatch
+        // through BSShaderPPLightingProperty::parse and produce a
+        // downcastable block.
+        let variants = [
+            "BSShaderPPLightingProperty",
+            "SkyShaderProperty",
+            "WaterShaderProperty",
+            "TallGrassShaderProperty",
+            "Lighting30ShaderProperty",
+            "TileShaderProperty",
+            "HairShaderProperty",
+            "VolumetricFogShaderProperty",
+            "DistantLODShaderProperty",
+            "BSDistantTreeShaderProperty",
+            "BSSkyShaderProperty",
+            "BSWaterShaderProperty",
+        ];
+        let header = oblivion_header();
+        let bytes = oblivion_bsshader_bytes();
+
+        for variant in variants {
+            let mut stream = NifStream::new(&bytes, &header);
+            let block = parse_block(variant, &mut stream, Some(bytes.len() as u32))
+                .unwrap_or_else(|e| panic!("variant '{variant}' failed to parse: {e}"));
+            let prop = block
+                .as_any()
+                .downcast_ref::<BSShaderPPLightingProperty>()
+                .unwrap_or_else(|| {
+                    panic!("variant '{variant}' did not downcast to BSShaderPPLightingProperty")
+                });
+            assert_eq!(
+                prop.texture_set_ref.index(),
+                Some(5),
+                "variant '{variant}' parsed the wrong texture_set_ref"
+            );
         }
     }
 }
