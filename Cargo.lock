@@ -352,7 +352,9 @@ dependencies = [
 name = "byroredux-nif"
 version = "0.1.0"
 dependencies = [
+ "byroredux-bsa",
  "byroredux-core",
+ "env_logger",
  "log",
  "nalgebra",
  "thiserror 2.0.18",

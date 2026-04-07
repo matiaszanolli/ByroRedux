@@ -8,3 +8,11 @@ byroredux-core = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
 nalgebra = { workspace = true }
+
+[dev-dependencies]
+byroredux-bsa = { workspace = true }
+env_logger = { workspace = true }
+
+[[example]]
+name = "nif_stats"
+path = "examples/nif_stats.rs"

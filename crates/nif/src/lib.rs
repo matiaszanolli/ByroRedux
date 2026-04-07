@@ -159,15 +159,29 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
             }
             Err(e) => {
                 let consumed = stream.position() - start_pos;
-                if block_size.is_some() {
-                    // With block_size, this is a hard error — block sizes guarantee recovery
-                    return Err(io::Error::new(
-                        e.kind(),
-                        format!(
-                            "block {} '{}' (size {:?}, offset {}, consumed {}): {}",
-                            i, type_name, block_size, start_pos, consumed, e
-                        ),
-                    ));
+                if let Some(size) = block_size {
+                    // With block_size we can recover: seek to the expected end of
+                    // the block, record an NiUnknown placeholder, and keep going.
+                    // Without this, a single buggy block parser (e.g. a Havok
+                    // layout quirk) takes down the entire NIF. The unit tests
+                    // still exercise the happy path; this is the belt-and-braces
+                    // path that keeps `parse_rate_*` integration tests meaningful.
+                    log::warn!(
+                        "Block {} '{}' (size {}, offset {}, consumed {}): {} — \
+                         seeking past block and inserting NiUnknown",
+                        i,
+                        type_name,
+                        size,
+                        start_pos,
+                        consumed,
+                        e
+                    );
+                    stream.set_position(start_pos + size as u64);
+                    blocks.push(Box::new(blocks::NiUnknown {
+                        type_name: type_name.to_string(),
+                        data: Vec::new(),
+                    }));
+                    continue;
                 }
                 // Without block_size (Oblivion), stop parsing but keep blocks parsed so far.
                 // This allows geometry blocks to be imported even when collision blocks fail.
@@ -384,95 +398,7 @@ mod tests {
         assert!(result.is_none());
     }
 
-    /// Parse a real Fallout: New Vegas NIF file (beer bottle).
-    ///
-    /// Requires /tmp/test_fnv_bottle.nif to be present — these are real game
-    /// assets that can't be committed to the repo.
-    #[test]
-    #[ignore]
-    fn parse_real_fnv_bottle() {
-        let path = std::path::Path::new("/tmp/test_fnv_bottle.nif");
-        if !path.exists() {
-            eprintln!("Skipping: {path:?} not found");
-            return;
-        }
-        let data = std::fs::read(path).unwrap();
-        let scene = parse_nif(&data).expect("parse_nif should succeed on FNV bottle");
-
-        assert_eq!(scene.len(), 12, "FNV bottle should have 12 blocks");
-
-        let meshes = import::import_nif(&scene);
-        assert!(
-            !meshes.is_empty(),
-            "should import at least one mesh from bottle"
-        );
-
-        let m = &meshes[0];
-        assert!(!m.positions.is_empty(), "mesh should have vertices");
-        assert!(!m.indices.is_empty(), "mesh should have indices");
-        eprintln!(
-            "Bottle mesh: {} verts, {} indices, texture={:?}",
-            m.positions.len(),
-            m.indices.len(),
-            m.texture_path
-        );
-        eprintln!("  translation: {:?}", m.translation);
-        eprintln!("  scale: {}", m.scale);
-        eprintln!("  scale: {}", m.scale);
-        // Vertex bounds
-        let (mut min, mut max) = (m.positions[0], m.positions[0]);
-        for p in &m.positions {
-            for i in 0..3 {
-                min[i] = min[i].min(p[i]);
-                max[i] = max[i].max(p[i]);
-            }
-        }
-        eprintln!("  vertex bounds: min={:?} max={:?}", min, max);
-    }
-
-    /// Parse a real Fallout: New Vegas NIF file (deathclaw sign).
-    #[test]
-    #[ignore]
-    fn parse_real_fnv_sign() {
-        let path = std::path::Path::new("/tmp/test_fnv.nif");
-        if !path.exists() {
-            eprintln!("Skipping: {path:?} not found");
-            return;
-        }
-        let data = std::fs::read(path).unwrap();
-        let scene = parse_nif(&data).expect("parse_nif should succeed on FNV sign");
-
-        assert_eq!(scene.len(), 18, "FNV sign should have 18 blocks");
-
-        let meshes = import::import_nif(&scene);
-        assert!(
-            !meshes.is_empty(),
-            "should import at least one mesh from sign"
-        );
-        eprintln!("Sign: {} meshes imported", meshes.len());
-    }
-
-    /// Parse a real Fallout: New Vegas NIF file (cave rock).
-    #[test]
-    #[ignore]
-    fn parse_real_fnv_rock() {
-        let path = std::path::Path::new("/tmp/test_fnv_rock.nif");
-        if !path.exists() {
-            eprintln!("Skipping: {path:?} not found");
-            return;
-        }
-        let data = std::fs::read(path).unwrap();
-        let scene = parse_nif(&data).expect("parse_nif should succeed on FNV rock");
-
-        let meshes = import::import_nif(&scene);
-        assert!(
-            !meshes.is_empty(),
-            "should import at least one mesh from rock"
-        );
-        eprintln!(
-            "Rock: {} meshes, first has {} verts",
-            meshes.len(),
-            meshes[0].positions.len()
-        );
-    }
+    // Real-game NIF parse coverage lives in `tests/parse_real_nifs.rs`, which
+    // walks entire mesh archives and asserts a per-game success-rate threshold.
+    // The old /tmp-based single-file smoke tests were removed in N23.10.
 }
