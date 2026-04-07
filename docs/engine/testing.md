@@ -1,106 +1,144 @@
 # Testing
 
-All tests are in-module (`#[cfg(test)] mod tests`) within the source files
-they cover. Run with `cargo test -p byroredux-core`.
+ByroRedux uses two layers of tests:
 
-## Test Coverage: 57 Tests
+1. **Unit tests** (`#[cfg(test)] mod tests` inside source files) — fast,
+   no game data required, run on every `cargo test`. **372 passing**.
+2. **Integration tests** (`#[ignore]`'d by default) — exercise real game
+   archives, parse rates, and end-to-end byte-level round-trips. Need
+   the relevant game installed and resolve paths via env vars or Steam
+   defaults. Run with `cargo test ... -- --ignored`. **14 in total.**
 
-### Storage Backends (13 tests)
+The split keeps CI fast and game-data-free while letting developers run
+the heavy sweeps locally on demand.
 
-**SparseSetStorage** — `crates/core/src/ecs/sparse_set.rs` (7 tests)
-- `insert_and_get` — basic insert + lookup
-- `overwrite` — re-insert same entity overwrites, doesn't duplicate
-- `swap_remove` — remove from middle, verify swap-remove fixes pointers
-- `remove_last` — remove last element (no swap needed)
-- `remove_nonexistent` — returns None
-- `iter_all` — iteration covers all entities
-- `iter_mut_modify` — mutation through iterator
+## Per-crate test counts
 
-**PackedStorage** — `crates/core/src/ecs/packed.rs` (6 tests)
-- `insert_maintains_sort_order` — out-of-order inserts stay sorted
-- `overwrite` — re-insert overwrites, doesn't duplicate
-- `remove_middle` — remove from middle maintains sort
-- `remove_nonexistent` — returns None
-- `iteration_is_sorted` — iteration order matches entity ID order
-- `iter_mut_modify` — mutation through iterator
+Numbers are accurate at the time of writing (M24 Phase 1, April 2026). For
+a live count, run `cargo test 2>&1 | grep "test result"`.
 
-### World (34 tests)
+| Crate | Unit tests | Ignored |
+|---|---|---|
+| `byroredux-core` | 152 | — |
+| `byroredux-nif` | 118 | — |
+| `byroredux-plugin` | 64 | 2 |
+| `byroredux-platform` | 19 | — |
+| `byroredux-scripting` | 8 | — |
+| `byroredux-bsa` | 8 | 7 |
+| `byroredux-renderer` | 2 (doc-tests) | — |
+| `byroredux` (binary) | 1 | 2 |
+| Integration: `parse_real_nifs.rs` | — | 8 |
+| **Total** | **372** | **19** |
 
-**Basic operations** — `crates/core/src/ecs/world.rs` (6 tests)
-- `spawn_and_insert` — spawn entity, insert two component types
-- `different_storage_backends` — sparse + packed coexist
-- `remove_component` — remove returns the value
-- `mutate_component` — get_mut modifies in place
-- `get_nonexistent` — missing component/entity returns None
-- `lazy_storage_init` — count/has work before any insert
+## Unit test coverage by area
 
-**Single-component queries** (5 tests)
-- `query_read_single` — read query with get/len
-- `query_write_single` — write query with mutation
-- `query_write_insert_remove` — insert/remove through QueryWrite
-- `query_returns_none_for_unregistered` — None for unknown types
-- `query_after_register` — register without insert, query succeeds (empty)
+### ECS — `byroredux-core`
+- **Storage backends** (sparse set, packed) — insert / remove / iterate / overwrite, swap-remove invariants, sort-order maintenance
+- **World basics** — spawn, multi-storage coexistence, get/get_mut, lazy storage init
+- **Single-component queries** — read, write, register-without-insert
+- **Multi-component queries** — read+write coexistence, lock ordering, deadlock detection on same-type pairs
+- **Resources** — insert/read/mutate, type-name in panic messages, missing-resource handling, overwrite, scheduler visibility
+- **Scheduler** — closures, struct systems, ordering, mutation propagation, system names
+- **Names + StringPool** — attach, find_by_name, missing pool, missing components
+- **Math + types** — `Vec3`/`Quat` round-trips, `Color`, `NiTransform` defaults
+- **Form IDs** — pool allocation, plugin slot mapping, content-addressed identity
+- **Animation engine** — clip registry, player advance, blending stack, root motion split, interpolation kernels (linear, Hermite, TBC)
 
-**Multi-component queries** (5 tests)
-- `multiple_read_queries_coexist` — two QueryReads at once
-- `query_2_mut_read_and_write` — read A + write B simultaneously
-- `query_2_mut_mut_both_writable` — write A + write B simultaneously
-- `query_2_mut_same_type_panics` — same type → panic (deadlock prevention)
-- `intersection_iteration` — iterate velocity, look up position
+### NIF — `byroredux-nif`
+- **Header parser** — minimal Skyrim header, blocks + strings, NetImmerse pre-Gamebryo, BSStreamHeader for FO4/FO76, user_version threshold
+- **Stream reader** — primitives, version-dependent string format, block refs, transforms
+- **Block parsers** — every supported block type (NiNode, NiTriShape, BSTriShape variants, NiSkinPartition, BSLightingShaderProperty across 8 shader-type variants, BSEffectShaderProperty, particle systems, Havok skip and full-parse, FO76 CRC32 flag arrays, FO76 stopcond, FO76 luminance/translucency)
+- **Animation import** — `NiTransformInterpolator`, `NiKeyframeData`, `NiTextKeyExtraData`, controller manager
+- **Coordinate conversion** — Z-up→Y-up identity, 90° rotation around each axis, vertex positions, vertex normals, winding order preservation
+- **Scene parsing** — empty file, minimal node, unknown block recovery, downcasting via `get_as`
 
-**Iteration** (2 tests)
-- `query_iter` — sum values across iterator
-- `query_iter_mut` — mutate all values through iterator
+### Plugin — `byroredux-plugin`
+- **Manifest parsing** — valid TOML, invalid TOML, no-deps case
+- **Records** — `RecordType` 4-char codes, ECS spawn integration, `find_by_form_id`, equality / hashing
+- **DataStore + resolver** — depth resolution, three-way chains, transitive deps, deterministic tiebreak
+- **Legacy ESM/ESP/ESL bridge** — slot-to-PluginId mapping, save-generated forms, reserved slots
+- **ESM cell parser** — STAT extraction, REFR position/scale, group walking
+- **ESM record parser (M24)** — WEAP / ARMO / MISC field extraction, CONT inventory, LVLI leveled entries, NPC race/class/factions/inventory/AI, FACT relations + ranks, GLOB/GMST typed values, `extract_records` group walker, total counters
 
-**Resources** (10 tests)
-- `resource_insert_and_read` — insert then read
-- `resource_insert_and_mutate` — insert, mutate, verify
-- `two_resource_types_coexist` — multiple resource types readable at once
-- `missing_resource_panics_with_type_name` — panic includes type name
-- `missing_resource_mut_panics` — panics with "not found"
-- `remove_resource_returns_value` — remove returns the value, gone afterward
-- `remove_nonexistent_resource_returns_none` — None for missing
-- `resource_overwrite` — second insert replaces first
-- `resource_visible_to_system_via_scheduler` — system reads resource inside scheduler.run()
-- `try_resource_returns_none_when_missing` — non-panicking variant
+### BSA / BA2 — `byroredux-bsa`
+- **Path normalization** — case-insensitive, slash agnostic
+- **Reject non-archive files** — both BSA and BA2
+- **DDS header reconstruction** — 148-byte layout invariants, BC1/BC7 linear-size, unknown-format fallback
 
-**Name + StringPool** (6 tests)
-- `name_component_attach_and_query` — attach Name, resolve through pool
-- `find_by_name_hit` — find_by_name returns correct entity
-- `find_by_name_miss` — wrong name returns None
-- `find_by_name_no_pool` — no StringPool resource → None (no panic)
-- `find_by_name_no_name_components` — string interned but no entities → None
-- `string_pool_as_world_resource` — pool accessible as resource
+### Other crates
+- **`byroredux-scripting`** — event marker round-trips, timer expiry, end-of-frame cleanup
+- **`byroredux-platform`** — window creation, raw handle round-trip
+- **`byroredux-renderer`** — doc-tests on the public API
 
-### Scheduler (6 tests)
+## Integration tests (`#[ignore]`'d)
 
-`crates/core/src/ecs/scheduler.rs`
-- `closure_system` — closure modifies world through query
-- `struct_system` — struct implementing System trait
-- `systems_run_in_order` — atomic counter verifies order
-- `mutation_visible_to_next_system` — system 1 writes, system 2 reads
-- `empty_scheduler_runs_cleanly` — no panic
-- `system_names_in_order` — correct names in registration order
+These tests require real game data on disk and are gated behind the
+`#[ignore]` attribute so CI doesn't fail without it. They resolve game
+paths from environment variables, falling back to canonical Steam install
+paths on the reference development machine.
 
-### String Interning (4 tests)
+| Test                                                       | What it does                                                                |
+|------------------------------------------------------------|-----------------------------------------------------------------------------|
+| `parse_rate_oblivion`                                      | Walks `Oblivion - Meshes.bsa`, asserts ≥95% NIF parse success               |
+| `parse_rate_fallout_3`                                     | `Fallout - Meshes.bsa` (FO3)                                                |
+| `parse_rate_fallout_nv`                                    | `Fallout - Meshes.bsa` (FNV)                                                |
+| `parse_rate_skyrim_se`                                     | `Skyrim - Meshes0.bsa`                                                      |
+| `parse_rate_fallout_4`                                     | `Fallout4 - Meshes.ba2` (BA2 v8)                                            |
+| `parse_rate_fallout_76`                                    | `SeventySix - Meshes.ba2` (BA2 v1)                                          |
+| `parse_rate_starfield`                                     | `Starfield - Meshes01.ba2` (BA2 v2)                                         |
+| `parse_rate_smoke_all_games`                               | First 50 NIFs from each available game                                      |
+| `parse_real_fnv_esm` (cell side)                           | Loads `FalloutNV.esm`, asserts >100 cells, >1000 statics, Saloon refs       |
+| `parse_real_fnv_esm_record_counts` (M24)                   | Asserts FNV item / NPC / faction / global counts                            |
+| `byroredux-bsa` archive tests                              | FNV BSA open/list/contains/extract/decompress round-trips                   |
+| `byroredux` binary doc tests / args parsing                | CLI help, env var override                                                  |
 
-`crates/core/src/string/mod.rs`
-- `intern_same_string_returns_same_symbol` — dedup
-- `different_strings_different_symbols` — distinct
-- `resolve_round_trips` — intern then resolve
-- `get_without_interning` — lookup without side effects
+## Game data resolution
 
-## Running Tests
+The integration test suite shares one helper module
+[`crates/nif/tests/common/mod.rs`](../../crates/nif/tests/common/mod.rs)
+that exposes a `Game` enum and a `MeshArchive` enum wrapping both BSA and
+BA2 archives behind a single `list_files()` / `extract()` API. Each game
+declares its env-var name (`BYROREDUX_FNV_DATA`, etc.) and a default Steam
+path; the helper picks whichever resolves first and prints a skip notice
+when neither does.
+
+The same helper is used by the `parse_real_nifs.rs` integration test and
+the `nif_stats` example binary in `crates/nif/examples/nif_stats.rs`.
+
+## Running tests
 
 ```bash
-# All core tests
-cargo test -p byroredux-core
-
-# Specific module
-cargo test -p byroredux-core -- ecs::world
-cargo test -p byroredux-core -- ecs::sparse_set
-cargo test -p byroredux-core -- string
-
-# Full workspace (includes renderer/platform compilation check)
+# Default — fast, no game data required (~372 tests)
 cargo test
+
+# A single crate
+cargo test -p byroredux-core
+cargo test -p byroredux-nif
+cargo test -p byroredux-plugin
+
+# A single module
+cargo test -p byroredux-core -- ecs::world
+
+# Integration tests requiring game data
+cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored
+cargo test -p byroredux-plugin --release -- --ignored parse_real_fnv_esm
+cargo test -p byroredux-bsa -- --ignored
+
+# nif_stats CLI: walks one archive and reports parse rate + block histogram
+cargo run -p byroredux-nif --example nif_stats --release -- \
+    "/path/to/Fallout - Meshes.bsa"
 ```
+
+## Test infrastructure milestones
+
+- **N23.10** introduced the per-game integration test infrastructure plus
+  graceful per-block parse recovery in the NIF top-level walker. This is
+  what turned single-block parser bugs from NIF-killing errors into
+  measurable telemetry.
+- **M26+** added the `MeshArchive` enum and BA2 game entries (Fallout 4,
+  Fallout 76, Starfield) on top of the existing BSA games.
+- **M24 Phase 1** added the `parse_real_fnv_esm_record_counts` test that
+  verifies the new structured record parser against real FNV.esm.
+
+See [Game Compatibility](game-compatibility.md) for the per-game parse
+rate matrix the integration tests produce.

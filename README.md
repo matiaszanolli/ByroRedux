@@ -1,6 +1,6 @@
 # ByroRedux
 
-A clean rebuild of the Gamebryo/Creation engine lineage in **Rust + C++**, using **Vulkan** for rendering. Linux-first, with the long-term goal of loading and running content from Gamebryo/Creation-era games (Oblivion, Fallout 3, New Vegas, Skyrim).
+A clean rebuild of the Gamebryo/Creation engine lineage in **Rust + C++**, using **Vulkan** for rendering. Linux-first, with the long-term goal of loading and running content from Gamebryo/Creation-era games (Oblivion, Fallout 3, New Vegas, Skyrim, Fallout 4, Fallout 76, Starfield).
 
 Not a port — a ground-up rebuild that understands the legacy architecture and builds modern equivalents.
 
@@ -10,10 +10,10 @@ Not a port — a ground-up rebuild that understands the legacy architecture and 
 
 ## Current State
 
-**22 milestones complete (M1–M22), N23 parser overhaul 8/10 done.** Loads full Fallout: New Vegas interior/exterior cells and Skyrim SE meshes with RT ray-traced shadows. 186 NIF block types parsed across Oblivion through Fallout 4 (particles, skinning, compressed mesh collision, FO4 half-float vertices + shader trailing fields). Multi-light rendering with cell ambient/directional from ESM. Animation playback with scene graph hierarchy.
+**22 milestones complete (M1–M22), N23 NIF parser overhaul complete (10/10), M24 Phase 1, M26+ done.** Loads cells from every Bethesda Gamebryo/Creation game and renders them with RT shadows. NIF parser hits **100% on every supported game** across the full archive sweeps. Full ESM record parser extracts items, NPCs, factions, and supporting metadata in addition to cells.
 
 ```bash
-# FNV interior cell
+# FNV interior cell with full lighting
 cargo run -- --esm FalloutNV.esm --cell GSProspectorSaloonInterior \
              --bsa "Fallout - Meshes.bsa" \
              --textures-bsa "Fallout - Textures.bsa" \
@@ -29,34 +29,55 @@ cargo run -- path/to/mesh.nif --kf path/to/anim.kf
 
 # SWF menu overlay
 cargo run -- --swf path/to/menu.swf
+
+# Per-game NIF parse rate sweep (requires game data)
+cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored
 ```
 
 Press **Escape** to capture mouse, then **WASD** + mouse to fly around. **Space/Shift** for up/down, **Ctrl** for speed boost.
+
+## Game Compatibility
+
+Every supported Bethesda game parses its full mesh archive without errors:
+
+| Game              | Archive format | NIF parse rate     | Cells | Notes                                      |
+|-------------------|----------------|--------------------|-------|--------------------------------------------|
+| Oblivion          | BSA v103       | **100%** (8,032)   | —     | Decompression + pre-Gamebryo header fixes  |
+| Fallout 3         | BSA v104       | **100%** (10,989)  | ✓     | Megaton interior, full Wasteland           |
+| Fallout New Vegas | BSA v104       | **100%** (14,881)  | ✓     | Prospector Saloon, exterior 3×3 grid       |
+| Skyrim SE         | BSA v105 (LZ4) | **100%** (18,862)  | —     | Full mesh archive coverage                 |
+| Fallout 4         | BA2 v8         | **100%** (34,995)  | —     | BA2 GNRL + DX10 textures                   |
+| Fallout 76        | BA2 v1         | **100%** (58,469)  | —     | FO76 stopcond shader paths                 |
+| Starfield         | BA2 v2         | **100%** (31,058)  | —     | 32-byte header extension                   |
+
+**Total: 177,286 NIFs parse cleanly across the entire Bethesda lineage.**
+See [Game Compatibility](docs/engine/game-compatibility.md) for the per-game architecture details.
+
+## Capability Matrix
 
 | Feature | Status |
 |---------|--------|
 | ECS with pluggable storage (SparseSet + Packed), hierarchy (Parent/Children) | Working |
 | Vulkan RT renderer with multi-light SSBO, ray query shadows, cell XCLL lighting | Working |
-| ESM parser (CELL, REFR, STAT, MSTT, FURN, DOOR, ACTI, CONT, LIGH, XCLL + 23 types) | Working |
-| NIF parser (186 block types: particles, collision, skinning, FO4 shaders, Oblivion→FO4) | Working |
-| DDS texture loading (BC1/BC3/BC5 + DX10, mipmaps, shared sampler cache) | Working |
-| BSA v103 + v104 + v105 archive reader (Oblivion/FO3/FNV/Skyrim LE/SE) | Working |
+| NIF parser (186 block types) — Oblivion through Starfield, 100% per-game success | Working |
+| BSA reader (v103/v104/v105) — Oblivion through Skyrim SE | Working |
+| BA2 reader (v1/v2/v3/v7/v8) — FO4, FO76, Starfield, GNRL + DX10 with reconstructed DDS headers | Working |
+| ESM/ESP parser — cells, statics, items, NPCs, factions, leveled lists, globals (10+ record categories) | Working |
 | Interior + exterior cell loading with placed object transforms | Working |
+| DDS texture loading (BC1/BC3/BC5 + DX10, mipmaps, shared sampler cache) | Working |
 | Animation playback (.kf files, linear/Hermite/TBC, 8 controller types, blending stack) | Working |
-| NiControllerManager embedded animation discovery | Working |
-| Text key events as transient ECS markers | Working |
+| NiControllerManager embedded animation discovery + text key events as ECS markers | Working |
 | Scene graph hierarchy (Parent/Children) with transform propagation | Working |
 | Skyrim SE NIF support (BSTriShape, BSLightingShader, packed vertices) | Working |
-| Scaleform/SWF UI system (Ruffle integration, deferred texture updates) | Working |
+| FO76/Starfield shader stopcond, CRC32 flag arrays, Luminance/Translucency | Working |
+| Scaleform/SWF UI (Ruffle integration, deferred texture updates) | Working |
 | Pipeline cache with disk persistence | Working |
 | Fly camera (WASD + mouse look) | Working |
 | Plugin system with stable Form IDs, conflict resolution | Working |
 | ECS-native scripting (events, timers) | Working |
 | Material component (emissive, specular, glossiness, UV, normal map) | Working |
-| WorldBound component (bounding sphere for frustum culling / spatial queries) | Working |
-| StagingPool for reusable GPU upload buffers | Working |
 | Collision import (Havok shapes → ECS, compressed mesh for Skyrim) | Working |
-| 319 unit tests | Passing |
+| Per-game integration test infrastructure with 95% parse rate threshold | Working |
 
 ## Architecture
 
@@ -64,15 +85,17 @@ Press **Escape** to capture mouse, then **WASD** + mouse to fly around. **Space/
 byroredux/                 Binary — game loop, cell loader, fly camera, animation system
 crates/
   core/                    ECS, math (glam), animation engine, types, string interning, form IDs
-  renderer/                Vulkan graphics via ash + gpu-allocator
-  plugin/                  Plugin system, ESM parser, manifests, conflict resolution
-  nif/                     NIF file parser + animation importer (.nif/.kf)
-  bsa/                     BSA archive reader (v103/v104/v105)
+  renderer/                Vulkan graphics via ash + gpu-allocator (RT extensions)
+  plugin/                  Plugin system + ESM/ESP parser (cells, items, NPCs, factions, ...)
+  nif/                     NIF file parser (186 block types) + animation importer
+  bsa/                     BSA + BA2 archive readers (Oblivion → Starfield)
   ui/                      Scaleform/SWF UI system (Ruffle integration)
   scripting/               ECS-native scripting (events, timers)
   platform/                Windowing via winit (Linux-first)
   cxx-bridge/              C++ interop via cxx
 ```
+
+See [Architecture Overview](docs/engine/architecture.md) for design principles, the crate dependency graph, and a tour of each subsystem.
 
 ### ECS Design
 
@@ -88,19 +111,21 @@ World wraps each storage in `RwLock` so query methods take `&self`, enabling con
 Vulkan 1.3 via `ash` with RT ray query extensions:
 
 - Full initialization chain with validation layers in debug builds
-- RT acceleration structures (BLAS per mesh + TLAS per frame) with DEVICE_LOCAL memory
+- RT acceleration structures (BLAS per mesh + TLAS per frame) with `DEVICE_LOCAL` memory
 - Multi-light SSBO with point/spot/directional lights and RT shadow rays
-- Pipeline cache with disk persistence (10-50ms cold → <1ms warm)
-- Shared VkSampler across all textures
+- Pipeline cache with disk persistence (10–50 ms cold → <1 ms warm)
+- Shared `VkSampler` across all textures
 - Per-image semaphore synchronization with HOST→AS_BUILD memory barriers
 - Deferred texture destruction for stall-free dynamic UI updates
 - Atomic swapchain handoff on resize
 - Proper depth format querying with fallback chain (D32→D32S8→D24S8→D16)
 - Backface culling with confirmed NIF/D3D CW winding convention
 
+See [Vulkan Renderer](docs/engine/renderer.md) for the per-module breakdown and the [Lighting System](docs/engine/lighting-from-cells.md) doc for cell-based lighting.
+
 ### Asset Pipeline
 
-ESM files parsed for CELL/REFR/STAT records (23 record types). Interior cell lighting from XCLL subrecords. NIF files parsed with version-aware binary reading (NifVariant for 8 game variants, 186 registered block types). Full coverage: ~48 particle system types, bhkCompressedMeshShape for Skyrim collision, FO4 half-float vertices + shader wetness params, all 6 skinning blocks, 30+ Havok collision shapes. Collision import to ECS with Havok→engine coordinate conversion. Scene graph hierarchy preserved as Parent/Children entities. Single-pass material property extraction into Material ECS component. DDS textures from BSA v103/v104/v105 archives. StagingPool for reusable GPU upload buffers. NiControllerManager embedded animation discovery with text key event emission.
+ESM files parsed for cell, static, item, NPC, faction, and supporting records. NIF files parsed with version-aware binary reading (`NifVariant` for 8 game variants, 186 registered block types). Full coverage: ~48 particle system types, `bhkCompressedMeshShape` for Skyrim collision, FO4 half-float vertices + shader wetness params, all 6 skinning blocks, 30+ Havok collision shapes, FO76/Starfield shader stopcond + CRC32 flag arrays. Collision import to ECS with Havok→engine coordinate conversion. Scene graph hierarchy preserved as Parent/Children entities. Single-pass material property extraction into `Material` ECS component. DDS textures from BSA v103/v104/v105 archives and BA2 v1/2/7 DX10 archives with reconstructed headers. `StagingPool` for reusable GPU upload buffers. `NiControllerManager` embedded animation discovery with text key event emission.
 
 ## Building
 
@@ -125,7 +150,23 @@ cargo run -- --esm FalloutNV.esm \
              --textures-bsa "Fallout - Textures.bsa"  # Load an interior cell
 cargo run -- --swf menu.swf        # Render a Scaleform SWF menu
 cargo run -- --debug               # Show FPS/entity stats in title bar
-cargo test                         # Run all 319 tests
+cargo test                         # All workspace tests
+cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored
+                                   # Per-game NIF parse rate sweeps (needs game data)
+```
+
+### Per-Game Data Paths
+
+The integration tests resolve game data via environment variables, falling back to canonical Steam install paths:
+
+```
+BYROREDUX_OBLIVION_DATA   /mnt/data/SteamLibrary/.../Oblivion/Data
+BYROREDUX_FO3_DATA        .../Fallout 3 goty/Data
+BYROREDUX_FNV_DATA        .../Fallout New Vegas/Data
+BYROREDUX_SKYRIMSE_DATA   .../Skyrim Special Edition/Data
+BYROREDUX_FO4_DATA        .../Fallout 4/Data
+BYROREDUX_FO76_DATA       .../Fallout76/Data
+BYROREDUX_STARFIELD_DATA  .../Starfield/Data
 ```
 
 ### Shader Compilation
@@ -140,32 +181,69 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 
 ## Documentation
 
-- [Engine Documentation](docs/engine/index.md) — architecture, ECS, renderer, game loop
-- [Legacy Gamebryo 2.3 Analysis](docs/legacy/gamebryo-2.3-architecture.md) — class hierarchy, NIF format, compatibility mapping
-- [Development Roadmap](ROADMAP.md) — milestones, game compatibility, known issues
+### Engine
+- [Engine Index](docs/engine/index.md) — gateway to every doc
+- [Architecture Overview](docs/engine/architecture.md) — design principles, crate graph
+- [ECS](docs/engine/ecs.md) — components, storage, queries, scheduler
+- [Vulkan Renderer](docs/engine/renderer.md) — RT pipeline, multi-light, BLAS/TLAS
+- [NIF Parser](docs/engine/nif-parser.md) — 186 block types, version handling, parse-rate matrix
+- [Archives (BSA + BA2)](docs/engine/archives.md) — BSA v103/104/105 and BA2 v1/2/3/7/8
+- [ESM Records](docs/engine/esm-records.md) — cell loading + structured record extraction
+- [Animation](docs/engine/animation.md) — keyframe pipeline, controllers, blending stack
+- [Asset Pipeline](docs/engine/asset-pipeline.md) — texture provider, mesh cache, NIF→ECS
+- [UI System](docs/engine/ui.md) — Scaleform/SWF via Ruffle
+- [Game Compatibility](docs/engine/game-compatibility.md) — 7-game parse rate matrix
+- [Cell Lighting](docs/engine/lighting-from-cells.md) — XCLL extraction, RT integration
+- [Coordinate System](docs/engine/coordinate-system.md) — Z-up→Y-up, CW rotations
+- [Game Loop](docs/engine/game-loop.md) — winit, frame loop, cell loading
+- [Testing](docs/engine/testing.md) — unit + integration test inventory
+- [Dependencies](docs/engine/dependencies.md) — workspace and per-crate
+- [String Interning](docs/engine/string-interning.md), [C++ Interop](docs/engine/cxx-interop.md), [Platform](docs/engine/platform.md), [Scripting](docs/engine/scripting.md)
+
+### Legacy reference
+- [Gamebryo 2.3 Architecture](docs/legacy/gamebryo-2.3-architecture.md) — class hierarchy, NIF format, compatibility mapping
+- [Key Source Files](docs/legacy/key-files.md) — paths to critical headers by subsystem
+- [API Deep Dive](docs/legacy/api-deep-dive.md) — `NiObject`, `NiAVObject`, `NiStream`, `NiProperty`, `NiTransform`
+- [Papyrus API Reference](docs/legacy/papyrus-api-reference.md) — what the script runtime needs to mirror
+- [Creation Engine UI](docs/legacy/creation-engine-ui.md) — Scaleform menu architecture
+
+### Project state
+- [Development Roadmap](ROADMAP.md) — milestones, deferred work, achievement matrix
 
 ## Stats
 
-| Metric | Value |
-|--------|-------|
-| Rust source files | 128 |
-| Lines of Rust | ~30,900 |
-| Unit tests | 319 |
-| Commits | 194 |
-| Workspace crates | 10 |
+| Metric                                | Value          |
+|---------------------------------------|----------------|
+| Rust source files                     | 142            |
+| Lines of Rust                         | ~35,800        |
+| Unit tests passing                    | 372            |
+| Integration tests (`#[ignore]`'d)     | 14             |
+| NIFs in per-game integration sweeps   | 177,286        |
+| Per-game parse success rate           | 100% (7 games) |
+| Workspace crates                      | 10             |
+| Commits                               | 219            |
 
 ## Dependencies
 
-| Crate | Purpose |
-|-------|---------|
-| ash | Raw Vulkan bindings |
-| gpu-allocator | GPU memory allocation |
-| winit | Cross-platform windowing |
-| glam | Linear algebra |
-| nalgebra | SVD for degenerate rotation repair |
-| string-interner | O(1) string equality |
-| cxx | C++ interop |
-| image | PNG/image loading |
+| Crate           | Purpose                                       |
+|-----------------|-----------------------------------------------|
+| ash             | Raw Vulkan bindings                           |
+| ash-window      | Surface creation from window handles          |
+| gpu-allocator   | Vulkan memory allocation                      |
+| winit           | Cross-platform windowing                      |
+| glam            | Linear algebra (Vec/Mat/Quat)                 |
+| nalgebra        | SVD for degenerate rotation repair            |
+| string-interner | O(1) string equality                          |
+| flate2          | Zlib decompression for BSA + BA2              |
+| lz4_flex        | LZ4 frame decompression for BSA v105          |
+| image           | PNG / image loading                           |
+| serde / toml    | Plugin manifest serialization                 |
+| uuid / semver   | Plugin identity and version constraints       |
+| anyhow / thiserror | Error handling                             |
+| cxx             | C++ interop                                   |
+| log / env_logger | Structured logging                           |
+
+See [Dependencies](docs/engine/dependencies.md) for the full per-crate breakdown.
 
 ## License
 
