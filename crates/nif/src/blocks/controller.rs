@@ -4,6 +4,7 @@
 //! Parsed enough to advance the stream correctly; actual animation
 //! interpretation comes later.
 
+use super::base::NiObjectNETData;
 use super::NiObject;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
@@ -671,6 +672,40 @@ impl NiMorphData {
             num_vertices,
             relative_targets,
             morphs,
+        })
+    }
+}
+
+// ── NiSequenceStreamHelper ─────────────────────────────────────────────
+//
+// Pre-Skyrim animation root used by Oblivion / Morrowind / FO3 / FNV KF
+// files. Inherits from NiObjectNET with no extra fields: the per-bone
+// drivers hang off the controller chain (NiKeyframeController instances)
+// and the text keys hang off the extra_data list.
+//
+// We don't currently consume this from the animation importer — that
+// work remains as a follow-up — but parsing it here lets Oblivion KF
+// files load without hard-failing on unknown block types (v20.0.0.5 has
+// no block_sizes fallback).
+
+#[derive(Debug)]
+pub struct NiSequenceStreamHelper {
+    pub net: NiObjectNETData,
+}
+
+impl NiObject for NiSequenceStreamHelper {
+    fn block_type_name(&self) -> &'static str {
+        "NiSequenceStreamHelper"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiSequenceStreamHelper {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        Ok(Self {
+            net: NiObjectNETData::parse(stream)?,
         })
     }
 }

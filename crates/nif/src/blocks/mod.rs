@@ -29,7 +29,8 @@ use collision::{
 };
 use controller::{
     NiControllerManager, NiControllerSequence, NiGeomMorpherController, NiMaterialColorController,
-    NiMorphData, NiMultiTargetTransformController, NiSingleInterpController, NiTimeController,
+    NiMorphData, NiMultiTargetTransformController, NiSequenceStreamHelper,
+    NiSingleInterpController, NiTimeController,
 };
 use extra_data::{
     BsBehaviorGraphExtraData, BsBound, BsClothExtraData, BsConnectPointChildren,
@@ -186,7 +187,12 @@ pub fn parse_block(
         "NiTextureTransformController" => Ok(Box::new(
             controller::NiTextureTransformController::parse(stream)?,
         )),
+        // NiKeyframeController is the pre-Skyrim per-bone animation driver
+        // (Oblivion / Morrowind / FO3 / FNV KF files). It inherits from
+        // NiSingleInterpController with no extra fields at Oblivion-era
+        // versions, so it parses identically — see issue #144.
         "NiTransformController"
+        | "NiKeyframeController"
         | "NiVisController"
         | "NiAlphaController"
         | "BSEffectShaderPropertyFloatController"
@@ -203,6 +209,10 @@ pub fn parse_block(
         "NiMorphData" => Ok(Box::new(NiMorphData::parse(stream)?)),
         "NiControllerManager" => Ok(Box::new(NiControllerManager::parse(stream)?)),
         "NiControllerSequence" => Ok(Box::new(NiControllerSequence::parse(stream)?)),
+        // Pre-Skyrim KF animation root — see issue #144. NiObjectNET with
+        // no extra fields; the per-bone controller chain and text keys
+        // hang off its extra_data / controller refs.
+        "NiSequenceStreamHelper" => Ok(Box::new(NiSequenceStreamHelper::parse(stream)?)),
         "NiDefaultAVObjectPalette" => {
             Ok(Box::new(palette::NiDefaultAVObjectPalette::parse(stream)?))
         }
@@ -495,5 +505,48 @@ mod dispatch_tests {
                 "variant '{variant}' parsed the wrong texture_set_ref"
             );
         }
+    }
+
+    /// Regression test for issue #144: Oblivion-era KF animation roots
+    /// must dispatch through the right parsers.
+    #[test]
+    fn oblivion_kf_animation_blocks_route_correctly() {
+        // NiKeyframeController: parses as NiSingleInterpController
+        // (26-byte NiTimeControllerBase + 4-byte interpolator ref).
+        let header = oblivion_header();
+        let mut kf_bytes = Vec::new();
+        // NiTimeControllerBase: next_controller, flags, frequency, phase,
+        // start_time, stop_time, target_ref.
+        kf_bytes.extend_from_slice(&(-1i32).to_le_bytes()); // next_controller
+        kf_bytes.extend_from_slice(&0u16.to_le_bytes()); // flags
+        kf_bytes.extend_from_slice(&1.0f32.to_le_bytes()); // frequency
+        kf_bytes.extend_from_slice(&0.0f32.to_le_bytes()); // phase
+        kf_bytes.extend_from_slice(&0.0f32.to_le_bytes()); // start_time
+        kf_bytes.extend_from_slice(&1.0f32.to_le_bytes()); // stop_time
+        kf_bytes.extend_from_slice(&(-1i32).to_le_bytes()); // target_ref
+        kf_bytes.extend_from_slice(&7i32.to_le_bytes()); // interpolator_ref
+        let mut stream = NifStream::new(&kf_bytes, &header);
+        let block = parse_block("NiKeyframeController", &mut stream, Some(kf_bytes.len() as u32))
+            .expect("NiKeyframeController should dispatch through NiSingleInterpController");
+        let ctrl = block
+            .as_any()
+            .downcast_ref::<crate::blocks::controller::NiSingleInterpController>()
+            .expect("NiKeyframeController did not downcast to NiSingleInterpController");
+        assert_eq!(ctrl.interpolator_ref.index(), Some(7));
+
+        // NiSequenceStreamHelper: NiObjectNET with no extra fields.
+        // name (string table index 0) + extra_data count (0) + controller ref (-1)
+        let mut ssh_bytes = Vec::new();
+        ssh_bytes.extend_from_slice(&0i32.to_le_bytes()); // name
+        ssh_bytes.extend_from_slice(&0u32.to_le_bytes()); // extra_data count
+        ssh_bytes.extend_from_slice(&(-1i32).to_le_bytes()); // controller
+        let mut stream = NifStream::new(&ssh_bytes, &header);
+        let block =
+            parse_block("NiSequenceStreamHelper", &mut stream, Some(ssh_bytes.len() as u32))
+                .expect("NiSequenceStreamHelper should dispatch to its own parser");
+        assert!(block
+            .as_any()
+            .downcast_ref::<crate::blocks::controller::NiSequenceStreamHelper>()
+            .is_some());
     }
 }
