@@ -190,9 +190,13 @@ pub fn parse_block(
         "BSMultiBound" => Ok(Box::new(BsMultiBound::parse(stream)?)),
         "BSMultiBoundAABB" => Ok(Box::new(BsMultiBoundAABB::parse(stream)?)),
         "BSMultiBoundOBB" => Ok(Box::new(BsMultiBoundOBB::parse(stream)?)),
-        "NiTriShape" | "NiTriStrips" | "BSSegmentedTriShape" => {
-            Ok(Box::new(NiTriShape::parse(stream)?))
-        }
+        "NiTriShape" | "NiTriStrips" => Ok(Box::new(NiTriShape::parse(stream)?)),
+        // BSSegmentedTriShape: FO3/FNV/SkyrimLE biped body-part segmentation.
+        // Inherits NiTriShape and adds a trailing (u32 num_segments) +
+        // (u8 flags + u32 index + u32 num_tris_in_segment)[num_segments]
+        // array. Previously aliased to plain NiTriShape, leaving those
+        // bytes unread and relying on block-loop realignment. See #146.
+        "BSSegmentedTriShape" => Ok(Box::new(NiTriShape::parse_segmented(stream)?)),
         "BSTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse(stream)?)),
         // BSMeshLODTriShape / BSLODTriShape: same 3-u32 LOD-size trailing
         // layout. BSMeshLODTriShape appears in Skyrim SE DLC and FO4 LOD;

@@ -141,6 +141,35 @@ impl NiTriShape {
             active_material_index,
         })
     }
+
+    /// Parse `BSSegmentedTriShape` — an NiTriShape subclass used by
+    /// FO3/FNV/SkyrimLE for biped body-part LOD chunking. Adds a
+    /// trailing segment table (niflib nif.xml):
+    ///
+    /// ```text
+    /// NiTriShape body
+    /// uint num_segments
+    /// for each segment:
+    ///     byte flags
+    ///     uint index
+    ///     uint num_tris_in_segment
+    /// ```
+    ///
+    /// The segment metadata is used for runtime dismemberment / armour
+    /// body-part toggles. The renderer doesn't need it, so we consume
+    /// the bytes and discard — but doing so properly (fixed layout,
+    /// 9 bytes per segment) is cheaper than relying on `block_size`
+    /// realignment and avoids warning spam. See issue #146.
+    pub fn parse_segmented(stream: &mut NifStream) -> io::Result<Self> {
+        let shape = Self::parse(stream)?;
+        let num_segments = stream.read_u32_le()?;
+        for _ in 0..num_segments {
+            let _flags = stream.read_u8()?;
+            let _index = stream.read_u32_le()?;
+            let _num_tris = stream.read_u32_le()?;
+        }
+        Ok(shape)
+    }
 }
 
 /// NiTriStrips — identical serialization to NiTriShape (both are NiGeometry).
@@ -886,6 +915,93 @@ mod skin_vertex_tests {
             stream.position() as usize,
             bytes.len(),
             "BSDynamicTriShape trailing extras not fully consumed"
+        );
+    }
+
+    /// FO3/FNV header — has_properties_list=true, no shader_alpha_refs.
+    /// Used by the BSSegmentedTriShape regression test.
+    fn fo3_header() -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 11,
+            user_version_2: 34, // Fallout 3 / NV
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    /// Build a minimal valid FO3/FNV NiTriShape body: zero materials,
+    /// null data refs, identity transform. Used as the base for the
+    /// BSSegmentedTriShape regression test.
+    fn minimal_fo3_ni_tri_shape_bytes() -> Vec<u8> {
+        let mut d = Vec::new();
+        // NiObjectNET: name=-1, extra_data count=0, controller=-1
+        d.extend_from_slice(&(-1i32).to_le_bytes());
+        d.extend_from_slice(&0u32.to_le_bytes());
+        d.extend_from_slice(&(-1i32).to_le_bytes());
+        // NiAVObject (FO3/FNV, bsver=34): flags u32, transform,
+        // properties list (count=0, no entries), collision_ref
+        d.extend_from_slice(&0u32.to_le_bytes()); // flags
+        for _ in 0..3 {
+            d.extend_from_slice(&0.0f32.to_le_bytes()); // translation
+        }
+        for row in 0..3 {
+            for col in 0..3 {
+                let v: f32 = if row == col { 1.0 } else { 0.0 };
+                d.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        d.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+        d.extend_from_slice(&0u32.to_le_bytes()); // properties count
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
+        // NiTriShape: data_ref, skin_instance_ref, num_materials,
+        // active_material_index, dirty_flag (v >= 20.2.0.7).
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // data_ref
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // skin_instance_ref
+        d.extend_from_slice(&0u32.to_le_bytes()); // num_materials
+        d.extend_from_slice(&0u32.to_le_bytes()); // active_material_index
+        d.push(0u8); // dirty_flag
+        // FO3/FNV has no shader_alpha_refs branch.
+        d
+    }
+
+    /// Regression: #146 — BSSegmentedTriShape must dispatch to the
+    /// segmented parser and consume its trailing `num_segments` (u32)
+    /// + 9-byte segment records. Previously aliased to plain NiTriShape,
+    /// dropping segment metadata and causing block-loop realignment
+    /// warnings on every FO3/FNV/SkyrimLE body-part mesh.
+    #[test]
+    fn bs_segmented_tri_shape_dispatches_and_consumes_segment_table() {
+        let header = fo3_header();
+        let mut bytes = minimal_fo3_ni_tri_shape_bytes();
+        // num_segments = 2 + two 9-byte segment records.
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        // Segment 0: flags=0x1, index=0, num_tris=10
+        bytes.push(0x1);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&10u32.to_le_bytes());
+        // Segment 1: flags=0x2, index=10, num_tris=5
+        bytes.push(0x2);
+        bytes.extend_from_slice(&10u32.to_le_bytes());
+        bytes.extend_from_slice(&5u32.to_le_bytes());
+
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        let block = parse_block("BSSegmentedTriShape", &mut stream, Some(bytes.len() as u32))
+            .expect("BSSegmentedTriShape should dispatch through NiTriShape::parse_segmented");
+        assert!(
+            block.as_any().downcast_ref::<NiTriShape>().is_some(),
+            "BSSegmentedTriShape did not downcast to NiTriShape"
+        );
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "BSSegmentedTriShape segment table not fully consumed"
         );
     }
 
