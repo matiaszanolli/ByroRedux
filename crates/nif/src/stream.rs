@@ -143,14 +143,18 @@ impl<'a> NifStream<'a> {
     // ── NIF-specific reads ─────────────────────────────────────────────
 
     /// Read a string. Format depends on version:
-    /// - Pre-20.1: length-prefixed (u32 length + bytes)
-    /// - 20.1+: string table index (u32 → header.strings[index])
+    /// - Pre-20.1.0.1: length-prefixed (u32 length + bytes)
+    /// - 20.1.0.1+: string table index (u32 → header.strings[index])
     ///
     /// Returns `Arc<str>` so that string-table reads (the common path on
     /// 20.1+ files) are a cheap pointer copy + atomic increment, not a
     /// fresh allocation. The legacy length-prefixed path allocates once.
+    ///
+    /// NOTE: the threshold `0x14010001` must match the one in
+    /// `header.rs` that decides whether to populate `header.strings`.
+    /// A mismatch would corrupt reads on 20.1.0.1/20.1.0.2 files.
     pub fn read_string(&mut self) -> io::Result<Option<Arc<str>>> {
-        if self.header.version >= NifVersion(0x14010003) {
+        if self.header.version >= NifVersion(0x14010001) {
             // String table index — Arc::clone is just a refcount bump.
             let idx = self.read_i32_le()?;
             if idx < 0 {
@@ -341,7 +345,7 @@ mod tests {
 
     #[test]
     fn read_string_from_table() {
-        // Version >= 20.1.0.3 reads from string table
+        // Version >= 20.1.0.1 reads from string table
         let header = test_header(NifVersion::V20_2_0_7);
         let data: Vec<u8> = vec![
             0x01, 0x00, 0x00, 0x00, // string table index 1
@@ -351,6 +355,34 @@ mod tests {
 
         assert_eq!(stream.read_string().unwrap().as_deref(), Some("world"));
         assert_eq!(stream.read_string().unwrap(), None);
+    }
+
+    #[test]
+    fn read_string_table_boundary_at_20_1_0_1() {
+        // Regression for #172: string-table dispatch must kick in at
+        // exactly 20.1.0.1 per nif.xml, not 20.1.0.3 as it used to.
+        // At 20.1.0.1 the reader should take the string-table path.
+        let header = test_header(NifVersion(0x14010001));
+        let data: Vec<u8> = vec![
+            0x00, 0x00, 0x00, 0x00, // string table index 0
+        ];
+        let mut stream = NifStream::new(&data, &header);
+        // If the threshold is still 0x14010003 this would fall through
+        // to the inline path and try to read 0 bytes → return None.
+        // With the corrected threshold we read index 0 → "hello".
+        assert_eq!(stream.read_string().unwrap().as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn read_string_inline_below_20_1_0_1() {
+        // Just below the threshold: 20.1.0.0 must still use inline strings.
+        let header = test_header(NifVersion(0x14010000));
+        let data: Vec<u8> = vec![
+            0x03, 0x00, 0x00, 0x00, // length: 3
+            b'f', b'o', b'o', //
+        ];
+        let mut stream = NifStream::new(&data, &header);
+        assert_eq!(stream.read_string().unwrap().as_deref(), Some("foo"));
     }
 
     #[test]

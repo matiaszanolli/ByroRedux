@@ -143,8 +143,10 @@ impl NifHeader {
             Vec::new()
         };
 
-        // String table (version >= 20.1.0.3)
-        let (strings, max_string_length) = if version >= NifVersion(0x14010003) {
+        // String table — since 20.1.0.1 per nif.xml. Must stay in sync with
+        // the same threshold in NifStream::read_string (stream.rs); a mismatch
+        // would corrupt reads on 20.1.0.1/20.1.0.2 files.
+        let (strings, max_string_length) = if version >= NifVersion(0x14010001) {
             let num_strings = read_u32_le(&mut cursor)? as usize;
             let max_len = read_u32_le(&mut cursor)?;
             let mut strs: Vec<Arc<str>> = Vec::with_capacity(num_strings);
