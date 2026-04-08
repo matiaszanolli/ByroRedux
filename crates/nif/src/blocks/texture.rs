@@ -1,10 +1,12 @@
 //! NiSourceTexture — texture file reference.
 //! NiPixelData — embedded pixel data (used by some Oblivion NIFs).
+//! NiTextureEffect — projected texture effect (env map, gobo, fog).
 
-use super::base::NiObjectNETData;
+use super::base::{NiAVObjectData, NiObjectNETData};
+use super::traits::{HasAVObject, HasObjectNET};
 use super::NiObject;
 use crate::stream::NifStream;
-use crate::types::BlockRef;
+use crate::types::{BlockRef, NiMatrix3, NiTransform};
 use crate::version::NifVersion;
 use std::any::Any;
 use std::io;
@@ -359,5 +361,170 @@ mod tests {
         assert_eq!(pix.pixel_data.len(), 16);
         assert_eq!(pix.pixel_data[0], 255); // first pixel R
         assert_eq!(stream.position() as usize, data.len());
+    }
+}
+
+// ── NiTextureEffect ────────────────────────────────────────────────────
+//
+// Inherits NiDynamicEffect (which in turn inherits NiAVObject). Describes
+// a projected texture — sphere/env maps, gobos, fog maps, projected
+// shadows. Used by Oblivion magic FX meshes and various projected-shadow
+// setups. See issue #163.
+//
+// Wire layout (up to Skyrim — FO4 removes NiDynamicEffect from the chain):
+//
+//   NiAVObject base
+//   [NiDynamicEffect] switch_state:u8 (since 10.1.0.106, < BSVER 130)
+//                     num_affected_nodes:u32 (since 10.1.0.0, < BSVER 130)
+//                     affected_nodes:u32[n]
+//   model_projection_matrix: Matrix33
+//   model_projection_translation: Vector3
+//   texture_filtering: u32 (TexFilterMode enum)
+//   max_anisotropy: u16 (since 20.5.0.4)
+//   texture_clamping: u32 (TexClampMode enum)
+//   texture_type: u32 (TextureType enum)
+//   coordinate_generation_type: u32 (CoordGenType enum)
+//   source_texture_ref: Ref<NiSourceTexture> (since 3.1 — always for us)
+//   enable_plane: u8 (byte bool)
+//   plane: NiPlane { normal:Vec3, constant:f32 } = 16 bytes
+//   ps2_l: i16 (until 10.2.0.0 — present in Oblivion v20.0.0.5... wait,
+//              nif.xml says "until 10.2.0.0"; Oblivion is 20.0.0.5 which is
+//              AFTER that, so PS2 fields are ABSENT for Oblivion)
+//   ps2_k: i16 (until 10.2.0.0 — same)
+
+/// NiTextureEffect — projected texture effect (env map, gobo, fog, etc.).
+#[derive(Debug)]
+pub struct NiTextureEffect {
+    pub av: NiAVObjectData,
+    pub switch_state: bool,
+    pub affected_nodes: Vec<u32>,
+    pub model_projection_matrix: NiMatrix3,
+    pub model_projection_translation: [f32; 3],
+    pub texture_filtering: u32,
+    pub max_anisotropy: u16,
+    pub texture_clamping: u32,
+    pub texture_type: u32,
+    pub coordinate_generation_type: u32,
+    pub source_texture_ref: BlockRef,
+    pub enable_plane: bool,
+    /// Clipping plane: (normal_x, normal_y, normal_z, constant).
+    pub plane: [f32; 4],
+    pub ps2_l: i16,
+    pub ps2_k: i16,
+}
+
+impl NiObject for NiTextureEffect {
+    fn block_type_name(&self) -> &'static str {
+        "NiTextureEffect"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_object_net(&self) -> Option<&dyn HasObjectNET> {
+        Some(self)
+    }
+    fn as_av_object(&self) -> Option<&dyn HasAVObject> {
+        Some(self)
+    }
+}
+
+impl HasObjectNET for NiTextureEffect {
+    fn name(&self) -> Option<&str> {
+        self.av.net.name.as_deref()
+    }
+    fn extra_data_refs(&self) -> &[BlockRef] {
+        &self.av.net.extra_data_refs
+    }
+    fn controller_ref(&self) -> BlockRef {
+        self.av.net.controller_ref
+    }
+}
+
+impl HasAVObject for NiTextureEffect {
+    fn flags(&self) -> u32 {
+        self.av.flags
+    }
+    fn transform(&self) -> &NiTransform {
+        &self.av.transform
+    }
+    fn properties(&self) -> &[BlockRef] {
+        &self.av.properties
+    }
+    fn collision_ref(&self) -> BlockRef {
+        self.av.collision_ref
+    }
+}
+
+impl NiTextureEffect {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let av = NiAVObjectData::parse(stream)?;
+
+        // NiDynamicEffect base fields — same version gates as NiLight.
+        // See crates/nif/src/blocks/light.rs for the full rationale.
+        let switch_state = if stream.version() >= NifVersion(0x0A01006A) {
+            stream.read_u8()? != 0
+        } else {
+            true
+        };
+        let affected_nodes = if stream.version() >= NifVersion(0x0A010000) {
+            let count = stream.read_u32_le()? as usize;
+            let mut nodes = Vec::with_capacity(count);
+            for _ in 0..count {
+                nodes.push(stream.read_u32_le()?);
+            }
+            nodes
+        } else {
+            Vec::new()
+        };
+
+        let model_projection_matrix = stream.read_ni_matrix3()?;
+        let p = stream.read_ni_point3()?;
+        let model_projection_translation = [p.x, p.y, p.z];
+
+        let texture_filtering = stream.read_u32_le()?;
+        let max_anisotropy = if stream.version() >= NifVersion(0x14050004) {
+            stream.read_u16_le()?
+        } else {
+            0
+        };
+        let texture_clamping = stream.read_u32_le()?;
+        let texture_type = stream.read_u32_le()?;
+        let coordinate_generation_type = stream.read_u32_le()?;
+        let source_texture_ref = stream.read_block_ref()?;
+
+        let enable_plane = stream.read_u8()? != 0;
+        // NiPlane: vec3 normal + f32 constant = 16 bytes.
+        let pn = stream.read_ni_point3()?;
+        let pc = stream.read_f32_le()?;
+        let plane = [pn.x, pn.y, pn.z, pc];
+
+        // PS2 L/K: only present up to and including 10.2.0.0. Oblivion
+        // is 20.0.0.5 — AFTER 10.2.0.0 — so these fields are ABSENT.
+        let (ps2_l, ps2_k) = if stream.version() <= NifVersion(0x0A020000) {
+            // No i16 reader in NifStream; sign-reinterpret the u16.
+            let l = stream.read_u16_le()? as i16;
+            let k = stream.read_u16_le()? as i16;
+            (l, k)
+        } else {
+            (0, 0)
+        };
+
+        Ok(Self {
+            av,
+            switch_state,
+            affected_nodes,
+            model_projection_matrix,
+            model_projection_translation,
+            texture_filtering,
+            max_anisotropy,
+            texture_clamping,
+            texture_type,
+            coordinate_generation_type,
+            source_texture_ref,
+            enable_plane,
+            plane,
+            ps2_l,
+            ps2_k,
+        })
     }
 }

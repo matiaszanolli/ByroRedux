@@ -140,6 +140,9 @@ pub fn parse_block(
         }
         // NiCamera — embedded cinematic camera block. See issue #153.
         "NiCamera" => Ok(Box::new(node::NiCamera::parse(stream)?)),
+        // NiTextureEffect — projected env-map / gobo / fog projector.
+        // See issue #163.
+        "NiTextureEffect" => Ok(Box::new(texture::NiTextureEffect::parse(stream)?)),
         "BSOrderedNode" => Ok(Box::new(BsOrderedNode::parse(stream)?)),
         "BSValueNode" => Ok(Box::new(BsValueNode::parse(stream)?)),
         // Multi-bound spatial volumes
@@ -961,6 +964,62 @@ mod dispatch_tests {
         assert_eq!(c.scene_ref.index(), Some(9));
         assert_eq!(c.num_screen_polygons, 0);
         assert_eq!(c.num_screen_textures, 0);
+        assert_eq!(stream.position(), bytes.len() as u64);
+    }
+
+    /// Regression test for issue #163: NiTextureEffect.
+    #[test]
+    fn oblivion_ni_texture_effect_roundtrip() {
+        use crate::blocks::texture::NiTextureEffect;
+
+        let header = oblivion_header();
+        let mut bytes = oblivion_niavobject_bytes();
+        // NiDynamicEffect base: switch_state=1, num_affected_nodes=0
+        bytes.push(1u8);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        // model_projection_matrix: 3x3 identity
+        for row in [[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+            for v in row {
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        // model_projection_translation: (0, 0, 0)
+        for _ in 0..3 {
+            bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        // texture_filtering = 2 (trilerp)
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        // NO max_anisotropy at 20.0.0.5 (< 20.5.0.4)
+        // texture_clamping = 0
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        // texture_type = 4 (env map)
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        // coordinate_generation_type = 0 (sphere map)
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        // source_texture_ref = 17
+        bytes.extend_from_slice(&17i32.to_le_bytes());
+        // enable_plane = 0
+        bytes.push(0u8);
+        // plane: normal (0, 1, 0), constant 0.5
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        bytes.extend_from_slice(&0.5f32.to_le_bytes());
+        // NO ps2_l / ps2_k at 20.0.0.5 (> 10.2.0.0)
+
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block("NiTextureEffect", &mut stream, Some(bytes.len() as u32))
+            .expect("NiTextureEffect dispatch");
+        let e = block.as_any().downcast_ref::<NiTextureEffect>().unwrap();
+        assert_eq!(e.texture_filtering, 2);
+        assert_eq!(e.texture_type, 4);
+        assert_eq!(e.coordinate_generation_type, 0);
+        assert_eq!(e.source_texture_ref.index(), Some(17));
+        assert!(!e.enable_plane);
+        assert!((e.plane[1] - 1.0).abs() < 1e-6);
+        assert!((e.plane[3] - 0.5).abs() < 1e-6);
+        assert_eq!(e.max_anisotropy, 0); // absent for Oblivion
+        assert_eq!(e.ps2_l, 0); // absent for Oblivion
         assert_eq!(stream.position(), bytes.len() as u64);
     }
 }
