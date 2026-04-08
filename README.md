@@ -4,15 +4,24 @@ A clean rebuild of the Gamebryo/Creation engine lineage in **Rust + C++**, using
 
 Not a port — a ground-up rebuild that understands the legacy architecture and builds modern equivalents.
 
+![*Anvil Heinrich Oaken Halls* from The Elder Scrolls IV: Oblivion, rendered in ByroRedux](docs/screenshots/anvil-oaken-halls.png)
+
+*Anvil Heinrich Oaken Halls House (Oblivion) loaded directly from `Oblivion.esm` + `Oblivion - Meshes.bsa` + `Oblivion - Textures - Compressed.bsa` — 379 entities, 376 meshes, 104 DDS textures, 12 lights (cell XCLL ambient + per-mesh NiLight torches), RT multi-light with ray query shadows at ~1600 FPS on RTX 4070 Ti.*
+
 ![*Prospector Saloon* from Fallout: New Vegas, rendered in ByroRedux](docs/screenshots/prospector-saloon.png)
 
-*The Prospector Saloon (Goodsprings) loaded from FalloutNV.esm — 789 entities, RT multi-light with shadows, cell interior XCLL lighting at 85 FPS on RTX 4070 Ti.*
+*The Prospector Saloon (Goodsprings) loaded from `FalloutNV.esm` — 789 entities, RT multi-light with shadows, cell interior XCLL lighting at 85 FPS on RTX 4070 Ti.*
 
 ## Current State
 
-**23 milestones complete (M1–M22, M24 Phase 1, M26, M28 Phase 1), N23 NIF parser overhaul complete (10/10), N26 Oblivion coverage audit done.** Loads cells from every Bethesda Gamebryo/Creation game and renders them with RT shadows. NIF parser hits **100% on every supported game** across the full archive sweeps. Full ESM record parser extracts items, NPCs, factions, and supporting metadata. Rapier3D physics simulates the loaded cell: the player capsule collides with world geometry, dynamic clutter falls under gravity. Per-mesh NiLight sources (Oblivion torches, candles, magic FX) now contribute to the RT light buffer alongside cell XCLL ambient.
+**23 milestones complete (M1–M22, M24 Phase 1, M26, M28 Phase 1), N23 NIF parser overhaul complete (10/10), N26 Oblivion coverage audit done.** Loads and renders interior cells directly from unmodified Bethesda game data across **both Oblivion and Fallout New Vegas** — no intermediate tools, no re-exported assets, no mod manager. NIF parser hits **100% on every supported game** across the full archive sweeps (177,286 NIFs). Full ESM record parser extracts items, NPCs, factions, and supporting metadata. Rapier3D physics runs on NIF collision data extracted from `bhk*` blocks. Per-mesh NiLight sources (Oblivion torches, candles, magic FX) contribute to the RT light buffer alongside cell XCLL ambient.
 
 ```bash
+# Oblivion interior cell with XCLL lighting + per-mesh NiLight torches
+cargo run --release -- --esm Oblivion.esm --cell AnvilHeinrichOakenHallsHouse \
+             --bsa "Oblivion - Meshes.bsa" \
+             --textures-bsa "Oblivion - Textures - Compressed.bsa"
+
 # FNV interior cell with full lighting
 cargo run -- --esm FalloutNV.esm --cell GSProspectorSaloonInterior \
              --bsa "Fallout - Meshes.bsa" \
@@ -38,17 +47,17 @@ Press **Escape** to capture mouse, then **WASD** + mouse to fly around. **Space/
 
 ## Game Compatibility
 
-Every supported Bethesda game parses its full mesh archive without errors:
+Every supported Bethesda game parses its full mesh archive without errors. **Oblivion** and **Fallout New Vegas** additionally load and render real interior cells end-to-end from unmodified game data.
 
-| Game              | Archive format | NIF parse rate     | Cells | Notes                                      |
-|-------------------|----------------|--------------------|-------|--------------------------------------------|
-| Oblivion          | BSA v103       | **100%** (8,032)   | —     | Decompression + pre-Gamebryo header fixes  |
-| Fallout 3         | BSA v104       | **100%** (10,989)  | ✓     | Megaton interior, full Wasteland           |
-| Fallout New Vegas | BSA v104       | **100%** (14,881)  | ✓     | Prospector Saloon, exterior 3×3 grid       |
-| Skyrim SE         | BSA v105 (LZ4) | **100%** (18,862)  | —     | Full mesh archive coverage                 |
-| Fallout 4         | BA2 v8         | **100%** (34,995)  | —     | BA2 GNRL + DX10 textures                   |
-| Fallout 76        | BA2 v1         | **100%** (58,469)  | —     | FO76 stopcond shader paths                 |
-| Starfield         | BA2 v2         | **100%** (31,058)  | —     | 32-byte header extension                   |
+| Game              | Archive format | NIF parse rate     | Cells rendering | Notes                                                 |
+|-------------------|----------------|--------------------|-----------------|-------------------------------------------------------|
+| Oblivion          | BSA v103       | **100%** (8,032)   | ✓ Interior      | 20-byte TES4 headers, N26 block audit, Heinrich Halls |
+| Fallout 3         | BSA v104       | **100%** (10,989)  | ✓ Interior      | Megaton interior, full Wasteland                      |
+| Fallout New Vegas | BSA v104       | **100%** (14,881)  | ✓ Int + 3×3 ext | Prospector Saloon, exterior 3×3 grid                  |
+| Skyrim SE         | BSA v105 (LZ4) | **100%** (18,862)  | —               | Full mesh archive coverage                            |
+| Fallout 4         | BA2 v8         | **100%** (34,995)  | —               | BA2 GNRL + DX10 textures                              |
+| Fallout 76        | BA2 v1         | **100%** (58,469)  | —               | FO76 stopcond shader paths                            |
+| Starfield         | BA2 v2         | **100%** (31,058)  | —               | 32-byte header extension                              |
 
 **Total: 177,286 NIFs parse cleanly across the entire Bethesda lineage.**
 See [Game Compatibility](docs/engine/game-compatibility.md) for the per-game architecture details.
@@ -61,7 +70,8 @@ See [Game Compatibility](docs/engine/game-compatibility.md) for the per-game arc
 | Vulkan RT renderer with multi-light SSBO, ray query shadows, cell XCLL lighting | Working |
 | Per-mesh `NiLight` sources (ambient / directional / point / spot) → GpuLight | Working |
 | NIF parser (~210 block types) — Oblivion through Starfield, 100% per-game success | Working |
-| Rapier3D physics simulation — collision from NIF bhk chain, fixed 60 Hz substep, dynamic-capsule player body | Working |
+| End-to-end cell rendering from unmodified game data (Oblivion + FNV) | Working |
+| Rapier3D physics simulation — collision from NIF bhk chain, fixed 60 Hz substep | Working (static/dynamic bodies); kinematic character controller → M28.5 |
 | BSA reader (v103/v104/v105) — Oblivion through Skyrim SE | Working |
 | BA2 reader (v1/v2/v3/v7/v8) — FO4, FO76, Starfield, GNRL + DX10 with reconstructed DDS headers | Working |
 | ESM/ESP parser — cells, statics, items, NPCs, factions, leveled lists, globals (10+ record categories) | Working |
@@ -219,9 +229,9 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 | Metric                                | Value          |
 |---------------------------------------|----------------|
 | Rust source files                     | 149            |
-| Lines of Rust                         | ~39,600        |
-| Unit tests passing                    | 396            |
-| Integration tests (`#[ignore]`'d)     | 22             |
+| Lines of Rust                         | ~40,100        |
+| Unit tests passing                    | 406            |
+| Integration tests (`#[ignore]`'d)     | 24             |
 | NIFs in per-game integration sweeps   | 177,286        |
 | Per-game parse success rate           | 100% (7 games) |
 | Workspace crates                      | 11             |
