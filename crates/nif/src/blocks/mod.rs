@@ -9,6 +9,7 @@ pub mod collision;
 pub mod controller;
 pub mod extra_data;
 pub mod interpolator;
+pub mod legacy_particle;
 pub mod light;
 pub mod multibound;
 pub mod node;
@@ -143,6 +144,45 @@ pub fn parse_block(
         // NiTextureEffect — projected env-map / gobo / fog projector.
         // See issue #163.
         "NiTextureEffect" => Ok(Box::new(texture::NiTextureEffect::parse(stream)?)),
+        // Legacy (pre-NiPSys) particle stack — Oblivion magic FX, fire,
+        // dust, blood. See issue #143. NiBSPArrayController is an empty
+        // NiParticleSystemController subclass (zero additional fields)
+        // so it aliases to the same parser.
+        "NiParticleSystemController" | "NiBSPArrayController" => Ok(Box::new(
+            legacy_particle::NiParticleSystemController::parse(stream)?,
+        )),
+        "NiAutoNormalParticles" => Ok(Box::new(legacy_particle::NiLegacyParticles::parse(
+            stream,
+            "NiAutoNormalParticles",
+        )?)),
+        "NiRotatingParticles" => Ok(Box::new(legacy_particle::NiLegacyParticles::parse(
+            stream,
+            "NiRotatingParticles",
+        )?)),
+        "NiAutoNormalParticlesData" => Ok(Box::new(
+            legacy_particle::NiLegacyParticlesData::parse(stream, "NiAutoNormalParticlesData")?,
+        )),
+        "NiRotatingParticlesData" => Ok(Box::new(legacy_particle::NiLegacyParticlesData::parse(
+            stream,
+            "NiRotatingParticlesData",
+        )?)),
+        "NiParticleColorModifier" => Ok(Box::new(
+            legacy_particle::NiParticleColorModifier::parse(stream)?,
+        )),
+        "NiParticleGrowFade" => {
+            Ok(Box::new(legacy_particle::NiParticleGrowFade::parse(stream)?))
+        }
+        "NiParticleRotation" => {
+            Ok(Box::new(legacy_particle::NiParticleRotation::parse(stream)?))
+        }
+        "NiParticleBomb" => Ok(Box::new(legacy_particle::NiParticleBomb::parse(stream)?)),
+        "NiGravity" => Ok(Box::new(legacy_particle::NiGravity::parse(stream)?)),
+        "NiPlanarCollider" => {
+            Ok(Box::new(legacy_particle::NiPlanarCollider::parse(stream)?))
+        }
+        "NiSphericalCollider" => Ok(Box::new(legacy_particle::NiSphericalCollider::parse(
+            stream,
+        )?)),
         "BSOrderedNode" => Ok(Box::new(BsOrderedNode::parse(stream)?)),
         "BSValueNode" => Ok(Box::new(BsValueNode::parse(stream)?)),
         // Multi-bound spatial volumes
@@ -1021,5 +1061,239 @@ mod dispatch_tests {
         assert_eq!(e.max_anisotropy, 0); // absent for Oblivion
         assert_eq!(e.ps2_l, 0); // absent for Oblivion
         assert_eq!(stream.position(), bytes.len() as u64);
+    }
+
+    /// Regression test for issue #143: legacy particle modifier chain
+    /// and NiParticleSystemController. These types ship in every
+    /// Oblivion magic FX / fire / dust / blood mesh and hard-fail the
+    /// whole file when one is missing (no block_sizes fallback).
+    #[test]
+    fn oblivion_legacy_particle_modifier_chain_roundtrip() {
+        use crate::blocks::legacy_particle::{
+            NiGravity, NiParticleBomb, NiParticleColorModifier, NiParticleGrowFade,
+            NiParticleRotation, NiPlanarCollider, NiSphericalCollider,
+        };
+
+        let header = oblivion_header();
+
+        // Helpers.
+        fn niptr_modifier_prefix() -> Vec<u8> {
+            // next_modifier = -1, controller = -1
+            let mut d = Vec::new();
+            d.extend_from_slice(&(-1i32).to_le_bytes());
+            d.extend_from_slice(&(-1i32).to_le_bytes());
+            d
+        }
+        fn collider_prefix() -> Vec<u8> {
+            let mut d = niptr_modifier_prefix();
+            d.extend_from_slice(&0.5f32.to_le_bytes()); // bounce
+            d.push(0u8); // spawn_on_collide
+            d.push(1u8); // die_on_collide
+            d
+        }
+
+        // NiParticleColorModifier: base + color_data_ref.
+        let mut bytes = niptr_modifier_prefix();
+        bytes.extend_from_slice(&7i32.to_le_bytes());
+        let mut s = NifStream::new(&bytes, &header);
+        let b = parse_block("NiParticleColorModifier", &mut s, Some(bytes.len() as u32)).unwrap();
+        let m = b.as_any().downcast_ref::<NiParticleColorModifier>().unwrap();
+        assert_eq!(m.color_data_ref.index(), Some(7));
+        assert_eq!(s.position(), bytes.len() as u64);
+
+        // NiParticleGrowFade: base + grow + fade.
+        let mut bytes = niptr_modifier_prefix();
+        bytes.extend_from_slice(&0.25f32.to_le_bytes());
+        bytes.extend_from_slice(&0.75f32.to_le_bytes());
+        let mut s = NifStream::new(&bytes, &header);
+        let b = parse_block("NiParticleGrowFade", &mut s, Some(bytes.len() as u32)).unwrap();
+        let m = b.as_any().downcast_ref::<NiParticleGrowFade>().unwrap();
+        assert!((m.grow - 0.25).abs() < 1e-6);
+        assert!((m.fade - 0.75).abs() < 1e-6);
+        assert_eq!(s.position(), bytes.len() as u64);
+
+        // NiParticleRotation: base + random_initial_axis + Vec3 axis + speed.
+        let mut bytes = niptr_modifier_prefix();
+        bytes.push(1u8);
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        bytes.extend_from_slice(&2.5f32.to_le_bytes());
+        let mut s = NifStream::new(&bytes, &header);
+        let b = parse_block("NiParticleRotation", &mut s, Some(bytes.len() as u32)).unwrap();
+        let m = b.as_any().downcast_ref::<NiParticleRotation>().unwrap();
+        assert!(m.random_initial_axis);
+        assert_eq!(m.initial_axis, [0.0, 1.0, 0.0]);
+        assert!((m.rotation_speed - 2.5).abs() < 1e-6);
+        assert_eq!(s.position(), bytes.len() as u64);
+
+        // NiParticleBomb: base + decay + duration + delta_v + start +
+        // decay_type + symmetry_type + position + direction.
+        let mut bytes = niptr_modifier_prefix();
+        for v in [0.1f32, 1.0, 2.0, 0.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // decay_type
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // symmetry_type
+        for v in [0.0f32, 0.0, 0.0, 0.0, 0.0, 1.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let mut s = NifStream::new(&bytes, &header);
+        let b = parse_block("NiParticleBomb", &mut s, Some(bytes.len() as u32)).unwrap();
+        let m = b.as_any().downcast_ref::<NiParticleBomb>().unwrap();
+        assert_eq!(m.decay_type, 1);
+        assert_eq!(m.direction, [0.0, 0.0, 1.0]);
+        assert_eq!(s.position(), bytes.len() as u64);
+
+        // NiGravity: base + decay + force + field_type + position + direction.
+        let mut bytes = niptr_modifier_prefix();
+        bytes.extend_from_slice(&0.0f32.to_le_bytes()); // decay
+        bytes.extend_from_slice(&9.81f32.to_le_bytes()); // force
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // planar field
+        for v in [0.0f32, 0.0, 0.0, 0.0, -1.0, 0.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let mut s = NifStream::new(&bytes, &header);
+        let b = parse_block("NiGravity", &mut s, Some(bytes.len() as u32)).unwrap();
+        let m = b.as_any().downcast_ref::<NiGravity>().unwrap();
+        assert!((m.force - 9.81).abs() < 1e-6);
+        assert_eq!(m.field_type, 1);
+        assert_eq!(m.direction[1], -1.0);
+        assert_eq!(s.position(), bytes.len() as u64);
+
+        // NiPlanarCollider: collider_prefix + height + width + position +
+        // x_vector + y_vector + NiPlane (vec3 normal + f32 constant).
+        let mut bytes = collider_prefix();
+        bytes.extend_from_slice(&10.0f32.to_le_bytes()); // height
+        bytes.extend_from_slice(&5.0f32.to_le_bytes()); // width
+        for v in [0.0f32; 3] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        } // position
+        for v in [1.0f32, 0.0, 0.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        } // x_vector
+        for v in [0.0f32, 0.0, 1.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        } // y_vector
+        for v in [0.0f32, 1.0, 0.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        } // plane normal
+        bytes.extend_from_slice(&0.25f32.to_le_bytes()); // plane constant
+        let mut s = NifStream::new(&bytes, &header);
+        let b = parse_block("NiPlanarCollider", &mut s, Some(bytes.len() as u32)).unwrap();
+        let m = b.as_any().downcast_ref::<NiPlanarCollider>().unwrap();
+        assert!(m.die_on_collide);
+        assert!((m.height - 10.0).abs() < 1e-6);
+        assert_eq!(m.plane, [0.0, 1.0, 0.0, 0.25]);
+        assert_eq!(s.position(), bytes.len() as u64);
+
+        // NiSphericalCollider: collider_prefix + radius + position.
+        let mut bytes = collider_prefix();
+        bytes.extend_from_slice(&3.5f32.to_le_bytes()); // radius
+        for v in [1.0f32, 2.0, 3.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let mut s = NifStream::new(&bytes, &header);
+        let b = parse_block("NiSphericalCollider", &mut s, Some(bytes.len() as u32)).unwrap();
+        let m = b.as_any().downcast_ref::<NiSphericalCollider>().unwrap();
+        assert!((m.radius - 3.5).abs() < 1e-6);
+        assert_eq!(m.position, [1.0, 2.0, 3.0]);
+        assert_eq!(s.position(), bytes.len() as u64);
+    }
+
+    /// Regression test for issue #143: NiParticleSystemController with
+    /// zero particles. Verifies the huge scalar field chain consumes
+    /// the expected byte count.
+    #[test]
+    fn oblivion_legacy_particle_system_controller_roundtrip() {
+        use crate::blocks::legacy_particle::NiParticleSystemController;
+
+        let header = oblivion_header();
+
+        // NiTimeControllerBase: 26 bytes.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(-1i32).to_le_bytes()); // next_controller
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // flags
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // frequency
+        bytes.extend_from_slice(&0.0f32.to_le_bytes()); // phase
+        bytes.extend_from_slice(&0.0f32.to_le_bytes()); // start_time
+        bytes.extend_from_slice(&3.0f32.to_le_bytes()); // stop_time
+        bytes.extend_from_slice(&(-1i32).to_le_bytes()); // target_ref
+
+        // Controller body scalar soup — mostly zeros, non-zero marker
+        // values to verify specific field offsets.
+        for v in [
+            50.0f32, // speed
+            5.0,     // speed_variation
+            0.0,     // declination
+            0.5,     // declination_variation
+            0.0,     // planar_angle
+            6.28,    // planar_angle_variation
+        ] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        // initial_normal (vec3)
+        for v in [0.0f32, 0.0, 1.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        // initial_color (RGBA)
+        for v in [1.0f32, 0.5, 0.25, 1.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        bytes.extend_from_slice(&1.5f32.to_le_bytes()); // initial_size
+        bytes.extend_from_slice(&0.0f32.to_le_bytes()); // emit_start_time
+        bytes.extend_from_slice(&10.0f32.to_le_bytes()); // emit_stop_time
+        bytes.push(0u8); // reset_particle_system
+        bytes.extend_from_slice(&25.0f32.to_le_bytes()); // birth_rate
+        bytes.extend_from_slice(&2.0f32.to_le_bytes()); // lifetime
+        bytes.extend_from_slice(&0.5f32.to_le_bytes()); // lifetime_variation
+        bytes.push(1u8); // use_birth_rate
+        bytes.push(0u8); // spawn_on_death
+        for v in [0.0f32; 3] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        } // emitter_dimensions
+        bytes.extend_from_slice(&0xDEADBEEFu32.to_le_bytes()); // emitter ptr hash
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // num_spawn_generations
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // percentage_spawned
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // spawn_multiplier
+        bytes.extend_from_slice(&0.1f32.to_le_bytes()); // spawn_speed_chaos
+        bytes.extend_from_slice(&0.1f32.to_le_bytes()); // spawn_dir_chaos
+
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // num_particles
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // num_valid
+        // No particle records.
+        bytes.extend_from_slice(&(-1i32).to_le_bytes()); // unknown_ref
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // num_emitter_points
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // trailer_emitter_type
+        bytes.extend_from_slice(&0.0f32.to_le_bytes()); // unknown_trailer_float
+        bytes.extend_from_slice(&(-1i32).to_le_bytes()); // trailer_emitter_modifier
+
+        let mut s = NifStream::new(&bytes, &header);
+        let b = parse_block(
+            "NiParticleSystemController",
+            &mut s,
+            Some(bytes.len() as u32),
+        )
+        .expect("NiParticleSystemController dispatch");
+        let c = b
+            .as_any()
+            .downcast_ref::<NiParticleSystemController>()
+            .unwrap();
+        assert!((c.speed - 50.0).abs() < 1e-6);
+        assert!((c.birth_rate - 25.0).abs() < 1e-6);
+        assert!((c.lifetime - 2.0).abs() < 1e-6);
+        assert_eq!(c.emitter, 0xDEADBEEF);
+        assert_eq!(c.num_particles, 0);
+        assert_eq!(s.position(), bytes.len() as u64);
+
+        // NiBSPArrayController aliases to the same parser with the
+        // identical payload — verify it dispatches.
+        let mut s = NifStream::new(&bytes, &header);
+        let b = parse_block("NiBSPArrayController", &mut s, Some(bytes.len() as u32))
+            .expect("NiBSPArrayController dispatch");
+        assert!(b
+            .as_any()
+            .downcast_ref::<NiParticleSystemController>()
+            .is_some());
     }
 }
