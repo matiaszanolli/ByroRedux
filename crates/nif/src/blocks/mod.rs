@@ -193,16 +193,36 @@ pub fn parse_block(
         "NiTriShape" | "NiTriStrips" | "BSSegmentedTriShape" => {
             Ok(Box::new(NiTriShape::parse(stream)?))
         }
-        "BSTriShape" | "BSMeshLODTriShape" | "BSSubIndexTriShape" => {
-            Ok(Box::new(tri_shape::BsTriShape::parse(stream)?))
+        "BSTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse(stream)?)),
+        // BSMeshLODTriShape / BSLODTriShape: same 3-u32 LOD-size trailing
+        // layout. BSMeshLODTriShape appears in Skyrim SE DLC and FO4 LOD;
+        // BSLODTriShape is the FO4 distant-LOD variant. See issue #147, #157.
+        "BSMeshLODTriShape" | "BSLODTriShape" => {
+            Ok(Box::new(tri_shape::BsTriShape::parse_lod(stream)?))
+        }
+        // BSSubIndexTriShape: ubiquitous in Skyrim SE DLC and all FO4 actor
+        // meshes (clothing segmentation for dismemberment). After the
+        // BSTriShape body, FO4+ adds a variable-size segmentation block
+        // (num primitives, segment table, optional shared sub-segment data
+        // with SSF filename). The segmentation structure is used only for
+        // gameplay damage subdivision — the renderer doesn't need it — so
+        // we trust block_size to bound the skip rather than reimplementing
+        // the full variable layout. See issue #147.
+        "BSSubIndexTriShape" => {
+            let start = stream.position();
+            let shape = tri_shape::BsTriShape::parse(stream)?;
+            if let Some(size) = block_size {
+                let consumed = stream.position() - start;
+                if consumed < size as u64 {
+                    stream.skip(size as u64 - consumed);
+                }
+            }
+            Ok(Box::new(shape))
         }
         // BSDynamicTriShape: Skyrim facegen head meshes — BSTriShape body
         // + CPU-mutable trailing Vector4 vertex array. Routing this to
         // NiUnknown caused invisible faces on every NPC. See issue #157.
         "BSDynamicTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse_dynamic(stream)?)),
-        // BSLODTriShape: FO4 distant LOD geometry — BSTriShape body +
-        // three trailing LOD triangle counts. See issue #157.
-        "BSLODTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse_lod(stream)?)),
         "NiTriShapeData" => Ok(Box::new(NiTriShapeData::parse(stream)?)),
         "NiTriStripsData" => Ok(Box::new(NiTriStripsData::parse(stream)?)),
         // All Oblivion-era BSShaderLightingProperty specializations share the

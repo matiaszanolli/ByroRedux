@@ -889,6 +889,61 @@ mod skin_vertex_tests {
         );
     }
 
+    /// Regression: #147 — BSMeshLODTriShape shares BSLODTriShape's
+    /// 3-u32 LOD-size trailing layout. Previously dispatched to the
+    /// plain BSTriShape arm, leaving 12 bytes unread and spamming the
+    /// block-loop realignment warning.
+    #[test]
+    fn bs_mesh_lod_tri_shape_dispatches_and_consumes_trailing_bytes() {
+        let header = test_header();
+        let mut bytes = minimal_bs_tri_shape_bytes();
+        // BSMeshLODTriShape trailing: 3 × u32 LOD sizes.
+        bytes.extend_from_slice(&20u32.to_le_bytes());
+        bytes.extend_from_slice(&10u32.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        let block = parse_block("BSMeshLODTriShape", &mut stream, Some(bytes.len() as u32))
+            .expect("BSMeshLODTriShape should dispatch through BsTriShape::parse_lod");
+        assert!(
+            block.as_any().downcast_ref::<BsTriShape>().is_some(),
+            "BSMeshLODTriShape did not downcast to BsTriShape"
+        );
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "BSMeshLODTriShape trailing LOD sizes not fully consumed"
+        );
+    }
+
+    /// Regression: #147 — BSSubIndexTriShape carries a variable-size
+    /// FO4+ segmentation block (num primitives + segment table + optional
+    /// shared sub-segment data with SSF filename). The dispatch uses
+    /// `block_size` to bound the skip rather than reimplementing the
+    /// full variable layout, since segmentation is gameplay-only data.
+    #[test]
+    fn bs_sub_index_tri_shape_consumes_segmentation_via_block_size() {
+        let header = test_header();
+        let mut bytes = minimal_bs_tri_shape_bytes();
+        // Simulate a 24-byte segmentation payload — doesn't need to be
+        // semantically valid, only that block_size bounds the skip.
+        let segmentation_bytes = [0xAAu8; 24];
+        bytes.extend_from_slice(&segmentation_bytes);
+
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        let block = parse_block("BSSubIndexTriShape", &mut stream, Some(bytes.len() as u32))
+            .expect("BSSubIndexTriShape should parse with block_size skip");
+        assert!(
+            block.as_any().downcast_ref::<BsTriShape>().is_some(),
+            "BSSubIndexTriShape did not downcast to BsTriShape"
+        );
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "BSSubIndexTriShape segmentation payload not fully consumed"
+        );
+    }
+
     /// Regression: #157 — BSLODTriShape must dispatch to the LOD parser
     /// and consume its 3 trailing LOD-size u32s. Previously routed to
     /// NiUnknown, breaking FO4 distant LOD.
