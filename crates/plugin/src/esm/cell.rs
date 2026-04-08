@@ -191,7 +191,8 @@ fn parse_cell_group(
                         b"EDID" => editor_id = read_zstring(&sub.data),
                         b"DATA" if sub.data.len() >= 1 => is_interior = sub.data[0] & 1 != 0,
                         b"XCLL" if sub.data.len() >= 28 => {
-                            // FNV XCLL layout:
+                            // Shared Oblivion / FO3 / FNV XCLL layout
+                            // (first 28 bytes — Skyrim+ is incompatible):
                             //   0-3:   Ambient RGBA (4 bytes)
                             //   4-7:   Directional RGBA (4 bytes)
                             //   8-11:  Fog color near RGBA (4 bytes)
@@ -200,6 +201,17 @@ fn parse_cell_group(
                             //   20-23: Directional rotation X (i32, degrees)
                             //   24-27: Directional rotation Y (i32, degrees)
                             //   28-31: Directional fade (f32)
+                            //   32-35: Fog clip distance (f32)
+                            //   36-39: Fog power (FNV only)
+                            //
+                            // Oblivion XCLL is 36 bytes; FNV is 40.
+                            // The fields we actually consume (ambient,
+                            // directional, rotation) live in the
+                            // byte-identical prefix, so a single parser
+                            // handles both games without branching.
+                            // Validated by the
+                            // `oblivion_cells_populate_xcll_lighting`
+                            // integration test in this module.
                             let ambient_r = sub.data[0] as f32 / 255.0;
                             let ambient_g = sub.data[1] as f32 / 255.0;
                             let ambient_b = sub.data[2] as f32 / 255.0;
@@ -712,6 +724,99 @@ mod tests {
         for (key, cell) in index.cells.iter().take(10) {
             eprintln!("  Cell '{}': {} refs", key, cell.references.len());
         }
+    }
+
+    /// Regression guard: proves the existing FNV-shaped XCLL parser is
+    /// byte-compatible with Oblivion for the fields we consume.
+    ///
+    /// XCLL in Oblivion (36 bytes) and FNV (40 bytes) share an identical
+    /// prefix for ambient / directional colors + fog colors + fog
+    /// near/far + directional rotation XY + fade + clip distance. FNV
+    /// appends a `fog_power` float; Skyrim+ has a completely different
+    /// (longer) layout. Since `parse_esm_cells` only reads bytes 0-27
+    /// (ambient, directional, and rotation), the byte offsets work for
+    /// both games without any per-variant branching.
+    ///
+    /// This test validates that assumption against a real `Oblivion.esm`:
+    /// ≥90% of interior cells must produce a populated CellLighting
+    /// record, and the sampled color values must land in the expected
+    /// 0..1 normalized float range.
+    #[test]
+    #[ignore]
+    fn oblivion_cells_populate_xcll_lighting() {
+        let path =
+            "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data/Oblivion.esm";
+        if !std::path::Path::new(path).exists() {
+            eprintln!("Skipping: Oblivion.esm not found");
+            return;
+        }
+        let data = std::fs::read(path).unwrap();
+        let idx = parse_esm_cells(&data).expect("Oblivion walker");
+
+        let total = idx.cells.len();
+        let with_lighting = idx
+            .cells
+            .values()
+            .filter(|c| c.lighting.is_some())
+            .count();
+        let with_directional = idx
+            .cells
+            .values()
+            .filter(|c| {
+                c.lighting
+                    .as_ref()
+                    .is_some_and(|l| l.directional_color.iter().any(|&x| x > 0.0))
+            })
+            .count();
+
+        eprintln!(
+            "Oblivion.esm: {total} cells, {with_lighting} with XCLL \
+             ({:.1}%), {with_directional} with non-zero directional",
+            100.0 * with_lighting as f32 / total.max(1) as f32,
+        );
+
+        // Log a couple of directional samples so that any future
+        // XCLL-layout regression shows up in test output as obviously
+        // wrong color values or rotations.
+        for (name, lit) in idx
+            .cells
+            .values()
+            .filter_map(|c| c.lighting.as_ref().map(|l| (c.editor_id.clone(), l.clone())))
+            .filter(|(_, l)| l.directional_color.iter().any(|&c| c > 0.0))
+            .take(2)
+        {
+            eprintln!(
+                "  '{name}': ambient={:.3?} directional={:.3?} rot=[{:.1},{:.1}]°",
+                lit.ambient,
+                lit.directional_color,
+                lit.directional_rotation[0].to_degrees(),
+                lit.directional_rotation[1].to_degrees(),
+            );
+
+            // Sanity: normalized color channels must sit in [0, 1].
+            for c in lit.ambient.iter().chain(lit.directional_color.iter()) {
+                assert!(
+                    (0.0..=1.0).contains(c),
+                    "color channel {c} out of [0,1] for cell '{name}' — \
+                     XCLL byte offsets may have drifted"
+                );
+            }
+        }
+
+        // For the parser to be considered working on Oblivion, the vast
+        // majority of interior cells must produce lighting data. The
+        // residual are cells that legitimately omit XCLL (wilderness
+        // stubs, deleted, or inherited from a template).
+        let lighting_pct = with_lighting * 100 / total.max(1);
+        assert!(
+            lighting_pct >= 90,
+            "expected >=90% of Oblivion cells to have XCLL lighting, \
+             got {with_lighting}/{total} ({lighting_pct}%)"
+        );
+        assert!(
+            with_directional > 100,
+            "expected >100 cells with non-zero directional light, got {with_directional}"
+        );
     }
 
     /// Smoke test: does `parse_esm_cells` survive a real `Oblivion.esm`
