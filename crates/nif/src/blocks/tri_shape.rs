@@ -171,6 +171,12 @@ pub struct BsTriShape {
     pub normals: Vec<NiPoint3>,
     pub vertex_colors: Vec<[f32; 4]>,
     pub triangles: Vec<[u16; 3]>,
+    /// Per-vertex bone weights (4 per vertex, half-float decoded to f32).
+    /// Empty when the vertex descriptor lacks VF_SKINNED.
+    pub bone_weights: Vec<[f32; 4]>,
+    /// Per-vertex bone indices (4 per vertex). Parallel to `bone_weights`.
+    /// Empty when the vertex descriptor lacks VF_SKINNED.
+    pub bone_indices: Vec<[u8; 4]>,
 }
 
 impl NiObject for BsTriShape {
@@ -271,6 +277,17 @@ impl BsTriShape {
         let mut normals = Vec::with_capacity(nv);
         let mut vertex_colors = Vec::with_capacity(nv);
         let mut triangles = Vec::with_capacity(num_triangles as usize);
+        let is_skinned = vertex_attrs & VF_SKINNED != 0;
+        let mut bone_weights: Vec<[f32; 4]> = if is_skinned {
+            Vec::with_capacity(nv)
+        } else {
+            Vec::new()
+        };
+        let mut bone_indices: Vec<[u8; 4]> = if is_skinned {
+            Vec::with_capacity(nv)
+        } else {
+            Vec::new()
+        };
 
         if data_size > 0 {
             let vertex_size_bytes = vertex_size_quads * 4;
@@ -333,9 +350,13 @@ impl BsTriShape {
                     vertex_colors.push([r, g, b, a]);
                 }
 
-                // Skinning data (4 × f16 weights + 4 × u8 indices)
-                if vertex_attrs & VF_SKINNED != 0 {
-                    stream.skip(12); // 8 bytes weights + 4 bytes indices
+                // Skinning data — 4 × half-float weights + 4 × u8 bone indices
+                // (12 bytes total). Present when the vertex descriptor has
+                // VF_SKINNED set. Valid for both Skyrim LE/SE and FO4+ layouts.
+                if is_skinned {
+                    let (weights, indices) = read_vertex_skin_data(stream)?;
+                    bone_weights.push(weights);
+                    bone_indices.push(indices);
                 }
 
                 // Eye data (f32)
@@ -396,8 +417,29 @@ impl BsTriShape {
             normals,
             vertex_colors,
             triangles,
+            bone_weights,
+            bone_indices,
         })
     }
+}
+
+/// Read the 12-byte VF_SKINNED vertex extras: 4 × half-float weights
+/// followed by 4 × u8 bone indices. Weights are stored as IEEE-754
+/// half-floats per nif.xml BSVertexData_F / BSVertexDataSSE.
+///
+/// Exposed as a standalone helper so the skinning read can be unit-tested
+/// without having to construct a full BSTriShape byte stream.
+#[inline]
+fn read_vertex_skin_data(stream: &mut NifStream) -> io::Result<([f32; 4], [u8; 4])> {
+    let w0 = half_to_f32(stream.read_u16_le()?);
+    let w1 = half_to_f32(stream.read_u16_le()?);
+    let w2 = half_to_f32(stream.read_u16_le()?);
+    let w3 = half_to_f32(stream.read_u16_le()?);
+    let i0 = stream.read_u8()?;
+    let i1 = stream.read_u8()?;
+    let i2 = stream.read_u8()?;
+    let i3 = stream.read_u8()?;
+    Ok(([w0, w1, w2, w3], [i0, i1, i2, i3]))
 }
 
 /// Convert IEEE 754 half-precision float (u16) to f32.
@@ -693,5 +735,76 @@ impl NiTriStripsData {
             }
         }
         triangles
+    }
+}
+
+#[cfg(test)]
+mod skin_vertex_tests {
+    use super::*;
+    use crate::header::NifHeader;
+    use crate::version::NifVersion;
+
+    fn test_header() -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 12,
+            user_version_2: 100, // Skyrim SE
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    /// IEEE-754 half-float for 1.0 is 0x3C00; for 0.5 is 0x3800; for 0.0 is 0x0000.
+    /// These are the constants the read_vertex_skin_data helper will decode.
+    #[test]
+    fn read_vertex_skin_data_weights_and_indices() {
+        let header = test_header();
+        let mut data = Vec::new();
+        // Weights: 1.0, 0.5, 0.0, 0.0 as half-floats.
+        data.extend_from_slice(&0x3C00u16.to_le_bytes()); // 1.0
+        data.extend_from_slice(&0x3800u16.to_le_bytes()); // 0.5
+        data.extend_from_slice(&0x0000u16.to_le_bytes()); // 0.0
+        data.extend_from_slice(&0x0000u16.to_le_bytes()); // 0.0
+        // Indices: 0, 1, 0, 0
+        data.extend_from_slice(&[0u8, 1, 0, 0]);
+
+        let mut stream = NifStream::new(&data, &header);
+        let (weights, indices) = read_vertex_skin_data(&mut stream).unwrap();
+
+        assert!((weights[0] - 1.0).abs() < 1e-4);
+        assert!((weights[1] - 0.5).abs() < 1e-4);
+        assert_eq!(weights[2], 0.0);
+        assert_eq!(weights[3], 0.0);
+        assert_eq!(indices, [0, 1, 0, 0]);
+        // All 12 bytes consumed.
+        assert_eq!(stream.position() as usize, data.len());
+    }
+
+    #[test]
+    fn read_vertex_skin_data_four_bones_normalized() {
+        let header = test_header();
+        let mut data = Vec::new();
+        // Four equal weights of 0.25 as half-floats (0x3400).
+        for _ in 0..4 {
+            data.extend_from_slice(&0x3400u16.to_le_bytes());
+        }
+        // Four distinct bone indices.
+        data.extend_from_slice(&[3u8, 7, 12, 42]);
+
+        let mut stream = NifStream::new(&data, &header);
+        let (weights, indices) = read_vertex_skin_data(&mut stream).unwrap();
+
+        let sum: f32 = weights.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-3, "weights should sum to 1, got {}", sum);
+        for w in &weights {
+            assert!((w - 0.25).abs() < 1e-3);
+        }
+        assert_eq!(indices, [3, 7, 12, 42]);
     }
 }

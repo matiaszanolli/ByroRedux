@@ -375,11 +375,10 @@ pub(super) fn extract_skin_ni_tri_shape(
     })
 }
 
-/// Extract `ImportedSkin` for a BSTriShape via `skin_ref`. Only the bone
-/// list + bind-inverse transforms are populated — per-vertex weights
-/// live inside the packed BSTriShape vertex buffer (VF_SKINNED) which
-/// the current parser skips. Follow-up issue will land the vertex-buffer
-/// extraction.
+/// Extract `ImportedSkin` for a BSTriShape via `skin_ref`. Walks the
+/// skin instance for bone list + bind-inverse transforms, then copies
+/// the parsed per-vertex weights + indices from the packed vertex
+/// buffer (VF_SKINNED, issue #177).
 ///
 /// Handles both:
 ///   - NiSkinInstance (Skyrim LE BSTriShape) via NiSkinData
@@ -390,17 +389,18 @@ pub(super) fn extract_skin_bs_tri_shape(
 ) -> Option<ImportedSkin> {
     let skin_idx = shape.skin_ref.index()?;
 
-    // Skyrim LE path: NiSkinInstance + NiSkinData.
+    // Per-vertex weights and indices come from the BSTriShape vertex
+    // buffer (VF_SKINNED) — already decoded at parse time (#177). We
+    // just clone them through to ImportedSkin. If the vertex buffer
+    // lacks the VF_SKINNED bit these will be empty, and downstream
+    // should treat the mesh as rigid.
+    let vertex_bone_indices = shape.bone_indices.clone();
+    let vertex_bone_weights = shape.bone_weights.clone();
+
+    // Skyrim LE path: NiSkinInstance + NiSkinData (bone list + bind transforms).
     if scene.get_as::<NiSkinInstance>(skin_idx).is_some()
         || scene.get_as::<BsDismemberSkinInstance>(skin_idx).is_some()
     {
-        // Reuse the NiTriShape path for the bone list + bind inverses,
-        // but pass num_vertices = 0 so the dense weight tables stay
-        // empty (BSTriShape weights come from the vertex buffer, not
-        // NiSkinData). Downstream consumers should treat empty weight
-        // arrays as "read from vertex buffer".
-        // We can't reuse extract_skin_ni_tri_shape because it takes a
-        // NiTriShape; manually walk the chain here instead.
         let (bone_refs, skeleton_root_ref, data_ref) =
             if let Some(inst) = scene.get_as::<NiSkinInstance>(skin_idx) {
                 (
@@ -425,8 +425,8 @@ pub(super) fn extract_skin_bs_tri_shape(
         return Some(ImportedSkin {
             bones,
             skeleton_root,
-            vertex_bone_indices: Vec::new(),
-            vertex_bone_weights: Vec::new(),
+            vertex_bone_indices,
+            vertex_bone_weights,
         });
     }
 
@@ -450,8 +450,8 @@ pub(super) fn extract_skin_bs_tri_shape(
         return Some(ImportedSkin {
             bones,
             skeleton_root,
-            vertex_bone_indices: Vec::new(),
-            vertex_bone_weights: Vec::new(),
+            vertex_bone_indices,
+            vertex_bone_weights,
         });
     }
 
