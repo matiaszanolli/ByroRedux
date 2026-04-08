@@ -1,5 +1,46 @@
 # Cell-Based Lighting Architecture
 
+## Per-mesh NiLight sources (N26 audit follow-up)
+
+Cell lighting isn't the only source of light in a Bethesda world.
+Individual meshes can embed `NiLight` subclasses — ambient, directional,
+point, spot — right in the scene graph. Every Oblivion torch, candle,
+and magic effect carries one (and FO3+ lamps / Skyrim braziers too).
+Until the N26 audit these were silently dropped in Oblivion, leaving
+the cell XCLL ambient / directional as the only illumination source
+and making night-time scenes unplayable.
+
+The NIF parser now handles the full `NiLight` hierarchy (#156):
+
+- `crates/nif/src/blocks/light.rs` implements `NiLightBase` +
+  `NiAmbientLight` / `NiDirectionalLight` / `NiPointLight` /
+  `NiSpotLight` with per-version gates for the NiDynamicEffect base
+  (switch_state + affected-node ptr list) and NiLight scalar fields
+  (dimmer + ambient / diffuse / specular color3).
+- `crates/nif/src/import/walk.rs::walk_node_lights` pulls lights out
+  of the scene graph in world space, composing the parent chain and
+  deriving each light's effective radius from the attenuation
+  polynomial (solves for the distance where contribution drops below
+  1/256 of peak — Bethesda's shader cull threshold). Ambient /
+  directional lights clamp to a 2048-unit fallback.
+- `byroredux/src/cell_loader.rs::load_nif_placed` spawns a
+  `Transform + GlobalTransform + LightSource` ECS entity per extracted
+  light, parented through the reference transform so torches inside
+  cell references contribute to the same `GpuLight` buffer that the
+  XCLL directional light already flows into.
+
+Result: the renderer sees both "cell environment light" (XCLL) and
+"per-object point lights" (NiLight) through the same
+`build_render_data()` path, feeding the same SSBO and the same ray
+query shadow pass. From the renderer's perspective there's no
+difference between a torch inside a REFR and a cell's ambient colour.
+
+FO4+ (BSVER ≥ 130) reparents `NiLight` onto `NiAVObject` and drops
+the `NiDynamicEffect` base — not implemented until FO4 cell rendering
+becomes a target.
+
+---
+
 ## Legacy: How Bethesda Uses CELL Lighting Data
 
 Each CELL record stores lighting parameters across two groups:

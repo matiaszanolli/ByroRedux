@@ -10,7 +10,7 @@ Not a port — a ground-up rebuild that understands the legacy architecture and 
 
 ## Current State
 
-**22 milestones complete (M1–M22), N23 NIF parser overhaul complete (10/10), M24 Phase 1, M26+ done.** Loads cells from every Bethesda Gamebryo/Creation game and renders them with RT shadows. NIF parser hits **100% on every supported game** across the full archive sweeps. Full ESM record parser extracts items, NPCs, factions, and supporting metadata in addition to cells.
+**23 milestones complete (M1–M22, M24 Phase 1, M26, M28 Phase 1), N23 NIF parser overhaul complete (10/10), N26 Oblivion coverage audit done.** Loads cells from every Bethesda Gamebryo/Creation game and renders them with RT shadows. NIF parser hits **100% on every supported game** across the full archive sweeps. Full ESM record parser extracts items, NPCs, factions, and supporting metadata. Rapier3D physics simulates the loaded cell: the player capsule collides with world geometry, dynamic clutter falls under gravity. Per-mesh NiLight sources (Oblivion torches, candles, magic FX) now contribute to the RT light buffer alongside cell XCLL ambient.
 
 ```bash
 # FNV interior cell with full lighting
@@ -59,7 +59,9 @@ See [Game Compatibility](docs/engine/game-compatibility.md) for the per-game arc
 |---------|--------|
 | ECS with pluggable storage (SparseSet + Packed), hierarchy (Parent/Children) | Working |
 | Vulkan RT renderer with multi-light SSBO, ray query shadows, cell XCLL lighting | Working |
-| NIF parser (186 block types) — Oblivion through Starfield, 100% per-game success | Working |
+| Per-mesh `NiLight` sources (ambient / directional / point / spot) → GpuLight | Working |
+| NIF parser (~210 block types) — Oblivion through Starfield, 100% per-game success | Working |
+| Rapier3D physics simulation — collision from NIF bhk chain, fixed 60 Hz substep, dynamic-capsule player body | Working |
 | BSA reader (v103/v104/v105) — Oblivion through Skyrim SE | Working |
 | BA2 reader (v1/v2/v3/v7/v8) — FO4, FO76, Starfield, GNRL + DX10 with reconstructed DDS headers | Working |
 | ESM/ESP parser — cells, statics, items, NPCs, factions, leveled lists, globals (10+ record categories) | Working |
@@ -87,8 +89,9 @@ crates/
   core/                    ECS, math (glam), animation engine, types, string interning, form IDs
   renderer/                Vulkan graphics via ash + gpu-allocator (RT extensions)
   plugin/                  Plugin system + ESM/ESP parser (cells, items, NPCs, factions, ...)
-  nif/                     NIF file parser (186 block types) + animation importer
+  nif/                     NIF file parser (~210 block types) + animation importer
   bsa/                     BSA + BA2 archive readers (Oblivion → Starfield)
+  physics/                 Rapier3D bridge (M28 Phase 1) — NIF collision → ECS → stepper
   ui/                      Scaleform/SWF UI system (Ruffle integration)
   scripting/               ECS-native scripting (events, timers)
   platform/                Windowing via winit (Linux-first)
@@ -186,10 +189,11 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 - [Architecture Overview](docs/engine/architecture.md) — design principles, crate graph
 - [ECS](docs/engine/ecs.md) — components, storage, queries, scheduler
 - [Vulkan Renderer](docs/engine/renderer.md) — RT pipeline, multi-light, BLAS/TLAS
-- [NIF Parser](docs/engine/nif-parser.md) — 186 block types, version handling, parse-rate matrix
+- [NIF Parser](docs/engine/nif-parser.md) — ~210 block types, version handling, parse-rate matrix
 - [Archives (BSA + BA2)](docs/engine/archives.md) — BSA v103/104/105 and BA2 v1/2/3/7/8
 - [ESM Records](docs/engine/esm-records.md) — cell loading + structured record extraction
 - [Animation](docs/engine/animation.md) — keyframe pipeline, controllers, blending stack
+- [Physics](docs/engine/physics.md) — Rapier3D bridge, collision pipeline, player body
 - [Asset Pipeline](docs/engine/asset-pipeline.md) — texture provider, mesh cache, NIF→ECS
 - [UI System](docs/engine/ui.md) — Scaleform/SWF via Ruffle
 - [Game Compatibility](docs/engine/game-compatibility.md) — 7-game parse rate matrix
@@ -214,14 +218,13 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 
 | Metric                                | Value          |
 |---------------------------------------|----------------|
-| Rust source files                     | 142            |
-| Lines of Rust                         | ~35,800        |
-| Unit tests passing                    | 372            |
-| Integration tests (`#[ignore]`'d)     | 14             |
+| Rust source files                     | 149            |
+| Lines of Rust                         | ~39,600        |
+| Unit tests passing                    | 396            |
+| Integration tests (`#[ignore]`'d)     | 22             |
 | NIFs in per-game integration sweeps   | 177,286        |
 | Per-game parse success rate           | 100% (7 games) |
-| Workspace crates                      | 10             |
-| Commits                               | 219            |
+| Workspace crates                      | 11             |
 
 ## Dependencies
 
@@ -237,6 +240,7 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 | flate2          | Zlib decompression for BSA + BA2              |
 | lz4_flex        | LZ4 frame decompression for BSA v105          |
 | image           | PNG / image loading                           |
+| rapier3d        | Physics simulation (M28 Phase 1)              |
 | serde / toml    | Plugin manifest serialization                 |
 | uuid / semver   | Plugin identity and version constraints       |
 | anyhow / thiserror | Error handling                             |

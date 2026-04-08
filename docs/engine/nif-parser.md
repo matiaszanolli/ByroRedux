@@ -12,10 +12,10 @@ Source: [`crates/nif/src/`](../../crates/nif/src/)
 
 | | |
 |---|---|
-| Block types parsed       | 156 (+30 Havok types skipped via `block_size`) |
-| Distinct type names      | 186 |
+| Block types parsed       | ~180 (+30 Havok types skipped via `block_size`) |
+| Distinct type names      | 210+ |
 | Game variants supported  | 8 (Morrowind → Starfield) |
-| Tests (unit)             | 118 |
+| Tests (unit)             | 128 (includes 10 in the `dispatch_tests` module) |
 | Integration sweeps       | 7 games, 100% each |
 | Cumulative NIFs parsed   | 177,286 (full mesh archive sweeps) |
 
@@ -34,17 +34,28 @@ crates/nif/src/
 │   ├── mod.rs        parse_block dispatcher (190+ entries) + NiObject trait
 │   ├── traits.rs     HasObjectNET, HasAVObject, HasShaderRefs upcast traits
 │   ├── base.rs       Shared base-class data structs (NiObjectNETData, ...)
-│   ├── node.rs       NiNode + BS variants (BSFadeNode, BSValueNode, ...)
-│   ├── tri_shape.rs  NiTriShape, NiTriStrips, BSTriShape (FO4+ packed format)
+│   ├── node.rs       NiNode + BS variants (BSFadeNode, BSValueNode, BsRangeNode,
+│   │                 NiBillboardNode, NiSwitchNode, NiLODNode, NiSortAdjustNode,
+│   │                 NiCamera, ...)
+│   ├── tri_shape.rs  NiTriShape, NiTriStrips, BSTriShape (FO4+ packed format),
+│   │                 shared parse_geometry_data_base helper for particle data
 │   ├── shader.rs     BSShaderPP / BSLightingShader / BSEffectShader (8 ST variants, FO76 stopcond)
+│   ├── light.rs      NiLight hierarchy (ambient, directional, point, spot)
 │   ├── properties.rs Material, Alpha, Stencil, Texturing, ZBuffer, VertexColor, ...
-│   ├── texture.rs    NiSourceTexture, NiPixelData
-│   ├── controller.rs NiTimeController + 13 subclasses, NiControllerManager
-│   ├── interpolator.rs NiTransform/Float/Point3/Bool interpolators + Blend variants
-│   ├── extra_data.rs NiStringExtraData, BSXFlags, BSBound, BSDecalPlacement, ...
+│   ├── texture.rs    NiSourceTexture, NiPixelData, NiTextureEffect (projector)
+│   ├── controller.rs NiTimeController + 14 subclasses, NiControllerManager,
+│   │                 NiUVController, NiSequenceStreamHelper
+│   ├── interpolator.rs NiTransform/Float/Point3/Bool interpolators + Blend
+│   │                 variants, NiUVData
+│   ├── extra_data.rs NiStringExtraData, BSXFlags, BSBound, BSDecalPlacement,
+│   │                 NiStringsExtraData + NiIntegersExtraData (array variants), ...
 │   ├── multibound.rs BSMultiBound + AABB/OBB shapes
 │   ├── palette.rs    NiDefaultAVObjectPalette, NiStringPalette
-│   ├── particle.rs   ~48 particle system types (data, modifiers, emitters, fields)
+│   ├── particle.rs   ~48 modern (NiPSys) particle system types
+│   ├── legacy_particle.rs  Pre-NiPSys particle stack (Oblivion / Morrowind):
+│   │                 NiParticleSystemController, NiAutoNormal/Rotating Particles,
+│   │                 NiParticleColorModifier / GrowFade / Rotation / Bomb,
+│   │                 NiGravity, NiPlanarCollider, NiSphericalCollider
 │   ├── skin.rs       NiSkinInstance/Data/Partition, BSSkin, BsDismemberSkinInstance
 │   └── collision.rs  bhk* collision shapes (rigid bodies, MOPP, CompressedMesh)
 └── import/           NIF→ECS scene import
@@ -219,9 +230,27 @@ Block types fall into a handful of families. Coverage summary:
 `NiTriStrips`, `BSSegmentedTriShape`, `BSTriShape`, `BSMeshLODTriShape`,
 `BSSubIndexTriShape`, `NiTriShapeData`, `NiTriStripsData`.
 
+### Node subtypes (N26 audit follow-up)
+`NiBillboardNode` (camera-facing children, u16 mode since 10.1.0.0),
+`NiSwitchNode` (u16 flags + u32 active index), `NiLODNode`
+(inherits NiSwitchNode + NiLODData ref), `NiSortAdjustNode`
+(transparency sorter override), `NiCamera` (embedded cinematic
+frustum + viewport + lod_adjust for cutscene rigs),
+`BsRangeNode` (BSRangeNode / BSBlastNode / BSDamageStage / BSDebrisNode
+— identical `(min, max, current)` byte triple),
+`AvoidNode` / `NiBSAnimationNode` / `NiBSParticleNode` (legacy NiNode
+pure-aliases with no trailing fields). All gated on the per-version
+layouts pulled straight from `nif.xml`.
+
 ### Shaders
 - **FO3/FNV**: `BSShaderPPLightingProperty` (with refraction/parallax),
   `BSShaderNoLightingProperty`, `BSShaderTextureSet`
+- **Oblivion specializations** (all alias to `BSShaderPPLightingProperty`
+  since they share the base texture-set + flags layout — see #145):
+  `SkyShaderProperty`, `WaterShaderProperty`, `TallGrassShaderProperty`,
+  `Lighting30ShaderProperty`, `TileShaderProperty`, `HairShaderProperty`,
+  `VolumetricFogShaderProperty`, `DistantLODShaderProperty`,
+  `BSDistantTreeShaderProperty`, `BSSkyShaderProperty`, `BSWaterShaderProperty`
 - **Skyrim+/FO4**: `BSLightingShaderProperty` (8 shader-type variants —
   EnvironmentMap, SkinTint, HairTint, ParallaxOcc, MultiLayerParallax,
   SparkleSnow, EyeEnvmap, None), `BSEffectShaderProperty`
@@ -239,20 +268,42 @@ map / parallax fields), `NiStencilProperty` (version-aware), `NiZBufferProperty`
 `NiDitherProperty`, `NiShadeProperty`.
 
 ### Textures
-`NiSourceTexture`, `NiPixelData`, `NiPersistentSrcTextureRendererData`.
+`NiSourceTexture`, `NiPixelData`, `NiPersistentSrcTextureRendererData`,
+`NiTextureEffect` (projected env-map / gobo / fog projector with full
+NiDynamicEffect base, texture filtering / clamping / type / coord-gen
+enums, clipping plane, and version-gated max anisotropy and PS2 L/K
+fields — see #163).
+
+### Lights
+Full `NiLight` hierarchy (#156): `NiAmbientLight`, `NiDirectionalLight`,
+`NiPointLight`, `NiSpotLight`. All share a common `NiLightBase` covering
+the NiDynamicEffect (switch_state + affected-node ptr list) + NiLight
+(dimmer + ambient/diffuse/specular color3) wire layout. Point lights
+add 3-float attenuation, spot lights add outer/inner cone angles +
+exponent with correct version gating (inner angle since 20.2.0.5).
+FO4+ (BSVER ≥ 130) reparents NiLight onto NiAVObject and is
+intentionally not implemented yet. Downstream, `import_nif_lights()`
+walks the scene graph and emits `ImportedLight` records; the cell
+loader spawns a `LightSource` ECS entity per parsed light, feeding
+them into the existing GpuLight buffer.
 
 ### Extra data
 `NiStringExtraData`, `NiBinaryExtraData`, `NiIntegerExtraData`, `BSXFlags`,
-`NiBooleanExtraData`, `BSBound`, `BSDecalPlacementVectorExtraData`,
-`BSBehaviorGraphExtraData`, `BSInvMarker`, `BSClothExtraData`,
-`BSConnectPoint::Parents`, `BSConnectPoint::Children`.
+`NiBooleanExtraData`, `NiStringsExtraData` / `NiIntegersExtraData` (array
+variants — material override lists, bone LOD metadata), `BSBound`,
+`BSDecalPlacementVectorExtraData`, `BSBehaviorGraphExtraData`, `BSInvMarker`,
+`BSClothExtraData`, `BSConnectPoint::Parents`, `BSConnectPoint::Children`.
 
 ### Controllers and interpolators
 `NiTimeController`, `NiSingleInterpController`, `NiMaterialColorController`,
 `NiMultiTargetTransformController`, `NiControllerManager`,
 `NiControllerSequence`, `NiTextureTransformController`, `NiTransformController`,
-`NiVisController`, `NiAlphaController`, `BSEffect/Lighting Shader Property
-{Float,Color}Controller`, `NiGeomMorpherController`, `NiMorphData`.
+`NiKeyframeController` (pre-Skyrim per-bone driver, aliases to
+`NiSingleInterpController` — see #144), `NiVisController`, `NiAlphaController`,
+`BSEffect/Lighting Shader Property {Float,Color}Controller`,
+`NiGeomMorpherController`, `NiMorphData`, `NiUVController` +
+`NiUVData` (scrolling UV animation for water / fire / banners — see #154),
+`NiSequenceStreamHelper` (pre-Skyrim KF animation root).
 Interpolators: `NiTransformInterpolator`, `BSRotAccumTransfInterpolator`,
 `NiTransformData`/`NiKeyframeData`, `NiFloatInterpolator`, `NiFloatData`,
 `NiPoint3Interpolator`, `NiPosData`, `NiBoolInterpolator`, `NiBoolData`,
@@ -270,6 +321,26 @@ by `NiControllerManager` blending.
 `NiParticlesData`/`NiPSysData`/`NiMeshPSysData`/`BSStripPSysData`/
 `NiPSysEmitterCtlrData`, 18 modifiers, 5 emitters, 2 colliders, 6 field
 modifiers, 21 controllers via shared base parsers.
+
+### Legacy (pre-NiPSys) particle stack — Oblivion / Morrowind (#143)
+nif.xml marks these `until="V10_0_1_0"` but Bethesda kept them alive
+through Oblivion v20.0.0.5, and every magic FX / fire / dust / blood
+mesh depends on them. Full parsers live in
+[`legacy_particle.rs`](../../crates/nif/src/blocks/legacy_particle.rs):
+
+- `NiParticleSystemController` (32-field scalar chain + variable particle
+  record array + trailing emitter / modifier plumbing), `NiBSPArrayController`
+  (aliases the same parser — Bethesda subclass with zero added fields)
+- `NiAutoNormalParticles` / `NiRotatingParticles` — NiGeometry body in
+  Oblivion form, shared `NiLegacyParticles` struct with a type-name tag
+- `NiAutoNormalParticlesData` / `NiRotatingParticlesData` — NiParticlesData
+  scalar tail (has_radii / num_active / has_sizes / has_rotations /
+  has_rotation_angles / has_rotation_axes) on top of
+  `tri_shape::parse_geometry_data_base`
+- Seven leaf modifiers — `NiParticleColorModifier`, `NiParticleGrowFade`,
+  `NiParticleRotation`, `NiParticleBomb`, `NiGravity`, `NiPlanarCollider`,
+  `NiSphericalCollider` — sharing `parse_particle_modifier_base` and
+  `parse_particle_collider_base` helpers
 
 ### Havok collision (~30 types)
 **Fully parsed** (since N23.6): `bhkCollisionObject`, `bhkRigidBody`,
@@ -336,7 +407,12 @@ count for a typical Skyrim NIF dropped by ~40× when this landed (issue
 
 ## Test infrastructure
 
-- **118 unit tests** with synthetic byte streams covering every parser
+- **128 unit tests** with synthetic byte streams covering every parser,
+  including the 10-test `blocks::dispatch_tests` module that drives
+  every new N26 audit block through `parse_block` on a minimal
+  Oblivion-shaped header and asserts exact stream consumption — so
+  any future byte-width or version-gate drift fails fast on the
+  block-sizes-less Oblivion path
 - **8 integration tests** in [`crates/nif/tests/parse_real_nifs.rs`](../../crates/nif/tests/parse_real_nifs.rs)
   walking real game archives, asserting ≥95% parse success per game
 - **`nif_stats` example binary** at [`crates/nif/examples/nif_stats.rs`](../../crates/nif/examples/nif_stats.rs)
@@ -370,9 +446,38 @@ parse rate matrix.
 - [Gamebryo 2.3 Architecture](../legacy/gamebryo-2.3-architecture.md)
   for the original engine context
 
+## N26 audit — Oblivion coverage sweep
+
+After the N23 series closed the per-game parse rate at 100% on the
+mesh archives we had on disk, a second audit (N26) walked `nif.xml`
+against the dispatch table to find block types that were parsing
+"well enough" on the archives we'd tested but would hard-fail on
+Oblivion content the integration sweep didn't cover (every Oblivion
+interior, every magic FX, every Oblivion cinematic). Oblivion's
+v20.0.0.5 header has no `block_sizes` table, so a single missing
+dispatch arm takes down the entire mesh. The audit landed 9 PRs
+addressing every known critical / high-severity gap:
+
+| # | Issue | Block types added |
+|---|-------|-------------------|
+| #145 | Oblivion specialized BS shader variants (Sky / Water / TallGrass / Lighting30 / Tile / Hair / VolumetricFog / DistantLOD / BSDistantTree / BSSky / BSWater) — all alias `BSShaderPPLightingProperty` | 11 |
+| #144 | `NiKeyframeController` + `NiSequenceStreamHelper` — pre-Skyrim KF animation root + per-bone driver | 2 |
+| #164 | `NiStringsExtraData` + `NiIntegersExtraData` — array-form extra data | 2 |
+| #142 | `NiBillboardNode`, `NiSwitchNode`, `NiLODNode`, `NiSortAdjustNode`, BSRangeNode family, plus 3 NiNode pure-aliases | 13 |
+| #156 | Full `NiLight` hierarchy (ambient / directional / point / spot) with downstream `LightSource` ECS wiring | 4 |
+| #154 | `NiUVController` + `NiUVData` — scrolling UV animation | 2 |
+| #153 | Embedded `NiCamera` — cinematic frustum + viewport | 1 |
+| #163 | `NiTextureEffect` — projected env-map / gobo / fog projector | 1 |
+| #143 | Legacy (pre-NiPSys) particle stack — `NiParticleSystemController` + 7 leaf modifiers + `NiAutoNormal/Rotating Particles` + data | 13 |
+
+Every audit fix comes with a `dispatch_tests` regression test that
+asserts exact stream consumption on a minimal Oblivion-shaped payload.
+The dispatch table is now at 154 arms covering ~180 block types.
+
 ## Open items
 
-The N23 series is complete (10/10 milestones). Known follow-ups that
+The N23 series is complete (10/10 milestones) and N26 has addressed
+every known CRITICAL / HIGH audit item. Known follow-ups that
 **don't** affect the 100% per-game parse rate:
 
 - `BSSubIndexTriShape` segment data (`BSGeometrySegmentData`,
@@ -383,5 +488,30 @@ The N23 series is complete (10/10 milestones). Known follow-ups that
   the archive opens and the directory parses but the chunk decompression
   fails. This is a BA2 reader gap, not a NIF parser one. See
   [Archives — Starfield DX10](archives.md#starfield-v3-dx10-deferred).
+- **NiUV animation importer** (#154 follow-up) — `NiUVController` +
+  `NiUVData` parse correctly but the `anim.rs` importer doesn't yet
+  emit scrolling-UV channels. Needs new `FloatTarget::UvOffsetU/V` +
+  `UvTileU/V` variants. Pure parser work was the blocker.
+- **NiSequenceStreamHelper animation importer** (#144 follow-up) —
+  parses cleanly but the `anim.rs` importer doesn't yet build
+  `AnimationClip`s from its controller chain. Tracked alongside #107
+  (Oblivion string-palette format for `NiControllerSequence`).
+- **NiLight FO4+ inheritance flip** (#156 follow-up) — FO4+ (BSVER
+  ≥ 130) reparents `NiLight` directly onto `NiAVObject`, skipping the
+  `NiDynamicEffect` base. Not implemented until FO4 cell rendering
+  becomes a target.
+- **Per-variant shader specialization** (#145 follow-up) —
+  `WaterShaderProperty`, `SkyShaderProperty`, etc. currently alias to
+  the `BSShaderPPLightingProperty` base so Oblivion doesn't hard-fail,
+  but their per-variant fields (sky scroll, water reflection, etc.)
+  are not yet extracted.
+- **Billboard-mode renderer wiring** (#142 follow-up) — `NiBillboardNode`
+  now parses correctly but the renderer doesn't yet rotate the node
+  to face the camera each frame.
+- **NiLegacyParticlesData parse-rate validation** (#143 follow-up) —
+  the parser is exercised by the real-NIF sweeps, but there's no
+  byte-level unit test because it would require hand-building a full
+  NiGeometryData body. Oblivion integration sweeps will catch any
+  regression.
 - Soft shadows / emissive bypass / RT lighting polish (M22+) — render-side,
   not parser-side.

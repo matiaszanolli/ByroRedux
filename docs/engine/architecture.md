@@ -21,6 +21,8 @@ byroredux/
 │   │                          importer, scene import to ECS-friendly meshes
 │   ├── bsa/                   BSA + BA2 archive readers for every Bethesda game
 │   │                          (Oblivion through Starfield)
+│   ├── physics/               Rapier3D-backed physics simulation, consumes
+│   │                          the collision data the NIF importer emits
 │   ├── renderer/              Vulkan graphics via ash + gpu-allocator, with RT
 │   │                          extensions (VK_KHR_ray_query)
 │   ├── ui/                    Scaleform/SWF UI system (Ruffle integration)
@@ -124,6 +126,8 @@ byroredux (binary)
 │   └── byroredux-core
 ├── byroredux-bsa
 │   └── (no internal deps — leaf)
+├── byroredux-physics
+│   └── byroredux-core
 ├── byroredux-ui
 │   └── byroredux-core
 ├── byroredux-scripting
@@ -135,7 +139,9 @@ byroredux (binary)
 `byroredux-core` is the spine — every other engine crate depends on it for
 ECS types, math, animation, string interning, and form IDs. `byroredux-bsa`
 and `byroredux-cxx-bridge` are leaves (no internal deps), which keeps the
-asset reader and the C++ bridge testable in isolation.
+asset reader and the C++ bridge testable in isolation. `byroredux-physics`
+depends only on `core`, keeping `rapier3d` / `nalgebra` out of every other
+crate's build graph.
 
 The integration tests in `crates/nif/tests/parse_real_nifs.rs` add a test-only
 dependency on `byroredux-bsa` so a single test binary can walk both BSA and
@@ -160,6 +166,7 @@ Where each major capability lives, by milestone group:
 | KF animation import | `nif` | [crates/nif/src/anim.rs](../../crates/nif/src/anim.rs) |
 | BSA reader (v103/104/105) | `bsa` | [crates/bsa/src/archive.rs](../../crates/bsa/src/archive.rs) |
 | BA2 reader (v1/2/3/7/8) | `bsa` | [crates/bsa/src/ba2.rs](../../crates/bsa/src/ba2.rs) |
+| Physics world + sync | `physics` | [crates/physics/src/](../../crates/physics/src/) |
 | Vulkan context (init, draw, resize) | `renderer` | [crates/renderer/src/vulkan/context/](../../crates/renderer/src/vulkan/context/) |
 | Mesh / texture registries | `renderer` | [crates/renderer/src/](../../crates/renderer/src/) |
 | RT acceleration structures | `renderer` | [crates/renderer/src/vulkan/acceleration.rs](../../crates/renderer/src/vulkan/acceleration.rs) |
@@ -180,11 +187,11 @@ globals, and game settings on top of the existing cell + static extraction.
 
 | Metric                              | Value          |
 |-------------------------------------|----------------|
-| Rust source files                   | 142            |
-| Lines of Rust                       | ~35,800        |
-| Workspace crates                    | 10             |
-| Unit tests passing                  | 372            |
-| Integration tests (`#[ignore]`'d)   | 14             |
+| Rust source files                   | 149            |
+| Lines of Rust                       | ~39,600        |
+| Workspace crates                    | 11             |
+| Unit tests passing                  | 396            |
+| Integration tests (`#[ignore]`'d)   | 22             |
 | NIFs parsed in integration sweeps   | 177,286        |
 | Per-game NIF parse success rate     | 100% (7 games) |
 | ESM records parsed from FNV.esm     | 13,684         |
@@ -194,6 +201,10 @@ What works today, end-to-end:
 - Open a Vulkan window on Linux (Wayland or X11), validation layers in debug
 - Load a full FNV interior cell from `FalloutNV.esm` + the BSA, render it
   with RT-shadowed multi-light at 85+ FPS on an RTX 4070 Ti
+- Per-mesh NiLight sources contribute to the GpuLight buffer — Oblivion
+  torches and candles now light their surroundings
+- Simulate physics on the loaded cell via Rapier3D — the player capsule
+  collides with world geometry, dynamic clutter falls under gravity
 - Load Skyrim SE meshes from BSA v105 (LZ4)
 - Load FO4 / FO76 / Starfield meshes from BA2 (v1, v2, v8)
 - Play `.kf` animations on named ECS entities with the full controller stack

@@ -3,32 +3,34 @@
 ByroRedux uses two layers of tests:
 
 1. **Unit tests** (`#[cfg(test)] mod tests` inside source files) — fast,
-   no game data required, run on every `cargo test`. **372 passing**.
+   no game data required, run on every `cargo test`. **396 passing**.
 2. **Integration tests** (`#[ignore]`'d by default) — exercise real game
    archives, parse rates, and end-to-end byte-level round-trips. Need
    the relevant game installed and resolve paths via env vars or Steam
-   defaults. Run with `cargo test ... -- --ignored`. **14 in total.**
+   defaults. Run with `cargo test ... -- --ignored`. **22 in total.**
 
 The split keeps CI fast and game-data-free while letting developers run
 the heavy sweeps locally on demand.
 
 ## Per-crate test counts
 
-Numbers are accurate at the time of writing (M24 Phase 1, April 2026). For
-a live count, run `cargo test 2>&1 | grep "test result"`.
+Numbers are accurate at the time of writing (M28 Phase 1 + N26 audit,
+April 2026). For a live count, run
+`cargo test 2>&1 | grep "test result"`.
 
 | Crate | Unit tests | Ignored |
 |---|---|---|
-| `byroredux-core` | 152 | — |
-| `byroredux-nif` | 118 | — |
-| `byroredux-plugin` | 64 | 2 |
-| `byroredux-platform` | 19 | — |
+| `byroredux-core` | 153 | — |
+| `byroredux-nif` | 128 | — |
+| `byroredux-plugin` | 66 | 2 |
+| `byroredux-physics` | 14 | — |
+| `byroredux-renderer` | 19 (unit + doc-tests) | — |
 | `byroredux-scripting` | 8 | — |
 | `byroredux-bsa` | 8 | 7 |
-| `byroredux-renderer` | 2 (doc-tests) | — |
-| `byroredux` (binary) | 1 | 2 |
+| `byroredux-platform` | — | — |
+| `byroredux` (binary) | — | 2 |
 | Integration: `parse_real_nifs.rs` | — | 8 |
-| **Total** | **372** | **19** |
+| **Total** | **396** | **19** |
 
 ## Unit test coverage by area
 
@@ -48,6 +50,7 @@ a live count, run `cargo test 2>&1 | grep "test result"`.
 - **Header parser** — minimal Skyrim header, blocks + strings, NetImmerse pre-Gamebryo, BSStreamHeader for FO4/FO76, user_version threshold
 - **Stream reader** — primitives, version-dependent string format, block refs, transforms
 - **Block parsers** — every supported block type (NiNode, NiTriShape, BSTriShape variants, NiSkinPartition, BSLightingShaderProperty across 8 shader-type variants, BSEffectShaderProperty, particle systems, Havok skip and full-parse, FO76 CRC32 flag arrays, FO76 stopcond, FO76 luminance/translucency)
+- **Dispatch regression tests** (`blocks::dispatch_tests`, 10 tests added during the N26 audit) — minimal Oblivion-shaped byte streams drive each N26 block type through `parse_block`, downcast the result, and assert exact stream consumption so that any future byte-width or version-gate drift fails fast on Oblivion's block-sizes-less path. Covers all 9 audit fixes: specialized BS shader aliases (#145), `NiKeyframeController` + `NiSequenceStreamHelper` (#144), `NiStringsExtraData` / `NiIntegersExtraData` (#164), 13 NiNode subtypes (#142), full NiLight hierarchy (#156), `NiUVController` + `NiUVData` (#154), embedded `NiCamera` (#153), `NiTextureEffect` (#163), legacy particle stack (#143).
 - **Animation import** — `NiTransformInterpolator`, `NiKeyframeData`, `NiTextKeyExtraData`, controller manager
 - **Coordinate conversion** — Z-up→Y-up identity, 90° rotation around each axis, vertex positions, vertex normals, winding order preservation
 - **Scene parsing** — empty file, minimal node, unknown block recovery, downcasting via `get_as`
@@ -64,6 +67,11 @@ a live count, run `cargo test 2>&1 | grep "test result"`.
 - **Path normalization** — case-insensitive, slash agnostic
 - **Reject non-archive files** — both BSA and BA2
 - **DDS header reconstruction** — 148-byte layout invariants, BC1/BC7 linear-size, unknown-format fallback
+
+### Physics — `byroredux-physics`
+- **Shape conversion** (`convert.rs`) — glam ↔ nalgebra Vec3/Quat round-trips, every `CollisionShape` variant mapping to the right Rapier `SharedShape` constructor, compound shape recursive mapping, empty trimesh fallback to a tiny ball
+- **World stepping** (`world.rs`) — empty world has zero bodies, a dynamic ball actually falls under gravity after 60 fixed substeps, a static floor blocks a dynamic ball to rest at `y ≈ radius`, the 5-substep cap clamps wall-clock spikes so the physics system never spiral-of-deaths on a hitch
+- **Player body** (`components.rs`) — `PlayerBody::HUMAN` constructs a sane capsule
 
 ### Other crates
 - **`byroredux-scripting`** — event marker round-trips, timer expiry, end-of-frame cleanup
@@ -139,6 +147,14 @@ cargo run -p byroredux-nif --example nif_stats --release -- \
   Fallout 76, Starfield) on top of the existing BSA games.
 - **M24 Phase 1** added the `parse_real_fnv_esm_record_counts` test that
   verifies the new structured record parser against real FNV.esm.
+- **N26 audit** landed the `blocks::dispatch_tests` module — 10 regression
+  tests that cover every Oblivion-critical block type added during the
+  audit sweep. Each test drives `parse_block` on a minimal Oblivion-shaped
+  payload and asserts *exact* stream consumption, catching any future
+  byte-width or version-gate drift on v20.0.0.5's block-sizes-less path.
+- **M28 Phase 1** added the `byroredux-physics` crate with 14 unit tests
+  proving the Rapier bridge end-to-end: shape mapping, dynamic bodies
+  falling under gravity, and static floors blocking them.
 
 See [Game Compatibility](game-compatibility.md) for the per-game parse
 rate matrix the integration tests produce.

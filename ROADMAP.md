@@ -3,7 +3,7 @@
 A clean Rust + C++ rebuild of the Gamebryo/Creation engine lineage with Vulkan rendering.
 This document tracks completed milestones, current capabilities, planned work, and known gaps.
 
-Last updated: 2026-04-05 (session 4)
+Last updated: 2026-04-07 (session 5 — M28 Phase 1 + N26 audit)
 
 ---
 
@@ -18,7 +18,7 @@ Last updated: 2026-04-05 (session 4)
 | `cargo run -- --swf path/to/menu.swf` | Load and render a Skyrim SE SWF menu overlay |
 | `cargo run -- path/to/mesh.nif --kf path/to/anim.kf` | Play a .kf animation on a loaded NIF mesh |
 | `cargo run -- --bsa Meshes.bsa --mesh meshes\foo.nif --kf meshes\anim.kf` | Load KF from BSA (extracts automatically) |
-| `cargo test` | 319 passing tests across all crates |
+| `cargo test` | 396 passing tests across all crates |
 
 **Fallout New Vegas:** Interior cells load from ESM with placed objects (REFR → STAT), real DDS textures
 from BSA v104 archives, correct coordinate transforms (Gamebryo CW rotation convention),
@@ -444,6 +444,55 @@ spot-checks Varmint Rifle / NCR faction.
 
 ---
 
+## M28 Phase 1: Physics Foundation — DONE
+
+Rapier3D integration on top of the `CollisionShape` / `RigidBodyData`
+components the NIF importer has been populating since N23.6. New
+`byroredux-physics` crate keeps `rapier3d` / `nalgebra` confined so
+`core` stays physics-agnostic and the loose-NIF viewer can opt out.
+
+- `PhysicsWorld` resource owns the Rapier sets + pipeline + fixed
+  60 Hz accumulator (max 5 substeps/frame)
+- `physics_sync_system` runs four phases per tick: register newcomers,
+  push kinematic transforms, step, pull dynamic transforms back
+- `PlayerBody::HUMAN` marker on the camera entity spawns a dynamic
+  capsule with rotations locked; `fly_camera_system` drives it via
+  `set_linear_velocity` instead of mutating `Transform`
+- Gravity is −686.7 BU/s² (−9.81 m/s² × 70 BU/m); the NIF importer
+  already strips Havok's 7.0 scale factor so Rapier sees Bethesda
+  units throughout
+- 14 unit tests: glam↔nalgebra round-trips, shape mapping for every
+  `CollisionShape` variant, dynamic ball falling under gravity, static
+  floor blocking a dropped ball to rest, accumulator substep cap
+
+Deferred to M28.5: kinematic character controller with step-up and
+slope limiting. Deferred to M29: constraints and joints (ragdolls).
+See [docs/engine/physics.md](docs/engine/physics.md) for full details.
+
+## N26: Oblivion Coverage Sweep — DONE
+
+Post-N23 audit (`nif.xml` vs. dispatch table) that closed 9
+CRITICAL / HIGH severity parser gaps. Oblivion's v20.0.0.5 header has
+no `block_sizes` fallback, so a single missing dispatch arm takes
+down the entire mesh. Every fix ships with a `dispatch_tests`
+regression test that asserts exact stream consumption on a minimal
+Oblivion-shaped payload.
+
+| # | Block types | Severity | Game impact |
+|---|-------------|----------|-------------|
+| #145 | 11 specialized `BSShader*Property` aliases | CRITICAL | Oblivion exteriors (sky / water / grass / distant LOD) |
+| #144 | `NiKeyframeController` + `NiSequenceStreamHelper` | CRITICAL | All Oblivion NPC animation |
+| #164 | `NiStringsExtraData` + `NiIntegersExtraData` | MEDIUM | Oblivion bone LOD / material overrides |
+| #142 | `NiBillboardNode` + 12 NiNode subtypes | CRITICAL | Foliage, magic FX, LOD architecture, furniture markers |
+| #156 | Full `NiLight` hierarchy + ECS wiring | HIGH | Torches / candles / magic light everywhere |
+| #154 | `NiUVController` + `NiUVData` | HIGH | Oblivion water, fire, banners |
+| #153 | Embedded `NiCamera` | HIGH | Cinematic / cutscene cameras |
+| #163 | `NiTextureEffect` | MEDIUM | Oblivion magic FX projectors |
+| #143 | Legacy particle stack (13 types) | CRITICAL | Every Oblivion magic FX / fire / dust / blood mesh |
+
+Total: ~50 new block types parsed, 10 dispatch regression tests
+landed, workspace test count rose from 372 → 396.
+
 ## Deferred Roadmap (post-N23)
 
 | # | Milestone | Scope |
@@ -453,8 +502,8 @@ spot-checks Varmint Rifle / NCR faction.
 | M25 | Vulkan Compute | Batch transforms, coordinate conversion, GPU skinning |
 | M26 | BA2 Archive Support | **DONE** — see below |
 | M27 | Parallel System Dispatch | Rayon-based parallel ECS execution |
-| M28 | Physics Foundation | Rapier/custom physics, character controller (uses N23.6 collision data) |
-| M29 | Skeletal Animation | GPU skinning via compute shaders (uses N23.5 skin data) |
+| M28 | Physics Foundation | **DONE (Phase 1)** — Rapier3D bridge, dynamic capsule player body; kinematic controller deferred to M28.5 |
+| M29 | Skeletal Animation | GPU skinning via compute shaders (uses N23.5 skin data); ragdolls follow via Havok constraint parsing |
 
 ---
 
@@ -550,14 +599,16 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Metric | Value |
 |--------|-------|
-| Passing tests | 319 |
-| Workspace crates | 10 |
-| Completed milestones | 22 (M1–M22 Phase A+B) |
-| NIF block types | 186 (156 parsed + 30 Havok skip) |
+| Passing tests | 396 |
+| Workspace crates | 11 |
+| Completed milestones | 23 (M1–M22 + M24 Phase 1 + M26 + M28 Phase 1) + N23 + N26 |
+| NIF block types | ~210 distinct type names, ~180 parsed + 30 Havok skip |
 | NifVariant games | 8 (Morrowind → Starfield) |
-| Supported archive formats | BSA v103 (open), BSA v104, BSA v105 |
+| Per-game NIF parse rate | 100% across 177,286 NIFs (7 games) |
+| Supported archive formats | BSA v103 / v104 / v105, BA2 v1 / v2 / v3 / v7 / v8 |
 | Primary language | Rust (2021 edition) |
-| Renderer | Vulkan 1.3 via ash |
+| Renderer | Vulkan 1.3 via ash, RT extensions (VK_KHR_ray_query) |
+| Physics | Rapier3D 0.22 (simd-stable), fixed 60 Hz substep |
 | Target platform | Linux-first (Wayland + X11) |
 | Reference GPU | NVIDIA GeForce RTX 4070 Ti |
 | Reference CPU | AMD Ryzen 9 7950X (16-core) |
@@ -568,16 +619,17 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Crate | Milestones | Tests |
 |-------|------------|-------|
-| `byroredux-core` | M3 (ECS), M5 (Form IDs), M21 (Animation) | 127 |
-| `byroredux-renderer` | M1, M2, M4, M7, M8, M13, M14 | 13 |
+| `byroredux-core` | M3 (ECS), M5 (Form IDs), M21 (Animation) | 153 |
+| `byroredux-renderer` | M1, M2, M4, M7, M8, M13, M14, M22 | 19 |
 | `byroredux-platform` | M1 (windowing) | — |
-| `byroredux-plugin` | M5, M6 | 50 |
-| `byroredux-nif` | M9, M10, M17, M18, M21, N23.1–N23.4 | 112 |
-| `byroredux-bsa` | M11, M18 | 2 |
+| `byroredux-plugin` | M5, M6, M19, M24 Phase 1 | 66 |
+| `byroredux-nif` | M9, M10, M17, M18, M21, N23.1–N23.10, N26 audit | 128 |
+| `byroredux-bsa` | M11, M18, M26 (BA2) | 8 |
+| `byroredux-physics` | M28 Phase 1 (Rapier3D bridge) | 14 |
 | `byroredux-scripting` | M12 | 8 |
 | `byroredux-ui` | M20 (Ruffle/SWF) | — |
 | `byroredux-cxx-bridge` | Cross-cutting | — |
-| `byroredux` (binary) | M4, M11, M14, M15, M16, M17 | — |
+| `byroredux` (binary) | M4, M11, M14, M15, M16, M17, M19, M28 integration | — |
 
 ---
 

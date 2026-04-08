@@ -11,11 +11,12 @@ built, where the code lives, and what guarantees it makes.
 | [Architecture Overview](architecture.md) | all | Design principles, workspace layout, crate dependency graph |
 | [ECS](ecs.md) | core | Components, storage backends, queries, scheduler, resources |
 | [Vulkan Renderer](renderer.md) | renderer | Init chain, RT pipeline, multi-light, BLAS/TLAS, swapchain |
-| [NIF Parser](nif-parser.md) | nif | 186 block types, version handling, robustness, parse-rate matrix |
+| [NIF Parser](nif-parser.md) | nif | ~210 block types, version handling, robustness, parse-rate matrix |
 | [Archives (BSA + BA2)](archives.md) | bsa | BSA v103/104/105, BA2 v1/2/3/7/8, GNRL + DX10 |
 | [ESM Records](esm-records.md) | plugin | Cell loading, items, NPCs, factions, leveled lists |
 | [Asset Pipeline](asset-pipeline.md) | byroredux, nif, bsa | TextureProvider, mesh cache, NIF→ECS import |
 | [Animation](animation.md) | core, nif | Keyframe pipeline, controllers, blending stack |
+| [Physics](physics.md) | physics | Rapier3D integration, NIF collision → ECS → stepper, player body |
 | [Cell Lighting](lighting-from-cells.md) | byroredux | XCLL extraction, RT integration |
 | [UI System](ui.md) | ui | Scaleform/SWF via Ruffle, deferred texture upload |
 | [Game Loop](game-loop.md) | byroredux | winit integration, frame loop, cell loading |
@@ -55,6 +56,8 @@ built, where the code lives, and what guarantees it makes.
 | ESM cell index | `byroredux_plugin::esm::cell::parse_esm_cells` |
 | ESM record index | `byroredux_plugin::esm::records::parse_esm` |
 | Plugin manifests | `byroredux_plugin::PluginManifest` |
+| Physics world | `byroredux_physics::PhysicsWorld` |
+| Physics sync system | `byroredux_physics::physics_sync_system` |
 | Window creation | `byroredux_platform::window::create_window` |
 | C++ bridge | `byroredux_cxx_bridge::ffi::*` |
 
@@ -62,17 +65,18 @@ built, where the code lives, and what guarantees it makes.
 
 | Metric                              | Value          |
 |-------------------------------------|----------------|
-| Rust source files                   | 142            |
-| Lines of Rust                       | ~35,800        |
-| Workspace crates                    | 10             |
-| Unit tests passing                  | 372            |
-| Integration tests (`#[ignore]`'d)   | 14             |
+| Rust source files                   | 149            |
+| Lines of Rust                       | ~39,600        |
+| Workspace crates                    | 11             |
+| Unit tests passing                  | 396            |
+| Integration tests (`#[ignore]`'d)   | 22             |
 | NIFs in per-game integration sweeps | 177,286        |
 | Per-game NIF parse success rate     | 100% (7 games) |
-| External dependency crates          | ~25            |
+| External dependency crates          | ~30            |
 
-Numbers above are accurate as of M24 Phase 1 (April 2026). For the live
-counts run `cargo test` and `cargo test --test parse_real_nifs -- --ignored`.
+Numbers above are accurate as of M28 Phase 1 + N26 audit (April 2026).
+For the live counts run `cargo test` and
+`cargo test --test parse_real_nifs -- --ignored`.
 
 ## Reading order
 
