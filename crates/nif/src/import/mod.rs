@@ -131,6 +131,51 @@ pub struct ImportedMesh {
     pub env_map_scale: f32,
     /// Index into `ImportedScene.nodes` for this mesh's parent node, or None.
     pub parent_node: Option<usize>,
+    /// Skeletal skinning data. `None` for rigid meshes.
+    pub skin: Option<ImportedSkin>,
+}
+
+/// Per-bone binding for a skinned mesh. Bone space is Y-up (converted
+/// from Gamebryo Z-up on import).
+#[derive(Debug, Clone)]
+pub struct ImportedBone {
+    /// Name of the bone's scene-graph node (e.g. "Bip01 Spine"). The
+    /// consumer looks up the matching entity in the skeleton.
+    pub name: String,
+    /// Mesh-space → bone-space transform at bind time, stored as a
+    /// 4x4 matrix. Multiply by the bone's current world-space transform
+    /// during skinning (matrix palette skinning).
+    ///
+    /// Packed column-major per glam convention.
+    pub bind_inverse: [[f32; 4]; 4],
+    /// Bounding sphere in bone space (center xyz + radius).
+    pub bounding_sphere: [f32; 4],
+}
+
+/// Skinning data attached to an `ImportedMesh`. Up to 4 bone influences
+/// per vertex (the hardware-standard palette).
+///
+/// For legacy NiTriShape meshes, per-vertex weights are computed from
+/// `NiSkinData`'s sparse per-bone weight lists by keeping the 4 highest
+/// weights per vertex and re-normalizing to sum to 1. For modern
+/// BSTriShape meshes the weights live inside the packed vertex buffer
+/// (VF_SKINNED) — currently not extracted, so those fields will be
+/// empty and the consumer should fall back to the BSTriShape vertex
+/// buffer directly. See follow-up issue.
+#[derive(Debug, Clone, Default)]
+pub struct ImportedSkin {
+    /// Bones this mesh binds to, in the order the interpolator refers
+    /// to them by index.
+    pub bones: Vec<ImportedBone>,
+    /// Skeleton root bone name, if identifiable. The animation system
+    /// uses this to know where to start applying joint transforms.
+    pub skeleton_root: Option<String>,
+    /// Per-vertex bone indices (up to 4). Parallel to `ImportedMesh::positions`.
+    /// Empty if weights come from a separate source (BSTriShape).
+    pub vertex_bone_indices: Vec<[u8; 4]>,
+    /// Per-vertex bone weights (up to 4). Must sum to 1.0 after
+    /// normalization. Parallel to `vertex_bone_indices`.
+    pub vertex_bone_weights: Vec<[f32; 4]>,
 }
 
 /// A fully imported NIF scene with hierarchy preserved.
