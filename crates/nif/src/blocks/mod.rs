@@ -196,6 +196,13 @@ pub fn parse_block(
         "BSTriShape" | "BSMeshLODTriShape" | "BSSubIndexTriShape" => {
             Ok(Box::new(tri_shape::BsTriShape::parse(stream)?))
         }
+        // BSDynamicTriShape: Skyrim facegen head meshes — BSTriShape body
+        // + CPU-mutable trailing Vector4 vertex array. Routing this to
+        // NiUnknown caused invisible faces on every NPC. See issue #157.
+        "BSDynamicTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse_dynamic(stream)?)),
+        // BSLODTriShape: FO4 distant LOD geometry — BSTriShape body +
+        // three trailing LOD triangle counts. See issue #157.
+        "BSLODTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse_lod(stream)?)),
         "NiTriShapeData" => Ok(Box::new(NiTriShapeData::parse(stream)?)),
         "NiTriStripsData" => Ok(Box::new(NiTriStripsData::parse(stream)?)),
         // All Oblivion-era BSShaderLightingProperty specializations share the

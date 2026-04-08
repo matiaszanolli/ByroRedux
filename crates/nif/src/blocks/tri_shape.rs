@@ -421,6 +421,66 @@ impl BsTriShape {
             bone_indices,
         })
     }
+
+    /// Parse `BSDynamicTriShape` — a BSTriShape subclass used for Skyrim
+    /// facegen head meshes. The block contains the full BSTriShape body
+    /// followed by a CPU-mutable per-vertex `Vector4` array that the
+    /// engine updates at runtime to apply head morphs.
+    ///
+    /// Wire layout (niflib nif.xml):
+    /// ```text
+    /// BSTriShape body
+    /// uint vertex_data_size  ; bytes of trailing vertex array (num_vertices * 16)
+    /// uint unknown           ; always 0
+    /// if vertex_data_size != 0:
+    ///     Vector4[num_vertices] dynamic_vertices
+    /// ```
+    ///
+    /// When the dynamic-vertex array is present we overwrite the BSTriShape
+    /// positions with it — on facegen meshes the base-packed positions are
+    /// often zeros placeholder data, and the trailing float4 array carries
+    /// the actual head shape. See issue #157.
+    pub fn parse_dynamic(stream: &mut NifStream) -> io::Result<Self> {
+        let mut shape = Self::parse(stream)?;
+        let vertex_data_size = stream.read_u32_le()?;
+        let _unknown = stream.read_u32_le()?;
+        if vertex_data_size > 0 {
+            let mut dynamic_vertices = Vec::with_capacity(shape.num_vertices as usize);
+            for _ in 0..shape.num_vertices {
+                let x = stream.read_f32_le()?;
+                let y = stream.read_f32_le()?;
+                let z = stream.read_f32_le()?;
+                let _w = stream.read_f32_le()?; // bitangent-x or unused
+                dynamic_vertices.push(NiPoint3 { x, y, z });
+            }
+            if !dynamic_vertices.is_empty() {
+                shape.vertices = dynamic_vertices;
+            }
+        }
+        Ok(shape)
+    }
+
+    /// Parse `BSLODTriShape` — a BSTriShape subclass used for FO4 distant
+    /// LOD geometry. Adds three trailing LOD triangle counts.
+    ///
+    /// Wire layout (niflib nif.xml):
+    /// ```text
+    /// BSTriShape body
+    /// uint lod_0_size
+    /// uint lod_1_size
+    /// uint lod_2_size
+    /// ```
+    ///
+    /// The LOD sizes are consumed but not retained — the importer only
+    /// needs the base geometry to make distant buildings render. See
+    /// issue #157.
+    pub fn parse_lod(stream: &mut NifStream) -> io::Result<Self> {
+        let shape = Self::parse(stream)?;
+        let _lod0 = stream.read_u32_le()?;
+        let _lod1 = stream.read_u32_le()?;
+        let _lod2 = stream.read_u32_le()?;
+        Ok(shape)
+    }
 }
 
 /// Read the 12-byte VF_SKINNED vertex extras: 4 × half-float weights
@@ -741,6 +801,7 @@ impl NiTriStripsData {
 #[cfg(test)]
 mod skin_vertex_tests {
     use super::*;
+    use crate::blocks::parse_block;
     use crate::header::NifHeader;
     use crate::version::NifVersion;
 
@@ -758,6 +819,100 @@ mod skin_vertex_tests {
             max_string_length: 0,
             num_groups: 0,
         }
+    }
+
+    /// Build a minimal valid Skyrim SE BSTriShape body with zero vertices
+    /// and zero triangles. Used by the BSDynamicTriShape / BSLODTriShape
+    /// dispatch regression tests (issue #157).
+    fn minimal_bs_tri_shape_bytes() -> Vec<u8> {
+        let mut d = Vec::new();
+        // NiObjectNET: name=-1, extra_data count=0, controller=-1
+        d.extend_from_slice(&(-1i32).to_le_bytes());
+        d.extend_from_slice(&0u32.to_le_bytes());
+        d.extend_from_slice(&(-1i32).to_le_bytes());
+        // NiAVObject (SSE, no properties): flags u32, transform, collision_ref
+        d.extend_from_slice(&0u32.to_le_bytes()); // flags
+        // NiTransform: translation (3 f32) + rotation (9 f32) + scale (f32)
+        for _ in 0..3 {
+            d.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        // Identity rotation
+        for row in 0..3 {
+            for col in 0..3 {
+                let v: f32 = if row == col { 1.0 } else { 0.0 };
+                d.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        d.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
+        // BSTriShape: center (3 f32) + radius + 3 refs + vertex_desc u64
+        for _ in 0..3 {
+            d.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        d.extend_from_slice(&0.0f32.to_le_bytes()); // radius
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // skin_ref
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // shader_property_ref
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // alpha_property_ref
+        d.extend_from_slice(&0u64.to_le_bytes()); // vertex_desc (no attrs, stride 0)
+        // SSE (bsver<130): num_triangles as u16
+        d.extend_from_slice(&0u16.to_le_bytes());
+        d.extend_from_slice(&0u16.to_le_bytes()); // num_vertices
+        d.extend_from_slice(&0u32.to_le_bytes()); // data_size — skip the vertex/tri loops
+        // Note: when data_size == 0, the SSE particle-data block is not
+        // read — the parser's particle section is inside `if data_size > 0`.
+        d
+    }
+
+    /// Regression: #157 — BSDynamicTriShape must dispatch to the Dynamic
+    /// parser and consume its trailing `vertex_data_size` + `unknown`
+    /// header (even when zero-sized). Previously routed to NiUnknown,
+    /// making every Skyrim NPC face invisible.
+    #[test]
+    fn bs_dynamic_tri_shape_dispatches_and_consumes_trailing_bytes() {
+        let header = test_header();
+        let mut bytes = minimal_bs_tri_shape_bytes();
+        // BSDynamicTriShape trailing: vertex_data_size=0, unknown=0.
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        let block = parse_block("BSDynamicTriShape", &mut stream, Some(bytes.len() as u32))
+            .expect("BSDynamicTriShape should dispatch through BsTriShape::parse_dynamic");
+        assert!(
+            block.as_any().downcast_ref::<BsTriShape>().is_some(),
+            "BSDynamicTriShape did not downcast to BsTriShape"
+        );
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "BSDynamicTriShape trailing extras not fully consumed"
+        );
+    }
+
+    /// Regression: #157 — BSLODTriShape must dispatch to the LOD parser
+    /// and consume its 3 trailing LOD-size u32s. Previously routed to
+    /// NiUnknown, breaking FO4 distant LOD.
+    #[test]
+    fn bs_lod_tri_shape_dispatches_and_consumes_trailing_bytes() {
+        let header = test_header();
+        let mut bytes = minimal_bs_tri_shape_bytes();
+        // BSLODTriShape trailing: 3 × u32 LOD sizes.
+        bytes.extend_from_slice(&10u32.to_le_bytes());
+        bytes.extend_from_slice(&5u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        let block = parse_block("BSLODTriShape", &mut stream, Some(bytes.len() as u32))
+            .expect("BSLODTriShape should dispatch through BsTriShape::parse_lod");
+        assert!(
+            block.as_any().downcast_ref::<BsTriShape>().is_some(),
+            "BSLODTriShape did not downcast to BsTriShape"
+        );
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "BSLODTriShape trailing LOD sizes not fully consumed"
+        );
     }
 
     /// IEEE-754 half-float for 1.0 is 0x3C00; for 0.5 is 0x3800; for 0.0 is 0x0000.
