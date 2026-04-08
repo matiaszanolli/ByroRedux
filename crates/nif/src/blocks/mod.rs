@@ -9,6 +9,7 @@ pub mod collision;
 pub mod controller;
 pub mod extra_data;
 pub mod interpolator;
+pub mod light;
 pub mod multibound;
 pub mod node;
 pub mod palette;
@@ -106,6 +107,12 @@ pub fn parse_block(
     block_size: Option<u32>,
 ) -> io::Result<Box<dyn NiObject>> {
     match type_name {
+        // NiLight hierarchy — see issue #156. All four subtypes share the
+        // NiDynamicEffect + NiLight base; NiSpotLight extends NiPointLight.
+        "NiAmbientLight" => Ok(Box::new(light::NiAmbientLight::parse(stream)?)),
+        "NiDirectionalLight" => Ok(Box::new(light::NiDirectionalLight::parse(stream)?)),
+        "NiPointLight" => Ok(Box::new(light::NiPointLight::parse(stream)?)),
+        "NiSpotLight" => Ok(Box::new(light::NiSpotLight::parse(stream)?)),
         // Plain NiNode alias targets — no extra serialized fields beyond the
         // NiNode base. AvoidNode / NiBSAnimationNode / NiBSParticleNode are
         // legacy Morrowind/Oblivion-era NiNode subclasses; the rest are
@@ -752,5 +759,101 @@ mod dispatch_tests {
             assert!(block.as_any().downcast_ref::<crate::blocks::NiNode>().is_some());
             assert_eq!(stream.position(), base.len() as u64);
         }
+    }
+
+    /// Build an "empty NiAVObject" body sized for Oblivion. Same prefix
+    /// as the NiNode helper, minus the NiNode-specific children+effects
+    /// trailers. Used for NiLight bodies.
+    fn oblivion_niavobject_bytes() -> Vec<u8> {
+        let mut d = Vec::new();
+        d.extend_from_slice(&0u32.to_le_bytes()); // name len (empty inline)
+        d.extend_from_slice(&0u32.to_le_bytes()); // extra_data count
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+        d.extend_from_slice(&0u16.to_le_bytes()); // flags
+        for _ in 0..3 {
+            d.extend_from_slice(&0.0f32.to_le_bytes()); // translation
+        }
+        for row in [[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+            for v in row {
+                d.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        d.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+        d.extend_from_slice(&0u32.to_le_bytes()); // empty properties list
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
+        d
+    }
+
+    /// Regression test for issue #156: NiLight hierarchy dispatch + payload.
+    #[test]
+    fn oblivion_lights_parse_with_attenuation_and_color() {
+        use crate::blocks::light::{NiAmbientLight, NiPointLight, NiSpotLight};
+
+        let header = oblivion_header();
+        let av = oblivion_niavobject_bytes();
+
+        // Common NiDynamicEffect + NiLight tail for an Oblivion torch:
+        //   switch_state:u8=1, num_affected_nodes:u32=0,
+        //   dimmer:f32=1.0,
+        //   ambient:(0,0,0), diffuse:(1.0, 0.6, 0.2), specular:(0,0,0)
+        fn dynamic_light_tail() -> Vec<u8> {
+            let mut d = Vec::new();
+            d.push(1u8); // switch_state
+            d.extend_from_slice(&0u32.to_le_bytes()); // affected nodes count
+            d.extend_from_slice(&1.0f32.to_le_bytes()); // dimmer
+            for _ in 0..3 {
+                d.extend_from_slice(&0.0f32.to_le_bytes()); // ambient color
+            }
+            for &c in &[1.0f32, 0.6, 0.2] {
+                d.extend_from_slice(&c.to_le_bytes()); // diffuse color
+            }
+            for _ in 0..3 {
+                d.extend_from_slice(&0.0f32.to_le_bytes()); // specular color
+            }
+            d
+        }
+
+        // NiAmbientLight: base + dynamic_light_tail, nothing else.
+        let mut amb = av.clone();
+        amb.extend_from_slice(&dynamic_light_tail());
+        let mut stream = NifStream::new(&amb, &header);
+        let block = parse_block("NiAmbientLight", &mut stream, Some(amb.len() as u32))
+            .expect("NiAmbientLight dispatch");
+        let light = block.as_any().downcast_ref::<NiAmbientLight>().unwrap();
+        assert_eq!(light.base.dimmer, 1.0);
+        assert!((light.base.diffuse_color.g - 0.6).abs() < 1e-6);
+        assert_eq!(stream.position(), amb.len() as u64);
+
+        // NiPointLight: base + tail + (const=1.0, lin=0.01, quad=0.0).
+        let mut pl = av.clone();
+        pl.extend_from_slice(&dynamic_light_tail());
+        pl.extend_from_slice(&1.0f32.to_le_bytes()); // constant
+        pl.extend_from_slice(&0.01f32.to_le_bytes()); // linear
+        pl.extend_from_slice(&0.0f32.to_le_bytes()); // quadratic
+        let mut stream = NifStream::new(&pl, &header);
+        let block = parse_block("NiPointLight", &mut stream, Some(pl.len() as u32))
+            .expect("NiPointLight dispatch");
+        let p = block.as_any().downcast_ref::<NiPointLight>().unwrap();
+        assert_eq!(p.constant_attenuation, 1.0);
+        assert!((p.linear_attenuation - 0.01).abs() < 1e-6);
+        assert_eq!(stream.position(), pl.len() as u64);
+
+        // NiSpotLight: NiPointLight body + outer + exponent (Oblivion
+        // v20.0.0.5 < 20.2.0.5, so no inner_spot_angle).
+        let mut sl = av.clone();
+        sl.extend_from_slice(&dynamic_light_tail());
+        sl.extend_from_slice(&1.0f32.to_le_bytes()); // constant
+        sl.extend_from_slice(&0.01f32.to_le_bytes()); // linear
+        sl.extend_from_slice(&0.0f32.to_le_bytes()); // quadratic
+        sl.extend_from_slice(&(std::f32::consts::FRAC_PI_4).to_le_bytes()); // outer
+        sl.extend_from_slice(&2.0f32.to_le_bytes()); // exponent
+        let mut stream = NifStream::new(&sl, &header);
+        let block = parse_block("NiSpotLight", &mut stream, Some(sl.len() as u32))
+            .expect("NiSpotLight dispatch");
+        let s = block.as_any().downcast_ref::<NiSpotLight>().unwrap();
+        assert!((s.outer_spot_angle - std::f32::consts::FRAC_PI_4).abs() < 1e-6);
+        assert_eq!(s.inner_spot_angle, 0.0); // not in this version
+        assert_eq!(s.exponent, 2.0);
+        assert_eq!(stream.position(), sl.len() as u64);
     }
 }

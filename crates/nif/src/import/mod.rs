@@ -18,6 +18,38 @@ use crate::scene::NifScene;
 use crate::types::NiTransform;
 use byroredux_core::ecs::components::collision::{CollisionShape, RigidBodyData};
 
+/// One light source extracted from a NIF scene, positioned in world space.
+///
+/// Populated from NiAmbientLight / NiDirectionalLight / NiPointLight /
+/// NiSpotLight blocks during the flat walk. See issue #156.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImportedLight {
+    /// World-space position (Y-up).
+    pub translation: [f32; 3],
+    /// Unit direction (Y-up) — zero for ambient/point, camera-facing
+    /// meaningful only for directional and spot lights.
+    pub direction: [f32; 3],
+    /// Diffuse RGB in 0..1 (multiplied by dimmer, ignoring alpha).
+    pub color: [f32; 3],
+    /// Effective radius in Bethesda units, derived from the attenuation
+    /// parameters. Zero for ambient/directional (infinite reach).
+    pub radius: f32,
+    /// Kind tag for the renderer. 0 = ambient, 1 = directional,
+    /// 2 = point, 3 = spot.
+    pub kind: LightKind,
+    /// Outer cone half-angle in radians (0.0 for non-spot).
+    pub outer_angle: f32,
+}
+
+/// Kind of a parsed NIF light.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightKind {
+    Ambient,
+    Directional,
+    Point,
+    Spot,
+}
+
 /// Collision data extracted from a NiNode, positioned in world space.
 ///
 /// Used by the flat import path to return collision alongside geometry,
@@ -142,6 +174,21 @@ pub fn import_nif(scene: &NifScene) -> Vec<ImportedMesh> {
 
     walk::walk_node_flat(scene, root_idx, &NiTransform::default(), &mut meshes, None);
     meshes
+}
+
+/// Walk a parsed NIF scene and extract every NiLight subclass as an
+/// `ImportedLight`, positioned in world space (Y-up).
+///
+/// This is an independent pass from `import_nif` — callers that care
+/// about lights (currently: the cell loader) run it alongside the
+/// mesh import. See issue #156.
+pub fn import_nif_lights(scene: &NifScene) -> Vec<ImportedLight> {
+    let mut lights = Vec::new();
+    let Some(root_idx) = scene.root_index else {
+        return lights;
+    };
+    walk::walk_node_lights(scene, root_idx, &NiTransform::default(), &mut lights);
+    lights
 }
 
 /// Flat import with collision data.

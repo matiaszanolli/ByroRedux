@@ -366,7 +366,40 @@ fn load_nif_placed(
     };
 
     let (imported, collisions) = byroredux_nif::import::import_nif_with_collision(&scene);
+    let nif_lights = byroredux_nif::import::import_nif_lights(&scene);
     let mut count = 0;
+
+    // Spawn per-mesh NiLight blocks as LightSource entities. Parented
+    // through the reference transform so torches/candles inside cell
+    // refs contribute to the live GpuLight buffer. See issue #156.
+    for light in &nif_lights {
+        // Skip lights whose diffuse contribution is effectively zero —
+        // these are usually authored-off placeholders.
+        if light.color[0] + light.color[1] + light.color[2] < 1e-4 {
+            continue;
+        }
+        let nif_pos = Vec3::new(light.translation[0], light.translation[1], light.translation[2]);
+        let final_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
+        // Ambient / directional lights have no meaningful placement radius;
+        // fall back to a large cell-scale default so the renderer still
+        // picks them up instead of culling by radius == 0.
+        let radius = if light.radius > 0.0 {
+            light.radius * ref_scale
+        } else {
+            4096.0
+        };
+        let entity = world.spawn();
+        world.insert(entity, Transform::from_translation(final_pos));
+        world.insert(entity, GlobalTransform::new(final_pos, Quat::IDENTITY, 1.0));
+        world.insert(
+            entity,
+            LightSource {
+                radius,
+                color: light.color,
+                flags: 0,
+            },
+        );
+    }
 
     // Spawn collision entities from NiNode collision data.
     for coll in &collisions {
