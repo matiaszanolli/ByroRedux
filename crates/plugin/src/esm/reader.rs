@@ -3,22 +3,80 @@
 //! ESM/ESP files are sequences of records and groups. Each record has a
 //! 4-char type code, data size, flags, and form ID. Records contain
 //! sub-records (type + size + data). Groups contain other records/groups.
+//!
+//! **Per-game header layout.** Oblivion (TES4) uses a 20-byte record
+//! header and 20-byte group header, ending after `vc_info`. Every later
+//! game (Fallout 3, New Vegas, Skyrim, FO4, etc.) extends both to 24
+//! bytes with a trailing version + unknown field. The first 16 bytes are
+//! identical in either layout, so we only need to branch on the
+//! additional skip at the end.
 
 use anyhow::{ensure, Context, Result};
 use flate2::read::ZlibDecoder;
 use std::io::Read;
 
-/// Size of a record header in bytes (type + data_size + flags + form_id + vc_info + version).
-const RECORD_HEADER_SIZE: usize = 24;
-/// Size of a group header in bytes (type + size + label + group_type + vc_info + version).
-const GROUP_HEADER_SIZE: usize = 24;
 /// Record flag: data is zlib-compressed.
 const FLAG_COMPRESSED: u32 = 0x00040000;
+
+/// ESM format variant — determines record / group header size.
+///
+/// The two surviving layouts across the Bethesda lineage:
+/// - [`Oblivion`](Self::Oblivion) — 20-byte headers (TES4, Oblivion.esm)
+/// - [`Tes5Plus`](Self::Tes5Plus) — 24-byte headers (FO3 / FNV / Skyrim /
+///   FO4 / FO76 / Starfield)
+///
+/// Morrowind's TES3 format is entirely different and not supported here;
+/// it would need its own reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EsmVariant {
+    /// Oblivion — 20-byte record and group headers.
+    Oblivion,
+    /// FO3 / FNV / Skyrim LE+SE / FO4 / FO76 / Starfield — 24-byte headers.
+    Tes5Plus,
+}
+
+impl EsmVariant {
+    /// Auto-detect the ESM variant from a file buffer.
+    ///
+    /// The heuristic looks at byte offset 20 in the file. Every Bethesda
+    /// ESM begins with a `TES4` record, and the first sub-record inside
+    /// its data area is always `HEDR`. In Oblivion, the record header is
+    /// 20 bytes, so bytes 20-23 spell out `"HEDR"`. In every later game
+    /// the header is 24 bytes, so bytes 20-23 are the version u16 +
+    /// unknown u16 (small integers, never ASCII). Test the four ASCII
+    /// bytes and you have a deterministic, one-shot detector.
+    pub fn detect(data: &[u8]) -> Self {
+        if data.len() >= 24 && &data[20..24] == b"HEDR" {
+            Self::Oblivion
+        } else {
+            Self::Tes5Plus
+        }
+    }
+
+    /// Record header size in bytes (`type + data_size + flags + form_id`
+    /// plus trailing metadata).
+    pub fn record_header_size(self) -> usize {
+        match self {
+            Self::Oblivion => 20,
+            Self::Tes5Plus => 24,
+        }
+    }
+
+    /// Group header size in bytes (`GRUP + size + label + group_type`
+    /// plus trailing metadata).
+    pub fn group_header_size(self) -> usize {
+        match self {
+            Self::Oblivion => 20,
+            Self::Tes5Plus => 24,
+        }
+    }
+}
 
 /// Binary reader for ESM/ESP files.
 pub struct EsmReader<'a> {
     data: &'a [u8],
     pos: usize,
+    variant: EsmVariant,
 }
 
 /// Parsed record header (CELL, REFR, STAT, TES4, etc.).
@@ -54,8 +112,29 @@ pub struct FileHeader {
 }
 
 impl<'a> EsmReader<'a> {
+    /// Create a reader, auto-detecting the game variant from the file
+    /// header. Oblivion gets 20-byte record/group headers; everything
+    /// else gets 24. See [`EsmVariant::detect`].
     pub fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0 }
+        Self {
+            data,
+            pos: 0,
+            variant: EsmVariant::detect(data),
+        }
+    }
+
+    /// Create a reader with an explicit variant — used by the unit
+    /// tests which build synthetic 24-byte records regardless of game.
+    pub fn with_variant(data: &'a [u8], variant: EsmVariant) -> Self {
+        Self {
+            data,
+            pos: 0,
+            variant,
+        }
+    }
+
+    pub fn variant(&self) -> EsmVariant {
+        self.variant
     }
 
     pub fn position(&self) -> usize {
@@ -89,18 +168,18 @@ impl<'a> EsmReader<'a> {
         self.peek_type() == Some(*b"GRUP")
     }
 
-    /// Read a record header (24 bytes).
+    /// Read a record header (20 bytes on Oblivion, 24 on FO3+).
     pub fn read_record_header(&mut self) -> Result<RecordHeader> {
-        ensure!(
-            self.remaining() >= RECORD_HEADER_SIZE,
-            "Truncated record header"
-        );
+        let header_size = self.variant.record_header_size();
+        ensure!(self.remaining() >= header_size, "Truncated record header");
         let record_type = self.read_bytes_4();
         let data_size = self.read_u32();
         let flags = self.read_u32();
         let form_id = self.read_u32();
-        // Skip vc_info (u16) + vc_unknown (u16) + version (u16) + unknown (u16)
-        self.skip(8);
+        // Trailing metadata: Oblivion = 4 bytes (vc_info); FO3+ = 8 bytes
+        // (vc_info + unknown + version + unknown). We don't consume any
+        // of it today, just skip past.
+        self.skip(header_size - 16);
         Ok(RecordHeader {
             record_type,
             data_size,
@@ -109,12 +188,11 @@ impl<'a> EsmReader<'a> {
         })
     }
 
-    /// Read a group header (24 bytes). Caller must verify peek_type == "GRUP" first.
+    /// Read a group header (20 bytes on Oblivion, 24 on FO3+). Caller
+    /// must verify `peek_type() == "GRUP"` first.
     pub fn read_group_header(&mut self) -> Result<GroupHeader> {
-        ensure!(
-            self.remaining() >= GROUP_HEADER_SIZE,
-            "Truncated group header"
-        );
+        let header_size = self.variant.group_header_size();
+        ensure!(self.remaining() >= header_size, "Truncated group header");
         let typ = self.read_bytes_4();
         ensure!(
             &typ == b"GRUP",
@@ -124,8 +202,9 @@ impl<'a> EsmReader<'a> {
         let total_size = self.read_u32();
         let label = self.read_bytes_4();
         let group_type = self.read_u32();
-        // Skip vc_info (u16) + vc_unknown (u16) + version (u16) + unknown (u16)
-        self.skip(8);
+        // Trailing metadata: Oblivion = 4 bytes (stamp); FO3+ = 8 bytes
+        // (stamp + unknown + version + unknown).
+        self.skip(header_size - 16);
         Ok(GroupHeader {
             label,
             group_type,
@@ -202,9 +281,12 @@ impl<'a> EsmReader<'a> {
         self.pos += header.data_size as usize;
     }
 
-    /// Skip a group's remaining content (total_size includes the 24-byte header already read).
+    /// Skip a group's remaining content. `total_size` in the group
+    /// header includes the (20- or 24-byte) header that the caller has
+    /// already read, so subtract the variant's header size to get the
+    /// remaining content length.
     pub fn skip_group(&mut self, header: &GroupHeader) {
-        let remaining = header.total_size as usize - GROUP_HEADER_SIZE;
+        let remaining = header.total_size as usize - self.variant.group_header_size();
         self.pos += remaining;
     }
 
@@ -271,7 +353,20 @@ impl<'a> EsmReader<'a> {
 mod tests {
     use super::*;
 
+    /// Build a synthetic Tes5Plus (24-byte header) record.
     fn build_record(typ: &[u8; 4], form_id: u32, sub_records: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
+        build_record_for(EsmVariant::Tes5Plus, typ, form_id, sub_records)
+    }
+
+    /// Build a synthetic record with explicit variant — Oblivion's
+    /// 20-byte header has 4 bytes of vc_info padding where the Tes5Plus
+    /// layout has 8.
+    fn build_record_for(
+        variant: EsmVariant,
+        typ: &[u8; 4],
+        form_id: u32,
+        sub_records: &[(&[u8; 4], &[u8])],
+    ) -> Vec<u8> {
         // Build sub-record data first.
         let mut sub_data = Vec::new();
         for (sub_type, data) in sub_records {
@@ -285,19 +380,30 @@ mod tests {
         buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes()); // data_size
         buf.extend_from_slice(&0u32.to_le_bytes()); // flags
         buf.extend_from_slice(&form_id.to_le_bytes());
-        buf.extend_from_slice(&[0u8; 8]); // vc_info + version padding
+        // Trailing metadata: 4 bytes for Oblivion, 8 for Tes5Plus.
+        buf.resize(buf.len() + (variant.record_header_size() - 16), 0);
         buf.extend_from_slice(&sub_data);
         buf
     }
 
+    /// Build a synthetic Tes5Plus (24-byte header) group.
     fn build_group(label: &[u8; 4], group_type: u32, content: &[u8]) -> Vec<u8> {
-        let total_size = GROUP_HEADER_SIZE + content.len();
+        build_group_for(EsmVariant::Tes5Plus, label, group_type, content)
+    }
+
+    fn build_group_for(
+        variant: EsmVariant,
+        label: &[u8; 4],
+        group_type: u32,
+        content: &[u8],
+    ) -> Vec<u8> {
+        let total_size = variant.group_header_size() + content.len();
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GRUP");
         buf.extend_from_slice(&(total_size as u32).to_le_bytes());
         buf.extend_from_slice(label);
         buf.extend_from_slice(&group_type.to_le_bytes());
-        buf.extend_from_slice(&[0u8; 8]); // vc_info + version padding
+        buf.resize(buf.len() + (variant.group_header_size() - 16), 0);
         buf.extend_from_slice(content);
         buf
     }
@@ -305,7 +411,7 @@ mod tests {
     #[test]
     fn read_record_header_basic() {
         let data = build_record(b"STAT", 0x12345, &[]);
-        let mut reader = EsmReader::new(&data);
+        let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
         let header = reader.read_record_header().unwrap();
         assert_eq!(&header.record_type, b"STAT");
         assert_eq!(header.form_id, 0x12345);
@@ -319,7 +425,7 @@ mod tests {
             0x100,
             &[(b"EDID", b"TestStatic\0"), (b"MODL", b"meshes\\test.nif\0")],
         );
-        let mut reader = EsmReader::new(&data);
+        let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
         let header = reader.read_record_header().unwrap();
         let subs = reader.read_sub_records(&header).unwrap();
 
@@ -333,28 +439,28 @@ mod tests {
     #[test]
     fn read_group_header_basic() {
         let group = build_group(b"CELL", 0, &[]);
-        let mut reader = EsmReader::new(&group);
+        let mut reader = EsmReader::with_variant(&group, EsmVariant::Tes5Plus);
         let header = reader.read_group_header().unwrap();
         assert_eq!(&header.label, b"CELL");
         assert_eq!(header.group_type, 0);
-        assert_eq!(header.total_size, GROUP_HEADER_SIZE as u32);
+        assert_eq!(header.total_size, 24);
     }
 
     #[test]
     fn is_group_detects_grup() {
         let group = build_group(b"CELL", 0, &[]);
-        let reader = EsmReader::new(&group);
+        let reader = EsmReader::with_variant(&group, EsmVariant::Tes5Plus);
         assert!(reader.is_group());
 
         let record = build_record(b"STAT", 0, &[]);
-        let reader = EsmReader::new(&record);
+        let reader = EsmReader::with_variant(&record, EsmVariant::Tes5Plus);
         assert!(!reader.is_group());
     }
 
     #[test]
     fn skip_record_advances_position() {
         let data = build_record(b"STAT", 0, &[(b"EDID", b"Test\0")]);
-        let mut reader = EsmReader::new(&data);
+        let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
         let header = reader.read_record_header().unwrap();
         reader.skip_record(&header);
         assert_eq!(reader.remaining(), 0);
@@ -378,9 +484,120 @@ mod tests {
                 (b"DATA", &0u64.to_le_bytes()),
             ],
         );
-        let mut reader = EsmReader::new(&tes4);
+        let mut reader = EsmReader::with_variant(&tes4, EsmVariant::Tes5Plus);
         let fh = reader.read_file_header().unwrap();
         assert_eq!(fh.record_count, 42);
         assert_eq!(fh.master_files, vec!["FalloutNV.esm"]);
+    }
+
+    // ── Oblivion (20-byte header) tests ────────────────────────────────
+
+    #[test]
+    fn variant_detect_oblivion() {
+        // Build a real Oblivion TES4 record: 20-byte header + HEDR subrecord.
+        let tes4 = build_record_for(
+            EsmVariant::Oblivion,
+            b"TES4",
+            0,
+            &[(b"HEDR", &{
+                let mut d = Vec::new();
+                d.extend_from_slice(&1.0f32.to_le_bytes()); // Oblivion version = 1.0
+                d.extend_from_slice(&0u32.to_le_bytes()); // record count
+                d.extend_from_slice(&0u32.to_le_bytes()); // next object id
+                d
+            })],
+        );
+        // At offset 20 we should see "HEDR" — the sub-record type.
+        assert_eq!(&tes4[20..24], b"HEDR");
+        assert_eq!(EsmVariant::detect(&tes4), EsmVariant::Oblivion);
+    }
+
+    #[test]
+    fn variant_detect_tes5_plus() {
+        // FNV-style TES4 — HEDR lands at offset 24.
+        let tes4 = build_record_for(
+            EsmVariant::Tes5Plus,
+            b"TES4",
+            0,
+            &[(b"HEDR", b"placeholder\0")],
+        );
+        assert_eq!(&tes4[24..28], b"HEDR");
+        assert_eq!(EsmVariant::detect(&tes4), EsmVariant::Tes5Plus);
+    }
+
+    #[test]
+    fn read_oblivion_record_header_has_20_byte_layout() {
+        let data = build_record_for(EsmVariant::Oblivion, b"STAT", 0xAB, &[]);
+        assert_eq!(data.len(), 20); // no sub-records → 20 header bytes total
+        let mut reader = EsmReader::with_variant(&data, EsmVariant::Oblivion);
+        let header = reader.read_record_header().unwrap();
+        assert_eq!(&header.record_type, b"STAT");
+        assert_eq!(header.form_id, 0xAB);
+        assert_eq!(header.data_size, 0);
+        assert_eq!(reader.position(), 20);
+    }
+
+    #[test]
+    fn read_oblivion_group_header_has_20_byte_layout() {
+        let group = build_group_for(EsmVariant::Oblivion, b"CELL", 0, &[]);
+        assert_eq!(group.len(), 20);
+        let mut reader = EsmReader::with_variant(&group, EsmVariant::Oblivion);
+        let header = reader.read_group_header().unwrap();
+        assert_eq!(&header.label, b"CELL");
+        assert_eq!(header.total_size, 20);
+        assert_eq!(reader.position(), 20);
+    }
+
+    #[test]
+    fn read_oblivion_sub_records() {
+        let data = build_record_for(
+            EsmVariant::Oblivion,
+            b"STAT",
+            0x100,
+            &[(b"EDID", b"TestOblivion\0"), (b"MODL", b"meshes\\stat.nif\0")],
+        );
+        let mut reader = EsmReader::with_variant(&data, EsmVariant::Oblivion);
+        let header = reader.read_record_header().unwrap();
+        let subs = reader.read_sub_records(&header).unwrap();
+        assert_eq!(subs.len(), 2);
+        assert_eq!(&subs[0].sub_type, b"EDID");
+        assert_eq!(subs[0].data, b"TestOblivion\0");
+        assert_eq!(&subs[1].sub_type, b"MODL");
+    }
+
+    #[test]
+    fn oblivion_skip_group_uses_20_byte_header() {
+        // Group containing one STAT record. skip_group should land exactly
+        // at end-of-buffer — off-by-4 bugs show up here.
+        let inner = build_record_for(EsmVariant::Oblivion, b"STAT", 1, &[]);
+        let group = build_group_for(EsmVariant::Oblivion, b"STAT", 0, &inner);
+        let mut reader = EsmReader::with_variant(&group, EsmVariant::Oblivion);
+        let header = reader.read_group_header().unwrap();
+        reader.skip_group(&header);
+        assert_eq!(reader.remaining(), 0);
+    }
+
+    #[test]
+    fn oblivion_file_header_parses() {
+        let tes4 = build_record_for(
+            EsmVariant::Oblivion,
+            b"TES4",
+            0,
+            &[
+                (b"HEDR", &{
+                    let mut d = Vec::new();
+                    d.extend_from_slice(&1.0f32.to_le_bytes()); // Oblivion v1.0
+                    d.extend_from_slice(&123u32.to_le_bytes()); // record count
+                    d.extend_from_slice(&0u32.to_le_bytes());
+                    d
+                }),
+                (b"MAST", b"Oblivion.esm\0"),
+            ],
+        );
+        let mut reader = EsmReader::new(&tes4); // auto-detect
+        assert_eq!(reader.variant(), EsmVariant::Oblivion);
+        let fh = reader.read_file_header().unwrap();
+        assert_eq!(fh.record_count, 123);
+        assert_eq!(fh.master_files, vec!["Oblivion.esm"]);
     }
 }

@@ -714,6 +714,56 @@ mod tests {
         }
     }
 
+    /// Smoke test: does `parse_esm_cells` survive a real `Oblivion.esm`
+    /// walk now that the reader understands 20-byte headers?
+    ///
+    /// This does NOT assert a cell count or that specific records
+    /// parsed — the FNV-shaped CELL / REFR / STAT subrecord layouts may
+    /// still trip over Oblivion-specific fields. It only validates
+    /// that the top-level walker reaches the end of the file without a
+    /// hard error, which is the minimum bar for future per-record
+    /// Oblivion work.
+    #[test]
+    #[ignore]
+    fn parse_real_oblivion_esm_walker_survives() {
+        let path =
+            "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data/Oblivion.esm";
+        if !std::path::Path::new(path).exists() {
+            eprintln!("Skipping: Oblivion.esm not found");
+            return;
+        }
+        let data = std::fs::read(path).unwrap();
+
+        // Sanity-check auto-detection.
+        use crate::esm::reader::{EsmReader, EsmVariant};
+        assert_eq!(
+            EsmVariant::detect(&data),
+            EsmVariant::Oblivion,
+            "Oblivion.esm should auto-detect as Oblivion variant"
+        );
+        let mut reader = EsmReader::new(&data);
+        let fh = reader.read_file_header().expect("Oblivion TES4 header");
+        eprintln!(
+            "Oblivion.esm: record_count={} masters={:?}",
+            fh.record_count, fh.master_files
+        );
+
+        // Now run the full cell walker. We only assert it returns Ok —
+        // the record contents are Phase 2 work.
+        match parse_esm_cells(&data) {
+            Ok(idx) => {
+                eprintln!(
+                    "Oblivion.esm walker OK: cells={} statics={} \
+                     cells_with_refs={}",
+                    idx.cells.len(),
+                    idx.statics.len(),
+                    idx.cells.values().filter(|c| !c.references.is_empty()).count(),
+                );
+            }
+            Err(e) => panic!("parse_esm_cells failed on Oblivion.esm: {e:#}"),
+        }
+    }
+
     #[test]
     fn read_zstring_handles_null_terminator() {
         assert_eq!(read_zstring(b"Hello\0"), "Hello");
