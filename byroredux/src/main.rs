@@ -96,6 +96,10 @@ struct App {
     draw_commands: Vec<DrawCommand>,
     /// Reusable per-frame light buffer (cleared each frame, allocation retained).
     gpu_lights: Vec<byroredux_renderer::GpuLight>,
+    /// Reusable per-frame bone palette (column-major mat4 entries; slot 0
+    /// always identity). Walked by `build_render_data` for every
+    /// SkinnedMesh entity and uploaded once per frame.
+    bone_palette: Vec<[[f32; 4]; 4]>,
 }
 
 impl App {
@@ -153,6 +157,7 @@ impl App {
             ui_texture_handle: None,
             draw_commands: Vec::new(),
             gpu_lights: Vec::new(),
+            bone_palette: Vec::new(),
         }
     }
 
@@ -250,6 +255,7 @@ impl ApplicationHandler for App {
                         &self.world,
                         &mut self.draw_commands,
                         &mut self.gpu_lights,
+                        &mut self.bone_palette,
                     );
 
                     // Record draw call count for diagnostics.
@@ -298,6 +304,7 @@ impl ApplicationHandler for App {
                         &view_proj,
                         &self.draw_commands,
                         &self.gpu_lights,
+                        &self.bone_palette,
                         camera_pos,
                         ambient,
                         ui_tex,

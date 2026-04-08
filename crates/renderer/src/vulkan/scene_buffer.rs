@@ -14,6 +14,19 @@ use ash::vk;
 /// 512 lights × 48 bytes = 24 KB per frame — trivial.
 const MAX_LIGHTS: usize = 512;
 
+/// Maximum bones we can upload per frame across all skinned meshes.
+/// 4096 × 64 B = 256 KB/frame. Slot 0 is a reserved identity fallback
+/// (used by rigid vertices through the sum-of-weights escape hatch and
+/// by `SkinnedMesh` bones that failed to resolve). The remaining 4095
+/// slots are assigned sequentially per skinned mesh, with each mesh
+/// consuming `MAX_BONES_PER_MESH` (128) slots for simplicity. That
+/// gives ~31 skinned meshes per frame — more than enough for a cell
+/// full of actors.
+pub const MAX_TOTAL_BONES: usize = 4096;
+
+/// Slot 0 of the bone palette is always the identity matrix.
+pub const IDENTITY_BONE_SLOT: u32 = 0;
+
 /// GPU-side light struct (48 bytes, std430 layout).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -50,9 +63,14 @@ pub struct SceneBuffers {
     light_buffers: Vec<GpuBuffer>,
     /// One UBO per frame-in-flight (camera data).
     camera_buffers: Vec<GpuBuffer>,
+    /// One SSBO per frame-in-flight (bone palette for skinning).
+    /// Slot 0 is always the identity matrix; the vertex shader uses it
+    /// as a fallback for rigid vertices that land here by accident.
+    bone_buffers: Vec<GpuBuffer>,
     /// Descriptor pool for scene descriptor sets.
     descriptor_pool: vk::DescriptorPool,
-    /// Layout for set 1: binding 0 = SSBO (lights), binding 1 = UBO (camera).
+    /// Layout for set 1: binding 0 = SSBO (lights), binding 1 = UBO (camera),
+    /// binding 2 = TLAS (RT only), binding 3 = SSBO (bone palette).
     pub descriptor_set_layout: vk::DescriptorSetLayout,
     /// One descriptor set per frame-in-flight.
     pub descriptor_sets: Vec<vk::DescriptorSet>,
@@ -72,10 +90,13 @@ impl SceneBuffers {
             + std::mem::size_of::<GpuLight>() * MAX_LIGHTS)
             as vk::DeviceSize;
         let camera_buf_size = std::mem::size_of::<GpuCamera>() as vk::DeviceSize;
+        // Bone palette: 4 × vec4 (mat4) per slot, std430 layout.
+        let bone_buf_size = (std::mem::size_of::<[[f32; 4]; 4]>() * MAX_TOTAL_BONES) as vk::DeviceSize;
 
         // Create per-frame buffers.
         let mut light_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut camera_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut bone_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             light_buffers.push(GpuBuffer::create_host_visible(
                 device,
@@ -88,6 +109,12 @@ impl SceneBuffers {
                 allocator,
                 camera_buf_size,
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
+            )?);
+            bone_buffers.push(GpuBuffer::create_host_visible(
+                device,
+                allocator,
+                bone_buf_size,
+                vk::BufferUsageFlags::STORAGE_BUFFER,
             )?);
         }
 
@@ -113,6 +140,14 @@ impl SceneBuffers {
                     .stage_flags(vk::ShaderStageFlags::FRAGMENT),
             );
         }
+        // Binding 3: bone palette SSBO (vertex shader — skinning).
+        bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(3)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX),
+        );
         let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
         let descriptor_set_layout = unsafe {
             device
@@ -121,10 +156,11 @@ impl SceneBuffers {
         };
 
         // Descriptor pool.
+        // Two STORAGE_BUFFER descriptors per frame (lights + bones).
         let mut pool_sizes = vec![
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
+                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 2) as u32,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::UNIFORM_BUFFER,
@@ -169,6 +205,11 @@ impl SceneBuffers {
                 offset: 0,
                 range: camera_buf_size,
             }];
+            let bone_buf_info = [vk::DescriptorBufferInfo {
+                buffer: bone_buffers[i].buffer,
+                offset: 0,
+                range: bone_buf_size,
+            }];
             let writes = [
                 vk::WriteDescriptorSet::default()
                     .dst_set(descriptor_sets[i])
@@ -180,10 +221,29 @@ impl SceneBuffers {
                     .dst_binding(1)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .buffer_info(&camera_buf_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_sets[i])
+                    .dst_binding(3)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(&bone_buf_info),
             ];
             unsafe {
                 device.update_descriptor_sets(&writes, &[]);
             }
+        }
+
+        // Seed slot 0 of each bone palette with the identity matrix so
+        // rigid vertices that fall through to the palette (shouldn't
+        // happen, but serves as a defensive fallback) produce correct
+        // positions rather than collapsing to origin.
+        let identity: [[f32; 4]; 4] = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        for buf in &mut bone_buffers {
+            buf.write_mapped(device, std::slice::from_ref(&identity))?;
         }
 
         log::info!(
@@ -196,6 +256,7 @@ impl SceneBuffers {
         Ok(Self {
             light_buffers,
             camera_buffers,
+            bone_buffers,
             descriptor_pool,
             descriptor_set_layout,
             descriptor_sets,
@@ -253,6 +314,40 @@ impl SceneBuffers {
         self.camera_buffers[frame_index].write_mapped(device, std::slice::from_ref(camera))
     }
 
+    /// Upload the bone palette for the current frame-in-flight.
+    ///
+    /// `palette` is packed contiguous mat4 entries in column-major glam
+    /// layout. Slot 0 is always the identity matrix — callers that
+    /// assemble multiple meshes into one palette should keep slot 0 as
+    /// identity and start writing mesh bones at slot 1.
+    ///
+    /// Writes at most `MAX_TOTAL_BONES` entries; extra are silently
+    /// clamped and logged once per session by the caller.
+    pub fn upload_bones(
+        &mut self,
+        device: &ash::Device,
+        frame_index: usize,
+        palette: &[[[f32; 4]; 4]],
+    ) -> Result<()> {
+        let count = palette.len().min(MAX_TOTAL_BONES);
+        if count == 0 {
+            return Ok(());
+        }
+
+        let buf = &mut self.bone_buffers[frame_index];
+        let mapped = buf.mapped_slice_mut()?;
+        // SAFETY: [[f32; 4]; 4] is #[repr(C)]-compatible with std430 mat4.
+        // bone_buffers are sized for MAX_TOTAL_BONES slots; count is clamped.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                palette.as_ptr() as *const u8,
+                mapped.as_mut_ptr(),
+                std::mem::size_of::<[[f32; 4]; 4]>() * count,
+            );
+        }
+        buf.flush_if_needed(device)
+    }
+
     /// Get the descriptor set for the current frame-in-flight.
     pub fn descriptor_set(&self, frame_index: usize) -> vk::DescriptorSet {
         self.descriptor_sets[frame_index]
@@ -288,6 +383,9 @@ impl SceneBuffers {
             buf.destroy(device, allocator);
         }
         for buf in &mut self.camera_buffers {
+            buf.destroy(device, allocator);
+        }
+        for buf in &mut self.bone_buffers {
             buf.destroy(device, allocator);
         }
         device.destroy_descriptor_pool(self.descriptor_pool, None);

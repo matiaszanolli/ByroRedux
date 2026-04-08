@@ -509,26 +509,50 @@ pub(crate) fn load_nif_bytes(
     let mut count = 0;
     for mesh in &imported.meshes {
         let num_verts = mesh.positions.len();
+        // Skinned vertices use the per-vertex bone indices + weights that
+        // #151 / #177 extracted from NiSkinData / BSTriShape. Rigid
+        // vertices pass zero weights and the shader's rigid-path routes
+        // them through `pc.model` instead of the bone palette.
+        let skin_vertex_data = mesh.skin.as_ref().filter(|s| {
+            !s.vertex_bone_indices.is_empty() && !s.vertex_bone_weights.is_empty()
+        });
         let vertices: Vec<Vertex> = (0..num_verts)
             .map(|i| {
-                Vertex::new(
-                    mesh.positions[i],
-                    if i < mesh.colors.len() {
-                        mesh.colors[i]
-                    } else {
-                        [1.0, 1.0, 1.0]
-                    },
-                    if i < mesh.normals.len() {
-                        mesh.normals[i]
-                    } else {
-                        [0.0, 1.0, 0.0]
-                    },
-                    if i < mesh.uvs.len() {
-                        mesh.uvs[i]
-                    } else {
-                        [0.0, 0.0]
-                    },
-                )
+                let position = mesh.positions[i];
+                let color = if i < mesh.colors.len() {
+                    mesh.colors[i]
+                } else {
+                    [1.0, 1.0, 1.0]
+                };
+                let normal = if i < mesh.normals.len() {
+                    mesh.normals[i]
+                } else {
+                    [0.0, 1.0, 0.0]
+                };
+                let uv = if i < mesh.uvs.len() {
+                    mesh.uvs[i]
+                } else {
+                    [0.0, 0.0]
+                };
+                if let Some(skin) = skin_vertex_data {
+                    // Guard against parallel-vector truncation — if the
+                    // sparse skin upload filled fewer vertices than the
+                    // mesh has positions, fall back to rigid for the
+                    // remainder rather than panicking on index.
+                    if i < skin.vertex_bone_indices.len() && i < skin.vertex_bone_weights.len() {
+                        let idx = skin.vertex_bone_indices[i];
+                        let w = skin.vertex_bone_weights[i];
+                        return Vertex::new_skinned(
+                            position,
+                            color,
+                            normal,
+                            uv,
+                            [idx[0] as u32, idx[1] as u32, idx[2] as u32, idx[3] as u32],
+                            w,
+                        );
+                    }
+                }
+                Vertex::new(position, color, normal, uv)
             })
             .collect();
 

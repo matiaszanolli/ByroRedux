@@ -1,11 +1,12 @@
 //! Per-frame render data collection from ECS queries.
 
 use byroredux_core::ecs::{
-    ActiveCamera, AnimatedVisibility, Camera, GlobalTransform, LightSource, MeshHandle,
-    TextureHandle, Transform, World,
+    ActiveCamera, AnimatedVisibility, Camera, GlobalTransform, LightSource, MeshHandle, SkinnedMesh,
+    TextureHandle, Transform, World, MAX_BONES_PER_MESH,
 };
 use byroredux_core::math::Mat4;
 use byroredux_renderer::vulkan::context::DrawCommand;
+use std::collections::HashMap;
 
 use crate::components::{AlphaBlend, CellLightingRes, Decal, TwoSided};
 
@@ -14,9 +15,53 @@ pub(crate) fn build_render_data(
     world: &World,
     draw_commands: &mut Vec<DrawCommand>,
     gpu_lights: &mut Vec<byroredux_renderer::GpuLight>,
+    bone_palette: &mut Vec<[[f32; 4]; 4]>,
 ) -> ([f32; 16], [f32; 3], [f32; 3]) {
     draw_commands.clear();
     gpu_lights.clear();
+    bone_palette.clear();
+    // Slot 0 is always identity — rigid meshes tagged with bone_offset=0
+    // that somehow hit the skinning path fall here harmlessly.
+    bone_palette.push([
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]);
+
+    // First pass: walk SkinnedMesh entities, compute each mesh's bone
+    // palette slice, and record `entity → bone_offset` so the draw loop
+    // below can stamp it onto the DrawCommand. Each skinned mesh reserves
+    // exactly MAX_BONES_PER_MESH slots so per-mesh bone_offset arithmetic
+    // stays trivial.
+    let mut skin_offsets: HashMap<byroredux_core::ecs::EntityId, u32> = HashMap::new();
+    if let Some((gt_q, skin_q)) = world.query_2_mut::<GlobalTransform, SkinnedMesh>() {
+        for (entity, skin) in skin_q.iter() {
+            let offset = bone_palette.len() as u32;
+            // World-lookup closure — reads GlobalTransform for each bone
+            // entity through the same query guard. Missing bones fall
+            // back to identity inside compute_palette.
+            let palette = skin.compute_palette(|bone_entity| {
+                gt_q.get(bone_entity).map(|gt| gt.to_matrix())
+            });
+            // Pad every skinned mesh to MAX_BONES_PER_MESH so per-mesh
+            // bone offsets are trivially `offset + local_index` and the
+            // shader doesn't need a per-mesh bone count.
+            for mat in &palette {
+                bone_palette.push(mat.to_cols_array_2d());
+            }
+            for _ in palette.len()..MAX_BONES_PER_MESH {
+                bone_palette.push([
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ]);
+            }
+            skin_offsets.insert(entity, offset);
+            let _ = entity; // silence unused if debug_assertions off
+        }
+    }
 
     // Get camera view-projection.
     let view_proj = if let Some(active) = world.try_resource::<ActiveCamera>() {
@@ -79,6 +124,7 @@ pub(crate) fn build_render_data(
                     .as_ref()
                     .map(|q| q.get(entity).is_some())
                     .unwrap_or(false);
+                let bone_offset = skin_offsets.get(&entity).copied().unwrap_or(0);
                 draw_commands.push(DrawCommand {
                     mesh_handle: mesh.0,
                     texture_handle: tex_handle,
@@ -86,6 +132,7 @@ pub(crate) fn build_render_data(
                     alpha_blend,
                     two_sided,
                     is_decal,
+                    bone_offset,
                 });
             }
         }

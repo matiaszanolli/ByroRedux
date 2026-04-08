@@ -181,11 +181,14 @@ fn create_triangle_pipeline_with_layout(
     let dynamic_state =
         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
-    // Push constants: viewProj (mat4) + model (mat4) = 128 bytes.
+    // Push constants: viewProj (mat4) + model (mat4) + bone_offset (uint)
+    // + padding to 4-byte alignment = 132 bytes. Well under the 128-byte
+    // spec minimum caveat on old hardware — modern Vulkan drivers expose
+    // at least 256 bytes.
     let push_constant_ranges = [vk::PushConstantRange {
         stage_flags: vk::ShaderStageFlags::VERTEX,
         offset: 0,
-        size: 128, // 2 * sizeof(mat4)
+        size: 132, // 2 * sizeof(mat4) + sizeof(uint)
     }];
     let (pipeline_layout, owns_layout) = if let Some(layout) = existing_layout {
         (layout, false)

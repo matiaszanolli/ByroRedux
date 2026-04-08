@@ -17,6 +17,7 @@ impl VulkanContext {
         view_proj: &[f32; 16],
         draw_commands: &[DrawCommand],
         lights: &[scene_buffer::GpuLight],
+        bone_palette: &[[[f32; 4]; 4]],
         camera_pos: [f32; 3],
         ambient_color: [f32; 3],
         ui_texture_handle: Option<u32>,
@@ -154,6 +155,13 @@ impl VulkanContext {
         self.scene_buffers
             .upload_camera(&self.device, frame, &camera)
             .unwrap_or_else(|e| log::warn!("Failed to upload camera: {e}"));
+        // Bone palette for skinning. Empty slice leaves slot 0 (identity,
+        // seeded at SceneBuffers::new) untouched — fine for rigid-only scenes.
+        if !bone_palette.is_empty() {
+            self.scene_buffers
+                .upload_bones(&self.device, frame, bone_palette)
+                .unwrap_or_else(|e| log::warn!("Failed to upload bone palette: {e}"));
+        }
 
         unsafe {
             self.device
@@ -266,6 +274,18 @@ impl VulkanContext {
                         64,
                         model_bytes,
                     );
+                    // Push bone_offset (bytes 128..132).
+                    let bone_offset_bytes: &[u8] = std::slice::from_raw_parts(
+                        &draw_cmd.bone_offset as *const u32 as *const u8,
+                        4,
+                    );
+                    self.device.cmd_push_constants(
+                        cmd,
+                        self.pipeline_layout,
+                        vk::ShaderStageFlags::VERTEX,
+                        128,
+                        bone_offset_bytes,
+                    );
 
                     self.device
                         .cmd_bind_vertex_buffers(cmd, 0, &[mesh.vertex_buffer.buffer], &[0]);
@@ -323,6 +343,21 @@ impl VulkanContext {
                         vk::ShaderStageFlags::VERTEX,
                         64,
                         identity_bytes,
+                    );
+                    // Zero bone_offset — UI vertices carry zero weights so
+                    // the shader's rigid path ignores the palette anyway,
+                    // but we keep push-constant state well-defined.
+                    let zero_u32: u32 = 0;
+                    let zero_bytes: &[u8] = std::slice::from_raw_parts(
+                        &zero_u32 as *const u32 as *const u8,
+                        4,
+                    );
+                    self.device.cmd_push_constants(
+                        cmd,
+                        self.pipeline_layout,
+                        vk::ShaderStageFlags::VERTEX,
+                        128,
+                        zero_bytes,
                     );
 
                     self.device
