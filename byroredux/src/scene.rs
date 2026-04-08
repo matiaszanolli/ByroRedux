@@ -3,10 +3,10 @@
 use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
-    ActiveCamera, Camera, GlobalTransform, Material, MeshHandle, Name, Parent, TextureHandle,
-    Transform, World,
+    ActiveCamera, Camera, GlobalTransform, Material, MeshHandle, Name, Parent, SkinnedMesh,
+    TextureHandle, Transform, World, MAX_BONES_PER_MESH,
 };
-use byroredux_core::math::{Quat, Vec3};
+use byroredux_core::math::{Mat4, Quat, Vec3};
 use byroredux_core::string::StringPool;
 use byroredux_renderer::{cube_vertices, quad_vertices, triangle_vertices, Vertex, VulkanContext};
 use byroredux_ui::UiManager;
@@ -446,7 +446,14 @@ pub(crate) fn load_nif_bytes(
 
     // Phase 1: Spawn node entities (NiNode hierarchy).
     // node_index → EntityId mapping.
+    // Also build a name → EntityId map so Phase 3 can resolve skinning
+    // bone names to the entities they should drive. Skeleton nodes are
+    // the only entities with unique names in a typical NIF, so collisions
+    // (multiple nodes sharing a name) are rare; on collision we keep the
+    // first spawn (root-most in depth-first order).
     let mut node_entities: Vec<EntityId> = Vec::with_capacity(imported.nodes.len());
+    let mut node_by_name: std::collections::HashMap<String, EntityId> =
+        std::collections::HashMap::with_capacity(imported.nodes.len());
     for node in &imported.nodes {
         let quat = Quat::from_xyzw(
             node.rotation[0],
@@ -469,6 +476,7 @@ pub(crate) fn load_nif_bytes(
             let sym = pool.intern(name);
             drop(pool);
             world.insert(entity, Name(sym));
+            node_by_name.entry(name.clone()).or_insert(entity);
         }
 
         // Attach collision data if present.
@@ -599,6 +607,46 @@ pub(crate) fn load_nif_bytes(
             let sym = pool.intern(name);
             drop(pool);
             world.insert(entity, Name(sym));
+        }
+
+        // Attach skinning binding if present. Resolves each bone name to
+        // the entity spawned for that node in Phase 1. Missing bones are
+        // kept as `None`; the palette system substitutes identity for them.
+        if let Some(ref skin) = mesh.skin {
+            if skin.bones.len() > MAX_BONES_PER_MESH {
+                log::warn!(
+                    "Skinned mesh '{}' has {} bones (> MAX_BONES_PER_MESH={}); skipping skinning",
+                    mesh.name.as_deref().unwrap_or("?"),
+                    skin.bones.len(),
+                    MAX_BONES_PER_MESH
+                );
+            } else {
+                let mut bones: Vec<Option<EntityId>> = Vec::with_capacity(skin.bones.len());
+                let mut binds: Vec<Mat4> = Vec::with_capacity(skin.bones.len());
+                let mut unresolved = 0_usize;
+                for bone in &skin.bones {
+                    match node_by_name.get(&bone.name) {
+                        Some(&e) => bones.push(Some(e)),
+                        None => {
+                            bones.push(None);
+                            unresolved += 1;
+                        }
+                    }
+                    binds.push(Mat4::from_cols_array_2d(&bone.bind_inverse));
+                }
+                let root_entity = skin
+                    .skeleton_root
+                    .as_ref()
+                    .and_then(|n| node_by_name.get(n).copied());
+                world.insert(entity, SkinnedMesh::new(root_entity, bones, binds));
+                log::info!(
+                    "Skinned mesh '{}': {} bones ({} unresolved), root={:?}",
+                    mesh.name.as_deref().unwrap_or("?"),
+                    skin.bones.len(),
+                    unresolved,
+                    skin.skeleton_root,
+                );
+            }
         }
 
         // Set up parent relationship.

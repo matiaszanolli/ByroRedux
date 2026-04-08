@@ -19,7 +19,8 @@ pub mod world;
 
 pub use components::{
     ActiveCamera, AnimatedAlpha, AnimatedColor, AnimatedVisibility, Camera, Children,
-    GlobalTransform, LightSource, Material, MeshHandle, Name, Parent, TextureHandle, Transform,
+    GlobalTransform, LightSource, Material, MeshHandle, Name, Parent, SkinnedMesh, TextureHandle,
+    Transform, MAX_BONES_PER_MESH,
 };
 pub use packed::PackedStorage;
 pub use query::{ComponentRef, QueryRead, QueryWrite};
