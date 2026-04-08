@@ -632,32 +632,77 @@ impl NiMorphData {
         let num_vertices = stream.read_u32_le()?;
         let relative_targets = stream.read_u8()?;
 
+        // Sanity cap: a real NIF never has more than a few thousand
+        // vertices per morph target (the Oblivion face morph data tops
+        // out around 1k verts). If we see something absurd, the block
+        // has drifted — bail out rather than allocate several GB. The
+        // caller's per-block recovery path will seek past the block.
+        if num_morphs > 65_536 || num_vertices > 65_536 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "NiMorphData: implausible num_morphs={num_morphs} \
+                     num_vertices={num_vertices} — block drifted"
+                ),
+            ));
+        }
+
+        // Morph element layout per nif.xml (see <struct name="Morph">):
+        //
+        //   since 10.1.0.106:          frame_name: string
+        //   until 10.1.0.0:            num_keys: u32
+        //                              interpolation: KeyType (u32)
+        //                              keys: Key<float>[num_keys]
+        //   since 10.1.0.104
+        //     until 20.1.0.2
+        //     && BSVER < 10:           legacy_weight: f32
+        //   (always):                  vectors: Vec3[num_vertices]
+        //
+        // The "until 10.1.0.0" branch is pre-NetImmerse legacy content
+        // — NONE of the games Redux targets (Morrowind 4.0.0.0 included)
+        // fall into it, because the type was deprecated well before
+        // 10.1. The previous implementation read those fields
+        // unconditionally, which walked off the end of a valid Oblivion
+        // morph and allocated a ~118 GB vector when a garbage num_keys
+        // happened to be a huge number.
+        //
+        // Oblivion (v20.0.0.5, BSVER in 0..=11) hits the legacy_weight
+        // window. FNV / FO3 (BSVER 34) and everything later do not.
+        let version = stream.version();
+        let bsver = stream.bsver();
+        let has_keys = version <= NifVersion(0x0A010000);
+        let has_legacy_weight = version >= NifVersion(0x0A010068)
+            && version <= NifVersion(0x14010002)
+            && bsver < 10;
+
         let mut morphs = Vec::with_capacity(num_morphs);
         for _ in 0..num_morphs {
-            // Frame name (string table indexed for version >= 10.1.0.106).
-            let name = stream.read_string()?;
+            // Frame name (string table indexed from 10.1.0.106).
+            let name = if version >= NifVersion(0x0A01006A) {
+                stream.read_string()?
+            } else {
+                None
+            };
 
-            // Legacy float key group — per nif.xml, each morph frame serializes
-            // a KeyGroup<float> between the name and vertex deltas.
-            let num_keys = stream.read_u32_le()?;
-            if num_keys > 0 {
+            if has_keys {
+                let num_keys = stream.read_u32_le()? as u64;
                 let interpolation = stream.read_u32_le()?;
-                // Key size depends on interpolation type:
-                // 1 (LINEAR) = time(f32) + value(f32) = 8 bytes
-                // 2 (QUADRATIC) = time + value + forward + backward = 16 bytes
-                // 3 (TBC) = time + value + tension + bias + continuity = 20 bytes
-                // 5 (CONSTANT) = time + value = 8 bytes
                 let key_size: u64 = match interpolation {
-                    1 | 5 => 8,
-                    2 => 16,
-                    3 => 20,
-                    _ => 8, // fallback
+                    1 | 5 => 8,          // LINEAR / CONSTANT
+                    2 => 16,             // QUADRATIC
+                    3 => 20,             // TBC
+                    _ => 8,              // fallback
                 };
-                stream.skip(key_size * num_keys as u64);
+                stream.skip(key_size * num_keys);
             }
 
-            // Vertex position deltas.
-            let mut vectors = Vec::with_capacity(num_vertices as usize);
+            if has_legacy_weight {
+                let _legacy_weight = stream.read_f32_le()?;
+            }
+
+            // Vertex deltas — guarded against an absurd num_vertices
+            // that would otherwise OOM the process on a corrupt block.
+            let mut vectors = Vec::with_capacity((num_vertices as usize).min(1_000_000));
             for _ in 0..num_vertices {
                 let x = stream.read_f32_le()?;
                 let y = stream.read_f32_le()?;

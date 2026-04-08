@@ -104,15 +104,26 @@ impl<'a> NifStream<'a> {
     }
 
     /// Read a NiBool (version-dependent size).
-    /// Per nif.xml: NiBool is u32 for version >= 4.1.0.1, u8 for older.
-    /// Covers Oblivion (20.0.0.5) through Starfield (20.2.0.7+).
+    ///
+    /// Per nif.xml's `<basic name="bool">` entry:
+    /// > A boolean; 32-bit up to and including 4.0.0.2, 8-bit from 4.1.0.1 on.
+    ///
+    /// So every game Redux targets (Morrowind 4.0.0.0, Oblivion 20.0.0.5,
+    /// FO3/FNV 20.2.0.7, Skyrim+) reads a **single byte**. Only pre-4.1
+    /// NetImmerse content uses the 4-byte form.
+    ///
+    /// A previous version of this function had the comparison inverted
+    /// and the test cases documented the wrong behavior; that bug made
+    /// `NiTriShape::parse` over-read by 3 bytes on every Oblivion NIF
+    /// that had a shader, which in turn made the block walker fail on
+    /// every Oblivion static mesh and silently return empty scenes.
     pub fn read_bool(&mut self) -> io::Result<bool> {
         if self.header.version >= NifVersion(0x04010001) {
-            // 4.1.0.1+: NiBool is u32
-            Ok(self.read_u32_le()? != 0)
-        } else {
-            // Pre-4.1.0.1: NiBool is u8
+            // 4.1.0.1+: bool is u8
             Ok(self.read_u8()? != 0)
+        } else {
+            // Pre-4.1.0.1: bool is u32
+            Ok(self.read_u32_le()? != 0)
         }
     }
 
@@ -376,26 +387,29 @@ mod tests {
 
     #[test]
     fn read_bool_version_dependent() {
-        // v20.2.0.7: bool is u32
+        // Per nif.xml, type `bool` is 8-bit from 4.1.0.1 onward and
+        // 32-bit for older content.
+
+        // v20.2.0.7 (FO3/FNV/Skyrim+): bool is u8
         let header_new = test_header(NifVersion::V20_2_0_7);
-        let data_new: Vec<u8> = vec![0x01, 0x00, 0x00, 0x00];
+        let data_new: Vec<u8> = vec![0x01];
         let mut stream = NifStream::new(&data_new, &header_new);
         assert!(stream.read_bool().unwrap());
-        assert_eq!(stream.position(), 4); // consumed 4 bytes
+        assert_eq!(stream.position(), 1);
 
-        // v20.0.0.5 (Oblivion): bool is u32 (>= 4.1.0.1 threshold)
+        // v20.0.0.5 (Oblivion): bool is u8 (>= 4.1.0.1)
         let header_oblivion = test_header(NifVersion::V20_0_0_5);
-        let data_oblivion: Vec<u8> = vec![0x01, 0x00, 0x00, 0x00];
+        let data_oblivion: Vec<u8> = vec![0x01];
         let mut stream = NifStream::new(&data_oblivion, &header_oblivion);
         assert!(stream.read_bool().unwrap());
-        assert_eq!(stream.position(), 4); // consumed 4 bytes, NOT 1
+        assert_eq!(stream.position(), 1);
 
-        // v4.0.0.2 (Morrowind): bool is u8 (< 4.1.0.1 threshold)
+        // v4.0.0.2 (pre-NetImmerse 4.1): bool is u32
         let header_old = test_header(NifVersion::V4_0_0_2);
-        let data_old: Vec<u8> = vec![0x01];
+        let data_old: Vec<u8> = vec![0x01, 0x00, 0x00, 0x00];
         let mut stream = NifStream::new(&data_old, &header_old);
         assert!(stream.read_bool().unwrap());
-        assert_eq!(stream.position(), 1); // consumed 1 byte
+        assert_eq!(stream.position(), 4);
     }
 
     #[test]

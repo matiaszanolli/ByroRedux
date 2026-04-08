@@ -97,19 +97,53 @@ pub fn collision_shape_to_shared_shape(shape: &CollisionShape) -> SharedShape {
             SharedShape::trimesh(pts, idx)
         }
         CollisionShape::Compound { children } => {
-            if children.is_empty() {
+            // Parry / Rapier does NOT allow nested compound shapes —
+            // `SharedShape::compound(children)` panics if any child is
+            // itself a compound. Oblivion / NIF `bhkListShape` chains
+            // commonly produce nested CollisionShape::Compound after
+            // the NIF importer walks through `bhkTransformShape` /
+            // `bhkListShape` composition, so we need to flatten them
+            // before handing anything to Rapier.
+            //
+            // `flatten_compound` walks the tree depth-first, composing
+            // transforms as it descends, and emits one flat
+            // `(Isometry3, SharedShape)` per leaf shape.
+            let mut parts: Vec<(Isometry3<f32>, SharedShape)> = Vec::new();
+            flatten_compound(children, Isometry3::identity(), &mut parts);
+            if parts.is_empty() {
                 return SharedShape::ball(1e-3);
             }
-            let parts: Vec<(Isometry3<f32>, SharedShape)> = children
-                .iter()
-                .map(|(t, r, child)| {
-                    (
-                        iso_from_trs(*t, *r),
-                        collision_shape_to_shared_shape(child),
-                    )
-                })
-                .collect();
+            if parts.len() == 1 {
+                // Single-child compound after flattening is still
+                // valid in Rapier, but returning the bare child lets
+                // the caller skip the compound wrapper entirely.
+                return parts.into_iter().next().unwrap().1;
+            }
             SharedShape::compound(parts)
+        }
+    }
+}
+
+/// Depth-first walk a `CollisionShape::Compound` child list, composing
+/// local transforms as we descend and appending each non-compound leaf
+/// to `out`. The caller passes the parent-space transform (identity at
+/// the top level). Every leaf in `out` is in the **same** parent-space
+/// frame as the original root.
+fn flatten_compound(
+    children: &[(Vec3, Quat, Box<CollisionShape>)],
+    parent_iso: Isometry3<f32>,
+    out: &mut Vec<(Isometry3<f32>, SharedShape)>,
+) {
+    for (t, r, child) in children {
+        let local = iso_from_trs(*t, *r);
+        let composed = parent_iso * local;
+        if let CollisionShape::Compound {
+            children: grandchildren,
+        } = child.as_ref()
+        {
+            flatten_compound(grandchildren, composed, out);
+        } else {
+            out.push((composed, collision_shape_to_shared_shape(child)));
         }
     }
 }
@@ -175,6 +209,105 @@ mod tests {
         let c = s.as_capsule().unwrap();
         assert_eq!(c.radius, 1.5);
         assert_eq!(c.half_height(), 5.0);
+    }
+
+    #[test]
+    fn nested_compound_is_flattened_before_rapier_sees_it() {
+        // Oblivion bhkListShape chains commonly produce nested
+        // CollisionShape::Compound (a Compound whose child is itself
+        // a Compound). Parry panics ("Nested composite shapes are not
+        // allowed") if we hand it one directly — verify we flatten.
+        let inner = CollisionShape::Compound {
+            children: vec![
+                (
+                    Vec3::new(1.0, 0.0, 0.0),
+                    Quat::IDENTITY,
+                    Box::new(CollisionShape::Ball { radius: 0.5 }),
+                ),
+                (
+                    Vec3::new(-1.0, 0.0, 0.0),
+                    Quat::IDENTITY,
+                    Box::new(CollisionShape::Ball { radius: 0.5 }),
+                ),
+            ],
+        };
+        let outer = CollisionShape::Compound {
+            children: vec![(
+                Vec3::new(0.0, 2.0, 0.0),
+                Quat::IDENTITY,
+                Box::new(inner),
+            )],
+        };
+
+        let shape = collision_shape_to_shared_shape(&outer);
+        // Must dispatch as a Compound — not panic, not fall through to
+        // the ball fallback.
+        assert_eq!(shape.shape_type(), ShapeType::Compound);
+        let compound = shape.as_compound().expect("flattened compound");
+        // Both original leaves must survive the flatten.
+        assert_eq!(compound.shapes().len(), 2);
+        // Every leaf must now be a non-compound primitive.
+        for (_, child) in compound.shapes() {
+            assert_ne!(
+                child.shape_type(),
+                ShapeType::Compound,
+                "flatten_compound left a nested compound in place"
+            );
+        }
+        // The inner children were offset by (+-1, 0, 0) and the outer
+        // parent by (0, 2, 0), so composed positions should be
+        // (1, 2, 0) and (-1, 2, 0).
+        let translations: Vec<_> = compound
+            .shapes()
+            .iter()
+            .map(|(iso, _)| (iso.translation.x, iso.translation.y, iso.translation.z))
+            .collect();
+        assert!(translations.contains(&(1.0, 2.0, 0.0)));
+        assert!(translations.contains(&(-1.0, 2.0, 0.0)));
+    }
+
+    #[test]
+    fn deeply_nested_compound_fully_flattens() {
+        // 3 levels deep — Compound → Compound → Compound → Ball.
+        // Each level contributes a +1 Y offset. Final world Y of the
+        // single leaf must be +3.
+        let level3 = CollisionShape::Compound {
+            children: vec![(
+                Vec3::new(0.0, 1.0, 0.0),
+                Quat::IDENTITY,
+                Box::new(CollisionShape::Ball { radius: 1.0 }),
+            )],
+        };
+        let level2 = CollisionShape::Compound {
+            children: vec![(
+                Vec3::new(0.0, 1.0, 0.0),
+                Quat::IDENTITY,
+                Box::new(level3),
+            )],
+        };
+        let level1 = CollisionShape::Compound {
+            children: vec![(
+                Vec3::new(0.0, 1.0, 0.0),
+                Quat::IDENTITY,
+                Box::new(level2),
+            )],
+        };
+        let shape = collision_shape_to_shared_shape(&level1);
+        // Single leaf after flattening → we unwrap the compound and
+        // return the bare Ball.
+        assert_eq!(shape.shape_type(), ShapeType::Ball);
+    }
+
+    #[test]
+    fn empty_nested_compound_falls_back_to_ball() {
+        // A compound whose only child is an empty compound should fall
+        // through the "no parts after flatten" path, not panic.
+        let inner = CollisionShape::Compound { children: vec![] };
+        let outer = CollisionShape::Compound {
+            children: vec![(Vec3::ZERO, Quat::IDENTITY, Box::new(inner))],
+        };
+        let shape = collision_shape_to_shared_shape(&outer);
+        assert_eq!(shape.shape_type(), ShapeType::Ball);
     }
 
     #[test]
