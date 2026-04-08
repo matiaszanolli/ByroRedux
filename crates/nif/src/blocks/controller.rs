@@ -709,3 +709,47 @@ impl NiSequenceStreamHelper {
         })
     }
 }
+
+// ── NiUVController ────────────────────────────────────────────────────
+//
+// DEPRECATED (pre-10.1), REMOVED (20.3). The last Bethesda game that
+// ships with NiUVController is Oblivion (v20.0.0.5) — water, fire, and
+// banner meshes rely on it to scroll texture coordinates. Inherits
+// from NiTimeController with two trailing fields: target_attribute (u16)
+// and data ref (NiUVData). See issue #156... wait #154.
+//
+// The parser is stateless beyond the NiTimeController base; the actual
+// keyframe data lives in the referenced NiUVData block. The UV channel
+// extractor in anim.rs can pick it up later — parsing is the blocker.
+
+#[derive(Debug)]
+pub struct NiUVController {
+    pub base: NiTimeControllerBase,
+    /// Texture slot index to animate. 0 = base, 1 = normal, etc. Rarely
+    /// non-zero in Bethesda content.
+    pub target_attribute: u16,
+    /// Ref to the NiUVData block with the four KeyGroup channels.
+    pub data_ref: BlockRef,
+}
+
+impl NiObject for NiUVController {
+    fn block_type_name(&self) -> &'static str {
+        "NiUVController"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiUVController {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiTimeControllerBase::parse(stream)?;
+        let target_attribute = stream.read_u16_le()?;
+        let data_ref = stream.read_block_ref()?;
+        Ok(Self {
+            base,
+            target_attribute,
+            data_ref,
+        })
+    }
+}

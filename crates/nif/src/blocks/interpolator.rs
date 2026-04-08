@@ -904,3 +904,36 @@ impl NiBlendBoolInterpolator {
         Ok(Self { base, value })
     }
 }
+
+// ── NiUVData ──────────────────────────────────────────────────────────
+//
+// Four float KeyGroups that feed NiUVController:
+//   0 = offset U, 1 = offset V, 2 = tiling U, 3 = tiling V.
+// Referenced only by NiUVController. See issue #154.
+
+#[derive(Debug)]
+pub struct NiUVData {
+    /// Four animated UV channels: [offset_u, offset_v, tiling_u, tiling_v].
+    pub groups: [KeyGroup<FloatKey>; 4],
+}
+
+impl NiObject for NiUVData {
+    fn block_type_name(&self) -> &'static str {
+        "NiUVData"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiUVData {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let g0 = KeyGroup::<FloatKey>::parse(stream)?;
+        let g1 = KeyGroup::<FloatKey>::parse(stream)?;
+        let g2 = KeyGroup::<FloatKey>::parse(stream)?;
+        let g3 = KeyGroup::<FloatKey>::parse(stream)?;
+        Ok(Self {
+            groups: [g0, g1, g2, g3],
+        })
+    }
+}

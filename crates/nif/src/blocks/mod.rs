@@ -31,7 +31,7 @@ use collision::{
 use controller::{
     NiControllerManager, NiControllerSequence, NiGeomMorpherController, NiMaterialColorController,
     NiMorphData, NiMultiTargetTransformController, NiSequenceStreamHelper,
-    NiSingleInterpController, NiTimeController,
+    NiSingleInterpController, NiTimeController, NiUVController,
 };
 use extra_data::{
     BsBehaviorGraphExtraData, BsBound, BsClothExtraData, BsConnectPointChildren,
@@ -41,6 +41,7 @@ use interpolator::{
     NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendPoint3Interpolator,
     NiBlendTransformInterpolator, NiBoolData, NiBoolInterpolator, NiFloatData, NiFloatInterpolator,
     NiPoint3Interpolator, NiPosData, NiTextKeyExtraData, NiTransformData, NiTransformInterpolator,
+    NiUVData,
 };
 use multibound::{BsMultiBound, BsMultiBoundAABB, BsMultiBoundOBB};
 use node::{BsOrderedNode, BsValueNode, NiNode};
@@ -257,6 +258,10 @@ pub fn parse_block(
         "NiTransformData" | "NiKeyframeData" => Ok(Box::new(NiTransformData::parse(stream)?)),
         "NiFloatInterpolator" => Ok(Box::new(NiFloatInterpolator::parse(stream)?)),
         "NiFloatData" => Ok(Box::new(NiFloatData::parse(stream)?)),
+        // NiUVController + NiUVData — scrolling UV animation, deprecated
+        // pre-10.1 and removed at 20.3. See issue #154.
+        "NiUVController" => Ok(Box::new(NiUVController::parse(stream)?)),
+        "NiUVData" => Ok(Box::new(NiUVData::parse(stream)?)),
         "NiPoint3Interpolator" => Ok(Box::new(NiPoint3Interpolator::parse(stream)?)),
         "NiPosData" => Ok(Box::new(NiPosData::parse(stream)?)),
         "NiBoolInterpolator" => Ok(Box::new(NiBoolInterpolator::parse(stream)?)),
@@ -855,5 +860,59 @@ mod dispatch_tests {
         assert_eq!(s.inner_spot_angle, 0.0); // not in this version
         assert_eq!(s.exponent, 2.0);
         assert_eq!(stream.position(), sl.len() as u64);
+    }
+
+    /// Regression test for issue #154: NiUVController + NiUVData.
+    #[test]
+    fn oblivion_uv_controller_and_data_roundtrip() {
+        use crate::blocks::controller::NiUVController;
+        use crate::blocks::interpolator::NiUVData;
+
+        let header = oblivion_header();
+
+        // NiUVController: NiTimeControllerBase (26 bytes) + u16 target + i32 data ref.
+        let mut uvc = Vec::new();
+        uvc.extend_from_slice(&(-1i32).to_le_bytes()); // next_controller
+        uvc.extend_from_slice(&0u16.to_le_bytes()); // flags
+        uvc.extend_from_slice(&1.0f32.to_le_bytes()); // frequency
+        uvc.extend_from_slice(&0.0f32.to_le_bytes()); // phase
+        uvc.extend_from_slice(&0.0f32.to_le_bytes()); // start_time
+        uvc.extend_from_slice(&2.5f32.to_le_bytes()); // stop_time
+        uvc.extend_from_slice(&(-1i32).to_le_bytes()); // target_ref
+        uvc.extend_from_slice(&0u16.to_le_bytes()); // target_attribute
+        uvc.extend_from_slice(&42i32.to_le_bytes()); // data ref
+        let mut stream = NifStream::new(&uvc, &header);
+        let block = parse_block("NiUVController", &mut stream, Some(uvc.len() as u32))
+            .expect("NiUVController dispatch");
+        let c = block.as_any().downcast_ref::<NiUVController>().unwrap();
+        assert_eq!(c.target_attribute, 0);
+        assert_eq!(c.data_ref.index(), Some(42));
+        assert!((c.base.stop_time - 2.5).abs() < 1e-6);
+        assert_eq!(stream.position(), uvc.len() as u64);
+
+        // NiUVData: four KeyGroup<FloatKey>. First group has 2 linear
+        // keys scrolling U from 0→1; the rest are empty.
+        let mut uvd = Vec::new();
+        // Group 0: num_keys=2, key_type=Linear(1), key (time, value)×2
+        uvd.extend_from_slice(&2u32.to_le_bytes());
+        uvd.extend_from_slice(&1u32.to_le_bytes()); // KeyType::Linear
+        uvd.extend_from_slice(&0.0f32.to_le_bytes()); // t=0
+        uvd.extend_from_slice(&0.0f32.to_le_bytes()); // v=0
+        uvd.extend_from_slice(&1.0f32.to_le_bytes()); // t=1
+        uvd.extend_from_slice(&1.0f32.to_le_bytes()); // v=1
+        // Groups 1-3: num_keys=0 (no key_type field when empty).
+        for _ in 0..3 {
+            uvd.extend_from_slice(&0u32.to_le_bytes());
+        }
+        let mut stream = NifStream::new(&uvd, &header);
+        let block = parse_block("NiUVData", &mut stream, Some(uvd.len() as u32))
+            .expect("NiUVData dispatch");
+        let d = block.as_any().downcast_ref::<NiUVData>().unwrap();
+        assert_eq!(d.groups[0].keys.len(), 2);
+        assert_eq!(d.groups[0].keys[1].value, 1.0);
+        assert!(d.groups[1].keys.is_empty());
+        assert!(d.groups[2].keys.is_empty());
+        assert!(d.groups[3].keys.is_empty());
+        assert_eq!(stream.position(), uvd.len() as u64);
     }
 }
