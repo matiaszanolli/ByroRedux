@@ -262,13 +262,15 @@ pub(crate) fn setup_scene(
     world.insert(cam, Camera::default());
     world.insert_resource(ActiveCamera(cam));
 
-    // Attach a dynamic capsule collider so the fly camera collides with
-    // the world. physics_sync_system picks this up in Phase 1 of the
-    // frame after scene setup. Only done when we actually loaded NIF
-    // world content — the primitive demo doesn't need physics.
-    if has_nif_content {
-        world.insert(cam, byroredux_physics::PlayerBody::HUMAN);
-    }
+    // NOTE: M28 Phase 1 attached a `PlayerBody::HUMAN` capsule to the
+    // camera so the fly cam would collide with world geometry. That
+    // path doesn't actually work as a camera rig — physics_sync_system
+    // Phase 4 clobbers the rotation the fly camera writes each frame
+    // (locking the view to the body's initial yaw), and setting linvel
+    // directly overrides gravity so the player can't fall. A proper
+    // kinematic character controller lands in M28.5; until then, the
+    // fly camera stays free-fly and physics runs only on world +
+    // clutter bodies spawned by the cell loader.
 
     // Initialize fly camera yaw/pitch from the initial look direction.
     {
