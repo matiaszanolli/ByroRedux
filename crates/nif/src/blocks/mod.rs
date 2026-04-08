@@ -138,6 +138,8 @@ pub fn parse_block(
         "BSRangeNode" | "BSBlastNode" | "BSDamageStage" | "BSDebrisNode" => {
             Ok(Box::new(node::BsRangeNode::parse(stream)?))
         }
+        // NiCamera — embedded cinematic camera block. See issue #153.
+        "NiCamera" => Ok(Box::new(node::NiCamera::parse(stream)?)),
         "BSOrderedNode" => Ok(Box::new(BsOrderedNode::parse(stream)?)),
         "BSValueNode" => Ok(Box::new(BsValueNode::parse(stream)?)),
         // Multi-bound spatial volumes
@@ -914,5 +916,51 @@ mod dispatch_tests {
         assert!(d.groups[2].keys.is_empty());
         assert!(d.groups[3].keys.is_empty());
         assert_eq!(stream.position(), uvd.len() as u64);
+    }
+
+    /// Regression test for issue #153: NiCamera parsing.
+    #[test]
+    fn oblivion_ni_camera_roundtrip() {
+        use crate::blocks::node::NiCamera;
+
+        let header = oblivion_header();
+        let mut bytes = oblivion_niavobject_bytes();
+        // camera_flags u16
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        // frustum left/right/top/bottom
+        bytes.extend_from_slice(&(-0.5f32).to_le_bytes());
+        bytes.extend_from_slice(&0.5f32.to_le_bytes());
+        bytes.extend_from_slice(&0.3f32.to_le_bytes());
+        bytes.extend_from_slice(&(-0.3f32).to_le_bytes());
+        // frustum near / far
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&5000.0f32.to_le_bytes());
+        // use_orthographic byte bool = 0
+        bytes.push(0u8);
+        // viewport left/right/top/bottom
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        // lod_adjust
+        bytes.extend_from_slice(&1.5f32.to_le_bytes());
+        // scene_ref
+        bytes.extend_from_slice(&9i32.to_le_bytes());
+        // num_screen_polygons, num_screen_textures (both u32, both 0 on disk)
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block("NiCamera", &mut stream, Some(bytes.len() as u32))
+            .expect("NiCamera dispatch");
+        let c = block.as_any().downcast_ref::<NiCamera>().unwrap();
+        assert!((c.frustum_right - 0.5).abs() < 1e-6);
+        assert!((c.frustum_far - 5000.0).abs() < 1e-6);
+        assert!(!c.use_orthographic);
+        assert!((c.lod_adjust - 1.5).abs() < 1e-6);
+        assert_eq!(c.scene_ref.index(), Some(9));
+        assert_eq!(c.num_screen_polygons, 0);
+        assert_eq!(c.num_screen_textures, 0);
+        assert_eq!(stream.position(), bytes.len() as u64);
     }
 }

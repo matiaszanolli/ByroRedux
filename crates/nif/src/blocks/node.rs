@@ -432,3 +432,152 @@ impl BsRangeNode {
         })
     }
 }
+
+// ── NiCamera ───────────────────────────────────────────────────────────
+//
+// Animated cinematic NIFs ship an embedded NiCamera describing a view
+// frustum + viewport + LOD bias. Used to drive cutscene cameras from
+// an animated scene graph. See issue #153.
+//
+// Layout (from nif.xml):
+//
+//   NiAVObject base
+//   camera_flags: u16 (since 10.1.0.0)
+//   frustum_left/right/top/bottom: f32
+//   frustum_near, frustum_far: f32
+//   use_orthographic: bool (since 10.1.0.0)
+//   viewport_left/right/top/bottom: f32
+//   lod_adjust: f32
+//   scene_ref: Ref (NiAVObject)
+//   num_screen_polygons: u32 (always 0 on disk)
+//   num_screen_textures: u32 (since 4.2.1.0, always 0 on disk)
+
+/// NiCamera — embedded camera block with frustum, viewport, LOD bias.
+#[derive(Debug)]
+pub struct NiCamera {
+    pub av: NiAVObjectData,
+    pub camera_flags: u16,
+    pub frustum_left: f32,
+    pub frustum_right: f32,
+    pub frustum_top: f32,
+    pub frustum_bottom: f32,
+    pub frustum_near: f32,
+    pub frustum_far: f32,
+    pub use_orthographic: bool,
+    pub viewport_left: f32,
+    pub viewport_right: f32,
+    pub viewport_top: f32,
+    pub viewport_bottom: f32,
+    pub lod_adjust: f32,
+    pub scene_ref: BlockRef,
+    /// Legacy — always zero on disk.
+    pub num_screen_polygons: u32,
+    /// Legacy — always zero on disk.
+    pub num_screen_textures: u32,
+}
+
+impl NiObject for NiCamera {
+    fn block_type_name(&self) -> &'static str {
+        "NiCamera"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_object_net(&self) -> Option<&dyn HasObjectNET> {
+        Some(self)
+    }
+    fn as_av_object(&self) -> Option<&dyn HasAVObject> {
+        Some(self)
+    }
+}
+
+impl HasObjectNET for NiCamera {
+    fn name(&self) -> Option<&str> {
+        self.av.net.name.as_deref()
+    }
+    fn extra_data_refs(&self) -> &[BlockRef] {
+        &self.av.net.extra_data_refs
+    }
+    fn controller_ref(&self) -> BlockRef {
+        self.av.net.controller_ref
+    }
+}
+
+impl HasAVObject for NiCamera {
+    fn flags(&self) -> u32 {
+        self.av.flags
+    }
+    fn transform(&self) -> &NiTransform {
+        &self.av.transform
+    }
+    fn properties(&self) -> &[BlockRef] {
+        &self.av.properties
+    }
+    fn collision_ref(&self) -> BlockRef {
+        self.av.collision_ref
+    }
+}
+
+impl NiCamera {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let av = NiAVObjectData::parse(stream)?;
+
+        // camera_flags added at 10.1.0.0. Oblivion (20.0.0.5) has it.
+        let camera_flags = if stream.version() >= crate::version::NifVersion(0x0A010000) {
+            stream.read_u16_le()?
+        } else {
+            0
+        };
+
+        let frustum_left = stream.read_f32_le()?;
+        let frustum_right = stream.read_f32_le()?;
+        let frustum_top = stream.read_f32_le()?;
+        let frustum_bottom = stream.read_f32_le()?;
+        let frustum_near = stream.read_f32_le()?;
+        let frustum_far = stream.read_f32_le()?;
+
+        // use_orthographic added at 10.1.0.0. Per nif.xml, `bool` is
+        // 8-bit from 4.1.0.1 onward — all games we target (Oblivion+)
+        // sit in that window, so read a single byte.
+        let use_orthographic = if stream.version() >= crate::version::NifVersion(0x0A010000) {
+            stream.read_byte_bool()?
+        } else {
+            false
+        };
+
+        let viewport_left = stream.read_f32_le()?;
+        let viewport_right = stream.read_f32_le()?;
+        let viewport_top = stream.read_f32_le()?;
+        let viewport_bottom = stream.read_f32_le()?;
+        let lod_adjust = stream.read_f32_le()?;
+        let scene_ref = stream.read_block_ref()?;
+        let num_screen_polygons = stream.read_u32_le()?;
+
+        // num_screen_textures added at 4.2.1.0 — always present for our targets.
+        let num_screen_textures = if stream.version() >= crate::version::NifVersion(0x04020100) {
+            stream.read_u32_le()?
+        } else {
+            0
+        };
+
+        Ok(Self {
+            av,
+            camera_flags,
+            frustum_left,
+            frustum_right,
+            frustum_top,
+            frustum_bottom,
+            frustum_near,
+            frustum_far,
+            use_orthographic,
+            viewport_left,
+            viewport_right,
+            viewport_top,
+            viewport_bottom,
+            lod_adjust,
+            scene_ref,
+            num_screen_polygons,
+            num_screen_textures,
+        })
+    }
+}
