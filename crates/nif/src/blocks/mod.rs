@@ -124,11 +124,14 @@ pub fn parse_block(
         | "BSFadeNode"
         | "BSLeafAnimNode"
         | "BSTreeNode"
-        | "BSMultiBoundNode"
         | "RootCollisionNode"
         | "AvoidNode"
         | "NiBSAnimationNode"
         | "NiBSParticleNode" => Ok(Box::new(NiNode::parse(stream)?)),
+        // BSMultiBoundNode: NiNode + multi_bound_ref + (Skyrim+) culling_mode.
+        // See issue #148. Previously aliased to plain NiNode, dropping the
+        // multi_bound linkage to BSMultiBoundAABB volumes.
+        "BSMultiBoundNode" => Ok(Box::new(node::BsMultiBoundNode::parse(stream)?)),
         // NiNode subtypes with a small payload of trailing fields.
         "NiBillboardNode" => Ok(Box::new(node::NiBillboardNode::parse(stream)?)),
         "NiSwitchNode" => Ok(Box::new(node::NiSwitchNode::parse(stream)?)),
@@ -850,6 +853,31 @@ mod dispatch_tests {
             assert!(block.as_any().downcast_ref::<crate::blocks::NiNode>().is_some());
             assert_eq!(stream.position(), base.len() as u64);
         }
+    }
+
+    /// Regression: #148 — BSMultiBoundNode must dispatch to its own
+    /// parser and read the trailing `multi_bound_ref` (BlockRef, always)
+    /// + `culling_mode` (u32, Skyrim+ only). Previously aliased to plain
+    /// NiNode so the multi-bound linkage was silently dropped.
+    #[test]
+    fn bs_multi_bound_node_dispatches_with_multi_bound_ref() {
+        use crate::blocks::node::BsMultiBoundNode;
+
+        let header = oblivion_header(); // bsver 0 — no culling_mode field
+        let mut bytes = oblivion_empty_ninode_bytes();
+        // multi_bound_ref = 42
+        bytes.extend_from_slice(&42i32.to_le_bytes());
+
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block("BSMultiBoundNode", &mut stream, Some(bytes.len() as u32))
+            .expect("BSMultiBoundNode should dispatch through BsMultiBoundNode::parse");
+        let node = block
+            .as_any()
+            .downcast_ref::<BsMultiBoundNode>()
+            .expect("BSMultiBoundNode did not downcast to BsMultiBoundNode");
+        assert_eq!(node.multi_bound_ref.index(), Some(42));
+        assert_eq!(node.culling_mode, 0); // default when bsver < 83
+        assert_eq!(stream.position(), bytes.len() as u64);
     }
 
     /// Build an "empty NiAVObject" body sized for Oblivion. Same prefix

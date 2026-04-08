@@ -202,6 +202,64 @@ impl BsValueNode {
     }
 }
 
+// ── BSMultiBoundNode ────────────────────────────────────────────────
+
+/// BSMultiBoundNode — NiNode subclass with a pre-computed multi-bound
+/// culling volume used for fast rejection of large interior cells.
+///
+/// Wire layout (niflib nif.xml):
+/// ```text
+/// NiNode body
+/// BlockRef multi_bound_ref      ; → BSMultiBound
+/// uint culling_mode             ; only for BSVER >= 83 (Skyrim+)
+/// ```
+///
+/// `culling_mode` values: 0 = normal, 1 = all bounds visible, 2 = all
+/// bounds hidden, 3 = force culled. Only present on Skyrim+ — the FO3/FNV
+/// variant stops at `multi_bound_ref`. See issue #148.
+#[derive(Debug)]
+pub struct BsMultiBoundNode {
+    pub base: NiNode,
+    /// Reference to the associated BSMultiBound block.
+    pub multi_bound_ref: BlockRef,
+    /// Culling mode (Skyrim+ only; FO3/FNV leaves this as 0).
+    pub culling_mode: u32,
+}
+
+impl NiObject for BsMultiBoundNode {
+    fn block_type_name(&self) -> &'static str {
+        "BSMultiBoundNode"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_object_net(&self) -> Option<&dyn HasObjectNET> {
+        Some(&self.base)
+    }
+    fn as_av_object(&self) -> Option<&dyn HasAVObject> {
+        Some(&self.base)
+    }
+}
+
+impl BsMultiBoundNode {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiNode::parse(stream)?;
+        let multi_bound_ref = stream.read_block_ref()?;
+        // culling_mode is Skyrim+ only (BSVER >= 83). FO3/FNV (bsver=34)
+        // stops after the multi_bound_ref.
+        let culling_mode = if stream.bsver() >= 83 {
+            stream.read_u32_le()?
+        } else {
+            0
+        };
+        Ok(Self {
+            base,
+            multi_bound_ref,
+            culling_mode,
+        })
+    }
+}
+
 // ── NiBillboardNode ────────────────────────────────────────────────────
 //
 // Pre-10.1.0.0 the billboard mode was packed into the parent NiAVObject
