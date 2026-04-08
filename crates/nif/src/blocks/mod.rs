@@ -39,6 +39,7 @@ use extra_data::{
     BsConnectPointParents, BsDecalPlacementVectorExtraData, BsInvMarker, NiExtraData,
 };
 use interpolator::{
+    NiBSplineBasisData, NiBSplineCompTransformInterpolator, NiBSplineData,
     NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendPoint3Interpolator,
     NiBlendTransformInterpolator, NiBoolData, NiBoolInterpolator, NiFloatData, NiFloatInterpolator,
     NiPoint3Interpolator, NiPosData, NiTextKeyExtraData, NiTransformData, NiTransformInterpolator,
@@ -301,6 +302,15 @@ pub fn parse_block(
             Ok(Box::new(NiTransformInterpolator::parse(stream)?))
         }
         "NiTransformData" | "NiKeyframeData" => Ok(Box::new(NiTransformData::parse(stream)?)),
+        // NiBSpline* compressed animation (Skyrim / FO4 actor KF files).
+        // See issue #155. Only the CompTransform variant is commonly used;
+        // the data+basis blocks are shared across all bspline interpolator
+        // subclasses. anim.rs evaluates the spline at 30 Hz into TQS keys.
+        "NiBSplineCompTransformInterpolator" => {
+            Ok(Box::new(NiBSplineCompTransformInterpolator::parse(stream)?))
+        }
+        "NiBSplineData" => Ok(Box::new(NiBSplineData::parse(stream)?)),
+        "NiBSplineBasisData" => Ok(Box::new(NiBSplineBasisData::parse(stream)?)),
         "NiFloatInterpolator" => Ok(Box::new(NiFloatInterpolator::parse(stream)?)),
         "NiFloatData" => Ok(Box::new(NiFloatData::parse(stream)?)),
         // NiUVController + NiUVData — scrolling UV animation, deprecated

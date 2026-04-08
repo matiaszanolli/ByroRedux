@@ -937,3 +937,158 @@ impl NiUVData {
         })
     }
 }
+
+// ── NiBSpline* compressed animation family ─────────────────────────────
+//
+// Used pervasively by Skyrim / FO4 KF files for actor body and face
+// animation. Stores quantized control points for open uniform B-splines
+// of degree 3. The interpolator carries per-channel handles that index
+// into `NiBSplineData::compact_control_points` (i16 values).
+//
+// Decompression formula per control point:
+//     value = offset + (short / 32767) * half_range
+//
+// See `anim.rs::extract_transform_channel_bspline` for the De Boor
+// evaluator that turns these into sampled TQS keys.
+
+/// `NiBSplineBasisData` — control-point count for the B-spline basis.
+#[derive(Debug)]
+pub struct NiBSplineBasisData {
+    pub num_control_points: u32,
+}
+
+impl NiObject for NiBSplineBasisData {
+    fn block_type_name(&self) -> &'static str {
+        "NiBSplineBasisData"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiBSplineBasisData {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let num_control_points = stream.read_u32_le()?;
+        Ok(Self { num_control_points })
+    }
+}
+
+/// `NiBSplineData` — flat arrays of B-spline control points.
+///
+/// Both float and compact (i16) arrays can be populated simultaneously
+/// in the same block; handles in the interpolator pick the right slice.
+#[derive(Debug)]
+pub struct NiBSplineData {
+    pub float_control_points: Vec<f32>,
+    pub compact_control_points: Vec<i16>,
+}
+
+impl NiObject for NiBSplineData {
+    fn block_type_name(&self) -> &'static str {
+        "NiBSplineData"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiBSplineData {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let num_float = stream.read_u32_le()? as usize;
+        let mut float_control_points = Vec::with_capacity(num_float);
+        for _ in 0..num_float {
+            float_control_points.push(stream.read_f32_le()?);
+        }
+        let num_compact = stream.read_u32_le()? as usize;
+        let mut compact_control_points = Vec::with_capacity(num_compact);
+        for _ in 0..num_compact {
+            // `short` in nif.xml — signed 16-bit.
+            let raw = stream.read_u16_le()?;
+            compact_control_points.push(raw as i16);
+        }
+        Ok(Self {
+            float_control_points,
+            compact_control_points,
+        })
+    }
+}
+
+/// `NiBSplineCompTransformInterpolator` — B-spline driven transform channel
+/// using compact (quantized) control points. Inherits
+/// `NiBSplineTransformInterpolator` → `NiBSplineInterpolator`.
+///
+/// Serialized layout (flat, in inheritance order):
+/// - NiBSplineInterpolator: `start_time`, `stop_time`, `spline_data_ref`, `basis_data_ref`
+/// - NiBSplineTransformInterpolator: `NiQuatTransform` + 3 handles
+/// - NiBSplineCompTransformInterpolator: 6 quantization params (offset + half_range per channel)
+///
+/// A handle value of `u32::MAX` means that channel is static (use the
+/// inherited `transform` field directly).
+#[derive(Debug)]
+pub struct NiBSplineCompTransformInterpolator {
+    pub start_time: f32,
+    pub stop_time: f32,
+    pub spline_data_ref: BlockRef,
+    pub basis_data_ref: BlockRef,
+    /// Static fallback transform when the corresponding handle is invalid.
+    pub transform: NiQuatTransform,
+    pub translation_handle: u32,
+    pub rotation_handle: u32,
+    pub scale_handle: u32,
+    pub translation_offset: f32,
+    pub translation_half_range: f32,
+    pub rotation_offset: f32,
+    pub rotation_half_range: f32,
+    pub scale_offset: f32,
+    pub scale_half_range: f32,
+}
+
+impl NiObject for NiBSplineCompTransformInterpolator {
+    fn block_type_name(&self) -> &'static str {
+        "NiBSplineCompTransformInterpolator"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiBSplineCompTransformInterpolator {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        // NiBSplineInterpolator base
+        let start_time = stream.read_f32_le()?;
+        let stop_time = stream.read_f32_le()?;
+        let spline_data_ref = stream.read_block_ref()?;
+        let basis_data_ref = stream.read_block_ref()?;
+
+        // NiBSplineTransformInterpolator
+        let transform = stream.read_ni_quat_transform()?;
+        let translation_handle = stream.read_u32_le()?;
+        let rotation_handle = stream.read_u32_le()?;
+        let scale_handle = stream.read_u32_le()?;
+
+        // NiBSplineCompTransformInterpolator
+        let translation_offset = stream.read_f32_le()?;
+        let translation_half_range = stream.read_f32_le()?;
+        let rotation_offset = stream.read_f32_le()?;
+        let rotation_half_range = stream.read_f32_le()?;
+        let scale_offset = stream.read_f32_le()?;
+        let scale_half_range = stream.read_f32_le()?;
+
+        Ok(Self {
+            start_time,
+            stop_time,
+            spline_data_ref,
+            basis_data_ref,
+            transform,
+            translation_handle,
+            rotation_handle,
+            scale_handle,
+            translation_offset,
+            translation_half_range,
+            rotation_offset,
+            rotation_half_range,
+            scale_offset,
+            scale_half_range,
+        })
+    }
+}

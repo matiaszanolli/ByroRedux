@@ -7,11 +7,20 @@
 use crate::blocks::controller::{ControlledBlock, NiControllerManager, NiControllerSequence};
 use crate::blocks::interpolator::NiTextKeyExtraData;
 use crate::blocks::interpolator::{
-    FloatKey, KeyGroup, KeyType, NiBoolInterpolator, NiFloatData, NiFloatInterpolator,
-    NiPoint3Interpolator, NiPosData, NiTransformData, NiTransformInterpolator, Vec3Key,
+    FloatKey, KeyGroup, KeyType, NiBSplineBasisData, NiBSplineCompTransformInterpolator,
+    NiBSplineData, NiBoolInterpolator, NiFloatData, NiFloatInterpolator, NiPoint3Interpolator,
+    NiPosData, NiTransformData, NiTransformInterpolator, Vec3Key,
 };
 use crate::scene::NifScene;
 use std::collections::{BTreeSet, HashMap};
+
+/// Sampling rate for B-spline interpolators during import.
+/// 30 Hz matches the typical Bethesda animation frame rate.
+const BSPLINE_SAMPLE_HZ: f32 = 30.0;
+
+/// Degree of the open uniform B-spline used by Gamebryo/Creation engine.
+/// Always 3 (cubic) per nif.xml / legacy Gamebryo source.
+const BSPLINE_DEGREE: usize = 3;
 
 // ── Public animation types ────────────────────────────────────────────
 
@@ -375,23 +384,398 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
 
 fn extract_transform_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<TransformChannel> {
     let interp_idx = cb.interpolator_ref.index()?;
-    let interp = scene.get_as::<NiTransformInterpolator>(interp_idx)?;
-    let data_idx = interp.data_ref.index()?;
-    let data = scene.get_as::<NiTransformData>(data_idx)?;
 
-    let (translation_keys, translation_type) = convert_vec3_keys(&data.translations);
-    let (rotation_keys, rotation_type) = convert_quat_keys(data);
-    let (scale_keys, scale_type) = convert_float_keys(&data.scales);
+    // Try the modern NiTransformInterpolator → NiTransformData path first.
+    if let Some(interp) = scene.get_as::<NiTransformInterpolator>(interp_idx) {
+        let data_idx = interp.data_ref.index()?;
+        let data = scene.get_as::<NiTransformData>(data_idx)?;
+
+        let (translation_keys, translation_type) = convert_vec3_keys(&data.translations);
+        let (rotation_keys, rotation_type) = convert_quat_keys(data);
+        let (scale_keys, scale_type) = convert_float_keys(&data.scales);
+
+        return Some(TransformChannel {
+            translation_keys,
+            translation_type,
+            rotation_keys,
+            rotation_type,
+            scale_keys,
+            scale_type,
+            priority: 0, // Will be overwritten by import_sequence with cb.priority.
+        });
+    }
+
+    // Fall back to the Skyrim / FO4 NiBSplineCompTransformInterpolator path.
+    // See issue #155. The B-spline is evaluated at BSPLINE_SAMPLE_HZ and
+    // emitted as linear-interpolated TQS keys.
+    if let Some(interp) = scene.get_as::<NiBSplineCompTransformInterpolator>(interp_idx) {
+        return extract_transform_channel_bspline(scene, interp);
+    }
+
+    None
+}
+
+// ── B-spline evaluation (issue #155) ──────────────────────────────────────
+//
+// NiBSplineCompTransformInterpolator stores quantized control points for
+// three sub-curves (translation, rotation, scale) that drive one node's
+// transform. The data block contains a flat array of i16 control points;
+// per-channel handles index into that array. Decompression:
+//
+//     value = offset + (short / 32767) * half_range
+//
+// Each channel is an open uniform cubic B-spline (degree 3). Evaluation
+// uses a simple De Boor step: given `N` control points (N >= 4), the
+// curve is parametrized over `[0, N - 3]` with knots
+//     0, 0, 0, 0, 1, 2, ..., N-4, N-3, N-3, N-3, N-3.
+// We sample the parameter `u ∈ [0, N - 3]` uniformly in time over
+// `[start_time, stop_time]` and emit linear TQS keys — downstream
+// evaluation interpolates linearly between samples, which is a visible
+// but acceptable approximation of the continuous cubic curve at 30 Hz.
+//
+// This is the minimum viable implementation. A follow-up could sample
+// non-uniformly at tangent breakpoints or emit Hermite tangents instead
+// of linear keys.
+
+/// Number of channels a comp-transform interpolator stores per control
+/// point per channel: 3 for translation (x,y,z), 4 for rotation
+/// (w,x,y,z), 1 for scale.
+const BSPLINE_TRANS_STRIDE: usize = 3;
+const BSPLINE_ROT_STRIDE: usize = 4;
+const BSPLINE_SCALE_STRIDE: usize = 1;
+
+/// Dequantize a single compact control point to an f32.
+#[inline]
+fn dequant(raw: i16, offset: f32, half_range: f32) -> f32 {
+    offset + (raw as f32 / 32767.0) * half_range
+}
+
+/// Evaluate an open uniform cubic B-spline at parameter `u ∈ [0, N - 3]`
+/// given `n` control points (each point is `stride` floats packed
+/// contiguously in `control_points`).
+///
+/// Uses De Boor's algorithm restricted to degree 3. For an open uniform
+/// knot vector with clamped endpoints, `u == 0` evaluates exactly to the
+/// first control point and `u == n - 3` evaluates exactly to the last.
+fn deboor_cubic(control_points: &[f32], n: usize, stride: usize, u: f32) -> Vec<f32> {
+    debug_assert!(stride > 0);
+    if n < BSPLINE_DEGREE + 1 {
+        // Underdetermined — just return the first CP (or zeros if empty).
+        return control_points
+            .get(0..stride)
+            .map(|s| s.to_vec())
+            .unwrap_or_else(|| vec![0.0; stride]);
+    }
+
+    // Clamp u to the valid parameter range.
+    let u_max = (n - BSPLINE_DEGREE) as f32;
+    let u = u.clamp(0.0, u_max);
+
+    // Find the knot span k such that knots[k] <= u < knots[k+1].
+    // For the open uniform knot vector:
+    //   knots = [0, 0, 0, 0, 1, 2, ..., n-4, n-3, n-3, n-3, n-3]
+    // Internal knots 1..=n-4 correspond to parameter values 1..=n-4.
+    // k is in [3, n-1].
+    let k = {
+        let mut k = (u.floor() as usize) + BSPLINE_DEGREE;
+        if k >= n {
+            k = n - 1;
+        }
+        if k < BSPLINE_DEGREE {
+            k = BSPLINE_DEGREE;
+        }
+        k
+    };
+
+    // De Boor triangle: start with control points P[k-d..=k] and
+    // fold them toward the evaluation point.
+    // For the open uniform knot vector, the spans between interior
+    // knots are all length 1, so the alpha values simplify.
+    let mut d: [Vec<f32>; BSPLINE_DEGREE + 1] = [
+        vec![0.0; stride],
+        vec![0.0; stride],
+        vec![0.0; stride],
+        vec![0.0; stride],
+    ];
+    for j in 0..=BSPLINE_DEGREE {
+        let cp_idx = k + j - BSPLINE_DEGREE;
+        let cp_idx = cp_idx.min(n - 1);
+        let start = cp_idx * stride;
+        d[j].copy_from_slice(&control_points[start..start + stride]);
+    }
+
+    // Open uniform clamped knot vector for `n` control points and
+    // degree `d = BSPLINE_DEGREE`:
+    //     knots = [0, 0, 0, 0, 1, 2, ..., n-d-1, n-d, n-d, n-d, n-d]
+    // with `n + d + 1` total entries.
+    //   - Indices 0..=d all map to value 0 (left clamp).
+    //   - Indices d+1..=n-1 are interior knots at values 1..n-d-1.
+    //   - Indices n..=n+d all map to value n-d (right clamp).
+    let knot_at = |idx: isize| -> f32 {
+        let d = BSPLINE_DEGREE as isize;
+        let n_d = (n - BSPLINE_DEGREE) as isize;
+        if idx <= d {
+            0.0
+        } else {
+            (idx - d).min(n_d) as f32
+        }
+    };
+
+    for r in 1..=BSPLINE_DEGREE {
+        for j in (r..=BSPLINE_DEGREE).rev() {
+            let k_i = k as isize;
+            let left = knot_at(k_i + j as isize - BSPLINE_DEGREE as isize);
+            let right = knot_at(k_i + j as isize - (r as isize - 1));
+            let span = right - left;
+            let alpha = if span > f32::EPSILON {
+                (u - left) / span
+            } else {
+                0.0
+            };
+            for c in 0..stride {
+                d[j][c] = (1.0 - alpha) * d[j - 1][c] + alpha * d[j][c];
+            }
+        }
+    }
+
+    d[BSPLINE_DEGREE].clone()
+}
+
+/// Dequantize a range of compact control points into a flat f32 vector,
+/// preserving the given channel stride.
+fn dequantize_channel(
+    raw: &[i16],
+    start: usize,
+    count: usize,
+    stride: usize,
+    offset: f32,
+    half_range: f32,
+) -> Vec<f32> {
+    let end = start + count * stride;
+    let mut out = Vec::with_capacity(count * stride);
+    for &r in &raw[start..end] {
+        out.push(dequant(r, offset, half_range));
+    }
+    out
+}
+
+/// Extract a TransformChannel by sampling a NiBSplineCompTransformInterpolator.
+fn extract_transform_channel_bspline(
+    scene: &NifScene,
+    interp: &NiBSplineCompTransformInterpolator,
+) -> Option<TransformChannel> {
+    let basis_idx = interp.basis_data_ref.index()?;
+    let basis = scene.get_as::<NiBSplineBasisData>(basis_idx)?;
+    let data_idx = interp.spline_data_ref.index()?;
+    let data = scene.get_as::<NiBSplineData>(data_idx)?;
+
+    let n_cp = basis.num_control_points as usize;
+    if n_cp < BSPLINE_DEGREE + 1 {
+        // Not enough control points for a cubic B-spline — fall back to
+        // the static transform stored on the interpolator.
+        return Some(static_transform_channel(interp));
+    }
+
+    // Determine number of samples from the animation duration.
+    let duration = (interp.stop_time - interp.start_time).max(0.0);
+    let n_samples_f = (duration * BSPLINE_SAMPLE_HZ).ceil();
+    let n_samples = (n_samples_f as usize).max(2);
+
+    // Per-channel setup. Each handle is an offset in i16 units into
+    // `data.compact_control_points` where that channel's run of
+    // `n_cp * stride` quantized values begins. INVALID = u32::MAX.
+    let trans_q = channel_slice(
+        interp.translation_handle,
+        &data.compact_control_points,
+        n_cp,
+        BSPLINE_TRANS_STRIDE,
+        interp.translation_offset,
+        interp.translation_half_range,
+    );
+    let rot_q = channel_slice(
+        interp.rotation_handle,
+        &data.compact_control_points,
+        n_cp,
+        BSPLINE_ROT_STRIDE,
+        interp.rotation_offset,
+        interp.rotation_half_range,
+    );
+    let scale_q = channel_slice(
+        interp.scale_handle,
+        &data.compact_control_points,
+        n_cp,
+        BSPLINE_SCALE_STRIDE,
+        interp.scale_offset,
+        interp.scale_half_range,
+    );
+
+    let u_max = (n_cp - BSPLINE_DEGREE) as f32;
+
+    let mut translation_keys = Vec::with_capacity(n_samples);
+    let mut rotation_keys = Vec::with_capacity(n_samples);
+    let mut scale_keys = Vec::with_capacity(n_samples);
+
+    for i in 0..n_samples {
+        let t = if n_samples > 1 {
+            interp.start_time + duration * (i as f32 / (n_samples - 1) as f32)
+        } else {
+            interp.start_time
+        };
+        // Parameter u in [0, n-d] corresponding to t in [start, stop].
+        let u = if duration > f32::EPSILON {
+            ((t - interp.start_time) / duration) * u_max
+        } else {
+            0.0
+        };
+
+        // Translation
+        if let Some(ref cps) = trans_q {
+            let p = deboor_cubic(cps, n_cp, BSPLINE_TRANS_STRIDE, u);
+            let zup = [p[0], p[1], p[2]];
+            translation_keys.push(TranslationKey {
+                time: t,
+                value: zup_to_yup_pos(zup),
+                forward: [0.0, 0.0, 0.0],
+                backward: [0.0, 0.0, 0.0],
+                tbc: None,
+            });
+        } else {
+            translation_keys.push(TranslationKey {
+                time: t,
+                value: zup_to_yup_pos([
+                interp.transform.translation.x,
+                interp.transform.translation.y,
+                interp.transform.translation.z,
+            ]),
+                forward: [0.0, 0.0, 0.0],
+                backward: [0.0, 0.0, 0.0],
+                tbc: None,
+            });
+        }
+
+        // Rotation — normalize after sampling since the B-spline doesn't
+        // enforce unit length on quaternions.
+        if let Some(ref cps) = rot_q {
+            let p = deboor_cubic(cps, n_cp, BSPLINE_ROT_STRIDE, u);
+            let [mut w, mut x, mut y, mut z] = [p[0], p[1], p[2], p[3]];
+            let len_sq = w * w + x * x + y * y + z * z;
+            if len_sq > f32::EPSILON {
+                let inv = 1.0 / len_sq.sqrt();
+                w *= inv;
+                x *= inv;
+                y *= inv;
+                z *= inv;
+            } else {
+                w = 1.0;
+                x = 0.0;
+                y = 0.0;
+                z = 0.0;
+            }
+            rotation_keys.push(RotationKey {
+                time: t,
+                value: zup_to_yup_quat([w, x, y, z]),
+                tbc: None,
+            });
+        } else {
+            rotation_keys.push(RotationKey {
+                time: t,
+                value: zup_to_yup_quat(interp.transform.rotation),
+                tbc: None,
+            });
+        }
+
+        // Scale
+        if let Some(ref cps) = scale_q {
+            let p = deboor_cubic(cps, n_cp, BSPLINE_SCALE_STRIDE, u);
+            scale_keys.push(ScaleKey {
+                time: t,
+                value: p[0],
+                forward: 0.0,
+                backward: 0.0,
+                tbc: None,
+            });
+        } else {
+            scale_keys.push(ScaleKey {
+                time: t,
+                value: interp.transform.scale,
+                forward: 0.0,
+                backward: 0.0,
+                tbc: None,
+            });
+        }
+    }
 
     Some(TransformChannel {
         translation_keys,
-        translation_type,
+        translation_type: KeyType::Linear,
         rotation_keys,
-        rotation_type,
+        rotation_type: KeyType::Linear,
         scale_keys,
-        scale_type,
-        priority: 0, // Will be overwritten by import_sequence with cb.priority.
+        scale_type: KeyType::Linear,
+        priority: 0,
     })
+}
+
+/// Build a static single-key TransformChannel from an interpolator's
+/// fallback `NiQuatTransform`.
+fn static_transform_channel(interp: &NiBSplineCompTransformInterpolator) -> TransformChannel {
+    TransformChannel {
+        translation_keys: vec![TranslationKey {
+            time: interp.start_time,
+            value: zup_to_yup_pos([
+                interp.transform.translation.x,
+                interp.transform.translation.y,
+                interp.transform.translation.z,
+            ]),
+            forward: [0.0, 0.0, 0.0],
+            backward: [0.0, 0.0, 0.0],
+            tbc: None,
+        }],
+        translation_type: KeyType::Linear,
+        rotation_keys: vec![RotationKey {
+            time: interp.start_time,
+            value: zup_to_yup_quat(interp.transform.rotation),
+            tbc: None,
+        }],
+        rotation_type: KeyType::Linear,
+        scale_keys: vec![ScaleKey {
+            time: interp.start_time,
+            value: interp.transform.scale,
+            forward: 0.0,
+            backward: 0.0,
+            tbc: None,
+        }],
+        scale_type: KeyType::Linear,
+        priority: 0,
+    }
+}
+
+/// Slice the compact control-point array for a single channel and
+/// dequantize it. Returns `None` when the handle is invalid (`u32::MAX`)
+/// or when the slice would run off the end of the data buffer.
+fn channel_slice(
+    handle: u32,
+    raw: &[i16],
+    n_cp: usize,
+    stride: usize,
+    offset: f32,
+    half_range: f32,
+) -> Option<Vec<f32>> {
+    if handle == u32::MAX {
+        return None;
+    }
+    let start = handle as usize;
+    let needed = n_cp * stride;
+    if start.checked_add(needed).map_or(true, |end| end > raw.len()) {
+        log::debug!(
+            "NiBSplineCompTransformInterpolator: handle {} + {} > data len {}",
+            handle,
+            needed,
+            raw.len(),
+        );
+        return None;
+    }
+    Some(dequantize_channel(raw, start, n_cp, stride, offset, half_range))
 }
 
 /// Extract a float channel from a NiFloatInterpolator → NiFloatData.
@@ -952,5 +1336,85 @@ mod tests {
             "quaternion should be unit: {:?}",
             k1.value
         );
+    }
+
+    // ── B-spline evaluator tests (issue #155) ──────────────────────────
+
+    #[test]
+    fn bspline_dequant_midpoint() {
+        // raw=0 → offset; raw=32767 → offset + half_range; raw=-32767 → offset - half_range
+        assert!((dequant(0, 10.0, 5.0) - 10.0).abs() < 1e-5);
+        assert!((dequant(32767, 10.0, 5.0) - 15.0).abs() < 1e-4);
+        assert!((dequant(-32767, 10.0, 5.0) - 5.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn deboor_cubic_clamped_endpoints() {
+        // With 4 control points on a single-scalar channel, the cubic
+        // B-spline at u=0 should equal CP[0], at u=1 should equal CP[3]
+        // because an open uniform knot vector is fully clamped at both
+        // ends for the minimum degree-3 case.
+        let cps = vec![1.0, 2.0, 3.0, 10.0];
+        let v0 = deboor_cubic(&cps, 4, 1, 0.0);
+        let v1 = deboor_cubic(&cps, 4, 1, 1.0);
+        assert!(
+            (v0[0] - 1.0).abs() < 1e-4,
+            "u=0 should give CP[0], got {}",
+            v0[0]
+        );
+        assert!(
+            (v1[0] - 10.0).abs() < 1e-4,
+            "u=1 should give CP[3], got {}",
+            v1[0]
+        );
+    }
+
+    #[test]
+    fn deboor_cubic_monotone_between_endpoints() {
+        // With a monotone CP sequence and a monotone knot parameter,
+        // the evaluated curve should also be monotone (not strictly,
+        // but the sign of successive differences should agree).
+        let cps = vec![0.0, 1.0, 2.0, 3.0, 4.0];
+        let n = 5;
+        let u_max = (n - BSPLINE_DEGREE) as f32;
+        let mut prev = f32::NEG_INFINITY;
+        for i in 0..=10 {
+            let u = u_max * (i as f32 / 10.0);
+            let v = deboor_cubic(&cps, n, 1, u)[0];
+            assert!(
+                v >= prev - 1e-4,
+                "non-monotone: v[{}] = {} < prev {}",
+                i,
+                v,
+                prev
+            );
+            prev = v;
+        }
+    }
+
+    #[test]
+    fn bspline_channel_slice_invalid_handle() {
+        let raw: Vec<i16> = vec![0; 100];
+        assert!(channel_slice(u32::MAX, &raw, 4, 3, 0.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn bspline_channel_slice_out_of_bounds() {
+        let raw: Vec<i16> = vec![0; 10];
+        // Needs 4 * 3 = 12 slots starting at handle 0 → should fail (only 10).
+        assert!(channel_slice(0, &raw, 4, 3, 0.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn bspline_channel_slice_dequantizes() {
+        // 4 CPs × stride 1, raw values [0, 32767, -32767, 0]
+        // with offset=10, half_range=5 → [10, 15, 5, 10]
+        let raw: Vec<i16> = vec![0, 32767, -32767, 0];
+        let out = channel_slice(0, &raw, 4, 1, 10.0, 5.0).unwrap();
+        assert_eq!(out.len(), 4);
+        assert!((out[0] - 10.0).abs() < 1e-4);
+        assert!((out[1] - 15.0).abs() < 1e-4);
+        assert!((out[2] - 5.0).abs() < 1e-4);
+        assert!((out[3] - 10.0).abs() < 1e-4);
     }
 }
