@@ -201,3 +201,234 @@ impl BsValueNode {
         })
     }
 }
+
+// ── NiBillboardNode ────────────────────────────────────────────────────
+//
+// Pre-10.1.0.0 the billboard mode was packed into the parent NiAVObject
+// flags (bits 5-6). From 10.1.0.0 onward — including Oblivion v20.0.0.5
+// — it becomes a trailing u16.
+
+/// NiBillboardNode — children face the camera at rendering time.
+#[derive(Debug)]
+pub struct NiBillboardNode {
+    pub base: NiNode,
+    /// 0 = ALWAYS_FACE_CAMERA, 1 = ROTATE_ABOUT_UP,
+    /// 2 = RIGID_FACE_CAMERA, 3 = ALWAYS_FACE_CENTER, 4 = RIGID_FACE_CENTER.
+    pub billboard_mode: u16,
+}
+
+impl NiObject for NiBillboardNode {
+    fn block_type_name(&self) -> &'static str {
+        "NiBillboardNode"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_object_net(&self) -> Option<&dyn HasObjectNET> {
+        Some(&self.base)
+    }
+    fn as_av_object(&self) -> Option<&dyn HasAVObject> {
+        Some(&self.base)
+    }
+}
+
+impl NiBillboardNode {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiNode::parse(stream)?;
+        // Mode field was introduced in 10.1.0.0. Earlier NIFs pack the
+        // mode into NiAVObject flags (bits 5-6) and have no trailing
+        // field — see nif.xml.
+        let billboard_mode = if stream.version() >= crate::version::NifVersion(0x0A010000) {
+            stream.read_u16_le()?
+        } else {
+            0
+        };
+        Ok(Self {
+            base,
+            billboard_mode,
+        })
+    }
+}
+
+// ── NiSwitchNode ───────────────────────────────────────────────────────
+//
+// Groups multiple scenegraph subtrees and exposes a single "active child"
+// index. The flags field was added in 10.1.0.0 — at Oblivion-era versions
+// we always read it.
+
+/// NiSwitchNode — scenegraph node with a single active child.
+#[derive(Debug)]
+pub struct NiSwitchNode {
+    pub base: NiNode,
+    /// Bit 0: update only active child. Bit 1: update controllers.
+    pub switch_flags: u16,
+    /// Active child index into `base.children`.
+    pub index: u32,
+}
+
+impl NiObject for NiSwitchNode {
+    fn block_type_name(&self) -> &'static str {
+        "NiSwitchNode"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_object_net(&self) -> Option<&dyn HasObjectNET> {
+        Some(&self.base)
+    }
+    fn as_av_object(&self) -> Option<&dyn HasAVObject> {
+        Some(&self.base)
+    }
+}
+
+impl NiSwitchNode {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiNode::parse(stream)?;
+        let switch_flags = if stream.version() >= crate::version::NifVersion(0x0A010000) {
+            stream.read_u16_le()?
+        } else {
+            0
+        };
+        let index = stream.read_u32_le()?;
+        Ok(Self {
+            base,
+            switch_flags,
+            index,
+        })
+    }
+}
+
+// ── NiLODNode ──────────────────────────────────────────────────────────
+//
+// Distance-based LOD selector. Inherits NiSwitchNode; from 10.1.0.0 onward
+// it stores a ref to NiLODData. Before that it held an inline (LOD center +
+// num levels + level array) block — the legacy path is not exercised by
+// any Bethesda game we target (Oblivion is already 20.0.0.5).
+
+/// NiLODNode — distance-based level-of-detail selector.
+#[derive(Debug)]
+pub struct NiLODNode {
+    pub base: NiSwitchNode,
+    /// Ref to NiLODData (since 10.1.0.0). `NULL` for the legacy path.
+    pub lod_level_data: BlockRef,
+}
+
+impl NiObject for NiLODNode {
+    fn block_type_name(&self) -> &'static str {
+        "NiLODNode"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_object_net(&self) -> Option<&dyn HasObjectNET> {
+        Some(&self.base.base)
+    }
+    fn as_av_object(&self) -> Option<&dyn HasAVObject> {
+        Some(&self.base.base)
+    }
+}
+
+impl NiLODNode {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiSwitchNode::parse(stream)?;
+        let lod_level_data = if stream.version() >= crate::version::NifVersion(0x0A010000) {
+            stream.read_block_ref()?
+        } else {
+            // Legacy path (Vector3 center + num levels + N × LODRange)
+            // is not exercised by any currently-targeted game. Leave
+            // unread; callers that hit this should switch to the
+            // legacy branch if it ever becomes needed.
+            BlockRef::NULL
+        };
+        Ok(Self {
+            base,
+            lod_level_data,
+        })
+    }
+}
+
+// ── NiSortAdjustNode ───────────────────────────────────────────────────
+//
+// Overrides the transparency sorter for a subtree. Oblivion v20.0.0.5 is
+// > 20.0.0.3, so the trailing `accumulator` ref is absent.
+
+/// NiSortAdjustNode — alpha sort override for a scenegraph subtree.
+#[derive(Debug)]
+pub struct NiSortAdjustNode {
+    pub base: NiNode,
+    /// SortingMode enum (u32). Typical values: 0 = inherit, 1 = off, 2 = sub-sort.
+    pub sorting_mode: u32,
+}
+
+impl NiObject for NiSortAdjustNode {
+    fn block_type_name(&self) -> &'static str {
+        "NiSortAdjustNode"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_object_net(&self) -> Option<&dyn HasObjectNET> {
+        Some(&self.base)
+    }
+    fn as_av_object(&self) -> Option<&dyn HasAVObject> {
+        Some(&self.base)
+    }
+}
+
+impl NiSortAdjustNode {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiNode::parse(stream)?;
+        let sorting_mode = stream.read_u32_le()?;
+        // Legacy accumulator ref (until 20.0.0.3) — Oblivion and later
+        // don't serialize it.
+        if stream.version() <= crate::version::NifVersion(0x14000003) {
+            let _accumulator = stream.read_block_ref()?;
+        }
+        Ok(Self { base, sorting_mode })
+    }
+}
+
+// ── BSRangeNode ────────────────────────────────────────────────────────
+//
+// Bethesda node with (min, max, current) byte range values. FO3 and later.
+// Its subclasses BSBlastNode, BSDamageStage, BSDebrisNode add no extra
+// fields and share the exact same layout.
+
+/// BSRangeNode — Bethesda-specific node carrying min/max/current bytes.
+#[derive(Debug)]
+pub struct BsRangeNode {
+    pub base: NiNode,
+    pub min: u8,
+    pub max: u8,
+    pub current: u8,
+}
+
+impl NiObject for BsRangeNode {
+    fn block_type_name(&self) -> &'static str {
+        "BSRangeNode"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_object_net(&self) -> Option<&dyn HasObjectNET> {
+        Some(&self.base)
+    }
+    fn as_av_object(&self) -> Option<&dyn HasAVObject> {
+        Some(&self.base)
+    }
+}
+
+impl BsRangeNode {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiNode::parse(stream)?;
+        let min = stream.read_u8()?;
+        let max = stream.read_u8()?;
+        let current = stream.read_u8()?;
+        Ok(Self {
+            base,
+            min,
+            max,
+            current,
+        })
+    }
+}

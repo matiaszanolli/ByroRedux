@@ -106,8 +106,30 @@ pub fn parse_block(
     block_size: Option<u32>,
 ) -> io::Result<Box<dyn NiObject>> {
     match type_name {
-        "NiNode" | "BSFadeNode" | "BSLeafAnimNode" | "BSTreeNode" | "BSMultiBoundNode"
-        | "RootCollisionNode" => Ok(Box::new(NiNode::parse(stream)?)),
+        // Plain NiNode alias targets — no extra serialized fields beyond the
+        // NiNode base. AvoidNode / NiBSAnimationNode / NiBSParticleNode are
+        // legacy Morrowind/Oblivion-era NiNode subclasses; the rest are
+        // Bethesda node tags. See issue #142.
+        "NiNode"
+        | "BSFadeNode"
+        | "BSLeafAnimNode"
+        | "BSTreeNode"
+        | "BSMultiBoundNode"
+        | "RootCollisionNode"
+        | "AvoidNode"
+        | "NiBSAnimationNode"
+        | "NiBSParticleNode" => Ok(Box::new(NiNode::parse(stream)?)),
+        // NiNode subtypes with a small payload of trailing fields.
+        "NiBillboardNode" => Ok(Box::new(node::NiBillboardNode::parse(stream)?)),
+        "NiSwitchNode" => Ok(Box::new(node::NiSwitchNode::parse(stream)?)),
+        "NiLODNode" => Ok(Box::new(node::NiLODNode::parse(stream)?)),
+        "NiSortAdjustNode" => Ok(Box::new(node::NiSortAdjustNode::parse(stream)?)),
+        // BSRangeNode + subclasses — all carry the same (min, max, current)
+        // byte triple and are FO3+. BSBlastNode/BSDamageStage/BSDebrisNode
+        // inherit BSRangeNode and add nothing on the wire.
+        "BSRangeNode" | "BSBlastNode" | "BSDamageStage" | "BSDebrisNode" => {
+            Ok(Box::new(node::BsRangeNode::parse(stream)?))
+        }
         "BSOrderedNode" => Ok(Box::new(BsOrderedNode::parse(stream)?)),
         "BSValueNode" => Ok(Box::new(BsValueNode::parse(stream)?)),
         // Multi-bound spatial volumes
@@ -613,5 +635,122 @@ mod dispatch_tests {
             .expect("downcast to NiExtraData");
         let arr = ed.integers_array.as_ref().expect("integers_array populated");
         assert_eq!(arr, &vec![42u32, 0xDEADBEEF]);
+    }
+
+    /// Oblivion-era empty NiNode body (no children, no effects, no
+    /// properties, identity transform). Used as the base bytes for
+    /// every NiNode subtype test in this module.
+    fn oblivion_empty_ninode_bytes() -> Vec<u8> {
+        let mut d = Vec::new();
+        // NiObjectNET: name (empty inline) + empty extra data list + null controller
+        d.extend_from_slice(&0u32.to_le_bytes()); // name len
+        d.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+        // NiAVObject: flags (u16 for bsver<=26), identity transform (13 f32),
+        // empty properties list, null collision ref.
+        d.extend_from_slice(&0u16.to_le_bytes()); // flags
+        // transform: translation (3 f32)
+        d.extend_from_slice(&0.0f32.to_le_bytes());
+        d.extend_from_slice(&0.0f32.to_le_bytes());
+        d.extend_from_slice(&0.0f32.to_le_bytes());
+        // transform: rotation 3x3 identity
+        for (i, row) in (0..3).zip([[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]) {
+            let _ = i;
+            for v in row {
+                d.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        // transform: scale
+        d.extend_from_slice(&1.0f32.to_le_bytes());
+        // properties list: empty
+        d.extend_from_slice(&0u32.to_le_bytes());
+        // collision_ref: null
+        d.extend_from_slice(&(-1i32).to_le_bytes());
+        // NiNode children: empty
+        d.extend_from_slice(&0u32.to_le_bytes());
+        // NiNode effects: empty (Oblivion has_effects_list = true)
+        d.extend_from_slice(&0u32.to_le_bytes());
+        d
+    }
+
+    /// Regression test for issue #142: NiNode subtypes with trailing fields.
+    #[test]
+    fn oblivion_node_subtypes_dispatch_with_correct_payload() {
+        use crate::blocks::node::{
+            BsRangeNode, NiBillboardNode, NiLODNode, NiSortAdjustNode, NiSwitchNode,
+        };
+
+        let header = oblivion_header();
+        let base = oblivion_empty_ninode_bytes();
+
+        // NiBillboardNode: base + billboard_mode u16.
+        let mut bb = base.clone();
+        bb.extend_from_slice(&3u16.to_le_bytes()); // ALWAYS_FACE_CENTER
+        let mut stream = NifStream::new(&bb, &header);
+        let block = parse_block("NiBillboardNode", &mut stream, Some(bb.len() as u32))
+            .expect("NiBillboardNode dispatch");
+        let n = block.as_any().downcast_ref::<NiBillboardNode>().unwrap();
+        assert_eq!(n.billboard_mode, 3);
+        assert_eq!(stream.position(), bb.len() as u64);
+
+        // NiSwitchNode: base + switch_flags u16 + index u32.
+        let mut sw = base.clone();
+        sw.extend_from_slice(&0x0003u16.to_le_bytes()); // UpdateOnlyActiveChild | UpdateControllers
+        sw.extend_from_slice(&7u32.to_le_bytes());
+        let mut stream = NifStream::new(&sw, &header);
+        let block = parse_block("NiSwitchNode", &mut stream, Some(sw.len() as u32))
+            .expect("NiSwitchNode dispatch");
+        let n = block.as_any().downcast_ref::<NiSwitchNode>().unwrap();
+        assert_eq!(n.switch_flags, 0x0003);
+        assert_eq!(n.index, 7);
+        assert_eq!(stream.position(), sw.len() as u64);
+
+        // NiLODNode: NiSwitchNode body + lod_level_data ref i32.
+        let mut lod = base.clone();
+        lod.extend_from_slice(&0u16.to_le_bytes()); // switch_flags
+        lod.extend_from_slice(&0u32.to_le_bytes()); // index
+        lod.extend_from_slice(&42i32.to_le_bytes()); // lod_level_data
+        let mut stream = NifStream::new(&lod, &header);
+        let block = parse_block("NiLODNode", &mut stream, Some(lod.len() as u32))
+            .expect("NiLODNode dispatch");
+        let n = block.as_any().downcast_ref::<NiLODNode>().unwrap();
+        assert_eq!(n.lod_level_data.index(), Some(42));
+        assert_eq!(stream.position(), lod.len() as u64);
+
+        // NiSortAdjustNode: base + sorting_mode u32 (v20.0.0.5 > 20.0.0.3 → no
+        // trailing accumulator ref).
+        let mut sa = base.clone();
+        sa.extend_from_slice(&1u32.to_le_bytes()); // SORTING_OFF
+        let mut stream = NifStream::new(&sa, &header);
+        let block = parse_block("NiSortAdjustNode", &mut stream, Some(sa.len() as u32))
+            .expect("NiSortAdjustNode dispatch");
+        let n = block.as_any().downcast_ref::<NiSortAdjustNode>().unwrap();
+        assert_eq!(n.sorting_mode, 1);
+        assert_eq!(stream.position(), sa.len() as u64);
+
+        // BSRangeNode (and its subclasses) — base + 3 bytes.
+        for type_name in ["BSRangeNode", "BSBlastNode", "BSDamageStage", "BSDebrisNode"] {
+            let mut r = base.clone();
+            r.push(5); // min
+            r.push(10); // max
+            r.push(7); // current
+            let mut stream = NifStream::new(&r, &header);
+            let block = parse_block(type_name, &mut stream, Some(r.len() as u32))
+                .unwrap_or_else(|e| panic!("{type_name} dispatch: {e}"));
+            let n = block.as_any().downcast_ref::<BsRangeNode>().unwrap();
+            assert_eq!(n.min, 5);
+            assert_eq!(n.max, 10);
+            assert_eq!(n.current, 7);
+            assert_eq!(stream.position(), r.len() as u64);
+        }
+
+        // Pure-alias variants — parse as plain NiNode with no trailing bytes.
+        for type_name in ["AvoidNode", "NiBSAnimationNode", "NiBSParticleNode"] {
+            let mut stream = NifStream::new(&base, &header);
+            let block = parse_block(type_name, &mut stream, Some(base.len() as u32))
+                .unwrap_or_else(|e| panic!("{type_name} dispatch: {e}"));
+            assert!(block.as_any().downcast_ref::<crate::blocks::NiNode>().is_some());
+            assert_eq!(stream.position(), base.len() as u64);
+        }
     }
 }
