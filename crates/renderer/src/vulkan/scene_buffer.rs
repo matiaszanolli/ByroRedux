@@ -39,14 +39,36 @@ pub struct GpuLight {
     pub direction_angle: [f32; 4],
 }
 
-/// GPU-side camera data (32 bytes).
+/// GPU-side camera data (96 bytes, std140-compatible).
+///
+/// The `view_proj` matrix lives here (UBO, per-frame) rather than in push
+/// constants because it is the same for all draws in a frame. This keeps
+/// push constants at 68 bytes (model mat4 + boneOffset uint), well within
+/// the Vulkan-guaranteed 128-byte minimum `maxPushConstantsSize`.
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct GpuCamera {
+    /// Combined view-projection matrix (column-major).
+    pub view_proj: [[f32; 4]; 4],
     /// xyz = world position, w = unused.
     pub position: [f32; 4],
     /// x = RT enabled (1.0), y/z/w = ambient light color (RGB).
     pub flags: [f32; 4],
+}
+
+impl Default for GpuCamera {
+    fn default() -> Self {
+        Self {
+            view_proj: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            position: [0.0; 4],
+            flags: [0.0; 4],
+        }
+    }
 }
 
 /// SSBO header: lightCount + padding to 16-byte alignment (std430).

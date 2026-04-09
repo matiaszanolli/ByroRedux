@@ -8,10 +8,18 @@ layout(location = 4) in uvec4 inBoneIndices;
 layout(location = 5) in vec4  inBoneWeights;
 
 layout(push_constant) uniform PushConstants {
-    mat4 viewProj;
     mat4 model;
     uint boneOffset;
 } pc;
+
+// Camera UBO (set 1, binding 1) — per-frame, not per-draw. viewProj lives
+// here rather than in push constants to stay within the Vulkan spec
+// guaranteed minimum of 128 bytes for maxPushConstantsSize.
+layout(set = 1, binding = 1) uniform CameraUBO {
+    mat4 viewProj;
+    vec4 cameraPos;
+    vec4 sceneFlags;
+};
 
 // Bone palette: computed CPU-side as `bone_world * bind_inverse`, one
 // entry per bone across all skinned meshes in the frame. Slot 0 is a
@@ -46,7 +54,7 @@ void main() {
     }
 
     vec4 worldPos = xform * vec4(inPosition, 1.0);
-    gl_Position = pc.viewProj * worldPos;
+    gl_Position = viewProj * worldPos;
     fragColor = inColor;
     fragUV = inUV;
     // Transform normal by xform's upper 3x3. For uniform scale this is

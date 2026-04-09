@@ -151,7 +151,17 @@ impl VulkanContext {
             } else {
                 0.0
             };
+        // Pack viewProj into the camera UBO alongside position/flags.
+        // This keeps push constants at 68 bytes (model + boneOffset),
+        // within the Vulkan spec guaranteed minimum of 128.
+        let vp = view_proj;
         let camera = scene_buffer::GpuCamera {
+            view_proj: [
+                [vp[0], vp[1], vp[2], vp[3]],
+                [vp[4], vp[5], vp[6], vp[7]],
+                [vp[8], vp[9], vp[10], vp[11]],
+                [vp[12], vp[13], vp[14], vp[15]],
+            ],
             position: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
             flags: [
                 rt_flag,
@@ -195,19 +205,6 @@ impl VulkanContext {
                 extent: self.swapchain_state.extent,
             }];
             self.device.cmd_set_scissor(cmd, 0, &scissors);
-
-            // Push viewProj matrix (first 64 bytes of push constants).
-            // SAFETY: [f32; 16] is 64 bytes, properly aligned, and the
-            // reference is valid for the duration of cmd_push_constants.
-            let view_proj_bytes: &[u8] =
-                std::slice::from_raw_parts(view_proj.as_ptr() as *const u8, 64);
-            self.device.cmd_push_constants(
-                cmd,
-                self.pipeline_layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                view_proj_bytes,
-            );
 
             // Bind scene descriptor set (lights + camera SSBOs/UBOs).
             // Indexed by `frame` (frame-in-flight, 0..MAX_FRAMES_IN_FLIGHT) because
@@ -279,17 +276,17 @@ impl VulkanContext {
                         if draw_cmd.is_decal { -2.0 } else { 0.0 },
                     );
 
-                    // Push model matrix (bytes 64..128).
+                    // Push model matrix (bytes 0..64).
                     let model_bytes: &[u8] =
                         std::slice::from_raw_parts(draw_cmd.model_matrix.as_ptr() as *const u8, 64);
                     self.device.cmd_push_constants(
                         cmd,
                         self.pipeline_layout,
                         vk::ShaderStageFlags::VERTEX,
-                        64,
+                        0,
                         model_bytes,
                     );
-                    // Push bone_offset (bytes 128..132).
+                    // Push bone_offset (bytes 64..68).
                     let bone_offset_bytes: &[u8] = std::slice::from_raw_parts(
                         &draw_cmd.bone_offset as *const u32 as *const u8,
                         4,
@@ -298,7 +295,7 @@ impl VulkanContext {
                         cmd,
                         self.pipeline_layout,
                         vk::ShaderStageFlags::VERTEX,
-                        128,
+                        64,
                         bone_offset_bytes,
                     );
 
@@ -346,7 +343,7 @@ impl VulkanContext {
                         &[],
                     );
 
-                    // Push identity matrices (required by pipeline layout, ignored by UI shader).
+                    // Push identity model matrix (required by pipeline layout, ignored by UI shader).
                     let identity: [f32; 16] = [
                         1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
                         1.0,
@@ -362,13 +359,6 @@ impl VulkanContext {
                         0,
                         identity_bytes,
                     );
-                    self.device.cmd_push_constants(
-                        cmd,
-                        self.pipeline_layout,
-                        vk::ShaderStageFlags::VERTEX,
-                        64,
-                        identity_bytes,
-                    );
                     // Zero bone_offset — UI vertices carry zero weights so
                     // the shader's rigid path ignores the palette anyway,
                     // but we keep push-constant state well-defined.
@@ -381,7 +371,7 @@ impl VulkanContext {
                         cmd,
                         self.pipeline_layout,
                         vk::ShaderStageFlags::VERTEX,
-                        128,
+                        64,
                         zero_bytes,
                     );
 

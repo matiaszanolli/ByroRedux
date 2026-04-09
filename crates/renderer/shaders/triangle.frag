@@ -23,6 +23,7 @@ layout(std430, set = 1, binding = 0) readonly buffer LightBuffer {
 };
 
 layout(set = 1, binding = 1) uniform CameraUBO {
+    mat4 viewProj;    // combined view-projection (used by vertex shader)
     vec4 cameraPos;   // xyz = world position
     vec4 sceneFlags;  // x = RT enabled (1.0), yzw = ambient color (RGB)
 };
