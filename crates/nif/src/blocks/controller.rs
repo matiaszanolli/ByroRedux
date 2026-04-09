@@ -688,10 +688,18 @@ impl NiMorphData {
                 let num_keys = stream.read_u32_le()? as u64;
                 let interpolation = stream.read_u32_le()?;
                 let key_size: u64 = match interpolation {
-                    1 | 5 => 8,          // LINEAR / CONSTANT
-                    2 => 16,             // QUADRATIC
-                    3 => 20,             // TBC
-                    _ => 8,              // fallback
+                    1 | 5 => 8,  // LINEAR / CONSTANT: time(f32) + value(f32)
+                    2 => 16,     // QUADRATIC: time + value + fwd + bwd
+                    3 => 20,     // TBC: time + value + tension + bias + continuity
+                    other => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "NiMorphData: unknown float key interpolation {other} \
+                                 with {num_keys} keys — stream position unreliable"
+                            ),
+                        ));
+                    }
                 };
                 stream.skip(key_size * num_keys);
             }
