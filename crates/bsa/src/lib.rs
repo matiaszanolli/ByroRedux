@@ -4,7 +4,7 @@
 //!   and v105 (Skyrim SE, Fallout 4 — BSA variant).
 //! - [`Ba2Archive`] handles the BTDX-family BA2 format used by Fallout 4,
 //!   Fallout 76, and Starfield, covering both GNRL (general files) and
-//!   DX10 (texture) variants.
+//!   DX10 (texture) variants with zlib and LZ4 block compression.
 //!
 //! # Usage
 //! ```ignore

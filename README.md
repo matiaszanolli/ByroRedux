@@ -55,9 +55,9 @@ Every supported Bethesda game parses its full mesh archive without errors. **Obl
 | Fallout 3         | BSA v104       | **100%** (10,989)  | ✓ Interior      | Megaton interior, full Wasteland                      |
 | Fallout New Vegas | BSA v104       | **100%** (14,881)  | ✓ Int + 3×3 ext | Prospector Saloon, exterior 3×3 grid                  |
 | Skyrim SE         | BSA v105 (LZ4) | **100%** (18,862)  | —               | Full mesh archive coverage                            |
-| Fallout 4         | BA2 v8         | **100%** (34,995)  | —               | BA2 GNRL + DX10 textures                              |
+| Fallout 4         | BA2 v1/v7/v8   | **100%** (34,995)  | —               | BA2 GNRL + DX10 textures, 53 archives verified        |
 | Fallout 76        | BA2 v1         | **100%** (58,469)  | —               | FO76 stopcond shader paths                            |
-| Starfield         | BA2 v2         | **100%** (31,058)  | —               | 32-byte header extension                              |
+| Starfield         | BA2 v2/v3      | **100%** (31,058)  | —               | GNRL + DX10 textures, LZ4 compression, ~128K textures |
 
 **Total: 177,286 NIFs parse cleanly across the entire Bethesda lineage.**
 See [Game Compatibility](docs/engine/game-compatibility.md) for the per-game architecture details.
@@ -76,7 +76,7 @@ See [Game Compatibility](docs/engine/game-compatibility.md) for the per-game arc
 | End-to-end cell rendering from unmodified game data (Oblivion + FNV) | Working |
 | Rapier3D physics simulation — collision from NIF bhk chain, fixed 60 Hz substep | Working (static/dynamic bodies); kinematic character controller → M28.5 |
 | BSA reader (v103/v104/v105) — Oblivion through Skyrim SE | Working |
-| BA2 reader (v1/v2/v3/v7/v8) — FO4, FO76, Starfield, GNRL + DX10 with reconstructed DDS headers | Working |
+| BA2 reader (v1/v2/v3/v7/v8) — FO4, FO76, Starfield, GNRL + DX10 with reconstructed DDS headers, zlib + LZ4 | Working |
 | ESM/ESP parser — cells, statics, items, NPCs, factions, leveled lists, globals (10+ record categories) | Working |
 | Interior + exterior cell loading with placed object transforms | Working |
 | DDS texture loading (BC1/BC3/BC5 + DX10, mipmaps, shared sampler cache) | Working |
@@ -251,7 +251,7 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 | nalgebra        | SVD for degenerate rotation repair            |
 | string-interner | O(1) string equality                          |
 | flate2          | Zlib decompression for BSA + BA2              |
-| lz4_flex        | LZ4 frame decompression for BSA v105          |
+| lz4_flex        | LZ4 decompression (frame for BSA v105, block for BA2 v3) |
 | image           | PNG / image loading                           |
 | rapier3d        | Physics simulation (M28 Phase 1)              |
 | serde / toml    | Plugin manifest serialization                 |

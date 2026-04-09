@@ -28,7 +28,7 @@ crate graph is documented in [Architecture Overview](architecture.md#crate-depen
 | toml               | 0.8      | plugin                                       | Plugin manifest format                        |
 | **Compression**    |          |                                              |                                               |
 | flate2             | 1        | bsa, plugin                                  | Zlib decompression for BSA + BA2 + ESM records |
-| lz4_flex           | 0.11     | bsa                                          | LZ4 frame decompression for BSA v105          |
+| lz4_flex           | 0.11     | bsa                                          | LZ4 frame decompression for BSA v105, LZ4 block for BA2 v3 |
 | **Image**          |          |                                              |                                               |
 | image              | 0.24     | renderer                                     | PNG / non-DDS image loading                   |
 | **C++ interop**    |          |                                              |                                               |

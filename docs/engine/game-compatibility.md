@@ -110,7 +110,7 @@ cargo run -- --bsa "Skyrim - Meshes0.bsa" \
 
 - **NIF parser**: 34,995 / 34,995 (100%) — across both BA2 v1 (original
   release) and v8 (Next Gen update) archives
-- **Archive**: BA2 BTDX v1 GNRL ✓, v7 DX10 ✓, v8 GNRL ✓ — see [Archives](archives.md)
+- **Archive**: BA2 BTDX v1/v7/v8 GNRL + DX10 ✓ — 53 vanilla archives verified, see [Archives](archives.md)
 - **NIF support**: BSTriShape FO4 packed vertex format with VF_FULL_PRECISION
   bit + half-float vertices, FO4 shader flags (u32 pair), BSLightingShaderProperty
   FO4 trailing fields (subsurface, rimlight, backlight, fresnel, wetness),
@@ -124,7 +124,7 @@ cargo run -- --bsa "Skyrim - Meshes0.bsa" \
 #### Fallout 76
 
 - **NIF parser**: 58,469 / 58,469 (100%)
-- **Archive**: BA2 BTDX v1 GNRL ✓
+- **Archive**: BA2 BTDX v1 GNRL + DX10 ✓
 - **NIF support**: BSVER 155 (FO76) shader stopcond — non-empty Name = BGSM
   file path, rest of the block is absent. CRC32-hashed shader flag arrays
   (`Num SF1` / `SF1[]` since BSVER ≥ 132, `Num SF2` / `SF2[]` since BSVER ≥ 152).
@@ -137,17 +137,16 @@ cargo run -- --bsa "Skyrim - Meshes0.bsa" \
 - **Cell loading**: not yet started (no ESM parser stub)
 - **Status**: parser side complete, no cell loader
 
-### Tier 3: Working for meshes, textures partially deferred
+### Tier 3: Working for meshes and textures
 
 #### Starfield
 
 - **NIF parser**: 31,058 / 31,058 (100%)
-- **Mesh archive**: BA2 BTDX v2 GNRL ✓ (32-byte header with 8-byte extension)
-- **Texture archive**: BA2 BTDX v3 DX10 — header parses, directory walks,
-  but `extract()` for textures returns errors. The chunk layout differs
-  from FO4 v7 DX10 (chunk padding word doesn't match `0xBAADF00D`, record
-  fields likely shift). **Mesh / NIF extraction is unaffected** — the
-  Starfield meshes archive is BTDX v2 GNRL and parses cleanly.
+- **Mesh archive**: BA2 BTDX v2 GNRL ✓ (32-byte header with 8-byte extension, zlib)
+- **Texture archive**: BA2 BTDX v3 DX10 ✓ — 22 archives, ~128K textures,
+  LZ4 block compression. The v3 header has a 12-byte extension (vs. 8
+  for v2) containing a `compression_method` field. DX10 base record and
+  chunk layouts are identical to FO4 v1/v7.
 - **NIF support**: same FO76+ shader flag arrays + stopcond as FO76,
   with BSVER ≥ 170. Inherits all of N23.9.
 - **Cell loading**: not yet started; Starfield's ESM format also has a
@@ -181,6 +180,7 @@ cargo run -- --bsa "Skyrim - Meshes0.bsa" \
 | BA2 BTDX v1 GNRL (FO4 original / FO76) | DONE — M26 |
 | BA2 BTDX v2 GNRL (Starfield meshes) | DONE — M26 |
 | BA2 BTDX v3 GNRL (Starfield meshes patches) | DONE — M26 |
+| BA2 BTDX v3 DX10 (Starfield textures, LZ4) | DONE — session 7 |
 | BA2 BTDX v7 DX10 (FO4 textures) | DONE — M26 |
 | BA2 BTDX v8 GNRL (FO4 Next Gen meshes) | DONE — M26 |
 
@@ -213,10 +213,10 @@ game, fix the per-game sub-record codes that differ. The records-side
 parser (`records/`) is already game-agnostic since it reads by sub-record
 code rather than fixed offsets.
 
-### Starfield BA2 v3 DX10 textures
+### ~~Starfield BA2 v3 DX10 textures~~ — RESOLVED (session 7)
 
-See [Archives — Starfield v3 DX10 (deferred)](archives.md#starfield-v3-dx10-deferred).
-Affects rendering Starfield textures only; mesh extraction is unaffected.
+The v3 DX10 texture gap is now closed. See
+[Archives — Resolved gaps](archives.md#resolved-gaps-session-7).
 
 ### NIF v3.3.0.13 inline-block-name support
 

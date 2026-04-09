@@ -190,9 +190,13 @@ was the root cause of "NiSourceTexture: failed to fill whole buffer"
 spam on every Oblivion cell load — Anvil Heinrich Oaken Halls now
 renders fully populated. Tools: new `crates/nif/examples/trace_block.rs`
 that dumps per-block positions + 64-byte hex peeks for parser debugging.
-Next: Starfield v3 DX10 textures, M27 parallel scheduler, M24 Phase 2
-(QUST/DIAL/PERK), M28.5 kinematic character controller, M29 GPU skinning
-compute path (the rasterized path is in via #178).
+Session 7: Starfield BA2 v3 DX10 texture extraction — v3 header has a
+12-byte extension (not 8) with a compression_method field; LZ4 block
+decompression via lz4_flex::block. Verified against 22 Starfield texture
+archives (~128K DX10 textures) + 53 vanilla FO4 BA2s (v1/v7/v8), zero
+failures. BA2 support now verified end-to-end for every version/variant.
+Next: M27 parallel scheduler, M24 Phase 2 (QUST/DIAL/PERK), M28.5
+kinematic character controller, M29 GPU skinning compute path.
 
 ## Git Conventions
 

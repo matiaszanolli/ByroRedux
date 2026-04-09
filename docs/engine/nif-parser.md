@@ -484,10 +484,9 @@ every known CRITICAL / HIGH audit item. Known follow-ups that
   `BSGeometrySegmentSharedData`) — currently skipped via `block_size`,
   not parsed. Only meaningful when the renderer surfaces per-segment
   metadata. Tracked under N23.9.
-- Starfield BA2 v3 DX10 textures — different chunk layout from FO4 v7;
-  the archive opens and the directory parses but the chunk decompression
-  fails. This is a BA2 reader gap, not a NIF parser one. See
-  [Archives — Starfield DX10](archives.md#starfield-v3-dx10-deferred).
+- ~~Starfield BA2 v3 DX10 textures~~ — resolved in session 7. The issue
+  was a missing compression method field in the v3 header + LZ4 block
+  compression. See [Archives — Resolved gaps](archives.md#resolved-gaps-session-7).
 - **NiUV animation importer** (#154 follow-up) — `NiUVController` +
   `NiUVData` parse correctly but the `anim.rs` importer doesn't yet
   emit scrolling-UV channels. Needs new `FloatTarget::UvOffsetU/V` +

@@ -35,7 +35,7 @@ Source: [`crates/bsa/src/`](../../crates/bsa/src/)
 | Fallout 4 (original) | BA2 BTDX v1 GNRL / v7 DX10 | zlib | `Ba2Archive` |
 | Fallout 4 (Next Gen) | BA2 BTDX v8 GNRL / v7 DX10 | zlib | `Ba2Archive` |
 | Fallout 76 | BA2 BTDX v1 GNRL | zlib | `Ba2Archive` |
-| Starfield | BA2 BTDX v2 GNRL / v3 DX10 | LZ4 / Zstd | `Ba2Archive` (GNRL works; v3 DX10 deferred) |
+| Starfield | BA2 BTDX v2 GNRL / v3 DX10 | zlib + LZ4 block | `Ba2Archive` |
 
 The integration test that walks all of these against real game data is
 in [`crates/nif/tests/parse_real_nifs.rs`](../../crates/nif/tests/parse_real_nifs.rs)
@@ -122,25 +122,37 @@ record layouts:
 0x10  8 bytes  name table offset (absolute, u64)
 ```
 
-For BTDX **v2 and v3** (Starfield) the header has 8 extra bytes after the
-basic 24-byte block — likely a u64 compressed-name-table length. The
-reader skips them so the stream lines up with the first file record.
+For Starfield the header extends beyond the base 24 bytes:
+
+- **v2** (Starfield GNRL): +8 bytes (2×u32 unknown, likely compressed
+  name-table metadata). Compression is always zlib.
+- **v3** (Starfield DX10): +12 bytes (2×u32 unknown + u32 `compression_method`).
+  Method 0 = zlib, 3 = LZ4 block. All chunks in a v3 LZ4 archive use LZ4
+  block compression (archive-level, not per-chunk).
 
 ```rust
 if version == 2 || version == 3 {
-    let mut extra = [0u8; 8];
-    reader.read_exact(&mut extra)?;
+    reader.read_exact(&mut [0u8; 8])?;  // 2×u32 unknown
+}
+if version == 3 {
+    reader.read_exact(&mut method_buf)?; // u32 compression method
+    // 0 = zlib, 3 = LZ4 block
 }
 ```
 
 The version numbering is **non-monotonic** across games:
-- v1 = original FO4, FO76 (24-byte header)
-- v2/v3 = Starfield (32-byte header with 8-byte extension)
-- v7 = FO4 Next Gen textures (back to 24-byte header)
-- v8 = FO4 Next Gen meshes (24-byte header)
+- v1 = original FO4, FO76 (24-byte header, zlib)
+- v2 = Starfield meshes (32-byte header = base + 8, zlib)
+- v3 = Starfield textures (36-byte header = base + 12, zlib or LZ4 block)
+- v7 = FO4 Next Gen textures (back to 24-byte header, zlib)
+- v8 = FO4 Next Gen meshes (24-byte header, zlib)
 
 This bit me during M26: gating the 8-byte extension on `version >= 2`
 broke FO4 v8. The check is now `version == 2 || version == 3` exactly.
+The v3 compression method was discovered in session 7 — the original
+"different chunk layout" diagnosis was wrong; the real issue was a
+missing 4-byte field shifting the reader past the header, plus zlib
+being used for LZ4-compressed chunks.
 
 ### GNRL records (36 bytes)
 
@@ -157,7 +169,8 @@ broke FO4 v8. The check is now `version == 2 || version == 3` exactly.
 
 `extract()` seeks to `offset` and either reads `unpacked_size` bytes
 directly (when `packed_size == 0`) or reads `packed_size` bytes and
-zlib-decompresses to `unpacked_size`.
+decompresses to `unpacked_size` using the archive's compression codec
+(zlib for v1/v2/v7/v8, LZ4 block for v3 with `compression_method == 3`).
 
 ### Name table
 
@@ -199,9 +212,10 @@ Per chunk (24 bytes):
 ```
 
 When the user calls `extract(...)` on a DX10 entry, the reader assembles
-the chunks (decompressing each via zlib if `packed_size > 0`) and
-**reconstructs a 148-byte DDS+DX10 header in front of them**, since the
-DDS file format isn't actually stored in the archive — only the pixel data
+the chunks (decompressing each via the archive's codec — zlib or LZ4
+block — if `packed_size > 0`) and **reconstructs a 148-byte DDS+DX10
+header in front of them**, since the DDS file format isn't actually stored
+in the archive — only the pixel data
 plus the metadata needed to recreate the header.
 
 #### DDS header reconstruction
@@ -321,42 +335,35 @@ pulls one specific file out of an Oblivion BSA and writes it to disk —
 used during the M26+ Oblivion follow-up to investigate parser failures
 on real Oblivion NetImmerse-era content.
 
-## Known gaps
+## Resolved gaps (session 7)
 
-### Starfield v3 DX10 (deferred)
+All three previously-deferred Starfield BA2 gaps are now resolved:
 
-Starfield's texture archives use BTDX v3 DX10 with a different per-chunk
-layout than FO4 v7 — the chunk padding word doesn't match `0xBAADF00D`
-and the record fields likely shift. The archive header and directory
-parse correctly, but `extract()` for textures returns errors. **NIF / mesh
-extraction is unaffected** — the Starfield meshes archive is BTDX v2 GNRL
-and parses cleanly.
+- **Starfield v3 DX10 textures** — the v3 header has a 12-byte extension
+  (not 8 like v2) containing a `compression_method: u32` field. The DX10
+  base record and chunk record layouts are identical to FO4 v1/v7. The
+  original "different chunk layout" diagnosis was wrong — the real issue
+  was the missing compression method field shifting the reader position
+  by 4 bytes.
+- **Starfield LZ4 compression** — v3 archives use LZ4 block compression
+  (`compression_method == 3`). The reader now dispatches through a unified
+  `decompress_chunk()` that selects zlib or `lz4_flex::block::decompress`
+  based on the archive-level compression method.
+- **BA2 v3 header differences** — confirmed: v3 adds exactly 4 bytes
+  beyond v2's 8-byte extension (the compression method field). No other
+  structural differences.
 
-This is tracked as a follow-up under the M26 deferred list. It only
-matters once we want to render Starfield textures, which itself depends
-on rendering pipelines that don't exist yet for Starfield's
-material/shader stack.
-
-### Starfield LZ4 / Zstd compression
-
-Starfield uses LZ4 block compression (and Zstd in some streams) for some
-file payloads. The current reader assumes zlib for compressed entries
-inside GNRL archives. Most Starfield mesh entries appear to be raw
-(`packed_size == 0`), so this hasn't blocked the 100% Starfield NIF parse
-rate, but it would be needed for any compressed entries we encounter.
-
-### BA2 v3 GNRL header differences (theoretical)
-
-BA2 v3 might add fields beyond the v2 8-byte extension. We currently
-treat v2 and v3 identically; if Starfield ships an archive that uses v3-only
-fields we'll need to dig into the layout.
+Verified against 22 Starfield texture archives (~128K DX10 textures)
+and 53 vanilla Fallout 4 BA2 archives (v1/v7/v8 GNRL + DX10), zero
+extraction failures.
 
 ## Tests
 
-- **8 unit tests** between BSA and BA2 — `normalize_path`, header rejection
+- **11 unit tests** between BSA and BA2 — `normalize_path`, header rejection
   of non-archive files, DDS header reconstruction layout invariants
   (148 bytes, "DDS " magic, "DX10" FourCC, dxgi_format at offset 128),
-  `linear_size_for` block size math
+  `linear_size_for` block size math, `decompress_chunk` zlib/LZ4 roundtrip
+  + corrupt-data rejection
 - **7 ignored integration tests** in BSA covering FNV mesh open / list /
   contains / extract / decompress, FNV texture BSA decompression
 - **Indirectly covered** by every per-game NIF parse-rate sweep in

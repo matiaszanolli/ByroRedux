@@ -3,7 +3,7 @@
 A clean Rust + C++ rebuild of the Gamebryo/Creation engine lineage with Vulkan rendering.
 This document tracks completed milestones, current capabilities, planned work, and known gaps.
 
-Last updated: 2026-04-09 (session 6 — N26 closeout + #178 skinning + Oblivion parser fix)
+Last updated: 2026-04-09 (session 7 — Starfield BA2 v3 DX10 LZ4 texture support, FO4 BA2 verification)
 
 ---
 
@@ -18,7 +18,7 @@ Last updated: 2026-04-09 (session 6 — N26 closeout + #178 skinning + Oblivion 
 | `cargo run -- --swf path/to/menu.swf` | Load and render a Skyrim SE SWF menu overlay |
 | `cargo run -- path/to/mesh.nif --kf path/to/anim.kf` | Play a .kf animation on a loaded NIF mesh |
 | `cargo run -- --bsa Meshes.bsa --mesh meshes\foo.nif --kf meshes\anim.kf` | Load KF from BSA (extracts automatically) |
-| `cargo test` | 396 passing tests across all crates |
+| `cargo test` | 475 passing tests across all crates |
 
 **Fallout New Vegas:** Interior cells load from ESM with placed objects (REFR → STAT), real DDS textures
 from BSA v104 archives, correct coordinate transforms (Gamebryo CW rotation convention),
@@ -697,7 +697,7 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Metric | Value |
 |--------|-------|
-| Passing tests | 472 |
+| Passing tests | 475 |
 | Workspace crates | 11 |
 | Completed milestones | 23 (M1–M22 + M24 Phase 1 + M26 + M28 Phase 1) + N23 + N26 + #178 skinning |
 | NIF block types | ~215 distinct type names, ~185 parsed + 30 Havok skip |
@@ -722,7 +722,7 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 | `byroredux-platform` | M1 (windowing) | — |
 | `byroredux-plugin` | M5, M6, M19, M24 Phase 1 | 71 |
 | `byroredux-nif` | M9, M10, M17, M18, M21, N23.1–N23.10, N26 audit, #79 KFM, session 6 closeout | 178 |
-| `byroredux-bsa` | M11, M18, M26 (BA2) | 8 |
+| `byroredux-bsa` | M11, M18, M26 (BA2), session 7 (v3 LZ4) | 11 |
 | `byroredux-physics` | M28 Phase 1 (Rapier3D bridge) | 17 |
 | `byroredux-scripting` | M12 | 8 |
 | `byroredux-ui` | M20 (Ruffle/SWF) | — |
