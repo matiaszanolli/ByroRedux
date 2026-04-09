@@ -14,7 +14,7 @@ Not a port — a ground-up rebuild that understands the legacy architecture and 
 
 ## Current State
 
-**23 milestones complete (M1–M22, M24 Phase 1, M26, M28 Phase 1), N23 NIF parser overhaul complete (10/10), N26 Oblivion coverage audit done.** Loads and renders interior cells directly from unmodified Bethesda game data across **both Oblivion and Fallout New Vegas** — no intermediate tools, no re-exported assets, no mod manager. NIF parser hits **100% on every supported game** across the full archive sweeps (177,286 NIFs). Full ESM record parser extracts items, NPCs, factions, and supporting metadata. Rapier3D physics runs on NIF collision data extracted from `bhk*` blocks. Per-mesh NiLight sources (Oblivion torches, candles, magic FX) contribute to the RT light buffer alongside cell XCLL ambient.
+**23 milestones complete (M1–M22, M24 Phase 1, M26, M28 Phase 1), N23 NIF parser overhaul complete (10/10), N26 Oblivion coverage audit closed out.** Loads and renders interior cells directly from unmodified Bethesda game data across **both Oblivion and Fallout New Vegas** — no intermediate tools, no re-exported assets, no mod manager. NIF parser hits **100% on every supported game** across the full archive sweeps (177,286 NIFs). The end-to-end skinning pipeline (#178) is in: NIF importer → ECS `SkinnedMesh` component → bone-palette SSBO → unified vertex shader with `sum(weights)` rigid/skinned routing. Full ESM record parser extracts items, NPCs, factions, and supporting metadata. Rapier3D physics runs on NIF collision data extracted from `bhk*` blocks. Per-mesh NiLight sources (Oblivion torches, candles, magic FX) contribute to the RT light buffer alongside cell XCLL ambient. KFM animation state-machine catalogs parse for the Gamebryo 1.2.0.0 → 2.2.0.0 binary format.
 
 ```bash
 # Oblivion interior cell with XCLL lighting + per-mesh NiLight torches
@@ -68,8 +68,11 @@ See [Game Compatibility](docs/engine/game-compatibility.md) for the per-game arc
 |---------|--------|
 | ECS with pluggable storage (SparseSet + Packed), hierarchy (Parent/Children) | Working |
 | Vulkan RT renderer with multi-light SSBO, ray query shadows, cell XCLL lighting | Working |
+| 16× anisotropic filtering on the shared sampler when the device exposes it | Working |
 | Per-mesh `NiLight` sources (ambient / directional / point / spot) → GpuLight | Working |
+| Skeletal skinning end-to-end: `SkinnedMesh` ECS component, bone-palette SSBO (4096 slots), shader skinning | Working |
 | NIF parser (~210 block types) — Oblivion through Starfield, 100% per-game success | Working |
+| KFM animation state-machine parser (Gamebryo 1.2.0.0 → 2.2.0.0 binary format) | Working |
 | End-to-end cell rendering from unmodified game data (Oblivion + FNV) | Working |
 | Rapier3D physics simulation — collision from NIF bhk chain, fixed 60 Hz substep | Working (static/dynamic bodies); kinematic character controller → M28.5 |
 | BSA reader (v103/v104/v105) — Oblivion through Skyrim SE | Working |
@@ -228,9 +231,9 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 
 | Metric                                | Value          |
 |---------------------------------------|----------------|
-| Rust source files                     | 149            |
-| Lines of Rust                         | ~40,100        |
-| Unit tests passing                    | 406            |
+| Rust source files                     | 152            |
+| Lines of Rust                         | ~44,900        |
+| Unit tests passing                    | 472            |
 | Integration tests (`#[ignore]`'d)     | 24             |
 | NIFs in per-game integration sweeps   | 177,286        |
 | Per-game parse success rate           | 100% (7 games) |

@@ -3,7 +3,7 @@
 A clean Rust + C++ rebuild of the Gamebryo/Creation engine lineage with Vulkan rendering.
 This document tracks completed milestones, current capabilities, planned work, and known gaps.
 
-Last updated: 2026-04-07 (session 5 — M28 Phase 1 + N26 audit)
+Last updated: 2026-04-09 (session 6 — N26 closeout + #178 skinning + Oblivion parser fix)
 
 ---
 
@@ -493,6 +493,99 @@ Oblivion-shaped payload.
 Total: ~50 new block types parsed, 10 dispatch regression tests
 landed, workspace test count rose from 372 → 396.
 
+## Session 6 — N26 closeout + skinning end-to-end + Oblivion parser fix
+
+A long bug-bash session that closed out 26 GitHub issues and tracked
+down a long-standing Oblivion parser regression. The 35 commits split
+into four buckets:
+
+**Skeletal skinning, end-to-end (#178)**
+- Part A (`923d11b`): new `SkinnedMesh` ECS component with
+  `compute_palette()` pure function. Scene assembly resolves
+  `ImportedSkin.bones[].name` → `EntityId` via a name map built
+  during NIF node spawn. 8 unit tests cover the palette math.
+- Part B (`4c97a36`): GPU side. Vertex format extended with
+  `bone_indices: [u32; 4]` + `bone_weights: [f32; 4]` (44 → 76 B,
+  6 attribute descriptions). New 4096-slot bone-palette SSBO on
+  scene set 1 binding 3. Push constants 128 → 132 B (`uint
+  bone_offset`). Single unified vertex shader — rigid vertices tag
+  themselves with `sum(weights) ≈ 0` and route through `pc.model`,
+  skinned vertices blend 4 palette entries via `bone_offset +
+  inBoneIndices[i]`. `build_render_data` walks `(GlobalTransform,
+  SkinnedMesh)` and stamps each draw with its bone offset.
+
+**N26 dispatch closeout — every "block silently dropped" issue closed**
+- `#157` BSDynamicTriShape + BSLODTriShape (Skyrim facegen + FO4 LOD)
+- `#147` BSMeshLODTriShape + BSSubIndexTriShape (Skyrim DLC + FO4 actors)
+- `#146` BSSegmentedTriShape (FO3/FNV/Skyrim LE biped body parts)
+- `#148` BSMultiBoundNode (interior cell culling volumes)
+- `#159` BSTreeNode (Skyrim SpeedTree wind-bone lists)
+- `#158` BSPackedCombined[Shared]GeomDataExtra (FO4 distant LOD batches)
+- `#150` `as_ni_node` walker helper that unwraps every NiNode subclass
+  (BsOrderedNode, BsValueNode, BsRangeNode, NiBillboardNode, NiSwitchNode,
+  NiSortAdjustNode, NiLODNode, BsMultiBoundNode, BsTreeNode) — every
+  subclass with a `base: NiNode` field now descends correctly during
+  scene-graph walks.
+- `#160` `NiAVObject` properties list + `NiNode` effects list now use
+  the raw `bsver()` instead of variant-based helpers, fixing
+  non-Bethesda Gamebryo (`Unknown` variant) misalignment.
+- `#175` `NifScene.truncated` field surfaces Oblivion's no-block-size
+  early-bailout state to consumers.
+
+**Critical Oblivion parser regression (`afab3e7`)**
+- Wrote a new `crates/nif/examples/trace_block.rs` debug tool that
+  dumps per-block start positions + 64-byte hex peeks. Used it to
+  bisect the runtime `NiSourceTexture: failed to fill whole buffer`
+  spam on Oblivion cell loads (consumed counts 8K–250K bytes per
+  block on real files like `Quarto03.NIF`).
+- Root cause: an earlier fix (#149) had added a `Has Shader Textures:
+  bool` gate on `NiTexturingProperty`'s shader-map trailer based on
+  `nif.xml`. The authoritative Gamebryo 2.3 source reads the count
+  as a `uint` directly — no leading bool. The bool gate consumed
+  the first byte of the u32 count, leaving the parser **3 bytes
+  short** on every NiTexturingProperty. On Oblivion (no per-block
+  size to recover) this misaligned the following NiSourceTexture's
+  filename length field, which then read garbage as a u32 ≈ 33 M
+  and bled through the rest of the file.
+- Reverted the bool gate. All ~80 unique Oblivion clutter / book /
+  furniture meshes that were previously truncating now parse to
+  completion. Visual confirmation: Anvil Heinrich Oaken Halls
+  interior renders fully populated (chandeliers, paintings,
+  bookshelves, table settings).
+
+**Quality + correctness fixes**
+- `#137` lock_tracker RAII scope guards (no stale state on poison panics)
+- `#136` 16× anisotropic filtering on the shared sampler
+- `#134` frame-counter-based deferred texture destruction (was call-count)
+- `#152` NiAlphaProperty alpha-test bit + threshold extracted (cutout
+  foliage / hair / fences no longer mis-routed through alpha-blend)
+- `#131` NiTexturingProperty `bump_texture` slot extracted as the
+  Oblivion normal map (the dedicated `normal_texture` slot only landed
+  in FO3, so Oblivion architecture was rendering completely
+  flat-shaded before this)
+- `#155` NiBSpline* compressed animation family (parse + De Boor
+  evaluator at 30 Hz)
+- `#151` + `#177` NIF skinning data extraction (NiSkinData sparse
+  weights + BSTriShape VF_SKINNED packed vertex bones)
+- `#79` binary KFM (KeyFrame Metadata) animation state-machine
+  parser, Gamebryo 1.2.0.0 → 2.2.0.0
+- `#108` BSConnectPoint::Children skinned flag is `byte`, not `uint`
+- `#127` bhkRigidBody body_flags threshold 76 → 83 per nif.xml
+- `#172` NIF string-table version threshold aligned to 20.1.0.1
+- `#149` (now superseded by `afab3e7` revert)
+- `#50` per-draw vertex/index buffer rebind dedup via mesh_handle
+  sort key + `last_mesh_handle` cache
+- `#36` `World::spawn` now panics on EntityId overflow instead of
+  silent wrap
+- Cell loader (`65d34dd`): each unique NIF parses + imports exactly
+  once per cell load via a new `CachedNifImport` Arc cache. Cuts
+  the parser warning volume from O(N placements) to O(M unique
+  meshes) — typically 10-40× reduction on dense interior cells.
+- `lock_tracker.rs`: silenced release-build dead-code warnings on
+  the no-op stubs (`69c4f7a`).
+
+Workspace test count: 396 → 472. Zero new warnings.
+
 ## Deferred Roadmap (post-N23)
 
 | # | Milestone | Scope |
@@ -599,10 +692,10 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Metric | Value |
 |--------|-------|
-| Passing tests | 396 |
+| Passing tests | 472 |
 | Workspace crates | 11 |
-| Completed milestones | 23 (M1–M22 + M24 Phase 1 + M26 + M28 Phase 1) + N23 + N26 |
-| NIF block types | ~210 distinct type names, ~180 parsed + 30 Havok skip |
+| Completed milestones | 23 (M1–M22 + M24 Phase 1 + M26 + M28 Phase 1) + N23 + N26 + #178 skinning |
+| NIF block types | ~215 distinct type names, ~185 parsed + 30 Havok skip |
 | NifVariant games | 8 (Morrowind → Starfield) |
 | Per-game NIF parse rate | 100% across 177,286 NIFs (7 games) |
 | Supported archive formats | BSA v103 / v104 / v105, BA2 v1 / v2 / v3 / v7 / v8 |
@@ -619,17 +712,17 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Crate | Milestones | Tests |
 |-------|------------|-------|
-| `byroredux-core` | M3 (ECS), M5 (Form IDs), M21 (Animation) | 153 |
-| `byroredux-renderer` | M1, M2, M4, M7, M8, M13, M14, M22 | 19 |
+| `byroredux-core` | M3 (ECS), M5 (Form IDs), M21 (Animation), #178A (SkinnedMesh), #137 (lock guards) | 162 |
+| `byroredux-renderer` | M1, M2, M4, M7, M8, M13, M14, M22, #178B (bone palette), #136 (16× AF) | 25 |
 | `byroredux-platform` | M1 (windowing) | — |
-| `byroredux-plugin` | M5, M6, M19, M24 Phase 1 | 66 |
-| `byroredux-nif` | M9, M10, M17, M18, M21, N23.1–N23.10, N26 audit | 128 |
+| `byroredux-plugin` | M5, M6, M19, M24 Phase 1 | 71 |
+| `byroredux-nif` | M9, M10, M17, M18, M21, N23.1–N23.10, N26 audit, #79 KFM, session 6 closeout | 178 |
 | `byroredux-bsa` | M11, M18, M26 (BA2) | 8 |
-| `byroredux-physics` | M28 Phase 1 (Rapier3D bridge) | 14 |
+| `byroredux-physics` | M28 Phase 1 (Rapier3D bridge) | 17 |
 | `byroredux-scripting` | M12 | 8 |
 | `byroredux-ui` | M20 (Ruffle/SWF) | — |
 | `byroredux-cxx-bridge` | Cross-cutting | — |
-| `byroredux` (binary) | M4, M11, M14, M15, M16, M17, M19, M28 integration | — |
+| `byroredux` (binary) | M4, M11, M14, M15, M16, M17, M19, M28 integration, parse-once cell cache | — |
 
 ---
 

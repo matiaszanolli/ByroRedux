@@ -7,7 +7,7 @@ Long-term goal: load and render content from Gamebryo/Creation-era games.
 
 ```bash
 cargo check                    # Type check (fast)
-cargo test -p byroredux-core    # Run ECS/core tests (111 tests)
+cargo test -p byroredux-core    # Run ECS/core tests (162 tests)
 cargo test                     # Full workspace tests
 cargo run                      # Launch engine (spinning cube demo)
 cargo build --release          # Release build
@@ -159,9 +159,11 @@ Detailed analysis in `docs/legacy/`.
 ## Development Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for the full roadmap with milestones, known issues, and game compatibility.
-Current: 22 milestones complete (M1–M22). RT multi-light with ray query shadows, animation with
-blending stack, scene graph hierarchy, cell XCLL lighting, decal detection, BSA v103 (Oblivion).
-Active: N23 series — NIF parser overhaul (186 block types, all 10 milestones done).
+Current: 23 milestones complete (M1–M22, M24 Phase 1, M26, M28 Phase 1) + N23 + N26 closeout
++ #178 end-to-end skinning (SkinnedMesh component → bone palette SSBO → unified shader path).
+RT multi-light with ray query shadows, animation with blending stack, scene graph hierarchy,
+cell XCLL lighting, decal detection, BSA v103 (Oblivion), 16× anisotropic filtering.
+Active: N26 closeout — every "block silently dropped" issue closed. ~215 block types now parsed.
 Usage:
   `cargo run -- path/to/mesh.nif` — render a loose NIF file
   `cargo run -- mesh.nif --kf anim.kf` — play animation on a mesh
@@ -181,7 +183,16 @@ Full-archive parse rates: ALL 7 games at 100% (177,286 NIFs). Oblivion was 99.13
 M24 (Phase 1): records/ module with WEAP/ARMO/AMMO/MISC/KEYM/ALCH/INGR/BOOK/NOTE,
       CONT, LVLI/LVLN, NPC_, RACE, CLAS, FACT, GLOB, GMST. Real FNV.esm parses to
       13,684 structured records on top of cells in 0.19s release.
-Next: Starfield v3 DX10 textures, M28 physics, M27 parallel scheduler, M24 Phase 2 (QUST/DIAL/PERK).
+Session 6: Closed 26 GitHub issues. Critical fix: reverted #149's
+NiTexturingProperty `Has Shader Textures: bool` gate (nif.xml was wrong;
+Gamebryo 2.3 source reads u32 count directly). The bool-gate regression
+was the root cause of "NiSourceTexture: failed to fill whole buffer"
+spam on every Oblivion cell load — Anvil Heinrich Oaken Halls now
+renders fully populated. Tools: new `crates/nif/examples/trace_block.rs`
+that dumps per-block positions + 64-byte hex peeks for parser debugging.
+Next: Starfield v3 DX10 textures, M27 parallel scheduler, M24 Phase 2
+(QUST/DIAL/PERK), M28.5 kinematic character controller, M29 GPU skinning
+compute path (the rasterized path is in via #178).
 
 ## Git Conventions
 
