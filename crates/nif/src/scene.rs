@@ -9,6 +9,17 @@ pub struct NifScene {
     pub blocks: Vec<Box<dyn NiObject>>,
     /// Index of the root block (typically first NiNode).
     pub root_index: Option<usize>,
+    /// `true` when the parse loop aborted early because a block
+    /// parser returned `Err` on a NIF file without per-block sizes
+    /// (Oblivion era) — any blocks after the failure point are
+    /// missing from `blocks` and the scene graph may reference
+    /// unreachable indices. The first NiNode heuristic for
+    /// `root_index` may also pick a subtree rather than the real
+    /// root when truncation hits before the scene root. Consumers
+    /// that need complete scenes should treat this as a hard error;
+    /// consumers that can tolerate partial geometry (e.g. cell
+    /// loaders doing best-effort import) can ignore it. See #175.
+    pub truncated: bool,
 }
 
 impl NifScene {

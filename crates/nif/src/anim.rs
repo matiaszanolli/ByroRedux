@@ -1147,6 +1147,7 @@ mod tests {
         let scene = NifScene {
             blocks: Vec::new(),
             root_index: None,
+            truncated: false,
         };
         let clips = import_kf(&scene);
         assert!(clips.is_empty());

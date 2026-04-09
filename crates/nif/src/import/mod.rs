@@ -278,7 +278,11 @@ mod tests {
     /// Helper: build a minimal NifScene with the given blocks.
     fn scene_from_blocks(blocks: Vec<Box<dyn crate::blocks::NiObject>>) -> NifScene {
         let root_index = if blocks.is_empty() { None } else { Some(0) };
-        NifScene { blocks, root_index }
+        NifScene {
+            blocks,
+            root_index,
+            truncated: false,
+        }
     }
 
     fn identity_transform() -> NiTransform {
@@ -395,6 +399,7 @@ mod tests {
         let scene = NifScene {
             blocks: Vec::new(),
             root_index: None,
+            truncated: false,
         };
         let meshes = import_nif(&scene);
         assert!(meshes.is_empty());

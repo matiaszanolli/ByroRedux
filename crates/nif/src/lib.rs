@@ -102,6 +102,10 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
     let block_data = &data[block_data_offset..];
     let mut stream = NifStream::new(block_data, &header);
     let mut blocks: Vec<Box<dyn NiObject>> = Vec::with_capacity(header.num_blocks as usize);
+    // Set to `true` if an Oblivion-style (no block-sizes) parse bails out
+    // early — `NifScene.truncated` exposes the state to downstream
+    // consumers so they can decide how to handle the incomplete graph.
+    let mut truncated = false;
 
     if header.block_sizes.is_empty() && header.num_blocks > 0 {
         log::debug!(
@@ -126,6 +130,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         return Ok(NifScene {
             blocks: Vec::new(),
             root_index: None,
+            truncated: false,
         });
     }
 
@@ -207,18 +212,25 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                 }
                 // Without block_size (Oblivion), stop parsing but keep blocks parsed so far.
                 // This allows geometry blocks to be imported even when collision blocks fail.
+                // The scene is marked `truncated = true` so consumers that care about
+                // completeness (cell loaders with strict validation, scripts that rely
+                // on a specific block count) can detect the partial state. See #175.
+                let dropped = header.num_blocks as usize - i;
                 log::warn!(
-                    "Block {} '{}' (offset {}, consumed {}): {} — stopping parse, keeping {} blocks",
-                    i, type_name, start_pos, consumed, e, blocks.len()
+                    "Block {} '{}' (offset {}, consumed {}): {} — stopping parse; \
+                     keeping {} blocks, DISCARDING {} subsequent blocks (scene marked truncated)",
+                    i, type_name, start_pos, consumed, e, blocks.len(), dropped
                 );
+                truncated = true;
                 break;
             }
         }
     }
 
-    // Phase 3: Identify root
+    // Phase 3: Identify root. Root is typically the first NiNode block.
+    // When the scene is truncated that "first NiNode" may be a subtree
+    // rather than the real root — the warning above documents the risk.
     let root_index = if !blocks.is_empty() {
-        // Root is typically the first NiNode block
         blocks
             .iter()
             .position(|b| matches!(b.block_type_name(), "NiNode"))
@@ -227,7 +239,11 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         None
     };
 
-    Ok(NifScene { blocks, root_index })
+    Ok(NifScene {
+        blocks,
+        root_index,
+        truncated,
+    })
 }
 
 #[cfg(test)]
@@ -311,6 +327,39 @@ mod tests {
         buf.extend_from_slice(&block);
 
         buf
+    }
+
+    /// Regression test for issue #175: `NifScene.truncated` defaults to
+    /// `false` on a happy-path parse, and can be distinguished from a
+    /// genuinely-truncated scene by downstream consumers. The full
+    /// end-to-end "Oblivion block parser errors mid-file" path is
+    /// exercised by the ignored `parse_rate_oblivion` integration test
+    /// against real .nif corpora — this unit test just pins the public
+    /// field surface so that a future refactor of the error path can't
+    /// silently drop the field.
+    #[test]
+    fn nif_scene_truncated_flag_defaults_false_on_clean_parse() {
+        let data = build_test_nif_with_node();
+        let scene = parse_nif(&data).unwrap();
+        assert!(
+            !scene.truncated,
+            "clean parse must not set the truncated flag"
+        );
+        assert_eq!(scene.len(), 1);
+    }
+
+    #[test]
+    fn nif_scene_struct_carries_truncated_field() {
+        // Hand-constructed marker: verifies the field exists on the
+        // struct surface so consumers like `cell_loader` can branch on
+        // it without fear of the field being silently removed.
+        let scene = NifScene {
+            blocks: Vec::new(),
+            root_index: None,
+            truncated: true,
+        };
+        assert!(scene.truncated);
+        assert!(scene.is_empty());
     }
 
     #[test]
