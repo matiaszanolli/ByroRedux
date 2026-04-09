@@ -24,6 +24,12 @@ impl VulkanContext {
     ) -> Result<bool> {
         let frame = self.current_frame;
 
+        // Advance the texture registry's deferred-destroy frame counter.
+        // Keyed on frame count (not per-call count) so `update_rgba`
+        // can safely be called multiple times per frame on the same
+        // handle. See issue #134.
+        self.texture_registry.begin_frame();
+
         // Wait for this frame-in-flight slot to be available.
         unsafe {
             self.device

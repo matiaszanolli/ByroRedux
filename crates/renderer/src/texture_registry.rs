@@ -15,11 +15,19 @@ const MAX_FRAMES_IN_FLIGHT: usize = 2;
 struct TextureEntry {
     texture: Texture,
     descriptor_sets: Vec<vk::DescriptorSet>,
-    /// Ring of replaced textures awaiting deferred destruction.
-    /// Textures are pushed on each update_rgba call and only destroyed
-    /// when the ring exceeds MAX_FRAMES_IN_FLIGHT entries, guaranteeing
-    /// no in-flight command buffer still references them.
-    pending_destroy: VecDeque<Texture>,
+    /// Ring of replaced textures awaiting deferred destruction, paired
+    /// with the `frame_id` at which they were queued. `update_rgba`
+    /// destroys any entry whose `frame_id` is at least
+    /// `MAX_FRAMES_IN_FLIGHT` frames older than the current frame —
+    /// this is safe because any command buffer that referenced the
+    /// old texture has finished by then (`draw_frame` waits on its
+    /// per-frame fence before reusing a slot).
+    ///
+    /// Frame-id tracking (not call-count) lets `update_rgba` be called
+    /// multiple times per frame on the same handle without destroying
+    /// textures still referenced by in-flight command buffers.
+    /// See issue #134.
+    pending_destroy: VecDeque<(u64, Texture)>,
 }
 
 /// Registry mapping texture paths to GPU-resident textures with cached descriptor sets.
@@ -36,6 +44,11 @@ pub struct TextureRegistry {
     pub shared_sampler: vk::Sampler,
     swapchain_image_count: u32,
     max_textures: u32,
+    /// Monotonic frame counter used by `update_rgba`'s deferred-destroy
+    /// ring. Incremented once per frame via `begin_frame()`; replaced
+    /// textures are kept alive until `current_frame_id - queued_frame_id
+    /// >= MAX_FRAMES_IN_FLIGHT`. See issue #134.
+    current_frame_id: u64,
 }
 
 impl TextureRegistry {
@@ -129,6 +142,7 @@ impl TextureRegistry {
             shared_sampler,
             swapchain_image_count,
             max_textures,
+            current_frame_id: 0,
         };
 
         log::info!(
@@ -248,11 +262,35 @@ impl TextureRegistry {
         Ok(handle)
     }
 
+    /// Advance the registry's frame counter. Must be called once at
+    /// the top of each frame (before any `update_rgba` calls) so the
+    /// deferred-destroy ring can age pending textures correctly.
+    /// `VulkanContext::draw_frame` handles this automatically.
+    /// See issue #134.
+    pub fn begin_frame(&mut self) {
+        self.current_frame_id = self.current_frame_id.wrapping_add(1);
+    }
+
+    /// Current registry frame counter. Test-only accessor exposed as
+    /// `pub(crate)` so `VulkanContext` internals can observe the
+    /// counter for diagnostics; the field itself stays private.
+    #[cfg(test)]
+    pub(crate) fn current_frame_id(&self) -> u64 {
+        self.current_frame_id
+    }
+
     /// Replace the texture data for an existing handle with new RGBA pixels.
     ///
-    /// Uses deferred destruction: the old texture is kept alive as
-    /// `pending_destroy` until the NEXT call, giving in-flight frames
-    /// time to finish using it. No device_wait_idle stall.
+    /// Uses deferred destruction keyed on the registry's monotonic
+    /// frame counter: a replaced texture is kept alive until
+    /// `MAX_FRAMES_IN_FLIGHT` frames have elapsed since it was queued,
+    /// guaranteeing that any command buffer still referencing it has
+    /// finished. No `device_wait_idle` stall.
+    ///
+    /// Safe to call multiple times per frame on the same handle —
+    /// each call queues its replaced texture under the current
+    /// `frame_id` and none are destroyed until the frame counter
+    /// advances via `begin_frame()`. See issue #134.
     pub fn update_rgba(
         &mut self,
         device: &ash::Device,
@@ -264,12 +302,18 @@ impl TextureRegistry {
         height: u32,
         pixels: &[u8],
     ) -> Result<()> {
+        let current_frame_id = self.current_frame_id;
         let entry = &mut self.textures[handle as usize];
 
-        // Drain textures old enough that no in-flight command buffer references them.
-        // With MAX_FRAMES_IN_FLIGHT=2, we keep the 2 most recent replacements alive.
-        while entry.pending_destroy.len() >= MAX_FRAMES_IN_FLIGHT {
-            if let Some(mut old) = entry.pending_destroy.pop_front() {
+        // Drain textures whose queue frame is at least
+        // `MAX_FRAMES_IN_FLIGHT` behind the current frame. Pending
+        // entries are queued in ascending frame_id order, so we can
+        // stop at the first entry that is still too young.
+        while let Some(&(queued, _)) = entry.pending_destroy.front() {
+            if !should_destroy_pending(current_frame_id, queued) {
+                break;
+            }
+            if let Some((_, mut old)) = entry.pending_destroy.pop_front() {
                 old.destroy(device, allocator);
             }
         }
@@ -287,7 +331,7 @@ impl TextureRegistry {
         )
         .context("Failed to create updated dynamic RGBA texture")?;
         std::mem::swap(&mut entry.texture, &mut prev);
-        entry.pending_destroy.push_back(prev);
+        entry.pending_destroy.push_back((current_frame_id, prev));
 
         // Re-write the existing descriptor sets to point to the new image.
         let image_info = vk::DescriptorImageInfo::default()
@@ -371,7 +415,7 @@ impl TextureRegistry {
     /// Destroy all textures, descriptor pool, and layout.
     pub fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         for entry in &mut self.textures {
-            for mut pending in entry.pending_destroy.drain(..) {
+            for (_, mut pending) in entry.pending_destroy.drain(..) {
                 pending.destroy(device, allocator);
             }
             entry.texture.destroy(device, allocator);
@@ -447,6 +491,20 @@ fn normalize_path(path: &str) -> String {
     path.to_ascii_lowercase().replace('\\', "/")
 }
 
+/// Return `true` when a pending texture queued at `queued_frame` can
+/// be destroyed given the registry's `current_frame`. An entry is safe
+/// to destroy once at least `MAX_FRAMES_IN_FLIGHT` frames have elapsed
+/// since it was queued — at that point every command buffer that
+/// referenced the old texture has finished (the per-frame fence in
+/// `draw_frame` guarantees it). Wrap-safe via `wrapping_sub`; in
+/// practice the u64 counter lasts ~584 years at 1000 fps.
+///
+/// Pure helper extracted from `update_rgba` so the aging math can be
+/// unit-tested without a Vulkan device. See issue #134.
+fn should_destroy_pending(current_frame: u64, queued_frame: u64) -> bool {
+    current_frame.wrapping_sub(queued_frame) >= MAX_FRAMES_IN_FLIGHT as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,5 +523,72 @@ mod tests {
             normalize_path("textures/clutter/food/beerbottle.dds"),
             "textures/clutter/food/beerbottle.dds"
         );
+    }
+
+    /// Regression test for issue #134: deferred-destroy aging math
+    /// must treat two calls in the same frame as safe, and only
+    /// authorise destruction once MAX_FRAMES_IN_FLIGHT real frames
+    /// have elapsed since the queue point.
+    #[test]
+    fn should_destroy_pending_honors_frame_gap() {
+        // Same frame — never destroy (could still be in flight).
+        assert!(!should_destroy_pending(0, 0));
+        assert!(!should_destroy_pending(42, 42));
+
+        // 1 frame later — still too young when MAX_FRAMES_IN_FLIGHT == 2.
+        assert!(!should_destroy_pending(1, 0));
+        assert!(!should_destroy_pending(43, 42));
+
+        // Exactly MAX_FRAMES_IN_FLIGHT frames later — safe.
+        assert!(should_destroy_pending(MAX_FRAMES_IN_FLIGHT as u64, 0));
+        assert!(should_destroy_pending(
+            42 + MAX_FRAMES_IN_FLIGHT as u64,
+            42
+        ));
+
+        // Many frames later — still safe.
+        assert!(should_destroy_pending(1000, 0));
+    }
+
+    /// The previous call-count-based drain would trigger on
+    /// `pending_destroy.len() >= MAX_FRAMES_IN_FLIGHT`, so two calls
+    /// in the same frame would immediately destroy the first queued
+    /// entry — unsound because both were queued in a frame that may
+    /// still be in flight. Verify the new aging helper refuses to
+    /// destroy any entry whose queue frame matches the current frame
+    /// regardless of how many entries are pending.
+    #[test]
+    fn multiple_same_frame_calls_do_not_authorize_destruction() {
+        let current_frame = 10;
+        // 5 entries all queued on the same frame.
+        for _ in 0..5 {
+            assert!(
+                !should_destroy_pending(current_frame, current_frame),
+                "same-frame entries must never be destroyed"
+            );
+        }
+        // The oldest one becomes destroyable only after the frame counter
+        // has advanced by MAX_FRAMES_IN_FLIGHT.
+        assert!(should_destroy_pending(
+            current_frame + MAX_FRAMES_IN_FLIGHT as u64,
+            current_frame
+        ));
+    }
+
+    /// The monotonic counter uses `wrapping_add` / `wrapping_sub` so
+    /// the math stays correct even across a u64 wrap (impossible in
+    /// practice — ~584 years at 1000 fps — but free to get right).
+    #[test]
+    fn frame_counter_math_is_wrap_safe() {
+        // Queued right before wrap, current frame is MAX_FRAMES_IN_FLIGHT
+        // frames past the wrap. The wrap-safe subtraction should still
+        // return MAX_FRAMES_IN_FLIGHT and authorize destruction.
+        let queued = u64::MAX - 1;
+        let current = queued.wrapping_add(MAX_FRAMES_IN_FLIGHT as u64);
+        assert!(should_destroy_pending(current, queued));
+
+        // One frame before the threshold — still not destroyable.
+        let current = queued.wrapping_add(MAX_FRAMES_IN_FLIGHT as u64 - 1);
+        assert!(!should_destroy_pending(current, queued));
     }
 }
