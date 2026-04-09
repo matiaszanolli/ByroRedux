@@ -383,9 +383,6 @@ impl Drop for VulkanContext {
                 }
             }
 
-            if let Some(ref alloc) = self.allocator {
-                self.mesh_registry.destroy_all(&self.device, alloc);
-            }
             self.device.destroy_pipeline(self.pipeline, None);
             self.device.destroy_pipeline(self.pipeline_alpha, None);
             self.device.destroy_pipeline(self.pipeline_two_sided, None);
@@ -398,6 +395,11 @@ impl Drop for VulkanContext {
             self.device.destroy_shader_module(self.frag_module, None);
             self.device.destroy_shader_module(self.ui_vert_module, None);
             self.device.destroy_shader_module(self.ui_frag_module, None);
+            // Meshes after pipelines: pipelines consume meshes at draw time,
+            // so meshes should outlive the pipelines that reference them.
+            if let Some(ref alloc) = self.allocator {
+                self.mesh_registry.destroy_all(&self.device, alloc);
+            }
             // Save pipeline cache to disk before destroying.
             save_pipeline_cache(&self.device, self.pipeline_cache);
             self.device
