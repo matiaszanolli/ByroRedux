@@ -214,8 +214,9 @@ impl World {
     pub fn query<T: Component>(&self) -> Option<QueryRead<'_, T>> {
         let type_id = TypeId::of::<T>();
         let lock = self.storages.get(&type_id)?;
-        lock_tracker::track_read(type_id, std::any::type_name::<T>());
+        let scope = lock_tracker::TrackedRead::new(type_id, std::any::type_name::<T>());
         let guard = lock.read().unwrap_or_else(|_| storage_lock_poisoned::<T>());
+        scope.defuse();
         Some(QueryRead::new(guard, type_id))
     }
 
@@ -226,10 +227,11 @@ impl World {
     pub fn query_mut<T: Component>(&self) -> Option<QueryWrite<'_, T>> {
         let type_id = TypeId::of::<T>();
         let lock = self.storages.get(&type_id)?;
-        lock_tracker::track_write(type_id, std::any::type_name::<T>());
+        let scope = lock_tracker::TrackedWrite::new(type_id, std::any::type_name::<T>());
         let guard = lock
             .write()
             .unwrap_or_else(|_| storage_lock_poisoned::<T>());
+        scope.defuse();
         Some(QueryWrite::new(guard, type_id))
     }
 
@@ -257,8 +259,8 @@ impl World {
         let lock_a = self.storages.get(&id_a)?;
         let lock_b = self.storages.get(&id_b)?;
 
-        lock_tracker::track_read(id_a, std::any::type_name::<A>());
-        lock_tracker::track_write(id_b, std::any::type_name::<B>());
+        let scope_a = lock_tracker::TrackedRead::new(id_a, std::any::type_name::<A>());
+        let scope_b = lock_tracker::TrackedWrite::new(id_b, std::any::type_name::<B>());
 
         // Always lock in TypeId order to prevent deadlocks.
         if id_a < id_b {
@@ -268,6 +270,8 @@ impl World {
             let guard_b = lock_b
                 .write()
                 .unwrap_or_else(|_| storage_lock_poisoned::<B>());
+            scope_a.defuse();
+            scope_b.defuse();
             Some((
                 QueryRead::new(guard_a, id_a),
                 QueryWrite::new(guard_b, id_b),
@@ -279,6 +283,8 @@ impl World {
             let guard_a = lock_a
                 .read()
                 .unwrap_or_else(|_| storage_lock_poisoned::<A>());
+            scope_a.defuse();
+            scope_b.defuse();
             Some((
                 QueryRead::new(guard_a, id_a),
                 QueryWrite::new(guard_b, id_b),
@@ -309,8 +315,8 @@ impl World {
         let lock_a = self.storages.get(&id_a)?;
         let lock_b = self.storages.get(&id_b)?;
 
-        lock_tracker::track_write(id_a, std::any::type_name::<A>());
-        lock_tracker::track_write(id_b, std::any::type_name::<B>());
+        let scope_a = lock_tracker::TrackedWrite::new(id_a, std::any::type_name::<A>());
+        let scope_b = lock_tracker::TrackedWrite::new(id_b, std::any::type_name::<B>());
 
         if id_a < id_b {
             let guard_a = lock_a
@@ -319,6 +325,8 @@ impl World {
             let guard_b = lock_b
                 .write()
                 .unwrap_or_else(|_| storage_lock_poisoned::<B>());
+            scope_a.defuse();
+            scope_b.defuse();
             Some((
                 QueryWrite::new(guard_a, id_a),
                 QueryWrite::new(guard_b, id_b),
@@ -330,6 +338,8 @@ impl World {
             let guard_a = lock_a
                 .write()
                 .unwrap_or_else(|_| storage_lock_poisoned::<A>());
+            scope_a.defuse();
+            scope_b.defuse();
             Some((
                 QueryWrite::new(guard_a, id_a),
                 QueryWrite::new(guard_b, id_b),
@@ -374,10 +384,11 @@ impl World {
                 std::any::type_name::<R>()
             )
         });
-        lock_tracker::track_read(type_id, std::any::type_name::<R>());
+        let scope = lock_tracker::TrackedRead::new(type_id, std::any::type_name::<R>());
         let guard = lock
             .read()
             .unwrap_or_else(|_| resource_lock_poisoned::<R>());
+        scope.defuse();
         ResourceRead::new(guard, type_id)
     }
 
@@ -394,10 +405,11 @@ impl World {
                 std::any::type_name::<R>()
             )
         });
-        lock_tracker::track_write(type_id, std::any::type_name::<R>());
+        let scope = lock_tracker::TrackedWrite::new(type_id, std::any::type_name::<R>());
         let guard = lock
             .write()
             .unwrap_or_else(|_| resource_lock_poisoned::<R>());
+        scope.defuse();
         ResourceWrite::new(guard, type_id)
     }
 
@@ -434,8 +446,8 @@ impl World {
             )
         });
 
-        lock_tracker::track_write(id_a, std::any::type_name::<A>());
-        lock_tracker::track_write(id_b, std::any::type_name::<B>());
+        let scope_a = lock_tracker::TrackedWrite::new(id_a, std::any::type_name::<A>());
+        let scope_b = lock_tracker::TrackedWrite::new(id_b, std::any::type_name::<B>());
 
         // Always lock in TypeId order to prevent deadlocks.
         if id_a < id_b {
@@ -445,6 +457,8 @@ impl World {
             let guard_b = lock_b
                 .write()
                 .unwrap_or_else(|_| resource_lock_poisoned::<B>());
+            scope_a.defuse();
+            scope_b.defuse();
             (
                 ResourceWrite::new(guard_a, id_a),
                 ResourceWrite::new(guard_b, id_b),
@@ -456,6 +470,8 @@ impl World {
             let guard_a = lock_a
                 .write()
                 .unwrap_or_else(|_| resource_lock_poisoned::<A>());
+            scope_a.defuse();
+            scope_b.defuse();
             (
                 ResourceWrite::new(guard_a, id_a),
                 ResourceWrite::new(guard_b, id_b),
@@ -467,10 +483,11 @@ impl World {
     pub fn try_resource<R: Resource>(&self) -> Option<ResourceRead<'_, R>> {
         let type_id = TypeId::of::<R>();
         let lock = self.resources.get(&type_id)?;
-        lock_tracker::track_read(type_id, std::any::type_name::<R>());
+        let scope = lock_tracker::TrackedRead::new(type_id, std::any::type_name::<R>());
         let guard = lock
             .read()
             .unwrap_or_else(|_| resource_lock_poisoned::<R>());
+        scope.defuse();
         Some(ResourceRead::new(guard, type_id))
     }
 
@@ -478,10 +495,11 @@ impl World {
     pub fn try_resource_mut<R: Resource>(&self) -> Option<ResourceWrite<'_, R>> {
         let type_id = TypeId::of::<R>();
         let lock = self.resources.get(&type_id)?;
-        lock_tracker::track_write(type_id, std::any::type_name::<R>());
+        let scope = lock_tracker::TrackedWrite::new(type_id, std::any::type_name::<R>());
         let guard = lock
             .write()
             .unwrap_or_else(|_| resource_lock_poisoned::<R>());
+        scope.defuse();
         Some(ResourceWrite::new(guard, type_id))
     }
 
@@ -1362,6 +1380,109 @@ mod tests {
         assert!(
             msg.contains("ResA") && msg.contains("poisoned"),
             "panic message should name the resource type and mention poisoning, got: {msg}"
+        );
+    }
+
+    /// Regression test for issue #137: when the poisoned-lock panic
+    /// path fires inside `query`/`resource`/etc., the RAII `TrackedRead`/
+    /// `TrackedWrite` scope guard must untrack the pending row. Before
+    /// the fix, `track_read` / `track_write` were called directly before
+    /// `lock.read()/write()`, and the stale row leaked into the
+    /// thread-local tracker — a subsequent `catch_unwind` recovery
+    /// would then see a false "deadlock detected" panic on the same type.
+    #[test]
+    fn lock_tracker_is_clean_after_poisoned_panic() {
+        use super::super::lock_tracker;
+        use std::sync::Arc;
+
+        // Sanity check: tracker is empty at the start of this test. In
+        // debug builds the thread-local map is per-thread and each test
+        // runs on a fresh worker thread, so this must hold.
+        assert!(
+            lock_tracker::is_clean(),
+            "lock tracker must start clean"
+        );
+
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+        let world = Arc::new(world);
+
+        // Poison the Health storage from another thread.
+        let w = Arc::clone(&world);
+        let _ = std::thread::spawn(move || {
+            let _q = w.query_mut::<Health>().unwrap();
+            panic!("intentional panic to poison the lock");
+        })
+        .join();
+
+        // Each of the nine affected methods must leave the tracker
+        // clean after its poisoned-lock panic unwinds. Iterating over
+        // the representative set (single read/write, 2-read/write,
+        // resource read/write, resource 2-write, try_read/try_write)
+        // covers every `TrackedRead::new` / `TrackedWrite::new` call
+        // site in `world.rs`.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = world.query::<Health>();
+        }));
+        assert!(
+            lock_tracker::is_clean(),
+            "tracker row leaked after query<Health> poison-panic"
+        );
+
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = world.query_mut::<Health>();
+        }));
+        assert!(
+            lock_tracker::is_clean(),
+            "tracker row leaked after query_mut<Health> poison-panic"
+        );
+
+        // query_2_mut: the FIRST tracked scope must also untrack if
+        // the second lock panics. Here the Health lock is poisoned —
+        // the exact arm that panics depends on TypeId ordering, but
+        // either way both scopes must untrack cleanly.
+        let mut world2 = World::new();
+        let e = world2.spawn();
+        world2.insert(e, Health(100.0));
+        world2.insert(
+            e,
+            Position {
+                x: 0.0,
+                y: 0.0,
+            },
+        );
+        let world2 = Arc::new(world2);
+        let w = Arc::clone(&world2);
+        let _ = std::thread::spawn(move || {
+            let _q = w.query_mut::<Health>().unwrap();
+            panic!("intentional panic to poison the lock");
+        })
+        .join();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = world2.query_2_mut::<Position, Health>();
+        }));
+        assert!(
+            lock_tracker::is_clean(),
+            "tracker row leaked after query_2_mut poison-panic"
+        );
+
+        // Resource path mirrors the storage path.
+        let mut world3 = World::new();
+        world3.insert_resource(ResA(42.0));
+        let world3 = Arc::new(world3);
+        let w = Arc::clone(&world3);
+        let _ = std::thread::spawn(move || {
+            let _r = w.resource_mut::<ResA>();
+            panic!("intentional panic to poison the resource lock");
+        })
+        .join();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = world3.try_resource::<ResA>();
+        }));
+        assert!(
+            lock_tracker::is_clean(),
+            "tracker row leaked after try_resource<ResA> poison-panic"
         );
     }
 }

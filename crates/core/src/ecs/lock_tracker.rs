@@ -102,6 +102,95 @@ pub(crate) fn untrack_write(type_id: TypeId) {
     });
 }
 
+/// RAII scope guard that tracks a read-lock intent on construction and
+/// auto-untracks on drop unless [`TrackedRead::defuse`] is called first.
+///
+/// Use this instead of raw [`track_read`] when there's code between the
+/// intent-to-lock and the actual guard construction that could panic
+/// (e.g. a poisoned-lock `unwrap_or_else` panic helper). If the panic
+/// fires, this guard's `Drop` releases the tracker row, preventing a
+/// false "deadlock detected" report on a subsequent catch_unwind
+/// recovery.
+///
+/// Once the real lock guard is successfully constructed, call
+/// `defuse()` to transfer ownership of the tracker row — the `Drop`
+/// impl of `QueryRead` / `ResourceRead` on the real guard will take
+/// over. See issue #137.
+#[cfg(debug_assertions)]
+pub(crate) struct TrackedRead {
+    type_id: TypeId,
+    armed: bool,
+}
+
+#[cfg(debug_assertions)]
+impl TrackedRead {
+    #[inline]
+    pub(crate) fn new(type_id: TypeId, type_name: &str) -> Self {
+        track_read(type_id, type_name);
+        Self {
+            type_id,
+            armed: true,
+        }
+    }
+
+    /// Hand ownership of the tracker row off to the real lock guard.
+    /// Call this once the lock has been successfully acquired.
+    #[inline]
+    pub(crate) fn defuse(mut self) {
+        self.armed = false;
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for TrackedRead {
+    fn drop(&mut self) {
+        if self.armed {
+            untrack_read(self.type_id);
+        }
+    }
+}
+
+/// RAII scope guard for write-lock intents. Mirror of [`TrackedRead`].
+#[cfg(debug_assertions)]
+pub(crate) struct TrackedWrite {
+    type_id: TypeId,
+    armed: bool,
+}
+
+#[cfg(debug_assertions)]
+impl TrackedWrite {
+    #[inline]
+    pub(crate) fn new(type_id: TypeId, type_name: &str) -> Self {
+        track_write(type_id, type_name);
+        Self {
+            type_id,
+            armed: true,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn defuse(mut self) {
+        self.armed = false;
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for TrackedWrite {
+    fn drop(&mut self) {
+        if self.armed {
+            untrack_write(self.type_id);
+        }
+    }
+}
+
+/// Test-only helper: returns `true` if the thread-local tracker map
+/// has no live entries. Used by the #137 regression test to verify
+/// that a panicked lock acquisition leaves no stale rows behind.
+#[cfg(all(test, debug_assertions))]
+pub(crate) fn is_clean() -> bool {
+    LOCKS.with(|locks| locks.borrow().is_empty())
+}
+
 // Release-build no-ops.
 
 #[cfg(not(debug_assertions))]
@@ -119,6 +208,32 @@ pub(crate) fn untrack_read(_type_id: std::any::TypeId) {}
 #[cfg(not(debug_assertions))]
 #[inline(always)]
 pub(crate) fn untrack_write(_type_id: std::any::TypeId) {}
+
+#[cfg(not(debug_assertions))]
+pub(crate) struct TrackedRead;
+
+#[cfg(not(debug_assertions))]
+impl TrackedRead {
+    #[inline(always)]
+    pub(crate) fn new(_type_id: std::any::TypeId, _type_name: &str) -> Self {
+        Self
+    }
+    #[inline(always)]
+    pub(crate) fn defuse(self) {}
+}
+
+#[cfg(not(debug_assertions))]
+pub(crate) struct TrackedWrite;
+
+#[cfg(not(debug_assertions))]
+impl TrackedWrite {
+    #[inline(always)]
+    pub(crate) fn new(_type_id: std::any::TypeId, _type_name: &str) -> Self {
+        Self
+    }
+    #[inline(always)]
+    pub(crate) fn defuse(self) {}
+}
 
 #[cfg(test)]
 mod tests {
