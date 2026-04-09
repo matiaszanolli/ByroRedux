@@ -561,6 +561,177 @@ mod tests {
         assert_eq!(meshes[0].colors[2], [0.0, 0.0, 1.0]);
     }
 
+    /// Regression test for issue #131: Oblivion meshes store their
+    /// tangent-space normal maps in `NiTexturingProperty.bump_texture`
+    /// (the dedicated `normal_texture` slot landed in FO3). The
+    /// importer must follow the `bump_texture.source_ref` through
+    /// the scene to the referenced `NiSourceTexture.filename` and
+    /// populate `ImportedMesh.normal_map`.
+    #[test]
+    fn import_extracts_oblivion_bump_texture_as_normal_map() {
+        use crate::blocks::properties::{NiTexturingProperty, TexDesc};
+        use crate::blocks::texture::NiSourceTexture;
+        use std::sync::Arc;
+
+        // Block layout:
+        //  0: root NiNode
+        //  1: NiTriShape referencing data at 2 and property at 3
+        //  2: NiTriShapeData
+        //  3: NiTexturingProperty with bump_texture → block 4
+        //  4: NiSourceTexture for the bump map
+        //  5: NiSourceTexture for the base texture (referenced too)
+        let tex_prop = NiTexturingProperty {
+            net: crate::blocks::base::NiObjectNETData {
+                name: None,
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            flags: 0,
+            texture_count: 6,
+            base_texture: Some(TexDesc {
+                source_ref: BlockRef(5),
+                flags: 0,
+            }),
+            dark_texture: None,
+            detail_texture: None,
+            gloss_texture: None,
+            glow_texture: None,
+            bump_texture: Some(TexDesc {
+                source_ref: BlockRef(4),
+                flags: 0,
+            }),
+            normal_texture: None,
+        };
+        let bump_src = NiSourceTexture {
+            net: crate::blocks::base::NiObjectNETData {
+                name: None,
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            use_external: true,
+            filename: Some(Arc::from("textures\\architecture\\wall01_n.dds")),
+            pixel_data_ref: BlockRef::NULL,
+            pixel_layout: 0,
+            use_mipmaps: 0,
+            alpha_format: 0,
+            is_static: true,
+        };
+        let base_src = NiSourceTexture {
+            net: crate::blocks::base::NiObjectNETData {
+                name: None,
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            use_external: true,
+            filename: Some(Arc::from("textures\\architecture\\wall01.dds")),
+            pixel_data_ref: BlockRef::NULL,
+            pixel_layout: 0,
+            use_mipmaps: 0,
+            alpha_format: 0,
+            is_static: true,
+        };
+
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+            Box::new(make_ni_node(identity_transform(), vec![BlockRef(1)])),
+            Box::new(make_ni_tri_shape(
+                "Wall",
+                identity_transform(),
+                2,
+                vec![BlockRef(3)], // property: texturing
+            )),
+            Box::new(make_tri_shape_data()),
+            Box::new(tex_prop),
+            Box::new(bump_src),
+            Box::new(base_src),
+        ];
+        let scene = scene_from_blocks(blocks);
+        let meshes = import_nif(&scene);
+
+        assert_eq!(meshes.len(), 1);
+        let m = &meshes[0];
+        assert_eq!(
+            m.texture_path.as_deref(),
+            Some("textures\\architecture\\wall01.dds"),
+            "base_texture should still be extracted"
+        );
+        assert_eq!(
+            m.normal_map.as_deref(),
+            Some("textures\\architecture\\wall01_n.dds"),
+            "bump_texture slot should populate normal_map for Oblivion meshes"
+        );
+    }
+
+    /// When both `bump_texture` and `normal_texture` slots are populated
+    /// (an FO3/FNV mesh exported by a tool that kept the legacy slot
+    /// filled), the importer should prefer `normal_texture` — it's the
+    /// dedicated field and more likely to contain the current asset.
+    #[test]
+    fn import_prefers_normal_texture_over_bump_texture() {
+        use crate::blocks::properties::{NiTexturingProperty, TexDesc};
+        use crate::blocks::texture::NiSourceTexture;
+        use std::sync::Arc;
+
+        let make_src = |name: &str| NiSourceTexture {
+            net: crate::blocks::base::NiObjectNETData {
+                name: None,
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            use_external: true,
+            filename: Some(Arc::from(name)),
+            pixel_data_ref: BlockRef::NULL,
+            pixel_layout: 0,
+            use_mipmaps: 0,
+            alpha_format: 0,
+            is_static: true,
+        };
+
+        let tex_prop = NiTexturingProperty {
+            net: crate::blocks::base::NiObjectNETData {
+                name: None,
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            flags: 0,
+            texture_count: 7,
+            base_texture: None,
+            dark_texture: None,
+            detail_texture: None,
+            gloss_texture: None,
+            glow_texture: None,
+            bump_texture: Some(TexDesc {
+                source_ref: BlockRef(4),
+                flags: 0,
+            }),
+            normal_texture: Some(TexDesc {
+                source_ref: BlockRef(5),
+                flags: 0,
+            }),
+        };
+
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+            Box::new(make_ni_node(identity_transform(), vec![BlockRef(1)])),
+            Box::new(make_ni_tri_shape(
+                "Wall",
+                identity_transform(),
+                2,
+                vec![BlockRef(3)],
+            )),
+            Box::new(make_tri_shape_data()),
+            Box::new(tex_prop),
+            Box::new(make_src("legacy_bump.dds")),
+            Box::new(make_src("modern_normal.dds")),
+        ];
+        let scene = scene_from_blocks(blocks);
+        let meshes = import_nif(&scene);
+
+        assert_eq!(
+            meshes[0].normal_map.as_deref(),
+            Some("modern_normal.dds"),
+            "normal_texture should win when both slots are populated"
+        );
+    }
+
     #[test]
     fn import_falls_back_to_material_diffuse() {
         use crate::blocks::properties::NiMaterialProperty;

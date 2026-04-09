@@ -1,7 +1,7 @@
 //! NIF material and texture property extraction.
 
 use crate::blocks::properties::{
-    NiAlphaProperty, NiMaterialProperty, NiStencilProperty, NiTexturingProperty,
+    NiAlphaProperty, NiMaterialProperty, NiStencilProperty, NiTexturingProperty, TexDesc,
 };
 use crate::blocks::shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
@@ -199,16 +199,23 @@ pub(super) fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> Mat
             }
         }
 
-        if info.texture_path.is_none() {
-            if let Some(tex_prop) = scene.get_as::<NiTexturingProperty>(idx) {
-                if let Some(ref base) = tex_prop.base_texture {
-                    if let Some(src_idx) = base.source_ref.index() {
-                        if let Some(src_tex) = scene.get_as::<NiSourceTexture>(src_idx) {
-                            if let Some(ref f) = src_tex.filename {
-                                info.texture_path = Some(f.to_string());
-                            }
-                        }
-                    }
+        if let Some(tex_prop) = scene.get_as::<NiTexturingProperty>(idx) {
+            if info.texture_path.is_none() {
+                if let Some(path) = tex_desc_source_path(scene, tex_prop.base_texture.as_ref()) {
+                    info.texture_path = Some(path);
+                }
+            }
+            // Oblivion stores tangent-space normal maps in the `bump_texture`
+            // slot (the dedicated `normal_texture` slot landed later in FO3).
+            // Skyrim+ meshes use BSShaderTextureSet handled elsewhere, so
+            // this branch is specifically for pre-Skyrim static meshes.
+            // See issue #131.
+            if info.normal_map.is_none() {
+                if let Some(path) =
+                    tex_desc_source_path(scene, tex_prop.normal_texture.as_ref())
+                        .or_else(|| tex_desc_source_path(scene, tex_prop.bump_texture.as_ref()))
+                {
+                    info.normal_map = Some(path);
                 }
             }
         }
@@ -294,6 +301,20 @@ pub(super) fn apply_alpha_flags(info: &mut MaterialInfo, alpha: &NiAlphaProperty
     } else if blend {
         info.alpha_blend = true;
     }
+}
+
+/// Resolve a `TexDesc` slot on an `NiTexturingProperty` to a texture
+/// filename by following its `source_ref` through the scene's block
+/// table and pulling the filename from the referenced
+/// `NiSourceTexture`. Returns `None` if the slot is empty, the ref
+/// is null, or the source texture has no external filename (embedded
+/// NiPixelData is not supported here — the downstream texture
+/// provider can't resolve those anyway). See issue #131.
+fn tex_desc_source_path(scene: &NifScene, desc: Option<&TexDesc>) -> Option<String> {
+    let desc = desc?;
+    let src_idx = desc.source_ref.index()?;
+    let src_tex = scene.get_as::<NiSourceTexture>(src_idx)?;
+    src_tex.filename.as_ref().map(|f| f.to_string())
 }
 
 /// Check if a BsTriShape is decal geometry (Skyrim+).
