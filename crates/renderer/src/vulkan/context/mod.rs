@@ -184,8 +184,12 @@ impl VulkanContext {
         let command_pool = create_command_pool(&device, queue_indices.graphics)?;
 
         // 11. Texture registry with checkerboard fallback
-        let mut texture_registry =
-            TextureRegistry::new(&device, swapchain_state.images.len() as u32, 1024)?;
+        let mut texture_registry = TextureRegistry::new(
+            &device,
+            swapchain_state.images.len() as u32,
+            1024,
+            device_caps.max_sampler_anisotropy,
+        )?;
         let checkerboard = super::texture::generate_checkerboard(256, 256, 32);
         let fallback_texture = Texture::from_rgba(
             &device,

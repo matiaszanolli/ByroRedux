@@ -40,10 +40,19 @@ pub struct TextureRegistry {
 
 impl TextureRegistry {
     /// Create a new texture registry (no fallback yet — call `set_fallback` after).
+    ///
+    /// `max_sampler_anisotropy` is the clamped `maxSamplerAnisotropy`
+    /// limit from the physical device (see `DeviceCapabilities`), or
+    /// `0.0` if the device does not support `samplerAnisotropy`. When
+    /// greater than 1.0 the shared sampler enables anisotropic
+    /// filtering — significantly improves ground/wall texture quality
+    /// at oblique angles, which is the dominant case for Bethesda
+    /// content. See issue #136.
     pub fn new(
         device: &ash::Device,
         swapchain_image_count: u32,
         max_textures: u32,
+        max_sampler_anisotropy: f32,
     ) -> Result<Self> {
         // Descriptor set layout: binding 0 = combined image sampler, fragment stage.
         let binding = vk::DescriptorSetLayoutBinding::default()
@@ -80,13 +89,24 @@ impl TextureRegistry {
 
         // Shared sampler: LINEAR/REPEAT with max_lod high enough for any mip chain.
         // The actual image's mip count naturally clamps sampling.
+        //
+        // Anisotropic filtering is enabled when the device exposes
+        // samplerAnisotropy and the caller passes a limit > 1.0. The
+        // value is already clamped to 16× in DeviceCapabilities, so we
+        // just forward it here. See issue #136.
+        let anisotropy_enable = max_sampler_anisotropy > 1.0;
         let sampler_info = vk::SamplerCreateInfo::default()
             .mag_filter(vk::Filter::LINEAR)
             .min_filter(vk::Filter::LINEAR)
             .address_mode_u(vk::SamplerAddressMode::REPEAT)
             .address_mode_v(vk::SamplerAddressMode::REPEAT)
             .address_mode_w(vk::SamplerAddressMode::REPEAT)
-            .anisotropy_enable(false)
+            .anisotropy_enable(anisotropy_enable)
+            .max_anisotropy(if anisotropy_enable {
+                max_sampler_anisotropy
+            } else {
+                1.0
+            })
             .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
             .unnormalized_coordinates(false)
             .compare_enable(false)
@@ -112,9 +132,14 @@ impl TextureRegistry {
         };
 
         log::info!(
-            "TextureRegistry created: pool for {} textures × {} swapchain images",
+            "TextureRegistry created: pool for {} textures × {} swapchain images, anisotropy {}",
             max_textures,
             swapchain_image_count,
+            if anisotropy_enable {
+                format!("{:.0}×", max_sampler_anisotropy)
+            } else {
+                "disabled".to_string()
+            },
         );
 
         Ok(registry)

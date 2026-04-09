@@ -16,6 +16,15 @@ pub struct QueueFamilyIndices {
 pub struct DeviceCapabilities {
     /// True if VK_KHR_acceleration_structure + VK_KHR_ray_query are available.
     pub ray_query_supported: bool,
+    /// True if the physical device exposes `samplerAnisotropy` in
+    /// `VkPhysicalDeviceFeatures`. Required to enable anisotropic
+    /// filtering on the shared texture sampler. Universally available
+    /// on desktop GPUs; we still guard it to be safe on SoCs.
+    pub sampler_anisotropy_supported: bool,
+    /// `maxSamplerAnisotropy` from `VkPhysicalDeviceLimits`, already
+    /// clamped to our configured target (16×). Zero when
+    /// `sampler_anisotropy_supported` is false.
+    pub max_sampler_anisotropy: f32,
 }
 
 /// Required device extensions (always needed).
@@ -96,6 +105,19 @@ fn is_device_suitable(
     // Check optional RT extensions.
     let ray_query_supported = RT_EXTENSIONS.iter().all(|ext| has_extension(ext));
 
+    // Query features + limits for optional features we care about.
+    // `samplerAnisotropy` is the only one right now (issue #136).
+    let features = unsafe { instance.get_physical_device_features(device) };
+    let properties = unsafe { instance.get_physical_device_properties(device) };
+    let sampler_anisotropy_supported = features.sampler_anisotropy == vk::TRUE;
+    // Cap at 16× — the point of diminishing returns on every modern
+    // GPU, and the common "16x AF" preset players expect.
+    let max_sampler_anisotropy = if sampler_anisotropy_supported {
+        properties.limits.max_sampler_anisotropy.min(16.0)
+    } else {
+        0.0
+    };
+
     // Find queue families.
     let queue_families = unsafe { instance.get_physical_device_queue_family_properties(device) };
 
@@ -132,6 +154,8 @@ fn is_device_suitable(
             },
             DeviceCapabilities {
                 ray_query_supported,
+                sampler_anisotropy_supported,
+                max_sampler_anisotropy,
             },
         ))),
         _ => Ok(None),
@@ -162,7 +186,10 @@ pub fn create_logical_device(
         })
         .collect();
 
-    let device_features = vk::PhysicalDeviceFeatures::default();
+    // Enable only the features we actually need. Anisotropic filtering
+    // is gated behind a device-features toggle (see issue #136).
+    let device_features =
+        vk::PhysicalDeviceFeatures::default().sampler_anisotropy(caps.sampler_anisotropy_supported);
 
     // Build extension list: required + optional RT.
     let mut extensions: Vec<*const i8> = REQUIRED_EXTENSIONS.iter().map(|e| e.as_ptr()).collect();
