@@ -137,13 +137,17 @@ pub(crate) fn build_render_data(
             }
         }
     }
-    // Sort: opaque → decal → alpha; decals drawn after base geometry at same depth.
+    // Sort: opaque → decal → alpha; decals drawn after base geometry at
+    // same depth. Within a pipeline/texture cluster we also group by
+    // mesh_handle so `draw.rs` can skip redundant vertex/index buffer
+    // rebinds when consecutive draws share a mesh. See issue #50.
     draw_commands.sort_unstable_by_key(|cmd| {
         (
             cmd.alpha_blend,
             cmd.is_decal,
             cmd.two_sided,
             cmd.texture_handle,
+            cmd.mesh_handle,
         )
     });
 

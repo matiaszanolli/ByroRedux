@@ -215,8 +215,15 @@ impl VulkanContext {
             );
 
             // Draw: opaque first, then alpha-blended. Switch pipeline on mode change.
+            // Deduplicate vertex/index buffer binds when consecutive draws share a
+            // mesh — at ~500 draws / 50 meshes that's roughly 450 redundant
+            // `cmd_bind_vertex_buffers` + `cmd_bind_index_buffer` calls per frame.
+            // The sort key in `render::build_render_data` now includes
+            // `mesh_handle` so instances of the same mesh land contiguously.
+            // See issue #50.
             let mut last_texture = u32::MAX;
             let mut last_pipeline_key = (false, false); // (alpha_blend, two_sided)
+            let mut last_mesh_handle = u32::MAX;
 
             for draw_cmd in draw_commands {
                 if let Some(mesh) = self.mesh_registry.get(draw_cmd.mesh_handle) {
@@ -287,14 +294,24 @@ impl VulkanContext {
                         bone_offset_bytes,
                     );
 
-                    self.device
-                        .cmd_bind_vertex_buffers(cmd, 0, &[mesh.vertex_buffer.buffer], &[0]);
-                    self.device.cmd_bind_index_buffer(
-                        cmd,
-                        mesh.index_buffer.buffer,
-                        0,
-                        vk::IndexType::UINT32,
-                    );
+                    // Rebind vertex + index buffers only when the mesh changes.
+                    // The sort key in render.rs clusters identical meshes so
+                    // this skips the majority of redundant rebinds. See #50.
+                    if draw_cmd.mesh_handle != last_mesh_handle {
+                        self.device.cmd_bind_vertex_buffers(
+                            cmd,
+                            0,
+                            &[mesh.vertex_buffer.buffer],
+                            &[0],
+                        );
+                        self.device.cmd_bind_index_buffer(
+                            cmd,
+                            mesh.index_buffer.buffer,
+                            0,
+                            vk::IndexType::UINT32,
+                        );
+                        last_mesh_handle = draw_cmd.mesh_handle;
+                    }
                     self.device
                         .cmd_draw_indexed(cmd, mesh.index_count, 1, 0, 0, 0);
                 }
