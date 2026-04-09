@@ -235,20 +235,33 @@ impl NiTexturingProperty {
             }
         }
 
+        // Shader textures trailer: nif.xml (NiTexturingProperty) has a
+        // `Has Shader Textures: bool` leading the `Num Shader Textures`
+        // count. The count + loop are BOTH conditional on the bool.
+        //
+        // Previous implementation unconditionally read a u32 count, which
+        // consumed the bool byte + 3 trailing bytes of whatever came next.
+        // When the stars aligned (has=0, next 3 bytes zero) the loop ran
+        // zero times but the stream was 3 bytes past block end, producing
+        // the long-standing "NiTexturingProperty: N bytes short" warning
+        // on Oblivion / FO3 / FNV / Skyrim LE files. See issue #149.
         if stream.version() >= crate::version::NifVersion(0x0A000100) {
-            let num_shader_textures = stream.read_u32_le()?;
-            for _ in 0..num_shader_textures {
-                let has = stream.read_byte_bool()?;
-                if has {
-                    let _source_ref = stream.read_block_ref()?;
-                    if stream.version() >= crate::version::NifVersion(0x14010003) {
-                        let _flags = stream.read_u16_le()?;
-                    } else {
-                        let _clamp = stream.read_u32_le()?;
-                        let _filter = stream.read_u32_le()?;
-                        let _uv_set = stream.read_u32_le()?;
+            let has_shader_textures = stream.read_byte_bool()?;
+            if has_shader_textures {
+                let num_shader_textures = stream.read_u32_le()?;
+                for _ in 0..num_shader_textures {
+                    let has = stream.read_byte_bool()?;
+                    if has {
+                        let _source_ref = stream.read_block_ref()?;
+                        if stream.version() >= crate::version::NifVersion(0x14010003) {
+                            let _flags = stream.read_u16_le()?;
+                        } else {
+                            let _clamp = stream.read_u32_le()?;
+                            let _filter = stream.read_u32_le()?;
+                            let _uv_set = stream.read_u32_le()?;
+                        }
+                        let _map_id = stream.read_u32_le()?;
                     }
-                    let _map_id = stream.read_u32_le()?;
                 }
             }
         }
@@ -464,6 +477,69 @@ mod tests {
         assert_eq!(pal.get_string(17), Some("Bip01 L Hand"));
         assert_eq!(pal.get_string(999), None);
         assert_eq!(stream.position() as usize, data.len());
+    }
+
+    /// Regression test for issue #149: NiTexturingProperty must gate
+    /// `Num Shader Textures` on the leading `Has Shader Textures: bool`.
+    /// A tail of `0x00` (has_shader_textures = false) used to be
+    /// misparsed as a u32 count + read the next 3 bytes as part of
+    /// the count, leaving the stream 3 bytes past block end.
+    #[test]
+    fn parse_ni_texturing_property_with_has_shader_textures_false() {
+        let header = make_header(12, 83); // Skyrim LE — v20.2.0.7 path
+        let mut data = Vec::new();
+        // NiObjectNET: name string index, extra_data count, controller
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // flags u16 (v >= 20.1.0.2 path); no apply_mode at v20.2.0.7
+        data.extend_from_slice(&0u16.to_le_bytes());
+        // texture_count = 1 → only base_texture is read.
+        data.extend_from_slice(&1u32.to_le_bytes());
+        // base_texture TexDesc: has_texture = 0 → TexDesc skipped.
+        data.push(0);
+        // No bump/parallax (texture_count=1, so none of the trailing
+        // slot-specific sections execute).
+        // num_decals = texture_count.saturating_sub(8) = 0 → no loop.
+        // Has Shader Textures = 0x00 — the line this test exists for.
+        data.push(0);
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let prop = NiTexturingProperty::parse(&mut stream)
+            .expect("NiTexturingProperty with has_shader_textures=false should parse");
+        assert_eq!(prop.texture_count, 1);
+        assert!(prop.base_texture.is_none()); // TexDesc was has=0 too
+        assert_eq!(
+            stream.position() as usize,
+            expected_len,
+            "NiTexturingProperty consumed {} bytes, expected exactly {}",
+            stream.position(),
+            expected_len
+        );
+    }
+
+    /// Regression test for #149: `has_shader_textures = 1` + a count
+    /// of zero shader textures must still parse correctly (reads the
+    /// count as a u32, then runs zero iterations). Ensures the gating
+    /// doesn't accidentally break the previously-working happy path.
+    #[test]
+    fn parse_ni_texturing_property_with_empty_shader_texture_list() {
+        let header = make_header(12, 83);
+        let mut data = Vec::new();
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes()); // flags
+        data.extend_from_slice(&1u32.to_le_bytes()); // texture_count
+        data.push(0); // base_texture has=0
+        data.push(1); // has_shader_textures = true
+        data.extend_from_slice(&0u32.to_le_bytes()); // num_shader_textures = 0
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let _prop = NiTexturingProperty::parse(&mut stream).unwrap();
+        assert_eq!(stream.position() as usize, expected_len);
     }
 }
 
