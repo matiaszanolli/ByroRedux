@@ -235,33 +235,46 @@ impl NiTexturingProperty {
             }
         }
 
-        // Shader textures trailer: nif.xml (NiTexturingProperty) has a
-        // `Has Shader Textures: bool` leading the `Num Shader Textures`
-        // count. The count + loop are BOTH conditional on the bool.
+        // Shader textures trailer: the authoritative Gamebryo 2.3
+        // `NiTexturingProperty::LoadBinary` reads a `uint` count
+        // UNCONDITIONALLY (no leading bool gate), then loops over the
+        // shader maps. For every entry the loop reads `bool has_map`
+        // + optional Map body.
         //
-        // Previous implementation unconditionally read a u32 count, which
-        // consumed the bool byte + 3 trailing bytes of whatever came next.
-        // When the stars aligned (has=0, next 3 bytes zero) the loop ran
-        // zero times but the stream was 3 bytes past block end, producing
-        // the long-standing "NiTexturingProperty: N bytes short" warning
-        // on Oblivion / FO3 / FNV / Skyrim LE files. See issue #149.
+        // This contradicts nif.xml which claims a leading
+        // `Has Shader Textures: bool` gate, but the real on-disk
+        // data — verified against an Oblivion Quarto03.NIF trace —
+        // matches the Gamebryo 2.3 source: the shader-map count is
+        // the first 4 bytes of this section. A previous fix (#149)
+        // followed nif.xml and read a bool instead, consuming the
+        // first byte of the u32 count and leaving the parser 3
+        // bytes short on every NiTexturingProperty — which in turn
+        // misaligned every following block on Oblivion cell loads
+        // (including NiSourceTexture → "failed to fill whole buffer"
+        // with huge consumed counts).
+        //
+        // The version gate (>= 10.0.1.0) matches the historical
+        // gate — pre-10.0.1.0 files don't carry the shader map list
+        // at all.
         if stream.version() >= crate::version::NifVersion(0x0A000100) {
-            let has_shader_textures = stream.read_byte_bool()?;
-            if has_shader_textures {
-                let num_shader_textures = stream.read_u32_le()?;
-                for _ in 0..num_shader_textures {
-                    let has = stream.read_byte_bool()?;
-                    if has {
-                        let _source_ref = stream.read_block_ref()?;
-                        if stream.version() >= crate::version::NifVersion(0x14010003) {
-                            let _flags = stream.read_u16_le()?;
-                        } else {
-                            let _clamp = stream.read_u32_le()?;
-                            let _filter = stream.read_u32_le()?;
-                            let _uv_set = stream.read_u32_le()?;
-                        }
-                        let _map_id = stream.read_u32_le()?;
+            let num_shader_textures = stream.read_u32_le()?;
+            for _ in 0..num_shader_textures {
+                let has = stream.read_byte_bool()?;
+                if has {
+                    // Each shader Map shares the base Map::LoadBinary
+                    // layout: source_ref, clamp/filter/uv or flags,
+                    // optional texture transform. The trailing
+                    // `map_id` is an extra u32 per shader map that
+                    // Gamebryo stores but the importer doesn't need.
+                    let _source_ref = stream.read_block_ref()?;
+                    if stream.version() >= crate::version::NifVersion(0x14010003) {
+                        let _flags = stream.read_u16_le()?;
+                    } else {
+                        let _clamp = stream.read_u32_le()?;
+                        let _filter = stream.read_u32_le()?;
+                        let _uv_set = stream.read_u32_le()?;
                     }
+                    let _map_id = stream.read_u32_le()?;
                 }
             }
         }
@@ -479,13 +492,17 @@ mod tests {
         assert_eq!(stream.position() as usize, data.len());
     }
 
-    /// Regression test for issue #149: NiTexturingProperty must gate
-    /// `Num Shader Textures` on the leading `Has Shader Textures: bool`.
-    /// A tail of `0x00` (has_shader_textures = false) used to be
-    /// misparsed as a u32 count + read the next 3 bytes as part of
-    /// the count, leaving the stream 3 bytes past block end.
+    /// Regression test for issue #149 / runtime Oblivion trace:
+    /// NiTexturingProperty's shader-map-list tail is a `u32 count`
+    /// read unconditionally (no leading bool gate), per the
+    /// Gamebryo 2.3 source. An earlier fix (#149) followed nif.xml
+    /// and added a leading `has_shader_textures: bool` which
+    /// consumed the first byte of the u32 count, leaving the
+    /// parser 3 bytes short and misaligning every subsequent
+    /// block on Oblivion cell loads. Verify the empty-shader-list
+    /// case (count = 0) consumes exactly 4 bytes.
     #[test]
-    fn parse_ni_texturing_property_with_has_shader_textures_false() {
+    fn parse_ni_texturing_property_with_zero_shader_maps() {
         let header = make_header(12, 83); // Skyrim LE — v20.2.0.7 path
         let mut data = Vec::new();
         // NiObjectNET: name string index, extra_data count, controller
@@ -498,18 +515,16 @@ mod tests {
         data.extend_from_slice(&1u32.to_le_bytes());
         // base_texture TexDesc: has_texture = 0 → TexDesc skipped.
         data.push(0);
-        // No bump/parallax (texture_count=1, so none of the trailing
-        // slot-specific sections execute).
         // num_decals = texture_count.saturating_sub(8) = 0 → no loop.
-        // Has Shader Textures = 0x00 — the line this test exists for.
-        data.push(0);
+        // num_shader_textures = 0 as u32 (4 bytes).
+        data.extend_from_slice(&0u32.to_le_bytes());
 
         let expected_len = data.len();
         let mut stream = NifStream::new(&data, &header);
         let prop = NiTexturingProperty::parse(&mut stream)
-            .expect("NiTexturingProperty with has_shader_textures=false should parse");
+            .expect("NiTexturingProperty with zero shader maps should parse");
         assert_eq!(prop.texture_count, 1);
-        assert!(prop.base_texture.is_none()); // TexDesc was has=0 too
+        assert!(prop.base_texture.is_none());
         assert_eq!(
             stream.position() as usize,
             expected_len,
@@ -519,12 +534,12 @@ mod tests {
         );
     }
 
-    /// Regression test for #149: `has_shader_textures = 1` + a count
-    /// of zero shader textures must still parse correctly (reads the
-    /// count as a u32, then runs zero iterations). Ensures the gating
-    /// doesn't accidentally break the previously-working happy path.
+    /// Regression test: `num_shader_textures = 1` + one shader map
+    /// with `has = 0` (no body) must parse to exactly `4 (count) +
+    /// 1 (has)` = 5 trailing bytes. Exercises the loop logic without
+    /// requiring a full shader Map body.
     #[test]
-    fn parse_ni_texturing_property_with_empty_shader_texture_list() {
+    fn parse_ni_texturing_property_with_empty_shader_map_entry() {
         let header = make_header(12, 83);
         let mut data = Vec::new();
         data.extend_from_slice(&(-1i32).to_le_bytes());
@@ -533,8 +548,8 @@ mod tests {
         data.extend_from_slice(&0u16.to_le_bytes()); // flags
         data.extend_from_slice(&1u32.to_le_bytes()); // texture_count
         data.push(0); // base_texture has=0
-        data.push(1); // has_shader_textures = true
-        data.extend_from_slice(&0u32.to_le_bytes()); // num_shader_textures = 0
+        data.extend_from_slice(&1u32.to_le_bytes()); // num_shader_textures = 1
+        data.push(0); // shader map has = 0
 
         let expected_len = data.len();
         let mut stream = NifStream::new(&data, &header);
