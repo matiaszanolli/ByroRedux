@@ -181,8 +181,11 @@ impl BhkRigidBody {
             constraint_refs.push(stream.read_block_ref()?);
         }
 
-        // Body flags
-        let body_flags = if bsver < 76 {
+        // Body flags: u32 until Skyrim (BSVER < 83), u16 in Skyrim+ per
+        // nif.xml (#SKY_AND_LATER# gating). See issue #127 — previously
+        // used threshold 76, which is in the BSVER 35-75 gap no shipped
+        // game uses but diverges from the reference schema.
+        let body_flags = if bsver < 83 {
             stream.read_u32_le()?
         } else {
             stream.read_u16_le()? as u32
