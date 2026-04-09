@@ -298,6 +298,28 @@ pub fn parse_block(
         "BSClothExtraData" => Ok(Box::new(BsClothExtraData::parse(stream)?)),
         "BSConnectPoint::Parents" => Ok(Box::new(BsConnectPointParents::parse(stream)?)),
         "BSConnectPoint::Children" => Ok(Box::new(BsConnectPointChildren::parse(stream)?)),
+        // BSPackedCombined[Shared]GeomDataExtra — FO4+ distant-LOD
+        // merged geometry batches attached to BSMultiBoundNode roots in
+        // cell LOD NIFs. The fixed-layout header is parsed; the
+        // variable-size per-object data + vertex/triangle pools are
+        // skipped via block_size until a downstream LOD importer picks
+        // them up (terrain streaming milestone). See issue #158.
+        "BSPackedCombinedGeomDataExtra" | "BSPackedCombinedSharedGeomDataExtra" => {
+            let start = stream.position();
+            let type_name_static: &'static str = match type_name {
+                "BSPackedCombinedGeomDataExtra" => "BSPackedCombinedGeomDataExtra",
+                "BSPackedCombinedSharedGeomDataExtra" => "BSPackedCombinedSharedGeomDataExtra",
+                _ => unreachable!(),
+            };
+            let block = extra_data::BsPackedCombinedGeomDataExtra::parse(stream, type_name_static)?;
+            if let Some(size) = block_size {
+                let consumed = stream.position() - start;
+                if consumed < size as u64 {
+                    stream.skip(size as u64 - consumed);
+                }
+            }
+            Ok(Box::new(block))
+        }
         // NiSingleInterpController subclasses (base + interpolator ref)
         "NiTextureTransformController" => Ok(Box::new(
             controller::NiTextureTransformController::parse(stream)?,
@@ -878,6 +900,63 @@ mod dispatch_tests {
         assert_eq!(node.multi_bound_ref.index(), Some(42));
         assert_eq!(node.culling_mode, 0); // default when bsver < 83
         assert_eq!(stream.position(), bytes.len() as u64);
+    }
+
+    /// Regression: #158 — BSPackedCombined[Shared]GeomDataExtra must
+    /// dispatch to its own parser, read the fixed-layout geometry
+    /// header (vertex_desc u64 + 5 × u32), and consume any remaining
+    /// variable-size per-object data via block_size. Previously fell
+    /// through to the default NiUnknown arm, losing the type
+    /// classification.
+    #[test]
+    fn bs_packed_combined_geom_data_extra_dispatches_and_consumes_variable_tail() {
+        use crate::blocks::extra_data::BsPackedCombinedGeomDataExtra;
+
+        // Oblivion uses inline length-prefixed strings (pre-20.1.0.1).
+        // Write a zero-length inline string for `name`.
+        let header = oblivion_header();
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u32.to_le_bytes()); // name: empty inline string
+        // vertex_desc: arbitrary u64
+        data.extend_from_slice(&0x0123_4567_89AB_CDEFu64.to_le_bytes());
+        // num_vertices
+        data.extend_from_slice(&42u32.to_le_bytes());
+        // num_triangles
+        data.extend_from_slice(&24u32.to_le_bytes());
+        // unknown_flags_1, _2
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&2u32.to_le_bytes());
+        // num_data
+        data.extend_from_slice(&3u32.to_le_bytes());
+        // Simulate 32 bytes of variable per-object tail payload. The
+        // invariant is that block_size bounds the skip regardless of
+        // the tail's internal shape.
+        data.extend_from_slice(&[0xBBu8; 32]);
+
+        for variant in [
+            "BSPackedCombinedGeomDataExtra",
+            "BSPackedCombinedSharedGeomDataExtra",
+        ] {
+            let mut stream = NifStream::new(&data, &header);
+            let block = parse_block(variant, &mut stream, Some(data.len() as u32))
+                .unwrap_or_else(|e| panic!("{variant} dispatch failed: {e}"));
+            let extra = block
+                .as_any()
+                .downcast_ref::<BsPackedCombinedGeomDataExtra>()
+                .unwrap_or_else(|| panic!("{variant} did not downcast"));
+            assert_eq!(extra.type_name, variant);
+            assert_eq!(extra.vertex_desc, 0x0123_4567_89AB_CDEF);
+            assert_eq!(extra.num_vertices, 42);
+            assert_eq!(extra.num_triangles, 24);
+            assert_eq!(extra.unknown_flags_1, 1);
+            assert_eq!(extra.unknown_flags_2, 2);
+            assert_eq!(extra.num_data, 3);
+            assert_eq!(
+                stream.position() as usize,
+                data.len(),
+                "{variant} did not fully consume the variable-size tail"
+            );
+        }
     }
 
     /// Build an "empty NiAVObject" body sized for Oblivion. Same prefix

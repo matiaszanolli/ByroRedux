@@ -363,6 +363,81 @@ impl BsConnectPointParents {
     }
 }
 
+// ── BSPackedCombined[Shared]GeomDataExtra ──────────────────────────
+
+/// Shared fields for `BSPackedCombinedGeomDataExtra` and
+/// `BSPackedCombinedSharedGeomDataExtra` — FO4+ distant-LOD merged
+/// geometry batches attached to BSMultiBoundNode roots in cell LOD NIFs.
+///
+/// Wire layout (niflib nif.xml):
+/// ```text
+/// NiExtraData base (name)
+/// uint64  vertex_desc       ; BSVertexDesc bitfield
+/// uint    num_vertices
+/// uint    num_triangles
+/// uint    unknown_flags_1
+/// uint    unknown_flags_2
+/// uint    num_data
+/// <variable-size per-object data + vertex/triangle pools>
+/// ```
+///
+/// The renderer does not yet reconstruct merged LOD meshes from this
+/// data (distant terrain decoration is a downstream importer task that
+/// lands with the terrain streaming milestone). This struct classifies
+/// the block and captures the fixed-layout header so scene walkers can
+/// identify it by type and name; the variable-size tail is skipped via
+/// the caller-supplied `block_size`. See issue #158.
+#[derive(Debug)]
+pub struct BsPackedCombinedGeomDataExtra {
+    /// Discriminator: `"BSPackedCombinedGeomDataExtra"` or
+    /// `"BSPackedCombinedSharedGeomDataExtra"`. The two variants differ
+    /// only in how the downstream engine assembles the object pool —
+    /// on the wire they share the identical header layout.
+    pub type_name: &'static str,
+    pub name: Option<Arc<str>>,
+    pub vertex_desc: u64,
+    pub num_vertices: u32,
+    pub num_triangles: u32,
+    pub unknown_flags_1: u32,
+    pub unknown_flags_2: u32,
+    pub num_data: u32,
+}
+
+impl NiObject for BsPackedCombinedGeomDataExtra {
+    fn block_type_name(&self) -> &'static str {
+        self.type_name
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsPackedCombinedGeomDataExtra {
+    /// Parse the NiExtraData name + fixed-layout geometry header.
+    /// The variable-size tail (per-object records + vertex/triangle
+    /// pools) is left on the stream — the dispatcher uses `block_size`
+    /// to bound the skip, same pattern as BSSubIndexTriShape (#147).
+    pub fn parse(stream: &mut NifStream, type_name: &'static str) -> io::Result<Self> {
+        let name = stream.read_string()?;
+        let vertex_desc = stream.read_u64_le()?;
+        let num_vertices = stream.read_u32_le()?;
+        let num_triangles = stream.read_u32_le()?;
+        let unknown_flags_1 = stream.read_u32_le()?;
+        let unknown_flags_2 = stream.read_u32_le()?;
+        let num_data = stream.read_u32_le()?;
+        Ok(Self {
+            type_name,
+            name,
+            vertex_desc,
+            num_vertices,
+            num_triangles,
+            unknown_flags_1,
+            unknown_flags_2,
+            num_data,
+        })
+    }
+}
+
 // ── BSConnectPoint::Children ───────────────────────────────────────
 
 /// Workshop connection point child references. FO4+.
