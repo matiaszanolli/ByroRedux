@@ -877,4 +877,77 @@ mod tests {
         assert!(q[2].abs() < 1e-4, "qz={}", q[2]);
         assert!((q[3].abs() - cos45).abs() < 1e-4, "qw={}", q[3]);
     }
+
+    /// Regression test for issue #150 — `BsOrderedNode` (and every other
+    /// NiNode subclass with a `base: NiNode` field) must unwrap cleanly
+    /// during scene-graph walks. Previously the walker only downcast to
+    /// plain `NiNode`, so children of BSOrderedNode (FO3/FNV weapons,
+    /// effects, architecture) were silently dropped.
+    #[test]
+    fn bs_ordered_node_children_are_walked() {
+        use crate::blocks::node::BsOrderedNode;
+
+        // Root BsOrderedNode with a single NiTriShape child.
+        let inner_node = make_ni_node(identity_transform(), vec![BlockRef(1)]);
+        let ordered = BsOrderedNode {
+            base: inner_node,
+            alpha_sort_bound: [0.0, 0.0, 0.0, 10.0],
+            is_static_bound: false,
+        };
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+            Box::new(ordered),
+            Box::new(make_ni_tri_shape(
+                "OrderedChild",
+                identity_transform(),
+                2,
+                Vec::new(),
+            )),
+            Box::new(make_tri_shape_data()),
+        ];
+        let scene = scene_from_blocks(blocks);
+
+        // Flat path — would return zero meshes before the fix.
+        let meshes = import_nif(&scene);
+        assert_eq!(
+            meshes.len(),
+            1,
+            "BsOrderedNode subtree must yield 1 mesh in flat import"
+        );
+        assert_eq!(meshes[0].name, Some("OrderedChild".to_string()));
+
+        // Hierarchical path — must register the parent node AND the mesh.
+        let imported = import_nif_scene(&scene);
+        assert_eq!(imported.nodes.len(), 1);
+        assert_eq!(imported.meshes.len(), 1);
+        assert_eq!(imported.meshes[0].parent_node, Some(0));
+    }
+
+    /// Regression test for issue #150 — `BsValueNode` is a NiNode
+    /// subclass carrying numeric metadata; its children must also be
+    /// walked.
+    #[test]
+    fn bs_value_node_children_are_walked() {
+        use crate::blocks::node::BsValueNode;
+
+        let inner_node = make_ni_node(identity_transform(), vec![BlockRef(1)]);
+        let value_node = BsValueNode {
+            base: inner_node,
+            value: 42,
+            value_flags: 0,
+        };
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+            Box::new(value_node),
+            Box::new(make_ni_tri_shape(
+                "ValueChild",
+                identity_transform(),
+                2,
+                Vec::new(),
+            )),
+            Box::new(make_tri_shape_data()),
+        ];
+        let scene = scene_from_blocks(blocks);
+        let meshes = import_nif(&scene);
+        assert_eq!(meshes.len(), 1);
+        assert_eq!(meshes[0].name, Some("ValueChild".to_string()));
+    }
 }

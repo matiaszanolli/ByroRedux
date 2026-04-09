@@ -1,8 +1,12 @@
 //! Scene graph walking — hierarchical and flat traversal.
 
 use crate::blocks::light::{NiAmbientLight, NiDirectionalLight, NiPointLight, NiSpotLight};
-use crate::blocks::node::NiNode;
+use crate::blocks::node::{
+    BsMultiBoundNode, BsOrderedNode, BsRangeNode, BsValueNode, NiBillboardNode, NiLODNode, NiNode,
+    NiSortAdjustNode, NiSwitchNode,
+};
 use crate::blocks::tri_shape::{BsTriShape, NiTriShape};
+use crate::blocks::NiObject;
 use crate::scene::NifScene;
 use crate::types::NiTransform;
 
@@ -13,6 +17,51 @@ use super::mesh::{
 };
 use super::transform::compose_transforms;
 use super::{ImportedCollision, ImportedLight, ImportedMesh, ImportedNode, ImportedScene, LightKind};
+
+/// Downcast a `NiObject` to its underlying `NiNode` representation,
+/// unwrapping any known subclass that wraps a `base: NiNode` (directly
+/// or transitively). Returns `None` for non-node blocks.
+///
+/// This exists because every NiNode subclass gets its own concrete
+/// Rust type, not a runtime alias — a plain `downcast_ref::<NiNode>()`
+/// check would miss every subclass the parser grew dedicated structs
+/// for (#142, #148, and the BSOrderedNode / BSValueNode cases from
+/// issue #150 that this helper unblocks). Walkers should call this
+/// instead of hand-rolling the downcast chain so that future NiNode
+/// subtypes get picked up in one place.
+pub(super) fn as_ni_node(block: &dyn NiObject) -> Option<&NiNode> {
+    let any = block.as_any();
+    if let Some(n) = any.downcast_ref::<NiNode>() {
+        return Some(n);
+    }
+    // Direct NiNode wrappers (single `base: NiNode` field).
+    if let Some(n) = any.downcast_ref::<BsOrderedNode>() {
+        return Some(&n.base);
+    }
+    if let Some(n) = any.downcast_ref::<BsValueNode>() {
+        return Some(&n.base);
+    }
+    if let Some(n) = any.downcast_ref::<BsMultiBoundNode>() {
+        return Some(&n.base);
+    }
+    if let Some(n) = any.downcast_ref::<NiBillboardNode>() {
+        return Some(&n.base);
+    }
+    if let Some(n) = any.downcast_ref::<NiSwitchNode>() {
+        return Some(&n.base);
+    }
+    if let Some(n) = any.downcast_ref::<NiSortAdjustNode>() {
+        return Some(&n.base);
+    }
+    if let Some(n) = any.downcast_ref::<BsRangeNode>() {
+        return Some(&n.base);
+    }
+    // NiLODNode wraps NiSwitchNode, which wraps NiNode.
+    if let Some(n) = any.downcast_ref::<NiLODNode>() {
+        return Some(&n.base.base);
+    }
+    None
+}
 
 /// Recursively walk the scene graph, preserving hierarchy.
 /// NiNodes become ImportedNode entries; geometry becomes ImportedMesh with parent_node set.
@@ -26,7 +75,7 @@ pub(super) fn walk_node_hierarchical(
         return;
     };
 
-    if let Some(node) = block.as_any().downcast_ref::<NiNode>() {
+    if let Some(node) = as_ni_node(block) {
         if node.av.flags & 0x01 != 0 {
             return;
         }
@@ -105,7 +154,7 @@ pub(super) fn walk_node_flat(
         return;
     };
 
-    if let Some(node) = block.as_any().downcast_ref::<NiNode>() {
+    if let Some(node) = as_ni_node(block) {
         if node.av.flags & 0x01 != 0 {
             return;
         }
@@ -178,7 +227,7 @@ pub(super) fn walk_node_lights(
         return;
     };
 
-    if let Some(node) = block.as_any().downcast_ref::<NiNode>() {
+    if let Some(node) = as_ni_node(block) {
         if node.av.flags & 0x01 != 0 {
             return;
         }
