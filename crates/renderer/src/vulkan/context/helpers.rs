@@ -239,6 +239,31 @@ pub(super) fn create_command_pool(
     Ok(pool)
 }
 
+/// Create a command pool for one-time upload/transfer commands.
+///
+/// Unlike the per-frame draw pool, this pool does NOT set
+/// RESET_COMMAND_BUFFER because one-time commands are allocated, used
+/// once, and freed — never reset. Using a separate pool avoids Vulkan
+/// external-sync contention with draw command buffer operations
+/// (VUID-vkAllocateCommandBuffers-commandPool-00044).
+pub(super) fn create_transfer_pool(
+    device: &ash::Device,
+    queue_family: u32,
+) -> Result<vk::CommandPool> {
+    let create_info = vk::CommandPoolCreateInfo::default()
+        .queue_family_index(queue_family)
+        .flags(vk::CommandPoolCreateFlags::TRANSIENT);
+
+    let pool = unsafe {
+        device
+            .create_command_pool(&create_info, None)
+            .context("Failed to create transfer command pool")?
+    };
+
+    log::info!("Transfer command pool created");
+    Ok(pool)
+}
+
 pub(super) fn allocate_command_buffers(
     device: &ash::Device,
     pool: vk::CommandPool,

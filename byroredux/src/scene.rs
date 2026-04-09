@@ -164,7 +164,7 @@ pub(crate) fn setup_scene(
         let alloc = ctx.allocator.as_ref().unwrap();
         let (verts, idxs) = cube_vertices();
         let queue = &ctx.graphics_queue;
-        let pool = ctx.command_pool;
+        let pool = ctx.transfer_pool;
         let rt = ctx.device_caps.ray_query_supported;
         let cube_handle = ctx
             .mesh_registry
@@ -306,7 +306,7 @@ pub(crate) fn setup_scene(
                                 &ctx.device,
                                 allocator,
                                 &ctx.graphics_queue,
-                                ctx.command_pool,
+                                ctx.transfer_pool,
                                 w,
                                 h,
                                 &pixels,
@@ -561,7 +561,7 @@ pub(crate) fn load_nif_bytes(
             &ctx.device,
             alloc,
             &ctx.graphics_queue,
-            ctx.command_pool,
+            ctx.transfer_pool,
             &vertices,
             &mesh.indices,
             ctx.device_caps.ray_query_supported,

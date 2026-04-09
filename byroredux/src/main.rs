@@ -282,7 +282,7 @@ impl ApplicationHandler for App {
                                     &ctx.device,
                                     allocator,
                                     &ctx.graphics_queue,
-                                    ctx.command_pool,
+                                    ctx.transfer_pool,
                                     handle,
                                     ui_w,
                                     ui_h,

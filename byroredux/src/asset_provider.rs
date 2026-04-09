@@ -107,7 +107,7 @@ pub(crate) fn resolve_texture(
             &ctx.device,
             alloc,
             &ctx.graphics_queue,
-            ctx.command_pool,
+            ctx.transfer_pool,
             tex_path,
             &dds_bytes,
         ) {

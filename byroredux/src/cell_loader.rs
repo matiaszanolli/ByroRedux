@@ -512,7 +512,7 @@ fn spawn_placed_instances(
                 &ctx.device,
                 alloc,
                 &ctx.graphics_queue,
-                ctx.command_pool,
+                ctx.transfer_pool,
                 &vertices,
                 &mesh.indices,
                 ctx.device_caps.ray_query_supported,
@@ -541,7 +541,7 @@ fn spawn_placed_instances(
                             &ctx.device,
                             alloc,
                             &ctx.graphics_queue,
-                            ctx.command_pool,
+                            ctx.transfer_pool,
                             tex_path,
                             &dds_bytes,
                         )

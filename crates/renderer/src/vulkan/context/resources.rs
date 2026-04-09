@@ -17,7 +17,7 @@ impl VulkanContext {
             &self.device,
             allocator,
             &self.graphics_queue,
-            self.command_pool,
+            self.transfer_pool,
             mesh_handle,
             mesh,
             vertex_count,
@@ -36,7 +36,7 @@ impl VulkanContext {
             &self.device,
             allocator,
             &self.graphics_queue,
-            self.command_pool,
+            self.transfer_pool,
             &vertices,
             &indices,
             false, // UI quad doesn't need RT

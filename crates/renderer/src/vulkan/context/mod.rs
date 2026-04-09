@@ -42,7 +42,13 @@ pub struct VulkanContext {
 
     frame_sync: FrameSync,
     command_buffers: Vec<vk::CommandBuffer>,
-    pub command_pool: vk::CommandPool,
+    command_pool: vk::CommandPool,
+    /// Dedicated pool for one-time upload/transfer commands, separate from
+    /// the per-frame draw pool. Vulkan requires external synchronization on
+    /// VkCommandPool (VUID-vkAllocateCommandBuffers-commandPool-00044);
+    /// keeping upload commands on a separate pool avoids contention with
+    /// draw command buffer reset/recording.
+    pub transfer_pool: vk::CommandPool,
     framebuffers: Vec<vk::Framebuffer>,
     depth_image_view: vk::ImageView,
     depth_image: vk::Image,
@@ -180,8 +186,11 @@ impl VulkanContext {
         // 10. Render pass (color + depth)
         let render_pass = create_render_pass(&device, swapchain_state.format.format, depth_format)?;
 
-        // 10. Command pool (needed for texture upload one-time commands)
+        // 10. Command pools: one for per-frame draw commands (RESET_COMMAND_BUFFER),
+        //     one for one-time upload/transfer commands (separate pool to avoid
+        //     contention — Vulkan requires external sync on VkCommandPool).
         let command_pool = create_command_pool(&device, queue_indices.graphics)?;
+        let transfer_pool = create_transfer_pool(&device, queue_indices.graphics)?;
 
         // 11. Texture registry with checkerboard fallback
         let mut texture_registry = TextureRegistry::new(
@@ -195,7 +204,7 @@ impl VulkanContext {
             &device,
             &gpu_allocator,
             &graphics_queue,
-            command_pool,
+            transfer_pool,
             256,
             256,
             &checkerboard,
@@ -223,7 +232,7 @@ impl VulkanContext {
                 super::texture::with_one_time_commands(
                     &device,
                     &graphics_queue,
-                    command_pool,
+                    transfer_pool,
                     |cmd| unsafe {
                         accel
                             .build_tlas(&device, &gpu_allocator, cmd, &empty_draws, f)
@@ -314,6 +323,7 @@ impl VulkanContext {
             depth_image_view,
             framebuffers,
             command_pool,
+            transfer_pool,
             command_buffers,
             frame_sync,
             current_frame: 0,
@@ -340,6 +350,8 @@ impl Drop for VulkanContext {
             let _ = self.device.device_wait_idle();
 
             self.frame_sync.destroy(&self.device);
+            self.device
+                .destroy_command_pool(self.transfer_pool, None);
             self.device
                 .free_command_buffers(self.command_pool, &self.command_buffers);
             self.device.destroy_command_pool(self.command_pool, None);
@@ -423,6 +435,6 @@ impl Drop for VulkanContext {
 
 // Helper functions are in helpers.rs — use helpers:: prefix.
 use helpers::{
-    allocate_command_buffers, create_command_pool, create_depth_resources, create_framebuffers,
+    allocate_command_buffers, create_command_pool, create_depth_resources, create_framebuffers, create_transfer_pool,
     create_render_pass, find_depth_format, load_or_create_pipeline_cache, save_pipeline_cache,
 };
