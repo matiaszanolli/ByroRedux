@@ -191,22 +191,32 @@ pub(crate) fn is_clean() -> bool {
     LOCKS.with(|locks| locks.borrow().is_empty())
 }
 
-// Release-build no-ops.
+// Release-build no-ops. The standalone `track_*` / `untrack_*`
+// functions exist only to satisfy the debug-build public API surface
+// — in release the `TrackedRead` / `TrackedWrite` scope guards are
+// ZSTs with inline no-op methods, so the functions themselves have
+// no callers. `#[allow(dead_code)]` keeps the symbol available for
+// any external crate that picked them up via `pub(crate)` in debug,
+// without warning during release builds.
 
 #[cfg(not(debug_assertions))]
 #[inline(always)]
+#[allow(dead_code)]
 pub(crate) fn track_read(_type_id: std::any::TypeId, _type_name: &str) {}
 
 #[cfg(not(debug_assertions))]
 #[inline(always)]
+#[allow(dead_code)]
 pub(crate) fn track_write(_type_id: std::any::TypeId, _type_name: &str) {}
 
 #[cfg(not(debug_assertions))]
 #[inline(always)]
+#[allow(dead_code)]
 pub(crate) fn untrack_read(_type_id: std::any::TypeId) {}
 
 #[cfg(not(debug_assertions))]
 #[inline(always)]
+#[allow(dead_code)]
 pub(crate) fn untrack_write(_type_id: std::any::TypeId) {}
 
 #[cfg(not(debug_assertions))]
