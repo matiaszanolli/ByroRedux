@@ -147,11 +147,14 @@ impl SceneBuffers {
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            // Camera UBO is read by both vertex (viewProj) and fragment (cameraPos, sceneFlags).
             vk::DescriptorSetLayoutBinding::default()
                 .binding(1)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                .stage_flags(
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                ),
         ];
         if rt_enabled {
             bindings.push(
