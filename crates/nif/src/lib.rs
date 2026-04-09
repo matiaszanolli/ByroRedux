@@ -148,7 +148,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         // Skip animation blocks when geometry-only parsing is requested.
         if options.skip_animation && is_animation_block(type_name) {
             if let Some(size) = block_size {
-                stream.skip(size as u64);
+                stream.skip(size as u64)?;
                 blocks.push(Box::new(blocks::NiUnknown {
                     type_name: type_name.to_string(),
                     data: Vec::new(), // Don't store data — just a placeholder

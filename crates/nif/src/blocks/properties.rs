@@ -308,7 +308,7 @@ impl NiTexturingProperty {
                 if has_transform {
                     // Translation (2 floats) + Scale (2 floats) + Rotation (1 float)
                     // + Transform Method (u32) + Center (2 floats) = 32 bytes
-                    stream.skip(4 * 2 + 4 * 2 + 4 + 4 + 4 * 2);
+                    stream.skip(4 * 2 + 4 * 2 + 4 + 4 + 4 * 2)?;
                 }
             }
             Ok(Some(TexDesc { source_ref, flags }))
@@ -325,7 +325,7 @@ impl NiTexturingProperty {
             if stream.version() >= crate::version::NifVersion(0x0A010000) {
                 let has_transform = stream.read_byte_bool()?;
                 if has_transform {
-                    stream.skip(4 * 5 + 4 + 4 * 2);
+                    stream.skip(4 * 5 + 4 + 4 * 2)?;
                 }
             }
 

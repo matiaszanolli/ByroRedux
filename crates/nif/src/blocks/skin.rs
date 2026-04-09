@@ -187,7 +187,7 @@ impl NiSkinPartition {
             let _vertex_size = stream.read_u32_le()?;
             let _vertex_desc = stream.read_u64_le()?;
             if data_size > 0 {
-                stream.skip(data_size as u64);
+                stream.skip(data_size as u64)?;
             }
         }
 
@@ -268,7 +268,7 @@ impl NiSkinPartition {
                 if num_strips > 0 {
                     // Jagged strip arrays — skip strip data (not converted to triangles here).
                     for &len in &strip_lengths {
-                        stream.skip(len as u64 * 2);
+                        stream.skip(len as u64 * 2)?;
                     }
                 } else {
                     triangles = Vec::with_capacity(num_triangles as usize);
@@ -302,7 +302,7 @@ impl NiSkinPartition {
             if bsver == 100 {
                 let _vertex_desc = stream.read_u64_le()?;
                 // Triangles copy — same data as above, skip.
-                stream.skip(num_triangles as u64 * 6);
+                stream.skip(num_triangles as u64 * 6)?;
             }
 
             partitions.push(SkinPartitionEntry {

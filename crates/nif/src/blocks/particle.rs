@@ -48,7 +48,7 @@ fn skip_emitter_base(stream: &mut NifStream) -> io::Result<()> {
     // declination_variation(f32) + planar_angle(f32) + planar_angle_variation(f32) +
     // initial_color(Color4=4×f32) + initial_radius(f32) + radius_variation(f32) +
     // life_span(f32) + life_span_variation(f32)
-    stream.skip(4 * 12); // 12 floats = 48 bytes
+    stream.skip(4 * 12)?; // 12 floats = 48 bytes
     Ok(())
 }
 
@@ -131,7 +131,7 @@ pub fn parse_age_death_modifier(stream: &mut NifStream) -> io::Result<NiPSysBloc
 pub fn parse_bomb_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     let _bomber = stream.read_block_ref()?;
-    stream.skip(12); // axis vec3
+    stream.skip(12)?; // axis vec3
     let _decay = stream.read_f32_le()?;
     let _delta_v = stream.read_f32_le()?;
     let _decay_type = stream.read_u32_le()?;
@@ -172,7 +172,7 @@ pub fn parse_color_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
 pub fn parse_drag_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     let _parent = stream.read_block_ref()?;
-    stream.skip(12 + 4 + 4 + 4); // vec3 + 3 floats
+    stream.skip(12 + 4 + 4 + 4)?; // vec3 + 3 floats
     Ok(NiPSysBlock {
         original_type: "NiPSysDragModifier".to_string(),
     })
@@ -184,7 +184,7 @@ pub fn parse_drag_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
 pub fn parse_gravity_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     let _gravity_object = stream.read_block_ref()?;
-    stream.skip(12); // gravity_axis vec3
+    stream.skip(12)?; // gravity_axis vec3
     let _decay = stream.read_f32_le()?;
     let _strength = stream.read_f32_le()?;
     let _force_type = stream.read_u32_le()?;
@@ -219,10 +219,10 @@ pub fn parse_rotation_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock
     let _initial_speed = stream.read_f32_le()?;
     // speed_variation + initial_angle + angle_variation: since v20.0.0.2
     if stream.version() >= crate::version::NifVersion(0x14000002) {
-        stream.skip(4 * 3); // 3 floats
+        stream.skip(4 * 3)?; // 3 floats
     }
     let _random_axis = stream.read_byte_bool()?;
-    stream.skip(12); // axis vec3
+    stream.skip(12)?; // axis vec3
     Ok(NiPSysBlock {
         original_type: "NiPSysRotationModifier".to_string(),
     })
@@ -237,7 +237,7 @@ pub fn parse_spawn_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _percentage_spawned = stream.read_f32_le()?;
     let _min_num_to_spawn = stream.read_u16_le()?;
     let _max_num_to_spawn = stream.read_u16_le()?;
-    stream.skip(4 * 4); // 4 floats
+    stream.skip(4 * 4)?; // 4 floats
     Ok(NiPSysBlock {
         original_type: "NiPSysSpawnModifier".to_string(),
     })
@@ -284,7 +284,7 @@ pub fn parse_float_modifier(stream: &mut NifStream, type_name: &str) -> io::Resu
 pub fn parse_inherit_velocity_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     let _inherit_object = stream.read_block_ref()?;
-    stream.skip(4 * 3); // 3 floats
+    stream.skip(4 * 3)?; // 3 floats
     Ok(NiPSysBlock {
         original_type: "BSPSysInheritVelocityModifier".to_string(),
     })
@@ -293,7 +293,7 @@ pub fn parse_inherit_velocity_modifier(stream: &mut NifStream) -> io::Result<NiP
 /// BSPSysRecycleBoundModifier: base + 2×vec3 + target_ref
 pub fn parse_recycle_bound_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
-    stream.skip(12 + 12); // 2 vec3s
+    stream.skip(12 + 12)?; // 2 vec3s
     let _target = stream.read_block_ref()?;
     Ok(NiPSysBlock {
         original_type: "BSPSysRecycleBoundModifier".to_string(),
@@ -303,7 +303,7 @@ pub fn parse_recycle_bound_modifier(stream: &mut NifStream) -> io::Result<NiPSys
 /// BSPSysSubTexModifier: base + 7 floats
 pub fn parse_sub_tex_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
-    stream.skip(4 * 7); // 7 floats
+    stream.skip(4 * 7)?; // 7 floats
     Ok(NiPSysBlock {
         original_type: "BSPSysSubTexModifier".to_string(),
     })
@@ -312,7 +312,7 @@ pub fn parse_sub_tex_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock>
 /// BSPSysLODModifier: base + 4 floats
 pub fn parse_lod_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
-    stream.skip(4 * 4); // 4 floats
+    stream.skip(4 * 4)?; // 4 floats
     Ok(NiPSysBlock {
         original_type: "BSPSysLODModifier".to_string(),
     })
@@ -322,7 +322,7 @@ pub fn parse_lod_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
 pub fn parse_scale_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     let count = stream.read_u32_le()? as u64;
-    stream.skip(count * 4);
+    stream.skip(count * 4)?;
     Ok(NiPSysBlock {
         original_type: "BSPSysScaleModifier".to_string(),
     })
@@ -331,7 +331,7 @@ pub fn parse_scale_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
 /// BSPSysSimpleColorModifier (FO3+): base + 6 floats + 3 Color4s
 pub fn parse_simple_color_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
-    stream.skip(4 * 6 + 4 * 4 * 3); // 6 floats + 3 Color4
+    stream.skip(4 * 6 + 4 * 4 * 3)?; // 6 floats + 3 Color4
     Ok(NiPSysBlock {
         original_type: "BSPSysSimpleColorModifier".to_string(),
     })
@@ -352,7 +352,7 @@ pub fn parse_strip_update_modifier(stream: &mut NifStream) -> io::Result<NiPSysB
 pub fn parse_box_emitter(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     skip_volume_emitter_base(stream)?;
-    stream.skip(4 * 3); // width, height, depth
+    stream.skip(4 * 3)?; // width, height, depth
     Ok(NiPSysBlock {
         original_type: "NiPSysBoxEmitter".to_string(),
     })
@@ -362,7 +362,7 @@ pub fn parse_box_emitter(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
 pub fn parse_cylinder_emitter(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     skip_volume_emitter_base(stream)?;
-    stream.skip(4 * 2); // radius, height
+    stream.skip(4 * 2)?; // radius, height
     Ok(NiPSysBlock {
         original_type: "NiPSysCylinderEmitter".to_string(),
     })
@@ -398,7 +398,7 @@ pub fn parse_mesh_emitter(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     }
     let _initial_velocity_type = stream.read_u32_le()?;
     let _emission_type = stream.read_u32_le()?;
-    stream.skip(12); // emission_axis vec3
+    stream.skip(12)?; // emission_axis vec3
     Ok(NiPSysBlock {
         original_type: "NiPSysMeshEmitter".to_string(),
     })
@@ -409,7 +409,7 @@ pub fn parse_mesh_emitter(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
 /// NiPSysPlanarCollider: collider_base + 2 floats + 2 vec3s
 pub fn parse_planar_collider(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     skip_collider_base(stream)?;
-    stream.skip(4 * 2 + 12 * 2); // 2 floats + 2 vec3s
+    stream.skip(4 * 2 + 12 * 2)?; // 2 floats + 2 vec3s
     Ok(NiPSysBlock {
         original_type: "NiPSysPlanarCollider".to_string(),
     })
@@ -433,7 +433,7 @@ pub fn parse_field_modifier_vec3(
 ) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     skip_field_modifier_base(stream)?;
-    stream.skip(12); // direction vec3
+    stream.skip(12)?; // direction vec3
     Ok(NiPSysBlock {
         original_type: type_name.to_string(),
     })
@@ -444,7 +444,7 @@ pub fn parse_drag_field_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlo
     let _base = NiPSysModifierBase::parse(stream)?;
     skip_field_modifier_base(stream)?;
     let _use_direction = stream.read_byte_bool()?;
-    stream.skip(12); // direction vec3
+    stream.skip(12)?; // direction vec3
     Ok(NiPSysBlock {
         original_type: "NiPSysDragFieldModifier".to_string(),
     })
@@ -464,8 +464,8 @@ pub fn parse_turbulence_field_modifier(stream: &mut NifStream) -> io::Result<NiP
 pub fn parse_air_field_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     skip_field_modifier_base(stream)?;
-    stream.skip(12); // direction vec3
-    stream.skip(4 * 2); // air friction + inherit velocity
+    stream.skip(12)?; // direction vec3
+    stream.skip(4 * 2)?; // air friction + inherit velocity
     let _inherit_rotation = stream.read_byte_bool()?;
     let _component_only = stream.read_byte_bool()?;
     let _enable_spread = stream.read_byte_bool()?;
@@ -597,20 +597,20 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
         // The base parser reads num_vertices — we need it. Rather than refactoring,
         // count from the vertices vec.
         let count = _verts.len();
-        stream.skip(count as u64 * 4);
+        stream.skip(count as u64 * 4)?;
     }
     // Num Active Particles (u16) — since 10.0.1.0
     let _active_particles = stream.read_u16_le()?;
     let has_sizes = stream.read_byte_bool()?;
     if has_sizes {
-        stream.skip(_verts.len() as u64 * 4);
+        stream.skip(_verts.len() as u64 * 4)?;
     }
 
     // Rotations: since v10.0.1.0
     if stream.version() >= crate::version::NifVersion(0x0A000100) {
         let has_rotations = stream.read_byte_bool()?;
         if has_rotations {
-            stream.skip(_verts.len() as u64 * 16); // quaternions (4×f32)
+            stream.skip(_verts.len() as u64 * 16)?; // quaternions (4×f32)
         }
     }
 
@@ -618,11 +618,11 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
     if stream.version() >= crate::version::NifVersion(0x14000004) {
         let has_rotation_angles = stream.read_byte_bool()?;
         if has_rotation_angles {
-            stream.skip(_verts.len() as u64 * 4);
+            stream.skip(_verts.len() as u64 * 4)?;
         }
         let has_rotation_axes = stream.read_byte_bool()?;
         if has_rotation_axes {
-            stream.skip(_verts.len() as u64 * 12); // vec3
+            stream.skip(_verts.len() as u64 * 12)?; // vec3
         }
     }
 
@@ -630,7 +630,7 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
     if type_name != "NiParticlesData" {
         let has_rotation_speeds = stream.read_byte_bool()?;
         if has_rotation_speeds {
-            stream.skip(_verts.len() as u64 * 4);
+            stream.skip(_verts.len() as u64 * 4)?;
         }
         // Num Added + Added Particles Base: since 20.0.0.2 until 20.2.0.7
         if stream.version() >= crate::version::NifVersion(0x14000002)
@@ -686,13 +686,13 @@ pub fn parse_emitter_ctlr_data(stream: &mut NifStream) -> io::Result<NiPSysBlock
                 ));
             }
         };
-        stream.skip(key_size * num_keys as u64);
+        stream.skip(key_size * num_keys as u64)?;
     }
     // Visibility keys: num(u32) + Key<byte> array
     let num_vis = stream.read_u32_le()? as u64;
     if num_vis > 0 {
         // Each key<byte>: time(f32) + value(u8) = 5 bytes
-        stream.skip(num_vis * 5);
+        stream.skip(num_vis * 5)?;
     }
     Ok(NiPSysBlock {
         original_type: "NiPSysEmitterCtlrData".to_string(),

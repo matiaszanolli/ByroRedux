@@ -367,7 +367,7 @@ impl BsTriShape {
 
                 // Tangent (ByteVector3 + bitangent Z)
                 if vertex_attrs & VF_TANGENTS != 0 && vertex_attrs & VF_NORMALS != 0 {
-                    stream.skip(4); // 3 bytes tangent + 1 byte bitangent Z
+                    stream.skip(4)?; // 3 bytes tangent + 1 byte bitangent Z
                 }
 
                 // Vertex colors (RGBA as 4 × u8)
@@ -390,7 +390,7 @@ impl BsTriShape {
 
                 // Eye data (f32)
                 if vertex_attrs & VF_EYE_DATA != 0 {
-                    stream.skip(4);
+                    stream.skip(4)?;
                 }
 
                 // Ensure we consumed exactly vertex_size_bytes.
@@ -398,7 +398,7 @@ impl BsTriShape {
                 // vertex descriptor), report an error instead of wrapping to a huge skip.
                 let consumed = (stream.position() - vert_start) as usize;
                 if consumed < vertex_size_bytes {
-                    stream.skip((vertex_size_bytes - consumed) as u64);
+                    stream.skip((vertex_size_bytes - consumed) as u64)?;
                 } else if consumed > vertex_size_bytes {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -426,7 +426,7 @@ impl BsTriShape {
                     let skip_bytes = (num_vertices as u64) * 6 // half-float positions
                         + (num_vertices as u64) * 6 // half-float normals
                         + (num_triangles as u64) * 6; // triangle indices
-                    stream.skip(skip_bytes);
+                    stream.skip(skip_bytes)?;
                 }
             }
         }
@@ -637,9 +637,9 @@ pub(crate) fn parse_geometry_data_base(
     // Tangents + bitangents (if has_normals and dataFlags bit 12 set = NBT method)
     if has_normals && data_flags & 0xF000 != 0 {
         // Skip tangents (num_vertices * 3 floats)
-        stream.skip(num_vertices as u64 * 12);
+        stream.skip(num_vertices as u64 * 12)?;
         // Skip bitangents (num_vertices * 3 floats)
-        stream.skip(num_vertices as u64 * 12);
+        stream.skip(num_vertices as u64 * 12)?;
     }
 
     // Bounding sphere
@@ -721,7 +721,7 @@ impl NiTriShapeData {
         let num_match_groups = stream.read_u16_le()? as usize;
         for _ in 0..num_match_groups {
             let count = stream.read_u16_le()? as usize;
-            stream.skip(count as u64 * 2); // u16 per entry
+            stream.skip(count as u64 * 2)?; // u16 per entry
         }
 
         Ok(Self {

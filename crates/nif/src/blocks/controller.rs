@@ -701,7 +701,7 @@ impl NiMorphData {
                         ));
                     }
                 };
-                stream.skip(key_size * num_keys);
+                stream.skip(key_size * num_keys)?;
             }
 
             if has_legacy_weight {

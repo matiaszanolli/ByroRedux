@@ -98,19 +98,19 @@ impl BhkRigidBody {
         let shape_ref = stream.read_block_ref()?;
         let havok_filter = stream.read_u32_le()?;
         // bhkWorldObjectCInfo: 4 unused + broadphase(1) + 3 unused + 3 property u32s = 20 bytes
-        stream.skip(20);
+        stream.skip(20)?;
 
         // bhkEntityCInfo: response(1) + unused(1) + callback_delay(2) = 4 bytes
-        stream.skip(4);
+        stream.skip(4)?;
 
         if bsver <= 34 {
             // bhkRigidBodyCInfo550_660 (Oblivion / FO3)
             // Duplicated filter + entity CInfo (since 10.1.0.0)
-            stream.skip(4); // unused
+            stream.skip(4)?; // unused
             let _cinfo_filter = stream.read_u32_le()?;
-            stream.skip(4); // unused
-            stream.skip(4); // response + unused + callback_delay
-            stream.skip(4); // unused
+            stream.skip(4)?; // unused
+            stream.skip(4)?; // response + unused + callback_delay
+            stream.skip(4)?; // unused
         }
 
         let translation = read_vec4(stream)?;
@@ -164,14 +164,14 @@ impl BhkRigidBody {
 
         if bsver <= 34 {
             // Oblivion/FO3: 12 bytes unused padding after quality type
-            stream.skip(12);
+            stream.skip(12)?;
         } else if bsver < 130 {
             // Skyrim: autoRemoveLevel(1) + responseModifierFlags(1) + numShapeKeysInContactPoint(1)
             // + forceCollidedOntoPPU(1) = 4 bytes
-            stream.skip(4);
+            stream.skip(4)?;
         } else {
             // FO4+: different padding
-            stream.skip(4);
+            stream.skip(4)?;
         }
 
         // Constraint refs
@@ -265,7 +265,7 @@ impl BhkBoxShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let material = stream.read_u32_le()?;
         let radius = stream.read_f32_le()?;
-        stream.skip(8); // unused
+        stream.skip(8)?; // unused
         let dx = stream.read_f32_le()?;
         let dy = stream.read_f32_le()?;
         let dz = stream.read_f32_le()?;
@@ -302,7 +302,7 @@ impl BhkCapsuleShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let material = stream.read_u32_le()?;
         let radius = stream.read_f32_le()?;
-        stream.skip(8); // unused
+        stream.skip(8)?; // unused
         let p1x = stream.read_f32_le()?;
         let p1y = stream.read_f32_le()?;
         let p1z = stream.read_f32_le()?;
@@ -345,11 +345,11 @@ impl BhkCylinderShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let material = stream.read_u32_le()?;
         let radius = stream.read_f32_le()?;
-        stream.skip(8); // unused
+        stream.skip(8)?; // unused
         let point1 = read_vec4(stream)?;
         let point2 = read_vec4(stream)?;
         let cylinder_radius = stream.read_f32_le()?;
-        stream.skip(12); // unused padding
+        stream.skip(12)?; // unused padding
         Ok(Self {
             material,
             radius,
@@ -385,7 +385,7 @@ impl BhkConvexVerticesShape {
         let material = stream.read_u32_le()?;
         let radius = stream.read_f32_le()?;
         // Two bhkWorldObjCInfoProperty structs (12 bytes each)
-        stream.skip(24);
+        stream.skip(24)?;
         let num_vertices = stream.read_u32_le()? as usize;
         let mut vertices = Vec::with_capacity(num_vertices);
         for _ in 0..num_vertices {
@@ -433,7 +433,7 @@ impl BhkListShape {
         }
         let material = stream.read_u32_le()?;
         // Two bhkWorldObjCInfoProperty structs (12 bytes each)
-        stream.skip(24);
+        stream.skip(24)?;
         let num_filters = stream.read_u32_le()? as usize;
         let mut filters = Vec::with_capacity(num_filters);
         for _ in 0..num_filters {
@@ -470,7 +470,7 @@ impl BhkTransformShape {
         let shape_ref = stream.read_block_ref()?;
         let material = stream.read_u32_le()?;
         let radius = stream.read_f32_le()?;
-        stream.skip(8); // unused
+        stream.skip(8)?; // unused
         let mut transform = [[0.0f32; 4]; 4];
         for row in &mut transform {
             for val in row.iter_mut() {
@@ -510,7 +510,7 @@ impl NiObject for BhkMoppBvTreeShape {
 impl BhkMoppBvTreeShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let shape_ref = stream.read_block_ref()?; // bhkBvTreeShape
-        stream.skip(12); // unused
+        stream.skip(12)?; // unused
         let scale = stream.read_f32_le()?;
         let data_size = stream.read_u32_le()? as usize;
         let origin = read_vec4(stream)?; // since 10.1.0.0 (always present)
@@ -552,7 +552,7 @@ impl BhkNiTriStripsShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let material = stream.read_u32_le()?;
         let radius = stream.read_f32_le()?;
-        stream.skip(20); // unused
+        stream.skip(20)?; // unused
         let _grow_by = stream.read_u32_le()?;
         // Scale: since 10.1.0.0 (always present for Oblivion+)
         let _scale = read_vec4(stream)?;
@@ -624,9 +624,9 @@ impl BhkPackedNiTriStripsShape {
         };
 
         let _user_data = stream.read_u32_le()?;
-        stream.skip(4); // unused
+        stream.skip(4)?; // unused
         let _radius = stream.read_f32_le()?;
-        stream.skip(4); // unused
+        stream.skip(4)?; // unused
         let scale = read_vec4(stream)?;
         let _radius_copy = stream.read_f32_le()?;
         let _scale_copy = read_vec4(stream)?;
@@ -712,7 +712,7 @@ impl HkPackedNiTriStripsData {
         if version >= crate::version::NifVersion::V20_2_0_7 {
             let num_sub_shapes = stream.read_u16_le()? as usize;
             for _ in 0..num_sub_shapes {
-                stream.skip(12); // HkSubPartData: filter(4) + numVerts(4) + material(4)
+                stream.skip(12)?; // HkSubPartData: filter(4) + numVerts(4) + material(4)
             }
         }
 
@@ -747,7 +747,7 @@ impl BhkSimpleShapePhantom {
         // bhkWorldObject: shape ref + filter + world CInfo (20 bytes)
         let shape_ref = stream.read_block_ref()?;
         let havok_filter = stream.read_u32_le()?;
-        stream.skip(20); // bhkWorldObjectCInfo
+        stream.skip(20)?; // bhkWorldObjectCInfo
 
         // bhkPhantom / bhkShapePhantom / bhkSimpleShapePhantom: 4x4 transform
         let mut transform = [[0.0f32; 4]; 4];
@@ -923,11 +923,11 @@ impl BhkCompressedMeshShapeData {
 
         // Material arrays (unused but must be consumed)
         let num_mat32 = stream.read_u32_le()? as usize;
-        stream.skip(num_mat32 as u64 * 4);
+        stream.skip(num_mat32 as u64 * 4)?;
         let num_mat16 = stream.read_u32_le()? as usize;
-        stream.skip(num_mat16 as u64 * 4);
+        stream.skip(num_mat16 as u64 * 4)?;
         let num_mat8 = stream.read_u32_le()? as usize;
-        stream.skip(num_mat8 as u64 * 4);
+        stream.skip(num_mat8 as u64 * 4)?;
 
         // Chunk materials: (SkyrimHavokMaterial, HavokFilter) = 2×u32 = 8 bytes each
         let num_chunk_materials = stream.read_u32_le()? as usize;
@@ -1034,7 +1034,7 @@ impl BhkCompressedMeshShapeData {
 
             // Welding info
             let num_welding = stream.read_u32_le()? as usize;
-            stream.skip(num_welding as u64 * 2);
+            stream.skip(num_welding as u64 * 2)?;
 
             chunks.push(CmsChunk {
                 translation,

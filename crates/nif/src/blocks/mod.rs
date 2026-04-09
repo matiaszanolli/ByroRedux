@@ -224,7 +224,7 @@ pub fn parse_block(
             if let Some(size) = block_size {
                 let consumed = stream.position() - start;
                 if consumed < size as u64 {
-                    stream.skip(size as u64 - consumed);
+                    stream.skip(size as u64 - consumed)?;
                 }
             }
             Ok(Box::new(shape))
@@ -318,7 +318,7 @@ pub fn parse_block(
             if let Some(size) = block_size {
                 let consumed = stream.position() - start;
                 if consumed < size as u64 {
-                    stream.skip(size as u64 - consumed);
+                    stream.skip(size as u64 - consumed)?;
                 }
             }
             Ok(Box::new(block))

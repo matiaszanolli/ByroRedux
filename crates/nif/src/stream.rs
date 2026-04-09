@@ -60,9 +60,25 @@ impl<'a> NifStream<'a> {
         self.cursor.set_position(pos);
     }
 
-    pub fn skip(&mut self, n: u64) {
+    /// Advance the cursor by `n` bytes.
+    ///
+    /// Returns `UnexpectedEof` if the skip would move past the end of
+    /// the backing data, or if `pos + n` overflows `u64`. The cursor is
+    /// NOT advanced on error, so callers can rely on block_size recovery.
+    pub fn skip(&mut self, n: u64) -> io::Result<()> {
         let pos = self.cursor.position();
-        self.cursor.set_position(pos + n);
+        let end = pos.checked_add(n).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::UnexpectedEof, "skip overflow")
+        })?;
+        let len = self.cursor.get_ref().len() as u64;
+        if end > len {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("skip({n}) at position {pos} would exceed data length {len}"),
+            ));
+        }
+        self.cursor.set_position(end);
+        Ok(())
     }
 
     // ── Primitive reads ────────────────────────────────────────────────
@@ -510,5 +526,38 @@ mod tests {
         assert_eq!(t.rotation.rows[0], [0.0, -1.0, 0.0]);
         assert_eq!(t.rotation.rows[1], [1.0, 0.0, 0.0]);
         assert_eq!(t.scale, 1.0);
+    }
+
+    #[test]
+    fn skip_within_bounds_succeeds() {
+        let data = [0u8; 16];
+        let header = test_header(NifVersion::V20_2_0_7);
+        let mut stream = NifStream::new(&data, &header);
+        assert!(stream.skip(8).is_ok());
+        assert_eq!(stream.position(), 8);
+        assert!(stream.skip(8).is_ok());
+        assert_eq!(stream.position(), 16);
+    }
+
+    #[test]
+    fn skip_past_end_returns_error() {
+        let data = [0u8; 10];
+        let header = test_header(NifVersion::V20_2_0_7);
+        let mut stream = NifStream::new(&data, &header);
+        let err = stream.skip(11).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        // Cursor must NOT have advanced on error.
+        assert_eq!(stream.position(), 0);
+    }
+
+    #[test]
+    fn skip_overflow_returns_error() {
+        let data = [0u8; 10];
+        let header = test_header(NifVersion::V20_2_0_7);
+        let mut stream = NifStream::new(&data, &header);
+        stream.skip(5).unwrap();
+        let err = stream.skip(u64::MAX).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(stream.position(), 5);
     }
 }
