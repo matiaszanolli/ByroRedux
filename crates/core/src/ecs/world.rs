@@ -147,34 +147,13 @@ impl World {
 
     /// Check if an entity has a specific component.
     pub fn has<T: Component>(&self, entity: EntityId) -> bool {
-        self.storages.get(&TypeId::of::<T>()).is_some_and(|lock| {
-            let type_id = TypeId::of::<T>();
-            lock_tracker::track_read(type_id, std::any::type_name::<T>());
-            let guard = lock.read().unwrap_or_else(|_| storage_lock_poisoned::<T>());
-            let result = guard
-                .downcast_ref::<T::Storage>()
-                .expect("storage type mismatch")
-                .contains(entity);
-            drop(guard);
-            lock_tracker::untrack_read(type_id);
-            result
-        })
+        self.query::<T>()
+            .is_some_and(|q| q.contains(entity))
     }
 
     /// Returns the number of entities that have component `T`.
     pub fn count<T: Component>(&self) -> usize {
-        self.storages.get(&TypeId::of::<T>()).map_or(0, |lock| {
-            let type_id = TypeId::of::<T>();
-            lock_tracker::track_read(type_id, std::any::type_name::<T>());
-            let guard = lock.read().unwrap_or_else(|_| storage_lock_poisoned::<T>());
-            let result = guard
-                .downcast_ref::<T::Storage>()
-                .expect("storage type mismatch")
-                .len();
-            drop(guard);
-            lock_tracker::untrack_read(type_id);
-            result
-        })
+        self.query::<T>().map_or(0, |q| q.len())
     }
 
     /// Returns the next entity id that will be assigned (monotonic high-water mark).
