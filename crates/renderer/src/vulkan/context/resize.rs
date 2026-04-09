@@ -20,8 +20,11 @@ impl VulkanContext {
             for &fb in &self.framebuffers {
                 self.device.destroy_framebuffer(fb, None);
             }
-            // Depth: view → free allocation → destroy image.
+            // Depth: view → image → free allocation. The image must be
+            // destroyed while its bound memory is still valid (Vulkan spec
+            // VUID-vkFreeMemory-memory-00677).
             self.device.destroy_image_view(self.depth_image_view, None);
+            self.device.destroy_image(self.depth_image, None);
             if let Some(alloc) = self.depth_allocation.take() {
                 self.allocator
                     .as_ref()
@@ -31,7 +34,6 @@ impl VulkanContext {
                     .free(alloc)
                     .expect("Failed to free depth allocation");
             }
-            self.device.destroy_image(self.depth_image, None);
 
             // Destroy old pipelines before the render pass they reference.
             self.device.destroy_pipeline(self.pipeline, None);

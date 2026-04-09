@@ -356,7 +356,11 @@ impl Drop for VulkanContext {
             }
 
             // Destroy depth resources before the allocator.
+            // Order: view → image → free allocation. The image must be
+            // destroyed while its bound memory is still valid (Vulkan spec
+            // VUID-vkFreeMemory-memory-00677).
             self.device.destroy_image_view(self.depth_image_view, None);
+            self.device.destroy_image(self.depth_image, None);
             if let Some(alloc) = self.depth_allocation.take() {
                 if let Some(ref allocator) = self.allocator {
                     allocator
@@ -366,7 +370,6 @@ impl Drop for VulkanContext {
                         .expect("Failed to free depth allocation");
                 }
             }
-            self.device.destroy_image(self.depth_image, None);
 
             if let Some(ref alloc) = self.allocator {
                 self.mesh_registry.destroy_all(&self.device, alloc);
