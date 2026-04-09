@@ -6,6 +6,7 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::mesh::GpuMesh;
 use crate::vertex::Vertex;
 use crate::vulkan::context::DrawCommand;
@@ -29,14 +30,24 @@ pub struct TlasState {
 }
 
 /// Manages BLAS and TLAS for RT ray queries.
+///
+/// TLAS state is double-buffered per frame-in-flight to avoid
+/// synchronization hazards: each frame slot has its own accel structure,
+/// instance buffer, and scratch buffer. The per-frame fence wait
+/// guarantees the previous use of each slot is complete before reuse,
+/// so no additional barriers or `device_wait_idle` calls are needed.
 pub struct AccelerationManager {
     accel_loader: ash::khr::acceleration_structure::Device,
     /// One BLAS per mesh in MeshRegistry (indexed by mesh handle).
     blas_entries: Vec<Option<BlasEntry>>,
-    pub tlas: Option<TlasState>,
-    /// Persisted TLAS scratch buffer (reused across rebuilds).
-    scratch_buffer: Option<GpuBuffer>,
+    /// Per-frame-in-flight TLAS state. Each slot is independently
+    /// created/resized when that frame slot first needs it.
+    pub tlas: [Option<TlasState>; MAX_FRAMES_IN_FLIGHT],
+    /// Per-frame-in-flight TLAS scratch buffers (reused across rebuilds).
+    scratch_buffers: [Option<GpuBuffer>; MAX_FRAMES_IN_FLIGHT],
     /// Persisted BLAS scratch buffer (reused across builds, grows to high-water mark).
+    /// BLAS builds use one-time command buffers with a fence wait, so a single
+    /// shared buffer is safe (no overlapping BLAS builds).
     blas_scratch_buffer: Option<GpuBuffer>,
 }
 
@@ -46,8 +57,8 @@ impl AccelerationManager {
         Self {
             accel_loader,
             blas_entries: Vec::new(),
-            tlas: None,
-            scratch_buffer: None,
+            tlas: [None, None],
+            scratch_buffers: [None, None],
             blas_scratch_buffer: None,
         }
     }
@@ -216,7 +227,12 @@ impl AccelerationManager {
         Ok(())
     }
 
-    /// Build or rebuild the TLAS from draw commands.
+    /// Build or rebuild the TLAS from draw commands for a specific frame-in-flight slot.
+    ///
+    /// Each frame slot has its own TLAS resources (accel structure, instance buffer,
+    /// scratch buffer), so overlapping frames cannot interfere. The caller's fence
+    /// wait guarantees the previous use of this slot is complete.
+    ///
     /// Records commands into `cmd` — caller must ensure a memory barrier after.
     pub unsafe fn build_tlas(
         &mut self,
@@ -224,6 +240,7 @@ impl AccelerationManager {
         allocator: &SharedAllocator,
         cmd: vk::CommandBuffer,
         draw_commands: &[DrawCommand],
+        frame_index: usize,
     ) -> Result<()> {
         // Build instance array.
         let mut instances: Vec<vk::AccelerationStructureInstanceKHR> = Vec::new();
@@ -262,22 +279,24 @@ impl AccelerationManager {
         // Even with 0 instances, we build a valid (empty) TLAS so the
         // descriptor set binding is always valid for the shader.
 
-        // Create/resize instance buffer if needed.
-        let need_new_tlas =
-            self.tlas.is_none() || self.tlas.as_ref().unwrap().max_instances < instance_count;
+        // Create/resize instance buffer if needed for this frame slot.
+        let need_new_tlas = self.tlas[frame_index].is_none()
+            || self.tlas[frame_index]
+                .as_ref()
+                .unwrap()
+                .max_instances
+                < instance_count;
 
         if need_new_tlas {
-            // Destroy old TLAS. device_wait_idle is needed because the old
-            // TLAS may be referenced by an in-flight command buffer from
-            // another frame slot. This is rare — initial capacity of 4096
-            // covers most scenes without resize.
-            if let Some(mut old) = self.tlas.take() {
-                log::warn!(
-                    "TLAS resize: {} → {} instances (GPU stall — consider increasing initial capacity)",
+            // Destroy old TLAS for this frame slot. The fence wait in
+            // draw_frame guarantees this slot's previous GPU work is
+            // complete, so no device_wait_idle is needed.
+            if let Some(mut old) = self.tlas[frame_index].take() {
+                log::info!(
+                    "TLAS[{frame_index}] resize: {} → {} instances",
                     old.max_instances,
                     instance_count,
                 );
-                device.device_wait_idle().ok();
                 self.accel_loader
                     .destroy_acceleration_structure(old.accel, None);
                 old.buffer.destroy(device, allocator);
@@ -348,19 +367,19 @@ impl AccelerationManager {
                 .create_acceleration_structure(&accel_info, None)
                 .context("Failed to create TLAS")?;
 
-            // Allocate scratch for TLAS.
-            if let Some(mut old_scratch) = self.scratch_buffer.take() {
+            // Allocate scratch for this frame slot.
+            if let Some(mut old_scratch) = self.scratch_buffers[frame_index].take() {
                 old_scratch.destroy(device, allocator);
             }
             // DEVICE_LOCAL: GPU-only scratch space during TLAS build.
-            self.scratch_buffer = Some(GpuBuffer::create_device_local_uninit(
+            self.scratch_buffers[frame_index] = Some(GpuBuffer::create_device_local_uninit(
                 device,
                 allocator,
                 sizes.build_scratch_size,
                 vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             )?);
 
-            self.tlas = Some(TlasState {
+            self.tlas[frame_index] = Some(TlasState {
                 accel,
                 buffer: tlas_buffer,
                 instance_buffer,
@@ -368,7 +387,7 @@ impl AccelerationManager {
             });
         }
 
-        let tlas = self.tlas.as_mut().unwrap();
+        let tlas = self.tlas[frame_index].as_mut().unwrap();
 
         // Write instances to buffer (host write).
         tlas.instance_buffer.write_mapped(device, &instances)?;
@@ -410,7 +429,7 @@ impl AccelerationManager {
 
         let scratch_address = device.get_buffer_device_address(
             &vk::BufferDeviceAddressInfo::default()
-                .buffer(self.scratch_buffer.as_ref().unwrap().buffer),
+                .buffer(self.scratch_buffers[frame_index].as_ref().unwrap().buffer),
         );
 
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
@@ -435,9 +454,9 @@ impl AccelerationManager {
         Ok(())
     }
 
-    /// Get the TLAS acceleration structure handle (for descriptor binding).
-    pub fn tlas_handle(&self) -> Option<vk::AccelerationStructureKHR> {
-        self.tlas.as_ref().map(|t| t.accel)
+    /// Get the TLAS acceleration structure handle for a frame slot (for descriptor binding).
+    pub fn tlas_handle(&self, frame_index: usize) -> Option<vk::AccelerationStructureKHR> {
+        self.tlas[frame_index].as_ref().map(|t| t.accel)
     }
 
     /// Destroy all acceleration structures and buffers.
@@ -449,14 +468,18 @@ impl AccelerationManager {
                 e.buffer.destroy(device, allocator);
             }
         }
-        if let Some(mut tlas) = self.tlas.take() {
-            self.accel_loader
-                .destroy_acceleration_structure(tlas.accel, None);
-            tlas.buffer.destroy(device, allocator);
-            tlas.instance_buffer.destroy(device, allocator);
+        for slot in &mut self.tlas {
+            if let Some(mut tlas) = slot.take() {
+                self.accel_loader
+                    .destroy_acceleration_structure(tlas.accel, None);
+                tlas.buffer.destroy(device, allocator);
+                tlas.instance_buffer.destroy(device, allocator);
+            }
         }
-        if let Some(mut scratch) = self.scratch_buffer.take() {
-            scratch.destroy(device, allocator);
+        for scratch in &mut self.scratch_buffers {
+            if let Some(mut s) = scratch.take() {
+                s.destroy(device, allocator);
+            }
         }
         if let Some(mut scratch) = self.blas_scratch_buffer.take() {
             scratch.destroy(device, allocator);

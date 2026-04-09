@@ -214,24 +214,24 @@ impl VulkanContext {
         let mut scene_buffers = scene_buffers;
         let accel_manager = if device_caps.ray_query_supported {
             let mut accel = AccelerationManager::new(&vk_instance, &device);
-            // Build an empty TLAS via one-time command buffer so all descriptor sets
-            // have a valid acceleration structure from frame 0.
-            {
-                let empty_draws: Vec<DrawCommand> = Vec::new();
+            // Build an empty TLAS per frame-in-flight slot via one-time command
+            // buffers so all descriptor sets have a valid acceleration structure
+            // from frame 0. Each build blocks until complete (fence wait inside
+            // with_one_time_commands), so no overlap between builds.
+            let empty_draws: Vec<DrawCommand> = Vec::new();
+            for f in 0..MAX_FRAMES_IN_FLIGHT {
                 super::texture::with_one_time_commands(
                     &device,
                     &graphics_queue,
                     command_pool,
                     |cmd| unsafe {
                         accel
-                            .build_tlas(&device, &gpu_allocator, cmd, &empty_draws)
+                            .build_tlas(&device, &gpu_allocator, cmd, &empty_draws, f)
                             .context("initial empty TLAS build")
                     },
                 )?;
-                if let Some(tlas_handle) = accel.tlas_handle() {
-                    for f in 0..MAX_FRAMES_IN_FLIGHT {
-                        scene_buffers.write_tlas(&device, f, tlas_handle);
-                    }
+                if let Some(tlas_handle) = accel.tlas_handle(f) {
+                    scene_buffers.write_tlas(&device, f, tlas_handle);
                 }
             }
             Some(accel)

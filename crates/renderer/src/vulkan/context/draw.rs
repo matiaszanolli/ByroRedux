@@ -114,7 +114,9 @@ impl VulkanContext {
         unsafe {
             if let Some(ref mut accel) = self.accel_manager {
                 if let Some(alloc) = self.allocator.as_ref() {
-                    if let Err(e) = accel.build_tlas(&self.device, alloc, cmd, draw_commands) {
+                    if let Err(e) =
+                        accel.build_tlas(&self.device, alloc, cmd, draw_commands, frame)
+                    {
                         log::warn!("TLAS build failed: {e}");
                     } else {
                         // Memory barrier: TLAS build → fragment shader read.
@@ -130,7 +132,7 @@ impl VulkanContext {
                             &[],
                             &[],
                         );
-                        if let Some(tlas_handle) = accel.tlas_handle() {
+                        if let Some(tlas_handle) = accel.tlas_handle(frame) {
                             self.scene_buffers
                                 .write_tlas(&self.device, frame, tlas_handle);
                         }
