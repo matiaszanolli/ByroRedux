@@ -131,6 +131,51 @@ impl Vertex {
     }
 }
 
+/// Lightweight UI vertex: position + UV only (20 bytes).
+///
+/// The UI overlay just needs position (already in NDC) and texture
+/// coordinates. Using this instead of the full 76-byte `Vertex` avoids
+/// feeding unused color/normal/bone attributes through the vertex input.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct UiVertex {
+    pub position: [f32; 3],
+    pub uv: [f32; 2],
+}
+
+impl UiVertex {
+    pub const fn new(position: [f32; 3], uv: [f32; 2]) -> Self {
+        Self { position, uv }
+    }
+
+    pub fn binding_description() -> vk::VertexInputBindingDescription {
+        vk::VertexInputBindingDescription {
+            binding: 0,
+            stride: std::mem::size_of::<Self>() as u32,
+            input_rate: vk::VertexInputRate::VERTEX,
+        }
+    }
+
+    pub fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
+        [
+            // location 0: position (vec3)
+            vk::VertexInputAttributeDescription {
+                location: 0,
+                binding: 0,
+                format: vk::Format::R32G32B32_SFLOAT,
+                offset: 0,
+            },
+            // location 1: uv (vec2)
+            vk::VertexInputAttributeDescription {
+                location: 1,
+                binding: 0,
+                format: vk::Format::R32G32_SFLOAT,
+                offset: 12, // after [f32; 3]
+            },
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,5 +202,17 @@ mod tests {
         let v = Vertex::new([0.0; 3], [1.0; 3], [0.0, 1.0, 0.0], [0.0; 2]);
         let sum: f32 = v.bone_weights.iter().sum();
         assert_eq!(sum, 0.0, "rigid marker: sum-of-weights must be exactly 0");
+    }
+
+    #[test]
+    fn ui_vertex_size() {
+        // Total = 12 (pos) + 8 (uv) = 20
+        assert_eq!(size_of::<UiVertex>(), 20);
+    }
+
+    #[test]
+    fn ui_vertex_offsets_match_struct_layout() {
+        assert_eq!(offset_of!(UiVertex, position), 0);
+        assert_eq!(offset_of!(UiVertex, uv), 12);
     }
 }

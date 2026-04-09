@@ -1,6 +1,6 @@
 //! Graphics pipeline creation and shader module loading.
 
-use crate::vertex::Vertex;
+use crate::vertex::{UiVertex, Vertex};
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -361,8 +361,10 @@ pub fn create_ui_pipeline(
             .name(entry_point),
     ];
 
-    let binding_descriptions = [Vertex::binding_description()];
-    let attribute_descriptions = Vertex::attribute_descriptions();
+    // UI pipeline uses the lightweight UiVertex (position + UV only, 20 bytes)
+    // instead of the full 76-byte Vertex with unused bone/normal/color fields.
+    let binding_descriptions = [UiVertex::binding_description()];
+    let attribute_descriptions = UiVertex::attribute_descriptions();
     let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
         .vertex_binding_descriptions(&binding_descriptions)
         .vertex_attribute_descriptions(&attribute_descriptions);

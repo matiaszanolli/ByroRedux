@@ -1,6 +1,6 @@
 //! Mesh registry — maps MeshHandle IDs to GPU buffers.
 
-use crate::vertex::Vertex;
+use crate::vertex::{UiVertex, Vertex};
 use crate::vulkan::allocator::SharedAllocator;
 use crate::vulkan::buffer::{GpuBuffer, StagingPool};
 use anyhow::Result;
@@ -33,13 +33,15 @@ impl MeshRegistry {
     /// Upload a mesh to the GPU and return its handle ID.
     ///
     /// Uses a staging buffer to place geometry in DEVICE_LOCAL memory.
-    pub fn upload(
+    /// The vertex type is generic (`Vertex` for scene meshes, `UiVertex`
+    /// for UI overlays) — the GPU buffer is format-agnostic.
+    pub fn upload<V: Copy>(
         &mut self,
         device: &ash::Device,
         allocator: &SharedAllocator,
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
-        vertices: &[Vertex],
+        vertices: &[V],
         indices: &[u32],
         rt_enabled: bool,
         mut staging_pool: Option<&mut StagingPool>,
@@ -328,6 +330,18 @@ pub fn fullscreen_quad_vertices() -> (Vec<Vertex>, Vec<u32>) {
             [0.0, 0.0, 1.0],
             [0.0, 0.0],
         ),
+    ];
+    let indices = vec![0, 1, 2, 2, 3, 0];
+    (vertices, indices)
+}
+
+/// Lightweight fullscreen quad for UI overlay — position + UV only (20 B/vertex).
+pub fn fullscreen_quad_ui_vertices() -> (Vec<UiVertex>, Vec<u32>) {
+    let vertices = vec![
+        UiVertex::new([-1.0, -1.0, 0.0], [0.0, 1.0]),
+        UiVertex::new([1.0, -1.0, 0.0], [1.0, 1.0]),
+        UiVertex::new([1.0, 1.0, 0.0], [1.0, 0.0]),
+        UiVertex::new([-1.0, 1.0, 0.0], [0.0, 0.0]),
     ];
     let indices = vec![0, 1, 2, 2, 3, 0];
     (vertices, indices)

@@ -2,11 +2,10 @@
 
 // UI overlay vertex shader — passthrough to clip space, no transforms.
 // Vertices are already in NDC ([-1,1] range).
+// Uses UiVertex (position + UV only, 20 bytes) — no bone/normal/color fields.
 
 layout(location = 0) in vec3 inPosition;
-layout(location = 1) in vec3 inColor;    // unused, but must match Vertex layout
-layout(location = 2) in vec3 inNormal;   // unused
-layout(location = 3) in vec2 inUV;
+layout(location = 1) in vec2 inUV;
 
 layout(location = 0) out vec2 fragUV;
 

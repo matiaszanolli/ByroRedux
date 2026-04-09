@@ -30,7 +30,7 @@ impl VulkanContext {
     /// Register the fullscreen quad mesh for UI overlay rendering.
     /// Call this once after creating the context.
     pub fn register_ui_quad(&mut self) -> Result<()> {
-        let (vertices, indices) = crate::mesh::fullscreen_quad_vertices();
+        let (vertices, indices) = crate::mesh::fullscreen_quad_ui_vertices();
         let allocator = self.allocator.as_ref().expect("allocator missing");
         let handle = self.mesh_registry.upload(
             &self.device,
