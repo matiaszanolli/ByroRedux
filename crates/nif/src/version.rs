@@ -61,8 +61,10 @@ pub enum NifVariant {
     Morrowind,
     /// Oblivion (NIF 20.0.0.5, user_version < 11)
     Oblivion,
-    /// Fallout 3 / Fallout New Vegas (NIF 20.2.0.7, uv=11, uv2≤34)
-    Fallout3NV,
+    /// Fallout 3 (NIF 20.2.0.7, uv=11, uv2<34 — typically BSVER 21)
+    Fallout3,
+    /// Fallout New Vegas (NIF 20.2.0.7, uv=11, uv2=34)
+    FalloutNV,
     /// Skyrim LE (NIF 20.2.0.7, uv=12, uv2=83)
     SkyrimLE,
     /// Skyrim SE (NIF 20.2.0.7, uv=12, uv2=100)
@@ -92,7 +94,8 @@ impl NifVariant {
         match (user_version, user_version_2) {
             // user_version < 11: Oblivion exports on v20.2.0.7 (NifSkope, older tools)
             (uv, _) if uv < 11 => Self::Oblivion,
-            (11, uv2) if uv2 <= 34 => Self::Fallout3NV,
+            (11, uv2) if uv2 < 34 => Self::Fallout3,
+            (11, 34) => Self::FalloutNV,
             (12, uv2) if uv2 <= 83 => Self::SkyrimLE,
             (12, uv2) if uv2 <= 100 => Self::SkyrimSE,
             // 101-129: unknown gap, treat as SkyrimSE (closest known)
@@ -109,7 +112,8 @@ impl NifVariant {
     pub fn bsver(self) -> u32 {
         match self {
             Self::Morrowind | Self::Oblivion => 0,
-            Self::Fallout3NV => 34,
+            Self::Fallout3 => 21,
+            Self::FalloutNV => 34,
             Self::SkyrimLE => 83,
             Self::SkyrimSE => 100,
             Self::Fallout4 => 130,
@@ -128,7 +132,7 @@ impl NifVariant {
     pub fn compact_material(self) -> bool {
         matches!(
             self,
-            Self::Fallout3NV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4
+            Self::Fallout3 | Self::FalloutNV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4
         )
     }
 
@@ -137,7 +141,7 @@ impl NifVariant {
     pub fn has_emissive_mult(self) -> bool {
         matches!(
             self,
-            Self::Fallout3NV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4
+            Self::Fallout3 | Self::FalloutNV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4
         )
     }
 
@@ -146,7 +150,7 @@ impl NifVariant {
     pub fn has_shader_emissive_color(self) -> bool {
         matches!(
             self,
-            Self::Fallout3NV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4
+            Self::Fallout3 | Self::FalloutNV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4
         )
     }
 
@@ -176,7 +180,7 @@ impl NifVariant {
     /// NiAVObject has Num Properties + Properties list.
     /// nif.xml: `#NI_BS_LTE_FO3#` (BSVER ≤ 34). Removed in Skyrim+.
     pub fn has_properties_list(self) -> bool {
-        matches!(self, Self::Morrowind | Self::Oblivion | Self::Fallout3NV)
+        matches!(self, Self::Morrowind | Self::Oblivion | Self::Fallout3 | Self::FalloutNV)
     }
 
     /// NiAVObject flags field is u32 (BSVER > 26). Older versions use u16.
@@ -184,7 +188,7 @@ impl NifVariant {
     pub fn avobject_flags_u32(self) -> bool {
         matches!(
             self,
-            Self::Fallout3NV
+            Self::Fallout3 | Self::FalloutNV
                 | Self::SkyrimLE
                 | Self::SkyrimSE
                 | Self::Fallout4
@@ -211,7 +215,7 @@ impl NifVariant {
     pub fn has_effects_list(self) -> bool {
         matches!(
             self,
-            Self::Morrowind | Self::Oblivion | Self::Fallout3NV | Self::SkyrimLE | Self::SkyrimSE
+            Self::Morrowind | Self::Oblivion | Self::Fallout3 | Self::FalloutNV | Self::SkyrimLE | Self::SkyrimSE
         )
     }
 
@@ -220,7 +224,7 @@ impl NifVariant {
     /// BSShaderProperty has ShaderType, ShaderFlags, ShaderFlags2, EnvMapScale.
     /// nif.xml: `#NI_BS_LTE_FO3#` (BSVER ≤ 34). Only FO3/FNV.
     pub fn has_shader_property_fo3_fields(self) -> bool {
-        matches!(self, Self::Fallout3NV)
+        matches!(self, Self::Fallout3 | Self::FalloutNV)
     }
 
     /// BSLightingShaderProperty uses FO4 shader flag format.
@@ -364,10 +368,18 @@ mod tests {
     }
 
     #[test]
-    fn detect_fallout3_nv() {
+    fn detect_fallout3() {
+        assert_eq!(
+            NifVariant::detect(NifVersion::V20_2_0_7, 11, 21),
+            NifVariant::Fallout3,
+        );
+    }
+
+    #[test]
+    fn detect_fallout_nv() {
         assert_eq!(
             NifVariant::detect(NifVersion::V20_2_0_7, 11, 34),
-            NifVariant::Fallout3NV,
+            NifVariant::FalloutNV,
         );
     }
 
@@ -413,7 +425,8 @@ mod tests {
 
     #[test]
     fn bsver_values() {
-        assert_eq!(NifVariant::Fallout3NV.bsver(), 34);
+        assert_eq!(NifVariant::Fallout3.bsver(), 21);
+        assert_eq!(NifVariant::FalloutNV.bsver(), 34);
         assert_eq!(NifVariant::SkyrimLE.bsver(), 83);
         assert_eq!(NifVariant::SkyrimSE.bsver(), 100);
         assert_eq!(NifVariant::Fallout4.bsver(), 130);
@@ -425,7 +438,7 @@ mod tests {
         // FNV and earlier have properties list on NiAVObject
         assert!(NifVariant::Morrowind.has_properties_list());
         assert!(NifVariant::Oblivion.has_properties_list());
-        assert!(NifVariant::Fallout3NV.has_properties_list());
+        assert!(NifVariant::FalloutNV.has_properties_list());
         // Skyrim+ removed it
         assert!(!NifVariant::SkyrimLE.has_properties_list());
         assert!(!NifVariant::SkyrimSE.has_properties_list());
@@ -435,7 +448,7 @@ mod tests {
     #[test]
     fn feature_shader_alpha_refs() {
         // Skyrim+ has dedicated shader/alpha property refs on NiGeometry
-        assert!(!NifVariant::Fallout3NV.has_shader_alpha_refs());
+        assert!(!NifVariant::FalloutNV.has_shader_alpha_refs());
         assert!(NifVariant::SkyrimLE.has_shader_alpha_refs());
         assert!(NifVariant::SkyrimSE.has_shader_alpha_refs());
         assert!(NifVariant::Fallout4.has_shader_alpha_refs());
@@ -444,7 +457,7 @@ mod tests {
     #[test]
     fn feature_effects_list() {
         // Everything before FO4 has effects list on NiNode
-        assert!(NifVariant::Fallout3NV.has_effects_list());
+        assert!(NifVariant::FalloutNV.has_effects_list());
         assert!(NifVariant::SkyrimSE.has_effects_list());
         assert!(!NifVariant::Fallout4.has_effects_list());
     }
@@ -452,20 +465,20 @@ mod tests {
     #[test]
     fn feature_compact_material() {
         assert!(!NifVariant::Oblivion.compact_material());
-        assert!(NifVariant::Fallout3NV.compact_material());
+        assert!(NifVariant::FalloutNV.compact_material());
         assert!(NifVariant::SkyrimSE.compact_material());
     }
 
     #[test]
     fn feature_dedicated_shader_refs() {
-        assert!(!NifVariant::Fallout3NV.has_dedicated_shader_refs());
+        assert!(!NifVariant::FalloutNV.has_dedicated_shader_refs());
         assert!(!NifVariant::SkyrimSE.has_dedicated_shader_refs());
         assert!(NifVariant::Fallout4.has_dedicated_shader_refs());
     }
 
     #[test]
     fn feature_material_crc() {
-        assert!(!NifVariant::Fallout3NV.has_material_crc());
+        assert!(!NifVariant::FalloutNV.has_material_crc());
         assert!(NifVariant::SkyrimLE.has_material_crc());
         assert!(NifVariant::Fallout4.has_material_crc());
     }
