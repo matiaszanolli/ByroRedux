@@ -130,7 +130,7 @@ impl AccelerationManager {
         };
 
         // Allocate result buffer in DEVICE_LOCAL memory (GPU-built, GPU-read only).
-        let result_buffer = GpuBuffer::create_device_local_uninit(
+        let mut result_buffer = GpuBuffer::create_device_local_uninit(
             device,
             allocator,
             sizes.acceleration_structure_size,
@@ -150,60 +150,77 @@ impl AccelerationManager {
                 .context("Failed to create BLAS")?
         };
 
-        // Reuse persisted BLAS scratch buffer; only reallocate if the current
-        // one is too small for this build.
-        let need_new_scratch = self
-            .blas_scratch_buffer
-            .as_ref()
-            .map_or(true, |b| b.size < sizes.build_scratch_size);
+        // Wrap the remaining fallible operations in a closure so we can
+        // clean up `accel` + `result_buffer` on any failure. Without this,
+        // a scratch allocation or command submission error would leak both.
+        let build_result = (|| -> Result<()> {
+            // Reuse persisted BLAS scratch buffer; only reallocate if the current
+            // one is too small for this build.
+            let need_new_scratch = self
+                .blas_scratch_buffer
+                .as_ref()
+                .map_or(true, |b| b.size < sizes.build_scratch_size);
 
-        if need_new_scratch {
-            if let Some(mut old) = self.blas_scratch_buffer.take() {
-                old.destroy(device, allocator);
+            if need_new_scratch {
+                if let Some(mut old) = self.blas_scratch_buffer.take() {
+                    old.destroy(device, allocator);
+                }
+                self.blas_scratch_buffer = Some(GpuBuffer::create_device_local_uninit(
+                    device,
+                    allocator,
+                    sizes.build_scratch_size,
+                    vk::BufferUsageFlags::STORAGE_BUFFER
+                        | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                )?);
             }
-            self.blas_scratch_buffer = Some(GpuBuffer::create_device_local_uninit(
-                device,
-                allocator,
-                sizes.build_scratch_size,
-                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            )?);
-        }
 
-        // SAFETY: scratch buffer was just created with SHADER_DEVICE_ADDRESS flag.
-        let scratch_address = unsafe {
-            device.get_buffer_device_address(
-                &vk::BufferDeviceAddressInfo::default()
-                    .buffer(self.blas_scratch_buffer.as_ref().unwrap().buffer),
-            )
-        };
+            // SAFETY: scratch buffer was just created with SHADER_DEVICE_ADDRESS flag.
+            let scratch_address = unsafe {
+                device.get_buffer_device_address(
+                    &vk::BufferDeviceAddressInfo::default()
+                        .buffer(self.blas_scratch_buffer.as_ref().unwrap().buffer),
+                )
+            };
 
-        // Build the BLAS via one-time command buffer.
-        // SAFETY: DeviceOrHostAddressKHR union — device_address field used for device builds.
-        let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
-            .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
-            .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-            .dst_acceleration_structure(accel)
-            .geometries(std::slice::from_ref(&geometry))
-            .scratch_data(vk::DeviceOrHostAddressKHR {
-                device_address: scratch_address,
-            });
+            // Build the BLAS via one-time command buffer.
+            // SAFETY: DeviceOrHostAddressKHR union — device_address field used for device builds.
+            let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+                .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+                .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+                .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+                .dst_acceleration_structure(accel)
+                .geometries(std::slice::from_ref(&geometry))
+                .scratch_data(vk::DeviceOrHostAddressKHR {
+                    device_address: scratch_address,
+                });
 
-        let range_info = vk::AccelerationStructureBuildRangeInfoKHR::default()
-            .primitive_count(primitive_count)
-            .primitive_offset(0)
-            .first_vertex(0);
+            let range_info = vk::AccelerationStructureBuildRangeInfoKHR::default()
+                .primitive_count(primitive_count)
+                .primitive_offset(0)
+                .first_vertex(0);
 
-        super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
+            super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
+                unsafe {
+                    self.accel_loader.cmd_build_acceleration_structures(
+                        cmd,
+                        &[build_info],
+                        &[std::slice::from_ref(&range_info)],
+                    );
+                }
+                Ok(())
+            })
+        })();
+
+        if let Err(e) = build_result {
+            // Clean up the accel structure and result buffer that were
+            // already created before the build failed.
             unsafe {
-                self.accel_loader.cmd_build_acceleration_structures(
-                    cmd,
-                    &[build_info],
-                    &[std::slice::from_ref(&range_info)],
-                );
+                self.accel_loader
+                    .destroy_acceleration_structure(accel, None);
             }
-            Ok(())
-        })?;
+            result_buffer.destroy(device, allocator);
+            return Err(e);
+        }
 
         // Get the BLAS device address.
         let device_address = unsafe {
@@ -310,7 +327,7 @@ impl AccelerationManager {
             let padded_size = (std::mem::size_of::<vk::AccelerationStructureInstanceKHR>()
                 * padded_count) as vk::DeviceSize;
 
-            let instance_buffer = GpuBuffer::create_host_visible(
+            let mut instance_buffer = GpuBuffer::create_host_visible(
                 device,
                 allocator,
                 padded_size,
@@ -349,13 +366,14 @@ impl AccelerationManager {
             );
 
             // DEVICE_LOCAL: GPU-built, GPU-read during ray queries.
-            let tlas_buffer = GpuBuffer::create_device_local_uninit(
+            let mut tlas_buffer = GpuBuffer::create_device_local_uninit(
                 device,
                 allocator,
                 sizes.acceleration_structure_size,
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
                     | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            )?;
+            )
+            .inspect_err(|_| instance_buffer.destroy(device, allocator))?;
 
             let accel_info = vk::AccelerationStructureCreateInfoKHR::default()
                 .buffer(tlas_buffer.buffer)
@@ -365,6 +383,10 @@ impl AccelerationManager {
             let accel = self
                 .accel_loader
                 .create_acceleration_structure(&accel_info, None)
+                .inspect_err(|_| {
+                    tlas_buffer.destroy(device, allocator);
+                    instance_buffer.destroy(device, allocator);
+                })
                 .context("Failed to create TLAS")?;
 
             // Allocate scratch for this frame slot.
@@ -372,12 +394,22 @@ impl AccelerationManager {
                 old_scratch.destroy(device, allocator);
             }
             // DEVICE_LOCAL: GPU-only scratch space during TLAS build.
-            self.scratch_buffers[frame_index] = Some(GpuBuffer::create_device_local_uninit(
+            let scratch_result = GpuBuffer::create_device_local_uninit(
                 device,
                 allocator,
                 sizes.build_scratch_size,
                 vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            )?);
+            );
+            match scratch_result {
+                Ok(scratch) => self.scratch_buffers[frame_index] = Some(scratch),
+                Err(e) => {
+                    self.accel_loader
+                        .destroy_acceleration_structure(accel, None);
+                    tlas_buffer.destroy(device, allocator);
+                    instance_buffer.destroy(device, allocator);
+                    return Err(e);
+                }
+            }
 
             self.tlas[frame_index] = Some(TlasState {
                 accel,
