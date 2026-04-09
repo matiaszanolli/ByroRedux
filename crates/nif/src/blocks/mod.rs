@@ -959,6 +959,54 @@ mod dispatch_tests {
         }
     }
 
+    /// Regression test for issue #108: `BSConnectPoint::Children.Skinned`
+    /// is a `byte` per nif.xml, not a `uint`. The previous parser read
+    /// 4 bytes instead of 1, eating the first 3 bytes of the following
+    /// count field. Verifies the byte read preserves the subsequent
+    /// count and string fields exactly.
+    #[test]
+    fn bs_connect_point_children_reads_skinned_as_byte() {
+        use crate::blocks::extra_data::BsConnectPointChildren;
+
+        let header = oblivion_header(); // inline-string path (pre-20.1.0.1)
+        let mut data = Vec::new();
+        // NiExtraData base: empty inline name
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // Skinned: 1 (true) — ONE byte, not four.
+        data.push(1u8);
+        // Num Connect Points: u32 = 2
+        data.extend_from_slice(&2u32.to_le_bytes());
+        // Two sized-string entries.
+        let s1 = b"HEAD";
+        data.extend_from_slice(&(s1.len() as u32).to_le_bytes());
+        data.extend_from_slice(s1);
+        let s2 = b"CAMERA";
+        data.extend_from_slice(&(s2.len() as u32).to_le_bytes());
+        data.extend_from_slice(s2);
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let block = parse_block(
+            "BSConnectPoint::Children",
+            &mut stream,
+            Some(data.len() as u32),
+        )
+        .expect("BSConnectPoint::Children should dispatch");
+        let cp = block
+            .as_any()
+            .downcast_ref::<BsConnectPointChildren>()
+            .expect("downcast to BsConnectPointChildren");
+        assert!(cp.skinned, "skinned byte should decode to true");
+        assert_eq!(cp.point_names.len(), 2);
+        assert_eq!(cp.point_names[0], "HEAD");
+        assert_eq!(cp.point_names[1], "CAMERA");
+        assert_eq!(
+            stream.position() as usize,
+            expected_len,
+            "BSConnectPoint::Children over-read the skinned flag"
+        );
+    }
+
     /// Build an "empty NiAVObject" body sized for Oblivion. Same prefix
     /// as the NiNode helper, minus the NiNode-specific children+effects
     /// trailers. Used for NiLight bodies.

@@ -460,7 +460,10 @@ impl NiObject for BsConnectPointChildren {
 impl BsConnectPointChildren {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let name = stream.read_string()?;
-        let skinned = stream.read_u32_le()? != 0;
+        // nif.xml: `Skinned` is type `byte`, not `uint` — reading it as
+        // a u32 over-consumes 3 bytes of the following `Num Connect
+        // Points` count. See issue #108.
+        let skinned = stream.read_u8()? != 0;
         let count = stream.read_u32_le()? as usize;
         let mut point_names = Vec::with_capacity(count);
         for _ in 0..count {
