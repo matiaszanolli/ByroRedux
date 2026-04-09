@@ -24,6 +24,17 @@ pub(super) struct MaterialInfo {
     pub texture_path: Option<String>,
     pub normal_map: Option<String>,
     pub alpha_blend: bool,
+    /// Alpha-tested (cutout) rendering — vertices whose sampled texture
+    /// alpha falls below `alpha_threshold` should be `discard`-ed in the
+    /// fragment shader. Set when NiAlphaProperty.flags has bit 9 (0x200).
+    /// Mutually exclusive with `alpha_blend` in the importer: when a
+    /// material sets both bits (common on Gamebryo foliage and hair),
+    /// alpha-test wins because the discard + depth-write path sorts
+    /// cleanly, while alpha-blend produces z-sort artifacts.
+    pub alpha_test: bool,
+    /// Cutoff threshold for `alpha_test`, in the [0.0, 1.0] range —
+    /// `NiAlphaProperty.threshold` (u8) divided by 255.
+    pub alpha_threshold: f32,
     pub two_sided: bool,
     pub is_decal: bool,
     pub emissive_color: [f32; 3],
@@ -44,6 +55,8 @@ impl Default for MaterialInfo {
             texture_path: None,
             normal_map: None,
             alpha_blend: false,
+            alpha_test: false,
+            alpha_threshold: 0.0,
             two_sided: false,
             is_decal: false,
             emissive_color: [0.0, 0.0, 0.0],
@@ -158,9 +171,7 @@ pub(super) fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> Mat
     // Skyrim+: dedicated alpha_property_ref
     if let Some(idx) = shape.alpha_property_ref.index() {
         if let Some(alpha) = scene.get_as::<NiAlphaProperty>(idx) {
-            if alpha.flags & 1 != 0 {
-                info.alpha_blend = true;
-            }
+            apply_alpha_flags(&mut info, alpha);
         }
     }
 
@@ -170,11 +181,9 @@ pub(super) fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> Mat
             continue;
         };
 
-        if !info.alpha_blend {
+        if !info.alpha_blend && !info.alpha_test {
             if let Some(alpha) = scene.get_as::<NiAlphaProperty>(idx) {
-                if alpha.flags & 1 != 0 {
-                    info.alpha_blend = true;
-                }
+                apply_alpha_flags(&mut info, alpha);
             }
         }
 
@@ -264,6 +273,29 @@ pub(super) fn find_texture_path(scene: &NifScene, shape: &NiTriShape) -> Option<
     extract_material_info(scene, shape).texture_path
 }
 
+/// Decode an NiAlphaProperty onto a `MaterialInfo`. `NiAlphaProperty.flags`
+/// packs both alpha-blend (bit 0) and alpha-test (bit 9, mask 0x200) per
+/// nif.xml; `threshold` is a u8 in [0, 255]. See issue #152.
+///
+/// When a material sets both bits (common on Gamebryo foliage, hair,
+/// chain-link fences) we prefer alpha-test over alpha-blend — the
+/// discard + opaque-depth path gives clean cutouts without the z-sort
+/// artifacts that plague back-to-front blend on statics. `alpha_blend`
+/// is intentionally set to `false` in that case so the renderer binds
+/// the opaque pipeline.
+pub(super) fn apply_alpha_flags(info: &mut MaterialInfo, alpha: &NiAlphaProperty) {
+    let blend = alpha.flags & 0x001 != 0;
+    let test = alpha.flags & 0x200 != 0;
+    if test {
+        info.alpha_test = true;
+        info.alpha_threshold = alpha.threshold as f32 / 255.0;
+        // Prefer cutout to blending when both are set.
+        info.alpha_blend = false;
+    } else if blend {
+        info.alpha_blend = true;
+    }
+}
+
 /// Check if a BsTriShape is decal geometry (Skyrim+).
 pub(super) fn find_decal_bs(scene: &NifScene, shape: &BsTriShape) -> bool {
     if let Some(idx) = shape.shader_property_ref.index() {
@@ -274,4 +306,74 @@ pub(super) fn find_decal_bs(scene: &NifScene, shape: &BsTriShape) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod alpha_flag_tests {
+    //! Regression tests for issue #152 — NiAlphaProperty bit extraction.
+    //! Verify the cutout-vs-blend precedence and threshold scaling.
+    use super::*;
+    use crate::blocks::base::NiObjectNETData;
+
+    fn alpha_prop(flags: u16, threshold: u8) -> NiAlphaProperty {
+        NiAlphaProperty {
+            net: NiObjectNETData {
+                name: None,
+                extra_data_refs: Vec::new(),
+                controller_ref: crate::types::BlockRef::NULL,
+            },
+            flags,
+            threshold,
+        }
+    }
+
+    #[test]
+    fn alpha_blend_only_sets_blend() {
+        let mut info = MaterialInfo::default();
+        apply_alpha_flags(&mut info, &alpha_prop(0x0001, 128));
+        assert!(info.alpha_blend);
+        assert!(!info.alpha_test);
+        assert_eq!(info.alpha_threshold, 0.0);
+    }
+
+    #[test]
+    fn alpha_test_only_sets_test_and_scales_threshold() {
+        let mut info = MaterialInfo::default();
+        apply_alpha_flags(&mut info, &alpha_prop(0x0200, 128));
+        assert!(!info.alpha_blend);
+        assert!(info.alpha_test);
+        assert!((info.alpha_threshold - (128.0 / 255.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn alpha_test_and_blend_prefers_test() {
+        // Foliage with both bits set: alpha-test wins because the
+        // discard + depth-write path sorts cleanly without back-to-front
+        // pre-sort of the alpha-blend pipeline.
+        let mut info = MaterialInfo::default();
+        apply_alpha_flags(&mut info, &alpha_prop(0x0201, 200));
+        assert!(!info.alpha_blend, "alpha_blend should yield to alpha_test");
+        assert!(info.alpha_test);
+        assert!((info.alpha_threshold - (200.0 / 255.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn neither_bit_leaves_defaults() {
+        let mut info = MaterialInfo::default();
+        apply_alpha_flags(&mut info, &alpha_prop(0x0000, 255));
+        assert!(!info.alpha_blend);
+        assert!(!info.alpha_test);
+        assert_eq!(info.alpha_threshold, 0.0);
+    }
+
+    #[test]
+    fn threshold_extremes_clamp_expected_range() {
+        let mut info_min = MaterialInfo::default();
+        apply_alpha_flags(&mut info_min, &alpha_prop(0x0200, 0));
+        assert_eq!(info_min.alpha_threshold, 0.0);
+
+        let mut info_max = MaterialInfo::default();
+        apply_alpha_flags(&mut info_max, &alpha_prop(0x0200, 255));
+        assert!((info_max.alpha_threshold - 1.0).abs() < 1e-5);
+    }
 }

@@ -109,6 +109,8 @@ pub(super) fn extract_mesh(
         name: shape.av.net.name.as_deref().map(str::to_string),
         texture_path,
         has_alpha: mat.alpha_blend,
+        alpha_test: mat.alpha_test,
+        alpha_threshold: mat.alpha_threshold,
         two_sided: mat.two_sided,
         is_decal: mat.is_decal,
         normal_map: mat.normal_map,
@@ -169,14 +171,26 @@ pub(super) fn extract_bs_tri_shape(
 
     let texture_path = find_texture_path_bs_tri_shape(scene, shape);
 
-    let has_alpha = if let Some(idx) = shape.alpha_property_ref.index() {
-        scene
-            .get_as::<NiAlphaProperty>(idx)
-            .map(|a| a.flags & 1 != 0)
-            .unwrap_or(false)
-    } else {
-        false
-    };
+    // NiAlphaProperty: bit 0 = alpha blend, bit 9 (0x200) = alpha test
+    // (cutout). See issue #152. Prefer alpha-test over alpha-blend when
+    // both bits are set — same policy as the NiTriShape path in
+    // `apply_alpha_flags`.
+    let (has_alpha, alpha_test, alpha_threshold) =
+        if let Some(idx) = shape.alpha_property_ref.index() {
+            if let Some(a) = scene.get_as::<NiAlphaProperty>(idx) {
+                let blend = a.flags & 0x001 != 0;
+                let test = a.flags & 0x200 != 0;
+                if test {
+                    (false, true, a.threshold as f32 / 255.0)
+                } else {
+                    (blend, false, 0.0)
+                }
+            } else {
+                (false, false, 0.0)
+            }
+        } else {
+            (false, false, 0.0)
+        };
 
     let two_sided = if let Some(idx) = shape.shader_property_ref.index() {
         scene
@@ -256,6 +270,8 @@ pub(super) fn extract_bs_tri_shape(
         name: shape.av.net.name.as_deref().map(str::to_string),
         texture_path,
         has_alpha,
+        alpha_test,
+        alpha_threshold,
         two_sided,
         is_decal: find_decal_bs(scene, shape),
         normal_map,

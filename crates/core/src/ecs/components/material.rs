@@ -33,6 +33,17 @@ pub struct Material {
     pub env_map_scale: f32,
     /// Normal map texture path (if available).
     pub normal_map: Option<String>,
+    /// Whether the renderer should `discard` fragments whose sampled
+    /// texture alpha falls below `alpha_threshold`. Extracted from
+    /// `NiAlphaProperty.flags` bit 9 (0x200). Mutually exclusive with
+    /// the `AlphaBlend` marker component — the importer prefers
+    /// alpha-test over alpha-blend when a material sets both bits.
+    /// See issue #152.
+    pub alpha_test: bool,
+    /// Cutoff threshold for `alpha_test`, in [0, 1]
+    /// (`NiAlphaProperty.threshold` divided by 255). Only meaningful
+    /// when `alpha_test` is `true`.
+    pub alpha_threshold: f32,
 }
 
 impl Default for Material {
@@ -48,6 +59,8 @@ impl Default for Material {
             alpha: 1.0,
             env_map_scale: 1.0,
             normal_map: None,
+            alpha_test: false,
+            alpha_threshold: 0.0,
         }
     }
 }

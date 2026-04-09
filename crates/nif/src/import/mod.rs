@@ -103,8 +103,18 @@ pub struct ImportedMesh {
     pub texture_path: Option<String>,
     /// Node name from the NIF.
     pub name: Option<String>,
-    /// Whether this mesh uses alpha blending (from NiAlphaProperty).
+    /// Whether this mesh uses alpha blending (from NiAlphaProperty bit 0).
     pub has_alpha: bool,
+    /// Whether this mesh uses alpha testing / cutout rendering
+    /// (NiAlphaProperty bit 9 / mask 0x200). When `true`, the renderer
+    /// should render opaque but `discard` fragments whose sampled
+    /// texture alpha is below `alpha_threshold`. Mutually exclusive
+    /// with `has_alpha` — the importer prefers alpha-test when both
+    /// bits are set on the source material. See issue #152.
+    pub alpha_test: bool,
+    /// Alpha-test cutoff threshold in [0, 1] (NiAlphaProperty.threshold
+    /// divided by 255). Only meaningful when `alpha_test` is `true`.
+    pub alpha_threshold: f32,
     /// Whether this mesh should be rendered two-sided (no backface culling).
     pub two_sided: bool,
     /// Whether this mesh is a decal (should render on top of coplanar surfaces).
