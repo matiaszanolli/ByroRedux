@@ -11,9 +11,24 @@ use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::VulkanContext;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::asset_provider::TextureProvider;
 use crate::components::{AlphaBlend, Decal, TwoSided};
+
+/// Parsed + imported NIF scene data cached per unique model path.
+///
+/// The cell loader parses each distinct mesh exactly once and stores
+/// the imported scene in this struct — subsequent placements of the
+/// same model (very common in Bethesda cells, e.g. 40 chairs sharing
+/// one chair.nif) reuse the `Arc` instead of re-parsing. This cuts
+/// the parser warning spam down from O(N placements) to O(M unique
+/// meshes) and halves the parse CPU cost at load time.
+struct CachedNifImport {
+    meshes: Vec<byroredux_nif::import::ImportedMesh>,
+    collisions: Vec<byroredux_nif::import::ImportedCollision>,
+    lights: Vec<byroredux_nif::import::ImportedLight>,
+}
 
 /// Result of loading a cell.
 #[allow(dead_code)]
@@ -203,7 +218,16 @@ fn load_references(
     label: &str,
 ) -> RefLoadResult {
     let mut entity_count = 0;
-    let mut mesh_cache: HashMap<String, Vec<u8>> = HashMap::new();
+    // Cache parsed-and-imported NIF scene data keyed by model path.
+    // Each unique mesh is parsed exactly once per cell load; subsequent
+    // placements of the same model reuse the shared `Arc` and only pay
+    // the per-reference spawn cost (vertex upload, texture resolve,
+    // entity insertion). Previously we cached only the raw bytes and
+    // re-parsed on every placement, producing N× the parser warning
+    // spam and N× the parse CPU cost for a cell with N placements.
+    // A `None` entry records a mesh that failed to parse — we skip
+    // subsequent placements of the same model silently.
+    let mut import_cache: HashMap<String, Option<Arc<CachedNifImport>>> = HashMap::new();
     let mut bounds_min = Vec3::splat(f32::INFINITY);
     let mut bounds_max = Vec3::splat(f32::NEG_INFINITY);
 
@@ -277,25 +301,29 @@ fn load_references(
                 format!("meshes\\{}", stat.model_path)
             };
 
-        let nif_data = match mesh_cache.get(&model_path) {
-            Some(data) => data.clone(),
-            None => match tex_provider.extract_mesh(&model_path) {
-                Some(d) => {
-                    mesh_cache.insert(model_path.clone(), d.clone());
-                    d
-                }
-                None => {
-                    log::debug!("NIF not found in BSA: '{}'", model_path);
-                    continue;
-                }
-            },
+        // Fetch parsed+imported NIF from cache, or load+parse once.
+        let cached = match import_cache.get(&model_path) {
+            Some(entry) => entry.clone(),
+            None => {
+                let nif_data = match tex_provider.extract_mesh(&model_path) {
+                    Some(d) => d,
+                    None => {
+                        log::debug!("NIF not found in BSA: '{}'", model_path);
+                        import_cache.insert(model_path.clone(), None);
+                        continue;
+                    }
+                };
+                let parsed = parse_and_import_nif(&nif_data, &model_path);
+                import_cache.insert(model_path.clone(), parsed.clone());
+                parsed
+            }
         };
+        let Some(cached) = cached else { continue };
 
-        let count = load_nif_placed(
+        let count = spawn_placed_instances(
             world,
             ctx,
-            &nif_data,
-            &model_path,
+            &cached,
             tex_provider,
             ref_pos,
             ref_rot,
@@ -311,7 +339,7 @@ fn load_references(
         "'{}' loaded: {} entities, {} unique meshes, {} hits, {} misses",
         label,
         entity_count,
-        mesh_cache.len(),
+        import_cache.len(),
         stat_hit,
         stat_miss,
     );
@@ -331,20 +359,56 @@ fn load_references(
 
     RefLoadResult {
         entity_count,
-        mesh_count: mesh_cache.len(),
+        // Count only successfully-parsed entries.
+        mesh_count: import_cache.values().filter(|e| e.is_some()).count(),
         center,
     }
 }
 
-/// Parse a NIF and spawn all its sub-meshes with a parent REFR transform applied.
-///
-/// Each NIF sub-mesh has its own local transform (from the NIF scene graph).
-/// The REFR placement transform is composed on top as the parent.
-fn load_nif_placed(
+/// Parse + import a NIF scene once. Returns `None` on parse failure
+/// or when the scene has zero useful geometry. All per-block parse
+/// warnings and the truncation message (if any) are emitted exactly
+/// once per unique NIF at this step — subsequent placements read
+/// from the cache without re-parsing. See runtime-spam incident from
+/// the `AnvilHeinrichOakenHallsHouse` trace.
+fn parse_and_import_nif(nif_data: &[u8], label: &str) -> Option<Arc<CachedNifImport>> {
+    let scene = match byroredux_nif::parse_nif(nif_data) {
+        Ok(s) => {
+            log::debug!("Parsed NIF '{}': {} blocks", label, s.len());
+            if s.truncated {
+                log::warn!(
+                    "  NIF '{}' parsed with truncation — downstream import will \
+                     work from the partial block list",
+                    label
+                );
+            }
+            s
+        }
+        Err(e) => {
+            log::warn!("Failed to parse NIF '{}': {}", label, e);
+            return None;
+        }
+    };
+
+    let (meshes, collisions) = byroredux_nif::import::import_nif_with_collision(&scene);
+    let lights = byroredux_nif::import::import_nif_lights(&scene);
+    Some(Arc::new(CachedNifImport {
+        meshes,
+        collisions,
+        lights,
+    }))
+}
+
+/// Spawn entities for every mesh/light/collision in a pre-parsed NIF
+/// with a parent REFR transform applied. Each NIF sub-mesh has its
+/// own local transform (from the scene graph) which is composed on
+/// top of the REFR placement transform. The `cached` parameter is
+/// produced by `parse_and_import_nif` and shared across all
+/// placements of the same model via `Arc`.
+fn spawn_placed_instances(
     world: &mut World,
     ctx: &mut VulkanContext,
-    nif_data: &[u8],
-    label: &str,
+    cached: &CachedNifImport,
     tex_provider: &TextureProvider,
     ref_pos: Vec3,
     ref_rot: Quat,
@@ -353,26 +417,15 @@ fn load_nif_placed(
 ) -> usize {
     use byroredux_renderer::Vertex;
 
-    let scene = match byroredux_nif::parse_nif(nif_data) {
-        Ok(s) => {
-            // Temporary: log NIF path for block-level warning correlation
-            log::debug!("Parsed NIF '{}': {} blocks", label, s.len());
-            s
-        }
-        Err(e) => {
-            log::warn!("Failed to parse NIF '{}': {}", label, e);
-            return 0;
-        }
-    };
-
-    let (imported, collisions) = byroredux_nif::import::import_nif_with_collision(&scene);
-    let nif_lights = byroredux_nif::import::import_nif_lights(&scene);
+    let imported = &cached.meshes;
+    let collisions = &cached.collisions;
+    let nif_lights = &cached.lights;
     let mut count = 0;
 
     // Spawn per-mesh NiLight blocks as LightSource entities. Parented
     // through the reference transform so torches/candles inside cell
     // refs contribute to the live GpuLight buffer. See issue #156.
-    for light in &nif_lights {
+    for light in nif_lights {
         // Skip lights whose diffuse contribution is effectively zero —
         // these are usually authored-off placeholders.
         if light.color[0] + light.color[1] + light.color[2] < 1e-4 {
@@ -402,7 +455,7 @@ fn load_nif_placed(
     }
 
     // Spawn collision entities from NiNode collision data.
-    for coll in &collisions {
+    for coll in collisions {
         let nif_pos = Vec3::new(
             coll.translation[0],
             coll.translation[1],
@@ -428,7 +481,7 @@ fn load_nif_placed(
         world.insert(entity, coll.body.clone());
     }
 
-    for mesh in &imported {
+    for mesh in imported {
         let num_verts = mesh.positions.len();
         let vertices: Vec<Vertex> = (0..num_verts)
             .map(|i| {
@@ -528,10 +581,9 @@ fn load_nif_placed(
         let nif_offset_len = nif_pos.length();
         if nif_offset_len > 50.0 {
             log::debug!(
-                "  NIF offset {:.0} for '{}' mesh {:?}: nif_pos=({:.0},{:.0},{:.0}) \
+                "  NIF offset {:.0} for mesh {:?}: nif_pos=({:.0},{:.0},{:.0}) \
                  final=({:.0},{:.0},{:.0})",
                 nif_offset_len,
-                label,
                 mesh.name,
                 nif_pos.x,
                 nif_pos.y,
