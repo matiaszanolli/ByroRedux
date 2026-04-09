@@ -41,7 +41,11 @@
       "Bash(rg \"struct AllocatorReport\" ~/.cargo/registry/src/*/gpu-allocator-0.27.0/src/)",
       "Bash(rg \"total_reserved_bytes\\\\|total_allocated_bytes\" ~/.cargo/registry/src/*/gpu-allocator-0.27.0/src/)",
       "Bash(cargo clippy:*)",
-      "Bash(mkdir -p .claude/issues/120)"
+      "Bash(mkdir -p .claude/issues/120)",
+      "Read(//^mod tests/,/**)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:en.uesp.net)",
+      "WebFetch(domain:gitlab.com)"
     ],
     "additionalDirectories": [
       "/mnt/data/src/gamebyro-redux/.claude",
@@ -56,7 +60,8 @@
       "/mnt/data/src/gamebyro-redux/.claude/issues/121",
       "/mnt/data/src/gamebyro-redux/.claude/issues/123",
       "/mnt/data/src/gamebyro-redux/.claude/issues/145",
-      "/mnt/data/src/gamebyro-redux/.claude/issues/172"
+      "/mnt/data/src/gamebyro-redux/.claude/issues/172",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/157"
     ]
   }
 }
