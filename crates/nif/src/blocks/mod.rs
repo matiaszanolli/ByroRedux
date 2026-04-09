@@ -123,7 +123,6 @@ pub fn parse_block(
         "NiNode"
         | "BSFadeNode"
         | "BSLeafAnimNode"
-        | "BSTreeNode"
         | "RootCollisionNode"
         | "AvoidNode"
         | "NiBSAnimationNode"
@@ -132,6 +131,10 @@ pub fn parse_block(
         // See issue #148. Previously aliased to plain NiNode, dropping the
         // multi_bound linkage to BSMultiBoundAABB volumes.
         "BSMultiBoundNode" => Ok(Box::new(node::BsMultiBoundNode::parse(stream)?)),
+        // BSTreeNode: Skyrim SpeedTree root with two trailing NiNode ref lists
+        // (branch roots + trunk bones) for wind simulation. Previously aliased
+        // to plain NiNode, silently dropping both ref lists. See #159.
+        "BSTreeNode" => Ok(Box::new(node::BsTreeNode::parse(stream)?)),
         // NiNode subtypes with a small payload of trailing fields.
         "NiBillboardNode" => Ok(Box::new(node::NiBillboardNode::parse(stream)?)),
         "NiSwitchNode" => Ok(Box::new(node::NiSwitchNode::parse(stream)?)),
@@ -875,6 +878,43 @@ mod dispatch_tests {
             assert!(block.as_any().downcast_ref::<crate::blocks::NiNode>().is_some());
             assert_eq!(stream.position(), base.len() as u64);
         }
+    }
+
+    /// Regression: #159 — BSTreeNode (Skyrim SpeedTree) must dispatch
+    /// to its own parser and consume the two trailing NiNode ref lists
+    /// (`Bones 1` + `Bones 2`). Previously aliased to plain NiNode so
+    /// the two ref lists were silently dropped.
+    #[test]
+    fn bs_tree_node_dispatches_with_both_bone_lists() {
+        use crate::blocks::node::BsTreeNode;
+
+        let header = oblivion_header();
+        let mut bytes = oblivion_empty_ninode_bytes();
+        // bones_1: 3 refs (7, 8, 9)
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&7i32.to_le_bytes());
+        bytes.extend_from_slice(&8i32.to_le_bytes());
+        bytes.extend_from_slice(&9i32.to_le_bytes());
+        // bones_2: 2 refs (10, 11)
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&10i32.to_le_bytes());
+        bytes.extend_from_slice(&11i32.to_le_bytes());
+
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block("BSTreeNode", &mut stream, Some(bytes.len() as u32))
+            .expect("BSTreeNode should dispatch through BsTreeNode::parse");
+        let tree = block
+            .as_any()
+            .downcast_ref::<BsTreeNode>()
+            .expect("BSTreeNode did not downcast to BsTreeNode");
+        assert_eq!(tree.bones_1.len(), 3);
+        assert_eq!(tree.bones_1[0].index(), Some(7));
+        assert_eq!(tree.bones_1[1].index(), Some(8));
+        assert_eq!(tree.bones_1[2].index(), Some(9));
+        assert_eq!(tree.bones_2.len(), 2);
+        assert_eq!(tree.bones_2[0].index(), Some(10));
+        assert_eq!(tree.bones_2[1].index(), Some(11));
+        assert_eq!(stream.position(), bytes.len() as u64);
     }
 
     /// Regression: #148 — BSMultiBoundNode must dispatch to its own

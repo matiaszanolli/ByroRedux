@@ -260,6 +260,62 @@ impl BsMultiBoundNode {
     }
 }
 
+// ── BSTreeNode ───────────────────────────────────────────────────────
+
+/// BSTreeNode — Skyrim SpeedTree root with two bone lists (branches /
+/// trunk) that the engine's tree simulation uses to animate bending
+/// under wind loads. The bones are references to existing `NiNode`
+/// blocks, so the scene walker still descends through the regular
+/// `NiNode.children` path — these extra ref lists are just metadata
+/// for the future SpeedTree runtime.
+///
+/// Wire layout (niflib nif.xml):
+/// ```text
+/// NiNode body
+/// uint num_bones_1
+/// BlockRef[num_bones_1] bones_1
+/// uint num_bones_2
+/// BlockRef[num_bones_2] bones_2
+/// ```
+///
+/// See issue #159.
+#[derive(Debug)]
+pub struct BsTreeNode {
+    pub base: NiNode,
+    /// First bone list — the SpeedTree tool labels this "branch roots".
+    pub bones_1: Vec<BlockRef>,
+    /// Second bone list — the SpeedTree tool labels this "trunk bones".
+    pub bones_2: Vec<BlockRef>,
+}
+
+impl NiObject for BsTreeNode {
+    fn block_type_name(&self) -> &'static str {
+        "BSTreeNode"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_object_net(&self) -> Option<&dyn HasObjectNET> {
+        Some(&self.base)
+    }
+    fn as_av_object(&self) -> Option<&dyn HasAVObject> {
+        Some(&self.base)
+    }
+}
+
+impl BsTreeNode {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiNode::parse(stream)?;
+        let bones_1 = stream.read_block_ref_list()?;
+        let bones_2 = stream.read_block_ref_list()?;
+        Ok(Self {
+            base,
+            bones_1,
+            bones_2,
+        })
+    }
+}
+
 // ── NiBillboardNode ────────────────────────────────────────────────────
 //
 // Pre-10.1.0.0 the billboard mode was packed into the parent NiAVObject
