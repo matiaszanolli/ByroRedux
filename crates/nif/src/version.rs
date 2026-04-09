@@ -155,15 +155,24 @@ impl NifVariant {
     }
 
     /// NiTriShape has dedicated shader_property_ref and alpha_property_ref fields.
-    /// Present in FO4+ (user_version_2 >= 130).
+    /// Present in FO4+ (user_version_2 >= 130). FO76/Starfield use BSTriShape
+    /// exclusively so this is never queried for those games, but the flag is
+    /// correct for completeness.
     pub fn has_dedicated_shader_refs(self) -> bool {
-        matches!(self, Self::Fallout4)
+        matches!(self, Self::Fallout4 | Self::Fallout76 | Self::Starfield)
     }
 
     /// NiGeometryData has a material CRC field after data_flags.
     /// Present in Skyrim+ (user_version >= 12).
     pub fn has_material_crc(self) -> bool {
-        matches!(self, Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4)
+        matches!(
+            self,
+            Self::SkyrimLE
+                | Self::SkyrimSE
+                | Self::Fallout4
+                | Self::Fallout76
+                | Self::Starfield
+        )
     }
 
     /// Uses BSLightingShaderProperty instead of BSShaderPPLightingProperty.
@@ -474,6 +483,8 @@ mod tests {
         assert!(!NifVariant::FalloutNV.has_dedicated_shader_refs());
         assert!(!NifVariant::SkyrimSE.has_dedicated_shader_refs());
         assert!(NifVariant::Fallout4.has_dedicated_shader_refs());
+        assert!(NifVariant::Fallout76.has_dedicated_shader_refs());
+        assert!(NifVariant::Starfield.has_dedicated_shader_refs());
     }
 
     #[test]
@@ -481,5 +492,7 @@ mod tests {
         assert!(!NifVariant::FalloutNV.has_material_crc());
         assert!(NifVariant::SkyrimLE.has_material_crc());
         assert!(NifVariant::Fallout4.has_material_crc());
+        assert!(NifVariant::Fallout76.has_material_crc());
+        assert!(NifVariant::Starfield.has_material_crc());
     }
 }
