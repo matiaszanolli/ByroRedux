@@ -379,10 +379,15 @@ that were holding Oblivion below 100%:
 
 All seven supported games now sit at 100% on the full mesh archive sweep.
 
-**Deferred:** Starfield BA2 v3 DX10 textures (different per-chunk layout
-than FO4 v7 — record padding doesn't match `0xBAADF00D`). The archive
-opens correctly and the directory parses, only `extract` for textures
-returns errors. NIF/mesh extraction is unaffected.
+**Resolved:** Starfield BA2 v3 DX10 textures now supported. The v3 header
+has a 12-byte extension (vs. 8 for v2) containing a `compression_method`
+field (0 = zlib, 3 = LZ4 block). The DX10 base record and chunk record
+layouts are unchanged from FO4 v1; the original "different per-chunk
+layout" diagnosis was incorrect — the real issue was the missing 4-byte
+compression method field shifting the reader past the header, plus zlib
+being used for LZ4-compressed chunks. Both GNRL and DX10 extraction now
+dispatch through a unified `decompress_chunk()` that selects zlib or
+LZ4 block based on the archive-level compression method.
 
 ---
 
@@ -636,7 +641,7 @@ Workspace test count: 396 → 472. Zero new warnings.
 - [x] ~~BSLightingShaderProperty trailing fields per shader type~~ → 8 ShaderTypeData variants (N23.2)
 - [x] ~~No skinning blocks~~ → 6 skinning parsers (NiSkinInstance/Data/Partition, BsDismemberSkinInstance, BSSkin::Instance/BoneData) (N23.5)
 - [x] ~~No collision blocks~~ → 30 Havok types registered for block_size skip (N23.6, full parse → M28)
-- [ ] No BA2 reader for FO4/FO76/Starfield — N23.7+
+- [x] ~~No BA2 reader for FO4/FO76/Starfield~~ → BA2 v1/v2/v3/v7/v8, GNRL + DX10, zlib + LZ4 (M26)
 
 ### Renderer Gaps
 - [x] ~~No shadow maps or ray tracing~~ → RT ray query shadows (M22)
@@ -665,9 +670,9 @@ Workspace test count: 396 → 472. Zero new warnings.
 | 1 — Working | Fallout 3 | Validated: Megaton 1609 entities, 0 parse failures | BSA v104 ✓ | Same as FNV ✓ | Interior ✓ |
 | 2 — Partial | Skyrim SE | BSTriShape + BSLightingShader (8 variants) | BSA v105 ✓ (LZ4) | Stub | Individual meshes ✓ |
 | 3 — Planned | Oblivion | All block types landed, needs BSA v103 decompression | BSA v103 (opens, decompression WIP) | Stub | — |
-| 4 — Partial | Fallout 4 | 8 block types landed, half-float vertex WIP | BA2 (BTDX v1) needed | Stub | — |
-| 5 — Future | Fallout 76 | stopcond needed | BA2 (BTDX v1) needed | — | — |
-| 6 — Future | Starfield | No spec | BA2 (BTDX v2) needed | — | — |
+| 4 — Partial | Fallout 4 | 8 block types landed, half-float vertex WIP | BA2 v1/v7/v8 ✓ (GNRL + DX10, zlib) | Stub | — |
+| 5 — Future | Fallout 76 | stopcond needed | BA2 v1 ✓ (GNRL + DX10, zlib) | — | — |
+| 6 — Future | Starfield | No spec | BA2 v2/v3 ✓ (GNRL + DX10, zlib + LZ4) | — | — |
 
 **NifVariant enum covers all 8 game variants** with semantic feature flags (has_properties_list,
 has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shader, uses_bs_tri_shape).

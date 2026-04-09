@@ -8,17 +8,17 @@
 //! - **DX10** — texture archive. Each texture has a 24-byte base record plus
 //!   per-mip-chain chunk records; the DDS header is not stored and must be
 //!   reconstructed from the record fields (format, dimensions, mip count).
-//! - **Starfield (v2+)** — adds an 8-byte extension to the archive header and
-//!   switches some compressed streams to LZ4 block / Zstd. We parse the
-//!   header and directory but gracefully fail on unsupported compression.
+//! - **Starfield (v2/v3)** — extends the archive header by 8 (v2) or 12 (v3)
+//!   bytes. v3 adds a `compression_method` field: 0 = zlib, 3 = LZ4 block.
+//!   Both GNRL and DX10 extraction are fully supported.
 //!
 //! # Version mapping
 //!
 //! | BTDX version | Games                          | Notes                          |
 //! |--------------|--------------------------------|--------------------------------|
 //! | 1            | FO4 (original), FO76           | 24-byte header, zlib           |
-//! | 2            | FO4 (patches), Starfield meshes | 32-byte header on Starfield    |
-//! | 3            | Starfield (some updates)       | same layout as v2              |
+//! | 2            | FO4 (patches), Starfield meshes | 32-byte header (base + 8)      |
+//! | 3            | Starfield textures             | 36-byte header (base + 12, +compression method) |
 //! | 7            | FO4 Next Gen textures          | 24-byte header, zlib           |
 //! | 8            | FO4 Next Gen meshes            | 24-byte header, zlib           |
 //!
@@ -49,11 +49,21 @@ pub enum Ba2Variant {
     Dx10,
 }
 
+/// Compression codec for the archive's data chunks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ba2Compression {
+    /// Standard zlib deflate (FO4, FO76, default).
+    Zlib,
+    /// LZ4 block format (Starfield v3).
+    Lz4Block,
+}
+
 /// BA2 archive opened for reading.
 pub struct Ba2Archive {
     path: PathBuf,
     version: u32,
     variant: Ba2Variant,
+    compression: Ba2Compression,
     files: HashMap<String, Ba2Entry>,
 }
 
@@ -128,14 +138,33 @@ impl Ba2Archive {
             name_table_offset
         );
 
-        // Starfield archives insert 8 extra header bytes here (likely a u64
-        // compressed-name-table length). The version numbering is NOT
-        // monotonic across games: BTDX v1 = FO4 original / FO76, v2/v3 =
-        // Starfield, v7/v8 = FO4 Next Gen patches with the same 24-byte
-        // header as v1. The extension only applies to Starfield's v2/v3.
+        // Starfield archives extend the header beyond the base 24 bytes.
+        // The version numbering is NOT monotonic across games: BTDX v1 =
+        // FO4 original / FO76, v2/v3 = Starfield, v7/v8 = FO4 Next Gen
+        // patches with the same 24-byte header as v1.
+        //
+        // v2 (Starfield GNRL): +8 bytes (2×u32 unknown, likely compressed
+        //   name-table metadata). Compression is always zlib.
+        // v3 (Starfield DX10): +12 bytes (2×u32 unknown + u32 compression
+        //   method). Method 0 = zlib, 3 = LZ4 block.
+        let mut compression = Ba2Compression::Zlib;
         if version == 2 || version == 3 {
             let mut extra = [0u8; 8];
             reader.read_exact(&mut extra)?;
+        }
+        if version == 3 {
+            let mut method_buf = [0u8; 4];
+            reader.read_exact(&mut method_buf)?;
+            let method = u32::from_le_bytes(method_buf);
+            compression = match method {
+                0 => Ba2Compression::Zlib,
+                3 => Ba2Compression::Lz4Block,
+                other => {
+                    log::warn!("BA2 v3: unknown compression method {}, assuming zlib", other);
+                    Ba2Compression::Zlib
+                }
+            };
+            log::debug!("BA2 v3 compression method: {:?}", compression);
         }
 
         // ── File records ────────────────────────────────────────────
@@ -176,6 +205,7 @@ impl Ba2Archive {
             path: path.to_path_buf(),
             version,
             variant,
+            compression,
             files: map,
         })
     }
@@ -223,7 +253,13 @@ impl Ba2Archive {
                 offset,
                 packed_size,
                 unpacked_size,
-            } => extract_general(&mut reader, *offset, *packed_size, *unpacked_size),
+            } => extract_general(
+                &mut reader,
+                *offset,
+                *packed_size,
+                *unpacked_size,
+                self.compression,
+            ),
             Ba2Entry::Dx10 {
                 dxgi_format,
                 width,
@@ -239,6 +275,7 @@ impl Ba2Archive {
                 *num_mips,
                 *is_cubemap,
                 chunks,
+                self.compression,
             ),
         }
     }
@@ -336,11 +373,43 @@ fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<V
     Ok(out)
 }
 
+/// Decompress a packed chunk using the archive's compression codec.
+fn decompress_chunk(
+    packed: &[u8],
+    unpacked_size: usize,
+    compression: Ba2Compression,
+) -> io::Result<Vec<u8>> {
+    match compression {
+        Ba2Compression::Zlib => {
+            let mut decoder = ZlibDecoder::new(packed);
+            let mut buf = Vec::with_capacity(unpacked_size);
+            decoder.read_to_end(&mut buf)?;
+            if buf.len() != unpacked_size {
+                log::debug!(
+                    "BA2 zlib decompressed {} bytes but record declared {}",
+                    buf.len(),
+                    unpacked_size
+                );
+            }
+            Ok(buf)
+        }
+        Ba2Compression::Lz4Block => {
+            lz4_flex::block::decompress(packed, unpacked_size).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("BA2 LZ4 block decompression failed: {}", e),
+                )
+            })
+        }
+    }
+}
+
 fn extract_general(
     reader: &mut BufReader<File>,
     offset: u64,
     packed_size: u32,
     unpacked_size: u32,
+    compression: Ba2Compression,
 ) -> io::Result<Vec<u8>> {
     reader.seek(SeekFrom::Start(offset))?;
     if packed_size == 0 {
@@ -351,17 +420,7 @@ fn extract_general(
     } else {
         let mut packed = vec![0u8; packed_size as usize];
         reader.read_exact(&mut packed)?;
-        let mut decoder = ZlibDecoder::new(&packed[..]);
-        let mut buf = Vec::with_capacity(unpacked_size as usize);
-        decoder.read_to_end(&mut buf)?;
-        if buf.len() != unpacked_size as usize {
-            log::debug!(
-                "BA2 GNRL decompressed {} bytes but record declared {}",
-                buf.len(),
-                unpacked_size
-            );
-        }
-        Ok(buf)
+        decompress_chunk(&packed, unpacked_size as usize, compression)
     }
 }
 
@@ -373,8 +432,9 @@ fn extract_dx10(
     num_mips: u8,
     is_cubemap: bool,
     chunks: &[Dx10Chunk],
+    compression: Ba2Compression,
 ) -> io::Result<Vec<u8>> {
-    // Pull each chunk's bytes (zlib if packed, raw otherwise) and concatenate.
+    // Pull each chunk's bytes (compressed or raw) and concatenate.
     let mut pixel_data = Vec::new();
     for chunk in chunks {
         reader.seek(SeekFrom::Start(chunk.offset))?;
@@ -385,9 +445,7 @@ fn extract_dx10(
         } else {
             let mut packed = vec![0u8; chunk.packed_size as usize];
             reader.read_exact(&mut packed)?;
-            let mut decoder = ZlibDecoder::new(&packed[..]);
-            let mut buf = Vec::with_capacity(chunk.unpacked_size as usize);
-            decoder.read_to_end(&mut buf)?;
+            let buf = decompress_chunk(&packed, chunk.unpacked_size as usize, compression)?;
             pixel_data.extend_from_slice(&buf);
         }
     }
@@ -590,5 +648,38 @@ mod tests {
         assert_eq!(&hdr[84..88], b"DX10");
         // DX10 extended: dxgi_format at offset 128
         assert_eq!(u32::from_le_bytes(hdr[128..132].try_into().unwrap()), 71);
+    }
+
+    #[test]
+    fn decompress_chunk_zlib_roundtrip() {
+        use flate2::write::ZlibEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let original = b"Hello, Starfield BA2 textures!";
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(original).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let result = decompress_chunk(&compressed, original.len(), Ba2Compression::Zlib).unwrap();
+        assert_eq!(result, original);
+    }
+
+    #[test]
+    fn decompress_chunk_lz4_roundtrip() {
+        let original = b"Starfield LZ4 block compressed texture chunk data - test payload";
+        let compressed = lz4_flex::block::compress(original);
+
+        let result =
+            decompress_chunk(&compressed, original.len(), Ba2Compression::Lz4Block).unwrap();
+        assert_eq!(result, original.as_slice());
+    }
+
+    #[test]
+    fn decompress_chunk_lz4_corrupt_data_fails() {
+        // Garbage input should fail LZ4 decompression.
+        let garbage = [0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA];
+        let result = decompress_chunk(&garbage, 1024, Ba2Compression::Lz4Block);
+        assert!(result.is_err());
     }
 }
