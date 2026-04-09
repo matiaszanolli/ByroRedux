@@ -343,6 +343,7 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "log",
+ "rayon",
  "string-interner",
  "thiserror 2.0.18",
  "uuid",

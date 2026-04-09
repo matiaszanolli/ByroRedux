@@ -3,9 +3,14 @@ name = "byroredux-core"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["parallel-scheduler"]
+parallel-scheduler = ["rayon"]
+
 [dependencies]
 glam = { workspace = true }
 log = { workspace = true }
+rayon = { workspace = true, optional = true }
 string-interner = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }

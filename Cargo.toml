@@ -63,6 +63,9 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 semver = { version = "1", features = ["serde"] }
 
+# Parallelism
+rayon = "1"
+
 # Compression
 flate2 = "1"
 lz4_flex = "0.11"

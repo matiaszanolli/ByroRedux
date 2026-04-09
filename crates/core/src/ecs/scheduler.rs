@@ -1,56 +1,157 @@
-//! Scheduler — runs systems in registration order.
+//! Stage-based parallel scheduler.
 //!
-//! Currently single-threaded and sequential. The design is intentionally
-//! parallel-ready: systems take `&World` (not `&mut World`), and storage
-//! access is mediated by RwLock, so adding parallelism is a matter of
-//! replacing the loop with a thread pool — no API changes needed.
+//! Systems are assigned to **stages** that run sequentially in a fixed order.
+//! Within each stage, systems run **in parallel** via rayon (when the
+//! `parallel-scheduler` feature is enabled). The `World`'s per-storage
+//! `RwLock` design naturally serialises conflicting accesses — no explicit
+//! dependency declarations are needed.
+//!
+//! Systems added with `add_exclusive` run alone *after* the parallel batch
+//! in their stage completes. Use this for cleanup or barrier systems.
 
 use super::system::System;
 use super::world::World;
+use std::collections::BTreeMap;
+
+#[cfg(feature = "parallel-scheduler")]
+use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
+
+/// Execution stage — stages run sequentially in discriminant order.
+///
+/// Within a stage, all non-exclusive systems run in parallel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Stage {
+    /// Input handling, camera, timers — runs first.
+    Early = 0,
+    /// Core gameplay: animation, AI, scripting.
+    Update = 1,
+    /// Transform propagation — sees results of Update.
+    PostUpdate = 2,
+    /// Physics sync — sees propagated transforms.
+    Physics = 3,
+    /// Stats, cleanup — runs last.
+    Late = 4,
+}
+
+/// Per-stage system storage.
+struct StageData {
+    /// Systems that run in parallel within this stage.
+    parallel: Vec<Box<dyn System>>,
+    /// Systems that run sequentially *after* the parallel batch completes.
+    exclusive: Vec<Box<dyn System>>,
+}
+
+impl StageData {
+    fn new() -> Self {
+        Self {
+            parallel: Vec::new(),
+            exclusive: Vec::new(),
+        }
+    }
+
+    fn all_names(&self) -> impl Iterator<Item = &str> {
+        self.parallel
+            .iter()
+            .chain(self.exclusive.iter())
+            .map(|s| s.name())
+    }
+}
 
 pub struct Scheduler {
-    systems: Vec<Box<dyn System>>,
+    stages: BTreeMap<Stage, StageData>,
 }
 
 impl Scheduler {
     pub fn new() -> Self {
         Self {
-            systems: Vec::new(),
+            stages: BTreeMap::new(),
         }
     }
 
-    /// Add a system to the end of the execution list.
+    /// Add a system to [`Stage::Update`] (backward-compatible default).
     ///
-    /// Systems run in the order they are added.
-    /// Warns if a system with the same name is already registered.
+    /// Systems added via `add()` run in parallel with other systems in
+    /// the same stage. For explicit stage assignment, use [`add_to`].
     pub fn add<S: System + 'static>(&mut self, system: S) -> &mut Self {
+        self.add_to(Stage::Update, system)
+    }
+
+    /// Add a system to a specific stage.
+    ///
+    /// Within the stage, this system runs in parallel with other
+    /// non-exclusive systems. Use [`add_exclusive`] for systems that
+    /// must run alone after the parallel batch.
+    pub fn add_to<S: System + 'static>(&mut self, stage: Stage, system: S) -> &mut Self {
         let name = system.name().to_string();
-        if self.systems.iter().any(|s| s.name() == name) {
+        if self.has_system(&name) {
             log::warn!(
-                "Scheduler: duplicate system name '{}' (index {})",
+                "Scheduler: duplicate system name '{}' in stage {:?}",
                 name,
-                self.systems.len()
+                stage,
             );
         }
-        self.systems.push(Box::new(system));
+        self.stages
+            .entry(stage)
+            .or_insert_with(StageData::new)
+            .parallel
+            .push(Box::new(system));
         self
     }
 
-    /// Run all systems in order, passing the shared world and delta time.
+    /// Add an exclusive system to a specific stage.
+    ///
+    /// Exclusive systems run sequentially *after* all parallel systems
+    /// in the same stage have completed. Use this for barrier or cleanup
+    /// systems that must see the results of the parallel batch.
+    pub fn add_exclusive<S: System + 'static>(&mut self, stage: Stage, system: S) -> &mut Self {
+        let name = system.name().to_string();
+        if self.has_system(&name) {
+            log::warn!(
+                "Scheduler: duplicate system name '{}' in stage {:?}",
+                name,
+                stage,
+            );
+        }
+        self.stages
+            .entry(stage)
+            .or_insert_with(StageData::new)
+            .exclusive
+            .push(Box::new(system));
+        self
+    }
+
+    /// Run all systems: stages in order, parallel within each stage.
     pub fn run(&mut self, world: &World, dt: f32) {
-        // TODO: replace this sequential loop with rayon::scope or a
-        // dependency-graph executor for parallel system dispatch.
-        // The RwLock-per-storage design already supports concurrent
-        // reads across systems — the scheduler just needs to stop
-        // serialising them.
-        for system in &mut self.systems {
-            system.run(world, dt);
+        for (_stage, data) in &mut self.stages {
+            // Phase 1: run parallel systems concurrently.
+            #[cfg(feature = "parallel-scheduler")]
+            {
+                data.parallel
+                    .par_iter_mut()
+                    .for_each(|sys| sys.run(world, dt));
+            }
+            #[cfg(not(feature = "parallel-scheduler"))]
+            {
+                for sys in &mut data.parallel {
+                    sys.run(world, dt);
+                }
+            }
+            // Phase 2: run exclusive systems sequentially.
+            for sys in &mut data.exclusive {
+                sys.run(world, dt);
+            }
         }
     }
 
-    /// Returns the names of all registered systems, in execution order.
+    /// Returns the names of all registered systems, in stage order.
+    ///
+    /// Within each stage, parallel systems appear first, then exclusive.
     pub fn system_names(&self) -> Vec<&str> {
-        self.systems.iter().map(|s| s.name()).collect()
+        self.stages.values().flat_map(|d| d.all_names()).collect()
+    }
+
+    fn has_system(&self, name: &str) -> bool {
+        self.stages.values().any(|d| d.all_names().any(|n| n == name))
     }
 }
 
@@ -143,26 +244,26 @@ mod tests {
         assert_eq!(world.get::<Health>(e).unwrap().0, 70.0);
     }
 
-    // ── Multiple systems, ordered execution ─────────────────────────────
+    // ── Stage ordering: systems in different stages run in stage order ──
 
     #[test]
-    fn systems_run_in_order() {
+    fn stages_run_in_order() {
         let order = Arc::new(AtomicU32::new(0));
 
-        let order1 = Arc::clone(&order);
-        let order2 = Arc::clone(&order);
-        let order3 = Arc::clone(&order);
+        let o1 = Arc::clone(&order);
+        let o2 = Arc::clone(&order);
+        let o3 = Arc::clone(&order);
 
         let mut scheduler = Scheduler::new();
 
-        scheduler.add(move |_world: &World, _dt: f32| {
-            assert_eq!(order1.fetch_add(1, Ordering::SeqCst), 0);
+        scheduler.add_to(Stage::Early, move |_world: &World, _dt: f32| {
+            assert_eq!(o1.fetch_add(1, Ordering::SeqCst), 0);
         });
-        scheduler.add(move |_world: &World, _dt: f32| {
-            assert_eq!(order2.fetch_add(1, Ordering::SeqCst), 1);
+        scheduler.add_to(Stage::Update, move |_world: &World, _dt: f32| {
+            assert_eq!(o2.fetch_add(1, Ordering::SeqCst), 1);
         });
-        scheduler.add(move |_world: &World, _dt: f32| {
-            assert_eq!(order3.fetch_add(1, Ordering::SeqCst), 2);
+        scheduler.add_to(Stage::PostUpdate, move |_world: &World, _dt: f32| {
+            assert_eq!(o3.fetch_add(1, Ordering::SeqCst), 2);
         });
 
         let world = World::new();
@@ -171,10 +272,10 @@ mod tests {
         assert_eq!(order.load(Ordering::SeqCst), 3);
     }
 
-    // ── Mutation visible to subsequent system ───────────────────────────
+    // ── Mutation visible across stages ──────────────────────────────────
 
     #[test]
-    fn mutation_visible_to_next_system() {
+    fn mutation_visible_across_stages() {
         let mut world = World::new();
         let e = world.spawn();
         world.insert(e, Position { x: 0.0, y: 0.0 });
@@ -182,8 +283,8 @@ mod tests {
 
         let mut scheduler = Scheduler::new();
 
-        // System 1: apply velocity to position.
-        scheduler.add(|world: &World, dt: f32| {
+        // Stage::Update: apply velocity to position.
+        scheduler.add_to(Stage::Update, |world: &World, dt: f32| {
             let (q_vel, mut q_pos) = world.query_2_mut::<Velocity, Position>().unwrap();
             for (entity, vel) in q_vel.iter() {
                 if let Some(pos) = q_pos.get_mut(entity) {
@@ -193,17 +294,87 @@ mod tests {
             }
         });
 
-        // System 2: verify position was updated by system 1.
-        scheduler.add(|world: &World, _dt: f32| {
+        // Stage::PostUpdate: verify position was updated.
+        scheduler.add_to(Stage::PostUpdate, |world: &World, _dt: f32| {
             let q = world.query::<Position>().unwrap();
             let pos = q.get(0).unwrap();
-            assert!(pos.x > 0.0, "System 1 mutation not visible to System 2");
+            assert!(pos.x > 0.0, "Update mutation not visible in PostUpdate");
         });
 
         scheduler.run(&world, 1.0);
 
         assert_eq!(world.get::<Position>(e).unwrap().x, 5.0);
         assert_eq!(world.get::<Position>(e).unwrap().y, 10.0);
+    }
+
+    // ── Parallel within stage: both systems complete ────────────────────
+
+    #[test]
+    fn parallel_within_stage() {
+        let counter = Arc::new(AtomicU32::new(0));
+
+        let c1 = Arc::clone(&counter);
+        let c2 = Arc::clone(&counter);
+
+        let mut scheduler = Scheduler::new();
+        scheduler.add_to(Stage::Update, move |_: &World, _: f32| {
+            c1.fetch_add(1, Ordering::SeqCst);
+        });
+        scheduler.add_to(Stage::Update, move |_: &World, _: f32| {
+            c2.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let world = World::new();
+        scheduler.run(&world, 0.0);
+
+        assert_eq!(counter.load(Ordering::SeqCst), 2, "both systems must run");
+    }
+
+    // ── Exclusive runs after parallel batch ──────────────────────────────
+
+    #[test]
+    fn exclusive_runs_after_parallel() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+
+        let mut scheduler = Scheduler::new();
+
+        // Parallel: damage the entity.
+        scheduler.add_to(Stage::Late, |world: &World, _dt: f32| {
+            let mut q = world.query_mut::<Health>().unwrap();
+            for (_, h) in q.iter_mut() {
+                h.0 -= 25.0;
+            }
+        });
+
+        // Exclusive: verify damage was applied (runs after parallel).
+        scheduler.add_exclusive(Stage::Late, |world: &World, _dt: f32| {
+            let q = world.query::<Health>().unwrap();
+            let h = q.get(0).unwrap();
+            assert_eq!(h.0, 75.0, "exclusive must see parallel system's writes");
+        });
+
+        scheduler.run(&world, 0.0);
+    }
+
+    // ── add() defaults to Stage::Update ─────────────────────────────────
+
+    #[test]
+    fn add_defaults_to_update() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add_to(Stage::Early, |_: &World, _: f32| {});
+        scheduler.add(|_: &World, _: f32| {}); // should land in Update
+        scheduler.add_to(Stage::Late, |_: &World, _: f32| {});
+
+        let names = scheduler.system_names();
+        assert_eq!(names.len(), 3);
+        // The Update system (index 1) should be between Early and Late.
+        // We can't check names directly (closures have generated names),
+        // but we can verify count and that stages are populated.
+        assert!(scheduler.stages.contains_key(&Stage::Early));
+        assert!(scheduler.stages.contains_key(&Stage::Update));
+        assert!(scheduler.stages.contains_key(&Stage::Late));
     }
 
     // ── Empty scheduler ─────────────────────────────────────────────────
@@ -215,18 +386,40 @@ mod tests {
         scheduler.run(&world, 1.0 / 60.0); // no panic
     }
 
-    // ── system_names ────────────────────────────────────────────────────
+    // ── Empty intermediate stages are skipped ───────────────────────────
 
     #[test]
-    fn system_names_in_order() {
+    fn empty_stages_skipped() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let c1 = Arc::clone(&counter);
+        let c2 = Arc::clone(&counter);
+
         let mut scheduler = Scheduler::new();
-        scheduler.add(DamageOverTime { dps: 10.0 });
-        scheduler.add(|_world: &World, _dt: f32| {});
+        // Only Early and Late — Update/PostUpdate/Physics are empty.
+        scheduler.add_to(Stage::Early, move |_: &World, _: f32| {
+            c1.fetch_add(1, Ordering::SeqCst);
+        });
+        scheduler.add_to(Stage::Late, move |_: &World, _: f32| {
+            c2.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let world = World::new();
+        scheduler.run(&world, 0.0);
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    // ── system_names preserves stage order ───────────────────────────────
+
+    #[test]
+    fn system_names_in_stage_order() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add_to(Stage::Late, DamageOverTime { dps: 10.0 });
+        scheduler.add_to(Stage::Early, |_world: &World, _dt: f32| {});
 
         let names = scheduler.system_names();
         assert_eq!(names.len(), 2);
-        assert_eq!(names[0], "DamageOverTime");
-        // Closure name is the compiler-generated type name — just check it exists.
-        assert!(!names[1].is_empty());
+        // Early system should come first (even though Late was added first).
+        // The DamageOverTime struct system is in Late, so it should be second.
+        assert_eq!(names[1], "DamageOverTime");
     }
 }

@@ -14,7 +14,7 @@ use anyhow::Result;
 use byroredux_core::animation::AnimationClipRegistry;
 use byroredux_core::console::CommandRegistry;
 use byroredux_core::ecs::{
-    ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, Scheduler, TotalTime, World,
+    ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, Scheduler, Stage, TotalTime, World,
 };
 use byroredux_core::string::StringPool;
 use byroredux_platform::window::{self, WindowConfig};
@@ -127,16 +127,17 @@ impl App {
         // Register scripting component storages.
         byroredux_scripting::register(&mut world);
 
-        // Build the system schedule.
+        // Build the system schedule — stages run sequentially, systems
+        // within each stage run in parallel via rayon.
         let mut scheduler = Scheduler::new();
-        scheduler.add(fly_camera_system);
-        scheduler.add(animation_system);
-        scheduler.add(make_transform_propagation_system());
-        scheduler.add(spin_system);
-        scheduler.add(byroredux_physics::physics_sync_system);
-        scheduler.add(byroredux_scripting::timer_tick_system);
-        scheduler.add(log_stats_system);
-        scheduler.add(byroredux_scripting::event_cleanup_system);
+        scheduler.add_to(Stage::Early, fly_camera_system);
+        scheduler.add_to(Stage::Early, byroredux_scripting::timer_tick_system);
+        scheduler.add_to(Stage::Update, animation_system);
+        scheduler.add_to(Stage::Update, spin_system);
+        scheduler.add_to(Stage::PostUpdate, make_transform_propagation_system());
+        scheduler.add_to(Stage::Physics, byroredux_physics::physics_sync_system);
+        scheduler.add_to(Stage::Late, log_stats_system);
+        scheduler.add_exclusive(Stage::Late, byroredux_scripting::event_cleanup_system);
 
         // Store system names + console commands as resources.
         let system_names: Vec<String> = scheduler
