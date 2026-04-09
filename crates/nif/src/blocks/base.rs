@@ -68,9 +68,16 @@ impl NiAVObjectData {
 
         let transform = stream.read_ni_transform()?;
 
-        // Properties list: present in pre-Skyrim (Morrowind, Oblivion, FO3/FNV).
-        // Removed in Skyrim+ where shader/alpha are dedicated refs on NiGeometry.
-        let properties = if stream.variant().has_properties_list() {
+        // Properties list: present on every pre-Skyrim NIF per nif.xml
+        // `#NI_BS_LTE_FO3#` gate (BSVER <= 34). Removed in Skyrim+ where
+        // shader/alpha are dedicated refs on NiGeometry. We use the raw
+        // bsver() directly rather than `variant().has_properties_list()`
+        // because the variant path returns `false` for `Unknown` —
+        // misclassifying non-Bethesda Gamebryo files (Civ IV, Freedom
+        // Force, etc.) and causing 4-byte stream misalignment on every
+        // NiAVObject. Same pattern as the u32/u16 flags check above.
+        // See issue #160.
+        let properties = if stream.bsver() <= 34 {
             stream.read_block_ref_list()?
         } else {
             Vec::new()

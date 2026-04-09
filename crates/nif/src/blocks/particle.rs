@@ -697,7 +697,9 @@ pub fn parse_master_particle_system(stream: &mut NifStream) -> io::Result<NiPSys
 
     let _av = NiAVObjectData::parse(stream)?;
     let _children = stream.read_block_ref_list()?;
-    if stream.variant().has_effects_list() {
+    // FO4+ removes the effects list from NiNode (BSVER >= 130). Raw
+    // bsver check to keep non-Bethesda Unknown variants correct — see #160.
+    if stream.bsver() < 130 {
         let _effects = stream.read_block_ref_list()?;
     }
     let _max_emitter_count = stream.read_u16_le()?;

@@ -880,6 +880,93 @@ mod dispatch_tests {
         }
     }
 
+    /// Regression test for issue #160: `NiAVObject::parse` and
+    /// `NiNode::parse` must use the raw `bsver()` for binary-layout
+    /// decisions so that non-Bethesda Gamebryo files classified as
+    /// `NifVariant::Unknown` still read the correct fields. Previously
+    /// the variant-based `has_properties_list` / `has_effects_list`
+    /// helpers returned `false` for `Unknown`, so an Unknown variant
+    /// with `bsver <= 34` (pre-Skyrim) would skip the properties list
+    /// and mis-align the stream on every NiAVObject.
+    #[test]
+    fn ni_node_parses_unknown_variant_with_low_bsver() {
+        use crate::header::NifHeader;
+        use crate::stream::NifStream;
+        use crate::version::{NifVariant, NifVersion};
+        use std::sync::Arc;
+
+        // Craft a header that detects as `Unknown`: the only path into
+        // that variant on `detect()` is `uv >= 11` without matching
+        // any specific (uv, uv2) arm. uv=13, uv2=0 lands there and
+        // also gives us `bsver() == 0` so the pre-Skyrim binary layout
+        // applies.
+        let header = NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 13,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: vec![Arc::from("Root")],
+            max_string_length: 4,
+            num_groups: 0,
+        };
+        // Sanity: this combo really does classify as Unknown.
+        assert_eq!(
+            NifVariant::detect(header.version, header.user_version, header.user_version_2),
+            NifVariant::Unknown
+        );
+
+        // Build a minimal NiNode body matching the pre-Skyrim layout
+        // (has properties list + has effects list). Identity transform,
+        // empty children / properties / effects lists, null collision
+        // ref with the distinctive sentinel value 0xFFFFFFFF so we can
+        // detect a stream misalignment at the `collision_ref` field.
+        let mut data = Vec::new();
+        // NiObjectNET: name index 0, extra_data count 0, controller -1
+        data.extend_from_slice(&0i32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // NiAVObject: flags u16 (bsver <= 26), transform, properties list,
+        // collision ref. Note flags is u16 here because bsver=0 < 26.
+        data.extend_from_slice(&0u16.to_le_bytes()); // flags
+        for _ in 0..3 {
+            data.extend_from_slice(&0.0f32.to_le_bytes()); // translation
+        }
+        for row in [[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+            for v in row {
+                data.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        data.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+        // Properties list — this is the field `has_properties_list`
+        // gates. Old buggy path would skip it and misread the next
+        // 4 bytes as `collision_ref`.
+        data.extend_from_slice(&0u32.to_le_bytes()); // properties count
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref (null)
+        // NiNode children + effects
+        data.extend_from_slice(&0u32.to_le_bytes()); // children count
+        data.extend_from_slice(&0u32.to_le_bytes()); // effects count
+
+        let mut stream = NifStream::new(&data, &header);
+        let block = parse_block("NiNode", &mut stream, Some(data.len() as u32))
+            .expect("NiNode must parse under Unknown variant + bsver 0");
+        let node = block
+            .as_any()
+            .downcast_ref::<crate::blocks::NiNode>()
+            .expect("downcast to NiNode");
+        assert!(
+            node.av.collision_ref.is_null(),
+            "Unknown variant with bsver=0 must still read properties list \
+             so collision_ref lands on the right 4 bytes"
+        );
+        assert!(node.children.is_empty());
+        assert!(node.effects.is_empty());
+        assert_eq!(stream.position() as usize, data.len());
+    }
+
     /// Regression: #159 — BSTreeNode (Skyrim SpeedTree) must dispatch
     /// to its own parser and consume the two trailing NiNode ref lists
     /// (`Bones 1` + `Bones 2`). Previously aliased to plain NiNode so

@@ -101,7 +101,11 @@ impl NiNode {
         // NiNode-specific fields
         let children = stream.read_block_ref_list()?;
         // FO4+ removes the effects list from NiNode (BSVER >= 130).
-        let effects = if stream.variant().has_effects_list() {
+        // Use raw bsver rather than `variant().has_effects_list()` so
+        // non-Bethesda pre-FO4 Gamebryo files (Unknown variant, bsver=0)
+        // still read the list correctly. Same pattern + rationale as
+        // the `has_properties_list` fix in base.rs. See issue #160.
+        let effects = if stream.bsver() < 130 {
             stream.read_block_ref_list()?
         } else {
             Vec::new()
