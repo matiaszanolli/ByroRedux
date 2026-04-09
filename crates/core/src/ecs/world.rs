@@ -54,9 +54,21 @@ impl World {
     }
 
     /// Allocate a new entity id.
+    ///
+    /// Panics if the `EntityId` counter would overflow. Previously used
+    /// a bare `+= 1` which wraps silently at `u32::MAX` in release
+    /// builds, causing entity ID aliasing (the new entity reuses a
+    /// still-live ID) and silent component-data corruption. Hitting
+    /// this limit requires allocating ~4 billion entities without ever
+    /// reclaiming IDs — a symptom of a runaway spawn loop, not legit
+    /// usage — so crashing is preferable to silent corruption.
+    /// See issue #36.
     pub fn spawn(&mut self) -> EntityId {
         let id = self.next_entity;
-        self.next_entity += 1;
+        self.next_entity = self
+            .next_entity
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("World::spawn overflowed EntityId (u32::MAX reached)"));
         id
     }
 
@@ -1381,6 +1393,21 @@ mod tests {
             msg.contains("ResA") && msg.contains("poisoned"),
             "panic message should name the resource type and mention poisoning, got: {msg}"
         );
+    }
+
+    /// Regression test for issue #36: `spawn()` must panic when the
+    /// `EntityId` counter would overflow, not wrap silently.
+    #[test]
+    #[should_panic(expected = "overflowed EntityId")]
+    fn spawn_panics_on_entity_id_overflow() {
+        let mut world = World::new();
+        // Jam the counter to u32::MAX. The next spawn() returns MAX
+        // and the increment inside should panic.
+        world.next_entity = EntityId::MAX;
+        let last = world.spawn();
+        assert_eq!(last, EntityId::MAX);
+        // This call must panic — u32::MAX + 1 overflows.
+        let _ = world.spawn();
     }
 
     /// Regression test for issue #137: when the poisoned-lock panic
