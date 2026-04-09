@@ -99,9 +99,24 @@ pub(super) fn create_render_pass(
                 | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
         );
 
+    // Outgoing dependency: ensure color attachment writes are complete
+    // before the implicit layout transition to PRESENT_SRC_KHR at render
+    // pass end. Without this, the implicit subpass dependency provides
+    // only BOTTOM_OF_PIPE / no-access, relying on the render_finished
+    // semaphore for correctness. The explicit dependency makes the render
+    // pass self-documenting and robust against future refactoring (e.g.,
+    // adding post-render-pass compute work before present).
+    let dependency_out = vk::SubpassDependency::default()
+        .src_subpass(0)
+        .dst_subpass(vk::SUBPASS_EXTERNAL)
+        .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+        .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+        .dst_stage_mask(vk::PipelineStageFlags::BOTTOM_OF_PIPE)
+        .dst_access_mask(vk::AccessFlags::empty());
+
     let attachments = [color_attachment, depth_attachment];
     let subpasses = [subpass];
-    let dependencies = [dependency];
+    let dependencies = [dependency, dependency_out];
 
     let create_info = vk::RenderPassCreateInfo::default()
         .attachments(&attachments)
