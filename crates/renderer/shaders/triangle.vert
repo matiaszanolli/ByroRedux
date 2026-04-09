@@ -57,11 +57,14 @@ void main() {
     gl_Position = viewProj * worldPos;
     fragColor = inColor;
     fragUV = inUV;
-    // Transform normal by xform's upper 3x3. For uniform scale this is
-    // equivalent to inverse-transpose. Guard against zero-scale meshes
-    // (NIF placeholders, animated transitions) where mat3(xform) is
-    // degenerate and normalize() would produce NaN.
-    vec3 n = mat3(xform) * inNormal;
+    // Transform normal by the inverse-transpose of xform's upper 3x3.
+    // This is correct for non-uniform scale (common in NIF content:
+    // stretched rocks, squashed furniture, character morphs). Guard
+    // against zero-scale meshes (NIF placeholders, animated transitions)
+    // where the matrix is degenerate and inverse() would produce Inf/NaN.
+    mat3 m3 = mat3(xform);
+    float det = determinant(m3);
+    vec3 n = (abs(det) > 1e-6) ? transpose(inverse(m3)) * inNormal : inNormal;
     fragNormal = (dot(n, n) > 0.0) ? normalize(n) : vec3(0.0, 1.0, 0.0);
     fragWorldPos = worldPos.xyz;
 }
