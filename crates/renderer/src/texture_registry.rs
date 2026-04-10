@@ -1,4 +1,13 @@
-//! Texture registry — maps texture paths to GPU-resident textures with per-texture descriptor sets.
+//! Bindless texture registry — all textures in a single descriptor array.
+//!
+//! Instead of per-texture descriptor sets, all textures live in a global
+//! `sampler2D textures[]` array (Vulkan descriptor indexing). The draw
+//! loop binds this once per frame; the fragment shader indexes into it
+//! via a per-instance `texture_index` from the instance SSBO.
+//!
+//! Two copies of the bindless set exist (one per frame-in-flight) to avoid
+//! descriptor write hazards when `update_rgba` replaces a texture while
+//! another frame's command buffer is still executing.
 
 use crate::vulkan::allocator::SharedAllocator;
 use crate::vulkan::texture::Texture;
@@ -6,7 +15,7 @@ use anyhow::{Context, Result};
 use ash::vk;
 use std::collections::{HashMap, VecDeque};
 
-/// Handle into the TextureRegistry (mirrors MeshHandle pattern).
+/// Handle into the TextureRegistry (index into the bindless array).
 pub type TextureHandle = u32;
 
 /// Maximum frames in flight — textures must survive this many frames after replacement.
@@ -14,99 +23,93 @@ const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 struct TextureEntry {
     texture: Texture,
-    descriptor_sets: Vec<vk::DescriptorSet>,
-    /// Ring of replaced textures awaiting deferred destruction, paired
-    /// with the `frame_id` at which they were queued. `update_rgba`
-    /// destroys any entry whose `frame_id` is at least
-    /// `MAX_FRAMES_IN_FLIGHT` frames older than the current frame —
-    /// this is safe because any command buffer that referenced the
-    /// old texture has finished by then (`draw_frame` waits on its
-    /// per-frame fence before reusing a slot).
-    ///
-    /// Frame-id tracking (not call-count) lets `update_rgba` be called
-    /// multiple times per frame on the same handle without destroying
-    /// textures still referenced by in-flight command buffers.
+    /// Ring of replaced textures awaiting deferred destruction.
     /// See issue #134.
     pending_destroy: VecDeque<(u64, Texture)>,
 }
 
-/// Registry mapping texture paths to GPU-resident textures with cached descriptor sets.
+/// Bindless texture registry.
 ///
-/// Each texture gets its own descriptor sets (one per swapchain image) so the draw loop
-/// can bind per-mesh textures by swapping descriptor sets between draw calls.
+/// All textures are stored in a `sampler2D textures[max_textures]` descriptor
+/// array. Two copies exist (per frame-in-flight) for safe descriptor updates.
 pub struct TextureRegistry {
     textures: Vec<TextureEntry>,
     path_map: HashMap<String, TextureHandle>,
     fallback_handle: TextureHandle,
     descriptor_pool: vk::DescriptorPool,
+    /// Layout for set 0: binding 0 = sampler2D[max_textures], PARTIALLY_BOUND.
     pub descriptor_set_layout: vk::DescriptorSetLayout,
-    /// Shared sampler for all textures (LINEAR/REPEAT, max LOD clamped by image).
+    /// One bindless descriptor set per frame-in-flight.
+    bindless_sets: Vec<vk::DescriptorSet>,
+    /// Shared sampler for all textures.
     pub shared_sampler: vk::Sampler,
-    swapchain_image_count: u32,
     max_textures: u32,
-    /// Monotonic frame counter used by `update_rgba`'s deferred-destroy
-    /// ring. Incremented once per frame via `begin_frame()`; replaced
-    /// textures are kept alive until `current_frame_id - queued_frame_id
-    /// >= MAX_FRAMES_IN_FLIGHT`. See issue #134.
+    /// Monotonic frame counter for deferred-destroy aging (issue #134).
     current_frame_id: u64,
 }
 
 impl TextureRegistry {
-    /// Create a new texture registry (no fallback yet — call `set_fallback` after).
+    /// Create a new bindless texture registry.
     ///
-    /// `max_sampler_anisotropy` is the clamped `maxSamplerAnisotropy`
-    /// limit from the physical device (see `DeviceCapabilities`), or
-    /// `0.0` if the device does not support `samplerAnisotropy`. When
-    /// greater than 1.0 the shared sampler enables anisotropic
-    /// filtering — significantly improves ground/wall texture quality
-    /// at oblique angles, which is the dominant case for Bethesda
-    /// content. See issue #136.
+    /// Requires `descriptorBindingPartiallyBound` and `runtimeDescriptorArray`
+    /// to be enabled on the device (Vulkan 1.2 core features).
     pub fn new(
         device: &ash::Device,
-        swapchain_image_count: u32,
+        _swapchain_image_count: u32, // unused with bindless — kept for API compat
         max_textures: u32,
         max_sampler_anisotropy: f32,
     ) -> Result<Self> {
-        // Descriptor set layout: binding 0 = combined image sampler, fragment stage.
+        // Descriptor set layout: binding 0 = sampler2D[max_textures].
+        // PARTIALLY_BOUND allows uninitialized array elements (the shader
+        // only accesses indices that correspond to loaded textures).
+        let binding_flags = [vk::DescriptorBindingFlags::PARTIALLY_BOUND];
+        let mut binding_flags_info =
+            vk::DescriptorSetLayoutBindingFlagsCreateInfo::default()
+                .binding_flags(&binding_flags);
+
         let binding = vk::DescriptorSetLayoutBinding::default()
             .binding(0)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1)
+            .descriptor_count(max_textures)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
-        let layout_info =
-            vk::DescriptorSetLayoutCreateInfo::default().bindings(std::slice::from_ref(&binding));
+        let layout_info = vk::DescriptorSetLayoutCreateInfo::default()
+            .bindings(std::slice::from_ref(&binding))
+            .push_next(&mut binding_flags_info);
 
         let descriptor_set_layout = unsafe {
             device
                 .create_descriptor_set_layout(&layout_info, None)
-                .context("Failed to create texture descriptor set layout")?
+                .context("Failed to create bindless texture descriptor set layout")?
         };
 
-        let total_sets = max_textures * swapchain_image_count;
+        // Pool: 2 sets (per frame-in-flight), each with max_textures samplers.
         let pool_size = vk::DescriptorPoolSize {
             ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            descriptor_count: total_sets,
+            descriptor_count: max_textures * MAX_FRAMES_IN_FLIGHT as u32,
         };
-
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(std::slice::from_ref(&pool_size))
-            .max_sets(total_sets)
-            .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET);
+            .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
 
         let descriptor_pool = unsafe {
             device
                 .create_descriptor_pool(&pool_info, None)
-                .context("Failed to create texture descriptor pool")?
+                .context("Failed to create bindless texture descriptor pool")?
         };
 
-        // Shared sampler: LINEAR/REPEAT with max_lod high enough for any mip chain.
-        // The actual image's mip count naturally clamps sampling.
-        //
-        // Anisotropic filtering is enabled when the device exposes
-        // samplerAnisotropy and the caller passes a limit > 1.0. The
-        // value is already clamped to 16× in DeviceCapabilities, so we
-        // just forward it here. See issue #136.
+        // Allocate per-frame-in-flight descriptor sets.
+        let layouts = vec![descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
+        let alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(descriptor_pool)
+            .set_layouts(&layouts);
+        let bindless_sets = unsafe {
+            device
+                .allocate_descriptor_sets(&alloc_info)
+                .context("Failed to allocate bindless texture descriptor sets")?
+        };
+
+        // Shared sampler: LINEAR/REPEAT with anisotropic filtering.
         let anisotropy_enable = max_sampler_anisotropy > 1.0;
         let sampler_info = vk::SamplerCreateInfo::default()
             .mag_filter(vk::Filter::LINEAR)
@@ -133,22 +136,10 @@ impl TextureRegistry {
                 .context("Failed to create shared texture sampler")?
         };
 
-        let registry = Self {
-            textures: Vec::new(),
-            path_map: HashMap::new(),
-            fallback_handle: 0,
-            descriptor_pool,
-            descriptor_set_layout,
-            shared_sampler,
-            swapchain_image_count,
-            max_textures,
-            current_frame_id: 0,
-        };
-
         log::info!(
-            "TextureRegistry created: pool for {} textures × {} swapchain images, anisotropy {}",
+            "TextureRegistry created: bindless array[{}] × {} frames, anisotropy {}",
             max_textures,
-            swapchain_image_count,
+            MAX_FRAMES_IN_FLIGHT,
             if anisotropy_enable {
                 format!("{:.0}×", max_sampler_anisotropy)
             } else {
@@ -156,22 +147,32 @@ impl TextureRegistry {
             },
         );
 
-        Ok(registry)
+        Ok(Self {
+            textures: Vec::new(),
+            path_map: HashMap::new(),
+            fallback_handle: 0,
+            descriptor_pool,
+            descriptor_set_layout,
+            bindless_sets,
+            shared_sampler,
+            max_textures,
+            current_frame_id: 0,
+        })
     }
 
     /// Register the fallback texture as handle 0. Must be called once after new().
     pub fn set_fallback(&mut self, device: &ash::Device, fallback_texture: Texture) -> Result<()> {
-        let sets = self.allocate_and_write_sets(device, &fallback_texture)?;
+        let handle = self.textures.len() as TextureHandle;
+        self.write_texture_to_all_sets(device, handle, &fallback_texture);
         self.textures.push(TextureEntry {
             texture: fallback_texture,
-            descriptor_sets: sets,
             pending_destroy: VecDeque::new(),
         });
-        self.fallback_handle = 0;
+        self.fallback_handle = handle;
         Ok(())
     }
 
-    /// Load a DDS texture from raw bytes, or return a cached handle if the path is already loaded.
+    /// Load a DDS texture from raw bytes, or return a cached handle if already loaded.
     pub fn load_dds(
         &mut self,
         device: &ash::Device,
@@ -197,12 +198,10 @@ impl TextureRegistry {
         )
         .with_context(|| format!("Failed to load DDS texture '{}'", path))?;
 
-        let sets = self.allocate_and_write_sets(device, &texture)?;
         let handle = self.textures.len() as TextureHandle;
-
+        self.write_texture_to_all_sets(device, handle, &texture);
         self.textures.push(TextureEntry {
             texture,
-            descriptor_sets: sets,
             pending_destroy: VecDeque::new(),
         });
         self.path_map.insert(normalized, handle);
@@ -220,14 +219,16 @@ impl TextureRegistry {
         self.fallback_handle
     }
 
-    /// Get the descriptor set for a texture handle and swapchain image index.
-    pub fn descriptor_set(&self, handle: TextureHandle, image_index: usize) -> vk::DescriptorSet {
-        let entry = &self.textures[handle as usize];
-        entry.descriptor_sets[image_index]
+    /// Get the bindless descriptor set for a frame-in-flight.
+    ///
+    /// This single set contains ALL textures. Bind it once per frame —
+    /// the fragment shader indexes into `textures[texture_index]` via
+    /// the per-instance data.
+    pub fn descriptor_set(&self, frame_index: usize) -> vk::DescriptorSet {
+        self.bindless_sets[frame_index]
     }
 
-    /// Register an RGBA texture directly (not from a DDS file or path).
-    /// Returns a handle that can be used with `update_rgba` for dynamic updates.
+    /// Register an RGBA texture directly (for dynamic UI textures).
     pub fn register_rgba(
         &mut self,
         device: &ash::Device,
@@ -250,30 +251,21 @@ impl TextureRegistry {
         )
         .context("Failed to create dynamic RGBA texture")?;
 
-        let sets = self.allocate_and_write_sets(device, &texture)?;
         let handle = self.textures.len() as TextureHandle;
-
+        self.write_texture_to_all_sets(device, handle, &texture);
         self.textures.push(TextureEntry {
             texture,
-            descriptor_sets: sets,
             pending_destroy: VecDeque::new(),
         });
 
         Ok(handle)
     }
 
-    /// Advance the registry's frame counter. Must be called once at
-    /// the top of each frame (before any `update_rgba` calls) so the
-    /// deferred-destroy ring can age pending textures correctly.
-    /// `VulkanContext::draw_frame` handles this automatically.
-    /// See issue #134.
+    /// Advance the frame counter for deferred-destroy aging (issue #134).
     pub fn begin_frame(&mut self) {
         self.current_frame_id = self.current_frame_id.wrapping_add(1);
     }
 
-    /// Current registry frame counter. Test-only accessor exposed as
-    /// `pub(crate)` so `VulkanContext` internals can observe the
-    /// counter for diagnostics; the field itself stays private.
     #[cfg(test)]
     pub(crate) fn current_frame_id(&self) -> u64 {
         self.current_frame_id
@@ -281,16 +273,8 @@ impl TextureRegistry {
 
     /// Replace the texture data for an existing handle with new RGBA pixels.
     ///
-    /// Uses deferred destruction keyed on the registry's monotonic
-    /// frame counter: a replaced texture is kept alive until
-    /// `MAX_FRAMES_IN_FLIGHT` frames have elapsed since it was queued,
-    /// guaranteeing that any command buffer still referencing it has
-    /// finished. No `device_wait_idle` stall.
-    ///
-    /// Safe to call multiple times per frame on the same handle —
-    /// each call queues its replaced texture under the current
-    /// `frame_id` and none are destroyed until the frame counter
-    /// advances via `begin_frame()`. See issue #134.
+    /// Uses deferred destruction: the replaced texture is kept alive until
+    /// `MAX_FRAMES_IN_FLIGHT` frames have elapsed. See issue #134.
     pub fn update_rgba(
         &mut self,
         device: &ash::Device,
@@ -305,10 +289,7 @@ impl TextureRegistry {
         let current_frame_id = self.current_frame_id;
         let entry = &mut self.textures[handle as usize];
 
-        // Drain textures whose queue frame is at least
-        // `MAX_FRAMES_IN_FLIGHT` behind the current frame. Pending
-        // entries are queued in ascending frame_id order, so we can
-        // stop at the first entry that is still too young.
+        // Drain old textures that have aged out.
         while let Some(&(queued, _)) = entry.pending_destroy.front() {
             if !should_destroy_pending(current_frame_id, queued) {
                 break;
@@ -318,7 +299,7 @@ impl TextureRegistry {
             }
         }
 
-        // Move current texture to pending ring, swap in the new one.
+        // Swap in the new texture.
         let mut prev = Texture::from_rgba(
             device,
             allocator,
@@ -333,20 +314,21 @@ impl TextureRegistry {
         std::mem::swap(&mut entry.texture, &mut prev);
         entry.pending_destroy.push_back((current_frame_id, prev));
 
-        // Re-write the existing descriptor sets to point to the new image.
+        // Update the bindless array entry in all frame sets.
+        // Extract the data we need before re-borrowing self.
+        let image_view = self.textures[handle as usize].texture.image_view;
+        let sampler = self.textures[handle as usize].texture.sampler;
         let image_info = vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(entry.texture.image_view)
-            .sampler(entry.texture.sampler);
-
-        for &set in &entry.descriptor_sets {
+            .image_view(image_view)
+            .sampler(sampler);
+        for &set in &self.bindless_sets {
             let write = vk::WriteDescriptorSet::default()
                 .dst_set(set)
                 .dst_binding(0)
-                .dst_array_element(0)
+                .dst_array_element(handle)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(std::slice::from_ref(&image_info));
-
             unsafe {
                 device.update_descriptor_sets(&[write], &[]);
             }
@@ -360,53 +342,53 @@ impl TextureRegistry {
         self.textures.len()
     }
 
-    /// Recreate all descriptor sets for a new swapchain image count.
+    /// Recreate descriptor sets for a new swapchain.
     ///
-    /// Called on swapchain recreation. Destroys the old pool, creates a new one,
-    /// and re-writes all texture descriptors. Textures themselves are preserved.
+    /// With bindless textures, the descriptor sets are independent of swapchain
+    /// image count. This method recreates them to ensure a clean state and
+    /// re-writes all texture bindings.
     pub fn recreate_descriptor_sets(
         &mut self,
         device: &ash::Device,
-        new_swapchain_image_count: u32,
+        _new_swapchain_image_count: u32,
     ) -> Result<()> {
         // Destroy old pool (frees all sets implicitly).
         unsafe {
             device.destroy_descriptor_pool(self.descriptor_pool, None);
         }
 
-        // Create new pool.
-        let total_sets = self.max_textures * new_swapchain_image_count;
+        // Recreate pool + sets.
         let pool_size = vk::DescriptorPoolSize {
             ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            descriptor_count: total_sets,
+            descriptor_count: self.max_textures * MAX_FRAMES_IN_FLIGHT as u32,
         };
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(std::slice::from_ref(&pool_size))
-            .max_sets(total_sets)
-            .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET);
-
+            .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
         self.descriptor_pool = unsafe {
             device
                 .create_descriptor_pool(&pool_info, None)
-                .context("Failed to recreate texture descriptor pool")?
+                .context("Failed to recreate bindless texture descriptor pool")?
         };
-        self.swapchain_image_count = new_swapchain_image_count;
 
-        // Re-allocate and write descriptor sets for all textures.
-        for entry in &mut self.textures {
-            entry.descriptor_sets = Self::allocate_and_write_sets_inner(
-                device,
-                &entry.texture,
-                self.descriptor_set_layout,
-                self.descriptor_pool,
-                new_swapchain_image_count,
-            )?;
+        let layouts = vec![self.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
+        let alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(self.descriptor_pool)
+            .set_layouts(&layouts);
+        self.bindless_sets = unsafe {
+            device
+                .allocate_descriptor_sets(&alloc_info)
+                .context("Failed to reallocate bindless texture descriptor sets")?
+        };
+
+        // Re-write all texture bindings.
+        for (i, entry) in self.textures.iter().enumerate() {
+            self.write_texture_to_sets_inner(device, i as TextureHandle, &entry.texture);
         }
 
         log::info!(
-            "TextureRegistry descriptor sets recreated: {} textures × {} images",
+            "TextureRegistry descriptor sets recreated: {} textures (bindless)",
             self.textures.len(),
-            new_swapchain_image_count,
         );
 
         Ok(())
@@ -430,50 +412,32 @@ impl TextureRegistry {
         }
     }
 
-    /// Allocate descriptor sets for a texture and write the combined image sampler.
-    fn allocate_and_write_sets(
+    /// Write a texture's image view + sampler to all per-frame bindless sets.
+    fn write_texture_to_all_sets(
         &self,
         device: &ash::Device,
+        handle: TextureHandle,
         texture: &Texture,
-    ) -> Result<Vec<vk::DescriptorSet>> {
-        Self::allocate_and_write_sets_inner(
-            device,
-            texture,
-            self.descriptor_set_layout,
-            self.descriptor_pool,
-            self.swapchain_image_count,
-        )
+    ) {
+        self.write_texture_to_sets_inner(device, handle, texture);
     }
 
-    fn allocate_and_write_sets_inner(
+    fn write_texture_to_sets_inner(
+        &self,
         device: &ash::Device,
+        handle: TextureHandle,
         texture: &Texture,
-        layout: vk::DescriptorSetLayout,
-        pool: vk::DescriptorPool,
-        count: u32,
-    ) -> Result<Vec<vk::DescriptorSet>> {
-        let layouts = vec![layout; count as usize];
-
-        let alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(pool)
-            .set_layouts(&layouts);
-
-        let sets = unsafe {
-            device
-                .allocate_descriptor_sets(&alloc_info)
-                .context("Failed to allocate texture descriptor sets")?
-        };
-
+    ) {
         let image_info = vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .image_view(texture.image_view)
             .sampler(texture.sampler);
 
-        for &set in &sets {
+        for &set in &self.bindless_sets {
             let write = vk::WriteDescriptorSet::default()
                 .dst_set(set)
                 .dst_binding(0)
-                .dst_array_element(0)
+                .dst_array_element(handle)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(std::slice::from_ref(&image_info));
 
@@ -481,8 +445,6 @@ impl TextureRegistry {
                 device.update_descriptor_sets(&[write], &[]);
             }
         }
-
-        Ok(sets)
     }
 }
 
@@ -491,16 +453,6 @@ fn normalize_path(path: &str) -> String {
     path.to_ascii_lowercase().replace('\\', "/")
 }
 
-/// Return `true` when a pending texture queued at `queued_frame` can
-/// be destroyed given the registry's `current_frame`. An entry is safe
-/// to destroy once at least `MAX_FRAMES_IN_FLIGHT` frames have elapsed
-/// since it was queued — at that point every command buffer that
-/// referenced the old texture has finished (the per-frame fence in
-/// `draw_frame` guarantees it). Wrap-safe via `wrapping_sub`; in
-/// practice the u64 counter lasts ~584 years at 1000 fps.
-///
-/// Pure helper extracted from `update_rgba` so the aging math can be
-/// unit-tested without a Vulkan device. See issue #134.
 fn should_destroy_pending(current_frame: u64, queued_frame: u64) -> bool {
     current_frame.wrapping_sub(queued_frame) >= MAX_FRAMES_IN_FLIGHT as u64
 }
@@ -525,69 +477,31 @@ mod tests {
         );
     }
 
-    /// Regression test for issue #134: deferred-destroy aging math
-    /// must treat two calls in the same frame as safe, and only
-    /// authorise destruction once MAX_FRAMES_IN_FLIGHT real frames
-    /// have elapsed since the queue point.
     #[test]
     fn should_destroy_pending_honors_frame_gap() {
-        // Same frame — never destroy (could still be in flight).
         assert!(!should_destroy_pending(0, 0));
-        assert!(!should_destroy_pending(42, 42));
-
-        // 1 frame later — still too young when MAX_FRAMES_IN_FLIGHT == 2.
         assert!(!should_destroy_pending(1, 0));
-        assert!(!should_destroy_pending(43, 42));
-
-        // Exactly MAX_FRAMES_IN_FLIGHT frames later — safe.
         assert!(should_destroy_pending(MAX_FRAMES_IN_FLIGHT as u64, 0));
-        assert!(should_destroy_pending(
-            42 + MAX_FRAMES_IN_FLIGHT as u64,
-            42
-        ));
-
-        // Many frames later — still safe.
         assert!(should_destroy_pending(1000, 0));
     }
 
-    /// The previous call-count-based drain would trigger on
-    /// `pending_destroy.len() >= MAX_FRAMES_IN_FLIGHT`, so two calls
-    /// in the same frame would immediately destroy the first queued
-    /// entry — unsound because both were queued in a frame that may
-    /// still be in flight. Verify the new aging helper refuses to
-    /// destroy any entry whose queue frame matches the current frame
-    /// regardless of how many entries are pending.
     #[test]
     fn multiple_same_frame_calls_do_not_authorize_destruction() {
         let current_frame = 10;
-        // 5 entries all queued on the same frame.
         for _ in 0..5 {
-            assert!(
-                !should_destroy_pending(current_frame, current_frame),
-                "same-frame entries must never be destroyed"
-            );
+            assert!(!should_destroy_pending(current_frame, current_frame));
         }
-        // The oldest one becomes destroyable only after the frame counter
-        // has advanced by MAX_FRAMES_IN_FLIGHT.
         assert!(should_destroy_pending(
             current_frame + MAX_FRAMES_IN_FLIGHT as u64,
             current_frame
         ));
     }
 
-    /// The monotonic counter uses `wrapping_add` / `wrapping_sub` so
-    /// the math stays correct even across a u64 wrap (impossible in
-    /// practice — ~584 years at 1000 fps — but free to get right).
     #[test]
     fn frame_counter_math_is_wrap_safe() {
-        // Queued right before wrap, current frame is MAX_FRAMES_IN_FLIGHT
-        // frames past the wrap. The wrap-safe subtraction should still
-        // return MAX_FRAMES_IN_FLIGHT and authorize destruction.
         let queued = u64::MAX - 1;
         let current = queued.wrapping_add(MAX_FRAMES_IN_FLIGHT as u64);
         assert!(should_destroy_pending(current, queued));
-
-        // One frame before the threshold — still not destroyable.
         let current = queued.wrapping_add(MAX_FRAMES_IN_FLIGHT as u64 - 1);
         assert!(!should_destroy_pending(current, queued));
     }

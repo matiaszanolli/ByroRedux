@@ -1,14 +1,18 @@
 #version 460
 #extension GL_EXT_ray_query : enable
+#extension GL_EXT_nonuniform_qualifier : require
 
 layout(location = 0) in vec3 fragColor;
 layout(location = 1) in vec2 fragUV;
 layout(location = 2) in vec3 fragNormal;
 layout(location = 3) in vec3 fragWorldPos;
+layout(location = 4) flat in uint fragTexIndex;
 
 layout(location = 0) out vec4 outColor;
 
-layout(set = 0, binding = 0) uniform sampler2D texSampler;
+// Bindless texture array: all textures in a single descriptor set.
+// The per-instance texture index selects which texture to sample.
+layout(set = 0, binding = 0) uniform sampler2D textures[];
 
 struct GpuLight {
     vec4 position_radius;  // xyz = position, w = radius
@@ -31,7 +35,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
 
 void main() {
-    vec4 texColor = texture(texSampler, fragUV);
+    vec4 texColor = texture(textures[nonuniformEXT(fragTexIndex)], fragUV);
 
     // Alpha test: discard fully transparent fragments (alpha < threshold).
     // This handles glass, fences, foliage, and other alpha-tested geometry.

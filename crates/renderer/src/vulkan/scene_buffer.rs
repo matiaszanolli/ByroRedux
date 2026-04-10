@@ -27,6 +27,46 @@ pub const MAX_TOTAL_BONES: usize = 4096;
 /// Slot 0 of the bone palette is always the identity matrix.
 pub const IDENTITY_BONE_SLOT: u32 = 0;
 
+/// Maximum instances per frame. 4096 × 80 B = 320 KB/frame — trivial.
+/// Covers the largest exterior cells (~3000 placed references).
+pub const MAX_INSTANCES: usize = 4096;
+
+/// Per-instance data uploaded to the instance SSBO each frame.
+///
+/// The vertex shader reads `instances[gl_InstanceIndex]` instead of push
+/// constants, enabling instanced drawing: consecutive draws with the same
+/// mesh + pipeline can be batched into a single `cmd_draw_indexed` call.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GpuInstance {
+    /// Model-to-world matrix (column-major, matches glam/GLSL convention).
+    pub model: [[f32; 4]; 4],
+    /// Index into the bindless texture array (set 0). The fragment shader
+    /// uses `textures[nonuniformEXT(texture_index)]` to sample.
+    pub texture_index: u32,
+    /// Offset into the bone palette SSBO for skinned meshes (0 = identity slot for rigid).
+    pub bone_offset: u32,
+    /// Padding to 16-byte alignment (std430 requires struct members aligned to
+    /// the largest member size, and arrays of structs are rounded up to 16).
+    pub _padding: [u32; 2],
+}
+
+impl Default for GpuInstance {
+    fn default() -> Self {
+        Self {
+            model: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            texture_index: 0,
+            bone_offset: 0,
+            _padding: [0; 2],
+        }
+    }
+}
+
 /// GPU-side light struct (48 bytes, std430 layout).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -89,10 +129,14 @@ pub struct SceneBuffers {
     /// Slot 0 is always the identity matrix; the vertex shader uses it
     /// as a fallback for rigid vertices that land here by accident.
     bone_buffers: Vec<GpuBuffer>,
+    /// One SSBO per frame-in-flight (per-instance data for instanced drawing).
+    /// Each entry contains model matrix + texture index + bone offset.
+    instance_buffers: Vec<GpuBuffer>,
     /// Descriptor pool for scene descriptor sets.
     descriptor_pool: vk::DescriptorPool,
     /// Layout for set 1: binding 0 = SSBO (lights), binding 1 = UBO (camera),
-    /// binding 2 = TLAS (RT only), binding 3 = SSBO (bone palette).
+    /// binding 2 = TLAS (RT only), binding 3 = SSBO (bone palette),
+    /// binding 4 = SSBO (instance data).
     pub descriptor_set_layout: vk::DescriptorSetLayout,
     /// One descriptor set per frame-in-flight.
     pub descriptor_sets: Vec<vk::DescriptorSet>,
@@ -113,12 +157,17 @@ impl SceneBuffers {
             as vk::DeviceSize;
         let camera_buf_size = std::mem::size_of::<GpuCamera>() as vk::DeviceSize;
         // Bone palette: 4 × vec4 (mat4) per slot, std430 layout.
-        let bone_buf_size = (std::mem::size_of::<[[f32; 4]; 4]>() * MAX_TOTAL_BONES) as vk::DeviceSize;
+        let bone_buf_size =
+            (std::mem::size_of::<[[f32; 4]; 4]>() * MAX_TOTAL_BONES) as vk::DeviceSize;
+        // Instance SSBO: per-instance model matrix + texture index + bone offset.
+        let instance_buf_size =
+            (std::mem::size_of::<GpuInstance>() * MAX_INSTANCES) as vk::DeviceSize;
 
         // Create per-frame buffers.
         let mut light_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut camera_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut bone_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut instance_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             light_buffers.push(GpuBuffer::create_host_visible(
                 device,
@@ -136,6 +185,12 @@ impl SceneBuffers {
                 device,
                 allocator,
                 bone_buf_size,
+                vk::BufferUsageFlags::STORAGE_BUFFER,
+            )?);
+            instance_buffers.push(GpuBuffer::create_host_visible(
+                device,
+                allocator,
+                instance_buf_size,
                 vk::BufferUsageFlags::STORAGE_BUFFER,
             )?);
         }
@@ -173,6 +228,16 @@ impl SceneBuffers {
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::VERTEX),
         );
+        // Binding 4: instance data SSBO (vertex shader — instanced drawing).
+        // The vertex shader reads model matrix, texture index, and bone offset
+        // per instance via gl_InstanceIndex.
+        bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX),
+        );
         let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
         let descriptor_set_layout = unsafe {
             device
@@ -185,7 +250,8 @@ impl SceneBuffers {
         let mut pool_sizes = vec![
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 2) as u32,
+                // 3 SSBOs per frame: lights (binding 0), bones (binding 3), instances (binding 4).
+                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 3) as u32,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::UNIFORM_BUFFER,
@@ -235,6 +301,11 @@ impl SceneBuffers {
                 offset: 0,
                 range: bone_buf_size,
             }];
+            let instance_buf_info = [vk::DescriptorBufferInfo {
+                buffer: instance_buffers[i].buffer,
+                offset: 0,
+                range: instance_buf_size,
+            }];
             let writes = [
                 vk::WriteDescriptorSet::default()
                     .dst_set(descriptor_sets[i])
@@ -251,6 +322,11 @@ impl SceneBuffers {
                     .dst_binding(3)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .buffer_info(&bone_buf_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_sets[i])
+                    .dst_binding(4)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(&instance_buf_info),
             ];
             unsafe {
                 device.update_descriptor_sets(&writes, &[]);
@@ -282,6 +358,7 @@ impl SceneBuffers {
             light_buffers,
             camera_buffers,
             bone_buffers,
+            instance_buffers,
             descriptor_pool,
             descriptor_set_layout,
             descriptor_sets,
@@ -373,6 +450,44 @@ impl SceneBuffers {
         buf.flush_if_needed(device)
     }
 
+    /// Upload per-instance data for the current frame-in-flight.
+    ///
+    /// Called once per frame before the render pass. The vertex shader reads
+    /// `instances[gl_InstanceIndex]` for model matrix, texture index, and bone offset.
+    pub fn upload_instances(
+        &mut self,
+        device: &ash::Device,
+        frame_index: usize,
+        instances: &[GpuInstance],
+    ) -> Result<()> {
+        let count = instances.len().min(MAX_INSTANCES);
+        if count == 0 {
+            return Ok(());
+        }
+        let buf = &mut self.instance_buffers[frame_index];
+        let mapped = buf.mapped_slice_mut()?;
+        let byte_size = std::mem::size_of::<GpuInstance>() * count;
+        // SAFETY: GpuInstance is #[repr(C)] with plain f32/u32 fields.
+        // instance_buffers are sized for MAX_INSTANCES; count is clamped.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                instances.as_ptr() as *const u8,
+                mapped.as_mut_ptr(),
+                byte_size,
+            );
+        }
+        buf.flush_if_needed(device)
+    }
+
+    /// Get a mutable reference to the mapped instance buffer for direct writes.
+    /// Used by the UI overlay to append a single instance after the bulk upload.
+    pub fn instance_buffer_mapped_mut(
+        &mut self,
+        frame_index: usize,
+    ) -> Result<&mut [u8]> {
+        self.instance_buffers[frame_index].mapped_slice_mut()
+    }
+
     /// Get the descriptor set for the current frame-in-flight.
     pub fn descriptor_set(&self, frame_index: usize) -> vk::DescriptorSet {
         self.descriptor_sets[frame_index]
@@ -411,6 +526,9 @@ impl SceneBuffers {
             buf.destroy(device, allocator);
         }
         for buf in &mut self.bone_buffers {
+            buf.destroy(device, allocator);
+        }
+        for buf in &mut self.instance_buffers {
             buf.destroy(device, allocator);
         }
         device.destroy_descriptor_pool(self.descriptor_pool, None);

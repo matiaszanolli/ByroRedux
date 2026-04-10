@@ -1,4 +1,5 @@
 #version 450
+#extension GL_EXT_nonuniform_qualifier : require
 
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inColor;
@@ -7,24 +8,28 @@ layout(location = 3) in vec2 inUV;
 layout(location = 4) in uvec4 inBoneIndices;
 layout(location = 5) in vec4  inBoneWeights;
 
-layout(push_constant) uniform PushConstants {
+// Per-instance data from the instance SSBO. Each draw's gl_InstanceIndex
+// maps to one entry containing model matrix, texture index, and bone offset.
+struct GpuInstance {
     mat4 model;
+    uint textureIndex;
     uint boneOffset;
-} pc;
+    uint _pad0;
+    uint _pad1;
+};
 
-// Camera UBO (set 1, binding 1) — per-frame, not per-draw. viewProj lives
-// here rather than in push constants to stay within the Vulkan spec
-// guaranteed minimum of 128 bytes for maxPushConstantsSize.
+layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
+    GpuInstance instances[];
+};
+
+// Camera UBO (set 1, binding 1) — per-frame, shared across all draws.
 layout(set = 1, binding = 1) uniform CameraUBO {
     mat4 viewProj;
     vec4 cameraPos;
     vec4 sceneFlags;
 };
 
-// Bone palette: computed CPU-side as `bone_world * bind_inverse`, one
-// entry per bone across all skinned meshes in the frame. Slot 0 is a
-// reserved identity matrix. See crates/renderer/src/vulkan/scene_buffer.rs
-// and the SkinnedMesh ECS component (issue #178).
+// Bone palette SSBO (set 1, binding 3) — skinning matrices.
 layout(std430, set = 1, binding = 3) readonly buffer BoneBuffer {
     mat4 bones[];
 };
@@ -33,19 +38,18 @@ layout(location = 0) out vec3 fragColor;
 layout(location = 1) out vec2 fragUV;
 layout(location = 2) out vec3 fragNormal;
 layout(location = 3) out vec3 fragWorldPos;
+layout(location = 4) flat out uint fragTexIndex;
 
 void main() {
-    // Rigid vertices are tagged by sum(weights) ≈ 0 and go through the
-    // push-constant model matrix directly. Skinned vertices blend 4
-    // bone-palette entries weighted by the per-vertex weights; the
-    // palette entries are already in world space (bone_world * bind_inv)
-    // so no additional model multiplication is needed.
+    GpuInstance inst = instances[gl_InstanceIndex];
+
+    // Rigid vs skinned vertex selection.
     float wsum = inBoneWeights.x + inBoneWeights.y + inBoneWeights.z + inBoneWeights.w;
     mat4 xform;
     if (wsum < 0.001) {
-        xform = pc.model;
+        xform = inst.model;
     } else {
-        uint base = pc.boneOffset;
+        uint base = inst.boneOffset;
         xform =
               inBoneWeights.x * bones[base + inBoneIndices.x]
             + inBoneWeights.y * bones[base + inBoneIndices.y]
@@ -57,14 +61,11 @@ void main() {
     gl_Position = viewProj * worldPos;
     fragColor = inColor;
     fragUV = inUV;
-    // Transform normal by the inverse-transpose of xform's upper 3x3.
-    // This is correct for non-uniform scale (common in NIF content:
-    // stretched rocks, squashed furniture, character morphs). Guard
-    // against zero-scale meshes (NIF placeholders, animated transitions)
-    // where the matrix is degenerate and inverse() would produce Inf/NaN.
+    // Correct normal transform for non-uniform scale (inverse-transpose).
     mat3 m3 = mat3(xform);
     float det = determinant(m3);
     vec3 n = (abs(det) > 1e-6) ? transpose(inverse(m3)) * inNormal : inNormal;
     fragNormal = (dot(n, n) > 0.0) ? normalize(n) : vec3(0.0, 1.0, 0.0);
     fragWorldPos = worldPos.xyz;
+    fragTexIndex = inst.textureIndex;
 }

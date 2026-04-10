@@ -202,9 +202,16 @@ pub fn create_logical_device(
         );
     }
 
-    // Feature chain for RT (pNext).
+    // Feature chain (pNext): Vulkan 1.2 features.
+    // - buffer_device_address: required for RT acceleration structures.
+    // - descriptor_indexing features: required for bindless texture arrays.
+    //   These are Vulkan 1.2 core (no extension needed), universally available
+    //   on desktop GPUs that support Vulkan 1.2+.
     let mut vulkan12_features = vk::PhysicalDeviceVulkan12Features::default()
-        .buffer_device_address(caps.ray_query_supported);
+        .buffer_device_address(caps.ray_query_supported)
+        .shader_sampled_image_array_non_uniform_indexing(true)
+        .runtime_descriptor_array(true)
+        .descriptor_binding_partially_bound(true);
 
     let mut accel_features = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
         .acceleration_structure(caps.ray_query_supported);
@@ -212,6 +219,8 @@ pub fn create_logical_device(
     let mut ray_query_features =
         vk::PhysicalDeviceRayQueryFeaturesKHR::default().ray_query(caps.ray_query_supported);
 
+    // Always push Vulkan 1.2 features (descriptor indexing is needed for
+    // bindless textures even without RT). RT features are only pushed when available.
     let create_info = if caps.ray_query_supported {
         vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_create_infos)
@@ -225,6 +234,7 @@ pub fn create_logical_device(
             .queue_create_infos(&queue_create_infos)
             .enabled_features(&device_features)
             .enabled_extension_names(&extensions)
+            .push_next(&mut vulkan12_features)
     };
 
     let device = unsafe {

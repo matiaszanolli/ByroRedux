@@ -181,22 +181,15 @@ fn create_triangle_pipeline_with_layout(
     let dynamic_state =
         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
-    // Push constants: model (mat4, 64 B) + bone_offset (uint, 4 B) = 68 bytes.
-    // viewProj moved to the camera UBO (set 1, binding 1) since it is
-    // per-frame, not per-draw. 68 bytes is well within the Vulkan spec
-    // guaranteed minimum of 128 bytes.
-    let push_constant_ranges = [vk::PushConstantRange {
-        stage_flags: vk::ShaderStageFlags::VERTEX,
-        offset: 0,
-        size: 68, // sizeof(mat4) + sizeof(uint)
-    }];
+    // No push constants — per-draw data (model matrix, texture index, bone offset)
+    // lives in the instance SSBO (set 1, binding 4). The vertex shader reads
+    // instances[gl_InstanceIndex] for all per-instance data.
     let (pipeline_layout, owns_layout) = if let Some(layout) = existing_layout {
         (layout, false)
     } else {
         let set_layouts = [descriptor_set_layout, scene_set_layout];
         let layout_info = vk::PipelineLayoutCreateInfo::default()
-            .set_layouts(&set_layouts)
-            .push_constant_ranges(&push_constant_ranges);
+            .set_layouts(&set_layouts);
         let layout = unsafe {
             device
                 .create_pipeline_layout(&layout_info, None)

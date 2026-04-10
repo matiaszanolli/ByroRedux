@@ -1,10 +1,21 @@
 //! Frame recording and submission — the per-frame hot path.
 
-use super::super::scene_buffer;
+use super::super::scene_buffer::{self, GpuInstance};
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::{DrawCommand, VulkanContext};
 use anyhow::{Context, Result};
 use ash::vk;
+
+/// A batch of instances sharing the same mesh + pipeline state.
+/// Drawn with a single `cmd_draw_indexed` call.
+struct DrawBatch {
+    mesh_handle: u32,
+    pipeline_key: (bool, bool), // (alpha_blend, two_sided)
+    is_decal: bool,
+    first_instance: u32,
+    instance_count: u32,
+    index_count: u32,
+}
 
 impl VulkanContext {
     /// Record and submit a frame.
@@ -25,9 +36,6 @@ impl VulkanContext {
         let frame = self.current_frame;
 
         // Advance the texture registry's deferred-destroy frame counter.
-        // Keyed on frame count (not per-call count) so `update_rgba`
-        // can safely be called multiple times per frame on the same
-        // handle. See issue #134.
         self.texture_registry.begin_frame();
 
         // Wait for this frame-in-flight slot to be available.
@@ -78,9 +86,8 @@ impl VulkanContext {
                 .context("reset_command_buffer")?;
         }
 
-        let begin_info = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-
+        let begin_info =
+            vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         unsafe {
             self.device
                 .begin_command_buffer(cmd, &begin_info)
@@ -151,9 +158,6 @@ impl VulkanContext {
             } else {
                 0.0
             };
-        // Pack viewProj into the camera UBO alongside position/flags.
-        // This keeps push constants at 68 bytes (model + boneOffset),
-        // within the Vulkan spec guaranteed minimum of 128.
         let vp = view_proj;
         let camera = scene_buffer::GpuCamera {
             view_proj: [
@@ -173,23 +177,78 @@ impl VulkanContext {
         self.scene_buffers
             .upload_camera(&self.device, frame, &camera)
             .unwrap_or_else(|e| log::warn!("Failed to upload camera: {e}"));
-        // Bone palette for skinning. Empty slice leaves slot 0 (identity,
-        // seeded at SceneBuffers::new) untouched — fine for rigid-only scenes.
         if !bone_palette.is_empty() {
             self.scene_buffers
                 .upload_bones(&self.device, frame, bone_palette)
                 .unwrap_or_else(|e| log::warn!("Failed to upload bone palette: {e}"));
         }
 
+        // ── Build instance SSBO + draw batches ────────────────────────
+        //
+        // Each DrawCommand becomes one GpuInstance in the SSBO. Consecutive
+        // commands with the same (pipeline_key, is_decal, mesh_handle) are
+        // merged into a single instanced draw call.
+        let mut gpu_instances: Vec<GpuInstance> = Vec::with_capacity(draw_commands.len());
+        let mut batches: Vec<DrawBatch> = Vec::new();
+
+        for draw_cmd in draw_commands {
+            let Some(mesh) = self.mesh_registry.get(draw_cmd.mesh_handle) else {
+                continue;
+            };
+
+            let instance_idx = gpu_instances.len() as u32;
+            gpu_instances.push(GpuInstance {
+                model: [
+                    [draw_cmd.model_matrix[0], draw_cmd.model_matrix[1], draw_cmd.model_matrix[2], draw_cmd.model_matrix[3]],
+                    [draw_cmd.model_matrix[4], draw_cmd.model_matrix[5], draw_cmd.model_matrix[6], draw_cmd.model_matrix[7]],
+                    [draw_cmd.model_matrix[8], draw_cmd.model_matrix[9], draw_cmd.model_matrix[10], draw_cmd.model_matrix[11]],
+                    [draw_cmd.model_matrix[12], draw_cmd.model_matrix[13], draw_cmd.model_matrix[14], draw_cmd.model_matrix[15]],
+                ],
+                texture_index: draw_cmd.texture_handle,
+                bone_offset: draw_cmd.bone_offset,
+                _padding: [0; 2],
+            });
+
+            let pipeline_key = (draw_cmd.alpha_blend, draw_cmd.two_sided);
+
+            // Extend the current batch if this draw shares the same state.
+            if let Some(batch) = batches.last_mut() {
+                if batch.mesh_handle == draw_cmd.mesh_handle
+                    && batch.pipeline_key == pipeline_key
+                    && batch.is_decal == draw_cmd.is_decal
+                {
+                    batch.instance_count += 1;
+                    continue;
+                }
+            }
+
+            // Start a new batch.
+            batches.push(DrawBatch {
+                mesh_handle: draw_cmd.mesh_handle,
+                pipeline_key,
+                is_decal: draw_cmd.is_decal,
+                first_instance: instance_idx,
+                instance_count: 1,
+                index_count: mesh.index_count,
+            });
+        }
+
+        // Upload instance data to the SSBO.
+        if !gpu_instances.is_empty() {
+            self.scene_buffers
+                .upload_instances(&self.device, frame, &gpu_instances)
+                .unwrap_or_else(|e| log::warn!("Failed to upload instances: {e}"));
+        }
+
         unsafe {
             self.device
                 .cmd_begin_render_pass(cmd, &render_pass_begin, vk::SubpassContents::INLINE);
 
-            // Bind the graphics pipeline.
+            // Bind the default graphics pipeline.
             self.device
                 .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
 
-            // Set dynamic viewport and scissor.
+            // Dynamic viewport + scissor.
             let viewports = [vk::Viewport {
                 x: 0.0,
                 y: 0.0,
@@ -206,103 +265,63 @@ impl VulkanContext {
             }];
             self.device.cmd_set_scissor(cmd, 0, &scissors);
 
-            // Bind scene descriptor set (lights + camera SSBOs/UBOs).
-            // Indexed by `frame` (frame-in-flight, 0..MAX_FRAMES_IN_FLIGHT) because
-            // scene data is double-buffered per frame, not per swapchain image.
+            // Bind the bindless texture descriptor set (set 0) — once per frame.
+            let texture_set = self.texture_registry.descriptor_set(frame);
+            self.device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                0,
+                &[texture_set],
+                &[],
+            );
+
+            // Bind the scene descriptor set (set 1) — once per frame.
             let scene_set = self.scene_buffers.descriptor_set(frame);
             self.device.cmd_bind_descriptor_sets(
                 cmd,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline_layout,
-                1, // set 1
+                1,
                 &[scene_set],
                 &[],
             );
 
-            // Draw: opaque first, then alpha-blended. Switch pipeline on mode change.
-            // Deduplicate vertex/index buffer binds when consecutive draws share a
-            // mesh — at ~500 draws / 50 meshes that's roughly 450 redundant
-            // `cmd_bind_vertex_buffers` + `cmd_bind_index_buffer` calls per frame.
-            // The sort key in `render::build_render_data` now includes
-            // `mesh_handle` so instances of the same mesh land contiguously.
-            // See issue #50.
-            let mut last_texture = u32::MAX;
-            let mut last_pipeline_key = (false, false); // (alpha_blend, two_sided)
+            // ── Instanced draw loop ───────────────────────────────────
+            //
+            // Each batch is a single cmd_draw_indexed call with instance_count > 1.
+            // The vertex shader reads instances[gl_InstanceIndex] for the model matrix,
+            // texture index, and bone offset — no push constants, no per-draw descriptor
+            // set binds.
+            let mut last_pipeline_key = (false, false);
             let mut last_mesh_handle = u32::MAX;
 
-            for draw_cmd in draw_commands {
-                if let Some(mesh) = self.mesh_registry.get(draw_cmd.mesh_handle) {
-                    // Switch pipeline when rendering mode changes.
-                    let pipeline_key = (draw_cmd.alpha_blend, draw_cmd.two_sided);
-                    if pipeline_key != last_pipeline_key {
-                        let pipe = match pipeline_key {
-                            (false, false) => self.pipeline,
-                            (true, false) => self.pipeline_alpha,
-                            (false, true) => self.pipeline_two_sided,
-                            (true, true) => self.pipeline_alpha_two_sided,
-                        };
-                        self.device
-                            .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipe);
-                        last_pipeline_key = pipeline_key;
-                        // Descriptor set 0 (texture) is preserved across compatible
-                        // pipeline switches per Vulkan spec 14.2.2 — no rebind needed.
-                    }
+            for batch in &batches {
+                // Switch pipeline when rendering mode changes.
+                if batch.pipeline_key != last_pipeline_key {
+                    let pipe = match batch.pipeline_key {
+                        (false, false) => self.pipeline,
+                        (true, false) => self.pipeline_alpha,
+                        (false, true) => self.pipeline_two_sided,
+                        (true, true) => self.pipeline_alpha_two_sided,
+                    };
+                    self.device
+                        .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipe);
+                    last_pipeline_key = batch.pipeline_key;
+                }
 
-                    // Bind texture descriptor set (skip if same as previous draw).
-                    // Indexed by `image_index` (swapchain image) because texture sets
-                    // are allocated per-image to avoid write-after-read hazards across
-                    // frames that may reference different swapchain images.
-                    if draw_cmd.texture_handle != last_texture {
-                        let desc_set = self
-                            .texture_registry
-                            .descriptor_set(draw_cmd.texture_handle, image_index as usize);
-                        self.device.cmd_bind_descriptor_sets(
-                            cmd,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            self.pipeline_layout,
-                            0,
-                            &[desc_set],
-                            &[],
-                        );
-                        last_texture = draw_cmd.texture_handle;
-                    }
+                // Depth bias for decal geometry.
+                let bias = if batch.is_decal { -8.0_f32 } else { 0.0 };
+                self.device.cmd_set_depth_bias(
+                    cmd,
+                    bias,
+                    0.0,
+                    if batch.is_decal { -2.0 } else { 0.0 },
+                );
 
-                    // Depth bias for decal geometry.
-                    let bias = if draw_cmd.is_decal { -8.0_f32 } else { 0.0 };
-                    self.device.cmd_set_depth_bias(
-                        cmd,
-                        bias,
-                        0.0,
-                        if draw_cmd.is_decal { -2.0 } else { 0.0 },
-                    );
-
-                    // Push model matrix (bytes 0..64).
-                    let model_bytes: &[u8] =
-                        std::slice::from_raw_parts(draw_cmd.model_matrix.as_ptr() as *const u8, 64);
-                    self.device.cmd_push_constants(
-                        cmd,
-                        self.pipeline_layout,
-                        vk::ShaderStageFlags::VERTEX,
-                        0,
-                        model_bytes,
-                    );
-                    // Push bone_offset (bytes 64..68).
-                    let bone_offset_bytes: &[u8] = std::slice::from_raw_parts(
-                        &draw_cmd.bone_offset as *const u32 as *const u8,
-                        4,
-                    );
-                    self.device.cmd_push_constants(
-                        cmd,
-                        self.pipeline_layout,
-                        vk::ShaderStageFlags::VERTEX,
-                        64,
-                        bone_offset_bytes,
-                    );
-
-                    // Rebind vertex + index buffers only when the mesh changes.
-                    // The sort key in render.rs clusters identical meshes so
-                    // this skips the majority of redundant rebinds. See #50.
-                    if draw_cmd.mesh_handle != last_mesh_handle {
+                // Rebind vertex + index buffers only when the mesh changes.
+                if batch.mesh_handle != last_mesh_handle {
+                    if let Some(mesh) = self.mesh_registry.get(batch.mesh_handle) {
                         self.device.cmd_bind_vertex_buffers(
                             cmd,
                             0,
@@ -315,11 +334,19 @@ impl VulkanContext {
                             0,
                             vk::IndexType::UINT32,
                         );
-                        last_mesh_handle = draw_cmd.mesh_handle;
+                        last_mesh_handle = batch.mesh_handle;
                     }
-                    self.device
-                        .cmd_draw_indexed(cmd, mesh.index_count, 1, 0, 0, 0);
                 }
+
+                // Single instanced draw call for the entire batch.
+                self.device.cmd_draw_indexed(
+                    cmd,
+                    batch.index_count,
+                    batch.instance_count,
+                    0,
+                    0,
+                    batch.first_instance,
+                );
             }
 
             // UI overlay: draw a fullscreen quad with the Ruffle-rendered texture.
@@ -331,49 +358,13 @@ impl VulkanContext {
                         self.pipeline_ui,
                     );
 
-                    let desc_set = self
-                        .texture_registry
-                        .descriptor_set(ui_tex, image_index as usize);
-                    self.device.cmd_bind_descriptor_sets(
-                        cmd,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        self.pipeline_layout,
-                        0,
-                        &[desc_set],
-                        &[],
-                    );
-
-                    // Push identity model matrix (required by pipeline layout, ignored by UI shader).
-                    let identity: [f32; 16] = [
-                        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
-                        1.0,
-                    ];
-                    // SAFETY: [f32; 16] is 64 bytes, properly aligned, and the
-                    // reference is valid for the duration of cmd_push_constants.
-                    let identity_bytes: &[u8] =
-                        std::slice::from_raw_parts(identity.as_ptr() as *const u8, 64);
-                    self.device.cmd_push_constants(
-                        cmd,
-                        self.pipeline_layout,
-                        vk::ShaderStageFlags::VERTEX,
-                        0,
-                        identity_bytes,
-                    );
-                    // Zero bone_offset — UI vertices carry zero weights so
-                    // the shader's rigid path ignores the palette anyway,
-                    // but we keep push-constant state well-defined.
-                    let zero_u32: u32 = 0;
-                    let zero_bytes: &[u8] = std::slice::from_raw_parts(
-                        &zero_u32 as *const u32 as *const u8,
-                        4,
-                    );
-                    self.device.cmd_push_constants(
-                        cmd,
-                        self.pipeline_layout,
-                        vk::ShaderStageFlags::VERTEX,
-                        64,
-                        zero_bytes,
-                    );
+                    // The UI pipeline uses the same bindless texture set (already bound).
+                    // Push the UI texture index as a small push constant so the UI
+                    // fragment shader knows which texture to sample.
+                    // Actually — the UI shader is a simple passthrough that doesn't
+                    // use the instance SSBO. We write a temporary instance entry for it.
+                    // TODO: The UI should use its own minimal pipeline without the
+                    // scene descriptor set. For now, reuse the last instance slot.
 
                     self.device
                         .cmd_bind_vertex_buffers(cmd, 0, &[mesh.vertex_buffer.buffer], &[0]);
@@ -383,8 +374,39 @@ impl VulkanContext {
                         0,
                         vk::IndexType::UINT32,
                     );
+                    // Write a UI instance into the SSBO at the next available slot.
+                    let ui_instance_idx = gpu_instances.len() as u32;
+                    let ui_instance = [GpuInstance {
+                        model: [
+                            [1.0, 0.0, 0.0, 0.0],
+                            [0.0, 1.0, 0.0, 0.0],
+                            [0.0, 0.0, 1.0, 0.0],
+                            [0.0, 0.0, 0.0, 1.0],
+                        ],
+                        texture_index: ui_tex,
+                        bone_offset: 0,
+                        _padding: [0; 2],
+                    }];
+                    // Upload the single UI instance at the end of the SSBO.
+                    // SAFETY: we only write within the buffer's capacity (MAX_INSTANCES).
+                    let buf = &mut self.scene_buffers;
+                    if (ui_instance_idx as usize) < scene_buffer::MAX_INSTANCES {
+                        let instance_offset = ui_instance_idx as usize
+                            * std::mem::size_of::<GpuInstance>();
+                        if let Ok(mapped) =
+                            buf.instance_buffer_mapped_mut(frame)
+                        {
+                            let src = &ui_instance as *const GpuInstance as *const u8;
+                            let size = std::mem::size_of::<GpuInstance>();
+                            std::ptr::copy_nonoverlapping(
+                                src,
+                                mapped.as_mut_ptr().add(instance_offset),
+                                size,
+                            );
+                        }
+                    }
                     self.device
-                        .cmd_draw_indexed(cmd, mesh.index_count, 1, 0, 0, 0);
+                        .cmd_draw_indexed(cmd, mesh.index_count, 1, 0, 0, ui_instance_idx);
                 }
             }
 
