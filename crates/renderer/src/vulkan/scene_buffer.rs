@@ -117,8 +117,10 @@ pub struct GpuCamera {
     pub position: [f32; 4],
     /// x = RT enabled (1.0), y/z/w = ambient light color (RGB).
     pub flags: [f32; 4],
-    /// x = screen width, y = screen height, z/w = unused.
+    /// x = screen width, y = screen height, z = fog near, w = fog far.
     pub screen: [f32; 4],
+    /// xyz = fog color (RGB 0-1), w = fog enabled (1.0 = yes).
+    pub fog: [f32; 4],
 }
 
 impl Default for GpuCamera {
@@ -133,6 +135,7 @@ impl Default for GpuCamera {
             position: [0.0; 4],
             flags: [0.0; 4],
             screen: [1280.0, 720.0, 0.0, 0.0],
+            fog: [0.0, 0.0, 0.0, 0.0],
         }
     }
 }

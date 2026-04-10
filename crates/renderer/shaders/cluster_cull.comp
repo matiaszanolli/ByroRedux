@@ -34,6 +34,7 @@ layout(set = 0, binding = 1) uniform CameraUBO {
     vec4 cameraPos;
     vec4 sceneFlags;
     vec4 screen;
+    vec4 fog;
 };
 
 struct ClusterEntry {

@@ -45,12 +45,18 @@ impl Component for NormalMapHandle {
 pub(crate) struct SystemList(pub(crate) Vec<String>);
 impl Resource for SystemList {}
 
-/// Cell lighting from the ESM (ambient + directional).
+/// Cell lighting from the ESM (ambient + directional + fog).
 pub(crate) struct CellLightingRes {
     pub(crate) ambient: [f32; 3],
     pub(crate) directional_color: [f32; 3],
     /// Direction vector in Y-up space (computed from rotation).
     pub(crate) directional_dir: [f32; 3],
+    /// Fog color (RGB 0-1).
+    pub(crate) fog_color: [f32; 3],
+    /// Fog near distance (game units).
+    pub(crate) fog_near: f32,
+    /// Fog far distance (game units).
+    pub(crate) fog_far: f32,
 }
 impl Resource for CellLightingRes {}
 

@@ -16,7 +16,7 @@ pub(crate) fn build_render_data(
     draw_commands: &mut Vec<DrawCommand>,
     gpu_lights: &mut Vec<byroredux_renderer::GpuLight>,
     bone_palette: &mut Vec<[[f32; 4]; 4]>,
-) -> ([f32; 16], [f32; 3], [f32; 3]) {
+) -> ([f32; 16], [f32; 3], [f32; 3], [f32; 3], f32, f32) {
     draw_commands.clear();
     gpu_lights.clear();
     bone_palette.clear();
@@ -259,10 +259,12 @@ pub(crate) fn build_render_data(
     };
 
     // Cell ambient color (or default).
-    let ambient = world
-        .try_resource::<CellLightingRes>()
-        .map(|l| l.ambient)
-        .unwrap_or([0.08, 0.08, 0.08]);
+    let cell_lit = world.try_resource::<CellLightingRes>();
+    let ambient = cell_lit.as_ref().map(|l| l.ambient).unwrap_or([0.08, 0.08, 0.08]);
+    let fog_color = cell_lit.as_ref().map(|l| l.fog_color).unwrap_or([0.0; 3]);
+    let fog_near = cell_lit.as_ref().map(|l| l.fog_near).unwrap_or(0.0);
+    let fog_far = cell_lit.as_ref().map(|l| l.fog_far).unwrap_or(0.0);
+    drop(cell_lit);
 
-    (view_proj, camera_pos, ambient)
+    (view_proj, camera_pos, ambient, fog_color, fog_near, fog_far)
 }

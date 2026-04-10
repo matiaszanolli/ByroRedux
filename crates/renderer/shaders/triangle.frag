@@ -56,7 +56,8 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     mat4 viewProj;
     vec4 cameraPos;   // xyz = world position, w = frame counter
     vec4 sceneFlags;  // x = RT enabled (1.0), yzw = ambient color (RGB)
-    vec4 screen;      // x = width, y = height, zw = unused
+    vec4 screen;      // x = width, y = height, z = fog near, w = fog far
+    vec4 fog;         // xyz = fog color (RGB), w = fog enabled (1.0)
 };
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
@@ -373,5 +374,15 @@ void main() {
         }
     }
 
-    outColor = vec4(ambient + Lo, texColor.a);
+    vec3 finalColor = ambient + Lo;
+
+    // Distance fog — blends scene color toward fog color based on distance
+    // from camera. Uses smoothstep for a natural falloff. The fog parameters
+    // come from the cell's XCLL record (fog near, fog far, fog color).
+    if (fog.w > 0.5) {
+        float fogFactor = smoothstep(screen.z, screen.w, worldDist);
+        finalColor = mix(finalColor, fog.xyz, fogFactor);
+    }
+
+    outColor = vec4(finalColor, texColor.a);
 }

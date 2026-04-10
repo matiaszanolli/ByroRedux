@@ -64,12 +64,18 @@ pub(crate) fn setup_scene(
                             ambient: lit.ambient,
                             directional_color: lit.directional_color,
                             directional_dir: dir,
+                            fog_color: lit.fog_color,
+                            fog_near: lit.fog_near,
+                            fog_far: lit.fog_far,
                         });
                         log::info!(
-                            "Cell lighting: ambient={:?} directional={:?} dir={:?}",
+                            "Cell lighting: ambient={:?} directional={:?} dir={:?} fog={:?} near={:.0} far={:.0}",
                             lit.ambient,
                             lit.directional_color,
-                            dir
+                            dir,
+                            lit.fog_color,
+                            lit.fog_near,
+                            lit.fog_far,
                         );
                     }
                     log::info!(

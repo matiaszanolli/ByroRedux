@@ -40,6 +40,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 cameraPos;
     vec4 sceneFlags;
     vec4 screen;
+    vec4 fog;
 };
 
 // Bone palette SSBO (set 1, binding 3) — skinning matrices.

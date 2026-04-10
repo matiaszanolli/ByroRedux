@@ -31,6 +31,9 @@ impl VulkanContext {
         bone_palette: &[[[f32; 4]; 4]],
         camera_pos: [f32; 3],
         ambient_color: [f32; 3],
+        fog_color: [f32; 3],
+        fog_near: f32,
+        fog_far: f32,
         ui_texture_handle: Option<u32>,
     ) -> Result<bool> {
         let frame = self.current_frame;
@@ -177,8 +180,14 @@ impl VulkanContext {
             screen: [
                 self.swapchain_state.extent.width as f32,
                 self.swapchain_state.extent.height as f32,
-                0.0,
-                0.0,
+                fog_near,
+                fog_far,
+            ],
+            fog: [
+                fog_color[0],
+                fog_color[1],
+                fog_color[2],
+                if fog_far > fog_near { 1.0 } else { 0.0 }, // fog enabled flag
             ],
         };
         self.scene_buffers

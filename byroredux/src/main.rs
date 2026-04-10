@@ -252,7 +252,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(ref mut ctx) = self.renderer {
-                    let (view_proj, camera_pos, ambient) = build_render_data(
+                    let (view_proj, camera_pos, ambient, fog_color, fog_near, fog_far) = build_render_data(
                         &self.world,
                         &mut self.draw_commands,
                         &mut self.gpu_lights,
@@ -308,6 +308,9 @@ impl ApplicationHandler for App {
                         &self.bone_palette,
                         camera_pos,
                         ambient,
+                        fog_color,
+                        fog_near,
+                        fog_far,
                         ui_tex,
                     ) {
                         Ok(needs_recreate) => {

@@ -17,6 +17,12 @@ pub struct CellLighting {
     pub directional_color: [f32; 3],
     /// Directional light rotation (Euler XY in radians, converted to direction vector).
     pub directional_rotation: [f32; 2],
+    /// Fog color (RGB 0–1), from XCLL bytes 8-10.
+    pub fog_color: [f32; 3],
+    /// Fog near distance (game units), from XCLL bytes 12-15.
+    pub fog_near: f32,
+    /// Fog far distance (game units), from XCLL bytes 16-19.
+    pub fog_far: f32,
 }
 
 /// A cell (interior or exterior) with its placed object references.
@@ -237,10 +243,28 @@ fn parse_cell_group(
                                 ]);
                                 (raw as f32).to_radians()
                             };
+                            // Fog color (RGBA at bytes 8-11) and distances (bytes 12-19).
+                            let (fog_color, fog_near, fog_far) = if sub.data.len() >= 20 {
+                                let fog_r = sub.data[8] as f32 / 255.0;
+                                let fog_g = sub.data[9] as f32 / 255.0;
+                                let fog_b = sub.data[10] as f32 / 255.0;
+                                let fog_near = f32::from_le_bytes([
+                                    sub.data[12], sub.data[13], sub.data[14], sub.data[15],
+                                ]);
+                                let fog_far = f32::from_le_bytes([
+                                    sub.data[16], sub.data[17], sub.data[18], sub.data[19],
+                                ]);
+                                ([fog_r, fog_g, fog_b], fog_near, fog_far)
+                            } else {
+                                ([0.0; 3], 0.0, 0.0)
+                            };
                             lighting = Some(CellLighting {
                                 ambient: [ambient_r, ambient_g, ambient_b],
                                 directional_color: [dir_r, dir_g, dir_b],
                                 directional_rotation: [rot_x, rot_y],
+                                fog_color,
+                                fog_near,
+                                fog_far,
                             });
                         }
                         _ => {}
