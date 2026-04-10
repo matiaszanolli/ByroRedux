@@ -284,8 +284,8 @@ pub(crate) fn build_render_data(
         // Fog distances: gentle fog starting at ~40% of typical room size,
         // becoming dense at ~200% of room size. Interior cells are typically
         // 500-2000 units across.
-        fog_near = 300.0;
-        fog_far = 1500.0;
+        fog_near = 600.0;
+        fog_far = 2500.0;
     }
 
     (view_proj, camera_pos, ambient, fog_color, fog_near, fog_far)
