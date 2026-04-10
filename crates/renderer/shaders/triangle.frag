@@ -311,25 +311,37 @@ void main() {
             // naturally integrates into smooth soft shadows for the human eye.
             float shadow = 1.0;
             if (rtEnabled) {
-                // Penumbra size from light radius and distance.
-                // Larger lights / closer lights = wider penumbra.
-                float penumbraScale = (lightType < 1.5)
-                    ? radius * 0.015  // point/spot: scale by light radius
-                    : 2.0;            // directional: fixed penumbra width
+                // Soft shadow via jittered light position.
+                //
+                // Instead of tracing toward the exact light center, jitter
+                // the target point on a disk around the light. The disk size
+                // equals the light's physical radius, producing naturally
+                // contact-hardening shadows: at an occluder close to the
+                // surface the angular spread is tiny (sharp shadow), far from
+                // the surface it's large (soft penumbra).
+                //
+                // The ray origin stays fixed on the surface (+ normal bias).
+                // Only the direction varies.
 
-                // Per-fragment, per-light, per-frame noise.
-                float frameCount = cameraPos.w;  // monotonic frame counter
+                float frameCount = cameraPos.w;
                 float noise1 = interleavedGradientNoise(gl_FragCoord.xy, frameCount + float(i) * 7.0);
                 float noise2 = interleavedGradientNoise(gl_FragCoord.xy + vec2(113.5, 247.3), frameCount + float(i) * 13.0);
 
-                // Jitter on a disk perpendicular to L.
-                vec2 diskSample = concentricDiskSample(noise1, noise2);
                 vec3 T, B;
                 buildOrthoBasis(L, T, B);
-                vec3 jitter = (T * diskSample.x + B * diskSample.y) * penumbraScale;
+                vec2 diskSample = concentricDiskSample(noise1, noise2);
 
-                vec3 rayOrigin = fragWorldPos + N * 0.05 + jitter;
-                vec3 rayDir = normalize(L - jitter / max(dist, 1.0));
+                // Light source radius as a fraction of distance — this gives
+                // the angular size. Bethesda radii are falloff range, not
+                // physical size, so we use a small fraction for the emitter disk.
+                float lightDiskRadius = (lightType < 1.5)
+                    ? max(radius * 0.003, 0.5)  // point/spot: ~0.3% of range, min 0.5 units
+                    : 1.5;                        // directional: small fixed angular spread
+
+                vec3 jitteredTarget = lightPos + (T * diskSample.x + B * diskSample.y) * lightDiskRadius;
+                vec3 rayOrigin = fragWorldPos + N * 0.05;
+                vec3 rayDir = normalize(jitteredTarget - rayOrigin);
+                float rayDist = length(jitteredTarget - rayOrigin) - 0.1;
 
                 rayQueryEXT rayQuery;
                 rayQueryInitializeEXT(
@@ -340,7 +352,7 @@ void main() {
                     rayOrigin,
                     0.001,
                     rayDir,
-                    dist - 0.1
+                    max(rayDist, 0.01)
                 );
                 rayQueryProceedEXT(rayQuery);
                 if (rayQueryGetIntersectionTypeEXT(rayQuery, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
