@@ -629,6 +629,7 @@ pub(crate) fn load_nif_bytes(
                 alpha: mesh.mat_alpha,
                 env_map_scale: mesh.env_map_scale,
                 normal_map: mesh.normal_map.clone(),
+                texture_path: mesh.texture_path.clone(),
                 alpha_test: mesh.alpha_test,
                 alpha_threshold: mesh.alpha_threshold,
             },

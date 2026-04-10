@@ -33,6 +33,8 @@ pub struct Material {
     pub env_map_scale: f32,
     /// Normal map texture path (if available).
     pub normal_map: Option<String>,
+    /// Diffuse texture path (for PBR material classification from path keywords).
+    pub texture_path: Option<String>,
     /// Whether the renderer should `discard` fragments whose sampled
     /// texture alpha falls below `alpha_threshold`. Extracted from
     /// `NiAlphaProperty.flags` bit 9 (0x200). Mutually exclusive with
@@ -59,6 +61,7 @@ impl Default for Material {
             alpha: 1.0,
             env_map_scale: 1.0,
             normal_map: None,
+            texture_path: None,
             alpha_test: false,
             alpha_threshold: 0.0,
         }
@@ -108,8 +111,12 @@ impl Material {
         if contains_any(&path, &["stone", "rock", "cave", "brick", "ruins", "cobble"]) {
             return PbrMaterial { roughness: 0.85, metalness: 0.0 };
         }
-        if contains_any(&path, &["fabric", "cloth", "leather", "fur", "linen", "carpet"]) {
-            return PbrMaterial { roughness: 0.9, metalness: 0.0 };
+        if contains_any(&path, &[
+            "fabric", "cloth", "leather", "fur", "linen", "carpet",
+            "rug", "tapestry", "banner", "curtain", "drape", "bedding",
+            "pillow", "sack", "burlap", "wool",
+        ]) {
+            return PbrMaterial { roughness: 0.95, metalness: 0.0 };
         }
         if contains_any(&path, &["skin", "body", "head", "hand", "face"]) {
             return PbrMaterial { roughness: 0.5, metalness: 0.0 };
@@ -158,5 +165,6 @@ mod tests {
         assert_eq!(m.uv_scale, [1.0, 1.0]);
         assert_eq!(m.alpha, 1.0);
         assert!(m.normal_map.is_none());
+        assert!(m.texture_path.is_none());
     }
 }

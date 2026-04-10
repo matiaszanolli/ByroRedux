@@ -135,13 +135,9 @@ pub(crate) fn build_render_data(
 
                 // Material data + PBR classification.
                 let mat = mat_q.as_ref().and_then(|q| q.get(entity));
-                let tex_path_str: Option<String> = tex_q
-                    .as_ref()
-                    .and_then(|q| q.get(entity))
-                    .map(|_| String::new()); // texture path not available here — use empty
                 let (roughness, metalness, emissive_mult, emissive_color, specular_strength, specular_color) =
                     if let Some(m) = mat {
-                        let pbr = m.classify_pbr(None); // TODO: pass texture path when available
+                        let pbr = m.classify_pbr(m.texture_path.as_deref());
                         (
                             pbr.roughness,
                             pbr.metalness,
@@ -153,7 +149,6 @@ pub(crate) fn build_render_data(
                     } else {
                         (0.5, 0.0, 0.0, [0.0; 3], 1.0, [1.0; 3])
                     };
-                drop(tex_path_str);
 
                 draw_commands.push(DrawCommand {
                     mesh_handle: mesh.0,
