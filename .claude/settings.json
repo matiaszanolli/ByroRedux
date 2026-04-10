@@ -45,7 +45,13 @@
       "Read(//^mod tests/,/**)",
       "WebFetch(domain:docs.rs)",
       "WebFetch(domain:en.uesp.net)",
-      "WebFetch(domain:gitlab.com)"
+      "WebFetch(domain:gitlab.com)",
+      "Bash(sed -i '606s/stream\\\\.skip\\(_verts\\\\.len\\(\\) as u64 \\\\* 4\\);/stream.skip\\(_verts.len\\(\\) as u64 * 4\\)?;/' crates/nif/src/blocks/particle.rs)",
+      "Bash(sed -i '613s/stream\\\\.skip\\(_verts\\\\.len\\(\\) as u64 \\\\* 16\\);/stream.skip\\(_verts.len\\(\\) as u64 * 16\\)?;/' crates/nif/src/blocks/particle.rs)",
+      "Bash(sed -i '621s/stream\\\\.skip\\(_verts\\\\.len\\(\\) as u64 \\\\* 4\\);/stream.skip\\(_verts.len\\(\\) as u64 * 4\\)?;/' crates/nif/src/blocks/particle.rs)",
+      "Bash(sed -i '625s/stream\\\\.skip\\(_verts\\\\.len\\(\\) as u64 \\\\* 12\\);/stream.skip\\(_verts.len\\(\\) as u64 * 12\\)?;/' crates/nif/src/blocks/particle.rs)",
+      "Bash(sed -i '633s/stream\\\\.skip\\(_verts\\\\.len\\(\\) as u64 \\\\* 4\\);/stream.skip\\(_verts.len\\(\\) as u64 * 4\\)?;/' crates/nif/src/blocks/particle.rs)",
+      "Bash(glslangValidator -V cluster_cull.comp -o cluster_cull.comp.spv)"
     ],
     "additionalDirectories": [
       "/mnt/data/src/gamebyro-redux/.claude",
