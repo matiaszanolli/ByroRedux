@@ -66,7 +66,12 @@ impl NiSourceTexture {
         let pixel_layout = stream.read_u32_le()?;
         let use_mipmaps = stream.read_u32_le()?;
         let alpha_format = stream.read_u32_le()?;
-        let is_static = stream.read_u8()? != 0;
+        // is_static only present in v >= 5.0.0.1 (not in Morrowind-era NIFs).
+        let is_static = if stream.version() >= NifVersion(0x05000001) {
+            stream.read_u8()? != 0
+        } else {
+            true
+        };
 
         // nif.xml: Direct Render since 10.1.0.103 (0x0A010067), NOT 10.1.0.6.
         if stream.version() >= crate::version::NifVersion(0x0A010067) {

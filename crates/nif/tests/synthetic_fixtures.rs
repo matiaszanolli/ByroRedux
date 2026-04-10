@@ -334,3 +334,111 @@ fn synthetic_oblivion_variant_detection() {
     );
     assert_eq!(variant, byroredux_nif::version::NifVariant::Oblivion);
 }
+
+// ── Morrowind (v4.0.0.2) ──────────────────────────────────────────────
+
+/// Build a minimal Morrowind NIF (v4.0.0.2, NetImmerse era).
+///
+/// Contains: 1 NiNode (root) with inline RTTI type name (no block type table).
+/// Exercises: pre-Gamebryo header, inline block type names, single extra_data ref,
+/// velocity field, bounding volume, NiNode parsing.
+fn build_morrowind_nif() -> Vec<u8> {
+    let mut nif = Vec::new();
+
+    // Header line (NetImmerse, not Gamebryo)
+    nif.extend_from_slice(b"NetImmerse File Format, Version 4.0.0.2\n");
+
+    // Version u32 (v4.0.0.2 = 0x04000002)
+    w32(&mut nif, 0x04000002);
+
+    // No endianness byte (v < 20.0.0.4)
+    // No user_version (v < 10.0.1.8)
+
+    // num_blocks
+    w32(&mut nif, 1);
+
+    // No BSStreamHeader (v < 10.0.1.2 and user_version < 3)
+    // No block types table (v < 10.0.1.0)
+    // No block sizes (v < 20.2.0.7)
+    // No string table (v < 20.1.0.1)
+    // No num_groups (v < 10.0.1.0)
+
+    // ── Block 0: NiNode ──
+    // Pre-Gamebryo: each block prefixed by its type name as a sized string.
+    wsstr(&mut nif, "NiNode");
+
+    // NiObjectNETData (pre-Gamebryo format):
+    //   name: SizedString
+    //   extra_data_ref: single Ref (i32), not counted list
+    //   controller_ref: Ref (i32)
+    wsstr(&mut nif, "Scene Root");   // name
+    w32(&mut nif, 0xFFFFFFFF);       // extra_data_ref (NULL = -1)
+    w32(&mut nif, 0xFFFFFFFF);       // controller_ref (NULL = -1)
+
+    // NiAVObjectData (pre-Gamebryo format):
+    //   flags: u16 (bsver <= 26)
+    //   transform: NiTransform (3×3 rotation + 3 translation + 1 scale = 13 floats)
+    //   velocity: NiPoint3 (only v <= 4.2.2.0)
+    //   properties: num_properties (u32) + refs
+    //   has_bounding_volume: bool + optional bounding volume (no collision_ref)
+    w16(&mut nif, 0x000E); // flags
+
+    // Translation
+    wf32(&mut nif, 0.0); wf32(&mut nif, 0.0); wf32(&mut nif, 0.0);
+    // Rotation (identity)
+    wf32(&mut nif, 1.0); wf32(&mut nif, 0.0); wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0); wf32(&mut nif, 1.0); wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0); wf32(&mut nif, 0.0); wf32(&mut nif, 1.0);
+    wf32(&mut nif, 1.0); // scale
+
+    // Velocity (only v <= 4.2.2.0)
+    wf32(&mut nif, 0.0); wf32(&mut nif, 0.0); wf32(&mut nif, 0.0);
+
+    // Properties list
+    w32(&mut nif, 0); // num_properties
+
+    // Bounding volume (replaces collision_ref in pre-Gamebryo)
+    w8(&mut nif, 0); // has_bounding_volume = false
+
+    // NiNode-specific: children + effects
+    w32(&mut nif, 0); // num_children
+    w32(&mut nif, 0); // num_effects
+
+    nif
+}
+
+#[test]
+fn parse_synthetic_morrowind() {
+    let data = build_morrowind_nif();
+    let scene = byroredux_nif::parse_nif(&data).expect("Morrowind NIF should parse");
+    assert_eq!(scene.blocks.len(), 1, "should have 1 block");
+    assert_eq!(scene.blocks[0].block_type_name(), "NiNode");
+    assert!(!scene.truncated, "should not be truncated");
+}
+
+#[test]
+fn synthetic_morrowind_variant_detection() {
+    let data = build_morrowind_nif();
+    let (header, _) = byroredux_nif::header::NifHeader::parse(&data).unwrap();
+    assert_eq!(header.version, byroredux_nif::version::NifVersion::V4_0_0_2);
+    assert_eq!(header.user_version, 0);
+    assert_eq!(header.num_blocks, 1);
+    assert!(header.block_types.is_empty(), "pre-Gamebryo has no block type table");
+    let variant = byroredux_nif::version::NifVariant::detect(
+        header.version,
+        header.user_version,
+        header.user_version_2,
+    );
+    assert_eq!(variant, byroredux_nif::version::NifVariant::Morrowind);
+}
+
+#[test]
+fn synthetic_morrowind_node_has_name() {
+    let data = build_morrowind_nif();
+    let scene = byroredux_nif::parse_nif(&data).unwrap();
+    let node = scene.blocks[0]
+        .as_any()
+        .downcast_ref::<byroredux_nif::blocks::node::NiNode>()
+        .expect("block 0 should be NiNode");
+    assert_eq!(node.name(), Some("Scene Root"));
+}

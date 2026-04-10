@@ -9,6 +9,7 @@
 
 use crate::stream::NifStream;
 use crate::types::{BlockRef, NiTransform};
+use crate::version::NifVersion;
 use std::io;
 use std::sync::Arc;
 
@@ -28,7 +29,21 @@ impl NiObjectNETData {
     /// Works for all NIF versions (string table or inline, list or single ref).
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let name = stream.read_string()?;
-        let extra_data_refs = stream.read_block_ref_list()?;
+
+        // Pre-Gamebryo (v < 10.0.1.0): NiObjectNET stores a single extra_data ref
+        // (head of a linked list) instead of a counted array. Each NiExtraData block
+        // has a next_extra_data_ref field that chains them together.
+        let extra_data_refs = if stream.version() < NifVersion(0x0A000100) {
+            let r = stream.read_block_ref()?;
+            if r.is_null() {
+                Vec::new()
+            } else {
+                vec![r]
+            }
+        } else {
+            stream.read_block_ref_list()?
+        };
+
         let controller_ref = stream.read_block_ref()?;
         Ok(Self {
             name,
@@ -68,6 +83,11 @@ impl NiAVObjectData {
 
         let transform = stream.read_ni_transform()?;
 
+        // Pre-Gamebryo (v <= 4.2.2.0, Morrowind): NiAVObject has a velocity vector.
+        if stream.version() <= NifVersion(0x04020200) {
+            let _velocity = stream.read_ni_point3()?;
+        }
+
         // Properties list: present on every pre-Skyrim NIF per nif.xml
         // `#NI_BS_LTE_FO3#` gate (BSVER <= 34). Removed in Skyrim+ where
         // shader/alpha are dedicated refs on NiGeometry. We use the raw
@@ -83,7 +103,14 @@ impl NiAVObjectData {
             Vec::new()
         };
 
-        let collision_ref = stream.read_block_ref()?;
+        // Pre-Gamebryo (v < 10.0.1.0): no collision_ref. Instead, there's
+        // a bounding volume (bool + variable-size struct). We read and discard it.
+        let collision_ref = if stream.version() >= NifVersion(0x0A000100) {
+            stream.read_block_ref()?
+        } else {
+            skip_bounding_volume(stream)?;
+            BlockRef::NULL
+        };
 
         Ok(Self {
             net,
@@ -152,4 +179,49 @@ impl BSShaderPropertyData {
             texture_clamp_mode,
         ))
     }
+}
+
+// ── Pre-Gamebryo bounding volume ──────────────────────────────────────
+
+/// Read and discard a NiBoundingVolume (pre-Gamebryo NiAVObject).
+/// The bounding volume replaces the collision_ref in NIF v < 10.0.1.0.
+fn skip_bounding_volume(stream: &mut NifStream) -> io::Result<()> {
+    let has_bv = stream.read_u8()? != 0;
+    if has_bv {
+        read_and_skip_bounding_volume(stream)?;
+    }
+    Ok(())
+}
+
+fn read_and_skip_bounding_volume(stream: &mut NifStream) -> io::Result<()> {
+    let bv_type = stream.read_u32_le()?;
+    match bv_type {
+        0 => {
+            // SPHERE: center(3×f32) + radius(f32) = 16 bytes
+            stream.skip(16)?;
+        }
+        1 => {
+            // BOX: center(3×f32) + 3 axes(9×f32) + extents(3×f32) = 60 bytes
+            stream.skip(60)?;
+        }
+        2 => {
+            // CAPSULE: center(3×f32) + origin(3×f32) + extent(f32) + radius(f32) = 32 bytes
+            stream.skip(32)?;
+        }
+        4 => {
+            // UNION: num_bv(u32) + BoundingVolume[num_bv]
+            let count = stream.read_u32_le()?;
+            for _ in 0..count {
+                read_and_skip_bounding_volume(stream)?;
+            }
+        }
+        5 => {
+            // HALF_SPACE: plane(4×f32) + center(3×f32) = 28 bytes
+            stream.skip(28)?;
+        }
+        _ => {
+            log::warn!("Unknown bounding volume type {}, skipping", bv_type);
+        }
+    }
+    Ok(())
 }

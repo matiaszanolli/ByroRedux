@@ -5,6 +5,7 @@
 
 use super::NiObject;
 use crate::stream::NifStream;
+use crate::version::NifVersion;
 use std::any::Any;
 use std::io;
 use std::sync::Arc;
@@ -36,6 +37,14 @@ impl NiObject for NiExtraData {
 
 impl NiExtraData {
     pub fn parse(stream: &mut NifStream, type_name: &str) -> io::Result<Self> {
+        // Pre-Gamebryo (v < 5.0.0.1): NiExtraData does NOT inherit NiObjectNET.
+        // Format is: next_extra_data_ref (Ref) + bytes_remaining (u32) + subclass data.
+        // Gamebryo+ (v >= 10.0.1.0): inherits NiObjectNET (name + extra_data_refs + controller).
+        // We only need the name; the rest comes from the subclass match below.
+        if stream.version() < NifVersion(0x0A000100) {
+            return Self::parse_legacy(stream, type_name);
+        }
+
         let name = stream.read_string()?;
 
         let mut string_value = None;
@@ -89,6 +98,44 @@ impl NiExtraData {
             binary_data,
             strings_array,
             integers_array,
+        })
+    }
+
+    /// Parse pre-Gamebryo NiExtraData (v < 5.0.0.1, e.g. Morrowind).
+    /// Old format: next_extra_data_ref + bytes_remaining + subclass data.
+    /// No NiObjectNET inheritance (no name field).
+    fn parse_legacy(stream: &mut NifStream, type_name: &str) -> io::Result<Self> {
+        let _next_extra_data_ref = stream.read_block_ref()?;
+        let bytes_remaining = stream.read_u32_le()?;
+
+        let mut string_value = None;
+        let mut integer_value = None;
+
+        match type_name {
+            "NiStringExtraData" => {
+                // Old NiStringExtraData: bytes_remaining includes the u32 length prefix.
+                let s = stream.read_sized_string()?;
+                string_value = Some(Arc::from(s.as_str()));
+            }
+            "NiIntegerExtraData" => {
+                integer_value = Some(stream.read_u32_le()?);
+            }
+            _ => {
+                // Unknown old extra data — skip bytes_remaining to stay aligned.
+                if bytes_remaining > 0 {
+                    stream.skip(bytes_remaining as u64)?;
+                }
+            }
+        }
+
+        Ok(Self {
+            type_name: type_name.to_string(),
+            name: None,
+            string_value,
+            integer_value,
+            binary_data: None,
+            strings_array: None,
+            integers_array: None,
         })
     }
 }

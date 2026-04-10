@@ -121,7 +121,9 @@ impl NiTriShape {
                 shader_property_ref = stream.read_block_ref()?;
                 alpha_property_ref = stream.read_block_ref()?;
             }
-        } else if stream.version() <= NifVersion(0x14010003) {
+        } else if stream.version() >= NifVersion(0x0A000100)
+            && stream.version() <= NifVersion(0x14010003)
+        {
             // NiGeometry Has Shader + Shader Name + Shader Extra Data
             // (since 10.0.1.0, until 20.1.0.3 — present in Oblivion v20.0.0.4).
             let has_shader = stream.read_bool()?;
@@ -600,10 +602,16 @@ pub(crate) fn parse_geometry_data_base(
     Vec<[f32; 4]>,      // vertex_colors
     Vec<Vec<[f32; 2]>>, // uv_sets
 )> {
-    let _group_id = stream.read_i32_le()?; // usually 0
+    // Pre-Gamebryo (v < 10.0.1.0): NiGeometryData has no group_id, keep_flags, or
+    // compress_flags. These were added when the format was extended for Gamebryo.
+    if stream.version() >= NifVersion(0x0A000100) {
+        let _group_id = stream.read_i32_le()?; // usually 0
+    }
     let num_vertices = stream.read_u16_le()? as usize;
-    let _keep_flags = stream.read_u8()?;
-    let _compress_flags = stream.read_u8()?;
+    if stream.version() >= NifVersion(0x0A000100) {
+        let _keep_flags = stream.read_u8()?;
+        let _compress_flags = stream.read_u8()?;
+    }
 
     let has_vertices = stream.read_byte_bool()?;
     let vertices = if has_vertices {
@@ -616,12 +624,17 @@ pub(crate) fn parse_geometry_data_base(
         Vec::new()
     };
 
-    // u16 dataFlags is always present in NiGeometryData.
-    // Bethesda extensions (material CRC) only exist in Skyrim+.
-    let data_flags = stream.read_u16_le()?;
-    if stream.variant().has_material_crc() {
-        let _material_crc = stream.read_u32_le()?;
-    }
+    // Data flags: present from v >= 10.0.1.0. Pre-Gamebryo stores UV set count
+    // as a separate u16 field after normals + bounding sphere.
+    let data_flags = if stream.version() >= NifVersion(0x0A000100) {
+        let df = stream.read_u16_le()?;
+        if stream.variant().has_material_crc() {
+            let _material_crc = stream.read_u32_le()?;
+        }
+        df
+    } else {
+        0
+    };
 
     let has_normals = stream.read_byte_bool()?;
     let normals = if has_normals {
@@ -634,7 +647,7 @@ pub(crate) fn parse_geometry_data_base(
         Vec::new()
     };
 
-    // Tangents + bitangents (if has_normals and dataFlags bit 12 set = NBT method)
+    // Tangents + bitangents (Gamebryo+: has_normals and dataFlags bit 12 set = NBT method)
     if has_normals && data_flags & 0xF000 != 0 {
         // Skip tangents (num_vertices * 3 floats)
         stream.skip(num_vertices as u64 * 12)?;
@@ -662,21 +675,41 @@ pub(crate) fn parse_geometry_data_base(
         Vec::new()
     };
 
-    // UV sets: count is packed in dataFlags bits [0..5]
-    let num_uv_sets = (data_flags & 0x003F) as usize;
-    let mut uv_sets = Vec::with_capacity(num_uv_sets);
-    for _ in 0..num_uv_sets {
-        let mut uvs = Vec::with_capacity(num_vertices);
-        for _ in 0..num_vertices {
-            let u = stream.read_f32_le()?;
-            let v = stream.read_f32_le()?;
-            uvs.push([u, v]);
+    // UV sets: Gamebryo+ packs count in dataFlags bits [0..5].
+    // Pre-Gamebryo (v < 10.0.1.0) has a separate num_uv_sets u16 field.
+    let num_uv_sets = if stream.version() < NifVersion(0x0A000100) {
+        stream.read_u16_le()? as usize
+    } else {
+        (data_flags & 0x003F) as usize
+    };
+
+    // nif.xml: Has UV flag (only for version >= 20.0.0.4, always true before)
+    let has_uv = if stream.version() >= NifVersion(0x14000004) {
+        num_uv_sets > 0
+    } else {
+        // Pre-20.0.0.4: read has_uv bool
+        stream.read_byte_bool()?
+    };
+
+    let mut uv_sets = Vec::with_capacity(if has_uv { num_uv_sets.max(1) } else { 0 });
+    if has_uv {
+        // Ensure at least 1 UV set if has_uv is true but num_uv_sets is 0 (legacy)
+        let count = num_uv_sets.max(1);
+        for _ in 0..count {
+            let mut uvs = Vec::with_capacity(num_vertices);
+            for _ in 0..num_vertices {
+                let u = stream.read_f32_le()?;
+                let v = stream.read_f32_le()?;
+                uvs.push([u, v]);
+            }
+            uv_sets.push(uvs);
         }
-        uv_sets.push(uvs);
     }
 
-    // Consistency flags
-    let _consistency_flags = stream.read_u16_le()?;
+    // Consistency flags (version >= 10.0.1.0)
+    if stream.version() >= NifVersion(0x0A000100) {
+        let _consistency_flags = stream.read_u16_le()?;
+    }
 
     // Additional data (version >= 20.0.0.4)
     if stream.version() >= NifVersion(0x14000004) {
@@ -703,7 +736,13 @@ impl NiTriShapeData {
         let num_triangles = stream.read_u16_le()? as usize;
         let _num_triangle_points = stream.read_u32_le()?; // num_triangles * 3
 
-        let has_triangles = stream.read_byte_bool()?;
+        // has_triangles bool: only present from v >= 10.0.1.0. In Morrowind-era
+        // NIFs, triangles are always present when num_triangles > 0.
+        let has_triangles = if stream.version() >= NifVersion(0x0A000100) {
+            stream.read_byte_bool()?
+        } else {
+            num_triangles > 0
+        };
         let triangles = if has_triangles {
             let mut tris = Vec::with_capacity(num_triangles);
             for _ in 0..num_triangles {
@@ -777,7 +816,12 @@ impl NiTriStripsData {
             strip_lengths.push(stream.read_u16_le()?);
         }
 
-        let has_strips = stream.read_byte_bool()?;
+        // has_strips: only from v >= 10.0.1.0. In Morrowind NIFs, strips always present.
+        let has_strips = if stream.version() >= NifVersion(0x0A000100) {
+            stream.read_byte_bool()?
+        } else {
+            num_strips > 0
+        };
         let mut strips = Vec::with_capacity(num_strips);
         if has_strips {
             for &len in &strip_lengths {

@@ -115,32 +115,33 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         );
     }
 
-    // Pre-Gamebryo NetImmerse files (NIF v < 5.0.0.1, e.g. Oblivion's
-    // marker_*.nif debug placeholders) inline each block's type name as a
-    // sized string instead of using a global block-type table. We don't
-    // currently parse those files (nothing in the engine consumes them —
-    // editor markers are filtered out by name elsewhere) but we shouldn't
-    // hard-fail on them either: return an empty scene so callers and tests
-    // see them as a successful parse with zero blocks.
-    if header.block_types.is_empty() && header.num_blocks > 0 {
+    // Pre-Gamebryo NetImmerse files (NIF v < 5.0.0.1, e.g. Morrowind at
+    // v4.0.0.2) inline each block's type name as a sized string instead of
+    // using a global block-type table. We read them inline in the loop below.
+    let inline_type_names = header.block_types.is_empty() && header.num_blocks > 0;
+    if inline_type_names {
         log::debug!(
-            "NIF v{} has no block-type table (pre-Gamebryo); returning empty scene",
-            header.version
+            "NIF v{} uses inline block type names (pre-Gamebryo, {} blocks)",
+            header.version,
+            header.num_blocks
         );
-        return Ok(NifScene {
-            blocks: Vec::new(),
-            root_index: None,
-            truncated: false,
-        });
     }
 
     for i in 0..header.num_blocks as usize {
-        let type_name = header.block_type_name(i).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("block {} has no type name", i),
-            )
-        })?;
+        // Resolve block type name: from header table (Gamebryo+) or inline string (pre-Gamebryo).
+        let inline_name: String;
+        let type_name: &str = if inline_type_names {
+            // Pre-Gamebryo: each block is prefixed by a u32-length-prefixed type name string.
+            inline_name = stream.read_sized_string()?;
+            &inline_name
+        } else {
+            header.block_type_name(i).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("block {} has no type name", i),
+                )
+            })?
+        };
 
         let block_size = header.block_sizes.get(i).copied();
         let start_pos = stream.position();
