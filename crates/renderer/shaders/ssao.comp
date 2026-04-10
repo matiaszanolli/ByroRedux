@@ -2,14 +2,9 @@
 
 // Screen-space ambient occlusion (SSAO) compute shader.
 //
-// Samples the depth buffer in a hemisphere around each pixel to estimate
-// how much ambient light is occluded by nearby geometry. Writes a single-
-// channel R8 occlusion texture that the next frame's fragment shader
-// reads to darken corners, crevices, and contact shadows.
-//
-// Uses a simplified HBAO approach: for each pixel, sample depth at N
-// random directions in screen space and compute the horizon angle.
-// Occlusion = how much the horizon blocks the hemisphere.
+// Samples the depth buffer around each pixel and compares depths to
+// estimate occlusion. Simple and robust: no view-space reconstruction,
+// just screen-space depth comparison with distance falloff.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -17,106 +12,86 @@ layout(set = 0, binding = 0) uniform sampler2D depthTex;
 layout(set = 0, binding = 1, r8) uniform writeonly image2D aoOutput;
 
 layout(set = 0, binding = 2) uniform SSAOParams {
-    mat4 projection;    // for reconstructing view-space position from depth
-    vec4 params;        // x = radius, y = bias, z = intensity, w = unused
+    mat4 viewProj;      // inverted GPU-side for world-space reconstruction
+    vec4 params;        // x = radius (pixels), y = bias, z = intensity, w = unused
     vec4 screenSize;    // x = width, y = height, z = 1/width, w = 1/height
+    vec4 cameraPos;     // xyz = camera world position
 };
 
 const float PI = 3.14159265359;
-const int NUM_DIRECTIONS = 6;
-const int NUM_STEPS = 4;
+const int NUM_SAMPLES = 16;
 
-// Interleaved gradient noise for per-pixel random rotation.
-float interleavedGradientNoise(vec2 coord) {
+// Interleaved gradient noise.
+float ign(vec2 coord, float seed) {
     vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
-    return fract(magic.z * fract(dot(coord, magic.xy)));
+    return fract(magic.z * fract(dot(coord + seed * vec2(5.588238, 5.588238), magic.xy)));
 }
 
-// Reconstruct view-space position from depth buffer sample.
-vec3 viewPosFromDepth(vec2 uv, float depth) {
-    // Reverse the projection: NDC xy from UV, depth from sample.
+// Reconstruct world position from depth + screen UV via inverse viewProj.
+vec3 worldFromDepth(vec2 uv, float depth, mat4 invVP) {
     vec2 ndc = uv * 2.0 - 1.0;
     vec4 clip = vec4(ndc, depth, 1.0);
-    vec4 view = inverse(projection) * clip;
-    return view.xyz / view.w;
+    vec4 world = invVP * clip;
+    return world.xyz / world.w;
 }
 
 void main() {
-    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
-    vec2 texSize = screenSize.xy;
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= int(screenSize.x) || px.y >= int(screenSize.y)) return;
 
-    // Early out for pixels outside the viewport.
-    if (pixelCoord.x >= int(texSize.x) || pixelCoord.y >= int(texSize.y)) {
-        return;
-    }
-
-    vec2 uv = (vec2(pixelCoord) + 0.5) / texSize;
+    vec2 uv = (vec2(px) + 0.5) * screenSize.zw;
     float depth = texture(depthTex, uv).r;
 
-    // Sky pixels (depth = 1.0 or 0.0 depending on convention) get no AO.
-    if (depth >= 0.999 || depth <= 0.001) {
-        imageStore(aoOutput, pixelCoord, vec4(1.0));
+    // Sky — no AO.
+    if (depth >= 0.999) {
+        imageStore(aoOutput, px, vec4(1.0));
         return;
     }
 
-    vec3 viewPos = viewPosFromDepth(uv, depth);
-    float radius = params.x;       // world-space AO radius
-    float bias = params.y;          // depth bias to avoid self-occlusion
-    float intensity = params.z;     // AO strength multiplier
+    mat4 invVP = inverse(viewProj);
+    vec3 worldPos = worldFromDepth(uv, depth, invVP);
+    float distFromCam = length(worldPos - cameraPos.xyz);
 
-    // Screen-space radius: project world radius to pixels.
-    float screenRadius = radius / max(-viewPos.z, 0.1) * texSize.y * 0.5;
-    screenRadius = clamp(screenRadius, 2.0, 64.0);
+    // AO radius in screen pixels, shrinking with distance.
+    float radiusPx = params.x / max(distFromCam * 0.01, 0.5);
+    radiusPx = clamp(radiusPx, 1.0, 32.0);
 
-    // Per-pixel random rotation angle.
-    float rotAngle = interleavedGradientNoise(vec2(pixelCoord)) * 2.0 * PI;
+    float bias = params.y;
+    float intensity = params.z;
+
+    // Per-pixel noise for sample rotation.
+    float angle0 = ign(vec2(px), 0.0) * 2.0 * PI;
 
     float occlusion = 0.0;
 
-    for (int dir = 0; dir < NUM_DIRECTIONS; dir++) {
-        // Direction in screen space, rotated by per-pixel noise.
-        float angle = rotAngle + float(dir) * (2.0 * PI / float(NUM_DIRECTIONS));
-        vec2 direction = vec2(cos(angle), sin(angle));
+    for (int i = 0; i < NUM_SAMPLES; i++) {
+        // Poisson-like sample pattern: radial distance + angle.
+        float fi = float(i);
+        float r = (fi + 0.5) / float(NUM_SAMPLES); // [0..1] radial
+        float angle = angle0 + fi * 2.39996323; // golden angle rotation
 
-        // March along this direction, sampling depth at each step.
-        float maxHorizon = -1.0; // sin of the maximum horizon angle found
+        vec2 offset = vec2(cos(angle), sin(angle)) * r * radiusPx;
+        vec2 sampleUV = uv + offset * screenSize.zw;
+        sampleUV = clamp(sampleUV, vec2(0.001), vec2(0.999));
 
-        for (int step = 1; step <= NUM_STEPS; step++) {
-            float t = float(step) / float(NUM_STEPS);
-            vec2 sampleOffset = direction * screenRadius * t;
-            vec2 sampleUV = uv + sampleOffset * screenSize.zw; // zw = 1/width, 1/height
+        float sampleDepth = texture(depthTex, sampleUV).r;
 
-            // Clamp to viewport.
-            sampleUV = clamp(sampleUV, vec2(0.001), vec2(0.999));
+        // Compare depths: if the sample is closer to the camera (smaller
+        // depth in Vulkan [0=near, 1=far]), it occludes this pixel.
+        float depthDiff = depth - sampleDepth; // positive = sample is closer
 
-            float sampleDepth = texture(depthTex, sampleUV).r;
-            vec3 sampleViewPos = viewPosFromDepth(sampleUV, sampleDepth);
-
-            // Vector from current pixel to sample in view space.
-            vec3 diff = sampleViewPos - viewPos;
-            float diffLen = length(diff);
-
-            if (diffLen < 0.001) continue;
-
-            // Horizon angle: how high above the tangent plane is this sample?
-            float horizonSin = diff.z / diffLen;
-
-            // Only count if the sample is above our bias threshold and
-            // within the AO radius.
-            if (horizonSin > maxHorizon + bias && diffLen < radius) {
-                maxHorizon = horizonSin;
-            }
+        // Only count occlusion within a reasonable range.
+        // Too small = self-occlusion noise, too large = distant geometry leaking.
+        if (depthDiff > bias && depthDiff < 0.05) {
+            // Weight by proximity: closer samples contribute more.
+            float weight = 1.0 - smoothstep(0.0, 0.05, depthDiff);
+            occlusion += weight;
         }
-
-        // Convert the maximum horizon angle to occlusion.
-        // Higher horizon = more occlusion.
-        occlusion += clamp(maxHorizon, 0.0, 1.0);
     }
 
-    // Average over all directions and apply intensity.
-    occlusion /= float(NUM_DIRECTIONS);
+    occlusion /= float(NUM_SAMPLES);
     float ao = 1.0 - occlusion * intensity;
     ao = clamp(ao, 0.0, 1.0);
 
-    imageStore(aoOutput, pixelCoord, vec4(ao, ao, ao, 1.0));
+    imageStore(aoOutput, px, vec4(ao, ao, ao, 1.0));
 }

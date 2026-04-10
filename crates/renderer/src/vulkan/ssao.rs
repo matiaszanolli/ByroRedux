@@ -13,12 +13,14 @@ use ash::vk;
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct SsaoParams {
-    /// Projection matrix (for view-space reconstruction from depth).
-    projection: [[f32; 4]; 4],
-    /// x = radius, y = bias, z = intensity, w = unused.
+    /// View-projection matrix (inverted GPU-side for world-space reconstruction).
+    view_proj: [[f32; 4]; 4],
+    /// x = radius (pixels), y = depth bias, z = intensity, w = unused.
     params: [f32; 4],
     /// x = width, y = height, z = 1/width, w = 1/height.
     screen_size: [f32; 4],
+    /// xyz = camera world position, w = unused.
+    camera_pos: [f32; 4],
 }
 
 pub struct SsaoPipeline {
@@ -310,18 +312,19 @@ impl SsaoPipeline {
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         frame: usize,
-        projection: &[[f32; 4]; 4],
+        view_proj: &[[f32; 4]; 4],
+        camera_pos: [f32; 3],
     ) -> Result<()> {
-        // Upload parameters.
         let params = SsaoParams {
-            projection: *projection,
-            params: [50.0, 0.05, 1.5, 0.0], // radius=50, bias=0.05, intensity=1.5
+            view_proj: *view_proj,
+            params: [16.0, 0.0002, 2.0, 0.0], // radius=16px, bias=0.0002, intensity=2.0
             screen_size: [
                 self.width as f32,
                 self.height as f32,
                 1.0 / self.width as f32,
                 1.0 / self.height as f32,
             ],
+            camera_pos: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
         };
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))?;
 
