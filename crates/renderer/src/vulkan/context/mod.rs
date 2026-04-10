@@ -29,11 +29,21 @@ pub struct DrawCommand {
     /// Decal geometry — renders on top of coplanar surfaces via depth bias.
     pub is_decal: bool,
     /// Base offset into the bone-palette SSBO for this draw, or 0 for rigid.
-    /// Rigid meshes use slot 0 (identity) which is harmless because their
-    /// vertices carry `bone_weights = [0,0,0,0]` and the shader's rigid-path
-    /// detector (`sum(weights) < epsilon`) routes them through `model`
-    /// instead. See `Vertex::new` in vertex.rs and `triangle.vert`.
     pub bone_offset: u32,
+    /// Bindless texture index for the normal map (0 = no normal map).
+    pub normal_map_index: u32,
+    /// PBR roughness [0.05..0.95].
+    pub roughness: f32,
+    /// PBR metalness [0..1].
+    pub metalness: f32,
+    /// Emissive intensity multiplier.
+    pub emissive_mult: f32,
+    /// Emissive color (RGB).
+    pub emissive_color: [f32; 3],
+    /// Specular intensity multiplier.
+    pub specular_strength: f32,
+    /// Specular color (RGB).
+    pub specular_color: [f32; 3],
 }
 
 pub struct VulkanContext {

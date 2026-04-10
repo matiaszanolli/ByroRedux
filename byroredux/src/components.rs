@@ -34,6 +34,13 @@ impl Component for Decal {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Bindless texture handle for a normal map (parallels TextureHandle for diffuse).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NormalMapHandle(pub(crate) u32);
+impl Component for NormalMapHandle {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// System names stored as a resource for the `systems` console command.
 pub(crate) struct SystemList(pub(crate) Vec<String>);
 impl Resource for SystemList {}

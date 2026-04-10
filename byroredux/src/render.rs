@@ -1,14 +1,14 @@
 //! Per-frame render data collection from ECS queries.
 
 use byroredux_core::ecs::{
-    ActiveCamera, AnimatedVisibility, Camera, GlobalTransform, LightSource, MeshHandle, SkinnedMesh,
-    TextureHandle, Transform, World, MAX_BONES_PER_MESH,
+    ActiveCamera, AnimatedVisibility, Camera, GlobalTransform, LightSource, Material, MeshHandle,
+    SkinnedMesh, TextureHandle, Transform, World, MAX_BONES_PER_MESH,
 };
 use byroredux_core::math::Mat4;
 use byroredux_renderer::vulkan::context::DrawCommand;
 use std::collections::HashMap;
 
-use crate::components::{AlphaBlend, CellLightingRes, Decal, TwoSided};
+use crate::components::{AlphaBlend, CellLightingRes, Decal, NormalMapHandle, TwoSided};
 
 /// Build the view-projection matrix and draw command list from ECS queries.
 pub(crate) fn build_render_data(
@@ -95,6 +95,8 @@ pub(crate) fn build_render_data(
         let two_sided_q = world.query::<TwoSided>();
         let decal_q = world.query::<Decal>();
         let vis_q = world.query::<AnimatedVisibility>();
+        let mat_q = world.query::<Material>();
+        let nmap_q = world.query::<NormalMapHandle>();
         for (entity, mesh) in mq.iter() {
             // Skip entities hidden by animation.
             let visible = vis_q
@@ -125,6 +127,34 @@ pub(crate) fn build_render_data(
                     .map(|q| q.get(entity).is_some())
                     .unwrap_or(false);
                 let bone_offset = skin_offsets.get(&entity).copied().unwrap_or(0);
+                let normal_map_index = nmap_q
+                    .as_ref()
+                    .and_then(|q| q.get(entity))
+                    .map(|n| n.0)
+                    .unwrap_or(0);
+
+                // Material data + PBR classification.
+                let mat = mat_q.as_ref().and_then(|q| q.get(entity));
+                let tex_path_str: Option<String> = tex_q
+                    .as_ref()
+                    .and_then(|q| q.get(entity))
+                    .map(|_| String::new()); // texture path not available here — use empty
+                let (roughness, metalness, emissive_mult, emissive_color, specular_strength, specular_color) =
+                    if let Some(m) = mat {
+                        let pbr = m.classify_pbr(None); // TODO: pass texture path when available
+                        (
+                            pbr.roughness,
+                            pbr.metalness,
+                            m.emissive_mult,
+                            m.emissive_color,
+                            m.specular_strength,
+                            m.specular_color,
+                        )
+                    } else {
+                        (0.5, 0.0, 0.0, [0.0; 3], 1.0, [1.0; 3])
+                    };
+                drop(tex_path_str);
+
                 draw_commands.push(DrawCommand {
                     mesh_handle: mesh.0,
                     texture_handle: tex_handle,
@@ -133,6 +163,13 @@ pub(crate) fn build_render_data(
                     two_sided,
                     is_decal,
                     bone_offset,
+                    normal_map_index,
+                    roughness,
+                    metalness,
+                    emissive_mult,
+                    emissive_color,
+                    specular_strength,
+                    specular_color,
                 });
             }
         }

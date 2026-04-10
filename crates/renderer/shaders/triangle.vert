@@ -39,6 +39,7 @@ layout(location = 1) out vec2 fragUV;
 layout(location = 2) out vec3 fragNormal;
 layout(location = 3) out vec3 fragWorldPos;
 layout(location = 4) flat out uint fragTexIndex;
+layout(location = 5) flat out int fragInstanceIndex;
 
 void main() {
     GpuInstance inst = instances[gl_InstanceIndex];
@@ -68,4 +69,5 @@ void main() {
     fragNormal = (dot(n, n) > 0.0) ? normalize(n) : vec3(0.0, 1.0, 0.0);
     fragWorldPos = worldPos.xyz;
     fragTexIndex = inst.textureIndex;
+    fragInstanceIndex = gl_InstanceIndex;
 }

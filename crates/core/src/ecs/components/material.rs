@@ -69,6 +69,82 @@ impl Component for Material {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Physically-based material properties inferred from legacy NIF data.
+///
+/// Legacy Gamebryo materials have no PBR concept — we infer plausible
+/// roughness/metalness from texture path keywords, shader type, and
+/// the original glossiness/env_map_scale values. This produces better
+/// lighting than faithfully reproducing the legacy Phong model.
+#[derive(Debug, Clone, Copy)]
+pub struct PbrMaterial {
+    pub roughness: f32,
+    pub metalness: f32,
+}
+
+impl Material {
+    /// Infer PBR properties from legacy material data + texture path.
+    ///
+    /// The texture path is the primary signal — keywords like "metal",
+    /// "glass", "wood" map to physically-plausible defaults. Fallback
+    /// uses the NIF glossiness value converted to roughness.
+    pub fn classify_pbr(&self, texture_path: Option<&str>) -> PbrMaterial {
+        let path = texture_path
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        // Keyword-based classification (highest priority).
+        if contains_any(&path, &["metal", "iron", "steel", "dwemer", "dwarven", "chainmail"]) {
+            return PbrMaterial { roughness: 0.3, metalness: 0.9 };
+        }
+        if contains_any(&path, &["gold", "silver", "bronze", "copper"]) {
+            return PbrMaterial { roughness: 0.25, metalness: 0.95 };
+        }
+        if contains_any(&path, &["glass", "crystal", "ice", "gem"]) {
+            return PbrMaterial { roughness: 0.1, metalness: 0.0 };
+        }
+        if contains_any(&path, &["wood", "plank", "barrel", "crate", "log"]) {
+            return PbrMaterial { roughness: 0.7, metalness: 0.0 };
+        }
+        if contains_any(&path, &["stone", "rock", "cave", "brick", "ruins", "cobble"]) {
+            return PbrMaterial { roughness: 0.85, metalness: 0.0 };
+        }
+        if contains_any(&path, &["fabric", "cloth", "leather", "fur", "linen", "carpet"]) {
+            return PbrMaterial { roughness: 0.9, metalness: 0.0 };
+        }
+        if contains_any(&path, &["skin", "body", "head", "hand", "face"]) {
+            return PbrMaterial { roughness: 0.5, metalness: 0.0 };
+        }
+        if contains_any(&path, &["hair"]) {
+            return PbrMaterial { roughness: 0.6, metalness: 0.0 };
+        }
+
+        // Environment map scale as metalness proxy.
+        if self.env_map_scale > 0.3 {
+            return PbrMaterial {
+                roughness: (1.0 - self.env_map_scale * 0.5).clamp(0.1, 0.8),
+                metalness: self.env_map_scale.clamp(0.0, 1.0),
+            };
+        }
+
+        // Fallback: convert glossiness to roughness.
+        let roughness = (1.0 - self.glossiness / 100.0).clamp(0.05, 0.95);
+        // Adjust if normal map is present (surface detail → slightly smoother macro).
+        let roughness = if self.normal_map.is_some() {
+            (roughness - 0.1).max(0.05)
+        } else {
+            roughness
+        };
+        PbrMaterial {
+            roughness,
+            metalness: 0.0,
+        }
+    }
+}
+
+fn contains_any(path: &str, keywords: &[&str]) -> bool {
+    keywords.iter().any(|kw| path.contains(kw))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

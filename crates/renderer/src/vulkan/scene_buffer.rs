@@ -36,19 +36,36 @@ pub const MAX_INSTANCES: usize = 4096;
 /// The vertex shader reads `instances[gl_InstanceIndex]` instead of push
 /// constants, enabling instanced drawing: consecutive draws with the same
 /// mesh + pipeline can be batched into a single `cmd_draw_indexed` call.
+///
+/// Layout: 128 bytes per instance (std430, 16-byte aligned).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuInstance {
     /// Model-to-world matrix (column-major, matches glam/GLSL convention).
-    pub model: [[f32; 4]; 4],
-    /// Index into the bindless texture array (set 0). The fragment shader
-    /// uses `textures[nonuniformEXT(texture_index)]` to sample.
-    pub texture_index: u32,
-    /// Offset into the bone palette SSBO for skinned meshes (0 = identity slot for rigid).
-    pub bone_offset: u32,
-    /// Padding to 16-byte alignment (std430 requires struct members aligned to
-    /// the largest member size, and arrays of structs are rounded up to 16).
-    pub _padding: [u32; 2],
+    pub model: [[f32; 4]; 4],          // 64 bytes, offset 0
+    /// Index into the bindless texture array (set 0) for diffuse.
+    pub texture_index: u32,             // 4 bytes, offset 64
+    /// Offset into the bone palette SSBO for skinned meshes.
+    pub bone_offset: u32,               // 4 bytes, offset 68
+    /// Index into bindless texture array for normal map (0 = none).
+    pub normal_map_index: u32,           // 4 bytes, offset 72
+    /// PBR roughness [0.05..0.95] — inferred from material classifier.
+    pub roughness: f32,                  // 4 bytes, offset 76
+    /// PBR metalness [0..1] — inferred from material classifier.
+    pub metalness: f32,                  // 4 bytes, offset 80
+    /// Emissive intensity multiplier (>0 = skip shadow rays, self-lit).
+    pub emissive_mult: f32,              // 4 bytes, offset 84
+    /// Emissive color (RGB, packed into 3 floats).
+    pub emissive_color: [f32; 3],        // 12 bytes, offset 88
+    /// Specular intensity multiplier.
+    pub specular_strength: f32,          // 4 bytes, offset 100
+    /// Specular color (RGB).
+    pub specular_color: [f32; 3],        // 12 bytes, offset 104
+    pub _padding: u32,                   // 4 bytes, offset 116 → total 120
+    // Note: 120 is not 128-aligned. We need 128 for nice SSBO alignment.
+    // Actually 120 is fine for std430 — the struct's alignment is max(16) from mat4.
+    // But let's pad to 128 for cache-line friendliness.
+    pub _padding2: [u32; 2],             // 8 bytes → total 128
 }
 
 impl Default for GpuInstance {
@@ -62,7 +79,15 @@ impl Default for GpuInstance {
             ],
             texture_index: 0,
             bone_offset: 0,
-            _padding: [0; 2],
+            normal_map_index: 0,
+            roughness: 0.5,
+            metalness: 0.0,
+            emissive_mult: 0.0,
+            emissive_color: [0.0, 0.0, 0.0],
+            specular_strength: 1.0,
+            specular_color: [1.0, 1.0, 1.0],
+            _padding: 0,
+            _padding2: [0; 2],
         }
     }
 }

@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::asset_provider::TextureProvider;
-use crate::components::{AlphaBlend, Decal, TwoSided};
+use crate::components::{AlphaBlend, Decal, NormalMapHandle, TwoSided};
 
 /// Parsed + imported NIF scene data cached per unique model path.
 ///
@@ -602,6 +602,33 @@ fn spawn_placed_instances(
         );
         world.insert(entity, MeshHandle(mesh_handle));
         world.insert(entity, TextureHandle(tex_handle));
+        // Load and attach normal map if the material specifies one.
+        if let Some(ref nmap_path) = mesh.normal_map {
+            let nmap_handle = if let Some(cached) = ctx.texture_registry.get_by_path(nmap_path) {
+                Some(cached)
+            } else if let Some(dds_bytes) = tex_provider.extract(nmap_path) {
+                let alloc = ctx.allocator.as_ref().unwrap();
+                match ctx.texture_registry.load_dds(
+                    &ctx.device,
+                    alloc,
+                    &ctx.graphics_queue,
+                    ctx.transfer_pool,
+                    nmap_path,
+                    &dds_bytes,
+                ) {
+                    Ok(h) => Some(h),
+                    Err(e) => {
+                        log::debug!("Normal map '{}' failed: {}", nmap_path, e);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            if let Some(h) = nmap_handle {
+                world.insert(entity, NormalMapHandle(h));
+            }
+        }
         if mesh.has_alpha {
             world.insert(entity, AlphaBlend);
         }

@@ -197,16 +197,25 @@ impl VulkanContext {
             };
 
             let instance_idx = gpu_instances.len() as u32;
+            let m = &draw_cmd.model_matrix;
             gpu_instances.push(GpuInstance {
                 model: [
-                    [draw_cmd.model_matrix[0], draw_cmd.model_matrix[1], draw_cmd.model_matrix[2], draw_cmd.model_matrix[3]],
-                    [draw_cmd.model_matrix[4], draw_cmd.model_matrix[5], draw_cmd.model_matrix[6], draw_cmd.model_matrix[7]],
-                    [draw_cmd.model_matrix[8], draw_cmd.model_matrix[9], draw_cmd.model_matrix[10], draw_cmd.model_matrix[11]],
-                    [draw_cmd.model_matrix[12], draw_cmd.model_matrix[13], draw_cmd.model_matrix[14], draw_cmd.model_matrix[15]],
+                    [m[0], m[1], m[2], m[3]],
+                    [m[4], m[5], m[6], m[7]],
+                    [m[8], m[9], m[10], m[11]],
+                    [m[12], m[13], m[14], m[15]],
                 ],
                 texture_index: draw_cmd.texture_handle,
                 bone_offset: draw_cmd.bone_offset,
-                _padding: [0; 2],
+                normal_map_index: draw_cmd.normal_map_index,
+                roughness: draw_cmd.roughness,
+                metalness: draw_cmd.metalness,
+                emissive_mult: draw_cmd.emissive_mult,
+                emissive_color: draw_cmd.emissive_color,
+                specular_strength: draw_cmd.specular_strength,
+                specular_color: draw_cmd.specular_color,
+                _padding: 0,
+                _padding2: [0; 2],
             });
 
             let pipeline_key = (draw_cmd.alpha_blend, draw_cmd.two_sided);
@@ -376,17 +385,10 @@ impl VulkanContext {
                     );
                     // Write a UI instance into the SSBO at the next available slot.
                     let ui_instance_idx = gpu_instances.len() as u32;
-                    let ui_instance = [GpuInstance {
-                        model: [
-                            [1.0, 0.0, 0.0, 0.0],
-                            [0.0, 1.0, 0.0, 0.0],
-                            [0.0, 0.0, 1.0, 0.0],
-                            [0.0, 0.0, 0.0, 1.0],
-                        ],
+                    let ui_instance = GpuInstance {
                         texture_index: ui_tex,
-                        bone_offset: 0,
-                        _padding: [0; 2],
-                    }];
+                        ..GpuInstance::default()
+                    };
                     // Upload the single UI instance at the end of the SSBO.
                     // SAFETY: we only write within the buffer's capacity (MAX_INSTANCES).
                     let buf = &mut self.scene_buffers;
