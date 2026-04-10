@@ -222,6 +222,16 @@ pub(crate) fn setup_scene(
             )
             .expect("Failed to upload blue triangle mesh");
 
+        // Build BLAS for RT shadows on demo meshes.
+        let (cv, ci) = (verts.len() as u32, idxs.len() as u32);
+        ctx.build_blas_for_mesh(cube_handle, cv, ci);
+        let (qv, qi) = (quad_verts.len() as u32, quad_idxs.len() as u32);
+        ctx.build_blas_for_mesh(quad_handle, qv, qi);
+        let (rv, ri) = (red_verts.len() as u32, red_idxs.len() as u32);
+        ctx.build_blas_for_mesh(red_handle, rv, ri);
+        let (bv, bi) = (blue_verts.len() as u32, blue_idxs.len() as u32);
+        ctx.build_blas_for_mesh(blue_handle, bv, bi);
+
         let cube = world.spawn();
         world.insert(cube, Transform::from_translation(Vec3::new(-1.5, 0.0, 0.0)));
         world.insert(cube, GlobalTransform::IDENTITY);

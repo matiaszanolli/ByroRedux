@@ -8,7 +8,9 @@ use byroredux_core::math::Mat4;
 use byroredux_renderer::vulkan::context::DrawCommand;
 use std::collections::HashMap;
 
-use crate::components::{AlphaBlend, CellLightingRes, Decal, NormalMapHandle, TwoSided};
+use crate::components::{
+    AlphaBlend, CellLightingRes, Decal, NormalMapHandle, TwoSided, WindowLight,
+};
 
 /// Build the view-projection matrix and draw command list from ECS queries.
 pub(crate) fn build_render_data(
@@ -230,6 +232,35 @@ pub(crate) fn build_render_data(
                     direction_angle: [0.0, 0.0, 0.0, 0.0],
                 });
             }
+        }
+    }
+
+    // Add virtual window lights — synthetic point lights placed just outside
+    // each window, illuminating the room interior with sky-colored light.
+    // These reuse the existing clustered lighting + RT shadow infrastructure.
+    if let Some((tq, wq)) = world.query_2_mut::<GlobalTransform, WindowLight>() {
+        let mut window_count = 0u32;
+        for (entity, wl) in wq.iter() {
+            if let Some(t) = tq.get(entity) {
+                let inward = [wl.inward_normal[0], wl.inward_normal[1], wl.inward_normal[2]];
+                // Place light slightly outside the window (behind the wall)
+                // so rays from interior surfaces travel through the window opening,
+                // naturally shadowed by walls/frames around the window.
+                let light_pos = [
+                    t.translation.x - inward[0] * 50.0,
+                    t.translation.y - inward[1] * 50.0,
+                    t.translation.z - inward[2] * 50.0,
+                ];
+                gpu_lights.push(byroredux_renderer::GpuLight {
+                    position_radius: [light_pos[0], light_pos[1], light_pos[2], 2000.0],
+                    color_type: [1.8, 2.0, 2.5, 0.0], // bright daylight, point light
+                    direction_angle: [0.0, 0.0, 0.0, 0.0],
+                });
+                window_count += 1;
+            }
+        }
+        if window_count > 0 {
+            log::info!("Window lights injected: {}", window_count);
         }
     }
 

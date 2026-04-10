@@ -297,6 +297,22 @@ impl AccelerationManager {
         }
 
         let instance_count = instances.len() as u32;
+        let missing = draw_commands.len() - instances.len();
+        if missing > 0 && frame_index == 0 {
+            // Log once per second (at 60fps, frame_index 0 fires 30×/s — good enough).
+            static LAST_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let prev = LAST_LOG.load(std::sync::atomic::Ordering::Relaxed);
+            if now != prev {
+                LAST_LOG.store(now, std::sync::atomic::Ordering::Relaxed);
+                log::warn!(
+                    "TLAS: {} instances from {} draw commands ({} lack BLAS — no RT shadows for those meshes)",
+                    instance_count, draw_commands.len(), missing
+                );
+            }
+        }
 
         // Even with 0 instances, we build a valid (empty) TLAS so the
         // descriptor set binding is always valid for the shader.

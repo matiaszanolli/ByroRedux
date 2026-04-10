@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::asset_provider::TextureProvider;
-use crate::components::{AlphaBlend, Decal, NormalMapHandle, TwoSided};
+use crate::components::{AlphaBlend, Decal, NormalMapHandle, TwoSided, WindowLight};
 
 /// Parsed + imported NIF scene data cached per unique model path.
 ///
@@ -631,6 +631,23 @@ fn spawn_placed_instances(
         }
         if mesh.has_alpha {
             world.insert(entity, AlphaBlend);
+
+            // Detect window meshes: alpha-blended surfaces whose texture
+            // path suggests a window (not a bottle/vase/potion). Each window
+            // gets a WindowLight component so build_render_data can inject a
+            // virtual point light to illuminate the room interior.
+            if is_window_texture(mesh.texture_path.as_deref()) {
+                // Inward normal: window geometry faces outward (toward sky);
+                // the inward normal is the negated local Z axis rotated to world.
+                let outward = final_rot * Vec3::Z;
+                let inward = -outward;
+                world.insert(
+                    entity,
+                    WindowLight {
+                        inward_normal: [inward.x, inward.y, inward.z],
+                    },
+                );
+            }
         }
         if mesh.two_sided {
             world.insert(entity, TwoSided);
@@ -671,4 +688,20 @@ fn spawn_placed_instances(
 /// Result: R_yup = Ry(-rz) · Rz(ry) · Rx(-rx)
 fn euler_zup_to_quat_yup(rx: f32, ry: f32, rz: f32) -> Quat {
     Quat::from_rotation_y(-rz) * Quat::from_rotation_z(ry) * Quat::from_rotation_x(-rx)
+}
+
+/// Check if a texture path looks like a window surface.
+/// Matches common Bethesda naming: `window`, `pane`, `windowglass`.
+/// Excludes small glass objects (bottles, vases, potions, goblets).
+fn is_window_texture(path: Option<&str>) -> bool {
+    let Some(path) = path else { return false };
+    let lower = path.to_ascii_lowercase();
+    let is_window = lower.contains("window") || lower.contains("pane");
+    let is_object = lower.contains("bottle")
+        || lower.contains("goblet")
+        || lower.contains("potion")
+        || lower.contains("vase")
+        || lower.contains("flask")
+        || lower.contains("jar");
+    is_window && !is_object
 }

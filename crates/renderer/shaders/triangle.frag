@@ -125,6 +125,18 @@ void buildOrthoBasis(vec3 dir, out vec3 tangent, out vec3 bitangent) {
     bitangent = cross(dir, tangent);
 }
 
+// ── Cosine-weighted hemisphere sampling for GI ─────────────────────
+
+// Generate a cosine-weighted random direction in the hemisphere above N.
+// u1, u2 in [0,1] — use noise functions seeded by fragCoord + frameCount.
+vec3 cosineWeightedHemisphere(vec3 N, float u1, float u2) {
+    float r = sqrt(u1);
+    float theta = 2.0 * PI * u2;
+    vec3 T, B;
+    buildOrthoBasis(N, T, B);
+    return normalize(T * (r * cos(theta)) + B * (r * sin(theta)) + N * sqrt(max(1.0 - u1, 0.0)));
+}
+
 // ── RT Reflection ───────────────────────────────────────────────────
 
 // Look up UV coordinates at a ray hit point using barycentrics + vertex data.
@@ -541,12 +553,64 @@ void main() {
         }
     }
 
+    // ── 1-bounce RT ambient GI ──────────────────────────────────────
+    //
+    // Cast a single cosine-weighted hemisphere ray per fragment. If it
+    // hits geometry, sample the hit surface's texture color and multiply
+    // by the ambient light level to approximate indirect illumination.
+    // At 60+ FPS, temporal noise integration produces smooth color bleeding.
+    vec3 indirect = vec3(0.0);
+    if (rtEnabled && !isWindow && !isGlass && emissiveMult < 0.01) {
+        float giDist = length(fragWorldPos - cameraPos.xyz);
+        if (giDist < 1500.0) {
+            // Use a slowly-varying noise seed: floor(frameCount/4) makes
+            // each noise pattern persist for 4 frames, reducing flicker
+            // while still converging over time.
+            float frameCount = cameraPos.w;
+            float giSeed = floor(frameCount * 0.25);
+            float n1 = interleavedGradientNoise(gl_FragCoord.xy, giSeed);
+            float n2 = interleavedGradientNoise(gl_FragCoord.xy + vec2(73.7, 191.3), giSeed + 37.0);
+
+            vec3 giDir = cosineWeightedHemisphere(N, n1, n2);
+            vec3 giOrigin = fragWorldPos + N * 0.1;
+
+            rayQueryEXT giRQ;
+            rayQueryInitializeEXT(
+                giRQ, topLevelAS,
+                gl_RayFlagsOpaqueEXT, 0xFF,
+                giOrigin, 0.5, giDir, 500.0
+            );
+            rayQueryProceedEXT(giRQ);
+
+            if (rayQueryGetIntersectionTypeEXT(giRQ, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+                int hitIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(giRQ, true);
+                int hitPrim = rayQueryGetIntersectionPrimitiveIndexEXT(giRQ, true);
+                vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(giRQ, true);
+                float hitDist = rayQueryGetIntersectionTEXT(giRQ, true);
+
+                GpuInstance hitInst = instances[hitIdx];
+                vec2 hitUV = getHitUV(uint(hitIdx), uint(hitPrim), hitBary);
+                vec3 hitAlbedo = texture(textures[nonuniformEXT(hitInst.textureIndex)], hitUV).rgb;
+
+                // Ambient bounce: modulates hue from nearby surfaces.
+                // Scale is moderate — the 4-frame noise hold smooths flicker.
+                float giFade = 1.0 / (1.0 + hitDist * 0.005);
+                indirect = sceneFlags.yzw * hitAlbedo * giFade * 0.3;
+                // Soft clamp to tame outliers without killing the effect.
+                indirect = min(indirect, vec3(0.4));
+            } else {
+                // Ray escaped — sky fill adds subtle blue to open areas.
+                indirect = vec3(0.6, 0.75, 1.0) * 0.06;
+            }
+        }
+    }
+
     // Sample ambient occlusion from the SSAO texture (computed last frame).
     // On the first frame before SSAO has run, the texture may read 0 —
     // clamp to a minimum to avoid killing all ambient light.
     vec2 aoUV = gl_FragCoord.xy / screen.xy;
     float ao = max(texture(aoTexture, aoUV).r, 0.3);
-    vec3 finalColor = ambient * ao + Lo;
+    vec3 finalColor = (ambient + indirect) * ao + Lo;
 
     // Glass compositing: Fresnel controls the output alpha. At grazing
     // angles glass becomes more opaque (reflective); at direct incidence
