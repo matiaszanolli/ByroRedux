@@ -346,12 +346,16 @@ void main() {
 
         if (!hitsInterior) {
             // Ray escaped the cell — this window sees sky.
-            // Procedural sky color: warm daylight blue, tinted by window texture.
-            vec3 skyColor = vec3(0.5, 0.65, 0.9); // clear day sky
-            vec3 windowLight = skyColor * texColor.rgb * (1.0 - texColor.a) * 2.0;
-            albedo = windowLight;
-            // Override ambient to sky-lit level for the window surface.
-            F0 = vec3(0.02);
+            // Output sky light directly: the window is a light portal,
+            // not a shaded surface. Skip the entire PBR lighting loop.
+            vec3 skyColor = vec3(0.6, 0.75, 1.0); // clear day sky
+            // Tint by window texture: stained glass tints the light,
+            // clear glass passes it through mostly unchanged.
+            // The texture alpha controls how much glass vs sky we see.
+            vec3 windowTint = mix(vec3(1.0), texColor.rgb, texColor.a * 0.5);
+            vec3 transmitted = skyColor * windowTint * 0.8;
+            outColor = vec4(transmitted, 1.0);
+            return;
         }
     }
 
