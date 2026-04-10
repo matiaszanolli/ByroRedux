@@ -62,9 +62,12 @@ pub struct GpuInstance {
     pub specular_r: f32,                 // 4 B, offset 104
     pub specular_g: f32,                 // 4 B, offset 108
     pub specular_b: f32,                 // 4 B, offset 112 → total 116
-    pub _padding: u32,                   // 4 B → total 120
-    // Pad to 128 for cache-line alignment.
-    pub _padding2: [u32; 2],             // 8 B → total 128
+    /// Offset into the global vertex SSBO (in vertices, not bytes).
+    pub vertex_offset: u32,              // 4 B, offset 116
+    /// Offset into the global index SSBO (in indices, not bytes).
+    pub index_offset: u32,               // 4 B, offset 120
+    /// Vertex count for this mesh (for bounds checking).
+    pub vertex_count: u32,               // 4 B, offset 124 → total 128
 }
 
 impl Default for GpuInstance {
@@ -89,8 +92,9 @@ impl Default for GpuInstance {
             specular_r: 1.0,
             specular_g: 1.0,
             specular_b: 1.0,
-            _padding: 0,
-            _padding2: [0; 2],
+            vertex_offset: 0,
+            index_offset: 0,
+            vertex_count: 0,
         }
     }
 }
@@ -289,6 +293,22 @@ impl SceneBuffers {
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         );
+        // Binding 8: global vertex SSBO (fragment shader — RT reflection UV lookup).
+        bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(8)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        );
+        // Binding 9: global index SSBO (fragment shader — RT reflection UV lookup).
+        bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(9)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        );
         // Mark bindings 5+6 (cluster data) as PARTIALLY_BOUND so they are
         // valid even when unwritten (cluster cull pipeline may fail to create).
         // The fragment shader guards access with a lightCount > 0 check.
@@ -297,7 +317,7 @@ impl SceneBuffers {
             .enumerate()
             .map(|(_, b)| {
                 let binding_idx = b.binding;
-                if binding_idx == 5 || binding_idx == 6 || binding_idx == 7 {
+                if binding_idx >= 5 {
                     vk::DescriptorBindingFlags::PARTIALLY_BOUND
                 } else {
                     vk::DescriptorBindingFlags::empty()
@@ -321,8 +341,8 @@ impl SceneBuffers {
         let mut pool_sizes = vec![
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
-                // 5 SSBOs per frame: lights (0), bones (3), instances (4), cluster grid (5), light indices (6).
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 5) as u32,
+                // 7 SSBOs per frame: lights(0), bones(3), instances(4), cluster grid(5), light indices(6), vertices(8), indices(9).
+                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 7) as u32,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
@@ -610,6 +630,41 @@ impl SceneBuffers {
         unsafe {
             device.update_descriptor_sets(&[write], &[]);
         }
+    }
+
+    /// Write global geometry SSBO references for RT reflection UV lookups.
+    pub fn write_geometry_buffers(
+        &self,
+        device: &ash::Device,
+        frame_index: usize,
+        vertex_buffer: vk::Buffer,
+        vertex_size: vk::DeviceSize,
+        index_buffer: vk::Buffer,
+        index_size: vk::DeviceSize,
+    ) {
+        let vert_info = [vk::DescriptorBufferInfo {
+            buffer: vertex_buffer,
+            offset: 0,
+            range: vertex_size,
+        }];
+        let idx_info = [vk::DescriptorBufferInfo {
+            buffer: index_buffer,
+            offset: 0,
+            range: index_size,
+        }];
+        let writes = [
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_sets[frame_index])
+                .dst_binding(8)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&vert_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_sets[frame_index])
+                .dst_binding(9)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&idx_info),
+        ];
+        unsafe { device.update_descriptor_sets(&writes, &[]) }
     }
 
     /// Write cluster buffer references into the scene descriptor set for a given frame.

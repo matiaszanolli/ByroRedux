@@ -285,6 +285,26 @@ pub(crate) fn setup_scene(
         input.pitch = forward.y.asin();
     }
 
+    // Build the global geometry SSBO for RT reflection ray UV lookups.
+    if let Err(e) = ctx.mesh_registry.build_geometry_ssbo(
+        &ctx.device,
+        ctx.allocator.as_ref().unwrap(),
+        &ctx.graphics_queue,
+        ctx.transfer_pool,
+    ) {
+        log::warn!("Failed to build geometry SSBO: {e}");
+    }
+    // Write global geometry buffers to scene descriptor sets for RT reflection UV lookups.
+    if let (Some(ref vb), Some(ref ib)) = (&ctx.mesh_registry.global_vertex_buffer, &ctx.mesh_registry.global_index_buffer) {
+        for f in 0..2 {
+            ctx.scene_buffers.write_geometry_buffers(
+                &ctx.device, f,
+                vb.buffer, vb.size,
+                ib.buffer, ib.size,
+            );
+        }
+    }
+
     let total_entities = world.next_entity_id();
     log::info!(
         "Scene ready: {} entities, 1 camera. Press Escape to capture mouse for fly camera.",

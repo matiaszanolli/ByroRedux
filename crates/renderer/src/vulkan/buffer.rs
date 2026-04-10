@@ -469,7 +469,7 @@ impl GpuBuffer {
     // ── Internal ────────────────────────────────────────────────────────
 
     /// Create a DEVICE_LOCAL buffer and upload data via a CpuToGpu staging buffer.
-    fn create_device_local_buffer<T: Copy>(
+    pub fn create_device_local_buffer<T: Copy>(
         device: &ash::Device,
         allocator: &SharedAllocator,
         queue: &std::sync::Mutex<vk::Queue>,

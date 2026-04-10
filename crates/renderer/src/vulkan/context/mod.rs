@@ -46,6 +46,12 @@ pub struct DrawCommand {
     pub specular_strength: f32,
     /// Specular color (RGB).
     pub specular_color: [f32; 3],
+    /// Offset into the global vertex SSBO (in vertices).
+    pub vertex_offset: u32,
+    /// Offset into the global index SSBO (in indices).
+    pub index_offset: u32,
+    /// Vertex count for this mesh.
+    pub vertex_count: u32,
 }
 
 pub struct VulkanContext {

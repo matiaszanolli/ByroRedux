@@ -276,8 +276,9 @@ impl VulkanContext {
                 specular_r: draw_cmd.specular_color[0],
                 specular_g: draw_cmd.specular_color[1],
                 specular_b: draw_cmd.specular_color[2],
-                _padding: 0,
-                _padding2: [0; 2],
+                vertex_offset: mesh.global_vertex_offset,
+                index_offset: mesh.global_index_offset,
+                vertex_count: mesh.vertex_count,
             });
 
             let pipeline_key = (draw_cmd.alpha_blend, draw_cmd.two_sided);

@@ -508,7 +508,7 @@ fn spawn_placed_instances(
 
         let mesh_handle = {
             let alloc = ctx.allocator.as_ref().unwrap();
-            match ctx.mesh_registry.upload(
+            match ctx.mesh_registry.upload_scene_mesh(
                 &ctx.device,
                 alloc,
                 &ctx.graphics_queue,

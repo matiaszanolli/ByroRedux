@@ -150,6 +150,14 @@ pub(crate) fn build_render_data(
                         (0.5, 0.0, 0.0, [0.0; 3], 1.0, [1.0; 3])
                     };
 
+                // Geometry SSBO offsets for RT reflection UV lookups.
+                let (v_off, i_off, v_count) = {
+                    // SAFETY: mesh_registry is accessed immutably through the
+                    // VulkanContext ref, not through the ECS.
+                    // We can't access it here directly; pass zeros and let draw.rs fill from mesh_registry.
+                    (0u32, 0u32, 0u32)
+                };
+
                 draw_commands.push(DrawCommand {
                     mesh_handle: mesh.0,
                     texture_handle: tex_handle,
@@ -165,6 +173,9 @@ pub(crate) fn build_render_data(
                     emissive_color,
                     specular_strength,
                     specular_color,
+                    vertex_offset: v_off,
+                    index_offset: i_off,
+                    vertex_count: v_count,
                 });
             }
         }

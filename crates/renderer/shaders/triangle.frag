@@ -32,8 +32,9 @@ struct GpuInstance {
     float specularR;         // offset 104
     float specularG;         // offset 108
     float specularB;         // offset 112
-    uint _pad;               // offset 116
-    uint _pad2[2];           // offset 120 → total 128
+    uint vertexOffset;       // offset 116
+    uint indexOffset;        // offset 120
+    uint vertexCount;        // offset 124 → total 128
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
@@ -79,6 +80,16 @@ layout(std430, set = 1, binding = 6) readonly buffer ClusterLightIndices {
 // SSAO texture (computed after the render pass, read next frame).
 layout(set = 1, binding = 7) uniform sampler2D aoTexture;
 
+// Global geometry SSBOs for RT reflection UV lookups.
+// Vertex data: position (vec3) + color (vec3) + normal (vec3) + uv (vec2) + bones = 76 bytes/vertex.
+// We only need the UV at offset 36 bytes (9 floats into each vertex).
+layout(std430, set = 1, binding = 8) readonly buffer GlobalVertices {
+    float vertexData[]; // flat array, stride = 19 floats (76 bytes)
+};
+layout(std430, set = 1, binding = 9) readonly buffer GlobalIndices {
+    uint indexData[];
+};
+
 // Must match cluster_cull.comp constants.
 const uint CLUSTER_TILES_X = 16;
 const uint CLUSTER_TILES_Y = 9;
@@ -112,6 +123,72 @@ void buildOrthoBasis(vec3 dir, out vec3 tangent, out vec3 bitangent) {
     vec3 up = abs(dir.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
     tangent = normalize(cross(up, dir));
     bitangent = cross(dir, tangent);
+}
+
+// ── RT Reflection ───────────────────────────────────────────────────
+
+// Look up UV coordinates at a ray hit point using barycentrics + vertex data.
+vec2 getHitUV(uint instanceIdx, uint primitiveIdx, vec2 barycentrics) {
+    GpuInstance hitInst = instances[instanceIdx];
+    uint vOff = hitInst.vertexOffset;
+    uint iOff = hitInst.indexOffset;
+
+    // Triangle vertex indices from the global index buffer.
+    uint i0 = indexData[iOff + primitiveIdx * 3 + 0];
+    uint i1 = indexData[iOff + primitiveIdx * 3 + 1];
+    uint i2 = indexData[iOff + primitiveIdx * 3 + 2];
+
+    // Vertex stride: 19 floats (76 bytes). UV starts at float offset 9 (byte 36).
+    const uint STRIDE = 19;
+    const uint UV_OFFSET = 9;
+
+    vec2 uv0 = vec2(vertexData[(vOff + i0) * STRIDE + UV_OFFSET],
+                     vertexData[(vOff + i0) * STRIDE + UV_OFFSET + 1]);
+    vec2 uv1 = vec2(vertexData[(vOff + i1) * STRIDE + UV_OFFSET],
+                     vertexData[(vOff + i1) * STRIDE + UV_OFFSET + 1]);
+    vec2 uv2 = vec2(vertexData[(vOff + i2) * STRIDE + UV_OFFSET],
+                     vertexData[(vOff + i2) * STRIDE + UV_OFFSET + 1]);
+
+    // Barycentric interpolation: bary.x = u (vertex 1), bary.y = v (vertex 2), w = 1-u-v (vertex 0).
+    float w = 1.0 - barycentrics.x - barycentrics.y;
+    return w * uv0 + barycentrics.x * uv1 + barycentrics.y * uv2;
+}
+
+// Cast a reflection ray and return the reflected color.
+// Returns (color, hit) where hit is 1.0 if the ray hit geometry, 0.0 if it missed.
+vec4 traceReflection(vec3 origin, vec3 direction, float maxDist) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(
+        rq, topLevelAS,
+        gl_RayFlagsOpaqueEXT, 0xFF,
+        origin, 0.01, direction, maxDist
+    );
+    rayQueryProceedEXT(rq);
+
+    if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+        // Miss — return fog/ambient color.
+        return vec4(fog.xyz * 0.5 + sceneFlags.yzw * 0.5, 0.0);
+    }
+
+    // Hit — get instance, primitive, barycentrics.
+    int hitInstanceIdx = rayQueryGetIntersectionInstanceIdEXT(rq, true);
+    int hitPrimitiveIdx = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
+    vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+
+    // Look up the hit surface's texture and UV.
+    GpuInstance hitInst = instances[hitInstanceIdx];
+    uint hitTexIdx = hitInst.textureIndex;
+    vec2 hitUV = getHitUV(uint(hitInstanceIdx), uint(hitPrimitiveIdx), hitBary);
+
+    // Sample the hit surface's texture.
+    vec3 hitColor = texture(textures[nonuniformEXT(hitTexIdx)], hitUV).rgb;
+
+    // Apply a simple lighting approximation: darken based on the hit distance
+    // (distant reflections are dimmer). No full shading on the reflected surface.
+    float hitDist = rayQueryGetIntersectionTEXT(rq, true);
+    float distFade = 1.0 / (1.0 + hitDist * 0.005);
+
+    return vec4(hitColor * distFade, 1.0);
 }
 
 // ── Cluster lookup ──────────────────────────────────────────────────
@@ -250,6 +327,27 @@ void main() {
     // Ambient base from cell lighting.
     vec3 ambient = sceneFlags.yzw * albedo * (1.0 - metalness);
     vec3 Lo = vec3(0.0); // Accumulated outgoing radiance.
+
+    // ── RT reflection for metallic/glossy surfaces ──────────────────
+    //
+    // Metals reflect their environment. Cast a reflection ray and blend
+    // the result based on metalness and Fresnel. The reflected color
+    // replaces the ambient term for metals (they have no diffuse).
+    if (rtEnabled && metalness > 0.3 && roughness < 0.6) {
+        vec3 R = reflect(-V, N);
+        vec4 reflResult = traceReflection(fragWorldPos + N * 0.1, R, 5000.0);
+
+        // Fresnel-weighted reflection: stronger at grazing angles.
+        vec3 F = fresnelSchlick(NdotV, F0);
+
+        // Roughness blurs the reflection: mix toward ambient for rough metals.
+        float reflClarity = 1.0 - roughness;
+        vec3 envColor = mix(ambient, reflResult.rgb * albedo, reflClarity * reflResult.a);
+
+        // Metals: reflection replaces ambient entirely.
+        // Glossy dielectrics: reflection adds on top of ambient.
+        ambient = mix(ambient, envColor, metalness * F);
+    }
 
     // World-space distance from camera for cluster depth slicing.
     // Must match cluster_cull.comp's sliceDepth() which uses world-space distance.

@@ -19,8 +19,9 @@ struct GpuInstance {
     float emissiveR, emissiveG, emissiveB;
     float specularStrength;
     float specularR, specularG, specularB;
-    uint _pad;
-    uint _pad2[2];
+    uint vertexOffset;
+    uint indexOffset;
+    uint vertexCount;
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

@@ -11,6 +11,12 @@ pub struct GpuMesh {
     pub vertex_buffer: GpuBuffer,
     pub index_buffer: GpuBuffer,
     pub index_count: u32,
+    /// Offset into the global vertex SSBO (in vertices). Set after build_geometry_ssbo.
+    pub global_vertex_offset: u32,
+    /// Offset into the global index SSBO (in indices). Set after build_geometry_ssbo.
+    pub global_index_offset: u32,
+    /// Number of vertices in this mesh.
+    pub vertex_count: u32,
 }
 
 impl GpuMesh {
@@ -23,11 +29,25 @@ impl GpuMesh {
 /// Registry mapping mesh handle IDs to GPU-side geometry.
 pub struct MeshRegistry {
     meshes: Vec<GpuMesh>,
+    /// Accumulated vertex data for building the global geometry SSBO.
+    pending_vertices: Vec<Vertex>,
+    /// Accumulated index data for building the global geometry SSBO.
+    pending_indices: Vec<u32>,
+    /// Global geometry SSBO (vertices). Built by `build_geometry_ssbo()`.
+    pub global_vertex_buffer: Option<GpuBuffer>,
+    /// Global geometry SSBO (indices). Built by `build_geometry_ssbo()`.
+    pub global_index_buffer: Option<GpuBuffer>,
 }
 
 impl MeshRegistry {
     pub fn new() -> Self {
-        Self { meshes: Vec::new() }
+        Self {
+            meshes: Vec::new(),
+            pending_vertices: Vec::new(),
+            pending_indices: Vec::new(),
+            global_vertex_buffer: None,
+            global_index_buffer: None,
+        }
     }
 
     /// Upload a mesh to the GPU and return its handle ID.
@@ -71,9 +91,92 @@ impl MeshRegistry {
             vertex_buffer,
             index_buffer,
             index_count,
+            global_vertex_offset: 0,
+            global_index_offset: 0,
+            vertex_count: vertices.len() as u32,
         });
 
         Ok(id)
+    }
+
+    /// Upload a scene mesh (Vertex type) and track its geometry for the
+    /// global SSBO used by RT reflection ray UV lookups.
+    pub fn upload_scene_mesh(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        command_pool: vk::CommandPool,
+        vertices: &[Vertex],
+        indices: &[u32],
+        rt_enabled: bool,
+        staging_pool: Option<&mut StagingPool>,
+    ) -> Result<u32> {
+        // Record offsets before appending.
+        let v_offset = self.pending_vertices.len() as u32;
+        let i_offset = self.pending_indices.len() as u32;
+
+        // Accumulate for global SSBO.
+        self.pending_vertices.extend_from_slice(vertices);
+        self.pending_indices.extend_from_slice(indices);
+
+        // Upload to per-mesh buffers.
+        let id = self.upload(device, allocator, queue, command_pool, vertices, indices, rt_enabled, staging_pool)?;
+
+        // Store offsets.
+        let mesh = &mut self.meshes[id as usize];
+        mesh.global_vertex_offset = v_offset;
+        mesh.global_index_offset = i_offset;
+
+        Ok(id)
+    }
+
+    /// Build the global geometry SSBO from accumulated vertex/index data.
+    /// Call once after all scene meshes are loaded.
+    pub fn build_geometry_ssbo(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        command_pool: vk::CommandPool,
+    ) -> Result<()> {
+        if self.pending_vertices.is_empty() {
+            return Ok(());
+        }
+
+        let vertex_size = (std::mem::size_of::<Vertex>() * self.pending_vertices.len()) as vk::DeviceSize;
+        let index_size = (std::mem::size_of::<u32>() * self.pending_indices.len()) as vk::DeviceSize;
+
+        // Create as STORAGE_BUFFER so the fragment shader can read vertex data
+        // for RT reflection UV lookups via barycentrics.
+        self.global_vertex_buffer = Some(GpuBuffer::create_device_local_buffer(
+            device, allocator, queue, command_pool,
+            vertex_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+            &self.pending_vertices,
+            None,
+        )?);
+        self.global_index_buffer = Some(GpuBuffer::create_device_local_buffer(
+            device, allocator, queue, command_pool,
+            index_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+            &self.pending_indices,
+            None,
+        )?);
+
+        log::info!(
+            "Global geometry SSBO: {} vertices ({:.1} KB), {} indices ({:.1} KB)",
+            self.pending_vertices.len(),
+            vertex_size as f64 / 1024.0,
+            self.pending_indices.len(),
+            index_size as f64 / 1024.0,
+        );
+
+        // Free CPU-side data.
+        self.pending_vertices = Vec::new();
+        self.pending_indices = Vec::new();
+
+        Ok(())
     }
 
     pub fn get(&self, id: u32) -> Option<&GpuMesh> {
@@ -89,6 +192,14 @@ impl MeshRegistry {
             mesh.destroy(device, allocator);
         }
         self.meshes.clear();
+        if let Some(ref mut vb) = self.global_vertex_buffer {
+            vb.destroy(device, allocator);
+        }
+        if let Some(ref mut ib) = self.global_index_buffer {
+            ib.destroy(device, allocator);
+        }
+        self.global_vertex_buffer = None;
+        self.global_index_buffer = None;
     }
 }
 
