@@ -335,8 +335,8 @@ void main() {
                 // the angular size. Bethesda radii are falloff range, not
                 // physical size, so we use a small fraction for the emitter disk.
                 float lightDiskRadius = (lightType < 1.5)
-                    ? max(radius * 0.003, 0.5)  // point/spot: ~0.3% of range, min 0.5 units
-                    : 1.5;                        // directional: small fixed angular spread
+                    ? max(radius * 0.012, 2.0)   // point/spot: ~1.2% of range, min 2 units
+                    : 4.0;                        // directional: wider angular spread
 
                 vec3 jitteredTarget = lightPos + (T * diskSample.x + B * diskSample.y) * lightDiskRadius;
                 vec3 rayOrigin = fragWorldPos + N * 0.05;
