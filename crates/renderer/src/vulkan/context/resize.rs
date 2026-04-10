@@ -1,5 +1,7 @@
 //! Swapchain recreation after window resize or suboptimal present.
 
+use super::super::ssao::SsaoPipeline;
+use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::super::{pipeline, swapchain};
 use super::helpers::{
     allocate_command_buffers, create_depth_resources, create_framebuffers, create_render_pass,
@@ -112,6 +114,39 @@ impl VulkanContext {
         // Recreate descriptor sets for existing textures (new swapchain image count).
         self.texture_registry
             .recreate_descriptor_sets(&self.device, self.swapchain_state.images.len() as u32)?;
+
+        // Recreate SSAO pipeline with the new depth image view and dimensions.
+        // The old pipeline's descriptor sets still reference the destroyed depth
+        // image view (VUID-VkDescriptorImageInfo-imageView-parameter), so we
+        // must destroy and rebuild it. The scene descriptor set binding 7
+        // (aoTexture) is also re-written to point at the new AO image.
+        if let Some(ref mut old_ssao) = self.ssao {
+            let allocator = self.allocator.as_ref().expect("allocator missing during resize");
+            unsafe { old_ssao.destroy(&self.device, allocator) };
+            self.ssao = None;
+            match SsaoPipeline::new(
+                &self.device,
+                allocator,
+                self.depth_image_view,
+                self.swapchain_state.extent.width,
+                self.swapchain_state.extent.height,
+            ) {
+                Ok(new_ssao) => {
+                    for f in 0..MAX_FRAMES_IN_FLIGHT {
+                        self.scene_buffers.write_ao_texture(
+                            &self.device,
+                            f,
+                            new_ssao.ao_image_view,
+                            new_ssao.ao_sampler,
+                        );
+                    }
+                    self.ssao = Some(new_ssao);
+                }
+                Err(e) => {
+                    log::warn!("SSAO recreation failed after resize: {e} — no ambient occlusion");
+                }
+            }
+        }
 
         self.framebuffers = create_framebuffers(
             &self.device,
