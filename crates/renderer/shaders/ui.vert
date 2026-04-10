@@ -12,8 +12,15 @@ struct GpuInstance {
     mat4 model;
     uint textureIndex;
     uint boneOffset;
-    uint _pad0;
-    uint _pad1;
+    uint normalMapIndex;
+    float roughness;
+    float metalness;
+    float emissiveMult;
+    float emissiveR, emissiveG, emissiveB;
+    float specularStrength;
+    float specularR, specularG, specularB;
+    uint _pad;
+    uint _pad2[2];
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

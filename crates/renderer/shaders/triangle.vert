@@ -10,12 +10,24 @@ layout(location = 5) in vec4  inBoneWeights;
 
 // Per-instance data from the instance SSBO. Each draw's gl_InstanceIndex
 // maps to one entry containing model matrix, texture index, and bone offset.
+// Must match Rust GpuInstance layout exactly — all scalars, no vec3.
 struct GpuInstance {
-    mat4 model;
-    uint textureIndex;
-    uint boneOffset;
-    uint _pad0;
-    uint _pad1;
+    mat4 model;              // 64 bytes
+    uint textureIndex;       // offset 64
+    uint boneOffset;         // offset 68
+    uint normalMapIndex;     // offset 72
+    float roughness;         // offset 76
+    float metalness;         // offset 80
+    float emissiveMult;      // offset 84
+    float emissiveR;         // offset 88
+    float emissiveG;         // offset 92
+    float emissiveB;         // offset 96
+    float specularStrength;  // offset 100
+    float specularR;         // offset 104
+    float specularG;         // offset 108
+    float specularB;         // offset 112
+    uint _pad;               // offset 116
+    uint _pad2[2];           // offset 120 → total 128
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

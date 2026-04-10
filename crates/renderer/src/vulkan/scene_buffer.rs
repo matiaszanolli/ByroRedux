@@ -37,35 +37,34 @@ pub const MAX_INSTANCES: usize = 4096;
 /// constants, enabling instanced drawing: consecutive draws with the same
 /// mesh + pipeline can be batched into a single `cmd_draw_indexed` call.
 ///
-/// Layout: 128 bytes per instance (std430, 16-byte aligned).
+/// **CRITICAL**: All fields use scalar types (f32/u32) or vec4-equivalent
+/// `[f32; 4]` — NEVER `[f32; 3]`. In std430 layout, a vec3 is aligned to
+/// 16 bytes (same as vec4), which would silently mismatch a tightly-packed
+/// `#[repr(C)]` Rust struct where `[f32; 3]` is only 12 bytes.
+///
+/// Layout: 112 bytes per instance, 16-byte aligned (pad to 112 = 7×16).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuInstance {
-    /// Model-to-world matrix (column-major, matches glam/GLSL convention).
-    pub model: [[f32; 4]; 4],          // 64 bytes, offset 0
-    /// Index into the bindless texture array (set 0) for diffuse.
-    pub texture_index: u32,             // 4 bytes, offset 64
-    /// Offset into the bone palette SSBO for skinned meshes.
-    pub bone_offset: u32,               // 4 bytes, offset 68
-    /// Index into bindless texture array for normal map (0 = none).
-    pub normal_map_index: u32,           // 4 bytes, offset 72
-    /// PBR roughness [0.05..0.95] — inferred from material classifier.
-    pub roughness: f32,                  // 4 bytes, offset 76
-    /// PBR metalness [0..1] — inferred from material classifier.
-    pub metalness: f32,                  // 4 bytes, offset 80
-    /// Emissive intensity multiplier (>0 = skip shadow rays, self-lit).
-    pub emissive_mult: f32,              // 4 bytes, offset 84
-    /// Emissive color (RGB, packed into 3 floats).
-    pub emissive_color: [f32; 3],        // 12 bytes, offset 88
-    /// Specular intensity multiplier.
-    pub specular_strength: f32,          // 4 bytes, offset 100
-    /// Specular color (RGB).
-    pub specular_color: [f32; 3],        // 12 bytes, offset 104
-    pub _padding: u32,                   // 4 bytes, offset 116 → total 120
-    // Note: 120 is not 128-aligned. We need 128 for nice SSBO alignment.
-    // Actually 120 is fine for std430 — the struct's alignment is max(16) from mat4.
-    // But let's pad to 128 for cache-line friendliness.
-    pub _padding2: [u32; 2],             // 8 bytes → total 128
+    pub model: [[f32; 4]; 4],          // 64 B, offset 0
+    pub texture_index: u32,             // 4 B, offset 64
+    pub bone_offset: u32,               // 4 B, offset 68
+    pub normal_map_index: u32,           // 4 B, offset 72
+    pub roughness: f32,                  // 4 B, offset 76
+    pub metalness: f32,                  // 4 B, offset 80
+    pub emissive_mult: f32,              // 4 B, offset 84
+    /// Emissive RGB + specular_strength packed as vec4 to avoid vec3 alignment.
+    pub emissive_r: f32,                 // 4 B, offset 88
+    pub emissive_g: f32,                 // 4 B, offset 92
+    pub emissive_b: f32,                 // 4 B, offset 96
+    pub specular_strength: f32,          // 4 B, offset 100
+    /// Specular RGB + padding packed to avoid vec3.
+    pub specular_r: f32,                 // 4 B, offset 104
+    pub specular_g: f32,                 // 4 B, offset 108
+    pub specular_b: f32,                 // 4 B, offset 112 → total 116
+    pub _padding: u32,                   // 4 B → total 120
+    // Pad to 128 for cache-line alignment.
+    pub _padding2: [u32; 2],             // 8 B → total 128
 }
 
 impl Default for GpuInstance {
@@ -83,9 +82,13 @@ impl Default for GpuInstance {
             roughness: 0.5,
             metalness: 0.0,
             emissive_mult: 0.0,
-            emissive_color: [0.0, 0.0, 0.0],
+            emissive_r: 0.0,
+            emissive_g: 0.0,
+            emissive_b: 0.0,
             specular_strength: 1.0,
-            specular_color: [1.0, 1.0, 1.0],
+            specular_r: 1.0,
+            specular_g: 1.0,
+            specular_b: 1.0,
             _padding: 0,
             _padding2: [0; 2],
         }
@@ -253,13 +256,13 @@ impl SceneBuffers {
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::VERTEX),
         );
-        // Binding 4: instance data SSBO (vertex shader — instanced drawing).
+        // Binding 4: instance data SSBO (vertex + fragment — instanced drawing + PBR materials).
         bindings.push(
             vk::DescriptorSetLayoutBinding::default()
                 .binding(4)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::VERTEX),
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
         );
         // Binding 5: cluster grid SSBO (fragment shader — clustered lighting).
         bindings.push(

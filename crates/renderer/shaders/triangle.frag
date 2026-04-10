@@ -15,19 +15,25 @@ layout(location = 0) out vec4 outColor;
 layout(set = 0, binding = 0) uniform sampler2D textures[];
 
 // Per-instance material data from the instance SSBO.
+// CRITICAL: all scalars, NO vec3 (vec3 has 16-byte alignment in std430,
+// which would mismatch the tightly-packed Rust #[repr(C)] struct).
 struct GpuInstance {
-    mat4 model;
-    uint textureIndex;
-    uint boneOffset;
-    uint normalMapIndex;
-    float roughness;
-    float metalness;
-    float emissiveMult;
-    vec3 emissiveColor;
-    float specularStrength;
-    vec3 specularColor;
-    uint _pad;
-    uint _pad2[2];
+    mat4 model;              // offset 0,  64 bytes
+    uint textureIndex;       // offset 64, 4 bytes
+    uint boneOffset;         // offset 68
+    uint normalMapIndex;     // offset 72
+    float roughness;         // offset 76
+    float metalness;         // offset 80
+    float emissiveMult;      // offset 84
+    float emissiveR;         // offset 88
+    float emissiveG;         // offset 92
+    float emissiveB;         // offset 96
+    float specularStrength;  // offset 100
+    float specularR;         // offset 104
+    float specularG;         // offset 108
+    float specularB;         // offset 112
+    uint _pad;               // offset 116
+    uint _pad2[2];           // offset 120 → total 128
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
@@ -158,9 +164,9 @@ void main() {
     float roughness = inst.roughness;
     float metalness = inst.metalness;
     float emissiveMult = inst.emissiveMult;
-    vec3 emissiveColor = inst.emissiveColor;
+    vec3 emissiveColor = vec3(inst.emissiveR, inst.emissiveG, inst.emissiveB);
     float specStrength = inst.specularStrength;
-    vec3 specColor = inst.specularColor;
+    vec3 specColor = vec3(inst.specularR, inst.specularG, inst.specularB);
     uint normalMapIdx = inst.normalMapIndex;
 
     // Surface normal — perturbed by normal map if available.
