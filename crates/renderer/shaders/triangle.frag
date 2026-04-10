@@ -313,14 +313,52 @@ void main() {
     // material classifier (roughness ≤ 0.1) AND with visible transparency.
     // This excludes windows (which are just alpha-blended, not refractive)
     // and only catches actual glass/crystal/gem objects.
-    bool isGlass = roughness <= 0.1 && metalness < 0.1 && texColor.a < 0.85 && texColor.a > 0.1;
+    // ── Window light portals ─────────────────────────────────────────
+    //
+    // In every Bethesda game (Morrowind→Starfield), interior windows are
+    // fake portals — the exterior visible through them isn't real geometry.
+    // We cast a ray through the window surface: if it escapes the cell
+    // (no hit within range), we treat it as seeing sky and transmit
+    // exterior light through the window, tinted by its texture color.
+    //
+    // Detection: alpha-blended fragments (alpha < 0.95) that are NOT
+    // glass objects (roughness > 0.1 or metalness > 0). This catches
+    // windows but excludes glass vases/bottles.
+    bool isWindow = texColor.a < 0.95 && texColor.a > 0.05 && !(roughness <= 0.1 && metalness < 0.1);
+    bool isGlass = roughness <= 0.1 && metalness < 0.1 && texColor.a < 0.7 && texColor.a > 0.2;
+
+    if (isWindow && rtEnabled) {
+        // Cast a ray through the window in the view direction.
+        vec3 throughDir = -V; // continue along the camera's line of sight
+        rayQueryEXT windowRQ;
+        rayQueryInitializeEXT(
+            windowRQ, topLevelAS,
+            gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+            0xFF,
+            fragWorldPos - N * 0.5, // start slightly behind the window surface
+            0.1,
+            throughDir,
+            2000.0 // if nothing hit within 2000 units, it's "outside"
+        );
+        rayQueryProceedEXT(windowRQ);
+
+        bool hitsInterior = (rayQueryGetIntersectionTypeEXT(windowRQ, true) != gl_RayQueryCommittedIntersectionNoneEXT);
+
+        if (!hitsInterior) {
+            // Ray escaped the cell — this window sees sky.
+            // Procedural sky color: warm daylight blue, tinted by window texture.
+            vec3 skyColor = vec3(0.5, 0.65, 0.9); // clear day sky
+            vec3 windowLight = skyColor * texColor.rgb * (1.0 - texColor.a) * 2.0;
+            albedo = windowLight;
+            // Override ambient to sky-lit level for the window surface.
+            F0 = vec3(0.02);
+        }
+    }
+
     float glassFresnel = 0.0;
     if (isGlass) {
-        // Fresnel: glass reflects more at grazing angles.
         glassFresnel = fresnelSchlick(NdotV, vec3(0.04)).r;
-        // Boost specular on glass for that sharp highlight.
         specStrength = max(specStrength, 3.0);
-        // Make glass slightly more transparent at direct incidence.
         F0 = vec3(0.04);
     }
 
@@ -498,8 +536,10 @@ void main() {
     }
 
     // Sample ambient occlusion from the SSAO texture (computed last frame).
+    // On the first frame before SSAO has run, the texture may read 0 —
+    // clamp to a minimum to avoid killing all ambient light.
     vec2 aoUV = gl_FragCoord.xy / screen.xy;
-    float ao = texture(aoTexture, aoUV).r;
+    float ao = max(texture(aoTexture, aoUV).r, 0.3);
     vec3 finalColor = ambient * ao + Lo;
 
     // Glass compositing: Fresnel controls the output alpha. At grazing
