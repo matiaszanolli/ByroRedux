@@ -225,12 +225,10 @@ void main() {
     vec3 ambient = sceneFlags.yzw * albedo * (1.0 - metalness);
     vec3 Lo = vec3(0.0); // Accumulated outgoing radiance.
 
-    // Compute view-space depth for cluster lookup.
-    vec4 viewPos = viewProj * vec4(fragWorldPos, 1.0);
-    float viewDepth = viewPos.w; // clip-space W = view-space Z for perspective
-    // Screen size from the camera UBO — packed as viewport dimensions.
-    // We reconstruct from gl_FragCoord and the viewport.
-    uint clusterIdx = getClusterIndex(gl_FragCoord.xy, viewDepth, screen.xy);
+    // World-space distance from camera for cluster depth slicing.
+    // Must match cluster_cull.comp's sliceDepth() which uses world-space distance.
+    float worldDist = length(fragWorldPos - cameraPos.xyz);
+    uint clusterIdx = getClusterIndex(gl_FragCoord.xy, worldDist, screen.xy);
 
     if (lightCount == 0) {
         // Fallback: single directional light.

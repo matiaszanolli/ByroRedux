@@ -197,13 +197,7 @@ impl VulkanContext {
         // that the fragment shader reads during the render pass.
         unsafe {
             if let Some(ref cc) = self.cluster_cull {
-                cc.dispatch(
-                    &self.device,
-                    cmd,
-                    frame,
-                    self.swapchain_state.extent.width as f32,
-                    self.swapchain_state.extent.height as f32,
-                );
+                cc.dispatch(&self.device, cmd, frame);
                 // Barrier: compute writes → fragment reads on cluster SSBOs.
                 let barrier = vk::MemoryBarrier::default()
                     .src_access_mask(vk::AccessFlags::SHADER_WRITE)

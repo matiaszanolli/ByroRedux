@@ -116,15 +116,9 @@ impl ClusterCullPipeline {
                 .context("Failed to create cluster cull descriptor set layout")?
         };
 
-        // Push constant: screen dimensions (8 bytes).
-        let push_range = vk::PushConstantRange {
-            stage_flags: vk::ShaderStageFlags::COMPUTE,
-            offset: 0,
-            size: 8,
-        };
+        // No push constants — screen dimensions are in the camera UBO.
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
-            .set_layouts(std::slice::from_ref(&descriptor_set_layout))
-            .push_constant_ranges(std::slice::from_ref(&push_range));
+            .set_layouts(std::slice::from_ref(&descriptor_set_layout));
         let pipeline_layout = unsafe {
             device
                 .create_pipeline_layout(&pipeline_layout_info, None)
@@ -277,8 +271,6 @@ impl ClusterCullPipeline {
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         frame: usize,
-        screen_width: f32,
-        screen_height: f32,
     ) {
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
         device.cmd_bind_descriptor_sets(
@@ -288,20 +280,6 @@ impl ClusterCullPipeline {
             0,
             &[self.descriptor_sets[frame]],
             &[],
-        );
-
-        // Push screen dimensions.
-        let push_data = [screen_width, screen_height];
-        let push_bytes: &[u8] = std::slice::from_raw_parts(
-            push_data.as_ptr() as *const u8,
-            8,
-        );
-        device.cmd_push_constants(
-            cmd,
-            self.pipeline_layout,
-            vk::ShaderStageFlags::COMPUTE,
-            0,
-            push_bytes,
         );
 
         device.cmd_dispatch(cmd, TILES_X, TILES_Y, SLICES_Z);
