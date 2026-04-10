@@ -12,5 +12,6 @@ pub mod pipeline;
 pub mod scene_buffer;
 pub mod surface;
 pub mod swapchain;
+pub mod ssao;
 pub mod sync;
 pub mod texture;

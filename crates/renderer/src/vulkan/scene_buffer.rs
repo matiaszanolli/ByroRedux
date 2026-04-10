@@ -281,6 +281,14 @@ impl SceneBuffers {
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         );
+        // Binding 7: SSAO texture (fragment shader — ambient occlusion).
+        bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(7)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        );
         // Mark bindings 5+6 (cluster data) as PARTIALLY_BOUND so they are
         // valid even when unwritten (cluster cull pipeline may fail to create).
         // The fragment shader guards access with a lightCount > 0 check.
@@ -289,7 +297,7 @@ impl SceneBuffers {
             .enumerate()
             .map(|(_, b)| {
                 let binding_idx = b.binding;
-                if binding_idx == 5 || binding_idx == 6 {
+                if binding_idx == 5 || binding_idx == 6 || binding_idx == 7 {
                     vk::DescriptorBindingFlags::PARTIALLY_BOUND
                 } else {
                     vk::DescriptorBindingFlags::empty()
@@ -315,6 +323,11 @@ impl SceneBuffers {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
                 // 5 SSBOs per frame: lights (0), bones (3), instances (4), cluster grid (5), light indices (6).
                 descriptor_count: (MAX_FRAMES_IN_FLIGHT * 5) as u32,
+            },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                // 1 per frame: SSAO texture (binding 7).
+                descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::UNIFORM_BUFFER,
@@ -575,6 +588,28 @@ impl SceneBuffers {
     /// Get the descriptor set for the current frame-in-flight.
     pub fn descriptor_set(&self, frame_index: usize) -> vk::DescriptorSet {
         self.descriptor_sets[frame_index]
+    }
+
+    /// Write the SSAO texture into the scene descriptor set for a given frame.
+    pub fn write_ao_texture(
+        &self,
+        device: &ash::Device,
+        frame_index: usize,
+        ao_image_view: vk::ImageView,
+        ao_sampler: vk::Sampler,
+    ) {
+        let image_info = [vk::DescriptorImageInfo::default()
+            .sampler(ao_sampler)
+            .image_view(ao_image_view)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let write = vk::WriteDescriptorSet::default()
+            .dst_set(self.descriptor_sets[frame_index])
+            .dst_binding(7)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(&image_info);
+        unsafe {
+            device.update_descriptor_sets(&[write], &[]);
+        }
     }
 
     /// Write cluster buffer references into the scene descriptor set for a given frame.

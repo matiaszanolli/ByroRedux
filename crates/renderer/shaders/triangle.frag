@@ -76,6 +76,9 @@ layout(std430, set = 1, binding = 6) readonly buffer ClusterLightIndices {
     uint clusterLightIndices[];
 };
 
+// SSAO texture (computed after the render pass, read next frame).
+layout(set = 1, binding = 7) uniform sampler2D aoTexture;
+
 // Must match cluster_cull.comp constants.
 const uint CLUSTER_TILES_X = 16;
 const uint CLUSTER_TILES_Y = 9;
@@ -374,7 +377,11 @@ void main() {
         }
     }
 
-    vec3 finalColor = ambient + Lo;
+    // Sample ambient occlusion from the SSAO texture (computed last frame).
+    // Uses screen UV from gl_FragCoord to read the AO value.
+    vec2 aoUV = gl_FragCoord.xy / screen.xy;
+    float ao = texture(aoTexture, aoUV).r;
+    vec3 finalColor = ambient * ao + Lo;
 
     // Distance fog — blends scene color toward fog color based on distance
     // from camera. Uses smoothstep for a natural falloff. The fog parameters

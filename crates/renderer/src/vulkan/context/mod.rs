@@ -2,6 +2,7 @@
 
 use super::acceleration::AccelerationManager;
 use super::compute::ClusterCullPipeline;
+use super::ssao::SsaoPipeline;
 use super::allocator::{self, SharedAllocator};
 use super::debug;
 use super::device::{self, QueueFamilyIndices};
@@ -71,6 +72,7 @@ pub struct VulkanContext {
     pub scene_buffers: scene_buffer::SceneBuffers,
     pub accel_manager: Option<AccelerationManager>,
     pub cluster_cull: Option<ClusterCullPipeline>,
+    pub ssao: Option<SsaoPipeline>,
     pipeline_cache: vk::PipelineCache,
     pipeline: vk::Pipeline,
     pipeline_alpha: vk::Pipeline,
@@ -313,6 +315,28 @@ impl VulkanContext {
             pipeline_cache,
         )?;
 
+        // 14a. SSAO pipeline (reads depth buffer after render pass)
+        let ssao = match SsaoPipeline::new(
+            &device,
+            &gpu_allocator,
+            depth_image_view,
+            swapchain_state.extent.width,
+            swapchain_state.extent.height,
+        ) {
+            Ok(s) => {
+                for f in 0..MAX_FRAMES_IN_FLIGHT {
+                    scene_buffers.write_ao_texture(
+                        &device, f, s.ao_image_view, s.ao_sampler,
+                    );
+                }
+                Some(s)
+            }
+            Err(e) => {
+                log::warn!("SSAO pipeline creation failed: {e} — no ambient occlusion");
+                None
+            }
+        };
+
         // 14. Mesh registry (empty — meshes uploaded by the application)
         let mesh_registry = MeshRegistry::new();
 
@@ -362,6 +386,7 @@ impl VulkanContext {
             scene_buffers,
             accel_manager,
             cluster_cull,
+            ssao,
             depth_allocation: Some(depth_allocation),
             depth_image,
             depth_image_view,
@@ -412,6 +437,9 @@ impl Drop for VulkanContext {
                 }
                 if let Some(ref mut cc) = self.cluster_cull {
                     cc.destroy(&self.device, alloc);
+                }
+                if let Some(ref mut ssao) = self.ssao {
+                    ssao.destroy(&self.device, alloc);
                 }
             }
 

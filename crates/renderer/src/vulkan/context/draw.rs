@@ -458,6 +458,23 @@ impl VulkanContext {
             }
 
             self.device.cmd_end_render_pass(cmd);
+
+            // SSAO compute pass: reads depth buffer (now in READ_ONLY layout
+            // after render pass), writes AO texture for next frame's fragment shader.
+            if let Some(ref mut ssao) = self.ssao {
+                // We need the projection matrix for view-space reconstruction.
+                // For now, pass the full viewProj — the SSAO shader will invert it.
+                let proj = [
+                    [vp[0], vp[1], vp[2], vp[3]],
+                    [vp[4], vp[5], vp[6], vp[7]],
+                    [vp[8], vp[9], vp[10], vp[11]],
+                    [vp[12], vp[13], vp[14], vp[15]],
+                ];
+                if let Err(e) = ssao.dispatch(&self.device, cmd, frame, &proj) {
+                    log::warn!("SSAO dispatch failed: {e}");
+                }
+            }
+
             self.device
                 .end_command_buffer(cmd)
                 .context("end_command_buffer")?;

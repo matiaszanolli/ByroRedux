@@ -52,15 +52,17 @@ pub(super) fn create_render_pass(
 
     // Depth store DONT_CARE — cleared each frame, never sampled afterward.
     // Saves bandwidth on tile-based GPUs (skips depth writeback to memory).
+    // Depth is STORED (not DONT_CARE) so the SSAO compute pass can read it
+    // after the render pass. Final layout is READ_ONLY for shader sampling.
     let depth_attachment = vk::AttachmentDescription::default()
         .format(depth_format)
         .samples(vk::SampleCountFlags::TYPE_1)
         .load_op(vk::AttachmentLoadOp::CLEAR)
-        .store_op(vk::AttachmentStoreOp::DONT_CARE)
+        .store_op(vk::AttachmentStoreOp::STORE)
         .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
         .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
         .initial_layout(vk::ImageLayout::UNDEFINED)
-        .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        .final_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 
     let color_ref = vk::AttachmentReference {
         attachment: 0,
@@ -106,13 +108,21 @@ pub(super) fn create_render_pass(
     // semaphore for correctness. The explicit dependency makes the render
     // pass self-documenting and robust against future refactoring (e.g.,
     // adding post-render-pass compute work before present).
+    // Outgoing: ensure color + depth writes are complete before SSAO
+    // compute reads the depth buffer and before present reads color.
     let dependency_out = vk::SubpassDependency::default()
         .src_subpass(0)
         .dst_subpass(vk::SUBPASS_EXTERNAL)
-        .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-        .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-        .dst_stage_mask(vk::PipelineStageFlags::BOTTOM_OF_PIPE)
-        .dst_access_mask(vk::AccessFlags::empty());
+        .src_stage_mask(
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+        )
+        .src_access_mask(
+            vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+        )
+        .dst_stage_mask(vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::BOTTOM_OF_PIPE)
+        .dst_access_mask(vk::AccessFlags::SHADER_READ);
 
     let attachments = [color_attachment, depth_attachment];
     let subpasses = [subpass];
@@ -179,7 +189,7 @@ pub(super) fn create_depth_resources(
         .array_layers(1)
         .samples(vk::SampleCountFlags::TYPE_1)
         .tiling(vk::ImageTiling::OPTIMAL)
-        .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+        .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .initial_layout(vk::ImageLayout::UNDEFINED);
 
