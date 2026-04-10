@@ -195,6 +195,12 @@ pub struct ImportedScene {
     pub nodes: Vec<ImportedNode>,
     /// Leaf geometry meshes.
     pub meshes: Vec<ImportedMesh>,
+    /// BSXFlags value from the root node's extra data (physics/animation hints).
+    /// Bits: 0=animated, 1=havok, 2=ragdoll, 3=complex, 4=addon, 5=editor marker,
+    /// 6=dynamic, 7=articulated, 8=needs_transform_updates, 9=external_emit.
+    pub bsx_flags: Option<u32>,
+    /// BSBound from the root node's extra data (object-level bounding box).
+    pub bs_bound: Option<([f32; 3], [f32; 3])>, // (center, half_extents)
 }
 
 /// Import all renderable meshes from a parsed NIF scene, preserving hierarchy.
@@ -206,6 +212,8 @@ pub fn import_nif_scene(scene: &NifScene) -> ImportedScene {
     let mut imported = ImportedScene {
         nodes: Vec::new(),
         meshes: Vec::new(),
+        bsx_flags: None,
+        bs_bound: None,
     };
 
     let Some(root_idx) = scene.root_index else {
@@ -213,6 +221,29 @@ pub fn import_nif_scene(scene: &NifScene) -> ImportedScene {
     };
 
     walk::walk_node_hierarchical(scene, root_idx, None, &mut imported);
+
+    // Resolve extra data from the root node (BSXFlags, BSBound).
+    if let Some(root_block) = scene.blocks.get(root_idx) {
+        if let Some(node) = root_block.as_any().downcast_ref::<crate::blocks::node::NiNode>() {
+            for &ref_idx in &node.av.net.extra_data_refs {
+                let idx = ref_idx.0;
+                if idx < 0 {
+                    continue;
+                }
+                if let Some(block) = scene.blocks.get(idx as usize) {
+                    if let Some(ed) = block.as_any().downcast_ref::<crate::blocks::extra_data::NiExtraData>() {
+                        if ed.type_name == "BSXFlags" {
+                            imported.bsx_flags = ed.integer_value;
+                        }
+                    }
+                    if let Some(bb) = block.as_any().downcast_ref::<crate::blocks::extra_data::BsBound>() {
+                        imported.bs_bound = Some((bb.center, bb.dimensions));
+                    }
+                }
+            }
+        }
+    }
+
     imported
 }
 

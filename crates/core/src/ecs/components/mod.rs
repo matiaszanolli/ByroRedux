@@ -1,6 +1,7 @@
 //! Built-in engine components.
 
 pub mod animated;
+pub mod bsx;
 pub mod camera;
 pub mod collision;
 pub mod form_id;
@@ -17,6 +18,7 @@ pub mod transform;
 pub mod world_bound;
 
 pub use animated::{AnimatedAlpha, AnimatedColor, AnimatedVisibility};
+pub use bsx::{BSBound, BSXFlags};
 pub use camera::{ActiveCamera, Camera};
 pub use collision::{CollisionShape, MotionType, RigidBodyData};
 pub use form_id::FormIdComponent;
