@@ -113,6 +113,22 @@ impl StagingPool {
     }
 }
 
+impl Drop for StagingPool {
+    fn drop(&mut self) {
+        if !self.free_list.is_empty() {
+            log::warn!(
+                "StagingPool dropped with {} unreleased buffers — call destroy() before drop",
+                self.free_list.len(),
+            );
+            debug_assert!(
+                self.free_list.is_empty(),
+                "StagingPool leaked {} staging buffers",
+                self.free_list.len(),
+            );
+        }
+    }
+}
+
 /// RAII guard for a staging buffer. Destroys on drop if not explicitly released.
 /// Used to ensure cleanup on early return from upload paths.
 pub(crate) struct StagingGuard {
