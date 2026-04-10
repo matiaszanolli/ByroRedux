@@ -261,10 +261,32 @@ pub(crate) fn build_render_data(
     // Cell ambient color (or default).
     let cell_lit = world.try_resource::<CellLightingRes>();
     let ambient = cell_lit.as_ref().map(|l| l.ambient).unwrap_or([0.08, 0.08, 0.08]);
-    let fog_color = cell_lit.as_ref().map(|l| l.fog_color).unwrap_or([0.0; 3]);
-    let fog_near = cell_lit.as_ref().map(|l| l.fog_near).unwrap_or(0.0);
-    let fog_far = cell_lit.as_ref().map(|l| l.fog_far).unwrap_or(0.0);
+    let mut fog_color = cell_lit.as_ref().map(|l| l.fog_color).unwrap_or([0.0; 3]);
+    let mut fog_near = cell_lit.as_ref().map(|l| l.fog_near).unwrap_or(0.0);
+    let mut fog_far = cell_lit.as_ref().map(|l| l.fog_far).unwrap_or(0.0);
     drop(cell_lit);
+
+    // Procedural fog: when the cell doesn't define fog (near == far == 0),
+    // generate atmospheric fog from the ambient color. This adds depth and
+    // mood to interiors that the original game achieved via its fixed-function
+    // fog pipeline but didn't encode in the cell data.
+    if fog_far <= fog_near + 1.0 {
+        // Fog color: blend ambient toward a cool desaturated tone.
+        // Darker ambients → cooler, more blue-gray fog (dungeons).
+        // Brighter ambients → warmer, amber-tinted fog (homes).
+        let lum = ambient[0] * 0.299 + ambient[1] * 0.587 + ambient[2] * 0.114;
+        let warmth = lum.clamp(0.0, 0.3); // how warm the fog tint is
+        fog_color = [
+            ambient[0] * 0.4 + warmth * 0.3 + 0.02,
+            ambient[1] * 0.4 + warmth * 0.2 + 0.02,
+            ambient[2] * 0.4 + warmth * 0.1 + 0.03,
+        ];
+        // Fog distances: gentle fog starting at ~40% of typical room size,
+        // becoming dense at ~200% of room size. Interior cells are typically
+        // 500-2000 units across.
+        fog_near = 300.0;
+        fog_far = 1500.0;
+    }
 
     (view_proj, camera_pos, ambient, fog_color, fog_near, fog_far)
 }
