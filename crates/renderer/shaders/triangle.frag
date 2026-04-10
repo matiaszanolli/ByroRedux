@@ -232,29 +232,19 @@ void main() {
     // natural distortion effect. Fresnel controls the reflection/transmission
     // split — at grazing angles glass reflects more, at direct incidence
     // it's mostly transparent.
-    bool isGlass = roughness < 0.2 && metalness < 0.1 && texColor.a < 0.95;
-    vec3 glassRefraction = vec3(0.0);
+    // Glass detection: only surfaces explicitly classified as glass by the
+    // material classifier (roughness ≤ 0.1) AND with visible transparency.
+    // This excludes windows (which are just alpha-blended, not refractive)
+    // and only catches actual glass/crystal/gem objects.
+    bool isGlass = roughness <= 0.1 && metalness < 0.1 && texColor.a < 0.85 && texColor.a > 0.1;
     float glassFresnel = 0.0;
     if (isGlass) {
-        // IOR for glass ≈ 1.5 → F0 ≈ 0.04 (already in F0 for dielectrics).
+        // Fresnel: glass reflects more at grazing angles.
         glassFresnel = fresnelSchlick(NdotV, vec3(0.04)).r;
-
-        // Screen-space refraction: offset the screen UV by the normal's
-        // XY components to simulate light bending through the surface.
-        // The offset is scaled by the glass thickness (approximated by
-        // how transparent it is — more transparent = more distortion).
-        vec2 screenUV = gl_FragCoord.xy / screen.xy;
-        float refractionStrength = (1.0 - texColor.a) * 0.05;
-        vec2 refractedUV = screenUV + N.xy * refractionStrength;
-        refractedUV = clamp(refractedUV, vec2(0.001), vec2(0.999));
-
-        // Sample the scene behind the glass from the AO texture's mip chain.
-        // Since we don't have a separate scene color buffer, we use the
-        // ambient + fog color as an approximation of what's behind the glass.
-        // The tint from the glass texture color gives it the characteristic
-        // colored-glass look (blue for Ayleid, green for potions, etc.)
-        vec3 behindColor = sceneFlags.yzw * 1.5; // brightened ambient as proxy
-        glassRefraction = behindColor * albedo; // tinted by glass color
+        // Boost specular on glass for that sharp highlight.
+        specStrength = max(specStrength, 3.0);
+        // Make glass slightly more transparent at direct incidence.
+        F0 = vec3(0.04);
     }
 
     // Ambient base from cell lighting.
@@ -414,13 +404,16 @@ void main() {
     float ao = texture(aoTexture, aoUV).r;
     vec3 finalColor = ambient * ao + Lo;
 
-    // Glass compositing: blend between refracted (transmitted) light and
-    // reflected (specular) light based on Fresnel. At grazing angles,
-    // glass reflects the environment; at direct incidence, it transmits.
+    // Glass compositing: Fresnel controls the output alpha. At grazing
+    // angles glass becomes more opaque (reflective); at direct incidence
+    // it's more transparent (transmissive). The alpha blend with the
+    // background handles the "see-through" effect naturally.
+    float finalAlpha = texColor.a;
     if (isGlass) {
-        vec3 reflected = finalColor; // the lit surface is the reflection
-        vec3 transmitted = glassRefraction;
-        finalColor = mix(transmitted, reflected, glassFresnel);
+        // Boost opacity at grazing angles (Fresnel reflection).
+        finalAlpha = mix(texColor.a, 1.0, glassFresnel * 0.7);
+        // Add a subtle tint from the glass color to the lit result.
+        finalColor = finalColor + albedo * 0.15;
     }
 
     // Distance fog — blends scene color toward fog color based on distance
@@ -431,5 +424,5 @@ void main() {
         finalColor = mix(finalColor, fog.xyz, fogFactor);
     }
 
-    outColor = vec4(finalColor, texColor.a);
+    outColor = vec4(finalColor, finalAlpha);
 }
