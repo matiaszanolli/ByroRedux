@@ -278,7 +278,27 @@ impl SceneBuffers {
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         );
-        let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+        // Mark bindings 5+6 (cluster data) as PARTIALLY_BOUND so they are
+        // valid even when unwritten (cluster cull pipeline may fail to create).
+        // The fragment shader guards access with a lightCount > 0 check.
+        let binding_flags: Vec<vk::DescriptorBindingFlags> = bindings
+            .iter()
+            .enumerate()
+            .map(|(_, b)| {
+                let binding_idx = b.binding;
+                if binding_idx == 5 || binding_idx == 6 {
+                    vk::DescriptorBindingFlags::PARTIALLY_BOUND
+                } else {
+                    vk::DescriptorBindingFlags::empty()
+                }
+            })
+            .collect();
+        let mut binding_flags_info =
+            vk::DescriptorSetLayoutBindingFlagsCreateInfo::default()
+                .binding_flags(&binding_flags);
+        let layout_info = vk::DescriptorSetLayoutCreateInfo::default()
+            .bindings(&bindings)
+            .push_next(&mut binding_flags_info);
         let descriptor_set_layout = unsafe {
             device
                 .create_descriptor_set_layout(&layout_info, None)

@@ -197,6 +197,24 @@ impl VulkanContext {
         // that the fragment shader reads during the render pass.
         unsafe {
             if let Some(ref cc) = self.cluster_cull {
+                // Barrier: host writes to light/camera/instance SSBOs must be
+                // visible to the compute shader before dispatch. Required by
+                // Vulkan spec even for HOST_COHERENT memory.
+                let host_barrier = vk::MemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::HOST_WRITE)
+                    .dst_access_mask(
+                        vk::AccessFlags::SHADER_READ | vk::AccessFlags::UNIFORM_READ,
+                    );
+                self.device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::HOST,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[host_barrier],
+                    &[],
+                    &[],
+                );
+
                 cc.dispatch(&self.device, cmd, frame);
                 // Barrier: compute writes → fragment reads on cluster SSBOs.
                 let barrier = vk::MemoryBarrier::default()
@@ -277,7 +295,21 @@ impl VulkanContext {
             });
         }
 
-        // Upload instance data to the SSBO.
+        // Append UI instance (if needed) BEFORE the bulk upload so it's
+        // included in the single flush. Avoids the need for a separate raw
+        // pointer write + flush that was missing on non-coherent memory (#189).
+        let ui_instance_idx = if let (Some(ui_tex), Some(_)) = (ui_texture_handle, self.ui_quad_handle) {
+            let idx = gpu_instances.len() as u32;
+            gpu_instances.push(GpuInstance {
+                texture_index: ui_tex,
+                ..GpuInstance::default()
+            });
+            Some(idx)
+        } else {
+            None
+        };
+
+        // Upload all instance data (scene + UI) to the SSBO in one flush.
         if !gpu_instances.is_empty() {
             self.scene_buffers
                 .upload_instances(&self.device, frame, &gpu_instances)
@@ -394,22 +426,15 @@ impl VulkanContext {
             }
 
             // UI overlay: draw a fullscreen quad with the Ruffle-rendered texture.
-            if let (Some(ui_tex), Some(ui_quad)) = (ui_texture_handle, self.ui_quad_handle) {
+            // The UI instance was appended to gpu_instances before the bulk upload,
+            // so it's already in the SSBO with a proper flush.
+            if let (Some(idx), Some(ui_quad)) = (ui_instance_idx, self.ui_quad_handle) {
                 if let Some(mesh) = self.mesh_registry.get(ui_quad) {
                     self.device.cmd_bind_pipeline(
                         cmd,
                         vk::PipelineBindPoint::GRAPHICS,
                         self.pipeline_ui,
                     );
-
-                    // The UI pipeline uses the same bindless texture set (already bound).
-                    // Push the UI texture index as a small push constant so the UI
-                    // fragment shader knows which texture to sample.
-                    // Actually — the UI shader is a simple passthrough that doesn't
-                    // use the instance SSBO. We write a temporary instance entry for it.
-                    // TODO: The UI should use its own minimal pipeline without the
-                    // scene descriptor set. For now, reuse the last instance slot.
-
                     self.device
                         .cmd_bind_vertex_buffers(cmd, 0, &[mesh.vertex_buffer.buffer], &[0]);
                     self.device.cmd_bind_index_buffer(
@@ -418,32 +443,8 @@ impl VulkanContext {
                         0,
                         vk::IndexType::UINT32,
                     );
-                    // Write a UI instance into the SSBO at the next available slot.
-                    let ui_instance_idx = gpu_instances.len() as u32;
-                    let ui_instance = GpuInstance {
-                        texture_index: ui_tex,
-                        ..GpuInstance::default()
-                    };
-                    // Upload the single UI instance at the end of the SSBO.
-                    // SAFETY: we only write within the buffer's capacity (MAX_INSTANCES).
-                    let buf = &mut self.scene_buffers;
-                    if (ui_instance_idx as usize) < scene_buffer::MAX_INSTANCES {
-                        let instance_offset = ui_instance_idx as usize
-                            * std::mem::size_of::<GpuInstance>();
-                        if let Ok(mapped) =
-                            buf.instance_buffer_mapped_mut(frame)
-                        {
-                            let src = &ui_instance as *const GpuInstance as *const u8;
-                            let size = std::mem::size_of::<GpuInstance>();
-                            std::ptr::copy_nonoverlapping(
-                                src,
-                                mapped.as_mut_ptr().add(instance_offset),
-                                size,
-                            );
-                        }
-                    }
                     self.device
-                        .cmd_draw_indexed(cmd, mesh.index_count, 1, 0, 0, ui_instance_idx);
+                        .cmd_draw_indexed(cmd, mesh.index_count, 1, 0, 0, idx);
                 }
             }
 
