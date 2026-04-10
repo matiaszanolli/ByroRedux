@@ -105,6 +105,8 @@ pub enum FloatTarget {
     UvRotation,
     /// Shader float property (BSEffectShader/BSLightingShader float controllers).
     ShaderFloat,
+    /// Morph target weight (NiGeomMorpherController blend shape).
+    MorphWeight(u32),
 }
 
 /// What a color animation channel targets.
@@ -340,6 +342,21 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
             "BSEffectShaderPropertyColorController" | "BSLightingShaderPropertyColorController" => {
                 if let Some(ch) = extract_shader_color_channel(scene, cb) {
                     color_channels.push((node_name.to_string(), ch));
+                }
+            }
+            "NiGeomMorpherController" => {
+                // Each morph target weight is a separate float channel.
+                // The controlled block's interpolator ref points to the
+                // weight interpolator for one morph target.
+                if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::MorphWeight(0)) {
+                    float_channels.push((node_name.to_string(), ch));
+                }
+            }
+            "NiUVController" => {
+                // UV scrolling — maps to UvOffsetU/V float channels.
+                // The default UV scroll is offset U (horizontal scroll).
+                if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::UvOffsetU) {
+                    float_channels.push((node_name.to_string(), ch));
                 }
             }
             _ => {

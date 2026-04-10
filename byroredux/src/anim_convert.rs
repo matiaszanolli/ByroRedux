@@ -126,6 +126,7 @@ pub(crate) fn convert_nif_clip(nif: &byroredux_nif::anim::AnimationClip) -> Anim
         na::FloatTarget::UvScaleV => FloatTarget::UvScaleV,
         na::FloatTarget::UvRotation => FloatTarget::UvRotation,
         na::FloatTarget::ShaderFloat => FloatTarget::ShaderFloat,
+        na::FloatTarget::MorphWeight(idx) => FloatTarget::MorphWeight(idx),
     };
 
     let convert_color_target = |t: na::ColorTarget| match t {

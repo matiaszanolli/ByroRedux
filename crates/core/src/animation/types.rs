@@ -72,6 +72,9 @@ pub enum FloatTarget {
     UvScaleV,
     UvRotation,
     ShaderFloat,
+    /// Morph target weight (blend shape). The u32 is the morph index
+    /// into the NiGeomMorpherController's target list.
+    MorphWeight(u32),
 }
 
 /// What a color channel targets.
