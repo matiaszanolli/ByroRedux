@@ -130,6 +130,14 @@ void main() {
         aabbMin = min(aabbMin, corners[i]);
         aabbMax = max(aabbMax, corners[i]);
     }
+    // Inflate the AABB slightly to create overlap between adjacent clusters.
+    // This prevents hard light cutoff lines at cluster boundaries — a light
+    // near a boundary will be included in both clusters, and the fragment
+    // shader's actual attenuation smoothly fades it out.
+    vec3 aabbSize = aabbMax - aabbMin;
+    vec3 inflate = aabbSize * 0.15; // 15% overlap per side
+    aabbMin -= inflate;
+    aabbMax += inflate;
 
     // Test each light against this cluster's AABB.
     uint count = 0;
