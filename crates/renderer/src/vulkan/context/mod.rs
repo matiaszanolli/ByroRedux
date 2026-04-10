@@ -1,6 +1,7 @@
 //! Top-level Vulkan context that owns the entire graphics state.
 
 use super::acceleration::AccelerationManager;
+use super::compute::ClusterCullPipeline;
 use super::allocator::{self, SharedAllocator};
 use super::debug;
 use super::device::{self, QueueFamilyIndices};
@@ -67,6 +68,7 @@ pub struct VulkanContext {
     pub texture_registry: TextureRegistry,
     pub scene_buffers: scene_buffer::SceneBuffers,
     pub accel_manager: Option<AccelerationManager>,
+    pub cluster_cull: Option<ClusterCullPipeline>,
     pipeline_cache: vk::PipelineCache,
     pipeline: vk::Pipeline,
     pipeline_alpha: vk::Pipeline,
@@ -258,6 +260,35 @@ impl VulkanContext {
             None
         };
 
+        // 12c. Cluster cull compute pipeline (light culling)
+        let cluster_cull = match ClusterCullPipeline::new(
+            &device,
+            &gpu_allocator,
+            scene_buffers.light_buffers(),
+            scene_buffers.camera_buffers(),
+            scene_buffers.light_buffer_size(),
+            scene_buffers.camera_buffer_size(),
+        ) {
+            Ok(cc) => {
+                // Write cluster buffer references into scene descriptor sets.
+                for f in 0..MAX_FRAMES_IN_FLIGHT {
+                    scene_buffers.write_cluster_buffers(
+                        &device,
+                        f,
+                        cc.grid_buffer(f),
+                        cc.grid_buffer_size(),
+                        cc.index_buffer(f),
+                        cc.index_buffer_size(),
+                    );
+                }
+                Some(cc)
+            }
+            Err(e) => {
+                log::warn!("Cluster cull pipeline creation failed: {e} — falling back to all-lights loop");
+                None
+            }
+        };
+
         // 13. Pipeline cache (load from disk if available)
         let pipeline_cache = load_or_create_pipeline_cache(&device)?;
 
@@ -328,6 +359,7 @@ impl VulkanContext {
             texture_registry,
             scene_buffers,
             accel_manager,
+            cluster_cull,
             depth_allocation: Some(depth_allocation),
             depth_image,
             depth_image_view,
@@ -374,6 +406,9 @@ impl Drop for VulkanContext {
                 self.scene_buffers.destroy(&self.device, alloc);
                 if let Some(ref mut accel) = self.accel_manager {
                     accel.destroy(&self.device, alloc);
+                }
+                if let Some(ref mut cc) = self.cluster_cull {
+                    cc.destroy(&self.device, alloc);
                 }
             }
 

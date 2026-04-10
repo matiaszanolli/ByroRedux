@@ -183,6 +183,36 @@ impl VulkanContext {
                 .unwrap_or_else(|e| log::warn!("Failed to upload bone palette: {e}"));
         }
 
+        // ── Cluster light culling (compute dispatch) ─────────────────
+        //
+        // Runs after light + camera uploads, before the render pass.
+        // The compute shader reads lights/camera and writes cluster SSBOs
+        // that the fragment shader reads during the render pass.
+        unsafe {
+            if let Some(ref cc) = self.cluster_cull {
+                cc.dispatch(
+                    &self.device,
+                    cmd,
+                    frame,
+                    self.swapchain_state.extent.width as f32,
+                    self.swapchain_state.extent.height as f32,
+                );
+                // Barrier: compute writes → fragment reads on cluster SSBOs.
+                let barrier = vk::MemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ);
+                self.device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[barrier],
+                    &[],
+                    &[],
+                );
+            }
+        }
+
         // ── Build instance SSBO + draw batches ────────────────────────
         //
         // Each DrawCommand becomes one GpuInstance in the SSBO. Consecutive

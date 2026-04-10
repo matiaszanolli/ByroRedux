@@ -1,0 +1,159 @@
+#version 450
+
+// Clustered light culling compute shader.
+//
+// Divides the view frustum into TILES_X × TILES_Y × SLICES_Z clusters.
+// For each cluster, tests all lights against the cluster's world-space AABB
+// and writes matching light indices into a flat list. The fragment shader
+// reads only its cluster's lights — O(k) per fragment instead of O(N).
+//
+// Dispatch: (TILES_X, TILES_Y, SLICES_Z) = (16, 9, 24) = 3456 workgroups,
+// each with 1 invocation (one cluster per workgroup).
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+// ── Constants ───────────────────────────────────────────────────────
+
+const uint TILES_X = 16;
+const uint TILES_Y = 9;
+const uint SLICES_Z = 24;
+const uint MAX_LIGHTS_PER_CLUSTER = 32;
+const float NEAR = 0.1;
+const float FAR = 10000.0;
+
+// ── Bindings (shared with scene descriptor set 1) ───────────────────
+
+struct GpuLight {
+    vec4 position_radius;
+    vec4 color_type;
+    vec4 direction_angle;
+};
+
+layout(std430, set = 0, binding = 0) readonly buffer LightBuffer {
+    uint lightCount;
+    uint _pad0, _pad1, _pad2;
+    GpuLight lights[];
+};
+
+layout(set = 0, binding = 1) uniform CameraUBO {
+    mat4 viewProj;
+    vec4 cameraPos;
+    vec4 sceneFlags;  // sceneFlags.w is unused; we pack screen dims here
+};
+
+// Cluster grid: per-cluster (offset, count) into the light index list.
+struct ClusterEntry {
+    uint offset;
+    uint count;
+};
+
+layout(std430, set = 0, binding = 2) writeonly buffer ClusterGrid {
+    ClusterEntry clusters[];
+};
+
+// Flat list of light indices, packed contiguously per cluster.
+layout(std430, set = 0, binding = 3) writeonly buffer ClusterLightIndices {
+    uint lightIndices[];
+};
+
+// Screen dimensions passed as a push constant (8 bytes).
+layout(push_constant) uniform PushData {
+    float screenWidth;
+    float screenHeight;
+};
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+// Exponential depth slicing: slice boundaries grow exponentially from
+// near to far, giving more resolution near the camera where precision
+// matters most.
+float sliceDepth(uint slice) {
+    return NEAR * pow(FAR / NEAR, float(slice) / float(SLICES_Z));
+}
+
+// Reconstruct a view-space position from NDC xy and linear depth.
+// We invert the projection to get the frustum corner.
+vec3 screenToView(vec2 screenUV, float depth, mat4 invProj) {
+    vec4 clip = vec4(screenUV * 2.0 - 1.0, 0.0, 1.0);
+    vec4 view = invProj * clip;
+    view /= view.w;
+    // Scale to the desired depth.
+    return view.xyz * (depth / -view.z);
+}
+
+// Test whether a sphere (light) intersects an AABB (cluster).
+bool sphereIntersectsAABB(vec3 center, float radius, vec3 aabbMin, vec3 aabbMax) {
+    // Clamp sphere center to AABB, measure distance.
+    vec3 closest = clamp(center, aabbMin, aabbMax);
+    vec3 diff = center - closest;
+    return dot(diff, diff) <= radius * radius;
+}
+
+// ── Main ────────────────────────────────────────────────────────────
+
+void main() {
+    uint tileX = gl_WorkGroupID.x;
+    uint tileY = gl_WorkGroupID.y;
+    uint sliceZ = gl_WorkGroupID.z;
+    uint clusterIdx = tileX + tileY * TILES_X + sliceZ * TILES_X * TILES_Y;
+
+    // Compute inverse projection for frustum reconstruction.
+    mat4 invProj = inverse(viewProj);
+
+    // Tile boundaries in screen UV space [0,1].
+    float tileMinU = float(tileX) / float(TILES_X);
+    float tileMaxU = float(tileX + 1) / float(TILES_X);
+    float tileMinV = float(tileY) / float(TILES_Y);
+    float tileMaxV = float(tileY + 1) / float(TILES_Y);
+
+    // Depth boundaries for this slice (view space, positive = away from camera).
+    float zNear = sliceDepth(sliceZ);
+    float zFar = sliceDepth(sliceZ + 1);
+
+    // Reconstruct the 8 corners of this cluster in world space.
+    // We use 4 screen corners × 2 depth values.
+    vec3 corners[8];
+    corners[0] = screenToView(vec2(tileMinU, tileMinV), zNear, invProj);
+    corners[1] = screenToView(vec2(tileMaxU, tileMinV), zNear, invProj);
+    corners[2] = screenToView(vec2(tileMinU, tileMaxV), zNear, invProj);
+    corners[3] = screenToView(vec2(tileMaxU, tileMaxV), zNear, invProj);
+    corners[4] = screenToView(vec2(tileMinU, tileMinV), zFar, invProj);
+    corners[5] = screenToView(vec2(tileMaxU, tileMinV), zFar, invProj);
+    corners[6] = screenToView(vec2(tileMinU, tileMaxV), zFar, invProj);
+    corners[7] = screenToView(vec2(tileMaxU, tileMaxV), zFar, invProj);
+
+    // Compute world-space AABB of this cluster.
+    vec3 aabbMin = corners[0];
+    vec3 aabbMax = corners[0];
+    for (int i = 1; i < 8; i++) {
+        aabbMin = min(aabbMin, corners[i]);
+        aabbMax = max(aabbMax, corners[i]);
+    }
+
+    // Test each light against this cluster's AABB.
+    uint count = 0;
+    uint baseOffset = clusterIdx * MAX_LIGHTS_PER_CLUSTER;
+
+    for (uint i = 0; i < lightCount && count < MAX_LIGHTS_PER_CLUSTER; i++) {
+        float lightType = lights[i].color_type.w;
+
+        if (lightType > 1.5) {
+            // Directional light — always affects all clusters.
+            lightIndices[baseOffset + count] = i;
+            count++;
+        } else {
+            // Point/spot light — sphere test.
+            vec3 lightPos = lights[i].position_radius.xyz;
+            float lightRadius = lights[i].position_radius.w;
+
+            if (sphereIntersectsAABB(lightPos, lightRadius, aabbMin, aabbMax)) {
+                lightIndices[baseOffset + count] = i;
+                count++;
+            }
+        }
+    }
+
+    // Write cluster entry.
+    clusters[clusterIdx].offset = baseOffset;
+    clusters[clusterIdx].count = count;
+}

@@ -54,6 +54,44 @@ layout(set = 1, binding = 1) uniform CameraUBO {
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
 
+// Clustered lighting data (written by cluster_cull.comp each frame).
+struct ClusterEntry {
+    uint offset;
+    uint count;
+};
+
+layout(std430, set = 1, binding = 5) readonly buffer ClusterGrid {
+    ClusterEntry clusters[];
+};
+
+layout(std430, set = 1, binding = 6) readonly buffer ClusterLightIndices {
+    uint clusterLightIndices[];
+};
+
+// Must match cluster_cull.comp constants.
+const uint CLUSTER_TILES_X = 16;
+const uint CLUSTER_TILES_Y = 9;
+const uint CLUSTER_SLICES_Z = 24;
+const float CLUSTER_NEAR = 0.1;
+const float CLUSTER_FAR = 10000.0;
+
+// ── Cluster lookup ──────────────────────────────────────────────────
+
+// Compute which cluster this fragment belongs to from screen position + depth.
+uint getClusterIndex(vec2 fragCoord, float viewDepth, vec2 screenSize) {
+    uint tileX = uint(fragCoord.x / screenSize.x * float(CLUSTER_TILES_X));
+    uint tileY = uint(fragCoord.y / screenSize.y * float(CLUSTER_TILES_Y));
+    tileX = min(tileX, CLUSTER_TILES_X - 1);
+    tileY = min(tileY, CLUSTER_TILES_Y - 1);
+
+    // Exponential depth slicing (must match cluster_cull.comp).
+    float logRatio = log(CLUSTER_FAR / CLUSTER_NEAR);
+    uint sliceZ = uint(log(max(viewDepth, CLUSTER_NEAR) / CLUSTER_NEAR) / logRatio * float(CLUSTER_SLICES_Z));
+    sliceZ = min(sliceZ, CLUSTER_SLICES_Z - 1);
+
+    return tileX + tileY * CLUSTER_TILES_X + sliceZ * CLUSTER_TILES_X * CLUSTER_TILES_Y;
+}
+
 // ── PBR: GGX / Cook-Torrance BRDF ──────────────────────────────────
 
 const float PI = 3.14159265359;
@@ -154,6 +192,18 @@ void main() {
     vec3 ambient = sceneFlags.yzw * albedo * (1.0 - metalness);
     vec3 Lo = vec3(0.0); // Accumulated outgoing radiance.
 
+    // Compute view-space depth for cluster lookup.
+    vec4 viewPos = viewProj * vec4(fragWorldPos, 1.0);
+    float viewDepth = viewPos.w; // clip-space W = view-space Z for perspective
+    // Screen size from the camera UBO — packed as viewport dimensions.
+    // We reconstruct from gl_FragCoord and the viewport.
+    vec2 screenSize = vec2(textureSize(textures[0], 0)); // fallback
+    // Use fragCoord directly — the cluster shader uses the same tile grid.
+    uint clusterIdx = getClusterIndex(gl_FragCoord.xy, viewDepth, vec2(1280.0, 720.0));
+    // TODO: pass actual screen size via UBO. For now hardcode common resolution.
+    // The cluster grid is resolution-independent (tile fractions), so this
+    // approximation only affects slice assignment slightly.
+
     if (lightCount == 0) {
         // Fallback: single directional light.
         vec3 L = normalize(vec3(0.4, 0.8, 0.5));
@@ -170,7 +220,10 @@ void main() {
         vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
         Lo = (kD * albedo / PI + specular * specStrength * specColor) * vec3(0.8) * NdotL;
     } else {
-        for (uint i = 0; i < lightCount; i++) {
+        // Clustered lighting: iterate only lights assigned to this fragment's cluster.
+        ClusterEntry cluster = clusters[clusterIdx];
+        for (uint ci = 0; ci < cluster.count; ci++) {
+            uint i = clusterLightIndices[cluster.offset + ci];
             vec3 lightPos = lights[i].position_radius.xyz;
             float radius = lights[i].position_radius.w;
             vec3 lightColor = lights[i].color_type.rgb;

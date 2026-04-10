@@ -254,14 +254,28 @@ impl SceneBuffers {
                 .stage_flags(vk::ShaderStageFlags::VERTEX),
         );
         // Binding 4: instance data SSBO (vertex shader — instanced drawing).
-        // The vertex shader reads model matrix, texture index, and bone offset
-        // per instance via gl_InstanceIndex.
         bindings.push(
             vk::DescriptorSetLayoutBinding::default()
                 .binding(4)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::VERTEX),
+        );
+        // Binding 5: cluster grid SSBO (fragment shader — clustered lighting).
+        bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(5)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        );
+        // Binding 6: cluster light indices SSBO (fragment shader — clustered lighting).
+        bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(6)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         );
         let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
         let descriptor_set_layout = unsafe {
@@ -275,8 +289,8 @@ impl SceneBuffers {
         let mut pool_sizes = vec![
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
-                // 3 SSBOs per frame: lights (binding 0), bones (binding 3), instances (binding 4).
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 3) as u32,
+                // 5 SSBOs per frame: lights (0), bones (3), instances (4), cluster grid (5), light indices (6).
+                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 5) as u32,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::UNIFORM_BUFFER,
@@ -513,9 +527,68 @@ impl SceneBuffers {
         self.instance_buffers[frame_index].mapped_slice_mut()
     }
 
+    /// Get the light buffers (for compute pipeline descriptor writes).
+    pub fn light_buffers(&self) -> &[GpuBuffer] {
+        &self.light_buffers
+    }
+
+    /// Get the camera buffers (for compute pipeline descriptor writes).
+    pub fn camera_buffers(&self) -> &[GpuBuffer] {
+        &self.camera_buffers
+    }
+
+    /// Light buffer size in bytes.
+    pub fn light_buffer_size(&self) -> vk::DeviceSize {
+        (std::mem::size_of::<LightHeader>() + std::mem::size_of::<GpuLight>() * MAX_LIGHTS)
+            as vk::DeviceSize
+    }
+
+    /// Camera buffer size in bytes.
+    pub fn camera_buffer_size(&self) -> vk::DeviceSize {
+        std::mem::size_of::<GpuCamera>() as vk::DeviceSize
+    }
+
     /// Get the descriptor set for the current frame-in-flight.
     pub fn descriptor_set(&self, frame_index: usize) -> vk::DescriptorSet {
         self.descriptor_sets[frame_index]
+    }
+
+    /// Write cluster buffer references into the scene descriptor set for a given frame.
+    /// Called once during init after the cluster cull pipeline is created.
+    pub fn write_cluster_buffers(
+        &self,
+        device: &ash::Device,
+        frame_index: usize,
+        grid_buffer: vk::Buffer,
+        grid_size: vk::DeviceSize,
+        index_buffer: vk::Buffer,
+        index_size: vk::DeviceSize,
+    ) {
+        let grid_info = [vk::DescriptorBufferInfo {
+            buffer: grid_buffer,
+            offset: 0,
+            range: grid_size,
+        }];
+        let index_info = [vk::DescriptorBufferInfo {
+            buffer: index_buffer,
+            offset: 0,
+            range: index_size,
+        }];
+        let writes = [
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_sets[frame_index])
+                .dst_binding(5)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&grid_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_sets[frame_index])
+                .dst_binding(6)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&index_info),
+        ];
+        unsafe {
+            device.update_descriptor_sets(&writes, &[]);
+        }
     }
 
     /// Update the TLAS acceleration structure in the descriptor set for a given frame.

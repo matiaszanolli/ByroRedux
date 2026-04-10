@@ -1,6 +1,7 @@
 pub mod acceleration;
 pub mod allocator;
 pub mod buffer;
+pub mod compute;
 pub mod context;
 pub mod dds;
 pub mod debug;
