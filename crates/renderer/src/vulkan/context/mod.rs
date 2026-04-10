@@ -50,6 +50,8 @@ pub struct DrawCommand {
 pub struct VulkanContext {
     // Ordered for drop safety — later fields are destroyed first.
     pub current_frame: usize,
+    /// Monotonic frame counter for temporal effects (jitter seed, accumulation).
+    pub frame_counter: u32,
 
     frame_sync: FrameSync,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -369,6 +371,7 @@ impl VulkanContext {
             command_buffers,
             frame_sync,
             current_frame: 0,
+            frame_counter: 0,
         })
     }
 

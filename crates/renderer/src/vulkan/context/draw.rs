@@ -166,7 +166,8 @@ impl VulkanContext {
                 [vp[8], vp[9], vp[10], vp[11]],
                 [vp[12], vp[13], vp[14], vp[15]],
             ],
-            position: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
+            // w = monotonic frame counter for temporal jitter seed in shadow rays.
+            position: [camera_pos[0], camera_pos[1], camera_pos[2], self.frame_counter as f32],
             flags: [
                 rt_flag,
                 ambient_color[0],
@@ -499,6 +500,7 @@ impl VulkanContext {
         };
 
         self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
+        self.frame_counter = self.frame_counter.wrapping_add(1);
 
         Ok(suboptimal || present_suboptimal)
     }

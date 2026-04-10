@@ -118,7 +118,7 @@ pub struct GpuLight {
 pub struct GpuCamera {
     /// Combined view-projection matrix (column-major).
     pub view_proj: [[f32; 4]; 4],
-    /// xyz = world position, w = unused.
+    /// xyz = world position, w = frame counter (for temporal jitter seed).
     pub position: [f32; 4],
     /// x = RT enabled (1.0), y/z/w = ambient light color (RGB).
     pub flags: [f32; 4],

@@ -81,6 +81,34 @@ const uint CLUSTER_SLICES_Z = 24;
 const float CLUSTER_NEAR = 0.1;
 const float CLUSTER_FAR = 10000.0;
 
+const float PI = 3.14159265359;
+
+// ── Noise for stochastic shadow rays ────────────────────────────────
+
+// Interleaved gradient noise (Jimenez 2014) — excellent spatial distribution,
+// cheap to compute, and when seeded with frame counter gives temporally
+// varying patterns that average to smooth penumbra over a few frames.
+float interleavedGradientNoise(vec2 fragCoord, float frameCount) {
+    vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
+    float shifted = fract(magic.z * fract(dot(fragCoord + frameCount * vec2(5.588238, 5.588238), magic.xy)));
+    return shifted;
+}
+
+// Generate a 2D sample on a unit disk using concentric mapping.
+// t1, t2 in [0,1] → (x,y) uniformly distributed on unit disk.
+vec2 concentricDiskSample(float t1, float t2) {
+    float r = sqrt(t1);
+    float theta = 2.0 * PI * t2;
+    return vec2(r * cos(theta), r * sin(theta));
+}
+
+// Build an orthonormal basis from a direction vector (for jittering the ray).
+void buildOrthoBasis(vec3 dir, out vec3 tangent, out vec3 bitangent) {
+    vec3 up = abs(dir.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    tangent = normalize(cross(up, dir));
+    bitangent = cross(dir, tangent);
+}
+
 // ── Cluster lookup ──────────────────────────────────────────────────
 
 // Compute which cluster this fragment belongs to from screen position + depth.
@@ -99,8 +127,6 @@ uint getClusterIndex(vec2 fragCoord, float viewDepth, vec2 screenSize) {
 }
 
 // ── PBR: GGX / Cook-Torrance BRDF ──────────────────────────────────
-
-const float PI = 3.14159265359;
 
 // Normal Distribution Function (GGX/Trowbridge-Reitz).
 float distributionGGX(float NdotH, float roughness) {
@@ -274,18 +300,46 @@ void main() {
                 continue;
             }
 
-            // RT shadow ray.
+            // RT soft shadow ray: stochastic 1-SPP with penumbra.
+            //
+            // Jitter the ray origin on a disk perpendicular to the light
+            // direction, scaled by the light's angular size as seen from the
+            // fragment. This produces contact-hardening shadows: close to
+            // the occluder the penumbra is tight, far away it's wide.
+            //
+            // At 200+ FPS the temporal variation from frame-to-frame noise
+            // naturally integrates into smooth soft shadows for the human eye.
             float shadow = 1.0;
             if (rtEnabled) {
+                // Penumbra size from light radius and distance.
+                // Larger lights / closer lights = wider penumbra.
+                float penumbraScale = (lightType < 1.5)
+                    ? radius * 0.015  // point/spot: scale by light radius
+                    : 2.0;            // directional: fixed penumbra width
+
+                // Per-fragment, per-light, per-frame noise.
+                float frameCount = cameraPos.w;  // monotonic frame counter
+                float noise1 = interleavedGradientNoise(gl_FragCoord.xy, frameCount + float(i) * 7.0);
+                float noise2 = interleavedGradientNoise(gl_FragCoord.xy + vec2(113.5, 247.3), frameCount + float(i) * 13.0);
+
+                // Jitter on a disk perpendicular to L.
+                vec2 diskSample = concentricDiskSample(noise1, noise2);
+                vec3 T, B;
+                buildOrthoBasis(L, T, B);
+                vec3 jitter = (T * diskSample.x + B * diskSample.y) * penumbraScale;
+
+                vec3 rayOrigin = fragWorldPos + N * 0.05 + jitter;
+                vec3 rayDir = normalize(L - jitter / max(dist, 1.0));
+
                 rayQueryEXT rayQuery;
                 rayQueryInitializeEXT(
                     rayQuery,
                     topLevelAS,
                     gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
                     0xFF,
-                    fragWorldPos + N * 0.05,
+                    rayOrigin,
                     0.001,
-                    L,
+                    rayDir,
                     dist - 0.1
                 );
                 rayQueryProceedEXT(rayQuery);
