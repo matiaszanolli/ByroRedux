@@ -143,6 +143,10 @@ pub struct ImportedMesh {
     pub parent_node: Option<usize>,
     /// Skeletal skinning data. `None` for rigid meshes.
     pub skin: Option<ImportedSkin>,
+    /// Depth test enabled (from NiZBufferProperty). Default: true.
+    pub z_test: bool,
+    /// Depth write enabled (from NiZBufferProperty). Default: true.
+    pub z_write: bool,
 }
 
 /// Per-bone binding for a skinned mesh. Bone space is Y-up (converted

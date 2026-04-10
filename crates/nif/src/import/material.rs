@@ -47,6 +47,10 @@ pub(super) struct MaterialInfo {
     pub alpha: f32,
     pub env_map_scale: f32,
     pub has_material_data: bool,
+    /// Depth test enabled (from NiZBufferProperty). Default: true.
+    pub z_test: bool,
+    /// Depth write enabled (from NiZBufferProperty). Default: true.
+    pub z_write: bool,
 }
 
 impl Default for MaterialInfo {
@@ -69,6 +73,8 @@ impl Default for MaterialInfo {
             alpha: 1.0,
             env_map_scale: 1.0,
             has_material_data: false,
+            z_test: true,
+            z_write: true,
         }
     }
 }
@@ -185,6 +191,12 @@ pub(super) fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> Mat
             if let Some(alpha) = scene.get_as::<NiAlphaProperty>(idx) {
                 apply_alpha_flags(&mut info, alpha);
             }
+        }
+
+        // NiZBufferProperty — depth test/write mode.
+        if let Some(zbuf) = scene.get_as::<crate::blocks::properties::NiZBufferProperty>(idx) {
+            info.z_test = zbuf.z_test_enabled;
+            info.z_write = zbuf.z_write_enabled;
         }
 
         // NiMaterialProperty — capture specular/emissive/shininess/alpha.

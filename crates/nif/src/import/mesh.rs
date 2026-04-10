@@ -125,6 +125,8 @@ pub(super) fn extract_mesh(
         env_map_scale: mat.env_map_scale,
         parent_node: None,
         skin,
+        z_test: mat.z_test,
+        z_write: mat.z_write,
     })
 }
 
@@ -286,6 +288,8 @@ pub(super) fn extract_bs_tri_shape(
         env_map_scale,
         parent_node: None,
         skin,
+        z_test: true,
+        z_write: true,
     })
 }
 
