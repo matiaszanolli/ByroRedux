@@ -1,33 +1,28 @@
-//! Debug-only thread-local lock tracker for detecting same-thread deadlocks.
+//! Thread-local lock tracker for detecting same-thread deadlocks.
 //!
 //! `std::sync::RwLock` is not reentrant: acquiring a write lock while holding
 //! a read lock on the same thread deadlocks silently. This module catches
 //! that at the point of acquisition with a clear panic message.
 //!
-//! All functions are no-ops in release builds (`cfg(debug_assertions)`).
+//! Active in both debug and release builds. The per-acquisition cost is a
+//! thread-local HashMap lookup — negligible compared to the RwLock itself.
 
-#[cfg(debug_assertions)]
 use std::any::TypeId;
-#[cfg(debug_assertions)]
 use std::cell::RefCell;
-#[cfg(debug_assertions)]
 use std::collections::HashMap;
 
-#[cfg(debug_assertions)]
 #[derive(Debug, Clone, Copy)]
 struct LockState {
     read_count: u32,
     has_write: bool,
 }
 
-#[cfg(debug_assertions)]
 thread_local! {
     static LOCKS: RefCell<HashMap<TypeId, LockState>> = RefCell::new(HashMap::new());
 }
 
 /// Record a read lock acquisition. Panics if a write lock is already held
 /// on this type from the same thread (would deadlock).
-#[cfg(debug_assertions)]
 pub(crate) fn track_read(type_id: TypeId, type_name: &str) {
     LOCKS.with(|locks| {
         let mut map = locks.borrow_mut();
@@ -48,7 +43,6 @@ pub(crate) fn track_read(type_id: TypeId, type_name: &str) {
 
 /// Record a write lock acquisition. Panics if any lock (read or write) is
 /// already held on this type from the same thread (would deadlock).
-#[cfg(debug_assertions)]
 pub(crate) fn track_write(type_id: TypeId, type_name: &str) {
     LOCKS.with(|locks| {
         let mut map = locks.borrow_mut();
@@ -75,7 +69,6 @@ pub(crate) fn track_write(type_id: TypeId, type_name: &str) {
 }
 
 /// Remove a read lock from tracking.
-#[cfg(debug_assertions)]
 pub(crate) fn untrack_read(type_id: TypeId) {
     LOCKS.with(|locks| {
         let mut map = locks.borrow_mut();
@@ -89,7 +82,6 @@ pub(crate) fn untrack_read(type_id: TypeId) {
 }
 
 /// Remove a write lock from tracking.
-#[cfg(debug_assertions)]
 pub(crate) fn untrack_write(type_id: TypeId) {
     LOCKS.with(|locks| {
         let mut map = locks.borrow_mut();
@@ -116,13 +108,11 @@ pub(crate) fn untrack_write(type_id: TypeId) {
 /// `defuse()` to transfer ownership of the tracker row — the `Drop`
 /// impl of `QueryRead` / `ResourceRead` on the real guard will take
 /// over. See issue #137.
-#[cfg(debug_assertions)]
 pub(crate) struct TrackedRead {
     type_id: TypeId,
     armed: bool,
 }
 
-#[cfg(debug_assertions)]
 impl TrackedRead {
     #[inline]
     pub(crate) fn new(type_id: TypeId, type_name: &str) -> Self {
@@ -141,7 +131,6 @@ impl TrackedRead {
     }
 }
 
-#[cfg(debug_assertions)]
 impl Drop for TrackedRead {
     fn drop(&mut self) {
         if self.armed {
@@ -151,13 +140,11 @@ impl Drop for TrackedRead {
 }
 
 /// RAII scope guard for write-lock intents. Mirror of [`TrackedRead`].
-#[cfg(debug_assertions)]
 pub(crate) struct TrackedWrite {
     type_id: TypeId,
     armed: bool,
 }
 
-#[cfg(debug_assertions)]
 impl TrackedWrite {
     #[inline]
     pub(crate) fn new(type_id: TypeId, type_name: &str) -> Self {
@@ -174,7 +161,6 @@ impl TrackedWrite {
     }
 }
 
-#[cfg(debug_assertions)]
 impl Drop for TrackedWrite {
     fn drop(&mut self) {
         if self.armed {
@@ -186,63 +172,9 @@ impl Drop for TrackedWrite {
 /// Test-only helper: returns `true` if the thread-local tracker map
 /// has no live entries. Used by the #137 regression test to verify
 /// that a panicked lock acquisition leaves no stale rows behind.
-#[cfg(all(test, debug_assertions))]
+#[cfg(test)]
 pub(crate) fn is_clean() -> bool {
     LOCKS.with(|locks| locks.borrow().is_empty())
-}
-
-// Release-build no-ops. The standalone `track_*` / `untrack_*`
-// functions exist only to satisfy the debug-build public API surface
-// — in release the `TrackedRead` / `TrackedWrite` scope guards are
-// ZSTs with inline no-op methods, so the functions themselves have
-// no callers. `#[allow(dead_code)]` keeps the symbol available for
-// any external crate that picked them up via `pub(crate)` in debug,
-// without warning during release builds.
-
-#[cfg(not(debug_assertions))]
-#[inline(always)]
-#[allow(dead_code)]
-pub(crate) fn track_read(_type_id: std::any::TypeId, _type_name: &str) {}
-
-#[cfg(not(debug_assertions))]
-#[inline(always)]
-#[allow(dead_code)]
-pub(crate) fn track_write(_type_id: std::any::TypeId, _type_name: &str) {}
-
-#[cfg(not(debug_assertions))]
-#[inline(always)]
-#[allow(dead_code)]
-pub(crate) fn untrack_read(_type_id: std::any::TypeId) {}
-
-#[cfg(not(debug_assertions))]
-#[inline(always)]
-#[allow(dead_code)]
-pub(crate) fn untrack_write(_type_id: std::any::TypeId) {}
-
-#[cfg(not(debug_assertions))]
-pub(crate) struct TrackedRead;
-
-#[cfg(not(debug_assertions))]
-impl TrackedRead {
-    #[inline(always)]
-    pub(crate) fn new(_type_id: std::any::TypeId, _type_name: &str) -> Self {
-        Self
-    }
-    #[inline(always)]
-    pub(crate) fn defuse(self) {}
-}
-
-#[cfg(not(debug_assertions))]
-pub(crate) struct TrackedWrite;
-
-#[cfg(not(debug_assertions))]
-impl TrackedWrite {
-    #[inline(always)]
-    pub(crate) fn new(_type_id: std::any::TypeId, _type_name: &str) -> Self {
-        Self
-    }
-    #[inline(always)]
-    pub(crate) fn defuse(self) {}
 }
 
 #[cfg(test)]

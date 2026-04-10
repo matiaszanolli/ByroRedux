@@ -62,7 +62,11 @@ impl TextureRegistry {
         // Descriptor set layout: binding 0 = sampler2D[max_textures].
         // PARTIALLY_BOUND allows uninitialized array elements (the shader
         // only accesses indices that correspond to loaded textures).
-        let binding_flags = [vk::DescriptorBindingFlags::PARTIALLY_BOUND];
+        // UPDATE_AFTER_BIND allows writing new texture descriptors to a set
+        // while a prior frame's command buffer still references it — safe
+        // because only previously-unbound array indices are written.
+        let binding_flags = [vk::DescriptorBindingFlags::PARTIALLY_BOUND
+            | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND];
         let mut binding_flags_info =
             vk::DescriptorSetLayoutBindingFlagsCreateInfo::default()
                 .binding_flags(&binding_flags);
@@ -74,6 +78,7 @@ impl TextureRegistry {
             .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
         let layout_info = vk::DescriptorSetLayoutCreateInfo::default()
+            .flags(vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL)
             .bindings(std::slice::from_ref(&binding))
             .push_next(&mut binding_flags_info);
 
@@ -89,6 +94,7 @@ impl TextureRegistry {
             descriptor_count: max_textures * MAX_FRAMES_IN_FLIGHT as u32,
         };
         let pool_info = vk::DescriptorPoolCreateInfo::default()
+            .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
             .pool_sizes(std::slice::from_ref(&pool_size))
             .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
 
@@ -357,12 +363,13 @@ impl TextureRegistry {
             device.destroy_descriptor_pool(self.descriptor_pool, None);
         }
 
-        // Recreate pool + sets.
+        // Recreate pool + sets (must match new() flags: UPDATE_AFTER_BIND).
         let pool_size = vk::DescriptorPoolSize {
             ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
             descriptor_count: self.max_textures * MAX_FRAMES_IN_FLIGHT as u32,
         };
         let pool_info = vk::DescriptorPoolCreateInfo::default()
+            .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
             .pool_sizes(std::slice::from_ref(&pool_size))
             .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
         self.descriptor_pool = unsafe {

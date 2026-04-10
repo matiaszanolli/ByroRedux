@@ -211,7 +211,8 @@ pub fn create_logical_device(
         .buffer_device_address(caps.ray_query_supported)
         .shader_sampled_image_array_non_uniform_indexing(true)
         .runtime_descriptor_array(true)
-        .descriptor_binding_partially_bound(true);
+        .descriptor_binding_partially_bound(true)
+        .descriptor_binding_sampled_image_update_after_bind(true);
 
     let mut accel_features = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
         .acceleration_structure(caps.ray_query_supported);

@@ -51,6 +51,22 @@ impl SsaoPipeline {
         width: u32,
         height: u32,
     ) -> Result<Self> {
+        // Inner function does the actual work. On error, the caller
+        // cleans up any resources that were partially created.
+        let result = Self::new_inner(device, allocator, depth_image_view, width, height);
+        if let Err(ref e) = result {
+            log::debug!("SSAO pipeline creation failed at: {e}");
+        }
+        result
+    }
+
+    fn new_inner(
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        depth_image_view: vk::ImageView,
+        width: u32,
+        height: u32,
+    ) -> Result<Self> {
         let max_frames = 2;
 
         // Create AO output image (R8, full resolution).
@@ -76,26 +92,68 @@ impl SsaoPipeline {
                 .context("Failed to create AO image")?
         };
 
-        let requirements = unsafe { device.get_image_memory_requirements(ao_image) };
-        let ao_allocation = allocator
+        // From here on, any error must clean up ao_image. We build a
+        // partially-initialized Self and call destroy() on error.
+        let ao_allocation = match allocator
             .lock()
             .expect("allocator lock")
             .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
                 name: "ssao_output",
-                requirements,
+                requirements: unsafe { device.get_image_memory_requirements(ao_image) },
                 location: gpu_allocator::MemoryLocation::GpuOnly,
                 linear: false,
                 allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
             })
-            .context("Failed to allocate AO image memory")?;
+            .context("Failed to allocate AO image memory")
+        {
+            Ok(a) => a,
+            Err(e) => {
+                unsafe { device.destroy_image(ao_image, None) };
+                return Err(e);
+            }
+        };
 
-        unsafe {
-            device
-                .bind_image_memory(ao_image, ao_allocation.memory(), ao_allocation.offset())
-                .context("Failed to bind AO image memory")?;
+        if let Err(e) = unsafe {
+            device.bind_image_memory(ao_image, ao_allocation.memory(), ao_allocation.offset())
+        } {
+            allocator.lock().expect("allocator lock").free(ao_allocation).ok();
+            unsafe { device.destroy_image(ao_image, None) };
+            return Err(anyhow::anyhow!("Failed to bind AO image memory: {e}"));
         }
 
-        let ao_image_view = unsafe {
+        // Build a partially-valid Self so we can use destroy() for cleanup.
+        // Fields that haven't been created yet use null handles — destroy()
+        // calls vkDestroy* on null which is always a no-op per Vulkan spec.
+        let mut partial = Self {
+            pipeline: vk::Pipeline::null(),
+            pipeline_layout: vk::PipelineLayout::null(),
+            descriptor_set_layout: vk::DescriptorSetLayout::null(),
+            descriptor_pool: vk::DescriptorPool::null(),
+            descriptor_sets: Vec::new(),
+            param_buffers: Vec::new(),
+            ao_image,
+            ao_image_view: vk::ImageView::null(),
+            ao_allocation: Some(ao_allocation),
+            ao_sampler: vk::Sampler::null(),
+            depth_sampler: vk::Sampler::null(),
+            width,
+            height,
+        };
+
+        // Macro to clean up partial state on error and return.
+        macro_rules! try_or_cleanup {
+            ($expr:expr) => {
+                match $expr {
+                    Ok(v) => v,
+                    Err(e) => {
+                        unsafe { partial.destroy(device, allocator) };
+                        return Err(e.into());
+                    }
+                }
+            };
+        }
+
+        partial.ao_image_view = try_or_cleanup!(unsafe {
             device
                 .create_image_view(
                     &vk::ImageViewCreateInfo::default()
@@ -111,11 +169,11 @@ impl SsaoPipeline {
                         }),
                     None,
                 )
-                .context("Failed to create AO image view")?
-        };
+                .context("Failed to create AO image view")
+        });
 
         // Samplers.
-        let depth_sampler = unsafe {
+        partial.depth_sampler = try_or_cleanup!(unsafe {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -125,10 +183,10 @@ impl SsaoPipeline {
                         .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE),
                     None,
                 )
-                .context("depth sampler")?
-        };
+                .context("depth sampler")
+        });
 
-        let ao_sampler = unsafe {
+        partial.ao_sampler = try_or_cleanup!(unsafe {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -138,81 +196,87 @@ impl SsaoPipeline {
                         .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE),
                     None,
                 )
-                .context("ao sampler")?
-        };
+                .context("ao sampler")
+        });
 
         // Parameter UBOs.
         let param_size = std::mem::size_of::<SsaoParams>() as vk::DeviceSize;
-        let mut param_buffers = Vec::with_capacity(max_frames);
         for _ in 0..max_frames {
-            param_buffers.push(GpuBuffer::create_host_visible(
+            let buf = try_or_cleanup!(GpuBuffer::create_host_visible(
                 device,
                 allocator,
                 param_size,
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
-            )?);
+            ));
+            partial.param_buffers.push(buf);
         }
 
         // Descriptor set layout.
         let bindings = [
-            // binding 0: depth texture (sampled)
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            // binding 1: AO output (storage image)
             vk::DescriptorSetLayoutBinding::default()
                 .binding(1)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            // binding 2: SSAO params UBO
             vk::DescriptorSetLayoutBinding::default()
                 .binding(2)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
-        let layout_info =
-            vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
-        let descriptor_set_layout = unsafe {
+        partial.descriptor_set_layout = try_or_cleanup!(unsafe {
             device
-                .create_descriptor_set_layout(&layout_info, None)
-                .context("SSAO descriptor set layout")?
-        };
+                .create_descriptor_set_layout(
+                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
+                    None,
+                )
+                .context("SSAO descriptor set layout")
+        });
 
-        // Pipeline layout (no push constants).
-        let pipeline_layout = unsafe {
+        partial.pipeline_layout = try_or_cleanup!(unsafe {
             device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default()
-                        .set_layouts(std::slice::from_ref(&descriptor_set_layout)),
+                        .set_layouts(std::slice::from_ref(&partial.descriptor_set_layout)),
                     None,
                 )
-                .context("SSAO pipeline layout")?
-        };
+                .context("SSAO pipeline layout")
+        });
 
         // Compute pipeline.
         let comp_spv = include_bytes!("../../shaders/ssao.comp.spv");
-        let shader_module = super::pipeline::load_shader_module(device, comp_spv)?;
+        let shader_module = try_or_cleanup!(super::pipeline::load_shader_module(device, comp_spv));
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(shader_module)
             .name(c"main");
-        let pipeline = unsafe {
+        partial.pipeline = match unsafe {
             device
                 .create_compute_pipelines(
                     vk::PipelineCache::null(),
                     &[vk::ComputePipelineCreateInfo::default()
                         .stage(stage)
-                        .layout(pipeline_layout)],
+                        .layout(partial.pipeline_layout)],
                     None,
                 )
                 .map_err(|(_, e)| e)
-                .context("SSAO compute pipeline")?[0]
+                .context("SSAO compute pipeline")
+        } {
+            Ok(pipelines) => {
+                unsafe { device.destroy_shader_module(shader_module, None) };
+                pipelines[0]
+            }
+            Err(e) => {
+                unsafe { device.destroy_shader_module(shader_module, None) };
+                unsafe { partial.destroy(device, allocator) };
+                return Err(e);
+            }
         };
-        unsafe { device.destroy_shader_module(shader_module, None) };
 
         // Descriptor pool + sets.
         let pool_sizes = [
@@ -229,53 +293,55 @@ impl SsaoPipeline {
                 descriptor_count: max_frames as u32,
             },
         ];
-        let pool_info = vk::DescriptorPoolCreateInfo::default()
-            .pool_sizes(&pool_sizes)
-            .max_sets(max_frames as u32);
-        let descriptor_pool = unsafe {
+        partial.descriptor_pool = try_or_cleanup!(unsafe {
             device
-                .create_descriptor_pool(&pool_info, None)
-                .context("SSAO descriptor pool")?
-        };
+                .create_descriptor_pool(
+                    &vk::DescriptorPoolCreateInfo::default()
+                        .pool_sizes(&pool_sizes)
+                        .max_sets(max_frames as u32),
+                    None,
+                )
+                .context("SSAO descriptor pool")
+        });
 
-        let layouts = vec![descriptor_set_layout; max_frames];
-        let descriptor_sets = unsafe {
+        let layouts = vec![partial.descriptor_set_layout; max_frames];
+        partial.descriptor_sets = try_or_cleanup!(unsafe {
             device
                 .allocate_descriptor_sets(
                     &vk::DescriptorSetAllocateInfo::default()
-                        .descriptor_pool(descriptor_pool)
+                        .descriptor_pool(partial.descriptor_pool)
                         .set_layouts(&layouts),
                 )
-                .context("SSAO descriptor sets")?
-        };
+                .context("SSAO descriptor sets")
+        });
 
         // Write descriptor sets.
         for i in 0..max_frames {
             let depth_info = [vk::DescriptorImageInfo::default()
-                .sampler(depth_sampler)
+                .sampler(partial.depth_sampler)
                 .image_view(depth_image_view)
                 .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
             let ao_info = [vk::DescriptorImageInfo::default()
-                .image_view(ao_image_view)
+                .image_view(partial.ao_image_view)
                 .image_layout(vk::ImageLayout::GENERAL)];
             let param_info = [vk::DescriptorBufferInfo {
-                buffer: param_buffers[i].buffer,
+                buffer: partial.param_buffers[i].buffer,
                 offset: 0,
                 range: param_size,
             }];
             let writes = [
                 vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[i])
+                    .dst_set(partial.descriptor_sets[i])
                     .dst_binding(0)
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .image_info(&depth_info),
                 vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[i])
+                    .dst_set(partial.descriptor_sets[i])
                     .dst_binding(1)
                     .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                     .image_info(&ao_info),
                 vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[i])
+                    .dst_set(partial.descriptor_sets[i])
                     .dst_binding(2)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .buffer_info(&param_info),
@@ -285,21 +351,7 @@ impl SsaoPipeline {
 
         log::info!("SSAO pipeline created: {}x{}", width, height);
 
-        Ok(Self {
-            pipeline,
-            pipeline_layout,
-            descriptor_set_layout,
-            descriptor_pool,
-            descriptor_sets,
-            param_buffers,
-            ao_image,
-            ao_image_view,
-            ao_allocation: Some(ao_allocation),
-            ao_sampler,
-            depth_sampler,
-            width,
-            height,
-        })
+        Ok(partial)
     }
 
     /// Transition the AO image from UNDEFINED to SHADER_READ_ONLY_OPTIMAL

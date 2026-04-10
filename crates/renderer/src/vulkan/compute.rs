@@ -56,106 +56,137 @@ impl ClusterCullPipeline {
         light_buf_size: vk::DeviceSize,
         camera_buf_size: vk::DeviceSize,
     ) -> Result<Self> {
-        // Buffer sizes.
         let grid_size =
             (std::mem::size_of::<ClusterEntry>() * TOTAL_CLUSTERS as usize) as vk::DeviceSize;
         let index_list_size = (std::mem::size_of::<u32>()
             * TOTAL_CLUSTERS as usize
             * MAX_LIGHTS_PER_CLUSTER as usize) as vk::DeviceSize;
 
+        // Build a partially-initialized struct so we can use destroy() for
+        // cleanup on error. Null handles are safe — vkDestroy* is a no-op
+        // on VK_NULL_HANDLE, and GpuBuffer::destroy skips null buffers.
+        let mut partial = Self {
+            pipeline: vk::Pipeline::null(),
+            pipeline_layout: vk::PipelineLayout::null(),
+            descriptor_set_layout: vk::DescriptorSetLayout::null(),
+            descriptor_pool: vk::DescriptorPool::null(),
+            descriptor_sets: Vec::new(),
+            cluster_grid_buffers: Vec::new(),
+            light_index_buffers: Vec::new(),
+            scene_cluster_grid_buffers: Vec::new(),
+            scene_light_index_buffers: Vec::new(),
+        };
+
+        macro_rules! try_or_cleanup {
+            ($expr:expr) => {
+                match $expr {
+                    Ok(v) => v,
+                    Err(e) => {
+                        unsafe { partial.destroy(device, allocator) };
+                        return Err(e.into());
+                    }
+                }
+            };
+        }
+
         // Create per-frame buffers.
-        let mut cluster_grid_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let mut light_index_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            cluster_grid_buffers.push(GpuBuffer::create_device_local_uninit(
-                device,
-                allocator,
-                grid_size,
-                vk::BufferUsageFlags::STORAGE_BUFFER,
-            )?);
-            light_index_buffers.push(GpuBuffer::create_device_local_uninit(
-                device,
-                allocator,
-                index_list_size,
-                vk::BufferUsageFlags::STORAGE_BUFFER,
-            )?);
+            partial.cluster_grid_buffers.push(try_or_cleanup!(
+                GpuBuffer::create_device_local_uninit(
+                    device,
+                    allocator,
+                    grid_size,
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                )
+            ));
+            partial.light_index_buffers.push(try_or_cleanup!(
+                GpuBuffer::create_device_local_uninit(
+                    device,
+                    allocator,
+                    index_list_size,
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                )
+            ));
         }
 
         // Compute descriptor set layout.
         let bindings = [
-            // binding 0: lights SSBO (read)
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            // binding 1: camera UBO (read)
             vk::DescriptorSetLayoutBinding::default()
                 .binding(1)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            // binding 2: cluster grid SSBO (write)
             vk::DescriptorSetLayoutBinding::default()
                 .binding(2)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            // binding 3: light indices SSBO (write)
             vk::DescriptorSetLayoutBinding::default()
                 .binding(3)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
-        let layout_info =
-            vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
-        let descriptor_set_layout = unsafe {
+        partial.descriptor_set_layout = try_or_cleanup!(unsafe {
             device
-                .create_descriptor_set_layout(&layout_info, None)
-                .context("Failed to create cluster cull descriptor set layout")?
-        };
+                .create_descriptor_set_layout(
+                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
+                    None,
+                )
+                .context("Failed to create cluster cull descriptor set layout")
+        });
 
-        // No push constants — screen dimensions are in the camera UBO.
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
-            .set_layouts(std::slice::from_ref(&descriptor_set_layout));
-        let pipeline_layout = unsafe {
+        partial.pipeline_layout = try_or_cleanup!(unsafe {
             device
-                .create_pipeline_layout(&pipeline_layout_info, None)
-                .context("Failed to create cluster cull pipeline layout")?
-        };
+                .create_pipeline_layout(
+                    &vk::PipelineLayoutCreateInfo::default()
+                        .set_layouts(std::slice::from_ref(&partial.descriptor_set_layout)),
+                    None,
+                )
+                .context("Failed to create cluster cull pipeline layout")
+        });
 
         // Load compute shader.
         let comp_spv = include_bytes!("../../shaders/cluster_cull.comp.spv");
-        let shader_module = super::pipeline::load_shader_module(device, comp_spv)?;
-        let entry_point = c"main";
+        let shader_module = try_or_cleanup!(super::pipeline::load_shader_module(device, comp_spv));
 
-        let stage_info = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::COMPUTE)
-            .module(shader_module)
-            .name(entry_point);
-
-        let compute_info = vk::ComputePipelineCreateInfo::default()
-            .stage(stage_info)
-            .layout(pipeline_layout);
-
-        let pipeline = unsafe {
+        partial.pipeline = match unsafe {
             device
-                .create_compute_pipelines(vk::PipelineCache::null(), &[compute_info], None)
+                .create_compute_pipelines(
+                    vk::PipelineCache::null(),
+                    &[vk::ComputePipelineCreateInfo::default()
+                        .stage(
+                            vk::PipelineShaderStageCreateInfo::default()
+                                .stage(vk::ShaderStageFlags::COMPUTE)
+                                .module(shader_module)
+                                .name(c"main"),
+                        )
+                        .layout(partial.pipeline_layout)],
+                    None,
+                )
                 .map_err(|(_, e)| e)
-                .context("Failed to create cluster cull compute pipeline")?[0]
+                .context("Failed to create cluster cull compute pipeline")
+        } {
+            Ok(pipelines) => {
+                unsafe { device.destroy_shader_module(shader_module, None) };
+                pipelines[0]
+            }
+            Err(e) => {
+                unsafe { device.destroy_shader_module(shader_module, None) };
+                unsafe { partial.destroy(device, allocator) };
+                return Err(e);
+            }
         };
-
-        // Shader module no longer needed after pipeline creation.
-        unsafe {
-            device.destroy_shader_module(shader_module, None);
-        }
 
         // Descriptor pool + sets.
         let pool_sizes = [
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
-                // 3 SSBOs per frame × 2 frames (lights, grid, indices).
                 descriptor_count: (MAX_FRAMES_IN_FLIGHT * 3) as u32,
             },
             vk::DescriptorPoolSize {
@@ -163,24 +194,27 @@ impl ClusterCullPipeline {
                 descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
             },
         ];
-        let pool_info = vk::DescriptorPoolCreateInfo::default()
-            .pool_sizes(&pool_sizes)
-            .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
-        let descriptor_pool = unsafe {
+        partial.descriptor_pool = try_or_cleanup!(unsafe {
             device
-                .create_descriptor_pool(&pool_info, None)
-                .context("Failed to create cluster cull descriptor pool")?
-        };
+                .create_descriptor_pool(
+                    &vk::DescriptorPoolCreateInfo::default()
+                        .pool_sizes(&pool_sizes)
+                        .max_sets(MAX_FRAMES_IN_FLIGHT as u32),
+                    None,
+                )
+                .context("Failed to create cluster cull descriptor pool")
+        });
 
-        let layouts = vec![descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
-        let alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(descriptor_pool)
-            .set_layouts(&layouts);
-        let descriptor_sets = unsafe {
+        let layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
+        partial.descriptor_sets = try_or_cleanup!(unsafe {
             device
-                .allocate_descriptor_sets(&alloc_info)
-                .context("Failed to allocate cluster cull descriptor sets")?
-        };
+                .allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(partial.descriptor_pool)
+                        .set_layouts(&layouts),
+                )
+                .context("Failed to allocate cluster cull descriptor sets")
+        });
 
         // Write descriptor sets.
         for i in 0..MAX_FRAMES_IN_FLIGHT {
@@ -195,47 +229,45 @@ impl ClusterCullPipeline {
                 range: camera_buf_size,
             }];
             let grid_info = [vk::DescriptorBufferInfo {
-                buffer: cluster_grid_buffers[i].buffer,
+                buffer: partial.cluster_grid_buffers[i].buffer,
                 offset: 0,
                 range: grid_size,
             }];
             let index_info = [vk::DescriptorBufferInfo {
-                buffer: light_index_buffers[i].buffer,
+                buffer: partial.light_index_buffers[i].buffer,
                 offset: 0,
                 range: index_list_size,
             }];
             let writes = [
                 vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[i])
+                    .dst_set(partial.descriptor_sets[i])
                     .dst_binding(0)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .buffer_info(&light_info),
                 vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[i])
+                    .dst_set(partial.descriptor_sets[i])
                     .dst_binding(1)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .buffer_info(&camera_info),
                 vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[i])
+                    .dst_set(partial.descriptor_sets[i])
                     .dst_binding(2)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .buffer_info(&grid_info),
                 vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[i])
+                    .dst_set(partial.descriptor_sets[i])
                     .dst_binding(3)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .buffer_info(&index_info),
             ];
-            unsafe {
-                device.update_descriptor_sets(&writes, &[]);
-            }
+            unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
 
-        let scene_cluster_grid_buffers = cluster_grid_buffers
+        partial.scene_cluster_grid_buffers = partial.cluster_grid_buffers
             .iter()
             .map(|b| b.buffer)
             .collect();
-        let scene_light_index_buffers = light_index_buffers
+        partial.scene_light_index_buffers = partial.light_index_buffers
             .iter()
             .map(|b| b.buffer)
             .collect();
@@ -249,17 +281,7 @@ impl ClusterCullPipeline {
             MAX_LIGHTS_PER_CLUSTER,
         );
 
-        Ok(Self {
-            pipeline,
-            pipeline_layout,
-            descriptor_set_layout,
-            descriptor_pool,
-            descriptor_sets,
-            cluster_grid_buffers,
-            light_index_buffers,
-            scene_cluster_grid_buffers,
-            scene_light_index_buffers,
-        })
+        Ok(partial)
     }
 
     /// Record the cluster culling dispatch into a command buffer.
