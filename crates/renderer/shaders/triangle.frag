@@ -54,8 +54,9 @@ layout(std430, set = 1, binding = 0) readonly buffer LightBuffer {
 
 layout(set = 1, binding = 1) uniform CameraUBO {
     mat4 viewProj;
-    vec4 cameraPos;
+    vec4 cameraPos;   // xyz = world position, w = frame counter
     vec4 sceneFlags;  // x = RT enabled (1.0), yzw = ambient color (RGB)
+    vec4 screen;      // x = width, y = height, zw = unused
 };
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
@@ -229,12 +230,7 @@ void main() {
     float viewDepth = viewPos.w; // clip-space W = view-space Z for perspective
     // Screen size from the camera UBO — packed as viewport dimensions.
     // We reconstruct from gl_FragCoord and the viewport.
-    vec2 screenSize = vec2(textureSize(textures[0], 0)); // fallback
-    // Use fragCoord directly — the cluster shader uses the same tile grid.
-    uint clusterIdx = getClusterIndex(gl_FragCoord.xy, viewDepth, vec2(1280.0, 720.0));
-    // TODO: pass actual screen size via UBO. For now hardcode common resolution.
-    // The cluster grid is resolution-independent (tile fractions), so this
-    // approximation only affects slice assignment slightly.
+    uint clusterIdx = getClusterIndex(gl_FragCoord.xy, viewDepth, screen.xy);
 
     if (lightCount == 0) {
         // Fallback: single directional light.

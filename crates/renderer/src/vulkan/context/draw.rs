@@ -174,6 +174,12 @@ impl VulkanContext {
                 ambient_color[1],
                 ambient_color[2],
             ],
+            screen: [
+                self.swapchain_state.extent.width as f32,
+                self.swapchain_state.extent.height as f32,
+                0.0,
+                0.0,
+            ],
         };
         self.scene_buffers
             .upload_camera(&self.device, frame, &camera)

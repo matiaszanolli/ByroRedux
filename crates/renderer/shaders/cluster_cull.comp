@@ -38,7 +38,8 @@ layout(std430, set = 0, binding = 0) readonly buffer LightBuffer {
 layout(set = 0, binding = 1) uniform CameraUBO {
     mat4 viewProj;
     vec4 cameraPos;
-    vec4 sceneFlags;  // sceneFlags.w is unused; we pack screen dims here
+    vec4 sceneFlags;
+    vec4 screen;      // x = width, y = height
 };
 
 // Cluster grid: per-cluster (offset, count) into the light index list.

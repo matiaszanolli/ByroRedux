@@ -107,12 +107,7 @@ pub struct GpuLight {
     pub direction_angle: [f32; 4],
 }
 
-/// GPU-side camera data (96 bytes, std140-compatible).
-///
-/// The `view_proj` matrix lives here (UBO, per-frame) rather than in push
-/// constants because it is the same for all draws in a frame. This keeps
-/// push constants at 68 bytes (model mat4 + boneOffset uint), well within
-/// the Vulkan-guaranteed 128-byte minimum `maxPushConstantsSize`.
+/// GPU-side camera data (112 bytes, std140-compatible).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuCamera {
@@ -122,6 +117,8 @@ pub struct GpuCamera {
     pub position: [f32; 4],
     /// x = RT enabled (1.0), y/z/w = ambient light color (RGB).
     pub flags: [f32; 4],
+    /// x = screen width, y = screen height, z/w = unused.
+    pub screen: [f32; 4],
 }
 
 impl Default for GpuCamera {
@@ -135,6 +132,7 @@ impl Default for GpuCamera {
             ],
             position: [0.0; 4],
             flags: [0.0; 4],
+            screen: [1280.0, 720.0, 0.0, 0.0],
         }
     }
 }
