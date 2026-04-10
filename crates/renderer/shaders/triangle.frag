@@ -170,8 +170,10 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist) {
         return vec4(fog.xyz * 0.5 + sceneFlags.yzw * 0.5, 0.0);
     }
 
-    // Hit — get instance, primitive, barycentrics.
-    int hitInstanceIdx = rayQueryGetIntersectionInstanceIdEXT(rq, true);
+    // Hit — get SSBO instance index via custom index (encodes the draw
+    // command position, which matches the SSBO layout). InstanceId would
+    // give the TLAS-internal index, which diverges when some meshes lack BLAS.
+    int hitInstanceIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
     int hitPrimitiveIdx = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
     vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
 

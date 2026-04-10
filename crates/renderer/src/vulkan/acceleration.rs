@@ -259,9 +259,14 @@ impl AccelerationManager {
         draw_commands: &[DrawCommand],
         frame_index: usize,
     ) -> Result<()> {
-        // Build instance array.
+        // Build instance array. The enumeration index `i` matches the SSBO
+        // instance index in draw_frame (both iterate draw_commands in order and
+        // the mesh_registry.get() guard in draw.rs always succeeds for submitted
+        // draw commands). We encode `i` as instance_custom_index so the shader
+        // can map a TLAS hit back to the correct SSBO entry — the TLAS may be
+        // sparse (some draw commands lack a BLAS), so InstanceId != SSBO index.
         let mut instances: Vec<vk::AccelerationStructureInstanceKHR> = Vec::new();
-        for draw_cmd in draw_commands {
+        for (i, draw_cmd) in draw_commands.iter().enumerate() {
             let mesh_handle = draw_cmd.mesh_handle as usize;
             let Some(Some(blas)) = self.blas_entries.get(mesh_handle) else {
                 continue;
@@ -280,7 +285,7 @@ impl AccelerationManager {
             // obtained from get_acceleration_structure_device_address after BLAS creation.
             instances.push(vk::AccelerationStructureInstanceKHR {
                 transform,
-                instance_custom_index_and_mask: vk::Packed24_8::new(0, 0xFF),
+                instance_custom_index_and_mask: vk::Packed24_8::new(i as u32, 0xFF),
                 instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
                     0,
                     vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
