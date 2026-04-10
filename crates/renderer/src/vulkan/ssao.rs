@@ -66,7 +66,7 @@ impl SsaoPipeline {
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED)
+            .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
 
@@ -302,6 +302,87 @@ impl SsaoPipeline {
         })
     }
 
+    /// Transition the AO image from UNDEFINED to SHADER_READ_ONLY_OPTIMAL
+    /// and clear it to white (1.0 = no occlusion). Must be called once after
+    /// creation so the fragment shader sees a valid image on the first frame
+    /// (before the first SSAO dispatch has run).
+    pub unsafe fn initialize_ao_image(
+        &self,
+        device: &ash::Device,
+        queue: &std::sync::Mutex<vk::Queue>,
+        pool: vk::CommandPool,
+    ) -> Result<()> {
+        super::texture::with_one_time_commands(device, queue, pool, |cmd| {
+            // UNDEFINED → TRANSFER_DST for the clear.
+            let barrier = vk::ImageMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::empty())
+                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .image(self.ao_image)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+            unsafe {
+                device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[barrier],
+                );
+
+                // Clear to 1.0 (white = no occlusion).
+                device.cmd_clear_color_image(
+                    cmd,
+                    self.ao_image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &vk::ClearColorValue {
+                        float32: [1.0, 0.0, 0.0, 0.0],
+                    },
+                    &[vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    }],
+                );
+
+                // TRANSFER_DST → SHADER_READ_ONLY for fragment shader sampling.
+                let barrier2 = vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(self.ao_image)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    });
+                device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[barrier2],
+                );
+            }
+            Ok(())
+        })
+    }
+
     /// Upload SSAO parameters and dispatch the compute shader.
     ///
     /// Call AFTER the render pass (depth buffer must be written and
@@ -327,6 +408,22 @@ impl SsaoPipeline {
             camera_pos: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
         };
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))?;
+
+        // Barrier: make the host write to the param UBO visible to the
+        // compute shader. Required by the Vulkan spec even for HOST_COHERENT
+        // memory (the execution dependency ensures ordering).
+        let ubo_barrier = vk::MemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::HOST_WRITE)
+            .dst_access_mask(vk::AccessFlags::UNIFORM_READ);
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::HOST,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::DependencyFlags::empty(),
+            &[ubo_barrier],
+            &[],
+            &[],
+        );
 
         // Transition AO image to GENERAL for compute write.
         let ao_barrier = vk::ImageMemoryBarrier::default()

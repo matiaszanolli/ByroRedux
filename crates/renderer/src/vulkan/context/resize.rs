@@ -18,15 +18,22 @@ impl VulkanContext {
         }
 
         // Destroy old framebuffers, depth resources, swapchain views.
+        // Handles are nulled after destruction so that if a later creation
+        // step fails and Drop runs, the destroy calls are no-ops (Vulkan
+        // spec: vkDestroy* on VK_NULL_HANDLE is always valid).
         unsafe {
             for &fb in &self.framebuffers {
                 self.device.destroy_framebuffer(fb, None);
             }
+            self.framebuffers.clear();
+
             // Depth: view → image → free allocation. The image must be
             // destroyed while its bound memory is still valid (Vulkan spec
             // VUID-vkFreeMemory-memory-00677).
             self.device.destroy_image_view(self.depth_image_view, None);
+            self.depth_image_view = vk::ImageView::null();
             self.device.destroy_image(self.depth_image, None);
+            self.depth_image = vk::Image::null();
             if let Some(alloc) = self.depth_allocation.take() {
                 self.allocator
                     .as_ref()
@@ -39,13 +46,19 @@ impl VulkanContext {
 
             // Destroy old pipelines before the render pass they reference.
             self.device.destroy_pipeline(self.pipeline, None);
+            self.pipeline = vk::Pipeline::null();
             self.device.destroy_pipeline(self.pipeline_alpha, None);
+            self.pipeline_alpha = vk::Pipeline::null();
             self.device.destroy_pipeline(self.pipeline_two_sided, None);
+            self.pipeline_two_sided = vk::Pipeline::null();
             self.device
                 .destroy_pipeline(self.pipeline_alpha_two_sided, None);
+            self.pipeline_alpha_two_sided = vk::Pipeline::null();
             self.device.destroy_pipeline(self.pipeline_ui, None);
+            self.pipeline_ui = vk::Pipeline::null();
 
             self.device.destroy_render_pass(self.render_pass, None);
+            self.render_pass = vk::RenderPass::null();
             // Destroy old image views (but keep the old swapchain handle for handoff).
             for &view in &self.swapchain_state.image_views {
                 self.device.destroy_image_view(view, None);
@@ -132,6 +145,16 @@ impl VulkanContext {
                 self.swapchain_state.extent.height,
             ) {
                 Ok(new_ssao) => {
+                    // Transition AO image to valid layout before first use.
+                    if let Err(e) = unsafe {
+                        new_ssao.initialize_ao_image(
+                            &self.device,
+                            &self.graphics_queue,
+                            self.transfer_pool,
+                        )
+                    } {
+                        log::warn!("SSAO AO image init failed after resize: {e}");
+                    }
                     for f in 0..MAX_FRAMES_IN_FLIGHT {
                         self.scene_buffers.write_ao_texture(
                             &self.device,
@@ -171,6 +194,10 @@ impl VulkanContext {
             self.frame_sync
                 .recreate_for_swapchain(&self.device, self.swapchain_state.images.len())?;
         }
+
+        // Reset frame-in-flight counter so the first post-resize frame
+        // starts from slot 0 with a clean fence/semaphore cycle.
+        self.current_frame = 0;
 
         log::info!(
             "Swapchain recreated: {}x{}",

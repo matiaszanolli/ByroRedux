@@ -330,6 +330,14 @@ impl VulkanContext {
             swapchain_state.extent.height,
         ) {
             Ok(s) => {
+                // Transition AO image from UNDEFINED to SHADER_READ_ONLY_OPTIMAL
+                // so the first frame's fragment shader sees a valid layout (1.0 =
+                // no occlusion). Without this, sampling UNDEFINED is UB.
+                if let Err(e) = unsafe {
+                    s.initialize_ao_image(&device, &graphics_queue, transfer_pool)
+                } {
+                    log::warn!("SSAO AO image init failed: {e}");
+                }
                 for f in 0..MAX_FRAMES_IN_FLIGHT {
                     scene_buffers.write_ao_texture(
                         &device, f, s.ao_image_view, s.ao_sampler,
