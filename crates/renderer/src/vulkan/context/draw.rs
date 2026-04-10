@@ -206,9 +206,10 @@ impl VulkanContext {
         // that the fragment shader reads during the render pass.
         unsafe {
             if let Some(ref cc) = self.cluster_cull {
-                // Barrier: host writes to light/camera/instance SSBOs must be
-                // visible to the compute shader before dispatch. Required by
-                // Vulkan spec even for HOST_COHERENT memory.
+                // Barrier: host writes to light/camera SSBOs must be visible
+                // to the compute shader before dispatch. Required by Vulkan
+                // spec even for HOST_COHERENT memory. Instance data is NOT
+                // uploaded yet — it is built and uploaded after this dispatch.
                 let host_barrier = vk::MemoryBarrier::default()
                     .src_access_mask(vk::AccessFlags::HOST_WRITE)
                     .dst_access_mask(
@@ -324,6 +325,25 @@ impl VulkanContext {
             self.scene_buffers
                 .upload_instances(&self.device, frame, &gpu_instances)
                 .unwrap_or_else(|e| log::warn!("Failed to upload instances: {e}"));
+        }
+
+        // Barrier: make the instance SSBO host write (and any remaining
+        // light/camera/bone host writes) visible to the vertex + fragment
+        // shaders in the upcoming render pass. Required by Vulkan spec
+        // even for HOST_COHERENT memory.
+        unsafe {
+            let instance_barrier = vk::MemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::HOST_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::UNIFORM_READ);
+            self.device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::HOST,
+                vk::PipelineStageFlags::VERTEX_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[instance_barrier],
+                &[],
+                &[],
+            );
         }
 
         unsafe {
