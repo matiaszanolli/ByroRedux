@@ -325,12 +325,14 @@ void main() {
                 buildOrthoBasis(L, T, B);
                 vec2 diskSample = concentricDiskSample(noise1, noise2);
 
-                // Light source radius as a fraction of distance — this gives
-                // the angular size. Bethesda radii are falloff range, not
-                // physical size, so we use a small fraction for the emitter disk.
+                // Penumbra widens with distance from the light source:
+                // closer fragments get sharper shadows, distant fragments
+                // get softer shadows. This mimics real penumbra physics
+                // where angular size of the light grows as you move away.
+                float distRatio = clamp(dist / max(radius, 1.0), 0.1, 1.0);
                 float lightDiskRadius = (lightType < 1.5)
-                    ? max(radius * 0.012, 2.0)   // point/spot: ~1.2% of range, min 2 units
-                    : 4.0;                        // directional: wider angular spread
+                    ? max(radius * 0.025 * distRatio, 1.5)  // point/spot: scales with distance
+                    : 6.0 * distRatio;                        // directional: distance-dependent spread
 
                 vec3 jitteredTarget = lightPos + (T * diskSample.x + B * diskSample.y) * lightDiskRadius;
                 vec3 rayOrigin = fragWorldPos + N * 0.05;
