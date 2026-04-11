@@ -147,6 +147,12 @@ impl NifVariant {
 
     /// BSShaderPPLightingProperty has emissive color (4×f32) after texture set ref.
     /// Present in FNV+ (user_version_2 >= 34).
+    ///
+    /// FO76/Starfield are intentionally excluded: those games emit
+    /// BSLightingShaderProperty, not BSShaderPPLightingProperty, so this
+    /// predicate is never queried for them. Do NOT "fix" the exclusion —
+    /// see #169 for the same surface pattern on `compact_material()` and
+    /// `has_emissive_mult()`, where the exclusion is an actual bug.
     pub fn has_shader_emissive_color(self) -> bool {
         matches!(
             self,

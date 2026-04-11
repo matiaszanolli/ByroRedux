@@ -550,8 +550,10 @@ pub fn parse_particle_system(stream: &mut NifStream, type_name: &str) -> io::Res
     // NiGeometry: skin_ref (since v3.3.0.13)
     let _skin_ref = stream.read_block_ref()?;
 
-    // Shader/alpha refs for Skyrim+ (BSVER > 34)
-    if stream.variant().has_shader_alpha_refs() {
+    // Shader/alpha refs for Skyrim+ (BSVER > 34). Use raw bsver() rather than
+    // a variant predicate so non-Bethesda Gamebryo content at BSVER > 34 stays
+    // aligned (matches base.rs:73 and node.rs:107).
+    if stream.bsver() > 34 {
         let _shader_ref = stream.read_block_ref()?;
         let _alpha_ref = stream.read_block_ref()?;
     }

@@ -338,8 +338,28 @@ pub fn parse_block(
         | "BSEffectShaderPropertyFloatController"
         | "BSEffectShaderPropertyColorController"
         | "BSLightingShaderPropertyFloatController"
-        | "BSLightingShaderPropertyColorController" => {
+        | "BSLightingShaderPropertyColorController"
+        // Pure NiFloatInterpController subclasses (no extra fields beyond
+        // NiSingleInterpController). FO3+ era — block_size recovery catches
+        // any stream drift. See issue #235.
+        | "BSMaterialEmittanceMultController"
+        | "BSRefractionStrengthController"
+        | "BSFrustumFOVController" => {
             Ok(Box::new(NiSingleInterpController::parse(stream)?))
+        }
+        // Bethesda / Fallout controller types that extend NiTimeController
+        // or NiInterpController with additional fields we don't model yet.
+        // Dispatch to the NiTimeController base-parse stub so the RTTI name
+        // is preserved in telemetry; block_size recovery on FO3+ seeks past
+        // any trailing extra data. Oblivion-era files never reference these
+        // types. See issues #234, #235.
+        "BSLagBoneController"                        // base + 3 floats
+        | "BSKeyframeController"                     // NiSingleInterpController + Data2 ref
+        | "BSProceduralLightningController"          // base + 3 interp refs + strip data
+        | "NiMorpherController"                      // base + NiMorphData ref
+        | "NiMorphController"                        // base (no extra fields in nif.xml)
+        | "NiMorphWeightsController" => {            // base + interpolator / target arrays
+            Ok(Box::new(NiTimeController::parse(stream)?))
         }
         "NiMaterialColorController" => Ok(Box::new(NiMaterialColorController::parse(stream)?)),
         "NiMultiTargetTransformController" => {
