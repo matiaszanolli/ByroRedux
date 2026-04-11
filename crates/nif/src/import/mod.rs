@@ -79,6 +79,10 @@ pub struct ImportedNode {
     pub parent_node: Option<usize>,
     /// Collision shape and rigid body data (from bhkCollisionObject chain).
     pub collision: Option<(CollisionShape, RigidBodyData)>,
+    /// Raw `BillboardMode` value if this node was a `NiBillboardNode`.
+    /// `None` for regular NiNode and its non-billboard subclasses.
+    /// The consumer maps this to the `Billboard` ECS component. See #225.
+    pub billboard_mode: Option<u16>,
 }
 
 /// A mesh extracted from a NIF file, ready for GPU upload.

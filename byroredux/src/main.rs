@@ -33,8 +33,8 @@ use crate::components::{InputState, NameIndex, SystemList};
 use crate::helpers::world_resource_set;
 use crate::render::build_render_data;
 use crate::systems::{
-    animation_system, fly_camera_system, log_stats_system, make_transform_propagation_system,
-    spin_system,
+    animation_system, billboard_system, fly_camera_system, log_stats_system,
+    make_transform_propagation_system, spin_system,
 };
 
 fn main() -> Result<()> {
@@ -135,6 +135,11 @@ impl App {
         scheduler.add_to(Stage::Update, animation_system);
         scheduler.add_to(Stage::Update, spin_system);
         scheduler.add_to(Stage::PostUpdate, make_transform_propagation_system());
+        // Billboards must run AFTER transform propagation so they can
+        // overwrite the computed world rotation. Registered as exclusive
+        // so the scheduler sequences it after the PostUpdate parallel
+        // batch. See issue #225.
+        scheduler.add_exclusive(Stage::PostUpdate, billboard_system);
         scheduler.add_to(Stage::Physics, byroredux_physics::physics_sync_system);
         scheduler.add_to(Stage::Late, log_stats_system);
         scheduler.add_exclusive(Stage::Late, byroredux_scripting::event_cleanup_system);

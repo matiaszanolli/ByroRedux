@@ -93,6 +93,12 @@ pub(super) fn walk_node_hierarchical(
         // Extract collision data if this node has a collision_ref.
         let collision = extract_collision(scene, node.av.collision_ref);
 
+        // Detect NiBillboardNode (or the pre-10.1.0.0 form where the mode
+        // is packed into NiAVObject flags bits 5-6). See #225 / nif.xml
+        // `BillboardMode`. The importer hands the raw u16 to the consumer
+        // which maps it to the `Billboard` ECS component.
+        let billboard_mode = extract_billboard_mode(block, node.av.flags);
+
         let this_node_idx = out.nodes.len();
         out.nodes.push(ImportedNode {
             name: node.av.net.name.as_deref().map(str::to_string),
@@ -101,6 +107,7 @@ pub(super) fn walk_node_hierarchical(
             scale: node.av.transform.scale,
             parent_node: parent_node_idx,
             collision,
+            billboard_mode,
         });
 
         for child_ref in &node.children {
@@ -361,6 +368,29 @@ fn attenuation_radius(k_const: f32, k_lin: f32, k_quad: f32) -> f32 {
     // No attenuation → effectively infinite. Clamp to a sane default so
     // the renderer doesn't get a garbage value.
     2048.0
+}
+
+/// Extract a NiBillboardNode mode from a block, if any.
+///
+/// From 10.1.0.0 onward (all Bethesda games) the mode is a trailing u16
+/// field on the block. Pre-10.1.0.0 the mode is packed into NiAVObject
+/// flags bits 5-6 — we translate that back out so the consumer always
+/// sees the modern `BillboardMode` value regardless of source version.
+///
+/// Returns `None` for non-billboard nodes.
+fn extract_billboard_mode(block: &dyn NiObject, av_flags: u32) -> Option<u16> {
+    if let Some(bb) = block.as_any().downcast_ref::<NiBillboardNode>() {
+        if bb.billboard_mode != 0 {
+            return Some(bb.billboard_mode);
+        }
+        // 10.1.0.0+ NIF with mode 0 is still a valid "always face camera"
+        // billboard — preserve the fact that this is a billboard.
+        // Fall through to the legacy flags check in case the parser
+        // defaulted to 0 for a pre-10.1.0.0 NIF.
+        let legacy = (av_flags >> 5) & 0x3;
+        return Some(legacy as u16);
+    }
+    None
 }
 
 /// Check if a node name is an editor marker that should be skipped.

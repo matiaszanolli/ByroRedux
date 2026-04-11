@@ -3,8 +3,8 @@
 use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
-    ActiveCamera, Camera, GlobalTransform, Material, MeshHandle, Name, Parent, SkinnedMesh,
-    TextureHandle, Transform, World, MAX_BONES_PER_MESH,
+    ActiveCamera, Billboard, BillboardMode, Camera, GlobalTransform, Material, MeshHandle, Name,
+    Parent, SkinnedMesh, TextureHandle, Transform, World, MAX_BONES_PER_MESH,
 };
 use byroredux_core::math::{Mat4, Quat, Vec3};
 use byroredux_core::string::StringPool;
@@ -530,6 +530,13 @@ pub(crate) fn load_nif_bytes(
             );
             world.insert(entity, shape.clone());
             world.insert(entity, body.clone());
+        }
+
+        // Attach Billboard component for NiBillboardNode-derived entities.
+        // See #225 — nif import normalizes pre/post 10.1.0.0 mode layouts
+        // into a single u16 before we map it to BillboardMode.
+        if let Some(raw) = node.billboard_mode {
+            world.insert(entity, Billboard::new(BillboardMode::from_nif(raw)));
         }
 
         node_entities.push(entity);
