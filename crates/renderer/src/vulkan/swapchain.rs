@@ -56,36 +56,39 @@ pub fn create_swapchain(
         image_count = capabilities.max_image_count;
     }
 
+    // Switched from a raw struct initializer with `queue_family_indices.as_ptr()`
+    // to the ash builder pattern so the borrow of the local `queue_family_indices`
+    // array is checked by the compiler instead of trusted via a SAFETY comment.
+    // The builder stores a `&[u32]` reference, which must outlive `create_info`;
+    // both live in this function, so the constraint is automatic. See #93.
     let queue_family_indices = [indices.graphics, indices.present];
-    let (sharing_mode, queue_family_index_count, p_indices) = if indices.graphics != indices.present
-    {
-        (
-            vk::SharingMode::CONCURRENT,
-            2,
-            queue_family_indices.as_ptr(),
-        )
+    let sharing_mode = if indices.graphics != indices.present {
+        vk::SharingMode::CONCURRENT
     } else {
-        (vk::SharingMode::EXCLUSIVE, 0, std::ptr::null())
+        vk::SharingMode::EXCLUSIVE
     };
 
-    let create_info = vk::SwapchainCreateInfoKHR {
-        surface,
-        min_image_count: image_count,
-        image_format: format.format,
-        image_color_space: format.color_space,
-        image_extent: extent,
-        image_array_layers: 1,
-        image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
-        image_sharing_mode: sharing_mode,
-        queue_family_index_count,
-        p_queue_family_indices: p_indices,
-        pre_transform: capabilities.current_transform,
-        composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
-        present_mode,
-        clipped: vk::TRUE,
-        old_swapchain,
-        ..Default::default()
-    };
+    let mut create_info = vk::SwapchainCreateInfoKHR::default()
+        .surface(surface)
+        .min_image_count(image_count)
+        .image_format(format.format)
+        .image_color_space(format.color_space)
+        .image_extent(extent)
+        .image_array_layers(1)
+        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+        .image_sharing_mode(sharing_mode)
+        .pre_transform(capabilities.current_transform)
+        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+        .present_mode(present_mode)
+        .clipped(true)
+        .old_swapchain(old_swapchain);
+
+    // Only set queue family indices in CONCURRENT mode — the Vulkan spec
+    // requires `queueFamilyIndexCount == 0` and `pQueueFamilyIndices == NULL`
+    // under SHARING_MODE_EXCLUSIVE, which is the builder's default.
+    if indices.graphics != indices.present {
+        create_info = create_info.queue_family_indices(&queue_family_indices);
+    }
 
     let swapchain_loader = ash::khr::swapchain::Device::new(instance, device);
 
