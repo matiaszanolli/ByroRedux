@@ -1,10 +1,11 @@
 //! Swapchain recreation after window resize or suboptimal present.
 
+use super::super::composite::HDR_FORMAT;
 use super::super::ssao::SsaoPipeline;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::super::{pipeline, swapchain};
 use super::helpers::{
-    allocate_command_buffers, create_depth_resources, create_framebuffers, create_render_pass,
+    allocate_command_buffers, create_depth_resources, create_main_framebuffers, create_render_pass,
 };
 use super::VulkanContext;
 use anyhow::{Context, Result};
@@ -97,11 +98,8 @@ impl VulkanContext {
         self.depth_image_view = depth_image_view;
         self.depth_allocation = Some(depth_allocation);
 
-        self.render_pass = create_render_pass(
-            &self.device,
-            self.swapchain_state.format.format,
-            self.depth_format,
-        )?;
+        // Main render pass writes to HDR intermediate, not swapchain.
+        self.render_pass = create_render_pass(&self.device, HDR_FORMAT, self.depth_format)?;
 
         // Recreate pipelines against the new render pass, reusing existing layout.
         let pipelines = pipeline::recreate_triangle_pipelines(
@@ -171,11 +169,30 @@ impl VulkanContext {
             }
         }
 
-        self.framebuffers = create_framebuffers(
+        // Recreate composite pipeline's HDR images + swapchain framebuffers
+        // with the new extent. Must happen BEFORE main framebuffers (which
+        // bind the HDR views).
+        if let Some(ref mut composite) = self.composite {
+            composite.recreate_on_resize(
+                &self.device,
+                self.allocator.as_ref().expect("allocator missing during resize"),
+                &self.swapchain_state.image_views,
+                self.swapchain_state.extent.width,
+                self.swapchain_state.extent.height,
+            )?;
+        }
+
+        // Main framebuffers bind the new HDR image views + depth.
+        let composite_ref = self
+            .composite
+            .as_ref()
+            .expect("composite must exist during resize");
+        self.framebuffers = create_main_framebuffers(
             &self.device,
             self.render_pass,
-            &self.swapchain_state,
+            &composite_ref.hdr_image_views,
             self.depth_image_view,
+            self.swapchain_state.extent,
         )?;
 
         // Reallocate command buffers if image count changed.

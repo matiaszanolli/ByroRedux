@@ -1,6 +1,7 @@
 //! Top-level Vulkan context that owns the entire graphics state.
 
 use super::acceleration::AccelerationManager;
+use super::composite::{CompositePipeline, HDR_FORMAT};
 use super::compute::ClusterCullPipeline;
 use super::ssao::SsaoPipeline;
 use super::allocator::{self, SharedAllocator};
@@ -79,6 +80,7 @@ pub struct VulkanContext {
     pub accel_manager: Option<AccelerationManager>,
     pub cluster_cull: Option<ClusterCullPipeline>,
     pub ssao: Option<SsaoPipeline>,
+    pub composite: Option<CompositePipeline>,
     pipeline_cache: vk::PipelineCache,
     pipeline: vk::Pipeline,
     pipeline_alpha: vk::Pipeline,
@@ -205,8 +207,9 @@ impl VulkanContext {
             depth_format,
         )?;
 
-        // 10. Render pass (color + depth)
-        let render_pass = create_render_pass(&device, swapchain_state.format.format, depth_format)?;
+        // 10. Main render pass: writes to HDR intermediate (composite tone-maps
+        // to swapchain afterward). Color format is HDR, not swapchain.
+        let render_pass = create_render_pass(&device, HDR_FORMAT, depth_format)?;
 
         // 10. Command pools: one for per-frame draw commands (RESET_COMMAND_BUFFER),
         //     one for one-time upload/transfer commands (separate pool to avoid
@@ -354,9 +357,34 @@ impl VulkanContext {
         // 14. Mesh registry (empty — meshes uploaded by the application)
         let mesh_registry = MeshRegistry::new();
 
-        // 15. Framebuffers (color + depth attachments)
-        let framebuffers =
-            create_framebuffers(&device, render_pass, &swapchain_state, depth_image_view)?;
+        // 14b. Composite pipeline: owns HDR intermediates + tone-map pass.
+        // Must be created before main framebuffers because those framebuffers
+        // attach the HDR image views owned by composite.
+        let composite = match CompositePipeline::new(
+            &device,
+            &gpu_allocator,
+            swapchain_state.format.format,
+            &swapchain_state.image_views,
+            swapchain_state.extent.width,
+            swapchain_state.extent.height,
+        ) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                return Err(anyhow::anyhow!("Composite pipeline creation failed: {e}"));
+            }
+        };
+        let composite_ref = composite
+            .as_ref()
+            .expect("composite must exist after construction");
+
+        // 15. Main framebuffers: one per HDR image (per frame-in-flight).
+        let framebuffers = create_main_framebuffers(
+            &device,
+            render_pass,
+            &composite_ref.hdr_image_views,
+            depth_image_view,
+            swapchain_state.extent,
+        )?;
 
         // 16. Command buffers
         let command_buffers =
@@ -401,6 +429,7 @@ impl VulkanContext {
             accel_manager,
             cluster_cull,
             ssao,
+            composite,
             depth_allocation: Some(depth_allocation),
             depth_image,
             depth_image_view,
@@ -454,6 +483,9 @@ impl Drop for VulkanContext {
                 }
                 if let Some(ref mut ssao) = self.ssao {
                     ssao.destroy(&self.device, alloc);
+                }
+                if let Some(ref mut composite) = self.composite {
+                    composite.destroy(&self.device, alloc);
                 }
             }
 
@@ -527,6 +559,7 @@ impl Drop for VulkanContext {
 
 // Helper functions are in helpers.rs — use helpers:: prefix.
 use helpers::{
-    allocate_command_buffers, create_command_pool, create_depth_resources, create_framebuffers, create_transfer_pool,
-    create_render_pass, find_depth_format, load_or_create_pipeline_cache, save_pipeline_cache,
+    allocate_command_buffers, create_command_pool, create_depth_resources,
+    create_main_framebuffers, create_transfer_pool, create_render_pass, find_depth_format,
+    load_or_create_pipeline_cache, save_pipeline_cache,
 };

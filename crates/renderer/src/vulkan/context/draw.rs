@@ -111,9 +111,12 @@ impl VulkanContext {
             },
         ];
 
+        // Main framebuffer is now per-frame-in-flight (not per-swapchain-image).
+        // Each frame slot has its own HDR color image, so no read-after-write
+        // hazard across overlapping frames.
         let render_pass_begin = vk::RenderPassBeginInfo::default()
             .render_pass(self.render_pass)
-            .framebuffer(self.framebuffers[image_index as usize])
+            .framebuffer(self.framebuffers[frame])
             .render_area(vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
                 extent: self.swapchain_state.extent,
@@ -479,6 +482,17 @@ impl VulkanContext {
             }
 
             self.device.cmd_end_render_pass(cmd);
+
+            // Composite pass: sample HDR intermediate, ACES tone map, write to
+            // swapchain. Runs in its own render pass (single swapchain color
+            // attachment). The main render pass's outgoing subpass dependency
+            // already handles the layout transition of the HDR image from
+            // COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL, and the
+            // composite render pass's incoming dependency makes the write
+            // visible to the fragment shader read.
+            if let Some(ref composite) = self.composite {
+                composite.dispatch(&self.device, cmd, frame, img);
+            }
 
             // SSAO compute pass: reads depth buffer (now in READ_ONLY layout
             // after render pass), writes AO texture for next frame's fragment shader.

@@ -1,7 +1,6 @@
 //! Stateless helper functions used by VulkanContext::new(), recreate_swapchain(), and Drop.
 
 use super::super::allocator::SharedAllocator;
-use super::super::swapchain::SwapchainState;
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
@@ -40,6 +39,12 @@ pub(super) fn create_render_pass(
     color_format: vk::Format,
     depth_format: vk::Format,
 ) -> Result<vk::RenderPass> {
+    // Phase 0: main render pass writes to an HDR intermediate
+    // (RGBA16F). The composite render pass samples this intermediate as
+    // a texture, so the final layout must be SHADER_READ_ONLY_OPTIMAL
+    // (not PRESENT_SRC_KHR anymore — that's handled by composite).
+    // The `color_format` parameter here is expected to be the HDR format
+    // passed by the caller, not the swapchain format.
     let color_attachment = vk::AttachmentDescription::default()
         .format(color_format)
         .samples(vk::SampleCountFlags::TYPE_1)
@@ -48,7 +53,7 @@ pub(super) fn create_render_pass(
         .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
         .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
         .initial_layout(vk::ImageLayout::UNDEFINED)
-        .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
+        .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
 
     // Depth store DONT_CARE — cleared each frame, never sampled afterward.
     // Saves bandwidth on tile-based GPUs (skips depth writeback to memory).
@@ -101,15 +106,10 @@ pub(super) fn create_render_pass(
                 | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
         );
 
-    // Outgoing dependency: ensure color attachment writes are complete
-    // before the implicit layout transition to PRESENT_SRC_KHR at render
-    // pass end. Without this, the implicit subpass dependency provides
-    // only BOTTOM_OF_PIPE / no-access, relying on the render_finished
-    // semaphore for correctness. The explicit dependency makes the render
-    // pass self-documenting and robust against future refactoring (e.g.,
-    // adding post-render-pass compute work before present).
-    // Outgoing: ensure color + depth writes are complete before SSAO
-    // compute reads the depth buffer and before present reads color.
+    // Outgoing dependency: ensure color + depth writes are complete before
+    // downstream passes read them.
+    // - Composite fragment shader reads HDR color as a sampled texture.
+    // - SSAO compute shader reads depth in READ_ONLY layout.
     let dependency_out = vk::SubpassDependency::default()
         .src_subpass(0)
         .dst_subpass(vk::SUBPASS_EXTERNAL)
@@ -121,7 +121,11 @@ pub(super) fn create_render_pass(
             vk::AccessFlags::COLOR_ATTACHMENT_WRITE
                 | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
         )
-        .dst_stage_mask(vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::BOTTOM_OF_PIPE)
+        .dst_stage_mask(
+            vk::PipelineStageFlags::FRAGMENT_SHADER
+                | vk::PipelineStageFlags::COMPUTE_SHADER
+                | vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+        )
         .dst_access_mask(vk::AccessFlags::SHADER_READ);
 
     let attachments = [color_attachment, depth_attachment];
@@ -143,28 +147,31 @@ pub(super) fn create_render_pass(
     Ok(render_pass)
 }
 
-pub(super) fn create_framebuffers(
+/// Create one main framebuffer per HDR color image, all sharing the same
+/// depth attachment. Phase 0: the main render pass writes to an HDR
+/// intermediate (one per frame-in-flight) rather than directly to the
+/// swapchain; the composite pass handles the swapchain.
+pub(super) fn create_main_framebuffers(
     device: &ash::Device,
     render_pass: vk::RenderPass,
-    swapchain: &SwapchainState,
+    hdr_views: &[vk::ImageView],
     depth_view: vk::ImageView,
+    extent: vk::Extent2D,
 ) -> Result<Vec<vk::Framebuffer>> {
-    swapchain
-        .image_views
+    hdr_views
         .iter()
-        .map(|&view| {
-            let attachments = [view, depth_view];
+        .map(|&hdr_view| {
+            let attachments = [hdr_view, depth_view];
             let create_info = vk::FramebufferCreateInfo::default()
                 .render_pass(render_pass)
                 .attachments(&attachments)
-                .width(swapchain.extent.width)
-                .height(swapchain.extent.height)
+                .width(extent.width)
+                .height(extent.height)
                 .layers(1);
-
             unsafe {
                 device
                     .create_framebuffer(&create_info, None)
-                    .context("Failed to create framebuffer")
+                    .context("Failed to create main framebuffer")
             }
         })
         .collect()
