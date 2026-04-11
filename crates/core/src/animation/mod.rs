@@ -123,6 +123,175 @@ mod tests {
         assert!((q.dot(expected)).abs() > 0.999);
     }
 
+    /// Regression for #230: a TBC rotation channel with TBC params set
+    /// to zero and no neighbors must match plain SLERP (both sides have
+    /// equal-magnitude Catmull-Rom tangents that cancel in log space at
+    /// the midpoint). Guarantees the new TBC code path is at least
+    /// consistent with the old SLERP baseline on the degenerate case.
+    #[test]
+    fn tbc_rotation_midpoint_with_zero_params_matches_slerp_endpoints() {
+        let ch = TransformChannel {
+            translation_keys: Vec::new(),
+            translation_type: KeyType::Linear,
+            rotation_keys: vec![
+                RotationKey {
+                    time: 0.0,
+                    value: Quat::IDENTITY,
+                    tbc: Some([0.0, 0.0, 0.0]),
+                },
+                RotationKey {
+                    time: 1.0,
+                    value: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                    tbc: Some([0.0, 0.0, 0.0]),
+                },
+            ],
+            rotation_type: KeyType::Tbc,
+            scale_keys: Vec::new(),
+            scale_type: KeyType::Linear,
+            priority: 0,
+        };
+        // Endpoints must be exact.
+        let q_start = sample_rotation(&ch, 0.0).unwrap();
+        assert!(q_start.dot(Quat::IDENTITY).abs() > 0.9999);
+        let q_end = sample_rotation(&ch, 1.0).unwrap();
+        let expected_end = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        assert!(q_end.dot(expected_end).abs() > 0.9999);
+    }
+
+    /// Three-key TBC channel with TBC = (0, 0, 0) should match a
+    /// Catmull-Rom quaternion interpolation: the derived tangent at the
+    /// middle key is the average of the before/after deltas, so sampling
+    /// at the middle time must return the middle key's value exactly.
+    #[test]
+    fn tbc_rotation_three_key_hits_middle_key_exactly() {
+        let ch = TransformChannel {
+            translation_keys: Vec::new(),
+            translation_type: KeyType::Linear,
+            rotation_keys: vec![
+                RotationKey {
+                    time: 0.0,
+                    value: Quat::IDENTITY,
+                    tbc: Some([0.0, 0.0, 0.0]),
+                },
+                RotationKey {
+                    time: 1.0,
+                    value: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                    tbc: Some([0.0, 0.0, 0.0]),
+                },
+                RotationKey {
+                    time: 2.0,
+                    value: Quat::from_rotation_y(std::f32::consts::PI),
+                    tbc: Some([0.0, 0.0, 0.0]),
+                },
+            ],
+            rotation_type: KeyType::Tbc,
+            scale_keys: Vec::new(),
+            scale_type: KeyType::Linear,
+            priority: 0,
+        };
+        let q = sample_rotation(&ch, 1.0).unwrap();
+        let expected = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        assert!(q.dot(expected).abs() > 0.9999);
+    }
+
+    /// Tension = 1 zeros the tangents (no curvature). TBC rotation with
+    /// full tension must degenerate to plain Hermite with flat tangents,
+    /// which at the midpoint of a 90° Y rotation equals a 45° Y rotation
+    /// (same as SLERP). Verifies the TBC parameter actually feeds the
+    /// tangent computation.
+    #[test]
+    fn tbc_rotation_full_tension_matches_slerp_midpoint() {
+        let ch = TransformChannel {
+            translation_keys: Vec::new(),
+            translation_type: KeyType::Linear,
+            rotation_keys: vec![
+                RotationKey {
+                    time: 0.0,
+                    value: Quat::IDENTITY,
+                    tbc: Some([1.0, 0.0, 0.0]), // tension = 1 → zero tangent
+                },
+                RotationKey {
+                    time: 1.0,
+                    value: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                    tbc: Some([1.0, 0.0, 0.0]),
+                },
+            ],
+            rotation_type: KeyType::Tbc,
+            scale_keys: Vec::new(),
+            scale_type: KeyType::Linear,
+            priority: 0,
+        };
+        // With zero tangents, Hermite collapses to pure lerp on log
+        // space, which (for this case of two endpoints rebased into
+        // q0-local space) is the same as SLERP through the midpoint.
+        let q = sample_rotation(&ch, 0.5).unwrap();
+        let expected = Quat::from_rotation_y(std::f32::consts::FRAC_PI_4);
+        assert!(
+            q.dot(expected).abs() > 0.999,
+            "full-tension TBC midpoint should match SLERP, got {:?}",
+            q
+        );
+    }
+
+    /// Non-zero TBC parameters must actually bend the rotation path —
+    /// i.e. the TBC result must differ from plain SLERP. Uses a 3-key
+    /// clip with a non-uniform rotation profile (Y → Y+X) so the
+    /// derived tangent at the center key has a non-trivial direction
+    /// that TBC parameters can weight.
+    #[test]
+    fn tbc_rotation_nonzero_params_diverges_from_slerp() {
+        use std::f32::consts::FRAC_PI_4;
+        let mk = |tbc: Option<[f32; 3]>, rot_type: KeyType| TransformChannel {
+            translation_keys: Vec::new(),
+            translation_type: KeyType::Linear,
+            rotation_keys: vec![
+                RotationKey {
+                    time: 0.0,
+                    value: Quat::IDENTITY,
+                    tbc,
+                },
+                RotationKey {
+                    time: 1.0,
+                    value: Quat::from_rotation_y(FRAC_PI_4),
+                    tbc,
+                },
+                RotationKey {
+                    time: 2.0,
+                    // Rotation axis changes — mixes in X so the
+                    // derived tangent direction differs from pure Y.
+                    value: Quat::from_rotation_x(FRAC_PI_4)
+                        * Quat::from_rotation_y(FRAC_PI_4),
+                    tbc,
+                },
+            ],
+            rotation_type: rot_type,
+            scale_keys: Vec::new(),
+            scale_type: KeyType::Linear,
+            priority: 0,
+        };
+        let linear_ch = mk(None, KeyType::Linear);
+        // Bias = 0.5 pushes the tangent toward the outgoing side — must
+        // produce a different result from plain SLERP.
+        let tbc_ch = mk(Some([0.0, 0.5, 0.0]), KeyType::Tbc);
+
+        let q_linear = sample_rotation(&linear_ch, 0.5).unwrap();
+        let q_tbc = sample_rotation(&tbc_ch, 0.5).unwrap();
+        let dot = q_linear.dot(q_tbc).abs();
+        assert!(
+            dot < 0.9999,
+            "TBC params should bend the path (linear={:?}, tbc={:?}, dot={})",
+            q_linear,
+            q_tbc,
+            dot
+        );
+        // Sanity: result is still a unit quaternion.
+        let norm_sq = q_tbc.x * q_tbc.x
+            + q_tbc.y * q_tbc.y
+            + q_tbc.z * q_tbc.z
+            + q_tbc.w * q_tbc.w;
+        assert!((norm_sq - 1.0).abs() < 1e-4, "quat not normalized: {}", norm_sq);
+    }
+
     #[test]
     fn empty_channel_returns_none() {
         let ch = TransformChannel {

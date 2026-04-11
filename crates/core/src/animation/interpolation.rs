@@ -160,6 +160,50 @@ pub fn sample_translation(channel: &TransformChannel, time: f32) -> Option<Vec3>
     }
 }
 
+/// Shortest-path quaternion: flip `q` if it points away from `reference`.
+/// Keeps interpolation on the hemisphere nearest the reference to avoid
+/// long-way-around artifacts.
+fn shortest_path(reference: Quat, q: Quat) -> Quat {
+    if reference.dot(q) < 0.0 {
+        -q
+    } else {
+        q
+    }
+}
+
+/// Quaternion log relative to `base`: returns `log(base^-1 * q)` as an
+/// angle-axis vector with magnitude = half the rotation angle times the
+/// unit axis. The factor of 0.5 matches `exp_map_rel` below; both use
+/// the "quaternion = (cos(θ/2), sin(θ/2)·axis)" convention.
+///
+/// Flips `q` to the shortest-path hemisphere first so rotations above
+/// 180° aren't introduced by the rebase.
+fn quat_log_rel(base: Quat, q: Quat) -> Vec3 {
+    let q = shortest_path(base, q);
+    let rel = base.conjugate() * q;
+    let w = rel.w.clamp(-1.0, 1.0);
+    let sin_half = (1.0 - w * w).max(0.0).sqrt();
+    if sin_half < 1.0e-6 {
+        return Vec3::ZERO;
+    }
+    let half_angle = w.acos(); // θ/2, since w = cos(θ/2)
+    let axis = Vec3::new(rel.x, rel.y, rel.z) / sin_half;
+    axis * half_angle
+}
+
+/// Inverse of [`quat_log_rel`]: `exp(v)` as a quaternion with the
+/// same "half-angle axis" convention. `base * exp_map_rel(v)` gives
+/// back a unit quaternion displaced from `base` by `v`.
+fn exp_map_rel(v: Vec3) -> Quat {
+    let half_angle = v.length();
+    if half_angle < 1.0e-6 {
+        return Quat::IDENTITY;
+    }
+    let axis = v / half_angle;
+    let (sin_h, cos_h) = half_angle.sin_cos();
+    Quat::from_xyzw(axis.x * sin_h, axis.y * sin_h, axis.z * sin_h, cos_h)
+}
+
 /// Sample rotation at a given time.
 pub fn sample_rotation(channel: &TransformChannel, time: f32) -> Option<Quat> {
     let keys = &channel.rotation_keys;
@@ -176,15 +220,75 @@ pub fn sample_rotation(channel: &TransformChannel, time: f32) -> Option<Quat> {
         return Some(keys[i0].value);
     }
 
-    // For all rotation key types, use SLERP between the two bracketing keys.
-    // TBC rotation uses the same SLERP — TBC tangents affect timing but
-    // quaternion interpolation is always spherical.
-    let q0 = keys[i0].value;
-    let q1 = keys[i1].value;
+    let k0 = &keys[i0];
+    let k1 = &keys[i1];
+    let q0 = k0.value;
+    // Shortest-path flip for q1 relative to q0 — keeps SLERP on the
+    // near hemisphere for Linear, and keeps the q0-local log finite
+    // for TBC.
+    let q1 = shortest_path(q0, k1.value);
 
-    // Ensure shortest path
-    let q1 = if q0.dot(q1) < 0.0 { -q1 } else { q1 };
-    Some(q0.slerp(q1, t))
+    match channel.rotation_type {
+        KeyType::Linear | KeyType::Quadratic => {
+            // Quadratic rotations in nif.xml (QuaternionKey) carry
+            // forward/backward control quats; RotationKey doesn't store
+            // them today, so fall back to SLERP. Linear always uses
+            // SLERP — the standard Gamebryo behavior. See #230.
+            Some(q0.slerp(q1, t))
+        }
+        KeyType::Tbc => {
+            // Cubic Hermite in the log space of q0. We rebase every
+            // neighbor rotation into q0-local space (so q0 sits at the
+            // origin), run the scalar TBC-Hermite from
+            // `tbc_tangents_f32` axis-by-axis, and convert the result
+            // back via `exp_map_rel` before multiplying by q0. This is
+            // a standard log-space approximation of SQUAD that respects
+            // the TBC tension/bias/continuity parameters — the straight
+            // SLERP path ignored them entirely. See #230.
+            let prev = if i0 > 0 { Some(i0 - 1) } else { None };
+            let next = if i1 + 1 < keys.len() { Some(i1 + 1) } else { None };
+
+            // q0-local log of neighbors (always finite because
+            // `quat_log_rel` applies a shortest-path flip).
+            let log_prev =
+                prev.map(|pi| (keys[pi].time, quat_log_rel(q0, keys[pi].value)));
+            let log_k0 = (k0.time, Vec3::ZERO);
+            let log_k1 = (k1.time, quat_log_rel(q0, k1.value));
+            let log_next =
+                next.map(|ni| (keys[ni].time, quat_log_rel(q0, keys[ni].value)));
+
+            let tbc0 = k0.tbc.unwrap_or([0.0, 0.0, 0.0]);
+            let tbc1 = k1.tbc.unwrap_or([0.0, 0.0, 0.0]);
+
+            let mut m0 = Vec3::ZERO;
+            let mut m1 = Vec3::ZERO;
+            for axis in 0..3 {
+                let pv = log_prev.map(|(t, v)| (t, v[axis]));
+                let cv0 = (log_k0.0, log_k0.1[axis]);
+                let nv0 = Some((log_k1.0, log_k1.1[axis]));
+                let (_, out0) = tbc_tangents_f32(pv, cv0, nv0, tbc0[0], tbc0[1], tbc0[2]);
+                m0[axis] = out0;
+
+                let pv1 = Some((log_k0.0, log_k0.1[axis]));
+                let cv1 = (log_k1.0, log_k1.1[axis]);
+                let nv1 = log_next.map(|(t, v)| (t, v[axis]));
+                let (in1, _) = tbc_tangents_f32(pv1, cv1, nv1, tbc1[0], tbc1[1], tbc1[2]);
+                m1[axis] = in1;
+            }
+
+            let (h00, h10, h01, h11) = hermite(t);
+            let dt = k1.time - k0.time;
+            let p0 = log_k0.1; // zero
+            let p1 = log_k1.1;
+            let log_result = Vec3::new(
+                h00 * p0.x + h10 * m0.x * dt + h01 * p1.x + h11 * m1.x * dt,
+                h00 * p0.y + h10 * m0.y * dt + h01 * p1.y + h11 * m1.y * dt,
+                h00 * p0.z + h10 * m0.z * dt + h01 * p1.z + h11 * m1.z * dt,
+            );
+
+            Some((q0 * exp_map_rel(log_result)).normalize())
+        }
+    }
 }
 
 /// Sample scale at a given time.
