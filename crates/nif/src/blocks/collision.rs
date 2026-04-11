@@ -13,6 +13,37 @@ use std::io;
 
 // ── Collision Object ────────────────────────────────────────────────
 
+/// NiCollisionObject — base class for collision attachments.
+///
+/// Per nif.xml `NiCollisionObject` has exactly one field, a weak `Target`
+/// pointer back at the NiAVObject this collision object is attached to.
+/// Bethesda Havok subclasses add `Flags` and `Body` on top (see
+/// `BhkCollisionObject` below), but the plain base occasionally appears
+/// as a direct block in Oblivion scenes (#125). Because Oblivion NIFs
+/// have no `block_sizes`, an unknown-type fallback cascades the whole
+/// parse; parsing even the base 4 bytes is enough to keep the loop
+/// alive.
+#[derive(Debug)]
+pub struct NiCollisionObjectBase {
+    pub target_ref: BlockRef,
+}
+
+impl NiObject for NiCollisionObjectBase {
+    fn block_type_name(&self) -> &'static str {
+        "NiCollisionObject"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiCollisionObjectBase {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let target_ref = stream.read_block_ref()?;
+        Ok(Self { target_ref })
+    }
+}
+
 /// bhkCollisionObject — attaches a rigid body to a NiAVObject.
 /// Concrete subclass of bhkNiCollisionObject (NiCollisionObject base).
 #[derive(Debug)]

@@ -28,6 +28,7 @@ use collision::{
     BhkCompressedMeshShapeData, BhkConvexVerticesShape, BhkCylinderShape, BhkListShape,
     BhkMoppBvTreeShape, BhkNiTriStripsShape, BhkPackedNiTriStripsShape, BhkRigidBody,
     BhkSimpleShapePhantom, BhkSphereShape, BhkTransformShape, HkPackedNiTriStripsData,
+    NiCollisionObjectBase,
 };
 use controller::{
     NiControllerManager, NiControllerSequence, NiGeomMorpherController, NiMaterialColorController,
@@ -514,6 +515,10 @@ pub fn parse_block(
             Ok(Box::new(particle::parse_modifier_ctlr(stream, type_name)?))
         }
         // ── Havok collision blocks (fully parsed) ────────────────────
+        // NiCollisionObject (non-Havok base): occasionally appears as a
+        // direct block on Oblivion scenes. Reading even the 4-byte base
+        // keeps the parse loop alive on Oblivion (no block_sizes). #125.
+        "NiCollisionObject" => Ok(Box::new(NiCollisionObjectBase::parse(stream)?)),
         "bhkCollisionObject" | "bhkSPCollisionObject" => {
             Ok(Box::new(BhkCollisionObject::parse(stream, false)?))
         }
@@ -544,7 +549,6 @@ pub fn parse_block(
         | "bhkBallAndSocketConstraint"
         | "bhkStiffSpringConstraint"
         | "bhkPrismaticConstraint"
-        | "NiCollisionObject"
         | "bhkNPCollisionObject"
         | "bhkPhysicsSystem"
         | "bhkRagdollSystem" => {
@@ -898,6 +902,34 @@ mod dispatch_tests {
             assert!(block.as_any().downcast_ref::<crate::blocks::NiNode>().is_some());
             assert_eq!(stream.position(), base.len() as u64);
         }
+    }
+
+    /// Regression test for issue #125: `NiCollisionObject` (the non-Havok
+    /// base class) must dispatch to its own parser so Oblivion NIFs that
+    /// reference it directly don't cascade-fail on the unknown-block
+    /// fallback. The block is trivially small — a single target ref —
+    /// and we only need to prove the parser consumes exactly 4 bytes and
+    /// downcasts cleanly.
+    #[test]
+    fn oblivion_ni_collision_object_base_dispatches() {
+        use crate::blocks::collision::NiCollisionObjectBase;
+
+        let header = oblivion_header();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&42i32.to_le_bytes()); // target ref (i32 -> BlockRef(42))
+
+        let expected_len = bytes.len();
+        let mut stream = NifStream::new(&bytes, &header);
+        // Pass block_size=None to mimic Oblivion where the header has
+        // no block_sizes table. Before the fix this arm returned Err.
+        let block = parse_block("NiCollisionObject", &mut stream, None)
+            .expect("NiCollisionObject must dispatch without block_size on Oblivion");
+        let co = block
+            .as_any()
+            .downcast_ref::<NiCollisionObjectBase>()
+            .expect("downcast to NiCollisionObjectBase");
+        assert_eq!(co.target_ref.index(), Some(42));
+        assert_eq!(stream.position() as usize, expected_len);
     }
 
     /// Regression test for issue #160: `NiAVObject::parse` and
