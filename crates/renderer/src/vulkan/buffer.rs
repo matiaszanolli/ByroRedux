@@ -7,13 +7,32 @@ use ash::vk;
 use gpu_allocator::vulkan;
 use gpu_allocator::MemoryLocation;
 
+/// Default upper bound on total staging-pool capacity. Chosen to comfortably
+/// cover the largest single upload the engine performs today (a few MB) plus
+/// breathing room for a burst of concurrent uploads, without letting a cell
+/// load (500 meshes + 200 textures) accumulate hundreds of megabytes of
+/// forever-pinned host memory. Callers that stream huge assets can raise it
+/// via `StagingPool::with_budget`.
+pub const DEFAULT_STAGING_BUDGET_BYTES: vk::DeviceSize = 64 * 1024 * 1024;
+
 /// Pool of reusable staging buffers to avoid per-upload allocate/free cycles.
 ///
 /// On a cell load with 500 meshes + 200 textures, this eliminates ~1200
 /// staging buffer creation/destruction cycles through gpu_allocator.
+///
+/// The pool enforces a total-capacity budget on [`release`](Self::release):
+/// when a returned buffer would push the total over the budget, the pool
+/// evicts its largest entries (destroying the underlying Vulkan resources)
+/// until it fits. Callers doing bulk streaming can also call
+/// [`trim_to`](Self::trim_to) after a loading phase to force aggressive
+/// eviction down to any target size (often `0` after a cell load). See #99.
 pub struct StagingPool {
     /// Available staging buffers sorted by size (ascending).
     free_list: Vec<StagingEntry>,
+    /// Maximum total capacity retained across all free entries. New
+    /// `release` calls that would exceed this trigger eviction of the
+    /// largest entries first.
+    budget_bytes: vk::DeviceSize,
     device: ash::Device,
     allocator: SharedAllocator,
 }
@@ -25,12 +44,49 @@ struct StagingEntry {
 }
 
 impl StagingPool {
+    /// Create a pool with the default retained-capacity budget
+    /// ([`DEFAULT_STAGING_BUDGET_BYTES`]).
     pub fn new(device: ash::Device, allocator: SharedAllocator) -> Self {
+        Self::with_budget(device, allocator, DEFAULT_STAGING_BUDGET_BYTES)
+    }
+
+    /// Create a pool with an explicit retained-capacity budget.
+    ///
+    /// `budget_bytes = 0` disables retention entirely — every release
+    /// destroys its buffer immediately, which is useful for debugging
+    /// memory footprint.
+    pub fn with_budget(
+        device: ash::Device,
+        allocator: SharedAllocator,
+        budget_bytes: vk::DeviceSize,
+    ) -> Self {
         Self {
             free_list: Vec::new(),
+            budget_bytes,
             device,
             allocator,
         }
+    }
+
+    /// Total capacity currently held in the free list (sum of all
+    /// retained entries).
+    pub fn total_capacity(&self) -> vk::DeviceSize {
+        self.free_list.iter().map(|e| e.capacity).sum()
+    }
+
+    /// Number of entries currently held.
+    pub fn len(&self) -> usize {
+        self.free_list.len()
+    }
+
+    /// Configured budget.
+    pub fn budget_bytes(&self) -> vk::DeviceSize {
+        self.budget_bytes
+    }
+
+    /// True when there are no retained entries.
+    pub fn is_empty(&self) -> bool {
+        self.free_list.is_empty()
     }
 
     /// Acquire a mapped staging buffer with at least `size` bytes.
@@ -79,6 +135,12 @@ impl StagingPool {
     }
 
     /// Return a staging buffer to the pool for reuse.
+    ///
+    /// After insertion, if the total retained capacity exceeds the
+    /// configured budget, the pool evicts its largest entries until it
+    /// fits — see [`trim_to`](Self::trim_to). This keeps bulk loads
+    /// (cells, archives) from retaining hundreds of megabytes of host
+    /// memory forever.
     pub fn release(
         &mut self,
         buffer: vk::Buffer,
@@ -95,13 +157,37 @@ impl StagingPool {
                 capacity,
             },
         );
+
+        // Auto-trim: if this release pushed us over budget, evict
+        // largest-first until we fit. This absorbs the bulk-load case
+        // described in #99 without requiring callers to remember.
+        if self.total_capacity() > self.budget_bytes {
+            self.trim_to(self.budget_bytes);
+        }
     }
 
-    /// Destroy all pooled staging buffers. Call before device destruction.
-    pub fn destroy(&mut self) {
-        for entry in self.free_list.drain(..) {
+    /// Evict retained staging buffers until total capacity ≤ `target`.
+    ///
+    /// Evicts the largest entries first — maximum bytes freed per
+    /// destroyed Vulkan resource. Pass `0` to drop the pool back to
+    /// empty (useful after a cell load or archive flush).
+    pub fn trim_to(&mut self, target: vk::DeviceSize) {
+        let capacities: Vec<vk::DeviceSize> =
+            self.free_list.iter().map(|e| e.capacity).collect();
+        let evict = select_evictions(&capacities, target);
+        for _ in 0..evict {
+            // `free_list` is sorted ascending by capacity, so the last
+            // entry is always the largest — the one the policy wants
+            // next. Pop + destroy, no index shifting.
+            let Some(entry) = self.free_list.pop() else {
+                break;
+            };
             unsafe {
-                // SAFETY: buffer was created by this device, not yet destroyed.
+                // SAFETY: entry.buffer was created by this device via
+                // `acquire` / `release`, not yet destroyed, and not
+                // currently bound to any in-flight command buffer
+                // (callers call `release` only after the upload
+                // command's fence has signalled).
                 self.device.destroy_buffer(entry.buffer, None);
             }
             self.allocator
@@ -111,6 +197,40 @@ impl StagingPool {
                 .expect("Failed to free staging allocation");
         }
     }
+
+    /// Trim the pool back to its configured budget. Intended for
+    /// end-of-phase cleanup points (post-cell-load, post-BSA-load)
+    /// where the caller wants to force eviction without raising or
+    /// lowering the steady-state budget.
+    pub fn trim(&mut self) {
+        self.trim_to(self.budget_bytes);
+    }
+
+    /// Destroy all pooled staging buffers. Call before device destruction.
+    pub fn destroy(&mut self) {
+        self.trim_to(0);
+    }
+}
+
+/// Compute how many entries to evict from a capacity-sorted free list
+/// (ascending) so the total drops to `target` or below. Always pops
+/// largest-first (from the end) because that minimizes destroyed
+/// entries for a given number of freed bytes. Pure, deterministic, and
+/// independent of Vulkan so it can be unit-tested without a device.
+fn select_evictions(capacities_ascending: &[vk::DeviceSize], target: vk::DeviceSize) -> usize {
+    let mut total: vk::DeviceSize = capacities_ascending.iter().sum();
+    if total <= target {
+        return 0;
+    }
+    let mut evict = 0usize;
+    for &cap in capacities_ascending.iter().rev() {
+        if total <= target {
+            break;
+        }
+        total = total.saturating_sub(cap);
+        evict += 1;
+    }
+    evict
 }
 
 impl Drop for StagingPool {
@@ -672,5 +792,84 @@ mod tests {
         assert_ne!(sz, vk::WHOLE_SIZE);
         let (_, sz) = aligned_flush_range(1024 * 1024, 4096);
         assert_ne!(sz, vk::WHOLE_SIZE);
+    }
+
+    // ── StagingPool eviction policy tests (#99) ─────────────────────
+    //
+    // These exercise `select_evictions` directly instead of spinning up
+    // a real Vulkan device. The policy is pure arithmetic so it can be
+    // validated in isolation; the trim_to / release integration on top
+    // of it is a straight mapping (pop largest, destroy).
+
+    #[test]
+    fn select_evictions_under_budget_is_noop() {
+        // Sum 30 ≤ budget 100 → nothing to evict.
+        let caps = [10u64, 10, 10];
+        assert_eq!(select_evictions(&caps, 100), 0);
+    }
+
+    #[test]
+    fn select_evictions_exactly_at_budget_is_noop() {
+        // Boundary — 30 == 30 still passes.
+        let caps = [10u64, 10, 10];
+        assert_eq!(select_evictions(&caps, 30), 0);
+    }
+
+    #[test]
+    fn select_evictions_evicts_largest_first() {
+        // Ascending: [10, 20, 30, 40]. Total 100, target 50.
+        // Popping the 40 gives 60 (still > 50); then the 30 gives 30.
+        // Must evict exactly 2 entries.
+        let caps = [10u64, 20, 30, 40];
+        assert_eq!(select_evictions(&caps, 50), 2);
+    }
+
+    #[test]
+    fn select_evictions_target_zero_evicts_everything() {
+        let caps = [10u64, 20, 30];
+        assert_eq!(select_evictions(&caps, 0), 3);
+    }
+
+    #[test]
+    fn select_evictions_handles_empty_list() {
+        let caps: [u64; 0] = [];
+        assert_eq!(select_evictions(&caps, 0), 0);
+        assert_eq!(select_evictions(&caps, 100), 0);
+    }
+
+    #[test]
+    fn select_evictions_cell_load_scenario() {
+        // Simulate the cell-load case from #99: 700 small staging buffers
+        // averaging 256 KiB each = 175 MiB retained. Default budget is
+        // 64 MiB → must evict enough to fit under 64 MiB.
+        let caps: Vec<u64> = (0..700).map(|_| 256 * 1024).collect();
+        let budget = DEFAULT_STAGING_BUDGET_BYTES;
+        let evict = select_evictions(&caps, budget);
+
+        // Post-eviction total must be ≤ budget.
+        let remaining: u64 = caps
+            .iter()
+            .take(caps.len() - evict)
+            .copied()
+            .sum();
+        assert!(
+            remaining <= budget,
+            "remaining {} bytes should fit under {} byte budget after evicting {} entries",
+            remaining,
+            budget,
+            evict,
+        );
+
+        // And we should not over-evict: one fewer eviction must exceed
+        // the budget. Otherwise the policy is wasteful.
+        if evict > 0 {
+            let over: u64 = caps.iter().take(caps.len() - (evict - 1)).copied().sum();
+            assert!(
+                over > budget,
+                "evicting {} entries left {} bytes — could have evicted one fewer",
+                evict - 1,
+                over,
+            );
+        }
     }
 }
