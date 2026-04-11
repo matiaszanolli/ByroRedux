@@ -3,6 +3,7 @@
 use super::acceleration::AccelerationManager;
 use super::composite::{CompositePipeline, HDR_FORMAT};
 use super::compute::ClusterCullPipeline;
+use super::gbuffer::{GBuffer, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT};
 use super::ssao::SsaoPipeline;
 use super::allocator::{self, SharedAllocator};
 use super::debug;
@@ -60,6 +61,10 @@ pub struct VulkanContext {
     pub current_frame: usize,
     /// Monotonic frame counter for temporal effects (jitter seed, accumulation).
     pub frame_counter: u32,
+    /// Previous frame's view-projection matrix (column-major [f32; 16]).
+    /// Used to compute screen-space motion vectors in the vertex shader.
+    /// On the very first frame, equals the current frame's viewProj (no motion).
+    pub prev_view_proj: [f32; 16],
 
     frame_sync: FrameSync,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -81,6 +86,7 @@ pub struct VulkanContext {
     pub cluster_cull: Option<ClusterCullPipeline>,
     pub ssao: Option<SsaoPipeline>,
     pub composite: Option<CompositePipeline>,
+    pub gbuffer: Option<GBuffer>,
     pipeline_cache: vk::PipelineCache,
     pipeline: vk::Pipeline,
     pipeline_alpha: vk::Pipeline,
@@ -207,9 +213,15 @@ impl VulkanContext {
             depth_format,
         )?;
 
-        // 10. Main render pass: writes to HDR intermediate (composite tone-maps
-        // to swapchain afterward). Color format is HDR, not swapchain.
-        let render_pass = create_render_pass(&device, HDR_FORMAT, depth_format)?;
+        // 10. Main render pass: 4 color attachments (HDR + G-buffer) + depth.
+        let render_pass = create_render_pass(
+            &device,
+            HDR_FORMAT,
+            NORMAL_FORMAT,
+            MOTION_FORMAT,
+            MESH_ID_FORMAT,
+            depth_format,
+        )?;
 
         // 10. Command pools: one for per-frame draw commands (RESET_COMMAND_BUFFER),
         //     one for one-time upload/transfer commands (separate pool to avoid
@@ -377,11 +389,35 @@ impl VulkanContext {
             .as_ref()
             .expect("composite must exist after construction");
 
-        // 15. Main framebuffers: one per HDR image (per frame-in-flight).
+        // 14c. G-buffer: normal + motion + mesh_id attachments, one per
+        // frame-in-flight slot. Must be created before main framebuffers.
+        let gbuffer = Some(GBuffer::new(
+            &device,
+            &gpu_allocator,
+            swapchain_state.extent.width,
+            swapchain_state.extent.height,
+        )?);
+        let gbuffer_ref = gbuffer.as_ref().expect("gbuffer must exist");
+
+        // 15. Main framebuffers: one per frame-in-flight slot, binding that
+        // slot's HDR + normal + motion + mesh_id views + shared depth view.
+        let hdr_views = &composite_ref.hdr_image_views;
+        let normal_views: Vec<vk::ImageView> = (0..hdr_views.len())
+            .map(|i| gbuffer_ref.normal_view(i))
+            .collect();
+        let motion_views: Vec<vk::ImageView> = (0..hdr_views.len())
+            .map(|i| gbuffer_ref.motion_view(i))
+            .collect();
+        let mesh_id_views: Vec<vk::ImageView> = (0..hdr_views.len())
+            .map(|i| gbuffer_ref.mesh_id_view(i))
+            .collect();
         let framebuffers = create_main_framebuffers(
             &device,
             render_pass,
-            &composite_ref.hdr_image_views,
+            hdr_views,
+            &normal_views,
+            &motion_views,
+            &mesh_id_views,
             depth_image_view,
             swapchain_state.extent,
         )?;
@@ -430,6 +466,7 @@ impl VulkanContext {
             cluster_cull,
             ssao,
             composite,
+            gbuffer,
             depth_allocation: Some(depth_allocation),
             depth_image,
             depth_image_view,
@@ -440,6 +477,14 @@ impl VulkanContext {
             frame_sync,
             current_frame: 0,
             frame_counter: 0,
+            // Initialize to identity; first frame will overwrite with current
+            // viewProj so motion vector is zero on the first frame.
+            prev_view_proj: [
+                1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 1.0,
+            ],
         })
     }
 
@@ -486,6 +531,9 @@ impl Drop for VulkanContext {
                 }
                 if let Some(ref mut composite) = self.composite {
                     composite.destroy(&self.device, alloc);
+                }
+                if let Some(ref mut gbuffer) = self.gbuffer {
+                    gbuffer.destroy(&self.device, alloc);
                 }
             }
 

@@ -8,6 +8,7 @@ pub mod dds;
 pub mod debug;
 pub mod descriptors;
 pub mod device;
+pub mod gbuffer;
 pub mod instance;
 pub mod pipeline;
 pub mod scene_buffer;

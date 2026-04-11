@@ -37,16 +37,52 @@ pub(super) fn find_depth_format(
 pub(super) fn create_render_pass(
     device: &ash::Device,
     color_format: vk::Format,
+    normal_format: vk::Format,
+    motion_format: vk::Format,
+    mesh_id_format: vk::Format,
     depth_format: vk::Format,
 ) -> Result<vk::RenderPass> {
-    // Phase 0: main render pass writes to an HDR intermediate
-    // (RGBA16F). The composite render pass samples this intermediate as
-    // a texture, so the final layout must be SHADER_READ_ONLY_OPTIMAL
-    // (not PRESENT_SRC_KHR anymore — that's handled by composite).
-    // The `color_format` parameter here is expected to be the HDR format
-    // passed by the caller, not the swapchain format.
+    // Phase 1: main render pass writes to 4 color attachments + depth:
+    //   0 — HDR color (RGBA16F)
+    //   1 — normal (RGBA16_SNORM, world-space)
+    //   2 — motion vector (R16G16_SFLOAT, screen-space)
+    //   3 — mesh_id (R16_UINT, per-instance ID)
+    //   4 — depth (D32)
+    //
+    // All color attachments use final_layout SHADER_READ_ONLY_OPTIMAL so
+    // the composite pass and SVGF compute passes can sample them.
     let color_attachment = vk::AttachmentDescription::default()
         .format(color_format)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .load_op(vk::AttachmentLoadOp::CLEAR)
+        .store_op(vk::AttachmentStoreOp::STORE)
+        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+
+    let normal_attachment = vk::AttachmentDescription::default()
+        .format(normal_format)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .load_op(vk::AttachmentLoadOp::CLEAR)
+        .store_op(vk::AttachmentStoreOp::STORE)
+        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+
+    let motion_attachment = vk::AttachmentDescription::default()
+        .format(motion_format)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .load_op(vk::AttachmentLoadOp::CLEAR)
+        .store_op(vk::AttachmentStoreOp::STORE)
+        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+
+    let mesh_id_attachment = vk::AttachmentDescription::default()
+        .format(mesh_id_format)
         .samples(vk::SampleCountFlags::TYPE_1)
         .load_op(vk::AttachmentLoadOp::CLEAR)
         .store_op(vk::AttachmentStoreOp::STORE)
@@ -69,14 +105,28 @@ pub(super) fn create_render_pass(
         .initial_layout(vk::ImageLayout::UNDEFINED)
         .final_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 
-    let color_ref = vk::AttachmentReference {
-        attachment: 0,
-        layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-    };
-    let color_refs = [color_ref];
+    // Attachments 0..=3 are color, attachment 4 is depth.
+    let color_refs = [
+        vk::AttachmentReference {
+            attachment: 0,
+            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        },
+        vk::AttachmentReference {
+            attachment: 1,
+            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        },
+        vk::AttachmentReference {
+            attachment: 2,
+            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        },
+        vk::AttachmentReference {
+            attachment: 3,
+            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        },
+    ];
 
     let depth_ref = vk::AttachmentReference {
-        attachment: 1,
+        attachment: 4,
         layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
 
@@ -128,7 +178,13 @@ pub(super) fn create_render_pass(
         )
         .dst_access_mask(vk::AccessFlags::SHADER_READ);
 
-    let attachments = [color_attachment, depth_attachment];
+    let attachments = [
+        color_attachment,
+        normal_attachment,
+        motion_attachment,
+        mesh_id_attachment,
+        depth_attachment,
+    ];
     let subpasses = [subpass];
     let dependencies = [dependency, dependency_out];
 
@@ -143,25 +199,39 @@ pub(super) fn create_render_pass(
             .context("Failed to create render pass")?
     };
 
-    log::info!("Render pass created (color + depth)");
+    log::info!("Render pass created (4 color + depth)");
     Ok(render_pass)
 }
 
-/// Create one main framebuffer per HDR color image, all sharing the same
-/// depth attachment. Phase 0: the main render pass writes to an HDR
-/// intermediate (one per frame-in-flight) rather than directly to the
-/// swapchain; the composite pass handles the swapchain.
+/// Create one main framebuffer per frame-in-flight slot. Each framebuffer
+/// binds that slot's HDR color + normal + motion + mesh_id views, plus
+/// the shared depth view.
+///
+/// `hdr_views`, `normal_views`, `motion_views`, `mesh_id_views` must all
+/// have the same length (MAX_FRAMES_IN_FLIGHT).
 pub(super) fn create_main_framebuffers(
     device: &ash::Device,
     render_pass: vk::RenderPass,
     hdr_views: &[vk::ImageView],
+    normal_views: &[vk::ImageView],
+    motion_views: &[vk::ImageView],
+    mesh_id_views: &[vk::ImageView],
     depth_view: vk::ImageView,
     extent: vk::Extent2D,
 ) -> Result<Vec<vk::Framebuffer>> {
-    hdr_views
-        .iter()
-        .map(|&hdr_view| {
-            let attachments = [hdr_view, depth_view];
+    debug_assert_eq!(hdr_views.len(), normal_views.len());
+    debug_assert_eq!(hdr_views.len(), motion_views.len());
+    debug_assert_eq!(hdr_views.len(), mesh_id_views.len());
+
+    (0..hdr_views.len())
+        .map(|i| {
+            let attachments = [
+                hdr_views[i],
+                normal_views[i],
+                motion_views[i],
+                mesh_id_views[i],
+                depth_view,
+            ];
             let create_info = vk::FramebufferCreateInfo::default()
                 .render_pass(render_pass)
                 .attachments(&attachments)

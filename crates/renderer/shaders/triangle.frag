@@ -8,8 +8,14 @@ layout(location = 2) in vec3 fragNormal;
 layout(location = 3) in vec3 fragWorldPos;
 layout(location = 4) flat in uint fragTexIndex;
 layout(location = 5) flat in int fragInstanceIndex;
+layout(location = 6) in vec4 fragCurrClipPos;
+layout(location = 7) in vec4 fragPrevClipPos;
 
-layout(location = 0) out vec4 outColor;
+// Main render pass has 4 color attachments (Phase 1).
+layout(location = 0) out vec4 outColor;     // HDR color
+layout(location = 1) out vec4 outNormal;    // world-space normal (xyz), unused w
+layout(location = 2) out vec2 outMotion;    // screen-space motion vector
+layout(location = 3) out uint outMeshID;    // per-instance ID
 
 // Bindless texture array.
 layout(set = 0, binding = 0) uniform sampler2D textures[];
@@ -55,6 +61,7 @@ layout(std430, set = 1, binding = 0) readonly buffer LightBuffer {
 
 layout(set = 1, binding = 1) uniform CameraUBO {
     mat4 viewProj;
+    mat4 prevViewProj;  // Phase 1: previous frame's viewProj for motion vectors
     vec4 cameraPos;   // xyz = world position, w = frame counter
     vec4 sceneFlags;  // x = RT enabled (1.0), yzw = ambient color (RGB)
     vec4 screen;      // x = width, y = height, z = fog near, w = fog far
@@ -296,6 +303,23 @@ void main() {
     if (normalMapIdx != 0u) {
         N = perturbNormal(N, fragWorldPos, fragUV, normalMapIdx);
     }
+
+    // ── G-buffer outputs (Phase 1) ────────────────────────────────────
+    // Write these before any early return so SVGF has valid per-pixel
+    // normal / motion / mesh_id regardless of which lighting path we take.
+    outNormal = vec4(N, 0.0);
+
+    // Screen-space motion vector: current-pixel UV → previous-pixel UV.
+    // Perspective divide both clip-space positions to get NDC, halve to
+    // go from NDC delta [-2,2] to UV delta [-1,1]. SVGF's temporal pass
+    // reads it as: prev_uv = current_uv - motion.
+    vec2 currNDC = fragCurrClipPos.xy / fragCurrClipPos.w;
+    vec2 prevNDC = fragPrevClipPos.xy / fragPrevClipPos.w;
+    outMotion = (currNDC - prevNDC) * 0.5;
+
+    // Mesh ID: instance index + 1 so that "0" (clear value for background
+    // pixels) is distinct from "instance 0". Caps at uint16 max.
+    outMeshID = uint(fragInstanceIndex) + 1u;
 
     // View direction.
     vec3 V = normalize(cameraPos.xyz - fragWorldPos);

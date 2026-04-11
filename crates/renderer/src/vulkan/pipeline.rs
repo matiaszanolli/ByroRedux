@@ -164,9 +164,18 @@ fn create_triangle_pipeline_with_layout(
         .sample_shading_enable(false)
         .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
-    let color_blend_attachment = [vk::PipelineColorBlendAttachmentState::default()
+    // Phase 1: main render pass has 4 color attachments (HDR + normal +
+    // motion + mesh_id). Each needs a blend state entry. Opaque pipeline
+    // never blends any of them.
+    let color_blend_none = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
-        .blend_enable(false)];
+        .blend_enable(false);
+    let color_blend_attachment = [
+        color_blend_none,
+        color_blend_none,
+        color_blend_none,
+        color_blend_none,
+    ];
 
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)
@@ -207,7 +216,10 @@ fn create_triangle_pipeline_with_layout(
 
     // Alpha blend pipeline: standard src-alpha, one-minus-src-alpha.
     // Depth test on but depth write OFF (transparent objects shouldn't occlude).
-    let color_blend_alpha = [vk::PipelineColorBlendAttachmentState::default()
+    // Attachment 0 (HDR) blends. Attachments 1/2/3 (normal/motion/mesh_id)
+    // overwrite — the alpha surface's normal/motion/id replaces the opaque
+    // one behind it because the alpha fragment IS the new visible surface.
+    let color_blend_hdr_alpha = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
         .blend_enable(true)
         .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
@@ -215,7 +227,13 @@ fn create_triangle_pipeline_with_layout(
         .color_blend_op(vk::BlendOp::ADD)
         .src_alpha_blend_factor(vk::BlendFactor::ONE)
         .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-        .alpha_blend_op(vk::BlendOp::ADD)];
+        .alpha_blend_op(vk::BlendOp::ADD);
+    let color_blend_alpha = [
+        color_blend_hdr_alpha,
+        color_blend_none,
+        color_blend_none,
+        color_blend_none,
+    ];
     let color_blending_alpha = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)
         .attachments(&color_blend_alpha);
@@ -402,7 +420,10 @@ pub fn create_ui_pipeline(
         .stencil_test_enable(false);
 
     // Alpha blending for UI transparency.
-    let color_blend_attachment = [vk::PipelineColorBlendAttachmentState::default()
+    // Main render pass has 4 color attachments. UI writes to HDR (slot 0)
+    // with alpha blending and masks out writes to normal/motion/mesh_id
+    // via color_write_mask(empty) so UI doesn't pollute the G-buffer.
+    let ui_hdr_blend = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
         .blend_enable(true)
         .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
@@ -410,7 +431,16 @@ pub fn create_ui_pipeline(
         .color_blend_op(vk::BlendOp::ADD)
         .src_alpha_blend_factor(vk::BlendFactor::ONE)
         .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-        .alpha_blend_op(vk::BlendOp::ADD)];
+        .alpha_blend_op(vk::BlendOp::ADD);
+    let ui_noop_blend = vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::empty())
+        .blend_enable(false);
+    let color_blend_attachment = [
+        ui_hdr_blend,
+        ui_noop_blend,
+        ui_noop_blend,
+        ui_noop_blend,
+    ];
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)
         .attachments(&color_blend_attachment);

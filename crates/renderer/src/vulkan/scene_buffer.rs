@@ -117,6 +117,12 @@ pub struct GpuLight {
 pub struct GpuCamera {
     /// Combined view-projection matrix (column-major).
     pub view_proj: [[f32; 4]; 4],
+    /// Previous frame's view-projection matrix (column-major). Used by the
+    /// vertex shader to compute screen-space motion vectors: projecting a
+    /// vertex's current world position through both matrices gives the
+    /// screen motion that downstream temporal filters (SVGF, TAA) need.
+    /// On the very first frame, this equals `view_proj` so motion is zero.
+    pub prev_view_proj: [[f32; 4]; 4],
     /// xyz = world position, w = frame counter (for temporal jitter seed).
     pub position: [f32; 4],
     /// x = RT enabled (1.0), y/z/w = ambient light color (RGB).
@@ -129,13 +135,15 @@ pub struct GpuCamera {
 
 impl Default for GpuCamera {
     fn default() -> Self {
+        let identity = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
         Self {
-            view_proj: [
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ],
+            view_proj: identity,
+            prev_view_proj: identity,
             position: [0.0; 4],
             flags: [0.0; 4],
             screen: [1280.0, 720.0, 0.0, 0.0],

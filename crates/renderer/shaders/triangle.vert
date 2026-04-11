@@ -38,6 +38,7 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
 // Camera UBO (set 1, binding 1) — per-frame, shared across all draws.
 layout(set = 1, binding = 1) uniform CameraUBO {
     mat4 viewProj;
+    mat4 prevViewProj;   // Previous frame's view-projection for motion vectors.
     vec4 cameraPos;
     vec4 sceneFlags;
     vec4 screen;
@@ -55,6 +56,13 @@ layout(location = 2) out vec3 fragNormal;
 layout(location = 3) out vec3 fragWorldPos;
 layout(location = 4) flat out uint fragTexIndex;
 layout(location = 5) flat out int fragInstanceIndex;
+// Current + previous frame clip-space positions for screen-space motion
+// vector computation in the fragment shader. Passing both positions as
+// varyings (not the motion vector itself) avoids perspective interpolation
+// artifacts near edges. Assumes static geometry — skinned meshes get the
+// wrong motion vector but SVGF will detect that as a disocclusion.
+layout(location = 6) out vec4 fragCurrClipPos;
+layout(location = 7) out vec4 fragPrevClipPos;
 
 void main() {
     GpuInstance inst = instances[gl_InstanceIndex];
@@ -74,7 +82,8 @@ void main() {
     }
 
     vec4 worldPos = xform * vec4(inPosition, 1.0);
-    gl_Position = viewProj * worldPos;
+    vec4 currClip = viewProj * worldPos;
+    gl_Position = currClip;
     fragColor = inColor;
     fragUV = inUV;
     // Correct normal transform for non-uniform scale (inverse-transpose).
@@ -85,4 +94,10 @@ void main() {
     fragWorldPos = worldPos.xyz;
     fragTexIndex = inst.textureIndex;
     fragInstanceIndex = gl_InstanceIndex;
+
+    // Motion vector: current + previous clip-space positions. Fragment
+    // shader does the perspective divide and screen-space delta.
+    // Assumes static geometry (same world position both frames).
+    fragCurrClipPos = currClip;
+    fragPrevClipPos = prevViewProj * worldPos;
 }

@@ -97,10 +97,31 @@ impl VulkanContext {
                 .context("begin_command_buffer")?;
         }
 
+        // 4 color attachments + depth. Order must match the render pass:
+        //   0 HDR, 1 normal, 2 motion, 3 mesh_id, 4 depth.
         let clear_values = [
             vk::ClearValue {
                 color: vk::ClearColorValue {
                     float32: clear_color,
+                },
+            },
+            vk::ClearValue {
+                // Normal: zero — shader always writes per-fragment.
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 0.0],
+                },
+            },
+            vk::ClearValue {
+                // Motion: zero — "no movement" baseline for background/sky.
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 0.0],
+                },
+            },
+            vk::ClearValue {
+                // Mesh ID: 0 (distinct from any instance index which starts at 0 too,
+                // but background pixels are cleared to 0 which SVGF treats as "no history").
+                color: vk::ClearColorValue {
+                    uint32: [0, 0, 0, 0],
                 },
             },
             vk::ClearValue {
@@ -165,12 +186,19 @@ impl VulkanContext {
                 0.0
             };
         let vp = view_proj;
+        let pvp = &self.prev_view_proj;
         let camera = scene_buffer::GpuCamera {
             view_proj: [
                 [vp[0], vp[1], vp[2], vp[3]],
                 [vp[4], vp[5], vp[6], vp[7]],
                 [vp[8], vp[9], vp[10], vp[11]],
                 [vp[12], vp[13], vp[14], vp[15]],
+            ],
+            prev_view_proj: [
+                [pvp[0], pvp[1], pvp[2], pvp[3]],
+                [pvp[4], pvp[5], pvp[6], pvp[7]],
+                [pvp[8], pvp[9], pvp[10], pvp[11]],
+                [pvp[12], pvp[13], pvp[14], pvp[15]],
             ],
             // w = monotonic frame counter for temporal jitter seed in shadow rays.
             position: [camera_pos[0], camera_pos[1], camera_pos[2], self.frame_counter as f32],
@@ -196,6 +224,8 @@ impl VulkanContext {
         self.scene_buffers
             .upload_camera(&self.device, frame, &camera)
             .unwrap_or_else(|e| log::warn!("Failed to upload camera: {e}"));
+        // Store this frame's viewProj as next frame's "previous" for motion vectors.
+        self.prev_view_proj = *vp;
         if !bone_palette.is_empty() {
             self.scene_buffers
                 .upload_bones(&self.device, frame, bone_palette)

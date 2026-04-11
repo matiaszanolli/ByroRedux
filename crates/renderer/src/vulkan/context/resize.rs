@@ -1,6 +1,7 @@
 //! Swapchain recreation after window resize or suboptimal present.
 
 use super::super::composite::HDR_FORMAT;
+use super::super::gbuffer::{MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT};
 use super::super::ssao::SsaoPipeline;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::super::{pipeline, swapchain};
@@ -98,8 +99,15 @@ impl VulkanContext {
         self.depth_image_view = depth_image_view;
         self.depth_allocation = Some(depth_allocation);
 
-        // Main render pass writes to HDR intermediate, not swapchain.
-        self.render_pass = create_render_pass(&self.device, HDR_FORMAT, self.depth_format)?;
+        // Main render pass: 4 color (HDR + G-buffer) + depth.
+        self.render_pass = create_render_pass(
+            &self.device,
+            HDR_FORMAT,
+            NORMAL_FORMAT,
+            MOTION_FORMAT,
+            MESH_ID_FORMAT,
+            self.depth_format,
+        )?;
 
         // Recreate pipelines against the new render pass, reusing existing layout.
         let pipelines = pipeline::recreate_triangle_pipelines(
@@ -182,15 +190,42 @@ impl VulkanContext {
             )?;
         }
 
-        // Main framebuffers bind the new HDR image views + depth.
+        // Recreate G-buffer images at the new extent.
+        if let Some(ref mut gbuffer) = self.gbuffer {
+            gbuffer.recreate_on_resize(
+                &self.device,
+                self.allocator.as_ref().expect("allocator missing during resize"),
+                self.swapchain_state.extent.width,
+                self.swapchain_state.extent.height,
+            )?;
+        }
+
+        // Main framebuffers bind the new HDR + G-buffer views + depth.
         let composite_ref = self
             .composite
             .as_ref()
             .expect("composite must exist during resize");
+        let gbuffer_ref = self
+            .gbuffer
+            .as_ref()
+            .expect("gbuffer must exist during resize");
+        let hdr_views = &composite_ref.hdr_image_views;
+        let normal_views: Vec<vk::ImageView> = (0..hdr_views.len())
+            .map(|i| gbuffer_ref.normal_view(i))
+            .collect();
+        let motion_views: Vec<vk::ImageView> = (0..hdr_views.len())
+            .map(|i| gbuffer_ref.motion_view(i))
+            .collect();
+        let mesh_id_views: Vec<vk::ImageView> = (0..hdr_views.len())
+            .map(|i| gbuffer_ref.mesh_id_view(i))
+            .collect();
         self.framebuffers = create_main_framebuffers(
             &self.device,
             self.render_pass,
-            &composite_ref.hdr_image_views,
+            hdr_views,
+            &normal_views,
+            &motion_views,
+            &mesh_id_views,
             self.depth_image_view,
             self.swapchain_state.extent,
         )?;
