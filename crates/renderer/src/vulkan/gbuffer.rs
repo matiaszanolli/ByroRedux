@@ -32,6 +32,15 @@ use gpu_allocator::vulkan as vk_alloc;
 pub const NORMAL_FORMAT: vk::Format = vk::Format::R16G16B16A16_SNORM;
 pub const MOTION_FORMAT: vk::Format = vk::Format::R16G16_SFLOAT;
 pub const MESH_ID_FORMAT: vk::Format = vk::Format::R16_UINT;
+/// Raw (pre-denoise) indirect light, albedo-demodulated. Written by the
+/// main render pass, sampled by SVGF temporal pass (Phase 3+) and the
+/// composite pass. R11G11B10F = 4 bytes/pixel, plenty of precision for
+/// HDR diffuse bounce without alpha.
+pub const RAW_INDIRECT_FORMAT: vk::Format = vk::Format::B10G11R11_UFLOAT_PACK32;
+/// Surface albedo (diffuse color × vertex color). Written by the main
+/// render pass and re-multiplied in the composite pass to recover
+/// texture detail after SVGF blurs the demodulated indirect light.
+pub const ALBEDO_FORMAT: vk::Format = vk::Format::B10G11R11_UFLOAT_PACK32;
 
 /// A single G-buffer attachment slot (one image per frame-in-flight).
 struct Attachment {
@@ -139,12 +148,15 @@ impl Attachment {
     }
 }
 
-/// Owns the G-buffer attachment images (normal, motion, mesh_id) + their
-/// views and allocations. One image per frame-in-flight for each attachment.
+/// Owns the G-buffer attachment images (normal, motion, mesh_id,
+/// raw_indirect, albedo) + their views and allocations. One image per
+/// frame-in-flight slot for each attachment.
 pub struct GBuffer {
     normal: Attachment,
     motion: Attachment,
     mesh_id: Attachment,
+    raw_indirect: Attachment,
+    albedo: Attachment,
     pub width: u32,
     pub height: u32,
 }
@@ -161,6 +173,8 @@ impl GBuffer {
             normal: Attachment::new_empty(),
             motion: Attachment::new_empty(),
             mesh_id: Attachment::new_empty(),
+            raw_indirect: Attachment::new_empty(),
+            albedo: Attachment::new_empty(),
             width,
             height,
         };
@@ -169,13 +183,15 @@ impl GBuffer {
         let r1 = gb.normal.allocate(device, allocator, NORMAL_FORMAT, width, height, "gb_normal");
         let r2 = gb.motion.allocate(device, allocator, MOTION_FORMAT, width, height, "gb_motion");
         let r3 = gb.mesh_id.allocate(device, allocator, MESH_ID_FORMAT, width, height, "gb_mesh_id");
-        if let Err(e) = r1.and(r2).and(r3) {
+        let r4 = gb.raw_indirect.allocate(device, allocator, RAW_INDIRECT_FORMAT, width, height, "gb_raw_indirect");
+        let r5 = gb.albedo.allocate(device, allocator, ALBEDO_FORMAT, width, height, "gb_albedo");
+        if let Err(e) = r1.and(r2).and(r3).and(r4).and(r5) {
             unsafe { gb.destroy(device, allocator) };
             return Err(e);
         }
 
         log::info!(
-            "G-buffer created: {}x{} (normal + motion + mesh_id, {} frames)",
+            "G-buffer created: {}x{} (normal + motion + mesh_id + raw_indirect + albedo, {} frames)",
             width, height, MAX_FRAMES_IN_FLIGHT
         );
         Ok(gb)
@@ -193,6 +209,14 @@ impl GBuffer {
     pub fn mesh_id_view(&self, frame: usize) -> vk::ImageView {
         self.mesh_id.views[frame]
     }
+    /// Image view for the raw (pre-denoise) indirect light, per frame.
+    pub fn raw_indirect_view(&self, frame: usize) -> vk::ImageView {
+        self.raw_indirect.views[frame]
+    }
+    /// Image view for the albedo attachment in the given frame slot.
+    pub fn albedo_view(&self, frame: usize) -> vk::ImageView {
+        self.albedo.views[frame]
+    }
 
     /// Recreate all attachments at a new extent (called on swapchain resize).
     pub fn recreate_on_resize(
@@ -206,6 +230,8 @@ impl GBuffer {
             self.normal.destroy(device, allocator);
             self.motion.destroy(device, allocator);
             self.mesh_id.destroy(device, allocator);
+            self.raw_indirect.destroy(device, allocator);
+            self.albedo.destroy(device, allocator);
         }
         self.width = width;
         self.height = height;
@@ -215,6 +241,10 @@ impl GBuffer {
             .allocate(device, allocator, MOTION_FORMAT, width, height, "gb_motion")?;
         self.mesh_id
             .allocate(device, allocator, MESH_ID_FORMAT, width, height, "gb_mesh_id")?;
+        self.raw_indirect
+            .allocate(device, allocator, RAW_INDIRECT_FORMAT, width, height, "gb_raw_indirect")?;
+        self.albedo
+            .allocate(device, allocator, ALBEDO_FORMAT, width, height, "gb_albedo")?;
         Ok(())
     }
 
@@ -224,6 +254,8 @@ impl GBuffer {
             self.normal.destroy(device, allocator);
             self.motion.destroy(device, allocator);
             self.mesh_id.destroy(device, allocator);
+            self.raw_indirect.destroy(device, allocator);
+            self.albedo.destroy(device, allocator);
         }
     }
 }

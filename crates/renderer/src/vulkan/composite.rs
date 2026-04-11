@@ -27,10 +27,24 @@
 //! depth needed — fullscreen triangle, depth test disabled).
 
 use super::allocator::SharedAllocator;
+use super::buffer::GpuBuffer;
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
+
+/// Composite parameter UBO. Currently minimal — fog state is the only
+/// per-frame input. Grows in later phases as SVGF settings are added.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CompositeParams {
+    /// xyz = RGB, w = fog enabled (1.0 = yes, 0.0 = no)
+    pub fog_color: [f32; 4],
+    /// x = fog near, y = fog far, z/w = unused
+    pub fog_params: [f32; 4],
+    /// Reserved for future use (camera near/far, debug flags, etc.)
+    pub depth_params: [f32; 4],
+}
 
 /// HDR color format. RGBA16F = 8 bytes/pixel, sufficient dynamic range
 /// for all real-world scene brightness, supports alpha for glass blending.
@@ -56,12 +70,15 @@ pub struct CompositePipeline {
     pipeline_layout: vk::PipelineLayout,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
-    /// One descriptor set per frame-in-flight (each samples its own HDR image).
+    /// One descriptor set per frame-in-flight. Each references that frame's
+    /// HDR + raw_indirect + albedo views + the per-frame params UBO.
     descriptor_sets: Vec<vk::DescriptorSet>,
     vert_module: vk::ShaderModule,
     frag_module: vk::ShaderModule,
-    /// Sampler for reading the HDR color target in the composite fragment shader.
+    /// Sampler for reading all the input textures (HDR, indirect, albedo).
     hdr_sampler: vk::Sampler,
+    /// Per-frame parameter UBOs.
+    param_buffers: Vec<GpuBuffer>,
 
     pub width: u32,
     pub height: u32,
@@ -70,11 +87,17 @@ pub struct CompositePipeline {
 impl CompositePipeline {
     /// Create all HDR intermediate images, the composite render pass +
     /// pipeline, and the per-swapchain-image composite framebuffers.
+    ///
+    /// `raw_indirect_views` and `albedo_views` are owned by the G-buffer
+    /// module (one view per frame-in-flight); the composite pipeline just
+    /// references them via descriptor sets.
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
         swapchain_format: vk::Format,
         swapchain_views: &[vk::ImageView],
+        raw_indirect_views: &[vk::ImageView],
+        albedo_views: &[vk::ImageView],
         width: u32,
         height: u32,
     ) -> Result<Self> {
@@ -83,6 +106,8 @@ impl CompositePipeline {
             allocator,
             swapchain_format,
             swapchain_views,
+            raw_indirect_views,
+            albedo_views,
             width,
             height,
         );
@@ -97,9 +122,13 @@ impl CompositePipeline {
         allocator: &SharedAllocator,
         swapchain_format: vk::Format,
         swapchain_views: &[vk::ImageView],
+        raw_indirect_views: &[vk::ImageView],
+        albedo_views: &[vk::ImageView],
         width: u32,
         height: u32,
     ) -> Result<Self> {
+        debug_assert_eq!(raw_indirect_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(albedo_views.len(), MAX_FRAMES_IN_FLIGHT);
         // Build a partially-valid Self so we can use destroy() for cleanup
         // on any error. Fields that haven't been created yet use null
         // handles — destroy() calls vkDestroy* on null (always a no-op).
@@ -117,6 +146,7 @@ impl CompositePipeline {
             vert_module: vk::ShaderModule::null(),
             frag_module: vk::ShaderModule::null(),
             hdr_sampler: vk::Sampler::null(),
+            param_buffers: Vec::new(),
             width,
             height,
         };
@@ -288,12 +318,42 @@ impl CompositePipeline {
             partial.composite_framebuffers.push(fb);
         }
 
-        // ── 5. Descriptor set layout + pipeline layout ───────────────
-        let ds_bindings = [vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+        // ── 5. Per-frame parameter UBOs ──────────────────────────────
+        let param_size = std::mem::size_of::<CompositeParams>() as vk::DeviceSize;
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            let buf = try_or_cleanup!(GpuBuffer::create_host_visible(
+                device,
+                allocator,
+                param_size,
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
+            ));
+            partial.param_buffers.push(buf);
+        }
+
+        // ── 6. Descriptor set layout + pipeline layout ───────────────
+        // Phase 2: 4 bindings — HDR, indirect, albedo, params UBO.
+        let ds_bindings = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(2)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(3)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        ];
         partial.descriptor_set_layout = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_set_layout(
@@ -313,11 +373,17 @@ impl CompositePipeline {
                 .context("composite pipeline layout")
         });
 
-        // ── 6. Descriptor pool + per-frame descriptor sets ───────────
-        let pool_sizes = [vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-        }];
+        // ── 7. Descriptor pool + per-frame descriptor sets ───────────
+        let pool_sizes = [
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 3) as u32,
+            },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::UNIFORM_BUFFER,
+                descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
+            },
+        ];
         partial.descriptor_pool = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_pool(
@@ -340,21 +406,52 @@ impl CompositePipeline {
                 .context("composite descriptor sets")
         });
 
-        // Write each descriptor set to sample its own frame's HDR image.
+        // Write each descriptor set to sample its own frame's HDR + indirect +
+        // albedo views and bind its own param UBO.
         for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let image_info = [vk::DescriptorImageInfo::default()
+            let hdr_info = [vk::DescriptorImageInfo::default()
                 .sampler(partial.hdr_sampler)
                 .image_view(partial.hdr_image_views[i])
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let write = vk::WriteDescriptorSet::default()
-                .dst_set(partial.descriptor_sets[i])
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&image_info);
-            unsafe { device.update_descriptor_sets(&[write], &[]) };
+            let indirect_info = [vk::DescriptorImageInfo::default()
+                .sampler(partial.hdr_sampler)
+                .image_view(raw_indirect_views[i])
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let albedo_info = [vk::DescriptorImageInfo::default()
+                .sampler(partial.hdr_sampler)
+                .image_view(albedo_views[i])
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let params_info = [vk::DescriptorBufferInfo {
+                buffer: partial.param_buffers[i].buffer,
+                offset: 0,
+                range: param_size,
+            }];
+            let writes = [
+                vk::WriteDescriptorSet::default()
+                    .dst_set(partial.descriptor_sets[i])
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&hdr_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(partial.descriptor_sets[i])
+                    .dst_binding(1)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&indirect_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(partial.descriptor_sets[i])
+                    .dst_binding(2)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&albedo_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(partial.descriptor_sets[i])
+                    .dst_binding(3)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(&params_info),
+            ];
+            unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
 
-        // ── 7. Shader modules ────────────────────────────────────────
+        // ── 8. Shader modules ────────────────────────────────────────
         let vert_spv = include_bytes!("../../shaders/composite.vert.spv");
         let frag_spv = include_bytes!("../../shaders/composite.frag.spv");
         partial.vert_module =
@@ -362,7 +459,7 @@ impl CompositePipeline {
         partial.frag_module =
             try_or_cleanup!(super::pipeline::load_shader_module(device, frag_spv));
 
-        // ── 8. Graphics pipeline ─────────────────────────────────────
+        // ── 9. Graphics pipeline ─────────────────────────────────────
         let entry_point = c"main";
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()
@@ -529,12 +626,16 @@ impl CompositePipeline {
 
     /// Recreate framebuffers and pipeline viewport-dependent state on
     /// swapchain resize. The HDR images themselves are recreated because
-    /// their size matches the swapchain.
+    /// their size matches the swapchain. Caller must also pass the
+    /// G-buffer's new raw_indirect + albedo views (which they just
+    /// recreated via `GBuffer::recreate_on_resize`).
     pub fn recreate_on_resize(
         &mut self,
         device: &ash::Device,
         allocator: &SharedAllocator,
         swapchain_views: &[vk::ImageView],
+        raw_indirect_views: &[vk::ImageView],
+        albedo_views: &[vk::ImageView],
         width: u32,
         height: u32,
     ) -> Result<()> {
@@ -616,18 +717,50 @@ impl CompositePipeline {
             self.hdr_image_views.push(view);
         }
 
-        // Rewrite descriptor sets to point at the new HDR image views.
+        // Rewrite descriptor sets to point at the new HDR, raw_indirect,
+        // and albedo image views. Params UBO buffers are unchanged.
+        let param_size = std::mem::size_of::<CompositeParams>() as vk::DeviceSize;
         for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let image_info = [vk::DescriptorImageInfo::default()
+            let hdr_info = [vk::DescriptorImageInfo::default()
                 .sampler(self.hdr_sampler)
                 .image_view(self.hdr_image_views[i])
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let write = vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[i])
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&image_info);
-            unsafe { device.update_descriptor_sets(&[write], &[]) };
+            let indirect_info = [vk::DescriptorImageInfo::default()
+                .sampler(self.hdr_sampler)
+                .image_view(raw_indirect_views[i])
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let albedo_info = [vk::DescriptorImageInfo::default()
+                .sampler(self.hdr_sampler)
+                .image_view(albedo_views[i])
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let params_info = [vk::DescriptorBufferInfo {
+                buffer: self.param_buffers[i].buffer,
+                offset: 0,
+                range: param_size,
+            }];
+            let writes = [
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&hdr_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(1)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&indirect_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(2)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&albedo_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(3)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(&params_info),
+            ];
+            unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
 
         // Recreate composite framebuffers (bound to swapchain views).
@@ -646,9 +779,24 @@ impl CompositePipeline {
         Ok(())
     }
 
+    /// Upload per-frame composite parameters (fog state, etc.) to the
+    /// frame's UBO. Call once per frame before `dispatch`.
+    pub fn upload_params(
+        &mut self,
+        device: &ash::Device,
+        frame: usize,
+        params: &CompositeParams,
+    ) -> Result<()> {
+        self.param_buffers[frame].write_mapped(device, std::slice::from_ref(params))
+    }
+
     /// Destroy all Vulkan objects. Must be called before the device/allocator
     /// are dropped. Safe to call on partially-initialized state.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        for buf in &mut self.param_buffers {
+            buf.destroy(device, allocator);
+        }
+        self.param_buffers.clear();
         if self.pipeline != vk::Pipeline::null() {
             unsafe { device.destroy_pipeline(self.pipeline, None) };
         }

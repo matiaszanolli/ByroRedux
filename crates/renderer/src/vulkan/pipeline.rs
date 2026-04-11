@@ -164,13 +164,15 @@ fn create_triangle_pipeline_with_layout(
         .sample_shading_enable(false)
         .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
-    // Phase 1: main render pass has 4 color attachments (HDR + normal +
-    // motion + mesh_id). Each needs a blend state entry. Opaque pipeline
-    // never blends any of them.
+    // Phase 2: main render pass has 6 color attachments (HDR + normal +
+    // motion + mesh_id + raw_indirect + albedo). Each needs a blend state
+    // entry. Opaque pipeline never blends any of them.
     let color_blend_none = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
         .blend_enable(false);
     let color_blend_attachment = [
+        color_blend_none,
+        color_blend_none,
         color_blend_none,
         color_blend_none,
         color_blend_none,
@@ -230,9 +232,11 @@ fn create_triangle_pipeline_with_layout(
         .alpha_blend_op(vk::BlendOp::ADD);
     let color_blend_alpha = [
         color_blend_hdr_alpha,
-        color_blend_none,
-        color_blend_none,
-        color_blend_none,
+        color_blend_none, // normal: overwrite
+        color_blend_none, // motion: overwrite
+        color_blend_none, // mesh_id: overwrite
+        color_blend_none, // raw_indirect: overwrite (alpha surface's own indirect)
+        color_blend_none, // albedo: overwrite
     ];
     let color_blending_alpha = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)
@@ -437,6 +441,8 @@ pub fn create_ui_pipeline(
         .blend_enable(false);
     let color_blend_attachment = [
         ui_hdr_blend,
+        ui_noop_blend,
+        ui_noop_blend,
         ui_noop_blend,
         ui_noop_blend,
         ui_noop_blend,

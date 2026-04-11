@@ -97,33 +97,29 @@ impl VulkanContext {
                 .context("begin_command_buffer")?;
         }
 
-        // 4 color attachments + depth. Order must match the render pass:
-        //   0 HDR, 1 normal, 2 motion, 3 mesh_id, 4 depth.
+        // 6 color attachments + depth. Order must match the render pass:
+        //   0 HDR, 1 normal, 2 motion, 3 mesh_id, 4 raw_indirect, 5 albedo, 6 depth.
+        let zero_f = vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 0.0],
+            },
+        };
         let clear_values = [
             vk::ClearValue {
                 color: vk::ClearColorValue {
                     float32: clear_color,
                 },
             },
+            zero_f, // normal
+            zero_f, // motion
             vk::ClearValue {
-                // Normal: zero — shader always writes per-fragment.
-                color: vk::ClearColorValue {
-                    float32: [0.0, 0.0, 0.0, 0.0],
-                },
-            },
-            vk::ClearValue {
-                // Motion: zero — "no movement" baseline for background/sky.
-                color: vk::ClearColorValue {
-                    float32: [0.0, 0.0, 0.0, 0.0],
-                },
-            },
-            vk::ClearValue {
-                // Mesh ID: 0 (distinct from any instance index which starts at 0 too,
-                // but background pixels are cleared to 0 which SVGF treats as "no history").
+                // Mesh ID: 0 reserved for background (shader writes id + 1).
                 color: vk::ClearColorValue {
                     uint32: [0, 0, 0, 0],
                 },
             },
+            zero_f, // raw_indirect (background: no light)
+            zero_f, // albedo (background: no color)
             vk::ClearValue {
                 depth_stencil: vk::ClearDepthStencilValue {
                     depth: 1.0,
@@ -513,13 +509,28 @@ impl VulkanContext {
 
             self.device.cmd_end_render_pass(cmd);
 
-            // Composite pass: sample HDR intermediate, ACES tone map, write to
-            // swapchain. Runs in its own render pass (single swapchain color
-            // attachment). The main render pass's outgoing subpass dependency
-            // already handles the layout transition of the HDR image from
-            // COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL, and the
-            // composite render pass's incoming dependency makes the write
-            // visible to the fragment shader read.
+            // Upload composite params (fog, etc.) before the composite pass.
+            if let Some(ref mut composite) = self.composite {
+                let composite_params = super::super::composite::CompositeParams {
+                    fog_color: [
+                        fog_color[0],
+                        fog_color[1],
+                        fog_color[2],
+                        if fog_far > fog_near { 1.0 } else { 0.0 },
+                    ],
+                    fog_params: [fog_near, fog_far, 0.0, 0.0],
+                    depth_params: [0.0; 4],
+                };
+                if let Err(e) = composite.upload_params(&self.device, frame, &composite_params) {
+                    log::warn!("composite upload_params failed: {e}");
+                }
+            }
+
+            // Composite pass: sample HDR + indirect + albedo, combine, ACES
+            // tone map, write to swapchain. Runs in its own render pass.
+            // The main render pass's outgoing subpass dependency handles
+            // the layout transitions of all input attachments to
+            // SHADER_READ_ONLY_OPTIMAL.
             if let Some(ref composite) = self.composite {
                 composite.dispatch(&self.device, cmd, frame, img);
             }

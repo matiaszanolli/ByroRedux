@@ -40,56 +40,38 @@ pub(super) fn create_render_pass(
     normal_format: vk::Format,
     motion_format: vk::Format,
     mesh_id_format: vk::Format,
+    raw_indirect_format: vk::Format,
+    albedo_format: vk::Format,
     depth_format: vk::Format,
 ) -> Result<vk::RenderPass> {
-    // Phase 1: main render pass writes to 4 color attachments + depth:
-    //   0 — HDR color (RGBA16F)
-    //   1 — normal (RGBA16_SNORM, world-space)
-    //   2 — motion vector (R16G16_SFLOAT, screen-space)
-    //   3 — mesh_id (R16_UINT, per-instance ID)
-    //   4 — depth (D32)
+    // Phase 2: main render pass writes to 6 color attachments + depth:
+    //   0 — HDR color    (RGBA16F)       — direct lighting only
+    //   1 — normal       (RGBA16_SNORM)  — world-space surface normal
+    //   2 — motion       (R16G16_SFLOAT) — screen-space motion vector
+    //   3 — mesh_id      (R16_UINT)      — per-instance ID + 1
+    //   4 — raw_indirect (R11G11B10F)    — demodulated indirect light (for SVGF)
+    //   5 — albedo       (R11G11B10F)    — surface color (re-multiplied at composite)
+    //   6 — depth        (D32)
     //
     // All color attachments use final_layout SHADER_READ_ONLY_OPTIMAL so
     // the composite pass and SVGF compute passes can sample them.
-    let color_attachment = vk::AttachmentDescription::default()
-        .format(color_format)
-        .samples(vk::SampleCountFlags::TYPE_1)
-        .load_op(vk::AttachmentLoadOp::CLEAR)
-        .store_op(vk::AttachmentStoreOp::STORE)
-        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-        .initial_layout(vk::ImageLayout::UNDEFINED)
-        .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-
-    let normal_attachment = vk::AttachmentDescription::default()
-        .format(normal_format)
-        .samples(vk::SampleCountFlags::TYPE_1)
-        .load_op(vk::AttachmentLoadOp::CLEAR)
-        .store_op(vk::AttachmentStoreOp::STORE)
-        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-        .initial_layout(vk::ImageLayout::UNDEFINED)
-        .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-
-    let motion_attachment = vk::AttachmentDescription::default()
-        .format(motion_format)
-        .samples(vk::SampleCountFlags::TYPE_1)
-        .load_op(vk::AttachmentLoadOp::CLEAR)
-        .store_op(vk::AttachmentStoreOp::STORE)
-        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-        .initial_layout(vk::ImageLayout::UNDEFINED)
-        .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-
-    let mesh_id_attachment = vk::AttachmentDescription::default()
-        .format(mesh_id_format)
-        .samples(vk::SampleCountFlags::TYPE_1)
-        .load_op(vk::AttachmentLoadOp::CLEAR)
-        .store_op(vk::AttachmentStoreOp::STORE)
-        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-        .initial_layout(vk::ImageLayout::UNDEFINED)
-        .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+    let make_color = |fmt: vk::Format| -> vk::AttachmentDescription {
+        vk::AttachmentDescription::default()
+            .format(fmt)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+    };
+    let color_attachment = make_color(color_format);
+    let normal_attachment = make_color(normal_format);
+    let motion_attachment = make_color(motion_format);
+    let mesh_id_attachment = make_color(mesh_id_format);
+    let raw_indirect_attachment = make_color(raw_indirect_format);
+    let albedo_attachment = make_color(albedo_format);
 
     // Depth store DONT_CARE — cleared each frame, never sampled afterward.
     // Saves bandwidth on tile-based GPUs (skips depth writeback to memory).
@@ -105,28 +87,22 @@ pub(super) fn create_render_pass(
         .initial_layout(vk::ImageLayout::UNDEFINED)
         .final_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 
-    // Attachments 0..=3 are color, attachment 4 is depth.
+    // Attachments 0..=5 are color, attachment 6 is depth.
+    let make_color_ref = |i: u32| vk::AttachmentReference {
+        attachment: i,
+        layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+    };
     let color_refs = [
-        vk::AttachmentReference {
-            attachment: 0,
-            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        },
-        vk::AttachmentReference {
-            attachment: 1,
-            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        },
-        vk::AttachmentReference {
-            attachment: 2,
-            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        },
-        vk::AttachmentReference {
-            attachment: 3,
-            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        },
+        make_color_ref(0), // HDR
+        make_color_ref(1), // normal
+        make_color_ref(2), // motion
+        make_color_ref(3), // mesh_id
+        make_color_ref(4), // raw_indirect
+        make_color_ref(5), // albedo
     ];
 
     let depth_ref = vk::AttachmentReference {
-        attachment: 4,
+        attachment: 6,
         layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
 
@@ -183,6 +159,8 @@ pub(super) fn create_render_pass(
         normal_attachment,
         motion_attachment,
         mesh_id_attachment,
+        raw_indirect_attachment,
+        albedo_attachment,
         depth_attachment,
     ];
     let subpasses = [subpass];
@@ -199,16 +177,15 @@ pub(super) fn create_render_pass(
             .context("Failed to create render pass")?
     };
 
-    log::info!("Render pass created (4 color + depth)");
+    log::info!("Render pass created (6 color + depth)");
     Ok(render_pass)
 }
 
 /// Create one main framebuffer per frame-in-flight slot. Each framebuffer
-/// binds that slot's HDR color + normal + motion + mesh_id views, plus
-/// the shared depth view.
+/// binds that slot's HDR + normal + motion + mesh_id + raw_indirect +
+/// albedo views, plus the shared depth view.
 ///
-/// `hdr_views`, `normal_views`, `motion_views`, `mesh_id_views` must all
-/// have the same length (MAX_FRAMES_IN_FLIGHT).
+/// All the color view slices must have the same length (MAX_FRAMES_IN_FLIGHT).
 pub(super) fn create_main_framebuffers(
     device: &ash::Device,
     render_pass: vk::RenderPass,
@@ -216,12 +193,16 @@ pub(super) fn create_main_framebuffers(
     normal_views: &[vk::ImageView],
     motion_views: &[vk::ImageView],
     mesh_id_views: &[vk::ImageView],
+    raw_indirect_views: &[vk::ImageView],
+    albedo_views: &[vk::ImageView],
     depth_view: vk::ImageView,
     extent: vk::Extent2D,
 ) -> Result<Vec<vk::Framebuffer>> {
     debug_assert_eq!(hdr_views.len(), normal_views.len());
     debug_assert_eq!(hdr_views.len(), motion_views.len());
     debug_assert_eq!(hdr_views.len(), mesh_id_views.len());
+    debug_assert_eq!(hdr_views.len(), raw_indirect_views.len());
+    debug_assert_eq!(hdr_views.len(), albedo_views.len());
 
     (0..hdr_views.len())
         .map(|i| {
@@ -230,6 +211,8 @@ pub(super) fn create_main_framebuffers(
                 normal_views[i],
                 motion_views[i],
                 mesh_id_views[i],
+                raw_indirect_views[i],
+                albedo_views[i],
                 depth_view,
             ];
             let create_info = vk::FramebufferCreateInfo::default()

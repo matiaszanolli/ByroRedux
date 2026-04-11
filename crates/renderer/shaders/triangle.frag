@@ -11,11 +11,13 @@ layout(location = 5) flat in int fragInstanceIndex;
 layout(location = 6) in vec4 fragCurrClipPos;
 layout(location = 7) in vec4 fragPrevClipPos;
 
-// Main render pass has 4 color attachments (Phase 1).
-layout(location = 0) out vec4 outColor;     // HDR color
-layout(location = 1) out vec4 outNormal;    // world-space normal (xyz), unused w
-layout(location = 2) out vec2 outMotion;    // screen-space motion vector
-layout(location = 3) out uint outMeshID;    // per-instance ID
+// Main render pass has 6 color attachments (Phase 2).
+layout(location = 0) out vec4 outColor;        // HDR color (direct light only)
+layout(location = 1) out vec4 outNormal;       // world-space normal (xyz), unused w
+layout(location = 2) out vec2 outMotion;       // screen-space motion vector
+layout(location = 3) out uint outMeshID;       // per-instance ID + 1
+layout(location = 4) out vec4 outRawIndirect;  // demodulated indirect light (for SVGF)
+layout(location = 5) out vec4 outAlbedo;       // surface color (composite re-multiplies)
 
 // Bindless texture array.
 layout(set = 0, binding = 0) uniform sampler2D textures[];
@@ -336,6 +338,8 @@ void main() {
         vec3 emissive = emissiveColor * emissiveMult;
         vec3 ambient = sceneFlags.yzw * albedo * (1.0 - metalness);
         outColor = vec4(ambient + emissive, texColor.a);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(albedo, 1.0);
         return;
     }
 
@@ -393,6 +397,8 @@ void main() {
             vec3 windowTint = mix(vec3(1.0), texColor.rgb, texColor.a * 0.5);
             vec3 transmitted = skyColor * windowTint * 0.8;
             outColor = vec4(transmitted, 1.0);
+            outRawIndirect = vec4(0.0);
+            outAlbedo = vec4(albedo, 1.0);
             return;
         }
     }
@@ -634,7 +640,24 @@ void main() {
     // clamp to a minimum to avoid killing all ambient light.
     vec2 aoUV = gl_FragCoord.xy / screen.xy;
     float ao = max(texture(aoTexture, aoUV).r, 0.3);
-    vec3 finalColor = (ambient + indirect) * ao + Lo;
+
+    // Phase 2: separate direct from indirect lighting.
+    //
+    // outColor      = direct lighting only (Lo + glass tint)
+    // outRawIndirect = demodulated indirect light ((ambient + indirect) * ao / albedo)
+    // outAlbedo     = surface albedo (for composite re-multiplication)
+    //
+    // The composite pass reassembles: final = direct + indirect_demod * albedo
+    // and applies distance fog + tone mapping. Separating the signal lets
+    // SVGF filter only the noisy indirect term without blurring crisp
+    // direct-light shadows or texture detail.
+    vec3 directLight = Lo;
+
+    // Demodulate indirect by current surface albedo so SVGF filters a
+    // smooth irradiance signal (avoids blurring high-frequency texture).
+    // A tiny epsilon prevents division by zero on fully-black surfaces.
+    vec3 indirectLight = (ambient + indirect) * ao;
+    vec3 indirectDemod = indirectLight / max(albedo, vec3(0.01));
 
     // Glass compositing: Fresnel controls the output alpha. At grazing
     // angles glass becomes more opaque (reflective); at direct incidence
@@ -644,17 +667,15 @@ void main() {
     if (isGlass) {
         // Boost opacity at grazing angles (Fresnel reflection).
         finalAlpha = mix(texColor.a, 1.0, glassFresnel * 0.7);
-        // Add a subtle tint from the glass color to the lit result.
-        finalColor = finalColor + albedo * 0.15;
+        // Add a subtle tint from the glass color to the direct-light output.
+        directLight = directLight + albedo * 0.15;
     }
 
-    // Distance fog — blends scene color toward fog color based on distance
-    // from camera. Uses smoothstep for a natural falloff. The fog parameters
-    // come from the cell's XCLL record (fog near, fog far, fog color).
-    if (fog.w > 0.5) {
-        float fogFactor = smoothstep(screen.z, screen.w, worldDist);
-        finalColor = mix(finalColor, fog.xyz, fogFactor);
-    }
+    // Fog is deferred to the composite pass — it should apply to the
+    // combined (direct + indirect * albedo) signal, not to direct alone.
+    // The composite reads fogColor/fogNear/fogFar from its own uniforms.
 
-    outColor = vec4(finalColor, finalAlpha);
+    outColor = vec4(directLight, finalAlpha);
+    outRawIndirect = vec4(indirectDemod, 1.0);
+    outAlbedo = vec4(albedo, 1.0);
 }

@@ -1,7 +1,7 @@
 //! Swapchain recreation after window resize or suboptimal present.
 
 use super::super::composite::HDR_FORMAT;
-use super::super::gbuffer::{MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT};
+use super::super::gbuffer::{ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT};
 use super::super::ssao::SsaoPipeline;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::super::{pipeline, swapchain};
@@ -99,13 +99,15 @@ impl VulkanContext {
         self.depth_image_view = depth_image_view;
         self.depth_allocation = Some(depth_allocation);
 
-        // Main render pass: 4 color (HDR + G-buffer) + depth.
+        // Main render pass: 6 color (HDR + G-buffer + raw_indirect + albedo) + depth.
         self.render_pass = create_render_pass(
             &self.device,
             HDR_FORMAT,
             NORMAL_FORMAT,
             MOTION_FORMAT,
             MESH_ID_FORMAT,
+            RAW_INDIRECT_FORMAT,
+            ALBEDO_FORMAT,
             self.depth_format,
         )?;
 
@@ -177,24 +179,39 @@ impl VulkanContext {
             }
         }
 
-        // Recreate composite pipeline's HDR images + swapchain framebuffers
-        // with the new extent. Must happen BEFORE main framebuffers (which
-        // bind the HDR views).
-        if let Some(ref mut composite) = self.composite {
-            composite.recreate_on_resize(
+        // Recreate G-buffer images FIRST (they're referenced by composite
+        // descriptor sets, which we'll rewrite during composite recreation).
+        if let Some(ref mut gbuffer) = self.gbuffer {
+            gbuffer.recreate_on_resize(
                 &self.device,
                 self.allocator.as_ref().expect("allocator missing during resize"),
-                &self.swapchain_state.image_views,
                 self.swapchain_state.extent.width,
                 self.swapchain_state.extent.height,
             )?;
         }
 
-        // Recreate G-buffer images at the new extent.
-        if let Some(ref mut gbuffer) = self.gbuffer {
-            gbuffer.recreate_on_resize(
+        // Collect fresh G-buffer views before we borrow &mut self.composite.
+        let (raw_indirect_views, albedo_views) = {
+            let gbuffer_ref = self
+                .gbuffer
+                .as_ref()
+                .expect("gbuffer must exist during resize");
+            let n = MAX_FRAMES_IN_FLIGHT;
+            let ri: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.raw_indirect_view(i)).collect();
+            let ab: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.albedo_view(i)).collect();
+            (ri, ab)
+        };
+
+        // Recreate composite pipeline's HDR images + swapchain framebuffers
+        // with the new extent. Also rewrites descriptor sets to point at
+        // the new G-buffer views.
+        if let Some(ref mut composite) = self.composite {
+            composite.recreate_on_resize(
                 &self.device,
                 self.allocator.as_ref().expect("allocator missing during resize"),
+                &self.swapchain_state.image_views,
+                &raw_indirect_views,
+                &albedo_views,
                 self.swapchain_state.extent.width,
                 self.swapchain_state.extent.height,
             )?;
@@ -210,15 +227,13 @@ impl VulkanContext {
             .as_ref()
             .expect("gbuffer must exist during resize");
         let hdr_views = &composite_ref.hdr_image_views;
-        let normal_views: Vec<vk::ImageView> = (0..hdr_views.len())
-            .map(|i| gbuffer_ref.normal_view(i))
-            .collect();
-        let motion_views: Vec<vk::ImageView> = (0..hdr_views.len())
-            .map(|i| gbuffer_ref.motion_view(i))
-            .collect();
-        let mesh_id_views: Vec<vk::ImageView> = (0..hdr_views.len())
-            .map(|i| gbuffer_ref.mesh_id_view(i))
-            .collect();
+        let n = hdr_views.len();
+        let normal_views: Vec<vk::ImageView> =
+            (0..n).map(|i| gbuffer_ref.normal_view(i)).collect();
+        let motion_views: Vec<vk::ImageView> =
+            (0..n).map(|i| gbuffer_ref.motion_view(i)).collect();
+        let mesh_id_views: Vec<vk::ImageView> =
+            (0..n).map(|i| gbuffer_ref.mesh_id_view(i)).collect();
         self.framebuffers = create_main_framebuffers(
             &self.device,
             self.render_pass,
@@ -226,6 +241,8 @@ impl VulkanContext {
             &normal_views,
             &motion_views,
             &mesh_id_views,
+            &raw_indirect_views,
+            &albedo_views,
             self.depth_image_view,
             self.swapchain_state.extent,
         )?;

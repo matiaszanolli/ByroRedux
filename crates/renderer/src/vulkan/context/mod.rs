@@ -3,7 +3,7 @@
 use super::acceleration::AccelerationManager;
 use super::composite::{CompositePipeline, HDR_FORMAT};
 use super::compute::ClusterCullPipeline;
-use super::gbuffer::{GBuffer, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT};
+use super::gbuffer::{GBuffer, ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT};
 use super::ssao::SsaoPipeline;
 use super::allocator::{self, SharedAllocator};
 use super::debug;
@@ -213,13 +213,16 @@ impl VulkanContext {
             depth_format,
         )?;
 
-        // 10. Main render pass: 4 color attachments (HDR + G-buffer) + depth.
+        // 10. Main render pass: 6 color attachments (HDR + G-buffer +
+        // raw_indirect + albedo) + depth.
         let render_pass = create_render_pass(
             &device,
             HDR_FORMAT,
             NORMAL_FORMAT,
             MOTION_FORMAT,
             MESH_ID_FORMAT,
+            RAW_INDIRECT_FORMAT,
+            ALBEDO_FORMAT,
             depth_format,
         )?;
 
@@ -369,14 +372,35 @@ impl VulkanContext {
         // 14. Mesh registry (empty — meshes uploaded by the application)
         let mesh_registry = MeshRegistry::new();
 
-        // 14b. Composite pipeline: owns HDR intermediates + tone-map pass.
-        // Must be created before main framebuffers because those framebuffers
-        // attach the HDR image views owned by composite.
+        // 14b. G-buffer: all auxiliary attachments (normal, motion, mesh_id,
+        // raw_indirect, albedo). Created BEFORE composite because composite's
+        // descriptor sets reference the raw_indirect + albedo views.
+        let gbuffer = Some(GBuffer::new(
+            &device,
+            &gpu_allocator,
+            swapchain_state.extent.width,
+            swapchain_state.extent.height,
+        )?);
+        let gbuffer_ref = gbuffer.as_ref().expect("gbuffer must exist");
+
+        // Collect G-buffer views up-front so both composite and main
+        // framebuffer creation can reference them.
+        let n_frames = MAX_FRAMES_IN_FLIGHT;
+        let raw_indirect_views: Vec<vk::ImageView> =
+            (0..n_frames).map(|i| gbuffer_ref.raw_indirect_view(i)).collect();
+        let albedo_views: Vec<vk::ImageView> =
+            (0..n_frames).map(|i| gbuffer_ref.albedo_view(i)).collect();
+
+        // 14c. Composite pipeline: owns HDR intermediates + tone-map pass.
+        // Its descriptor sets sample HDR (owned by composite), raw_indirect,
+        // and albedo (both owned by gbuffer).
         let composite = match CompositePipeline::new(
             &device,
             &gpu_allocator,
             swapchain_state.format.format,
             &swapchain_state.image_views,
+            &raw_indirect_views,
+            &albedo_views,
             swapchain_state.extent.width,
             swapchain_state.extent.height,
         ) {
@@ -389,28 +413,16 @@ impl VulkanContext {
             .as_ref()
             .expect("composite must exist after construction");
 
-        // 14c. G-buffer: normal + motion + mesh_id attachments, one per
-        // frame-in-flight slot. Must be created before main framebuffers.
-        let gbuffer = Some(GBuffer::new(
-            &device,
-            &gpu_allocator,
-            swapchain_state.extent.width,
-            swapchain_state.extent.height,
-        )?);
-        let gbuffer_ref = gbuffer.as_ref().expect("gbuffer must exist");
-
         // 15. Main framebuffers: one per frame-in-flight slot, binding that
-        // slot's HDR + normal + motion + mesh_id views + shared depth view.
+        // slot's HDR + normal + motion + mesh_id + raw_indirect + albedo
+        // views + shared depth view.
         let hdr_views = &composite_ref.hdr_image_views;
-        let normal_views: Vec<vk::ImageView> = (0..hdr_views.len())
-            .map(|i| gbuffer_ref.normal_view(i))
-            .collect();
-        let motion_views: Vec<vk::ImageView> = (0..hdr_views.len())
-            .map(|i| gbuffer_ref.motion_view(i))
-            .collect();
-        let mesh_id_views: Vec<vk::ImageView> = (0..hdr_views.len())
-            .map(|i| gbuffer_ref.mesh_id_view(i))
-            .collect();
+        let normal_views: Vec<vk::ImageView> =
+            (0..n_frames).map(|i| gbuffer_ref.normal_view(i)).collect();
+        let motion_views: Vec<vk::ImageView> =
+            (0..n_frames).map(|i| gbuffer_ref.motion_view(i)).collect();
+        let mesh_id_views: Vec<vk::ImageView> =
+            (0..n_frames).map(|i| gbuffer_ref.mesh_id_view(i)).collect();
         let framebuffers = create_main_framebuffers(
             &device,
             render_pass,
@@ -418,6 +430,8 @@ impl VulkanContext {
             &normal_views,
             &motion_views,
             &mesh_id_views,
+            &raw_indirect_views,
+            &albedo_views,
             depth_image_view,
             swapchain_state.extent,
         )?;
