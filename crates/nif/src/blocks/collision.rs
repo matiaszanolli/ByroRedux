@@ -8,6 +8,7 @@
 use super::NiObject;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
+use crate::version::NifVersion;
 use std::any::Any;
 use std::io;
 
@@ -1093,6 +1094,159 @@ impl BhkCompressedMeshShapeData {
             big_verts,
             big_tris,
             chunks,
+        })
+    }
+}
+
+// ── Havok constraint stubs (#117) ──────────────────────────────────────
+//
+// Minimal parsers for the 7 Havok constraint types
+// (bhkBallAndSocket / bhkHinge / bhkLimitedHinge / bhkRagdoll /
+// bhkPrismatic / bhkStiffSpring / bhkMalleable). They capture the
+// shared `bhkConstraintCInfo` base — entity refs + priority — and
+// then skip the type-specific CInfo payload by its known byte size.
+// The physics system (M28) will eventually parse the full CInfo
+// structs; for now we just need enough to advance the stream past
+// these blocks so they stop cascading the parse loop on Oblivion.
+//
+// **Oblivion path** (`version <= 20.0.0.5`, aka the `#NI_BS_LTE_16#`
+// branch in nif.xml): sizes are hand-computed from nif.xml and must
+// be byte-exact because Oblivion NIFs have no `block_sizes` table
+// and any drift takes down every subsequent block.
+//
+// **FO3+ path** (`version >= 20.2.0.7`): layouts add Motor blobs and
+// extra vectors — several of them are variable-size. Rather than
+// duplicate the full layout here, the stub reads only the 16-byte
+// base and relies on the outer `parse_nif` loop's `block_size`
+// reconciliation to seek past the remainder. Zero risk: on FO3+ the
+// header always has a `block_sizes` table, so the recovery path is
+// guaranteed to run. This keeps the constraint code short without
+// sacrificing parse completeness.
+
+/// Opaque stub for a Havok constraint block.
+///
+/// Holds just the shared `bhkConstraintCInfo` base (two entity refs
+/// + priority); everything else is skipped. The concrete constraint
+/// type is preserved in `type_name` so downstream consumers and
+/// telemetry can identify it. See #117.
+#[derive(Debug)]
+pub struct BhkConstraint {
+    /// RTTI class name — one of the seven constraint types.
+    pub type_name: &'static str,
+    pub entity_a: BlockRef,
+    pub entity_b: BlockRef,
+    pub priority: u32,
+}
+
+impl NiObject for BhkConstraint {
+    fn block_type_name(&self) -> &'static str {
+        self.type_name
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BhkConstraint {
+    /// Read the shared `bhkConstraintCInfo` prefix — 16 bytes:
+    /// `num_entities u32 + entity_a i32 + entity_b i32 + priority u32`.
+    /// Returns `(entity_a, entity_b, priority)`.
+    fn parse_base(stream: &mut NifStream) -> io::Result<(BlockRef, BlockRef, u32)> {
+        let _num_entities = stream.read_u32_le()?;
+        let entity_a = stream.read_block_ref()?;
+        let entity_b = stream.read_block_ref()?;
+        let priority = stream.read_u32_le()?;
+        Ok((entity_a, entity_b, priority))
+    }
+
+    /// Parse a constraint block by type name. On Oblivion, reads the
+    /// exact byte layout and returns a `BhkConstraint`. On FO3+, reads
+    /// the 16-byte base and returns early; the caller seeks past the
+    /// remainder via `block_size`.
+    pub fn parse(stream: &mut NifStream, type_name: &'static str) -> io::Result<Self> {
+        let (entity_a, entity_b, priority) = Self::parse_base(stream)?;
+
+        // Oblivion byte-exact payload sizes (post-base bytes). Derived
+        // from nif.xml with `#NI_BS_LTE_16#` active. A zero means
+        // "drop through to the FO3+ short-stub path".
+        let is_oblivion = stream.version() <= NifVersion::V20_0_0_5;
+        if is_oblivion {
+            let payload_size: Option<u64> = match type_name {
+                // 2 × Vec4
+                "bhkBallAndSocketConstraint" => Some(32),
+                // 5 × Vec4
+                "bhkHingeConstraint" => Some(80),
+                // 6 × Vec4 + 6 × f32
+                "bhkRagdollConstraint" => Some(120),
+                // 7 × Vec4 + 3 × f32
+                "bhkLimitedHingeConstraint" => Some(124),
+                // 8 × Vec4 + 3 × f32
+                "bhkPrismaticConstraint" => Some(140),
+                // 2 × Vec4 + f32
+                "bhkStiffSpringConstraint" => Some(36),
+                // Malleable wrapper has a runtime-dispatched inner
+                // CInfo — handle separately below.
+                "bhkMalleableConstraint" => None,
+                _ => None,
+            };
+
+            if let Some(size) = payload_size {
+                stream.skip(size)?;
+                return Ok(Self {
+                    type_name,
+                    entity_a,
+                    entity_b,
+                    priority,
+                });
+            }
+
+            if type_name == "bhkMalleableConstraint" {
+                // Oblivion layout: type u32 + nested bhkConstraintCInfo
+                // (16) + wrapped CInfo + tau f32 + damping f32.
+                let wrapped_type = stream.read_u32_le()?;
+                let _nested_entities = stream.read_u32_le()?;
+                let _nested_a = stream.read_block_ref()?;
+                let _nested_b = stream.read_block_ref()?;
+                let _nested_priority = stream.read_u32_le()?;
+                let inner_size: u64 = match wrapped_type {
+                    0 => 32,  // Ball and Socket
+                    1 => 80,  // Hinge
+                    2 => 124, // Limited Hinge
+                    6 => 140, // Prismatic
+                    7 => 120, // Ragdoll
+                    8 => 36,  // Stiff Spring
+                    other => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "bhkMalleableConstraint: unknown inner type {other} — \
+                                 stream position unreliable"
+                            ),
+                        ));
+                    }
+                };
+                stream.skip(inner_size)?;
+                // Tau + Damping (Oblivion trailer).
+                stream.skip(8)?;
+                return Ok(Self {
+                    type_name,
+                    entity_a,
+                    entity_b,
+                    priority,
+                });
+            }
+        }
+
+        // FO3+ (or unknown pre-Oblivion content): return after the
+        // 16-byte base. The outer parse_nif loop seeks past the rest
+        // using the header's block_sizes table, which is always present
+        // on v >= 20.2.0.7. The stub still preserves the RTTI name
+        // for telemetry.
+        Ok(Self {
+            type_name,
+            entity_a,
+            entity_b,
+            priority,
         })
     }
 }

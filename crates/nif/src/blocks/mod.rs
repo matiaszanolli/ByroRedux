@@ -25,8 +25,8 @@ pub mod tri_shape;
 use crate::stream::NifStream;
 use collision::{
     BhkBoxShape, BhkCapsuleShape, BhkCollisionObject, BhkCompressedMeshShape,
-    BhkCompressedMeshShapeData, BhkConvexVerticesShape, BhkCylinderShape, BhkListShape,
-    BhkMoppBvTreeShape, BhkNiTriStripsShape, BhkPackedNiTriStripsShape, BhkRigidBody,
+    BhkCompressedMeshShapeData, BhkConstraint, BhkConvexVerticesShape, BhkCylinderShape,
+    BhkListShape, BhkMoppBvTreeShape, BhkNiTriStripsShape, BhkPackedNiTriStripsShape, BhkRigidBody,
     BhkSimpleShapePhantom, BhkSphereShape, BhkTransformShape, HkPackedNiTriStripsData,
     NiCollisionObjectBase,
 };
@@ -540,16 +540,36 @@ pub fn parse_block(
         "hkPackedNiTriStripsData" => Ok(Box::new(HkPackedNiTriStripsData::parse(stream)?)),
         "bhkCompressedMeshShape" => Ok(Box::new(BhkCompressedMeshShape::parse(stream)?)),
         "bhkCompressedMeshShapeData" => Ok(Box::new(BhkCompressedMeshShapeData::parse(stream)?)),
-        // Havok blocks that remain skip-only (constraints, systems).
-        // Constraints deferred to M28 (physics joints).
-        "bhkMalleableConstraint"
-        | "bhkRagdollConstraint"
-        | "bhkLimitedHingeConstraint"
-        | "bhkHingeConstraint"
-        | "bhkBallAndSocketConstraint"
-        | "bhkStiffSpringConstraint"
-        | "bhkPrismaticConstraint"
-        | "bhkNPCollisionObject"
+        // Havok constraints (#117) — minimal stub parse so Oblivion
+        // no longer cascades on these. The constraint CInfo layouts
+        // are skipped by a hand-computed byte size on Oblivion and
+        // by block_size recovery on FO3+. See BhkConstraint::parse.
+        "bhkBallAndSocketConstraint" => {
+            Ok(Box::new(BhkConstraint::parse(stream, "bhkBallAndSocketConstraint")?))
+        }
+        "bhkHingeConstraint" => {
+            Ok(Box::new(BhkConstraint::parse(stream, "bhkHingeConstraint")?))
+        }
+        "bhkLimitedHingeConstraint" => {
+            Ok(Box::new(BhkConstraint::parse(stream, "bhkLimitedHingeConstraint")?))
+        }
+        "bhkRagdollConstraint" => {
+            Ok(Box::new(BhkConstraint::parse(stream, "bhkRagdollConstraint")?))
+        }
+        "bhkPrismaticConstraint" => {
+            Ok(Box::new(BhkConstraint::parse(stream, "bhkPrismaticConstraint")?))
+        }
+        "bhkStiffSpringConstraint" => {
+            Ok(Box::new(BhkConstraint::parse(stream, "bhkStiffSpringConstraint")?))
+        }
+        "bhkMalleableConstraint" => {
+            Ok(Box::new(BhkConstraint::parse(stream, "bhkMalleableConstraint")?))
+        }
+        // Havok blocks that remain skip-only. Constraint CHAINS and
+        // system wrappers stay here — their internal layouts aren't
+        // yet modelled, and they only appear on FO3+ (where
+        // block_size recovery is available).
+        "bhkNPCollisionObject"
         | "bhkPhysicsSystem"
         | "bhkRagdollSystem" => {
             if let Some(size) = block_size {
@@ -929,6 +949,90 @@ mod dispatch_tests {
             .downcast_ref::<NiCollisionObjectBase>()
             .expect("downcast to NiCollisionObjectBase");
         assert_eq!(co.target_ref.index(), Some(42));
+        assert_eq!(stream.position() as usize, expected_len);
+    }
+
+    /// Regression test for issue #117: the 7 Havok constraint types must
+    /// dispatch to byte-exact parsers on Oblivion so a constraint block
+    /// on an Oblivion .nif no longer cascade-fails the parse loop.
+    /// Builds a 16-byte `bhkConstraintCInfo` base + a zero-filled
+    /// type-specific payload for each constraint type and asserts the
+    /// parser consumes exactly the expected number of bytes.
+    #[test]
+    fn oblivion_havok_constraints_dispatch_byte_exact() {
+        use crate::blocks::collision::BhkConstraint;
+
+        let header = oblivion_header();
+
+        /// Construct a valid bhkConstraintCInfo base (16 bytes) with
+        /// known entity refs and a non-trivial priority.
+        fn base_bytes() -> Vec<u8> {
+            let mut d = Vec::new();
+            d.extend_from_slice(&2u32.to_le_bytes()); // num_entities
+            d.extend_from_slice(&7i32.to_le_bytes()); // entity_a
+            d.extend_from_slice(&11i32.to_le_bytes()); // entity_b
+            d.extend_from_slice(&1u32.to_le_bytes()); // priority
+            d
+        }
+
+        // (type_name, payload_size_after_base) — Oblivion sizes per
+        // nif.xml with #NI_BS_LTE_16# active. Total = 16 + payload.
+        let cases: [(&'static str, usize); 6] = [
+            ("bhkBallAndSocketConstraint", 32),
+            ("bhkHingeConstraint", 80),
+            ("bhkRagdollConstraint", 120),
+            ("bhkLimitedHingeConstraint", 124),
+            ("bhkPrismaticConstraint", 140),
+            ("bhkStiffSpringConstraint", 36),
+        ];
+
+        for (type_name, payload) in cases {
+            let mut bytes = base_bytes();
+            bytes.resize(bytes.len() + payload, 0u8);
+            let expected_len = bytes.len();
+
+            let mut stream = NifStream::new(&bytes, &header);
+            let block = parse_block(type_name, &mut stream, None)
+                .unwrap_or_else(|e| panic!("{type_name} dispatch failed: {e}"));
+            let c = block
+                .as_any()
+                .downcast_ref::<BhkConstraint>()
+                .unwrap_or_else(|| panic!("{type_name} didn't downcast to BhkConstraint"));
+            assert_eq!(c.type_name, type_name);
+            assert_eq!(c.entity_a.index(), Some(7));
+            assert_eq!(c.entity_b.index(), Some(11));
+            assert_eq!(c.priority, 1);
+            assert_eq!(
+                stream.position() as usize,
+                expected_len,
+                "{type_name} consumed {} bytes, expected {}",
+                stream.position(),
+                expected_len,
+            );
+        }
+
+        // Malleable constraint — runtime dispatch on the wrapped type.
+        // Layout on Oblivion: base(16) + wrapped_type u32(4) + nested
+        // bhkConstraintCInfo(16) + inner CInfo(N) + tau+damping(8).
+        // Total = 44 + inner. Wrapped type 2 is LimitedHinge (inner=124).
+        let mut mbytes = base_bytes();
+        mbytes.extend_from_slice(&2u32.to_le_bytes()); // wrapped type = LimitedHinge
+        mbytes.extend_from_slice(&2u32.to_le_bytes()); // nested num_entities
+        mbytes.extend_from_slice(&3i32.to_le_bytes()); // nested entity_a
+        mbytes.extend_from_slice(&4i32.to_le_bytes()); // nested entity_b
+        mbytes.extend_from_slice(&0u32.to_le_bytes()); // nested priority
+        mbytes.resize(mbytes.len() + 124, 0u8); // inner LimitedHinge CInfo
+        mbytes.resize(mbytes.len() + 8, 0u8); // tau + damping
+        let expected_len = mbytes.len();
+
+        let mut stream = NifStream::new(&mbytes, &header);
+        let block = parse_block("bhkMalleableConstraint", &mut stream, None)
+            .expect("bhkMalleableConstraint dispatch failed");
+        let c = block
+            .as_any()
+            .downcast_ref::<BhkConstraint>()
+            .expect("malleable didn't downcast to BhkConstraint");
+        assert_eq!(c.type_name, "bhkMalleableConstraint");
         assert_eq!(stream.position() as usize, expected_len);
     }
 
