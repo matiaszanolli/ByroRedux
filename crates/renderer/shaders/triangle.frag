@@ -643,39 +643,40 @@ void main() {
 
     // Phase 2: separate direct from indirect lighting.
     //
-    // outColor      = direct lighting only (Lo + glass tint)
-    // outRawIndirect = demodulated indirect light ((ambient + indirect) * ao / albedo)
-    // outAlbedo     = surface albedo (for composite re-multiplication)
+    // outColor       = direct lighting (Lo + glass tint) + fog
+    // outRawIndirect = raw indirect light ((ambient + indirect) * ao)
+    // outAlbedo      = surface albedo (written for future SVGF phases)
     //
-    // The composite pass reassembles: final = direct + indirect_demod * albedo
-    // and applies distance fog + tone mapping. Separating the signal lets
-    // SVGF filter only the noisy indirect term without blurring crisp
-    // direct-light shadows or texture detail.
+    // The composite pass reassembles: final = direct + indirect
+    //
+    // NOTE: albedo demodulation is DEFERRED to Phase 3 where it pairs with
+    // SVGF denoising. In Phase 2 we write raw indirect (not divided by
+    // albedo) to avoid precision loss and dark-albedo amplification
+    // artifacts that were visible during isolated testing.
     vec3 directLight = Lo;
-
-    // Demodulate indirect by current surface albedo so SVGF filters a
-    // smooth irradiance signal (avoids blurring high-frequency texture).
-    // A tiny epsilon prevents division by zero on fully-black surfaces.
     vec3 indirectLight = (ambient + indirect) * ao;
-    vec3 indirectDemod = indirectLight / max(albedo, vec3(0.01));
 
-    // Glass compositing: Fresnel controls the output alpha. At grazing
-    // angles glass becomes more opaque (reflective); at direct incidence
-    // it's more transparent (transmissive). The alpha blend with the
-    // background handles the "see-through" effect naturally.
+    // Glass compositing: Fresnel controls the output alpha.
     float finalAlpha = texColor.a;
     if (isGlass) {
-        // Boost opacity at grazing angles (Fresnel reflection).
         finalAlpha = mix(texColor.a, 1.0, glassFresnel * 0.7);
-        // Add a subtle tint from the glass color to the direct-light output.
+        // Glass tint adds to the direct-light output.
         directLight = directLight + albedo * 0.15;
     }
 
-    // Fog is deferred to the composite pass — it should apply to the
-    // combined (direct + indirect * albedo) signal, not to direct alone.
-    // The composite reads fogColor/fogNear/fogFar from its own uniforms.
+    // Distance fog — applied to direct lighting only. Indirect is assumed
+    // to be local enough that fog attenuation is a minor visual artifact.
+    // (A more correct approach would be to pass linear depth to the
+    //  composite pass and fog the combined signal — deferred to later.)
+    if (fog.w > 0.5) {
+        float fogFactor = smoothstep(screen.z, screen.w, worldDist);
+        directLight = mix(directLight, fog.xyz, fogFactor);
+        // Also fade indirect toward zero in fog so distant bounces don't
+        // weirdly show through — matches the spatial locality assumption.
+        indirectLight *= (1.0 - fogFactor);
+    }
 
     outColor = vec4(directLight, finalAlpha);
-    outRawIndirect = vec4(indirectDemod, 1.0);
+    outRawIndirect = vec4(indirectLight, 1.0);
     outAlbedo = vec4(albedo, 1.0);
 }

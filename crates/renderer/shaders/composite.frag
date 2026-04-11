@@ -35,22 +35,13 @@ vec3 aces(vec3 x) {
 void main() {
     vec4 direct4 = texture(hdrTex, fragUV);
     vec3 direct = direct4.rgb;
-    vec3 indirectDemod = texture(indirectTex, fragUV).rgb;
-    vec3 albedo = texture(albedoTex, fragUV).rgb;
+    vec3 indirect = texture(indirectTex, fragUV).rgb;
+    // albedo is written by the main pass but unused in Phase 2 — it'll
+    // become load-bearing in Phase 3+ when SVGF demodulation kicks in.
+    // vec3 albedo = texture(albedoTex, fragUV).rgb;
 
-    // Reassemble the full lighting equation: direct + indirect_rescaled.
-    vec3 combined = direct + indirectDemod * albedo;
+    // Reassemble direct + indirect. Fog already applied in the main pass.
+    vec3 combined = direct + indirect;
 
-    // Fog application (moved from main render pass). Note: Phase 2
-    // doesn't yet pass camera/fog state to the composite; we use a
-    // simple smoothstep on fragment-UV-based "distance" as a stub.
-    // TODO(phase 3+): pass proper linear depth or pre-baked fog factor
-    // via an additional attachment / uniform.
-    if (params.fog_color.w > 0.5) {
-        // Until we have real depth here, disable fog in composite.
-        // The previous pass's fog behavior is lost — acceptable because
-        // the Oblivion test scene has no aggressive fog.
-    }
-
-    outColor = vec4(aces(combined), 1.0);
+    outColor = vec4(aces(combined), direct4.a);
 }
