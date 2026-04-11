@@ -20,6 +20,23 @@ pub struct NifScene {
     /// consumers that can tolerate partial geometry (e.g. cell
     /// loaders doing best-effort import) can ignore it. See #175.
     pub truncated: bool,
+    /// Number of blocks that were dropped from the scene because
+    /// the parse loop bailed out before reaching them. Non-zero
+    /// implies `truncated == true`. Lets observability layers
+    /// (telemetry, cell_loader diagnostics) quantify how much of
+    /// the file was lost without re-reading the raw header. See #224.
+    pub dropped_block_count: usize,
+}
+
+impl Default for NifScene {
+    fn default() -> Self {
+        Self {
+            blocks: Vec::new(),
+            root_index: None,
+            truncated: false,
+            dropped_block_count: 0,
+        }
+    }
 }
 
 impl NifScene {

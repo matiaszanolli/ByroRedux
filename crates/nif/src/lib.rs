@@ -25,6 +25,7 @@ pub mod version;
 use blocks::{parse_block, NiObject};
 use header::NifHeader;
 use scene::NifScene;
+use std::collections::HashMap;
 use std::io;
 use stream::NifStream;
 
@@ -36,6 +37,19 @@ pub struct ParseOptions {
     /// replaced with NiUnknown placeholders (via block_size).
     /// Only effective when the NIF header has block sizes (v20.2.0.7+).
     pub skip_animation: bool,
+    /// Hand-registered skip sizes for Oblivion-era unknown block types.
+    ///
+    /// Oblivion NIFs (v20.0.0.4/5) have no `block_sizes` table, so when a
+    /// block parser returns `Err` the main loop cannot resume — it stops
+    /// and marks the scene truncated, losing every subsequent block.
+    ///
+    /// When a type name is registered here, the loop instead seeks forward
+    /// by the given size and inserts an `NiUnknown` placeholder, letting
+    /// the rest of the file parse normally. Intended for rare/undiscovered
+    /// block types whose size is known from an external source (Gamebryo
+    /// 2.3 headers, nif_stats corpus analysis, modder documentation) but
+    /// whose full schema has not been implemented yet. See #224.
+    pub oblivion_skip_sizes: HashMap<String, u32>,
 }
 
 /// Animation block type names that can be skipped in geometry-only mode.
@@ -106,6 +120,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
     // early — `NifScene.truncated` exposes the state to downstream
     // consumers so they can decide how to handle the incomplete graph.
     let mut truncated = false;
+    let mut dropped_block_count: usize = 0;
 
     if header.block_sizes.is_empty() && header.num_blocks > 0 {
         log::debug!(
@@ -211,11 +226,43 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                     }));
                     continue;
                 }
-                // Without block_size (Oblivion), stop parsing but keep blocks parsed so far.
-                // This allows geometry blocks to be imported even when collision blocks fail.
-                // The scene is marked `truncated = true` so consumers that care about
-                // completeness (cell loaders with strict validation, scripts that rely
-                // on a specific block count) can detect the partial state. See #175.
+                // Without block_size (Oblivion), there's no header-driven
+                // recovery. Before giving up, check the caller's registered
+                // `oblivion_skip_sizes` map — if the type has a known fixed
+                // size, rewind any partial read, skip forward, insert a
+                // placeholder, and continue. This is the escape hatch for
+                // rare/undiscovered Oblivion block types (#224).
+                if let Some(&skip_size) = options.oblivion_skip_sizes.get(type_name) {
+                    // Rewind whatever the failed parse consumed, then skip
+                    // the full registered size. `set_position` is safe; the
+                    // stream is backed by an in-memory slice.
+                    stream.set_position(start_pos);
+                    if stream.skip(skip_size as u64).is_ok() {
+                        log::info!(
+                            "Block {} '{}' (offset {}): skipped {} bytes via \
+                             oblivion_skip_sizes hint (was: {})",
+                            i, type_name, start_pos, skip_size, e
+                        );
+                        blocks.push(Box::new(blocks::NiUnknown {
+                            type_name: type_name.to_string(),
+                            data: Vec::new(),
+                        }));
+                        continue;
+                    }
+                    // If the skip would go past EOF, fall through to the
+                    // truncation path — the caller's hint was wrong.
+                    log::warn!(
+                        "Block {} '{}' (offset {}): oblivion_skip_sizes hint of {} \
+                         bytes would exceed file length; truncating",
+                        i, type_name, start_pos, skip_size
+                    );
+                }
+
+                // Stop parsing but keep blocks parsed so far. This allows
+                // geometry blocks to be imported even when collision blocks
+                // fail. `truncated = true` is exposed via NifScene so
+                // consumers that care about completeness can detect the
+                // partial state. See #175.
                 let dropped = header.num_blocks as usize - i;
                 log::warn!(
                     "Block {} '{}' (offset {}, consumed {}): {} — stopping parse; \
@@ -223,6 +270,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                     i, type_name, start_pos, consumed, e, blocks.len(), dropped
                 );
                 truncated = true;
+                dropped_block_count = dropped;
                 break;
             }
         }
@@ -244,6 +292,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         blocks,
         root_index,
         truncated,
+        dropped_block_count,
     })
 }
 
@@ -358,8 +407,10 @@ mod tests {
             blocks: Vec::new(),
             root_index: None,
             truncated: true,
+            dropped_block_count: 3,
         };
         assert!(scene.truncated);
+        assert_eq!(scene.dropped_block_count, 3);
         assert!(scene.is_empty());
     }
 
@@ -468,6 +519,111 @@ mod tests {
         // Block 0 is NiNode, not NiTriShape
         let result = scene.get_as::<blocks::tri_shape::NiTriShape>(0);
         assert!(result.is_none());
+    }
+
+    /// Build a minimal Oblivion (v20.0.0.5) NIF with `num_unknown` blocks of
+    /// a registered unknown type, each `payload_size` bytes of garbage.
+    /// v20.0.0.5 has no `block_sizes` table and no string table, which is
+    /// exactly the configuration that exercises the `oblivion_skip_sizes`
+    /// recovery path in the main parse loop.
+    fn build_oblivion_nif_with_unknowns(
+        type_name: &str,
+        num_unknown: usize,
+        payload_size: usize,
+    ) -> Vec<u8> {
+        let mut buf = Vec::new();
+
+        // ASCII header line.
+        buf.extend_from_slice(b"Gamebryo File Format, Version 20.0.0.5\n");
+
+        // Binary header.
+        buf.extend_from_slice(&0x14000005u32.to_le_bytes()); // version
+        buf.push(1); // little_endian
+        buf.extend_from_slice(&11u32.to_le_bytes()); // user_version (Oblivion)
+        buf.extend_from_slice(&(num_unknown as u32).to_le_bytes()); // num_blocks
+
+        // BSStreamHeader (triggered by user_version >= 3).
+        buf.extend_from_slice(&11u32.to_le_bytes()); // user_version_2
+        buf.push(0); // author short_string: length 0
+        buf.push(0); // process_script (user_version_2 < 131)
+        buf.push(0); // export_script
+
+        // Block types table.
+        buf.extend_from_slice(&1u16.to_le_bytes()); // num_block_types
+        buf.extend_from_slice(&(type_name.len() as u32).to_le_bytes());
+        buf.extend_from_slice(type_name.as_bytes());
+
+        // Block type indices — all blocks point at type 0.
+        for _ in 0..num_unknown {
+            buf.extend_from_slice(&0u16.to_le_bytes());
+        }
+
+        // No block_sizes (version < 20.2.0.7).
+        // No string table (version < 20.1.0.1).
+
+        // num_groups = 0.
+        buf.extend_from_slice(&0u32.to_le_bytes());
+
+        // Block data: each block is `payload_size` bytes of 0xAB.
+        for _ in 0..num_unknown {
+            buf.extend(std::iter::repeat(0xABu8).take(payload_size));
+        }
+
+        buf
+    }
+
+    /// Regression test for issue #224: on Oblivion NIFs (no block_sizes) the
+    /// caller can register `oblivion_skip_sizes` hints that let the parser
+    /// skip past unknown block types instead of truncating the scene.
+    #[test]
+    fn oblivion_skip_sizes_hint_recovers_unknown_blocks() {
+        let type_name = "BSUnknownOblivionSkipTest";
+        let payload = 24;
+        let data = build_oblivion_nif_with_unknowns(type_name, 3, payload);
+
+        // Default options: no hints → parse should truncate after the first
+        // failing block, keeping 0 blocks.
+        let default_scene = parse_nif(&data).unwrap();
+        assert!(
+            default_scene.truncated,
+            "unknown-type Oblivion NIF must truncate without a hint"
+        );
+        assert_eq!(default_scene.dropped_block_count, 3);
+        assert!(default_scene.blocks.is_empty());
+
+        // With a registered hint the parser should skip past all 3 blocks.
+        let mut options = ParseOptions::default();
+        options
+            .oblivion_skip_sizes
+            .insert(type_name.to_string(), payload as u32);
+        let scene = parse_nif_with_options(&data, &options).unwrap();
+
+        assert!(!scene.truncated, "hint must prevent truncation");
+        assert_eq!(scene.dropped_block_count, 0);
+        assert_eq!(scene.len(), 3);
+        for i in 0..3 {
+            assert_eq!(scene.get(i).unwrap().block_type_name(), "NiUnknown");
+        }
+    }
+
+    /// A too-large hint (past EOF) must NOT crash or advance the stream —
+    /// the parser falls back to the truncation path gracefully.
+    #[test]
+    fn oblivion_skip_sizes_oversized_hint_falls_back_to_truncation() {
+        let type_name = "BSUnknownOblivionOversize";
+        let data = build_oblivion_nif_with_unknowns(type_name, 1, 16);
+
+        let mut options = ParseOptions::default();
+        // Hint is 9999 bytes but the payload is only 16 — skip would go
+        // past EOF, so the parser should log a warning and truncate.
+        options
+            .oblivion_skip_sizes
+            .insert(type_name.to_string(), 9999);
+        let scene = parse_nif_with_options(&data, &options).unwrap();
+
+        assert!(scene.truncated);
+        assert_eq!(scene.dropped_block_count, 1);
+        assert!(scene.blocks.is_empty());
     }
 
     // Real-game NIF parse coverage lives in `tests/parse_real_nifs.rs`, which

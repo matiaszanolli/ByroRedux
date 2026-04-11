@@ -1161,11 +1161,7 @@ mod tests {
 
     #[test]
     fn empty_scene_produces_no_clips() {
-        let scene = NifScene {
-            blocks: Vec::new(),
-            root_index: None,
-            truncated: false,
-        };
+        let scene = NifScene::default();
         let clips = import_kf(&scene);
         assert!(clips.is_empty());
     }

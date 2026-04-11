@@ -320,7 +320,7 @@ mod tests {
         NifScene {
             blocks,
             root_index,
-            truncated: false,
+            ..NifScene::default()
         }
     }
 
@@ -435,11 +435,7 @@ mod tests {
 
     #[test]
     fn import_empty_scene() {
-        let scene = NifScene {
-            blocks: Vec::new(),
-            root_index: None,
-            truncated: false,
-        };
+        let scene = NifScene::default();
         let meshes = import_nif(&scene);
         assert!(meshes.is_empty());
     }
