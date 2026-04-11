@@ -637,6 +637,7 @@ mod tests {
             base_texture: Some(TexDesc {
                 source_ref: BlockRef(5),
                 flags: 0,
+                transform: None,
             }),
             dark_texture: None,
             detail_texture: None,
@@ -645,6 +646,7 @@ mod tests {
             bump_texture: Some(TexDesc {
                 source_ref: BlockRef(4),
                 flags: 0,
+                transform: None,
             }),
             normal_texture: None,
         };
@@ -748,10 +750,12 @@ mod tests {
             bump_texture: Some(TexDesc {
                 source_ref: BlockRef(4),
                 flags: 0,
+                transform: None,
             }),
             normal_texture: Some(TexDesc {
                 source_ref: BlockRef(5),
                 flags: 0,
+                transform: None,
             }),
         };
 

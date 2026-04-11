@@ -240,6 +240,21 @@ pub(super) fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> Mat
                     info.normal_map = Some(path);
                 }
             }
+            // Propagate the base slot's UV transform to the shared
+            // `uv_offset` / `uv_scale` fields. The renderer shader applies
+            // them per-vertex to every sampled texture — fine for the
+            // common case where base, detail, glow and parallax share a
+            // UV set, which holds for Oblivion/FO3/FNV static meshes. See
+            // issue #219. Only overwrite the defaults — a BSShader path
+            // earlier in the pass may have already set these.
+            if !info.has_material_data {
+                if let Some(base) = tex_prop.base_texture.as_ref() {
+                    if let Some(tx) = base.transform {
+                        info.uv_offset = tx.translation;
+                        info.uv_scale = tx.scale;
+                    }
+                }
+            }
         }
 
         if let Some(shader) = scene.get_as::<BSShaderPPLightingProperty>(idx) {

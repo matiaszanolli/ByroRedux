@@ -136,6 +136,45 @@ pub struct NiTexturingProperty {
 pub struct TexDesc {
     pub source_ref: crate::types::BlockRef,
     pub flags: u16,
+    /// Optional per-slot UV transform. Populated when the NIF sets
+    /// `Has Texture Transform = true` on the slot; `None` when the slot
+    /// uses the identity transform. Only the base-texture slot is
+    /// currently consumed downstream (see #219).
+    pub transform: Option<TexTransform>,
+}
+
+/// Per-slot UV transform decoded from a `TexDesc`.
+///
+/// Corresponds to nif.xml `TexDesc` sub-fields `Translation`, `Scale`,
+/// `Rotation`, `Transform Method` and `Center`. Values are in UV space
+/// (Translation/Scale/Center are `TexCoord` = 2 × f32; Rotation is a
+/// single float in radians).
+#[derive(Debug, Clone, Copy)]
+pub struct TexTransform {
+    /// UV offset applied after the other transforms.
+    pub translation: [f32; 2],
+    /// UV scale applied around `center`.
+    pub scale: [f32; 2],
+    /// UV rotation (radians) applied around `center`.
+    pub rotation: f32,
+    /// Transform order flag from `TexturingTransformMethod` enum.
+    /// Preserved for downstream consumers that care about the order
+    /// (maya vs max vs milkshape conventions); most engines fold it
+    /// into the shader.
+    pub transform_method: u32,
+    /// Pivot point in UV space for rotation + scale.
+    pub center: [f32; 2],
+}
+
+impl TexTransform {
+    /// Identity transform (no offset, unit scale, no rotation).
+    pub const IDENTITY: Self = Self {
+        translation: [0.0, 0.0],
+        scale: [1.0, 1.0],
+        rotation: 0.0,
+        transform_method: 0,
+        center: [0.0, 0.0],
+    };
 }
 
 impl NiObject for NiTexturingProperty {
@@ -302,16 +341,27 @@ impl NiTexturingProperty {
 
         if stream.version() >= crate::version::NifVersion(0x14010003) {
             let flags = stream.read_u16_le()?;
-            // nif.xml: Has Texture Transform (bool) since 10.1.0.0, NO until — present in ALL modern versions.
-            if stream.version() >= crate::version::NifVersion(0x0A010000) {
-                let has_transform = stream.read_byte_bool()?;
-                if has_transform {
-                    // Translation (2 floats) + Scale (2 floats) + Rotation (1 float)
-                    // + Transform Method (u32) + Center (2 floats) = 32 bytes
-                    stream.skip(4 * 2 + 4 * 2 + 4 + 4 + 4 * 2)?;
-                }
-            }
-            Ok(Some(TexDesc { source_ref, flags }))
+            // nif.xml: Has Texture Transform (bool) since 10.1.0.0,
+            // present in every modern file. We read the 32-byte TexDesc
+            // transform body when the bool is set and store it on the
+            // returned TexDesc; the old parser skipped it, which caused
+            // #219 (per-slot UV transforms lost).
+            let transform =
+                if stream.version() >= crate::version::NifVersion(0x0A010000) {
+                    let has_transform = stream.read_byte_bool()?;
+                    if has_transform {
+                        Some(Self::read_tex_transform(stream)?)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+            Ok(Some(TexDesc {
+                source_ref,
+                flags,
+                transform,
+            }))
         } else {
             let clamp_mode = stream.read_u32_le()?;
             let filter_mode = stream.read_u32_le()?;
@@ -322,18 +372,47 @@ impl NiTexturingProperty {
                 let _ps2_k = stream.read_u16_le()?;
             }
 
-            if stream.version() >= crate::version::NifVersion(0x0A010000) {
-                let has_transform = stream.read_byte_bool()?;
-                if has_transform {
-                    stream.skip(4 * 5 + 4 + 4 * 2)?;
-                }
-            }
+            let transform =
+                if stream.version() >= crate::version::NifVersion(0x0A010000) {
+                    let has_transform = stream.read_byte_bool()?;
+                    if has_transform {
+                        Some(Self::read_tex_transform(stream)?)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
 
             let flags = ((clamp_mode & 0xF) as u16)
                 | (((filter_mode & 0xF) as u16) << 4)
                 | (((uv_set & 0xF) as u16) << 8);
-            Ok(Some(TexDesc { source_ref, flags }))
+            Ok(Some(TexDesc {
+                source_ref,
+                flags,
+                transform,
+            }))
         }
+    }
+
+    /// Read a 32-byte `TexTransform`: Translation (2 f32) + Scale (2 f32)
+    /// + Rotation (f32) + Transform Method (u32) + Center (2 f32).
+    fn read_tex_transform(stream: &mut NifStream) -> io::Result<TexTransform> {
+        let tx = stream.read_f32_le()?;
+        let ty = stream.read_f32_le()?;
+        let sx = stream.read_f32_le()?;
+        let sy = stream.read_f32_le()?;
+        let rotation = stream.read_f32_le()?;
+        let transform_method = stream.read_u32_le()?;
+        let cx = stream.read_f32_le()?;
+        let cy = stream.read_f32_le()?;
+        Ok(TexTransform {
+            translation: [tx, ty],
+            scale: [sx, sy],
+            rotation,
+            transform_method,
+            center: [cx, cy],
+        })
     }
 }
 
@@ -555,6 +634,99 @@ mod tests {
         let mut stream = NifStream::new(&data, &header);
         let _prop = NiTexturingProperty::parse(&mut stream).unwrap();
         assert_eq!(stream.position() as usize, expected_len);
+    }
+
+    /// Regression test for issue #219: the TexDesc's per-slot UV transform
+    /// must be captured (previously the 32 transform bytes were skipped
+    /// and the values discarded). Builds a minimal NiTexturingProperty at
+    /// v20.2.0.7 with a base_texture that has `Has Texture Transform = 1`
+    /// and verifies that `prop.base_texture.transform` carries the exact
+    /// values — and that the stream position matches the payload size.
+    #[test]
+    fn parse_ni_texturing_property_captures_base_uv_transform() {
+        let header = make_header(12, 83); // Skyrim LE — v20.2.0.7, >= 20.1.0.3 flags path
+        let mut data = Vec::new();
+
+        // NiObjectNET base.
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+
+        // NiProperty flags (u16), texture_count = 1.
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes());
+
+        // base_texture TexDesc (has = 1, source_ref = 5, flags = 0x0302,
+        // has_transform = 1, then the 32-byte body).
+        data.push(1); // has
+        data.extend_from_slice(&5i32.to_le_bytes()); // source_ref
+        data.extend_from_slice(&0x0302u16.to_le_bytes()); // flags
+        data.push(1); // has_transform
+        // Translation (u, v)
+        data.extend_from_slice(&0.25f32.to_le_bytes());
+        data.extend_from_slice(&(-0.5f32).to_le_bytes());
+        // Scale (su, sv)
+        data.extend_from_slice(&2.0f32.to_le_bytes());
+        data.extend_from_slice(&3.0f32.to_le_bytes());
+        // Rotation
+        data.extend_from_slice(&0.75f32.to_le_bytes());
+        // Transform method (u32 enum)
+        data.extend_from_slice(&2u32.to_le_bytes());
+        // Center (cu, cv)
+        data.extend_from_slice(&0.1f32.to_le_bytes());
+        data.extend_from_slice(&0.2f32.to_le_bytes());
+
+        // No decals, no shader map list.
+        data.extend_from_slice(&0u32.to_le_bytes());
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let prop = NiTexturingProperty::parse(&mut stream).unwrap();
+        assert_eq!(stream.position() as usize, expected_len);
+
+        let base = prop
+            .base_texture
+            .as_ref()
+            .expect("base_texture present (has=1)");
+        assert_eq!(base.source_ref.0, 5);
+        assert_eq!(base.flags, 0x0302);
+        let tx = base.transform.expect("transform captured (has_transform=1)");
+        assert!((tx.translation[0] - 0.25).abs() < 1e-6);
+        assert!((tx.translation[1] + 0.5).abs() < 1e-6);
+        assert!((tx.scale[0] - 2.0).abs() < 1e-6);
+        assert!((tx.scale[1] - 3.0).abs() < 1e-6);
+        assert!((tx.rotation - 0.75).abs() < 1e-6);
+        assert_eq!(tx.transform_method, 2);
+        assert!((tx.center[0] - 0.1).abs() < 1e-6);
+        assert!((tx.center[1] - 0.2).abs() < 1e-6);
+    }
+
+    /// Parse the same layout with `has_transform = 0` and confirm the
+    /// parser leaves `transform = None` instead of inventing identity.
+    #[test]
+    fn parse_ni_texturing_property_transform_absent() {
+        let header = make_header(12, 83);
+        let mut data = Vec::new();
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes());
+
+        data.push(1); // base_texture has = 1
+        data.extend_from_slice(&7i32.to_le_bytes()); // source_ref
+        data.extend_from_slice(&0u16.to_le_bytes()); // flags
+        data.push(0); // has_transform = 0 (no body bytes)
+
+        data.extend_from_slice(&0u32.to_le_bytes()); // num_shader_textures
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let prop = NiTexturingProperty::parse(&mut stream).unwrap();
+        assert_eq!(stream.position() as usize, expected_len);
+        let base = prop.base_texture.as_ref().unwrap();
+        assert_eq!(base.source_ref.0, 7);
+        assert!(base.transform.is_none());
     }
 }
 
