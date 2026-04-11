@@ -509,6 +509,19 @@ impl VulkanContext {
 
             self.device.cmd_end_render_pass(cmd);
 
+            // SVGF temporal accumulation (Phase 3): reprojects previous
+            // frame's accumulated indirect, blends with raw 1-SPP indirect
+            // at α=0.2. Reads G-buffer raw_indirect/motion/mesh_id (now in
+            // SHADER_READ_ONLY_OPTIMAL via render pass final_layout) +
+            // history from previous frame's SVGF output slot, writes this
+            // frame's accumulated indirect + moments. Composite samples
+            // the output below.
+            if let Some(ref mut svgf) = self.svgf {
+                if let Err(e) = svgf.dispatch(&self.device, cmd, frame) {
+                    log::warn!("SVGF dispatch failed: {e}");
+                }
+            }
+
             // Upload composite params (fog, etc.) before the composite pass.
             if let Some(ref mut composite) = self.composite {
                 let composite_params = super::super::composite::CompositeParams {

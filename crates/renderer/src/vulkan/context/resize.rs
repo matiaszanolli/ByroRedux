@@ -190,27 +190,63 @@ impl VulkanContext {
             )?;
         }
 
-        // Collect fresh G-buffer views before we borrow &mut self.composite.
-        let (raw_indirect_views, albedo_views) = {
+        // Collect fresh G-buffer views before we borrow &mut self.svgf /
+        // self.composite. Motion and mesh_id are needed by SVGF.
+        let (raw_indirect_views, motion_views_in, mesh_id_views_in, albedo_views) = {
             let gbuffer_ref = self
                 .gbuffer
                 .as_ref()
                 .expect("gbuffer must exist during resize");
             let n = MAX_FRAMES_IN_FLIGHT;
-            let ri: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.raw_indirect_view(i)).collect();
+            let ri: Vec<vk::ImageView> =
+                (0..n).map(|i| gbuffer_ref.raw_indirect_view(i)).collect();
+            let mo: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.motion_view(i)).collect();
+            let mi: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.mesh_id_view(i)).collect();
             let ab: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.albedo_view(i)).collect();
-            (ri, ab)
+            (ri, mo, mi, ab)
         };
+
+        // Recreate SVGF history images + rewrite its descriptor sets
+        // against the new G-buffer views. Must happen before composite
+        // (whose descriptor sets reference SVGF's indirect_view).
+        if let Some(ref mut svgf) = self.svgf {
+            svgf.recreate_on_resize(
+                &self.device,
+                self.allocator.as_ref().expect("allocator missing during resize"),
+                &raw_indirect_views,
+                &motion_views_in,
+                &mesh_id_views_in,
+                self.swapchain_state.extent.width,
+                self.swapchain_state.extent.height,
+            )?;
+            // Re-transition the fresh history images to GENERAL.
+            if let Err(e) =
+                unsafe { svgf.initialize_layouts(&self.device, &self.graphics_queue, self.transfer_pool) }
+            {
+                log::warn!("SVGF layout re-init after resize failed: {e}");
+            }
+        }
+
+        // Choose the indirect source for composite: SVGF accumulated (in
+        // GENERAL layout) if available, else raw G-buffer indirect.
+        let (composite_indirect_views, indirect_is_general): (Vec<vk::ImageView>, bool) =
+            if let Some(ref s) = self.svgf {
+                let n = MAX_FRAMES_IN_FLIGHT;
+                ((0..n).map(|i| s.indirect_view(i)).collect(), true)
+            } else {
+                (raw_indirect_views.clone(), false)
+            };
 
         // Recreate composite pipeline's HDR images + swapchain framebuffers
         // with the new extent. Also rewrites descriptor sets to point at
-        // the new G-buffer views.
+        // the new indirect + albedo views.
         if let Some(ref mut composite) = self.composite {
             composite.recreate_on_resize(
                 &self.device,
                 self.allocator.as_ref().expect("allocator missing during resize"),
                 &self.swapchain_state.image_views,
-                &raw_indirect_views,
+                &composite_indirect_views,
+                indirect_is_general,
                 &albedo_views,
                 self.swapchain_state.extent.width,
                 self.swapchain_state.extent.height,

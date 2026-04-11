@@ -323,9 +323,14 @@ void main() {
     // pixels) is distinct from "instance 0". Caps at uint16 max.
     outMeshID = uint(fragInstanceIndex) + 1u;
 
-    // View direction.
+    // View direction. NdotV is clamped to 0.05 (~87°) to prevent the
+    // Cook-Torrance `D*G*F / (4*NdotV*NdotL)` specular term from blowing
+    // up at grazing view angles — the microfacet model is not valid in
+    // that regime anyway, and the unclamped version produced bright
+    // triangular specular hotspots along wall surfaces when the camera
+    // was looking along them.
     vec3 V = normalize(cameraPos.xyz - fragWorldPos);
-    float NdotV = max(dot(N, V), 0.001);
+    float NdotV = max(dot(N, V), 0.05);
 
     bool rtEnabled = sceneFlags.x > 0.5;
 
@@ -453,7 +458,7 @@ void main() {
         vec3 F = fresnelSchlick(HdotV, F0);
 
         vec3 kD = (1.0 - F) * (1.0 - metalness);
-        vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
+        vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
         Lo = (kD * albedo / PI + specular * specStrength * specColor) * vec3(0.8) * NdotL;
     } else {
         // Clustered lighting: iterate only lights assigned to this fragment's cluster.
@@ -515,17 +520,14 @@ void main() {
             // naturally integrates into smooth soft shadows for the human eye.
             float shadow = 1.0;
             if (rtEnabled) {
-                // Soft shadow via jittered light position.
-                //
-                // Instead of tracing toward the exact light center, jitter
-                // the target point on a disk around the light. The disk size
-                // equals the light's physical radius, producing naturally
-                // contact-hardening shadows: at an occluder close to the
-                // surface the angular spread is tiny (sharp shadow), far from
-                // the surface it's large (soft penumbra).
-                //
-                // The ray origin stays fixed on the surface (+ normal bias).
-                // Only the direction varies.
+                // Soft shadow via jittered ray direction. Point/spot lights
+                // aim at a disk around their physical position; directional
+                // lights aim along -sunDir (i.e., the L vector) with a small
+                // angular cone for penumbra. The previous code shared the
+                // point-light path for directional lights, which caused the
+                // shadow ray to aim at the world origin (lightPos=(0,0,0)
+                // for directional) instead of the sun — producing a
+                // cone-shaped light leak on walls.
 
                 float frameCount = cameraPos.w;
                 float noise1 = interleavedGradientNoise(gl_FragCoord.xy, frameCount + float(i) * 7.0);
@@ -535,19 +537,29 @@ void main() {
                 buildOrthoBasis(L, T, B);
                 vec2 diskSample = concentricDiskSample(noise1, noise2);
 
-                // Penumbra widens with distance from the light source:
-                // closer fragments get sharper shadows, distant fragments
-                // get softer shadows. This mimics real penumbra physics
-                // where angular size of the light grows as you move away.
-                float distRatio = clamp(dist / max(radius, 1.0), 0.1, 1.0);
-                float lightDiskRadius = (lightType < 1.5)
-                    ? max(radius * 0.025 * distRatio, 1.5)  // point/spot: scales with distance
-                    : 6.0 * distRatio;                        // directional: distance-dependent spread
-
-                vec3 jitteredTarget = lightPos + (T * diskSample.x + B * diskSample.y) * lightDiskRadius;
                 vec3 rayOrigin = fragWorldPos + N * 0.05;
-                vec3 rayDir = normalize(jitteredTarget - rayOrigin);
-                float rayDist = length(jitteredTarget - rayOrigin) - 0.1;
+                vec3 rayDir;
+                float rayDist;
+
+                if (lightType < 1.5) {
+                    // Point / spot: trace toward a jittered point on the
+                    // light's physical disk. Penumbra scales with radius
+                    // and fragment-to-light distance.
+                    float distRatio = clamp(dist / max(radius, 1.0), 0.1, 1.0);
+                    float lightDiskRadius = max(radius * 0.025 * distRatio, 1.5);
+                    vec3 jitteredTarget = lightPos + (T * diskSample.x + B * diskSample.y) * lightDiskRadius;
+                    rayDir = normalize(jitteredTarget - rayOrigin);
+                    rayDist = length(jitteredTarget - rayOrigin) - 0.1;
+                } else {
+                    // Directional: trace along the direction-to-light (L)
+                    // with a small angular cone (~2.8°, matching the sun's
+                    // real angular diameter of ~0.5° scaled up for softer
+                    // penumbra). No physical light position.
+                    const float sunAngularRadius = 0.05; // tan(~2.8°)
+                    vec3 jitteredDir = L + (T * diskSample.x + B * diskSample.y) * sunAngularRadius;
+                    rayDir = normalize(jitteredDir);
+                    rayDist = 10000.0;
+                }
 
                 rayQueryEXT rayQuery;
                 rayQueryInitializeEXT(
@@ -576,7 +588,7 @@ void main() {
             vec3 F = fresnelSchlick(HdotV, F0);
 
             vec3 kD = (1.0 - F) * (1.0 - metalness);
-            vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
+            vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
             vec3 radiance = lightColor * atten * shadow;
 
             Lo += (kD * albedo / PI + specular * specStrength * specColor) * radiance * NdotL;

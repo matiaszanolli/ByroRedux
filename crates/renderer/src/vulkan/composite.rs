@@ -88,15 +88,19 @@ impl CompositePipeline {
     /// Create all HDR intermediate images, the composite render pass +
     /// pipeline, and the per-swapchain-image composite framebuffers.
     ///
-    /// `raw_indirect_views` and `albedo_views` are owned by the G-buffer
-    /// module (one view per frame-in-flight); the composite pipeline just
-    /// references them via descriptor sets.
+    /// `indirect_views` comes from the SVGF denoiser (Phase 3+) in layout
+    /// GENERAL, or from the raw G-buffer output (Phase 2) in layout
+    /// SHADER_READ_ONLY_OPTIMAL. `albedo_views` comes from the G-buffer.
+    /// Which layout the indirect is in is baked into the descriptor sets
+    /// at write time — callers must pass `indirect_is_general=true` when
+    /// wiring up the SVGF output.
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
         swapchain_format: vk::Format,
         swapchain_views: &[vk::ImageView],
-        raw_indirect_views: &[vk::ImageView],
+        indirect_views: &[vk::ImageView],
+        indirect_is_general: bool,
         albedo_views: &[vk::ImageView],
         width: u32,
         height: u32,
@@ -106,7 +110,8 @@ impl CompositePipeline {
             allocator,
             swapchain_format,
             swapchain_views,
-            raw_indirect_views,
+            indirect_views,
+            indirect_is_general,
             albedo_views,
             width,
             height,
@@ -122,12 +127,13 @@ impl CompositePipeline {
         allocator: &SharedAllocator,
         swapchain_format: vk::Format,
         swapchain_views: &[vk::ImageView],
-        raw_indirect_views: &[vk::ImageView],
+        indirect_views: &[vk::ImageView],
+        indirect_is_general: bool,
         albedo_views: &[vk::ImageView],
         width: u32,
         height: u32,
     ) -> Result<Self> {
-        debug_assert_eq!(raw_indirect_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(indirect_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(albedo_views.len(), MAX_FRAMES_IN_FLIGHT);
         // Build a partially-valid Self so we can use destroy() for cleanup
         // on any error. Fields that haven't been created yet use null
@@ -408,6 +414,11 @@ impl CompositePipeline {
 
         // Write each descriptor set to sample its own frame's HDR + indirect +
         // albedo views and bind its own param UBO.
+        let indirect_layout = if indirect_is_general {
+            vk::ImageLayout::GENERAL
+        } else {
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+        };
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let hdr_info = [vk::DescriptorImageInfo::default()
                 .sampler(partial.hdr_sampler)
@@ -415,8 +426,8 @@ impl CompositePipeline {
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             let indirect_info = [vk::DescriptorImageInfo::default()
                 .sampler(partial.hdr_sampler)
-                .image_view(raw_indirect_views[i])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                .image_view(indirect_views[i])
+                .image_layout(indirect_layout)];
             let albedo_info = [vk::DescriptorImageInfo::default()
                 .sampler(partial.hdr_sampler)
                 .image_view(albedo_views[i])
@@ -626,15 +637,15 @@ impl CompositePipeline {
 
     /// Recreate framebuffers and pipeline viewport-dependent state on
     /// swapchain resize. The HDR images themselves are recreated because
-    /// their size matches the swapchain. Caller must also pass the
-    /// G-buffer's new raw_indirect + albedo views (which they just
-    /// recreated via `GBuffer::recreate_on_resize`).
+    /// their size matches the swapchain. Caller must also pass the new
+    /// indirect + albedo views (SVGF/GBuffer just recreated them).
     pub fn recreate_on_resize(
         &mut self,
         device: &ash::Device,
         allocator: &SharedAllocator,
         swapchain_views: &[vk::ImageView],
-        raw_indirect_views: &[vk::ImageView],
+        indirect_views: &[vk::ImageView],
+        indirect_is_general: bool,
         albedo_views: &[vk::ImageView],
         width: u32,
         height: u32,
@@ -717,9 +728,14 @@ impl CompositePipeline {
             self.hdr_image_views.push(view);
         }
 
-        // Rewrite descriptor sets to point at the new HDR, raw_indirect,
+        // Rewrite descriptor sets to point at the new HDR, indirect,
         // and albedo image views. Params UBO buffers are unchanged.
         let param_size = std::mem::size_of::<CompositeParams>() as vk::DeviceSize;
+        let indirect_layout = if indirect_is_general {
+            vk::ImageLayout::GENERAL
+        } else {
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+        };
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let hdr_info = [vk::DescriptorImageInfo::default()
                 .sampler(self.hdr_sampler)
@@ -727,8 +743,8 @@ impl CompositePipeline {
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             let indirect_info = [vk::DescriptorImageInfo::default()
                 .sampler(self.hdr_sampler)
-                .image_view(raw_indirect_views[i])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                .image_view(indirect_views[i])
+                .image_layout(indirect_layout)];
             let albedo_info = [vk::DescriptorImageInfo::default()
                 .sampler(self.hdr_sampler)
                 .image_view(albedo_views[i])

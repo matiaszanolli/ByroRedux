@@ -41,19 +41,6 @@ impl Component for NormalMapHandle {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// Virtual light source generated from a window mesh that sees sky.
-/// The cell loader attaches this to alpha-blended window entities so
-/// that `build_render_data` can inject synthetic point lights placed
-/// just outside each window, illuminating the room interior.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct WindowLight {
-    /// Inward-facing normal (world space, points into the room).
-    pub(crate) inward_normal: [f32; 3],
-}
-impl Component for WindowLight {
-    type Storage = SparseSetStorage<Self>;
-}
-
 /// System names stored as a resource for the `systems` console command.
 pub(crate) struct SystemList(pub(crate) Vec<String>);
 impl Resource for SystemList {}
@@ -64,6 +51,10 @@ pub(crate) struct CellLightingRes {
     pub(crate) directional_color: [f32; 3],
     /// Direction vector in Y-up space (computed from rotation).
     pub(crate) directional_dir: [f32; 3],
+    /// True when the cell is interior. Interior XCLL directional is a
+    /// subtle tint, not a physical sun — we skip it as a scene light to
+    /// avoid leak artifacts on walls that shouldn't see the sky.
+    pub(crate) is_interior: bool,
     /// Fog color (RGB 0-1).
     pub(crate) fog_color: [f32; 3],
     /// Fog near distance (game units).

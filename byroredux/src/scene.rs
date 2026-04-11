@@ -64,6 +64,10 @@ pub(crate) fn setup_scene(
                             ambient: lit.ambient,
                             directional_color: lit.directional_color,
                             directional_dir: dir,
+                            // load_cell() only handles interior cells —
+                            // the directional will be skipped as a scene
+                            // light to prevent wall light leakage.
+                            is_interior: true,
                             fog_color: lit.fog_color,
                             fog_near: lit.fog_near,
                             fog_far: lit.fog_far,

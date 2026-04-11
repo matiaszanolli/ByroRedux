@@ -92,26 +92,25 @@ void main() {
     float zNear = sliceDepth(sliceZ);
     float zFar = sliceDepth(sliceZ + 1);
 
-    // Unproject the 4 tile corners to world-space rays from camera.
-    // Each ray goes from camera through the NDC point at the near plane (Z=0).
-    // The far plane point (Z=1) gives us the direction.
+    // Unproject the 4 tile corners to world space at the near plane, then
+    // build actual view rays from the camera through each corner. Walking
+    // those rays at zNear/zFar (world-space distance from camera) gives the
+    // 8 vertices of this cluster's frustum voxel.
+    //
+    // BUG PREVIOUSLY: rayDir was taken as `farCorners - nearCorners` (the
+    // chord along the frustum's side), which is NOT parallel to the view
+    // ray `nearCorners - camPos` in perspective projection. The resulting
+    // AABB was skewed, producing tile-shaped lighting discontinuities
+    // where lights were missed at cluster boundaries.
     vec3 nearCorners[4];
-    vec3 farCorners[4];
     nearCorners[0] = ndcToWorld(vec2(ndcMinX, ndcMinY), 0.0, invViewProj);
     nearCorners[1] = ndcToWorld(vec2(ndcMaxX, ndcMinY), 0.0, invViewProj);
     nearCorners[2] = ndcToWorld(vec2(ndcMinX, ndcMaxY), 0.0, invViewProj);
     nearCorners[3] = ndcToWorld(vec2(ndcMaxX, ndcMaxY), 0.0, invViewProj);
-    farCorners[0] = ndcToWorld(vec2(ndcMinX, ndcMinY), 1.0, invViewProj);
-    farCorners[1] = ndcToWorld(vec2(ndcMaxX, ndcMinY), 1.0, invViewProj);
-    farCorners[2] = ndcToWorld(vec2(ndcMinX, ndcMaxY), 1.0, invViewProj);
-    farCorners[3] = ndcToWorld(vec2(ndcMaxX, ndcMaxY), 1.0, invViewProj);
 
-    // Parameterize each ray by world-space distance from camera.
-    // For each tile corner, compute the world-space point at zNear and zFar
-    // distance along the ray from camera.
     vec3 corners[8];
     for (int i = 0; i < 4; i++) {
-        vec3 rayDir = normalize(farCorners[i] - nearCorners[i]);
+        vec3 rayDir = normalize(nearCorners[i] - camPos);
         corners[i] = camPos + rayDir * zNear;
         corners[i + 4] = camPos + rayDir * zFar;
     }

@@ -1,8 +1,10 @@
 //! NIF material and texture property extraction.
 
 use crate::blocks::properties::{
-    NiAlphaProperty, NiMaterialProperty, NiStencilProperty, NiTexturingProperty, TexDesc,
+    NiAlphaProperty, NiFlagProperty, NiMaterialProperty, NiStencilProperty, NiTexturingProperty,
+    TexDesc,
 };
+use crate::blocks::NiObject;
 use crate::blocks::shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
     BSShaderPPLightingProperty, BSShaderTextureSet, ShaderTypeData,
@@ -41,6 +43,13 @@ pub(super) struct MaterialInfo {
     pub emissive_mult: f32,
     pub specular_color: [f32; 3],
     pub specular_strength: f32,
+    /// True when the mesh has no `NiSpecularProperty` or the property's
+    /// enable flag (bit 0) is set. Many Oblivion/FNV matte surfaces
+    /// (stone walls, plaster, unfinished wood) explicitly disable
+    /// specular via a `NiSpecularProperty { flags: 0 }` block; honoring
+    /// that flag prevents bright specular hotspots that look like
+    /// lighting glitches in the new PBR pipeline.
+    pub specular_enabled: bool,
     pub glossiness: f32,
     pub uv_offset: [f32; 2],
     pub uv_scale: [f32; 2],
@@ -67,6 +76,7 @@ impl Default for MaterialInfo {
             emissive_mult: 1.0,
             specular_color: [1.0, 1.0, 1.0],
             specular_strength: 1.0,
+            specular_enabled: true,
             glossiness: 80.0,
             uv_offset: [0.0, 0.0],
             uv_scale: [1.0, 1.0],
@@ -282,6 +292,28 @@ pub(super) fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> Mat
                 }
             }
         }
+
+        // NiSpecularProperty (issue #220) — bit 0 of flags is the enable
+        // toggle. Many matte surfaces in Oblivion/FNV set flags=0 here to
+        // explicitly disable specular; without honoring this, every wall
+        // and ceiling panel gets a bright PBR specular highlight from
+        // point lights that looks like a lighting artifact.
+        //
+        // We use a type_name match because `NiFlagProperty` is shared by
+        // NiSpecular/Wireframe/Dither/Shade and we only care about
+        // specular here.
+        if let Some(flag_prop) = scene.get_as::<NiFlagProperty>(idx) {
+            if flag_prop.block_type_name() == "NiSpecularProperty" && !flag_prop.enabled() {
+                info.specular_enabled = false;
+            }
+        }
+    }
+
+    // Zero out specular strength when the property is disabled. We do
+    // this once at the end so later code (pipeline selection, draw
+    // command population) doesn't need to know about the flag.
+    if !info.specular_enabled {
+        info.specular_strength = 0.0;
     }
 
     info

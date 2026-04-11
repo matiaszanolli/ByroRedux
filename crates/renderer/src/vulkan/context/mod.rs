@@ -5,6 +5,7 @@ use super::composite::{CompositePipeline, HDR_FORMAT};
 use super::compute::ClusterCullPipeline;
 use super::gbuffer::{GBuffer, ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT};
 use super::ssao::SsaoPipeline;
+use super::svgf::SvgfPipeline;
 use super::allocator::{self, SharedAllocator};
 use super::debug;
 use super::device::{self, QueueFamilyIndices};
@@ -87,6 +88,7 @@ pub struct VulkanContext {
     pub ssao: Option<SsaoPipeline>,
     pub composite: Option<CompositePipeline>,
     pub gbuffer: Option<GBuffer>,
+    pub svgf: Option<SvgfPipeline>,
     pipeline_cache: vk::PipelineCache,
     pipeline: vk::Pipeline,
     pipeline_alpha: vk::Pipeline,
@@ -383,23 +385,75 @@ impl VulkanContext {
         )?);
         let gbuffer_ref = gbuffer.as_ref().expect("gbuffer must exist");
 
-        // Collect G-buffer views up-front so both composite and main
+        // Collect G-buffer views up-front so svgf, composite, and main
         // framebuffer creation can reference them.
         let n_frames = MAX_FRAMES_IN_FLIGHT;
         let raw_indirect_views: Vec<vk::ImageView> =
             (0..n_frames).map(|i| gbuffer_ref.raw_indirect_view(i)).collect();
+        let motion_views_seed: Vec<vk::ImageView> =
+            (0..n_frames).map(|i| gbuffer_ref.motion_view(i)).collect();
+        let mesh_id_views_seed: Vec<vk::ImageView> =
+            (0..n_frames).map(|i| gbuffer_ref.mesh_id_view(i)).collect();
         let albedo_views: Vec<vk::ImageView> =
             (0..n_frames).map(|i| gbuffer_ref.albedo_view(i)).collect();
 
+        // 14b2. SVGF temporal denoiser — reads raw_indirect + motion +
+        // mesh_id from the G-buffer, writes accumulated_indirect images
+        // that the composite pass will sample in place of raw_indirect.
+        // Created before composite so composite's descriptor sets can
+        // reference SVGF's indirect_history views.
+        let mut svgf = match SvgfPipeline::new(
+            &device,
+            &gpu_allocator,
+            &raw_indirect_views,
+            &motion_views_seed,
+            &mesh_id_views_seed,
+            swapchain_state.extent.width,
+            swapchain_state.extent.height,
+        ) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                log::warn!("SVGF pipeline creation failed: {e} — falling back to raw indirect");
+                None
+            }
+        };
+        // Transition history images UNDEFINED → GENERAL so first dispatch
+        // and first descriptor sampling see a valid layout.
+        if let Some(ref s) = svgf {
+            if let Err(e) =
+                unsafe { s.initialize_layouts(&device, &graphics_queue, transfer_pool) }
+            {
+                log::warn!("SVGF layout init failed: {e} — disabling SVGF");
+                // Destroy partially-initialized pipeline.
+                if let Some(mut pipe) = svgf.take() {
+                    unsafe { pipe.destroy(&device, &gpu_allocator) };
+                }
+            }
+        }
+
+        // Composite samples SVGF's accumulated indirect (GENERAL layout)
+        // when SVGF is available, else falls back to raw G-buffer indirect
+        // (SHADER_READ_ONLY_OPTIMAL layout).
+        let (composite_indirect_views, indirect_is_general): (Vec<vk::ImageView>, bool) =
+            if let Some(ref s) = svgf {
+                (
+                    (0..n_frames).map(|i| s.indirect_view(i)).collect(),
+                    true,
+                )
+            } else {
+                (raw_indirect_views.clone(), false)
+            };
+
         // 14c. Composite pipeline: owns HDR intermediates + tone-map pass.
-        // Its descriptor sets sample HDR (owned by composite), raw_indirect,
-        // and albedo (both owned by gbuffer).
+        // Its descriptor sets sample HDR (owned by composite), indirect
+        // (from SVGF or raw G-buffer), and albedo (G-buffer).
         let composite = match CompositePipeline::new(
             &device,
             &gpu_allocator,
             swapchain_state.format.format,
             &swapchain_state.image_views,
-            &raw_indirect_views,
+            &composite_indirect_views,
+            indirect_is_general,
             &albedo_views,
             swapchain_state.extent.width,
             swapchain_state.extent.height,
@@ -481,6 +535,7 @@ impl VulkanContext {
             ssao,
             composite,
             gbuffer,
+            svgf,
             depth_allocation: Some(depth_allocation),
             depth_image,
             depth_image_view,
@@ -545,6 +600,9 @@ impl Drop for VulkanContext {
                 }
                 if let Some(ref mut composite) = self.composite {
                     composite.destroy(&self.device, alloc);
+                }
+                if let Some(ref mut svgf) = self.svgf {
+                    svgf.destroy(&self.device, alloc);
                 }
                 if let Some(ref mut gbuffer) = self.gbuffer {
                     gbuffer.destroy(&self.device, alloc);

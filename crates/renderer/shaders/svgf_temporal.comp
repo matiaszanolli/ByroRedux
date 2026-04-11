@@ -1,0 +1,136 @@
+#version 450
+
+// SVGF temporal accumulation pass (Phase 3).
+//
+// Reads the raw 1-SPP indirect light from the G-buffer, reprojects the
+// previous frame's accumulated indirect via motion vectors, and blends the
+// two with a fixed α (paper value 0.2). Also updates a running
+// luminance-moments image (μ1, μ2, history_length) that Phase 4 will use
+// to estimate variance for the À-trous filter.
+//
+// The consistency test is intentionally minimal: we reject taps whose
+// previous-frame mesh_id differs from the current one. mesh_id is the
+// strongest disocclusion signal and avoids needing a previous-frame
+// depth/normal buffer.
+//
+// Motion vector convention (from triangle.frag):
+//   outMotion = (currNDC - prevNDC) * 0.5
+// which, since NDC = UV * 2 - 1 in Vulkan (y not flipped here), gives
+//   motion = currUV - prevUV  ⇒  prevUV = uv - motion
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// ── Current-frame G-buffer inputs ──
+layout(set = 0, binding = 0) uniform sampler2D currIndirectTex;
+layout(set = 0, binding = 1) uniform sampler2D motionTex;
+layout(set = 0, binding = 2) uniform usampler2D currMeshIdTex;
+
+// ── Previous-frame mesh_id (other frame-in-flight slot) ──
+layout(set = 0, binding = 3) uniform usampler2D prevMeshIdTex;
+
+// ── Previous-frame SVGF outputs (history) ──
+layout(set = 0, binding = 4) uniform sampler2D prevIndirectHistTex;
+layout(set = 0, binding = 5) uniform sampler2D prevMomentsHistTex;
+
+// ── Current-frame SVGF outputs (writes) ──
+layout(set = 0, binding = 6, rgba16f) uniform writeonly image2D outIndirect;
+layout(set = 0, binding = 7, rgba16f) uniform writeonly image2D outMoments;
+
+layout(set = 0, binding = 8) uniform SvgfTemporalParams {
+    vec4 screen;   // xy = size, zw = 1/size
+    vec4 params;   // x = alpha_color, y = alpha_moments, z = first_frame_flag (1.0 = reset), w = unused
+};
+
+float luminance(vec3 c) {
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= int(screen.x) || p.y >= int(screen.y)) return;
+
+    vec3 currInd  = texelFetch(currIndirectTex, p, 0).rgb;
+    float currLum = luminance(currInd);
+    float currLum2 = currLum * currLum;
+    uint currID = texelFetch(currMeshIdTex, p, 0).r;
+
+    // Background pixels (mesh_id 0 = sky/clear): no accumulation needed.
+    if (currID == 0u) {
+        imageStore(outIndirect, p, vec4(currInd, 1.0));
+        imageStore(outMoments, p, vec4(currLum, currLum2, 1.0, 0.0));
+        return;
+    }
+
+    // Back-project via motion vector.
+    vec2 uv = (vec2(p) + 0.5) * screen.zw;
+    vec2 motion = texelFetch(motionTex, p, 0).rg;
+    vec2 prevUV = uv - motion;
+
+    bool hasHistory = false;
+    vec3 histInd = vec3(0.0);
+    vec2 histMom = vec2(0.0);
+    float histAge = 0.0;
+
+    // Reject on first frame, out-of-bounds reprojection.
+    bool reprojectOk = params.z < 0.5
+        && prevUV.x >= 0.0 && prevUV.x <= 1.0
+        && prevUV.y >= 0.0 && prevUV.y <= 1.0;
+
+    if (reprojectOk) {
+        // 2×2 bilinear consistency test: weight each of the 4 nearest
+        // history taps by its bilinear weight × mesh_id match.
+        vec2 prevPx = prevUV * screen.xy - 0.5;
+        ivec2 base = ivec2(floor(prevPx));
+        vec2 f = prevPx - vec2(base);
+
+        float bilinear[4] = float[4](
+            (1.0 - f.x) * (1.0 - f.y),
+            f.x         * (1.0 - f.y),
+            (1.0 - f.x) * f.y,
+            f.x         * f.y
+        );
+        const ivec2 offs[4] = ivec2[4](
+            ivec2(0, 0), ivec2(1, 0), ivec2(0, 1), ivec2(1, 1)
+        );
+
+        float wTotal = 0.0;
+        for (int i = 0; i < 4; i++) {
+            ivec2 q = base + offs[i];
+            if (q.x < 0 || q.y < 0 || q.x >= int(screen.x) || q.y >= int(screen.y)) continue;
+            uint prevID = texelFetch(prevMeshIdTex, q, 0).r;
+            if (prevID != currID) continue;
+
+            vec3 sInd = texelFetch(prevIndirectHistTex, q, 0).rgb;
+            vec4 sMom = texelFetch(prevMomentsHistTex, q, 0);
+
+            float w = bilinear[i];
+            histInd += w * sInd;
+            histMom += w * sMom.xy;
+            histAge  = max(histAge, sMom.z);
+            wTotal  += w;
+        }
+
+        if (wTotal > 0.01) {
+            histInd /= wTotal;
+            histMom /= wTotal;
+            hasHistory = true;
+        }
+    }
+
+    if (hasHistory) {
+        // Force faster blend while history is young, else use fixed α.
+        // alpha' = max(alpha_base, 1/(age+1)) ⇒ frame 1 uses α=1, frame 5
+        // uses α=0.2, frame 10 uses α=0.1, clamped at alpha_base.
+        float alphaC = max(params.x, 1.0 / (histAge + 1.0));
+        float alphaM = max(params.y, 1.0 / (histAge + 1.0));
+
+        vec3 accInd = mix(histInd, currInd, alphaC);
+        vec2 accMom = mix(histMom, vec2(currLum, currLum2), alphaM);
+
+        imageStore(outIndirect, p, vec4(accInd, 1.0));
+        imageStore(outMoments, p, vec4(accMom, min(histAge + 1.0, 255.0), 0.0));
+    } else {
+        imageStore(outIndirect, p, vec4(currInd, 1.0));
+        imageStore(outMoments, p, vec4(currLum, currLum2, 1.0, 0.0));
+    }
+}

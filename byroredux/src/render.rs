@@ -8,9 +8,7 @@ use byroredux_core::math::Mat4;
 use byroredux_renderer::vulkan::context::DrawCommand;
 use std::collections::HashMap;
 
-use crate::components::{
-    AlphaBlend, CellLightingRes, Decal, NormalMapHandle, TwoSided, WindowLight,
-};
+use crate::components::{AlphaBlend, CellLightingRes, Decal, NormalMapHandle, TwoSided};
 
 /// Build the view-projection matrix and draw command list from ECS queries.
 pub(crate) fn build_render_data(
@@ -198,23 +196,28 @@ pub(crate) fn build_render_data(
 
     // Collect lights from ECS.
 
-    // Add cell directional light (primary interior illumination).
+    // Add cell directional light — ONLY for exterior cells. In Bethesda
+    // games, interior XCLL directional is a subtle color tint, not a
+    // physical sun, and treating it as a scene light causes leakage on
+    // interior walls where shadow rays can't perfectly seal the cell.
     if let Some(cell_lit) = world.try_resource::<CellLightingRes>() {
-        gpu_lights.push(byroredux_renderer::GpuLight {
-            position_radius: [0.0, 0.0, 0.0, 0.0],
-            color_type: [
-                cell_lit.directional_color[0],
-                cell_lit.directional_color[1],
-                cell_lit.directional_color[2],
-                2.0,
-            ], // 2 = directional
-            direction_angle: [
-                cell_lit.directional_dir[0],
-                cell_lit.directional_dir[1],
-                cell_lit.directional_dir[2],
-                0.0,
-            ],
-        });
+        if !cell_lit.is_interior {
+            gpu_lights.push(byroredux_renderer::GpuLight {
+                position_radius: [0.0, 0.0, 0.0, 0.0],
+                color_type: [
+                    cell_lit.directional_color[0],
+                    cell_lit.directional_color[1],
+                    cell_lit.directional_color[2],
+                    2.0,
+                ], // 2 = directional
+                direction_angle: [
+                    cell_lit.directional_dir[0],
+                    cell_lit.directional_dir[1],
+                    cell_lit.directional_dir[2],
+                    0.0,
+                ],
+            });
+        }
     }
 
     // Add placed point lights from LIGH records.
@@ -232,35 +235,6 @@ pub(crate) fn build_render_data(
                     direction_angle: [0.0, 0.0, 0.0, 0.0],
                 });
             }
-        }
-    }
-
-    // Add virtual window lights — synthetic point lights placed just outside
-    // each window, illuminating the room interior with sky-colored light.
-    // These reuse the existing clustered lighting + RT shadow infrastructure.
-    if let Some((tq, wq)) = world.query_2_mut::<GlobalTransform, WindowLight>() {
-        let mut window_count = 0u32;
-        for (entity, wl) in wq.iter() {
-            if let Some(t) = tq.get(entity) {
-                let inward = [wl.inward_normal[0], wl.inward_normal[1], wl.inward_normal[2]];
-                // Place light slightly outside the window (behind the wall)
-                // so rays from interior surfaces travel through the window opening,
-                // naturally shadowed by walls/frames around the window.
-                let light_pos = [
-                    t.translation.x - inward[0] * 50.0,
-                    t.translation.y - inward[1] * 50.0,
-                    t.translation.z - inward[2] * 50.0,
-                ];
-                gpu_lights.push(byroredux_renderer::GpuLight {
-                    position_radius: [light_pos[0], light_pos[1], light_pos[2], 2000.0],
-                    color_type: [1.8, 2.0, 2.5, 0.0], // bright daylight, point light
-                    direction_angle: [0.0, 0.0, 0.0, 0.0],
-                });
-                window_count += 1;
-            }
-        }
-        if window_count > 0 {
-            log::info!("Window lights injected: {}", window_count);
         }
     }
 
