@@ -34,7 +34,7 @@ use crate::helpers::world_resource_set;
 use crate::render::build_render_data;
 use crate::systems::{
     animation_system, billboard_system, fly_camera_system, log_stats_system,
-    make_transform_propagation_system, spin_system,
+    make_transform_propagation_system, make_world_bound_propagation_system, spin_system,
 };
 
 fn main() -> Result<()> {
@@ -140,6 +140,9 @@ impl App {
         // so the scheduler sequences it after the PostUpdate parallel
         // batch. See issue #225.
         scheduler.add_exclusive(Stage::PostUpdate, billboard_system);
+        // Bound propagation runs last in PostUpdate so it sees final
+        // world transforms (including billboard rotations). See #217.
+        scheduler.add_exclusive(Stage::PostUpdate, make_world_bound_propagation_system());
         scheduler.add_to(Stage::Physics, byroredux_physics::physics_sync_system);
         scheduler.add_to(Stage::Late, log_stats_system);
         scheduler.add_exclusive(Stage::Late, byroredux_scripting::event_cleanup_system);

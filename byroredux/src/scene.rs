@@ -3,8 +3,9 @@
 use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
-    ActiveCamera, Billboard, BillboardMode, Camera, GlobalTransform, Material, MeshHandle, Name,
-    Parent, SkinnedMesh, TextureHandle, Transform, World, MAX_BONES_PER_MESH,
+    ActiveCamera, Billboard, BillboardMode, Camera, GlobalTransform, LocalBound, Material,
+    MeshHandle, Name, Parent, SkinnedMesh, TextureHandle, Transform, World, WorldBound,
+    MAX_BONES_PER_MESH,
 };
 use byroredux_core::math::{Mat4, Quat, Vec3};
 use byroredux_core::string::StringPool;
@@ -647,6 +648,22 @@ pub(crate) fn load_nif_bytes(
         world.insert(entity, GlobalTransform::IDENTITY);
         world.insert(entity, MeshHandle(mesh_handle));
         world.insert(entity, TextureHandle(tex_handle));
+
+        // Attach bounding data (#217): LocalBound captures the mesh-local
+        // sphere; WorldBound is a placeholder filled in by the bound
+        // propagation system once GlobalTransform has been computed.
+        world.insert(
+            entity,
+            LocalBound::new(
+                Vec3::new(
+                    mesh.local_bound_center[0],
+                    mesh.local_bound_center[1],
+                    mesh.local_bound_center[2],
+                ),
+                mesh.local_bound_radius,
+            ),
+        );
+        world.insert(entity, WorldBound::ZERO);
         if mesh.has_alpha {
             world.insert(entity, AlphaBlend);
         }

@@ -24,6 +24,12 @@ pub(super) struct GeomData<'a> {
     pub vertex_colors: &'a [[f32; 4]],
     pub uv_sets: &'a [Vec<[f32; 2]>],
     pub triangles: std::borrow::Cow<'a, [[u16; 3]]>,
+    /// NIF-provided bounding sphere center, still in Gamebryo Z-up space.
+    /// Zero when the NIF omits a bound — the caller then computes one
+    /// from the positions. See #217.
+    pub bound_center: NiPoint3,
+    /// NIF-provided bounding sphere radius (no axis conversion needed).
+    pub bound_radius: f32,
 }
 
 /// Extract an ImportedMesh from an NiTriShape and its referenced data block.
@@ -42,6 +48,8 @@ pub(super) fn extract_mesh(
             vertex_colors: &data.vertex_colors,
             uv_sets: &data.uv_sets,
             triangles: std::borrow::Cow::Borrowed(&data.triangles),
+            bound_center: data.center,
+            bound_radius: data.radius,
         }
     } else if let Some(data) = scene.get_as::<NiTriStripsData>(data_idx) {
         GeomData {
@@ -50,6 +58,8 @@ pub(super) fn extract_mesh(
             vertex_colors: &data.vertex_colors,
             uv_sets: &data.uv_sets,
             triangles: std::borrow::Cow::Owned(data.to_triangles()),
+            bound_center: data.center,
+            bound_radius: data.radius,
         }
     } else {
         return None;
@@ -97,6 +107,13 @@ pub(super) fn extract_mesh(
     // NiSkinInstance / BSDismemberSkinInstance backing it.
     let skin = extract_skin_ni_tri_shape(scene, shape, positions.len());
 
+    // Local bounding sphere in Y-up renderer space. Prefer the NIF-provided
+    // NiBound on NiGeometryData; fall back to a fresh centroid+max-distance
+    // sphere computed from the positions when the NIF omits one (radius 0).
+    // See #217.
+    let (local_bound_center, local_bound_radius) =
+        extract_local_bound(geom.bound_center, geom.bound_radius, &positions);
+
     Some(ImportedMesh {
         positions,
         colors,
@@ -127,7 +144,49 @@ pub(super) fn extract_mesh(
         skin,
         z_test: mat.z_test,
         z_write: mat.z_write,
+        local_bound_center,
+        local_bound_radius,
     })
+}
+
+/// Produce a mesh-local bounding sphere in Y-up renderer space.
+///
+/// If the NIF supplied a non-zero `center`/`radius` (from `NiGeometryData`
+/// or `BsTriShape`), convert the center from Gamebryo Z-up to Y-up and
+/// return it — this is cheap and matches what the game engine computed
+/// at export time. When the NIF bound is zero (legacy content or
+/// auto-generated meshes) fall back to computing a centroid+max-distance
+/// sphere from the already-converted vertex positions.
+fn extract_local_bound(
+    nif_center: NiPoint3,
+    nif_radius: f32,
+    positions_yup: &[[f32; 3]],
+) -> ([f32; 3], f32) {
+    if nif_radius > 0.0 {
+        return ([nif_center.x, nif_center.z, -nif_center.y], nif_radius);
+    }
+    if positions_yup.is_empty() {
+        return ([0.0; 3], 0.0);
+    }
+    let mut sum = [0.0f32; 3];
+    for p in positions_yup {
+        sum[0] += p[0];
+        sum[1] += p[1];
+        sum[2] += p[2];
+    }
+    let inv_n = 1.0 / positions_yup.len() as f32;
+    let center = [sum[0] * inv_n, sum[1] * inv_n, sum[2] * inv_n];
+    let mut max_sq = 0.0f32;
+    for p in positions_yup {
+        let dx = p[0] - center[0];
+        let dy = p[1] - center[1];
+        let dz = p[2] - center[2];
+        let d_sq = dx * dx + dy * dy + dz * dz;
+        if d_sq > max_sq {
+            max_sq = d_sq;
+        }
+    }
+    (center, max_sq.sqrt())
 }
 
 /// Extract an ImportedMesh with local transform (for hierarchical import).
@@ -260,6 +319,11 @@ pub(super) fn extract_bs_tri_shape(
     // The renderer should fall back to the vertex buffer for weights.
     let skin = extract_skin_bs_tri_shape(scene, shape);
 
+    // BSTriShape carries its own bounding sphere (center + radius) on the
+    // block. See #217.
+    let (local_bound_center, local_bound_radius) =
+        extract_local_bound(shape.center, shape.radius, &positions);
+
     Some(ImportedMesh {
         positions,
         colors,
@@ -290,6 +354,8 @@ pub(super) fn extract_bs_tri_shape(
         skin,
         z_test: true,
         z_write: true,
+        local_bound_center,
+        local_bound_radius,
     })
 }
 

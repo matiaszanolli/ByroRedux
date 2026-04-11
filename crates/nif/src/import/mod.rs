@@ -151,6 +151,17 @@ pub struct ImportedMesh {
     pub z_test: bool,
     /// Depth write enabled (from NiZBufferProperty). Default: true.
     pub z_write: bool,
+    /// Mesh-local bounding sphere center in Y-up renderer space. Extracted
+    /// from `NiTriShapeData.center` / `BsTriShape.center` when present, or
+    /// computed from the vertex positions when the NIF bound is zero.
+    /// Consumers emit this as a `LocalBound` ECS component; the bound
+    /// propagation system composes it with `GlobalTransform` to produce
+    /// a world-space `WorldBound`. See #217.
+    pub local_bound_center: [f32; 3],
+    /// Mesh-local bounding sphere radius in Y-up renderer space.
+    /// Expressed in the mesh's own local units — the propagation system
+    /// multiplies by the world scale to produce the world-space radius.
+    pub local_bound_radius: f32,
 }
 
 /// Per-bone binding for a skinned mesh. Bone space is Y-up (converted
