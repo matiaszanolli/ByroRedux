@@ -15,6 +15,7 @@ pub mod scheduler;
 pub mod sparse_set;
 pub mod storage;
 pub mod system;
+pub mod systems;
 pub mod world;
 
 pub use components::{
@@ -31,4 +32,5 @@ pub use scheduler::{Scheduler, Stage};
 pub use sparse_set::SparseSetStorage;
 pub use storage::{Component, ComponentStorage, EntityId};
 pub use system::System;
+pub use systems::make_transform_propagation_system;
 pub use world::World;

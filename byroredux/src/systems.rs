@@ -384,107 +384,12 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
     }
 }
 
-/// Transform propagation system: computes GlobalTransform from local Transform + parent chain.
-///
-/// For root entities (no Parent), GlobalTransform = Transform.
-/// For child entities, GlobalTransform = parent.GlobalTransform ∘ child.Transform.
-/// Must run after animation_system and before rendering.
-/// Create the transform propagation system with reusable scratch buffers.
-///
-/// Returns a closure (FnMut) that captures `roots` and `queue` Vecs,
-/// clearing and reusing them each frame instead of allocating new ones.
-pub(crate) fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + Sync {
-    let mut roots: Vec<EntityId> = Vec::new();
-    let mut queue: Vec<EntityId> = Vec::new();
-
-    move |world: &World, _dt: f32| {
-        roots.clear();
-        queue.clear();
-
-        // Phase 1: find root entities (have Transform but no Parent).
-        {
-            let Some(tq) = world.query::<Transform>() else {
-                return;
-            };
-            let parent_q = world.query::<Parent>();
-
-            for (entity, _) in tq.iter() {
-                let is_root = parent_q
-                    .as_ref()
-                    .map(|pq| pq.get(entity).is_none())
-                    .unwrap_or(true);
-                if is_root {
-                    roots.push(entity);
-                }
-            }
-        }
-
-        // Update root GlobalTransforms.
-        {
-            let tq = world.query::<Transform>().unwrap();
-            let mut gq = match world.query_mut::<GlobalTransform>() {
-                Some(q) => q,
-                None => return,
-            };
-            for &entity in &roots {
-                if let Some(t) = tq.get(entity) {
-                    if let Some(g) = gq.get_mut(entity) {
-                        g.translation = t.translation;
-                        g.rotation = t.rotation;
-                        g.scale = t.scale;
-                    }
-                }
-            }
-        }
-
-        // Phase 2: propagate to children using BFS.
-        let children_q = world.query::<Children>();
-        let Some(ref cq) = children_q else { return };
-
-        for &root in &roots {
-            if let Some(children) = cq.get(root) {
-                queue.extend_from_slice(&children.0);
-            }
-        }
-
-        while let Some(entity) = queue.pop() {
-            let parent_q = world.query::<Parent>().unwrap();
-            let Some(parent) = parent_q.get(entity) else {
-                continue;
-            };
-            let parent_id = parent.0;
-            drop(parent_q);
-
-            let gq_read = world.query::<GlobalTransform>().unwrap();
-            let Some(parent_global) = gq_read.get(parent_id) else {
-                continue;
-            };
-            let parent_global = *parent_global;
-            drop(gq_read);
-
-            let tq = world.query::<Transform>().unwrap();
-            let local = tq.get(entity).copied().unwrap_or(Transform::IDENTITY);
-            drop(tq);
-
-            let composed = GlobalTransform::compose(
-                &parent_global,
-                local.translation,
-                local.rotation,
-                local.scale,
-            );
-
-            let mut gq_write = world.query_mut::<GlobalTransform>().unwrap();
-            if let Some(g) = gq_write.get_mut(entity) {
-                *g = composed;
-            }
-            drop(gq_write);
-
-            if let Some(children) = cq.get(entity) {
-                queue.extend_from_slice(&children.0);
-            }
-        }
-    }
-}
+// `make_transform_propagation_system` has moved to
+// `byroredux_core::ecs::systems` so every downstream crate gets the same
+// `NiNode::UpdateDownwardPass` equivalent without copy-pasting. Re-export
+// it here under the existing name so call sites in this binary don't need
+// to change. See issue #81.
+pub(crate) use byroredux_core::ecs::make_transform_propagation_system;
 
 /// Orients `Billboard` entities so their forward axis faces the active camera.
 ///
