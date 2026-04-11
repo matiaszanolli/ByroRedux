@@ -270,16 +270,47 @@ impl NiControllerManager {
 // Does NOT inherit NiTimeController. Inherits NiSequence → NiObject.
 
 /// A single controlled block entry within a NiControllerSequence.
+///
+/// There are two disjoint on-disk layouts for the string fields, and
+/// which one a file uses depends on its NIF version:
+///
+/// - **v ≥ 20.1.0.1** (FNV, Skyrim, FO4+): each string is an index into
+///   the file's global string table. The importer resolves them to the
+///   `node_name` / `property_type` / `controller_type` / `controller_id`
+///   / `interpolator_id` `Option<Arc<str>>` fields during parse.
+///
+/// - **10.2.0.0 ≤ v ≤ 20.1.0.0** (Oblivion, Morrowind BBBB-era content):
+///   the block has no strings inline; instead it carries a
+///   `string_palette_ref` pointing at an `NiStringPalette` block plus
+///   five `u32` byte offsets into that palette. The palette itself
+///   stores the concatenated UTF-8 names; a downstream importer pass
+///   slices them out (see [`NiStringPalette::get_string`]). The
+///   `Option<Arc<str>>` name fields stay `None` on this path — the
+///   parser does not cross-link blocks.
+///
+/// Both layouts are present in the struct to keep the type simple;
+/// callers pick whichever set is populated based on
+/// `string_palette_ref.is_null()`. See issue #107.
 #[derive(Debug)]
 pub struct ControlledBlock {
     pub interpolator_ref: BlockRef,
     pub controller_ref: BlockRef,
     pub priority: u8,
+    /// Resolved string (modern format) or `None` (palette format or
+    /// unresolved).
     pub node_name: Option<Arc<str>>,
     pub property_type: Option<Arc<str>>,
     pub controller_type: Option<Arc<str>>,
     pub controller_id: Option<Arc<str>>,
     pub interpolator_id: Option<Arc<str>>,
+    /// Palette-format fields (Oblivion / Morrowind BBBB era). Null ref
+    /// on the modern string-table path.
+    pub string_palette_ref: BlockRef,
+    pub node_name_offset: u32,
+    pub property_type_offset: u32,
+    pub controller_type_offset: u32,
+    pub controller_id_offset: u32,
+    pub interpolator_id_offset: u32,
 }
 
 #[derive(Debug)]
@@ -322,29 +353,83 @@ impl NiControllerSequence {
             0
         };
 
-        // ControlledBlock array
+        // ControlledBlock array. The layout of the per-block string
+        // fields switches twice across the version range:
+        //
+        //   v >= 20.1.0.1              → modern string-table format
+        //                                (FNV, Skyrim, FO4+)
+        //   10.2.0.0 <= v <= 20.1.0.0  → string-palette format
+        //                                (Oblivion, pre-FNV Bethesda)
+        //                                BlockRef + 5 × u32 offsets
+        //   v < 10.2.0.0               → inline strings (Morrowind
+        //                                BBBB era, handled by
+        //                                read_string's pre-20.1 branch)
+        //
+        // The old code unconditionally called read_string() even on the
+        // Oblivion path, where that helper reads a u32 length prefix
+        // followed by bytes. Against real Oblivion .kf files, the first
+        // u32 is actually a palette offset (typically a small value like
+        // 0x00000006), which read_string happily treated as a 6-byte
+        // inline string and then went 5 more bytes past the descriptor,
+        // corrupting the stream for every subsequent block. See #107.
         let bsver = stream.bsver();
+        let uses_string_palette = stream.version() >= NifVersion(0x0A020000)
+            && stream.version() < NifVersion(0x14010001);
         let mut controlled_blocks = Vec::with_capacity(num_controlled_blocks);
         for _ in 0..num_controlled_blocks {
             let interpolator_ref = stream.read_block_ref()?;
             let controller_ref = stream.read_block_ref()?;
             // Priority byte (BSVER > 0, i.e. any Bethesda game)
             let priority = if bsver > 0 { stream.read_u8()? } else { 0 };
-            let node_name = stream.read_string()?;
-            let property_type = stream.read_string()?;
-            let controller_type = stream.read_string()?;
-            let controller_id = stream.read_string()?;
-            let interpolator_id = stream.read_string()?;
-            controlled_blocks.push(ControlledBlock {
-                interpolator_ref,
-                controller_ref,
-                priority,
-                node_name,
-                property_type,
-                controller_type,
-                controller_id,
-                interpolator_id,
-            });
+
+            if uses_string_palette {
+                // Oblivion-era: palette ref + 5 byte offsets.
+                let string_palette_ref = stream.read_block_ref()?;
+                let node_name_offset = stream.read_u32_le()?;
+                let property_type_offset = stream.read_u32_le()?;
+                let controller_type_offset = stream.read_u32_le()?;
+                let controller_id_offset = stream.read_u32_le()?;
+                let interpolator_id_offset = stream.read_u32_le()?;
+                controlled_blocks.push(ControlledBlock {
+                    interpolator_ref,
+                    controller_ref,
+                    priority,
+                    node_name: None,
+                    property_type: None,
+                    controller_type: None,
+                    controller_id: None,
+                    interpolator_id: None,
+                    string_palette_ref,
+                    node_name_offset,
+                    property_type_offset,
+                    controller_type_offset,
+                    controller_id_offset,
+                    interpolator_id_offset,
+                });
+            } else {
+                // Modern string-table (or pre-10.2 inline) format.
+                let node_name = stream.read_string()?;
+                let property_type = stream.read_string()?;
+                let controller_type = stream.read_string()?;
+                let controller_id = stream.read_string()?;
+                let interpolator_id = stream.read_string()?;
+                controlled_blocks.push(ControlledBlock {
+                    interpolator_ref,
+                    controller_ref,
+                    priority,
+                    node_name,
+                    property_type,
+                    controller_type,
+                    controller_id,
+                    interpolator_id,
+                    string_palette_ref: BlockRef::NULL,
+                    node_name_offset: 0,
+                    property_type_offset: 0,
+                    controller_type_offset: 0,
+                    controller_id_offset: 0,
+                    interpolator_id_offset: 0,
+                });
+            }
         }
 
         // NiControllerSequence fields
@@ -536,6 +621,105 @@ mod tests {
         assert_eq!(seq.name.as_deref(), Some("TestName"));
         assert_eq!(seq.controlled_blocks.len(), 0);
         assert!(seq.text_keys_ref.is_null());
+    }
+
+    /// Build an Oblivion-era header (v20.0.0.5, user_version=11, uv2=11).
+    /// String table is empty — Oblivion doesn't use it, and per-block
+    /// strings go through the NiStringPalette format instead.
+    fn make_header_oblivion() -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_0_0_5,
+            little_endian: true,
+            user_version: 11,
+            user_version_2: 11,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    /// Regression test for issue #107: Oblivion .kf files encode the
+    /// ControlledBlock string fields via a NiStringPalette block ref +
+    /// five byte offsets (since 10.2.0.0, until 20.1.0.0). The old
+    /// parser called `read_string` unconditionally and mis-parsed the
+    /// first u32 offset as a string length, shifting the stream and
+    /// cascading into corrupted downstream blocks. The fix switches to
+    /// a version branch; this test pins the Oblivion path.
+    #[test]
+    fn parse_controller_sequence_oblivion_string_palette_format() {
+        let header = make_header_oblivion();
+        let mut data = Vec::new();
+
+        // NiSequence pre-10.1 string encoding: `read_string` returns
+        // Ok(None) on len=0, so a 4-byte zero-length acts as an empty
+        // "name" header field.
+        data.extend_from_slice(&0u32.to_le_bytes()); // name: empty inline string
+        data.extend_from_slice(&1u32.to_le_bytes()); // num_controlled_blocks
+        data.extend_from_slice(&0u32.to_le_bytes()); // array_grow_by
+
+        // One ControlledBlock in Oblivion palette format:
+        //   interpolator_ref (i32)
+        //   controller_ref   (i32)
+        //   priority         (u8)          — bsver=11 > 0, so present
+        //   string_palette_ref (i32)
+        //   node_name_offset        (u32)
+        //   property_type_offset    (u32)
+        //   controller_type_offset  (u32)
+        //   controller_id_offset    (u32)
+        //   interpolator_id_offset  (u32)
+        data.extend_from_slice(&12i32.to_le_bytes()); // interpolator_ref
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+        data.push(42); // priority
+        data.extend_from_slice(&9i32.to_le_bytes()); // string_palette_ref
+        data.extend_from_slice(&0u32.to_le_bytes()); // node_name_offset
+        data.extend_from_slice(&6u32.to_le_bytes()); // property_type_offset
+        data.extend_from_slice(&11u32.to_le_bytes()); // controller_type_offset
+        data.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // controller_id_offset (unset sentinel)
+        data.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // interpolator_id_offset
+
+        // NiControllerSequence trailer (same on all post-10.1 paths).
+        data.extend_from_slice(&1.0f32.to_le_bytes()); // weight
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // text_keys_ref
+        data.extend_from_slice(&0u32.to_le_bytes()); // cycle_type
+        data.extend_from_slice(&1.0f32.to_le_bytes()); // frequency
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // start_time
+        data.extend_from_slice(&1.0f32.to_le_bytes()); // stop_time
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // manager_ref
+        data.extend_from_slice(&0u32.to_le_bytes()); // accum_root_name: empty inline
+
+        // Oblivion bsver=11, 11 <= 28 → no anim note list, so don't
+        // append anything here.
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let seq = NiControllerSequence::parse(&mut stream)
+            .expect("Oblivion NiControllerSequence must parse the palette format");
+        assert_eq!(
+            stream.position() as usize,
+            expected_len,
+            "Oblivion parse consumed {} bytes, expected {}",
+            stream.position(),
+            expected_len,
+        );
+
+        assert_eq!(seq.controlled_blocks.len(), 1);
+        let cb = &seq.controlled_blocks[0];
+        assert_eq!(cb.interpolator_ref.index(), Some(12));
+        assert!(cb.controller_ref.is_null());
+        assert_eq!(cb.priority, 42);
+        // Palette fields must be populated, name fields left None.
+        assert_eq!(cb.string_palette_ref.index(), Some(9));
+        assert_eq!(cb.node_name_offset, 0);
+        assert_eq!(cb.property_type_offset, 6);
+        assert_eq!(cb.controller_type_offset, 11);
+        assert_eq!(cb.controller_id_offset, 0xFFFF_FFFF);
+        assert_eq!(cb.interpolator_id_offset, 0xFFFF_FFFF);
+        assert!(cb.node_name.is_none());
+        assert!(cb.property_type.is_none());
     }
 }
 
