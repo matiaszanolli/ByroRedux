@@ -330,18 +330,23 @@ pub(crate) fn build_render_data(
     // acts as a subtle fill light (not a physical sun), so we scale it down
     // to avoid hard shadow leakage through unsealed interior walls.
     if let Some(cell_lit) = world.try_resource::<CellLightingRes>() {
-        let dir_color = if cell_lit.is_interior {
+        let (dir_color, dir_radius) = if cell_lit.is_interior {
+            // Interior fill: scale down and flag unshadowed (radius = -1)
+            // so the shader skips shadow rays that would hit sealed walls.
             let s = 0.35;
-            [
-                cell_lit.directional_color[0] * s,
-                cell_lit.directional_color[1] * s,
-                cell_lit.directional_color[2] * s,
-            ]
+            (
+                [
+                    cell_lit.directional_color[0] * s,
+                    cell_lit.directional_color[1] * s,
+                    cell_lit.directional_color[2] * s,
+                ],
+                -1.0_f32,
+            )
         } else {
-            cell_lit.directional_color
+            (cell_lit.directional_color, 0.0)
         };
         gpu_lights.push(byroredux_renderer::GpuLight {
-            position_radius: [0.0, 0.0, 0.0, 0.0],
+            position_radius: [0.0, 0.0, 0.0, dir_radius],
             color_type: [dir_color[0], dir_color[1], dir_color[2], 2.0],
             direction_angle: [
                 cell_lit.directional_dir[0],

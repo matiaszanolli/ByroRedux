@@ -426,7 +426,7 @@ void main() {
             // clear glass passes it through mostly unchanged.
             // The texture alpha controls how much glass vs sky we see.
             vec3 windowTint = mix(vec3(1.0), texColor.rgb, texColor.a * 0.5);
-            vec3 transmitted = skyColor * windowTint * 0.4;
+            vec3 transmitted = skyColor * windowTint * 0.6;
             outColor = vec4(transmitted, 1.0);
             outRawIndirect = vec4(0.0);
             outAlbedo = vec4(albedo, 1.0);
@@ -544,8 +544,13 @@ void main() {
             //
             // At 200+ FPS the temporal variation from frame-to-frame noise
             // naturally integrates into smooth soft shadows for the human eye.
+            //
+            // Unshadowed lights (radius < 0, e.g. interior fill directional)
+            // skip shadow rays entirely — they exist as ambient fill that
+            // should not be blocked by sealed interior walls.
             float shadow = 1.0;
-            if (rtEnabled) {
+            bool unshadowed = radius < 0.0;
+            if (rtEnabled && !unshadowed) {
                 // Soft shadow via jittered ray direction. Point/spot lights
                 // aim at a disk around their physical position; directional
                 // lights aim along -sunDir (i.e., the L vector) with a small
