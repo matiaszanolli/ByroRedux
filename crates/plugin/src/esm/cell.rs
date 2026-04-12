@@ -79,6 +79,26 @@ pub struct EsmCellIndex {
 }
 
 /// Parse an ESM file and extract cells, worldspaces, and base object definitions.
+/// Convert a single sRGB channel value (0.0–1.0) to linear light.
+/// ESM/Creation Kit color pickers store colors in sRGB space; the
+/// renderer's PBR math expects linear-space inputs.
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Apply sRGB→linear to an RGB triple.
+fn srgb3_to_linear(rgb: [f32; 3]) -> [f32; 3] {
+    [
+        srgb_to_linear(rgb[0]),
+        srgb_to_linear(rgb[1]),
+        srgb_to_linear(rgb[2]),
+    ]
+}
+
 pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
     let mut reader = EsmReader::new(data);
     let file_header = reader
@@ -259,8 +279,8 @@ fn parse_cell_group(
                                 ([0.0; 3], 0.0, 0.0)
                             };
                             lighting = Some(CellLighting {
-                                ambient: [ambient_r, ambient_g, ambient_b],
-                                directional_color: [dir_r, dir_g, dir_b],
+                                ambient: srgb3_to_linear([ambient_r, ambient_g, ambient_b]),
+                                directional_color: srgb3_to_linear([dir_r, dir_g, dir_b]),
                                 directional_rotation: [rot_x, rot_y],
                                 fog_color,
                                 fog_near,
@@ -560,7 +580,7 @@ fn parse_modl_group(
                         };
                         light_data = Some(LightData {
                             radius,
-                            color: [r, g, b],
+                            color: srgb3_to_linear([r, g, b]),
                             flags,
                         });
                     }

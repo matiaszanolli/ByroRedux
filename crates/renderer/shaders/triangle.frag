@@ -625,6 +625,12 @@ void main() {
             vec3 radiance = lightColor * atten * shadow;
 
             Lo += (kD * albedo / PI + specular * specStrength * specColor) * radiance * NdotL;
+
+            // Per-light ambient fill: approximates Gamebryo's D3D9
+            // Material.Ambient * Light.Ambient * dimmer / attenuation term.
+            // Each nearby light contributes a small NdotL-independent fill
+            // that lifts the base illumination in rooms with many lights.
+            Lo += lightColor * atten * shadow * albedo * 0.12;
         }
     }
 

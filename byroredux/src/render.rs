@@ -412,10 +412,11 @@ pub(crate) fn build_render_data(
         .as_ref()
         .map(|l| {
             if l.is_interior {
-                // Boost interior ambient — raw XCLL values (0.10-0.15) are
-                // authored for Bethesda's legacy fixed-function pipeline which
-                // had additional fill contributions we don't replicate.
-                [l.ambient[0] * 2.5, l.ambient[1] * 2.5, l.ambient[2] * 2.5]
+                // Interior ambient boost — XCLL values are deliberately dim
+                // (Bethesda's engine adds per-light ambient fill that we
+                // approximate in the shader). A modest boost compensates for
+                // remaining differences in the lighting model.
+                [l.ambient[0] * 1.5, l.ambient[1] * 1.5, l.ambient[2] * 1.5]
             } else {
                 l.ambient
             }

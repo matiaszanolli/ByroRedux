@@ -285,12 +285,28 @@ fn load_references(
             continue;
         }
 
-        // Skip non-renderable effect meshes.
+        // Skip non-renderable effect meshes (light rays, halos, fog).
+        // Still spawn the ESM light entity if this LIGH record carries one —
+        // the effect mesh is visual-only but the point light is real.
         let model_lower = stat.model_path.to_ascii_lowercase();
         if model_lower.contains("fxlightrays")
             || model_lower.contains("fxlight")
             || model_lower.contains("fxfog")
         {
+            if let Some(ref ld) = stat.light_data {
+                let entity = world.spawn();
+                world.insert(entity, Transform::from_translation(ref_pos));
+                world.insert(entity, GlobalTransform::new(ref_pos, Quat::IDENTITY, 1.0));
+                world.insert(
+                    entity,
+                    LightSource {
+                        radius: ld.radius,
+                        color: ld.color,
+                        flags: ld.flags,
+                    },
+                );
+                entity_count += 1;
+            }
             continue;
         }
 
@@ -425,6 +441,11 @@ fn spawn_placed_instances(
     // Spawn per-mesh NiLight blocks as LightSource entities. Parented
     // through the reference transform so torches/candles inside cell
     // refs contribute to the live GpuLight buffer. See issue #156.
+    // When the ESM LIGH record provides an authored radius, prefer it
+    // over the NIF-computed attenuation_radius (which often returns 2048
+    // for NiPointLights with constant-only attenuation coefficients).
+    let esm_radius = light_data.as_ref().map(|ld| ld.radius);
+
     for light in nif_lights {
         // Skip lights whose diffuse contribution is effectively zero —
         // these are usually authored-off placeholders.
@@ -433,12 +454,14 @@ fn spawn_placed_instances(
         }
         let nif_pos = Vec3::new(light.translation[0], light.translation[1], light.translation[2]);
         let final_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
-        // Ambient / directional lights have no meaningful placement radius;
-        // fall back to a large cell-scale default so the renderer still
-        // picks them up instead of culling by radius == 0.
-        let radius = if light.radius > 0.0 {
+        let radius = if let Some(r) = esm_radius {
+            // ESM radius is authored by the level designer — ground truth.
+            r * ref_scale
+        } else if light.radius > 0.0 {
             light.radius * ref_scale
         } else {
+            // Ambient / directional lights have no meaningful placement radius;
+            // fall back to a large cell-scale default.
             4096.0
         };
         let entity = world.spawn();
@@ -624,15 +647,20 @@ fn spawn_placed_instances(
         if mesh.is_decal {
             world.insert(entity, Decal);
         }
+        // Attach ESM light_data ONLY if the NIF has no embedded lights
+        // (avoids duplicates) and only on the first mesh (avoids N copies
+        // when a lamp NIF has multiple sub-meshes).
         if let Some(ld) = light_data {
-            world.insert(
-                entity,
-                LightSource {
-                    radius: ld.radius,
-                    color: ld.color,
-                    flags: ld.flags,
-                },
-            );
+            if nif_lights.is_empty() && count == 0 {
+                world.insert(
+                    entity,
+                    LightSource {
+                        radius: ld.radius,
+                        color: ld.color,
+                        flags: ld.flags,
+                    },
+                );
+            }
         }
         count += 1;
     }

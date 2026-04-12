@@ -55,3 +55,13 @@ pub(super) fn zup_matrix_to_yup_quat(m: &NiMatrix3) -> [f32; 4] {
 
     [q.i, q.j, q.k, q.w]
 }
+
+/// Convert a single sRGB channel value (0.0–1.0) to linear light.
+/// Gamebryo stores colors in sRGB space; PBR shaders expect linear.
+pub(super) fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}

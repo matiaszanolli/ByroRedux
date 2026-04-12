@@ -11,7 +11,7 @@ use crate::scene::NifScene;
 use crate::types::{BlockRef, NiTransform};
 
 use super::collision::extract_collision;
-use super::coord::zup_matrix_to_yup_quat;
+use super::coord::{srgb_to_linear, zup_matrix_to_yup_quat};
 use super::mesh::{
     extract_bs_tri_shape, extract_bs_tri_shape_local, extract_mesh, extract_mesh_local,
 };
@@ -348,7 +348,12 @@ fn imported_light_from_base(
     // engine currently consumes. Ambient/specular are stored for later.
     let d = base.dimmer;
     let diffuse = base.diffuse_color;
-    let color = [diffuse.r * d, diffuse.g * d, diffuse.b * d];
+    // NIF colors are in sRGB space — linearize for PBR math.
+    let color = [
+        srgb_to_linear(diffuse.r) * d,
+        srgb_to_linear(diffuse.g) * d,
+        srgb_to_linear(diffuse.b) * d,
+    ];
 
     ImportedLight {
         translation,
