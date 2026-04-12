@@ -47,6 +47,6 @@ void main() {
     // values around 0–2 HDR range. Legacy content without energy-conserving
     // BRDF (no 1/PI) can produce values > 2 in brightly lit areas. A
     // moderate exposure brings the working range into ACES's sweet spot.
-    const float exposure = 0.7;
+    const float exposure = 0.85;
     outColor = vec4(aces(combined * exposure), direct4.a);
 }

@@ -744,7 +744,11 @@ void main() {
     // (A more correct approach would be to pass linear depth to the
     //  composite pass and fog the combined signal — deferred to later.)
     if (fog.w > 0.5) {
-        float fogFactor = smoothstep(screen.z, screen.w, worldDist);
+        // Cap fog opacity at 70% — the original D3D9 pipeline rendered fog
+        // in sRGB space where the blend appeared softer. Our linear-space
+        // fog is perceptually stronger, so we cap it to keep distant
+        // geometry readable while maintaining the atmospheric haze.
+        float fogFactor = smoothstep(screen.z, screen.w, worldDist) * 0.7;
         directLight = mix(directLight, fog.xyz, fogFactor);
         // Also fade indirect toward zero in fog so distant bounces don't
         // weirdly show through — matches the spatial locality assumption.
