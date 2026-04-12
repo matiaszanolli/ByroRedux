@@ -426,7 +426,7 @@ void main() {
             // clear glass passes it through mostly unchanged.
             // The texture alpha controls how much glass vs sky we see.
             vec3 windowTint = mix(vec3(1.0), texColor.rgb, texColor.a * 0.5);
-            vec3 transmitted = skyColor * windowTint * 0.8;
+            vec3 transmitted = skyColor * windowTint * 0.4;
             outColor = vec4(transmitted, 1.0);
             outRawIndirect = vec4(0.0);
             outAlbedo = vec4(albedo, 1.0);
@@ -665,7 +665,7 @@ void main() {
                 // Ambient bounce: modulates hue from nearby surfaces.
                 // Scale is moderate — the 4-frame noise hold smooths flicker.
                 float giFade = 1.0 / (1.0 + hitDist * 0.005);
-                indirect = sceneFlags.yzw * hitAlbedo * giFade * 0.3;
+                indirect = max(sceneFlags.yzw, vec3(0.15)) * hitAlbedo * giFade * 0.3;
                 // Soft clamp to tame outliers without killing the effect.
                 indirect = min(indirect, vec3(0.4));
             } else {
@@ -679,7 +679,7 @@ void main() {
     // On the first frame before SSAO has run, the texture may read 0 —
     // clamp to a minimum to avoid killing all ambient light.
     vec2 aoUV = gl_FragCoord.xy / screen.xy;
-    float ao = max(texture(aoTexture, aoUV).r, 0.3);
+    float ao = max(texture(aoTexture, aoUV).r, 0.45);
 
     // Phase 2: separate direct from indirect lighting.
     //

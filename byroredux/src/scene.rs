@@ -17,7 +17,10 @@ use crate::asset_provider::{
     build_texture_provider, parse_grid_coords, resolve_texture, TextureProvider,
 };
 use crate::cell_loader;
-use crate::components::{AlphaBlend, CellLightingRes, Decal, InputState, Spinning, TwoSided};
+use crate::components::{
+    AlphaBlend, CellLightingRes, DarkMapHandle, Decal, InputState, NormalMapHandle, Spinning,
+    TwoSided,
+};
 use crate::helpers::add_child;
 
 /// Called once after the renderer is ready — uploads meshes and spawns entities.
@@ -698,6 +701,21 @@ pub(crate) fn load_nif_bytes(
                 alpha_test_func: mesh.alpha_test_func,
             },
         );
+
+        // Load and attach normal map texture handle.
+        if let Some(ref nmap_path) = mesh.normal_map {
+            let h = resolve_texture(ctx, tex_provider, Some(nmap_path.as_str()));
+            if h != ctx.texture_registry.fallback() {
+                world.insert(entity, NormalMapHandle(h));
+            }
+        }
+        // Load and attach dark/lightmap texture handle.
+        if let Some(ref dark_path) = mesh.dark_map {
+            let h = resolve_texture(ctx, tex_provider, Some(dark_path.as_str()));
+            if h != ctx.texture_registry.fallback() {
+                world.insert(entity, DarkMapHandle(h));
+            }
+        }
 
         if let Some(ref name) = mesh.name {
             let mut pool = world.resource_mut::<StringPool>();

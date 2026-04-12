@@ -5,7 +5,7 @@
 //! and spawns ECS entities with correct world-space transforms.
 
 use byroredux_core::ecs::{
-    GlobalTransform, LightSource, MeshHandle, TextureHandle, Transform, World,
+    GlobalTransform, LightSource, Material, MeshHandle, TextureHandle, Transform, World,
 };
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
@@ -13,7 +13,7 @@ use byroredux_renderer::VulkanContext;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::asset_provider::TextureProvider;
+use crate::asset_provider::{resolve_texture, TextureProvider};
 use crate::components::{AlphaBlend, DarkMapHandle, Decal, NormalMapHandle, TwoSided};
 
 /// Parsed + imported NIF scene data cached per unique model path.
@@ -529,33 +529,8 @@ fn spawn_placed_instances(
         // Build BLAS for RT shadow rays.
         ctx.build_blas_for_mesh(mesh_handle, num_verts as u32, mesh.indices.len() as u32);
 
-        // Load texture.
-        let tex_handle = match &mesh.texture_path {
-            Some(tex_path) => {
-                if let Some(cached) = ctx.texture_registry.get_by_path(tex_path) {
-                    cached
-                } else if let Some(dds_bytes) = tex_provider.extract(tex_path) {
-                    let alloc = ctx.allocator.as_ref().unwrap();
-                    ctx.texture_registry
-                        .load_dds(
-                            &ctx.device,
-                            alloc,
-                            &ctx.graphics_queue,
-                            ctx.transfer_pool,
-                            tex_path,
-                            &dds_bytes,
-                        )
-                        .unwrap_or_else(|e| {
-                            log::warn!("Failed to load DDS '{}': {}", tex_path, e);
-                            ctx.texture_registry.fallback()
-                        })
-                } else {
-                    log::debug!("Texture not found in BSA: '{}'", tex_path);
-                    ctx.texture_registry.fallback()
-                }
-            }
-            None => ctx.texture_registry.fallback(),
-        };
+        // Load texture (shared resolve: cache → BSA → fallback).
+        let tex_handle = resolve_texture(ctx, tex_provider, mesh.texture_path.as_deref());
 
         // Compose: REFR parent transform * NIF local transform.
         // mesh.rotation is already a Y-up quaternion [x,y,z,w] extracted via SVD.
@@ -602,57 +577,41 @@ fn spawn_placed_instances(
         );
         world.insert(entity, MeshHandle(mesh_handle));
         world.insert(entity, TextureHandle(tex_handle));
+        world.insert(
+            entity,
+            Material {
+                emissive_color: mesh.emissive_color,
+                emissive_mult: mesh.emissive_mult,
+                specular_color: mesh.specular_color,
+                specular_strength: mesh.specular_strength,
+                glossiness: mesh.glossiness,
+                uv_offset: mesh.uv_offset,
+                uv_scale: mesh.uv_scale,
+                alpha: mesh.mat_alpha,
+                env_map_scale: mesh.env_map_scale,
+                normal_map: mesh.normal_map.clone(),
+                texture_path: mesh.texture_path.clone(),
+                glow_map: mesh.glow_map.clone(),
+                detail_map: mesh.detail_map.clone(),
+                gloss_map: mesh.gloss_map.clone(),
+                dark_map: mesh.dark_map.clone(),
+                vertex_color_mode: mesh.vertex_color_mode,
+                alpha_test: mesh.alpha_test,
+                alpha_threshold: mesh.alpha_threshold,
+                alpha_test_func: mesh.alpha_test_func,
+            },
+        );
         // Load and attach normal map if the material specifies one.
         if let Some(ref nmap_path) = mesh.normal_map {
-            let nmap_handle = if let Some(cached) = ctx.texture_registry.get_by_path(nmap_path) {
-                Some(cached)
-            } else if let Some(dds_bytes) = tex_provider.extract(nmap_path) {
-                let alloc = ctx.allocator.as_ref().unwrap();
-                match ctx.texture_registry.load_dds(
-                    &ctx.device,
-                    alloc,
-                    &ctx.graphics_queue,
-                    ctx.transfer_pool,
-                    nmap_path,
-                    &dds_bytes,
-                ) {
-                    Ok(h) => Some(h),
-                    Err(e) => {
-                        log::debug!("Normal map '{}' failed: {}", nmap_path, e);
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-            if let Some(h) = nmap_handle {
+            let h = resolve_texture(ctx, tex_provider, Some(nmap_path.as_str()));
+            if h != ctx.texture_registry.fallback() {
                 world.insert(entity, NormalMapHandle(h));
             }
         }
         // Load and attach dark/lightmap if the material specifies one (#264).
         if let Some(ref dark_path) = mesh.dark_map {
-            let dark_handle = if let Some(cached) = ctx.texture_registry.get_by_path(dark_path) {
-                Some(cached)
-            } else if let Some(dds_bytes) = tex_provider.extract(dark_path) {
-                let alloc = ctx.allocator.as_ref().unwrap();
-                match ctx.texture_registry.load_dds(
-                    &ctx.device,
-                    alloc,
-                    &ctx.graphics_queue,
-                    ctx.transfer_pool,
-                    dark_path,
-                    &dds_bytes,
-                ) {
-                    Ok(h) => Some(h),
-                    Err(e) => {
-                        log::debug!("Dark map '{}' failed: {}", dark_path, e);
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-            if let Some(h) = dark_handle {
+            let h = resolve_texture(ctx, tex_provider, Some(dark_path.as_str()));
+            if h != ctx.texture_registry.fallback() {
                 world.insert(entity, DarkMapHandle(h));
             }
         }

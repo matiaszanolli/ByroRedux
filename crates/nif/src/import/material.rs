@@ -255,6 +255,12 @@ pub(super) fn extract_material_info(
                             info.normal_map = Some(normal.clone());
                         }
                     }
+                    // Glow / emissive map is textures[2].
+                    if info.glow_map.is_none() {
+                        if let Some(glow) = tex_set.textures.get(2).filter(|s| !s.is_empty()) {
+                            info.glow_map = Some(glow.clone());
+                        }
+                    }
                 }
             }
             if shader.shader_flags_2 & 0x10 != 0 {
@@ -424,6 +430,12 @@ pub(super) fn extract_material_info(
                             if !normal.is_empty() {
                                 info.normal_map = Some(normal.clone());
                             }
+                        }
+                    }
+                    // Glow / emissive map is textures[2].
+                    if info.glow_map.is_none() {
+                        if let Some(glow) = tex_set.textures.get(2).filter(|s| !s.is_empty()) {
+                            info.glow_map = Some(glow.clone());
                         }
                     }
                 }

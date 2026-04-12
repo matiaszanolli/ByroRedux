@@ -326,28 +326,30 @@ pub(crate) fn build_render_data(
 
     // Collect lights from ECS.
 
-    // Add cell directional light — ONLY for exterior cells. In Bethesda
-    // games, interior XCLL directional is a subtle color tint, not a
-    // physical sun, and treating it as a scene light causes leakage on
-    // interior walls where shadow rays can't perfectly seal the cell.
+    // Add cell directional light. For interior cells the XCLL directional
+    // acts as a subtle fill light (not a physical sun), so we scale it down
+    // to avoid hard shadow leakage through unsealed interior walls.
     if let Some(cell_lit) = world.try_resource::<CellLightingRes>() {
-        if !cell_lit.is_interior {
-            gpu_lights.push(byroredux_renderer::GpuLight {
-                position_radius: [0.0, 0.0, 0.0, 0.0],
-                color_type: [
-                    cell_lit.directional_color[0],
-                    cell_lit.directional_color[1],
-                    cell_lit.directional_color[2],
-                    2.0,
-                ], // 2 = directional
-                direction_angle: [
-                    cell_lit.directional_dir[0],
-                    cell_lit.directional_dir[1],
-                    cell_lit.directional_dir[2],
-                    0.0,
-                ],
-            });
-        }
+        let dir_color = if cell_lit.is_interior {
+            let s = 0.35;
+            [
+                cell_lit.directional_color[0] * s,
+                cell_lit.directional_color[1] * s,
+                cell_lit.directional_color[2] * s,
+            ]
+        } else {
+            cell_lit.directional_color
+        };
+        gpu_lights.push(byroredux_renderer::GpuLight {
+            position_radius: [0.0, 0.0, 0.0, 0.0],
+            color_type: [dir_color[0], dir_color[1], dir_color[2], 2.0],
+            direction_angle: [
+                cell_lit.directional_dir[0],
+                cell_lit.directional_dir[1],
+                cell_lit.directional_dir[2],
+                0.0,
+            ],
+        });
     }
 
     // Add placed point lights from LIGH records.
@@ -401,7 +403,19 @@ pub(crate) fn build_render_data(
 
     // Cell ambient color (or default).
     let cell_lit = world.try_resource::<CellLightingRes>();
-    let ambient = cell_lit.as_ref().map(|l| l.ambient).unwrap_or([0.08, 0.08, 0.08]);
+    let ambient = cell_lit
+        .as_ref()
+        .map(|l| {
+            if l.is_interior {
+                // Boost interior ambient — raw XCLL values (0.10-0.15) are
+                // authored for Bethesda's legacy fixed-function pipeline which
+                // had additional fill contributions we don't replicate.
+                [l.ambient[0] * 2.5, l.ambient[1] * 2.5, l.ambient[2] * 2.5]
+            } else {
+                l.ambient
+            }
+        })
+        .unwrap_or([0.08, 0.08, 0.08]);
     let mut fog_color = cell_lit.as_ref().map(|l| l.fog_color).unwrap_or([0.0; 3]);
     let mut fog_near = cell_lit.as_ref().map(|l| l.fog_near).unwrap_or(0.0);
     let mut fog_far = cell_lit.as_ref().map(|l| l.fog_far).unwrap_or(0.0);
