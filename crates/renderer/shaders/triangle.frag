@@ -365,7 +365,12 @@ void main() {
     vec3 F0 = mix(vec3(0.04), albedo, metalness);
 
     // Emissive bypass: self-lit surfaces skip the light loop entirely.
-    if (emissiveMult > 0.01) {
+    // Only bypass when emissive actually produces visible light — both
+    // the multiplier AND the color must be non-zero. Without this check,
+    // meshes with emissive_mult > 0 but black emissive_color would skip
+    // the entire PBR lighting loop and render as ambient-only.
+    float emissiveLum = dot(emissiveColor, vec3(0.2126, 0.7152, 0.0722));
+    if (emissiveMult > 0.01 && emissiveLum > 0.01) {
         vec3 emissive = emissiveColor * emissiveMult;
         vec3 ambient = sceneFlags.yzw * albedo * (1.0 - metalness);
         outColor = vec4(ambient + emissive, texColor.a);
