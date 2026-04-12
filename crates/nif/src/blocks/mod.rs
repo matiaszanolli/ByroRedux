@@ -583,10 +583,10 @@ pub fn parse_block(
         | "bhkPhysicsSystem"
         | "bhkRagdollSystem" => {
             if let Some(size) = block_size {
-                let data = stream.read_bytes(size as usize)?;
+                stream.skip(size as u64)?;
                 Ok(Box::new(NiUnknown {
                     type_name: type_name.to_string(),
-                    data,
+                    data: Vec::new(),
                 }))
             } else {
                 Err(io::Error::new(
@@ -599,7 +599,7 @@ pub fn parse_block(
             // Unknown block type — skip it if we know the size
             if let Some(size) = block_size {
                 let start = stream.position();
-                let data = stream.read_bytes(size as usize)?;
+                stream.skip(size as u64)?;
                 log::debug!(
                     "Skipping unknown block type '{}' ({} bytes at offset {})",
                     type_name,
@@ -608,7 +608,7 @@ pub fn parse_block(
                 );
                 Ok(Box::new(NiUnknown {
                     type_name: type_name.to_string(),
-                    data,
+                    data: Vec::new(),
                 }))
             } else {
                 Err(io::Error::new(

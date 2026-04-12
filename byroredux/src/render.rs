@@ -2,13 +2,60 @@
 
 use byroredux_core::ecs::{
     ActiveCamera, AnimatedVisibility, Camera, EntityId, GlobalTransform, LightSource, Material,
-    MeshHandle, SkinnedMesh, TextureHandle, Transform, World, MAX_BONES_PER_MESH,
+    MeshHandle, SkinnedMesh, TextureHandle, Transform, World, WorldBound, MAX_BONES_PER_MESH,
 };
-use byroredux_core::math::Mat4;
+use byroredux_core::math::{Mat4, Vec3, Vec4};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use std::collections::HashMap;
 
 use crate::components::{AlphaBlend, CellLightingRes, Decal, NormalMapHandle, TwoSided};
+
+/// Six frustum half-planes extracted from a view-projection matrix.
+///
+/// Uses the Gribb/Hartmann method: each plane is (a, b, c, d) where
+/// `ax + by + cz + d >= 0` means the point is inside. Planes are
+/// unnormalized — we normalize once at construction so the sphere
+/// test can compare directly against radius.
+struct FrustumPlanes {
+    planes: [Vec4; 6],
+}
+
+impl FrustumPlanes {
+    fn from_view_proj(m: Mat4) -> Self {
+        let r0 = m.row(0);
+        let r1 = m.row(1);
+        let r2 = m.row(2);
+        let r3 = m.row(3);
+
+        let mut planes = [
+            r3 + r0, // left
+            r3 - r0, // right
+            r3 + r1, // bottom
+            r3 - r1, // top
+            r3 + r2, // near
+            r3 - r2, // far
+        ];
+
+        for p in &mut planes {
+            let len = Vec3::new(p.x, p.y, p.z).length();
+            if len > 1e-10 {
+                *p /= len;
+            }
+        }
+
+        Self { planes }
+    }
+
+    fn contains_sphere(&self, center: Vec3, radius: f32) -> bool {
+        for p in &self.planes {
+            let dist = p.x * center.x + p.y * center.y + p.z * center.z + p.w;
+            if dist < -radius {
+                return false;
+            }
+        }
+        true
+    }
+}
 
 /// Build the view-projection matrix and draw command list from ECS queries.
 ///
@@ -77,8 +124,8 @@ pub(crate) fn build_render_data(
         }
     }
 
-    // Get camera view-projection.
-    let view_proj = if let Some(active) = world.try_resource::<ActiveCamera>() {
+    // Get camera view-projection + build frustum planes for culling.
+    let (view_proj, frustum) = if let Some(active) = world.try_resource::<ActiveCamera>() {
         let cam_entity = active.0;
         drop(active);
 
@@ -96,9 +143,10 @@ pub(crate) fn build_render_data(
             }
             _ => Mat4::IDENTITY,
         };
-        vp.to_cols_array()
+        let frustum = FrustumPlanes::from_view_proj(vp);
+        (vp.to_cols_array(), frustum)
     } else {
-        Mat4::IDENTITY.to_cols_array()
+        (Mat4::IDENTITY.to_cols_array(), FrustumPlanes::from_view_proj(Mat4::IDENTITY))
     };
 
     // ── Render-data query bundle (#246) ──────────────────────────────
@@ -109,7 +157,7 @@ pub(crate) fn build_render_data(
     //
     //   1. The ECS has no `query_n_mut!` macro for acquiring N optional
     //      components in one call, so we acquire each component
-    //      separately. That's 9 RwLock read acquisitions per frame; all
+    //      separately. That's 10 RwLock read acquisitions per frame; all
     //      reads can coexist (no deadlock risk), so no TypeId-sorted
     //      bundling is needed.
     //
@@ -120,10 +168,11 @@ pub(crate) fn build_render_data(
     //
     // `GlobalTransform` and `MeshHandle` are required — if either is
     // absent there are no meshes to emit, so the whole collection path
-    // is skipped. The other seven components are optional per-entity
+    // is skipped. The other eight components are optional per-entity
     // modifiers (texture, alpha, two-sided, decal, visibility,
-    // material, normal map) and stay as `Option<QueryRead>` so entities
-    // without them fall through to the fallback path inside the loop.
+    // material, normal map, world bound) and stay as `Option<QueryRead>`
+    // so entities without them fall through to the fallback path inside
+    // the loop.
     let tq = world.query::<GlobalTransform>();
     let mq = world.query::<MeshHandle>();
     let tex_q = world.query::<TextureHandle>();
@@ -133,6 +182,7 @@ pub(crate) fn build_render_data(
     let vis_q = world.query::<AnimatedVisibility>();
     let mat_q = world.query::<Material>();
     let nmap_q = world.query::<NormalMapHandle>();
+    let wb_q = world.query::<WorldBound>();
     if let (Some(tq), Some(mq)) = (tq, mq) {
         for (entity, mesh) in mq.iter() {
             // Skip entities hidden by animation.
@@ -143,6 +193,20 @@ pub(crate) fn build_render_data(
                 .unwrap_or(true);
             if !visible {
                 continue;
+            }
+
+            // Frustum cull: skip entities whose WorldBound is entirely
+            // outside the view frustum. Entities without a WorldBound
+            // (or with radius 0, i.e. not yet computed) pass through
+            // uncull to avoid disappearing objects. See #237.
+            if let Some(ref wbq) = wb_q {
+                if let Some(wb) = wbq.get(entity) {
+                    if wb.radius > 0.0
+                        && !frustum.contains_sphere(wb.center, wb.radius)
+                    {
+                        continue;
+                    }
+                }
             }
 
             if let Some(transform) = tq.get(entity) {
@@ -337,4 +401,57 @@ pub(crate) fn build_render_data(
     }
 
     (view_proj, camera_pos, ambient, fog_color, fog_near, fog_far)
+}
+
+#[cfg(test)]
+mod frustum_tests {
+    use super::*;
+    use byroredux_core::math::{Mat4, Vec3};
+
+    fn perspective_vp() -> Mat4 {
+        let proj = Mat4::perspective_rh(
+            std::f32::consts::FRAC_PI_2, // 90° FOV
+            1.0,
+            0.1,
+            1000.0,
+        );
+        let view = Mat4::look_at_rh(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y);
+        proj * view
+    }
+
+    #[test]
+    fn sphere_in_front_is_inside() {
+        let f = FrustumPlanes::from_view_proj(perspective_vp());
+        assert!(f.contains_sphere(Vec3::new(0.0, 0.0, -50.0), 5.0));
+    }
+
+    #[test]
+    fn sphere_behind_camera_is_outside() {
+        let f = FrustumPlanes::from_view_proj(perspective_vp());
+        assert!(!f.contains_sphere(Vec3::new(0.0, 0.0, 50.0), 5.0));
+    }
+
+    #[test]
+    fn sphere_far_left_is_outside() {
+        let f = FrustumPlanes::from_view_proj(perspective_vp());
+        assert!(!f.contains_sphere(Vec3::new(-500.0, 0.0, -10.0), 1.0));
+    }
+
+    #[test]
+    fn sphere_straddling_near_plane_is_inside() {
+        let f = FrustumPlanes::from_view_proj(perspective_vp());
+        assert!(f.contains_sphere(Vec3::new(0.0, 0.0, -0.05), 0.2));
+    }
+
+    #[test]
+    fn identity_vp_contains_origin() {
+        let f = FrustumPlanes::from_view_proj(Mat4::IDENTITY);
+        assert!(f.contains_sphere(Vec3::ZERO, 0.5));
+    }
+
+    #[test]
+    fn sphere_beyond_far_plane_is_outside() {
+        let f = FrustumPlanes::from_view_proj(perspective_vp());
+        assert!(!f.contains_sphere(Vec3::new(0.0, 0.0, -1100.0), 5.0));
+    }
 }
