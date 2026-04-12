@@ -125,6 +125,23 @@ pub struct ImportedMesh {
     pub is_decal: bool,
     /// Normal map texture path (if found in shader texture set).
     pub normal_map: Option<String>,
+    /// Glow / self-illumination texture (NiTexturingProperty slot 4,
+    /// Oblivion/FO3/FNV). Separate from the BSShaderTextureSet glow
+    /// slot, which the Skyrim+ path pulls directly. See #214.
+    pub glow_map: Option<String>,
+    /// Detail overlay texture (NiTexturingProperty slot 2). See #214.
+    pub detail_map: Option<String>,
+    /// Specular-mask / gloss texture (NiTexturingProperty slot 3).
+    /// Per-texel specular strength. See #214.
+    pub gloss_map: Option<String>,
+    /// Vertex-color source mode from `NiVertexColorProperty`
+    /// (`vertex_mode`). Values match Gamebryo's `SourceMode` enum:
+    /// `0 = Ignore`, `1 = Emissive`, `2 = AmbientDiffuse` (default).
+    /// The importer already handles `Ignore` by not populating the
+    /// vertex-color vec; the value is forwarded so the material
+    /// system can route `Emissive` to self-illumination later.
+    /// See #214.
+    pub vertex_color_mode: u8,
     /// Emissive color (RGB, linear).
     pub emissive_color: [f32; 3],
     /// Emissive intensity multiplier.

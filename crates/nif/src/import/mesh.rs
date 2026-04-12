@@ -131,6 +131,10 @@ pub(super) fn extract_mesh(
         two_sided: mat.two_sided,
         is_decal: mat.is_decal,
         normal_map: mat.normal_map,
+        glow_map: mat.glow_map,
+        detail_map: mat.detail_map,
+        gloss_map: mat.gloss_map,
+        vertex_color_mode: mat.vertex_color_mode as u8,
         emissive_color: mat.emissive_color,
         emissive_mult: mat.emissive_mult,
         specular_color: mat.specular_color,
@@ -341,6 +345,20 @@ pub(super) fn extract_bs_tri_shape(
         two_sided,
         is_decal: find_decal_bs(scene, shape),
         normal_map,
+        // BsTriShape (Skyrim+) routes all texture slots through
+        // BSShaderTextureSet, which this path reads above. The legacy
+        // NiTexturingProperty glow/detail/gloss slots don't apply here,
+        // so leave them as `None`. Skyrim+ glow maps live in
+        // BSShaderTextureSet slot 2; wiring those is a separate task
+        // once we teach the renderer to sample a third slot. See #214.
+        glow_map: None,
+        detail_map: None,
+        gloss_map: None,
+        // BsTriShape vertex colors are driven by the shader
+        // properties, not an NiVertexColorProperty — pass the default
+        // (AmbientDiffuse = 2) so downstream consumers behave the same
+        // as before.
+        vertex_color_mode: 2,
         emissive_color,
         emissive_mult,
         specular_color,

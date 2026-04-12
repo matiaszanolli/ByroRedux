@@ -35,6 +35,29 @@ pub struct Material {
     pub normal_map: Option<String>,
     /// Diffuse texture path (for PBR material classification from path keywords).
     pub texture_path: Option<String>,
+    /// Glow / self-illumination texture — `NiTexturingProperty` slot 4
+    /// on Oblivion/FO3/FNV, or `BSShaderTextureSet` slot 2 on Skyrim+.
+    /// Populated on import when the mesh has a dedicated emissive
+    /// texture (enchanted weapons, torches, lava). Empty for most
+    /// static geometry. See #214.
+    pub glow_map: Option<String>,
+    /// Detail overlay texture — `NiTexturingProperty` slot 2. Legacy
+    /// high-frequency variation layer used by Oblivion terrain and
+    /// some clothing. See #214.
+    pub detail_map: Option<String>,
+    /// Specular-mask / gloss texture — `NiTexturingProperty` slot 3.
+    /// Per-texel specular strength mask; enables "leather with metal
+    /// trim" effects on armor. See #214.
+    pub gloss_map: Option<String>,
+    /// Vertex color source mode from `NiVertexColorProperty`. Matches
+    /// Gamebryo's `SourceMode` enum:
+    ///   * `0` = Ignore (vertex colors disabled)
+    ///   * `1` = Emissive (colors drive self-illumination)
+    ///   * `2` = AmbientDiffuse (default, colors drive diffuse)
+    /// The NIF importer already honors `Ignore` by not populating the
+    /// mesh's vertex color vec. `Emissive` is forwarded here so the
+    /// material system can route the data later. See #214.
+    pub vertex_color_mode: u8,
     /// Whether the renderer should `discard` fragments whose sampled
     /// texture alpha falls below `alpha_threshold`. Extracted from
     /// `NiAlphaProperty.flags` bit 9 (0x200). Mutually exclusive with
@@ -62,6 +85,12 @@ impl Default for Material {
             env_map_scale: 1.0,
             normal_map: None,
             texture_path: None,
+            glow_map: None,
+            detail_map: None,
+            gloss_map: None,
+            // AmbientDiffuse — the Gamebryo default, matches pre-#214
+            // behavior for meshes without an NiVertexColorProperty.
+            vertex_color_mode: 2,
             alpha_test: false,
             alpha_threshold: 0.0,
         }

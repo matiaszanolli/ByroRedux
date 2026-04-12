@@ -2,7 +2,7 @@
 
 use crate::blocks::properties::{
     NiAlphaProperty, NiFlagProperty, NiMaterialProperty, NiStencilProperty, NiTexturingProperty,
-    TexDesc,
+    NiVertexColorProperty, TexDesc,
 };
 use crate::blocks::NiObject;
 use crate::blocks::shader::{
@@ -20,11 +20,62 @@ pub(super) const DYNAMIC_DECAL: u32 = 0x08000000;
 const ALPHA_DECAL_F2: u32 = 0x00200000;
 const SF_DOUBLE_SIDED: u32 = 0x1000;
 
+/// How a `NiVertexColorProperty` wants per-vertex colors to participate
+/// in shading, mirroring Gamebryo's `NiVertexColorProperty::SourceMode`.
+///
+/// `NiTexturingProperty` / `NiMaterialProperty` meshes can opt out of
+/// vertex-color contribution entirely (`Ignore`) or route it through a
+/// different shader channel (`Emissive`). Pre-#214 the importer always
+/// used vertex colors as diffuse regardless of the stored mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(super) enum VertexColorMode {
+    /// `SRC_IGNORE` — the mesh has vertex colors in the data block but
+    /// the material explicitly disables them. Treat as if absent.
+    Ignore = 0,
+    /// `SRC_EMISSIVE` — vertex colors drive per-vertex self-illumination
+    /// rather than diffuse. Gamebryo uses this for flickering torches,
+    /// signs, and glowing effects baked into the geometry.
+    Emissive = 1,
+    /// `SRC_AMB_DIFF` — default / pre-10.0 behavior: vertex colors act
+    /// as per-vertex diffuse + ambient.
+    AmbientDiffuse = 2,
+}
+
+impl VertexColorMode {
+    /// Decode the Gamebryo source-mode u32. Unknown values fall back to
+    /// `AmbientDiffuse` — the value Gamebryo uses when the field is
+    /// missing — so legacy content stays visually unchanged.
+    pub(super) fn from_source_mode(raw: u32) -> Self {
+        match raw {
+            0 => Self::Ignore,
+            1 => Self::Emissive,
+            _ => Self::AmbientDiffuse,
+        }
+    }
+}
+
 /// Material properties extracted from a NiTriShape's property list in a single pass.
 #[derive(Debug)]
 pub(super) struct MaterialInfo {
     pub texture_path: Option<String>,
     pub normal_map: Option<String>,
+    /// Glow / self-illumination texture (NiTexturingProperty slot 4).
+    /// Filled on Oblivion/FO3/FNV meshes where a dedicated emissive
+    /// map supplements or replaces `NiMaterialProperty.emissive`. See #214.
+    pub glow_map: Option<String>,
+    /// Detail overlay texture (NiTexturingProperty slot 2). Blends with
+    /// the base texture at higher frequency; used for terrain detail
+    /// variation and clothing micro-texture.
+    pub detail_map: Option<String>,
+    /// Specular-mask / gloss texture (NiTexturingProperty slot 3).
+    /// Per-texel specular strength; enables armor highlights masked
+    /// by leather/fabric regions.
+    pub gloss_map: Option<String>,
+    /// How vertex colors should participate in shading. See #214 /
+    /// `VertexColorMode`. Defaults to `AmbientDiffuse` — the value
+    /// Gamebryo uses when the NIF has no `NiVertexColorProperty`.
+    pub vertex_color_mode: VertexColorMode,
     pub alpha_blend: bool,
     /// Alpha-tested (cutout) rendering — vertices whose sampled texture
     /// alpha falls below `alpha_threshold` should be `discard`-ed in the
@@ -67,6 +118,10 @@ impl Default for MaterialInfo {
         Self {
             texture_path: None,
             normal_map: None,
+            glow_map: None,
+            detail_map: None,
+            gloss_map: None,
+            vertex_color_mode: VertexColorMode::AmbientDiffuse,
             alpha_blend: false,
             alpha_test: false,
             alpha_threshold: 0.0,
@@ -97,8 +152,19 @@ pub(super) fn extract_material(
 ) -> (Vec<[f32; 3]>, Option<String>) {
     let num_verts = data.vertices.len();
 
-    // Per-vertex colors take priority
-    if !data.vertex_colors.is_empty() {
+    // Check for an NiVertexColorProperty that disables vertex colors.
+    // When the mesh declares SRC_IGNORE or SRC_EMISSIVE, the data-block
+    // vertex colors must NOT be routed to the diffuse channel. Ignore
+    // means fall through to the material diffuse path; Emissive means
+    // the colors go to a separate shader input (handled downstream via
+    // MaterialInfo.vertex_color_mode — for now we still fall back to
+    // material diffuse for the per-vertex color vector so unshaded
+    // diffuse doesn't get contaminated). See #214.
+    let vertex_mode = vertex_color_mode_for(scene, shape);
+    let use_vertex_colors =
+        !data.vertex_colors.is_empty() && vertex_mode == VertexColorMode::AmbientDiffuse;
+
+    if use_vertex_colors {
         let colors = data
             .vertex_colors
             .iter()
@@ -122,6 +188,22 @@ pub(super) fn extract_material(
     let colors = vec![diffuse; num_verts];
     let tex = find_texture_path(scene, shape);
     (colors, tex)
+}
+
+/// Look up `NiVertexColorProperty` on the shape and return the decoded
+/// vertex-color source mode. Absent property → `AmbientDiffuse` (the
+/// Gamebryo default). Helper for `extract_material` and the unit tests
+/// below.
+fn vertex_color_mode_for(scene: &NifScene, shape: &NiTriShape) -> VertexColorMode {
+    for prop_ref in &shape.av.properties {
+        let Some(idx) = prop_ref.index() else {
+            continue;
+        };
+        if let Some(vcol) = scene.get_as::<NiVertexColorProperty>(idx) {
+            return VertexColorMode::from_source_mode(vcol.vertex_mode);
+        }
+    }
+    VertexColorMode::AmbientDiffuse
 }
 
 /// Extract all material properties from a NiTriShape in a single pass.
@@ -240,6 +322,36 @@ pub(super) fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> Mat
                     info.normal_map = Some(path);
                 }
             }
+            // Secondary texture slots (#214). NiTexturingProperty has
+            // up to 8 slots — base and normal/bump are consumed above,
+            // the remaining three slots we care about feed separate
+            // shader inputs:
+            //   * glow_texture  → emissive map (self-illumination)
+            //   * detail_texture → high-frequency overlay
+            //   * gloss_texture  → per-texel specular strength mask
+            // We only overwrite if a Skyrim+ BSShader path hasn't
+            // already set them, matching the base/normal policy.
+            if info.glow_map.is_none() {
+                if let Some(path) =
+                    tex_desc_source_path(scene, tex_prop.glow_texture.as_ref())
+                {
+                    info.glow_map = Some(path);
+                }
+            }
+            if info.detail_map.is_none() {
+                if let Some(path) =
+                    tex_desc_source_path(scene, tex_prop.detail_texture.as_ref())
+                {
+                    info.detail_map = Some(path);
+                }
+            }
+            if info.gloss_map.is_none() {
+                if let Some(path) =
+                    tex_desc_source_path(scene, tex_prop.gloss_texture.as_ref())
+                {
+                    info.gloss_map = Some(path);
+                }
+            }
             // Propagate the base slot's UV transform to the shared
             // `uv_offset` / `uv_scale` fields. The renderer shader applies
             // them per-vertex to every sampled texture — fine for the
@@ -321,6 +433,17 @@ pub(super) fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> Mat
             if flag_prop.block_type_name() == "NiSpecularProperty" && !flag_prop.enabled() {
                 info.specular_enabled = false;
             }
+        }
+
+        // NiVertexColorProperty (#214) — controls how per-vertex colors
+        // participate in shading. The default is AmbientDiffuse; the
+        // mesh may instead request Ignore (don't use vertex colors at
+        // all) or Emissive (route them to self-illumination). The
+        // actual behavior split on Ignore is enforced by
+        // `extract_material` below when it decides whether to return
+        // the vertex color vec or fall back to the material diffuse.
+        if let Some(vcol) = scene.get_as::<NiVertexColorProperty>(idx) {
+            info.vertex_color_mode = VertexColorMode::from_source_mode(vcol.vertex_mode);
         }
     }
 
@@ -455,5 +578,58 @@ mod alpha_flag_tests {
         let mut info_max = MaterialInfo::default();
         apply_alpha_flags(&mut info_max, &alpha_prop(0x0200, 255));
         assert!((info_max.alpha_threshold - 1.0).abs() < 1e-5);
+    }
+}
+
+/// Regression tests for issue #214 — NiTexturingProperty secondary slots
+/// and NiVertexColorProperty mode extraction.
+#[cfg(test)]
+mod secondary_slot_tests {
+    use super::*;
+
+    #[test]
+    fn vertex_color_mode_decodes_all_three_values() {
+        assert_eq!(
+            VertexColorMode::from_source_mode(0),
+            VertexColorMode::Ignore
+        );
+        assert_eq!(
+            VertexColorMode::from_source_mode(1),
+            VertexColorMode::Emissive
+        );
+        assert_eq!(
+            VertexColorMode::from_source_mode(2),
+            VertexColorMode::AmbientDiffuse
+        );
+    }
+
+    #[test]
+    fn vertex_color_mode_unknown_falls_back_to_default() {
+        // Gamebryo uses values > 2 in some test/mod content — fall back
+        // to AmbientDiffuse instead of a hard error.
+        assert_eq!(
+            VertexColorMode::from_source_mode(99),
+            VertexColorMode::AmbientDiffuse
+        );
+    }
+
+    #[test]
+    fn vertex_color_mode_repr_u8_matches_gamebryo_source_mode() {
+        // Pin the discriminant layout — `Ignore=0, Emissive=1,
+        // AmbientDiffuse=2` matches Gamebryo's nif.xml `SourceMode`
+        // enum. ImportedMesh stores this as u8 via `as u8` cast and
+        // downstream consumers compare against literal 0/1/2.
+        assert_eq!(VertexColorMode::Ignore as u8, 0);
+        assert_eq!(VertexColorMode::Emissive as u8, 1);
+        assert_eq!(VertexColorMode::AmbientDiffuse as u8, 2);
+    }
+
+    #[test]
+    fn default_material_info_has_no_secondary_maps_and_default_mode() {
+        let info = MaterialInfo::default();
+        assert!(info.glow_map.is_none());
+        assert!(info.detail_map.is_none());
+        assert!(info.gloss_map.is_none());
+        assert_eq!(info.vertex_color_mode, VertexColorMode::AmbientDiffuse);
     }
 }
