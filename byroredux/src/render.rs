@@ -243,6 +243,25 @@ pub(crate) fn build_render_data(
                 // Material data + PBR classification.
                 let mat = mat_q.as_ref().and_then(|q| q.get(entity));
 
+                // Skip Gamebryo effect meshes (crossed glow quads, god rays).
+                // These are sprite-billboard fakes for bloom halos — in a RT
+                // renderer the actual point light already provides illumination
+                // and these quads just render as blown-out white surfaces.
+                if let Some(m) = mat {
+                    if let Some(ref tp) = m.texture_path {
+                        let lower = tp.to_ascii_lowercase();
+                        if lower.contains("effects\\fx")
+                            || lower.contains("effects/fx")
+                            || lower.contains("fxsoftglow")
+                            || lower.contains("fxpartglow")
+                            || lower.contains("fxparttiny")
+                            || lower.contains("fxlightrays")
+                        {
+                            continue;
+                        }
+                    }
+                }
+
                 let (roughness, metalness, emissive_mult, emissive_color, specular_strength, specular_color, alpha_threshold, alpha_test_func) =
                     if let Some(m) = mat {
                         let pbr = m.classify_pbr(m.texture_path.as_deref());
