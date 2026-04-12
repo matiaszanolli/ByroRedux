@@ -3,7 +3,7 @@
 A clean Rust + C++ rebuild of the Gamebryo/Creation engine lineage with Vulkan rendering.
 This document tracks completed milestones, current capabilities, planned work, and known gaps.
 
-Last updated: 2026-04-09 (session 7 — Starfield BA2 v3 DX10 LZ4 texture support, FO4 BA2 verification)
+Last updated: 2026-04-12 (session 8 — M30 Phase 1: Papyrus language parser, logos lexer + Pratt expression parser)
 
 ---
 
@@ -607,6 +607,34 @@ Workspace test count: 396 → 472. Zero new warnings.
 | M27 | Parallel System Dispatch | Rayon-based parallel ECS execution |
 | M28 | Physics Foundation | **DONE (Phase 1)** — Rapier3D bridge, dynamic capsule player body; kinematic controller deferred to M28.5 |
 | M29 | Skeletal Animation | GPU skinning via compute shaders (uses N23.5 skin data); ragdolls follow via Havok constraint parsing |
+| M30 | Papyrus Parser | **Phase 1 DONE** — `.psc` lexer (logos) + Pratt expression parser + full AST types; Phase 2–4: statements, script declarations, FO4 extensions |
+
+### M30: Papyrus Language Parser — Phase 1 DONE
+
+**Status:** Phase 1 complete (lexer + expression parser). Phases 2–4 pending.
+
+New crate `byroredux-papyrus` — parses Papyrus `.psc` source files into a typed AST.
+Does not execute anything; produces an AST for future transpilation to ECS component
+definitions + system functions. Uses `logos` for lexing (case-insensitive keywords,
+zero-copy tokens) and hand-written recursive descent for parsing (full control over
+error messages and recovery).
+
+**Phase 1 (done):** Token enum (all Papyrus keywords, operators, literals), lexer
+wrapper (line continuation removal with offset map, single-line/block/doc comment
+handling), Span/Spanned types, ParseError with source-location diagnostics, full
+AST type definitions (Script, ScriptItem, Type, Property, Function, Event, State,
+Struct, Group, Stmt, Expr with all node variants), Pratt expression parser with
+correct precedence (13 binary ops, 2 unary, `as` cast, `.` member access, `[]`
+indexing, function calls with named args, `new`, `parent.`, `self`). 45 tests.
+
+**Phase 2 (next):** Statement parser (If/While/Return/Assign/VarDecl), function/event
+body parsing with End terminators.
+
+**Phase 3:** Script-level declarations (ScriptName header, properties with Auto/Const/
+get-set, states, imports, groups). Target: parse any Skyrim-era .psc file.
+
+**Phase 4:** FO4 extensions (Struct, CustomEvent, Var, namespaces), error recovery,
+integration tests against real .psc corpora (Skyrim ~500, FO4 ~800 files).
 
 ---
 
@@ -621,7 +649,7 @@ Workspace test count: 396 → 472. Zero new warnings.
 | Audio | Sound descriptors, 3D spatial audio, music system |
 | UI | Scaleform GFx stubs, Papyrus↔UI bridge, input routing, font loading, all 34 menus |
 | Modding | Full plugin loading: discover, sort, merge, resolve conflicts |
-| Scripting | Full ECS-native scripting: 136 event types, condition system, perk entry points |
+| Scripting | Full ECS-native scripting: 136 event types, condition system, perk entry points; Papyrus transpiler (M30 AST → ECS components) |
 
 ---
 
@@ -702,9 +730,9 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Metric | Value |
 |--------|-------|
-| Passing tests | 475 |
-| Workspace crates | 11 |
-| Completed milestones | 23 (M1–M22 + M24 Phase 1 + M26 + M28 Phase 1) + N23 + N26 + #178 skinning |
+| Passing tests | 520 |
+| Workspace crates | 12 |
+| Completed milestones | 23 (M1–M22 + M24 Phase 1 + M26 + M28 Phase 1) + M30 Phase 1 + N23 + N26 + #178 skinning |
 | NIF block types | ~215 distinct type names, ~185 parsed + 30 Havok skip |
 | NifVariant games | 8 (Morrowind → Starfield) |
 | Per-game NIF parse rate | 100% across 177,286 NIFs (7 games) |
@@ -730,6 +758,7 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 | `byroredux-bsa` | M11, M18, M26 (BA2), session 7 (v3 LZ4) | 11 |
 | `byroredux-physics` | M28 Phase 1 (Rapier3D bridge) | 17 |
 | `byroredux-scripting` | M12 | 8 |
+| `byroredux-papyrus` | M30 Phase 1 (Papyrus parser) | 45 |
 | `byroredux-ui` | M20 (Ruffle/SWF) | — |
 | `byroredux-cxx-bridge` | Cross-cutting | — |
 | `byroredux` (binary) | M4, M11, M14, M15, M16, M17, M19, M28 integration, parse-once cell cache | — |

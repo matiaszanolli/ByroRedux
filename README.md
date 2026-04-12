@@ -90,6 +90,7 @@ See [Game Compatibility](docs/engine/game-compatibility.md) for the per-game arc
 | Fly camera (WASD + mouse look) | Working |
 | Plugin system with stable Form IDs, conflict resolution | Working |
 | ECS-native scripting (events, timers) | Working |
+| Papyrus language parser (`.psc` source → typed AST, Phase 1: lexer + expressions) | Working |
 | Material component (emissive, specular, glossiness, UV, normal map) | Working |
 | Collision import (Havok shapes → ECS, compressed mesh for Skyrim) | Working |
 | Per-game integration test infrastructure with 95% parse rate threshold | Working |
@@ -107,6 +108,7 @@ crates/
   physics/                 Rapier3D bridge (M28 Phase 1) — NIF collision → ECS → stepper
   ui/                      Scaleform/SWF UI system (Ruffle integration)
   scripting/               ECS-native scripting (events, timers)
+  papyrus/                 Papyrus language parser (.psc source → typed AST)
   platform/                Windowing via winit (Linux-first)
   cxx-bridge/              C++ interop via cxx
 ```
@@ -215,6 +217,7 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 - [Game Loop](docs/engine/game-loop.md) — winit, frame loop, cell loading
 - [Testing](docs/engine/testing.md) — unit + integration test inventory
 - [Dependencies](docs/engine/dependencies.md) — workspace and per-crate
+- [Papyrus Parser](docs/engine/papyrus-parser.md) — `.psc` lexer, AST, expression parser (Phase 1)
 - [String Interning](docs/engine/string-interning.md), [C++ Interop](docs/engine/cxx-interop.md), [Platform](docs/engine/platform.md), [Scripting](docs/engine/scripting.md)
 
 ### Legacy reference
@@ -231,13 +234,13 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 
 | Metric                                | Value          |
 |---------------------------------------|----------------|
-| Rust source files                     | 152            |
-| Lines of Rust                         | ~44,900        |
-| Unit tests passing                    | 472            |
+| Rust source files                     | 160            |
+| Lines of Rust                         | ~46,000        |
+| Unit tests passing                    | 517            |
 | Integration tests (`#[ignore]`'d)     | 24             |
 | NIFs in per-game integration sweeps   | 177,286        |
 | Per-game parse success rate           | 100% (7 games) |
-| Workspace crates                      | 11             |
+| Workspace crates                      | 12             |
 
 ## Dependencies
 
@@ -254,6 +257,7 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 | lz4_flex        | LZ4 decompression (frame for BSA v105, block for BA2 v3) |
 | image           | PNG / image loading                           |
 | rapier3d        | Physics simulation (M28 Phase 1)              |
+| logos           | Lexer generator for Papyrus parser             |
 | serde / toml    | Plugin manifest serialization                 |
 | uuid / semver   | Plugin identity and version constraints       |
 | anyhow / thiserror | Error handling                             |

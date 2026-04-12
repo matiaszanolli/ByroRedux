@@ -116,6 +116,15 @@ crates/
     src/events.rs            Transient marker components: ActivateEvent, HitEvent, TimerExpired
     src/timer.rs             ScriptTimer component + timer_tick_system
     src/cleanup.rs           event_cleanup_system (end-of-frame marker removal)
+  papyrus/                   Papyrus language parser (.psc source → AST)
+    src/token.rs             Token enum (logos derive, case-insensitive keywords)
+    src/lexer.rs             Lexer wrapper (line continuation, comments, doc comments)
+    src/ast.rs               Full AST types (Script, Expr, Stmt, Type, all node kinds)
+    src/span.rs              Span (byte offsets), Spanned<T> wrapper
+    src/error.rs             ParseError with source-location diagnostics
+    src/parser/              Recursive descent parser
+      mod.rs                 Parser struct, token access, type parsing
+      expr.rs                Pratt expression parser (precedence climbing)
   cxx-bridge/                C++ interop (cxx crate)
 docs/
   engine/                    Engine documentation (architecture, ECS, renderer, etc.)
@@ -208,8 +217,14 @@ Session 7: Starfield BA2 v3 DX10 texture extraction — v3 header has a
 decompression via lz4_flex::block. Verified against 22 Starfield texture
 archives (~128K DX10 textures) + 53 vanilla FO4 BA2s (v1/v7/v8), zero
 failures. BA2 support now verified end-to-end for every version/variant.
-Next: M27 parallel scheduler, M24 Phase 2 (QUST/DIAL/PERK), M28.5
-kinematic character controller, M29 GPU skinning compute path.
+Session 8: M30 Phase 1 — Papyrus language parser. New `byroredux-papyrus`
+crate with logos lexer (case-insensitive keywords, line continuation,
+comments) + Pratt expression parser (all operators, member access, indexing,
+calls with named args, casts, new). Full AST types for the complete language.
+45 tests. Phases 2–4 (statements, declarations, FO4 extensions) pending.
+Next: M30 Phase 2 (statements + function bodies), M27 parallel scheduler,
+M24 Phase 2 (QUST/DIAL/PERK), M28.5 kinematic character controller,
+M29 GPU skinning compute path.
 
 ## Git Conventions
 
