@@ -501,28 +501,29 @@ void main() {
             float atten;
 
             if (lightType < 0.5) {
-                // Point light — windowed 1/d falloff matching Gamebryo's
-                // default D3D9 attenuation (C=0, L=1, Q=0 → 1/d).
-                // The smooth window function fades to zero at the radius
-                // boundary to avoid sharp cutoff artifacts.
+                // Point light — radius-normalized inverse-linear falloff.
+                // Gamebryo's default D3D9 attenuation is 1/d (C=0, L=1, Q=0)
+                // with no hard cutoff. We normalize by radius so a light at
+                // half its radius has attenuation ~0.5, and smoothly fade to
+                // zero at the boundary via a windowing function.
                 vec3 toLight = lightPos - fragWorldPos;
                 dist = length(toLight);
                 L = toLight / max(dist, 0.001);
-                float ratio = dist / max(radius, 0.001);
+                float ratio = dist / max(radius, 1.0);
                 float window = clamp(1.0 - ratio, 0.0, 1.0);
                 window *= window; // smooth fade at boundary
-                atten = window / max(dist, 1.0);
+                atten = window / (1.0 + ratio * 4.0);
             } else if (lightType < 1.5) {
-                // Spot light — same windowed 1/d attenuation + cone factor.
+                // Spot light — same attenuation + cone factor.
                 vec3 toLight = lightPos - fragWorldPos;
                 dist = length(toLight);
                 L = toLight / max(dist, 0.001);
                 vec3 spotDir = normalize(lights[i].direction_angle.xyz);
                 float spotAngle = lights[i].direction_angle.w;
-                float ratio = dist / max(radius, 0.001);
+                float ratio = dist / max(radius, 1.0);
                 float window = clamp(1.0 - ratio, 0.0, 1.0);
                 window *= window;
-                atten = window / max(dist, 1.0);
+                atten = window / (1.0 + ratio * 4.0);
                 float spotFactor = dot(-L, spotDir);
                 atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
             } else {
