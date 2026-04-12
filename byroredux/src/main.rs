@@ -21,6 +21,7 @@ use byroredux_platform::window::{self, WindowConfig};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::VulkanContext;
 use byroredux_ui::UiManager;
+use std::collections::HashMap;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
@@ -100,6 +101,11 @@ struct App {
     /// always identity). Walked by `build_render_data` for every
     /// SkinnedMesh entity and uploaded once per frame.
     bone_palette: Vec<[[f32; 4]; 4]>,
+    /// Reusable per-frame entity → bone-offset map. Populated by the
+    /// skinned-mesh pass in `build_render_data` and read during draw
+    /// command emission. Retained across frames so the HashMap's bucket
+    /// allocation persists — see #253.
+    skin_offsets: HashMap<byroredux_core::ecs::EntityId, u32>,
 }
 
 impl App {
@@ -167,6 +173,7 @@ impl App {
             draw_commands: Vec::new(),
             gpu_lights: Vec::new(),
             bone_palette: Vec::new(),
+            skin_offsets: HashMap::new(),
         }
     }
 
@@ -265,6 +272,7 @@ impl ApplicationHandler for App {
                         &mut self.draw_commands,
                         &mut self.gpu_lights,
                         &mut self.bone_palette,
+                        &mut self.skin_offsets,
                     );
 
                     // Record draw call count for diagnostics.
