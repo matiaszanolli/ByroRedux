@@ -365,10 +365,8 @@ void main() {
     vec3 F0 = mix(vec3(0.04), albedo, metalness);
 
     // Emissive bypass: self-lit surfaces skip the light loop entirely.
-    // Boost by PI to match the radiance scale applied to point lights —
-    // emissive colors were authored for the same non-PBR pipeline.
     if (emissiveMult > 0.01) {
-        vec3 emissive = emissiveColor * emissiveMult * PI;
+        vec3 emissive = emissiveColor * emissiveMult;
         vec3 ambient = sceneFlags.yzw * albedo * (1.0 - metalness);
         outColor = vec4(ambient + emissive, texColor.a);
         outRawIndirect = vec4(0.0);
@@ -503,25 +501,28 @@ void main() {
             float atten;
 
             if (lightType < 0.5) {
-                // Point light.
+                // Point light — windowed 1/d falloff matching Gamebryo's
+                // default D3D9 attenuation (C=0, L=1, Q=0 → 1/d).
+                // The smooth window function fades to zero at the radius
+                // boundary to avoid sharp cutoff artifacts.
                 vec3 toLight = lightPos - fragWorldPos;
                 dist = length(toLight);
                 L = toLight / max(dist, 0.001);
                 float ratio = dist / max(radius, 0.001);
-                float ratio2 = ratio * ratio;
-                float window = max(1.0 - ratio2 * ratio2, 0.0);
-                atten = window * window / (1.0 + ratio2 * 4.0);
+                float window = clamp(1.0 - ratio, 0.0, 1.0);
+                window *= window; // smooth fade at boundary
+                atten = window / max(dist, 1.0);
             } else if (lightType < 1.5) {
-                // Spot light.
+                // Spot light — same windowed 1/d attenuation + cone factor.
                 vec3 toLight = lightPos - fragWorldPos;
                 dist = length(toLight);
                 L = toLight / max(dist, 0.001);
                 vec3 spotDir = normalize(lights[i].direction_angle.xyz);
                 float spotAngle = lights[i].direction_angle.w;
                 float ratio = dist / max(radius, 0.001);
-                float ratio2 = ratio * ratio;
-                float window = max(1.0 - ratio2 * ratio2, 0.0);
-                atten = window * window / (1.0 + ratio2 * 4.0);
+                float window = clamp(1.0 - ratio, 0.0, 1.0);
+                window *= window;
+                atten = window / max(dist, 1.0);
                 float spotFactor = dot(-L, spotDir);
                 atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
             } else {
@@ -624,12 +625,7 @@ void main() {
 
             vec3 kD = (1.0 - F) * (1.0 - metalness);
             vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
-            // Scale by PI to compensate for the BRDF's 1/PI divisor in the
-            // diffuse term — legacy content was authored for a non-PBR
-            // pipeline where radiance was applied directly without the
-            // energy-conserving 1/PI.  This keeps authored light colors
-            // at perceptually similar brightness after linearization.
-            vec3 radiance = lightColor * atten * shadow * PI;
+            vec3 radiance = lightColor * atten * shadow;
 
             Lo += (kD * albedo / PI + specular * specStrength * specColor) * radiance * NdotL;
 

@@ -11,7 +11,7 @@ use crate::scene::NifScene;
 use crate::types::{BlockRef, NiTransform};
 
 use super::collision::extract_collision;
-use super::coord::{srgb_to_linear, zup_matrix_to_yup_quat};
+use super::coord::zup_matrix_to_yup_quat;
 use super::mesh::{
     extract_bs_tri_shape, extract_bs_tri_shape_local, extract_mesh, extract_mesh_local,
 };
@@ -346,14 +346,13 @@ fn imported_light_from_base(
 
     // Dimmer scales the diffuse contribution — the only channel the
     // engine currently consumes. Ambient/specular are stored for later.
+    // Gamebryo stores light colors as raw floats in "monitor space" —
+    // effectively sRGB values used as-is with no gamma conversion.  We
+    // pass them through unchanged because the legacy content was
+    // authored for this non-linear-aware pipeline.
     let d = base.dimmer;
     let diffuse = base.diffuse_color;
-    // NIF colors are in sRGB space — linearize for PBR math.
-    let color = [
-        srgb_to_linear(diffuse.r) * d,
-        srgb_to_linear(diffuse.g) * d,
-        srgb_to_linear(diffuse.b) * d,
-    ];
+    let color = [diffuse.r * d, diffuse.g * d, diffuse.b * d];
 
     ImportedLight {
         translation,

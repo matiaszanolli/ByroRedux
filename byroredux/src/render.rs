@@ -412,11 +412,11 @@ pub(crate) fn build_render_data(
         .as_ref()
         .map(|l| {
             if l.is_interior {
-                // Interior ambient boost — XCLL values are deliberately dim
-                // (Bethesda's engine adds per-light ambient fill that we
-                // approximate in the shader). A modest boost compensates for
-                // remaining differences in the lighting model.
-                [l.ambient[0] * 1.5, l.ambient[1] * 1.5, l.ambient[2] * 1.5]
+                // Gamebryo's D3D9 pipeline adds per-light ambient fill
+                // (Light.Ambient × Material.Ambient) that we approximate in
+                // the shader. A 2x boost on the scene ambient compensates
+                // for the remaining model difference.
+                [l.ambient[0] * 2.0, l.ambient[1] * 2.0, l.ambient[2] * 2.0]
             } else {
                 l.ambient
             }

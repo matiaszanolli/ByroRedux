@@ -14,8 +14,6 @@ use crate::blocks::tri_shape::{BsTriShape, NiTriShape};
 use crate::scene::NifScene;
 use crate::types::BlockRef;
 
-use super::coord::srgb_to_linear;
-
 use super::mesh::GeomData;
 
 pub(super) const DECAL_SINGLE_PASS: u32 = 0x04000000;
@@ -272,18 +270,9 @@ pub(super) fn extract_material_info(
                 info.is_decal = true;
             }
             // Capture rich material data.
-            // BSLightingShaderProperty stores colors in sRGB space.
-            info.emissive_color = [
-                srgb_to_linear(shader.emissive_color[0]),
-                srgb_to_linear(shader.emissive_color[1]),
-                srgb_to_linear(shader.emissive_color[2]),
-            ];
+            info.emissive_color = shader.emissive_color;
             info.emissive_mult = shader.emissive_multiple;
-            info.specular_color = [
-                srgb_to_linear(shader.specular_color[0]),
-                srgb_to_linear(shader.specular_color[1]),
-                srgb_to_linear(shader.specular_color[2]),
-            ];
+            info.specular_color = shader.specular_color;
             info.specular_strength = shader.specular_strength;
             info.glossiness = shader.glossiness;
             info.uv_offset = shader.uv_offset;
@@ -341,17 +330,8 @@ pub(super) fn extract_material_info(
         // NiMaterialProperty — capture specular/emissive/shininess/alpha.
         if !info.has_material_data {
             if let Some(mat) = scene.get_as::<NiMaterialProperty>(idx) {
-                // NIF colors are in sRGB space — linearize for PBR math.
-                info.specular_color = [
-                    srgb_to_linear(mat.specular.r),
-                    srgb_to_linear(mat.specular.g),
-                    srgb_to_linear(mat.specular.b),
-                ];
-                info.emissive_color = [
-                    srgb_to_linear(mat.emissive.r),
-                    srgb_to_linear(mat.emissive.g),
-                    srgb_to_linear(mat.emissive.b),
-                ];
+                info.specular_color = [mat.specular.r, mat.specular.g, mat.specular.b];
+                info.emissive_color = [mat.emissive.r, mat.emissive.g, mat.emissive.b];
                 info.glossiness = mat.shininess;
                 info.alpha = mat.alpha;
                 info.emissive_mult = mat.emissive_mult;
