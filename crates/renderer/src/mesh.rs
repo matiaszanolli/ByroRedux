@@ -30,6 +30,8 @@ impl GpuMesh {
 pub struct MeshRegistry {
     meshes: Vec<GpuMesh>,
     /// Accumulated vertex data for building the global geometry SSBO.
+    /// Kept alive after `build_geometry_ssbo()` so late-loaded meshes
+    /// can append and trigger a rebuild. See #258.
     pending_vertices: Vec<Vertex>,
     /// Accumulated index data for building the global geometry SSBO.
     pending_indices: Vec<u32>,
@@ -37,6 +39,12 @@ pub struct MeshRegistry {
     pub global_vertex_buffer: Option<GpuBuffer>,
     /// Global geometry SSBO (indices). Built by `build_geometry_ssbo()`.
     pub global_index_buffer: Option<GpuBuffer>,
+    /// Set when `upload_scene_mesh` is called after the initial SSBO
+    /// build — signals the frame loop to call `rebuild_geometry_ssbo`.
+    geometry_dirty: bool,
+    /// Number of vertices in the SSBO at last build. Used to detect
+    /// whether a rebuild is needed vs. the current pending state.
+    ssbo_vertex_count: usize,
 }
 
 impl MeshRegistry {
@@ -47,6 +55,8 @@ impl MeshRegistry {
             pending_indices: Vec::new(),
             global_vertex_buffer: None,
             global_index_buffer: None,
+            geometry_dirty: false,
+            ssbo_vertex_count: 0,
         }
     }
 
@@ -128,6 +138,14 @@ impl MeshRegistry {
         mesh.global_vertex_offset = v_offset;
         mesh.global_index_offset = i_offset;
 
+        // If the SSBO has already been built, mark dirty so the frame
+        // loop knows to call rebuild_geometry_ssbo. See #258.
+        if self.global_vertex_buffer.is_some()
+            && self.pending_vertices.len() > self.ssbo_vertex_count
+        {
+            self.geometry_dirty = true;
+        }
+
         Ok(id)
     }
 
@@ -172,11 +190,52 @@ impl MeshRegistry {
             index_size as f64 / 1024.0,
         );
 
-        // Free CPU-side data.
-        self.pending_vertices = Vec::new();
-        self.pending_indices = Vec::new();
+        // Track the built size so we can detect when new data arrives.
+        // pending data is kept alive for potential rebuilds (#258).
+        self.ssbo_vertex_count = self.pending_vertices.len();
+        self.geometry_dirty = false;
 
         Ok(())
+    }
+
+    /// Rebuild the global geometry SSBO after new meshes have been loaded.
+    /// Destroys the old SSBO and creates a new one from all accumulated
+    /// vertex/index data. Only call when `is_geometry_dirty()` returns true.
+    ///
+    /// This is the simple "full rebuild" path — acceptable for infrequent
+    /// cell transitions. A future streaming optimization could append
+    /// in-place with buffer resize. See #258.
+    pub fn rebuild_geometry_ssbo(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        command_pool: vk::CommandPool,
+    ) -> Result<()> {
+        // Destroy old SSBO.
+        if let Some(ref mut vb) = self.global_vertex_buffer {
+            vb.destroy(device, allocator);
+        }
+        if let Some(ref mut ib) = self.global_index_buffer {
+            ib.destroy(device, allocator);
+        }
+        self.global_vertex_buffer = None;
+        self.global_index_buffer = None;
+
+        log::info!(
+            "Rebuilding geometry SSBO: {} → {} vertices",
+            self.ssbo_vertex_count,
+            self.pending_vertices.len(),
+        );
+
+        // Rebuild from all accumulated data.
+        self.build_geometry_ssbo(device, allocator, queue, command_pool)
+    }
+
+    /// Returns true when new meshes have been loaded since the last SSBO
+    /// build. The frame loop should call `rebuild_geometry_ssbo` to update.
+    pub fn is_geometry_dirty(&self) -> bool {
+        self.geometry_dirty
     }
 
     pub fn get(&self, id: u32) -> Option<&GpuMesh> {

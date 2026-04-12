@@ -275,6 +275,20 @@ impl ApplicationHandler for App {
                         &mut self.skin_offsets,
                     );
 
+                    // Rebuild the global geometry SSBO if new meshes were
+                    // loaded since the last build (cell transitions, late
+                    // streaming). See #258.
+                    if ctx.mesh_registry.is_geometry_dirty() {
+                        if let Err(e) = ctx.mesh_registry.rebuild_geometry_ssbo(
+                            &ctx.device,
+                            ctx.allocator.as_ref().unwrap(),
+                            &ctx.graphics_queue,
+                            ctx.transfer_pool,
+                        ) {
+                            log::warn!("Failed to rebuild geometry SSBO: {e}");
+                        }
+                    }
+
                     // Record draw call count for diagnostics.
                     world_resource_set::<DebugStats>(&self.world, |s| {
                         s.draw_call_count = self.draw_commands.len() as u32;
