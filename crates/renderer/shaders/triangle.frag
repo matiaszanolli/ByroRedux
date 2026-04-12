@@ -639,11 +639,11 @@ void main() {
 
             Lo += (kD * albedo / PI + specular * specStrength * specColor) * radiance * NdotL;
 
-            // Per-light ambient fill: Gamebryo's D3D9 equation adds
-            // Material.Ambient(0.5) × Light.Ambient(1.0) × dimmer / atten
-            // per light. This is omnidirectional scatter — NOT shadow-blocked
-            // (shadows only gate the NdotL-dependent diffuse/specular terms).
-            Lo += lightColor * atten * albedo * 0.5;
+            // Per-light ambient fill: approximates Gamebryo's D3D9 per-light
+            // ambient (Material.Ambient × Light.Ambient / atten). Kept small
+            // so RT shadows remain visible — the diffuse/specular terms above
+            // carry the directional contrast via the shadow factor.
+            Lo += lightColor * atten * albedo * 0.08;
         }
     }
 
