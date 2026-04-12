@@ -142,8 +142,11 @@ void main() {
             count++;
         } else {
             // Point/spot light — sphere-vs-AABB test.
+            // The ESM radius is a culling hint, not the attenuation range.
+            // Extend to 4× to match the fragment shader's effective range
+            // (Gamebryo lights have effectively infinite range via 1/d).
             vec3 lightPos = lights[i].position_radius.xyz;
-            float lightRadius = lights[i].position_radius.w;
+            float lightRadius = abs(lights[i].position_radius.w) * 4.0;
 
             if (sphereIntersectsAABB(lightPos, lightRadius, aabbMin, aabbMax)) {
                 lightIndices[baseOffset + count] = i;
