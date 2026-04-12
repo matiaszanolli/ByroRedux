@@ -27,6 +27,19 @@ pub struct TlasState {
     pub instance_buffer: GpuBuffer,
     /// Max instances the instance_buffer can hold.
     pub max_instances: u32,
+    /// BLAS device addresses submitted on the most recent BUILD, in
+    /// submission order. Used by `build_tlas` to decide whether the
+    /// next frame can refit (`UPDATE` mode) or must full-rebuild
+    /// (`BUILD` mode). REFIT is only legal when the per-instance BLAS
+    /// references are unchanged from the last build — Vulkan's UPDATE
+    /// mode permits changes to transforms, custom indices, SBT offsets,
+    /// mask, and flags, but NOT to `acceleration_structure_reference`.
+    /// See #247.
+    pub last_blas_addresses: Vec<vk::DeviceAddress>,
+    /// `true` when the next build must be a full BUILD (either the
+    /// TLAS was just (re)created, or the instance layout changed).
+    /// Reset to `false` after each successful BUILD.
+    pub needs_full_rebuild: bool,
 }
 
 /// Manages BLAS and TLAS for RT ray queries.
@@ -372,9 +385,17 @@ impl AccelerationManager {
                         }),
                 });
 
+            // ALLOW_UPDATE enables REFIT on subsequent frames (#247).
+            // PREFER_FAST_BUILD is retained — we rebuild often enough
+            // that trace-time wins from PREFER_FAST_TRACE don't pay back
+            // the slower build; REFIT is the actual optimization for
+            // static content.
             let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                 .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
-                .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD)
+                .flags(
+                    vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD
+                        | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE,
+                )
                 .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
                 .geometries(std::slice::from_ref(&geometry));
 
@@ -385,6 +406,8 @@ impl AccelerationManager {
                 &[padded_count as u32],
                 &mut sizes,
             );
+            // Scratch is sized for BUILD which is >= UPDATE per Vulkan
+            // spec, so the same buffer serves both modes.
 
             // DEVICE_LOCAL: GPU-built, GPU-read during ray queries.
             let mut tlas_buffer = GpuBuffer::create_device_local_uninit(
@@ -437,10 +460,49 @@ impl AccelerationManager {
                 buffer: tlas_buffer,
                 instance_buffer,
                 max_instances: padded_count as u32,
+                last_blas_addresses: Vec::with_capacity(padded_count),
+                // A freshly-created TLAS has no source to refit from —
+                // the first frame after creation must do a full BUILD.
+                needs_full_rebuild: true,
             });
         }
 
         let tlas = self.tlas[frame_index].as_mut().unwrap();
+
+        // Decide BUILD vs UPDATE (#247). REFIT (UPDATE) is legal only
+        // when the per-instance BLAS references are unchanged from the
+        // last BUILD. Transforms, custom indices, SBT offsets, masks,
+        // and flags can all change and still be refitted; only the
+        // `acceleration_structure_reference` field is off-limits.
+        //
+        // Gate: if `needs_full_rebuild` is set (freshly created or
+        // previous frame BUILT), or the current BLAS address sequence
+        // differs from the last BUILD, we BUILD. Otherwise UPDATE.
+        let blas_layout_matches = tlas.last_blas_addresses.len() == instances.len()
+            && tlas
+                .last_blas_addresses
+                .iter()
+                .zip(instances.iter())
+                .all(|(prev, inst)| unsafe {
+                    // SAFETY: AccelerationStructureReferenceKHR is a
+                    // union. Our BLAS entries are always device-built,
+                    // so `device_handle` is the live variant — same
+                    // invariant as the push site above.
+                    *prev == inst.acceleration_structure_reference.device_handle
+                });
+        let use_update = !tlas.needs_full_rebuild && blas_layout_matches;
+
+        // Cache the current BLAS sequence so the next frame can compare.
+        // Do this regardless of mode so a BUILD-after-UPDATE transition
+        // sees the up-to-date baseline.
+        tlas.last_blas_addresses.clear();
+        for inst in &instances {
+            tlas.last_blas_addresses
+                .push(inst.acceleration_structure_reference.device_handle);
+        }
+        // After this BUILD/UPDATE completes, the next frame can refit
+        // unless something invalidates it (resize, layout change).
+        tlas.needs_full_rebuild = false;
 
         // Write instances to buffer (host write).
         tlas.instance_buffer.write_mapped(device, &instances)?;
@@ -485,15 +547,30 @@ impl AccelerationManager {
                 .buffer(self.scratch_buffers[frame_index].as_ref().unwrap().buffer),
         );
 
-        let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+        // Mirror the flags used at creation time so Vulkan's validation
+        // layer matches source and dst flags. ALLOW_UPDATE must be set
+        // on both BUILD and UPDATE submissions.
+        let mut build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
-            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD)
-            .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+            .flags(
+                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD
+                    | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE,
+            )
             .dst_acceleration_structure(tlas.accel)
             .geometries(std::slice::from_ref(&geometry))
             .scratch_data(vk::DeviceOrHostAddressKHR {
                 device_address: scratch_address,
             });
+
+        if use_update {
+            // REFIT path: reuse the existing accel as the source,
+            // write the updated instance transforms into the same dst.
+            build_info = build_info
+                .mode(vk::BuildAccelerationStructureModeKHR::UPDATE)
+                .src_acceleration_structure(tlas.accel);
+        } else {
+            build_info = build_info.mode(vk::BuildAccelerationStructureModeKHR::BUILD);
+        }
 
         let range =
             vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(instance_count);
