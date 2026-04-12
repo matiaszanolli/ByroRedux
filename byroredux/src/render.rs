@@ -333,7 +333,7 @@ pub(crate) fn build_render_data(
         let (dir_color, dir_radius) = if cell_lit.is_interior {
             // Interior fill: scale down and flag unshadowed (radius = -1)
             // so the shader skips shadow rays that would hit sealed walls.
-            let s = 0.35;
+            let s = 0.6;
             (
                 [
                     cell_lit.directional_color[0] * s,

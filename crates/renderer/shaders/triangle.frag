@@ -365,8 +365,10 @@ void main() {
     vec3 F0 = mix(vec3(0.04), albedo, metalness);
 
     // Emissive bypass: self-lit surfaces skip the light loop entirely.
+    // Boost by PI to match the radiance scale applied to point lights —
+    // emissive colors were authored for the same non-PBR pipeline.
     if (emissiveMult > 0.01) {
-        vec3 emissive = emissiveColor * emissiveMult;
+        vec3 emissive = emissiveColor * emissiveMult * PI;
         vec3 ambient = sceneFlags.yzw * albedo * (1.0 - metalness);
         outColor = vec4(ambient + emissive, texColor.a);
         outRawIndirect = vec4(0.0);
@@ -426,7 +428,7 @@ void main() {
             // clear glass passes it through mostly unchanged.
             // The texture alpha controls how much glass vs sky we see.
             vec3 windowTint = mix(vec3(1.0), texColor.rgb, texColor.a * 0.5);
-            vec3 transmitted = skyColor * windowTint * 0.6;
+            vec3 transmitted = skyColor * windowTint * 1.2;
             outColor = vec4(transmitted, 1.0);
             outRawIndirect = vec4(0.0);
             outAlbedo = vec4(albedo, 1.0);
@@ -622,7 +624,12 @@ void main() {
 
             vec3 kD = (1.0 - F) * (1.0 - metalness);
             vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
-            vec3 radiance = lightColor * atten * shadow;
+            // Scale by PI to compensate for the BRDF's 1/PI divisor in the
+            // diffuse term — legacy content was authored for a non-PBR
+            // pipeline where radiance was applied directly without the
+            // energy-conserving 1/PI.  This keeps authored light colors
+            // at perceptually similar brightness after linearization.
+            vec3 radiance = lightColor * atten * shadow * PI;
 
             Lo += (kD * albedo / PI + specular * specStrength * specColor) * radiance * NdotL;
 
@@ -630,7 +637,7 @@ void main() {
             // Material.Ambient * Light.Ambient * dimmer / attenuation term.
             // Each nearby light contributes a small NdotL-independent fill
             // that lifts the base illumination in rooms with many lights.
-            Lo += lightColor * atten * shadow * albedo * 0.12;
+            Lo += lightColor * atten * shadow * albedo * 0.25;
         }
     }
 
