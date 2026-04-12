@@ -373,8 +373,11 @@ void main() {
     if (emissiveMult > 0.01 && emissiveLum > 0.01) {
         // Modulate emissive by the surface texture — light fixtures have
         // textured glass globes that should tint/shape the glow, not be
-        // replaced by a flat emissive color.
+        // replaced by a flat emissive color. Clamp to prevent HDR blowout
+        // that overwhelms ACES tone mapping (the globe surface should glow
+        // but not wash out to a featureless white disc).
         vec3 emissive = emissiveColor * emissiveMult * albedo;
+        emissive = min(emissive, vec3(1.5));
         vec3 ambient = sceneFlags.yzw * albedo * (1.0 - metalness);
         outColor = vec4(ambient + emissive, texColor.a);
         outRawIndirect = vec4(0.0);
