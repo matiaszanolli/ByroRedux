@@ -543,10 +543,12 @@ void main() {
 
                 if (lightType < 1.5) {
                     // Point / spot: trace toward a jittered point on the
-                    // light's physical disk. Penumbra scales with radius
-                    // and fragment-to-light distance.
-                    float distRatio = clamp(dist / max(radius, 1.0), 0.1, 1.0);
-                    float lightDiskRadius = max(radius * 0.025 * distRatio, 1.5);
+                    // light's physical disk. The fixed disk radius produces
+                    // correct contact-hardening naturally — nearby fragments
+                    // see the disk at a larger angular subtense (soft
+                    // penumbra), distant fragments at a smaller one (hard
+                    // shadows). See #257.
+                    float lightDiskRadius = max(radius * 0.025, 1.5);
                     vec3 jitteredTarget = lightPos + (T * diskSample.x + B * diskSample.y) * lightDiskRadius;
                     rayDir = normalize(jitteredTarget - rayOrigin);
                     rayDist = length(jitteredTarget - rayOrigin) - 0.1;
