@@ -1,6 +1,7 @@
 //! NifScene — resolved scene graph after linking.
 
-use crate::blocks::NiObject;
+use crate::blocks::{node::NiNode, NiObject};
+use crate::types::BlockRef;
 
 /// A fully parsed and linked NIF file.
 #[derive(Debug)]
@@ -62,5 +63,287 @@ impl NifScene {
 
     pub fn is_empty(&self) -> bool {
         self.blocks.is_empty()
+    }
+
+    /// Walk every block and check that each non-null `BlockRef` resolves
+    /// to an in-range block index. Returns an empty `Vec` when the scene
+    /// is link-clean; otherwise returns one [`RefError`] per dangling
+    /// reference with enough context (block index, block type, ref kind,
+    /// bad index) for diagnostics.
+    ///
+    /// This is an optional post-parse sanity pass — `parse_nif` does not
+    /// run it, so consumers that care (debug builds, `nif_stats`, tests
+    /// against real corpora) can opt in via:
+    /// ```ignore
+    /// let scene = byroredux_nif::parse_nif(&bytes)?;
+    /// for err in scene.validate_refs() {
+    ///     log::warn!("{err:?}");
+    /// }
+    /// ```
+    ///
+    /// Coverage is driven by the existing `HasObjectNET`/`HasAVObject`/
+    /// `HasShaderRefs` upcast traits plus an explicit `NiNode` downcast
+    /// for `children`/`effects`. The scene `root_index` is also
+    /// range-checked. Per-field type checking is intentionally out of
+    /// scope — this is a range-validity net, not a full schema
+    /// validator. See #226.
+    pub fn validate_refs(&self) -> Vec<RefError> {
+        let mut errors = Vec::new();
+        let len = self.blocks.len();
+
+        let check = |errors: &mut Vec<RefError>,
+                     block_index: usize,
+                     block_type: &'static str,
+                     kind: RefKind,
+                     r: BlockRef| {
+            if let Some(idx) = r.index() {
+                if idx >= len {
+                    errors.push(RefError {
+                        block_index,
+                        block_type,
+                        kind,
+                        bad_index: idx,
+                        blocks_len: len,
+                    });
+                }
+            }
+        };
+
+        for (i, block) in self.blocks.iter().enumerate() {
+            let type_name = block.block_type_name();
+
+            if let Some(net) = block.as_object_net() {
+                check(&mut errors, i, type_name, RefKind::Controller, net.controller_ref());
+                for r in net.extra_data_refs() {
+                    check(&mut errors, i, type_name, RefKind::ExtraData, *r);
+                }
+            }
+            if let Some(av) = block.as_av_object() {
+                check(&mut errors, i, type_name, RefKind::Collision, av.collision_ref());
+                for r in av.properties() {
+                    check(&mut errors, i, type_name, RefKind::Property, *r);
+                }
+            }
+            if let Some(sref) = block.as_shader_refs() {
+                check(
+                    &mut errors,
+                    i,
+                    type_name,
+                    RefKind::ShaderProperty,
+                    sref.shader_property_ref(),
+                );
+                check(
+                    &mut errors,
+                    i,
+                    type_name,
+                    RefKind::AlphaProperty,
+                    sref.alpha_property_ref(),
+                );
+            }
+
+            // NiNode children/effects are not exposed via a trait — they
+            // carry the scene graph edges, so we downcast explicitly.
+            if let Some(node) = block.as_any().downcast_ref::<NiNode>() {
+                for r in &node.children {
+                    check(&mut errors, i, type_name, RefKind::Child, *r);
+                }
+                for r in &node.effects {
+                    check(&mut errors, i, type_name, RefKind::Effect, *r);
+                }
+            }
+        }
+
+        if let Some(root) = self.root_index {
+            if root >= len {
+                errors.push(RefError {
+                    block_index: usize::MAX,
+                    block_type: "NifScene",
+                    kind: RefKind::Root,
+                    bad_index: root,
+                    blocks_len: len,
+                });
+            }
+        }
+
+        errors
+    }
+}
+
+/// One dangling-reference finding produced by [`NifScene::validate_refs`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefError {
+    /// Index of the block that owns the bad reference, or `usize::MAX`
+    /// when the error is on the scene itself (root_index out of range).
+    pub block_index: usize,
+    /// Static type name of the owning block (`"NifScene"` for root errors).
+    pub block_type: &'static str,
+    /// Which field the reference came from.
+    pub kind: RefKind,
+    /// The out-of-range index that was read from the NIF.
+    pub bad_index: usize,
+    /// Number of blocks actually present in the scene (bound that was exceeded).
+    pub blocks_len: usize,
+}
+
+/// Where a dangling `BlockRef` was discovered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefKind {
+    /// `NiObjectNET.controller` — animation controller chain head.
+    Controller,
+    /// `NiObjectNET.extra_data` — per-block metadata attachments.
+    ExtraData,
+    /// `NiAVObject.collision_object` — bhk collision volume.
+    Collision,
+    /// `NiAVObject.properties` — legacy property list (Oblivion/FNV).
+    Property,
+    /// `NiTriShape.shader_property` / `BSTriShape.shader_property` (Skyrim+).
+    ShaderProperty,
+    /// `NiTriShape.alpha_property` / `BSTriShape.alpha_property` (Skyrim+).
+    AlphaProperty,
+    /// `NiNode.children` — scene graph descendants.
+    Child,
+    /// `NiNode.effects` — attached `NiDynamicEffect` (pre-FO4).
+    Effect,
+    /// `NifScene.root_index` — identified root block.
+    Root,
+}
+
+#[cfg(test)]
+mod validate_refs_tests {
+    use super::*;
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::node::NiNode;
+    use crate::types::NiTransform;
+
+    fn empty_net() -> NiObjectNETData {
+        NiObjectNETData {
+            name: None,
+            extra_data_refs: Vec::new(),
+            controller_ref: BlockRef::NULL,
+        }
+    }
+
+    fn empty_av() -> NiAVObjectData {
+        NiAVObjectData {
+            net: empty_net(),
+            flags: 0,
+            transform: NiTransform::default(),
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        }
+    }
+
+    fn node(av: NiAVObjectData, children: Vec<BlockRef>, effects: Vec<BlockRef>) -> Box<NiNode> {
+        Box::new(NiNode { av, children, effects })
+    }
+
+    #[test]
+    fn clean_scene_reports_no_errors() {
+        // Root with two in-range children.
+        let root = node(
+            empty_av(),
+            vec![BlockRef(1), BlockRef(2)],
+            Vec::new(),
+        );
+        let child0 = node(empty_av(), Vec::new(), Vec::new());
+        let child1 = node(empty_av(), Vec::new(), Vec::new());
+        let scene = NifScene {
+            blocks: vec![root, child0, child1],
+            root_index: Some(0),
+            truncated: false,
+            dropped_block_count: 0,
+        };
+        assert!(scene.validate_refs().is_empty());
+    }
+
+    #[test]
+    fn null_refs_are_ignored() {
+        let mut av = empty_av();
+        av.net.controller_ref = BlockRef::NULL;
+        av.collision_ref = BlockRef::NULL;
+        av.net.extra_data_refs = vec![BlockRef::NULL];
+        let root = node(av, vec![BlockRef::NULL], vec![BlockRef::NULL]);
+        let scene = NifScene {
+            blocks: vec![root],
+            root_index: Some(0),
+            truncated: false,
+            dropped_block_count: 0,
+        };
+        assert!(scene.validate_refs().is_empty());
+    }
+
+    #[test]
+    fn dangling_child_is_reported() {
+        // Root points at block 5 — only 1 block in scene.
+        let root = node(empty_av(), vec![BlockRef(5)], Vec::new());
+        let scene = NifScene {
+            blocks: vec![root],
+            root_index: Some(0),
+            truncated: false,
+            dropped_block_count: 0,
+        };
+        let errs = scene.validate_refs();
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].block_index, 0);
+        assert_eq!(errs[0].block_type, "NiNode");
+        assert_eq!(errs[0].kind, RefKind::Child);
+        assert_eq!(errs[0].bad_index, 5);
+        assert_eq!(errs[0].blocks_len, 1);
+    }
+
+    #[test]
+    fn dangling_controller_and_collision_are_reported() {
+        let mut av = empty_av();
+        av.net.controller_ref = BlockRef(42);
+        av.collision_ref = BlockRef(99);
+        let root = node(av, Vec::new(), Vec::new());
+        let scene = NifScene {
+            blocks: vec![root],
+            root_index: Some(0),
+            truncated: false,
+            dropped_block_count: 0,
+        };
+        let errs = scene.validate_refs();
+        assert_eq!(errs.len(), 2);
+        assert!(errs.iter().any(|e| e.kind == RefKind::Controller && e.bad_index == 42));
+        assert!(errs.iter().any(|e| e.kind == RefKind::Collision && e.bad_index == 99));
+    }
+
+    #[test]
+    fn dangling_effect_is_reported() {
+        let root = node(empty_av(), Vec::new(), vec![BlockRef(7)]);
+        let scene = NifScene {
+            blocks: vec![root],
+            root_index: Some(0),
+            truncated: false,
+            dropped_block_count: 0,
+        };
+        let errs = scene.validate_refs();
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].kind, RefKind::Effect);
+        assert_eq!(errs[0].bad_index, 7);
+    }
+
+    #[test]
+    fn out_of_range_root_is_reported() {
+        let root = node(empty_av(), Vec::new(), Vec::new());
+        let scene = NifScene {
+            blocks: vec![root],
+            root_index: Some(4),
+            truncated: false,
+            dropped_block_count: 0,
+        };
+        let errs = scene.validate_refs();
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].kind, RefKind::Root);
+        assert_eq!(errs[0].block_index, usize::MAX);
+        assert_eq!(errs[0].block_type, "NifScene");
+        assert_eq!(errs[0].bad_index, 4);
+    }
+
+    #[test]
+    fn empty_scene_with_no_root_is_clean() {
+        let scene = NifScene::default();
+        assert!(scene.validate_refs().is_empty());
     }
 }
