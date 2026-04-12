@@ -28,13 +28,15 @@ If `--since` provided: `git log --since="<date>" --oneline && git diff $(git log
 | Domain | File Patterns | Risk |
 |--------|--------------|------|
 | **Vulkan/GPU** | `crates/renderer/src/vulkan/*` | HIGH |
+| **RT / Accel** | `crates/renderer/src/vulkan/acceleration.rs`, `crates/renderer/src/vulkan/svgf.rs`, `crates/renderer/src/vulkan/gbuffer.rs`, `crates/renderer/src/vulkan/composite.rs` | HIGH |
 | **Shaders** | `crates/renderer/shaders/*` | HIGH |
 | **ECS Core** | `crates/core/src/ecs/*` | HIGH |
-| **NIF Parser** | `crates/nif/src/blocks/*`, `crates/nif/src/import.rs` | HIGH |
+| **NIF Parser** | `crates/nif/src/blocks/*`, `crates/nif/src/import/*` | HIGH |
 | **BSA/Archive** | `crates/bsa/src/*` | HIGH |
 | **ESM Parser** | `crates/plugin/src/esm/*` | MEDIUM |
-| **Animation** | `crates/core/src/animation.rs`, `crates/nif/src/anim.rs` | MEDIUM |
+| **Animation** | `crates/core/src/animation/*`, `crates/nif/src/anim.rs` | MEDIUM |
 | **Cell Loader** | `byroredux/src/cell_loader.rs` | MEDIUM |
+| **Systems** | `byroredux/src/systems.rs`, `byroredux/src/render.rs` | MEDIUM |
 | **Main Loop** | `byroredux/src/main.rs` | MEDIUM |
 | **Tests** | `*/tests/*`, `*#[test]*` | LOW |
 | **Docs** | `*.md`, `docs/*` | LOW |
@@ -46,7 +48,7 @@ For each changed file, read the diff and surrounding context. Check:
 - [ ] **New bugs**: Logic errors, off-by-ones, wrong byte sizes, missing version checks?
 - [ ] **Unsafe changes**: New unsafe blocks? Changed safety invariants? Missing safety comments?
 - [ ] **Lock scope**: Changed RwLock acquisition? New query patterns? Potential deadlocks?
-- [ ] **Vulkan correctness**: New pipeline/barrier/sync changes? Missing validation?
+- [ ] **Vulkan correctness**: New pipeline/barrier/sync changes? Missing validation? RT acceleration structure changes?
 - [ ] **NIF correctness**: New block parsers consume correct byte count? Version conditionals right?
 - [ ] **Tests**: Corresponding test updates? New code paths tested?
 - [ ] **Contract breaks**: Public API changed — did ALL callers update?

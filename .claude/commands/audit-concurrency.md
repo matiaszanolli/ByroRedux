@@ -30,18 +30,18 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 ## Phase 2: Launch Dimension Agents
 
 ### Dimension 1: ECS Lock Ordering
-**Entry points**: `crates/core/src/ecs/world.rs`, `crates/core/src/ecs/query.rs`, all system functions in `byroredux/src/main.rs`
+**Entry points**: `crates/core/src/ecs/world.rs`, `crates/core/src/ecs/query.rs`, all system functions in `byroredux/src/systems.rs`
 **Checklist**: TypeId-sorted lock acquisition in multi-component queries, RwLock held across system function calls, query_mut dropping before next query, resource_mut scope, nested query patterns (animation_system queries Player then Transform), World::insert during system execution.
 **Output**: `/tmp/audit/concurrency/dim_1.md`
 
 ### Dimension 2: Vulkan Synchronization
-**Entry points**: `crates/renderer/src/vulkan/context.rs` (draw_frame), `crates/renderer/src/vulkan/sync.rs`, `crates/renderer/src/vulkan/acceleration.rs`
-**Checklist**: Frame-in-flight fence wait before command buffer reuse, semaphore signaling order (acquire → render → present), TLAS build barrier before fragment shader read, descriptor set update timing (only safe after fence wait), swapchain recreate synchronization (device_wait_idle coverage), graphics_queue Mutex lock duration.
+**Entry points**: `crates/renderer/src/vulkan/context/draw.rs` (draw_frame), `crates/renderer/src/vulkan/sync.rs`, `crates/renderer/src/vulkan/acceleration.rs`, `crates/renderer/src/vulkan/svgf.rs`, `crates/renderer/src/vulkan/composite.rs`
+**Checklist**: Frame-in-flight fence wait before command buffer reuse, semaphore signaling order (acquire → render → present), TLAS build barrier before fragment shader read (AS_WRITE → AS_READ, build stage → fragment stage), SVGF compute dispatch barrier (G-buffer write → compute read, compute write → composite read), descriptor set update timing (only safe after fence wait), swapchain recreate synchronization (device_wait_idle coverage), graphics_queue Mutex lock duration, BLAS build one-time command fence wait (blocks main thread).
 **Output**: `/tmp/audit/concurrency/dim_2.md`
 
 ### Dimension 3: Resource Lifecycle
-**Entry points**: `crates/renderer/src/vulkan/context.rs` (Drop impl), all `destroy()` methods, `crates/renderer/src/vulkan/buffer.rs`, `crates/renderer/src/vulkan/acceleration.rs`
-**Checklist**: Reverse-order destruction (Vulkan requirement), Drop called for all GPU resources, no use-after-destroy during swapchain recreate, allocator freed last, BLAS/TLAS cleanup on shutdown, scene_buffer cleanup, texture registry cleanup.
+**Entry points**: `crates/renderer/src/vulkan/context/mod.rs` (Drop impl), all `destroy()` methods, `crates/renderer/src/vulkan/buffer.rs`, `crates/renderer/src/vulkan/acceleration.rs`, `crates/renderer/src/vulkan/context/resize.rs`
+**Checklist**: Reverse-order destruction (Vulkan requirement), Drop called for all GPU resources, no use-after-destroy during swapchain recreate, allocator freed last, BLAS/TLAS cleanup on shutdown (all BlasEntry buffers + TlasState buffers + scratch), G-buffer/SVGF/composite cleanup on swapchain recreate, scene_buffer cleanup, texture registry cleanup.
 **Output**: `/tmp/audit/concurrency/dim_3.md`
 
 ### Dimension 4: Thread Safety

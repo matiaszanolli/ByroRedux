@@ -29,6 +29,13 @@ After significant renderer changes:
 1. `/audit-renderer`
 2. `/audit-performance --focus 1,2,3`
 3. `/audit-concurrency --focus 2,3`
+4. `/audit-safety`
+
+### `--preset rt-deep`
+After ray tracing / denoiser / G-buffer changes:
+1. `/audit-renderer --focus 8,9,10`
+2. `/audit-performance --focus 1,2`
+3. `/audit-concurrency --focus 2,3`
 
 ### `--preset comprehensive`
 Full audit coverage (longest — run monthly or before major milestones):

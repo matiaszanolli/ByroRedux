@@ -48,13 +48,25 @@ Code quality, maintainability, hardening opportunities.
 | NIF parse mismatch (stream position off) | MEDIUM |
 | ECS deadlock potential | HIGH |
 | FFI lifetime violation | CRITICAL |
+| BLAS/TLAS build with wrong geometry or address | CRITICAL |
+| Missing AS barrier (build → shader read) | HIGH |
+| Ray query self-intersection (wrong tMin/origin bias) | HIGH |
+| SVGF reprojection using wrong motion vectors | HIGH |
+| Denoiser ghosting (missing disocclusion check) | MEDIUM |
+| SSBO index mismatch (instance_custom_index vs draw index) | CRITICAL |
+| G-buffer format mismatch (shader output vs attachment) | HIGH |
+| Composite reassembly wrong order (tone map before add) | MEDIUM |
 
 ## Decision Tree
 
 ```
 Is it a Vulkan spec violation?
   → YES: At least HIGH
+Does it corrupt acceleration structures or SSBO indexing?
+  → YES: CRITICAL (wrong geometry in AS or wrong SSBO lookup = GPU crash or garbage rendering)
 Does it affect GPU memory or rendering correctness?
+  → YES: At least HIGH
+Does it affect ray tracing synchronization (missing AS barriers)?
   → YES: At least HIGH
 Does it affect ECS state or query safety?
   → YES: At least HIGH
@@ -64,6 +76,8 @@ Is it an unsafe block without a safety comment?
   → YES: At least MEDIUM
 Is it a NIF parse failure (blocks future parsing)?
   → YES: At least HIGH
+Does it cause visual artifacts only (denoiser ghosting, wrong tone map order)?
+  → YES: At least MEDIUM
 Is it a code quality issue only?
   → YES: LOW
 Otherwise → MEDIUM

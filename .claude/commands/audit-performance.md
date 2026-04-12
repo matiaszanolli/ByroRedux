@@ -30,22 +30,22 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 ## Phase 2: Launch Dimension Agents
 
 ### Dimension 1: GPU Pipeline Efficiency
-**Entry points**: `crates/renderer/src/vulkan/context.rs` (draw_frame), `crates/renderer/shaders/triangle.frag`
-**Checklist**: Unnecessary pipeline switches, redundant descriptor set binds, per-draw overhead (cmd_set_depth_bias on every draw?), shader branching cost (light loop divergence), TLAS rebuild cost, barrier placement.
+**Entry points**: `crates/renderer/src/vulkan/context/draw.rs` (draw_frame), `crates/renderer/shaders/triangle.frag`
+**Checklist**: Unnecessary pipeline switches, redundant descriptor set binds, per-draw overhead (cmd_set_depth_bias on every draw?), shader branching cost (light loop divergence, RT ray query divergence), TLAS rebuild vs refit frequency, AS barrier placement, SVGF dispatch overhead per frame, composite pass fullscreen quad cost, G-buffer bandwidth (6 render targets per fragment).
 **Output**: `/tmp/audit/performance/dim_1.md`
 
 ### Dimension 2: GPU Memory & Allocation Patterns
 **Entry points**: `crates/renderer/src/vulkan/buffer.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/renderer/src/vulkan/scene_buffer.rs`, `crates/renderer/src/vulkan/acceleration.rs`
-**Checklist**: Host-visible vs device-local usage, staging buffer lifecycle, BLAS scratch buffer reuse, per-frame SSBO/UBO mapped writes (flush needed?), texture upload staging reuse, gpu-allocator fragmentation.
+**Checklist**: Host-visible vs device-local usage, staging buffer lifecycle, BLAS scratch buffer reuse (high-water mark — does it grow unbounded?), per-frame SSBO/UBO mapped writes (flush needed?), texture upload staging reuse, gpu-allocator fragmentation, TLAS instance buffer sizing (2x padding policy), G-buffer memory footprint at high resolutions, SVGF history buffer double-allocation cost.
 **Output**: `/tmp/audit/performance/dim_2.md`
 
 ### Dimension 3: Draw Call & Batching Overhead
-**Entry points**: `byroredux/src/main.rs` (build_render_data, collect_draw_commands), `crates/renderer/src/vulkan/context.rs` (draw loop)
+**Entry points**: `byroredux/src/render.rs` (build_render_data), `crates/renderer/src/vulkan/context/draw.rs` (draw loop)
 **Checklist**: Sort key efficiency, texture bind frequency, pipeline switch frequency, push constant overhead per draw, potential for instanced drawing (same mesh multiple transforms), draw call count vs entity count ratio.
 **Output**: `/tmp/audit/performance/dim_3.md`
 
 ### Dimension 4: ECS Query Patterns
-**Entry points**: `byroredux/src/main.rs` (all system functions), `crates/core/src/ecs/world.rs`, `crates/core/src/ecs/query.rs`
+**Entry points**: `byroredux/src/systems.rs` (all system functions), `crates/core/src/ecs/world.rs`, `crates/core/src/ecs/query.rs`
 **Checklist**: Query lock duration (held across I/O or GPU ops?), redundant queries in same system, name index rebuild frequency, animation_system per-frame HashMap builds, transform_propagation_system BFS efficiency.
 **Output**: `/tmp/audit/performance/dim_4.md`
 
@@ -55,7 +55,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/performance/dim_5.md`
 
 ### Dimension 6: CPU Allocation Hot Paths
-**Entry points**: `byroredux/src/main.rs` (animation_system, transform_propagation_system, build_render_data)
+**Entry points**: `byroredux/src/systems.rs` (animation_system, transform_propagation_system), `byroredux/src/render.rs` (build_render_data)
 **Checklist**: Per-frame Vec allocations (should use pre-allocated buffers?), String allocations in name lookups (already fixed with FixedString?), HashMap rebuilds, temporary Vec<DrawCommand> growth.
 **Output**: `/tmp/audit/performance/dim_6.md`
 

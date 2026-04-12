@@ -5,29 +5,40 @@ This file is referenced by all audit skills. Do NOT use as a slash command (pref
 ## Project Layout
 
 ```
-Core ECS:      crates/core/src/ecs/
-Components:    crates/core/src/ecs/components/
-Animation:     crates/core/src/animation.rs
-Resources:     crates/core/src/ecs/resources.rs
-Strings:       crates/core/src/string/
-NIF Parser:    crates/nif/src/
-NIF Blocks:    crates/nif/src/blocks/
-NIF Import:    crates/nif/src/import.rs
-NIF Animation: crates/nif/src/anim.rs
-BSA Reader:    crates/bsa/src/archive.rs
-Renderer:      crates/renderer/src/vulkan/
-Accel (RT):    crates/renderer/src/vulkan/acceleration.rs
-Scene Buffers: crates/renderer/src/vulkan/scene_buffer.rs
-Mesh:          crates/renderer/src/mesh.rs
-Vertex:        crates/renderer/src/vertex.rs
-Shaders:       crates/renderer/shaders/
-Plugin/ESM:    crates/plugin/src/
-Platform:      crates/platform/src/
-UI (Ruffle):   crates/ui/src/
-CXX Bridge:    crates/cxx-bridge/
-Binary:        byroredux/src/main.rs
-Cell Loader:   byroredux/src/cell_loader.rs
-Legacy Ref:    docs/legacy/
+Core ECS:        crates/core/src/ecs/
+Components:      crates/core/src/ecs/components/
+Animation:       crates/core/src/animation/          (types, player, stack, registry, interpolation, root_motion, text_events)
+Resources:       crates/core/src/ecs/resources.rs
+Strings:         crates/core/src/string/
+NIF Parser:      crates/nif/src/
+NIF Blocks:      crates/nif/src/blocks/
+NIF Import:      crates/nif/src/import/               (walk, mesh, material, transform, coord, collision)
+NIF Animation:   crates/nif/src/anim.rs
+BSA Reader:      crates/bsa/src/archive.rs
+BA2 Reader:      crates/bsa/src/ba2.rs
+Renderer:        crates/renderer/src/vulkan/
+VulkanContext:   crates/renderer/src/vulkan/context/  (mod.rs, draw.rs, resize.rs, resources.rs, helpers.rs)
+Accel (RT):      crates/renderer/src/vulkan/acceleration.rs
+G-Buffer:        crates/renderer/src/vulkan/gbuffer.rs
+SVGF Denoiser:   crates/renderer/src/vulkan/svgf.rs
+Composite:       crates/renderer/src/vulkan/composite.rs
+SSAO:            crates/renderer/src/vulkan/ssao.rs
+Scene Buffers:   crates/renderer/src/vulkan/scene_buffer.rs
+Descriptors:     crates/renderer/src/vulkan/descriptors.rs
+Mesh:            crates/renderer/src/mesh.rs
+Vertex:          crates/renderer/src/vertex.rs
+Tex Registry:    crates/renderer/src/texture_registry.rs
+Shaders:         crates/renderer/shaders/             (triangle.vert/frag, svgf_temporal.comp, composite.vert/frag, ssao.comp, cluster_cull.comp, ui.vert/frag)
+Plugin/ESM:      crates/plugin/src/
+Platform:        crates/platform/src/
+UI (Ruffle):     crates/ui/src/
+CXX Bridge:      crates/cxx-bridge/
+Binary:          byroredux/src/main.rs
+Systems:         byroredux/src/systems.rs
+Scene Setup:     byroredux/src/scene.rs
+Render Data:     byroredux/src/render.rs
+Cell Loader:     byroredux/src/cell_loader.rs
+Legacy Ref:      docs/legacy/
 ```
 
 ## Game Data Locations
