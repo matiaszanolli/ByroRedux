@@ -301,13 +301,18 @@ coordinate conversion for keyframe data. StringPool-based Name components on imp
 animation blending (#4), BSA KF loading (#5), NiControllerManager (#6), text key events (#7),
 root motion (#8), name collision fix (#9), name lookup caching (#10). Skeletal animation in M29.
 
-### M22: RT-First Multi-Light System — DONE (polish deferred)
-**Status:** Phase A+B landed. Polish deferred for NIF correctness priority.
-**Scope:** SSBO multi-light rendering (Phase A), RT shadow rays via VK_KHR_ray_query (Phase B).
+### M22: RT-First Multi-Light System — DONE
+**Status:** All phases complete. Full RT pipeline operational.
+**Scope:** SSBO multi-light rendering (Phase A), RT shadow rays via VK_KHR_ray_query (Phase B),
+contact-hardening soft shadows, RT reflections with barycentric UV lookup via global vertex/index
+SSBOs, 1-bounce RT ambient GI with cosine-weighted hemisphere sampling, window light portals,
+G-buffer expansion (normal, motion vector, mesh ID, raw indirect, albedo — 6 render targets),
+SVGF temporal denoiser for indirect lighting with motion vector reprojection and mesh ID
+disocclusion detection, composite pipeline (direct + denoised indirect reassembly, ACES tone
+mapping), TLAS refit (UPDATE mode when BLAS layout unchanged between frames), clustered lighting.
 Cell interior XCLL lighting (ambient + directional), windowed inverse-square attenuation.
-BLAS per mesh, TLAS rebuilt per frame, dynamic depth bias for NIF-flagged decals.
-**Result:** Prospector Saloon: 25 point lights + directional + RT shadows at 85 FPS.
-**Deferred:** Soft shadows, emissive mesh bypass, lighting tuning (resumes after N23).
+BLAS per mesh, TLAS rebuilt/refitted per frame, dynamic depth bias for NIF-flagged decals.
+**Result:** Prospector Saloon: 25 point lights + directional + RT shadows at 85 FPS (RTX 4070 Ti).
 
 ---
 
@@ -595,7 +600,7 @@ Workspace test count: 396 → 472. Zero new warnings.
 
 | # | Milestone | Scope |
 |---|-----------|-------|
-| M22+ | RT Lighting Polish | Soft shadows, emissive bypass, lighting tuning (resumes after NIF correctness) |
+| M22+ | RT Lighting Polish | **DONE** — soft shadows, reflections, GI, SVGF denoiser, composite pipeline |
 | M24 | Full ESM/ESP Parser | **DONE (Phase 1)** — see below |
 | M25 | Vulkan Compute | Batch transforms, coordinate conversion, GPU skinning |
 | M26 | BA2 Archive Support | **DONE** — see below |
@@ -644,8 +649,8 @@ Workspace test count: 396 → 472. Zero new warnings.
 - [x] ~~No BA2 reader for FO4/FO76/Starfield~~ → BA2 v1/v2/v3/v7/v8, GNRL + DX10, zlib + LZ4 (M26)
 
 ### Renderer Gaps
-- [x] ~~No shadow maps or ray tracing~~ → RT ray query shadows (M22)
-- [x] ~~No multi-light system~~ → SSBO multi-light + cell XCLL lighting (M22)
+- [x] ~~No shadow maps or ray tracing~~ → Full RT pipeline: shadows, reflections, GI, SVGF denoiser, composite (M22)
+- [x] ~~No multi-light system~~ → SSBO multi-light + clustered lighting + cell XCLL (M22)
 - [ ] No transparency sorting for alpha-blended meshes
 - [ ] No skinned mesh rendering (skeletal animation)
 - [ ] No LOD system or frustum culling

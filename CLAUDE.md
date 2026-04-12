@@ -70,12 +70,25 @@ crates/
       resize.rs              recreate_swapchain() — window resize handler
       resources.rs           build_blas_for_mesh, register_ui_quad, swapchain_extent, log_memory_usage
       helpers.rs             find_depth_format, create_render_pass, create_framebuffers, etc.
+    src/vulkan/acceleration.rs  AccelerationManager, BlasEntry, TlasState (BLAS/TLAS lifecycle)
+    src/vulkan/gbuffer.rs    GBuffer — normal, motion vector, mesh ID, raw indirect, albedo attachments
+    src/vulkan/svgf.rs       SvgfPipeline — temporal accumulation denoiser for indirect lighting
+    src/vulkan/composite.rs  CompositePipeline — direct + denoised indirect reassembly, ACES tone mapping
+    src/vulkan/ssao.rs       SSAO compute pipeline (noise texture, kernel, screen-space AO)
+    src/vulkan/descriptors.rs Descriptor set/pool management
+    src/vulkan/compute.rs    Compute pipeline utilities
     src/vulkan/texture.rs    Texture upload (RGBA + BC-compressed DDS, staging, layout transitions)
     src/vulkan/dds.rs        DDS header parser (BC1/BC3/BC5, FourCC + DX10 extended, mip sizes)
     src/texture_registry.rs  TextureRegistry (path→handle cache, per-texture descriptor sets)
-    src/mesh.rs              MeshRegistry, cube/triangle/quad geometry helpers
+    src/mesh.rs              MeshRegistry, global vertex/index SSBOs, cube/triangle/quad helpers
     src/vertex.rs            Vertex (position + color + normal + UV), 4 attribute descriptions
     shaders/                 GLSL → SPIR-V (pre-compiled, include_bytes!)
+      triangle.vert/frag     Main geometry pass — PBR + RT ray queries (shadows, reflections, GI)
+      svgf_temporal.comp     SVGF temporal accumulation with motion vector reprojection
+      composite.vert/frag    Fullscreen quad — direct + denoised indirect + ACES tone mapping
+      ssao.comp              Screen-space ambient occlusion compute
+      cluster_cull.comp      Clustered lighting frustum assignment
+      ui.vert/frag           UI overlay (Scaleform/SWF)
   bsa/                       BSA + BA2 archive readers (Bethesda Softworks Archive)
     src/archive.rs           BsaArchive: BSA v103/v104/v105 (Oblivion → Skyrim SE)
     src/ba2.rs               Ba2Archive: BTDX v1/v2/v3/v7/v8 (FO4, FO76, Starfield),
