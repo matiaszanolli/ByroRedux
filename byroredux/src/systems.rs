@@ -384,10 +384,9 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         drop(sq);
 
         // Determine the accum root name from the highest-weight active
-        // layer (for root motion splitting). Multiple layers may have
-        // different accum roots; use the dominant layer's setting since
-        // the blended position is dominated by its contribution.
-        let accum_root = {
+        // layer (for root motion splitting). Borrows from the registry
+        // (not the stack query) so the &str outlives the query. #279 D6-04.
+        let accum_root: Option<&str> = {
             let sq = world.query::<AnimationStack>().unwrap();
             let stack = sq.get(entity).unwrap();
             let mut best: Option<(&str, f32)> = None;
@@ -402,7 +401,7 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
                     }
                 }
             }
-            best.map(|(n, _)| n.to_string())
+            best.map(|(n, _)| n)
         };
 
         // Apply blended transforms, with root motion splitting (AR-02).
@@ -410,7 +409,7 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         let mut root_motion = Vec3::ZERO;
         for &(name, target, pos, rot, scale) in &updates_scratch {
             if let Some(transform) = tq.get_mut(target) {
-                let is_accum = accum_root.as_deref() == Some(name);
+                let is_accum = accum_root == Some(name);
                 if is_accum {
                     let (anim_pos, delta) = split_root_motion(pos);
                     transform.translation = anim_pos;

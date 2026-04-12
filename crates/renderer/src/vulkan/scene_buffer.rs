@@ -122,7 +122,7 @@ pub struct GpuLight {
     pub direction_angle: [f32; 4],
 }
 
-/// GPU-side camera data (192 bytes, std140-compatible).
+/// GPU-side camera data (256 bytes, std140-compatible).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuCamera {
@@ -134,6 +134,10 @@ pub struct GpuCamera {
     /// screen motion that downstream temporal filters (SVGF, TAA) need.
     /// On the very first frame, this equals `view_proj` so motion is zero.
     pub prev_view_proj: [[f32; 4]; 4],
+    /// Precomputed `inverse(viewProj)` — used by cluster culling and SSAO
+    /// to reconstruct world positions from depth without a per-invocation
+    /// matrix inverse on the GPU.
+    pub inv_view_proj: [[f32; 4]; 4],
     /// xyz = world position, w = frame counter (for temporal jitter seed).
     pub position: [f32; 4],
     /// x = RT enabled (1.0), y/z/w = ambient light color (RGB).
@@ -155,6 +159,7 @@ impl Default for GpuCamera {
         Self {
             view_proj: identity,
             prev_view_proj: identity,
+            inv_view_proj: identity,
             position: [0.0; 4],
             flags: [0.0; 4],
             screen: [1280.0, 720.0, 0.0, 0.0],
@@ -576,6 +581,13 @@ impl SceneBuffers {
         instances: &[GpuInstance],
     ) -> Result<()> {
         let count = instances.len().min(MAX_INSTANCES);
+        if instances.len() > MAX_INSTANCES {
+            log::warn!(
+                "Instance SSBO overflow: {} instances submitted, capped at {} — excess draws silently dropped. #279 P2-12",
+                instances.len(),
+                MAX_INSTANCES,
+            );
+        }
         if count == 0 {
             return Ok(());
         }

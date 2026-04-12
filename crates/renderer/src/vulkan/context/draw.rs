@@ -187,6 +187,18 @@ impl VulkanContext {
             };
         let vp = view_proj;
         let pvp = &self.prev_view_proj;
+        // Precompute inverse(viewProj) once on the CPU so shaders
+        // (cluster culling, SSAO) can read it directly from the UBO
+        // instead of computing a ~100 ALU-op matrix inverse per invocation.
+        let vp_mat = byroredux_core::math::Mat4::from_cols_array(vp);
+        let inv_vp = vp_mat.inverse();
+        let inv_vp_cols = inv_vp.to_cols_array();
+        let inv_vp_arr = [
+            [inv_vp_cols[0], inv_vp_cols[1], inv_vp_cols[2], inv_vp_cols[3]],
+            [inv_vp_cols[4], inv_vp_cols[5], inv_vp_cols[6], inv_vp_cols[7]],
+            [inv_vp_cols[8], inv_vp_cols[9], inv_vp_cols[10], inv_vp_cols[11]],
+            [inv_vp_cols[12], inv_vp_cols[13], inv_vp_cols[14], inv_vp_cols[15]],
+        ];
         let camera = scene_buffer::GpuCamera {
             view_proj: [
                 [vp[0], vp[1], vp[2], vp[3]],
@@ -200,6 +212,7 @@ impl VulkanContext {
                 [pvp[8], pvp[9], pvp[10], pvp[11]],
                 [pvp[12], pvp[13], pvp[14], pvp[15]],
             ],
+            inv_view_proj: inv_vp_arr,
             // w = monotonic frame counter for temporal jitter seed in shadow rays.
             position: [camera_pos[0], camera_pos[1], camera_pos[2], self.frame_counter as f32],
             flags: [
@@ -296,6 +309,17 @@ impl VulkanContext {
         let mut batches: Vec<DrawBatch> = std::mem::take(&mut self.batches_scratch);
         batches.clear();
         batches.reserve(draw_commands.len());
+
+        // Assert draw commands are sorted by pipeline key so the consecutive
+        // batch merge below produces optimal results. #279 P1-08.
+        debug_assert!(
+            draw_commands.windows(2).all(|w| {
+                let k0 = (w[0].alpha_blend, w[0].two_sided, w[0].is_decal);
+                let k1 = (w[1].alpha_blend, w[1].two_sided, w[1].is_decal);
+                k0 <= k1 || w[0].sort_depth <= w[1].sort_depth
+            }),
+            "draw_commands should be sorted before batch merge"
+        );
 
         for draw_cmd in draw_commands {
             let Some(mesh) = self.mesh_registry.get(draw_cmd.mesh_handle) else {
@@ -544,6 +568,21 @@ impl VulkanContext {
                 }
             }
 
+            // SSAO compute pass: reads depth buffer (now in READ_ONLY layout
+            // after render pass), writes AO texture for this frame's fragment
+            // shader. Runs before composite so AO is current-frame (no lag).
+            if let Some(ref mut ssao) = self.ssao {
+                let vp_arr = [
+                    [vp[0], vp[1], vp[2], vp[3]],
+                    [vp[4], vp[5], vp[6], vp[7]],
+                    [vp[8], vp[9], vp[10], vp[11]],
+                    [vp[12], vp[13], vp[14], vp[15]],
+                ];
+                if let Err(e) = ssao.dispatch(&self.device, cmd, frame, &vp_arr, &inv_vp_arr, camera_pos) {
+                    log::warn!("SSAO dispatch failed: {e}");
+                }
+            }
+
             // Upload composite params (fog, etc.) before the composite pass.
             if let Some(ref mut composite) = self.composite {
                 let composite_params = super::super::composite::CompositeParams {
@@ -568,21 +607,6 @@ impl VulkanContext {
             // SHADER_READ_ONLY_OPTIMAL.
             if let Some(ref composite) = self.composite {
                 composite.dispatch(&self.device, cmd, frame, img);
-            }
-
-            // SSAO compute pass: reads depth buffer (now in READ_ONLY layout
-            // after render pass), writes AO texture for next frame's fragment shader.
-            if let Some(ref mut ssao) = self.ssao {
-                // Pass viewProj — the SSAO shader inverts it on the GPU.
-                let vp_arr = [
-                    [vp[0], vp[1], vp[2], vp[3]],
-                    [vp[4], vp[5], vp[6], vp[7]],
-                    [vp[8], vp[9], vp[10], vp[11]],
-                    [vp[12], vp[13], vp[14], vp[15]],
-                ];
-                if let Err(e) = ssao.dispatch(&self.device, cmd, frame, &vp_arr, camera_pos) {
-                    log::warn!("SSAO dispatch failed: {e}");
-                }
             }
 
             self.device

@@ -200,7 +200,7 @@ impl<'a> NifStream<'a> {
     pub fn read_sized_string(&mut self) -> io::Result<String> {
         let len = self.read_u32_le()? as usize;
         let bytes = self.read_bytes(len)?;
-        match String::from_utf8(bytes.to_vec()) {
+        match String::from_utf8(bytes) {
             Ok(s) => Ok(s),
             Err(e) => Ok(String::from_utf8_lossy(e.as_bytes()).into_owned()),
         }
@@ -211,14 +211,12 @@ impl<'a> NifStream<'a> {
     /// Same zero-copy-first strategy as `read_sized_string`. #254.
     pub fn read_short_string(&mut self) -> io::Result<String> {
         let len = self.read_u8()? as usize;
-        let bytes = self.read_bytes(len)?;
-        // Short strings include a null terminator
-        let trimmed = if bytes.last() == Some(&0) {
-            &bytes[..bytes.len() - 1]
-        } else {
-            &bytes[..]
-        };
-        match String::from_utf8(trimmed.to_vec()) {
+        let mut bytes = self.read_bytes(len)?;
+        // Short strings include a null terminator — pop it before conversion.
+        if bytes.last() == Some(&0) {
+            bytes.pop();
+        }
+        match String::from_utf8(bytes) {
             Ok(s) => Ok(s),
             Err(e) => Ok(String::from_utf8_lossy(e.as_bytes()).into_owned()),
         }

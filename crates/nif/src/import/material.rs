@@ -157,39 +157,34 @@ impl Default for MaterialInfo {
     }
 }
 
-/// Extract vertex colors and texture path from the shape's properties.
-pub(super) fn extract_material(
+/// Extract vertex colors using a pre-computed `MaterialInfo`.
+///
+/// Avoids the double `extract_material_info` that previously occurred when
+/// `extract_material` called `find_texture_path` (which internally called
+/// `extract_material_info`) followed by a second direct call. #279 D5-10.
+pub(super) fn extract_vertex_colors(
     scene: &NifScene,
     shape: &NiTriShape,
     data: &GeomData,
     inherited_props: &[BlockRef],
-) -> (Vec<[f32; 3]>, Option<String>) {
+    _mat: &MaterialInfo,
+) -> Vec<[f32; 3]> {
     let num_verts = data.vertices.len();
 
-    // Check for an NiVertexColorProperty that disables vertex colors.
-    // When the mesh declares SRC_IGNORE or SRC_EMISSIVE, the data-block
-    // vertex colors must NOT be routed to the diffuse channel. Ignore
-    // means fall through to the material diffuse path; Emissive means
-    // the colors go to a separate shader input (handled downstream via
-    // MaterialInfo.vertex_color_mode — for now we still fall back to
-    // material diffuse for the per-vertex color vector so unshaded
-    // diffuse doesn't get contaminated). See #214.
     let vertex_mode = vertex_color_mode_for(scene, shape, inherited_props);
     let use_vertex_colors =
         !data.vertex_colors.is_empty() && vertex_mode == VertexColorMode::AmbientDiffuse;
 
     if use_vertex_colors {
-        let colors = data
+        return data
             .vertex_colors
             .iter()
-            .map(|c| [c[0], c[1], c[2]]) // drop alpha
+            .map(|c| [c[0], c[1], c[2]])
             .collect();
-        let tex = find_texture_path(scene, shape, inherited_props);
-        return (colors, tex);
     }
 
-    // Search shape's own properties first, then inherited, for NiMaterialProperty.
-    let mut diffuse = [1.0f32; 3]; // default white
+    // Fall back to NiMaterialProperty diffuse or white.
+    let mut diffuse = [1.0f32; 3];
     for prop_ref in shape.av.properties.iter().chain(inherited_props.iter()) {
         if let Some(idx) = prop_ref.index() {
             if let Some(mat) = scene.get_as::<NiMaterialProperty>(idx) {
@@ -198,10 +193,7 @@ pub(super) fn extract_material(
             }
         }
     }
-
-    let colors = vec![diffuse; num_verts];
-    let tex = find_texture_path(scene, shape, inherited_props);
-    (colors, tex)
+    vec![diffuse; num_verts]
 }
 
 /// Look up `NiVertexColorProperty` on the shape and return the decoded
@@ -506,15 +498,6 @@ pub(super) fn extract_material_info(
     }
 
     info
-}
-
-/// Texture path only — delegates to extract_material_info.
-pub(super) fn find_texture_path(
-    scene: &NifScene,
-    shape: &NiTriShape,
-    inherited_props: &[BlockRef],
-) -> Option<String> {
-    extract_material_info(scene, shape, inherited_props).texture_path
 }
 
 /// Decode an NiAlphaProperty onto a `MaterialInfo`. `NiAlphaProperty.flags`

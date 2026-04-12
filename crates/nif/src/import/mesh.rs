@@ -13,7 +13,7 @@ use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
 
 use super::coord::zup_matrix_to_yup_quat;
-use super::material::{extract_material, extract_material_info, find_decal_bs};
+use super::material::{extract_material_info, extract_vertex_colors, find_decal_bs};
 use super::{ImportedBone, ImportedMesh, ImportedSkin};
 
 /// Intermediate geometry data extracted from either NiTriShapeData or NiTriStripsData.
@@ -91,8 +91,14 @@ pub(super) fn extract_mesh(
     // Get UVs from first UV set (if available)
     let uvs = geom.uv_sets.first().cloned().unwrap_or_default();
 
-    // Determine vertex colors: prefer per-vertex colors, then material diffuse, then white
-    let (colors, texture_path) = extract_material(scene, shape, &geom, inherited_props);
+    // Single-pass material property extraction — called once and reused for
+    // both vertex color resolution and material fields. Eliminates the double
+    // extract_material_info that previously occurred via extract_material →
+    // find_texture_path → extract_material_info + direct call. #279 D5-10.
+    let mat = extract_material_info(scene, shape, inherited_props);
+
+    // Determine vertex colors: prefer per-vertex colors, then material diffuse, then white.
+    let colors = extract_vertex_colors(scene, shape, &geom, inherited_props, &mat);
 
     // Apply Z-up → Y-up to the entity transform.
     let t = &world_transform.translation;
@@ -100,9 +106,6 @@ pub(super) fn extract_mesh(
 
     // Convert the Z-up rotation matrix to Y-up, then extract a robust quaternion.
     let quat = zup_matrix_to_yup_quat(r);
-
-    // Single-pass material property extraction (alpha, two-sided, decal).
-    let mat = extract_material_info(scene, shape, inherited_props);
 
     // Skinning data (issue #151). Populated when the shape has a
     // NiSkinInstance / BSDismemberSkinInstance backing it.
@@ -125,7 +128,7 @@ pub(super) fn extract_mesh(
         rotation: quat,
         scale: world_transform.scale,
         name: shape.av.net.name.as_deref().map(str::to_string),
-        texture_path,
+        texture_path: mat.texture_path,
         has_alpha: mat.alpha_blend,
         alpha_test: mat.alpha_test,
         alpha_threshold: mat.alpha_threshold,
@@ -510,29 +513,29 @@ pub(super) fn extract_skin_bs_tri_shape(
     let vertex_bone_weights = shape.bone_weights.clone();
 
     // Skyrim LE path: NiSkinInstance + NiSkinData (bone list + bind transforms).
-    if scene.get_as::<NiSkinInstance>(skin_idx).is_some()
-        || scene.get_as::<BsDismemberSkinInstance>(skin_idx).is_some()
-    {
-        let (bone_refs, skeleton_root_ref, data_ref) =
-            if let Some(inst) = scene.get_as::<NiSkinInstance>(skin_idx) {
-                (
-                    inst.bone_refs.clone(),
-                    inst.skeleton_root_ref,
-                    inst.data_ref,
-                )
-            } else {
-                let inst = scene.get_as::<BsDismemberSkinInstance>(skin_idx)?;
-                (
-                    inst.base.bone_refs.clone(),
-                    inst.base.skeleton_root_ref,
-                    inst.base.data_ref,
-                )
-            };
+    // Borrow bone_refs instead of cloning — they're only iterated. #279 D5-11.
+    let (bone_refs_slice, skeleton_root_ref, data_ref) =
+        if let Some(inst) = scene.get_as::<NiSkinInstance>(skin_idx) {
+            (
+                inst.bone_refs.as_slice(),
+                inst.skeleton_root_ref,
+                inst.data_ref,
+            )
+        } else if let Some(inst) = scene.get_as::<BsDismemberSkinInstance>(skin_idx) {
+            (
+                inst.base.bone_refs.as_slice(),
+                inst.base.skeleton_root_ref,
+                inst.base.data_ref,
+            )
+        } else {
+            (&[] as &[_], BlockRef::NULL, BlockRef::NULL)
+        };
+    if !bone_refs_slice.is_empty() {
         let data = scene.get_as::<NiSkinData>(data_ref.index()?)?;
-        if data.bones.len() != bone_refs.len() {
+        if data.bones.len() != bone_refs_slice.len() {
             return None;
         }
-        let bones = build_imported_bones(scene, &bone_refs, data)?;
+        let bones = build_imported_bones(scene, bone_refs_slice, data)?;
         let skeleton_root = resolve_node_name(scene, skeleton_root_ref);
         return Some(ImportedSkin {
             bones,
