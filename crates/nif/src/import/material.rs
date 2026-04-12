@@ -73,6 +73,10 @@ pub(super) struct MaterialInfo {
     /// Per-texel specular strength; enables armor highlights masked
     /// by leather/fabric regions.
     pub gloss_map: Option<String>,
+    /// Dark / multiplicative lightmap texture (NiTexturingProperty slot 1).
+    /// Baked shadow/grime modulation on Oblivion interior architecture.
+    /// Applied as `albedo.rgb *= dark_sample.rgb`. See #264.
+    pub dark_map: Option<String>,
     /// How vertex colors should participate in shading. See #214 /
     /// `VertexColorMode`. Defaults to `AmbientDiffuse` — the value
     /// Gamebryo uses when the NIF has no `NiVertexColorProperty`.
@@ -89,6 +93,12 @@ pub(super) struct MaterialInfo {
     /// Cutoff threshold for `alpha_test`, in the [0.0, 1.0] range —
     /// `NiAlphaProperty.threshold` (u8) divided by 255.
     pub alpha_threshold: f32,
+    /// Alpha test comparison function from `NiAlphaProperty.flags`
+    /// bits 10–12. Maps to Gamebryo's `TestFunction` enum:
+    ///   0=ALWAYS, 1=LESS, 2=EQUAL, 3=LESSEQUAL,
+    ///   4=GREATER, 5=NOTEQUAL, 6=GREATEREQUAL, 7=NEVER.
+    /// Default: 6 (GREATEREQUAL) — keep fragments where alpha >= threshold.
+    pub alpha_test_func: u8,
     pub two_sided: bool,
     pub is_decal: bool,
     pub emissive_color: [f32; 3],
@@ -122,10 +132,12 @@ impl Default for MaterialInfo {
             glow_map: None,
             detail_map: None,
             gloss_map: None,
+            dark_map: None,
             vertex_color_mode: VertexColorMode::AmbientDiffuse,
             alpha_blend: false,
             alpha_test: false,
             alpha_threshold: 0.0,
+            alpha_test_func: 6, // GREATEREQUAL — Gamebryo default
             two_sided: false,
             is_decal: false,
             emissive_color: [0.0, 0.0, 0.0],
@@ -370,6 +382,15 @@ pub(super) fn extract_material_info(
                     info.gloss_map = Some(path);
                 }
             }
+            // Dark / multiplicative lightmap (slot 1). Baked shadow data
+            // on Oblivion interior architecture — `albedo *= dark`. #264.
+            if info.dark_map.is_none() {
+                if let Some(path) =
+                    tex_desc_source_path(scene, tex_prop.dark_texture.as_ref())
+                {
+                    info.dark_map = Some(path);
+                }
+            }
             // Propagate the base slot's UV transform to the shared
             // `uv_offset` / `uv_scale` fields. The renderer shader applies
             // them per-vertex to every sampled texture — fine for the
@@ -500,6 +521,8 @@ pub(super) fn apply_alpha_flags(info: &mut MaterialInfo, alpha: &NiAlphaProperty
     if test {
         info.alpha_test = true;
         info.alpha_threshold = alpha.threshold as f32 / 255.0;
+        // Bits 10-12: alpha test comparison function (3 bits, 0–7).
+        info.alpha_test_func = ((alpha.flags & 0x1C00) >> 10) as u8;
         // Prefer cutout to blending when both are set.
         info.alpha_blend = false;
     } else if blend {
@@ -601,6 +624,41 @@ mod alpha_flag_tests {
         apply_alpha_flags(&mut info_max, &alpha_prop(0x0200, 255));
         assert!((info_max.alpha_threshold - 1.0).abs() < 1e-5);
     }
+
+    /// #263: alpha test function bits 10-12 are extracted.
+    #[test]
+    fn alpha_test_func_greaterequal_default() {
+        // flags = 0x1A00: test enable (0x200) + GREATEREQUAL (6 << 10 = 0x1800)
+        let mut info = MaterialInfo::default();
+        apply_alpha_flags(&mut info, &alpha_prop(0x1A00, 128));
+        assert!(info.alpha_test);
+        assert_eq!(info.alpha_test_func, 6); // GREATEREQUAL
+    }
+
+    #[test]
+    fn alpha_test_func_less() {
+        // flags = 0x0600: test enable (0x200) + LESS (1 << 10 = 0x400)
+        let mut info = MaterialInfo::default();
+        apply_alpha_flags(&mut info, &alpha_prop(0x0600, 64));
+        assert!(info.alpha_test);
+        assert_eq!(info.alpha_test_func, 1); // LESS
+    }
+
+    #[test]
+    fn alpha_test_func_always() {
+        // flags = 0x0200: test enable (0x200) + ALWAYS (0 << 10 = 0x000)
+        let mut info = MaterialInfo::default();
+        apply_alpha_flags(&mut info, &alpha_prop(0x0200, 128));
+        assert!(info.alpha_test);
+        assert_eq!(info.alpha_test_func, 0); // ALWAYS
+    }
+
+    #[test]
+    fn alpha_test_func_default_when_no_test() {
+        // When alpha test is disabled, func should stay at default (6).
+        let info = MaterialInfo::default();
+        assert_eq!(info.alpha_test_func, 6); // GREATEREQUAL default
+    }
 }
 
 /// Regression tests for issue #214 — NiTexturingProperty secondary slots
@@ -644,6 +702,12 @@ mod secondary_slot_tests {
         assert_eq!(VertexColorMode::Ignore as u8, 0);
         assert_eq!(VertexColorMode::Emissive as u8, 1);
         assert_eq!(VertexColorMode::AmbientDiffuse as u8, 2);
+    }
+
+    #[test]
+    fn default_material_info_has_no_dark_map() {
+        let info = MaterialInfo::default();
+        assert!(info.dark_map.is_none(), "dark_map should default to None");
     }
 
     #[test]

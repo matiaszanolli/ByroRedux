@@ -327,6 +327,10 @@ impl VulkanContext {
                 vertex_offset: mesh.global_vertex_offset,
                 index_offset: mesh.global_index_offset,
                 vertex_count: mesh.vertex_count,
+                alpha_threshold: draw_cmd.alpha_threshold,
+                alpha_test_func: draw_cmd.alpha_test_func,
+                dark_map_index: draw_cmd.dark_map_index,
+                _pad0: 0,
             });
 
             let pipeline_key = (draw_cmd.alpha_blend, draw_cmd.two_sided);

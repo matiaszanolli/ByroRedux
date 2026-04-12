@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::asset_provider::TextureProvider;
-use crate::components::{AlphaBlend, Decal, NormalMapHandle, TwoSided};
+use crate::components::{AlphaBlend, DarkMapHandle, Decal, NormalMapHandle, TwoSided};
 
 /// Parsed + imported NIF scene data cached per unique model path.
 ///
@@ -627,6 +627,33 @@ fn spawn_placed_instances(
             };
             if let Some(h) = nmap_handle {
                 world.insert(entity, NormalMapHandle(h));
+            }
+        }
+        // Load and attach dark/lightmap if the material specifies one (#264).
+        if let Some(ref dark_path) = mesh.dark_map {
+            let dark_handle = if let Some(cached) = ctx.texture_registry.get_by_path(dark_path) {
+                Some(cached)
+            } else if let Some(dds_bytes) = tex_provider.extract(dark_path) {
+                let alloc = ctx.allocator.as_ref().unwrap();
+                match ctx.texture_registry.load_dds(
+                    &ctx.device,
+                    alloc,
+                    &ctx.graphics_queue,
+                    ctx.transfer_pool,
+                    dark_path,
+                    &dds_bytes,
+                ) {
+                    Ok(h) => Some(h),
+                    Err(e) => {
+                        log::debug!("Dark map '{}' failed: {}", dark_path, e);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            if let Some(h) = dark_handle {
+                world.insert(entity, DarkMapHandle(h));
             }
         }
         if mesh.has_alpha {

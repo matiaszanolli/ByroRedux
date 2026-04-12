@@ -49,6 +49,10 @@ pub struct Material {
     /// Per-texel specular strength mask; enables "leather with metal
     /// trim" effects on armor. See #214.
     pub gloss_map: Option<String>,
+    /// Dark / multiplicative lightmap — `NiTexturingProperty` slot 1.
+    /// Baked shadow/grime modulation on Oblivion interior architecture.
+    /// Applied as `albedo.rgb *= dark_sample.rgb`. See #264.
+    pub dark_map: Option<String>,
     /// Vertex color source mode from `NiVertexColorProperty`. Matches
     /// Gamebryo's `SourceMode` enum:
     ///   * `0` = Ignore (vertex colors disabled)
@@ -69,6 +73,10 @@ pub struct Material {
     /// (`NiAlphaProperty.threshold` divided by 255). Only meaningful
     /// when `alpha_test` is `true`.
     pub alpha_threshold: f32,
+    /// Alpha test comparison function from NiAlphaProperty flags bits
+    /// 10–12. 0=ALWAYS, 1=LESS, 2=EQUAL, 3=LESSEQUAL, 4=GREATER,
+    /// 5=NOTEQUAL, 6=GREATEREQUAL (default), 7=NEVER. See #263.
+    pub alpha_test_func: u8,
 }
 
 impl Default for Material {
@@ -88,11 +96,13 @@ impl Default for Material {
             glow_map: None,
             detail_map: None,
             gloss_map: None,
+            dark_map: None,
             // AmbientDiffuse — the Gamebryo default, matches pre-#214
             // behavior for meshes without an NiVertexColorProperty.
             vertex_color_mode: 2,
             alpha_test: false,
             alpha_threshold: 0.0,
+            alpha_test_func: 6, // GREATEREQUAL default
         }
     }
 }

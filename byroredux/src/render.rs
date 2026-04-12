@@ -8,7 +8,7 @@ use byroredux_core::math::{Mat4, Vec3, Vec4};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use std::collections::HashMap;
 
-use crate::components::{AlphaBlend, CellLightingRes, Decal, NormalMapHandle, TwoSided};
+use crate::components::{AlphaBlend, CellLightingRes, DarkMapHandle, Decal, NormalMapHandle, TwoSided};
 
 /// Six frustum half-planes extracted from a view-projection matrix.
 ///
@@ -182,6 +182,7 @@ pub(crate) fn build_render_data(
     let vis_q = world.query::<AnimatedVisibility>();
     let mat_q = world.query::<Material>();
     let nmap_q = world.query::<NormalMapHandle>();
+    let dmap_q = world.query::<DarkMapHandle>();
     let wb_q = world.query::<WorldBound>();
     if let (Some(tq), Some(mq)) = (tq, mq) {
         for (entity, mesh) in mq.iter() {
@@ -233,12 +234,19 @@ pub(crate) fn build_render_data(
                     .and_then(|q| q.get(entity))
                     .map(|n| n.0)
                     .unwrap_or(0);
+                let dark_map_index = dmap_q
+                    .as_ref()
+                    .and_then(|q| q.get(entity))
+                    .map(|d| d.0)
+                    .unwrap_or(0);
 
                 // Material data + PBR classification.
                 let mat = mat_q.as_ref().and_then(|q| q.get(entity));
-                let (roughness, metalness, emissive_mult, emissive_color, specular_strength, specular_color) =
+                let (roughness, metalness, emissive_mult, emissive_color, specular_strength, specular_color, alpha_threshold, alpha_test_func) =
                     if let Some(m) = mat {
                         let pbr = m.classify_pbr(m.texture_path.as_deref());
+                        let thresh = if m.alpha_test { m.alpha_threshold } else { 0.0 };
+                        let func = if m.alpha_test { m.alpha_test_func as u32 } else { 0 };
                         (
                             pbr.roughness,
                             pbr.metalness,
@@ -246,9 +254,11 @@ pub(crate) fn build_render_data(
                             m.emissive_color,
                             m.specular_strength,
                             m.specular_color,
+                            thresh,
+                            func,
                         )
                     } else {
-                        (0.5, 0.0, 0.0, [0.0; 3], 1.0, [1.0; 3])
+                        (0.5, 0.0, 0.0, [0.0; 3], 1.0, [1.0; 3], 0.0, 0u32)
                     };
 
                 // Geometry SSBO offsets for RT reflection UV lookups.
@@ -276,6 +286,9 @@ pub(crate) fn build_render_data(
                     is_decal,
                     bone_offset,
                     normal_map_index,
+                    dark_map_index,
+                    alpha_threshold,
+                    alpha_test_func,
                     roughness,
                     metalness,
                     emissive_mult,

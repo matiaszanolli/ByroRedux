@@ -28,7 +28,11 @@ struct GpuInstance {
     float specularB;         // offset 112
     uint vertexOffset;       // offset 116
     uint indexOffset;        // offset 120
-    uint vertexCount;        // offset 124 → total 128
+    uint vertexCount;        // offset 124
+    float alphaThreshold;    // offset 128
+    uint alphaTestFunc;      // offset 132
+    uint darkMapIndex;       // offset 136
+    uint _pad0;              // offset 140 → total 144
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

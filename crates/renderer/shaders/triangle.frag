@@ -42,7 +42,11 @@ struct GpuInstance {
     float specularB;         // offset 112
     uint vertexOffset;       // offset 116
     uint indexOffset;        // offset 120
-    uint vertexCount;        // offset 124 → total 128
+    uint vertexCount;        // offset 124
+    float alphaThreshold;    // offset 128 — 0.0 = no alpha test (#263)
+    uint alphaTestFunc;      // offset 132 — Gamebryo TestFunction enum (#263)
+    uint darkMapIndex;       // offset 136 — 0 = no dark map (#264)
+    uint _pad0;              // offset 140 → total 144
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
@@ -285,13 +289,28 @@ vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx) {
 void main() {
     vec4 texColor = texture(textures[nonuniformEXT(fragTexIndex)], fragUV);
 
-    // Alpha test.
-    if (texColor.a < 0.1) {
-        discard;
-    }
-
-    // Read per-instance material data.
+    // Read per-instance material data (needed by alpha test and lighting).
     GpuInstance inst = instances[fragInstanceIndex];
+
+    // Per-instance alpha test (#263). When alphaThreshold > 0 the material
+    // has an alpha test enabled; alphaTestFunc selects the Gamebryo comparison:
+    //   0=ALWAYS, 1=LESS, 2=EQUAL, 3=LESSEQUAL,
+    //   4=GREATER, 5=NOTEQUAL, 6=GREATEREQUAL, 7=NEVER.
+    float aThresh = inst.alphaThreshold;
+    if (aThresh > 0.0) {
+        uint aFunc = inst.alphaTestFunc;
+        float a = texColor.a;
+        bool pass = true;
+        if      (aFunc == 1u) pass = (a <  aThresh);        // LESS
+        else if (aFunc == 2u) pass = (abs(a - aThresh) < 0.004); // EQUAL (~1/255)
+        else if (aFunc == 3u) pass = (a <= aThresh);        // LESSEQUAL
+        else if (aFunc == 4u) pass = (a >  aThresh);        // GREATER
+        else if (aFunc == 5u) pass = (abs(a - aThresh) >= 0.004); // NOTEQUAL
+        else if (aFunc == 6u) pass = (a >= aThresh);        // GREATEREQUAL
+        else if (aFunc == 7u) pass = false;                  // NEVER
+        // aFunc == 0 is ALWAYS → pass stays true
+        if (!pass) discard;
+    }
     float roughness = inst.roughness;
     float metalness = inst.metalness;
     float emissiveMult = inst.emissiveMult;
@@ -336,6 +355,13 @@ void main() {
 
     // Base reflectance: dielectrics use 0.04, metals use albedo color.
     vec3 albedo = texColor.rgb * fragColor;
+
+    // Dark / multiplicative lightmap (#264): baked shadow modulation.
+    if (inst.darkMapIndex != 0u) {
+        vec3 darkSample = texture(textures[nonuniformEXT(inst.darkMapIndex)], fragUV).rgb;
+        albedo *= darkSample;
+    }
+
     vec3 F0 = mix(vec3(0.04), albedo, metalness);
 
     // Emissive bypass: self-lit surfaces skip the light loop entirely.

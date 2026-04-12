@@ -22,6 +22,10 @@ struct GpuInstance {
     uint vertexOffset;
     uint indexOffset;
     uint vertexCount;
+    float alphaThreshold;
+    uint alphaTestFunc;
+    uint darkMapIndex;
+    uint _pad0;
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

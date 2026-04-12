@@ -37,6 +37,14 @@ pub struct DrawCommand {
     pub bone_offset: u32,
     /// Bindless texture index for the normal map (0 = no normal map).
     pub normal_map_index: u32,
+    /// Bindless texture index for the dark/lightmap (0 = no dark map). #264.
+    pub dark_map_index: u32,
+    /// Alpha test threshold in [0,1]. 0.0 when alpha test is disabled. #263.
+    pub alpha_threshold: f32,
+    /// Alpha test comparison function (Gamebryo TestFunction enum). #263.
+    /// 0=ALWAYS, 1=LESS, 2=EQUAL, 3=LESSEQUAL, 4=GREATER, 5=NOTEQUAL,
+    /// 6=GREATEREQUAL, 7=NEVER. Only meaningful when alpha_threshold > 0.
+    pub alpha_test_func: u32,
     /// PBR roughness [0.05..0.95].
     pub roughness: f32,
     /// PBR metalness [0..1].

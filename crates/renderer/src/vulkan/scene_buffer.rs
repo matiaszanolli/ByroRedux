@@ -42,7 +42,7 @@ pub const MAX_INSTANCES: usize = 4096;
 /// 16 bytes (same as vec4), which would silently mismatch a tightly-packed
 /// `#[repr(C)]` Rust struct where `[f32; 3]` is only 12 bytes.
 ///
-/// Layout: 128 bytes per instance, 16-byte aligned (8×16).
+/// Layout: 144 bytes per instance, 16-byte aligned (9×16).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuInstance {
@@ -61,13 +61,20 @@ pub struct GpuInstance {
     /// Specular RGB + padding packed to avoid vec3.
     pub specular_r: f32,                 // 4 B, offset 104
     pub specular_g: f32,                 // 4 B, offset 108
-    pub specular_b: f32,                 // 4 B, offset 112 → total 116
+    pub specular_b: f32,                 // 4 B, offset 112
     /// Offset into the global vertex SSBO (in vertices, not bytes).
     pub vertex_offset: u32,              // 4 B, offset 116
     /// Offset into the global index SSBO (in indices, not bytes).
     pub index_offset: u32,               // 4 B, offset 120
     /// Vertex count for this mesh (for bounds checking).
-    pub vertex_count: u32,               // 4 B, offset 124 → total 128
+    pub vertex_count: u32,               // 4 B, offset 124
+    /// Alpha test threshold [0,1]. 0.0 = no alpha test. #263.
+    pub alpha_threshold: f32,            // 4 B, offset 128
+    /// Alpha test comparison function (Gamebryo TestFunction). #263.
+    pub alpha_test_func: u32,            // 4 B, offset 132
+    /// Bindless texture index for dark/lightmap (0 = none). #264.
+    pub dark_map_index: u32,             // 4 B, offset 136
+    pub _pad0: u32,                      // 4 B, offset 140 → total 144
 }
 
 impl Default for GpuInstance {
@@ -95,6 +102,10 @@ impl Default for GpuInstance {
             vertex_offset: 0,
             index_offset: 0,
             vertex_count: 0,
+            alpha_threshold: 0.0,
+            alpha_test_func: 0,
+            dark_map_index: 0,
+            _pad0: 0,
         }
     }
 }

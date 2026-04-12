@@ -119,6 +119,10 @@ pub struct ImportedMesh {
     /// Alpha-test cutoff threshold in [0, 1] (NiAlphaProperty.threshold
     /// divided by 255). Only meaningful when `alpha_test` is `true`.
     pub alpha_threshold: f32,
+    /// Alpha test comparison function from NiAlphaProperty flags bits 10–12.
+    /// 0=ALWAYS, 1=LESS, 2=EQUAL, 3=LESSEQUAL, 4=GREATER, 5=NOTEQUAL,
+    /// 6=GREATEREQUAL (default), 7=NEVER.
+    pub alpha_test_func: u8,
     /// Whether this mesh should be rendered two-sided (no backface culling).
     pub two_sided: bool,
     /// Whether this mesh is a decal (should render on top of coplanar surfaces).
@@ -134,6 +138,9 @@ pub struct ImportedMesh {
     /// Specular-mask / gloss texture (NiTexturingProperty slot 3).
     /// Per-texel specular strength. See #214.
     pub gloss_map: Option<String>,
+    /// Dark / multiplicative lightmap (NiTexturingProperty slot 1).
+    /// Baked shadow modulation for Oblivion interior architecture. #264.
+    pub dark_map: Option<String>,
     /// Vertex-color source mode from `NiVertexColorProperty`
     /// (`vertex_mode`). Values match Gamebryo's `SourceMode` enum:
     /// `0 = Ignore`, `1 = Emissive`, `2 = AmbientDiffuse` (default).

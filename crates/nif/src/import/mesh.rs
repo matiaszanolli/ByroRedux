@@ -129,12 +129,14 @@ pub(super) fn extract_mesh(
         has_alpha: mat.alpha_blend,
         alpha_test: mat.alpha_test,
         alpha_threshold: mat.alpha_threshold,
+        alpha_test_func: mat.alpha_test_func,
         two_sided: mat.two_sided,
         is_decal: mat.is_decal,
         normal_map: mat.normal_map,
         glow_map: mat.glow_map,
         detail_map: mat.detail_map,
         gloss_map: mat.gloss_map,
+        dark_map: mat.dark_map,
         vertex_color_mode: mat.vertex_color_mode as u8,
         emissive_color: mat.emissive_color,
         emissive_mult: mat.emissive_mult,
@@ -245,21 +247,22 @@ pub(super) fn extract_bs_tri_shape(
     // (cutout). See issue #152. Prefer alpha-test over alpha-blend when
     // both bits are set — same policy as the NiTriShape path in
     // `apply_alpha_flags`.
-    let (has_alpha, alpha_test, alpha_threshold) =
+    let (has_alpha, alpha_test, alpha_threshold, alpha_test_func) =
         if let Some(idx) = shape.alpha_property_ref.index() {
             if let Some(a) = scene.get_as::<NiAlphaProperty>(idx) {
                 let blend = a.flags & 0x001 != 0;
                 let test = a.flags & 0x200 != 0;
+                let func = ((a.flags & 0x1C00) >> 10) as u8;
                 if test {
-                    (false, true, a.threshold as f32 / 255.0)
+                    (false, true, a.threshold as f32 / 255.0, func)
                 } else {
-                    (blend, false, 0.0)
+                    (blend, false, 0.0, 6) // 6 = GREATEREQUAL default
                 }
             } else {
-                (false, false, 0.0)
+                (false, false, 0.0, 6)
             }
         } else {
-            (false, false, 0.0)
+            (false, false, 0.0, 6)
         };
 
     let two_sided = if let Some(idx) = shape.shader_property_ref.index() {
@@ -345,6 +348,7 @@ pub(super) fn extract_bs_tri_shape(
         has_alpha,
         alpha_test,
         alpha_threshold,
+        alpha_test_func,
         two_sided,
         is_decal: find_decal_bs(scene, shape),
         normal_map,
@@ -357,6 +361,7 @@ pub(super) fn extract_bs_tri_shape(
         glow_map: None,
         detail_map: None,
         gloss_map: None,
+        dark_map: None, // BSTriShape doesn't use NiTexturingProperty slots
         // BsTriShape vertex colors are driven by the shader
         // properties, not an NiVertexColorProperty — pass the default
         // (AmbientDiffuse = 2) so downstream consumers behave the same

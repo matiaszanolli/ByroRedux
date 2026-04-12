@@ -691,9 +691,11 @@ pub(crate) fn load_nif_bytes(
                 glow_map: mesh.glow_map.clone(),
                 detail_map: mesh.detail_map.clone(),
                 gloss_map: mesh.gloss_map.clone(),
+                dark_map: mesh.dark_map.clone(),
                 vertex_color_mode: mesh.vertex_color_mode,
                 alpha_test: mesh.alpha_test,
                 alpha_threshold: mesh.alpha_threshold,
+                alpha_test_func: mesh.alpha_test_func,
             },
         );
 
