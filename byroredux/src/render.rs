@@ -380,15 +380,17 @@ pub(crate) fn build_render_data(
         use std::sync::atomic::{AtomicBool, Ordering};
         static LOGGED: AtomicBool = AtomicBool::new(false);
         if !LOGGED.swap(true, Ordering::Relaxed) {
-            log::info!(
-                "Lights collected: {} (first 3: {:?})",
-                gpu_lights.len(),
-                gpu_lights
-                    .iter()
-                    .take(3)
-                    .map(|l| (l.position_radius, l.color_type))
-                    .collect::<Vec<_>>(),
-            );
+            log::info!("Lights collected: {}", gpu_lights.len());
+            for (i, l) in gpu_lights.iter().enumerate() {
+                let r = l.position_radius[3];
+                let c = &l.color_type;
+                let t = if c[3] < 0.5 { "point" } else if c[3] < 1.5 { "spot" } else { "dir" };
+                log::info!(
+                    "  Light[{}]: {} radius={:.0} color=({:.3},{:.3},{:.3}) pos=({:.0},{:.0},{:.0})",
+                    i, t, r, c[0], c[1], c[2],
+                    l.position_radius[0], l.position_radius[1], l.position_radius[2]
+                );
+            }
         }
     }
 

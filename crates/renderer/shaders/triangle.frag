@@ -503,18 +503,20 @@ void main() {
             if (lightType < 0.5) {
                 // Point light — Gamebryo-matching 1/d attenuation.
                 //
-                // Gamebryo's D3D9 default is atten = 1/(C + L*d + Q*d²) with
-                // C=0, L=1, Q=0, giving pure 1/d falloff with no hard cutoff.
-                // The authored radius is a CULLING radius, not an attenuation
-                // parameter. We use radius/(radius+dist) to approximate 1/d
-                // (approaches 1.0 at close range, falls off as ~radius/dist
-                // at long range) with a smooth window to fade at the boundary.
+                // Gamebryo's D3D9 default: atten = 1/(C + L*d + Q*d²) with
+                // C=0, L=1, Q=0 → pure 1/d falloff. The ESM radius is a
+                // CULLING hint (which objects receive this light), not an
+                // attenuation parameter. We extend the effective range to 4×
+                // the authored radius for the smooth window, matching how
+                // Gamebryo's "infinite" range looks in practice — lights
+                // visibly affect surfaces well beyond their culling radius.
                 vec3 toLight = lightPos - fragWorldPos;
                 dist = length(toLight);
                 L = toLight / max(dist, 0.001);
-                float ratio = dist / max(radius, 1.0);
+                float effectiveRange = radius * 4.0;
+                float ratio = dist / max(effectiveRange, 1.0);
                 float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
-                atten = window * radius / (radius + dist);
+                atten = window / (1.0 + dist * 0.01);
             } else if (lightType < 1.5) {
                 // Spot light — same 1/d attenuation + cone factor.
                 vec3 toLight = lightPos - fragWorldPos;
@@ -522,9 +524,10 @@ void main() {
                 L = toLight / max(dist, 0.001);
                 vec3 spotDir = normalize(lights[i].direction_angle.xyz);
                 float spotAngle = lights[i].direction_angle.w;
-                float ratio = dist / max(radius, 1.0);
+                float effectiveRange = radius * 4.0;
+                float ratio = dist / max(effectiveRange, 1.0);
                 float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
-                atten = window * radius / (radius + dist);
+                atten = window / (1.0 + dist * 0.01);
                 float spotFactor = dot(-L, spotDir);
                 atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
             } else {
