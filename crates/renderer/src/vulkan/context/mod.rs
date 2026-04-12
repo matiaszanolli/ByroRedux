@@ -104,10 +104,6 @@ pub struct VulkanContext {
     pipeline_alpha_two_sided: vk::Pipeline,
     pipeline_ui: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
-    vert_module: vk::ShaderModule,
-    frag_module: vk::ShaderModule,
-    ui_vert_module: vk::ShaderModule,
-    ui_frag_module: vk::ShaderModule,
     /// Mesh handle for the fullscreen quad used by UI overlay.
     pub ui_quad_handle: Option<u32>,
     render_pass: vk::RenderPass,
@@ -341,7 +337,7 @@ impl VulkanContext {
         )?;
 
         // 15. UI overlay pipeline (no depth, alpha blend, passthrough shaders)
-        let (pipeline_ui, ui_vert_module, ui_frag_module) = pipeline::create_ui_pipeline(
+        let pipeline_ui = pipeline::create_ui_pipeline(
             &device,
             render_pass,
             swapchain_state.extent,
@@ -530,10 +526,6 @@ impl VulkanContext {
             pipeline_alpha_two_sided: pipelines.alpha_two_sided,
             pipeline_ui,
             pipeline_layout: pipelines.layout,
-            vert_module: pipelines.vert_module,
-            frag_module: pipelines.frag_module,
-            ui_vert_module,
-            ui_frag_module,
             ui_quad_handle: None,
             mesh_registry,
             texture_registry,
@@ -643,10 +635,6 @@ impl Drop for VulkanContext {
             self.device.destroy_pipeline(self.pipeline_ui, None);
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
-            self.device.destroy_shader_module(self.vert_module, None);
-            self.device.destroy_shader_module(self.frag_module, None);
-            self.device.destroy_shader_module(self.ui_vert_module, None);
-            self.device.destroy_shader_module(self.ui_frag_module, None);
             // Meshes after pipelines: pipelines consume meshes at draw time,
             // so meshes should outlive the pipelines that reference them.
             if let Some(ref alloc) = self.allocator {

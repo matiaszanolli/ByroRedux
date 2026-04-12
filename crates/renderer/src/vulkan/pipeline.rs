@@ -35,8 +35,6 @@ pub struct PipelineSet {
     pub opaque_two_sided: vk::Pipeline,
     pub alpha_two_sided: vk::Pipeline,
     pub layout: vk::PipelineLayout,
-    pub vert_module: vk::ShaderModule,
-    pub frag_module: vk::ShaderModule,
 }
 
 /// Creates the graphics pipelines with textured rendering.
@@ -195,18 +193,17 @@ fn create_triangle_pipeline_with_layout(
     // No push constants — per-draw data (model matrix, texture index, bone offset)
     // lives in the instance SSBO (set 1, binding 4). The vertex shader reads
     // instances[gl_InstanceIndex] for all per-instance data.
-    let (pipeline_layout, owns_layout) = if let Some(layout) = existing_layout {
-        (layout, false)
+    let pipeline_layout = if let Some(layout) = existing_layout {
+        layout
     } else {
         let set_layouts = [descriptor_set_layout, scene_set_layout];
         let layout_info = vk::PipelineLayoutCreateInfo::default()
             .set_layouts(&set_layouts);
-        let layout = unsafe {
+        unsafe {
             device
                 .create_pipeline_layout(&layout_info, None)
                 .context("Failed to create pipeline layout")?
-        };
-        (layout, true)
+        }
     };
 
     let depth_stencil_opaque = vk::PipelineDepthStencilStateCreateInfo::default()
@@ -317,13 +314,13 @@ fn create_triangle_pipeline_with_layout(
 
     log::info!("Graphics pipelines created (opaque + alpha + two-sided variants)");
 
-    // When reusing an existing layout, destroy shader modules now — they're
-    // compiled into the pipeline objects and no longer needed.
-    if !owns_layout {
-        unsafe {
-            device.destroy_shader_module(vert_module, None);
-            device.destroy_shader_module(frag_module, None);
-        }
+    // SAFETY: Shader modules are compiled into the pipeline objects during
+    // create_graphics_pipelines and are no longer needed. Destroy them
+    // immediately to avoid holding GPU resources for the entire context
+    // lifetime. See issue #98.
+    unsafe {
+        device.destroy_shader_module(vert_module, None);
+        device.destroy_shader_module(frag_module, None);
     }
 
     Ok(PipelineSet {
@@ -332,16 +329,6 @@ fn create_triangle_pipeline_with_layout(
         opaque_two_sided: pipelines[2],
         alpha_two_sided: pipelines[3],
         layout: pipeline_layout,
-        vert_module: if owns_layout {
-            vert_module
-        } else {
-            vk::ShaderModule::null()
-        },
-        frag_module: if owns_layout {
-            frag_module
-        } else {
-            vk::ShaderModule::null()
-        },
     })
 }
 
@@ -356,7 +343,7 @@ pub fn create_ui_pipeline(
     extent: vk::Extent2D,
     pipeline_layout: vk::PipelineLayout,
     pipeline_cache: vk::PipelineCache,
-) -> Result<(vk::Pipeline, vk::ShaderModule, vk::ShaderModule)> {
+) -> Result<vk::Pipeline> {
     let vert_spv = include_bytes!("../../shaders/ui.vert.spv");
     let frag_spv = include_bytes!("../../shaders/ui.frag.spv");
 
@@ -479,23 +466,12 @@ pub fn create_ui_pipeline(
 
     log::info!("UI overlay pipeline created");
 
-    Ok((pipelines[0], vert_module, frag_module))
-}
-
-/// Recreate the UI pipeline, destroying shader modules immediately after creation.
-/// Used during swapchain recreation — avoids returning modules just to destroy them.
-pub fn recreate_ui_pipeline(
-    device: &ash::Device,
-    render_pass: vk::RenderPass,
-    extent: vk::Extent2D,
-    pipeline_layout: vk::PipelineLayout,
-    pipeline_cache: vk::PipelineCache,
-) -> Result<vk::Pipeline> {
-    let (pipeline, vert, frag) =
-        create_ui_pipeline(device, render_pass, extent, pipeline_layout, pipeline_cache)?;
+    // SAFETY: Shader modules are compiled into the pipeline object during
+    // create_graphics_pipelines and are no longer needed. See issue #98.
     unsafe {
-        device.destroy_shader_module(vert, None);
-        device.destroy_shader_module(frag, None);
+        device.destroy_shader_module(vert_module, None);
+        device.destroy_shader_module(frag_module, None);
     }
-    Ok(pipeline)
+
+    Ok(pipelines[0])
 }

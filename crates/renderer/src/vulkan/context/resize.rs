@@ -124,7 +124,7 @@ impl VulkanContext {
         self.pipeline_two_sided = pipelines.opaque_two_sided;
         self.pipeline_alpha_two_sided = pipelines.alpha_two_sided;
 
-        self.pipeline_ui = pipeline::recreate_ui_pipeline(
+        self.pipeline_ui = pipeline::create_ui_pipeline(
             &self.device,
             self.render_pass,
             self.swapchain_state.extent,
