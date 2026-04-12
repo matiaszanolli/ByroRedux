@@ -478,7 +478,7 @@ mod tests {
     use crate::stream::NifStream;
     use crate::version::NifVersion;
 
-    fn make_header_fnv() -> NifHeader {
+    pub(super) fn make_header_fnv() -> NifHeader {
         NifHeader {
             version: NifVersion::V20_2_0_7,
             little_endian: true,
@@ -494,7 +494,7 @@ mod tests {
         }
     }
 
-    fn write_time_controller_base(data: &mut Vec<u8>) {
+    pub(super) fn write_time_controller_base(data: &mut Vec<u8>) {
         // next_controller_ref: -1
         data.extend_from_slice(&(-1i32).to_le_bytes());
         // flags: 0x000C
@@ -988,5 +988,218 @@ impl NiUVController {
             target_attribute,
             data_ref,
         })
+    }
+}
+
+// ── NiLookAtController ────────────────────────────────────────────────
+// Inherits NiTimeController. DEPRECATED (10.2), REMOVED (20.5) — appears
+// in Oblivion/FO3/FNV/Skyrim-LE but never in Skyrim-SE+. Orients a target
+// NiNode at a follow target; the engine later replaced this with
+// NiLookAtInterpolator on a plain NiTransformController. See #228.
+
+/// Legacy look-at constraint controller.
+///
+/// Rotates its owning block so that a chosen axis points at the
+/// `look_at_ref` target every frame. The `flags` bit layout is the
+/// `LookAtFlags` from nif.xml:
+///   - bit 0: LOOK_FLIP (invert the follow axis)
+///   - bit 1: LOOK_Y_AXIS (follow axis = Y instead of X)
+///   - bit 2: LOOK_Z_AXIS (follow axis = Z instead of X)
+///
+/// The `flags` field is only present from version 10.1.0.0 onwards; on
+/// earlier files only `look_at_ref` follows the base.
+#[derive(Debug)]
+pub struct NiLookAtController {
+    pub base: NiTimeControllerBase,
+    pub look_at_flags: u16,
+    pub look_at_ref: BlockRef,
+}
+
+impl NiObject for NiLookAtController {
+    fn block_type_name(&self) -> &'static str {
+        "NiLookAtController"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiLookAtController {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiTimeControllerBase::parse(stream)?;
+        let look_at_flags = if stream.version() >= NifVersion(0x0A010000) {
+            stream.read_u16_le()?
+        } else {
+            0
+        };
+        let look_at_ref = stream.read_block_ref()?;
+        Ok(Self {
+            base,
+            look_at_flags,
+            look_at_ref,
+        })
+    }
+}
+
+// ── NiPathController ──────────────────────────────────────────────────
+// Inherits NiTimeController. DEPRECATED (10.2), REMOVED (20.5) — cutscene
+// and environmental animation spline follower. The engine later replaced
+// this with NiPathInterpolator on a plain NiTransformController. See #228.
+
+/// Legacy spline-path follower controller.
+///
+/// Walks the owning block along a 3D spline defined by `path_data_ref`
+/// (NiPosData with XYZ keys) parameterized by `percent_data_ref`
+/// (NiFloatData mapping time → [0, 1] along the path). `bank_dir` +
+/// `max_bank_angle` drive roll around the motion axis, `smoothing`
+/// dampens tangent changes, and `follow_axis` picks which local axis
+/// tracks the tangent (0 = X, 1 = Y, 2 = Z).
+///
+/// The `path_flags` field is only present from version 10.1.0.0 onwards.
+#[derive(Debug)]
+pub struct NiPathController {
+    pub base: NiTimeControllerBase,
+    pub path_flags: u16,
+    pub bank_dir: i32,
+    pub max_bank_angle: f32,
+    pub smoothing: f32,
+    pub follow_axis: i16,
+    pub path_data_ref: BlockRef,
+    pub percent_data_ref: BlockRef,
+}
+
+impl NiObject for NiPathController {
+    fn block_type_name(&self) -> &'static str {
+        "NiPathController"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiPathController {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiTimeControllerBase::parse(stream)?;
+        let path_flags = if stream.version() >= NifVersion(0x0A010000) {
+            stream.read_u16_le()?
+        } else {
+            0
+        };
+        let bank_dir = stream.read_i32_le()?;
+        let max_bank_angle = stream.read_f32_le()?;
+        let smoothing = stream.read_f32_le()?;
+        // follow_axis is nominally `short` in nif.xml but the defined
+        // range is 0/1/2 (X/Y/Z); read as u16 and reinterpret.
+        let follow_axis = stream.read_u16_le()? as i16;
+        let path_data_ref = stream.read_block_ref()?;
+        let percent_data_ref = stream.read_block_ref()?;
+        Ok(Self {
+            base,
+            path_flags,
+            bank_dir,
+            max_bank_angle,
+            smoothing,
+            follow_axis,
+            path_data_ref,
+            percent_data_ref,
+        })
+    }
+}
+
+#[cfg(test)]
+mod path_lookat_tests {
+    use super::tests::*;
+    use super::*;
+
+    #[test]
+    fn parse_look_at_controller_32_bytes() {
+        let header = make_header_fnv();
+        let mut data = Vec::new();
+        write_time_controller_base(&mut data);
+        // look_at_flags = LOOK_Y_AXIS (bit 1)
+        data.extend_from_slice(&0x0002u16.to_le_bytes());
+        // look_at_ref = 7
+        data.extend_from_slice(&7i32.to_le_bytes());
+        assert_eq!(data.len(), 32);
+
+        let mut stream = NifStream::new(&data, &header);
+        let ctrl = NiLookAtController::parse(&mut stream).unwrap();
+        assert_eq!(stream.position(), 32);
+        assert_eq!(ctrl.look_at_flags, 0x0002);
+        assert_eq!(ctrl.look_at_ref.index(), Some(7));
+        assert!(ctrl.base.next_controller_ref.is_null());
+    }
+
+    #[test]
+    fn parse_path_controller_48_bytes() {
+        let header = make_header_fnv();
+        let mut data = Vec::new();
+        write_time_controller_base(&mut data);
+        // path_flags
+        data.extend_from_slice(&0x0000u16.to_le_bytes());
+        // bank_dir = 1 (positive)
+        data.extend_from_slice(&1i32.to_le_bytes());
+        // max_bank_angle = 0.5 rad
+        data.extend_from_slice(&0.5f32.to_le_bytes());
+        // smoothing = 0.25
+        data.extend_from_slice(&0.25f32.to_le_bytes());
+        // follow_axis = 1 (Y)
+        data.extend_from_slice(&1i16.to_le_bytes());
+        // path_data_ref = 11
+        data.extend_from_slice(&11i32.to_le_bytes());
+        // percent_data_ref = 12
+        data.extend_from_slice(&12i32.to_le_bytes());
+        // 26 (base) + 2 + 4 + 4 + 4 + 2 + 4 + 4 = 50
+        assert_eq!(data.len(), 50);
+
+        let mut stream = NifStream::new(&data, &header);
+        let ctrl = NiPathController::parse(&mut stream).unwrap();
+        assert_eq!(stream.position(), 50);
+        assert_eq!(ctrl.path_flags, 0);
+        assert_eq!(ctrl.bank_dir, 1);
+        assert_eq!(ctrl.max_bank_angle, 0.5);
+        assert_eq!(ctrl.smoothing, 0.25);
+        assert_eq!(ctrl.follow_axis, 1);
+        assert_eq!(ctrl.path_data_ref.index(), Some(11));
+        assert_eq!(ctrl.percent_data_ref.index(), Some(12));
+    }
+
+    #[test]
+    fn dispatch_routes_path_and_look_at_controllers() {
+        use crate::blocks::parse_block;
+        let header = make_header_fnv();
+
+        // ── NiLookAtController ───────────
+        let mut data = Vec::new();
+        write_time_controller_base(&mut data);
+        data.extend_from_slice(&0x0004u16.to_le_bytes()); // LOOK_Z_AXIS
+        data.extend_from_slice(&3i32.to_le_bytes());
+        let size = data.len() as u32;
+        let mut stream = NifStream::new(&data, &header);
+        let block = parse_block("NiLookAtController", &mut stream, Some(size))
+            .expect("NiLookAtController dispatch");
+        let c = block.as_any().downcast_ref::<NiLookAtController>().unwrap();
+        assert_eq!(c.look_at_flags, 0x0004);
+        assert_eq!(c.look_at_ref.index(), Some(3));
+
+        // ── NiPathController ─────────────
+        let mut data = Vec::new();
+        write_time_controller_base(&mut data);
+        data.extend_from_slice(&0x0000u16.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // bank_dir = Negative
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data.extend_from_slice(&0.1f32.to_le_bytes());
+        data.extend_from_slice(&2i16.to_le_bytes()); // Z
+        data.extend_from_slice(&5i32.to_le_bytes());
+        data.extend_from_slice(&6i32.to_le_bytes());
+        let size = data.len() as u32;
+        let mut stream = NifStream::new(&data, &header);
+        let block = parse_block("NiPathController", &mut stream, Some(size))
+            .expect("NiPathController dispatch");
+        let c = block.as_any().downcast_ref::<NiPathController>().unwrap();
+        assert_eq!(c.bank_dir, -1);
+        assert_eq!(c.follow_axis, 2);
+        assert_eq!(c.path_data_ref.index(), Some(5));
+        assert_eq!(c.percent_data_ref.index(), Some(6));
     }
 }

@@ -31,9 +31,9 @@ use collision::{
     NiCollisionObjectBase,
 };
 use controller::{
-    NiControllerManager, NiControllerSequence, NiGeomMorpherController, NiMaterialColorController,
-    NiMorphData, NiMultiTargetTransformController, NiSequenceStreamHelper,
-    NiSingleInterpController, NiTimeController, NiUVController,
+    NiControllerManager, NiControllerSequence, NiGeomMorpherController, NiLookAtController,
+    NiMaterialColorController, NiMorphData, NiMultiTargetTransformController, NiPathController,
+    NiSequenceStreamHelper, NiSingleInterpController, NiTimeController, NiUVController,
 };
 use extra_data::{
     BsBehaviorGraphExtraData, BsBound, BsClothExtraData, BsConnectPointChildren,
@@ -397,6 +397,16 @@ pub fn parse_block(
         // pre-10.1 and removed at 20.3. See issue #154.
         "NiUVController" => Ok(Box::new(NiUVController::parse(stream)?)),
         "NiUVData" => Ok(Box::new(NiUVData::parse(stream)?)),
+        // NiLookAtController + NiPathController — legacy NiTimeController
+        // subclasses for look-at constraints and spline path following.
+        // DEPRECATED (10.2), REMOVED (20.5) — appear in Oblivion/FO3/FNV/
+        // Skyrim-LE cutscenes and environmental animations. Post-Skyrim-LE
+        // content replaced them with NiTransformController + NiLookAt/
+        // NiPathInterpolator. Parsed so the blocks land in `NifScene`
+        // intact — ECS-side constraint systems are a later follow-up.
+        // See issue #228.
+        "NiLookAtController" => Ok(Box::new(NiLookAtController::parse(stream)?)),
+        "NiPathController" => Ok(Box::new(NiPathController::parse(stream)?)),
         "NiPoint3Interpolator" => Ok(Box::new(NiPoint3Interpolator::parse(stream)?)),
         "NiPosData" => Ok(Box::new(NiPosData::parse(stream)?)),
         "NiBoolInterpolator" => Ok(Box::new(NiBoolInterpolator::parse(stream)?)),
