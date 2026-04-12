@@ -31,10 +31,11 @@ layout(std430, set = 0, binding = 0) readonly buffer LightBuffer {
 
 layout(set = 0, binding = 1) uniform CameraUBO {
     mat4 viewProj;
-    vec4 cameraPos;
-    vec4 sceneFlags;
-    vec4 screen;
-    vec4 fog;
+    mat4 prevViewProj;  // Must match GpuCamera in scene_buffer.rs. See #256.
+    vec4 cameraPos;     // xyz = world position, w = frame counter
+    vec4 sceneFlags;    // x = RT enabled, yzw = ambient color
+    vec4 screen;        // x = width, y = height, z = fog near, w = fog far
+    vec4 fog;           // xyz = fog color, w = fog enabled
 };
 
 struct ClusterEntry {
