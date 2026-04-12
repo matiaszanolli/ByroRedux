@@ -12,6 +12,7 @@ use crate::blocks::shader::{
 use crate::blocks::texture::NiSourceTexture;
 use crate::blocks::tri_shape::{BsTriShape, NiTriShape};
 use crate::scene::NifScene;
+use crate::types::BlockRef;
 
 use super::mesh::GeomData;
 
@@ -149,6 +150,7 @@ pub(super) fn extract_material(
     scene: &NifScene,
     shape: &NiTriShape,
     data: &GeomData,
+    inherited_props: &[BlockRef],
 ) -> (Vec<[f32; 3]>, Option<String>) {
     let num_verts = data.vertices.len();
 
@@ -160,7 +162,7 @@ pub(super) fn extract_material(
     // MaterialInfo.vertex_color_mode — for now we still fall back to
     // material diffuse for the per-vertex color vector so unshaded
     // diffuse doesn't get contaminated). See #214.
-    let vertex_mode = vertex_color_mode_for(scene, shape);
+    let vertex_mode = vertex_color_mode_for(scene, shape, inherited_props);
     let use_vertex_colors =
         !data.vertex_colors.is_empty() && vertex_mode == VertexColorMode::AmbientDiffuse;
 
@@ -170,13 +172,13 @@ pub(super) fn extract_material(
             .iter()
             .map(|c| [c[0], c[1], c[2]]) // drop alpha
             .collect();
-        let tex = find_texture_path(scene, shape);
+        let tex = find_texture_path(scene, shape, inherited_props);
         return (colors, tex);
     }
 
-    // Search properties for NiMaterialProperty
+    // Search shape's own properties first, then inherited, for NiMaterialProperty.
     let mut diffuse = [1.0f32; 3]; // default white
-    for prop_ref in &shape.av.properties {
+    for prop_ref in shape.av.properties.iter().chain(inherited_props.iter()) {
         if let Some(idx) = prop_ref.index() {
             if let Some(mat) = scene.get_as::<NiMaterialProperty>(idx) {
                 diffuse = [mat.diffuse.r, mat.diffuse.g, mat.diffuse.b];
@@ -186,7 +188,7 @@ pub(super) fn extract_material(
     }
 
     let colors = vec![diffuse; num_verts];
-    let tex = find_texture_path(scene, shape);
+    let tex = find_texture_path(scene, shape, inherited_props);
     (colors, tex)
 }
 
@@ -194,8 +196,13 @@ pub(super) fn extract_material(
 /// vertex-color source mode. Absent property → `AmbientDiffuse` (the
 /// Gamebryo default). Helper for `extract_material` and the unit tests
 /// below.
-fn vertex_color_mode_for(scene: &NifScene, shape: &NiTriShape) -> VertexColorMode {
-    for prop_ref in &shape.av.properties {
+fn vertex_color_mode_for(
+    scene: &NifScene,
+    shape: &NiTriShape,
+    inherited_props: &[BlockRef],
+) -> VertexColorMode {
+    // Shape-level properties take priority over inherited.
+    for prop_ref in shape.av.properties.iter().chain(inherited_props.iter()) {
         let Some(idx) = prop_ref.index() else {
             continue;
         };
@@ -207,7 +214,17 @@ fn vertex_color_mode_for(scene: &NifScene, shape: &NiTriShape) -> VertexColorMod
 }
 
 /// Extract all material properties from a NiTriShape in a single pass.
-pub(super) fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> MaterialInfo {
+///
+/// `inherited_props` carries property BlockRefs accumulated from parent
+/// NiNodes during the scene graph walk. Gamebryo propagates properties
+/// down the hierarchy — child shapes inherit parent properties unless
+/// they override them with their own. Shape-level properties take
+/// priority; inherited properties fill in any gaps. See #208.
+pub(super) fn extract_material_info(
+    scene: &NifScene,
+    shape: &NiTriShape,
+    inherited_props: &[BlockRef],
+) -> MaterialInfo {
     let mut info = MaterialInfo::default();
 
     // Skyrim+: dedicated shader_property_ref
@@ -273,8 +290,9 @@ pub(super) fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> Mat
         }
     }
 
-    // FO3/FNV/Oblivion: single pass over properties list
-    for prop_ref in &shape.av.properties {
+    // FO3/FNV/Oblivion: single pass over shape + inherited properties.
+    // Shape properties first so they take priority (#208).
+    for prop_ref in shape.av.properties.iter().chain(inherited_props.iter()) {
         let Some(idx) = prop_ref.index() else {
             continue;
         };
@@ -458,8 +476,12 @@ pub(super) fn extract_material_info(scene: &NifScene, shape: &NiTriShape) -> Mat
 }
 
 /// Texture path only — delegates to extract_material_info.
-pub(super) fn find_texture_path(scene: &NifScene, shape: &NiTriShape) -> Option<String> {
-    extract_material_info(scene, shape).texture_path
+pub(super) fn find_texture_path(
+    scene: &NifScene,
+    shape: &NiTriShape,
+    inherited_props: &[BlockRef],
+) -> Option<String> {
+    extract_material_info(scene, shape, inherited_props).texture_path
 }
 
 /// Decode an NiAlphaProperty onto a `MaterialInfo`. `NiAlphaProperty.flags`

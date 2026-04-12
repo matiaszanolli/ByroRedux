@@ -256,7 +256,7 @@ pub fn import_nif_scene(scene: &NifScene) -> ImportedScene {
         return imported;
     };
 
-    walk::walk_node_hierarchical(scene, root_idx, None, &mut imported);
+    walk::walk_node_hierarchical(scene, root_idx, None, &[], &mut imported);
 
     // Resolve extra data from the root node (BSXFlags, BSBound).
     if let Some(root_block) = scene.blocks.get(root_idx) {
@@ -294,7 +294,7 @@ pub fn import_nif(scene: &NifScene) -> Vec<ImportedMesh> {
         return meshes;
     };
 
-    walk::walk_node_flat(scene, root_idx, &NiTransform::default(), &mut meshes, None);
+    walk::walk_node_flat(scene, root_idx, &NiTransform::default(), &[], &mut meshes, None);
     meshes
 }
 
@@ -330,6 +330,7 @@ pub fn import_nif_with_collision(scene: &NifScene) -> (Vec<ImportedMesh>, Vec<Im
         scene,
         root_idx,
         &NiTransform::default(),
+        &[],
         &mut meshes,
         Some(&mut collisions),
     );

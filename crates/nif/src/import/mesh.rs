@@ -37,6 +37,7 @@ pub(super) fn extract_mesh(
     scene: &NifScene,
     shape: &NiTriShape,
     world_transform: &NiTransform,
+    inherited_props: &[BlockRef],
 ) -> Option<ImportedMesh> {
     let data_idx = shape.data_ref.index()?;
 
@@ -91,7 +92,7 @@ pub(super) fn extract_mesh(
     let uvs = geom.uv_sets.first().cloned().unwrap_or_default();
 
     // Determine vertex colors: prefer per-vertex colors, then material diffuse, then white
-    let (colors, texture_path) = extract_material(scene, shape, &geom);
+    let (colors, texture_path) = extract_material(scene, shape, &geom, inherited_props);
 
     // Apply Z-up → Y-up to the entity transform.
     let t = &world_transform.translation;
@@ -101,7 +102,7 @@ pub(super) fn extract_mesh(
     let quat = zup_matrix_to_yup_quat(r);
 
     // Single-pass material property extraction (alpha, two-sided, decal).
-    let mat = extract_material_info(scene, shape);
+    let mat = extract_material_info(scene, shape, inherited_props);
 
     // Skinning data (issue #151). Populated when the shape has a
     // NiSkinInstance / BSDismemberSkinInstance backing it.
@@ -194,8 +195,12 @@ fn extract_local_bound(
 }
 
 /// Extract an ImportedMesh with local transform (for hierarchical import).
-pub(super) fn extract_mesh_local(scene: &NifScene, shape: &NiTriShape) -> Option<ImportedMesh> {
-    extract_mesh(scene, shape, &shape.av.transform)
+pub(super) fn extract_mesh_local(
+    scene: &NifScene,
+    shape: &NiTriShape,
+    inherited_props: &[BlockRef],
+) -> Option<ImportedMesh> {
+    extract_mesh(scene, shape, &shape.av.transform, inherited_props)
 }
 
 /// Extract an ImportedMesh from a BsTriShape (Skyrim SE+ self-contained geometry).
@@ -317,10 +322,8 @@ pub(super) fn extract_bs_tri_shape(
         )
     };
 
-    // Skinning data (issue #151). BSTriShape per-vertex weights live in
-    // the packed vertex buffer (VF_SKINNED); the current parser skips
-    // them, so the skin will only carry the bone list + bind inverses.
-    // The renderer should fall back to the vertex buffer for weights.
+    // Skinning data. BSTriShape per-vertex weights live in the packed
+    // vertex buffer (VF_SKINNED), decoded at parse time (#177).
     let skin = extract_skin_bs_tri_shape(scene, shape);
 
     // BSTriShape carries its own bounding sphere (center + radius) on the

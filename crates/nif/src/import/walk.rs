@@ -8,7 +8,7 @@ use crate::blocks::node::{
 use crate::blocks::tri_shape::{BsTriShape, NiTriShape};
 use crate::blocks::NiObject;
 use crate::scene::NifScene;
-use crate::types::NiTransform;
+use crate::types::{BlockRef, NiTransform};
 
 use super::collision::extract_collision;
 use super::coord::zup_matrix_to_yup_quat;
@@ -68,10 +68,15 @@ pub(super) fn as_ni_node(block: &dyn NiObject) -> Option<&NiNode> {
 
 /// Recursively walk the scene graph, preserving hierarchy.
 /// NiNodes become ImportedNode entries; geometry becomes ImportedMesh with parent_node set.
+///
+/// `inherited_props` accumulates property BlockRefs from ancestor NiNodes.
+/// Gamebryo propagates properties down the scene graph — children inherit
+/// parent properties unless they override with their own. See #208.
 pub(super) fn walk_node_hierarchical(
     scene: &NifScene,
     block_idx: usize,
     parent_node_idx: Option<usize>,
+    inherited_props: &[BlockRef],
     out: &mut ImportedScene,
 ) {
     let Some(block) = scene.get(block_idx) else {
@@ -110,9 +115,16 @@ pub(super) fn walk_node_hierarchical(
             billboard_mode,
         });
 
+        // Merge this node's properties with the inherited set.
+        // Child shapes see the union; their own properties take priority
+        // inside extract_material_info because shape props are iterated
+        // before inherited props.
+        let mut child_props = inherited_props.to_vec();
+        child_props.extend_from_slice(&node.av.properties);
+
         for child_ref in &node.children {
             if let Some(idx) = child_ref.index() {
-                walk_node_hierarchical(scene, idx, Some(this_node_idx), out);
+                walk_node_hierarchical(scene, idx, Some(this_node_idx), &child_props, out);
             }
         }
         return;
@@ -126,7 +138,7 @@ pub(super) fn walk_node_hierarchical(
             return;
         }
 
-        if let Some(mesh) = extract_mesh_local(scene, shape) {
+        if let Some(mesh) = extract_mesh_local(scene, shape, inherited_props) {
             let mut mesh = mesh;
             mesh.parent_node = parent_node_idx;
             out.meshes.push(mesh);
@@ -157,6 +169,7 @@ pub(super) fn walk_node_flat(
     scene: &NifScene,
     block_idx: usize,
     parent_transform: &NiTransform,
+    inherited_props: &[BlockRef],
     out: &mut Vec<ImportedMesh>,
     mut collisions: Option<&mut Vec<ImportedCollision>>,
 ) {
@@ -188,9 +201,12 @@ pub(super) fn walk_node_flat(
             }
         }
 
+        let mut child_props = inherited_props.to_vec();
+        child_props.extend_from_slice(&node.av.properties);
+
         for child_ref in &node.children {
             if let Some(idx) = child_ref.index() {
-                walk_node_flat(scene, idx, &world_transform, out, collisions.as_deref_mut());
+                walk_node_flat(scene, idx, &world_transform, &child_props, out, collisions.as_deref_mut());
             }
         }
         return;
@@ -205,7 +221,7 @@ pub(super) fn walk_node_flat(
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
 
-        if let Some(mesh) = extract_mesh(scene, shape, &world_transform) {
+        if let Some(mesh) = extract_mesh(scene, shape, &world_transform, inherited_props) {
             out.push(mesh);
         }
     }
