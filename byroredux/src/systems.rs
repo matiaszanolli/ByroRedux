@@ -323,6 +323,11 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
     let stack_entities: Vec<_> = stack_query.iter().map(|(e, _)| e).collect();
     drop(stack_query);
 
+    // Scratch buffers reused across entities to avoid per-tick heap
+    // allocations (#251, #252). Cleared at the start of each iteration.
+    let mut channel_names_scratch: Vec<&str> = Vec::new();
+    let mut updates_scratch: Vec<(&str, EntityId, Vec3, Quat, f32)> = Vec::new();
+
     for entity in stack_entities {
         // Advance all layers.
         {
@@ -352,26 +357,28 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         };
 
         // Collect all channel names across all active layers.
-        let mut channel_names: Vec<&str> = Vec::new();
+        // Reuse scratch buffer to avoid per-entity heap allocation (#251).
+        channel_names_scratch.clear();
         for layer in &stack.layers {
             if let Some(clip) = registry.get(layer.clip_handle) {
                 for name in clip.channels.keys() {
-                    channel_names.push(name.as_str());
+                    channel_names_scratch.push(name.as_str());
                 }
             }
         }
-        channel_names.sort_unstable();
-        channel_names.dedup();
+        channel_names_scratch.sort_unstable();
+        channel_names_scratch.dedup();
 
-        let mut updates: Vec<(&str, EntityId, Vec3, Quat, f32)> = Vec::new();
-        for channel_name in &channel_names {
+        // Batch pose updates to decouple sampling from transform writes (#252).
+        updates_scratch.clear();
+        for channel_name in &channel_names_scratch {
             let Some(target_entity) = stack_resolve(channel_name) else {
                 continue;
             };
             if let Some((pos, rot, scale)) =
                 sample_blended_transform(stack, &registry, channel_name)
             {
-                updates.push((channel_name, target_entity, pos, rot, scale));
+                updates_scratch.push((channel_name, target_entity, pos, rot, scale));
             }
         }
         drop(sq);
@@ -401,7 +408,7 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         // Apply blended transforms, with root motion splitting (AR-02).
         let mut tq = world.query_mut::<Transform>().unwrap();
         let mut root_motion = Vec3::ZERO;
-        for &(name, target, pos, rot, scale) in &updates {
+        for &(name, target, pos, rot, scale) in &updates_scratch {
             if let Some(transform) = tq.get_mut(target) {
                 let is_accum = accum_root.as_deref() == Some(name);
                 if is_accum {
