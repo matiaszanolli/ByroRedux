@@ -188,6 +188,17 @@ impl VulkanContext {
                 self.swapchain_state.extent.width,
                 self.swapchain_state.extent.height,
             )?;
+            // New images start UNDEFINED — transition to SHADER_READ_ONLY so
+            // the "prev" frame slot is valid on the first frame after resize.
+            if let Err(e) = unsafe {
+                gbuffer.initialize_layouts(
+                    &self.device,
+                    &self.graphics_queue,
+                    self.transfer_pool,
+                )
+            } {
+                log::warn!("G-buffer post-resize layout init failed: {e}");
+            }
         }
 
         // Collect fresh G-buffer views before we borrow &mut self.svgf /

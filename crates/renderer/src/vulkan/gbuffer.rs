@@ -218,6 +218,67 @@ impl GBuffer {
         self.albedo.views[frame]
     }
 
+    /// One-time layout transition UNDEFINED → SHADER_READ_ONLY_OPTIMAL for
+    /// every G-buffer image across all frame-in-flight slots. Call once after
+    /// `new()` so that the "previous frame" images are in a valid layout on
+    /// the very first frame — SVGF's temporal pass binds them for sampling.
+    /// Without this, the first frame produces a validation error:
+    /// `VkImage expects SHADER_READ_ONLY_OPTIMAL, current layout is UNDEFINED`.
+    ///
+    /// # Safety
+    /// Device, queue and command pool must be valid. The queue must support
+    /// graphics operations (for the layout transition pipeline barrier).
+    pub unsafe fn initialize_layouts(
+        &self,
+        device: &ash::Device,
+        queue: &std::sync::Mutex<vk::Queue>,
+        pool: vk::CommandPool,
+    ) -> anyhow::Result<()> {
+        super::texture::with_one_time_commands(device, queue, pool, |cmd| {
+            let attachments = [
+                &self.normal,
+                &self.motion,
+                &self.mesh_id,
+                &self.raw_indirect,
+                &self.albedo,
+            ];
+            let mut barriers = Vec::with_capacity(attachments.len() * MAX_FRAMES_IN_FLIGHT);
+            for att in &attachments {
+                for &img in &att.images {
+                    barriers.push(
+                        vk::ImageMemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::empty())
+                            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                            .old_layout(vk::ImageLayout::UNDEFINED)
+                            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                            .image(img)
+                            .subresource_range(vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                base_mip_level: 0,
+                                level_count: 1,
+                                base_array_layer: 0,
+                                layer_count: 1,
+                            }),
+                    );
+                }
+            }
+            // SAFETY: barriers are well-formed, device and cmd are valid.
+            unsafe {
+                device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER
+                        | vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &barriers,
+                );
+            }
+            Ok(())
+        })
+    }
+
     /// Recreate all attachments at a new extent (called on swapchain resize).
     pub fn recreate_on_resize(
         &mut self,

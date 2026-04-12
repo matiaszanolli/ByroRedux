@@ -394,6 +394,16 @@ impl VulkanContext {
         )?);
         let gbuffer_ref = gbuffer.as_ref().expect("gbuffer must exist");
 
+        // Transition all G-buffer images from UNDEFINED to
+        // SHADER_READ_ONLY_OPTIMAL so the "previous frame" slot is in a
+        // valid layout on the very first frame (SVGF temporal pass binds
+        // the previous frame's mesh_id/motion/raw_indirect for sampling).
+        if let Err(e) = unsafe {
+            gbuffer_ref.initialize_layouts(&device, &graphics_queue, transfer_pool)
+        } {
+            log::warn!("G-buffer layout init failed: {e}");
+        }
+
         // Collect G-buffer views up-front so svgf, composite, and main
         // framebuffer creation can reference them.
         let n_frames = MAX_FRAMES_IN_FLIGHT;
