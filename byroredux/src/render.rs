@@ -41,7 +41,15 @@ pub(crate) fn build_render_data(
     // below can stamp it onto the DrawCommand. Each skinned mesh reserves
     // exactly MAX_BONES_PER_MESH slots so per-mesh bone_offset arithmetic
     // stays trivial.
-    if let Some((gt_q, skin_q)) = world.query_2_mut::<GlobalTransform, SkinnedMesh>() {
+    //
+    // Both queries are read-only (the palette closure dereferences
+    // `GlobalTransform::to_matrix()` and the skin iter borrows each
+    // `SkinnedMesh` immutably), so two separate read queries give the
+    // correct lock pattern — the previous `query_2_mut::<GT, SkinnedMesh>`
+    // took an unnecessary write lock on SkinnedMesh. See #246.
+    let gt_q = world.query::<GlobalTransform>();
+    let skin_q = world.query::<SkinnedMesh>();
+    if let (Some(gt_q), Some(skin_q)) = (gt_q, skin_q) {
         for (entity, skin) in skin_q.iter() {
             let offset = bone_palette.len() as u32;
             // World-lookup closure — reads GlobalTransform for each bone
@@ -93,16 +101,39 @@ pub(crate) fn build_render_data(
         Mat4::IDENTITY.to_cols_array()
     };
 
-    // Collect draw commands from entities with (GlobalTransform, MeshHandle).
-    // TextureHandle is optional — entities without one use the fallback (0).
-    if let Some((tq, mq)) = world.query_2_mut::<GlobalTransform, MeshHandle>() {
-        let tex_q = world.query::<TextureHandle>();
-        let alpha_q = world.query::<AlphaBlend>();
-        let two_sided_q = world.query::<TwoSided>();
-        let decal_q = world.query::<Decal>();
-        let vis_q = world.query::<AnimatedVisibility>();
-        let mat_q = world.query::<Material>();
-        let nmap_q = world.query::<NormalMapHandle>();
+    // ── Render-data query bundle (#246) ──────────────────────────────
+    //
+    // Collect draw commands from entities with (GlobalTransform,
+    // MeshHandle). Everything here is read-only, so each query is an
+    // independent `QueryRead`. Two observations:
+    //
+    //   1. The ECS has no `query_n_mut!` macro for acquiring N optional
+    //      components in one call, so we acquire each component
+    //      separately. That's 9 RwLock read acquisitions per frame; all
+    //      reads can coexist (no deadlock risk), so no TypeId-sorted
+    //      bundling is needed.
+    //
+    //   2. The bundle is held across the full `for (entity, mesh) in
+    //      mq.iter()` loop. No system that writes these components
+    //      runs concurrently (render runs outside the scheduler in
+    //      `RedrawRequested`), so read contention is theoretical.
+    //
+    // `GlobalTransform` and `MeshHandle` are required — if either is
+    // absent there are no meshes to emit, so the whole collection path
+    // is skipped. The other seven components are optional per-entity
+    // modifiers (texture, alpha, two-sided, decal, visibility,
+    // material, normal map) and stay as `Option<QueryRead>` so entities
+    // without them fall through to the fallback path inside the loop.
+    let tq = world.query::<GlobalTransform>();
+    let mq = world.query::<MeshHandle>();
+    let tex_q = world.query::<TextureHandle>();
+    let alpha_q = world.query::<AlphaBlend>();
+    let two_sided_q = world.query::<TwoSided>();
+    let decal_q = world.query::<Decal>();
+    let vis_q = world.query::<AnimatedVisibility>();
+    let mat_q = world.query::<Material>();
+    let nmap_q = world.query::<NormalMapHandle>();
+    if let (Some(tq), Some(mq)) = (tq, mq) {
         for (entity, mesh) in mq.iter() {
             // Skip entities hidden by animation.
             let visible = vis_q
