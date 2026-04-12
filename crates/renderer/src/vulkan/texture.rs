@@ -562,8 +562,13 @@ impl Texture {
     /// Does NOT destroy the sampler — it's shared across all textures
     /// and owned by TextureRegistry.
     pub fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        // SAFETY: Vulkan object destruction order: view → image → allocation.
+        // The image view references the image; the image binds the allocation.
+        // Freeing the allocation before destroying the image is a
+        // use-after-free on the GPU memory backing. See issue #18.
         unsafe {
             device.destroy_image_view(self.image_view, None);
+            device.destroy_image(self.image, None);
         }
         if let Some(alloc) = self.allocation.take() {
             allocator
@@ -571,9 +576,6 @@ impl Texture {
                 .expect("allocator lock poisoned")
                 .free(alloc)
                 .expect("Failed to free texture allocation");
-        }
-        unsafe {
-            device.destroy_image(self.image, None);
         }
     }
 }

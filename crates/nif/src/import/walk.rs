@@ -396,9 +396,12 @@ fn extract_billboard_mode(block: &dyn NiObject, av_flags: u32) -> Option<u16> {
 /// Check if a node name is an editor marker that should be skipped.
 fn is_editor_marker(name: Option<&str>) -> bool {
     let Some(name) = name else { return false };
-    let lower = name.to_ascii_lowercase();
-    lower.starts_with("editormarker")
-        || lower.starts_with("marker_")
-        || lower == "markerx"
-        || lower.starts_with("marker:")
+    fn starts_with_ci(s: &str, prefix: &str) -> bool {
+        s.len() >= prefix.len()
+            && s.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+    }
+    starts_with_ci(name, "editormarker")
+        || starts_with_ci(name, "marker_")
+        || name.eq_ignore_ascii_case("markerx")
+        || starts_with_ci(name, "marker:")
 }
