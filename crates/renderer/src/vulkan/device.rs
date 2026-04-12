@@ -188,8 +188,13 @@ pub fn create_logical_device(
 
     // Enable only the features we actually need. Anisotropic filtering
     // is gated behind a device-features toggle (see issue #136).
-    let device_features =
-        vk::PhysicalDeviceFeatures::default().sampler_anisotropy(caps.sampler_anisotropy_supported);
+    // Independent blend: required because the alpha-blend and UI pipelines
+    // use different blend states per color attachment (HDR blends, G-buffer
+    // attachments overwrite). Without this feature the validation layer
+    // rejects any pipeline where pAttachments[i] != pAttachments[0].
+    let device_features = vk::PhysicalDeviceFeatures::default()
+        .sampler_anisotropy(caps.sampler_anisotropy_supported)
+        .independent_blend(true);
 
     // Build extension list: required + optional RT.
     let mut extensions: Vec<*const i8> = REQUIRED_EXTENSIONS.iter().map(|e| e.as_ptr()).collect();
