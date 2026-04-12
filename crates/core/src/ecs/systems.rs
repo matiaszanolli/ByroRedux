@@ -44,45 +44,61 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
         roots.clear();
         queue.clear();
 
-        // Phase 1: find root entities (have Transform but no Parent).
-        {
-            let Some(tq) = world.query::<Transform>() else {
-                return;
-            };
-            let parent_q = world.query::<Parent>();
-
-            for (entity, _) in tq.iter() {
-                let is_root = parent_q
-                    .as_ref()
-                    .map(|pq| pq.get(entity).is_none())
-                    .unwrap_or(true);
-                if is_root {
-                    roots.push(entity);
-                }
-            }
-        }
-
-        // Update root GlobalTransforms.
-        {
-            let tq = world.query::<Transform>().unwrap();
-            let mut gq = match world.query_mut::<GlobalTransform>() {
-                Some(q) => q,
-                None => return,
-            };
-            for &entity in &roots {
-                if let Some(t) = tq.get(entity) {
-                    if let Some(g) = gq.get_mut(entity) {
-                        g.translation = t.translation;
-                        g.rotation = t.rotation;
-                        g.scale = t.scale;
-                    }
-                }
-            }
-        }
-
-        // Phase 2: propagate to children using BFS.
+        // Acquire all ECS queries once per frame and hold them across
+        // both phases and the BFS walk. The prior implementation called
+        // `world.query*` four times *per child* inside the BFS loop,
+        // costing ~4 RwLock acquisitions + drops per node on top of the
+        // actual transform composition work. Holding the handles for
+        // the whole function collapses that to 4 acquisitions total.
+        // See #238.
+        //
+        // Lock-order note: the ECS schedules parallel systems with
+        // TypeId-sorted lock acquisition to prevent deadlocks. Acquire
+        // order here doesn't matter for single-system correctness, but
+        // we keep the read queries first and the write query last so
+        // downstream readers that want the same bundle can mirror this
+        // pattern.
+        let Some(tq) = world.query::<Transform>() else {
+            return;
+        };
+        let parent_q = world.query::<Parent>();
         let children_q = world.query::<Children>();
-        let Some(ref cq) = children_q else { return };
+        let Some(mut gq) = world.query_mut::<GlobalTransform>() else {
+            return;
+        };
+
+        // Phase 1: find root entities (have Transform but no Parent).
+        for (entity, _) in tq.iter() {
+            let is_root = parent_q
+                .as_ref()
+                .map(|pq| pq.get(entity).is_none())
+                .unwrap_or(true);
+            if is_root {
+                roots.push(entity);
+            }
+        }
+
+        // Phase 1b: update root GlobalTransforms via the held write query.
+        for &entity in &roots {
+            if let Some(t) = tq.get(entity) {
+                if let Some(g) = gq.get_mut(entity) {
+                    g.translation = t.translation;
+                    g.rotation = t.rotation;
+                    g.scale = t.scale;
+                }
+            }
+        }
+
+        // Phase 2: propagate to children using BFS. Requires both
+        // Parent (to look up each child's parent) and Children (to
+        // enqueue grandchildren). If either query is absent the scene
+        // graph is flat and phase 1 already produced the final state.
+        let Some(ref pq) = parent_q else {
+            return;
+        };
+        let Some(ref cq) = children_q else {
+            return;
+        };
 
         for &root in &roots {
             if let Some(children) = cq.get(root) {
@@ -91,23 +107,21 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
         }
 
         while let Some(entity) = queue.pop() {
-            let parent_q = world.query::<Parent>().unwrap();
-            let Some(parent) = parent_q.get(entity) else {
+            let Some(parent) = pq.get(entity) else {
                 continue;
             };
             let parent_id = parent.0;
-            drop(parent_q);
 
-            let gq_read = world.query::<GlobalTransform>().unwrap();
-            let Some(parent_global) = gq_read.get(parent_id) else {
+            // Read the parent's GlobalTransform through the held write
+            // query. `get_mut` returns `&mut GlobalTransform`, and the
+            // deref copies it out, ending the borrow before the child
+            // write below begins. Transform is `Copy`, so there's no
+            // aliasing.
+            let Some(parent_global) = gq.get_mut(parent_id).map(|g| *g) else {
                 continue;
             };
-            let parent_global = *parent_global;
-            drop(gq_read);
 
-            let tq = world.query::<Transform>().unwrap();
             let local = tq.get(entity).copied().unwrap_or(Transform::IDENTITY);
-            drop(tq);
 
             let composed = GlobalTransform::compose(
                 &parent_global,
@@ -116,11 +130,9 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
                 local.scale,
             );
 
-            let mut gq_write = world.query_mut::<GlobalTransform>().unwrap();
-            if let Some(g) = gq_write.get_mut(entity) {
+            if let Some(g) = gq.get_mut(entity) {
                 *g = composed;
             }
-            drop(gq_write);
 
             if let Some(children) = cq.get(entity) {
                 queue.extend_from_slice(&children.0);
@@ -257,5 +269,75 @@ mod tests {
         if let Some(q) = gq {
             assert!(q.get(e).is_none());
         }
+    }
+
+    /// Regression test for #238: a 10-level-deep chain composed in a
+    /// single propagation call must produce a linear translation
+    /// accumulation. The old implementation would acquire four ECS
+    /// locks per child (~40 acquisitions for this chain); the new
+    /// implementation holds all four queries across the BFS. Functional
+    /// correctness must be identical.
+    #[test]
+    fn ten_level_chain_composes_correctly_with_held_locks() {
+        let mut world = World::new();
+        let mut prev: Option<EntityId> = None;
+        let mut ids: Vec<EntityId> = Vec::new();
+        for _ in 0..10 {
+            let e = spawn_with_transform(
+                &mut world,
+                Vec3::new(1.0, 0.0, 0.0),
+                Quat::IDENTITY,
+                1.0,
+            );
+            if let Some(parent) = prev {
+                world.insert(e, Parent(parent));
+                world.insert(parent, Children(vec![e]));
+            }
+            prev = Some(e);
+            ids.push(e);
+        }
+
+        let mut sys = make_transform_propagation_system();
+        sys(&world, 0.016);
+
+        let gq = world.query::<GlobalTransform>().unwrap();
+        for (i, &id) in ids.iter().enumerate() {
+            let g = gq.get(id).unwrap();
+            let expected_x = (i + 1) as f32;
+            assert!(
+                (g.translation.x - expected_x).abs() < 1e-4,
+                "level {i}: expected x={expected_x}, got {}",
+                g.translation.x,
+            );
+            assert!(g.translation.y.abs() < 1e-4);
+            assert!(g.translation.z.abs() < 1e-4);
+        }
+    }
+
+    /// Two sibling subtrees under a common root must BOTH receive the
+    /// root's world translation. This pins the fan-out case — the BFS
+    /// enqueues both children, and both pops must re-read the same
+    /// `parent_global` through the held write query.
+    #[test]
+    fn fan_out_siblings_both_compose_from_same_root() {
+        let mut world = World::new();
+        let root =
+            spawn_with_transform(&mut world, Vec3::new(100.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        let left =
+            spawn_with_transform(&mut world, Vec3::new(-5.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        let right =
+            spawn_with_transform(&mut world, Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        world.insert(left, Parent(root));
+        world.insert(right, Parent(root));
+        world.insert(root, Children(vec![left, right]));
+
+        let mut sys = make_transform_propagation_system();
+        sys(&world, 0.016);
+
+        let gq = world.query::<GlobalTransform>().unwrap();
+        let gl = gq.get(left).unwrap();
+        let gr = gq.get(right).unwrap();
+        assert!((gl.translation.x - 95.0).abs() < 1e-4);
+        assert!((gr.translation.x - 105.0).abs() < 1e-4);
     }
 }
