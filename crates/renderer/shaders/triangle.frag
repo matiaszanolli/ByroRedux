@@ -371,7 +371,10 @@ void main() {
     // the entire PBR lighting loop and render as ambient-only.
     float emissiveLum = dot(emissiveColor, vec3(0.2126, 0.7152, 0.0722));
     if (emissiveMult > 0.01 && emissiveLum > 0.01) {
-        vec3 emissive = emissiveColor * emissiveMult;
+        // Modulate emissive by the surface texture — light fixtures have
+        // textured glass globes that should tint/shape the glow, not be
+        // replaced by a flat emissive color.
+        vec3 emissive = emissiveColor * emissiveMult * albedo;
         vec3 ambient = sceneFlags.yzw * albedo * (1.0 - metalness);
         outColor = vec4(ambient + emissive, texColor.a);
         outRawIndirect = vec4(0.0);
@@ -637,7 +640,12 @@ void main() {
             vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
             vec3 radiance = lightColor * atten * shadow;
 
-            Lo += (kD * albedo / PI + specular * specStrength * specColor) * radiance * NdotL;
+            // Legacy content was not authored for energy-conserving PBR — the
+            // D3D9 fixed-function pipeline multiplied Material.Diffuse ×
+            // Light.Diffuse × NdotL directly, without the 1/PI divisor.
+            // Omitting it preserves authored brightness and gives ~3× more
+            // diffuse contribution, making RT shadows much more visible.
+            Lo += (kD * albedo + specular * specStrength * specColor) * radiance * NdotL;
 
             // Per-light ambient fill: approximates Gamebryo's D3D9 per-light
             // ambient (Material.Ambient × Light.Ambient / atten). Kept small
