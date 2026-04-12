@@ -408,19 +408,12 @@ pub(crate) fn build_render_data(
 
     // Cell ambient color (or default).
     let cell_lit = world.try_resource::<CellLightingRes>();
+    // XCLL ambient passed through as-is — the per-light ambient fill in
+    // the shader (0.5 × lightColor × atten × albedo per light) provides
+    // the additional fill that Gamebryo's D3D9 equation contributes.
     let ambient = cell_lit
         .as_ref()
-        .map(|l| {
-            if l.is_interior {
-                // Gamebryo's D3D9 pipeline adds per-light ambient fill
-                // (Light.Ambient × Material.Ambient) that we approximate in
-                // the shader. A 2x boost on the scene ambient compensates
-                // for the remaining model difference.
-                [l.ambient[0] * 2.0, l.ambient[1] * 2.0, l.ambient[2] * 2.0]
-            } else {
-                l.ambient
-            }
-        })
+        .map(|l| l.ambient)
         .unwrap_or([0.08, 0.08, 0.08]);
     let mut fog_color = cell_lit.as_ref().map(|l| l.fog_color).unwrap_or([0.0; 3]);
     let mut fog_near = cell_lit.as_ref().map(|l| l.fog_near).unwrap_or(0.0);

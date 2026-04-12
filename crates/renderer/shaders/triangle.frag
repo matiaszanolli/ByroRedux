@@ -501,29 +501,30 @@ void main() {
             float atten;
 
             if (lightType < 0.5) {
-                // Point light — radius-normalized inverse-linear falloff.
-                // Gamebryo's default D3D9 attenuation is 1/d (C=0, L=1, Q=0)
-                // with no hard cutoff. We normalize by radius so a light at
-                // half its radius has attenuation ~0.5, and smoothly fade to
-                // zero at the boundary via a windowing function.
+                // Point light — Gamebryo-matching 1/d attenuation.
+                //
+                // Gamebryo's D3D9 default is atten = 1/(C + L*d + Q*d²) with
+                // C=0, L=1, Q=0, giving pure 1/d falloff with no hard cutoff.
+                // The authored radius is a CULLING radius, not an attenuation
+                // parameter. We use radius/(radius+dist) to approximate 1/d
+                // (approaches 1.0 at close range, falls off as ~radius/dist
+                // at long range) with a smooth window to fade at the boundary.
                 vec3 toLight = lightPos - fragWorldPos;
                 dist = length(toLight);
                 L = toLight / max(dist, 0.001);
                 float ratio = dist / max(radius, 1.0);
-                float window = clamp(1.0 - ratio, 0.0, 1.0);
-                window *= window; // smooth fade at boundary
-                atten = window / (1.0 + ratio * 4.0);
+                float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
+                atten = window * radius / (radius + dist);
             } else if (lightType < 1.5) {
-                // Spot light — same attenuation + cone factor.
+                // Spot light — same 1/d attenuation + cone factor.
                 vec3 toLight = lightPos - fragWorldPos;
                 dist = length(toLight);
                 L = toLight / max(dist, 0.001);
                 vec3 spotDir = normalize(lights[i].direction_angle.xyz);
                 float spotAngle = lights[i].direction_angle.w;
                 float ratio = dist / max(radius, 1.0);
-                float window = clamp(1.0 - ratio, 0.0, 1.0);
-                window *= window;
-                atten = window / (1.0 + ratio * 4.0);
+                float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
+                atten = window * radius / (radius + dist);
                 float spotFactor = dot(-L, spotDir);
                 atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
             } else {
@@ -630,11 +631,11 @@ void main() {
 
             Lo += (kD * albedo / PI + specular * specStrength * specColor) * radiance * NdotL;
 
-            // Per-light ambient fill: approximates Gamebryo's D3D9
-            // Material.Ambient * Light.Ambient * dimmer / attenuation term.
-            // Each nearby light contributes a small NdotL-independent fill
-            // that lifts the base illumination in rooms with many lights.
-            Lo += lightColor * atten * shadow * albedo * 0.25;
+            // Per-light ambient fill: Gamebryo's D3D9 equation adds
+            // Material.Ambient(0.5) × Light.Ambient(1.0) × dimmer / atten
+            // per light. This is omnidirectional scatter — NOT shadow-blocked
+            // (shadows only gate the NdotL-dependent diffuse/specular terms).
+            Lo += lightColor * atten * albedo * 0.5;
         }
     }
 
