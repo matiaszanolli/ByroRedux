@@ -66,6 +66,14 @@ pub struct VulkanContext {
     /// Used to compute screen-space motion vectors in the vertex shader.
     /// On the very first frame, equals the current frame's viewProj (no motion).
     pub prev_view_proj: [f32; 16],
+    /// Per-frame scratch buffer for the GPU instance SSBO payload. Held on
+    /// the context so that capacity amortizes across frames instead of
+    /// heap-allocating fresh each `draw_frame`. Cleared + reserved at the
+    /// top of draw_frame. See issue #243.
+    gpu_instances_scratch: Vec<scene_buffer::GpuInstance>,
+    /// Per-frame scratch buffer for draw batch metadata. Same lifecycle
+    /// as `gpu_instances_scratch`. See issue #243.
+    batches_scratch: Vec<draw::DrawBatch>,
 
     frame_sync: FrameSync,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -554,6 +562,8 @@ impl VulkanContext {
                 0.0, 0.0, 1.0, 0.0,
                 0.0, 0.0, 0.0, 1.0,
             ],
+            gpu_instances_scratch: Vec::new(),
+            batches_scratch: Vec::new(),
         })
     }
 

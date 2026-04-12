@@ -8,13 +8,17 @@ use ash::vk;
 
 /// A batch of instances sharing the same mesh + pipeline state.
 /// Drawn with a single `cmd_draw_indexed` call.
-struct DrawBatch {
-    mesh_handle: u32,
-    pipeline_key: (bool, bool), // (alpha_blend, two_sided)
-    is_decal: bool,
-    first_instance: u32,
-    instance_count: u32,
-    index_count: u32,
+///
+/// `pub(super)` so the enclosing `VulkanContext` can hold a reusable
+/// `Vec<DrawBatch>` scratch buffer as a field and amortize allocations
+/// across frames. See issue #243.
+pub(super) struct DrawBatch {
+    pub mesh_handle: u32,
+    pub pipeline_key: (bool, bool), // (alpha_blend, two_sided)
+    pub is_decal: bool,
+    pub first_instance: u32,
+    pub instance_count: u32,
+    pub index_count: u32,
 }
 
 impl VulkanContext {
@@ -276,8 +280,22 @@ impl VulkanContext {
         // Each DrawCommand becomes one GpuInstance in the SSBO. Consecutive
         // commands with the same (pipeline_key, is_decal, mesh_handle) are
         // merged into a single instanced draw call.
-        let mut gpu_instances: Vec<GpuInstance> = Vec::with_capacity(draw_commands.len());
-        let mut batches: Vec<DrawBatch> = Vec::new();
+        //
+        // The two working vectors are held on `self` as scratch buffers
+        // (`gpu_instances_scratch`, `batches_scratch`). `mem::take` moves
+        // them out so the rest of draw_frame can continue borrowing other
+        // fields of `self` without fighting the borrow checker; at the
+        // bottom of the function they are moved back, amortizing their
+        // capacity across frames. Error-path early returns lose the
+        // amortization for one frame only — acceptable since the draw
+        // has already failed. See issue #243.
+        let mut gpu_instances: Vec<GpuInstance> =
+            std::mem::take(&mut self.gpu_instances_scratch);
+        gpu_instances.clear();
+        gpu_instances.reserve(draw_commands.len() + 1); // +1 for optional UI quad
+        let mut batches: Vec<DrawBatch> = std::mem::take(&mut self.batches_scratch);
+        batches.clear();
+        batches.reserve(draw_commands.len());
 
         for draw_cmd in draw_commands {
             let Some(mesh) = self.mesh_registry.get(draw_cmd.mesh_handle) else {
@@ -616,6 +634,11 @@ impl VulkanContext {
 
         self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
         self.frame_counter = self.frame_counter.wrapping_add(1);
+
+        // Restore the scratch buffers to the context so their capacity
+        // amortizes across frames. See issue #243.
+        self.gpu_instances_scratch = gpu_instances;
+        self.batches_scratch = batches;
 
         Ok(suboptimal || present_suboptimal)
     }
