@@ -192,23 +192,36 @@ impl<'a> NifStream<'a> {
 
     /// Read a sized string (always length-prefixed, ignoring version).
     /// Used in headers and certain block fields.
+    ///
+    /// Tries zero-copy `String::from_utf8` first; falls back to lossy
+    /// replacement only when the bytes contain invalid UTF-8. Avoids
+    /// the unconditional copy from `from_utf8_lossy().into_owned()` on
+    /// the hot path (NIF strings are almost always valid ASCII). #254.
     pub fn read_sized_string(&mut self) -> io::Result<String> {
         let len = self.read_u32_le()? as usize;
         let bytes = self.read_bytes(len)?;
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+        match String::from_utf8(bytes.to_vec()) {
+            Ok(s) => Ok(s),
+            Err(e) => Ok(String::from_utf8_lossy(e.as_bytes()).into_owned()),
+        }
     }
 
     /// Read a short string (u8 length prefix + bytes).
+    ///
+    /// Same zero-copy-first strategy as `read_sized_string`. #254.
     pub fn read_short_string(&mut self) -> io::Result<String> {
         let len = self.read_u8()? as usize;
         let bytes = self.read_bytes(len)?;
         // Short strings include a null terminator
-        let s = if bytes.last() == Some(&0) {
-            String::from_utf8_lossy(&bytes[..bytes.len() - 1]).into_owned()
+        let trimmed = if bytes.last() == Some(&0) {
+            &bytes[..bytes.len() - 1]
         } else {
-            String::from_utf8_lossy(&bytes).into_owned()
+            &bytes[..]
         };
-        Ok(s)
+        match String::from_utf8(trimmed.to_vec()) {
+            Ok(s) => Ok(s),
+            Err(e) => Ok(String::from_utf8_lossy(e.as_bytes()).into_owned()),
+        }
     }
 
     /// Read a block reference (i32, where -1 = null).

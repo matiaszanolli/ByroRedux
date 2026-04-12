@@ -237,7 +237,10 @@ fn read_sized_string(cursor: &mut Cursor<&[u8]>) -> io::Result<String> {
     let len = read_u32_le(cursor)? as usize;
     let mut buf = vec![0u8; len];
     cursor.read_exact(&mut buf)?;
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    match String::from_utf8(buf) {
+        Ok(s) => Ok(s),
+        Err(e) => Ok(String::from_utf8_lossy(e.as_bytes()).into_owned()),
+    }
 }
 
 fn read_short_string(cursor: &mut Cursor<&[u8]>) -> io::Result<String> {
@@ -245,12 +248,13 @@ fn read_short_string(cursor: &mut Cursor<&[u8]>) -> io::Result<String> {
     let mut buf = vec![0u8; len];
     cursor.read_exact(&mut buf)?;
     // Short strings may include null terminator
-    let s = if buf.last() == Some(&0) {
-        String::from_utf8_lossy(&buf[..buf.len() - 1]).into_owned()
-    } else {
-        String::from_utf8_lossy(&buf).into_owned()
-    };
-    Ok(s)
+    if buf.last() == Some(&0) {
+        buf.pop();
+    }
+    match String::from_utf8(buf) {
+        Ok(s) => Ok(s),
+        Err(e) => Ok(String::from_utf8_lossy(e.as_bytes()).into_owned()),
+    }
 }
 
 #[cfg(test)]
