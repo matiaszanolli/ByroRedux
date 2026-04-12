@@ -1120,7 +1120,7 @@ mod tests {
         data.extend_from_slice(&0u32.to_le_bytes());
         // controller_ref: -1
         data.extend_from_slice(&(-1i32).to_le_bytes());
-        // BSShaderProperty: shader_flags (u16)
+        // NiShadeProperty: shade_flags (u16)
         data.extend_from_slice(&0u16.to_le_bytes());
         // shader_type (u32)
         data.extend_from_slice(&1u32.to_le_bytes());

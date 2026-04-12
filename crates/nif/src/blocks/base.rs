@@ -146,9 +146,20 @@ impl NiAVObjectData {
 ///
 /// Shared by BSShaderPPLightingProperty and BSShaderNoLightingProperty.
 /// BSLightingShaderProperty (Skyrim+) has a different layout and parses its own fields.
+///
+/// Inheritance chain on disk:
+///   NiProperty → NiShadeProperty → BSShaderProperty → BSShaderLightingProperty
+///
+/// The first u16 (`shade_flags`) is **NiShadeProperty.Flags**, *not*
+/// BSShaderProperty's own shader flags (which are the u32 pair
+/// `shader_flags_1` / `shader_flags_2`). Previously this field was
+/// named `shader_flags` which conflated the two levels. See #167.
 #[derive(Debug, Clone)]
 pub struct BSShaderPropertyData {
-    pub shader_flags: u16,
+    /// NiShadeProperty flags (u16) — smooth/specular bits at the
+    /// NiShadeProperty inheritance level. NOT the BSShaderProperty
+    /// u32 shader flags.
+    pub shade_flags: u16,
     pub shader_type: u32,
     pub shader_flags_1: u32,
     pub shader_flags_2: u32,
@@ -159,7 +170,7 @@ impl BSShaderPropertyData {
     /// Parse FO3-era BSShaderProperty + BSShaderLightingProperty base fields.
     /// Returns (shader_data, texture_clamp_mode).
     pub fn parse_fo3(stream: &mut NifStream) -> io::Result<(Self, u32)> {
-        let shader_flags = stream.read_u16_le()?;
+        let shade_flags = stream.read_u16_le()?;
         let shader_type = stream.read_u32_le()?;
         let shader_flags_1 = stream.read_u32_le()?;
         let shader_flags_2 = stream.read_u32_le()?;
@@ -170,7 +181,7 @@ impl BSShaderPropertyData {
 
         Ok((
             Self {
-                shader_flags,
+                shade_flags,
                 shader_type,
                 shader_flags_1,
                 shader_flags_2,

@@ -128,20 +128,32 @@ impl NifVariant {
     // Parsers call these instead of raw `user_version_2 >= N` checks.
 
     /// Bethesda compact material: ambient/diffuse omitted from NiMaterialProperty.
-    /// Present in FO3/FNV+ (user_version >= 11, user_version_2 > 21).
+    /// nif.xml: `BSVER >= 26` (i.e. FO3+, including FO76/Starfield).
     pub fn compact_material(self) -> bool {
         matches!(
             self,
-            Self::Fallout3 | Self::FalloutNV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4
+            Self::Fallout3
+                | Self::FalloutNV
+                | Self::SkyrimLE
+                | Self::SkyrimSE
+                | Self::Fallout4
+                | Self::Fallout76
+                | Self::Starfield
         )
     }
 
     /// NiMaterialProperty has an emissive multiplier float after alpha.
-    /// Present in FO3/FNV+ (user_version_2 >= 27).
+    /// nif.xml: `BSVER > 21` (i.e. FO3+, including FO76/Starfield).
     pub fn has_emissive_mult(self) -> bool {
         matches!(
             self,
-            Self::Fallout3 | Self::FalloutNV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4
+            Self::Fallout3
+                | Self::FalloutNV
+                | Self::SkyrimLE
+                | Self::SkyrimSE
+                | Self::Fallout4
+                | Self::Fallout76
+                | Self::Starfield
         )
     }
 
@@ -150,9 +162,7 @@ impl NifVariant {
     ///
     /// FO76/Starfield are intentionally excluded: those games emit
     /// BSLightingShaderProperty, not BSShaderPPLightingProperty, so this
-    /// predicate is never queried for them. Do NOT "fix" the exclusion —
-    /// see #169 for the same surface pattern on `compact_material()` and
-    /// `has_emissive_mult()`, where the exclusion is an actual bug.
+    /// predicate is never queried for them.
     pub fn has_shader_emissive_color(self) -> bool {
         matches!(
             self,
@@ -482,6 +492,19 @@ mod tests {
         assert!(!NifVariant::Oblivion.compact_material());
         assert!(NifVariant::FalloutNV.compact_material());
         assert!(NifVariant::SkyrimSE.compact_material());
+        assert!(NifVariant::Fallout4.compact_material());
+        assert!(NifVariant::Fallout76.compact_material());
+        assert!(NifVariant::Starfield.compact_material());
+    }
+
+    #[test]
+    fn feature_has_emissive_mult() {
+        assert!(!NifVariant::Oblivion.has_emissive_mult());
+        assert!(NifVariant::Fallout3.has_emissive_mult());
+        assert!(NifVariant::FalloutNV.has_emissive_mult());
+        assert!(NifVariant::Fallout4.has_emissive_mult());
+        assert!(NifVariant::Fallout76.has_emissive_mult());
+        assert!(NifVariant::Starfield.has_emissive_mult());
     }
 
     #[test]
