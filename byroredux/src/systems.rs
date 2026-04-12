@@ -363,7 +363,7 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         channel_names.sort_unstable();
         channel_names.dedup();
 
-        let mut updates: Vec<(EntityId, Vec3, Quat, f32)> = Vec::new();
+        let mut updates: Vec<(&str, EntityId, Vec3, Quat, f32)> = Vec::new();
         for channel_name in &channel_names {
             let Some(target_entity) = stack_resolve(channel_name) else {
                 continue;
@@ -371,18 +371,134 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
             if let Some((pos, rot, scale)) =
                 sample_blended_transform(stack, &registry, channel_name)
             {
-                updates.push((target_entity, pos, rot, scale));
+                updates.push((channel_name, target_entity, pos, rot, scale));
             }
         }
         drop(sq);
 
-        // Apply blended transforms.
+        // Determine the accum root name from the highest-weight active
+        // layer (for root motion splitting). Multiple layers may have
+        // different accum roots; use the dominant layer's setting since
+        // the blended position is dominated by its contribution.
+        let accum_root = {
+            let sq = world.query::<AnimationStack>().unwrap();
+            let stack = sq.get(entity).unwrap();
+            let mut best: Option<(&str, f32)> = None;
+            for layer in &stack.layers {
+                let ew = layer.effective_weight();
+                if ew < 0.001 { continue; }
+                if let Some(clip) = registry.get(layer.clip_handle) {
+                    if let Some(ref name) = clip.accum_root_name {
+                        if best.map_or(true, |(_, bw)| ew > bw) {
+                            best = Some((name.as_str(), ew));
+                        }
+                    }
+                }
+            }
+            best.map(|(n, _)| n.to_string())
+        };
+
+        // Apply blended transforms, with root motion splitting (AR-02).
         let mut tq = world.query_mut::<Transform>().unwrap();
-        for (target, pos, rot, scale) in updates {
+        let mut root_motion = Vec3::ZERO;
+        for &(name, target, pos, rot, scale) in &updates {
             if let Some(transform) = tq.get_mut(target) {
-                transform.translation = pos;
+                let is_accum = accum_root.as_deref() == Some(name);
+                if is_accum {
+                    let (anim_pos, delta) = split_root_motion(pos);
+                    transform.translation = anim_pos;
+                    root_motion += delta;
+                } else {
+                    transform.translation = pos;
+                }
                 transform.rotation = rot;
                 transform.scale = scale;
+            }
+        }
+        drop(tq);
+
+        // Write root motion delta.
+        if root_motion != Vec3::ZERO {
+            if let Some(mut rmq) = world.query_mut::<RootMotionDelta>() {
+                if let Some(rm) = rmq.get_mut(entity) {
+                    rm.0 = root_motion;
+                }
+            }
+        }
+
+        // AR-01: Apply non-transform channels from the highest-weight
+        // active layer. Float/color/bool channels don't blend naturally
+        // (alpha is binary-ish, visibility is boolean), so we take the
+        // dominant layer's sampled value rather than attempting a weighted
+        // average that would produce meaningless intermediate states.
+        //
+        // Clone the channel vecs from the dominant clip so we can drop
+        // the AnimationStack read lock before acquiring write locks on
+        // AnimatedAlpha / AnimatedColor / AnimatedVisibility.
+        let dominant_channels = {
+            let sq = world.query::<AnimationStack>().unwrap();
+            let stack = sq.get(entity).unwrap();
+            let dominant = stack
+                .layers
+                .iter()
+                .filter(|l| l.effective_weight() >= 0.001)
+                .max_by(|a, b| {
+                    a.effective_weight()
+                        .partial_cmp(&b.effective_weight())
+                        .unwrap()
+                });
+            dominant.and_then(|layer| {
+                let clip = registry.get(layer.clip_handle)?;
+                Some((
+                    layer.local_time,
+                    clip.float_channels.clone(),
+                    clip.color_channels.clone(),
+                    clip.bool_channels.clone(),
+                ))
+            })
+        };
+
+        if let Some((time, float_ch, color_ch, bool_ch)) = dominant_channels {
+            if !float_ch.is_empty() {
+                if let Some(mut aq) = world.query_mut::<AnimatedAlpha>() {
+                    for (channel_name, channel) in &float_ch {
+                        let Some(target_entity) = stack_resolve(channel_name) else {
+                            continue;
+                        };
+                        let value = sample_float_channel(channel, time);
+                        if channel.target == FloatTarget::Alpha {
+                            if let Some(a) = aq.get_mut(target_entity) {
+                                a.0 = value;
+                            }
+                        }
+                    }
+                }
+            }
+            if !color_ch.is_empty() {
+                if let Some(mut cq) = world.query_mut::<AnimatedColor>() {
+                    for (channel_name, channel) in &color_ch {
+                        let Some(target_entity) = stack_resolve(channel_name) else {
+                            continue;
+                        };
+                        let value = sample_color_channel(channel, time);
+                        if let Some(c) = cq.get_mut(target_entity) {
+                            c.0 = value;
+                        }
+                    }
+                }
+            }
+            if !bool_ch.is_empty() {
+                if let Some(mut vq) = world.query_mut::<AnimatedVisibility>() {
+                    for (channel_name, channel) in &bool_ch {
+                        let Some(target_entity) = stack_resolve(channel_name) else {
+                            continue;
+                        };
+                        let value = sample_bool_channel(channel, time);
+                        if let Some(v) = vq.get_mut(target_entity) {
+                            v.0 = value;
+                        }
+                    }
+                }
             }
         }
     }
