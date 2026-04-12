@@ -55,6 +55,11 @@ pub struct DrawCommand {
     pub index_offset: u32,
     /// Vertex count for this mesh.
     pub vertex_count: u32,
+    /// Camera-space depth for draw order sorting. Opaque draws are sorted
+    /// front-to-back (smaller depth first) for early-Z; transparent draws
+    /// are sorted back-to-front (larger depth first) for correct blending.
+    /// Encoded as `f32::to_bits()` for deterministic `sort_unstable_by_key`.
+    pub sort_depth: u32,
 }
 
 pub struct VulkanContext {

@@ -27,6 +27,7 @@ use header::NifHeader;
 use scene::NifScene;
 use std::collections::HashMap;
 use std::io;
+use std::sync::Arc;
 use stream::NifStream;
 
 /// Options for NIF parsing — allows skipping block categories for performance.
@@ -166,7 +167,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
             if let Some(size) = block_size {
                 stream.skip(size as u64)?;
                 blocks.push(Box::new(blocks::NiUnknown {
-                    type_name: type_name.to_string(),
+                    type_name: Arc::from(type_name),
                     data: Vec::new(), // Don't store data — just a placeholder
                 }));
                 continue;
@@ -221,7 +222,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                     );
                     stream.set_position(start_pos + size as u64);
                     blocks.push(Box::new(blocks::NiUnknown {
-                        type_name: type_name.to_string(),
+                        type_name: Arc::from(type_name),
                         data: Vec::new(),
                     }));
                     continue;
@@ -244,7 +245,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                             i, type_name, start_pos, skip_size, e
                         );
                         blocks.push(Box::new(blocks::NiUnknown {
-                            type_name: type_name.to_string(),
+                            type_name: Arc::from(type_name),
                             data: Vec::new(),
                         }));
                         continue;

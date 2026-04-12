@@ -125,7 +125,7 @@ pub(crate) fn build_render_data(
     }
 
     // Get camera view-projection + build frustum planes for culling.
-    let (view_proj, frustum) = if let Some(active) = world.try_resource::<ActiveCamera>() {
+    let (view_proj, frustum, vp_mat) = if let Some(active) = world.try_resource::<ActiveCamera>() {
         let cam_entity = active.0;
         drop(active);
 
@@ -144,9 +144,9 @@ pub(crate) fn build_render_data(
             _ => Mat4::IDENTITY,
         };
         let frustum = FrustumPlanes::from_view_proj(vp);
-        (vp.to_cols_array(), frustum)
+        (vp.to_cols_array(), frustum, vp)
     } else {
-        (Mat4::IDENTITY.to_cols_array(), FrustumPlanes::from_view_proj(Mat4::IDENTITY))
+        (Mat4::IDENTITY.to_cols_array(), FrustumPlanes::from_view_proj(Mat4::IDENTITY), Mat4::IDENTITY)
     };
 
     // ── Render-data query bundle (#246) ──────────────────────────────
@@ -259,10 +259,18 @@ pub(crate) fn build_render_data(
                     (0u32, 0u32, 0u32)
                 };
 
+                // Camera-space depth for draw order sorting. Transform
+                // the model position through the VP matrix and use the
+                // clip-space W (≈ linear depth) for sorting.
+                let model_mat = transform.to_matrix();
+                let pos = model_mat.col(3); // translation column
+                let clip = vp_mat * pos;
+                let sort_depth = clip.w.to_bits();
+
                 draw_commands.push(DrawCommand {
                     mesh_handle: mesh.0,
                     texture_handle: tex_handle,
-                    model_matrix: transform.to_matrix().to_cols_array(),
+                    model_matrix: model_mat.to_cols_array(),
                     alpha_blend,
                     two_sided,
                     is_decal,
@@ -277,19 +285,27 @@ pub(crate) fn build_render_data(
                     vertex_offset: v_off,
                     index_offset: i_off,
                     vertex_count: v_count,
+                    sort_depth,
                 });
             }
         }
     }
-    // Sort: opaque → decal → alpha; decals drawn after base geometry at
-    // same depth. Within a pipeline/texture cluster we also group by
-    // mesh_handle so `draw.rs` can skip redundant vertex/index buffer
-    // rebinds when consecutive draws share a mesh. See issue #50.
+    // Sort: opaque → decal → alpha. Within each group:
+    //   Opaque: front-to-back (smaller depth first) for early-Z rejection.
+    //   Transparent: back-to-front (larger depth first) for correct blending.
+    // Within same depth bucket, group by pipeline key and mesh handle so
+    // draw.rs can skip redundant pipeline/buffer rebinds. See #50, #241.
     draw_commands.sort_unstable_by_key(|cmd| {
+        let depth_key = if cmd.alpha_blend {
+            !cmd.sort_depth // back-to-front: invert bits so larger depth sorts first
+        } else {
+            cmd.sort_depth // front-to-back: smaller depth first
+        };
         (
             cmd.alpha_blend,
             cmd.is_decal,
             cmd.two_sided,
+            depth_key,
             cmd.texture_handle,
             cmd.mesh_handle,
         )

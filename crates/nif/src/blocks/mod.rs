@@ -63,6 +63,7 @@ use skin::{
 use std::any::Any;
 use std::fmt::Debug;
 use std::io;
+use std::sync::Arc;
 use texture::{NiPixelData, NiSourceTexture};
 use tri_shape::{NiTriShape, NiTriShapeData, NiTriStripsData};
 
@@ -89,7 +90,10 @@ pub trait NiObject: Debug + Send + Sync {
 /// Preserved so block indices remain valid.
 #[derive(Debug)]
 pub struct NiUnknown {
-    pub type_name: String,
+    /// Original block type name from the NIF header. `Arc<str>` instead
+    /// of `String` to avoid a per-unknown-block allocation — many unknown
+    /// blocks share the same type name. See #248.
+    pub type_name: Arc<str>,
     pub data: Vec<u8>,
 }
 
@@ -585,7 +589,7 @@ pub fn parse_block(
             if let Some(size) = block_size {
                 stream.skip(size as u64)?;
                 Ok(Box::new(NiUnknown {
-                    type_name: type_name.to_string(),
+                    type_name: Arc::from(type_name),
                     data: Vec::new(),
                 }))
             } else {
@@ -607,7 +611,7 @@ pub fn parse_block(
                     start
                 );
                 Ok(Box::new(NiUnknown {
-                    type_name: type_name.to_string(),
+                    type_name: Arc::from(type_name),
                     data: Vec::new(),
                 }))
             } else {
