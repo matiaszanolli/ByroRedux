@@ -65,10 +65,26 @@ pub(crate) struct CellLightingRes {
 impl Resource for CellLightingRes {}
 
 /// Cached name→entity mapping for the animation system.
-/// Rebuilt only when the entity count changes (no per-frame allocations).
+///
+/// Rebuilt only when the count of `Name` components changes. Previously
+/// the generation tracked `world.next_entity_id()`, which forced a full
+/// rebuild on every entity spawn regardless of whether the spawn
+/// involved a `Name` — a 3000-entity cell load with only 500 named
+/// entities still triggered one rebuild on the next frame. Using the
+/// `Name` storage size as the generation means only spawns/despawns
+/// that actually touch `Name` invalidate the cache. See #249.
+///
+/// Edge case: in-place `Name` replacement (re-inserting `Name` on an
+/// existing entity without removing it first) does not change the
+/// count and therefore does not invalidate the index. No code in the
+/// engine currently renames entities after spawn, so this is not a
+/// concern today — add an explicit `invalidate()` call if that
+/// changes.
 pub(crate) struct NameIndex {
     pub(crate) map: HashMap<FixedString, EntityId>,
-    pub(crate) generation: u32,
+    /// Count of `Name` components seen at the last rebuild. `usize::MAX`
+    /// on a fresh index so the first comparison always rebuilds.
+    pub(crate) generation: usize,
 }
 impl Resource for NameIndex {}
 
@@ -76,7 +92,7 @@ impl NameIndex {
     pub(crate) fn new() -> Self {
         Self {
             map: HashMap::new(),
-            generation: u32::MAX, // Force rebuild on first use.
+            generation: usize::MAX, // Force rebuild on first use.
         }
     }
 }

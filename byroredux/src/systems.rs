@@ -135,12 +135,16 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         std::collections::HashMap<FixedString, EntityId>,
     > = std::collections::HashMap::new();
 
-    // Rebuild name→entity index only when entities have been added.
-    let current_gen = world.next_entity_id();
+    // Rebuild name→entity index only when the count of Name components
+    // has changed. `QueryRead::len()` is O(1) (reads the storage's
+    // element count) so the check itself is cheap. See #249 — before
+    // this fix the generation tracked `world.next_entity_id()` and
+    // every entity spawn (even unnamed ones) forced a full rebuild.
     {
+        let current_name_count = world.query::<Name>().map(|q| q.len()).unwrap_or(0);
         let needs_rebuild = world
             .try_resource::<NameIndex>()
-            .map(|idx| idx.generation != current_gen)
+            .map(|idx| idx.generation != current_name_count)
             .unwrap_or(true);
         if needs_rebuild {
             let name_query = match world.query::<Name>() {
@@ -154,7 +158,7 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
             drop(name_query);
             let mut idx = world.resource_mut::<NameIndex>();
             idx.map = new_map;
-            idx.generation = current_gen;
+            idx.generation = current_name_count;
         }
     }
 
