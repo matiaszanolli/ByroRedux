@@ -87,8 +87,11 @@ impl NifHeader {
         let num_blocks = read_u32_le(&mut cursor)?;
 
         // BSStreamHeader presence — per nif.xml `#BSSTREAMHEADER#`:
-        //   - v10.0.1.2 always has it (it was the first Bethesda Gamebryo)
-        //   - Other versions only have it when user_version >= 3
+        //   (VER == 10.0.1.2)
+        //   OR ((VER in {20.2.0.7, 20.0.0.5}
+        //        OR (10.1.0.0 <= VER <= 20.0.0.4 AND USER <= 11))
+        //       AND USER >= 3)
+        //
         // The struct itself reads:
         //   BS Version    u32                                 (== `user_version_2`)
         //   Author        ExportString
@@ -96,7 +99,15 @@ impl NifHeader {
         //   Process Script ExportString, only if BS Version < 131  (≤ FO4)
         //   Export Script ExportString
         //   Max Filepath  ExportString, only if BS Version >= 103  (FO4+)
-        let has_bs_stream_header = version == NifVersion(0x0A000102) || user_version >= 3;
+        //
+        // Previously `user_version >= 3` alone (no version guard) — see #170.
+        let has_bs_stream_header = version == NifVersion(0x0A000102)
+            || (user_version >= 3
+                && (version == NifVersion::V20_2_0_7
+                    || version == NifVersion(0x14000005) // 20.0.0.5
+                    || (version >= NifVersion(0x0A010000) // 10.1.0.0
+                        && version <= NifVersion(0x14000004) // 20.0.0.4
+                        && user_version <= 11)));
         let user_version_2 = if has_bs_stream_header {
             read_u32_le(&mut cursor)?
         } else {
@@ -116,8 +127,9 @@ impl NifHeader {
             }
         }
 
-        // Block types table (version >= 10.0.1.0)
-        let (block_types, block_type_indices) = if version >= NifVersion(0x0A000100) {
+        // Block types table — nif.xml: since 5.0.0.1. Previously gated at
+        // 10.0.1.0 which missed any 5.x–10.0.0.x file. See #171.
+        let (block_types, block_type_indices) = if version >= NifVersion(0x05000001) {
             let num_block_types = read_u16_le(&mut cursor)? as usize;
             let mut types = Vec::with_capacity(num_block_types);
             for _ in 0..num_block_types {
@@ -132,8 +144,9 @@ impl NifHeader {
             (Vec::new(), Vec::new())
         };
 
-        // Block sizes (version >= 20.2.0.7)
-        let block_sizes = if version >= NifVersion::V20_2_0_7 {
+        // Block sizes — nif.xml: since 20.2.0.5. Previously gated at
+        // 20.2.0.7 which missed 20.2.0.5 and 20.2.0.6 files. See #171.
+        let block_sizes = if version >= NifVersion(0x14020005) {
             let mut sizes = Vec::with_capacity(num_blocks as usize);
             for _ in 0..num_blocks {
                 sizes.push(read_u32_le(&mut cursor)?);
@@ -158,8 +171,9 @@ impl NifHeader {
             (Vec::new(), 0)
         };
 
-        // Number of groups (version >= 10.0.1.0)
-        let num_groups = if version >= NifVersion(0x0A000100) {
+        // Number of groups — nif.xml: since 5.0.0.6. Previously gated at
+        // 10.0.1.0 which missed any 5.x–10.0.0.x file. See #171.
+        let num_groups = if version >= NifVersion(0x05000006) {
             read_u32_le(&mut cursor)?
         } else {
             0
@@ -400,5 +414,65 @@ mod tests {
         // Old versions don't have user_version, block types, etc.
         assert_eq!(header.user_version, 0);
         assert!(header.block_types.is_empty());
+    }
+
+    /// Regression for #170: BSStreamHeader must NOT be read for a
+    /// non-Bethesda file with user_version >= 3 at a version outside the
+    /// nif.xml-specified BSStreamHeader range. v20.1.0.0 is NOT 10.0.1.2,
+    /// NOT 20.0.0.5, NOT 20.2.0.7, and NOT in 10.1.0.0–20.0.0.4.
+    /// Previously `user_version >= 3` alone triggered the read, which
+    /// would consume bytes from the block-type table as a bogus
+    /// BSStreamHeader.
+    #[test]
+    fn bs_stream_header_not_read_for_off_spec_version() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"Gamebryo File Format, Version 20.1.0.0\n");
+        buf.extend_from_slice(&0x14010000u32.to_le_bytes()); // v20.1.0.0
+        buf.push(1); // little-endian (>= 20.0.0.4)
+        buf.extend_from_slice(&4u32.to_le_bytes()); // user_version = 4
+        buf.extend_from_slice(&0u32.to_le_bytes()); // num_blocks = 0
+        // No BSStreamHeader should follow. Next: block_types (since 5.0.0.1).
+        buf.extend_from_slice(&0u16.to_le_bytes()); // num_block_types = 0
+        // No block_sizes (version < 20.2.0.5).
+        // No string table (version < 20.1.0.1).
+        // num_groups:
+        buf.extend_from_slice(&0u32.to_le_bytes());
+
+        let (header, offset) = NifHeader::parse(&buf).unwrap();
+        assert_eq!(header.version, NifVersion(0x14010000));
+        assert_eq!(header.user_version, 4);
+        assert_eq!(header.user_version_2, 0);
+        assert_eq!(header.num_blocks, 0);
+        assert_eq!(offset, buf.len());
+    }
+
+    /// Regression for #171: block_sizes should be present at v20.2.0.5,
+    /// not just v20.2.0.7.
+    #[test]
+    fn block_sizes_present_at_20_2_0_5() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"Gamebryo File Format, Version 20.2.0.5\n");
+        buf.extend_from_slice(&0x14020005u32.to_le_bytes()); // 20.2.0.5
+        buf.push(1); // little-endian
+        buf.extend_from_slice(&0u32.to_le_bytes()); // user_version = 0 (non-Bethesda)
+        buf.extend_from_slice(&1u32.to_le_bytes()); // num_blocks = 1
+        // No BSStreamHeader (user_version < 3 and version != 10.0.1.2).
+        // Block types since >= 5.0.0.1:
+        buf.extend_from_slice(&1u16.to_le_bytes()); // num_block_types
+        buf.extend_from_slice(&6u32.to_le_bytes()); // "NiNode"
+        buf.extend_from_slice(b"NiNode");
+        buf.extend_from_slice(&0u16.to_le_bytes()); // block 0 → type 0
+        // Block sizes since >= 20.2.0.5:
+        buf.extend_from_slice(&100u32.to_le_bytes()); // block 0 size
+        // String table since >= 20.1.0.1:
+        buf.extend_from_slice(&0u32.to_le_bytes()); // num_strings
+        buf.extend_from_slice(&0u32.to_le_bytes()); // max_string_length
+        // num_groups:
+        buf.extend_from_slice(&0u32.to_le_bytes());
+
+        let (header, offset) = NifHeader::parse(&buf).unwrap();
+        assert_eq!(header.block_sizes, vec![100]);
+        assert_eq!(header.block_types, vec!["NiNode"]);
+        assert_eq!(offset, buf.len());
     }
 }
