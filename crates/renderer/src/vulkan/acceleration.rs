@@ -188,6 +188,13 @@ impl AccelerationManager {
             }
 
             // SAFETY: scratch buffer was just created with SHADER_DEVICE_ADDRESS flag.
+            // NOTE: scratch device address should be aligned to
+            // minAccelerationStructureScratchOffsetAlignment (typically
+            // 128 or 256). gpu-allocator returns GpuOnly allocations at
+            // 256+ alignment on all known desktop drivers, but this is not
+            // explicitly guaranteed. A future hardening pass should query
+            // the property at device selection and enforce alignment here.
+            // See #260 (R-05).
             let scratch_address = unsafe {
                 device.get_buffer_device_address(
                     &vk::BufferDeviceAddressInfo::default()
@@ -438,6 +445,7 @@ impl AccelerationManager {
                 old_scratch.destroy(device, allocator);
             }
             // DEVICE_LOCAL: GPU-only scratch space during TLAS build.
+            // NOTE: same scratch alignment caveat as BLAS — see #260 (R-05).
             let scratch_result = GpuBuffer::create_device_local_uninit(
                 device,
                 allocator,

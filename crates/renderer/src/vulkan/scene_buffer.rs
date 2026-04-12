@@ -42,7 +42,7 @@ pub const MAX_INSTANCES: usize = 4096;
 /// 16 bytes (same as vec4), which would silently mismatch a tightly-packed
 /// `#[repr(C)]` Rust struct where `[f32; 3]` is only 12 bytes.
 ///
-/// Layout: 112 bytes per instance, 16-byte aligned (pad to 112 = 7×16).
+/// Layout: 128 bytes per instance, 16-byte aligned (8×16).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuInstance {
@@ -111,7 +111,7 @@ pub struct GpuLight {
     pub direction_angle: [f32; 4],
 }
 
-/// GPU-side camera data (112 bytes, std140-compatible).
+/// GPU-side camera data (192 bytes, std140-compatible).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuCamera {

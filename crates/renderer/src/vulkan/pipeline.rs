@@ -411,7 +411,7 @@ pub fn create_ui_pipeline(
         .stencil_test_enable(false);
 
     // Alpha blending for UI transparency.
-    // Main render pass has 4 color attachments. UI writes to HDR (slot 0)
+    // Main render pass has 6 color attachments. UI writes to HDR (slot 0)
     // with alpha blending and masks out writes to normal/motion/mesh_id
     // via color_write_mask(empty) so UI doesn't pollute the G-buffer.
     let ui_hdr_blend = vk::PipelineColorBlendAttachmentState::default()

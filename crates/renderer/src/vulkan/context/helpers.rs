@@ -73,8 +73,6 @@ pub(super) fn create_render_pass(
     let raw_indirect_attachment = make_color(raw_indirect_format);
     let albedo_attachment = make_color(albedo_format);
 
-    // Depth store DONT_CARE — cleared each frame, never sampled afterward.
-    // Saves bandwidth on tile-based GPUs (skips depth writeback to memory).
     // Depth is STORED (not DONT_CARE) so the SSAO compute pass can read it
     // after the render pass. Final layout is READ_ONLY for shader sampling.
     let depth_attachment = vk::AttachmentDescription::default()

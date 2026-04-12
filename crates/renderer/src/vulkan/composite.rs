@@ -38,9 +38,12 @@ use gpu_allocator::vulkan as vk_alloc;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct CompositeParams {
-    /// xyz = RGB, w = fog enabled (1.0 = yes, 0.0 = no)
+    /// xyz = RGB, w = fog enabled (1.0 = yes, 0.0 = no).
+    /// Currently populated but unused — fog is applied in the main pass
+    /// (triangle.frag), not the composite pass. Kept for future use when
+    /// fog may move to composite for HDR-correct application. See #260 (R-09).
     pub fog_color: [f32; 4],
-    /// x = fog near, y = fog far, z/w = unused
+    /// x = fog near, y = fog far, z/w = unused. See fog_color note.
     pub fog_params: [f32; 4],
     /// Reserved for future use (camera near/far, debug flags, etc.)
     pub depth_params: [f32; 4],
