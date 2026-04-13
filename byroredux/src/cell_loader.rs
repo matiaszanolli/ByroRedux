@@ -159,21 +159,30 @@ pub fn load_exterior_cells(
         None => None,
     };
 
-    // Collect all references from cells in the grid.
+    // Collect all references from cells in the grid and spawn terrain meshes.
     let mut all_refs = Vec::new();
     let mut cells_loaded = 0u32;
+    let mut terrain_entities = 0usize;
     if let Some(cells_map) = wrld_cells {
         for gx in (center_x - radius)..=(center_x + radius) {
             for gy in (center_y - radius)..=(center_y + radius) {
                 if let Some(cell) = cells_map.get(&(gx, gy)) {
+                    let has_land = cell.landscape.is_some();
                     log::info!(
-                        "  Cell ({},{}) '{}': {} references",
+                        "  Cell ({},{}) '{}': {} references{}",
                         gx,
                         gy,
                         cell.editor_id,
                         cell.references.len(),
+                        if has_land { " + LAND" } else { "" },
                     );
                     all_refs.extend_from_slice(&cell.references);
+                    // Spawn terrain mesh from LAND heightmap.
+                    if let Some(ref land) = cell.landscape {
+                        if let Some(count) = spawn_terrain_mesh(world, ctx, gx, gy, land) {
+                            terrain_entities += count;
+                        }
+                    }
                     cells_loaded += 1;
                 }
             }
@@ -182,11 +191,12 @@ pub fn load_exterior_cells(
 
     let grid_size = (radius * 2 + 1) as u32;
     log::info!(
-        "Found {}/{} cells in {}x{} grid",
+        "Found {}/{} cells in {}x{} grid ({} terrain meshes)",
         cells_loaded,
         grid_size * grid_size,
         grid_size,
         grid_size,
+        terrain_entities,
     );
 
     let label = format!("exterior({},{})", center_x, center_y);
@@ -194,11 +204,142 @@ pub fn load_exterior_cells(
 
     Ok(CellLoadResult {
         cell_name: format!("{} ({},{})", wrld_name, center_x, center_y),
-        entity_count: result.entity_count,
-        mesh_count: result.mesh_count,
+        entity_count: result.entity_count + terrain_entities,
+        mesh_count: result.mesh_count + terrain_entities,
         center: result.center,
         lighting: None,
     })
+}
+
+/// Generate a terrain mesh from LAND heightmap data and spawn it as an entity.
+///
+/// Each exterior cell's LAND record has a 33×33 vertex grid spanning
+/// 4096×4096 Bethesda units (128-unit vertex spacing). We generate a
+/// triangle mesh from this grid with proper normals and vertex colors,
+/// upload it to the GPU, and attach it to a new ECS entity.
+///
+/// Coordinate conversion: Bethesda uses Z-up; we convert to Y-up:
+///   world_x = grid_x * 4096 + col * 128  → X
+///   world_z = heights[row][col]           → Y (up)
+///   world_y = grid_y * 4096 + row * 128   → -Z (negate for Y-up)
+fn spawn_terrain_mesh(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    grid_x: i32,
+    grid_y: i32,
+    land: &esm::cell::LandscapeData,
+) -> Option<usize> {
+    use byroredux_renderer::Vertex;
+
+    const CELL_SIZE: f32 = 4096.0;
+    const GRID: usize = 33;
+    const SPACING: f32 = CELL_SIZE / 32.0; // 128.0
+
+    let origin_x = grid_x as f32 * CELL_SIZE;
+    let origin_y = grid_y as f32 * CELL_SIZE;
+
+    // Build vertices (33×33 = 1089).
+    let mut vertices = Vec::with_capacity(GRID * GRID);
+    for row in 0..GRID {
+        for col in 0..GRID {
+            let idx = row * GRID + col;
+
+            // World-space position (Z-up → Y-up conversion).
+            let bx = origin_x + col as f32 * SPACING;
+            let by = origin_y + row as f32 * SPACING;
+            let bz = land.heights[idx];
+            let position = [bx, bz, -by]; // X stays, Z→Y(up), -Y→Z
+
+            // Normal (from VNML bytes or default up).
+            let normal = if let Some(ref nml) = land.normals {
+                let ni = idx * 3;
+                // VNML bytes are unsigned 0–255, center at 128 = zero.
+                // Bethesda Z-up: X, Y, Z → convert to Y-up: X, Z, -Y.
+                let nx = (nml[ni] as f32 - 128.0) / 127.0;
+                let ny = (nml[ni + 1] as f32 - 128.0) / 127.0;
+                let nz = (nml[ni + 2] as f32 - 128.0) / 127.0;
+                // Z-up to Y-up: (nx, nz, -ny)
+                let len = (nx * nx + nz * nz + ny * ny).sqrt().max(0.001);
+                [nx / len, nz / len, -ny / len]
+            } else {
+                [0.0, 1.0, 0.0] // default up
+            };
+
+            // Vertex color (from VCLR bytes or default white).
+            let color = if let Some(ref vc) = land.vertex_colors {
+                let ci = idx * 3;
+                [
+                    vc[ci] as f32 / 255.0,
+                    vc[ci + 1] as f32 / 255.0,
+                    vc[ci + 2] as f32 / 255.0,
+                ]
+            } else {
+                [1.0, 1.0, 1.0]
+            };
+
+            // UV: tile across the cell (0–1 per cell, repeats for texture).
+            let uv = [col as f32 / 32.0, 1.0 - row as f32 / 32.0];
+
+            vertices.push(Vertex::new(position, color, normal, uv));
+        }
+    }
+
+    // Build indices (32×32 quads × 2 triangles = 2048 triangles).
+    let mut indices = Vec::with_capacity(32 * 32 * 6);
+    for row in 0..32u32 {
+        for col in 0..32u32 {
+            let tl = row * GRID as u32 + col;
+            let tr = tl + 1;
+            let bl = (row + 1) * GRID as u32 + col;
+            let br = bl + 1;
+            // Two triangles per quad (CCW winding for Vulkan front face).
+            indices.push(tl);
+            indices.push(bl);
+            indices.push(tr);
+            indices.push(tr);
+            indices.push(bl);
+            indices.push(br);
+        }
+    }
+
+    // Upload to GPU.
+    let allocator = ctx.allocator.as_ref()?;
+    let mesh_handle = match ctx.mesh_registry.upload(
+        &ctx.device,
+        allocator,
+        &ctx.graphics_queue,
+        ctx.transfer_pool,
+        &vertices,
+        &indices,
+        ctx.device_caps.ray_query_supported,
+        None,
+    ) {
+        Ok(h) => h,
+        Err(e) => {
+            log::warn!("Failed to upload terrain mesh ({},{}): {}", grid_x, grid_y, e);
+            return None;
+        }
+    };
+
+    // Spawn ECS entity at origin (vertices are already in world-space).
+    let entity = world.spawn();
+    world.insert(entity, Transform::IDENTITY);
+    world.insert(entity, GlobalTransform::IDENTITY);
+    world.insert(entity, MeshHandle(mesh_handle));
+    // No texture — terrain uses vertex colors for now. The checkerboard
+    // fallback texture provides a recognizable pattern until proper
+    // LTEX texture splatting is implemented.
+
+    log::debug!(
+        "Terrain mesh ({},{}): {} verts, {} tris, height range {:.0}–{:.0}",
+        grid_x, grid_y,
+        vertices.len(),
+        indices.len() / 3,
+        land.heights.iter().cloned().fold(f32::INFINITY, f32::min),
+        land.heights.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
+    );
+
+    Some(1)
 }
 
 /// Result of loading references from one or more cells.

@@ -25,6 +25,24 @@ pub struct CellLighting {
     pub fog_far: f32,
 }
 
+/// Landscape heightmap data from a LAND record.
+///
+/// Each exterior cell has a 33×33 vertex grid spanning 4096×4096 game units.
+/// Vertex spacing is 128 units. The first row/column overlap with neighboring
+/// cells for seamless terrain stitching.
+#[derive(Debug, Clone)]
+pub struct LandscapeData {
+    /// Decoded heightmap: 33×33 heights in game units (Z-up).
+    /// Index: `[row * 33 + col]`, row 0 = south edge, col 0 = west edge.
+    pub heights: Vec<f32>,
+    /// Vertex normals: 33×33 × 3 bytes (X, Y, Z as unsigned bytes 0–255,
+    /// mapping to -1.0–1.0 via `(b - 127) / 127`). None if VNML absent.
+    pub normals: Option<Vec<u8>>,
+    /// Vertex colors: 33×33 × 3 bytes (R, G, B as unsigned bytes 0–255).
+    /// None if VCLR absent.
+    pub vertex_colors: Option<Vec<u8>>,
+}
+
 /// A cell (interior or exterior) with its placed object references.
 #[derive(Debug)]
 pub struct CellData {
@@ -36,6 +54,8 @@ pub struct CellData {
     pub grid: Option<(i32, i32)>,
     /// Interior cell lighting (from XCLL subrecord).
     pub lighting: Option<CellLighting>,
+    /// Landscape terrain data (from LAND record, exterior cells only).
+    pub landscape: Option<LandscapeData>,
 }
 
 /// A placed object reference within a cell (REFR or ACHR).
@@ -172,7 +192,8 @@ fn parse_cell_group(
                     if let Some((_, ref editor_id)) = current_cell {
                         let key = editor_id.to_ascii_lowercase();
                         let mut refs = Vec::new();
-                        parse_refr_group(reader, sub_end, &mut refs)?;
+                        let mut _land = None; // Interior cells don't have LAND records
+                        parse_refr_group(reader, sub_end, &mut refs, &mut _land)?;
                         if let Some(cell) = cells.get_mut(&key) {
                             cell.references.extend(refs);
                         }
@@ -282,6 +303,7 @@ fn parse_cell_group(
                             is_interior: true,
                             grid: None,
                             lighting: lighting.clone(),
+                            landscape: None,
                         },
                     );
                     current_cell = Some((header.form_id, editor_id));
@@ -296,14 +318,19 @@ fn parse_cell_group(
     Ok(())
 }
 
-/// Parse REFR records within a cell children group.
-fn parse_refr_group(reader: &mut EsmReader, end: usize, refs: &mut Vec<PlacedRef>) -> Result<()> {
+/// Parse REFR and LAND records within a cell children group.
+fn parse_refr_group(
+    reader: &mut EsmReader,
+    end: usize,
+    refs: &mut Vec<PlacedRef>,
+    landscape: &mut Option<LandscapeData>,
+) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
-            // Nested groups within cell children — recurse to find REFR records.
+            // Nested groups within cell children — recurse.
             let sub = reader.read_group_header()?;
             let sub_end = reader.position() + sub.total_size as usize - 24;
-            parse_refr_group(reader, sub_end, refs)?;
+            parse_refr_group(reader, sub_end, refs, landscape)?;
             continue;
         }
 
@@ -366,12 +393,75 @@ fn parse_refr_group(reader: &mut EsmReader, end: usize, refs: &mut Vec<PlacedRef
                     scale,
                 });
             }
+        } else if &header.record_type == b"LAND" {
+            // Parse landscape heightmap, normals, and vertex colors.
+            if let Ok(land) = parse_land_record(reader, &header) {
+                *landscape = Some(land);
+            } else {
+                log::warn!("LAND record parse failed (form {:08X})", header.form_id);
+            }
         } else {
-            // Skip other record types (PGRE, PMIS, LAND, NAVM, etc.)
+            // Skip other record types (PGRE, PMIS, NAVM, etc.)
             reader.skip_record(&header);
         }
     }
     Ok(())
+}
+
+/// Decode a LAND record's VHGT, VNML, and VCLR sub-records.
+///
+/// VHGT encoding (from UESP): the heightmap is delta-encoded with a
+/// column-then-row accumulator scheme. See the UESP wiki "Vertex Height
+/// Data" section for the canonical algorithm.
+fn parse_land_record(
+    reader: &mut EsmReader,
+    header: &super::reader::RecordHeader,
+) -> Result<LandscapeData> {
+    let subs = reader.read_sub_records(header)?;
+
+    let mut heights = vec![0.0f32; 33 * 33];
+    let mut normals: Option<Vec<u8>> = None;
+    let mut vertex_colors: Option<Vec<u8>> = None;
+
+    for sub in &subs {
+        match sub.sub_type.as_slice() {
+            b"VHGT" if sub.data.len() >= 1093 => {
+                // UESP VHGT algorithm: delta-encoded heightmap.
+                // Byte 0–3: offset (f32). Bytes 4–1092: 33×33 signed byte deltas.
+                // Each unit = 8 game units. Column 0 of each row accumulates
+                // into a running row-start offset; columns 1–32 accumulate
+                // across the row from that start.
+                let base_offset = f32::from_le_bytes([
+                    sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                ]);
+                let mut offset = base_offset * 8.0;
+                for row in 0..33usize {
+                    let first_delta = sub.data[4 + row * 33] as i8 as f32 * 8.0;
+                    offset += first_delta;
+                    heights[row * 33] = offset;
+                    let mut col_accum = offset;
+                    for col in 1..33usize {
+                        let d = sub.data[4 + row * 33 + col] as i8 as f32 * 8.0;
+                        col_accum += d;
+                        heights[row * 33 + col] = col_accum;
+                    }
+                }
+            }
+            b"VNML" if sub.data.len() >= 3267 => {
+                normals = Some(sub.data[..3267].to_vec());
+            }
+            b"VCLR" if sub.data.len() >= 3267 => {
+                vertex_colors = Some(sub.data[..3267].to_vec());
+            }
+            _ => {}
+        }
+    }
+
+    Ok(LandscapeData {
+        heights,
+        normals,
+        vertex_colors,
+    })
 }
 
 /// Walk the WRLD group hierarchy to find exterior cells and their placed references.
@@ -445,9 +535,13 @@ fn parse_wrld_children(
                 6 | 8 | 9 => {
                     if let Some(grid) = current_cell {
                         let mut refs = Vec::new();
-                        parse_refr_group(reader, sub_end, &mut refs)?;
+                        let mut land = None;
+                        parse_refr_group(reader, sub_end, &mut refs, &mut land)?;
                         if let Some(cell) = exterior_cells.get_mut(&grid) {
                             cell.references.extend(refs);
+                            if land.is_some() && cell.landscape.is_none() {
+                                cell.landscape = land;
+                            }
                         }
                     } else {
                         reader.skip_group(&sub_group);
@@ -496,6 +590,7 @@ fn parse_wrld_children(
                             is_interior: false,
                             grid: Some(g),
                             lighting: None,
+                            landscape: None,
                         },
                     );
                     current_cell = Some(g);
@@ -679,7 +774,8 @@ mod tests {
         let mut reader = EsmReader::new(&record);
         let end = record.len();
         let mut refs = Vec::new();
-        parse_refr_group(&mut reader, end, &mut refs).unwrap();
+        let mut land = None;
+        parse_refr_group(&mut reader, end, &mut refs, &mut land).unwrap();
 
         assert_eq!(refs.len(), 1);
         let r = &refs[0];
