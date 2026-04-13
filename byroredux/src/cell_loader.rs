@@ -205,11 +205,32 @@ pub fn load_exterior_cells(
     let label = format!("exterior({},{})", center_x, center_y);
     let result = load_references(&all_refs, &index, world, ctx, tex_provider, &label);
 
+    // Camera spawn: use terrain height at the center cell's midpoint
+    // so the camera starts at ground level instead of inside the terrain.
+    let spawn_center = if let Some(cells_map) = wrld_cells {
+        if let Some(cell) = cells_map.get(&(center_x, center_y)) {
+            if let Some(ref land) = cell.landscape {
+                // Sample the center of the 33×33 grid (vertex 16,16).
+                let mid_height = land.heights[16 * 33 + 16];
+                let world_x = center_x as f32 * 4096.0 + 16.0 * 128.0;
+                let world_y = center_y as f32 * 4096.0 + 16.0 * 128.0;
+                // Z-up → Y-up: (x, height, -y), plus 200 units above ground.
+                Vec3::new(world_x, mid_height + 200.0, -world_y)
+            } else {
+                result.center
+            }
+        } else {
+            result.center
+        }
+    } else {
+        result.center
+    };
+
     Ok(CellLoadResult {
         cell_name: format!("{} ({},{})", wrld_name, center_x, center_y),
         entity_count: result.entity_count + terrain_entities,
         mesh_count: result.mesh_count + terrain_entities,
-        center: result.center,
+        center: spawn_center,
         lighting: None,
     })
 }
@@ -335,13 +356,22 @@ fn spawn_terrain_mesh(
     let tex_handle = {
         let base_ltex = land.quadrants.iter().find_map(|q| q.base);
         if let Some(ltex_id) = base_ltex {
-            if let Some(tex_path) = landscape_textures.get(&ltex_id) {
+            if ltex_id == 0 {
+                // BTXT with form ID 0 = "default dirt" per UESP.
+                // Try the engine's built-in fallback dirt texture.
+                resolve_texture(ctx, tex_provider, Some("textures\\landscape\\dirt02.dds"))
+            } else if let Some(tex_path) = landscape_textures.get(&ltex_id) {
                 resolve_texture(ctx, tex_provider, Some(tex_path.as_str()))
             } else {
+                log::debug!(
+                    "Terrain ({},{}): LTEX {:08X} not in landscape_textures map",
+                    grid_x, grid_y, ltex_id,
+                );
                 0 // fallback
             }
         } else {
-            0 // fallback
+            // No BTXT at all — try default dirt.
+            resolve_texture(ctx, tex_provider, Some("textures\\landscape\\dirt02.dds"))
         }
     };
 
