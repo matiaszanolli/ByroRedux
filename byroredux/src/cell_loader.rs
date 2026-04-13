@@ -509,10 +509,30 @@ fn load_references(
             continue;
         }
 
-        // Skip non-renderable effect meshes (light rays, halos, fog).
+        // Skip non-renderable meshes: editor markers, effect sprites, fog.
         // Still spawn the ESM light entity if this LIGH record carries one —
         // the effect mesh is visual-only but the point light is real.
         let model_lower = stat.model_path.to_ascii_lowercase();
+
+        // Extract the filename (after the last \ or /) for prefix matching.
+        let filename = model_lower
+            .rsplit(|c| c == '\\' || c == '/')
+            .next()
+            .unwrap_or(&model_lower);
+
+        if filename.starts_with("marker")
+            || filename.starts_with("xmarker")
+            || filename.starts_with("defaultsetmarker")
+            || filename.starts_with("doormarker")
+            || filename.starts_with("northmarker")
+            || filename.starts_with("prisonmarker")
+            || filename.starts_with("travelmarker")
+            || filename.starts_with("roommarker")
+            || filename.starts_with("vatsmarker")
+        {
+            continue;
+        }
+
         if model_lower.contains("fxlightrays")
             || model_lower.contains("fxlight")
             || model_lower.contains("fxfog")
@@ -629,6 +649,14 @@ fn parse_and_import_nif(nif_data: &[u8], label: &str) -> Option<Arc<CachedNifImp
             return None;
         }
     };
+
+    // BSXFlags bit 5 (0x20) marks the entire NIF as an editor marker —
+    // invisible in-game objects like XMarker, PrisonMarker, etc.
+    let bsx = byroredux_nif::import::extract_bsx_flags(&scene);
+    if bsx & 0x20 != 0 {
+        log::debug!("Skipping editor marker NIF '{}'", label);
+        return None;
+    }
 
     let (meshes, collisions) = byroredux_nif::import::import_nif_with_collision(&scene);
     let lights = byroredux_nif::import::import_nif_lights(&scene);

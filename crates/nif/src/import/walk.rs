@@ -120,7 +120,7 @@ pub(super) fn walk_node_hierarchical(
     // children. Must be checked BEFORE as_ni_node() since these types
     // are no longer unwrapped there. See #212.
     if let Some((node, active_children)) = switch_active_children(block) {
-        if node.av.flags & 0x01 != 0 {
+        if node.av.flags & 0x21 != 0 {
             return;
         }
         if is_editor_marker(node.av.net.name.as_deref()) {
@@ -152,7 +152,7 @@ pub(super) fn walk_node_hierarchical(
     }
 
     if let Some(node) = as_ni_node(block) {
-        if node.av.flags & 0x01 != 0 {
+        if node.av.flags & 0x21 != 0 {
             return;
         }
         if is_editor_marker(node.av.net.name.as_deref()) {
@@ -247,7 +247,7 @@ pub(super) fn walk_node_flat(
 
     // NiSwitchNode / NiLODNode: only walk the active child (#212).
     if let Some((node, active_children)) = switch_active_children(block) {
-        if node.av.flags & 0x01 != 0 {
+        if node.av.flags & 0x21 != 0 {
             return;
         }
         if is_editor_marker(node.av.net.name.as_deref()) {
@@ -276,7 +276,7 @@ pub(super) fn walk_node_flat(
     }
 
     if let Some(node) = as_ni_node(block) {
-        if node.av.flags & 0x01 != 0 {
+        if node.av.flags & 0x21 != 0 {
             return;
         }
         if is_editor_marker(node.av.net.name.as_deref()) {
@@ -352,7 +352,7 @@ pub(super) fn walk_node_lights(
     };
 
     if let Some(node) = as_ni_node(block) {
-        if node.av.flags & 0x01 != 0 {
+        if node.av.flags & 0x21 != 0 {
             return;
         }
         if is_editor_marker(node.av.net.name.as_deref()) {

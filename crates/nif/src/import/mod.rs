@@ -311,6 +311,36 @@ pub fn import_nif(scene: &NifScene) -> Vec<ImportedMesh> {
 /// This is an independent pass from `import_nif` — callers that care
 /// about lights (currently: the cell loader) run it alongside the
 /// mesh import. See issue #156.
+/// Extract BSXFlags from the root node's extra data. Returns 0 if absent.
+/// Bit 5 (0x20) = editor marker — the NIF should not be rendered.
+pub fn extract_bsx_flags(scene: &NifScene) -> u32 {
+    let Some(root_idx) = scene.root_index else {
+        return 0;
+    };
+    let Some(root_block) = scene.blocks.get(root_idx) else {
+        return 0;
+    };
+    let Some(node) = root_block.as_any().downcast_ref::<crate::blocks::node::NiNode>() else {
+        return 0;
+    };
+    for &ref_idx in &node.av.net.extra_data_refs {
+        let idx = ref_idx.0;
+        if idx < 0 {
+            continue;
+        }
+        if let Some(block) = scene.blocks.get(idx as usize) {
+            if let Some(ed) =
+                block.as_any().downcast_ref::<crate::blocks::extra_data::NiExtraData>()
+            {
+                if ed.type_name == "BSXFlags" {
+                    return ed.integer_value.unwrap_or(0);
+                }
+            }
+        }
+    }
+    0
+}
+
 pub fn import_nif_lights(scene: &NifScene) -> Vec<ImportedLight> {
     let mut lights = Vec::new();
     let Some(root_idx) = scene.root_index else {
