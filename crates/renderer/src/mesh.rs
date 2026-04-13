@@ -212,6 +212,13 @@ impl MeshRegistry {
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
     ) -> Result<()> {
+        // SAFETY: In-flight command buffers may still reference the old
+        // global vertex/index SSBOs via scene descriptor set bindings 8/9.
+        // Wait for all GPU work to complete before destroying them.
+        // This is infrequent (cell transitions only), so the stall is
+        // acceptable. See #280.
+        unsafe { device.device_wait_idle().ok(); }
+
         // Destroy old SSBO.
         if let Some(ref mut vb) = self.global_vertex_buffer {
             vb.destroy(device, allocator);

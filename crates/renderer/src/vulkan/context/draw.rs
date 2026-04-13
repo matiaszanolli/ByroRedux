@@ -45,10 +45,22 @@ impl VulkanContext {
         // Advance the texture registry's deferred-destroy frame counter.
         self.texture_registry.begin_frame();
 
-        // Wait for this frame-in-flight slot to be available.
+        // Wait for this frame-in-flight slot AND the previous slot to be
+        // available. SVGF's temporal pass reads the previous slot's G-buffer
+        // images (mesh_id, motion, raw_indirect) — without waiting on the
+        // other slot's fence, a read-after-write hazard exists when the GPU
+        // hasn't finished the other slot's render pass. See #282.
+        //
+        // Cost: zero in practice — the GPU is rarely more than 1 frame
+        // behind the CPU, so the other fence is almost always signaled.
         unsafe {
+            let prev = (frame + 1) % super::super::sync::MAX_FRAMES_IN_FLIGHT;
             self.device
-                .wait_for_fences(&[self.frame_sync.in_flight[frame]], true, u64::MAX)
+                .wait_for_fences(
+                    &[self.frame_sync.in_flight[frame], self.frame_sync.in_flight[prev]],
+                    true,
+                    u64::MAX,
+                )
                 .context("wait_for_fences")?;
         }
 
@@ -598,6 +610,27 @@ impl VulkanContext {
                 if let Err(e) = composite.upload_params(&self.device, frame, &composite_params) {
                     log::warn!("composite upload_params failed: {e}");
                 }
+            }
+
+            // HOST→FRAGMENT barrier: the composite UBO was host-written by
+            // upload_params above. Per Vulkan spec, host writes require an
+            // explicit barrier even for HOST_COHERENT memory (the execution
+            // dependency ensures ordering). SVGF and SSAO correctly emit
+            // HOST→COMPUTE barriers for their UBOs; composite was missing
+            // this. See #281.
+            {
+                let barrier = vk::MemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::HOST_WRITE)
+                    .dst_access_mask(vk::AccessFlags::UNIFORM_READ);
+                self.device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::HOST,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[barrier],
+                    &[],
+                    &[],
+                );
             }
 
             // Composite pass: sample HDR + indirect + albedo, combine, ACES
