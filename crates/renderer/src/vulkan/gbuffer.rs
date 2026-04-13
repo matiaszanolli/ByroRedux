@@ -1,14 +1,16 @@
 //! G-Buffer attachments for SVGF denoising.
 //!
-//! Phase 1 adds three auxiliary render targets that the main render pass
-//! writes alongside the HDR color intermediate. These carry the
-//! per-pixel geometric data that downstream SVGF passes need:
+//! Five auxiliary render targets written by the main render pass alongside
+//! the HDR color intermediate. These carry the per-pixel geometric and
+//! material data that downstream SVGF and composite passes need:
 //!
-//! | Attachment | Format          | Contents                                   |
-//! |------------|-----------------|--------------------------------------------|
-//! | normal     | RGBA16_SNORM    | World-space surface normal (xyz), unused w |
-//! | motion     | R16G16_SFLOAT   | Screen-space motion vector (current→prev)  |
-//! | mesh_id    | R16_UINT        | Per-instance ID (disocclusion detection)   |
+//! | Attachment    | Format             | Contents                                     |
+//! |---------------|--------------------|----------------------------------------------|
+//! | normal        | RG16_SNORM         | Octahedral-encoded world-space normal (#275)  |
+//! | motion        | RG16_SFLOAT        | Screen-space motion vector (current→prev)     |
+//! | mesh_id       | R16_UINT           | Per-instance ID (disocclusion detection)      |
+//! | raw_indirect  | B10G11R11_UFLOAT   | Pre-denoise indirect light (albedo-demod)     |
+//! | albedo        | B10G11R11_UFLOAT   | Surface color for composite re-multiplication |
 //!
 //! ## Per-frame-in-flight
 //!

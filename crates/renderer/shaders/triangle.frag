@@ -445,8 +445,8 @@ void main() {
             windowRQ, topLevelAS,
             gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
             0xFF,
-            fragWorldPos - N * 0.5, // start slightly behind the window surface
-            0.1,
+            fragWorldPos - N * 0.15, // start slightly behind the window surface (#269 R2-08: reduced from 0.5 to shrink blind zone)
+            0.05,
             throughDir,
             2000.0 // if nothing hit within 2000 units, it's "outside"
         );
