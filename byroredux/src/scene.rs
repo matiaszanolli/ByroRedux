@@ -326,6 +326,7 @@ pub(crate) fn setup_scene(
         ctx.allocator.as_ref().unwrap(),
         &ctx.graphics_queue,
         ctx.transfer_pool,
+        None, // TODO: thread StagingPool through scene load (#242)
     ) {
         log::warn!("Failed to build geometry SSBO: {e}");
     }

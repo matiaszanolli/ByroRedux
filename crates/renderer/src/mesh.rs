@@ -177,12 +177,17 @@ impl MeshRegistry {
 
     /// Build the global geometry SSBO from accumulated vertex/index data.
     /// Call once after all scene meshes are loaded.
+    ///
+    /// When `staging_pool` is `Some`, the staging buffer is reused from the
+    /// pool instead of allocating a fresh one. This avoids a large
+    /// fire-and-forget staging allocation on cell loads. See #242.
     pub fn build_geometry_ssbo(
         &mut self,
         device: &ash::Device,
         allocator: &SharedAllocator,
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
+        staging_pool: Option<&mut StagingPool>,
     ) -> Result<()> {
         if self.pending_vertices.is_empty() {
             return Ok(());
@@ -193,19 +198,21 @@ impl MeshRegistry {
 
         // Create as STORAGE_BUFFER so the fragment shader can read vertex data
         // for RT reflection UV lookups via barycentrics.
+        // Re-borrow the staging pool for two consecutive uploads.
+        let mut pool = staging_pool;
         self.global_vertex_buffer = Some(GpuBuffer::create_device_local_buffer(
             device, allocator, queue, command_pool,
             vertex_size,
             vk::BufferUsageFlags::STORAGE_BUFFER,
             &self.pending_vertices,
-            None,
+            pool.as_deref_mut(),
         )?);
         self.global_index_buffer = Some(GpuBuffer::create_device_local_buffer(
             device, allocator, queue, command_pool,
             index_size,
             vk::BufferUsageFlags::STORAGE_BUFFER,
             &self.pending_indices,
-            None,
+            pool.as_deref_mut(),
         )?);
 
         log::info!(
@@ -237,6 +244,7 @@ impl MeshRegistry {
         allocator: &SharedAllocator,
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
+        staging_pool: Option<&mut StagingPool>,
     ) -> Result<()> {
         // Defer destruction of old SSBOs instead of stalling with
         // device_wait_idle. The old buffers survive for MAX_FRAMES_IN_FLIGHT
@@ -257,7 +265,7 @@ impl MeshRegistry {
         );
 
         // Rebuild from all accumulated data.
-        self.build_geometry_ssbo(device, allocator, queue, command_pool)
+        self.build_geometry_ssbo(device, allocator, queue, command_pool, staging_pool)
     }
 
     /// Returns true when new meshes have been loaded since the last SSBO

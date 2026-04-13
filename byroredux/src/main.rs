@@ -285,6 +285,7 @@ impl ApplicationHandler for App {
                             ctx.allocator.as_ref().unwrap(),
                             &ctx.graphics_queue,
                             ctx.transfer_pool,
+                            None, // TODO: thread StagingPool through frame loop (#242)
                         ) {
                             log::warn!("Failed to rebuild geometry SSBO: {e}");
                         }
