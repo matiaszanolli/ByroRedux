@@ -50,18 +50,51 @@ pub(super) fn as_ni_node(block: &dyn NiObject) -> Option<&NiNode> {
     if let Some(n) = any.downcast_ref::<NiBillboardNode>() {
         return Some(&n.base);
     }
-    if let Some(n) = any.downcast_ref::<NiSwitchNode>() {
-        return Some(&n.base);
-    }
+    // NiSwitchNode and NiLODNode are NOT unwrapped here — they need
+    // child-filtering logic (active_index / LOD 0 only) which the generic
+    // NiNode path doesn't provide. Handled explicitly in the walk
+    // functions. See #212.
     if let Some(n) = any.downcast_ref::<NiSortAdjustNode>() {
         return Some(&n.base);
     }
     if let Some(n) = any.downcast_ref::<BsRangeNode>() {
         return Some(&n.base);
     }
-    // NiLODNode wraps NiSwitchNode, which wraps NiNode.
-    if let Some(n) = any.downcast_ref::<NiLODNode>() {
-        return Some(&n.base.base);
+    None
+}
+
+/// Extract the active child indices for NiSwitchNode (and NiLODNode).
+///
+/// NiSwitchNode: walk only child at `active_index` (furniture states,
+/// weapon sheaths, destruction stages). If index is 0xFFFFFFFF (-1 as
+/// u32) or out of range, walk all children (fallback).
+///
+/// NiLODNode: walk child 0 only (highest LOD). Proper distance-based
+/// selection requires camera distance, which isn't available at import
+/// time. LOD 0 is always the most detailed mesh. See #212.
+fn switch_active_children(block: &dyn NiObject) -> Option<(&NiNode, Vec<usize>)> {
+    let any = block.as_any();
+    // NiLODNode check first (it wraps NiSwitchNode).
+    if let Some(lod) = any.downcast_ref::<NiLODNode>() {
+        let node = &lod.base.base;
+        let active = if node.children.is_empty() {
+            vec![]
+        } else {
+            // LOD 0 = highest detail.
+            node.children[0].index().into_iter().collect()
+        };
+        return Some((node, active));
+    }
+    if let Some(sw) = any.downcast_ref::<NiSwitchNode>() {
+        let node = &sw.base;
+        let idx = sw.index as usize;
+        let active = if idx < node.children.len() {
+            node.children[idx].index().into_iter().collect()
+        } else {
+            // Fallback: walk all children (index out of range or 0xFFFFFFFF).
+            node.children.iter().filter_map(|r| r.index()).collect()
+        };
+        return Some((node, active));
     }
     None
 }
@@ -82,6 +115,41 @@ pub(super) fn walk_node_hierarchical(
     let Some(block) = scene.get(block_idx) else {
         return;
     };
+
+    // NiSwitchNode / NiLODNode: only walk the active child, not all
+    // children. Must be checked BEFORE as_ni_node() since these types
+    // are no longer unwrapped there. See #212.
+    if let Some((node, active_children)) = switch_active_children(block) {
+        if node.av.flags & 0x01 != 0 {
+            return;
+        }
+        if is_editor_marker(node.av.net.name.as_deref()) {
+            return;
+        }
+        let t = &node.av.transform.translation;
+        let quat = zup_matrix_to_yup_quat(&node.av.transform.rotation);
+        let collision = extract_collision(scene, node.av.collision_ref);
+        let billboard_mode = extract_billboard_mode(block, node.av.flags);
+
+        let this_node_idx = out.nodes.len();
+        out.nodes.push(ImportedNode {
+            name: node.av.net.name.as_deref().map(str::to_string),
+            translation: [t.x, t.z, -t.y],
+            rotation: quat,
+            scale: node.av.transform.scale,
+            parent_node: parent_node_idx,
+            collision,
+            billboard_mode,
+        });
+
+        let mut child_props = inherited_props.to_vec();
+        child_props.extend_from_slice(&node.av.properties);
+
+        for idx in active_children {
+            walk_node_hierarchical(scene, idx, Some(this_node_idx), &child_props, out);
+        }
+        return;
+    }
 
     if let Some(node) = as_ni_node(block) {
         if node.av.flags & 0x01 != 0 {
@@ -176,6 +244,36 @@ pub(super) fn walk_node_flat(
     let Some(block) = scene.get(block_idx) else {
         return;
     };
+
+    // NiSwitchNode / NiLODNode: only walk the active child (#212).
+    if let Some((node, active_children)) = switch_active_children(block) {
+        if node.av.flags & 0x01 != 0 {
+            return;
+        }
+        if is_editor_marker(node.av.net.name.as_deref()) {
+            return;
+        }
+        let world_transform = compose_transforms(parent_transform, &node.av.transform);
+        if let Some(ref mut coll_out) = collisions {
+            if let Some((shape, body)) = extract_collision(scene, node.av.collision_ref) {
+                let t = &world_transform.translation;
+                let quat = zup_matrix_to_yup_quat(&world_transform.rotation);
+                coll_out.push(ImportedCollision {
+                    translation: [t.x, t.z, -t.y],
+                    rotation: quat,
+                    scale: world_transform.scale,
+                    shape,
+                    body,
+                });
+            }
+        }
+        let mut child_props = inherited_props.to_vec();
+        child_props.extend_from_slice(&node.av.properties);
+        for idx in active_children {
+            walk_node_flat(scene, idx, &world_transform, &child_props, out, collisions.as_deref_mut());
+        }
+        return;
+    }
 
     if let Some(node) = as_ni_node(block) {
         if node.av.flags & 0x01 != 0 {
