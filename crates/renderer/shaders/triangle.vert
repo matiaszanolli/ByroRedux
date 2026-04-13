@@ -35,7 +35,7 @@ struct GpuInstance {
     float avgAlbedoR;        // offset 140
     float avgAlbedoG;        // offset 144
     float avgAlbedoB;        // offset 148
-    uint _pad0;              // offset 152
+    uint flags;              // offset 152 — bit 0: has non-uniform scale (#273)
     uint _pad1;              // offset 156 → total 160
 };
 
@@ -95,10 +95,19 @@ void main() {
     gl_Position = currClip;
     fragColor = inColor;
     fragUV = inUV;
-    // Correct normal transform for non-uniform scale (inverse-transpose).
+    // Normal transform. For orthogonal upper-3x3 (uniform or no scale),
+    // m3 * normal gives the correct direction — normalize handles magnitude.
+    // Only non-uniform scale (skew) requires the expensive inverse-transpose
+    // (~40 ALU ops: determinant + cofactors + transpose). The CPU sets
+    // flags bit 0 when column lengths differ. See #273.
     mat3 m3 = mat3(xform);
-    float det = determinant(m3);
-    vec3 n = (abs(det) > 1e-6) ? transpose(inverse(m3)) * inNormal : inNormal;
+    vec3 n;
+    if ((inst.flags & 1u) != 0u) {
+        float det = determinant(m3);
+        n = (abs(det) > 1e-6) ? transpose(inverse(m3)) * inNormal : inNormal;
+    } else {
+        n = m3 * inNormal;
+    }
     fragNormal = (dot(n, n) > 0.0) ? normalize(n) : vec3(0.0, 1.0, 0.0);
     fragWorldPos = worldPos.xyz;
     fragTexIndex = inst.textureIndex;

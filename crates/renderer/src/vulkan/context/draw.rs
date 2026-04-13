@@ -347,6 +347,22 @@ impl VulkanContext {
 
             let instance_idx = gpu_instances.len() as u32;
             let m = &draw_cmd.model_matrix;
+
+            // Detect non-uniform scale from the model matrix column lengths.
+            // If the 3 column vectors of the upper-3x3 have different lengths,
+            // the vertex shader must use inverse-transpose for normals.
+            // Otherwise it can skip the expensive inverse (~40 ALU ops).
+            // Three dot products is trivial compared to the per-vertex savings.
+            let col0_sq = m[0] * m[0] + m[1] * m[1] + m[2] * m[2];
+            let col1_sq = m[4] * m[4] + m[5] * m[5] + m[6] * m[6];
+            let col2_sq = m[8] * m[8] + m[9] * m[9] + m[10] * m[10];
+            let has_non_uniform_scale = {
+                let tol = 0.001;
+                (col0_sq - col1_sq).abs() > tol
+                    || (col0_sq - col2_sq).abs() > tol
+            };
+            let flags = if has_non_uniform_scale { 1u32 } else { 0u32 };
+
             gpu_instances.push(GpuInstance {
                 model: [
                     [m[0], m[1], m[2], m[3]],
@@ -376,7 +392,7 @@ impl VulkanContext {
                 avg_albedo_r: draw_cmd.avg_albedo[0],
                 avg_albedo_g: draw_cmd.avg_albedo[1],
                 avg_albedo_b: draw_cmd.avg_albedo[2],
-                _pad0: 0,
+                flags,
                 _pad1: 0,
             });
 

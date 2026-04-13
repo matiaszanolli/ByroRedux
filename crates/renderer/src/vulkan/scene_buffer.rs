@@ -80,7 +80,9 @@ pub struct GpuInstance {
     pub avg_albedo_r: f32,               // 4 B, offset 140
     pub avg_albedo_g: f32,               // 4 B, offset 144
     pub avg_albedo_b: f32,               // 4 B, offset 148
-    pub _pad0: u32,                      // 4 B, offset 152
+    /// Per-instance flags. Bit 0 = has non-uniform scale (needs
+    /// inverse-transpose for normal transform). See #273.
+    pub flags: u32,                      // 4 B, offset 152
     pub _pad1: u32,                      // 4 B, offset 156 → total 160
     // Struct is 160 bytes (10×16), 16-byte aligned for std430.
 }
@@ -116,7 +118,7 @@ impl Default for GpuInstance {
             avg_albedo_r: 0.5,
             avg_albedo_g: 0.5,
             avg_albedo_b: 0.5,
-            _pad0: 0,
+            flags: 0,
             _pad1: 0,
         }
     }
