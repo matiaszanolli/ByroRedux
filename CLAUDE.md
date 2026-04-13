@@ -181,11 +181,11 @@ Detailed analysis in `docs/legacy/`.
 ## Development Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for the full roadmap with milestones, known issues, and game compatibility.
-Current: 23 milestones complete (M1–M22, M24 Phase 1, M26, M28 Phase 1) + N23 + N26 closeout
-+ #178 end-to-end skinning (SkinnedMesh component → bone palette SSBO → unified shader path).
-RT multi-light with ray query shadows, animation with blending stack, scene graph hierarchy,
-cell XCLL lighting, decal detection, BSA v103 (Oblivion), 16× anisotropic filtering.
-Active: N26 closeout — every "block silently dropped" issue closed. ~215 block types now parsed.
+Current: 28+ milestones complete (M1–M22, M24 Phase 1, M26, M28 Phase 1, M30 Phase 1, M31, M32
+Phase 1+2, M34 Phase 1) + N23 + N26 closeout + #178 skinning.
+RT multi-light with shadow ray budget (top-2), instanced draw batching, BLAS LRU eviction,
+landscape terrain with texture splatting, exterior directional sun, Papyrus language parser.
+612 tests across 12 crates. ~58K lines of Rust, 170 source files.
 Usage:
   `cargo run -- path/to/mesh.nif` — render a loose NIF file
   `cargo run -- mesh.nif --kf anim.kf` — play animation on a mesh
@@ -217,14 +217,20 @@ Session 7: Starfield BA2 v3 DX10 texture extraction — v3 header has a
 decompression via lz4_flex::block. Verified against 22 Starfield texture
 archives (~128K DX10 textures) + 53 vanilla FO4 BA2s (v1/v7/v8), zero
 failures. BA2 support now verified end-to-end for every version/variant.
-Session 8: M30 Phase 1 — Papyrus language parser. New `byroredux-papyrus`
-crate with logos lexer (case-insensitive keywords, line continuation,
-comments) + Pratt expression parser (all operators, member access, indexing,
-calls with named args, casts, new). Full AST types for the complete language.
-45 tests. Phases 2–4 (statements, declarations, FO4 extensions) pending.
-Next: M30 Phase 2 (statements + function bodies), M27 parallel scheduler,
-M24 Phase 2 (QUST/DIAL/PERK), M28.5 kinematic character controller,
-M29 GPU skinning compute path.
+Session 8: 35 commits. M30 Phase 1 — Papyrus language parser (logos lexer +
+Pratt expression parser, 45 tests). M31 — RT performance at scale (batched
+BLAS builds, TLAS culling, importance-sorted shadow budget, distance-based
+ray fallback, GI hit simplification, BLAS LRU eviction, deferred SSBO
+rebuild). M32 Phase 1+2 — landscape terrain from LAND heightmap records
+with LTEX/TXST texture splatting. M34 Phase 1 — default exterior sun for
+directional lighting. Fix #251–#284: alpha test function extraction (#263),
+dark texture import (#264), instanced draw batching (#272), shadow ray
+budget (#270), subtree cache persistence (#278), Vulkan sync fixes (#280–
+#284), NIF string read optimization (#254), animation scratch buffers
+(#251–#252), performance bundle (#279). Roadmap reprioritized to renderer-
+first with M32–M48 tiered plan.
+Next: M33 sky/atmosphere, M35 terrain LOD, M37 SVGF spatial filter,
+M29 GPU skinning.
 
 ## Git Conventions
 

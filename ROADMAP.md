@@ -732,9 +732,9 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Metric | Value |
 |--------|-------|
-| Passing tests | 520 |
+| Passing tests | 612 |
 | Workspace crates | 12 |
-| Completed milestones | 23 (M1–M22 + M24 Phase 1 + M26 + M28 Phase 1) + M30 Phase 1 + N23 + N26 + #178 skinning |
+| Completed milestones | 28+ (M1–M22, M24 Phase 1, M26, M28 Phase 1, M30 Phase 1, M31, M32 Phase 1+2, M34 Phase 1) + N23 + N26 + #178 |
 | NIF block types | ~215 distinct type names, ~185 parsed + 30 Havok skip |
 | NifVariant games | 8 (Morrowind → Starfield) |
 | Per-game NIF parse rate | 100% across 177,286 NIFs (7 games) |
@@ -752,18 +752,18 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Crate | Milestones | Tests |
 |-------|------------|-------|
-| `byroredux-core` | M3 (ECS), M5 (Form IDs), M21 (Animation), #178A (SkinnedMesh), #137 (lock guards) | 162 |
-| `byroredux-renderer` | M1, M2, M4, M7, M8, M13, M14, M22, #178B (bone palette), #136 (16× AF) | 25 |
+| `byroredux-core` | M3 (ECS), M5 (Form IDs), M21 (Animation), #178A (SkinnedMesh), #137 (lock guards) | 193 |
+| `byroredux-renderer` | M1, M2, M4, M7, M8, M13, M14, M22, M31, #178B (bone palette), #136 (16× AF) | 33 |
 | `byroredux-platform` | M1 (windowing) | — |
 | `byroredux-plugin` | M5, M6, M19, M24 Phase 1 | 71 |
-| `byroredux-nif` | M9, M10, M17, M18, M21, N23.1–N23.10, N26 audit, #79 KFM, session 6 closeout | 178 |
+| `byroredux-nif` | M9, M10, M17, M18, M21, N23.1–N23.10, N26 audit, #79 KFM, #263/#264 | 211 |
 | `byroredux-bsa` | M11, M18, M26 (BA2), session 7 (v3 LZ4) | 11 |
 | `byroredux-physics` | M28 Phase 1 (Rapier3D bridge) | 17 |
 | `byroredux-scripting` | M12 | 8 |
 | `byroredux-papyrus` | M30 Phase 1 (Papyrus parser) | 45 |
 | `byroredux-ui` | M20 (Ruffle/SWF) | — |
 | `byroredux-cxx-bridge` | Cross-cutting | — |
-| `byroredux` (binary) | M4, M11, M14, M15, M16, M17, M19, M28 integration, parse-once cell cache | — |
+| `byroredux` (binary) | M4, M11, M14–M17, M19, M28, M32, M34, cell cache, terrain | — |
 
 ---
 
