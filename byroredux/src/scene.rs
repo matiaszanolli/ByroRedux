@@ -107,6 +107,21 @@ pub(crate) fn setup_scene(
                         result.cell_name,
                         result.entity_count
                     );
+                    // Exterior cells: set up a default sun + ambient.
+                    // Real implementation will parse WTHR (weather) records
+                    // for per-worldspace sun position, color, and fog. For
+                    // now, use a Mojave-appropriate late-morning sun.
+                    world.insert_resource(CellLightingRes {
+                        ambient: [0.15, 0.14, 0.12],
+                        directional_color: [1.0, 0.95, 0.8],
+                        // Sun direction (Y-up): slightly south, high elevation.
+                        // Normalized (-0.4, -0.8, 0.45) ≈ sun at ~50° altitude, slightly south-east.
+                        directional_dir: [-0.4, 0.8, -0.45],
+                        is_interior: false,
+                        fog_color: [0.7, 0.65, 0.55],
+                        fog_near: 3000.0,
+                        fog_far: 25000.0,
+                    });
                 }
                 Err(e) => log::error!("Failed to load exterior cells: {:#}", e),
             }
