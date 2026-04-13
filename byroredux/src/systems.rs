@@ -16,7 +16,10 @@ use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::StringPool;
 
 use crate::anim_convert::build_subtree_name_map;
-use crate::components::{InputState, NameIndex, Spinning, SubtreeCache};
+use crate::components::{
+    CellLightingRes, GameTimeRes, InputState, NameIndex, SkyParamsRes, Spinning, SubtreeCache,
+    WeatherDataRes,
+};
 
 /// Fly camera system: WASD + mouse look. Updates the active camera's Transform.
 pub(crate) fn fly_camera_system(world: &World, dt: f32) {
@@ -833,6 +836,153 @@ pub(crate) fn log_stats_system(world: &World, _dt: f32) {
             stats.fps, stats.avg_fps(), stats.frame_time_ms,
             stats.entity_count, stats.mesh_count, stats.texture_count, stats.draw_call_count,
         );
+    }
+}
+
+/// Weather & time-of-day system: advances game clock, interpolates WTHR
+/// NAM0 sky colors, computes sun arc, and updates SkyParamsRes + CellLightingRes.
+///
+/// Only runs when WeatherDataRes + GameTimeRes exist (exterior cells with weather).
+pub(crate) fn weather_system(world: &World, dt: f32) {
+    // Advance game clock.
+    let hour = {
+        let Some(mut game_time) = world.try_resource_mut::<GameTimeRes>() else {
+            return;
+        };
+        game_time.hour += dt * game_time.time_scale / 3600.0;
+        if game_time.hour >= 24.0 {
+            game_time.hour -= 24.0;
+        }
+        game_time.hour
+    };
+
+    let Some(wd) = world.try_resource::<WeatherDataRes>() else {
+        return;
+    };
+
+    // Interpolate NAM0 colors based on game hour.
+    // The 6 time slots map to these hours:
+    //   0 = sunrise (6h), 1 = day (10h), 2 = sunset (18h),
+    //   3 = night (22h), 4 = high_noon (13h), 5 = midnight (1h).
+    //
+    // We define a piecewise-linear cycle through these key times:
+    //   midnight(1h) → sunrise(6h) → day(10h) → high_noon(13h) →
+    //   day(16h) → sunset(18h) → night(22h) → midnight(25h/1h)
+    use byroredux_plugin::esm::records::weather::*;
+    const KEYS: [(f32, usize); 7] = [
+        (1.0, TOD_MIDNIGHT),
+        (6.0, TOD_SUNRISE),
+        (10.0, TOD_DAY),
+        (13.0, TOD_HIGH_NOON),
+        (16.0, TOD_DAY),
+        (18.0, TOD_SUNSET),
+        (22.0, TOD_NIGHT),
+    ];
+
+    // Find which two keys we're between and compute blend factor.
+    let (slot_a, slot_b, t) = {
+        // Wrap hour to the key range [1, 25) — midnight at hour 0 maps to 24+1=25.
+        let h = if hour < KEYS[0].0 { hour + 24.0 } else { hour };
+        let last = KEYS.len() - 1;
+        let mut found = (KEYS[last].1, KEYS[0].1, 0.0f32);
+        for i in 0..last {
+            let (h0, s0) = KEYS[i];
+            let (h1, s1) = KEYS[i + 1];
+            if h >= h0 && h < h1 {
+                let frac = (h - h0) / (h1 - h0);
+                found = (s0, s1, frac);
+                break;
+            }
+        }
+        // After last key (22h+): interpolate night → midnight.
+        if h >= KEYS[last].0 {
+            let h0 = KEYS[last].0;
+            let h1 = KEYS[0].0 + 24.0; // midnight = 25
+            let frac = ((h - h0) / (h1 - h0)).clamp(0.0, 1.0);
+            found = (KEYS[last].1, KEYS[0].1, frac);
+        }
+        found
+    };
+
+    let lerp3 = |a: [f32; 3], b: [f32; 3], t: f32| -> [f32; 3] {
+        [
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+        ]
+    };
+
+    let zenith = lerp3(wd.sky_colors[SKY_UPPER][slot_a], wd.sky_colors[SKY_UPPER][slot_b], t);
+    let horizon = lerp3(wd.sky_colors[SKY_HORIZON][slot_a], wd.sky_colors[SKY_HORIZON][slot_b], t);
+    let sun_col = lerp3(wd.sky_colors[SKY_SUN][slot_a], wd.sky_colors[SKY_SUN][slot_b], t);
+    let ambient = lerp3(wd.sky_colors[SKY_AMBIENT][slot_a], wd.sky_colors[SKY_AMBIENT][slot_b], t);
+    let sunlight = lerp3(wd.sky_colors[SKY_SUNLIGHT][slot_a], wd.sky_colors[SKY_SUNLIGHT][slot_b], t);
+    let fog_col = lerp3(wd.sky_colors[SKY_FOG][slot_a], wd.sky_colors[SKY_FOG][slot_b], t);
+
+    // Fog distance: interpolate between day and night based on
+    // how "night-like" the current hour is (0 = full day, 1 = full night).
+    let night_factor = if hour >= 6.0 && hour <= 18.0 {
+        0.0 // daytime
+    } else if hour >= 20.0 || hour <= 4.0 {
+        1.0 // full night
+    } else if hour > 18.0 {
+        (hour - 18.0) / 2.0 // sunset transition
+    } else {
+        (6.0 - hour) / 2.0 // sunrise transition
+    };
+    let fog_near = wd.fog[0] + (wd.fog[2] - wd.fog[0]) * night_factor;
+    let fog_far = wd.fog[1] + (wd.fog[3] - wd.fog[1]) * night_factor;
+
+    // Sun direction: semicircular arc from east (6h) through zenith (12h) to west (18h).
+    // Below horizon at night. Y-up coordinate system.
+    let sun_dir = {
+        // Solar angle: 0 at sunrise (6h), π at sunset (18h).
+        let solar_hour = (hour - 6.0).clamp(0.0, 12.0);
+        let angle = solar_hour / 12.0 * std::f32::consts::PI;
+        // Sun arcs from east (+X) through up (+Y) to west (-X).
+        // Add a slight south tilt (negative Z in Y-up).
+        let x = angle.cos();
+        let y = angle.sin();
+        let z = -0.15_f32; // slight south tilt
+        let len = (x * x + y * y + z * z).sqrt();
+        if hour >= 6.0 && hour <= 18.0 {
+            [x / len, y / len, z / len]
+        } else {
+            // Night: sun below horizon. Push it down so no sun disc renders.
+            [0.0, -1.0, 0.0]
+        }
+    };
+
+    // Sun intensity: fade in/out at sunrise/sunset.
+    let sun_intensity = if hour >= 7.0 && hour <= 17.0 {
+        4.0
+    } else if hour >= 6.0 && hour < 7.0 {
+        (hour - 6.0) * 4.0 // fade in
+    } else if hour > 17.0 && hour <= 18.0 {
+        (18.0 - hour) * 4.0 // fade out
+    } else {
+        0.0 // night
+    };
+
+    drop(wd);
+
+    // Update SkyParamsRes.
+    if let Some(mut sky) = world.try_resource_mut::<SkyParamsRes>() {
+        sky.zenith_color = zenith;
+        sky.horizon_color = horizon;
+        sky.sun_color = sun_col;
+        sky.sun_direction = sun_dir;
+        sky.sun_intensity = sun_intensity;
+    }
+
+    // Update CellLightingRes.
+    if let Some(mut cell_lit) = world.try_resource_mut::<CellLightingRes>() {
+        cell_lit.ambient = ambient;
+        cell_lit.directional_color = sunlight;
+        cell_lit.directional_dir = sun_dir;
+        cell_lit.fog_color = fog_col;
+        cell_lit.fog_near = fog_near;
+        cell_lit.fog_far = fog_far;
     }
 }
 

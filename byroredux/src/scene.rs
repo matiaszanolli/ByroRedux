@@ -18,8 +18,8 @@ use crate::asset_provider::{
 };
 use crate::cell_loader;
 use crate::components::{
-    AlphaBlend, CellLightingRes, DarkMapHandle, Decal, InputState, NormalMapHandle, SkyParamsRes,
-    Spinning, TwoSided,
+    AlphaBlend, CellLightingRes, DarkMapHandle, Decal, GameTimeRes, InputState, NormalMapHandle,
+    SkyParamsRes, Spinning, TwoSided, WeatherDataRes,
 };
 use crate::helpers::add_child;
 
@@ -112,7 +112,7 @@ pub(crate) fn setup_scene(
                     let sun_dir: [f32; 3] = [-0.4, 0.8, -0.45];
                     if let Some(ref wthr) = result.weather {
                         use byroredux_plugin::esm::records::weather::*;
-                        // Extract "day" time slot colors from the WTHR NAM0 block.
+                        // Extract "day" time slot colors (initial state).
                         let ambient = wthr.sky_colors[SKY_AMBIENT][TOD_DAY].to_linear_rgb();
                         let sunlight = wthr.sky_colors[SKY_SUNLIGHT][TOD_DAY].to_linear_rgb();
                         let fog_col = wthr.sky_colors[SKY_FOG][TOD_DAY].to_linear_rgb();
@@ -142,6 +142,21 @@ pub(crate) fn setup_scene(
                             sun_intensity: 4.0,
                             is_exterior: true,
                         });
+                        // Store full NAM0 color table for per-frame time-of-day interpolation.
+                        let mut sky_colors = [[[0.0f32; 3]; 6]; 10];
+                        for g in 0..SKY_COLOR_GROUPS {
+                            for s in 0..SKY_TIME_SLOTS {
+                                sky_colors[g][s] = wthr.sky_colors[g][s].to_linear_rgb();
+                            }
+                        }
+                        world.insert_resource(WeatherDataRes {
+                            sky_colors,
+                            fog: [
+                                wthr.fog_day_near, wthr.fog_day_far,
+                                wthr.fog_night_near, wthr.fog_night_far,
+                            ],
+                        });
+                        world.insert_resource(GameTimeRes::default());
                     } else {
                         // Procedural fallback — warm Mojave desert sky.
                         world.insert_resource(CellLightingRes {

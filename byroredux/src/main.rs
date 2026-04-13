@@ -36,6 +36,7 @@ use crate::render::build_render_data;
 use crate::systems::{
     animation_system, billboard_system, fly_camera_system, log_stats_system,
     make_transform_propagation_system, make_world_bound_propagation_system, spin_system,
+    weather_system,
 };
 
 fn main() -> Result<()> {
@@ -138,6 +139,7 @@ impl App {
         // within each stage run in parallel via rayon.
         let mut scheduler = Scheduler::new();
         scheduler.add_to(Stage::Early, fly_camera_system);
+        scheduler.add_to(Stage::Early, weather_system);
         scheduler.add_to(Stage::Early, byroredux_scripting::timer_tick_system);
         scheduler.add_to(Stage::Update, animation_system);
         scheduler.add_to(Stage::Update, spin_system);

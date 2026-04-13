@@ -85,6 +85,37 @@ pub(crate) struct SkyParamsRes {
 }
 impl Resource for SkyParamsRes {}
 
+/// Game time resource — tracks current hour of day (0.0–24.0).
+/// Advances each frame based on real elapsed time × time scale.
+pub(crate) struct GameTimeRes {
+    /// Current game hour (0.0 = midnight, 6.0 = 6am, 12.0 = noon, etc.)
+    pub(crate) hour: f32,
+    /// Game-time multiplier: how many game-hours per real-second.
+    /// Default 1.0 = 1 game-hour per real-minute (Bethesda default ~30:1).
+    pub(crate) time_scale: f32,
+}
+impl Resource for GameTimeRes {}
+
+impl Default for GameTimeRes {
+    fn default() -> Self {
+        Self {
+            hour: 10.0, // late morning
+            time_scale: 30.0, // 30× = ~2 min per game hour (Bethesda default)
+        }
+    }
+}
+
+/// Full WTHR NAM0 sky color data stored for per-frame time-of-day interpolation.
+/// Inserted alongside SkyParamsRes when loading an exterior cell with weather.
+pub(crate) struct WeatherDataRes {
+    /// 10 color groups × 6 time-of-day slots, as linear RGB f32.
+    /// Indexed by `weather::SKY_*` and `weather::TOD_*` constants.
+    pub(crate) sky_colors: [[[f32; 3]; 6]; 10],
+    /// Fog distances: [day_near, day_far, night_near, night_far].
+    pub(crate) fog: [f32; 4],
+}
+impl Resource for WeatherDataRes {}
+
 /// Cached name→entity mapping for the animation system.
 ///
 /// Rebuilt only when the count of `Name` components changes. Previously
