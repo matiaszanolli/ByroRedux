@@ -6,6 +6,15 @@
 //!
 //! Active in both debug and release builds. The per-acquisition cost is a
 //! thread-local HashMap lookup — negligible compared to the RwLock itself.
+//!
+//! ## Limitation: cross-thread deadlocks (#284 C4-01)
+//!
+//! The tracker is `thread_local!`, so it cannot detect ABBA deadlocks
+//! across threads when the parallel scheduler runs systems on separate
+//! rayon workers. The `query_2_mut` API prevents this for 2-component
+//! queries via TypeId-sorted acquisition, but systems making multiple
+//! independent single-type queries are not protected. Callers using the
+//! parallel scheduler must ensure consistent lock ordering manually.
 
 use std::any::TypeId;
 use std::cell::RefCell;

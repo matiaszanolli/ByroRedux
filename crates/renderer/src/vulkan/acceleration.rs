@@ -77,6 +77,11 @@ impl AccelerationManager {
     }
 
     /// Build a BLAS for a mesh. Call after uploading the mesh to GPU.
+    ///
+    /// NOTE: This submits a one-time command buffer and blocks on a fence
+    /// via `with_one_time_commands`. Acceptable during scene load; for
+    /// streaming, batch BLAS builds into the frame's command buffer to
+    /// avoid per-mesh GPU stalls. See #284 (C2-04).
     pub fn build_blas(
         &mut self,
         device: &ash::Device,

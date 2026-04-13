@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// A single draw command: which mesh to draw, with what texture, and what model matrix.
 pub struct DrawCommand {
@@ -127,11 +127,13 @@ pub struct VulkanContext {
     /// Graphics queue, wrapped in a Mutex for Vulkan-required external
     /// synchronization (VUID-vkQueueSubmit-queue-00893). All queue
     /// submissions (draw_frame, texture/buffer uploads) must lock this.
-    pub graphics_queue: Mutex<vk::Queue>,
-    /// Present queue, also Mutex-wrapped for Vulkan external synchronization
-    /// (VUID-vkQueuePresentKHR-pPresentInfo-06329). May alias the graphics
-    /// queue when both use the same queue family (common on desktop GPUs).
-    pub present_queue: Mutex<vk::Queue>,
+    pub graphics_queue: Arc<Mutex<vk::Queue>>,
+    /// Present queue for vkQueuePresentKHR. When graphics and present
+    /// queue families are the same (common on desktop GPUs), this is an
+    /// `Arc::clone` of `graphics_queue` — a single Mutex protects the
+    /// shared VkQueue handle. When they differ, it's an independent
+    /// Mutex wrapping the separate present queue. See #284 (C2-03).
+    pub present_queue: Arc<Mutex<vk::Queue>>,
     pub queue_indices: QueueFamilyIndices,
     pub device: ash::Device,
     pub device_caps: device::DeviceCapabilities,
@@ -201,8 +203,14 @@ impl VulkanContext {
             queue_indices,
             &device_caps,
         )?;
-        let graphics_queue = Mutex::new(raw_graphics_queue);
-        let present_queue = Mutex::new(raw_present_queue);
+        let graphics_queue = Arc::new(Mutex::new(raw_graphics_queue));
+        // When graphics and present use the same queue family, share the
+        // same Mutex to avoid two locks wrapping one VkQueue handle (#284).
+        let present_queue = if queue_indices.graphics == queue_indices.present {
+            Arc::clone(&graphics_queue)
+        } else {
+            Arc::new(Mutex::new(raw_present_queue))
+        };
 
         // 7. GPU allocator (buffer_device_address required for RT acceleration structures)
         let gpu_allocator = allocator::create_allocator(
