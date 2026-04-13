@@ -12,7 +12,8 @@ layout(set = 0, binding = 0) uniform sampler2D depthTex;
 layout(set = 0, binding = 1, r8) uniform writeonly image2D aoOutput;
 
 layout(set = 0, binding = 2) uniform SSAOParams {
-    mat4 viewProj;      // inverted GPU-side for world-space reconstruction
+    mat4 viewProj;      // view-projection matrix (column-major)
+    mat4 invViewProj;   // precomputed inverse(viewProj) for world reconstruction
     vec4 params;        // x = radius (pixels), y = bias, z = intensity, w = unused
     vec4 screenSize;    // x = width, y = height, z = 1/width, w = 1/height
     vec4 cameraPos;     // xyz = camera world position
@@ -48,7 +49,7 @@ void main() {
         return;
     }
 
-    mat4 invVP = inverse(viewProj);
+    mat4 invVP = invViewProj;
     vec3 worldPos = worldFromDepth(uv, depth, invVP);
     float distFromCam = length(worldPos - cameraPos.xyz);
 

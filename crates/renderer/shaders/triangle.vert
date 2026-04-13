@@ -43,6 +43,7 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
 layout(set = 1, binding = 1) uniform CameraUBO {
     mat4 viewProj;
     mat4 prevViewProj;   // Previous frame's view-projection for motion vectors.
+    mat4 invViewProj;    // Precomputed inverse(viewProj) for world reconstruction.
     vec4 cameraPos;
     vec4 sceneFlags;
     vec4 screen;

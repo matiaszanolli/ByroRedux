@@ -1,8 +1,8 @@
 //! Screen-space ambient occlusion (SSAO) compute pipeline.
 //!
-//! Runs after the render pass to produce an R8 occlusion texture from the
-//! depth buffer. The fragment shader reads this texture the next frame to
-//! darken corners, crevices, and contact shadows.
+//! Runs after the main render pass (but before composite) to produce an R8
+//! occlusion texture from the depth buffer. The fragment shader reads this
+//! texture the same frame to darken corners, crevices, and contact shadows.
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
@@ -13,8 +13,10 @@ use ash::vk;
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct SsaoParams {
-    /// View-projection matrix (inverted GPU-side for world-space reconstruction).
+    /// View-projection matrix (column-major).
     view_proj: [[f32; 4]; 4],
+    /// Precomputed `inverse(viewProj)` for world-space reconstruction from depth.
+    inv_view_proj: [[f32; 4]; 4],
     /// x = radius (pixels), y = depth bias, z = intensity, w = unused.
     params: [f32; 4],
     /// x = width, y = height, z = 1/width, w = 1/height.
@@ -437,19 +439,22 @@ impl SsaoPipeline {
 
     /// Upload SSAO parameters and dispatch the compute shader.
     ///
-    /// Call AFTER the render pass (depth buffer must be written and
-    /// transitioned to READ_ONLY). The AO output image is written in
-    /// GENERAL layout and can be sampled by the next frame's fragment shader.
+    /// Call AFTER the main render pass but BEFORE composite (depth buffer
+    /// must be written and transitioned to READ_ONLY). The AO output image
+    /// is written in GENERAL layout, transitioned to SHADER_READ_ONLY, and
+    /// sampled by this frame's fragment shader.
     pub unsafe fn dispatch(
         &mut self,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         frame: usize,
         view_proj: &[[f32; 4]; 4],
+        inv_view_proj: &[[f32; 4]; 4],
         camera_pos: [f32; 3],
     ) -> Result<()> {
         let params = SsaoParams {
             view_proj: *view_proj,
+            inv_view_proj: *inv_view_proj,
             params: [16.0, 0.0002, 2.0, 0.0], // radius=16px, bias=0.0002, intensity=2.0
             screen_size: [
                 self.width as f32,
