@@ -67,7 +67,8 @@ layout(std430, set = 1, binding = 0) readonly buffer LightBuffer {
 
 layout(set = 1, binding = 1) uniform CameraUBO {
     mat4 viewProj;
-    mat4 prevViewProj;  // Phase 1: previous frame's viewProj for motion vectors
+    mat4 prevViewProj;  // Previous frame's viewProj for motion vectors
+    mat4 invViewProj;   // Precomputed inverse(viewProj) for world reconstruction
     vec4 cameraPos;   // xyz = world position, w = frame counter
     vec4 sceneFlags;  // x = RT enabled (1.0), yzw = ambient color (RGB)
     vec4 screen;      // x = width, y = height, z = fog near, w = fog far
@@ -499,6 +500,14 @@ void main() {
         Lo = (kD * albedo / PI + specular * specStrength * specColor) * vec3(0.8) * NdotL;
     } else {
         // Clustered lighting: iterate only lights assigned to this fragment's cluster.
+        //
+        // Shadow ray budget (#270): track the top MAX_SHADOW_RAYS lights by
+        // NdotL×atten contribution. Only those lights get RT shadow queries;
+        // weaker lights accumulate unshadowed. Reduces worst-case ray count
+        // from N to MAX_SHADOW_RAYS per fragment (typically 2).
+        const uint MAX_SHADOW_RAYS = 2;
+        uint shadowRayCount = 0;
+
         ClusterEntry cluster = clusters[clusterIdx];
         for (uint ci = 0; ci < cluster.count; ci++) {
             uint i = clusterLightIndices[cluster.offset + ci];
@@ -569,7 +578,10 @@ void main() {
             // should not be blocked by sealed interior walls.
             float shadow = 1.0;
             bool unshadowed = radius < 0.0;
-            if (rtEnabled && !unshadowed) {
+            // Shadow ray budget: only cast rays for the top-K lights (#270).
+            bool withinBudget = shadowRayCount < MAX_SHADOW_RAYS;
+            if (rtEnabled && !unshadowed && withinBudget) {
+                shadowRayCount++;
                 // Soft shadow via jittered ray direction. Point/spot lights
                 // aim at a disk around their physical position; directional
                 // lights aim along -sunDir (i.e., the L vector) with a small

@@ -13,10 +13,10 @@ use byroredux_core::ecs::{
     TotalTime, Transform, World, WorldBound,
 };
 use byroredux_core::math::{Quat, Vec3};
-use byroredux_core::string::{FixedString, StringPool};
+use byroredux_core::string::StringPool;
 
 use crate::anim_convert::build_subtree_name_map;
-use crate::components::{InputState, NameIndex, Spinning};
+use crate::components::{InputState, NameIndex, Spinning, SubtreeCache};
 
 /// Fly camera system: WASD + mouse look. Updates the active camera's Transform.
 pub(crate) fn fly_camera_system(world: &World, dt: f32) {
@@ -127,13 +127,21 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         return;
     }
 
-    // Per-frame cache of subtree name maps — built once per unique root entity,
-    // reused across all animated entities sharing that root. Avoids rebuilding
-    // the HashMap + BFS walk for every AnimationPlayer/Stack each frame.
-    let mut subtree_cache: std::collections::HashMap<
-        EntityId,
-        std::collections::HashMap<FixedString, EntityId>,
-    > = std::collections::HashMap::new();
+    // Persisted subtree name maps — survives across frames, only cleared when
+    // Name component count changes. Eliminates ~1500 HashMap insertions/frame
+    // for typical animated scenes. #278.
+    {
+        let current_name_count = world.query::<Name>().map(|q| q.len()).unwrap_or(0);
+        let needs_clear = world
+            .try_resource::<SubtreeCache>()
+            .map(|c| c.generation != current_name_count)
+            .unwrap_or(false);
+        if needs_clear {
+            let mut cache = world.resource_mut::<SubtreeCache>();
+            cache.map.clear();
+            cache.generation = current_name_count;
+        }
+    }
 
     // Rebuild name→entity index only when the count of Name components
     // has changed. `QueryRead::len()` is O(1) (reads the storage's
@@ -210,12 +218,21 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         };
         let current_time = ps.current_time;
 
-        // Scoped name lookup — cached per root entity.
-        let scoped_map = ps.root_entity.map(|root| {
-            subtree_cache
-                .entry(root)
-                .or_insert_with(|| build_subtree_name_map(world, root))
-                as &std::collections::HashMap<FixedString, EntityId>
+        // Scoped name lookup — persisted across frames (#278).
+        if let Some(root) = ps.root_entity {
+            let needs_build = world
+                .try_resource::<SubtreeCache>()
+                .map(|c| !c.map.contains_key(&root))
+                .unwrap_or(false);
+            if needs_build {
+                let map = build_subtree_name_map(world, root);
+                let mut cache = world.resource_mut::<SubtreeCache>();
+                cache.map.insert(root, map);
+            }
+        }
+        let subtree_ref = world.try_resource::<SubtreeCache>();
+        let scoped_map = ps.root_entity.and_then(|root| {
+            subtree_ref.as_ref().and_then(|c| c.map.get(&root))
         });
         let resolve_entity = |channel_name: &str| -> Option<EntityId> {
             let sym = pool.get(channel_name)?;
@@ -340,12 +357,21 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         let sq = world.query::<AnimationStack>().unwrap();
         let stack = sq.get(entity).unwrap();
 
-        // Scoped name lookup for stacks — cached per root entity.
-        let stack_scoped_map = stack.root_entity.map(|root| {
-            subtree_cache
-                .entry(root)
-                .or_insert_with(|| build_subtree_name_map(world, root))
-                as &std::collections::HashMap<FixedString, EntityId>
+        // Scoped name lookup for stacks — persisted across frames (#278).
+        if let Some(root) = stack.root_entity {
+            let needs_build = world
+                .try_resource::<SubtreeCache>()
+                .map(|c| !c.map.contains_key(&root))
+                .unwrap_or(false);
+            if needs_build {
+                let map = build_subtree_name_map(world, root);
+                let mut cache = world.resource_mut::<SubtreeCache>();
+                cache.map.insert(root, map);
+            }
+        }
+        let subtree_ref2 = world.try_resource::<SubtreeCache>();
+        let stack_scoped_map = stack.root_entity.and_then(|root| {
+            subtree_ref2.as_ref().and_then(|c| c.map.get(&root))
         });
         let stack_resolve = |channel_name: &str| -> Option<EntityId> {
             let sym = pool.get(channel_name)?;

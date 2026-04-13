@@ -96,6 +96,24 @@ pub(crate) struct NameIndex {
 }
 impl Resource for NameIndex {}
 
+/// Persisted subtree name maps for animation — maps root entity →
+/// (bone name → entity) so the BFS walk isn't repeated every frame.
+/// Invalidated alongside `NameIndex` when the Name component count changes. #278.
+pub(crate) struct SubtreeCache {
+    pub(crate) map: HashMap<EntityId, HashMap<FixedString, EntityId>>,
+    /// Name component count at last rebuild — same invalidation signal as NameIndex.
+    pub(crate) generation: usize,
+}
+impl Resource for SubtreeCache {}
+impl SubtreeCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+            generation: usize::MAX,
+        }
+    }
+}
+
 impl NameIndex {
     pub(crate) fn new() -> Self {
         Self {

@@ -30,7 +30,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::commands::build_command_registry;
-use crate::components::{InputState, NameIndex, SystemList};
+use crate::components::{InputState, NameIndex, SubtreeCache, SystemList};
 use crate::helpers::world_resource_set;
 use crate::render::build_render_data;
 use crate::systems::{
@@ -124,6 +124,7 @@ impl App {
         world.insert_resource(StringPool::new());
         world.insert_resource(AnimationClipRegistry::new());
         world.insert_resource(NameIndex::new());
+        world.insert_resource(SubtreeCache::new());
         world.insert_resource(byroredux_physics::PhysicsWorld::new());
 
         // Pre-register component storages that the physics sync system

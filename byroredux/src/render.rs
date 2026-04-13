@@ -323,25 +323,39 @@ pub(crate) fn build_render_data(
             }
         }
     }
-    // Sort: opaque → decal → alpha. Within each group:
-    //   Opaque: front-to-back (smaller depth first) for early-Z rejection.
-    //   Transparent: back-to-front (larger depth first) for correct blending.
-    // Within same depth bucket, group by pipeline key and mesh handle so
-    // draw.rs can skip redundant pipeline/buffer rebinds. See #50, #241.
+    // Sort: opaque → decal → alpha.
+    //
+    // Opaque: group by (pipeline_key, mesh, texture) to maximize instanced
+    // draw batching — consecutive draws sharing mesh+pipeline merge into a
+    // single cmd_draw_indexed. Depth is a tie-breaker within each group
+    // (front-to-back for early-Z). This trades some early-Z benefit for
+    // dramatically fewer draw calls on scenes with many identical meshes
+    // (e.g. 400 rocks → 1 instanced draw instead of 400). #272.
+    //
+    // Alpha-blend: must remain back-to-front (depth-primary) for correct
+    // transparency ordering — instancing is irrelevant here.
     draw_commands.sort_unstable_by_key(|cmd| {
-        let depth_key = if cmd.alpha_blend {
-            !cmd.sort_depth // back-to-front: invert bits so larger depth sorts first
+        if cmd.alpha_blend {
+            // Transparent: depth-primary (back-to-front).
+            (
+                1u8,           // after opaque
+                cmd.is_decal as u8,
+                cmd.two_sided as u8,
+                !cmd.sort_depth, // invert → larger depth first
+                cmd.texture_handle,
+                cmd.mesh_handle,
+            )
         } else {
-            cmd.sort_depth // front-to-back: smaller depth first
-        };
-        (
-            cmd.alpha_blend,
-            cmd.is_decal,
-            cmd.two_sided,
-            depth_key,
-            cmd.texture_handle,
-            cmd.mesh_handle,
-        )
+            // Opaque: batch-primary (mesh+texture, then depth).
+            (
+                0u8,
+                cmd.is_decal as u8,
+                cmd.two_sided as u8,
+                cmd.mesh_handle, // group identical meshes
+                cmd.texture_handle,
+                cmd.sort_depth,  // front-to-back within group
+            )
+        }
     });
 
     // Collect lights from ECS.
