@@ -179,7 +179,10 @@ pub fn load_exterior_cells(
                     all_refs.extend_from_slice(&cell.references);
                     // Spawn terrain mesh from LAND heightmap.
                     if let Some(ref land) = cell.landscape {
-                        if let Some(count) = spawn_terrain_mesh(world, ctx, gx, gy, land) {
+                        if let Some(count) = spawn_terrain_mesh(
+                            world, ctx, tex_provider, &index.landscape_textures,
+                            gx, gy, land,
+                        ) {
                             terrain_entities += count;
                         }
                     }
@@ -225,6 +228,8 @@ pub fn load_exterior_cells(
 fn spawn_terrain_mesh(
     world: &mut World,
     ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    landscape_textures: &HashMap<u32, String>,
     grid_x: i32,
     grid_y: i32,
     land: &esm::cell::LandscapeData,
@@ -292,13 +297,15 @@ fn spawn_terrain_mesh(
             let tr = tl + 1;
             let bl = (row + 1) * GRID as u32 + col;
             let br = bl + 1;
-            // Two triangles per quad (CCW winding for Vulkan front face).
+            // Two triangles per quad. The Z-up → Y-up transform negates
+            // the Z axis, flipping winding. Use CW here so it becomes CCW
+            // (Vulkan front face) after the coordinate conversion.
             indices.push(tl);
-            indices.push(bl);
-            indices.push(tr);
             indices.push(tr);
             indices.push(bl);
+            indices.push(tr);
             indices.push(br);
+            indices.push(bl);
         }
     }
 
@@ -321,14 +328,31 @@ fn spawn_terrain_mesh(
         }
     };
 
+    // Resolve terrain base texture: pick the first available BTXT from
+    // any quadrant, resolve via LTEX → texture path, load from BSA.
+    // Full per-quadrant multi-layer splatting is deferred — for now the
+    // entire cell gets one texture (the base layer of the first quadrant).
+    let tex_handle = {
+        let base_ltex = land.quadrants.iter().find_map(|q| q.base);
+        if let Some(ltex_id) = base_ltex {
+            if let Some(tex_path) = landscape_textures.get(&ltex_id) {
+                resolve_texture(ctx, tex_provider, Some(tex_path.as_str()))
+            } else {
+                0 // fallback
+            }
+        } else {
+            0 // fallback
+        }
+    };
+
     // Spawn ECS entity at origin (vertices are already in world-space).
     let entity = world.spawn();
     world.insert(entity, Transform::IDENTITY);
     world.insert(entity, GlobalTransform::IDENTITY);
     world.insert(entity, MeshHandle(mesh_handle));
-    // No texture — terrain uses vertex colors for now. The checkerboard
-    // fallback texture provides a recognizable pattern until proper
-    // LTEX texture splatting is implemented.
+    if tex_handle != 0 {
+        world.insert(entity, TextureHandle(tex_handle));
+    }
 
     log::debug!(
         "Terrain mesh ({},{}): {} verts, {} tris, height range {:.0}–{:.0}",

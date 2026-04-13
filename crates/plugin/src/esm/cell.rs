@@ -25,6 +25,28 @@ pub struct CellLighting {
     pub fog_far: f32,
 }
 
+/// A texture layer within a terrain quadrant.
+#[derive(Debug, Clone)]
+pub struct TerrainTextureLayer {
+    /// LTEX form ID (landscape texture record). 0 = default dirt.
+    pub ltex_form_id: u32,
+    /// Layer index (0 = base, 1+ = additional blended layers).
+    pub layer: u16,
+    /// Alpha opacity for each vertex in the 17×17 quadrant grid (sparse).
+    /// Only populated for additional layers (ATXT+VTXT), not the base (BTXT).
+    /// Index: `[row * 17 + col]`, values 0.0–1.0.
+    pub alpha: Option<Vec<f32>>,
+}
+
+/// Per-quadrant texture layers. Quadrants: 0=SW, 1=SE, 2=NW, 3=NE.
+#[derive(Debug, Clone, Default)]
+pub struct TerrainQuadrant {
+    /// Base texture (BTXT). Covers the whole quadrant at full opacity.
+    pub base: Option<u32>, // LTEX form ID
+    /// Additional alpha-blended texture layers (ATXT+VTXT), ordered by layer index.
+    pub layers: Vec<TerrainTextureLayer>,
+}
+
 /// Landscape heightmap data from a LAND record.
 ///
 /// Each exterior cell has a 33×33 vertex grid spanning 4096×4096 game units.
@@ -41,6 +63,8 @@ pub struct LandscapeData {
     /// Vertex colors: 33×33 × 3 bytes (R, G, B as unsigned bytes 0–255).
     /// None if VCLR absent.
     pub vertex_colors: Option<Vec<u8>>,
+    /// Texture layers per quadrant (0=SW, 1=SE, 2=NW, 3=NE).
+    pub quadrants: [TerrainQuadrant; 4],
 }
 
 /// A cell (interior or exterior) with its placed object references.
@@ -96,6 +120,9 @@ pub struct EsmCellIndex {
     pub exterior_cells: HashMap<String, HashMap<(i32, i32), CellData>>,
     /// All base object records with model paths, keyed by form ID.
     pub statics: HashMap<u32, StaticObject>,
+    /// Landscape texture definitions: LTEX form ID → diffuse texture path.
+    /// Resolved via LTEX.TNAM → TXST.TX00 (FO3+) or LTEX.ICON (Oblivion).
+    pub landscape_textures: HashMap<u32, String>,
 }
 
 /// Parse an ESM file and extract cells, worldspaces, and base object definitions.
@@ -114,6 +141,10 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
     let mut cells = HashMap::new();
     let mut exterior_cells: HashMap<String, HashMap<(i32, i32), CellData>> = HashMap::new();
     let mut statics = HashMap::new();
+    let mut landscape_textures: HashMap<u32, String> = HashMap::new();
+    // First pass collects TXST form IDs; second resolves LTEX → TXST → path.
+    let mut txst_textures: HashMap<u32, String> = HashMap::new();
+    let mut ltex_to_txst: HashMap<u32, u32> = HashMap::new();
 
     // Walk top-level groups.
     while reader.remaining() > 0 {
@@ -134,6 +165,14 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
                 let end = reader.position() + group.total_size as usize - 24;
                 parse_wrld_group(&mut reader, end, &mut exterior_cells)?;
             }
+            b"LTEX" => {
+                let end = reader.position() + group.total_size as usize - 24;
+                parse_ltex_group(&mut reader, end, &mut ltex_to_txst, &mut landscape_textures)?;
+            }
+            b"TXST" => {
+                let end = reader.position() + group.total_size as usize - 24;
+                parse_txst_group(&mut reader, end, &mut txst_textures)?;
+            }
             // All record types that have a MODL sub-record (NIF model path).
             // Placed references (REFR/ACHR) can point to any of these.
             b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"ACTI" | b"CONT" | b"LIGH" | b"MISC"
@@ -148,14 +187,24 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
         }
     }
 
+    // Resolve LTEX → texture path via TXST indirection.
+    // FO3/FNV: LTEX.TNAM → TXST form ID → TXST.TX00 diffuse path.
+    // Oblivion: LTEX.ICON is a direct texture path (stored in landscape_textures directly).
+    for (ltex_id, txst_id) in &ltex_to_txst {
+        if let Some(path) = txst_textures.get(txst_id) {
+            landscape_textures.insert(*ltex_id, path.clone());
+        }
+    }
+
     let total_exterior: usize = exterior_cells.values().map(|m| m.len()).sum();
     let wrld_names: Vec<&str> = exterior_cells.keys().map(|s| s.as_str()).collect();
     log::info!(
-        "ESM parsed: {} interior cells, {} exterior cells across {} worldspaces, {} base objects",
+        "ESM parsed: {} interior cells, {} exterior cells across {} worldspaces, {} base objects, {} landscape textures",
         cells.len(),
         total_exterior,
         exterior_cells.len(),
         statics.len(),
+        landscape_textures.len(),
     );
     if !wrld_names.is_empty() {
         log::info!("  Worldspaces: {:?}", wrld_names);
@@ -165,6 +214,7 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
         cells,
         exterior_cells,
         statics,
+        landscape_textures,
     })
 }
 
@@ -422,15 +472,16 @@ fn parse_land_record(
     let mut heights = vec![0.0f32; 33 * 33];
     let mut normals: Option<Vec<u8>> = None;
     let mut vertex_colors: Option<Vec<u8>> = None;
+    let mut quadrants: [TerrainQuadrant; 4] = Default::default();
+    // Track the most recently parsed ATXT header so we can attach the
+    // following VTXT alpha data to it. ESM sub-records are ordered:
+    // ...ATXT, VTXT, ATXT, VTXT... (each ATXT is followed by its VTXT).
+    let mut pending_atxt: Option<(usize, u32, u16)> = None; // (quadrant, ltex_form_id, layer)
 
     for sub in &subs {
         match sub.sub_type.as_slice() {
             b"VHGT" if sub.data.len() >= 1093 => {
                 // UESP VHGT algorithm: delta-encoded heightmap.
-                // Byte 0–3: offset (f32). Bytes 4–1092: 33×33 signed byte deltas.
-                // Each unit = 8 game units. Column 0 of each row accumulates
-                // into a running row-start offset; columns 1–32 accumulate
-                // across the row from that start.
                 let base_offset = f32::from_le_bytes([
                     sub.data[0], sub.data[1], sub.data[2], sub.data[3],
                 ]);
@@ -453,14 +504,70 @@ fn parse_land_record(
             b"VCLR" if sub.data.len() >= 3267 => {
                 vertex_colors = Some(sub.data[..3267].to_vec());
             }
+            b"BTXT" if sub.data.len() >= 8 => {
+                // Base texture: formid(4) + quadrant(1) + unused(3).
+                let ltex_id = u32::from_le_bytes([
+                    sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                ]);
+                let quadrant = sub.data[4] as usize;
+                if quadrant < 4 {
+                    quadrants[quadrant].base = Some(ltex_id);
+                }
+            }
+            b"ATXT" if sub.data.len() >= 8 => {
+                // Additional texture header: formid(4) + quadrant(1) + unused(1) + layer(2).
+                let ltex_id = u32::from_le_bytes([
+                    sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                ]);
+                let quadrant = sub.data[4] as usize;
+                let layer = u16::from_le_bytes([sub.data[6], sub.data[7]]);
+                if quadrant < 4 {
+                    pending_atxt = Some((quadrant, ltex_id, layer));
+                }
+            }
+            b"VTXT" => {
+                // Alpha layer data for the preceding ATXT.
+                // Array of 8-byte entries: position(u16) + unused(u16) + opacity(f32).
+                if let Some((quadrant, ltex_id, layer)) = pending_atxt.take() {
+                    let mut alpha = vec![0.0f32; 17 * 17];
+                    let entry_count = sub.data.len() / 8;
+                    for i in 0..entry_count {
+                        let off = i * 8;
+                        if off + 8 > sub.data.len() {
+                            break;
+                        }
+                        let pos = u16::from_le_bytes([sub.data[off], sub.data[off + 1]]) as usize;
+                        let opacity = f32::from_le_bytes([
+                            sub.data[off + 4],
+                            sub.data[off + 5],
+                            sub.data[off + 6],
+                            sub.data[off + 7],
+                        ]);
+                        if pos < 17 * 17 {
+                            alpha[pos] = opacity;
+                        }
+                    }
+                    quadrants[quadrant].layers.push(TerrainTextureLayer {
+                        ltex_form_id: ltex_id,
+                        layer,
+                        alpha: Some(alpha),
+                    });
+                }
+            }
             _ => {}
         }
+    }
+
+    // Sort additional layers by layer index within each quadrant.
+    for q in &mut quadrants {
+        q.layers.sort_by_key(|l| l.layer);
     }
 
     Ok(LandscapeData {
         heights,
         normals,
         vertex_colors,
+        quadrants,
     })
 }
 
@@ -685,6 +792,87 @@ fn parse_modl_group(
 fn read_zstring(data: &[u8]) -> String {
     let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
     String::from_utf8_lossy(&data[..end]).to_string()
+}
+
+/// Parse LTEX (Landscape Texture) records.
+///
+/// FO3/FNV: LTEX has a TNAM sub-record pointing to a TXST form ID.
+/// Oblivion: LTEX has an ICON sub-record with a direct texture path.
+fn parse_ltex_group(
+    reader: &mut EsmReader,
+    end: usize,
+    ltex_to_txst: &mut HashMap<u32, u32>,
+    direct_paths: &mut HashMap<u32, String>,
+) -> Result<()> {
+    while reader.position() < end && reader.remaining() > 0 {
+        if reader.is_group() {
+            let sub = reader.read_group_header()?;
+            let sub_end = reader.position() + sub.total_size as usize - 24;
+            parse_ltex_group(reader, sub_end, ltex_to_txst, direct_paths)?;
+            continue;
+        }
+
+        let header = reader.read_record_header()?;
+        if &header.record_type == b"LTEX" {
+            let subs = reader.read_sub_records(&header)?;
+            for sub in &subs {
+                match sub.sub_type.as_slice() {
+                    // FO3/FNV/Skyrim: TNAM → TXST form ID.
+                    b"TNAM" if sub.data.len() >= 4 => {
+                        let txst_id = u32::from_le_bytes([
+                            sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                        ]);
+                        ltex_to_txst.insert(header.form_id, txst_id);
+                    }
+                    // Oblivion: ICON → direct texture path.
+                    b"ICON" => {
+                        let path = read_zstring(&sub.data);
+                        if !path.is_empty() {
+                            direct_paths.insert(header.form_id, path);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        } else {
+            reader.skip_record(&header);
+        }
+    }
+    Ok(())
+}
+
+/// Parse TXST (Texture Set) records. Extracts the TX00 (diffuse) texture path.
+fn parse_txst_group(
+    reader: &mut EsmReader,
+    end: usize,
+    txst_textures: &mut HashMap<u32, String>,
+) -> Result<()> {
+    while reader.position() < end && reader.remaining() > 0 {
+        if reader.is_group() {
+            let sub = reader.read_group_header()?;
+            let sub_end = reader.position() + sub.total_size as usize - 24;
+            parse_txst_group(reader, sub_end, txst_textures)?;
+            continue;
+        }
+
+        let header = reader.read_record_header()?;
+        if &header.record_type == b"TXST" {
+            let subs = reader.read_sub_records(&header)?;
+            for sub in &subs {
+                // TX00 = diffuse/color map (the primary texture).
+                if sub.sub_type.as_slice() == b"TX00" {
+                    let path = read_zstring(&sub.data);
+                    if !path.is_empty() {
+                        txst_textures.insert(header.form_id, path);
+                    }
+                    break;
+                }
+            }
+        } else {
+            reader.skip_record(&header);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
