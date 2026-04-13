@@ -45,6 +45,11 @@ impl VulkanContext {
         // Advance the texture registry's deferred-destroy frame counter.
         self.texture_registry.begin_frame();
 
+        // Tick the mesh registry's deferred SSBO destroy list.
+        if let Some(ref alloc) = self.allocator {
+            self.mesh_registry.tick_deferred_destroy(&self.device, alloc);
+        }
+
         // Wait for this frame-in-flight slot AND the previous slot to be
         // available. SVGF's temporal pass reads the previous slot's G-buffer
         // images (mesh_id, motion, raw_indirect) — without waiting on the
@@ -182,6 +187,8 @@ impl VulkanContext {
                             self.scene_buffers
                                 .write_tlas(&self.device, frame, tlas_handle);
                         }
+                        // Evict unused BLAS entries if over budget.
+                        accel.evict_unused_blas(&self.device, alloc);
                     }
                 }
             }
@@ -366,7 +373,11 @@ impl VulkanContext {
                 alpha_threshold: draw_cmd.alpha_threshold,
                 alpha_test_func: draw_cmd.alpha_test_func,
                 dark_map_index: draw_cmd.dark_map_index,
+                avg_albedo_r: draw_cmd.avg_albedo[0],
+                avg_albedo_g: draw_cmd.avg_albedo[1],
+                avg_albedo_b: draw_cmd.avg_albedo[2],
                 _pad0: 0,
+                _pad1: 0,
             });
 
             let pipeline_key = (draw_cmd.alpha_blend, draw_cmd.two_sided);

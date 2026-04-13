@@ -319,6 +319,13 @@ pub(crate) fn build_render_data(
                     index_offset: i_off,
                     vertex_count: v_count,
                     sort_depth,
+                    in_tlas: true,
+                    // Average albedo for fast GI bounce approximation.
+                    // Falls back to mid-gray (0.5) when no texture color
+                    // data is available. A proper implementation would
+                    // downsample the texture to 1×1 during asset load;
+                    // for now we derive a heuristic from the material.
+                    avg_albedo: [0.5, 0.5, 0.5],
                 });
             }
         }

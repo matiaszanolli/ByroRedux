@@ -478,6 +478,9 @@ fn spawn_placed_instances(
     }
 
     // Spawn collision entities from NiNode collision data.
+    // Guard against parry3d panics from nested composite shapes — some
+    // Bethesda NIFs have deeply nested bhkCompressedMeshShape hierarchies
+    // that parry3d's Compound shape rejects. Skip those shapes gracefully.
     for coll in collisions {
         let nif_pos = Vec3::new(
             coll.translation[0],
@@ -494,16 +497,31 @@ fn spawn_placed_instances(
         let final_rot = ref_rot * nif_quat;
         let final_scale = ref_scale * coll.scale;
 
+        // parry3d panics on nested Compound shapes. Clone inside
+        // catch_unwind so a bad shape doesn't kill the entire load.
+        let shape_result = std::panic::catch_unwind(
+            std::panic::AssertUnwindSafe(|| coll.shape.clone()),
+        );
+        let shape = match shape_result {
+            Ok(s) => s,
+            Err(_) => {
+                log::warn!("Skipping collision shape (nested composite) at ({:.0},{:.0},{:.0})",
+                    final_pos.x, final_pos.y, final_pos.z);
+                continue;
+            }
+        };
+
         let entity = world.spawn();
         world.insert(entity, Transform::new(final_pos, final_rot, final_scale));
         world.insert(
             entity,
             GlobalTransform::new(final_pos, final_rot, final_scale),
         );
-        world.insert(entity, coll.shape.clone());
+        world.insert(entity, shape);
         world.insert(entity, coll.body.clone());
     }
 
+    let mut blas_specs: Vec<(u32, u32, u32)> = Vec::new();
     for mesh in imported {
         let num_verts = mesh.positions.len();
         let vertices: Vec<Vertex> = (0..num_verts)
@@ -549,8 +567,8 @@ fn spawn_placed_instances(
             }
         };
 
-        // Build BLAS for RT shadow rays.
-        ctx.build_blas_for_mesh(mesh_handle, num_verts as u32, mesh.indices.len() as u32);
+        // Collect BLAS specs for batched build after the loop.
+        blas_specs.push((mesh_handle, num_verts as u32, mesh.indices.len() as u32));
 
         // Load texture (shared resolve: cache → BSA → fallback).
         let tex_handle = resolve_texture(ctx, tex_provider, mesh.texture_path.as_deref());
@@ -663,6 +681,12 @@ fn spawn_placed_instances(
             }
         }
         count += 1;
+    }
+
+    // Batched BLAS build: single GPU submission for all meshes in this cell.
+    if !blas_specs.is_empty() {
+        let built = ctx.build_blas_batched(&blas_specs);
+        log::info!("Cell BLAS batch: {built}/{} meshes", blas_specs.len());
     }
 
     count

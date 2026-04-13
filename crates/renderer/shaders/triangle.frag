@@ -46,7 +46,11 @@ struct GpuInstance {
     float alphaThreshold;    // offset 128 — 0.0 = no alpha test (#263)
     uint alphaTestFunc;      // offset 132 — Gamebryo TestFunction enum (#263)
     uint darkMapIndex;       // offset 136 — 0 = no dark map (#264)
-    uint _pad0;              // offset 140 → total 144
+    float avgAlbedoR;        // offset 140 — pre-computed average albedo for GI bounce
+    float avgAlbedoG;        // offset 144
+    float avgAlbedoB;        // offset 148
+    uint _pad0;              // offset 152
+    uint _pad1;              // offset 156 → total 160
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
@@ -499,14 +503,32 @@ void main() {
         vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
         Lo = (kD * albedo / PI + specular * specStrength * specColor) * vec3(0.8) * NdotL;
     } else {
-        // Clustered lighting: iterate only lights assigned to this fragment's cluster.
+        // Clustered lighting with importance-sorted shadow budget.
         //
-        // Shadow ray budget (#270): track the top MAX_SHADOW_RAYS lights by
-        // NdotL×atten contribution. Only those lights get RT shadow queries;
-        // weaker lights accumulate unshadowed. Reduces worst-case ray count
-        // from N to MAX_SHADOW_RAYS per fragment (typically 2).
+        // Two-pass approach: first pass accumulates all lighting as if
+        // unshadowed and tracks the top-K lights by NdotL×atten
+        // contribution; second pass casts shadow rays for only those
+        // top-K lights and subtracts the shadowed portion. This ensures
+        // the brightest lights always get proper shadows instead of the
+        // FIFO order that previously wasted rays on dim fill lights.
+        //
+        // Distance fallback: beyond 800 units, shadow rays are skipped
+        // entirely (smooth fade 600-800 units) since shadows are
+        // imperceptible at distance.
+        float shadowDist = length(fragWorldPos - cameraPos.xyz);
+        float shadowFade = 1.0 - smoothstep(600.0, 800.0, shadowDist);
         const uint MAX_SHADOW_RAYS = 2;
-        uint shadowRayCount = 0;
+
+        // Top-K tracking: light index, contribution, and the radiance
+        // that would be removed if the light is fully shadowed.
+        uint topLightIdx[MAX_SHADOW_RAYS];
+        float topContrib[MAX_SHADOW_RAYS];
+        vec3 topRadiance[MAX_SHADOW_RAYS]; // unshadowed radiance for shadow subtraction
+        uint topCount = 0;
+        for (uint s = 0; s < MAX_SHADOW_RAYS; s++) {
+            topContrib[s] = 0.0;
+            topRadiance[s] = vec3(0.0);
+        }
 
         ClusterEntry cluster = clusters[clusterIdx];
         for (uint ci = 0; ci < cluster.count; ci++) {
@@ -522,14 +544,6 @@ void main() {
 
             if (lightType < 0.5) {
                 // Point light — Gamebryo-matching 1/d attenuation.
-                //
-                // Gamebryo's D3D9 default: atten = 1/(C + L*d + Q*d²) with
-                // C=0, L=1, Q=0 → pure 1/d falloff. The ESM radius is a
-                // CULLING hint (which objects receive this light), not an
-                // attenuation parameter. We extend the effective range to 4×
-                // the authored radius for the smooth window, matching how
-                // Gamebryo's "infinite" range looks in practice — lights
-                // visibly affect surfaces well beyond their culling radius.
                 vec3 toLight = lightPos - fragWorldPos;
                 dist = length(toLight);
                 L = toLight / max(dist, 0.001);
@@ -563,86 +577,7 @@ void main() {
                 continue;
             }
 
-            // RT soft shadow ray: stochastic 1-SPP with penumbra.
-            //
-            // Jitter the ray origin on a disk perpendicular to the light
-            // direction, scaled by the light's angular size as seen from the
-            // fragment. This produces contact-hardening shadows: close to
-            // the occluder the penumbra is tight, far away it's wide.
-            //
-            // At 200+ FPS the temporal variation from frame-to-frame noise
-            // naturally integrates into smooth soft shadows for the human eye.
-            //
-            // Unshadowed lights (radius < 0, e.g. interior fill directional)
-            // skip shadow rays entirely — they exist as ambient fill that
-            // should not be blocked by sealed interior walls.
-            float shadow = 1.0;
-            bool unshadowed = radius < 0.0;
-            // Shadow ray budget: only cast rays for the top-K lights (#270).
-            bool withinBudget = shadowRayCount < MAX_SHADOW_RAYS;
-            if (rtEnabled && !unshadowed && withinBudget) {
-                shadowRayCount++;
-                // Soft shadow via jittered ray direction. Point/spot lights
-                // aim at a disk around their physical position; directional
-                // lights aim along -sunDir (i.e., the L vector) with a small
-                // angular cone for penumbra. The previous code shared the
-                // point-light path for directional lights, which caused the
-                // shadow ray to aim at the world origin (lightPos=(0,0,0)
-                // for directional) instead of the sun — producing a
-                // cone-shaped light leak on walls.
-
-                float frameCount = cameraPos.w;
-                float noise1 = interleavedGradientNoise(gl_FragCoord.xy, frameCount + float(i) * 7.0);
-                float noise2 = interleavedGradientNoise(gl_FragCoord.xy + vec2(113.5, 247.3), frameCount + float(i) * 13.0);
-
-                vec3 T, B;
-                buildOrthoBasis(L, T, B);
-                vec2 diskSample = concentricDiskSample(noise1, noise2);
-
-                vec3 rayOrigin = fragWorldPos + N * 0.05;
-                vec3 rayDir;
-                float rayDist;
-
-                if (lightType < 1.5) {
-                    // Point / spot: trace toward a jittered point on the
-                    // light's physical disk. The fixed disk radius produces
-                    // correct contact-hardening naturally — nearby fragments
-                    // see the disk at a larger angular subtense (soft
-                    // penumbra), distant fragments at a smaller one (hard
-                    // shadows). See #257.
-                    float lightDiskRadius = max(radius * 0.025, 1.5);
-                    vec3 jitteredTarget = lightPos + (T * diskSample.x + B * diskSample.y) * lightDiskRadius;
-                    rayDir = normalize(jitteredTarget - rayOrigin);
-                    rayDist = length(jitteredTarget - rayOrigin) - 0.1;
-                } else {
-                    // Directional: trace along the direction-to-light (L)
-                    // with a small angular cone (~2.8°, matching the sun's
-                    // real angular diameter of ~0.5° scaled up for softer
-                    // penumbra). No physical light position.
-                    const float sunAngularRadius = 0.05; // tan(~2.8°)
-                    vec3 jitteredDir = L + (T * diskSample.x + B * diskSample.y) * sunAngularRadius;
-                    rayDir = normalize(jitteredDir);
-                    rayDist = 10000.0;
-                }
-
-                rayQueryEXT rayQuery;
-                rayQueryInitializeEXT(
-                    rayQuery,
-                    topLevelAS,
-                    gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
-                    0xFF,
-                    rayOrigin,
-                    0.001,
-                    rayDir,
-                    max(rayDist, 0.01)
-                );
-                rayQueryProceedEXT(rayQuery);
-                if (rayQueryGetIntersectionTypeEXT(rayQuery, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
-                    shadow = 0.0;
-                }
-            }
-
-            // PBR: Cook-Torrance BRDF.
+            // PBR: Cook-Torrance BRDF (unshadowed).
             vec3 H = normalize(V + L);
             float NdotH = max(dot(N, H), 0.0);
             float HdotV = max(dot(H, V), 0.0);
@@ -653,20 +588,104 @@ void main() {
 
             vec3 kD = (1.0 - F) * (1.0 - metalness);
             vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
-            vec3 radiance = lightColor * atten * shadow;
+            vec3 unshadowedRadiance = lightColor * atten;
+            vec3 brdfResult = (kD * albedo + specular * specStrength * specColor) * NdotL;
 
-            // Legacy content was not authored for energy-conserving PBR — the
-            // D3D9 fixed-function pipeline multiplied Material.Diffuse ×
-            // Light.Diffuse × NdotL directly, without the 1/PI divisor.
-            // Omitting it preserves authored brightness and gives ~3× more
-            // diffuse contribution, making RT shadows much more visible.
-            Lo += (kD * albedo + specular * specStrength * specColor) * radiance * NdotL;
+            // Accumulate as if unshadowed.
+            Lo += brdfResult * unshadowedRadiance;
 
-            // Per-light ambient fill: approximates Gamebryo's D3D9 per-light
-            // ambient (Material.Ambient × Light.Ambient / atten). Kept small
-            // so RT shadows remain visible — the diffuse/specular terms above
-            // carry the directional contrast via the shadow factor.
+            // Per-light ambient fill.
             Lo += lightColor * atten * albedo * 0.08;
+
+            // Track top-K shadowable lights by contribution.
+            bool unshadowed = radius < 0.0;
+            if (rtEnabled && !unshadowed && shadowFade > 0.01) {
+                // The radiance to subtract if this light is fully shadowed.
+                vec3 shadowableRadiance = brdfResult * unshadowedRadiance;
+
+                // Insert into top-K sorted array (insertion sort, K=2).
+                if (topCount < MAX_SHADOW_RAYS) {
+                    // Array not full — append.
+                    uint slot = topCount;
+                    topLightIdx[slot] = i;
+                    topContrib[slot] = contribution;
+                    topRadiance[slot] = shadowableRadiance;
+                    topCount++;
+                } else if (contribution > topContrib[0] || contribution > topContrib[1]) {
+                    // Replace the weaker of the two tracked lights.
+                    uint weakSlot = topContrib[0] < topContrib[1] ? 0u : 1u;
+                    if (contribution > topContrib[weakSlot]) {
+                        topLightIdx[weakSlot] = i;
+                        topContrib[weakSlot] = contribution;
+                        topRadiance[weakSlot] = shadowableRadiance;
+                    }
+                }
+            }
+        }
+
+        // ── Pass 2: shadow rays for the top-K brightest lights ─────
+        //
+        // Cast shadow rays only for the lights that contribute the most.
+        // If a ray hits, subtract the full unshadowed radiance (scaled
+        // by shadowFade for distance-based soft transition).
+        for (uint s = 0; s < topCount; s++) {
+            uint i = topLightIdx[s];
+            vec3 lightPos = lights[i].position_radius.xyz;
+            float radius = lights[i].position_radius.w;
+            float lightType = lights[i].color_type.w;
+
+            // Recompute light direction for shadow ray (cheaper than
+            // storing L per light in the top-K array).
+            vec3 L;
+            if (lightType < 1.5) {
+                L = normalize(lightPos - fragWorldPos);
+            } else {
+                L = normalize(lights[i].direction_angle.xyz);
+            }
+
+            float frameCount = cameraPos.w;
+            float noise1 = interleavedGradientNoise(gl_FragCoord.xy, frameCount + float(i) * 7.0);
+            float noise2 = interleavedGradientNoise(gl_FragCoord.xy + vec2(113.5, 247.3), frameCount + float(i) * 13.0);
+
+            vec3 T, B;
+            buildOrthoBasis(L, T, B);
+            vec2 diskSample = concentricDiskSample(noise1, noise2);
+
+            vec3 rayOrigin = fragWorldPos + N * 0.05;
+            vec3 rayDir;
+            float rayDist;
+
+            if (lightType < 1.5) {
+                // Point / spot: jittered ray toward the light's physical disk.
+                float lightDiskRadius = max(radius * 0.025, 1.5);
+                vec3 jitteredTarget = lightPos + (T * diskSample.x + B * diskSample.y) * lightDiskRadius;
+                rayDir = normalize(jitteredTarget - rayOrigin);
+                rayDist = length(jitteredTarget - rayOrigin) - 0.1;
+            } else {
+                // Directional: small angular cone for penumbra.
+                const float sunAngularRadius = 0.05;
+                vec3 jitteredDir = L + (T * diskSample.x + B * diskSample.y) * sunAngularRadius;
+                rayDir = normalize(jitteredDir);
+                rayDist = 10000.0;
+            }
+
+            rayQueryEXT rayQuery;
+            rayQueryInitializeEXT(
+                rayQuery,
+                topLevelAS,
+                gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+                0xFF,
+                rayOrigin,
+                0.001,
+                rayDir,
+                max(rayDist, 0.01)
+            );
+            rayQueryProceedEXT(rayQuery);
+            if (rayQueryGetIntersectionTypeEXT(rayQuery, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+                // Subtract the shadowed light's contribution, faded by distance.
+                // Clamp to prevent negative radiance from rounding / fill overlap.
+                Lo = max(Lo - topRadiance[s] * shadowFade, vec3(0.0));
+            }
         }
     }
 
@@ -679,7 +698,8 @@ void main() {
     vec3 indirect = vec3(0.0);
     if (rtEnabled && !isWindow && !isGlass && emissiveMult < 0.01) {
         float giDist = length(fragWorldPos - cameraPos.xyz);
-        if (giDist < 1500.0) {
+        float giFade = 1.0 - smoothstep(1200.0, 1500.0, giDist);
+        if (giFade > 0.01) {
             // Use a slowly-varying noise seed: floor(frameCount/4) makes
             // each noise pattern persist for 4 frames, reducing flicker
             // while still converging over time.
@@ -701,24 +721,30 @@ void main() {
 
             if (rayQueryGetIntersectionTypeEXT(giRQ, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
                 int hitIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(giRQ, true);
-                int hitPrim = rayQueryGetIntersectionPrimitiveIndexEXT(giRQ, true);
-                vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(giRQ, true);
                 float hitDist = rayQueryGetIntersectionTEXT(giRQ, true);
 
+                // Use pre-computed average albedo from the hit instance's
+                // SSBO entry instead of the full UV lookup + texture sample.
+                // This reduces 11 divergent memory ops (3 index reads +
+                // 6 vertex reads + 1 instance read + 1 texture sample) to
+                // a single SSBO read. At 1-SPP with temporal filtering,
+                // the texture detail was already noise — the color bleeding
+                // effect comes from the average hue, not fine detail.
                 GpuInstance hitInst = instances[hitIdx];
-                vec2 hitUV = getHitUV(uint(hitIdx), uint(hitPrim), hitBary);
-                vec3 hitAlbedo = texture(textures[nonuniformEXT(hitInst.textureIndex)], hitUV).rgb;
+                vec3 hitAlbedo = vec3(hitInst.avgAlbedoR, hitInst.avgAlbedoG, hitInst.avgAlbedoB);
 
                 // Ambient bounce: modulates hue from nearby surfaces.
-                // Scale is moderate — the 4-frame noise hold smooths flicker.
-                float giFade = 1.0 / (1.0 + hitDist * 0.005);
-                indirect = max(sceneFlags.yzw, vec3(0.15)) * hitAlbedo * giFade * 0.3;
+                float hitFade = 1.0 / (1.0 + hitDist * 0.005);
+                indirect = max(sceneFlags.yzw, vec3(0.15)) * hitAlbedo * hitFade * 0.3;
                 // Soft clamp to tame outliers without killing the effect.
                 indirect = min(indirect, vec3(0.4));
             } else {
                 // Ray escaped — sky fill adds subtle blue to open areas.
                 indirect = vec3(0.6, 0.75, 1.0) * 0.06;
             }
+            // Smooth distance fade: attenuate GI contribution at range
+            // to prevent a visible boundary at the cutoff distance.
+            indirect *= giFade;
         }
     }
 

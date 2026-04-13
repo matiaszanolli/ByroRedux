@@ -27,6 +27,40 @@ impl VulkanContext {
         }
     }
 
+    /// Build BLAS for multiple meshes in a single GPU submission.
+    ///
+    /// Call this after uploading all meshes during scene/cell load to
+    /// avoid the per-mesh fence stall of `build_blas_for_mesh`. Returns
+    /// the number of BLAS successfully built.
+    pub fn build_blas_batched(&mut self, mesh_specs: &[(u32, u32, u32)]) -> usize {
+        let Some(ref mut accel) = self.accel_manager else {
+            return 0;
+        };
+        let allocator = self.allocator.as_ref().expect("allocator missing");
+
+        // Gather mesh references for the batch — skip any missing handles.
+        let meshes: Vec<(u32, &crate::mesh::GpuMesh, u32, u32)> = mesh_specs
+            .iter()
+            .filter_map(|&(handle, vc, ic)| {
+                self.mesh_registry.get(handle).map(|m| (handle, m, vc, ic))
+            })
+            .collect();
+
+        match accel.build_blas_batched(
+            &self.device,
+            allocator,
+            &self.graphics_queue,
+            self.transfer_pool,
+            &meshes,
+        ) {
+            Ok(count) => count,
+            Err(e) => {
+                log::warn!("Batched BLAS build failed: {e}");
+                0
+            }
+        }
+    }
+
     /// Register the fullscreen quad mesh for UI overlay rendering.
     /// Call this once after creating the context.
     pub fn register_ui_quad(&mut self) -> Result<()> {

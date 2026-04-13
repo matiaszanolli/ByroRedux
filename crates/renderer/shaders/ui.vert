@@ -25,7 +25,9 @@ struct GpuInstance {
     float alphaThreshold;
     uint alphaTestFunc;
     uint darkMapIndex;
+    float avgAlbedoR, avgAlbedoG, avgAlbedoB;
     uint _pad0;
+    uint _pad1;
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

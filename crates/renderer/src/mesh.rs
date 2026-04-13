@@ -45,6 +45,11 @@ pub struct MeshRegistry {
     /// Number of vertices in the SSBO at last build. Used to detect
     /// whether a rebuild is needed vs. the current pending state.
     ssbo_vertex_count: usize,
+    /// Old SSBOs awaiting deferred destruction. Each entry is a pair of
+    /// (vertex, index) buffers and a countdown of frames before they can
+    /// be safely destroyed (must survive MAX_FRAMES_IN_FLIGHT frames to
+    /// guarantee no in-flight command buffer references them).
+    deferred_destroy: Vec<(Option<GpuBuffer>, Option<GpuBuffer>, u32)>,
 }
 
 impl MeshRegistry {
@@ -57,7 +62,28 @@ impl MeshRegistry {
             global_index_buffer: None,
             geometry_dirty: false,
             ssbo_vertex_count: 0,
+            deferred_destroy: Vec::new(),
         }
+    }
+
+    /// Tick the deferred-destroy list. Call once per frame. Destroys old
+    /// SSBOs whose countdown has reached zero (safe because all in-flight
+    /// command buffers referencing them have completed).
+    pub fn tick_deferred_destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        self.deferred_destroy.retain_mut(|(vb, ib, countdown)| {
+            if *countdown == 0 {
+                if let Some(mut b) = vb.take() {
+                    b.destroy(device, allocator);
+                }
+                if let Some(mut b) = ib.take() {
+                    b.destroy(device, allocator);
+                }
+                false // remove from list
+            } else {
+                *countdown -= 1;
+                true // keep
+            }
+        });
     }
 
     /// Upload a mesh to the GPU and return its handle ID.
@@ -212,22 +238,17 @@ impl MeshRegistry {
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
     ) -> Result<()> {
-        // SAFETY: In-flight command buffers may still reference the old
-        // global vertex/index SSBOs via scene descriptor set bindings 8/9.
-        // Wait for all GPU work to complete before destroying them.
-        // This is infrequent (cell transitions only), so the stall is
-        // acceptable. See #280.
-        unsafe { device.device_wait_idle().ok(); }
-
-        // Destroy old SSBO.
-        if let Some(ref mut vb) = self.global_vertex_buffer {
-            vb.destroy(device, allocator);
+        // Defer destruction of old SSBOs instead of stalling with
+        // device_wait_idle. The old buffers survive for MAX_FRAMES_IN_FLIGHT
+        // frames, guaranteeing no in-flight command buffer references them
+        // when they're finally destroyed. The descriptor set bindings 8/9
+        // will be updated to the new SSBO in the same frame this is called.
+        let old_vb = self.global_vertex_buffer.take();
+        let old_ib = self.global_index_buffer.take();
+        if old_vb.is_some() || old_ib.is_some() {
+            // Countdown of 2 frames (MAX_FRAMES_IN_FLIGHT) ensures safety.
+            self.deferred_destroy.push((old_vb, old_ib, 2));
         }
-        if let Some(ref mut ib) = self.global_index_buffer {
-            ib.destroy(device, allocator);
-        }
-        self.global_vertex_buffer = None;
-        self.global_index_buffer = None;
 
         log::info!(
             "Rebuilding geometry SSBO: {} → {} vertices",
@@ -266,6 +287,15 @@ impl MeshRegistry {
         }
         self.global_vertex_buffer = None;
         self.global_index_buffer = None;
+        // Drain deferred-destroy list.
+        for (mut vb, mut ib, _) in self.deferred_destroy.drain(..) {
+            if let Some(ref mut b) = vb {
+                b.destroy(device, allocator);
+            }
+            if let Some(ref mut b) = ib {
+                b.destroy(device, allocator);
+            }
+        }
     }
 }
 

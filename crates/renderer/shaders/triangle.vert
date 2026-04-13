@@ -32,7 +32,11 @@ struct GpuInstance {
     float alphaThreshold;    // offset 128
     uint alphaTestFunc;      // offset 132
     uint darkMapIndex;       // offset 136
-    uint _pad0;              // offset 140 → total 144
+    float avgAlbedoR;        // offset 140
+    float avgAlbedoG;        // offset 144
+    float avgAlbedoB;        // offset 148
+    uint _pad0;              // offset 152
+    uint _pad1;              // offset 156 → total 160
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

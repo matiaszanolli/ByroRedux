@@ -3,7 +3,7 @@
 A clean Rust + C++ rebuild of the Gamebryo/Creation engine lineage with Vulkan rendering.
 This document tracks completed milestones, current capabilities, planned work, and known gaps.
 
-Last updated: 2026-04-12 (session 8 — M30 Phase 1: Papyrus language parser, logos lexer + Pratt expression parser)
+Last updated: 2026-04-13 (session 9 — M31: RT performance at scale, roadmap reprioritization to renderer-first)
 
 ---
 
@@ -18,13 +18,14 @@ Last updated: 2026-04-12 (session 8 — M30 Phase 1: Papyrus language parser, lo
 | `cargo run -- --swf path/to/menu.swf` | Load and render a Skyrim SE SWF menu overlay |
 | `cargo run -- path/to/mesh.nif --kf path/to/anim.kf` | Play a .kf animation on a loaded NIF mesh |
 | `cargo run -- --bsa Meshes.bsa --mesh meshes\foo.nif --kf meshes\anim.kf` | Load KF from BSA (extracts automatically) |
-| `cargo test` | 475 passing tests across all crates |
+| `cargo test` | 610+ passing tests across all crates |
 
 **Fallout New Vegas:** Interior cells load from ESM with placed objects (REFR → STAT), real DDS textures
 from BSA v104 archives, correct coordinate transforms (Gamebryo CW rotation convention),
 RT multi-light with ray query shadows, cell XCLL interior lighting (ambient + directional),
 alpha blending with NIF decal detection, fly camera (WASD + mouse),
-and per-frame debug stats. 789 entities at 85 FPS (RT) on RTX 4070 Ti.
+and per-frame debug stats. Prospector Saloon: 784 draws at 48 FPS (RT) on RTX 4070 Ti.
+Exterior cells load 3×3 grids from WastelandNV worldspace (placed objects only — no landscape yet).
 
 **Fallout 3:** Interior cells load with zero NIF parse failures. Megaton Player House: 1609 entities,
 199 textures at 42 FPS. Same BSA v104 + ESM pipeline as FNV.
@@ -32,6 +33,12 @@ and per-frame debug stats. 789 entities at 85 FPS (RT) on RTX 4070 Ti.
 **Skyrim SE:** Individual meshes load from BSA v105 (LZ4 decompression), BSTriShape geometry
 with packed vertex data, BSLightingShaderProperty/BSEffectShaderProperty shaders,
 DDS textures. Sweetroll renders at 1615 FPS.
+
+**RT Performance (M31):** Batched BLAS builds (single GPU submission per cell load),
+importance-sorted shadow budget (top-2 brightest lights get rays), distance-based
+shadow/GI ray fallback, TLAS frustum culling, BLAS LRU eviction with 256 MB budget,
+deferred geometry SSBO rebuild (no device_wait_idle). Interior: 48 FPS.
+Exterior: loads and renders placed objects; landscape/sky/LOD pending (M32–M35).
 
 ---
 
@@ -596,102 +603,97 @@ into four buckets:
 
 Workspace test count: 396 → 472. Zero new warnings.
 
-## Deferred Roadmap (post-N23)
+## Previously Completed (M22–M30)
 
-| # | Milestone | Scope |
-|---|-----------|-------|
-| M22+ | RT Lighting Polish | **DONE** — soft shadows, reflections, GI, SVGF denoiser, composite pipeline |
-| M24 | Full ESM/ESP Parser | **DONE (Phase 1)** — see below |
-| M25 | Vulkan Compute | Batch transforms, coordinate conversion, GPU skinning |
-| M26 | BA2 Archive Support | **DONE** — see below |
-| M27 | Parallel System Dispatch | Rayon-based parallel ECS execution |
-| M28 | Physics Foundation | **DONE (Phase 1)** — Rapier3D bridge, dynamic capsule player body; kinematic controller deferred to M28.5 |
-| M29 | Skeletal Animation | GPU skinning via compute shaders (uses N23.5 skin data); ragdolls follow via Havok constraint parsing |
-| M30 | Papyrus Parser | **Phase 1 DONE** — `.psc` lexer (logos) + Pratt expression parser + full AST types; Phase 2–4: statements, script declarations, FO4 extensions |
-
-### M30: Papyrus Language Parser — Phase 1 DONE
-
-**Status:** Phase 1 complete (lexer + expression parser). Phases 2–4 pending.
-
-New crate `byroredux-papyrus` — parses Papyrus `.psc` source files into a typed AST.
-Does not execute anything; produces an AST for future transpilation to ECS component
-definitions + system functions. Uses `logos` for lexing (case-insensitive keywords,
-zero-copy tokens) and hand-written recursive descent for parsing (full control over
-error messages and recovery).
-
-**Phase 1 (done):** Token enum (all Papyrus keywords, operators, literals), lexer
-wrapper (line continuation removal with offset map, single-line/block/doc comment
-handling), Span/Spanned types, ParseError with source-location diagnostics, full
-AST type definitions (Script, ScriptItem, Type, Property, Function, Event, State,
-Struct, Group, Stmt, Expr with all node variants), Pratt expression parser with
-correct precedence (13 binary ops, 2 unary, `as` cast, `.` member access, `[]`
-indexing, function calls with named args, `new`, `parent.`, `self`). 45 tests.
-
-**Phase 2 (next):** Statement parser (If/While/Return/Assign/VarDecl), function/event
-body parsing with End terminators.
-
-**Phase 3:** Script-level declarations (ScriptName header, properties with Auto/Const/
-get-set, states, imports, groups). Target: parse any Skyrim-era .psc file.
-
-**Phase 4:** FO4 extensions (Struct, CustomEvent, Var, namespaces), error recovery,
-integration tests against real .psc corpora (Skyrim ~500, FO4 ~800 files).
+| # | Milestone | Status |
+|---|-----------|--------|
+| M24 | ESM/ESP Record Parser | **Phase 1 DONE** — 13,684 structured records (items, actors, factions, etc.) from FNV.esm |
+| M25 | Vulkan Compute | Partial — clustered lighting compute, SSAO compute, SVGF temporal compute |
+| M26 | BA2 Archive Support | **DONE** — BTDX v1/v2/v3/v7/v8, GNRL + DX10, zlib + LZ4. All 7 games 100% |
+| M28 | Physics Foundation | **Phase 1 DONE** — Rapier3D, dynamic capsule player body |
+| M30 | Papyrus Parser | **Phase 1 DONE** — logos lexer + Pratt expression parser + full AST. 45 tests |
+| M31 | RT Performance at Scale | **DONE** — batched BLAS builds, TLAS culling, importance-sorted shadow budget, distance-based ray fallback, GI hit simplification, BLAS LRU eviction, deferred SSBO rebuild |
 
 ---
 
-## Long-Term Vision (M29+)
+## Active Roadmap
 
-| Area | Scope |
-|------|-------|
-| World Loading | WRLD records, exterior cell grids, LOD terrain, streaming, navmesh |
-| AI | AI packages (30 procedures), patrol paths, combat behavior, Sandbox |
-| Quests & Dialogue | Quest stages, conditions (~300 functions), dialogue trees, Story Manager |
-| Save/Load | Serialize world state, change forms, cosave format |
-| Audio | Sound descriptors, 3D spatial audio, music system |
-| UI | Scaleform GFx stubs, Papyrus↔UI bridge, input routing, font loading, all 34 menus |
-| Modding | Full plugin loading: discover, sort, merge, resolve conflicts |
-| Scripting | Full ECS-native scripting: 136 event types, condition system, perk entry points; Papyrus transpiler (M30 AST → ECS components) |
+Priority: **robust renderer first** — make exterior scenes look correct before
+expanding gameplay systems. Each milestone produces a visible improvement.
+
+### Tier 1 — Exterior Rendering (immediate priority)
+
+| # | Milestone | Scope | Depends on |
+|---|-----------|-------|------------|
+| M32 | Landscape Mesh | Parse LAND records (33×33 heightmap grid per cell), generate terrain mesh, LTEX/TXST texture layers with alpha-blended splatting, vertex colors. The missing ground plane for all exterior cells. | ESM parser |
+| M33 | Sky & Atmosphere | Parse WTHR (Weather) records. Sky gradient dome, sun disc with position from game-time, cloud layers (scrolling textures), horizon fog. Procedural fallback when no WTHR is set. Replace hardcoded clear color. | ESM parser |
+| M34 | Exterior Lighting | Proper directional sun derived from WTHR/climate sun position. Time-of-day ambient color interpolation. Exterior fog from WTHR fog data (distance + color). Interior/exterior light path split in the shader. | M33 |
+| M35 | Terrain LOD | Parse `.btr` terrain LOD meshes from BSA. Distance-based LOD selection (full LAND → LOD4 → LOD8 → LOD16). LOD terrain texture atlas. Object LOD (`.bto` files) for distant statics. | M32 |
+
+### Tier 2 — Renderer Robustness
+
+| # | Milestone | Scope | Depends on |
+|---|-----------|-------|------------|
+| M36 | BLAS Compaction | `ALLOW_COMPACTION` + query + compact copy. 20–50% BLAS memory reduction. | M31 |
+| M37 | SVGF Spatial Filter | A-trous wavelet filter using existing moments data. 3 iterations, edge-stopping on normal/depth/variance. Major GI noise reduction (1-SPP → ~8-SPP visual quality). | — |
+| M29 | GPU Skinning | Compute shader bone palette evaluation. SkinnedMesh component → bone SSBO → unified vertex shader. Characters and creatures animate. | M25 |
+| M38 | Transparency & Water | Proper OIT or depth-peeled transparency. Water plane mesh with reflection/refraction (screen-space or planar). NIF alpha sort correctness. | — |
+| M39 | Texture Streaming | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Distance-based texture detail. Memory budget with LRU eviction. | — |
+
+### Tier 3 — Engine Infrastructure
+
+| # | Milestone | Scope | Depends on |
+|---|-----------|-------|------------|
+| M27 | Parallel System Dispatch | Rayon-based parallel ECS system execution. Type-sorted lock acquisition already in place. | — |
+| M28.5 | Character Controller | Kinematic capsule with step-up, slope limiting, ground snapping. Replaces the current dynamic body fly camera for on-foot movement. | M28, M32 |
+| M24.2 | ESM Phase 2 | QUST/DIAL/PERK/MGEF semantic parsing. Quest stages, dialogue trees, perk entry points. | M24 |
+| M30.2 | Papyrus Phase 2–4 | Statement parser, script declarations, FO4 extensions. Full `.psc` → AST for the entire Skyrim/FO4 corpus. | M30 |
+
+### Tier 4 — Gameplay Systems
+
+| # | Milestone | Scope | Depends on |
+|---|-----------|-------|------------|
+| M40 | World Streaming | Cell load/unload based on player position. Multi-cell exterior grid with async loading. BLAS streaming (evict/reload) ties into M31's LRU eviction. | M32, M35 |
+| M41 | NPC Spawning | Resolve NPC_ records → ECS entities with race/class/equipment. Spawn ACHR references. Visual appearance from head parts + body mesh + equipped items. | M24, M29 |
+| M42 | AI Packages | 30 composable procedures, package stack, Sandbox. Patrol paths from NAVM. Basic wander/follow/travel. | M28.5, M41 |
+| M43 | Quests & Dialogue | Quest stages, conditions (~300 functions), dialogue trees, Story Manager event triggers. | M24.2, M41 |
+| M44 | Audio | Sound descriptors, 3D spatial audio (OpenAL or miniaudio), music system, ambient sounds. | — |
+| M45 | Save/Load | Serialize world state, change forms, cosave format. | M40 |
+| M46 | Full Plugin Loading | Discover, sort, merge, resolve conflicts across full load order. | M24.2 |
+| M47 | Scripting Runtime | ECS-native scripting: 136 event types, condition evaluation, perk entry points. Papyrus transpiler (M30 AST → ECS components). | M30.2, M43 |
+| M48 | UI Integration | Scaleform GFx stubs (`_global.gfx`), Papyrus↔UI bridge, input routing, font loading, all 34 menus. | M20, M47 |
 
 ---
 
-## Known Issues and Gaps
+## Known Issues
 
-### Geometry
-- [x] ~~Degenerate NIF rotation matrices~~ → SVD decomposition (M17)
-- [x] ~~Gamebryo CW rotation convention~~ → Euler angle sign fix (M17)
-- [x] ~~Editor markers render~~ → filtered by name prefix (M17)
-- [x] ~~Light ray effect meshes render~~ → FX mesh filtering (M17)
-- [x] ~~43 NiTexturingProperty byte-count warnings~~ → bump map fields + parallax offset fixed (N23.1)
-- [x] ~~Backface culling disabled~~ → enabled with confirmed CW winding convention
-
-### Parser Gaps
+### Open
+- [ ] No landscape mesh (LAND records) — exterior cells have no ground
+- [ ] No sky, sun, clouds, or atmosphere — exterior uses hardcoded clear color
+- [ ] No terrain or object LOD — no distant rendering
+- [ ] Exterior lighting uses placed point lights only, no proper sun direction
+- [ ] BSA v103 (Oblivion) decompression not working
 - [ ] Legacy ESM/ESP parsers are stubs for Morrowind, Oblivion, Skyrim, FO4
-- [x] ~~NIF parser warnings: 274~~ → NiBoolInterpolator and KeyType::Constant fixed (N23.1)
-- [ ] NIF material properties beyond diffuse not wired to renderer
-- [x] ~~Animation controllers parsed but not executed~~ → full .kf playback pipeline (M21)
-- [x] ~~Only BSA v104 supported~~ → v103/v104/v105 (M18, Oblivion BSA open)
-- [x] ~~Cell loader only handles STAT~~ → all renderable types (M19)
-- [ ] BSA v103 (Oblivion) decompression not yet working
-- [x] ~~BSLightingShaderProperty trailing fields per shader type~~ → 8 ShaderTypeData variants (N23.2)
-- [x] ~~No skinning blocks~~ → 6 skinning parsers (NiSkinInstance/Data/Partition, BsDismemberSkinInstance, BSSkin::Instance/BoneData) (N23.5)
-- [x] ~~No collision blocks~~ → 30 Havok types registered for block_size skip (N23.6, full parse → M28)
-- [x] ~~No BA2 reader for FO4/FO76/Starfield~~ → BA2 v1/v2/v3/v7/v8, GNRL + DX10, zlib + LZ4 (M26)
-
-### Renderer Gaps
-- [x] ~~No shadow maps or ray tracing~~ → Full RT pipeline: shadows, reflections, GI, SVGF denoiser, composite (M22)
-- [x] ~~No multi-light system~~ → SSBO multi-light + clustered lighting + cell XCLL (M22)
-- [ ] No transparency sorting for alpha-blended meshes
-- [ ] No skinned mesh rendering (skeletal animation)
-- [ ] No LOD system or frustum culling
-- [ ] No Vulkan compute pipeline (planned for M23)
-
-### Engine Gaps
-- [x] ~~No structured diagnostics or debug console~~ (M15)
+- [ ] NIF material properties beyond diffuse not fully wired to renderer
+- [ ] No skinned mesh rendering (GPU skinning deferred to M29)
 - [ ] Scheduler is single-threaded
-- [ ] No physics or collision
-- [ ] No save/load system
-- [ ] No audio subsystem
-- [x] ~~No UI/menu system~~ → Ruffle SWF integration (M20)
-- [ ] No navmesh or AI
+- [ ] parry3d panics on nested compound collision shapes (catch_unwind guard in place)
+
+### Resolved
+- [x] RT shadow budget was FIFO, not importance-sorted → top-K by contribution (M31)
+- [x] No distance fallback for shadow/GI rays → smooth fade at 600–800/1200–1500 units (M31)
+- [x] BLAS builds blocked per-mesh with fence stall → batched single-submission (M31)
+- [x] No BLAS eviction → LRU eviction with 256 MB memory budget (M31)
+- [x] Geometry SSBO rebuild called device_wait_idle → deferred destroy (M31)
+- [x] TLAS instance Vec allocated fresh each frame → amortized scratch (M31)
+- [x] MAX_INSTANCES 4096 too small for exteriors → 8192 (M31)
+- [x] Full RT pipeline: shadows, reflections, GI, SVGF denoiser, composite (M22)
+- [x] SSBO multi-light + clustered lighting + cell XCLL (M22)
+- [x] Degenerate NIF rotation matrices → SVD decomposition (M17)
+- [x] Gamebryo CW rotation convention → Euler angle sign fix (M17)
+- [x] Animation controllers → full .kf playback pipeline (M21)
+- [x] BA2 support → v1/v2/v3/v7/v8, all 7 games 100% (M26)
+- [x] UI/menu system → Ruffle SWF integration (M20)
 
 ---
 

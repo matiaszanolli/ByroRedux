@@ -68,6 +68,11 @@ pub struct DrawCommand {
     /// are sorted back-to-front (larger depth first) for correct blending.
     /// Encoded as `f32::to_bits()` for deterministic `sort_unstable_by_key`.
     pub sort_depth: u32,
+    /// Include this instance in the TLAS for RT ray queries.
+    pub in_tlas: bool,
+    /// Pre-computed average albedo (RGB) for fast GI bounce approximation.
+    /// Replaces per-hit UV lookup + texture sample in the GI ray hit shader.
+    pub avg_albedo: [f32; 3],
 }
 
 pub struct VulkanContext {

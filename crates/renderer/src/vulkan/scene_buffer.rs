@@ -27,9 +27,9 @@ pub const MAX_TOTAL_BONES: usize = 4096;
 /// Slot 0 of the bone palette is always the identity matrix.
 pub const IDENTITY_BONE_SLOT: u32 = 0;
 
-/// Maximum instances per frame. 4096 × 80 B = 320 KB/frame — trivial.
-/// Covers the largest exterior cells (~3000 placed references).
-pub const MAX_INSTANCES: usize = 4096;
+/// Maximum instances per frame. 8192 × 160 B = 1.28 MB/frame — trivial.
+/// Covers large exterior cells with multiple loaded cells (~5000+ references).
+pub const MAX_INSTANCES: usize = 8192;
 
 /// Per-instance data uploaded to the instance SSBO each frame.
 ///
@@ -74,7 +74,15 @@ pub struct GpuInstance {
     pub alpha_test_func: u32,            // 4 B, offset 132
     /// Bindless texture index for dark/lightmap (0 = none). #264.
     pub dark_map_index: u32,             // 4 B, offset 136
-    pub _pad0: u32,                      // 4 B, offset 140 → total 144
+    /// Pre-computed average albedo for GI bounce approximation.
+    /// Avoids 11 divergent memory ops per GI ray hit by replacing
+    /// full UV lookup + texture sample with a single SSBO read.
+    pub avg_albedo_r: f32,               // 4 B, offset 140
+    pub avg_albedo_g: f32,               // 4 B, offset 144
+    pub avg_albedo_b: f32,               // 4 B, offset 148
+    pub _pad0: u32,                      // 4 B, offset 152
+    pub _pad1: u32,                      // 4 B, offset 156 → total 160
+    // Struct is 160 bytes (10×16), 16-byte aligned for std430.
 }
 
 impl Default for GpuInstance {
@@ -105,7 +113,11 @@ impl Default for GpuInstance {
             alpha_threshold: 0.0,
             alpha_test_func: 0,
             dark_map_index: 0,
+            avg_albedo_r: 0.5,
+            avg_albedo_g: 0.5,
+            avg_albedo_b: 0.5,
             _pad0: 0,
+            _pad1: 0,
         }
     }
 }

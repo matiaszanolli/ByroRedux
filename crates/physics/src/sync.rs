@@ -181,8 +181,21 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
     let mut registered: Vec<(EntityId, RapierHandles)> = Vec::with_capacity(newcomers.len());
 
     for n in newcomers {
+        // parry3d panics on nested compound shapes (Bethesda NIFs can
+        // produce deeply nested bhkListShape / bhkTransformShape chains).
+        // Guard conversion so one bad shape doesn't kill the frame.
         let shape = match &n.source {
-            NewcomerSource::Shape(s) => collision_shape_to_shared_shape(s),
+            NewcomerSource::Shape(s) => {
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    collision_shape_to_shared_shape(s)
+                })) {
+                    Ok(sh) => sh,
+                    Err(_) => {
+                        log::warn!("Skipping collision shape (parry3d panic) for entity");
+                        continue;
+                    }
+                }
+            }
             NewcomerSource::Player(p) => {
                 use rapier3d::prelude::SharedShape;
                 SharedShape::capsule_y(p.half_height.max(1e-3), p.radius.max(1e-3))
