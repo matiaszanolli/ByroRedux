@@ -735,7 +735,7 @@ void main() {
             rayQueryEXT giRQ;
             rayQueryInitializeEXT(
                 giRQ, topLevelAS,
-                gl_RayFlagsOpaqueEXT, 0xFF,
+                gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0xFF,
                 giOrigin, 0.5, giDir, 500.0
             );
             rayQueryProceedEXT(giRQ);

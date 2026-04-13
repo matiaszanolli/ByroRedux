@@ -42,7 +42,7 @@ pub const MAX_INSTANCES: usize = 8192;
 /// 16 bytes (same as vec4), which would silently mismatch a tightly-packed
 /// `#[repr(C)]` Rust struct where `[f32; 3]` is only 12 bytes.
 ///
-/// Layout: 144 bytes per instance, 16-byte aligned (9×16).
+/// Layout: 160 bytes per instance, 16-byte aligned (10×16).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuInstance {

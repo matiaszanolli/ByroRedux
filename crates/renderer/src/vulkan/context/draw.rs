@@ -515,6 +515,7 @@ impl VulkanContext {
             // set binds.
             let mut last_pipeline_key = (false, false);
             let mut last_mesh_handle = u32::MAX;
+            let mut last_is_decal = false;
 
             for batch in &batches {
                 // Switch pipeline when rendering mode changes.
@@ -530,14 +531,17 @@ impl VulkanContext {
                     last_pipeline_key = batch.pipeline_key;
                 }
 
-                // Depth bias for decal geometry.
-                let bias = if batch.is_decal { -8.0_f32 } else { 0.0 };
-                self.device.cmd_set_depth_bias(
-                    cmd,
-                    bias,
-                    0.0,
-                    if batch.is_decal { -2.0 } else { 0.0 },
-                );
+                // Depth bias for decal geometry — only emit when state changes.
+                if batch.is_decal != last_is_decal {
+                    let bias = if batch.is_decal { -8.0_f32 } else { 0.0 };
+                    self.device.cmd_set_depth_bias(
+                        cmd,
+                        bias,
+                        0.0,
+                        if batch.is_decal { -2.0 } else { 0.0 },
+                    );
+                    last_is_decal = batch.is_decal;
+                }
 
                 // Rebind vertex + index buffers only when the mesh changes.
                 if batch.mesh_handle != last_mesh_handle {

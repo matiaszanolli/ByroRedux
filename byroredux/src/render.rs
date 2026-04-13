@@ -249,13 +249,19 @@ pub(crate) fn build_render_data(
                 // and these quads just render as blown-out white surfaces.
                 if let Some(m) = mat {
                     if let Some(ref tp) = m.texture_path {
-                        let lower = tp.to_ascii_lowercase();
-                        if lower.contains("effects\\fx")
-                            || lower.contains("effects/fx")
-                            || lower.contains("fxsoftglow")
-                            || lower.contains("fxpartglow")
-                            || lower.contains("fxparttiny")
-                            || lower.contains("fxlightrays")
+                        // Case-insensitive contains without allocation (#286).
+                        fn contains_ci(haystack: &str, needle: &str) -> bool {
+                            haystack
+                                .as_bytes()
+                                .windows(needle.len())
+                                .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+                        }
+                        if contains_ci(tp, "effects\\fx")
+                            || contains_ci(tp, "effects/fx")
+                            || contains_ci(tp, "fxsoftglow")
+                            || contains_ci(tp, "fxpartglow")
+                            || contains_ci(tp, "fxparttiny")
+                            || contains_ci(tp, "fxlightrays")
                         {
                             continue;
                         }
@@ -398,8 +404,11 @@ pub(crate) fn build_render_data(
         });
     }
 
-    // Add placed point lights from LIGH records.
-    if let Some((tq, lq)) = world.query_2_mut::<GlobalTransform, LightSource>() {
+    // Add placed point lights from LIGH records. Read-only — no write
+    // needed on either component. Previously used query_2_mut (#290 P4-04).
+    let light_gt_q = world.query::<GlobalTransform>();
+    let light_q = world.query::<LightSource>();
+    if let (Some(tq), Some(lq)) = (light_gt_q, light_q) {
         for (entity, light) in lq.iter() {
             if let Some(t) = tq.get(entity) {
                 gpu_lights.push(byroredux_renderer::GpuLight {
