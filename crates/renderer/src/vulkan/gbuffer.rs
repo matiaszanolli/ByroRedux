@@ -299,17 +299,17 @@ impl GBuffer {
         }
         self.width = width;
         self.height = height;
-        self.normal
-            .allocate(device, allocator, NORMAL_FORMAT, width, height, "gb_normal")?;
-        self.motion
-            .allocate(device, allocator, MOTION_FORMAT, width, height, "gb_motion")?;
-        self.mesh_id
-            .allocate(device, allocator, MESH_ID_FORMAT, width, height, "gb_mesh_id")?;
-        self.raw_indirect
-            .allocate(device, allocator, RAW_INDIRECT_FORMAT, width, height, "gb_raw_indirect")?;
-        self.albedo
-            .allocate(device, allocator, ALBEDO_FORMAT, width, height, "gb_albedo")?;
-        Ok(())
+        let result = self.normal
+            .allocate(device, allocator, NORMAL_FORMAT, width, height, "gb_normal")
+            .and_then(|()| self.motion.allocate(device, allocator, MOTION_FORMAT, width, height, "gb_motion"))
+            .and_then(|()| self.mesh_id.allocate(device, allocator, MESH_ID_FORMAT, width, height, "gb_mesh_id"))
+            .and_then(|()| self.raw_indirect.allocate(device, allocator, RAW_INDIRECT_FORMAT, width, height, "gb_raw_indirect"))
+            .and_then(|()| self.albedo.allocate(device, allocator, ALBEDO_FORMAT, width, height, "gb_albedo"));
+        if let Err(ref e) = result {
+            log::error!("G-buffer recreate partial failure: {e} — destroying partial state");
+            unsafe { self.destroy(device, allocator) };
+        }
+        result
     }
 
     /// Destroy all images, views, and allocations. Safe to call multiple times.

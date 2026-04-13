@@ -763,23 +763,31 @@ impl SvgfPipeline {
         self.height = height;
         self.frames_since_creation = 0; // history is meaningless after resize
 
-        for i in 0..MAX_FRAMES_IN_FLIGHT {
-            self.indirect_history.push(Self::create_history_image(
-                device,
-                allocator,
-                width,
-                height,
-                INDIRECT_HIST_FORMAT,
-                &format!("svgf_indirect_{i}"),
-            )?);
-            self.moments_history.push(Self::create_history_image(
-                device,
-                allocator,
-                width,
-                height,
-                MOMENTS_HIST_FORMAT,
-                &format!("svgf_moments_{i}"),
-            )?);
+        let result = (|| -> Result<()> {
+            for i in 0..MAX_FRAMES_IN_FLIGHT {
+                self.indirect_history.push(Self::create_history_image(
+                    device,
+                    allocator,
+                    width,
+                    height,
+                    INDIRECT_HIST_FORMAT,
+                    &format!("svgf_indirect_{i}"),
+                )?);
+                self.moments_history.push(Self::create_history_image(
+                    device,
+                    allocator,
+                    width,
+                    height,
+                    MOMENTS_HIST_FORMAT,
+                    &format!("svgf_moments_{i}"),
+                )?);
+            }
+            Ok(())
+        })();
+        if let Err(ref e) = result {
+            log::error!("SVGF recreate partial failure: {e} — destroying partial state");
+            unsafe { self.destroy(device, allocator) };
+            return result;
         }
 
         self.write_descriptor_sets(device, raw_indirect_views, motion_views, mesh_id_views);

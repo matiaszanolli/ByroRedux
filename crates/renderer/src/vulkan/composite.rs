@@ -677,7 +677,9 @@ impl CompositePipeline {
         self.width = width;
         self.height = height;
 
-        // Recreate HDR images
+        // Recreate HDR images. On partial failure, clean up any
+        // already-allocated new resources. See #283.
+        let result = (|| -> Result<()> {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let img_info = vk::ImageCreateInfo::default()
                 .image_type(vk::ImageType::TYPE_2D)
@@ -796,6 +798,30 @@ impl CompositePipeline {
         }
 
         Ok(())
+        })(); // end of closure
+        if let Err(ref e) = result {
+            log::error!("Composite recreate partial failure: {e} — cleaning up");
+            // Clean up only the recreatable resources (HDR images +
+            // framebuffers), NOT the pipeline/render-pass/descriptors.
+            for &fb in &self.composite_framebuffers {
+                unsafe { device.destroy_framebuffer(fb, None) };
+            }
+            self.composite_framebuffers.clear();
+            for &view in &self.hdr_image_views {
+                unsafe { device.destroy_image_view(view, None) };
+            }
+            self.hdr_image_views.clear();
+            for &img in &self.hdr_images {
+                unsafe { device.destroy_image(img, None) };
+            }
+            self.hdr_images.clear();
+            for alloc in self.hdr_allocations.drain(..) {
+                if let Some(a) = alloc {
+                    allocator.lock().expect("allocator lock").free(a).ok();
+                }
+            }
+        }
+        result
     }
 
     /// Upload per-frame composite parameters (fog state, etc.) to the
