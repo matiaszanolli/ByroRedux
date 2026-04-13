@@ -33,10 +33,13 @@ pub struct SsaoPipeline {
     descriptor_sets: Vec<vk::DescriptorSet>,
     /// Per-frame parameter UBOs.
     param_buffers: Vec<GpuBuffer>,
-    /// AO output image (full-resolution R8).
-    pub ao_image: vk::Image,
-    pub ao_image_view: vk::ImageView,
-    ao_allocation: Option<gpu_allocator::vulkan::Allocation>,
+    /// Per-frame AO output images (full-resolution R8). Double-buffered to
+    /// prevent cross-frame RAW hazards — each frame-in-flight slot writes
+    /// its own image, so frame N's compute dispatch doesn't race with frame
+    /// N-1's fragment shader read. See #267.
+    pub ao_images: Vec<vk::Image>,
+    pub ao_image_views: Vec<vk::ImageView>,
+    ao_allocations: Vec<Option<gpu_allocator::vulkan::Allocation>>,
     /// Sampler for the AO texture (used by the fragment shader).
     pub ao_sampler: vk::Sampler,
     /// Depth sampler for reading the depth buffer.
@@ -71,58 +74,6 @@ impl SsaoPipeline {
     ) -> Result<Self> {
         let max_frames = 2;
 
-        // Create AO output image (R8, full resolution).
-        let ao_image_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(vk::Format::R8_UNORM)
-            .extent(vk::Extent3D {
-                width,
-                height,
-                depth: 1,
-            })
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED);
-
-        let ao_image = unsafe {
-            device
-                .create_image(&ao_image_info, None)
-                .context("Failed to create AO image")?
-        };
-
-        // From here on, any error must clean up ao_image. We build a
-        // partially-initialized Self and call destroy() on error.
-        let ao_allocation = match allocator
-            .lock()
-            .expect("allocator lock")
-            .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-                name: "ssao_output",
-                requirements: unsafe { device.get_image_memory_requirements(ao_image) },
-                location: gpu_allocator::MemoryLocation::GpuOnly,
-                linear: false,
-                allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-            })
-            .context("Failed to allocate AO image memory")
-        {
-            Ok(a) => a,
-            Err(e) => {
-                unsafe { device.destroy_image(ao_image, None) };
-                return Err(e);
-            }
-        };
-
-        if let Err(e) = unsafe {
-            device.bind_image_memory(ao_image, ao_allocation.memory(), ao_allocation.offset())
-        } {
-            allocator.lock().expect("allocator lock").free(ao_allocation).ok();
-            unsafe { device.destroy_image(ao_image, None) };
-            return Err(anyhow::anyhow!("Failed to bind AO image memory: {e}"));
-        }
-
         // Build a partially-valid Self so we can use destroy() for cleanup.
         // Fields that haven't been created yet use null handles — destroy()
         // calls vkDestroy* on null which is always a no-op per Vulkan spec.
@@ -133,31 +84,75 @@ impl SsaoPipeline {
             descriptor_pool: vk::DescriptorPool::null(),
             descriptor_sets: Vec::new(),
             param_buffers: Vec::new(),
-            ao_image,
-            ao_image_view: vk::ImageView::null(),
-            ao_allocation: Some(ao_allocation),
+            ao_images: Vec::new(),
+            ao_image_views: Vec::new(),
+            ao_allocations: Vec::new(),
             ao_sampler: vk::Sampler::null(),
             depth_sampler: vk::Sampler::null(),
             width,
             height,
         };
 
-        // Macro to clean up partial state on error and return.
-        macro_rules! try_or_cleanup {
-            ($expr:expr) => {
-                match $expr {
-                    Ok(v) => v,
-                    Err(e) => {
-                        unsafe { partial.destroy(device, allocator) };
-                        return Err(e.into());
-                    }
+        // Create per-frame AO output images (R8, full resolution).
+        // Double-buffered to prevent cross-frame RAW hazards (#267).
+        for fi in 0..max_frames {
+            let ao_image_info = vk::ImageCreateInfo::default()
+                .image_type(vk::ImageType::TYPE_2D)
+                .format(vk::Format::R8_UNORM)
+                .extent(vk::Extent3D {
+                    width,
+                    height,
+                    depth: 1,
+                })
+                .mip_levels(1)
+                .array_layers(1)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .tiling(vk::ImageTiling::OPTIMAL)
+                .usage(
+                    vk::ImageUsageFlags::STORAGE
+                        | vk::ImageUsageFlags::SAMPLED
+                        | vk::ImageUsageFlags::TRANSFER_DST,
+                )
+                .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                .initial_layout(vk::ImageLayout::UNDEFINED);
+
+            let ao_image = match unsafe { device.create_image(&ao_image_info, None) } {
+                Ok(img) => img,
+                Err(e) => {
+                    unsafe { partial.destroy(device, allocator) };
+                    return Err(anyhow::anyhow!("Failed to create AO image {fi}: {e}"));
                 }
             };
-        }
+            partial.ao_images.push(ao_image);
 
-        partial.ao_image_view = try_or_cleanup!(unsafe {
-            device
-                .create_image_view(
+            let ao_allocation = match allocator
+                .lock()
+                .expect("allocator lock")
+                .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+                    name: &format!("ssao_output_{fi}"),
+                    requirements: unsafe { device.get_image_memory_requirements(ao_image) },
+                    location: gpu_allocator::MemoryLocation::GpuOnly,
+                    linear: false,
+                    allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+                }) {
+                Ok(a) => a,
+                Err(e) => {
+                    unsafe { partial.destroy(device, allocator) };
+                    return Err(anyhow::anyhow!("Failed to allocate AO memory {fi}: {e}"));
+                }
+            };
+
+            if let Err(e) = unsafe {
+                device.bind_image_memory(ao_image, ao_allocation.memory(), ao_allocation.offset())
+            } {
+                allocator.lock().expect("allocator lock").free(ao_allocation).ok();
+                unsafe { partial.destroy(device, allocator) };
+                return Err(anyhow::anyhow!("Failed to bind AO image memory {fi}: {e}"));
+            }
+            partial.ao_allocations.push(Some(ao_allocation));
+
+            let view = match unsafe {
+                device.create_image_view(
                     &vk::ImageViewCreateInfo::default()
                         .image(ao_image)
                         .view_type(vk::ImageViewType::TYPE_2D)
@@ -171,8 +166,28 @@ impl SsaoPipeline {
                         }),
                     None,
                 )
-                .context("Failed to create AO image view")
-        });
+            } {
+                Ok(v) => v,
+                Err(e) => {
+                    unsafe { partial.destroy(device, allocator) };
+                    return Err(anyhow::anyhow!("Failed to create AO view {fi}: {e}"));
+                }
+            };
+            partial.ao_image_views.push(view);
+        }
+
+        // Macro to clean up partial state on error and return.
+        macro_rules! try_or_cleanup {
+            ($expr:expr) => {
+                match $expr {
+                    Ok(v) => v,
+                    Err(e) => {
+                        unsafe { partial.destroy(device, allocator) };
+                        return Err(e.into());
+                    }
+                }
+            };
+        }
 
         // Samplers.
         partial.depth_sampler = try_or_cleanup!(unsafe {
@@ -324,7 +339,7 @@ impl SsaoPipeline {
                 .image_view(depth_image_view)
                 .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
             let ao_info = [vk::DescriptorImageInfo::default()
-                .image_view(partial.ao_image_view)
+                .image_view(partial.ao_image_views[i])
                 .image_layout(vk::ImageLayout::GENERAL)];
             let param_info = [vk::DescriptorBufferInfo {
                 buffer: partial.param_buffers[i].buffer,
@@ -356,82 +371,69 @@ impl SsaoPipeline {
         Ok(partial)
     }
 
-    /// Transition the AO image from UNDEFINED to SHADER_READ_ONLY_OPTIMAL
-    /// and clear it to white (1.0 = no occlusion). Must be called once after
-    /// creation so the fragment shader sees a valid image on the first frame
-    /// (before the first SSAO dispatch has run).
-    pub unsafe fn initialize_ao_image(
+    /// Transition all per-frame AO images from UNDEFINED to
+    /// SHADER_READ_ONLY_OPTIMAL and clear them to white (1.0 = no occlusion).
+    /// Must be called once after creation so the fragment shader sees a valid
+    /// image on the first frame (before the first SSAO dispatch has run).
+    pub unsafe fn initialize_ao_images(
         &self,
         device: &ash::Device,
         queue: &std::sync::Mutex<vk::Queue>,
         pool: vk::CommandPool,
     ) -> Result<()> {
+        let range = vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
         super::texture::with_one_time_commands(device, queue, pool, |cmd| {
-            // UNDEFINED → TRANSFER_DST for the clear.
-            let barrier = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::empty())
-                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .image(self.ao_image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                });
-            unsafe {
-                device.cmd_pipeline_barrier(
-                    cmd,
-                    vk::PipelineStageFlags::TOP_OF_PIPE,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[barrier],
-                );
-
-                // Clear to 1.0 (white = no occlusion).
-                device.cmd_clear_color_image(
-                    cmd,
-                    self.ao_image,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    &vk::ClearColorValue {
-                        float32: [1.0, 0.0, 0.0, 0.0],
-                    },
-                    &[vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    }],
-                );
-
-                // TRANSFER_DST → SHADER_READ_ONLY for fragment shader sampling.
-                let barrier2 = vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image(self.ao_image)
-                    .subresource_range(vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    });
-                device.cmd_pipeline_barrier(
-                    cmd,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::PipelineStageFlags::FRAGMENT_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[barrier2],
-                );
+            for &img in &self.ao_images {
+                // UNDEFINED → TRANSFER_DST for the clear.
+                let barrier = vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::empty())
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .image(img)
+                    .subresource_range(range);
+                unsafe {
+                    device.cmd_pipeline_barrier(
+                        cmd,
+                        vk::PipelineStageFlags::TOP_OF_PIPE,
+                        vk::PipelineStageFlags::TRANSFER,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        &[barrier],
+                    );
+                    device.cmd_clear_color_image(
+                        cmd,
+                        img,
+                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        &vk::ClearColorValue {
+                            float32: [1.0, 0.0, 0.0, 0.0],
+                        },
+                        &[range],
+                    );
+                    let barrier2 = vk::ImageMemoryBarrier::default()
+                        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                        .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                        .image(img)
+                        .subresource_range(range);
+                    device.cmd_pipeline_barrier(
+                        cmd,
+                        vk::PipelineStageFlags::TRANSFER,
+                        vk::PipelineStageFlags::FRAGMENT_SHADER,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        &[barrier2],
+                    );
+                }
             }
             Ok(())
         })
@@ -482,13 +484,14 @@ impl SsaoPipeline {
             &[],
         );
 
-        // Transition AO image to GENERAL for compute write.
+        // Transition this frame's AO image to GENERAL for compute write.
+        let ao_image = self.ao_images[frame];
         let ao_barrier = vk::ImageMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::SHADER_READ)
             .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
             .old_layout(vk::ImageLayout::UNDEFINED)
             .new_layout(vk::ImageLayout::GENERAL)
-            .image(self.ao_image)
+            .image(ao_image)
             .subresource_range(vk::ImageSubresourceRange {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
                 base_mip_level: 0,
@@ -527,7 +530,7 @@ impl SsaoPipeline {
             .dst_access_mask(vk::AccessFlags::SHADER_READ)
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image(self.ao_image)
+            .image(ao_image)
             .subresource_range(vk::ImageSubresourceRange {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
                 base_mip_level: 0,
@@ -549,14 +552,18 @@ impl SsaoPipeline {
     }
 
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        device.destroy_image_view(self.ao_image_view, None);
-        device.destroy_image(self.ao_image, None);
-        if let Some(alloc) = self.ao_allocation.take() {
-            allocator
-                .lock()
-                .expect("allocator lock")
-                .free(alloc)
-                .expect("free AO allocation");
+        for &view in &self.ao_image_views {
+            device.destroy_image_view(view, None);
+        }
+        self.ao_image_views.clear();
+        for &img in &self.ao_images {
+            device.destroy_image(img, None);
+        }
+        self.ao_images.clear();
+        for alloc in self.ao_allocations.drain(..) {
+            if let Some(a) = alloc {
+                allocator.lock().expect("allocator lock").free(a).ok();
+            }
         }
         for buf in &mut self.param_buffers {
             buf.destroy(device, allocator);

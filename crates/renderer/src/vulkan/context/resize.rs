@@ -155,7 +155,7 @@ impl VulkanContext {
                 Ok(new_ssao) => {
                     // Transition AO image to valid layout before first use.
                     if let Err(e) = unsafe {
-                        new_ssao.initialize_ao_image(
+                        new_ssao.initialize_ao_images(
                             &self.device,
                             &self.graphics_queue,
                             self.transfer_pool,
@@ -167,7 +167,7 @@ impl VulkanContext {
                         self.scene_buffers.write_ao_texture(
                             &self.device,
                             f,
-                            new_ssao.ao_image_view,
+                            new_ssao.ao_image_views[f],
                             new_ssao.ao_sampler,
                         );
                     }
