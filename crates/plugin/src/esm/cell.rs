@@ -123,6 +123,9 @@ pub struct EsmCellIndex {
     /// Landscape texture definitions: LTEX form ID → diffuse texture path.
     /// Resolved via LTEX.TNAM → TXST.TX00 (FO3+) or LTEX.ICON (Oblivion).
     pub landscape_textures: HashMap<u32, String>,
+    /// Worldspace climate form IDs: worldspace_name_lowercase → CLMT form ID.
+    /// Extracted from the WRLD record's CNAM sub-record.
+    pub worldspace_climates: HashMap<String, u32>,
 }
 
 /// Parse an ESM file and extract cells, worldspaces, and base object definitions.
@@ -142,6 +145,7 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
     let mut exterior_cells: HashMap<String, HashMap<(i32, i32), CellData>> = HashMap::new();
     let mut statics = HashMap::new();
     let mut landscape_textures: HashMap<u32, String> = HashMap::new();
+    let mut worldspace_climates: HashMap<String, u32> = HashMap::new();
     // First pass collects TXST form IDs; second resolves LTEX → TXST → path.
     let mut txst_textures: HashMap<u32, String> = HashMap::new();
     let mut ltex_to_txst: HashMap<u32, u32> = HashMap::new();
@@ -163,7 +167,7 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
             }
             b"WRLD" => {
                 let end = reader.position() + group.total_size as usize - 24;
-                parse_wrld_group(&mut reader, end, &mut exterior_cells)?;
+                parse_wrld_group(&mut reader, end, &mut exterior_cells, &mut worldspace_climates)?;
             }
             b"LTEX" => {
                 let end = reader.position() + group.total_size as usize - 24;
@@ -215,6 +219,7 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
         exterior_cells,
         statics,
         landscape_textures,
+        worldspace_climates,
     })
 }
 
@@ -576,6 +581,7 @@ fn parse_wrld_group(
     reader: &mut EsmReader,
     end: usize,
     all_exterior_cells: &mut HashMap<String, HashMap<(i32, i32), CellData>>,
+    worldspace_climates: &mut HashMap<String, u32>,
 ) -> Result<()> {
     let mut current_wrld_name: Option<String> = None;
 
@@ -601,16 +607,34 @@ fn parse_wrld_group(
                 }
             }
         } else {
-            // WRLD record — extract worldspace name.
+            // WRLD record — extract worldspace name + climate form ID.
             let header = reader.read_record_header()?;
             if &header.record_type == b"WRLD" {
                 let subs = reader.read_sub_records(&header)?;
+                let mut name_opt: Option<String> = None;
+                let mut climate_fid: Option<u32> = None;
                 for sub in &subs {
-                    if &sub.sub_type == b"EDID" {
-                        let name = read_zstring(&sub.data);
-                        log::info!("Found worldspace: '{}' (form {:08X})", name, header.form_id);
-                        current_wrld_name = Some(name);
+                    match &sub.sub_type {
+                        b"EDID" => {
+                            name_opt = Some(read_zstring(&sub.data));
+                        }
+                        b"CNAM" if sub.data.len() >= 4 => {
+                            climate_fid = Some(u32::from_le_bytes([
+                                sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                            ]));
+                        }
+                        _ => {}
                     }
+                }
+                if let Some(ref name) = name_opt {
+                    log::info!(
+                        "Found worldspace: '{}' (form {:08X}, climate: {:08X?})",
+                        name, header.form_id, climate_fid,
+                    );
+                    if let Some(clmt_fid) = climate_fid {
+                        worldspace_climates.insert(name.to_ascii_lowercase(), clmt_fid);
+                    }
+                    current_wrld_name = name_opt;
                 }
             } else {
                 reader.skip_record(&header);

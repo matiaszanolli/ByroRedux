@@ -40,6 +40,8 @@ pub struct CellLoadResult {
     pub center: Vec3,
     /// Interior cell lighting (ambient + directional).
     pub lighting: Option<byroredux_plugin::esm::cell::CellLighting>,
+    /// Weather data for exterior cells (from WRLD→CLMT→WTHR chain).
+    pub weather: Option<byroredux_plugin::esm::records::WeatherRecord>,
 }
 
 /// Load an interior cell by editor ID.
@@ -106,6 +108,7 @@ pub fn load_cell(
         mesh_count: result.mesh_count,
         center: result.center,
         lighting: cell.lighting.clone(),
+        weather: None,
     })
 }
 
@@ -128,6 +131,13 @@ pub fn load_exterior_cells(
         esm_data.len() as f64 / 1_048_576.0
     );
     let index = esm::cell::parse_esm_cells(&esm_data)?;
+
+    // Second pass: extract WTHR + CLMT records for weather resolution.
+    let record_index = esm::records::parse_esm(&esm_data)
+        .unwrap_or_else(|e| {
+            log::warn!("Record parse pass failed (weather unavailable): {e}");
+            esm::records::EsmIndex::default()
+        });
 
     // Find the best worldspace. Try common FNV names, then fall back to largest.
     let wrld_key = {
@@ -226,12 +236,31 @@ pub fn load_exterior_cells(
         result.center
     };
 
+    // Resolve weather: WRLD → CLMT → WTHR (first pleasant or highest-chance weather).
+    let weather = wrld_key.as_deref().and_then(|wrld_name_lc| {
+        let climate_fid = index.worldspace_climates.get(wrld_name_lc)?;
+        let climate = record_index.climates.get(climate_fid)?;
+        log::info!(
+            "Worldspace '{}' climate '{}' ({:08X}): {} weathers",
+            wrld_name_lc, climate.editor_id, climate_fid, climate.weathers.len(),
+        );
+        // Pick the weather with the highest chance (most common / default).
+        let best = climate.weathers.iter().max_by_key(|w| w.chance)?;
+        let wthr = record_index.weathers.get(&best.weather_form_id)?;
+        log::info!(
+            "Default weather: '{}' ({:08X}, chance {})",
+            wthr.editor_id, wthr.form_id, best.chance,
+        );
+        Some(wthr.clone())
+    });
+
     Ok(CellLoadResult {
         cell_name: format!("{} ({},{})", wrld_name, center_x, center_y),
         entity_count: result.entity_count + terrain_entities,
         mesh_count: result.mesh_count + terrain_entities,
         center: spawn_center,
         lighting: None,
+        weather,
     })
 }
 

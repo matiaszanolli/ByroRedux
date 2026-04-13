@@ -110,27 +110,59 @@ pub(crate) fn setup_scene(
                     // Exterior cells: set up lighting + sky from WTHR data
                     // or a procedural Mojave-style fallback.
                     let sun_dir: [f32; 3] = [-0.4, 0.8, -0.45];
-                    world.insert_resource(CellLightingRes {
-                        ambient: [0.15, 0.14, 0.12],
-                        directional_color: [1.0, 0.95, 0.8],
-                        directional_dir: sun_dir,
-                        is_interior: false,
-                        fog_color: [0.7, 0.65, 0.55],
-                        fog_near: 3000.0,
-                        fog_far: 25000.0,
-                    });
-                    // Sky dome: procedural fallback — warm Mojave desert sky.
-                    // Future: extract from WTHR NAM0 sky colors for the
-                    // worldspace's default weather.
-                    world.insert_resource(SkyParamsRes {
-                        zenith_color: [0.15, 0.3, 0.65],
-                        horizon_color: [0.55, 0.5, 0.42],
-                        sun_direction: sun_dir,
-                        sun_color: [1.0, 0.95, 0.8],
-                        sun_size: 0.9995,
-                        sun_intensity: 4.0,
-                        is_exterior: true,
-                    });
+                    if let Some(ref wthr) = result.weather {
+                        use byroredux_plugin::esm::records::weather::*;
+                        // Extract "day" time slot colors from the WTHR NAM0 block.
+                        let ambient = wthr.sky_colors[SKY_AMBIENT][TOD_DAY].to_linear_rgb();
+                        let sunlight = wthr.sky_colors[SKY_SUNLIGHT][TOD_DAY].to_linear_rgb();
+                        let fog_col = wthr.sky_colors[SKY_FOG][TOD_DAY].to_linear_rgb();
+                        let zenith = wthr.sky_colors[SKY_UPPER][TOD_DAY].to_linear_rgb();
+                        let horizon = wthr.sky_colors[SKY_HORIZON][TOD_DAY].to_linear_rgb();
+                        let sun_col = wthr.sky_colors[SKY_SUN][TOD_DAY].to_linear_rgb();
+                        log::info!(
+                            "WTHR '{}': zenith={:?} horizon={:?} sun={:?} fog_day={:.0}–{:.0}",
+                            wthr.editor_id, zenith, horizon, sun_col,
+                            wthr.fog_day_near, wthr.fog_day_far,
+                        );
+                        world.insert_resource(CellLightingRes {
+                            ambient,
+                            directional_color: sunlight,
+                            directional_dir: sun_dir,
+                            is_interior: false,
+                            fog_color: fog_col,
+                            fog_near: wthr.fog_day_near,
+                            fog_far: wthr.fog_day_far,
+                        });
+                        world.insert_resource(SkyParamsRes {
+                            zenith_color: zenith,
+                            horizon_color: horizon,
+                            sun_direction: sun_dir,
+                            sun_color: sun_col,
+                            sun_size: 0.9995,
+                            sun_intensity: 4.0,
+                            is_exterior: true,
+                        });
+                    } else {
+                        // Procedural fallback — warm Mojave desert sky.
+                        world.insert_resource(CellLightingRes {
+                            ambient: [0.15, 0.14, 0.12],
+                            directional_color: [1.0, 0.95, 0.8],
+                            directional_dir: sun_dir,
+                            is_interior: false,
+                            fog_color: [0.7, 0.65, 0.55],
+                            fog_near: 3000.0,
+                            fog_far: 25000.0,
+                        });
+                        world.insert_resource(SkyParamsRes {
+                            zenith_color: [0.15, 0.3, 0.65],
+                            horizon_color: [0.55, 0.5, 0.42],
+                            sun_direction: sun_dir,
+                            sun_color: [1.0, 0.95, 0.8],
+                            sun_size: 0.9995,
+                            sun_intensity: 4.0,
+                            is_exterior: true,
+                        });
+                    }
                 }
                 Err(e) => log::error!("Failed to load exterior cells: {:#}", e),
             }
