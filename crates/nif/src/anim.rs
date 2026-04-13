@@ -13,6 +13,7 @@ use crate::blocks::interpolator::{
 };
 use crate::scene::NifScene;
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 /// Sampling rate for B-spline interpolators during import.
 /// 30 Hz matches the typical Bethesda animation frame rate.
@@ -177,14 +178,15 @@ pub struct AnimationClip {
     /// Accumulation root node name — horizontal translation on this node
     /// is extracted as root motion delta rather than applied as animation.
     pub accum_root_name: Option<String>,
-    /// Map from node name to its transform animation channel.
-    pub channels: HashMap<String, TransformChannel>,
+    /// Map from node name to its transform animation channel. `Arc<str>`
+    /// avoids per-channel allocation — parser holds names as `Arc<str>`. #244.
+    pub channels: HashMap<Arc<str>, TransformChannel>,
     /// Float channels keyed by (node_name, target).
-    pub float_channels: Vec<(String, FloatChannel)>,
+    pub float_channels: Vec<(Arc<str>, FloatChannel)>,
     /// Color channels keyed by (node_name, target).
-    pub color_channels: Vec<(String, ColorChannel)>,
+    pub color_channels: Vec<(Arc<str>, ColorChannel)>,
     /// Bool (visibility) channels keyed by node_name.
-    pub bool_channels: Vec<(String, BoolChannel)>,
+    pub bool_channels: Vec<(Arc<str>, BoolChannel)>,
     /// Text key events: (time, label). Imported from NiTextKeyExtraData.
     /// Emitted as transient ECS markers when crossed during playback.
     pub text_keys: Vec<(f32, String)>,
@@ -311,37 +313,37 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
             "NiTransformController" => {
                 if let Some(mut channel) = extract_transform_channel(scene, cb) {
                     channel.priority = cb.priority;
-                    channels.insert(node_name.to_string(), channel);
+                    channels.insert(Arc::clone(node_name), channel);
                 }
             }
             "NiMaterialColorController" => {
                 if let Some(ch) = extract_color_channel(scene, cb) {
-                    color_channels.push((node_name.to_string(), ch));
+                    color_channels.push((Arc::clone(node_name), ch));
                 }
             }
             "NiAlphaController" => {
                 if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::Alpha) {
-                    float_channels.push((node_name.to_string(), ch));
+                    float_channels.push((Arc::clone(node_name), ch));
                 }
             }
             "NiVisController" => {
                 if let Some(ch) = extract_bool_channel(scene, cb) {
-                    bool_channels.push((node_name.to_string(), ch));
+                    bool_channels.push((Arc::clone(node_name), ch));
                 }
             }
             "NiTextureTransformController" => {
                 if let Some(ch) = extract_texture_transform_channel(scene, cb) {
-                    float_channels.push((node_name.to_string(), ch));
+                    float_channels.push((Arc::clone(node_name), ch));
                 }
             }
             "BSEffectShaderPropertyFloatController" | "BSLightingShaderPropertyFloatController" => {
                 if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::ShaderFloat) {
-                    float_channels.push((node_name.to_string(), ch));
+                    float_channels.push((Arc::clone(node_name), ch));
                 }
             }
             "BSEffectShaderPropertyColorController" | "BSLightingShaderPropertyColorController" => {
                 if let Some(ch) = extract_shader_color_channel(scene, cb) {
-                    color_channels.push((node_name.to_string(), ch));
+                    color_channels.push((Arc::clone(node_name), ch));
                 }
             }
             "NiGeomMorpherController" => {
@@ -349,14 +351,14 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
                 // The controlled block's interpolator ref points to the
                 // weight interpolator for one morph target.
                 if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::MorphWeight(0)) {
-                    float_channels.push((node_name.to_string(), ch));
+                    float_channels.push((Arc::clone(node_name), ch));
                 }
             }
             "NiUVController" => {
                 // UV scrolling — maps to UvOffsetU/V float channels.
                 // The default UV scroll is offset U (horizontal scroll).
                 if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::UvOffsetU) {
-                    float_channels.push((node_name.to_string(), ch));
+                    float_channels.push((Arc::clone(node_name), ch));
                 }
             }
             _ => {

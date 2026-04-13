@@ -2,6 +2,7 @@
 
 use crate::math::{Quat, Vec3};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// How the animation behaves when it reaches its end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,14 +141,16 @@ pub struct AnimationClip {
     /// Accumulation root node name — horizontal translation on this node
     /// is extracted as root motion delta rather than applied as animation.
     pub accum_root_name: Option<String>,
-    /// Map from node name to its transform animation channel.
-    pub channels: HashMap<String, TransformChannel>,
+    /// Map from node name to its transform animation channel. `Arc<str>`
+    /// avoids per-channel String allocation during import — the parser
+    /// already holds node names as `Arc<str>`. See #244.
+    pub channels: HashMap<Arc<str>, TransformChannel>,
     /// Float channels: (node_name, channel).
-    pub float_channels: Vec<(String, FloatChannel)>,
+    pub float_channels: Vec<(Arc<str>, FloatChannel)>,
     /// Color channels: (node_name, channel).
-    pub color_channels: Vec<(String, ColorChannel)>,
+    pub color_channels: Vec<(Arc<str>, ColorChannel)>,
     /// Bool channels: (node_name, channel).
-    pub bool_channels: Vec<(String, BoolChannel)>,
+    pub bool_channels: Vec<(Arc<str>, BoolChannel)>,
     /// Text key events: (time, label). Imported from NiTextKeyExtraData.
     /// Emitted as transient ECS markers when crossed during playback.
     pub text_keys: Vec<(f32, String)>,

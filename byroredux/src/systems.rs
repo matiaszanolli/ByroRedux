@@ -388,7 +388,7 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         for layer in &stack.layers {
             if let Some(clip) = registry.get(layer.clip_handle) {
                 for name in clip.channels.keys() {
-                    channel_names_scratch.push(name.as_str());
+                    channel_names_scratch.push(&**name);
                 }
             }
         }
@@ -687,9 +687,14 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
     let mut stack: Vec<(EntityId, bool)> = Vec::new();
 
     move |world: &World, _dt: f32| {
+        // Acquire Children and LocalBound once — used by both passes.
+        // Previously re-acquired for pass 2 (#250).
+        let local_q = world.query::<LocalBound>();
+        let children_q = world.query::<Children>();
+
         // ── Pass 1: leaf bounds from LocalBound + GlobalTransform ──────
         {
-            let Some(lb_q) = world.query::<LocalBound>() else {
+            let Some(ref lb_q) = local_q else {
                 return;
             };
             let Some(g_q) = world.query::<GlobalTransform>() else {
@@ -739,7 +744,6 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
             }
         }
 
-        let children_q = world.query::<Children>();
         for &root in &roots {
             stack.push((root, false));
             while let Some((entity, visited)) = stack.pop() {
@@ -757,11 +761,8 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
                 }
             }
         }
-        drop(children_q);
 
         // Fold children into parents. Must be post-order — children first.
-        let local_q = world.query::<LocalBound>();
-        let children_q = world.query::<Children>();
         let Some(mut wb_q) = world.query_mut::<WorldBound>() else {
             return;
         };
