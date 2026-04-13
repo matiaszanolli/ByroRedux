@@ -29,7 +29,10 @@ use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 
-pub const NORMAL_FORMAT: vk::Format = vk::Format::R16G16B16A16_SNORM;
+/// Octahedral-encoded normal (2 channels). RGBA16_SNORM→RG16_SNORM saves
+/// 50% bandwidth (4B vs 8B/pixel). The fragment shader encodes via
+/// octahedral projection; consumers decode with the inverse. See #275.
+pub const NORMAL_FORMAT: vk::Format = vk::Format::R16G16_SNORM;
 pub const MOTION_FORMAT: vk::Format = vk::Format::R16G16_SFLOAT;
 pub const MESH_ID_FORMAT: vk::Format = vk::Format::R16_UINT;
 /// Raw (pre-denoise) indirect light, albedo-demodulated. Written by the

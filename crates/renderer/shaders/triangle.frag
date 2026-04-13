@@ -13,7 +13,7 @@ layout(location = 7) in vec4 fragPrevClipPos;
 
 // Main render pass has 6 color attachments (Phase 2).
 layout(location = 0) out vec4 outColor;        // HDR color (direct light only)
-layout(location = 1) out vec4 outNormal;       // world-space normal (xyz), unused w
+layout(location = 1) out vec2 outNormal;       // octahedral-encoded normal (RG16_SNORM). #275
 layout(location = 2) out vec2 outMotion;       // screen-space motion vector
 layout(location = 3) out uint outMeshID;       // per-instance ID + 1
 layout(location = 4) out vec4 outRawIndirect;  // demodulated indirect light (for SVGF)
@@ -116,6 +116,27 @@ const float CLUSTER_NEAR = 0.1;
 const float CLUSTER_FAR = 10000.0;
 
 const float PI = 3.14159265359;
+
+// ── Octahedral normal encoding (Cigolle et al. 2014) ────────────────
+// Encodes a unit normal into 2 components for RG16_SNORM storage.
+// Saves 50% G-buffer bandwidth vs RGBA16_SNORM. See #275.
+vec2 octEncode(vec3 n) {
+    n /= (abs(n.x) + abs(n.y) + abs(n.z));
+    if (n.z < 0.0) {
+        n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0,
+                                          n.y >= 0.0 ? 1.0 : -1.0);
+    }
+    return n.xy;
+}
+
+vec3 octDecode(vec2 e) {
+    vec3 n = vec3(e.xy, 1.0 - abs(e.x) - abs(e.y));
+    if (n.z < 0.0) {
+        n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0,
+                                          n.y >= 0.0 ? 1.0 : -1.0);
+    }
+    return normalize(n);
+}
 
 // ── Noise for stochastic shadow rays ────────────────────────────────
 
@@ -333,7 +354,7 @@ void main() {
     // ── G-buffer outputs (Phase 1) ────────────────────────────────────
     // Write these before any early return so SVGF has valid per-pixel
     // normal / motion / mesh_id regardless of which lighting path we take.
-    outNormal = vec4(N, 0.0);
+    outNormal = octEncode(N);
 
     // Screen-space motion vector: current-pixel UV → previous-pixel UV.
     // Perspective divide both clip-space positions to get NDC, halve to

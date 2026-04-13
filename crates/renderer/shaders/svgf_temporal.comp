@@ -33,7 +33,7 @@ layout(set = 0, binding = 4) uniform sampler2D prevIndirectHistTex;
 layout(set = 0, binding = 5) uniform sampler2D prevMomentsHistTex;
 
 // ── Current-frame SVGF outputs (writes) ──
-layout(set = 0, binding = 6, rgba16f) uniform writeonly image2D outIndirect;
+layout(set = 0, binding = 6, r11f_g11f_b10f) uniform writeonly image2D outIndirect;
 layout(set = 0, binding = 7, rgba16f) uniform writeonly image2D outMoments;
 
 layout(set = 0, binding = 8) uniform SvgfTemporalParams {

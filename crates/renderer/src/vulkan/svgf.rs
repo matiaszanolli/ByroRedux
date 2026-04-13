@@ -47,9 +47,14 @@ use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 
-/// Accumulated indirect / moments format. RGBA16F is universally supported
-/// as a storage image format; R11G11B10F support is optional.
-const HIST_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
+/// Accumulated indirect light format. R11G11B10F saves 50% vs RGBA16F
+/// (4B vs 8B/pixel). Alpha is always 1.0 and never read. Storage image
+/// support for R11G11B10 is required on all desktop GPUs since 2014
+/// (Maxwell/GCN/Gen9). See #275.
+const INDIRECT_HIST_FORMAT: vk::Format = vk::Format::B10G11R11_UFLOAT_PACK32;
+/// Moments format (μ1, μ2, history_length, unused). Kept as RGBA16F for
+/// precision — luminance² values up to 100+ need 10+ bit mantissa.
+const MOMENTS_HIST_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -166,6 +171,7 @@ impl SvgfPipeline {
                 allocator,
                 width,
                 height,
+                INDIRECT_HIST_FORMAT,
                 &format!("svgf_indirect_{i}"),
             ));
             partial.indirect_history.push(ind);
@@ -174,6 +180,7 @@ impl SvgfPipeline {
                 allocator,
                 width,
                 height,
+                MOMENTS_HIST_FORMAT,
                 &format!("svgf_moments_{i}"),
             ));
             partial.moments_history.push(mom);
@@ -363,11 +370,12 @@ impl SvgfPipeline {
         allocator: &SharedAllocator,
         width: u32,
         height: u32,
+        format: vk::Format,
         name: &str,
     ) -> Result<HistorySlot> {
         let img_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
-            .format(HIST_FORMAT)
+            .format(format)
             .extent(vk::Extent3D {
                 width,
                 height,
@@ -421,7 +429,7 @@ impl SvgfPipeline {
                     &vk::ImageViewCreateInfo::default()
                         .image(image)
                         .view_type(vk::ImageViewType::TYPE_2D)
-                        .format(HIST_FORMAT)
+                        .format(format)
                         .subresource_range(vk::ImageSubresourceRange {
                             aspect_mask: vk::ImageAspectFlags::COLOR,
                             base_mip_level: 0,
@@ -761,6 +769,7 @@ impl SvgfPipeline {
                 allocator,
                 width,
                 height,
+                INDIRECT_HIST_FORMAT,
                 &format!("svgf_indirect_{i}"),
             )?);
             self.moments_history.push(Self::create_history_image(
@@ -768,6 +777,7 @@ impl SvgfPipeline {
                 allocator,
                 width,
                 height,
+                MOMENTS_HIST_FORMAT,
                 &format!("svgf_moments_{i}"),
             )?);
         }
