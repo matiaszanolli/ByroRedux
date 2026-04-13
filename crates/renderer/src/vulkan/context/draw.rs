@@ -362,7 +362,14 @@ impl VulkanContext {
                 (col0_sq - col1_sq).abs() > tol
                     || (col0_sq - col2_sq).abs() > tol
             };
-            let flags = if has_non_uniform_scale { 1u32 } else { 0u32 };
+            // Per-instance flags: bit 0 = non-uniform scale, bit 1 = alpha blend.
+            // The alpha_blend flag tells the shader this mesh has NiAlphaProperty
+            // with blend enabled — its texture alpha controls transparency.
+            // Without this flag, texture alpha is a specular/env mask, NOT transparency.
+            let mut flags = if has_non_uniform_scale { 1u32 } else { 0u32 };
+            if draw_cmd.alpha_blend {
+                flags |= 2;
+            }
 
             gpu_instances.push(GpuInstance {
                 model: [

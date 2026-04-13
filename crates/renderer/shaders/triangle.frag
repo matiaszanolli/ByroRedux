@@ -49,7 +49,7 @@ struct GpuInstance {
     float avgAlbedoR;        // offset 140 — pre-computed average albedo for GI bounce
     float avgAlbedoG;        // offset 144
     float avgAlbedoB;        // offset 148
-    uint flags;              // offset 152 — bit 0: has non-uniform scale (#273)
+    uint flags;              // offset 152 — bit 0: non-uniform scale, bit 1: alpha blend enabled
     uint _pad1;              // offset 156 → total 160
 };
 
@@ -431,14 +431,17 @@ void main() {
     // (no hit within range), we treat it as seeing sky and transmit
     // exterior light through the window, tinted by its texture color.
     //
-    // Window detection: only trigger on genuinely transparent surfaces
-    // (alpha < 0.5). Many opaque meshes have texture alpha < 0.95 from
-    // specular masks or DDS authoring — these must NOT trigger the sky
-    // portal or solid walls vanish. The alpha threshold (from
-    // NiAlphaProperty) being zero means the mesh was not authored with
-    // alpha test/blend, so it's not a window.
-    bool isWindow = texColor.a < 0.5 && texColor.a > 0.02;
-    bool isGlass = roughness <= 0.1 && metalness < 0.1 && texColor.a < 0.5 && texColor.a > 0.02;
+    // Window/glass detection gated on NiAlphaProperty blend flag.
+    //
+    // In Gamebryo/Bethesda NIFs, the diffuse texture alpha channel is a
+    // SPECULAR MASK when NiAlphaProperty is absent or has blend disabled.
+    // A stone wall with texColor.a = 0.3 is fully opaque — the 0.3 just
+    // means low specular reflectivity. Transparency is determined
+    // EXCLUSIVELY by NiAlphaProperty flags bit 0 (alpha blend enable),
+    // which the CPU side encodes as bit 1 of inst.flags.
+    bool isAlphaBlend = (inst.flags & 2u) != 0u;
+    bool isWindow = isAlphaBlend && texColor.a < 0.5 && texColor.a > 0.02;
+    bool isGlass = isAlphaBlend && roughness <= 0.1 && metalness < 0.1 && texColor.a < 0.5 && texColor.a > 0.02;
 
     if (isWindow && rtEnabled) {
         // Cast a ray through the window in the view direction.
