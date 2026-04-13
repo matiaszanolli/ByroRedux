@@ -2,7 +2,7 @@
 
 use super::super::scene_buffer::{self, GpuInstance};
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
-use super::{DrawCommand, VulkanContext};
+use super::{DrawCommand, SkyParams, VulkanContext};
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -39,6 +39,7 @@ impl VulkanContext {
         fog_near: f32,
         fog_far: f32,
         ui_texture_handle: Option<u32>,
+        sky_params: &SkyParams,
     ) -> Result<bool> {
         let frame = self.current_frame;
 
@@ -626,7 +627,7 @@ impl VulkanContext {
                 }
             }
 
-            // Upload composite params (fog, etc.) before the composite pass.
+            // Upload composite params (fog + sky) before the composite pass.
             if let Some(ref mut composite) = self.composite {
                 let composite_params = super::super::composite::CompositeParams {
                     fog_color: [
@@ -636,7 +637,35 @@ impl VulkanContext {
                         if fog_far > fog_near { 1.0 } else { 0.0 },
                     ],
                     fog_params: [fog_near, fog_far, 0.0, 0.0],
-                    depth_params: [0.0; 4],
+                    depth_params: [
+                        if sky_params.is_exterior { 1.0 } else { 0.0 },
+                        0.0, 0.0, 0.0,
+                    ],
+                    sky_zenith: [
+                        sky_params.zenith_color[0],
+                        sky_params.zenith_color[1],
+                        sky_params.zenith_color[2],
+                        sky_params.sun_size,
+                    ],
+                    sky_horizon: [
+                        sky_params.horizon_color[0],
+                        sky_params.horizon_color[1],
+                        sky_params.horizon_color[2],
+                        0.0,
+                    ],
+                    sun_dir: [
+                        sky_params.sun_direction[0],
+                        sky_params.sun_direction[1],
+                        sky_params.sun_direction[2],
+                        sky_params.sun_intensity,
+                    ],
+                    sun_color: [
+                        sky_params.sun_color[0],
+                        sky_params.sun_color[1],
+                        sky_params.sun_color[2],
+                        0.0,
+                    ],
+                    inv_view_proj: inv_vp_arr,
                 };
                 if let Err(e) = composite.upload_params(&self.device, frame, &composite_params) {
                     log::warn!("composite upload_params failed: {e}");

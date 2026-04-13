@@ -72,6 +72,19 @@ pub(crate) struct CellLightingRes {
 }
 impl Resource for CellLightingRes {}
 
+/// Sky rendering parameters from WTHR records (exterior cells).
+/// Stored as an ECS resource so the render loop can read it per-frame.
+pub(crate) struct SkyParamsRes {
+    pub(crate) zenith_color: [f32; 3],
+    pub(crate) horizon_color: [f32; 3],
+    pub(crate) sun_direction: [f32; 3],
+    pub(crate) sun_color: [f32; 3],
+    pub(crate) sun_size: f32,
+    pub(crate) sun_intensity: f32,
+    pub(crate) is_exterior: bool,
+}
+impl Resource for SkyParamsRes {}
+
 /// Cached name→entity mapping for the animation system.
 ///
 /// Rebuilt only when the count of `Name` components changes. Previously

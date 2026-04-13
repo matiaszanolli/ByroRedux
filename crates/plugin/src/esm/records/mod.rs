@@ -17,6 +17,7 @@ pub mod common;
 pub mod container;
 pub mod global;
 pub mod items;
+pub mod weather;
 
 pub use actor::{
     parse_clas, parse_fact, parse_npc, parse_race, ClassRecord, FactionMembership, FactionRecord,
@@ -30,6 +31,7 @@ pub use items::{
     parse_alch, parse_ammo, parse_armo, parse_book, parse_ingr, parse_keym, parse_misc, parse_note,
     parse_weap, ItemKind, ItemRecord,
 };
+pub use weather::{parse_wthr, SkyColor, WeatherRecord};
 
 use super::cell::{parse_esm_cells, EsmCellIndex};
 use super::reader::{EsmReader, SubRecord};
@@ -53,6 +55,7 @@ pub struct EsmIndex {
     pub factions: HashMap<u32, FactionRecord>,
     pub globals: HashMap<u32, GlobalRecord>,
     pub game_settings: HashMap<u32, GameSetting>,
+    pub weathers: HashMap<u32, WeatherRecord>,
 }
 
 impl EsmIndex {
@@ -69,6 +72,7 @@ impl EsmIndex {
             + self.factions.len()
             + self.globals.len()
             + self.game_settings.len()
+            + self.weathers.len()
             + self.cells.cells.len()
             + self.cells.statics.len()
     }
@@ -169,6 +173,10 @@ pub fn parse_esm(data: &[u8]) -> Result<EsmIndex> {
             b"GMST" => extract_records(&mut reader, end, b"GMST", &mut |fid, subs| {
                 index.game_settings.insert(fid, parse_gmst(fid, subs));
             })?,
+            // Weather records — sky colors, fog, wind, clouds.
+            b"WTHR" => extract_records(&mut reader, end, b"WTHR", &mut |fid, subs| {
+                index.weathers.insert(fid, parse_wthr(fid, subs));
+            })?,
             _ => {
                 reader.skip_group(&group);
             }
@@ -177,7 +185,7 @@ pub fn parse_esm(data: &[u8]) -> Result<EsmIndex> {
 
     log::info!(
         "ESM parsed: {} cells, {} statics, {} items, {} containers, {} LVLI, {} LVLN, {} NPCs, \
-         {} races, {} classes, {} factions, {} globals, {} game settings",
+         {} races, {} classes, {} factions, {} globals, {} game settings, {} weathers",
         index.cells.cells.len(),
         index.cells.statics.len(),
         index.items.len(),
@@ -190,6 +198,7 @@ pub fn parse_esm(data: &[u8]) -> Result<EsmIndex> {
         index.factions.len(),
         index.globals.len(),
         index.game_settings.len(),
+        index.weathers.len(),
     );
 
     Ok(index)

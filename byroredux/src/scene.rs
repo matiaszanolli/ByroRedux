@@ -18,8 +18,8 @@ use crate::asset_provider::{
 };
 use crate::cell_loader;
 use crate::components::{
-    AlphaBlend, CellLightingRes, DarkMapHandle, Decal, InputState, NormalMapHandle, Spinning,
-    TwoSided,
+    AlphaBlend, CellLightingRes, DarkMapHandle, Decal, InputState, NormalMapHandle, SkyParamsRes,
+    Spinning, TwoSided,
 };
 use crate::helpers::add_child;
 
@@ -107,20 +107,29 @@ pub(crate) fn setup_scene(
                         result.cell_name,
                         result.entity_count
                     );
-                    // Exterior cells: set up a default sun + ambient.
-                    // Real implementation will parse WTHR (weather) records
-                    // for per-worldspace sun position, color, and fog. For
-                    // now, use a Mojave-appropriate late-morning sun.
+                    // Exterior cells: set up lighting + sky from WTHR data
+                    // or a procedural Mojave-style fallback.
+                    let sun_dir: [f32; 3] = [-0.4, 0.8, -0.45];
                     world.insert_resource(CellLightingRes {
                         ambient: [0.15, 0.14, 0.12],
                         directional_color: [1.0, 0.95, 0.8],
-                        // Sun direction (Y-up): slightly south, high elevation.
-                        // Normalized (-0.4, -0.8, 0.45) ≈ sun at ~50° altitude, slightly south-east.
-                        directional_dir: [-0.4, 0.8, -0.45],
+                        directional_dir: sun_dir,
                         is_interior: false,
                         fog_color: [0.7, 0.65, 0.55],
                         fog_near: 3000.0,
                         fog_far: 25000.0,
+                    });
+                    // Sky dome: procedural fallback — warm Mojave desert sky.
+                    // Future: extract from WTHR NAM0 sky colors for the
+                    // worldspace's default weather.
+                    world.insert_resource(SkyParamsRes {
+                        zenith_color: [0.15, 0.3, 0.65],
+                        horizon_color: [0.55, 0.5, 0.42],
+                        sun_direction: sun_dir,
+                        sun_color: [1.0, 0.95, 0.8],
+                        sun_size: 0.9995,
+                        sun_intensity: 4.0,
+                        is_exterior: true,
                     });
                 }
                 Err(e) => log::error!("Failed to load exterior cells: {:#}", e),

@@ -259,6 +259,7 @@ impl VulkanContext {
                 &composite_indirect_views,
                 indirect_is_general,
                 &albedo_views,
+                self.depth_image_view,
                 self.swapchain_state.extent.width,
                 self.swapchain_state.extent.height,
             )?;

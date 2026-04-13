@@ -33,20 +33,30 @@ use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 
-/// Composite parameter UBO. Currently minimal — fog state is the only
-/// per-frame input. Grows in later phases as SVGF settings are added.
+/// Composite parameter UBO — fog state + sky rendering parameters.
+///
+/// Layout must match `CompositeParams` in `composite.frag` exactly.
+/// The struct is uploaded once per frame before the composite dispatch.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct CompositeParams {
     /// xyz = RGB, w = fog enabled (1.0 = yes, 0.0 = no).
-    /// Currently populated but unused — fog is applied in the main pass
-    /// (triangle.frag), not the composite pass. Kept for future use when
-    /// fog may move to composite for HDR-correct application. See #260 (R-09).
     pub fog_color: [f32; 4],
-    /// x = fog near, y = fog far, z/w = unused. See fog_color note.
+    /// x = fog near, y = fog far, z/w = unused.
     pub fog_params: [f32; 4],
-    /// Reserved for future use (camera near/far, debug flags, etc.)
+    /// x = is_exterior (1.0 = sky enabled), y/z/w = reserved.
     pub depth_params: [f32; 4],
+    /// xyz = zenith (top-of-sky) color in linear RGB, w = sun angular size (cos threshold).
+    pub sky_zenith: [f32; 4],
+    /// xyz = horizon color in linear RGB, w = unused.
+    pub sky_horizon: [f32; 4],
+    /// xyz = sun direction (normalized, world-space Y-up), w = sun intensity.
+    pub sun_dir: [f32; 4],
+    /// xyz = sun disc color in linear RGB, w = unused.
+    pub sun_color: [f32; 4],
+    /// Inverse view-projection matrix for reconstructing world-space ray direction
+    /// from screen UV in the composite shader.
+    pub inv_view_proj: [[f32; 4]; 4],
 }
 
 /// HDR color format. RGBA16F = 8 bytes/pixel, sufficient dynamic range
@@ -105,6 +115,7 @@ impl CompositePipeline {
         indirect_views: &[vk::ImageView],
         indirect_is_general: bool,
         albedo_views: &[vk::ImageView],
+        depth_view: vk::ImageView,
         width: u32,
         height: u32,
     ) -> Result<Self> {
@@ -116,6 +127,7 @@ impl CompositePipeline {
             indirect_views,
             indirect_is_general,
             albedo_views,
+            depth_view,
             width,
             height,
         );
@@ -133,6 +145,7 @@ impl CompositePipeline {
         indirect_views: &[vk::ImageView],
         indirect_is_general: bool,
         albedo_views: &[vk::ImageView],
+        depth_view: vk::ImageView,
         width: u32,
         height: u32,
     ) -> Result<Self> {
@@ -340,7 +353,7 @@ impl CompositePipeline {
         }
 
         // ── 6. Descriptor set layout + pipeline layout ───────────────
-        // Phase 2: 4 bindings — HDR, indirect, albedo, params UBO.
+        // 5 bindings — HDR, indirect, albedo, params UBO, depth.
         let ds_bindings = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
@@ -360,6 +373,11 @@ impl CompositePipeline {
             vk::DescriptorSetLayoutBinding::default()
                 .binding(3)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
@@ -386,7 +404,7 @@ impl CompositePipeline {
         let pool_sizes = [
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 3) as u32,
+                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 4) as u32,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::UNIFORM_BUFFER,
@@ -416,7 +434,7 @@ impl CompositePipeline {
         });
 
         // Write each descriptor set to sample its own frame's HDR + indirect +
-        // albedo views and bind its own param UBO.
+        // albedo views, bind the param UBO, and the shared depth image.
         let indirect_layout = if indirect_is_general {
             vk::ImageLayout::GENERAL
         } else {
@@ -440,6 +458,13 @@ impl CompositePipeline {
                 offset: 0,
                 range: param_size,
             }];
+            // Depth is shared (not per-frame-in-flight) — the main render pass
+            // has finished and transitioned depth to SHADER_READ_ONLY by the
+            // time the composite pass runs.
+            let depth_info = [vk::DescriptorImageInfo::default()
+                .sampler(partial.hdr_sampler)
+                .image_view(depth_view)
+                .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
             let writes = [
                 vk::WriteDescriptorSet::default()
                     .dst_set(partial.descriptor_sets[i])
@@ -461,6 +486,11 @@ impl CompositePipeline {
                     .dst_binding(3)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .buffer_info(&params_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(partial.descriptor_sets[i])
+                    .dst_binding(4)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&depth_info),
             ];
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
@@ -650,6 +680,7 @@ impl CompositePipeline {
         indirect_views: &[vk::ImageView],
         indirect_is_general: bool,
         albedo_views: &[vk::ImageView],
+        depth_view: vk::ImageView,
         width: u32,
         height: u32,
     ) -> Result<()> {
@@ -734,7 +765,7 @@ impl CompositePipeline {
         }
 
         // Rewrite descriptor sets to point at the new HDR, indirect,
-        // and albedo image views. Params UBO buffers are unchanged.
+        // albedo views, and updated depth view. Params UBO buffers are unchanged.
         let param_size = std::mem::size_of::<CompositeParams>() as vk::DeviceSize;
         let indirect_layout = if indirect_is_general {
             vk::ImageLayout::GENERAL
@@ -759,6 +790,10 @@ impl CompositePipeline {
                 offset: 0,
                 range: param_size,
             }];
+            let depth_info = [vk::DescriptorImageInfo::default()
+                .sampler(self.hdr_sampler)
+                .image_view(depth_view)
+                .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
             let writes = [
                 vk::WriteDescriptorSet::default()
                     .dst_set(self.descriptor_sets[i])
@@ -780,6 +815,11 @@ impl CompositePipeline {
                     .dst_binding(3)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .buffer_info(&params_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(4)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&depth_info),
             ];
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }

@@ -6,9 +6,10 @@ use byroredux_core::ecs::{
 };
 use byroredux_core::math::{Mat4, Vec3, Vec4};
 use byroredux_renderer::vulkan::context::DrawCommand;
+use byroredux_renderer::SkyParams;
 use std::collections::HashMap;
 
-use crate::components::{AlphaBlend, CellLightingRes, DarkMapHandle, Decal, NormalMapHandle, TwoSided};
+use crate::components::{AlphaBlend, CellLightingRes, DarkMapHandle, Decal, NormalMapHandle, SkyParamsRes, TwoSided};
 
 /// Six frustum half-planes extracted from a view-projection matrix.
 ///
@@ -69,7 +70,7 @@ pub(crate) fn build_render_data(
     gpu_lights: &mut Vec<byroredux_renderer::GpuLight>,
     bone_palette: &mut Vec<[[f32; 4]; 4]>,
     skin_offsets: &mut HashMap<EntityId, u32>,
-) -> ([f32; 16], [f32; 3], [f32; 3], [f32; 3], f32, f32) {
+) -> ([f32; 16], [f32; 3], [f32; 3], [f32; 3], f32, f32, SkyParams) {
     draw_commands.clear();
     gpu_lights.clear();
     bone_palette.clear();
@@ -492,7 +493,22 @@ pub(crate) fn build_render_data(
         fog_far = 2500.0;
     }
 
-    (view_proj, camera_pos, ambient, fog_color, fog_near, fog_far)
+    // Sky params from ECS resource (exterior cells) or default (interior/none).
+    let sky = if let Some(sky_res) = world.try_resource::<SkyParamsRes>() {
+        SkyParams {
+            zenith_color: sky_res.zenith_color,
+            horizon_color: sky_res.horizon_color,
+            sun_direction: sky_res.sun_direction,
+            sun_color: sky_res.sun_color,
+            sun_size: sky_res.sun_size,
+            sun_intensity: sky_res.sun_intensity,
+            is_exterior: sky_res.is_exterior,
+        }
+    } else {
+        SkyParams::default()
+    };
+
+    (view_proj, camera_pos, ambient, fog_color, fog_near, fog_far, sky)
 }
 
 #[cfg(test)]

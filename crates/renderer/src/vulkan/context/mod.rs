@@ -75,6 +75,39 @@ pub struct DrawCommand {
     pub avg_albedo: [f32; 3],
 }
 
+/// Sky rendering parameters passed per-frame to the composite shader.
+/// Populated from WTHR records for exterior cells or a procedural fallback.
+pub struct SkyParams {
+    /// Zenith (top-of-sky) color in linear RGB.
+    pub zenith_color: [f32; 3],
+    /// Horizon color in linear RGB.
+    pub horizon_color: [f32; 3],
+    /// Sun direction (normalized, world-space Y-up).
+    pub sun_direction: [f32; 3],
+    /// Sun disc color in linear RGB.
+    pub sun_color: [f32; 3],
+    /// Angular size of the sun disc as cos(half-angle). ~0.9998 for real sun.
+    pub sun_size: f32,
+    /// Sun brightness multiplier.
+    pub sun_intensity: f32,
+    /// Whether sky rendering is enabled (true for exterior cells).
+    pub is_exterior: bool,
+}
+
+impl Default for SkyParams {
+    fn default() -> Self {
+        Self {
+            zenith_color: [0.15, 0.3, 0.6],
+            horizon_color: [0.5, 0.5, 0.45],
+            sun_direction: [-0.4, 0.8, -0.45],
+            sun_color: [1.0, 0.95, 0.8],
+            sun_size: 0.9995,
+            sun_intensity: 3.0,
+            is_exterior: false,
+        }
+    }
+}
+
 pub struct VulkanContext {
     // Ordered for drop safety — later fields are destroyed first.
     pub current_frame: usize,
@@ -495,6 +528,7 @@ impl VulkanContext {
             &composite_indirect_views,
             indirect_is_general,
             &albedo_views,
+            depth_image_view,
             swapchain_state.extent.width,
             swapchain_state.extent.height,
         ) {
