@@ -456,15 +456,19 @@ void main() {
 
         if (!hitsInterior) {
             // Ray escaped the cell — this window sees sky.
-            // Output sky light directly: the window is a light portal,
-            // not a shaded surface. Skip the entire PBR lighting loop.
+            // Blend the transmitted sky light with whatever opaque surface
+            // was already drawn behind this pixel (e.g. the window frame).
+            // Use the glass texture's alpha to control the blend — clear
+            // glass (low alpha) shows mostly sky, tinted glass shows more
+            // of the glass color.
             vec3 skyColor = vec3(0.6, 0.75, 1.0); // clear day sky
-            // Tint by window texture: stained glass tints the light,
-            // clear glass passes it through mostly unchanged.
-            // The texture alpha controls how much glass vs sky we see.
             vec3 windowTint = mix(vec3(1.0), texColor.rgb, texColor.a * 0.5);
             vec3 transmitted = skyColor * windowTint * 1.2;
-            outColor = vec4(transmitted, 1.0);
+            // Write with the glass texture alpha so the window frame
+            // (opaque, already in the framebuffer) shows through the
+            // frame border areas. The alpha blend pipeline composites:
+            //   result = transmitted × alpha + framebuffer × (1 - alpha)
+            outColor = vec4(transmitted, texColor.a);
             outRawIndirect = vec4(0.0);
             outAlbedo = vec4(albedo, 1.0);
             return;

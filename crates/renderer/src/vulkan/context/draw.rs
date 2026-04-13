@@ -538,13 +538,18 @@ impl VulkanContext {
                 }
 
                 // Depth bias for decal geometry — only emit when state changes.
+                // Reduced from (-8, -2) to (-4, -1) to prevent decals from
+                // floating visibly in front of their host surface at grazing
+                // viewing angles. The slope factor scales with the surface's
+                // depth gradient, so -2.0 was pulling decals too far forward
+                // on oblique walls.
                 if batch.is_decal != last_is_decal {
-                    let bias = if batch.is_decal { -8.0_f32 } else { 0.0 };
+                    let bias = if batch.is_decal { -4.0_f32 } else { 0.0 };
                     self.device.cmd_set_depth_bias(
                         cmd,
                         bias,
                         0.0,
-                        if batch.is_decal { -2.0 } else { 0.0 },
+                        if batch.is_decal { -1.0 } else { 0.0 },
                     );
                     last_is_decal = batch.is_decal;
                 }
