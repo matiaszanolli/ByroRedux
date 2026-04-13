@@ -518,6 +518,11 @@ impl VulkanContext {
             let mut last_mesh_handle = u32::MAX;
             let mut last_is_decal = false;
 
+            // Set initial depth bias to zero before first draw — Vulkan
+            // requires the dynamic state to be set before any draw call
+            // when the pipeline declares VK_DYNAMIC_STATE_DEPTH_BIAS.
+            self.device.cmd_set_depth_bias(cmd, 0.0, 0.0, 0.0);
+
             for batch in &batches {
                 // Switch pipeline when rendering mode changes.
                 if batch.pipeline_key != last_pipeline_key {
