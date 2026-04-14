@@ -96,6 +96,7 @@ See [Game Compatibility](docs/engine/game-compatibility.md) for the per-game arc
 | Plugin system with stable Form IDs, conflict resolution | Working |
 | ECS-native scripting (events, timers) | Working |
 | Papyrus language parser (`.psc` source → typed AST, Phase 1: lexer + expressions) | Working |
+| Debug CLI (`byro-dbg`) — live ECS inspection, component queries, screenshots over TCP | Working |
 | Material component (emissive, specular, glossiness, UV, normal map) | Working |
 | Collision import (Havok shapes → ECS, compressed mesh for Skyrim) | Working |
 | Per-game integration test infrastructure with 95% parse rate threshold | Working |
@@ -114,8 +115,12 @@ crates/
   ui/                      Scaleform/SWF UI system (Ruffle integration)
   scripting/               ECS-native scripting (events, timers)
   papyrus/                 Papyrus language parser (.psc source → typed AST)
+  debug-protocol/          Wire types + component registry for debug CLI
+  debug-server/            TCP debug server (Late-stage exclusive system)
   platform/                Windowing via winit (Linux-first)
   cxx-bridge/              C++ interop via cxx
+tools/
+  byro-dbg/                Standalone debug CLI — live ECS inspection over TCP
 ```
 
 See [Architecture Overview](docs/engine/architecture.md) for design principles, the crate dependency graph, and a tour of each subsystem.
@@ -173,6 +178,7 @@ cargo run -- --esm FalloutNV.esm \
              --textures-bsa "Fallout - Textures.bsa"  # Load an interior cell
 cargo run -- --swf menu.swf        # Render a Scaleform SWF menu
 cargo run -- --debug               # Show FPS/entity stats in title bar
+cargo run -p byro-dbg              # Connect debug CLI to running engine
 cargo test                         # All workspace tests
 cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored
                                    # Per-game NIF parse rate sweeps (needs game data)
@@ -202,6 +208,45 @@ glslangValidator -V triangle.vert -o triangle.vert.spv
 glslangValidator -V triangle.frag -o triangle.frag.spv
 ```
 
+### Debug CLI
+
+The engine includes a built-in TCP debug server (port 9876, enabled by default) and a standalone CLI tool for live inspection:
+
+```bash
+# In one terminal: run the engine
+cargo run --release -- --esm FalloutNV.esm --cell GSProspectorSaloonInterior \
+             --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa"
+
+# In another terminal: connect the debugger
+cargo run -p byro-dbg
+```
+
+```
+byro> stats
+FPS: 60.2 (avg 59.8) | Frame: 16.61ms | Entities: 789 | Meshes: 342 | Textures: 128 | Draws: 286
+
+byro> find("TorchSconce01")
+  Entity 142 "TorchSconce01"
+
+byro> 142.Transform
+{ "translation": [1024.0, 512.0, 128.0], "rotation": [0, 0, 0, 1], "scale": 1.0 }
+
+byro> 142.LightSource
+{ "radius": 512.0, "color": [1.0, 0.8, 0.6], "flags": 0 }
+
+byro> entities(LightSource)
+  Entity 10 "CandleFlame"
+  Entity 142 "TorchSconce01"
+(2 entities)
+
+byro> screenshot /tmp/debug.png
+Screenshot saved: /tmp/debug.png
+```
+
+Uses the Papyrus expression parser as query language — member access chains (`42.Transform.translation.x`), function calls (`find("name")`), entity listing (`entities(Component)`), and screenshot capture. Zero per-frame cost when no debugger is connected. Disable with `cargo build --no-default-features`.
+
+See [Debug CLI](docs/engine/debug-cli.md) for the full protocol reference, architecture, and component registry.
+
 ## Documentation
 
 ### Engine
@@ -223,6 +268,7 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 - [Testing](docs/engine/testing.md) — unit + integration test inventory
 - [Dependencies](docs/engine/dependencies.md) — workspace and per-crate
 - [Papyrus Parser](docs/engine/papyrus-parser.md) — `.psc` lexer, AST, expression parser (Phase 1)
+- [Debug CLI](docs/engine/debug-cli.md) — live ECS inspection, expression queries, screenshots
 - [String Interning](docs/engine/string-interning.md), [C++ Interop](docs/engine/cxx-interop.md), [Platform](docs/engine/platform.md), [Scripting](docs/engine/scripting.md)
 
 ### Legacy reference
@@ -245,7 +291,7 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 | Integration tests (`#[ignore]`'d)     | 26             |
 | NIFs in per-game integration sweeps   | 177,286        |
 | Per-game parse success rate           | 100% (7 games) |
-| Workspace crates                      | 12             |
+| Workspace crates                      | 14             |
 
 ## Dependencies
 
@@ -263,7 +309,7 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 | image           | PNG / image loading                           |
 | rapier3d        | Physics simulation (M28 Phase 1)              |
 | logos           | Lexer generator for Papyrus parser             |
-| serde / toml    | Plugin manifest serialization                 |
+| serde / serde_json / toml | Plugin manifests, debug protocol serialization |
 | uuid / semver   | Plugin identity and version constraints       |
 | anyhow / thiserror | Error handling                             |
 | cxx             | C++ interop                                   |
