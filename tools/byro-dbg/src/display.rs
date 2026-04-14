@@ -45,6 +45,12 @@ pub fn print_response(response: &DebugResponse) {
                 fps, avg_fps, frame_time_ms, entity_count, mesh_count, texture_count, draw_call_count
             );
         }
+        DebugResponse::Screenshot { png_base64: _, width: _, height: _ } => {
+            println!("Screenshot captured (raw data)");
+        }
+        DebugResponse::ScreenshotSaved { path } => {
+            println!("Screenshot saved: {}", path);
+        }
         DebugResponse::Ok => {
             println!("OK");
         }
@@ -66,6 +72,8 @@ pub fn print_help() {
     println!("  systems            List registered ECS systems");
     println!("  entities           List all entities with names");
     println!("  entities(Comp)     List entities with a specific component");
+    println!("  screenshot          Capture screenshot (auto-named)");
+    println!("  screenshot path    Capture screenshot to specific file");
     println!("  ping               Check connection");
     println!("  .help              This help");
     println!("  .quit              Exit");

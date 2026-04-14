@@ -38,6 +38,9 @@ pub enum DebugRequest {
     Stats,
     /// Find an entity by name (searches the Name component).
     FindEntity { name: String },
+    /// Capture a screenshot of the current frame.
+    /// Optionally save to a file path; if None, returns raw PNG bytes.
+    Screenshot { path: Option<String> },
     /// Ping / keep-alive.
     Ping,
 }
@@ -65,6 +68,10 @@ pub enum DebugResponse {
         texture_count: u32,
         draw_call_count: u32,
     },
+    /// Screenshot captured — PNG bytes (base64-encoded for JSON transport).
+    Screenshot { png_base64: String, width: u32, height: u32 },
+    /// Screenshot saved to a file path.
+    ScreenshotSaved { path: String },
     /// Successful mutation with no return value.
     Ok,
     /// Pong response to Ping.

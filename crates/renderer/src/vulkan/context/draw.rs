@@ -70,6 +70,9 @@ impl VulkanContext {
                 .context("wait_for_fences")?;
         }
 
+        // If a screenshot was captured last frame, the GPU is done — read it back.
+        self.screenshot_finish_readback();
+
         // Acquire next swapchain image.
         let (image_index, suboptimal) = unsafe {
             match self.swapchain_state.swapchain_loader.acquire_next_image(
@@ -718,6 +721,12 @@ impl VulkanContext {
             if let Some(ref composite) = self.composite {
                 composite.dispatch(&self.device, cmd, frame, img);
             }
+
+            // Screenshot capture: copy swapchain image to staging buffer
+            // if requested. Must happen after composite (image has content)
+            // and before end_command_buffer (still recording).
+            let swapchain_image = self.swapchain_state.images[img];
+            self.screenshot_record_copy(cmd, swapchain_image);
 
             self.device
                 .end_command_buffer(cmd)

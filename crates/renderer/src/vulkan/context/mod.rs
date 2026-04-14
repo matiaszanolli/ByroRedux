@@ -22,6 +22,7 @@ use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// A single draw command: which mesh to draw, with what texture, and what model matrix.
@@ -108,6 +109,33 @@ impl Default for SkyParams {
     }
 }
 
+/// Handle for requesting and retrieving screenshots from outside the render loop.
+pub struct ScreenshotHandle {
+    /// Set to `true` to request a screenshot on the next frame.
+    pub requested: Arc<AtomicBool>,
+    /// After capture, the PNG bytes are placed here for retrieval.
+    pub result: Arc<Mutex<Option<Vec<u8>>>>,
+}
+
+impl ScreenshotHandle {
+    pub fn new() -> Self {
+        Self {
+            requested: Arc::new(AtomicBool::new(false)),
+            result: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Request a screenshot. Returns immediately; check `result` later.
+    pub fn request(&self) {
+        self.requested.store(true, Ordering::Release);
+    }
+
+    /// Take the screenshot result if available. Returns None if not ready.
+    pub fn take_result(&self) -> Option<Vec<u8>> {
+        self.result.lock().unwrap().take()
+    }
+}
+
 pub struct VulkanContext {
     // Ordered for drop safety — later fields are destroyed first.
     pub current_frame: usize,
@@ -125,6 +153,14 @@ pub struct VulkanContext {
     /// Per-frame scratch buffer for draw batch metadata. Same lifecycle
     /// as `gpu_instances_scratch`. See issue #243.
     batches_scratch: Vec<draw::DrawBatch>,
+
+    // ── Screenshot capture ──────────────────────────────────────────
+    screenshot_requested: Arc<AtomicBool>,
+    screenshot_result: Arc<Mutex<Option<Vec<u8>>>>,
+    /// Staging buffer for screenshot readback (allocated on first capture).
+    screenshot_staging: Option<(vk::Buffer, vk_alloc::Allocation, vk::DeviceSize)>,
+    /// True when the staging buffer contains valid data waiting for fence.
+    screenshot_pending_readback: bool,
 
     frame_sync: FrameSync,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -626,7 +662,19 @@ impl VulkanContext {
             ],
             gpu_instances_scratch: Vec::new(),
             batches_scratch: Vec::new(),
+            screenshot_requested: Arc::new(AtomicBool::new(false)),
+            screenshot_result: Arc::new(Mutex::new(None)),
+            screenshot_staging: None,
+            screenshot_pending_readback: false,
         })
+    }
+
+    /// Get a handle for requesting screenshots from outside the render loop.
+    pub fn screenshot_handle(&self) -> ScreenshotHandle {
+        ScreenshotHandle {
+            requested: Arc::clone(&self.screenshot_requested),
+            result: Arc::clone(&self.screenshot_result),
+        }
     }
 
     // draw_frame is in draw.rs
@@ -639,6 +687,7 @@ mod draw;
 mod helpers;
 mod resize;
 mod resources;
+mod screenshot;
 
 impl Drop for VulkanContext {
     fn drop(&mut self) {
@@ -647,6 +696,8 @@ impl Drop for VulkanContext {
         // to satisfy Vulkan object lifetime requirements.
         unsafe {
             let _ = self.device.device_wait_idle();
+
+            self.destroy_screenshot_staging();
 
             self.frame_sync.destroy(&self.device);
             self.device

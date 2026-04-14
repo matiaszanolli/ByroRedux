@@ -232,6 +232,13 @@ impl ApplicationHandler for App {
 
         match VulkanContext::new(display, window_handle, [size.width, size.height]) {
             Ok(ctx) => {
+                // Create screenshot bridge for debug server access.
+                let ss_handle = ctx.screenshot_handle();
+                self.world.insert_resource(byroredux_core::ecs::ScreenshotBridge {
+                    requested: ss_handle.requested,
+                    result: ss_handle.result,
+                });
+
                 self.renderer = Some(ctx);
                 self.window = Some(win);
                 self.last_frame = Instant::now();

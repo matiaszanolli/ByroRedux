@@ -60,6 +60,11 @@ pub fn evaluate(
             value,
         } => eval_set_field(world, registry, *entity, component, path, value.clone()),
 
+        // Screenshot is handled by the drain system directly (spans multiple frames).
+        DebugRequest::Screenshot { .. } => {
+            DebugResponse::error("screenshot handled by system, not evaluator")
+        }
+
         DebugRequest::Eval { expr } => eval_expr(world, registry, expr),
     }
 }

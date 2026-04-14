@@ -89,7 +89,14 @@ fn parse_shorthand(input: &str) -> Option<DebugRequest> {
         "stats" => Some(DebugRequest::Stats),
         "components" => Some(DebugRequest::ListComponents),
         "systems" => Some(DebugRequest::ListSystems),
+        "screenshot" => Some(DebugRequest::Screenshot { path: None }),
         _ => {
+            if lower.starts_with("screenshot ") {
+                let path = input["screenshot".len()..].trim().to_string();
+                return Some(DebugRequest::Screenshot {
+                    path: if path.is_empty() { None } else { Some(path) },
+                });
+            }
             if lower.starts_with("entities") {
                 let arg = input["entities".len()..].trim();
                 let component = if arg.is_empty() {

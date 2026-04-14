@@ -6,6 +6,26 @@ use super::resource::Resource;
 pub struct SystemList(pub Vec<String>);
 impl Resource for SystemList {}
 
+/// Bridge for requesting screenshots from the renderer.
+/// Set `requested` to true; the renderer will capture the next frame and
+/// place the PNG bytes in `result`.
+pub struct ScreenshotBridge {
+    pub requested: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub result: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+}
+
+impl ScreenshotBridge {
+    pub fn request(&self) {
+        self.requested.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn take_result(&self) -> Option<Vec<u8>> {
+        self.result.lock().unwrap().take()
+    }
+}
+
+impl Resource for ScreenshotBridge {}
+
 /// Per-frame delta time in seconds.
 pub struct DeltaTime(pub f32);
 impl Resource for DeltaTime {}

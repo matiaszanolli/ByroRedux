@@ -27,7 +27,7 @@ pub use components::{
 pub use packed::PackedStorage;
 pub use query::{ComponentRef, QueryRead, QueryWrite};
 pub use resource::{Resource, ResourceRead, ResourceWrite};
-pub use resources::{DebugStats, DeltaTime, EngineConfig, SystemList, TotalTime};
+pub use resources::{DebugStats, DeltaTime, EngineConfig, ScreenshotBridge, SystemList, TotalTime};
 pub use scheduler::{Scheduler, Stage};
 pub use sparse_set::SparseSetStorage;
 pub use storage::{Component, ComponentStorage, EntityId};
