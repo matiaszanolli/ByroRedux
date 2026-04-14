@@ -254,8 +254,9 @@ uint getClusterIndex(vec2 fragCoord, float viewDepth, vec2 screenSize) {
     tileY = min(tileY, CLUSTER_TILES_Y - 1);
 
     // Exponential depth slicing (must match cluster_cull.comp).
-    float logRatio = log(CLUSTER_FAR / CLUSTER_NEAR);
-    uint sliceZ = uint(log(max(viewDepth, CLUSTER_NEAR) / CLUSTER_NEAR) / logRatio * float(CLUSTER_SLICES_Z));
+    // log(CLUSTER_FAR / CLUSTER_NEAR) = log(100000) ≈ 11.5129.
+    const float LOG_RATIO = 11.512925;
+    uint sliceZ = uint(log(max(viewDepth, CLUSTER_NEAR) / CLUSTER_NEAR) / LOG_RATIO * float(CLUSTER_SLICES_Z));
     sliceZ = min(sliceZ, CLUSTER_SLICES_Z - 1);
 
     return tileX + tileY * CLUSTER_TILES_X + sliceZ * CLUSTER_TILES_X * CLUSTER_TILES_Y;
@@ -546,8 +547,7 @@ void main() {
         // Distance fallback: beyond 800 units, shadow rays are skipped
         // entirely (smooth fade 600-800 units) since shadows are
         // imperceptible at distance.
-        float shadowDist = length(fragWorldPos - cameraPos.xyz);
-        float shadowFade = 1.0 - smoothstep(600.0, 800.0, shadowDist);
+        float shadowFade = 1.0 - smoothstep(600.0, 800.0, worldDist);
         const uint MAX_SHADOW_RAYS = 2;
 
         // Top-K tracking: light index, contribution, and the radiance

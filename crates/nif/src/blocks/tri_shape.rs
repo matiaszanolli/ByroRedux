@@ -850,7 +850,7 @@ impl NiTriStripsData {
     /// Handles winding order alternation and skips degenerate triangles
     /// (used for strip stitching).
     pub fn to_triangles(&self) -> Vec<[u16; 3]> {
-        let mut triangles = Vec::new();
+        let mut triangles = Vec::with_capacity(self.num_triangles as usize);
         for strip in &self.strips {
             for i in 2..strip.len() {
                 // OpenGL/Vulkan strip convention (CCW front face):
