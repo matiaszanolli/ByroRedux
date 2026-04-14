@@ -2,6 +2,7 @@
 name = "byroredux"
 version.workspace = true
 edition.workspace = true
+default-run = "byroredux"
 
 [features]
 default = ["debug-server"]

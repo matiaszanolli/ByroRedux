@@ -9,6 +9,12 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 
 /// Interior cell lighting from XCLL subrecord.
+///
+/// The base fields (ambient through fog_far) are shared across all games
+/// (Oblivion, FO3, FNV, Skyrim). Skyrim extends XCLL to 92 bytes with
+/// directional ambient, fog far color, light fade distances, etc. — these
+/// are stored in the `Option` fields below, which are `None` for pre-Skyrim
+/// games.
 #[derive(Debug, Clone)]
 pub struct CellLighting {
     /// Ambient light color (RGB 0–1).
@@ -23,6 +29,21 @@ pub struct CellLighting {
     pub fog_near: f32,
     /// Fog far distance (game units), from XCLL bytes 16-19.
     pub fog_far: f32,
+    // ── Skyrim+ extended fields (92-byte XCLL) ──────────────────────
+    /// Directional light fade multiplier (bytes 28-31).
+    pub directional_fade: Option<f32>,
+    /// Fog clip distance (bytes 32-35).
+    pub fog_clip: Option<f32>,
+    /// Fog power exponent (bytes 36-39).
+    pub fog_power: Option<f32>,
+    /// Fog far color (RGB 0–1, bytes 72-74). Separate from near fog color.
+    pub fog_far_color: Option<[f32; 3]>,
+    /// Maximum fog opacity (bytes 76-79).
+    pub fog_max: Option<f32>,
+    /// Light fade begin distance (bytes 80-83).
+    pub light_fade_begin: Option<f32>,
+    /// Light fade end distance (bytes 84-87).
+    pub light_fade_end: Option<f32>,
 }
 
 /// A texture layer within a terrain quadrant.
@@ -273,74 +294,81 @@ fn parse_cell_group(
                         b"EDID" => editor_id = read_zstring(&sub.data),
                         b"DATA" if sub.data.len() >= 1 => is_interior = sub.data[0] & 1 != 0,
                         b"XCLL" if sub.data.len() >= 28 => {
-                            // Shared Oblivion / FO3 / FNV XCLL layout
-                            // (first 28 bytes — Skyrim+ is incompatible):
-                            //   0-3:   Ambient RGBA (4 bytes)
-                            //   4-7:   Directional RGBA (4 bytes)
-                            //   8-11:  Fog color near RGBA (4 bytes)
+                            // XCLL layout (shared prefix for all games):
+                            //   0-3:   Ambient RGBA
+                            //   4-7:   Directional RGBA
+                            //   8-11:  Fog color near RGBA
                             //   12-15: Fog near (f32)
                             //   16-19: Fog far (f32)
                             //   20-23: Directional rotation X (i32, degrees)
                             //   24-27: Directional rotation Y (i32, degrees)
-                            //   28-31: Directional fade (f32)
-                            //   32-35: Fog clip distance (f32)
-                            //   36-39: Fog power (FNV only)
                             //
-                            // Oblivion XCLL is 36 bytes; FNV is 40.
-                            // The fields we actually consume (ambient,
-                            // directional, rotation) live in the
-                            // byte-identical prefix, so a single parser
-                            // handles both games without branching.
-                            // Validated by the
-                            // `oblivion_cells_populate_xcll_lighting`
-                            // integration test in this module.
-                            let ambient_r = sub.data[0] as f32 / 255.0;
-                            let ambient_g = sub.data[1] as f32 / 255.0;
-                            let ambient_b = sub.data[2] as f32 / 255.0;
-                            let dir_r = sub.data[4] as f32 / 255.0;
-                            let dir_g = sub.data[5] as f32 / 255.0;
-                            let dir_b = sub.data[6] as f32 / 255.0;
-                            // Directional rotation at bytes 20-27 (two i32, degrees)
+                            // Oblivion: 36 bytes. FNV: 40 bytes.
+                            // Skyrim+: 92 bytes with extended fields.
+                            // Detect by length — unambiguous.
+                            let d = &sub.data;
+                            let ambient = [d[0] as f32 / 255.0, d[1] as f32 / 255.0, d[2] as f32 / 255.0];
+                            let directional_color = [d[4] as f32 / 255.0, d[5] as f32 / 255.0, d[6] as f32 / 255.0];
                             let rot_x = {
-                                let raw = i32::from_le_bytes([
-                                    sub.data[20],
-                                    sub.data[21],
-                                    sub.data[22],
-                                    sub.data[23],
-                                ]);
+                                let raw = i32::from_le_bytes([d[20], d[21], d[22], d[23]]);
                                 (raw as f32).to_radians()
                             };
                             let rot_y = {
-                                let raw = i32::from_le_bytes([
-                                    sub.data[24],
-                                    sub.data[25],
-                                    sub.data[26],
-                                    sub.data[27],
-                                ]);
+                                let raw = i32::from_le_bytes([d[24], d[25], d[26], d[27]]);
                                 (raw as f32).to_radians()
                             };
-                            // Fog color (RGBA at bytes 8-11) and distances (bytes 12-19).
-                            let (fog_color, fog_near, fog_far) = if sub.data.len() >= 20 {
-                                let fog_r = sub.data[8] as f32 / 255.0;
-                                let fog_g = sub.data[9] as f32 / 255.0;
-                                let fog_b = sub.data[10] as f32 / 255.0;
-                                let fog_near = f32::from_le_bytes([
-                                    sub.data[12], sub.data[13], sub.data[14], sub.data[15],
-                                ]);
-                                let fog_far = f32::from_le_bytes([
-                                    sub.data[16], sub.data[17], sub.data[18], sub.data[19],
-                                ]);
+                            let (fog_color, fog_near, fog_far) = if d.len() >= 20 {
+                                let fog_r = d[8] as f32 / 255.0;
+                                let fog_g = d[9] as f32 / 255.0;
+                                let fog_b = d[10] as f32 / 255.0;
+                                let fog_near = f32::from_le_bytes([d[12], d[13], d[14], d[15]]);
+                                let fog_far = f32::from_le_bytes([d[16], d[17], d[18], d[19]]);
                                 ([fog_r, fog_g, fog_b], fog_near, fog_far)
                             } else {
                                 ([0.0; 3], 0.0, 0.0)
                             };
+
+                            // Skyrim+ extended XCLL (92 bytes):
+                            //   28-31: Directional fade (f32)
+                            //   32-35: Fog clip distance (f32)
+                            //   36-39: Fog power (f32)
+                            //   40-63: Directional ambient 6×RGBA (24 bytes, unused for now)
+                            //   64-67: Specular color RGBA (unused)
+                            //   68-71: Fresnel power (f32, unused)
+                            //   72-75: Fog far color RGBA
+                            //   76-79: Fog max (f32)
+                            //   80-83: Light fade begin (f32)
+                            //   84-87: Light fade end (f32)
+                            //   88-91: Inherits flags (u32, unused)
+                            let (dir_fade, fog_clip, fog_power, fog_far_color, fog_max, lf_begin, lf_end) =
+                                if d.len() >= 92 {
+                                    (
+                                        Some(f32::from_le_bytes([d[28], d[29], d[30], d[31]])),
+                                        Some(f32::from_le_bytes([d[32], d[33], d[34], d[35]])),
+                                        Some(f32::from_le_bytes([d[36], d[37], d[38], d[39]])),
+                                        Some([d[72] as f32 / 255.0, d[73] as f32 / 255.0, d[74] as f32 / 255.0]),
+                                        Some(f32::from_le_bytes([d[76], d[77], d[78], d[79]])),
+                                        Some(f32::from_le_bytes([d[80], d[81], d[82], d[83]])),
+                                        Some(f32::from_le_bytes([d[84], d[85], d[86], d[87]])),
+                                    )
+                                } else {
+                                    (None, None, None, None, None, None, None)
+                                };
+
                             lighting = Some(CellLighting {
-                                ambient: [ambient_r, ambient_g, ambient_b],
-                                directional_color: [dir_r, dir_g, dir_b],
+                                ambient,
+                                directional_color,
                                 directional_rotation: [rot_x, rot_y],
                                 fog_color,
                                 fog_near,
                                 fog_far,
+                                directional_fade: dir_fade,
+                                fog_clip,
+                                fog_power,
+                                fog_far_color,
+                                fog_max,
+                                light_fade_begin: lf_begin,
+                                light_fade_end: lf_end,
                             });
                         }
                         _ => {}
@@ -1199,6 +1227,83 @@ mod tests {
             }
             Err(e) => panic!("parse_esm_cells failed on Oblivion.esm: {e:#}"),
         }
+    }
+
+    /// Validates that `parse_esm_cells` handles Skyrim SE's 92-byte XCLL
+    /// sub-records and can find The Winking Skeever interior cell.
+    #[test]
+    #[ignore]
+    fn parse_real_skyrim_esm() {
+        let path =
+            "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/Skyrim.esm";
+        if !std::path::Path::new(path).exists() {
+            eprintln!("Skipping: Skyrim.esm not found");
+            return;
+        }
+        let data = std::fs::read(path).unwrap();
+        let idx = parse_esm_cells(&data).expect("Skyrim.esm walker");
+
+        eprintln!(
+            "Skyrim.esm: {} cells, {} statics, {} worldspaces",
+            idx.cells.len(),
+            idx.statics.len(),
+            idx.exterior_cells.len(),
+        );
+
+        // The Winking Skeever must exist.
+        let skeever = idx.cells.get("solitudewinkingskeever");
+        assert!(
+            skeever.is_some(),
+            "SolitudeWinkingSkeever not found in Skyrim.esm cells. \
+             Available keys (sample): {:?}",
+            idx.cells.keys().take(20).collect::<Vec<_>>()
+        );
+        let skeever = skeever.unwrap();
+        eprintln!(
+            "Winking Skeever: {} refs, lighting={:?}",
+            skeever.references.len(),
+            skeever.lighting.is_some()
+        );
+        assert!(
+            skeever.references.len() > 50,
+            "Winking Skeever should have >50 refs, got {}",
+            skeever.references.len()
+        );
+
+        // Skyrim XCLL should populate the extended fields.
+        if let Some(ref lit) = skeever.lighting {
+            eprintln!(
+                "  ambient={:.3?} directional={:.3?} fog_near={:.1} fog_far={:.1}",
+                lit.ambient, lit.directional_color, lit.fog_near, lit.fog_far,
+            );
+            // Skyrim's 92-byte XCLL must populate directional_fade.
+            assert!(
+                lit.directional_fade.is_some(),
+                "Skyrim XCLL should have directional_fade (92-byte layout)"
+            );
+            // Ambient should be non-zero for a tavern interior.
+            assert!(
+                lit.ambient.iter().any(|&c| c > 0.0),
+                "Winking Skeever ambient should be non-zero"
+            );
+        }
+
+        // Check overall Skyrim cell stats.
+        let with_lighting = idx.cells.values().filter(|c| c.lighting.is_some()).count();
+        let with_skyrim_xcll = idx
+            .cells
+            .values()
+            .filter(|c| {
+                c.lighting
+                    .as_ref()
+                    .is_some_and(|l| l.directional_fade.is_some())
+            })
+            .count();
+        eprintln!(
+            "Skyrim lighting: {with_lighting}/{} cells with XCLL, \
+             {with_skyrim_xcll} with Skyrim extended fields",
+            idx.cells.len()
+        );
     }
 
     #[test]
