@@ -82,6 +82,16 @@ pub(super) struct MaterialInfo {
     /// Gamebryo uses when the NIF has no `NiVertexColorProperty`.
     pub vertex_color_mode: VertexColorMode,
     pub alpha_blend: bool,
+    /// Source blend factor from NiAlphaProperty flags bits 1–4.
+    /// Maps to Gamebryo's AlphaFunction enum:
+    ///   0=ONE, 1=ZERO, 2=SRC_COLOR, 3=INV_SRC_COLOR, 4=DEST_COLOR,
+    ///   5=INV_DEST_COLOR, 6=SRC_ALPHA, 7=INV_SRC_ALPHA, 8=DEST_ALPHA,
+    ///   9=INV_DEST_ALPHA, 10=SRC_ALPHA_SATURATE.
+    /// Default: 6 (SRC_ALPHA).
+    pub src_blend_mode: u8,
+    /// Destination blend factor from NiAlphaProperty flags bits 5–8.
+    /// Same enum as src_blend_mode. Default: 7 (INV_SRC_ALPHA).
+    pub dst_blend_mode: u8,
     /// Alpha-tested (cutout) rendering — vertices whose sampled texture
     /// alpha falls below `alpha_threshold` should be `discard`-ed in the
     /// fragment shader. Set when NiAlphaProperty.flags has bit 9 (0x200).
@@ -135,6 +145,8 @@ impl Default for MaterialInfo {
             dark_map: None,
             vertex_color_mode: VertexColorMode::AmbientDiffuse,
             alpha_blend: false,
+            src_blend_mode: 6, // SRC_ALPHA — Gamebryo default
+            dst_blend_mode: 7, // INV_SRC_ALPHA — Gamebryo default
             alpha_test: false,
             alpha_threshold: 0.0,
             alpha_test_func: 6, // GREATEREQUAL — Gamebryo default
@@ -513,6 +525,10 @@ pub(super) fn extract_material_info(
 pub(super) fn apply_alpha_flags(info: &mut MaterialInfo, alpha: &NiAlphaProperty) {
     let blend = alpha.flags & 0x001 != 0;
     let test = alpha.flags & 0x200 != 0;
+    // Extract blend factors regardless of which mode wins — they're
+    // needed if the mesh later ends up blended (e.g., animated alpha).
+    info.src_blend_mode = ((alpha.flags >> 1) & 0xF) as u8; // bits 1–4
+    info.dst_blend_mode = ((alpha.flags >> 5) & 0xF) as u8; // bits 5–8
     if test {
         info.alpha_test = true;
         info.alpha_threshold = alpha.threshold as f32 / 255.0;

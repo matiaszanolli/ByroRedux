@@ -6,6 +6,7 @@ use crate::math::{Quat, Vec3};
 
 use super::interpolation::{sample_rotation, sample_scale, sample_translation};
 use super::registry::AnimationClipRegistry;
+use super::text_events::collect_text_key_events;
 use super::types::CycleType;
 
 /// A single animation layer in an AnimationStack.
@@ -27,6 +28,8 @@ pub struct AnimationLayer {
     pub blend_out_remaining: f32,
     /// Total blend-out duration.
     pub blend_out_total: f32,
+    /// Previous frame's local_time — used for text key event detection.
+    pub prev_time: f32,
 }
 
 impl AnimationLayer {
@@ -42,6 +45,7 @@ impl AnimationLayer {
             blend_in_total: 0.0,
             blend_out_remaining: 0.0,
             blend_out_total: 0.0,
+            prev_time: 0.0,
         }
     }
 
@@ -136,6 +140,9 @@ pub fn advance_stack(stack: &mut AnimationStack, registry: &AnimationClipRegistr
             continue;
         };
 
+        // Save prev_time for text key event detection.
+        layer.prev_time = layer.local_time;
+
         // Advance animation time.
         let delta = dt * layer.speed * clip.frequency;
         match clip.cycle_type {
@@ -182,6 +189,39 @@ pub fn advance_stack(stack: &mut AnimationStack, registry: &AnimationClipRegistr
     }
 
     stack.cleanup_finished();
+}
+
+/// Collect text key events from all active layers in a stack.
+///
+/// Must be called after `advance_stack()` — each layer's `prev_time` and
+/// `local_time` bracket the time window to scan. Deduplicates labels so
+/// overlapping layers don't fire the same event twice.
+pub fn collect_stack_text_events(
+    stack: &AnimationStack,
+    registry: &AnimationClipRegistry,
+) -> Vec<(String, f32)> {
+    let mut events = Vec::new();
+    for layer in &stack.layers {
+        if !layer.playing || layer.effective_weight() < 0.001 {
+            continue;
+        }
+        let Some(clip) = registry.get(layer.clip_handle) else {
+            continue;
+        };
+        for label in collect_text_key_events(clip, layer.prev_time, layer.local_time) {
+            // Find the timestamp for this label in the clip's text_keys.
+            let time = clip
+                .text_keys
+                .iter()
+                .find(|(_, l)| *l == label)
+                .map(|(t, _)| *t)
+                .unwrap_or(layer.local_time);
+            if !events.iter().any(|(l, _): &(String, f32)| *l == label) {
+                events.push((label, time));
+            }
+        }
+    }
+    events
 }
 
 /// Sample a blended transform from all layers in a stack for a given node.

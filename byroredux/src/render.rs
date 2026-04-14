@@ -218,10 +218,11 @@ pub(crate) fn build_render_data(
                     .and_then(|q| q.get(entity))
                     .map(|t| t.0)
                     .unwrap_or(0);
-                let alpha_blend = alpha_q
-                    .as_ref()
-                    .map(|q| q.get(entity).is_some())
-                    .unwrap_or(false);
+                let alpha_comp = alpha_q.as_ref().and_then(|q| q.get(entity));
+                let alpha_blend = alpha_comp.is_some();
+                let (src_blend, dst_blend) = alpha_comp
+                    .map(|a| (a.src_blend, a.dst_blend))
+                    .unwrap_or((6, 7)); // SRC_ALPHA / INV_SRC_ALPHA defaults
                 let two_sided = two_sided_q
                     .as_ref()
                     .map(|q| q.get(entity).is_some())
@@ -310,6 +311,8 @@ pub(crate) fn build_render_data(
                     texture_handle: tex_handle,
                     model_matrix: model_mat.to_cols_array(),
                     alpha_blend,
+                    src_blend,
+                    dst_blend,
                     two_sided,
                     is_decal,
                     bone_offset,

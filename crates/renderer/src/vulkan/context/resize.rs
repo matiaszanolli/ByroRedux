@@ -51,11 +51,16 @@ impl VulkanContext {
             self.pipeline = vk::Pipeline::null();
             self.device.destroy_pipeline(self.pipeline_alpha, None);
             self.pipeline_alpha = vk::Pipeline::null();
+            self.device.destroy_pipeline(self.pipeline_additive, None);
+            self.pipeline_additive = vk::Pipeline::null();
             self.device.destroy_pipeline(self.pipeline_two_sided, None);
             self.pipeline_two_sided = vk::Pipeline::null();
             self.device
                 .destroy_pipeline(self.pipeline_alpha_two_sided, None);
             self.pipeline_alpha_two_sided = vk::Pipeline::null();
+            self.device
+                .destroy_pipeline(self.pipeline_additive_two_sided, None);
+            self.pipeline_additive_two_sided = vk::Pipeline::null();
             self.device.destroy_pipeline(self.pipeline_ui, None);
             self.pipeline_ui = vk::Pipeline::null();
 
@@ -121,8 +126,10 @@ impl VulkanContext {
         )?;
         self.pipeline = pipelines.opaque;
         self.pipeline_alpha = pipelines.alpha;
+        self.pipeline_additive = pipelines.additive;
         self.pipeline_two_sided = pipelines.opaque_two_sided;
         self.pipeline_alpha_two_sided = pipelines.alpha_two_sided;
+        self.pipeline_additive_two_sided = pipelines.additive_two_sided;
 
         self.pipeline_ui = pipeline::create_ui_pipeline(
             &self.device,

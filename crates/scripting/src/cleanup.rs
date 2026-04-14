@@ -4,7 +4,7 @@
 //! events are only visible for one frame. This is the ECS equivalent
 //! of "clearing the event queue."
 
-use crate::events::{ActivateEvent, AnimationTextKeyEvent, HitEvent, TimerExpired};
+use crate::events::{ActivateEvent, AnimationTextKeyEvents, HitEvent, TimerExpired};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 
@@ -16,7 +16,7 @@ pub fn event_cleanup_system(world: &World, _dt: f32) {
     drain_component::<ActivateEvent>(world);
     drain_component::<HitEvent>(world);
     drain_component::<TimerExpired>(world);
-    drain_component::<AnimationTextKeyEvent>(world);
+    drain_component::<AnimationTextKeyEvents>(world);
 }
 
 /// Remove all instances of a component type from every entity.

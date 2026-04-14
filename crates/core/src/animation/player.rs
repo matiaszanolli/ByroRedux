@@ -20,6 +20,9 @@ pub struct AnimationPlayer {
     /// Root entity of the subtree to animate. When set, name lookups are
     /// scoped to this entity's descendants only (no global name collisions).
     pub root_entity: Option<EntityId>,
+    /// Previous frame's local_time — used by `collect_text_key_events()` to
+    /// detect which text keys were crossed during the last `advance_time()`.
+    pub prev_time: f32,
 }
 
 impl AnimationPlayer {
@@ -31,6 +34,7 @@ impl AnimationPlayer {
             speed: 1.0,
             reverse_direction: false,
             root_entity: None,
+            prev_time: 0.0,
         }
     }
 
@@ -46,11 +50,13 @@ impl Component for AnimationPlayer {
 }
 
 /// Advance the animation time according to the cycle type.
+/// Updates `prev_time` to the value of `local_time` before advancing.
 pub fn advance_time(player: &mut AnimationPlayer, clip: &AnimationClip, dt: f32) {
     if !player.playing {
         return;
     }
 
+    player.prev_time = player.local_time;
     let delta = dt * player.speed * clip.frequency;
 
     match clip.cycle_type {

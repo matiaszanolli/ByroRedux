@@ -909,7 +909,13 @@ fn spawn_placed_instances(
             }
         }
         if mesh.has_alpha {
-            world.insert(entity, AlphaBlend);
+            world.insert(
+                entity,
+                AlphaBlend {
+                    src_blend: mesh.src_blend_mode,
+                    dst_blend: mesh.dst_blend_mode,
+                },
+            );
         }
         if mesh.two_sided {
             world.insert(entity, TwoSided);

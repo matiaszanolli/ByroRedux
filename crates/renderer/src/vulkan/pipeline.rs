@@ -28,12 +28,39 @@ pub fn load_shader_module(device: &ash::Device, spv: &[u8]) -> Result<vk::Shader
     Ok(module)
 }
 
-/// Pipeline set: opaque, alpha, opaque-two-sided, alpha-two-sided.
+/// Blend type for pipeline selection — classifies the NiAlphaProperty
+/// blend factor pair into a small set of pipeline variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BlendType {
+    /// No blending — opaque pipeline.
+    Opaque,
+    /// Standard transparency: SRC_ALPHA / ONE_MINUS_SRC_ALPHA.
+    Alpha,
+    /// Additive blending: SRC_ALPHA / ONE (fire, magic glow, light flares).
+    Additive,
+}
+
+impl BlendType {
+    /// Classify a Gamebryo (src_blend, dst_blend) pair into a BlendType.
+    /// Unknown combinations fall back to Alpha (safe default — transparent).
+    pub fn from_nif_blend(src: u8, dst: u8) -> Self {
+        match (src, dst) {
+            // Additive: SRC_ALPHA/ONE or ONE/ONE
+            (6, 0) | (0, 0) => Self::Additive,
+            // Standard alpha blend (default)
+            _ => Self::Alpha,
+        }
+    }
+}
+
+/// Pipeline set: opaque, alpha, additive, and two-sided variants.
 pub struct PipelineSet {
     pub opaque: vk::Pipeline,
     pub alpha: vk::Pipeline,
+    pub additive: vk::Pipeline,
     pub opaque_two_sided: vk::Pipeline,
     pub alpha_two_sided: vk::Pipeline,
+    pub additive_two_sided: vk::Pipeline,
     pub layout: vk::PipelineLayout,
 }
 
@@ -246,6 +273,29 @@ fn create_triangle_pipeline_with_layout(
         .depth_bounds_test_enable(false)
         .stencil_test_enable(false);
 
+    // Additive blend: SRC_ALPHA + ONE — adds light without modulating
+    // the existing framebuffer. Used for fire, magic effects, glow.
+    let color_blend_hdr_additive = vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::RGBA)
+        .blend_enable(true)
+        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+        .dst_color_blend_factor(vk::BlendFactor::ONE)
+        .color_blend_op(vk::BlendOp::ADD)
+        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+        .alpha_blend_op(vk::BlendOp::ADD);
+    let color_blend_additive = [
+        color_blend_hdr_additive,
+        color_blend_none, // normal: overwrite
+        color_blend_none, // motion: overwrite
+        color_blend_none, // mesh_id: overwrite
+        color_blend_none, // raw_indirect: overwrite
+        color_blend_none, // albedo: overwrite
+    ];
+    let color_blending_additive = vk::PipelineColorBlendStateCreateInfo::default()
+        .logic_op_enable(false)
+        .attachments(&color_blend_additive);
+
     let pipeline_infos = [
         // [0] Opaque pipeline.
         vk::GraphicsPipelineCreateInfo::default()
@@ -303,6 +353,34 @@ fn create_triangle_pipeline_with_layout(
             .layout(pipeline_layout)
             .render_pass(render_pass)
             .subpass(0),
+        // [4] Additive blend (fire, magic, glow effects).
+        vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisampling)
+            .depth_stencil_state(&depth_stencil_alpha)
+            .color_blend_state(&color_blending_additive)
+            .dynamic_state(&dynamic_state)
+            .layout(pipeline_layout)
+            .render_pass(render_pass)
+            .subpass(0),
+        // [5] Additive blend two-sided.
+        vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer_no_cull)
+            .multisample_state(&multisampling)
+            .depth_stencil_state(&depth_stencil_alpha)
+            .color_blend_state(&color_blending_additive)
+            .dynamic_state(&dynamic_state)
+            .layout(pipeline_layout)
+            .render_pass(render_pass)
+            .subpass(0),
     ];
 
     let pipelines = unsafe {
@@ -312,7 +390,7 @@ fn create_triangle_pipeline_with_layout(
             .context("Failed to create graphics pipelines")?
     };
 
-    log::info!("Graphics pipelines created (opaque + alpha + two-sided variants)");
+    log::info!("Graphics pipelines created (opaque + alpha + additive + two-sided variants)");
 
     // SAFETY: Shader modules are compiled into the pipeline objects during
     // create_graphics_pipelines and are no longer needed. Destroy them
@@ -328,6 +406,8 @@ fn create_triangle_pipeline_with_layout(
         alpha: pipelines[1],
         opaque_two_sided: pipelines[2],
         alpha_two_sided: pipelines[3],
+        additive: pipelines[4],
+        additive_two_sided: pipelines[5],
         layout: pipeline_layout,
     })
 }

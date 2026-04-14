@@ -111,6 +111,12 @@ pub struct ImportedMesh {
     pub name: Option<Arc<str>>,
     /// Whether this mesh uses alpha blending (from NiAlphaProperty bit 0).
     pub has_alpha: bool,
+    /// Source blend factor from NiAlphaProperty flags bits 1–4.
+    /// Gamebryo AlphaFunction: 0=ONE, 6=SRC_ALPHA (default), etc.
+    pub src_blend_mode: u8,
+    /// Destination blend factor from NiAlphaProperty flags bits 5–8.
+    /// Gamebryo AlphaFunction: 0=ONE, 7=INV_SRC_ALPHA (default), etc.
+    pub dst_blend_mode: u8,
     /// Whether this mesh uses alpha testing / cutout rendering
     /// (NiAlphaProperty bit 9 / mask 0x200). When `true`, the renderer
     /// should render opaque but `discard` fragments whose sampled
@@ -525,7 +531,7 @@ mod tests {
 
         assert_eq!(meshes.len(), 1);
         let m = &meshes[0];
-        assert_eq!(m.name, Some("Triangle".to_string()));
+        assert_eq!(m.name, Some(Arc::from("Triangle")));
         assert_eq!(m.positions.len(), 3);
         assert_eq!(m.indices, vec![0, 1, 2]);
         assert_eq!(m.uvs.len(), 3);
@@ -633,8 +639,8 @@ mod tests {
         let meshes = import_nif(&scene);
 
         assert_eq!(meshes.len(), 2);
-        assert_eq!(meshes[0].name, Some("A".to_string()));
-        assert_eq!(meshes[1].name, Some("B".to_string()));
+        assert_eq!(meshes[0].name, Some(Arc::from("A")));
+        assert_eq!(meshes[1].name, Some(Arc::from("B")));
     }
 
     #[test]
@@ -1196,7 +1202,7 @@ mod tests {
             1,
             "BsOrderedNode subtree must yield 1 mesh in flat import"
         );
-        assert_eq!(meshes[0].name, Some("OrderedChild".to_string()));
+        assert_eq!(meshes[0].name, Some(Arc::from("OrderedChild")));
 
         // Hierarchical path — must register the parent node AND the mesh.
         let imported = import_nif_scene(&scene);
@@ -1231,6 +1237,6 @@ mod tests {
         let scene = scene_from_blocks(blocks);
         let meshes = import_nif(&scene);
         assert_eq!(meshes.len(), 1);
-        assert_eq!(meshes[0].name, Some("ValueChild".to_string()));
+        assert_eq!(meshes[0].name, Some(Arc::from("ValueChild")));
     }
 }

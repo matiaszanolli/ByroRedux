@@ -31,6 +31,12 @@ pub struct DrawCommand {
     pub texture_handle: u32,
     pub model_matrix: [f32; 16],
     pub alpha_blend: bool,
+    /// Source blend factor (Gamebryo AlphaFunction enum). Only meaningful
+    /// when `alpha_blend` is true. 6 = SRC_ALPHA (default).
+    pub src_blend: u8,
+    /// Destination blend factor (Gamebryo AlphaFunction enum). Only meaningful
+    /// when `alpha_blend` is true. 7 = INV_SRC_ALPHA (default).
+    pub dst_blend: u8,
     pub two_sided: bool,
     /// Decal geometry — renders on top of coplanar surfaces via depth bias.
     pub is_decal: bool,
@@ -187,8 +193,10 @@ pub struct VulkanContext {
     pipeline_cache: vk::PipelineCache,
     pipeline: vk::Pipeline,
     pipeline_alpha: vk::Pipeline,
+    pipeline_additive: vk::Pipeline,
     pipeline_two_sided: vk::Pipeline,
     pipeline_alpha_two_sided: vk::Pipeline,
+    pipeline_additive_two_sided: vk::Pipeline,
     pipeline_ui: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     /// Mesh handle for the fullscreen quad used by UI overlay.
@@ -628,8 +636,10 @@ impl VulkanContext {
             pipeline_cache,
             pipeline: pipelines.opaque,
             pipeline_alpha: pipelines.alpha,
+            pipeline_additive: pipelines.additive,
             pipeline_two_sided: pipelines.opaque_two_sided,
             pipeline_alpha_two_sided: pipelines.alpha_two_sided,
+            pipeline_additive_two_sided: pipelines.additive_two_sided,
             pipeline_ui,
             pipeline_layout: pipelines.layout,
             ui_quad_handle: None,
@@ -750,9 +760,12 @@ impl Drop for VulkanContext {
 
             self.device.destroy_pipeline(self.pipeline, None);
             self.device.destroy_pipeline(self.pipeline_alpha, None);
+            self.device.destroy_pipeline(self.pipeline_additive, None);
             self.device.destroy_pipeline(self.pipeline_two_sided, None);
             self.device
                 .destroy_pipeline(self.pipeline_alpha_two_sided, None);
+            self.device
+                .destroy_pipeline(self.pipeline_additive_two_sided, None);
             self.device.destroy_pipeline(self.pipeline_ui, None);
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);

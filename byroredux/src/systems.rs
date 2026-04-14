@@ -1,10 +1,10 @@
 //! ECS systems for the application: camera, animation, transform propagation, etc.
 
 use byroredux_core::animation::{
-    advance_stack, advance_time, sample_blended_transform, sample_bool_channel,
-    sample_color_channel, sample_float_channel, sample_rotation, sample_scale, sample_translation,
-    split_root_motion, AnimationClipRegistry, AnimationPlayer, AnimationStack, FloatTarget,
-    RootMotionDelta,
+    advance_stack, advance_time, collect_stack_text_events, collect_text_key_events,
+    sample_blended_transform, sample_bool_channel, sample_color_channel, sample_float_channel,
+    sample_rotation, sample_scale, sample_translation, split_root_motion,
+    AnimationClipRegistry, AnimationPlayer, AnimationStack, FloatTarget, RootMotionDelta,
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
@@ -192,6 +192,7 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         clip_handle: u32,
         root_entity: Option<EntityId>,
         current_time: f32,
+        prev_time: f32,
     }
     let mut playback_states = Vec::with_capacity(entities_with_players.len());
     {
@@ -209,9 +210,37 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
                 clip_handle,
                 root_entity: root_entity_opt,
                 current_time: player.local_time,
+                prev_time: player.prev_time,
             });
         }
     } // AnimationPlayer lock released here
+
+    // Emit text key events for AnimationPlayer entities (#211).
+    {
+        use byroredux_scripting::events::{AnimationTextKeyEvent, AnimationTextKeyEvents};
+        let mut eq = world.query_mut::<AnimationTextKeyEvents>().unwrap();
+        for ps in &playback_states {
+            let Some(clip) = registry.get(ps.clip_handle) else {
+                continue;
+            };
+            let labels = collect_text_key_events(clip, ps.prev_time, ps.current_time);
+            if !labels.is_empty() {
+                let events: Vec<_> = labels
+                    .into_iter()
+                    .map(|label| {
+                        let time = clip
+                            .text_keys
+                            .iter()
+                            .find(|(_, l)| *l == label)
+                            .map(|(t, _)| *t)
+                            .unwrap_or(ps.current_time);
+                        AnimationTextKeyEvent { label, time }
+                    })
+                    .collect();
+                eq.insert(ps.entity, AnimationTextKeyEvents(events));
+            }
+        }
+    }
 
     // Phase 2: Apply channels using pre-computed playback state.
     for ps in &playback_states {
@@ -354,6 +383,23 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
             let mut sq = world.query_mut::<AnimationStack>().unwrap();
             let stack = sq.get_mut(entity).unwrap();
             advance_stack(stack, &registry, dt);
+        }
+
+        // Emit text key events from all active layers (#211).
+        {
+            let sq = world.query::<AnimationStack>().unwrap();
+            let stack = sq.get(entity).unwrap();
+            let events = collect_stack_text_events(stack, &registry);
+            drop(sq);
+            if !events.is_empty() {
+                use byroredux_scripting::events::{AnimationTextKeyEvent, AnimationTextKeyEvents};
+                let mut eq = world.query_mut::<AnimationTextKeyEvents>().unwrap();
+                let events: Vec<_> = events
+                    .into_iter()
+                    .map(|(label, time)| AnimationTextKeyEvent { label, time })
+                    .collect();
+                eq.insert(entity, AnimationTextKeyEvents(events));
+            }
         }
 
         // Sample blended transforms for each channel name.

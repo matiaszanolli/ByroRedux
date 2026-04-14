@@ -19,7 +19,10 @@ pub use interpolation::{
 pub use player::{advance_time, AnimationPlayer};
 pub use registry::AnimationClipRegistry;
 pub use root_motion::{split_root_motion, RootMotionDelta};
-pub use stack::{advance_stack, sample_blended_transform, AnimationLayer, AnimationStack};
+pub use stack::{
+    advance_stack, collect_stack_text_events, sample_blended_transform, AnimationLayer,
+    AnimationStack,
+};
 pub use text_events::collect_text_key_events;
 pub use types::{
     AnimBoolKey, AnimColorKey, AnimFloatKey, AnimationClip, BoolChannel, ColorChannel, ColorTarget,
@@ -500,6 +503,44 @@ mod tests {
         };
         let events = collect_text_key_events(&clip, 0.0, 1.0);
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn advance_time_tracks_prev_time_for_text_keys() {
+        let clip = AnimationClip {
+            name: "test".into(),
+            duration: 2.0,
+            cycle_type: CycleType::Loop,
+            frequency: 1.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            text_keys: vec![
+                (0.5, "hit".into()),
+                (1.0, "sound: swing".into()),
+                (1.8, "end".into()),
+            ],
+        };
+        let mut player = AnimationPlayer::new(0);
+
+        // First advance: 0.0 → 0.6, should cross "hit" at 0.5.
+        advance_time(&mut player, &clip, 0.6);
+        let events = collect_text_key_events(&clip, player.prev_time, player.local_time);
+        assert_eq!(events, vec!["hit"]);
+
+        // Second advance: 0.6 → 1.2, should cross "sound: swing" at 1.0.
+        advance_time(&mut player, &clip, 0.6);
+        let events = collect_text_key_events(&clip, player.prev_time, player.local_time);
+        assert_eq!(events, vec!["sound: swing"]);
+
+        // Advance past loop wrap: 1.2 → (1.2+1.0=2.2 mod 2.0=0.2),
+        // should cross "end" at 1.8.
+        advance_time(&mut player, &clip, 1.0);
+        let events = collect_text_key_events(&clip, player.prev_time, player.local_time);
+        assert!(events.contains(&"end".to_string()));
     }
 
     #[test]

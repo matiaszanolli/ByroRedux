@@ -13,9 +13,18 @@ impl Component for Spinning {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// Marker component for entities that use alpha blending.
+/// Component for entities that use alpha blending, carrying the Gamebryo
+/// blend factors extracted from NiAlphaProperty flags.
+///
+/// Gamebryo AlphaFunction enum (bits 1–4 = src, bits 5–8 = dst):
+///   0=ONE, 1=ZERO, 2=SRC_COLOR, 3=INV_SRC_COLOR, 4=DEST_COLOR,
+///   5=INV_DEST_COLOR, 6=SRC_ALPHA, 7=INV_SRC_ALPHA, 8=DEST_ALPHA,
+///   9=INV_DEST_ALPHA, 10=SRC_ALPHA_SATURATE.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct AlphaBlend;
+pub(crate) struct AlphaBlend {
+    pub(crate) src_blend: u8,
+    pub(crate) dst_blend: u8,
+}
 impl Component for AlphaBlend {
     type Storage = SparseSetStorage<Self>;
 }

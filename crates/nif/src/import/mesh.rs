@@ -132,6 +132,8 @@ pub(super) fn extract_mesh(
         name: shape.av.net.name.clone(),
         texture_path: mat.texture_path,
         has_alpha: mat.alpha_blend,
+        src_blend_mode: mat.src_blend_mode,
+        dst_blend_mode: mat.dst_blend_mode,
         alpha_test: mat.alpha_test,
         alpha_threshold: mat.alpha_threshold,
         alpha_test_func: mat.alpha_test_func,
@@ -252,22 +254,24 @@ pub(super) fn extract_bs_tri_shape(
     // (cutout). See issue #152. Prefer alpha-test over alpha-blend when
     // both bits are set — same policy as the NiTriShape path in
     // `apply_alpha_flags`.
-    let (has_alpha, alpha_test, alpha_threshold, alpha_test_func) =
+    let (has_alpha, alpha_test, alpha_threshold, alpha_test_func, src_blend_mode, dst_blend_mode) =
         if let Some(idx) = shape.alpha_property_ref.index() {
             if let Some(a) = scene.get_as::<NiAlphaProperty>(idx) {
                 let blend = a.flags & 0x001 != 0;
                 let test = a.flags & 0x200 != 0;
                 let func = ((a.flags & 0x1C00) >> 10) as u8;
+                let src = ((a.flags >> 1) & 0xF) as u8;
+                let dst = ((a.flags >> 5) & 0xF) as u8;
                 if test {
-                    (false, true, a.threshold as f32 / 255.0, func)
+                    (false, true, a.threshold as f32 / 255.0, func, src, dst)
                 } else {
-                    (blend, false, 0.0, 6) // 6 = GREATEREQUAL default
+                    (blend, false, 0.0, 6, src, dst)
                 }
             } else {
-                (false, false, 0.0, 6)
+                (false, false, 0.0, 6, 6, 7)
             }
         } else {
-            (false, false, 0.0, 6)
+            (false, false, 0.0, 6, 6, 7)
         };
 
     let two_sided = if let Some(idx) = shape.shader_property_ref.index() {
@@ -351,6 +355,8 @@ pub(super) fn extract_bs_tri_shape(
         name: shape.av.net.name.clone(),
         texture_path,
         has_alpha,
+        src_blend_mode,
+        dst_blend_mode,
         alpha_test,
         alpha_threshold,
         alpha_test_func,

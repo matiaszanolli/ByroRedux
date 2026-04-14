@@ -1,5 +1,6 @@
 //! Frame recording and submission — the per-frame hot path.
 
+use super::super::pipeline::BlendType;
 use super::super::scene_buffer::{self, GpuInstance};
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::{DrawCommand, SkyParams, VulkanContext};
@@ -14,7 +15,7 @@ use ash::vk;
 /// across frames. See issue #243.
 pub(super) struct DrawBatch {
     pub mesh_handle: u32,
-    pub pipeline_key: (bool, bool), // (alpha_blend, two_sided)
+    pub pipeline_key: (BlendType, bool), // (blend_type, two_sided)
     pub is_decal: bool,
     pub first_instance: u32,
     pub instance_count: u32,
@@ -407,7 +408,12 @@ impl VulkanContext {
                 _pad1: 0,
             });
 
-            let pipeline_key = (draw_cmd.alpha_blend, draw_cmd.two_sided);
+            let blend_type = if draw_cmd.alpha_blend {
+                BlendType::from_nif_blend(draw_cmd.src_blend, draw_cmd.dst_blend)
+            } else {
+                BlendType::Opaque
+            };
+            let pipeline_key = (blend_type, draw_cmd.two_sided);
 
             // Extend the current batch if this draw shares the same state.
             if let Some(batch) = batches.last_mut() {
@@ -524,7 +530,7 @@ impl VulkanContext {
             // The vertex shader reads instances[gl_InstanceIndex] for the model matrix,
             // texture index, and bone offset — no push constants, no per-draw descriptor
             // set binds.
-            let mut last_pipeline_key = (false, false);
+            let mut last_pipeline_key = (BlendType::Opaque, false);
             let mut last_mesh_handle = u32::MAX;
             let mut last_is_decal = false;
 
@@ -537,10 +543,12 @@ impl VulkanContext {
                 // Switch pipeline when rendering mode changes.
                 if batch.pipeline_key != last_pipeline_key {
                     let pipe = match batch.pipeline_key {
-                        (false, false) => self.pipeline,
-                        (true, false) => self.pipeline_alpha,
-                        (false, true) => self.pipeline_two_sided,
-                        (true, true) => self.pipeline_alpha_two_sided,
+                        (BlendType::Opaque, false) => self.pipeline,
+                        (BlendType::Alpha, false) => self.pipeline_alpha,
+                        (BlendType::Additive, false) => self.pipeline_additive,
+                        (BlendType::Opaque, true) => self.pipeline_two_sided,
+                        (BlendType::Alpha, true) => self.pipeline_alpha_two_sided,
+                        (BlendType::Additive, true) => self.pipeline_additive_two_sided,
                     };
                     self.device
                         .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipe);
