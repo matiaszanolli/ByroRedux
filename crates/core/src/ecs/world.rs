@@ -122,12 +122,18 @@ impl World {
     pub fn get<T: Component>(&self, entity: EntityId) -> Option<ComponentRef<'_, T>> {
         let type_id = TypeId::of::<T>();
         let lock = self.storages.get(&type_id)?;
-        lock_tracker::track_read(type_id, std::any::type_name::<T>());
+        // RAII scope guard: if lock.read() panics (poisoned), TrackedRead's
+        // Drop untracks automatically — no stale tracker state. (#311)
+        let scope = lock_tracker::TrackedRead::new(type_id, std::any::type_name::<T>());
         let guard = lock.read().unwrap_or_else(|_| storage_lock_poisoned::<T>());
         match ComponentRef::new(guard, entity, type_id) {
-            Some(cr) => Some(cr),
+            Some(cr) => {
+                // ComponentRef::Drop will untrack — hand off ownership.
+                scope.defuse();
+                Some(cr)
+            }
             None => {
-                lock_tracker::untrack_read(type_id);
+                // scope drops here → TrackedRead::Drop untracks.
                 None
             }
         }
