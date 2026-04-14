@@ -26,6 +26,7 @@ built, where the code lives, and what guarantees it makes.
 | [Platform](platform.md) | platform | winit windowing, raw handles |
 | [Scripting](scripting.md) | scripting | ECS-native scripting (events, timers); contrast with Papyrus |
 | [Game Compatibility](game-compatibility.md) | all | Per-game parse rate matrix and known gaps |
+| [Debug CLI](debug-cli.md) | debug-protocol, debug-server, byro-dbg | Live ECS inspection, Papyrus expression queries, screenshots |
 | [Testing](testing.md) | all | Unit + integration test inventory, how to run |
 | [Dependencies](dependencies.md) | all | Workspace crates and per-crate deps |
 
@@ -60,6 +61,9 @@ built, where the code lives, and what guarantees it makes.
 | Physics sync system | `byroredux_physics::physics_sync_system` |
 | Window creation | `byroredux_platform::window::create_window` |
 | C++ bridge | `byroredux_cxx_bridge::ffi::*` |
+| Debug protocol | `byroredux_debug_protocol::{DebugRequest, DebugResponse}` |
+| Debug server | `byroredux_debug_server::start()` |
+| Debug CLI | `tools/byro-dbg` binary |
 
 ## Stats
 
@@ -67,7 +71,7 @@ built, where the code lives, and what guarantees it makes.
 |-------------------------------------|----------------|
 | Rust source files                   | 149            |
 | Lines of Rust                       | ~39,600        |
-| Workspace crates                    | 11             |
+| Workspace crates                    | 14             |
 | Unit tests passing                  | 396            |
 | Integration tests (`#[ignore]`'d)   | 22             |
 | NIFs in per-game integration sweeps | 177,286        |

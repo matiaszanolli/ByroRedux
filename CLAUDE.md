@@ -13,6 +13,12 @@ cargo run                      # Launch engine (spinning cube demo)
 cargo build --release          # Release build
 ```
 
+### Debug CLI
+```bash
+cargo run -p byro-dbg                       # Connect to running engine (port 9876)
+BYRO_DEBUG_PORT=8080 cargo run -p byro-dbg  # Custom port
+```
+
 ### Shader Compilation
 ```bash
 cd crates/renderer/shaders
@@ -126,6 +132,20 @@ crates/
       mod.rs                 Parser struct, token access, type parsing
       expr.rs                Pratt expression parser (precedence climbing)
   cxx-bridge/                C++ interop (cxx crate)
+  debug-protocol/            Wire types + component registry for debug CLI
+    src/lib.rs               DebugRequest, DebugResponse, EntityInfo
+    src/wire.rs              Length-prefixed JSON encode/decode
+    src/registry.rs          ComponentDescriptor, ComponentRegistry (type-erased accessors)
+  debug-server/              TCP debug server embedded in engine
+    src/lib.rs               start() entry point, SystemList re-export
+    src/listener.rs          TcpListener, per-client threads, command queue
+    src/system.rs            DebugDrainSystem (Late-stage exclusive), screenshot flow
+    src/evaluator.rs         Papyrus AST → ECS query evaluation
+    src/registration.rs      register_component::<T>() for 15 inspectable types
+tools/
+  byro-dbg/                  Standalone debug CLI binary
+    src/main.rs              TCP client, REPL loop, shorthand commands
+    src/display.rs           Pretty-print responses (entities, JSON, stats)
 docs/
   engine/                    Engine documentation (architecture, ECS, renderer, etc.)
   legacy/                    Gamebryo 2.3 analysis (class hierarchy, NIF format, API)
