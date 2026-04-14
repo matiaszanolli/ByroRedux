@@ -536,7 +536,7 @@ fn load_references(
 
         // Extract the filename (after the last \ or /) for prefix matching.
         let filename = model_lower
-            .rsplit(|c| c == '\\' || c == '/')
+            .rsplit(['\\', '/'])
             .next()
             .unwrap_or(&model_lower);
 

@@ -472,7 +472,7 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
                 }
                 if let Some(clip) = registry.get(layer.clip_handle) {
                     if let Some(ref name) = clip.accum_root_name {
-                        if best.map_or(true, |(_, bw)| ew > bw) {
+                        if best.is_none_or(|(_, bw)| ew > bw) {
                             best = Some((name.as_str(), ew));
                         }
                     }
@@ -1004,7 +1004,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
 
     // Fog distance: interpolate between day and night based on
     // how "night-like" the current hour is (0 = full day, 1 = full night).
-    let night_factor = if hour >= 6.0 && hour <= 18.0 {
+    let night_factor = if (6.0..=18.0).contains(&hour) {
         0.0 // daytime
     } else if hour >= 20.0 || hour <= 4.0 {
         1.0 // full night
@@ -1028,7 +1028,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         let y = angle.sin();
         let z = -0.15_f32; // slight south tilt
         let len = (x * x + y * y + z * z).sqrt();
-        if hour >= 6.0 && hour <= 18.0 {
+        if (6.0..=18.0).contains(&hour) {
             [x / len, y / len, z / len]
         } else {
             // Night: sun below horizon. Push it down so no sun disc renders.
@@ -1037,9 +1037,9 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     };
 
     // Sun intensity: fade in/out at sunrise/sunset.
-    let sun_intensity = if hour >= 7.0 && hour <= 17.0 {
+    let sun_intensity = if (7.0..=17.0).contains(&hour) {
         4.0
-    } else if hour >= 6.0 && hour < 7.0 {
+    } else if (6.0..7.0).contains(&hour) {
         (hour - 6.0) * 4.0 // fade in
     } else if hour > 17.0 && hour <= 18.0 {
         (18.0 - hour) * 4.0 // fade out
