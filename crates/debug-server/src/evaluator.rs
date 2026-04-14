@@ -233,6 +233,18 @@ fn eval_ast(world: &World, registry: &ComponentRegistry, expr: &Expr) -> DebugRe
             }
         }
 
+        // Float literal → treat as entity ID when whole number.
+        // The Papyrus lexer greedily parses `42.Transform` as
+        // `FloatLit(42.0).MemberAccess("Transform")`, so member access
+        // chains on integer entity IDs route through here.
+        Expr::FloatLit(f) => {
+            let entity = *f as u32;
+            let name = resolve_entity_name(world, entity);
+            DebugResponse::EntityList {
+                entities: vec![EntityInfo { id: entity, name }],
+            }
+        }
+
         // String literal → find by name
         Expr::StringLit(name) => eval_find(world, name),
 
@@ -283,6 +295,7 @@ fn eval_member_access(
     // Resolve root to an entity ID.
     let entity_id = match root {
         Expr::IntLit(id) => *id as u32,
+        Expr::FloatLit(f) => *f as u32,
         Expr::StringLit(name) => match world.find_by_name(name) {
             Some(id) => id,
             None => return DebugResponse::error(format!("no entity named '{}'", name)),
