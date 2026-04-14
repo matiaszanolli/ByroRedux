@@ -378,92 +378,92 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
     let mut updates_scratch: Vec<(&str, EntityId, Vec3, Quat, f32)> = Vec::new();
 
     for entity in stack_entities {
-        // Advance all layers.
+        // Phase 1: advance all layers (write lock).
         {
             let mut sq = world.query_mut::<AnimationStack>().unwrap();
             let stack = sq.get_mut(entity).unwrap();
             advance_stack(stack, &registry, dt);
         }
 
-        // Emit text key events from all active layers (#211).
+        // Ensure subtree cache is populated for this stack's root before we
+        // take the AnimationStack read lock below (cache rebuild acquires a
+        // write lock on SubtreeCache, separate from AnimationStack).
         {
             let sq = world.query::<AnimationStack>().unwrap();
             let stack = sq.get(entity).unwrap();
-            let events = collect_stack_text_events(stack, &registry);
+            let root_entity = stack.root_entity;
             drop(sq);
-            if !events.is_empty() {
-                use byroredux_scripting::events::{AnimationTextKeyEvent, AnimationTextKeyEvents};
-                let mut eq = world.query_mut::<AnimationTextKeyEvents>().unwrap();
-                let events: Vec<_> = events
-                    .into_iter()
-                    .map(|(label, time)| AnimationTextKeyEvent { label, time })
-                    .collect();
-                eq.insert(entity, AnimationTextKeyEvents(events));
-            }
-        }
-
-        // Sample blended transforms for each channel name.
-        let sq = world.query::<AnimationStack>().unwrap();
-        let stack = sq.get(entity).unwrap();
-
-        // Scoped name lookup for stacks — persisted across frames (#278).
-        if let Some(root) = stack.root_entity {
-            let needs_build = world
-                .try_resource::<SubtreeCache>()
-                .map(|c| !c.map.contains_key(&root))
-                .unwrap_or(false);
-            if needs_build {
-                let map = build_subtree_name_map(world, root);
-                let mut cache = world.resource_mut::<SubtreeCache>();
-                cache.map.insert(root, map);
-            }
-        }
-        let subtree_ref2 = world.try_resource::<SubtreeCache>();
-        let stack_scoped_map = stack.root_entity.and_then(|root| {
-            subtree_ref2.as_ref().and_then(|c| c.map.get(&root))
-        });
-        let stack_resolve = |channel_name: &str| -> Option<EntityId> {
-            let sym = pool.get(channel_name)?;
-            if let Some(scoped) = stack_scoped_map {
-                scoped.get(&sym).copied()
-            } else {
-                name_index.map.get(&sym).copied()
-            }
-        };
-
-        // Collect all channel names across all active layers.
-        // Reuse scratch buffer to avoid per-entity heap allocation (#251).
-        channel_names_scratch.clear();
-        for layer in &stack.layers {
-            if let Some(clip) = registry.get(layer.clip_handle) {
-                for name in clip.channels.keys() {
-                    channel_names_scratch.push(&**name);
+            if let Some(root) = root_entity {
+                let needs_build = world
+                    .try_resource::<SubtreeCache>()
+                    .map(|c| !c.map.contains_key(&root))
+                    .unwrap_or(false);
+                if needs_build {
+                    let map = build_subtree_name_map(world, root);
+                    let mut cache = world.resource_mut::<SubtreeCache>();
+                    cache.map.insert(root, map);
                 }
             }
         }
-        channel_names_scratch.sort_unstable();
-        channel_names_scratch.dedup();
 
-        // Batch pose updates to decouple sampling from transform writes (#252).
-        updates_scratch.clear();
-        for channel_name in &channel_names_scratch {
-            let Some(target_entity) = stack_resolve(channel_name) else {
-                continue;
-            };
-            if let Some((pos, rot, scale)) =
-                sample_blended_transform(stack, &registry, channel_name)
-            {
-                updates_scratch.push((channel_name, target_entity, pos, rot, scale));
-            }
-        }
-        drop(sq);
+        let subtree_ref2 = world.try_resource::<SubtreeCache>();
 
-        // Determine the accum root name from the highest-weight active
-        // layer (for root motion splitting). Borrows from the registry
-        // (not the stack query) so the &str outlives the query. #279 D6-04.
-        let accum_root: Option<&str> = {
+        // Phase 2: single read lock for everything that reads AnimationStack
+        // (#287 — was 4 separate acquisitions, now 1). Collect all outputs
+        // into owned / registry-borrowed data so the lock drops before any
+        // writes. Dominant info is stored as (clip_handle, local_time) —
+        // NO channel Vec clones (#265).
+        let events;
+        let accum_root: Option<&str>;
+        let dominant_info: Option<(u32, f32)>;
+        let stack_root: Option<EntityId>;
+        {
             let sq = world.query::<AnimationStack>().unwrap();
             let stack = sq.get(entity).unwrap();
+            stack_root = stack.root_entity;
+
+            // Text key events (#211).
+            events = collect_stack_text_events(stack, &registry);
+
+            // Scoped name resolver — reads subtree cache (outer lock).
+            let stack_scoped_map = stack.root_entity.and_then(|root| {
+                subtree_ref2.as_ref().and_then(|c| c.map.get(&root))
+            });
+            let stack_resolve = |channel_name: &str| -> Option<EntityId> {
+                let sym = pool.get(channel_name)?;
+                if let Some(scoped) = stack_scoped_map {
+                    scoped.get(&sym).copied()
+                } else {
+                    name_index.map.get(&sym).copied()
+                }
+            };
+
+            // Collect channel names across active layers (#251 scratch reuse).
+            channel_names_scratch.clear();
+            for layer in &stack.layers {
+                if let Some(clip) = registry.get(layer.clip_handle) {
+                    for name in clip.channels.keys() {
+                        channel_names_scratch.push(&**name);
+                    }
+                }
+            }
+            channel_names_scratch.sort_unstable();
+            channel_names_scratch.dedup();
+
+            // Sample blended transforms (#252 scratch reuse).
+            updates_scratch.clear();
+            for channel_name in &channel_names_scratch {
+                let Some(target_entity) = stack_resolve(channel_name) else {
+                    continue;
+                };
+                if let Some((pos, rot, scale)) =
+                    sample_blended_transform(stack, &registry, channel_name)
+                {
+                    updates_scratch.push((channel_name, target_entity, pos, rot, scale));
+                }
+            }
+
+            // Accum root name from highest-weight active layer (#279 D6-04).
             let mut best: Option<(&str, f32)> = None;
             for layer in &stack.layers {
                 let ew = layer.effective_weight();
@@ -476,10 +476,37 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
                     }
                 }
             }
-            best.map(|(n, _)| n)
-        };
+            accum_root = best.map(|(n, _)| n);
 
-        // Apply blended transforms, with root motion splitting (AR-02).
+            // Dominant layer: capture only clip_handle + local_time. The
+            // float/color/bool channel Vecs are accessed via the registry
+            // AFTER the stack lock drops — no clones required (#265).
+            dominant_info = stack
+                .layers
+                .iter()
+                .filter(|l| l.effective_weight() >= 0.001)
+                .max_by(|a, b| {
+                    a.effective_weight()
+                        .partial_cmp(&b.effective_weight())
+                        .unwrap()
+                })
+                .map(|l| (l.clip_handle, l.local_time));
+
+            drop(sq);
+        }
+
+        // Phase 3a: emit text events (write lock on a different component).
+        if !events.is_empty() {
+            use byroredux_scripting::events::{AnimationTextKeyEvent, AnimationTextKeyEvents};
+            let mut eq = world.query_mut::<AnimationTextKeyEvents>().unwrap();
+            let events: Vec<_> = events
+                .into_iter()
+                .map(|(label, time)| AnimationTextKeyEvent { label, time })
+                .collect();
+            eq.insert(entity, AnimationTextKeyEvents(events));
+        }
+
+        // Phase 3b: apply blended transforms with root motion splitting (AR-02).
         let mut tq = world.query_mut::<Transform>().unwrap();
         let mut root_motion = Vec3::ZERO;
         for &(name, target, pos, rot, scale) in &updates_scratch {
@@ -498,7 +525,6 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         }
         drop(tq);
 
-        // Write root motion delta.
         if root_motion != Vec3::ZERO {
             if let Some(mut rmq) = world.query_mut::<RootMotionDelta>() {
                 if let Some(rm) = rmq.get_mut(entity) {
@@ -507,76 +533,60 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
             }
         }
 
-        // AR-01: Apply non-transform channels from the highest-weight
-        // active layer. Float/color/bool channels don't blend naturally
-        // (alpha is binary-ish, visibility is boolean), so we take the
-        // dominant layer's sampled value rather than attempting a weighted
-        // average that would produce meaningless intermediate states.
-        //
-        // Clone the channel vecs from the dominant clip so we can drop
-        // the AnimationStack read lock before acquiring write locks on
-        // AnimatedAlpha / AnimatedColor / AnimatedVisibility.
-        let dominant_channels = {
-            let sq = world.query::<AnimationStack>().unwrap();
-            let stack = sq.get(entity).unwrap();
-            let dominant = stack
-                .layers
-                .iter()
-                .filter(|l| l.effective_weight() >= 0.001)
-                .max_by(|a, b| {
-                    a.effective_weight()
-                        .partial_cmp(&b.effective_weight())
-                        .unwrap()
-                });
-            dominant.and_then(|layer| {
-                let clip = registry.get(layer.clip_handle)?;
-                Some((
-                    layer.local_time,
-                    clip.float_channels.clone(),
-                    clip.color_channels.clone(),
-                    clip.bool_channels.clone(),
-                ))
-            })
+        // Phase 3c: apply non-transform channels from the dominant layer
+        // (AR-01). Access channel Vecs through the registry directly —
+        // no clones. #265.
+        let stack_scoped_map = stack_root
+            .and_then(|root| subtree_ref2.as_ref().and_then(|c| c.map.get(&root)));
+        let stack_resolve = |channel_name: &str| -> Option<EntityId> {
+            let sym = pool.get(channel_name)?;
+            if let Some(scoped) = stack_scoped_map {
+                scoped.get(&sym).copied()
+            } else {
+                name_index.map.get(&sym).copied()
+            }
         };
 
-        if let Some((time, float_ch, color_ch, bool_ch)) = dominant_channels {
-            if !float_ch.is_empty() {
-                if let Some(mut aq) = world.query_mut::<AnimatedAlpha>() {
-                    for (channel_name, channel) in &float_ch {
-                        let Some(target_entity) = stack_resolve(channel_name) else {
-                            continue;
-                        };
-                        let value = sample_float_channel(channel, time);
-                        if channel.target == FloatTarget::Alpha {
-                            if let Some(a) = aq.get_mut(target_entity) {
-                                a.0 = value;
+        if let Some((clip_handle, time)) = dominant_info {
+            if let Some(clip) = registry.get(clip_handle) {
+                if !clip.float_channels.is_empty() {
+                    if let Some(mut aq) = world.query_mut::<AnimatedAlpha>() {
+                        for (channel_name, channel) in &clip.float_channels {
+                            let Some(target_entity) = stack_resolve(channel_name) else {
+                                continue;
+                            };
+                            let value = sample_float_channel(channel, time);
+                            if channel.target == FloatTarget::Alpha {
+                                if let Some(a) = aq.get_mut(target_entity) {
+                                    a.0 = value;
+                                }
                             }
                         }
                     }
                 }
-            }
-            if !color_ch.is_empty() {
-                if let Some(mut cq) = world.query_mut::<AnimatedColor>() {
-                    for (channel_name, channel) in &color_ch {
-                        let Some(target_entity) = stack_resolve(channel_name) else {
-                            continue;
-                        };
-                        let value = sample_color_channel(channel, time);
-                        if let Some(c) = cq.get_mut(target_entity) {
-                            c.0 = value;
+                if !clip.color_channels.is_empty() {
+                    if let Some(mut cq) = world.query_mut::<AnimatedColor>() {
+                        for (channel_name, channel) in &clip.color_channels {
+                            let Some(target_entity) = stack_resolve(channel_name) else {
+                                continue;
+                            };
+                            let value = sample_color_channel(channel, time);
+                            if let Some(c) = cq.get_mut(target_entity) {
+                                c.0 = value;
+                            }
                         }
                     }
                 }
-            }
-            if !bool_ch.is_empty() {
-                if let Some(mut vq) = world.query_mut::<AnimatedVisibility>() {
-                    for (channel_name, channel) in &bool_ch {
-                        let Some(target_entity) = stack_resolve(channel_name) else {
-                            continue;
-                        };
-                        let value = sample_bool_channel(channel, time);
-                        if let Some(v) = vq.get_mut(target_entity) {
-                            v.0 = value;
+                if !clip.bool_channels.is_empty() {
+                    if let Some(mut vq) = world.query_mut::<AnimatedVisibility>() {
+                        for (channel_name, channel) in &clip.bool_channels {
+                            let Some(target_entity) = stack_resolve(channel_name) else {
+                                continue;
+                            };
+                            let value = sample_bool_channel(channel, time);
+                            if let Some(v) = vq.get_mut(target_entity) {
+                                v.0 = value;
+                            }
                         }
                     }
                 }

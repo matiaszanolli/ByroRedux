@@ -235,10 +235,14 @@ pub fn sample_blended_transform(
     registry: &AnimationClipRegistry,
     channel_name: &str,
 ) -> Option<(Vec3, Quat, f32)> {
-    // Pass 1: find max priority among layers that have data for this channel.
+    // Pass 1+2 fused: find max priority AND compute total weight at that
+    // priority in a single walk. Running max — when a strictly higher
+    // priority appears, reset total_weight to that layer's weight. #288.
     let mut max_priority: Option<u8> = None;
+    let mut total_weight = 0.0f32;
     for layer in &stack.layers {
-        if layer.effective_weight() < 0.001 {
+        let ew = layer.effective_weight();
+        if ew < 0.001 {
             continue;
         }
         let Some(clip) = registry.get(layer.clip_handle) else {
@@ -253,28 +257,22 @@ pub fn sample_blended_transform(
         if t.is_none() && r.is_none() && s.is_none() {
             continue;
         }
-        max_priority = Some(max_priority.map_or(channel.priority, |p: u8| p.max(channel.priority)));
+        match max_priority {
+            None => {
+                max_priority = Some(channel.priority);
+                total_weight = ew;
+            }
+            Some(cur) if channel.priority > cur => {
+                max_priority = Some(channel.priority);
+                total_weight = ew;
+            }
+            Some(cur) if channel.priority == cur => {
+                total_weight += ew;
+            }
+            _ => {} // lower priority — ignore
+        }
     }
     let max_priority = max_priority?;
-
-    // Pass 2: compute total weight for layers at max_priority.
-    let mut total_weight = 0.0f32;
-    for layer in &stack.layers {
-        let ew = layer.effective_weight();
-        if ew < 0.001 {
-            continue;
-        }
-        let Some(clip) = registry.get(layer.clip_handle) else {
-            continue;
-        };
-        let Some(channel) = clip.channels.get(channel_name) else {
-            continue;
-        };
-        if channel.priority != max_priority {
-            continue;
-        }
-        total_weight += ew;
-    }
     if total_weight < 0.001 {
         return None;
     }
