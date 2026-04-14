@@ -4,7 +4,10 @@
 //! and keyframe data) into engine-friendly `AnimationClip` structures that
 //! are decoupled from the NIF block graph.
 
-use crate::blocks::controller::{ControlledBlock, NiControllerManager, NiControllerSequence};
+use crate::blocks::controller::{
+    ControlledBlock, NiControllerManager, NiControllerSequence, NiGeomMorpherController,
+    NiMorphData,
+};
 use crate::blocks::interpolator::NiTextKeyExtraData;
 use crate::blocks::interpolator::{
     FloatKey, KeyGroup, KeyType, NiBSplineBasisData, NiBSplineCompTransformInterpolator,
@@ -347,10 +350,14 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
                 }
             }
             "NiGeomMorpherController" => {
-                // Each morph target weight is a separate float channel.
-                // The controlled block's interpolator ref points to the
-                // weight interpolator for one morph target.
-                if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::MorphWeight(0)) {
+                // Each morph target is a separate controlled_block with its
+                // own interpolator. cb.controller_id identifies the target
+                // by name; resolve it to an index in the NiMorphData array
+                // referenced by the controller. See #262.
+                let target_idx = resolve_morph_target_index(scene, cb).unwrap_or(0);
+                if let Some(ch) =
+                    extract_float_channel(scene, cb, FloatTarget::MorphWeight(target_idx))
+                {
                     float_channels.push((Arc::clone(node_name), ch));
                 }
             }
@@ -797,6 +804,25 @@ fn channel_slice(
     Some(dequantize_channel(raw, start, n_cp, stride, offset, half_range))
 }
 
+/// Resolve the morph target index for a NiGeomMorpherController-driven
+/// controlled block. Follows cb.controller_ref → NiGeomMorpherController →
+/// data_ref → NiMorphData.morphs, then matches cb.controller_id by name.
+///
+/// Returns `None` if any ref fails to resolve or the name isn't found;
+/// the caller falls back to index 0 (matching the legacy behavior).
+fn resolve_morph_target_index(scene: &NifScene, cb: &ControlledBlock) -> Option<u32> {
+    let target_name = cb.controller_id.as_deref()?;
+    let ctrl_idx = cb.controller_ref.index()?;
+    let ctrl = scene.get_as::<NiGeomMorpherController>(ctrl_idx)?;
+    let data_idx = ctrl.data_ref.index()?;
+    let data = scene.get_as::<NiMorphData>(data_idx)?;
+    data.morphs.iter().position(|m| {
+        m.name
+            .as_deref()
+            .is_some_and(|n| n.eq_ignore_ascii_case(target_name))
+    }).map(|i| i as u32)
+}
+
 /// Extract a float channel from a NiFloatInterpolator → NiFloatData.
 fn extract_float_channel(
     scene: &NifScene,
@@ -1138,6 +1164,88 @@ fn convert_float_keys(group: &KeyGroup<FloatKey>) -> (Vec<ScaleKey>, KeyType) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_morph_target_index_by_name() {
+        use crate::blocks::controller::{MorphTarget, NiTimeControllerBase};
+        use crate::types::BlockRef;
+
+        // Build a scene with: [0] NiMorphData (3 named targets), [1] NiGeomMorpherController.
+        let morph_data = NiMorphData {
+            num_vertices: 0,
+            relative_targets: 0,
+            morphs: vec![
+                MorphTarget {
+                    name: Some(Arc::from("Blink")),
+                    vectors: vec![],
+                },
+                MorphTarget {
+                    name: Some(Arc::from("JawOpen")),
+                    vectors: vec![],
+                },
+                MorphTarget {
+                    name: Some(Arc::from("BrowUp")),
+                    vectors: vec![],
+                },
+            ],
+        };
+        let morpher = NiGeomMorpherController {
+            base: NiTimeControllerBase {
+                next_controller_ref: BlockRef::NULL,
+                flags: 0,
+                frequency: 1.0,
+                phase: 0.0,
+                start_time: 0.0,
+                stop_time: 1.0,
+                target_ref: BlockRef::NULL,
+            },
+            morpher_flags: 0,
+            data_ref: BlockRef(0),
+            always_update: 0,
+            interpolator_weights: vec![],
+        };
+        let scene = NifScene {
+            blocks: vec![Box::new(morph_data), Box::new(morpher)],
+            ..NifScene::default()
+        };
+
+        // Controlled block pointing at the morpher with controller_id = "JawOpen".
+        let mut cb = dummy_controlled_block();
+        cb.controller_ref = BlockRef(1);
+        cb.controller_id = Some(Arc::from("JawOpen"));
+        assert_eq!(resolve_morph_target_index(&scene, &cb), Some(1));
+
+        // Case-insensitive match.
+        cb.controller_id = Some(Arc::from("blink"));
+        assert_eq!(resolve_morph_target_index(&scene, &cb), Some(0));
+
+        // Missing name returns None (caller falls back to 0).
+        cb.controller_id = Some(Arc::from("NotARealMorph"));
+        assert_eq!(resolve_morph_target_index(&scene, &cb), None);
+
+        // Null controller_ref returns None.
+        cb.controller_ref = BlockRef::NULL;
+        assert_eq!(resolve_morph_target_index(&scene, &cb), None);
+    }
+
+    fn dummy_controlled_block() -> ControlledBlock {
+        ControlledBlock {
+            interpolator_ref: crate::types::BlockRef::NULL,
+            controller_ref: crate::types::BlockRef::NULL,
+            priority: 0,
+            node_name: None,
+            property_type: None,
+            controller_type: None,
+            controller_id: None,
+            interpolator_id: None,
+            string_palette_ref: crate::types::BlockRef::NULL,
+            node_name_offset: 0,
+            property_type_offset: 0,
+            controller_type_offset: 0,
+            controller_id_offset: 0,
+            interpolator_id_offset: 0,
+        }
+    }
 
     #[test]
     fn cycle_type_from_u32() {
