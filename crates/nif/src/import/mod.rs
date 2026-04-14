@@ -17,6 +17,7 @@ mod walk;
 use crate::scene::NifScene;
 use crate::types::NiTransform;
 use byroredux_core::ecs::components::collision::{CollisionShape, RigidBodyData};
+use std::sync::Arc;
 
 /// One light source extracted from a NIF scene, positioned in world space.
 ///
@@ -69,7 +70,8 @@ pub struct ImportedCollision {
 #[derive(Debug)]
 pub struct ImportedNode {
     /// Node name from the NIF (e.g., "Bip01 Head", "Scene Root").
-    pub name: Option<String>,
+    /// Uses `Arc<str>` to share the string table entry without heap allocation.
+    pub name: Option<Arc<str>>,
     /// Local-space translation (Y-up), relative to parent.
     pub translation: [f32; 3],
     /// Local-space rotation as quaternion [x, y, z, w] (Y-up).
@@ -105,8 +107,8 @@ pub struct ImportedMesh {
     pub scale: f32,
     /// Texture file path (if a base texture was found).
     pub texture_path: Option<String>,
-    /// Node name from the NIF.
-    pub name: Option<String>,
+    /// Node name from the NIF. Uses `Arc<str>` to avoid heap copies from the string table.
+    pub name: Option<Arc<str>>,
     /// Whether this mesh uses alpha blending (from NiAlphaProperty bit 0).
     pub has_alpha: bool,
     /// Whether this mesh uses alpha testing / cutout rendering
@@ -194,7 +196,7 @@ pub struct ImportedMesh {
 pub struct ImportedBone {
     /// Name of the bone's scene-graph node (e.g. "Bip01 Spine"). The
     /// consumer looks up the matching entity in the skeleton.
-    pub name: String,
+    pub name: Arc<str>,
     /// Mesh-space → bone-space transform at bind time, stored as a
     /// 4x4 matrix. Multiply by the bone's current world-space transform
     /// during skinning (matrix palette skinning).
@@ -222,7 +224,7 @@ pub struct ImportedSkin {
     pub bones: Vec<ImportedBone>,
     /// Skeleton root bone name, if identifiable. The animation system
     /// uses this to know where to start applying joint transforms.
-    pub skeleton_root: Option<String>,
+    pub skeleton_root: Option<Arc<str>>,
     /// Per-vertex bone indices (up to 4). Parallel to `ImportedMesh::positions`.
     /// Empty if weights come from a separate source (BSTriShape).
     pub vertex_bone_indices: Vec<[u8; 4]>,

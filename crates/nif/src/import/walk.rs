@@ -133,7 +133,7 @@ pub(super) fn walk_node_hierarchical(
 
         let this_node_idx = out.nodes.len();
         out.nodes.push(ImportedNode {
-            name: node.av.net.name.as_deref().map(str::to_string),
+            name: node.av.net.name.clone(),
             translation: [t.x, t.z, -t.y],
             rotation: quat,
             scale: node.av.transform.scale,
@@ -174,7 +174,7 @@ pub(super) fn walk_node_hierarchical(
 
         let this_node_idx = out.nodes.len();
         out.nodes.push(ImportedNode {
-            name: node.av.net.name.as_deref().map(str::to_string),
+            name: node.av.net.name.clone(),
             translation: [t.x, t.z, -t.y],
             rotation: quat,
             scale: node.av.transform.scale,

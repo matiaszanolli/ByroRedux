@@ -1,5 +1,7 @@
 //! Geometry extraction from NiTriShape and BsTriShape blocks.
 
+use std::sync::Arc;
+
 use crate::blocks::node::NiNode;
 use crate::blocks::properties::NiAlphaProperty;
 use crate::blocks::shader::{
@@ -127,7 +129,7 @@ pub(super) fn extract_mesh(
         translation: [t.x, t.z, -t.y],
         rotation: quat,
         scale: world_transform.scale,
-        name: shape.av.net.name.as_deref().map(str::to_string),
+        name: shape.av.net.name.clone(),
         texture_path: mat.texture_path,
         has_alpha: mat.alpha_blend,
         alpha_test: mat.alpha_test,
@@ -346,7 +348,7 @@ pub(super) fn extract_bs_tri_shape(
         translation: [t.x, t.z, -t.y],
         rotation: quat,
         scale: world_transform.scale,
-        name: shape.av.net.name.as_deref().map(str::to_string),
+        name: shape.av.net.name.clone(),
         texture_path,
         has_alpha,
         alpha_test,
@@ -553,7 +555,7 @@ pub(super) fn extract_skin_bs_tri_shape(
         }
         let mut bones = Vec::with_capacity(inst.bone_refs.len());
         for (i, bone_ref) in inst.bone_refs.iter().enumerate() {
-            let name = resolve_node_name(scene, *bone_ref).unwrap_or_else(|| format!("Bone{}", i));
+            let name = resolve_node_name(scene, *bone_ref).unwrap_or_else(|| Arc::from(format!("Bone{}", i)));
             let bt = &bone_data.bones[i];
             bones.push(ImportedBone {
                 name,
@@ -583,7 +585,7 @@ fn build_imported_bones(
 ) -> Option<Vec<ImportedBone>> {
     let mut bones = Vec::with_capacity(bone_refs.len());
     for (i, bone_ref) in bone_refs.iter().enumerate() {
-        let name = resolve_node_name(scene, *bone_ref).unwrap_or_else(|| format!("Bone{}", i));
+        let name = resolve_node_name(scene, *bone_ref).unwrap_or_else(|| Arc::from(format!("Bone{}", i)));
         let bone = &data.bones[i];
         bones.push(ImportedBone {
             name,
@@ -597,10 +599,10 @@ fn build_imported_bones(
 /// Resolve a BlockRef pointing to a NiNode to the node's name.
 /// Returns `None` if the ref is null, the block isn't a NiNode, or the
 /// node has no name.
-fn resolve_node_name(scene: &NifScene, node_ref: BlockRef) -> Option<String> {
+fn resolve_node_name(scene: &NifScene, node_ref: BlockRef) -> Option<Arc<str>> {
     let idx = node_ref.index()?;
     let node = scene.get_as::<NiNode>(idx)?;
-    node.av.net.name.as_deref().map(str::to_string)
+    node.av.net.name.clone()
 }
 
 /// Convert a NiTransform to a column-major 4x4 matrix with the Y-up

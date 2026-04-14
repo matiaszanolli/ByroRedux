@@ -570,7 +570,7 @@ pub(crate) fn load_nif_bytes(
     // (multiple nodes sharing a name) are rare; on collision we keep the
     // first spawn (root-most in depth-first order).
     let mut node_entities: Vec<EntityId> = Vec::with_capacity(imported.nodes.len());
-    let mut node_by_name: std::collections::HashMap<String, EntityId> =
+    let mut node_by_name: std::collections::HashMap<std::sync::Arc<str>, EntityId> =
         std::collections::HashMap::with_capacity(imported.nodes.len());
     for node in &imported.nodes {
         let quat = Quat::from_xyzw(
