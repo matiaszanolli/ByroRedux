@@ -156,6 +156,94 @@ impl<'a> NifStream<'a> {
         Ok(buf)
     }
 
+    // ── Bulk reads (geometry hot path) ────────────────────────────────
+    //
+    // Read entire arrays in a single read_exact call instead of per-element
+    // calls, reducing function call + bounds check overhead from O(N) to O(1).
+    // See #291.
+
+    /// Read `count` NiPoint3 values (3×f32 each) in one bulk read.
+    pub fn read_ni_point3_array(&mut self, count: usize) -> io::Result<Vec<NiPoint3>> {
+        let byte_count = count * 12;
+        let mut buf = vec![0u8; byte_count];
+        self.cursor.read_exact(&mut buf)?;
+        Ok(buf
+            .chunks_exact(12)
+            .map(|c| NiPoint3 {
+                x: f32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+                y: f32::from_le_bytes([c[4], c[5], c[6], c[7]]),
+                z: f32::from_le_bytes([c[8], c[9], c[10], c[11]]),
+            })
+            .collect())
+    }
+
+    /// Read `count` RGBA color values (4×f32 each) in one bulk read.
+    pub fn read_ni_color4_array(&mut self, count: usize) -> io::Result<Vec<[f32; 4]>> {
+        let byte_count = count * 16;
+        let mut buf = vec![0u8; byte_count];
+        self.cursor.read_exact(&mut buf)?;
+        Ok(buf
+            .chunks_exact(16)
+            .map(|c| {
+                [
+                    f32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+                    f32::from_le_bytes([c[4], c[5], c[6], c[7]]),
+                    f32::from_le_bytes([c[8], c[9], c[10], c[11]]),
+                    f32::from_le_bytes([c[12], c[13], c[14], c[15]]),
+                ]
+            })
+            .collect())
+    }
+
+    /// Read `count` UV pairs (2×f32 each) in one bulk read.
+    pub fn read_uv_array(&mut self, count: usize) -> io::Result<Vec<[f32; 2]>> {
+        let byte_count = count * 8;
+        let mut buf = vec![0u8; byte_count];
+        self.cursor.read_exact(&mut buf)?;
+        Ok(buf
+            .chunks_exact(8)
+            .map(|c| {
+                [
+                    f32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+                    f32::from_le_bytes([c[4], c[5], c[6], c[7]]),
+                ]
+            })
+            .collect())
+    }
+
+    /// Read `count` u16 values in one bulk read.
+    pub fn read_u16_array(&mut self, count: usize) -> io::Result<Vec<u16>> {
+        let byte_count = count * 2;
+        let mut buf = vec![0u8; byte_count];
+        self.cursor.read_exact(&mut buf)?;
+        Ok(buf
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect())
+    }
+
+    /// Read `count` u32 values in one bulk read.
+    pub fn read_u32_array(&mut self, count: usize) -> io::Result<Vec<u32>> {
+        let byte_count = count * 4;
+        let mut buf = vec![0u8; byte_count];
+        self.cursor.read_exact(&mut buf)?;
+        Ok(buf
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect())
+    }
+
+    /// Read `count` f32 values in one bulk read.
+    pub fn read_f32_array(&mut self, count: usize) -> io::Result<Vec<f32>> {
+        let byte_count = count * 4;
+        let mut buf = vec![0u8; byte_count];
+        self.cursor.read_exact(&mut buf)?;
+        Ok(buf
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect())
+    }
+
     // ── NIF-specific reads ─────────────────────────────────────────────
 
     /// Read a string. Format depends on version:

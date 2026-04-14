@@ -412,12 +412,12 @@ impl BsTriShape {
                 }
             }
 
-            // Triangle indices
-            for _ in 0..num_triangles {
-                let a = stream.read_u16_le()?;
-                let b = stream.read_u16_le()?;
-                let c = stream.read_u16_le()?;
-                triangles.push([a, b, c]);
+            // Triangle indices — bulk read 3 u16s per triangle.
+            {
+                let flat = stream.read_u16_array(num_triangles as usize * 3)?;
+                for tri in flat.chunks_exact(3) {
+                    triangles.push([tri[0], tri[1], tri[2]]);
+                }
             }
 
             // Skyrim SE: particle data (skip)
@@ -615,11 +615,7 @@ pub(crate) fn parse_geometry_data_base(
 
     let has_vertices = stream.read_byte_bool()?;
     let vertices = if has_vertices {
-        let mut verts = Vec::with_capacity(num_vertices);
-        for _ in 0..num_vertices {
-            verts.push(stream.read_ni_point3()?);
-        }
-        verts
+        stream.read_ni_point3_array(num_vertices)?
     } else {
         Vec::new()
     };
@@ -638,11 +634,7 @@ pub(crate) fn parse_geometry_data_base(
 
     let has_normals = stream.read_byte_bool()?;
     let normals = if has_normals {
-        let mut norms = Vec::with_capacity(num_vertices);
-        for _ in 0..num_vertices {
-            norms.push(stream.read_ni_point3()?);
-        }
-        norms
+        stream.read_ni_point3_array(num_vertices)?
     } else {
         Vec::new()
     };
@@ -662,15 +654,7 @@ pub(crate) fn parse_geometry_data_base(
     // Vertex colors
     let has_vertex_colors = stream.read_byte_bool()?;
     let vertex_colors = if has_vertex_colors {
-        let mut colors = Vec::with_capacity(num_vertices);
-        for _ in 0..num_vertices {
-            let r = stream.read_f32_le()?;
-            let g = stream.read_f32_le()?;
-            let b = stream.read_f32_le()?;
-            let a = stream.read_f32_le()?;
-            colors.push([r, g, b, a]);
-        }
-        colors
+        stream.read_ni_color4_array(num_vertices)?
     } else {
         Vec::new()
     };
@@ -696,13 +680,7 @@ pub(crate) fn parse_geometry_data_base(
         // Ensure at least 1 UV set if has_uv is true but num_uv_sets is 0 (legacy)
         let count = num_uv_sets.max(1);
         for _ in 0..count {
-            let mut uvs = Vec::with_capacity(num_vertices);
-            for _ in 0..num_vertices {
-                let u = stream.read_f32_le()?;
-                let v = stream.read_f32_le()?;
-                uvs.push([u, v]);
-            }
-            uv_sets.push(uvs);
+            uv_sets.push(stream.read_uv_array(num_vertices)?);
         }
     }
 
@@ -744,14 +722,10 @@ impl NiTriShapeData {
             num_triangles > 0
         };
         let triangles = if has_triangles {
-            let mut tris = Vec::with_capacity(num_triangles);
-            for _ in 0..num_triangles {
-                let a = stream.read_u16_le()?;
-                let b = stream.read_u16_le()?;
-                let c = stream.read_u16_le()?;
-                tris.push([a, b, c]);
-            }
-            tris
+            let flat = stream.read_u16_array(num_triangles * 3)?;
+            flat.chunks_exact(3)
+                .map(|tri| [tri[0], tri[1], tri[2]])
+                .collect()
         } else {
             Vec::new()
         };
