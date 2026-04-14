@@ -7,6 +7,7 @@ use byroredux_core::ecs::{
 use byroredux_core::math::{Mat4, Vec3, Vec4};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::SkyParams;
+use rayon::slice::ParallelSliceMut;
 use std::collections::HashMap;
 
 use crate::components::{AlphaBlend, CellLightingRes, DarkMapHandle, Decal, NormalMapHandle, SkyParamsRes, TwoSided};
@@ -348,7 +349,7 @@ pub(crate) fn build_render_data(
     //
     // Alpha-blend: must remain back-to-front (depth-primary) for correct
     // transparency ordering — instancing is irrelevant here.
-    draw_commands.sort_unstable_by_key(|cmd| {
+    draw_commands.par_sort_unstable_by_key(|cmd| {
         if cmd.alpha_blend {
             // Transparent: depth-primary (back-to-front).
             (
