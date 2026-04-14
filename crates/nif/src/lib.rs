@@ -17,6 +17,7 @@ pub mod blocks;
 pub mod header;
 pub mod import;
 pub mod kfm;
+pub mod rotation;
 pub mod scene;
 pub mod stream;
 pub mod types;

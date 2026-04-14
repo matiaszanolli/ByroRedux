@@ -379,6 +379,9 @@ impl<'a> NifStream<'a> {
         let translation = self.read_ni_point3()?;
         let rotation = self.read_ni_matrix3()?;
         let scale = self.read_f32_le()?;
+        // Sanitize once at parse time so downstream code can treat the
+        // rotation as a valid rotation matrix. See #277.
+        let rotation = crate::rotation::sanitize_rotation(rotation);
         Ok(NiTransform {
             rotation,
             translation,

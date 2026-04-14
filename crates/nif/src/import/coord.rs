@@ -25,7 +25,7 @@ pub(super) fn zup_matrix_to_yup_quat(m: &NiMatrix3) -> [f32; 4] {
         [-r[1][0], -r[1][2], r[1][1]], // -Y row becomes Z row
     ];
 
-    // Determinant — same formula as transform.rs:is_degenerate_rotation.
+    // Determinant — same formula as rotation::is_degenerate_rotation.
     let det = yup[0][0] * (yup[1][1] * yup[2][2] - yup[1][2] * yup[2][1])
         - yup[0][1] * (yup[1][0] * yup[2][2] - yup[1][2] * yup[2][0])
         + yup[0][2] * (yup[1][0] * yup[2][1] - yup[1][1] * yup[2][0]);

@@ -1,4 +1,7 @@
-//! NIF transform composition and degenerate rotation repair.
+//! NIF transform composition.
+//!
+//! Rotation matrices are sanitized at parse time (see `crate::rotation`),
+//! so this module can assume all input rotations are valid.
 
 use crate::types::{NiMatrix3, NiPoint3, NiTransform};
 
@@ -8,15 +11,9 @@ use crate::types::{NiMatrix3, NiPoint3, NiTransform};
 /// translation = parent.rot * (parent.scale * child.trans) + parent.trans,
 /// scale = parent.scale * child.scale.
 pub(super) fn compose_transforms(parent: &NiTransform, child: &NiTransform) -> NiTransform {
-    let parent_rot = if is_degenerate_rotation(&parent.rotation) {
-        repair_rotation_svd_or_identity(&parent.rotation)
-    } else {
-        parent.rotation
-    };
-
-    let rot = mul_matrix3(&parent_rot, &child.rotation);
+    let rot = mul_matrix3(&parent.rotation, &child.rotation);
     let scaled_child_trans = scale_point(child.translation, parent.scale);
-    let rotated = mul_matrix3_point(&parent_rot, scaled_child_trans);
+    let rotated = mul_matrix3_point(&parent.rotation, scaled_child_trans);
     let translation = add_points(parent.translation, rotated);
     let scale = parent.scale * child.scale;
 
@@ -24,51 +21,6 @@ pub(super) fn compose_transforms(parent: &NiTransform, child: &NiTransform) -> N
         rotation: rot,
         translation,
         scale,
-    }
-}
-
-/// Check if a rotation matrix is degenerate (det far from 1.0).
-pub(super) fn is_degenerate_rotation(m: &NiMatrix3) -> bool {
-    let r = &m.rows;
-    let det = r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
-        - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
-        + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
-    (det - 1.0).abs() >= 0.1
-}
-
-/// SVD-repair a degenerate rotation matrix, or return identity if the matrix
-/// has no meaningful orientation (all singular values near zero).
-pub(super) fn repair_rotation_svd_or_identity(m: &NiMatrix3) -> NiMatrix3 {
-    use nalgebra::Matrix3;
-
-    let r = &m.rows;
-    let mat = Matrix3::new(
-        r[0][0], r[0][1], r[0][2], r[1][0], r[1][1], r[1][2], r[2][0], r[2][1], r[2][2],
-    );
-
-    let svd = mat.svd(true, true);
-
-    let max_sv = svd.singular_values.max();
-    if max_sv < 0.01 {
-        return NiMatrix3::default();
-    }
-
-    let u = svd.u.unwrap();
-    let vt = svd.v_t.unwrap();
-    let mut nearest = u * vt;
-
-    if nearest.determinant() < 0.0 {
-        let mut u_fixed = u;
-        u_fixed.column_mut(2).scale_mut(-1.0);
-        nearest = u_fixed * vt;
-    }
-
-    NiMatrix3 {
-        rows: [
-            [nearest[(0, 0)], nearest[(0, 1)], nearest[(0, 2)]],
-            [nearest[(1, 0)], nearest[(1, 1)], nearest[(1, 2)]],
-            [nearest[(2, 0)], nearest[(2, 1)], nearest[(2, 2)]],
-        ],
     }
 }
 

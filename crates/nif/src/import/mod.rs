@@ -1066,11 +1066,14 @@ mod tests {
 
     #[test]
     fn compose_degenerate_zero_matrix_uses_identity() {
+        // Since #277, degenerate rotations are repaired at parse time
+        // (read_ni_transform → sanitize_rotation). This test mirrors that
+        // pipeline by sanitizing manually before composition.
         let zero_rot = NiMatrix3 {
             rows: [[0.0; 3]; 3],
         };
         let parent = NiTransform {
-            rotation: zero_rot,
+            rotation: crate::rotation::sanitize_rotation(zero_rot),
             translation: NiPoint3 {
                 x: 10.0,
                 y: 0.0,
@@ -1092,7 +1095,7 @@ mod tests {
             rows: [[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]],
         };
         let parent = NiTransform {
-            rotation: scaled_identity,
+            rotation: crate::rotation::sanitize_rotation(scaled_identity),
             translation: NiPoint3 {
                 x: 0.0,
                 y: 0.0,
@@ -1114,7 +1117,7 @@ mod tests {
             rows: [[0.0, -2.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 2.0]],
         };
         let parent = NiTransform {
-            rotation: scaled_rot_z90,
+            rotation: crate::rotation::sanitize_rotation(scaled_rot_z90),
             translation: NiPoint3 {
                 x: 0.0,
                 y: 0.0,
