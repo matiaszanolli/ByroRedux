@@ -769,7 +769,11 @@ void main() {
 
                 // Ambient bounce: modulates hue from nearby surfaces.
                 float hitFade = 1.0 / (1.0 + hitDist * 0.005);
-                indirect = max(sceneFlags.yzw, vec3(0.15)) * hitAlbedo * hitFade * 0.3;
+                // Use raw XCLL ambient — no floor. The 0.15 clamp added in
+                // commit 14f2e63 was compensation for the since-removed 2.5x
+                // XCLL boost. RT bounce from hitAlbedo provides the fill
+                // that the floor was artificially preserving. See #268.
+                indirect = sceneFlags.yzw * hitAlbedo * hitFade * 0.3;
                 // Soft clamp to tame outliers without killing the effect.
                 indirect = min(indirect, vec3(0.4));
             } else {
@@ -783,10 +787,14 @@ void main() {
     }
 
     // Sample ambient occlusion from the SSAO texture (computed last frame).
-    // On the first frame before SSAO has run, the texture may read 0 —
-    // clamp to a minimum to avoid killing all ambient light.
+    // The floor was raised to 0.45 in commit 14f2e63 to compensate for a
+    // 2.5x XCLL ambient boost that has since been removed (now 1.0x in
+    // render.rs). With XCLL passed through raw and RT GI providing real
+    // bounce light, the aggressive floor prevented AO from visibly biting
+    // in crevices. 0.20 keeps a small safety margin for first-frame / edge
+    // cases while letting proper contact shadows show through.
     vec2 aoUV = gl_FragCoord.xy / screen.xy;
-    float ao = max(texture(aoTexture, aoUV).r, 0.45);
+    float ao = max(texture(aoTexture, aoUV).r, 0.20);
 
     // Phase 3: albedo-demodulated indirect lighting for SVGF.
     //

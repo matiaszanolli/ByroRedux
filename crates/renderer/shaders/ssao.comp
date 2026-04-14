@@ -41,7 +41,10 @@ void main() {
     if (px.x >= int(screenSize.x) || px.y >= int(screenSize.y)) return;
 
     vec2 uv = (vec2(px) + 0.5) * screenSize.zw;
-    float depth = texture(depthTex, uv).r;
+    // texelFetch instead of texture() — bilinear-filtered depth is
+    // physically meaningless at depth discontinuities and creates false
+    // occlusion halos at silhouettes. See #299.
+    float depth = texelFetch(depthTex, px, 0).r;
 
     // Sky — no AO.
     if (depth >= 0.999) {
@@ -72,10 +75,14 @@ void main() {
         float angle = angle0 + fi * 2.39996323; // golden angle rotation
 
         vec2 offset = vec2(cos(angle), sin(angle)) * r * radiusPx;
-        vec2 sampleUV = uv + offset * screenSize.zw;
-        sampleUV = clamp(sampleUV, vec2(0.001), vec2(0.999));
-
-        float sampleDepth = texture(depthTex, sampleUV).r;
+        ivec2 samplePx = clamp(
+            px + ivec2(offset),
+            ivec2(0),
+            ivec2(int(screenSize.x) - 1, int(screenSize.y) - 1)
+        );
+        // Point-sample the depth buffer to avoid bilinear-filtered depth
+        // artifacts at silhouettes (#299).
+        float sampleDepth = texelFetch(depthTex, samplePx, 0).r;
 
         // Compare depths: if the sample is closer to the camera (smaller
         // depth in Vulkan [0=near, 1=far]), it occludes this pixel.
