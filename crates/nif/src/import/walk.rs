@@ -102,14 +102,15 @@ fn switch_active_children(block: &dyn NiObject) -> Option<(&NiNode, Vec<usize>)>
 /// Recursively walk the scene graph, preserving hierarchy.
 /// NiNodes become ImportedNode entries; geometry becomes ImportedMesh with parent_node set.
 ///
-/// `inherited_props` accumulates property BlockRefs from ancestor NiNodes.
-/// Gamebryo propagates properties down the scene graph — children inherit
-/// parent properties unless they override with their own. See #208.
+/// `inherited_props` accumulates property BlockRefs from ancestor NiNodes via
+/// push/truncate stack discipline — no per-node Vec clone. Gamebryo propagates
+/// properties down the scene graph; children inherit parent properties unless
+/// they override with their own. See #208, #276.
 pub(super) fn walk_node_hierarchical(
     scene: &NifScene,
     block_idx: usize,
     parent_node_idx: Option<usize>,
-    inherited_props: &[BlockRef],
+    inherited_props: &mut Vec<BlockRef>,
     out: &mut ImportedScene,
 ) {
     let Some(block) = scene.get(block_idx) else {
@@ -142,12 +143,12 @@ pub(super) fn walk_node_hierarchical(
             billboard_mode,
         });
 
-        let mut child_props = inherited_props.to_vec();
-        child_props.extend_from_slice(&node.av.properties);
-
+        let prev_len = inherited_props.len();
+        inherited_props.extend_from_slice(&node.av.properties);
         for idx in active_children {
-            walk_node_hierarchical(scene, idx, Some(this_node_idx), &child_props, out);
+            walk_node_hierarchical(scene, idx, Some(this_node_idx), inherited_props, out);
         }
+        inherited_props.truncate(prev_len);
         return;
     }
 
@@ -183,18 +184,18 @@ pub(super) fn walk_node_hierarchical(
             billboard_mode,
         });
 
-        // Merge this node's properties with the inherited set.
-        // Child shapes see the union; their own properties take priority
-        // inside extract_material_info because shape props are iterated
-        // before inherited props.
-        let mut child_props = inherited_props.to_vec();
-        child_props.extend_from_slice(&node.av.properties);
-
+        // Merge this node's properties with the inherited set via stack
+        // discipline. Child shapes see the union; their own properties
+        // take priority inside extract_material_info because shape props
+        // are iterated before inherited props.
+        let prev_len = inherited_props.len();
+        inherited_props.extend_from_slice(&node.av.properties);
         for child_ref in &node.children {
             if let Some(idx) = child_ref.index() {
-                walk_node_hierarchical(scene, idx, Some(this_node_idx), &child_props, out);
+                walk_node_hierarchical(scene, idx, Some(this_node_idx), inherited_props, out);
             }
         }
+        inherited_props.truncate(prev_len);
         return;
     }
 
@@ -237,7 +238,7 @@ pub(super) fn walk_node_flat(
     scene: &NifScene,
     block_idx: usize,
     parent_transform: &NiTransform,
-    inherited_props: &[BlockRef],
+    inherited_props: &mut Vec<BlockRef>,
     out: &mut Vec<ImportedMesh>,
     mut collisions: Option<&mut Vec<ImportedCollision>>,
 ) {
@@ -267,11 +268,12 @@ pub(super) fn walk_node_flat(
                 });
             }
         }
-        let mut child_props = inherited_props.to_vec();
-        child_props.extend_from_slice(&node.av.properties);
+        let prev_len = inherited_props.len();
+        inherited_props.extend_from_slice(&node.av.properties);
         for idx in active_children {
-            walk_node_flat(scene, idx, &world_transform, &child_props, out, collisions.as_deref_mut());
+            walk_node_flat(scene, idx, &world_transform, inherited_props, out, collisions.as_deref_mut());
         }
+        inherited_props.truncate(prev_len);
         return;
     }
 
@@ -299,14 +301,14 @@ pub(super) fn walk_node_flat(
             }
         }
 
-        let mut child_props = inherited_props.to_vec();
-        child_props.extend_from_slice(&node.av.properties);
-
+        let prev_len = inherited_props.len();
+        inherited_props.extend_from_slice(&node.av.properties);
         for child_ref in &node.children {
             if let Some(idx) = child_ref.index() {
-                walk_node_flat(scene, idx, &world_transform, &child_props, out, collisions.as_deref_mut());
+                walk_node_flat(scene, idx, &world_transform, inherited_props, out, collisions.as_deref_mut());
             }
         }
+        inherited_props.truncate(prev_len);
         return;
     }
 
