@@ -6,36 +6,40 @@ use super::types::{BoolChannel, ColorChannel, FloatChannel, KeyType, TransformCh
 
 /// Binary search for the key pair bracketing `time`.
 /// Returns (index_before, index_after, normalized_t).
-pub(super) fn find_key_pair(times: &[f32], time: f32) -> (usize, usize, f32) {
-    if times.is_empty() {
+///
+/// Accepts a closure to look up the time at each index, avoiding the need
+/// to allocate a temporary `Vec<f32>` of key times. See #240.
+pub(super) fn find_key_pair<F>(key_count: usize, time_at: F, time: f32) -> (usize, usize, f32)
+where
+    F: Fn(usize) -> f32,
+{
+    if key_count == 0 {
         return (0, 0, 0.0);
     }
-    if times.len() == 1 || time <= times[0] {
+    if key_count == 1 || time <= time_at(0) {
         return (0, 0, 0.0);
     }
-    if time >= *times.last().unwrap() {
-        let last = times.len() - 1;
+    let last = key_count - 1;
+    if time >= time_at(last) {
         return (last, last, 0.0);
     }
 
     // Binary search for the interval
     let mut lo = 0;
-    let mut hi = times.len() - 1;
+    let mut hi = last;
     while lo + 1 < hi {
         let mid = (lo + hi) / 2;
-        if times[mid] <= time {
+        if time_at(mid) <= time {
             lo = mid;
         } else {
             hi = mid;
         }
     }
 
-    let dt = times[hi] - times[lo];
-    let t = if dt > 0.0 {
-        (time - times[lo]) / dt
-    } else {
-        0.0
-    };
+    let t_lo = time_at(lo);
+    let t_hi = time_at(hi);
+    let dt = t_hi - t_lo;
+    let t = if dt > 0.0 { (time - t_lo) / dt } else { 0.0 };
     (lo, hi, t)
 }
 
@@ -95,8 +99,7 @@ pub fn sample_translation(channel: &TransformChannel, time: f32) -> Option<Vec3>
         return Some(keys[0].value);
     }
 
-    let times: Vec<f32> = keys.iter().map(|k| k.time).collect();
-    let (i0, i1, t) = find_key_pair(&times, time);
+    let (i0, i1, t) = find_key_pair(keys.len(), |i| keys[i].time, time);
     if i0 == i1 {
         return Some(keys[i0].value);
     }
@@ -214,8 +217,7 @@ pub fn sample_rotation(channel: &TransformChannel, time: f32) -> Option<Quat> {
         return Some(keys[0].value);
     }
 
-    let times: Vec<f32> = keys.iter().map(|k| k.time).collect();
-    let (i0, i1, t) = find_key_pair(&times, time);
+    let (i0, i1, t) = find_key_pair(keys.len(), |i| keys[i].time, time);
     if i0 == i1 {
         return Some(keys[i0].value);
     }
@@ -301,8 +303,7 @@ pub fn sample_scale(channel: &TransformChannel, time: f32) -> Option<f32> {
         return Some(keys[0].value);
     }
 
-    let times: Vec<f32> = keys.iter().map(|k| k.time).collect();
-    let (i0, i1, t) = find_key_pair(&times, time);
+    let (i0, i1, t) = find_key_pair(keys.len(), |i| keys[i].time, time);
     if i0 == i1 {
         return Some(keys[i0].value);
     }
@@ -369,8 +370,7 @@ pub fn sample_float_channel(channel: &FloatChannel, time: f32) -> f32 {
         return keys.last().unwrap().value;
     }
 
-    let times: Vec<f32> = keys.iter().map(|k| k.time).collect();
-    let (i0, i1, t) = find_key_pair(&times, time);
+    let (i0, i1, t) = find_key_pair(keys.len(), |i| keys[i].time, time);
     if i0 == i1 {
         return keys[i0].value;
     }
@@ -390,8 +390,7 @@ pub fn sample_color_channel(channel: &ColorChannel, time: f32) -> Vec3 {
         return keys.last().unwrap().value;
     }
 
-    let times: Vec<f32> = keys.iter().map(|k| k.time).collect();
-    let (i0, i1, t) = find_key_pair(&times, time);
+    let (i0, i1, t) = find_key_pair(keys.len(), |i| keys[i].time, time);
     if i0 == i1 {
         return keys[i0].value;
     }

@@ -546,7 +546,7 @@ mod tests {
     #[test]
     fn find_key_pair_basic() {
         let times = vec![0.0, 0.5, 1.0];
-        let (i0, i1, t) = interpolation::find_key_pair(&times, 0.25);
+        let (i0, i1, t) = interpolation::find_key_pair(times.len(), |i| times[i], 0.25);
         assert_eq!(i0, 0);
         assert_eq!(i1, 1);
         assert!((t - 0.5).abs() < 1e-5);
