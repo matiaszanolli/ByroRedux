@@ -18,7 +18,7 @@
 
 layout(set = 0, binding = 0) uniform sampler2D hdrTex;       // direct light
 layout(set = 0, binding = 1) uniform sampler2D indirectTex;  // demodulated indirect
-layout(set = 0, binding = 2) uniform sampler2D albedoTex;    // surface albedo
+layout(set = 0, binding = 2) uniform sampler2D albedoTex;    // surface albedo (reserved for Phase 3 demodulated-indirect × albedo re-multiplication)
 layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 fog_color;      // xyz = RGB, w = enabled (1.0 = yes)
     vec4 fog_params;     // x = near, y = far, z/w = unused
