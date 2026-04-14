@@ -133,11 +133,10 @@ pub fn load_exterior_cells(
     let index = esm::cell::parse_esm_cells(&esm_data)?;
 
     // Second pass: extract WTHR + CLMT records for weather resolution.
-    let record_index = esm::records::parse_esm(&esm_data)
-        .unwrap_or_else(|e| {
-            log::warn!("Record parse pass failed (weather unavailable): {e}");
-            esm::records::EsmIndex::default()
-        });
+    let record_index = esm::records::parse_esm(&esm_data).unwrap_or_else(|e| {
+        log::warn!("Record parse pass failed (weather unavailable): {e}");
+        esm::records::EsmIndex::default()
+    });
 
     // Find the best worldspace. Try common FNV names, then fall back to largest.
     let wrld_key = {
@@ -190,8 +189,13 @@ pub fn load_exterior_cells(
                     // Spawn terrain mesh from LAND heightmap.
                     if let Some(ref land) = cell.landscape {
                         if let Some(count) = spawn_terrain_mesh(
-                            world, ctx, tex_provider, &index.landscape_textures,
-                            gx, gy, land,
+                            world,
+                            ctx,
+                            tex_provider,
+                            &index.landscape_textures,
+                            gx,
+                            gy,
+                            land,
                         ) {
                             terrain_entities += count;
                         }
@@ -242,14 +246,19 @@ pub fn load_exterior_cells(
         let climate = record_index.climates.get(climate_fid)?;
         log::info!(
             "Worldspace '{}' climate '{}' ({:08X}): {} weathers",
-            wrld_name_lc, climate.editor_id, climate_fid, climate.weathers.len(),
+            wrld_name_lc,
+            climate.editor_id,
+            climate_fid,
+            climate.weathers.len(),
         );
         // Pick the weather with the highest chance (most common / default).
         let best = climate.weathers.iter().max_by_key(|w| w.chance)?;
         let wthr = record_index.weathers.get(&best.weather_form_id)?;
         log::info!(
             "Default weather: '{}' ({:08X}, chance {})",
-            wthr.editor_id, wthr.form_id, best.chance,
+            wthr.editor_id,
+            wthr.form_id,
+            best.chance,
         );
         Some(wthr.clone())
     });
@@ -373,7 +382,12 @@ fn spawn_terrain_mesh(
     ) {
         Ok(h) => h,
         Err(e) => {
-            log::warn!("Failed to upload terrain mesh ({},{}): {}", grid_x, grid_y, e);
+            log::warn!(
+                "Failed to upload terrain mesh ({},{}): {}",
+                grid_x,
+                grid_y,
+                e
+            );
             return None;
         }
     };
@@ -394,7 +408,9 @@ fn spawn_terrain_mesh(
             } else {
                 log::debug!(
                     "Terrain ({},{}): LTEX {:08X} not in landscape_textures map",
-                    grid_x, grid_y, ltex_id,
+                    grid_x,
+                    grid_y,
+                    ltex_id,
                 );
                 0 // fallback
             }
@@ -415,11 +431,15 @@ fn spawn_terrain_mesh(
 
     log::debug!(
         "Terrain mesh ({},{}): {} verts, {} tris, height range {:.0}–{:.0}",
-        grid_x, grid_y,
+        grid_x,
+        grid_y,
         vertices.len(),
         indices.len() / 3,
         land.heights.iter().cloned().fold(f32::INFINITY, f32::min),
-        land.heights.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
+        land.heights
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max),
     );
 
     Some(1)
@@ -704,7 +724,11 @@ fn spawn_placed_instances(
         if light.color[0] + light.color[1] + light.color[2] < 1e-4 {
             continue;
         }
-        let nif_pos = Vec3::new(light.translation[0], light.translation[1], light.translation[2]);
+        let nif_pos = Vec3::new(
+            light.translation[0],
+            light.translation[1],
+            light.translation[2],
+        );
         let final_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
         let radius = if let Some(r) = esm_radius {
             // ESM radius is authored by the level designer — ground truth.
@@ -751,14 +775,17 @@ fn spawn_placed_instances(
 
         // parry3d panics on nested Compound shapes. Clone inside
         // catch_unwind so a bad shape doesn't kill the entire load.
-        let shape_result = std::panic::catch_unwind(
-            std::panic::AssertUnwindSafe(|| coll.shape.clone()),
-        );
+        let shape_result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| coll.shape.clone()));
         let shape = match shape_result {
             Ok(s) => s,
             Err(_) => {
-                log::warn!("Skipping collision shape (nested composite) at ({:.0},{:.0},{:.0})",
-                    final_pos.x, final_pos.y, final_pos.z);
+                log::warn!(
+                    "Skipping collision shape (nested composite) at ({:.0},{:.0},{:.0})",
+                    final_pos.x,
+                    final_pos.y,
+                    final_pos.z
+                );
                 continue;
             }
         };

@@ -14,7 +14,9 @@ pub mod events;
 pub mod timer;
 
 pub use cleanup::event_cleanup_system;
-pub use events::{ActivateEvent, AnimationTextKeyEvent, AnimationTextKeyEvents, HitEvent, TimerExpired};
+pub use events::{
+    ActivateEvent, AnimationTextKeyEvent, AnimationTextKeyEvents, HitEvent, TimerExpired,
+};
 pub use timer::{timer_tick_system, ScriptTimer};
 
 use byroredux_core::ecs::world::World;

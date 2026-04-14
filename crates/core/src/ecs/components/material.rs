@@ -132,38 +132,68 @@ impl Material {
     /// "glass", "wood" map to physically-plausible defaults. Fallback
     /// uses the NIF glossiness value converted to roughness.
     pub fn classify_pbr(&self, texture_path: Option<&str>) -> PbrMaterial {
-        let path = texture_path
-            .unwrap_or("")
-            .to_ascii_lowercase();
+        let path = texture_path.unwrap_or("").to_ascii_lowercase();
 
         // Keyword-based classification (highest priority).
-        if contains_any(&path, &["metal", "iron", "steel", "dwemer", "dwarven", "chainmail"]) {
-            return PbrMaterial { roughness: 0.3, metalness: 0.9 };
+        if contains_any(
+            &path,
+            &["metal", "iron", "steel", "dwemer", "dwarven", "chainmail"],
+        ) {
+            return PbrMaterial {
+                roughness: 0.3,
+                metalness: 0.9,
+            };
         }
         if contains_any(&path, &["gold", "silver", "bronze", "copper"]) {
-            return PbrMaterial { roughness: 0.25, metalness: 0.95 };
+            return PbrMaterial {
+                roughness: 0.25,
+                metalness: 0.95,
+            };
         }
         if contains_any(&path, &["glass", "crystal", "ice", "gem"]) {
-            return PbrMaterial { roughness: 0.1, metalness: 0.0 };
+            return PbrMaterial {
+                roughness: 0.1,
+                metalness: 0.0,
+            };
         }
         if contains_any(&path, &["wood", "plank", "barrel", "crate", "log"]) {
-            return PbrMaterial { roughness: 0.7, metalness: 0.0 };
+            return PbrMaterial {
+                roughness: 0.7,
+                metalness: 0.0,
+            };
         }
-        if contains_any(&path, &["stone", "rock", "cave", "brick", "ruins", "cobble"]) {
-            return PbrMaterial { roughness: 0.85, metalness: 0.0 };
+        if contains_any(
+            &path,
+            &["stone", "rock", "cave", "brick", "ruins", "cobble"],
+        ) {
+            return PbrMaterial {
+                roughness: 0.85,
+                metalness: 0.0,
+            };
         }
-        if contains_any(&path, &[
-            "fabric", "cloth", "leather", "fur", "linen", "carpet",
-            "rug", "tapestry", "banner", "curtain", "drape", "bedding",
-            "pillow", "sack", "burlap", "wool",
-        ]) {
-            return PbrMaterial { roughness: 0.95, metalness: 0.0 };
+        if contains_any(
+            &path,
+            &[
+                "fabric", "cloth", "leather", "fur", "linen", "carpet", "rug", "tapestry",
+                "banner", "curtain", "drape", "bedding", "pillow", "sack", "burlap", "wool",
+            ],
+        ) {
+            return PbrMaterial {
+                roughness: 0.95,
+                metalness: 0.0,
+            };
         }
         if contains_any(&path, &["skin", "body", "head", "hand", "face"]) {
-            return PbrMaterial { roughness: 0.5, metalness: 0.0 };
+            return PbrMaterial {
+                roughness: 0.5,
+                metalness: 0.0,
+            };
         }
         if contains_any(&path, &["hair"]) {
-            return PbrMaterial { roughness: 0.6, metalness: 0.0 };
+            return PbrMaterial {
+                roughness: 0.6,
+                metalness: 0.0,
+            };
         }
 
         // Environment map scale as metalness proxy.

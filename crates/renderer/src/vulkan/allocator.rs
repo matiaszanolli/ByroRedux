@@ -26,8 +26,8 @@ pub fn create_allocator(
     // 16 MB host) let the allocator grow on demand with less waste.
     // Typical cell load: ~250 MB across ~3000 allocations in 4–5 blocks.
     let allocation_sizes = gpu_allocator::AllocationSizes::new(
-        64 * 1024 * 1024,  // 64 MB device-local blocks
-        16 * 1024 * 1024,  // 16 MB host-visible blocks
+        64 * 1024 * 1024, // 64 MB device-local blocks
+        16 * 1024 * 1024, // 16 MB host-visible blocks
     );
     let allocator = vulkan::Allocator::new(&vulkan::AllocatorCreateDesc {
         instance: instance.clone(),

@@ -78,7 +78,10 @@ fn parse_string_literal(lex: &mut logos::Lexer<Token>) -> String {
 
 fn parse_int(lex: &mut logos::Lexer<Token>) -> i64 {
     let slice = lex.slice();
-    if let Some(hex) = slice.strip_prefix("0x").or_else(|| slice.strip_prefix("0X")) {
+    if let Some(hex) = slice
+        .strip_prefix("0x")
+        .or_else(|| slice.strip_prefix("0X"))
+    {
         i64::from_str_radix(hex, 16).unwrap_or(0)
     } else {
         slice.parse().unwrap_or(0)

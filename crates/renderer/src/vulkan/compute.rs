@@ -263,11 +263,13 @@ impl ClusterCullPipeline {
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
 
-        partial.scene_cluster_grid_buffers = partial.cluster_grid_buffers
+        partial.scene_cluster_grid_buffers = partial
+            .cluster_grid_buffers
             .iter()
             .map(|b| b.buffer)
             .collect();
-        partial.scene_light_index_buffers = partial.light_index_buffers
+        partial.scene_light_index_buffers = partial
+            .light_index_buffers
             .iter()
             .map(|b| b.buffer)
             .collect();
@@ -288,12 +290,7 @@ impl ClusterCullPipeline {
     ///
     /// Must be called AFTER light + camera uploads and BEFORE the render pass.
     /// The caller must insert a COMPUTE→FRAGMENT barrier after this returns.
-    pub unsafe fn dispatch(
-        &self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
+    pub unsafe fn dispatch(&self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
         device.cmd_bind_descriptor_sets(
             cmd,

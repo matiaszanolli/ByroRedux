@@ -122,8 +122,12 @@ pub(crate) fn setup_scene(
                         let sun_col = wthr.sky_colors[SKY_SUN][TOD_DAY].to_linear_rgb();
                         log::info!(
                             "WTHR '{}': zenith={:?} horizon={:?} sun={:?} fog_day={:.0}–{:.0}",
-                            wthr.editor_id, zenith, horizon, sun_col,
-                            wthr.fog_day_near, wthr.fog_day_far,
+                            wthr.editor_id,
+                            zenith,
+                            horizon,
+                            sun_col,
+                            wthr.fog_day_near,
+                            wthr.fog_day_far,
                         );
                         world.insert_resource(CellLightingRes {
                             ambient,
@@ -153,8 +157,10 @@ pub(crate) fn setup_scene(
                         world.insert_resource(WeatherDataRes {
                             sky_colors,
                             fog: [
-                                wthr.fog_day_near, wthr.fog_day_far,
-                                wthr.fog_night_near, wthr.fog_night_far,
+                                wthr.fog_day_near,
+                                wthr.fog_day_far,
+                                wthr.fog_night_near,
+                                wthr.fog_night_far,
                             ],
                         });
                         world.insert_resource(GameTimeRes::default());
@@ -388,12 +394,18 @@ pub(crate) fn setup_scene(
         log::warn!("Failed to build geometry SSBO: {e}");
     }
     // Write global geometry buffers to scene descriptor sets for RT reflection UV lookups.
-    if let (Some(ref vb), Some(ref ib)) = (&ctx.mesh_registry.global_vertex_buffer, &ctx.mesh_registry.global_index_buffer) {
+    if let (Some(ref vb), Some(ref ib)) = (
+        &ctx.mesh_registry.global_vertex_buffer,
+        &ctx.mesh_registry.global_index_buffer,
+    ) {
         for f in 0..2 {
             ctx.scene_buffers.write_geometry_buffers(
-                &ctx.device, f,
-                vb.buffer, vb.size,
-                ib.buffer, ib.size,
+                &ctx.device,
+                f,
+                vb.buffer,
+                vb.size,
+                ib.buffer,
+                ib.size,
             );
         }
     }
@@ -640,9 +652,10 @@ pub(crate) fn load_nif_bytes(
         // #151 / #177 extracted from NiSkinData / BSTriShape. Rigid
         // vertices pass zero weights and the shader's rigid-path routes
         // them through `pc.model` instead of the bone palette.
-        let skin_vertex_data = mesh.skin.as_ref().filter(|s| {
-            !s.vertex_bone_indices.is_empty() && !s.vertex_bone_weights.is_empty()
-        });
+        let skin_vertex_data = mesh
+            .skin
+            .as_ref()
+            .filter(|s| !s.vertex_bone_indices.is_empty() && !s.vertex_bone_weights.is_empty());
         let vertices: Vec<Vertex> = (0..num_verts)
             .map(|i| {
                 let position = mesh.positions[i];

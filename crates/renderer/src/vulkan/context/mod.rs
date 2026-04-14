@@ -1,18 +1,20 @@
 //! Top-level Vulkan context that owns the entire graphics state.
 
 use super::acceleration::AccelerationManager;
+use super::allocator::{self, SharedAllocator};
 use super::composite::{CompositePipeline, HDR_FORMAT};
 use super::compute::ClusterCullPipeline;
-use super::gbuffer::{GBuffer, ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT};
-use super::ssao::SsaoPipeline;
-use super::svgf::SvgfPipeline;
-use super::allocator::{self, SharedAllocator};
 use super::debug;
 use super::device::{self, QueueFamilyIndices};
+use super::gbuffer::{
+    GBuffer, ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT,
+};
 use super::instance;
 use super::pipeline;
 use super::scene_buffer;
+use super::ssao::SsaoPipeline;
 use super::surface;
+use super::svgf::SvgfPipeline;
 use super::swapchain::{self, SwapchainState};
 use super::sync::{self, FrameSync, MAX_FRAMES_IN_FLIGHT};
 use super::texture::Texture;
@@ -421,7 +423,9 @@ impl VulkanContext {
                 Some(cc)
             }
             Err(e) => {
-                log::warn!("Cluster cull pipeline creation failed: {e} — falling back to all-lights loop");
+                log::warn!(
+                    "Cluster cull pipeline creation failed: {e} — falling back to all-lights loop"
+                );
                 None
             }
         };
@@ -460,15 +464,13 @@ impl VulkanContext {
                 // Transition AO image from UNDEFINED to SHADER_READ_ONLY_OPTIMAL
                 // so the first frame's fragment shader sees a valid layout (1.0 =
                 // no occlusion). Without this, sampling UNDEFINED is UB.
-                if let Err(e) = unsafe {
-                    s.initialize_ao_images(&device, &graphics_queue, transfer_pool)
-                } {
+                if let Err(e) =
+                    unsafe { s.initialize_ao_images(&device, &graphics_queue, transfer_pool) }
+                {
                     log::warn!("SSAO AO image init failed: {e}");
                 }
                 for f in 0..MAX_FRAMES_IN_FLIGHT {
-                    scene_buffers.write_ao_texture(
-                        &device, f, s.ao_image_views[f], s.ao_sampler,
-                    );
+                    scene_buffers.write_ao_texture(&device, f, s.ao_image_views[f], s.ao_sampler);
                 }
                 Some(s)
             }
@@ -496,17 +498,18 @@ impl VulkanContext {
         // SHADER_READ_ONLY_OPTIMAL so the "previous frame" slot is in a
         // valid layout on the very first frame (SVGF temporal pass binds
         // the previous frame's mesh_id/motion/raw_indirect for sampling).
-        if let Err(e) = unsafe {
-            gbuffer_ref.initialize_layouts(&device, &graphics_queue, transfer_pool)
-        } {
+        if let Err(e) =
+            unsafe { gbuffer_ref.initialize_layouts(&device, &graphics_queue, transfer_pool) }
+        {
             log::warn!("G-buffer layout init failed: {e}");
         }
 
         // Collect G-buffer views up-front so svgf, composite, and main
         // framebuffer creation can reference them.
         let n_frames = MAX_FRAMES_IN_FLIGHT;
-        let raw_indirect_views: Vec<vk::ImageView> =
-            (0..n_frames).map(|i| gbuffer_ref.raw_indirect_view(i)).collect();
+        let raw_indirect_views: Vec<vk::ImageView> = (0..n_frames)
+            .map(|i| gbuffer_ref.raw_indirect_view(i))
+            .collect();
         let motion_views_seed: Vec<vk::ImageView> =
             (0..n_frames).map(|i| gbuffer_ref.motion_view(i)).collect();
         let mesh_id_views_seed: Vec<vk::ImageView> =
@@ -537,8 +540,7 @@ impl VulkanContext {
         // Transition history images UNDEFINED → GENERAL so first dispatch
         // and first descriptor sampling see a valid layout.
         if let Some(ref s) = svgf {
-            if let Err(e) =
-                unsafe { s.initialize_layouts(&device, &graphics_queue, transfer_pool) }
+            if let Err(e) = unsafe { s.initialize_layouts(&device, &graphics_queue, transfer_pool) }
             {
                 log::warn!("SVGF layout init failed: {e} — disabling SVGF");
                 // Destroy partially-initialized pipeline.
@@ -553,10 +555,7 @@ impl VulkanContext {
         // (SHADER_READ_ONLY_OPTIMAL layout).
         let (composite_indirect_views, indirect_is_general): (Vec<vk::ImageView>, bool) =
             if let Some(ref s) = svgf {
-                (
-                    (0..n_frames).map(|i| s.indirect_view(i)).collect(),
-                    true,
-                )
+                ((0..n_frames).map(|i| s.indirect_view(i)).collect(), true)
             } else {
                 (raw_indirect_views.clone(), false)
             };
@@ -612,11 +611,8 @@ impl VulkanContext {
         // image). The in_flight fence is per-frame, so tying command buffer
         // reuse to the same index makes the fence → cmd-buf relationship
         // direct and obvious. See #259.
-        let command_buffers = allocate_command_buffers(
-            &device,
-            command_pool,
-            sync::MAX_FRAMES_IN_FLIGHT,
-        )?;
+        let command_buffers =
+            allocate_command_buffers(&device, command_pool, sync::MAX_FRAMES_IN_FLIGHT)?;
 
         // 17. Sync objects
         let frame_sync = sync::create_sync_objects(&device, swapchain_state.images.len())?;
@@ -671,10 +667,7 @@ impl VulkanContext {
             // Initialize to identity; first frame will overwrite with current
             // viewProj so motion vector is zero on the first frame.
             prev_view_proj: [
-                1.0, 0.0, 0.0, 0.0,
-                0.0, 1.0, 0.0, 0.0,
-                0.0, 0.0, 1.0, 0.0,
-                0.0, 0.0, 0.0, 1.0,
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
             ],
             gpu_instances_scratch: Vec::new(),
             batches_scratch: Vec::new(),
@@ -716,8 +709,7 @@ impl Drop for VulkanContext {
             self.destroy_screenshot_staging();
 
             self.frame_sync.destroy(&self.device);
-            self.device
-                .destroy_command_pool(self.transfer_pool, None);
+            self.device.destroy_command_pool(self.transfer_pool, None);
             self.device
                 .free_command_buffers(self.command_pool, &self.command_buffers);
             self.device.destroy_command_pool(self.command_pool, None);
@@ -818,6 +810,6 @@ impl Drop for VulkanContext {
 // Helper functions are in helpers.rs — use helpers:: prefix.
 use helpers::{
     allocate_command_buffers, create_command_pool, create_depth_resources,
-    create_main_framebuffers, create_transfer_pool, create_render_pass, find_depth_format,
+    create_main_framebuffers, create_render_pass, create_transfer_pool, find_depth_format,
     load_or_create_pipeline_cache, save_pipeline_cache,
 };

@@ -373,8 +373,8 @@ impl NiControllerSequence {
         // inline string and then went 5 more bytes past the descriptor,
         // corrupting the stream for every subsequent block. See #107.
         let bsver = stream.bsver();
-        let uses_string_palette = stream.version() >= NifVersion(0x0A020000)
-            && stream.version() < NifVersion(0x14010001);
+        let uses_string_palette =
+            stream.version() >= NifVersion(0x0A020000) && stream.version() < NifVersion(0x14010001);
         let mut controlled_blocks = Vec::with_capacity(num_controlled_blocks);
         for _ in 0..num_controlled_blocks {
             let interpolator_ref = stream.read_block_ref()?;
@@ -855,9 +855,8 @@ impl NiMorphData {
         let version = stream.version();
         let bsver = stream.bsver();
         let has_keys = version <= NifVersion(0x0A010000);
-        let has_legacy_weight = version >= NifVersion(0x0A010068)
-            && version <= NifVersion(0x14010002)
-            && bsver < 10;
+        let has_legacy_weight =
+            version >= NifVersion(0x0A010068) && version <= NifVersion(0x14010002) && bsver < 10;
 
         let mut morphs = Vec::with_capacity(num_morphs);
         for _ in 0..num_morphs {
@@ -872,9 +871,9 @@ impl NiMorphData {
                 let num_keys = stream.read_u32_le()? as u64;
                 let interpolation = stream.read_u32_le()?;
                 let key_size: u64 = match interpolation {
-                    1 | 5 => 8,  // LINEAR / CONSTANT: time(f32) + value(f32)
-                    2 => 16,     // QUADRATIC: time + value + fwd + bwd
-                    3 => 20,     // TBC: time + value + tension + bias + continuity
+                    1 | 5 => 8, // LINEAR / CONSTANT: time(f32) + value(f32)
+                    2 => 16,    // QUADRATIC: time + value + fwd + bwd
+                    3 => 20,    // TBC: time + value + tension + bias + continuity
                     other => {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,

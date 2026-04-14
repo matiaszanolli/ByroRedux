@@ -450,8 +450,7 @@ impl AccelerationManager {
                 device,
                 allocator,
                 max_scratch_size,
-                vk::BufferUsageFlags::STORAGE_BUFFER
-                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             )?);
         }
 
@@ -566,7 +565,9 @@ impl AccelerationManager {
                 }
                 p.buffer.destroy(device, allocator);
             }
-            unsafe { device.destroy_query_pool(query_pool, None); }
+            unsafe {
+                device.destroy_query_pool(query_pool, None);
+            }
             return Err(e);
         }
 
@@ -627,14 +628,17 @@ impl AccelerationManager {
                         .mode(vk::CopyAccelerationStructureModeKHR::COMPACT);
 
                     unsafe {
-                        self.accel_loader.cmd_copy_acceleration_structure(cmd, &copy_info);
+                        self.accel_loader
+                            .cmd_copy_acceleration_structure(cmd, &copy_info);
                     }
                 }
                 Ok(())
             });
 
         // Destroy the query pool — no longer needed.
-        unsafe { device.destroy_query_pool(query_pool, None); }
+        unsafe {
+            device.destroy_query_pool(query_pool, None);
+        }
 
         if let Err(e) = copy_result {
             // Clean up both original and compact structures on failure.
@@ -789,11 +793,7 @@ impl AccelerationManager {
 
         // Create/resize instance buffer if needed for this frame slot.
         let need_new_tlas = self.tlas[frame_index].is_none()
-            || self.tlas[frame_index]
-                .as_ref()
-                .unwrap()
-                .max_instances
-                < instance_count;
+            || self.tlas[frame_index].as_ref().unwrap().max_instances < instance_count;
 
         if need_new_tlas {
             // Destroy old TLAS for this frame slot. The fence wait in
@@ -954,18 +954,17 @@ impl AccelerationManager {
         // Gate: if `needs_full_rebuild` is set (freshly created or
         // previous frame BUILT), or the current BLAS address sequence
         // differs from the last BUILD, we BUILD. Otherwise UPDATE.
-        let blas_layout_matches = tlas.last_blas_addresses.len() == instances.len()
-            && tlas
-                .last_blas_addresses
-                .iter()
-                .zip(instances.iter())
-                .all(|(prev, inst)| unsafe {
-                    // SAFETY: AccelerationStructureReferenceKHR is a
-                    // union. Our BLAS entries are always device-built,
-                    // so `device_handle` is the live variant — same
-                    // invariant as the push site above.
-                    *prev == inst.acceleration_structure_reference.device_handle
-                });
+        let blas_layout_matches =
+            tlas.last_blas_addresses.len() == instances.len()
+                && tlas.last_blas_addresses.iter().zip(instances.iter()).all(
+                    |(prev, inst)| unsafe {
+                        // SAFETY: AccelerationStructureReferenceKHR is a
+                        // union. Our BLAS entries are always device-built,
+                        // so `device_handle` is the live variant — same
+                        // invariant as the push site above.
+                        *prev == inst.acceleration_structure_reference.device_handle
+                    },
+                );
         let use_update = !tlas.needs_full_rebuild && blas_layout_matches;
 
         // Cache the current BLAS sequence so the next frame can compare.
@@ -1117,11 +1116,7 @@ impl AccelerationManager {
     /// Eviction is LRU — the least recently used entries are destroyed first.
     /// Only entries unused for >= MAX_FRAMES_IN_FLIGHT frames are safe to
     /// evict (guarantees no in-flight TLAS references them).
-    pub unsafe fn evict_unused_blas(
-        &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-    ) {
+    pub unsafe fn evict_unused_blas(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         if self.total_blas_bytes <= self.blas_budget_bytes {
             return;
         }

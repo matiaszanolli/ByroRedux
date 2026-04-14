@@ -151,7 +151,9 @@ impl Scheduler {
     }
 
     fn has_system(&self, name: &str) -> bool {
-        self.stages.values().any(|d| d.all_names().any(|n| n == name))
+        self.stages
+            .values()
+            .any(|d| d.all_names().any(|n| n == name))
     }
 }
 

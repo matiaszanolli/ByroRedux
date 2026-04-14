@@ -55,7 +55,8 @@ impl VulkanContext {
 
         // Tick the mesh registry's deferred SSBO destroy list.
         if let Some(ref alloc) = self.allocator {
-            self.mesh_registry.tick_deferred_destroy(&self.device, alloc);
+            self.mesh_registry
+                .tick_deferred_destroy(&self.device, alloc);
         }
 
         // Wait for this frame-in-flight slot AND the previous slot to be
@@ -70,7 +71,10 @@ impl VulkanContext {
             let prev = (frame + 1) % super::super::sync::MAX_FRAMES_IN_FLIGHT;
             self.device
                 .wait_for_fences(
-                    &[self.frame_sync.in_flight[frame], self.frame_sync.in_flight[prev]],
+                    &[
+                        self.frame_sync.in_flight[frame],
+                        self.frame_sync.in_flight[prev],
+                    ],
                     true,
                     u64::MAX,
                 )
@@ -124,8 +128,8 @@ impl VulkanContext {
                 .context("reset_command_buffer")?;
         }
 
-        let begin_info =
-            vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let begin_info = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         unsafe {
             self.device
                 .begin_command_buffer(cmd, &begin_info)
@@ -179,8 +183,7 @@ impl VulkanContext {
         unsafe {
             if let Some(ref mut accel) = self.accel_manager {
                 if let Some(alloc) = self.allocator.as_ref() {
-                    if let Err(e) =
-                        accel.build_tlas(&self.device, alloc, cmd, draw_commands, frame)
+                    if let Err(e) = accel.build_tlas(&self.device, alloc, cmd, draw_commands, frame)
                     {
                         log::warn!("TLAS build failed: {e}");
                     } else {
@@ -227,10 +230,30 @@ impl VulkanContext {
         let inv_vp = vp_mat.inverse();
         let inv_vp_cols = inv_vp.to_cols_array();
         let inv_vp_arr = [
-            [inv_vp_cols[0], inv_vp_cols[1], inv_vp_cols[2], inv_vp_cols[3]],
-            [inv_vp_cols[4], inv_vp_cols[5], inv_vp_cols[6], inv_vp_cols[7]],
-            [inv_vp_cols[8], inv_vp_cols[9], inv_vp_cols[10], inv_vp_cols[11]],
-            [inv_vp_cols[12], inv_vp_cols[13], inv_vp_cols[14], inv_vp_cols[15]],
+            [
+                inv_vp_cols[0],
+                inv_vp_cols[1],
+                inv_vp_cols[2],
+                inv_vp_cols[3],
+            ],
+            [
+                inv_vp_cols[4],
+                inv_vp_cols[5],
+                inv_vp_cols[6],
+                inv_vp_cols[7],
+            ],
+            [
+                inv_vp_cols[8],
+                inv_vp_cols[9],
+                inv_vp_cols[10],
+                inv_vp_cols[11],
+            ],
+            [
+                inv_vp_cols[12],
+                inv_vp_cols[13],
+                inv_vp_cols[14],
+                inv_vp_cols[15],
+            ],
         ];
         let camera = scene_buffer::GpuCamera {
             view_proj: [
@@ -247,7 +270,12 @@ impl VulkanContext {
             ],
             inv_view_proj: inv_vp_arr,
             // w = monotonic frame counter for temporal jitter seed in shadow rays.
-            position: [camera_pos[0], camera_pos[1], camera_pos[2], self.frame_counter as f32],
+            position: [
+                camera_pos[0],
+                camera_pos[1],
+                camera_pos[2],
+                self.frame_counter as f32,
+            ],
             flags: [
                 rt_flag,
                 ambient_color[0],
@@ -291,9 +319,7 @@ impl VulkanContext {
                 // uploaded yet — it is built and uploaded after this dispatch.
                 let host_barrier = vk::MemoryBarrier::default()
                     .src_access_mask(vk::AccessFlags::HOST_WRITE)
-                    .dst_access_mask(
-                        vk::AccessFlags::SHADER_READ | vk::AccessFlags::UNIFORM_READ,
-                    );
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::UNIFORM_READ);
                 self.device.cmd_pipeline_barrier(
                     cmd,
                     vk::PipelineStageFlags::HOST,
@@ -335,8 +361,7 @@ impl VulkanContext {
         // capacity across frames. Error-path early returns lose the
         // amortization for one frame only — acceptable since the draw
         // has already failed. See issue #243.
-        let mut gpu_instances: Vec<GpuInstance> =
-            std::mem::take(&mut self.gpu_instances_scratch);
+        let mut gpu_instances: Vec<GpuInstance> = std::mem::take(&mut self.gpu_instances_scratch);
         gpu_instances.clear();
         gpu_instances.reserve(draw_commands.len() + 1); // +1 for optional UI quad
         let mut batches: Vec<DrawBatch> = std::mem::take(&mut self.batches_scratch);
@@ -372,8 +397,7 @@ impl VulkanContext {
             let col2_sq = m[8] * m[8] + m[9] * m[9] + m[10] * m[10];
             let has_non_uniform_scale = {
                 let tol = 0.001;
-                (col0_sq - col1_sq).abs() > tol
-                    || (col0_sq - col2_sq).abs() > tol
+                (col0_sq - col1_sq).abs() > tol || (col0_sq - col2_sq).abs() > tol
             };
             // Per-instance flags: bit 0 = non-uniform scale, bit 1 = alpha blend.
             // The alpha_blend flag tells the shader this mesh has NiAlphaProperty
@@ -451,16 +475,17 @@ impl VulkanContext {
         // Append UI instance (if needed) BEFORE the bulk upload so it's
         // included in the single flush. Avoids the need for a separate raw
         // pointer write + flush that was missing on non-coherent memory (#189).
-        let ui_instance_idx = if let (Some(ui_tex), Some(_)) = (ui_texture_handle, self.ui_quad_handle) {
-            let idx = gpu_instances.len() as u32;
-            gpu_instances.push(GpuInstance {
-                texture_index: ui_tex,
-                ..GpuInstance::default()
-            });
-            Some(idx)
-        } else {
-            None
-        };
+        let ui_instance_idx =
+            if let (Some(ui_tex), Some(_)) = (ui_texture_handle, self.ui_quad_handle) {
+                let idx = gpu_instances.len() as u32;
+                gpu_instances.push(GpuInstance {
+                    texture_index: ui_tex,
+                    ..GpuInstance::default()
+                });
+                Some(idx)
+            } else {
+                None
+            };
 
         // Upload all instance data (scene + UI) to the SSBO in one flush.
         if !gpu_instances.is_empty() {
@@ -686,7 +711,9 @@ impl VulkanContext {
                     [vp[8], vp[9], vp[10], vp[11]],
                     [vp[12], vp[13], vp[14], vp[15]],
                 ];
-                if let Err(e) = ssao.dispatch(&self.device, cmd, frame, &vp_arr, &inv_vp_arr, camera_pos) {
+                if let Err(e) =
+                    ssao.dispatch(&self.device, cmd, frame, &vp_arr, &inv_vp_arr, camera_pos)
+                {
                     log::warn!("SSAO dispatch failed: {e}");
                 }
             }
@@ -703,7 +730,9 @@ impl VulkanContext {
                     fog_params: [fog_near, fog_far, 0.0, 0.0],
                     depth_params: [
                         if sky_params.is_exterior { 1.0 } else { 0.0 },
-                        0.0, 0.0, 0.0,
+                        0.0,
+                        0.0,
+                        0.0,
                     ],
                     sky_zenith: [
                         sky_params.zenith_color[0],

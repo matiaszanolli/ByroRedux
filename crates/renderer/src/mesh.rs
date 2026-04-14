@@ -157,7 +157,16 @@ impl MeshRegistry {
         self.pending_indices.extend_from_slice(indices);
 
         // Upload to per-mesh buffers.
-        let id = self.upload(device, allocator, queue, command_pool, vertices, indices, rt_enabled, staging_pool)?;
+        let id = self.upload(
+            device,
+            allocator,
+            queue,
+            command_pool,
+            vertices,
+            indices,
+            rt_enabled,
+            staging_pool,
+        )?;
 
         // Store offsets.
         let mesh = &mut self.meshes[id as usize];
@@ -193,22 +202,30 @@ impl MeshRegistry {
             return Ok(());
         }
 
-        let vertex_size = (std::mem::size_of::<Vertex>() * self.pending_vertices.len()) as vk::DeviceSize;
-        let index_size = (std::mem::size_of::<u32>() * self.pending_indices.len()) as vk::DeviceSize;
+        let vertex_size =
+            (std::mem::size_of::<Vertex>() * self.pending_vertices.len()) as vk::DeviceSize;
+        let index_size =
+            (std::mem::size_of::<u32>() * self.pending_indices.len()) as vk::DeviceSize;
 
         // Create with STORAGE_BUFFER (RT reflection UV lookups) plus
         // VERTEX_BUFFER / INDEX_BUFFER so the draw loop can bind this
         // single global buffer instead of per-mesh rebinding. See #294.
         let mut pool = staging_pool;
         self.global_vertex_buffer = Some(GpuBuffer::create_device_local_buffer(
-            device, allocator, queue, command_pool,
+            device,
+            allocator,
+            queue,
+            command_pool,
             vertex_size,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::VERTEX_BUFFER,
             &self.pending_vertices,
             pool.as_deref_mut(),
         )?);
         self.global_index_buffer = Some(GpuBuffer::create_device_local_buffer(
-            device, allocator, queue, command_pool,
+            device,
+            allocator,
+            queue,
+            command_pool,
             index_size,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER,
             &self.pending_indices,

@@ -675,9 +675,9 @@ pub fn parse_emitter_ctlr_data(stream: &mut NifStream) -> io::Result<NiPSysBlock
     if num_keys > 0 {
         let interpolation = stream.read_u32_le()?;
         let key_size: u64 = match interpolation {
-            1 | 5 => 8,  // LINEAR / CONSTANT: time(f32) + value(f32)
-            2 => 16,      // QUADRATIC: time + value + fwd + bwd
-            3 => 20,      // TBC: time + value + tension + bias + continuity
+            1 | 5 => 8, // LINEAR / CONSTANT: time(f32) + value(f32)
+            2 => 16,    // QUADRATIC: time + value + fwd + bwd
+            3 => 20,    // TBC: time + value + tension + bias + continuity
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,

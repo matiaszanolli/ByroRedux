@@ -24,6 +24,7 @@ pub use actor::{
     parse_clas, parse_fact, parse_npc, parse_race, ClassRecord, FactionMembership, FactionRecord,
     FactionRelation, NpcInventoryEntry, NpcRecord, RaceRecord,
 };
+pub use climate::{parse_clmt, ClimateRecord, ClimateWeather};
 pub use container::{
     parse_cont, parse_leveled_list, ContainerRecord, InventoryEntry, LeveledEntry, LeveledList,
 };
@@ -32,7 +33,6 @@ pub use items::{
     parse_alch, parse_ammo, parse_armo, parse_book, parse_ingr, parse_keym, parse_misc, parse_note,
     parse_weap, ItemKind, ItemRecord,
 };
-pub use climate::{parse_clmt, ClimateRecord, ClimateWeather};
 pub use weather::{parse_wthr, SkyColor, WeatherRecord};
 
 use super::cell::{parse_esm_cells, EsmCellIndex};

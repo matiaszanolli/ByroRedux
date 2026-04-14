@@ -67,9 +67,9 @@ impl<'a> NifStream<'a> {
     /// NOT advanced on error, so callers can rely on block_size recovery.
     pub fn skip(&mut self, n: u64) -> io::Result<()> {
         let pos = self.cursor.position();
-        let end = pos.checked_add(n).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::UnexpectedEof, "skip overflow")
-        })?;
+        let end = pos
+            .checked_add(n)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "skip overflow"))?;
         let len = self.cursor.get_ref().len() as u64;
         if end > len {
             return Err(io::Error::new(

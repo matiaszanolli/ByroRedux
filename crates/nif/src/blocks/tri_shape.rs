@@ -879,7 +879,7 @@ mod skin_vertex_tests {
         d.extend_from_slice(&(-1i32).to_le_bytes());
         // NiAVObject (SSE, no properties): flags u32, transform, collision_ref
         d.extend_from_slice(&0u32.to_le_bytes()); // flags
-        // NiTransform: translation (3 f32) + rotation (9 f32) + scale (f32)
+                                                  // NiTransform: translation (3 f32) + rotation (9 f32) + scale (f32)
         for _ in 0..3 {
             d.extend_from_slice(&0.0f32.to_le_bytes());
         }
@@ -892,7 +892,7 @@ mod skin_vertex_tests {
         }
         d.extend_from_slice(&1.0f32.to_le_bytes()); // scale
         d.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
-        // BSTriShape: center (3 f32) + radius + 3 refs + vertex_desc u64
+                                                     // BSTriShape: center (3 f32) + radius + 3 refs + vertex_desc u64
         for _ in 0..3 {
             d.extend_from_slice(&0.0f32.to_le_bytes());
         }
@@ -901,12 +901,12 @@ mod skin_vertex_tests {
         d.extend_from_slice(&(-1i32).to_le_bytes()); // shader_property_ref
         d.extend_from_slice(&(-1i32).to_le_bytes()); // alpha_property_ref
         d.extend_from_slice(&0u64.to_le_bytes()); // vertex_desc (no attrs, stride 0)
-        // SSE (bsver<130): num_triangles as u16
+                                                  // SSE (bsver<130): num_triangles as u16
         d.extend_from_slice(&0u16.to_le_bytes());
         d.extend_from_slice(&0u16.to_le_bytes()); // num_vertices
         d.extend_from_slice(&0u32.to_le_bytes()); // data_size — skip the vertex/tri loops
-        // Note: when data_size == 0, the SSE particle-data block is not
-        // read — the parser's particle section is inside `if data_size > 0`.
+                                                  // Note: when data_size == 0, the SSE particle-data block is not
+                                                  // read — the parser's particle section is inside `if data_size > 0`.
         d
     }
 
@@ -978,14 +978,14 @@ mod skin_vertex_tests {
         d.extend_from_slice(&1.0f32.to_le_bytes()); // scale
         d.extend_from_slice(&0u32.to_le_bytes()); // properties count
         d.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
-        // NiTriShape: data_ref, skin_instance_ref, num_materials,
-        // active_material_index, dirty_flag (v >= 20.2.0.7).
+                                                     // NiTriShape: data_ref, skin_instance_ref, num_materials,
+                                                     // active_material_index, dirty_flag (v >= 20.2.0.7).
         d.extend_from_slice(&(-1i32).to_le_bytes()); // data_ref
         d.extend_from_slice(&(-1i32).to_le_bytes()); // skin_instance_ref
         d.extend_from_slice(&0u32.to_le_bytes()); // num_materials
         d.extend_from_slice(&0u32.to_le_bytes()); // active_material_index
         d.push(0u8); // dirty_flag
-        // FO3/FNV has no shader_alpha_refs branch.
+                     // FO3/FNV has no shader_alpha_refs branch.
         d
     }
 
@@ -1115,7 +1115,7 @@ mod skin_vertex_tests {
         data.extend_from_slice(&0x3800u16.to_le_bytes()); // 0.5
         data.extend_from_slice(&0x0000u16.to_le_bytes()); // 0.0
         data.extend_from_slice(&0x0000u16.to_le_bytes()); // 0.0
-        // Indices: 0, 1, 0, 0
+                                                          // Indices: 0, 1, 0, 0
         data.extend_from_slice(&[0u8, 1, 0, 0]);
 
         let mut stream = NifStream::new(&data, &header);
@@ -1145,7 +1145,11 @@ mod skin_vertex_tests {
         let (weights, indices) = read_vertex_skin_data(&mut stream).unwrap();
 
         let sum: f32 = weights.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-3, "weights should sum to 1, got {}", sum);
+        assert!(
+            (sum - 1.0).abs() < 1e-3,
+            "weights should sum to 1, got {}",
+            sum
+        );
         for w in &weights {
             assert!((w - 0.25).abs() < 1e-3);
         }

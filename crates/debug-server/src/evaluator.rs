@@ -25,11 +25,9 @@ pub fn evaluate(
 
         DebugRequest::Stats => eval_stats(world),
 
-        DebugRequest::ListComponents => {
-            DebugResponse::ComponentList {
-                components: registry.names().into_iter().map(String::from).collect(),
-            }
-        }
+        DebugRequest::ListComponents => DebugResponse::ComponentList {
+            components: registry.names().into_iter().map(String::from).collect(),
+        },
 
         DebugRequest::ListSystems => {
             // SystemList is stored as a resource by the engine binary.
@@ -139,7 +137,9 @@ fn eval_list_entities(
                     .iter()
                     .map(|(id, name_comp)| EntityInfo {
                         id,
-                        name: pool.as_ref().and_then(|p| p.resolve(name_comp.0).map(|s| s.to_string())),
+                        name: pool
+                            .as_ref()
+                            .and_then(|p| p.resolve(name_comp.0).map(|s| s.to_string())),
                     })
                     .collect();
                 DebugResponse::EntityList { entities }
@@ -166,10 +166,7 @@ fn eval_get_component(
     };
     match (desc.get_json)(world as &dyn std::any::Any, entity) {
         Some(value) => DebugResponse::value(value),
-        None => DebugResponse::error(format!(
-            "entity {} has no {} component",
-            entity, component
-        )),
+        None => DebugResponse::error(format!("entity {} has no {} component", entity, component)),
     }
 }
 
@@ -315,9 +312,7 @@ fn eval_member_access(
     let component_name = chain[0];
     let desc = match registry.get(component_name) {
         Some(d) => d,
-        None => {
-            return DebugResponse::error(format!("unknown component '{}'", component_name))
-        }
+        None => return DebugResponse::error(format!("unknown component '{}'", component_name)),
     };
 
     // Get the full component data as JSON.

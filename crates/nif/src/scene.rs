@@ -113,13 +113,25 @@ impl NifScene {
             let type_name = block.block_type_name();
 
             if let Some(net) = block.as_object_net() {
-                check(&mut errors, i, type_name, RefKind::Controller, net.controller_ref());
+                check(
+                    &mut errors,
+                    i,
+                    type_name,
+                    RefKind::Controller,
+                    net.controller_ref(),
+                );
                 for r in net.extra_data_refs() {
                     check(&mut errors, i, type_name, RefKind::ExtraData, *r);
                 }
             }
             if let Some(av) = block.as_av_object() {
-                check(&mut errors, i, type_name, RefKind::Collision, av.collision_ref());
+                check(
+                    &mut errors,
+                    i,
+                    type_name,
+                    RefKind::Collision,
+                    av.collision_ref(),
+                );
                 for r in av.properties() {
                     check(&mut errors, i, type_name, RefKind::Property, *r);
                 }
@@ -234,17 +246,17 @@ mod validate_refs_tests {
     }
 
     fn node(av: NiAVObjectData, children: Vec<BlockRef>, effects: Vec<BlockRef>) -> Box<NiNode> {
-        Box::new(NiNode { av, children, effects })
+        Box::new(NiNode {
+            av,
+            children,
+            effects,
+        })
     }
 
     #[test]
     fn clean_scene_reports_no_errors() {
         // Root with two in-range children.
-        let root = node(
-            empty_av(),
-            vec![BlockRef(1), BlockRef(2)],
-            Vec::new(),
-        );
+        let root = node(empty_av(), vec![BlockRef(1), BlockRef(2)], Vec::new());
         let child0 = node(empty_av(), Vec::new(), Vec::new());
         let child1 = node(empty_av(), Vec::new(), Vec::new());
         let scene = NifScene {
@@ -305,8 +317,12 @@ mod validate_refs_tests {
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 2);
-        assert!(errs.iter().any(|e| e.kind == RefKind::Controller && e.bad_index == 42));
-        assert!(errs.iter().any(|e| e.kind == RefKind::Collision && e.bad_index == 99));
+        assert!(errs
+            .iter()
+            .any(|e| e.kind == RefKind::Controller && e.bad_index == 42));
+        assert!(errs
+            .iter()
+            .any(|e| e.kind == RefKind::Collision && e.bad_index == 99));
     }
 
     #[test]

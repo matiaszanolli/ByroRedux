@@ -65,11 +65,7 @@ pub fn parse_clmt(form_id: u32, subs: &[SubRecord]) -> ClimateRecord {
                 // FNV and Skyrim use 12-byte entries: (form_id: u32, chance: i32, global: u32).
                 // Oblivion uses 8-byte entries: (form_id: u32, chance: i32).
                 // Prefer 12 when divisible; fall back to 8.
-                let entry_size = if sub.data.len() % 12 == 0 {
-                    12
-                } else {
-                    8
-                };
+                let entry_size = if sub.data.len() % 12 == 0 { 12 } else { 8 };
                 let count = sub.data.len() / entry_size;
                 for i in 0..count {
                     let offset = i * entry_size;

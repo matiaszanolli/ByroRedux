@@ -188,7 +188,12 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
             }
             b"WRLD" => {
                 let end = reader.position() + group.total_size as usize - 24;
-                parse_wrld_group(&mut reader, end, &mut exterior_cells, &mut worldspace_climates)?;
+                parse_wrld_group(
+                    &mut reader,
+                    end,
+                    &mut exterior_cells,
+                    &mut worldspace_climates,
+                )?;
             }
             b"LTEX" => {
                 let end = reader.position() + group.total_size as usize - 24;
@@ -307,8 +312,16 @@ fn parse_cell_group(
                             // Skyrim+: 92 bytes with extended fields.
                             // Detect by length — unambiguous.
                             let d = &sub.data;
-                            let ambient = [d[0] as f32 / 255.0, d[1] as f32 / 255.0, d[2] as f32 / 255.0];
-                            let directional_color = [d[4] as f32 / 255.0, d[5] as f32 / 255.0, d[6] as f32 / 255.0];
+                            let ambient = [
+                                d[0] as f32 / 255.0,
+                                d[1] as f32 / 255.0,
+                                d[2] as f32 / 255.0,
+                            ];
+                            let directional_color = [
+                                d[4] as f32 / 255.0,
+                                d[5] as f32 / 255.0,
+                                d[6] as f32 / 255.0,
+                            ];
                             let rot_x = {
                                 let raw = i32::from_le_bytes([d[20], d[21], d[22], d[23]]);
                                 (raw as f32).to_radians()
@@ -340,20 +353,31 @@ fn parse_cell_group(
                             //   80-83: Light fade begin (f32)
                             //   84-87: Light fade end (f32)
                             //   88-91: Inherits flags (u32, unused)
-                            let (dir_fade, fog_clip, fog_power, fog_far_color, fog_max, lf_begin, lf_end) =
-                                if d.len() >= 92 {
-                                    (
-                                        Some(f32::from_le_bytes([d[28], d[29], d[30], d[31]])),
-                                        Some(f32::from_le_bytes([d[32], d[33], d[34], d[35]])),
-                                        Some(f32::from_le_bytes([d[36], d[37], d[38], d[39]])),
-                                        Some([d[72] as f32 / 255.0, d[73] as f32 / 255.0, d[74] as f32 / 255.0]),
-                                        Some(f32::from_le_bytes([d[76], d[77], d[78], d[79]])),
-                                        Some(f32::from_le_bytes([d[80], d[81], d[82], d[83]])),
-                                        Some(f32::from_le_bytes([d[84], d[85], d[86], d[87]])),
-                                    )
-                                } else {
-                                    (None, None, None, None, None, None, None)
-                                };
+                            let (
+                                dir_fade,
+                                fog_clip,
+                                fog_power,
+                                fog_far_color,
+                                fog_max,
+                                lf_begin,
+                                lf_end,
+                            ) = if d.len() >= 92 {
+                                (
+                                    Some(f32::from_le_bytes([d[28], d[29], d[30], d[31]])),
+                                    Some(f32::from_le_bytes([d[32], d[33], d[34], d[35]])),
+                                    Some(f32::from_le_bytes([d[36], d[37], d[38], d[39]])),
+                                    Some([
+                                        d[72] as f32 / 255.0,
+                                        d[73] as f32 / 255.0,
+                                        d[74] as f32 / 255.0,
+                                    ]),
+                                    Some(f32::from_le_bytes([d[76], d[77], d[78], d[79]])),
+                                    Some(f32::from_le_bytes([d[80], d[81], d[82], d[83]])),
+                                    Some(f32::from_le_bytes([d[84], d[85], d[86], d[87]])),
+                                )
+                            } else {
+                                (None, None, None, None, None, None, None)
+                            };
 
                             lighting = Some(CellLighting {
                                 ambient,
@@ -515,9 +539,8 @@ fn parse_land_record(
         match sub.sub_type.as_slice() {
             b"VHGT" if sub.data.len() >= 1093 => {
                 // UESP VHGT algorithm: delta-encoded heightmap.
-                let base_offset = f32::from_le_bytes([
-                    sub.data[0], sub.data[1], sub.data[2], sub.data[3],
-                ]);
+                let base_offset =
+                    f32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
                 let mut offset = base_offset * 8.0;
                 for row in 0..33usize {
                     let first_delta = sub.data[4 + row * 33] as i8 as f32 * 8.0;
@@ -539,9 +562,8 @@ fn parse_land_record(
             }
             b"BTXT" if sub.data.len() >= 8 => {
                 // Base texture: formid(4) + quadrant(1) + unused(3).
-                let ltex_id = u32::from_le_bytes([
-                    sub.data[0], sub.data[1], sub.data[2], sub.data[3],
-                ]);
+                let ltex_id =
+                    u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
                 let quadrant = sub.data[4] as usize;
                 if quadrant < 4 {
                     quadrants[quadrant].base = Some(ltex_id);
@@ -549,9 +571,8 @@ fn parse_land_record(
             }
             b"ATXT" if sub.data.len() >= 8 => {
                 // Additional texture header: formid(4) + quadrant(1) + unused(1) + layer(2).
-                let ltex_id = u32::from_le_bytes([
-                    sub.data[0], sub.data[1], sub.data[2], sub.data[3],
-                ]);
+                let ltex_id =
+                    u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
                 let quadrant = sub.data[4] as usize;
                 let layer = u16::from_le_bytes([sub.data[6], sub.data[7]]);
                 if quadrant < 4 {
@@ -648,7 +669,10 @@ fn parse_wrld_group(
                         }
                         b"CNAM" if sub.data.len() >= 4 => {
                             climate_fid = Some(u32::from_le_bytes([
-                                sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                                sub.data[0],
+                                sub.data[1],
+                                sub.data[2],
+                                sub.data[3],
                             ]));
                         }
                         _ => {}
@@ -657,7 +681,9 @@ fn parse_wrld_group(
                 if let Some(ref name) = name_opt {
                     log::info!(
                         "Found worldspace: '{}' (form {:08X}, climate: {:08X?})",
-                        name, header.form_id, climate_fid,
+                        name,
+                        header.form_id,
+                        climate_fid,
                     );
                     if let Some(clmt_fid) = climate_fid {
                         worldspace_climates.insert(name.to_ascii_lowercase(), clmt_fid);
@@ -872,7 +898,10 @@ fn parse_ltex_group(
                     // FO3/FNV/Skyrim: TNAM → TXST form ID.
                     b"TNAM" if sub.data.len() >= 4 => {
                         let txst_id = u32::from_le_bytes([
-                            sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                            sub.data[0],
+                            sub.data[1],
+                            sub.data[2],
+                            sub.data[3],
                         ]);
                         ltex_to_txst.insert(header.form_id, txst_id);
                     }
@@ -1104,8 +1133,7 @@ mod tests {
     #[test]
     #[ignore]
     fn oblivion_cells_populate_xcll_lighting() {
-        let path =
-            "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data/Oblivion.esm";
+        let path = "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data/Oblivion.esm";
         if !std::path::Path::new(path).exists() {
             eprintln!("Skipping: Oblivion.esm not found");
             return;
@@ -1114,11 +1142,7 @@ mod tests {
         let idx = parse_esm_cells(&data).expect("Oblivion walker");
 
         let total = idx.cells.len();
-        let with_lighting = idx
-            .cells
-            .values()
-            .filter(|c| c.lighting.is_some())
-            .count();
+        let with_lighting = idx.cells.values().filter(|c| c.lighting.is_some()).count();
         let with_directional = idx
             .cells
             .values()
@@ -1141,7 +1165,11 @@ mod tests {
         for (name, lit) in idx
             .cells
             .values()
-            .filter_map(|c| c.lighting.as_ref().map(|l| (c.editor_id.clone(), l.clone())))
+            .filter_map(|c| {
+                c.lighting
+                    .as_ref()
+                    .map(|l| (c.editor_id.clone(), l.clone()))
+            })
             .filter(|(_, l)| l.directional_color.iter().any(|&c| c > 0.0))
             .take(2)
         {
@@ -1191,8 +1219,7 @@ mod tests {
     #[test]
     #[ignore]
     fn parse_real_oblivion_esm_walker_survives() {
-        let path =
-            "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data/Oblivion.esm";
+        let path = "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data/Oblivion.esm";
         if !std::path::Path::new(path).exists() {
             eprintln!("Skipping: Oblivion.esm not found");
             return;
@@ -1222,7 +1249,10 @@ mod tests {
                      cells_with_refs={}",
                     idx.cells.len(),
                     idx.statics.len(),
-                    idx.cells.values().filter(|c| !c.references.is_empty()).count(),
+                    idx.cells
+                        .values()
+                        .filter(|c| !c.references.is_empty())
+                        .count(),
                 );
             }
             Err(e) => panic!("parse_esm_cells failed on Oblivion.esm: {e:#}"),
@@ -1234,8 +1264,7 @@ mod tests {
     #[test]
     #[ignore]
     fn parse_real_skyrim_esm() {
-        let path =
-            "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/Skyrim.esm";
+        let path = "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/Skyrim.esm";
         if !std::path::Path::new(path).exists() {
             eprintln!("Skipping: Skyrim.esm not found");
             return;

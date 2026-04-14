@@ -21,8 +21,7 @@ use rapier3d::prelude::{ColliderBuilder, RigidBodyBuilder, RigidBodyType};
 
 use crate::components::{PlayerBody, RapierHandles};
 use crate::convert::{
-    collision_shape_to_shared_shape, iso_from_trs, quat_from_na, vec3_from_translation,
-    vec3_to_na,
+    collision_shape_to_shared_shape, iso_from_trs, quat_from_na, vec3_from_translation, vec3_to_na,
 };
 use crate::world::PhysicsWorld;
 
@@ -335,4 +334,3 @@ fn pull_dynamic(world: &World) {
         }
     }
 }
-

@@ -281,10 +281,7 @@ mod tests {
 
         // Clouds
         assert_eq!(w.cloud_speeds, [10, 20, 30, 40]);
-        assert_eq!(
-            w.cloud_textures[0].as_deref(),
-            Some("sky\\clouds_01.dds")
-        );
+        assert_eq!(w.cloud_textures[0].as_deref(), Some("sky\\clouds_01.dds"));
         assert!(w.cloud_textures[1].is_none());
     }
 

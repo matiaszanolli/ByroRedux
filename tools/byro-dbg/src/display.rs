@@ -45,7 +45,11 @@ pub fn print_response(response: &DebugResponse) {
                 fps, avg_fps, frame_time_ms, entity_count, mesh_count, texture_count, draw_call_count
             );
         }
-        DebugResponse::Screenshot { png_base64: _, width: _, height: _ } => {
+        DebugResponse::Screenshot {
+            png_base64: _,
+            width: _,
+            height: _,
+        } => {
             println!("Screenshot captured (raw data)");
         }
         DebugResponse::ScreenshotSaved { path } => {

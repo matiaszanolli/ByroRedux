@@ -203,7 +203,10 @@ mod tests {
         let (tokens, errors) = lex("x ; this is a comment\ny");
         assert!(errors.is_empty());
         // Should have: Ident(x), Newline, Ident(y)
-        let non_newline: Vec<_> = tokens.iter().filter(|t| t.token != Token::Newline).collect();
+        let non_newline: Vec<_> = tokens
+            .iter()
+            .filter(|t| t.token != Token::Newline)
+            .collect();
         assert_eq!(non_newline.len(), 2);
         assert!(matches!(&non_newline[0].token, Token::Ident(s) if s == "x"));
         assert!(matches!(&non_newline[1].token, Token::Ident(s) if s == "y"));
@@ -213,7 +216,10 @@ mod tests {
     fn test_lex_block_comment() {
         let (tokens, errors) = lex("x ;/ block \n comment /; y");
         assert!(errors.is_empty());
-        let non_newline: Vec<_> = tokens.iter().filter(|t| t.token != Token::Newline).collect();
+        let non_newline: Vec<_> = tokens
+            .iter()
+            .filter(|t| t.token != Token::Newline)
+            .collect();
         assert_eq!(non_newline.len(), 2);
         assert!(matches!(&non_newline[0].token, Token::Ident(s) if s == "x"));
         assert!(matches!(&non_newline[1].token, Token::Ident(s) if s == "y"));

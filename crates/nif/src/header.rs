@@ -435,11 +435,11 @@ mod tests {
         buf.push(1); // little-endian (>= 20.0.0.4)
         buf.extend_from_slice(&4u32.to_le_bytes()); // user_version = 4
         buf.extend_from_slice(&0u32.to_le_bytes()); // num_blocks = 0
-        // No BSStreamHeader should follow. Next: block_types (since 5.0.0.1).
+                                                    // No BSStreamHeader should follow. Next: block_types (since 5.0.0.1).
         buf.extend_from_slice(&0u16.to_le_bytes()); // num_block_types = 0
-        // No block_sizes (version < 20.2.0.5).
-        // No string table (version < 20.1.0.1).
-        // num_groups:
+                                                    // No block_sizes (version < 20.2.0.5).
+                                                    // No string table (version < 20.1.0.1).
+                                                    // num_groups:
         buf.extend_from_slice(&0u32.to_le_bytes());
 
         let (header, offset) = NifHeader::parse(&buf).unwrap();
@@ -460,18 +460,18 @@ mod tests {
         buf.push(1); // little-endian
         buf.extend_from_slice(&0u32.to_le_bytes()); // user_version = 0 (non-Bethesda)
         buf.extend_from_slice(&1u32.to_le_bytes()); // num_blocks = 1
-        // No BSStreamHeader (user_version < 3 and version != 10.0.1.2).
-        // Block types since >= 5.0.0.1:
+                                                    // No BSStreamHeader (user_version < 3 and version != 10.0.1.2).
+                                                    // Block types since >= 5.0.0.1:
         buf.extend_from_slice(&1u16.to_le_bytes()); // num_block_types
         buf.extend_from_slice(&6u32.to_le_bytes()); // "NiNode"
         buf.extend_from_slice(b"NiNode");
         buf.extend_from_slice(&0u16.to_le_bytes()); // block 0 → type 0
-        // Block sizes since >= 20.2.0.5:
+                                                    // Block sizes since >= 20.2.0.5:
         buf.extend_from_slice(&100u32.to_le_bytes()); // block 0 size
-        // String table since >= 20.1.0.1:
+                                                      // String table since >= 20.1.0.1:
         buf.extend_from_slice(&0u32.to_le_bytes()); // num_strings
         buf.extend_from_slice(&0u32.to_le_bytes()); // max_string_length
-        // num_groups:
+                                                    // num_groups:
         buf.extend_from_slice(&0u32.to_le_bytes());
 
         let (header, offset) = NifHeader::parse(&buf).unwrap();

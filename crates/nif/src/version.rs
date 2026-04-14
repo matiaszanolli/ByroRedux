@@ -183,11 +183,7 @@ impl NifVariant {
     pub fn has_material_crc(self) -> bool {
         matches!(
             self,
-            Self::SkyrimLE
-                | Self::SkyrimSE
-                | Self::Fallout4
-                | Self::Fallout76
-                | Self::Starfield
+            Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4 | Self::Fallout76 | Self::Starfield
         )
     }
 
@@ -205,7 +201,10 @@ impl NifVariant {
     /// NiAVObject has Num Properties + Properties list.
     /// nif.xml: `#NI_BS_LTE_FO3#` (BSVER ≤ 34). Removed in Skyrim+.
     pub fn has_properties_list(self) -> bool {
-        matches!(self, Self::Morrowind | Self::Oblivion | Self::Fallout3 | Self::FalloutNV)
+        matches!(
+            self,
+            Self::Morrowind | Self::Oblivion | Self::Fallout3 | Self::FalloutNV
+        )
     }
 
     /// NiAVObject flags field is u32 (BSVER > 26). Older versions use u16.
@@ -213,7 +212,8 @@ impl NifVariant {
     pub fn avobject_flags_u32(self) -> bool {
         matches!(
             self,
-            Self::Fallout3 | Self::FalloutNV
+            Self::Fallout3
+                | Self::FalloutNV
                 | Self::SkyrimLE
                 | Self::SkyrimSE
                 | Self::Fallout4
@@ -240,7 +240,12 @@ impl NifVariant {
     pub fn has_effects_list(self) -> bool {
         matches!(
             self,
-            Self::Morrowind | Self::Oblivion | Self::Fallout3 | Self::FalloutNV | Self::SkyrimLE | Self::SkyrimSE
+            Self::Morrowind
+                | Self::Oblivion
+                | Self::Fallout3
+                | Self::FalloutNV
+                | Self::SkyrimLE
+                | Self::SkyrimSE
         )
     }
 

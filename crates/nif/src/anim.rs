@@ -669,10 +669,10 @@ fn extract_transform_channel_bspline(
             translation_keys.push(TranslationKey {
                 time: t,
                 value: zup_to_yup_pos([
-                interp.transform.translation.x,
-                interp.transform.translation.y,
-                interp.transform.translation.z,
-            ]),
+                    interp.transform.translation.x,
+                    interp.transform.translation.y,
+                    interp.transform.translation.z,
+                ]),
                 forward: [0.0, 0.0, 0.0],
                 backward: [0.0, 0.0, 0.0],
                 tbc: None,
@@ -792,7 +792,10 @@ fn channel_slice(
     }
     let start = handle as usize;
     let needed = n_cp * stride;
-    if start.checked_add(needed).map_or(true, |end| end > raw.len()) {
+    if start
+        .checked_add(needed)
+        .map_or(true, |end| end > raw.len())
+    {
         log::debug!(
             "NiBSplineCompTransformInterpolator: handle {} + {} > data len {}",
             handle,
@@ -801,7 +804,9 @@ fn channel_slice(
         );
         return None;
     }
-    Some(dequantize_channel(raw, start, n_cp, stride, offset, half_range))
+    Some(dequantize_channel(
+        raw, start, n_cp, stride, offset, half_range,
+    ))
 }
 
 /// Resolve the morph target index for a NiGeomMorpherController-driven
@@ -816,11 +821,14 @@ fn resolve_morph_target_index(scene: &NifScene, cb: &ControlledBlock) -> Option<
     let ctrl = scene.get_as::<NiGeomMorpherController>(ctrl_idx)?;
     let data_idx = ctrl.data_ref.index()?;
     let data = scene.get_as::<NiMorphData>(data_idx)?;
-    data.morphs.iter().position(|m| {
-        m.name
-            .as_deref()
-            .is_some_and(|n| n.eq_ignore_ascii_case(target_name))
-    }).map(|i| i as u32)
+    data.morphs
+        .iter()
+        .position(|m| {
+            m.name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(target_name))
+        })
+        .map(|i| i as u32)
 }
 
 /// Extract a float channel from a NiFloatInterpolator → NiFloatData.

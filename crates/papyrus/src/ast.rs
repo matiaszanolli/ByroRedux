@@ -299,7 +299,12 @@ impl BinaryOp {
         match self {
             BinaryOp::Or => 1,
             BinaryOp::And => 2,
-            BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => 3,
+            BinaryOp::Eq
+            | BinaryOp::Ne
+            | BinaryOp::Lt
+            | BinaryOp::Le
+            | BinaryOp::Gt
+            | BinaryOp::Ge => 3,
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::StrCat => 4,
             BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => 5,
         }

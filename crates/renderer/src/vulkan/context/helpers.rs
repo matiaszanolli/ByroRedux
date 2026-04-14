@@ -267,16 +267,15 @@ pub(super) fn create_depth_resources(
 
     let requirements = unsafe { device.get_image_memory_requirements(image) };
 
-    let allocation = match allocator
-        .lock()
-        .expect("allocator lock poisoned")
-        .allocate(&vk_alloc::AllocationCreateDesc {
+    let allocation = match allocator.lock().expect("allocator lock poisoned").allocate(
+        &vk_alloc::AllocationCreateDesc {
             name: "depth_buffer",
             requirements,
             location: MemoryLocation::GpuOnly,
             linear: false,
             allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-        }) {
+        },
+    ) {
         Ok(a) => a,
         Err(e) => {
             // Allocation failed — only `image` needs cleanup.
@@ -289,9 +288,9 @@ pub(super) fn create_depth_resources(
         }
     };
 
-    if let Err(e) = unsafe {
-        device.bind_image_memory(image, allocation.memory(), allocation.offset())
-    } {
+    if let Err(e) =
+        unsafe { device.bind_image_memory(image, allocation.memory(), allocation.offset()) }
+    {
         // Bind failed — destroy the image and release the allocation.
         // Order matters: destroy the image first so the allocator isn't
         // freeing memory that still has a live binding from the GPU's

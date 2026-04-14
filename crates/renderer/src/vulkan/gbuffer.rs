@@ -185,11 +185,31 @@ impl GBuffer {
         };
 
         // If any allocation fails, clean up everything allocated so far.
-        let r1 = gb.normal.allocate(device, allocator, NORMAL_FORMAT, width, height, "gb_normal");
-        let r2 = gb.motion.allocate(device, allocator, MOTION_FORMAT, width, height, "gb_motion");
-        let r3 = gb.mesh_id.allocate(device, allocator, MESH_ID_FORMAT, width, height, "gb_mesh_id");
-        let r4 = gb.raw_indirect.allocate(device, allocator, RAW_INDIRECT_FORMAT, width, height, "gb_raw_indirect");
-        let r5 = gb.albedo.allocate(device, allocator, ALBEDO_FORMAT, width, height, "gb_albedo");
+        let r1 = gb
+            .normal
+            .allocate(device, allocator, NORMAL_FORMAT, width, height, "gb_normal");
+        let r2 = gb
+            .motion
+            .allocate(device, allocator, MOTION_FORMAT, width, height, "gb_motion");
+        let r3 = gb.mesh_id.allocate(
+            device,
+            allocator,
+            MESH_ID_FORMAT,
+            width,
+            height,
+            "gb_mesh_id",
+        );
+        let r4 = gb.raw_indirect.allocate(
+            device,
+            allocator,
+            RAW_INDIRECT_FORMAT,
+            width,
+            height,
+            "gb_raw_indirect",
+        );
+        let r5 = gb
+            .albedo
+            .allocate(device, allocator, ALBEDO_FORMAT, width, height, "gb_albedo");
         if let Err(e) = r1.and(r2).and(r3).and(r4).and(r5) {
             unsafe { gb.destroy(device, allocator) };
             return Err(e);
@@ -301,12 +321,37 @@ impl GBuffer {
         }
         self.width = width;
         self.height = height;
-        let result = self.normal
+        let result = self
+            .normal
             .allocate(device, allocator, NORMAL_FORMAT, width, height, "gb_normal")
-            .and_then(|()| self.motion.allocate(device, allocator, MOTION_FORMAT, width, height, "gb_motion"))
-            .and_then(|()| self.mesh_id.allocate(device, allocator, MESH_ID_FORMAT, width, height, "gb_mesh_id"))
-            .and_then(|()| self.raw_indirect.allocate(device, allocator, RAW_INDIRECT_FORMAT, width, height, "gb_raw_indirect"))
-            .and_then(|()| self.albedo.allocate(device, allocator, ALBEDO_FORMAT, width, height, "gb_albedo"));
+            .and_then(|()| {
+                self.motion
+                    .allocate(device, allocator, MOTION_FORMAT, width, height, "gb_motion")
+            })
+            .and_then(|()| {
+                self.mesh_id.allocate(
+                    device,
+                    allocator,
+                    MESH_ID_FORMAT,
+                    width,
+                    height,
+                    "gb_mesh_id",
+                )
+            })
+            .and_then(|()| {
+                self.raw_indirect.allocate(
+                    device,
+                    allocator,
+                    RAW_INDIRECT_FORMAT,
+                    width,
+                    height,
+                    "gb_raw_indirect",
+                )
+            })
+            .and_then(|()| {
+                self.albedo
+                    .allocate(device, allocator, ALBEDO_FORMAT, width, height, "gb_albedo")
+            });
         if let Err(ref e) = result {
             log::error!("G-buffer recreate partial failure: {e} — destroying partial state");
             unsafe { self.destroy(device, allocator) };

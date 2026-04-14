@@ -69,7 +69,11 @@ pub enum DebugResponse {
         draw_call_count: u32,
     },
     /// Screenshot captured — PNG bytes (base64-encoded for JSON transport).
-    Screenshot { png_base64: String, width: u32, height: u32 },
+    Screenshot {
+        png_base64: String,
+        width: u32,
+        height: u32,
+    },
     /// Screenshot saved to a file path.
     ScreenshotSaved { path: String },
     /// Successful mutation with no return value.

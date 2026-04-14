@@ -248,16 +248,18 @@ pub fn sample_rotation(channel: &TransformChannel, time: f32) -> Option<Quat> {
             // the TBC tension/bias/continuity parameters — the straight
             // SLERP path ignored them entirely. See #230.
             let prev = if i0 > 0 { Some(i0 - 1) } else { None };
-            let next = if i1 + 1 < keys.len() { Some(i1 + 1) } else { None };
+            let next = if i1 + 1 < keys.len() {
+                Some(i1 + 1)
+            } else {
+                None
+            };
 
             // q0-local log of neighbors (always finite because
             // `quat_log_rel` applies a shortest-path flip).
-            let log_prev =
-                prev.map(|pi| (keys[pi].time, quat_log_rel(q0, keys[pi].value)));
+            let log_prev = prev.map(|pi| (keys[pi].time, quat_log_rel(q0, keys[pi].value)));
             let log_k0 = (k0.time, Vec3::ZERO);
             let log_k1 = (k1.time, quat_log_rel(q0, k1.value));
-            let log_next =
-                next.map(|ni| (keys[ni].time, quat_log_rel(q0, keys[ni].value)));
+            let log_next = next.map(|ni| (keys[ni].time, quat_log_rel(q0, keys[ni].value)));
 
             let tbc0 = k0.tbc.unwrap_or([0.0, 0.0, 0.0]);
             let tbc1 = k1.tbc.unwrap_or([0.0, 0.0, 0.0]);

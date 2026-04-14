@@ -185,7 +185,8 @@ mod tests {
     #[test]
     fn child_inherits_parent_translation_and_scale() {
         let mut world = World::new();
-        let parent = spawn_with_transform(&mut world, Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 2.0);
+        let parent =
+            spawn_with_transform(&mut world, Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 2.0);
         let child = spawn_with_transform(&mut world, Vec3::new(1.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
         world.insert(child, Parent(parent));
         world.insert(parent, Children(vec![child]));
@@ -238,8 +239,7 @@ mod tests {
             Quat::from_rotation_y(FRAC_PI_2),
             1.0,
         );
-        let child =
-            spawn_with_transform(&mut world, Vec3::new(1.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        let child = spawn_with_transform(&mut world, Vec3::new(1.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
         world.insert(child, Parent(parent));
         world.insert(parent, Children(vec![child]));
 
@@ -249,7 +249,11 @@ mod tests {
         let gq = world.query::<GlobalTransform>().unwrap();
         let cg = gq.get(child).unwrap();
         // Child's world translation must lie on the Z axis (x and y ≈ 0).
-        assert!(cg.translation.x.abs() < 1e-5, "x should be 0, got {}", cg.translation.x);
+        assert!(
+            cg.translation.x.abs() < 1e-5,
+            "x should be 0, got {}",
+            cg.translation.x
+        );
         assert!(cg.translation.y.abs() < 1e-5);
         assert!((cg.translation.z.abs() - 1.0).abs() < 1e-5);
     }
@@ -260,7 +264,10 @@ mod tests {
         // system must not panic; it simply skips the missing storage.
         let mut world = World::new();
         let e = world.spawn();
-        world.insert(e, Transform::new(Vec3::new(9.0, 9.0, 9.0), Quat::IDENTITY, 1.0));
+        world.insert(
+            e,
+            Transform::new(Vec3::new(9.0, 9.0, 9.0), Quat::IDENTITY, 1.0),
+        );
         // Deliberately no GlobalTransform.
         let mut sys = make_transform_propagation_system();
         sys(&world, 0.016);
@@ -283,12 +290,7 @@ mod tests {
         let mut prev: Option<EntityId> = None;
         let mut ids: Vec<EntityId> = Vec::new();
         for _ in 0..10 {
-            let e = spawn_with_transform(
-                &mut world,
-                Vec3::new(1.0, 0.0, 0.0),
-                Quat::IDENTITY,
-                1.0,
-            );
+            let e = spawn_with_transform(&mut world, Vec3::new(1.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
             if let Some(parent) = prev {
                 world.insert(e, Parent(parent));
                 world.insert(parent, Children(vec![e]));
@@ -323,10 +325,8 @@ mod tests {
         let mut world = World::new();
         let root =
             spawn_with_transform(&mut world, Vec3::new(100.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
-        let left =
-            spawn_with_transform(&mut world, Vec3::new(-5.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
-        let right =
-            spawn_with_transform(&mut world, Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        let left = spawn_with_transform(&mut world, Vec3::new(-5.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        let right = spawn_with_transform(&mut world, Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
         world.insert(left, Parent(root));
         world.insert(right, Parent(root));
         world.insert(root, Children(vec![left, right]));

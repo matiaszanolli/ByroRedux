@@ -153,8 +153,7 @@ impl World {
 
     /// Check if an entity has a specific component.
     pub fn has<T: Component>(&self, entity: EntityId) -> bool {
-        self.query::<T>()
-            .is_some_and(|q| q.contains(entity))
+        self.query::<T>().is_some_and(|q| q.contains(entity))
     }
 
     /// Returns the number of entities that have component `T`.
@@ -1410,10 +1409,7 @@ mod tests {
         // Sanity check: tracker is empty at the start of this test. In
         // debug builds the thread-local map is per-thread and each test
         // runs on a fresh worker thread, so this must hold.
-        assert!(
-            lock_tracker::is_clean(),
-            "lock tracker must start clean"
-        );
+        assert!(lock_tracker::is_clean(), "lock tracker must start clean");
 
         let mut world = World::new();
         let e = world.spawn();
@@ -1457,13 +1453,7 @@ mod tests {
         let mut world2 = World::new();
         let e = world2.spawn();
         world2.insert(e, Health(100.0));
-        world2.insert(
-            e,
-            Position {
-                x: 0.0,
-                y: 0.0,
-            },
-        );
+        world2.insert(e, Position { x: 0.0, y: 0.0 });
         let world2 = Arc::new(world2);
         let w = Arc::clone(&world2);
         let _ = std::thread::spawn(move || {

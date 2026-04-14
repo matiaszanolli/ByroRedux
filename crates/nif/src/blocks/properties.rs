@@ -346,17 +346,16 @@ impl NiTexturingProperty {
             // transform body when the bool is set and store it on the
             // returned TexDesc; the old parser skipped it, which caused
             // #219 (per-slot UV transforms lost).
-            let transform =
-                if stream.version() >= crate::version::NifVersion(0x0A010000) {
-                    let has_transform = stream.read_byte_bool()?;
-                    if has_transform {
-                        Some(Self::read_tex_transform(stream)?)
-                    } else {
-                        None
-                    }
+            let transform = if stream.version() >= crate::version::NifVersion(0x0A010000) {
+                let has_transform = stream.read_byte_bool()?;
+                if has_transform {
+                    Some(Self::read_tex_transform(stream)?)
                 } else {
                     None
-                };
+                }
+            } else {
+                None
+            };
             Ok(Some(TexDesc {
                 source_ref,
                 flags,
@@ -372,17 +371,16 @@ impl NiTexturingProperty {
                 let _ps2_k = stream.read_u16_le()?;
             }
 
-            let transform =
-                if stream.version() >= crate::version::NifVersion(0x0A010000) {
-                    let has_transform = stream.read_byte_bool()?;
-                    if has_transform {
-                        Some(Self::read_tex_transform(stream)?)
-                    } else {
-                        None
-                    }
+            let transform = if stream.version() >= crate::version::NifVersion(0x0A010000) {
+                let has_transform = stream.read_byte_bool()?;
+                if has_transform {
+                    Some(Self::read_tex_transform(stream)?)
                 } else {
                     None
-                };
+                }
+            } else {
+                None
+            };
 
             let flags = ((clamp_mode & 0xF) as u16)
                 | (((filter_mode & 0xF) as u16) << 4)
@@ -662,7 +660,7 @@ mod tests {
         data.extend_from_slice(&5i32.to_le_bytes()); // source_ref
         data.extend_from_slice(&0x0302u16.to_le_bytes()); // flags
         data.push(1); // has_transform
-        // Translation (u, v)
+                      // Translation (u, v)
         data.extend_from_slice(&0.25f32.to_le_bytes());
         data.extend_from_slice(&(-0.5f32).to_le_bytes());
         // Scale (su, sv)
@@ -690,7 +688,9 @@ mod tests {
             .expect("base_texture present (has=1)");
         assert_eq!(base.source_ref.0, 5);
         assert_eq!(base.flags, 0x0302);
-        let tx = base.transform.expect("transform captured (has_transform=1)");
+        let tx = base
+            .transform
+            .expect("transform captured (has_transform=1)");
         assert!((tx.translation[0] - 0.25).abs() < 1e-6);
         assert!((tx.translation[1] + 0.5).abs() < 1e-6);
         assert!((tx.scale[0] - 2.0).abs() < 1e-6);

@@ -1,13 +1,13 @@
 //! Swapchain recreation after window resize or suboptimal present.
 
 use super::super::composite::HDR_FORMAT;
-use super::super::gbuffer::{ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT};
+use super::super::gbuffer::{
+    ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT,
+};
 use super::super::ssao::SsaoPipeline;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::super::{pipeline, swapchain};
-use super::helpers::{
-    create_depth_resources, create_main_framebuffers, create_render_pass,
-};
+use super::helpers::{create_depth_resources, create_main_framebuffers, create_render_pass};
 use super::VulkanContext;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -149,7 +149,10 @@ impl VulkanContext {
         // must destroy and rebuild it. The scene descriptor set binding 7
         // (aoTexture) is also re-written to point at the new AO image.
         if let Some(ref mut old_ssao) = self.ssao {
-            let allocator = self.allocator.as_ref().expect("allocator missing during resize");
+            let allocator = self
+                .allocator
+                .as_ref()
+                .expect("allocator missing during resize");
             unsafe { old_ssao.destroy(&self.device, allocator) };
             self.ssao = None;
             match SsaoPipeline::new(
@@ -191,18 +194,16 @@ impl VulkanContext {
         if let Some(ref mut gbuffer) = self.gbuffer {
             gbuffer.recreate_on_resize(
                 &self.device,
-                self.allocator.as_ref().expect("allocator missing during resize"),
+                self.allocator
+                    .as_ref()
+                    .expect("allocator missing during resize"),
                 self.swapchain_state.extent.width,
                 self.swapchain_state.extent.height,
             )?;
             // New images start UNDEFINED — transition to SHADER_READ_ONLY so
             // the "prev" frame slot is valid on the first frame after resize.
             if let Err(e) = unsafe {
-                gbuffer.initialize_layouts(
-                    &self.device,
-                    &self.graphics_queue,
-                    self.transfer_pool,
-                )
+                gbuffer.initialize_layouts(&self.device, &self.graphics_queue, self.transfer_pool)
             } {
                 log::warn!("G-buffer post-resize layout init failed: {e}");
             }
@@ -216,8 +217,7 @@ impl VulkanContext {
                 .as_ref()
                 .expect("gbuffer must exist during resize");
             let n = MAX_FRAMES_IN_FLIGHT;
-            let ri: Vec<vk::ImageView> =
-                (0..n).map(|i| gbuffer_ref.raw_indirect_view(i)).collect();
+            let ri: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.raw_indirect_view(i)).collect();
             let mo: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.motion_view(i)).collect();
             let mi: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.mesh_id_view(i)).collect();
             let ab: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.albedo_view(i)).collect();
@@ -230,7 +230,9 @@ impl VulkanContext {
         if let Some(ref mut svgf) = self.svgf {
             svgf.recreate_on_resize(
                 &self.device,
-                self.allocator.as_ref().expect("allocator missing during resize"),
+                self.allocator
+                    .as_ref()
+                    .expect("allocator missing during resize"),
                 &raw_indirect_views,
                 &motion_views_in,
                 &mesh_id_views_in,
@@ -238,9 +240,9 @@ impl VulkanContext {
                 self.swapchain_state.extent.height,
             )?;
             // Re-transition the fresh history images to GENERAL.
-            if let Err(e) =
-                unsafe { svgf.initialize_layouts(&self.device, &self.graphics_queue, self.transfer_pool) }
-            {
+            if let Err(e) = unsafe {
+                svgf.initialize_layouts(&self.device, &self.graphics_queue, self.transfer_pool)
+            } {
                 log::warn!("SVGF layout re-init after resize failed: {e}");
             }
         }
@@ -261,7 +263,9 @@ impl VulkanContext {
         if let Some(ref mut composite) = self.composite {
             composite.recreate_on_resize(
                 &self.device,
-                self.allocator.as_ref().expect("allocator missing during resize"),
+                self.allocator
+                    .as_ref()
+                    .expect("allocator missing during resize"),
                 &self.swapchain_state.image_views,
                 &composite_indirect_views,
                 indirect_is_general,
@@ -283,10 +287,8 @@ impl VulkanContext {
             .expect("gbuffer must exist during resize");
         let hdr_views = &composite_ref.hdr_image_views;
         let n = hdr_views.len();
-        let normal_views: Vec<vk::ImageView> =
-            (0..n).map(|i| gbuffer_ref.normal_view(i)).collect();
-        let motion_views: Vec<vk::ImageView> =
-            (0..n).map(|i| gbuffer_ref.motion_view(i)).collect();
+        let normal_views: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.normal_view(i)).collect();
+        let motion_views: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.motion_view(i)).collect();
         let mesh_id_views: Vec<vk::ImageView> =
             (0..n).map(|i| gbuffer_ref.mesh_id_view(i)).collect();
         self.framebuffers = create_main_framebuffers(

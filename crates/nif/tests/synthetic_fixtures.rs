@@ -55,8 +55,8 @@ fn build_skyrim_se_nif() -> Vec<u8> {
 
     // ── Binary header ──
     w32(&mut nif, 0x14020007); // version = 20.2.0.7
-    w8(&mut nif, 1);           // little-endian
-    w32(&mut nif, 12);         // user_version = 12
+    w8(&mut nif, 1); // little-endian
+    w32(&mut nif, 12); // user_version = 12
 
     let num_blocks: u32 = 1;
     w32(&mut nif, num_blocks);
@@ -64,10 +64,10 @@ fn build_skyrim_se_nif() -> Vec<u8> {
     // BSStreamHeader: user_version_2 (bsver)
     w32(&mut nif, 100); // bsver = 100 (Skyrim SE)
     wshort(&mut nif, "ByroRedux Test"); // author
-    // bsver < 131 → process_script
-    wshort(&mut nif, "");               // process_script
-    wshort(&mut nif, "");               // export_script
-    // bsver >= 103 → max_filepath: 100 < 103, so DO NOT write it
+                                        // bsver < 131 → process_script
+    wshort(&mut nif, ""); // process_script
+    wshort(&mut nif, ""); // export_script
+                          // bsver >= 103 → max_filepath: 100 < 103, so DO NOT write it
 
     // Block type table: 1 type ("NiNode")
     w16(&mut nif, 1); // num_block_types
@@ -106,18 +106,24 @@ fn build_skyrim_se_nif() -> Vec<u8> {
     //   properties (bsver <= 34 only — Skyrim bsver=100 does NOT have this)
     //   collision_ref: i32
 
-    w32(&mut nif, 0);       // name = string index 0 ("Scene Root")
-    w32(&mut nif, 0);       // num_extra_data = 0
+    w32(&mut nif, 0); // name = string index 0 ("Scene Root")
+    w32(&mut nif, 0); // num_extra_data = 0
     w32(&mut nif, 0xFFFFFFFF); // controller_ref = -1 (none)
-    w32(&mut nif, 0x0E);    // flags (typical NiNode flags)
-    // Translation
+    w32(&mut nif, 0x0E); // flags (typical NiNode flags)
+                         // Translation
     wf32(&mut nif, 0.0);
     wf32(&mut nif, 0.0);
     wf32(&mut nif, 0.0);
     // Rotation (identity 3×3)
-    wf32(&mut nif, 1.0); wf32(&mut nif, 0.0); wf32(&mut nif, 0.0);
-    wf32(&mut nif, 0.0); wf32(&mut nif, 1.0); wf32(&mut nif, 0.0);
-    wf32(&mut nif, 0.0); wf32(&mut nif, 0.0); wf32(&mut nif, 1.0);
+    wf32(&mut nif, 1.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 1.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 1.0);
     // Scale
     wf32(&mut nif, 1.0);
     // collision_ref
@@ -132,8 +138,7 @@ fn build_skyrim_se_nif() -> Vec<u8> {
     let block_size = (nif.len() - block_start) as u32;
 
     // Patch block size.
-    nif[block_sizes_offset..block_sizes_offset + 4]
-        .copy_from_slice(&block_size.to_le_bytes());
+    nif[block_sizes_offset..block_sizes_offset + 4].copy_from_slice(&block_size.to_le_bytes());
 
     nif
 }
@@ -177,20 +182,28 @@ fn build_fo3_nif() -> Vec<u8> {
 
     // NiNode block data (bsver=34: has properties list)
     let block_start = nif.len();
-    w32(&mut nif, 0);          // name
-    w32(&mut nif, 0);          // num_extra_data
+    w32(&mut nif, 0); // name
+    w32(&mut nif, 0); // num_extra_data
     w32(&mut nif, 0xFFFFFFFF); // controller_ref
-    w32(&mut nif, 0x0E);       // flags (bsver > 26)
-    // Translation
-    wf32(&mut nif, 0.0); wf32(&mut nif, 0.0); wf32(&mut nif, 0.0);
+    w32(&mut nif, 0x0E); // flags (bsver > 26)
+                         // Translation
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
     // Rotation (identity)
-    wf32(&mut nif, 1.0); wf32(&mut nif, 0.0); wf32(&mut nif, 0.0);
-    wf32(&mut nif, 0.0); wf32(&mut nif, 1.0); wf32(&mut nif, 0.0);
-    wf32(&mut nif, 0.0); wf32(&mut nif, 0.0); wf32(&mut nif, 1.0);
+    wf32(&mut nif, 1.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 1.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 1.0);
     wf32(&mut nif, 1.0); // scale
-    // Properties list (bsver <= 34 → present)
+                         // Properties list (bsver <= 34 → present)
     w32(&mut nif, 0); // num_properties = 0
-    // Collision ref
+                      // Collision ref
     w32(&mut nif, 0xFFFFFFFF);
     // Children
     w32(&mut nif, 0);
@@ -198,8 +211,7 @@ fn build_fo3_nif() -> Vec<u8> {
     w32(&mut nif, 0);
 
     let block_size = (nif.len() - block_start) as u32;
-    nif[block_sizes_offset..block_sizes_offset + 4]
-        .copy_from_slice(&block_size.to_le_bytes());
+    nif[block_sizes_offset..block_sizes_offset + 4].copy_from_slice(&block_size.to_le_bytes());
 
     nif
 }
@@ -210,8 +222,8 @@ fn build_oblivion_nif() -> Vec<u8> {
 
     nif.extend_from_slice(b"Gamebryo File Format, Version 20.0.0.5\n");
     w32(&mut nif, 0x14000005); // v20.0.0.5
-    w8(&mut nif, 1);           // little-endian
-    w32(&mut nif, 0);          // user_version = 0 (Oblivion)
+    w8(&mut nif, 1); // little-endian
+    w32(&mut nif, 0); // user_version = 0 (Oblivion)
 
     let num_blocks: u32 = 1;
     w32(&mut nif, num_blocks);
@@ -246,21 +258,29 @@ fn build_oblivion_nif() -> Vec<u8> {
 
     // For Oblivion (bsver=0): flags is u16, no BSStreamHeader, strings inline
     wsstr(&mut nif, "Scene Root"); // name (inline sized string, not string table index)
-    w32(&mut nif, 0);              // num_extra_data
-    w32(&mut nif, 0xFFFFFFFF);     // controller_ref
-    w16(&mut nif, 0x000E);         // flags (u16 for bsver <= 26)
-    // Translation
-    wf32(&mut nif, 0.0); wf32(&mut nif, 0.0); wf32(&mut nif, 0.0);
+    w32(&mut nif, 0); // num_extra_data
+    w32(&mut nif, 0xFFFFFFFF); // controller_ref
+    w16(&mut nif, 0x000E); // flags (u16 for bsver <= 26)
+                           // Translation
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
     // Rotation (identity)
-    wf32(&mut nif, 1.0); wf32(&mut nif, 0.0); wf32(&mut nif, 0.0);
-    wf32(&mut nif, 0.0); wf32(&mut nif, 1.0); wf32(&mut nif, 0.0);
-    wf32(&mut nif, 0.0); wf32(&mut nif, 0.0); wf32(&mut nif, 1.0);
+    wf32(&mut nif, 1.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 1.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 1.0);
     wf32(&mut nif, 1.0); // scale
-    // Properties list
+                         // Properties list
     w32(&mut nif, 0); // num_properties
-    // has_collision for Oblivion (bsver 0): always present
+                      // has_collision for Oblivion (bsver 0): always present
     w32(&mut nif, 0xFFFFFFFF); // collision_ref
-    // Children
+                               // Children
     w32(&mut nif, 0);
     // Effects (bsver < 130)
     w32(&mut nif, 0);
@@ -301,7 +321,10 @@ fn parse_synthetic_oblivion() {
 fn synthetic_skyrim_header_version() {
     let data = build_skyrim_se_nif();
     let (header, _) = byroredux_nif::header::NifHeader::parse(&data).unwrap();
-    assert_eq!(header.version, byroredux_nif::version::NifVersion::V20_2_0_7);
+    assert_eq!(
+        header.version,
+        byroredux_nif::version::NifVersion::V20_2_0_7
+    );
     assert_eq!(header.user_version, 12);
     assert_eq!(header.user_version_2, 100);
     assert_eq!(header.num_blocks, 1);
@@ -371,9 +394,9 @@ fn build_morrowind_nif() -> Vec<u8> {
     //   name: SizedString
     //   extra_data_ref: single Ref (i32), not counted list
     //   controller_ref: Ref (i32)
-    wsstr(&mut nif, "Scene Root");   // name
-    w32(&mut nif, 0xFFFFFFFF);       // extra_data_ref (NULL = -1)
-    w32(&mut nif, 0xFFFFFFFF);       // controller_ref (NULL = -1)
+    wsstr(&mut nif, "Scene Root"); // name
+    w32(&mut nif, 0xFFFFFFFF); // extra_data_ref (NULL = -1)
+    w32(&mut nif, 0xFFFFFFFF); // controller_ref (NULL = -1)
 
     // NiAVObjectData (pre-Gamebryo format):
     //   flags: u16 (bsver <= 26)
@@ -384,15 +407,25 @@ fn build_morrowind_nif() -> Vec<u8> {
     w16(&mut nif, 0x000E); // flags
 
     // Translation
-    wf32(&mut nif, 0.0); wf32(&mut nif, 0.0); wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
     // Rotation (identity)
-    wf32(&mut nif, 1.0); wf32(&mut nif, 0.0); wf32(&mut nif, 0.0);
-    wf32(&mut nif, 0.0); wf32(&mut nif, 1.0); wf32(&mut nif, 0.0);
-    wf32(&mut nif, 0.0); wf32(&mut nif, 0.0); wf32(&mut nif, 1.0);
+    wf32(&mut nif, 1.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 1.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 1.0);
     wf32(&mut nif, 1.0); // scale
 
     // Velocity (only v <= 4.2.2.0)
-    wf32(&mut nif, 0.0); wf32(&mut nif, 0.0); wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
+    wf32(&mut nif, 0.0);
 
     // Properties list
     w32(&mut nif, 0); // num_properties
@@ -423,7 +456,10 @@ fn synthetic_morrowind_variant_detection() {
     assert_eq!(header.version, byroredux_nif::version::NifVersion::V4_0_0_2);
     assert_eq!(header.user_version, 0);
     assert_eq!(header.num_blocks, 1);
-    assert!(header.block_types.is_empty(), "pre-Gamebryo has no block type table");
+    assert!(
+        header.block_types.is_empty(),
+        "pre-Gamebryo has no block type table"
+    );
     let variant = byroredux_nif::version::NifVariant::detect(
         header.version,
         header.user_version,

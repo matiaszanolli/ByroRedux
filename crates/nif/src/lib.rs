@@ -243,7 +243,11 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                         log::info!(
                             "Block {} '{}' (offset {}): skipped {} bytes via \
                              oblivion_skip_sizes hint (was: {})",
-                            i, type_name, start_pos, skip_size, e
+                            i,
+                            type_name,
+                            start_pos,
+                            skip_size,
+                            e
                         );
                         blocks.push(Box::new(blocks::NiUnknown {
                             type_name: Arc::from(type_name),
@@ -256,7 +260,10 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                     log::warn!(
                         "Block {} '{}' (offset {}): oblivion_skip_sizes hint of {} \
                          bytes would exceed file length; truncating",
-                        i, type_name, start_pos, skip_size
+                        i,
+                        type_name,
+                        start_pos,
+                        skip_size
                     );
                 }
 
@@ -269,7 +276,13 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                 log::warn!(
                     "Block {} '{}' (offset {}, consumed {}): {} — stopping parse; \
                      keeping {} blocks, DISCARDING {} subsequent blocks (scene marked truncated)",
-                    i, type_name, start_pos, consumed, e, blocks.len(), dropped
+                    i,
+                    type_name,
+                    start_pos,
+                    consumed,
+                    e,
+                    blocks.len(),
+                    dropped
                 );
                 truncated = true;
                 dropped_block_count = dropped;

@@ -291,8 +291,7 @@ impl SvgfPipeline {
 
         // ── 5. Compute pipeline ───────────────────────────────────────
         let spv = include_bytes!("../../shaders/svgf_temporal.comp.spv");
-        partial.shader_module =
-            try_or_cleanup!(super::pipeline::load_shader_module(device, spv));
+        partial.shader_module = try_or_cleanup!(super::pipeline::load_shader_module(device, spv));
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(partial.shader_module)
@@ -354,12 +353,7 @@ impl SvgfPipeline {
         });
 
         // ── 7. Write descriptor sets ──────────────────────────────────
-        partial.write_descriptor_sets(
-            device,
-            raw_indirect_views,
-            motion_views,
-            mesh_id_views,
-        );
+        partial.write_descriptor_sets(device, raw_indirect_views, motion_views, mesh_id_views);
 
         log::info!("SVGF pipeline created: {}x{}", width, height);
         Ok(partial)
@@ -571,7 +565,11 @@ impl SvgfPipeline {
     ) -> Result<()> {
         super::texture::with_one_time_commands(device, queue, pool, |cmd| {
             let mut barriers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT * 2);
-            for slot in self.indirect_history.iter().chain(self.moments_history.iter()) {
+            for slot in self
+                .indirect_history
+                .iter()
+                .chain(self.moments_history.iter())
+            {
                 barriers.push(
                     vk::ImageMemoryBarrier::default()
                         .src_access_mask(vk::AccessFlags::empty())

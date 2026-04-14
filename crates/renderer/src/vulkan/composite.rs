@@ -200,10 +200,7 @@ impl CompositePipeline {
                 .array_layers(1)
                 .samples(vk::SampleCountFlags::TYPE_1)
                 .tiling(vk::ImageTiling::OPTIMAL)
-                .usage(
-                    vk::ImageUsageFlags::COLOR_ATTACHMENT
-                        | vk::ImageUsageFlags::SAMPLED,
-                )
+                .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE)
                 .initial_layout(vk::ImageLayout::UNDEFINED);
             let img = try_or_cleanup!(unsafe {
@@ -584,11 +581,7 @@ impl CompositePipeline {
             .subpass(0);
 
         partial.pipeline = match unsafe {
-            device.create_graphics_pipelines(
-                vk::PipelineCache::null(),
-                &[pipeline_info],
-                None,
-            )
+            device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
         } {
             Ok(pipelines) => pipelines[0],
             Err((_, e)) => {
@@ -711,133 +704,130 @@ impl CompositePipeline {
         // Recreate HDR images. On partial failure, clean up any
         // already-allocated new resources. See #283.
         let result = (|| -> Result<()> {
-        for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let img_info = vk::ImageCreateInfo::default()
-                .image_type(vk::ImageType::TYPE_2D)
-                .format(HDR_FORMAT)
-                .extent(vk::Extent3D {
-                    width,
-                    height,
-                    depth: 1,
-                })
-                .mip_levels(1)
-                .array_layers(1)
-                .samples(vk::SampleCountFlags::TYPE_1)
-                .tiling(vk::ImageTiling::OPTIMAL)
-                .usage(
-                    vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
-                )
-                .sharing_mode(vk::SharingMode::EXCLUSIVE)
-                .initial_layout(vk::ImageLayout::UNDEFINED);
-            let img = unsafe { device.create_image(&img_info, None)? };
-            self.hdr_images.push(img);
+            for i in 0..MAX_FRAMES_IN_FLIGHT {
+                let img_info = vk::ImageCreateInfo::default()
+                    .image_type(vk::ImageType::TYPE_2D)
+                    .format(HDR_FORMAT)
+                    .extent(vk::Extent3D {
+                        width,
+                        height,
+                        depth: 1,
+                    })
+                    .mip_levels(1)
+                    .array_layers(1)
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .tiling(vk::ImageTiling::OPTIMAL)
+                    .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                    .initial_layout(vk::ImageLayout::UNDEFINED);
+                let img = unsafe { device.create_image(&img_info, None)? };
+                self.hdr_images.push(img);
 
-            let alloc = allocator
-                .lock()
-                .expect("allocator lock")
-                .allocate(&vk_alloc::AllocationCreateDesc {
-                    name: &format!("hdr_color_{}", i),
-                    requirements: unsafe { device.get_image_memory_requirements(img) },
-                    location: gpu_allocator::MemoryLocation::GpuOnly,
-                    linear: false,
-                    allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-                })?;
-            unsafe { device.bind_image_memory(img, alloc.memory(), alloc.offset())? };
-            self.hdr_allocations.push(Some(alloc));
+                let alloc = allocator.lock().expect("allocator lock").allocate(
+                    &vk_alloc::AllocationCreateDesc {
+                        name: &format!("hdr_color_{}", i),
+                        requirements: unsafe { device.get_image_memory_requirements(img) },
+                        location: gpu_allocator::MemoryLocation::GpuOnly,
+                        linear: false,
+                        allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
+                    },
+                )?;
+                unsafe { device.bind_image_memory(img, alloc.memory(), alloc.offset())? };
+                self.hdr_allocations.push(Some(alloc));
 
-            let view = unsafe {
-                device.create_image_view(
-                    &vk::ImageViewCreateInfo::default()
-                        .image(img)
-                        .view_type(vk::ImageViewType::TYPE_2D)
-                        .format(HDR_FORMAT)
-                        .subresource_range(vk::ImageSubresourceRange {
-                            aspect_mask: vk::ImageAspectFlags::COLOR,
-                            base_mip_level: 0,
-                            level_count: 1,
-                            base_array_layer: 0,
-                            layer_count: 1,
-                        }),
-                    None,
-                )?
+                let view = unsafe {
+                    device.create_image_view(
+                        &vk::ImageViewCreateInfo::default()
+                            .image(img)
+                            .view_type(vk::ImageViewType::TYPE_2D)
+                            .format(HDR_FORMAT)
+                            .subresource_range(vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                base_mip_level: 0,
+                                level_count: 1,
+                                base_array_layer: 0,
+                                layer_count: 1,
+                            }),
+                        None,
+                    )?
+                };
+                self.hdr_image_views.push(view);
+            }
+
+            // Rewrite descriptor sets to point at the new HDR, indirect,
+            // albedo views, and updated depth view. Params UBO buffers are unchanged.
+            let param_size = std::mem::size_of::<CompositeParams>() as vk::DeviceSize;
+            let indirect_layout = if indirect_is_general {
+                vk::ImageLayout::GENERAL
+            } else {
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
             };
-            self.hdr_image_views.push(view);
-        }
+            for i in 0..MAX_FRAMES_IN_FLIGHT {
+                let hdr_info = [vk::DescriptorImageInfo::default()
+                    .sampler(self.hdr_sampler)
+                    .image_view(self.hdr_image_views[i])
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                let indirect_info = [vk::DescriptorImageInfo::default()
+                    .sampler(self.hdr_sampler)
+                    .image_view(indirect_views[i])
+                    .image_layout(indirect_layout)];
+                let albedo_info = [vk::DescriptorImageInfo::default()
+                    .sampler(self.hdr_sampler)
+                    .image_view(albedo_views[i])
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                let params_info = [vk::DescriptorBufferInfo {
+                    buffer: self.param_buffers[i].buffer,
+                    offset: 0,
+                    range: param_size,
+                }];
+                let depth_info = [vk::DescriptorImageInfo::default()
+                    .sampler(self.hdr_sampler)
+                    .image_view(depth_view)
+                    .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
+                let writes = [
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(self.descriptor_sets[i])
+                        .dst_binding(0)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(&hdr_info),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(self.descriptor_sets[i])
+                        .dst_binding(1)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(&indirect_info),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(self.descriptor_sets[i])
+                        .dst_binding(2)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(&albedo_info),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(self.descriptor_sets[i])
+                        .dst_binding(3)
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .buffer_info(&params_info),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(self.descriptor_sets[i])
+                        .dst_binding(4)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(&depth_info),
+                ];
+                unsafe { device.update_descriptor_sets(&writes, &[]) };
+            }
 
-        // Rewrite descriptor sets to point at the new HDR, indirect,
-        // albedo views, and updated depth view. Params UBO buffers are unchanged.
-        let param_size = std::mem::size_of::<CompositeParams>() as vk::DeviceSize;
-        let indirect_layout = if indirect_is_general {
-            vk::ImageLayout::GENERAL
-        } else {
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
-        };
-        for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let hdr_info = [vk::DescriptorImageInfo::default()
-                .sampler(self.hdr_sampler)
-                .image_view(self.hdr_image_views[i])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let indirect_info = [vk::DescriptorImageInfo::default()
-                .sampler(self.hdr_sampler)
-                .image_view(indirect_views[i])
-                .image_layout(indirect_layout)];
-            let albedo_info = [vk::DescriptorImageInfo::default()
-                .sampler(self.hdr_sampler)
-                .image_view(albedo_views[i])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let params_info = [vk::DescriptorBufferInfo {
-                buffer: self.param_buffers[i].buffer,
-                offset: 0,
-                range: param_size,
-            }];
-            let depth_info = [vk::DescriptorImageInfo::default()
-                .sampler(self.hdr_sampler)
-                .image_view(depth_view)
-                .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
-            let writes = [
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[i])
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&hdr_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[i])
-                    .dst_binding(1)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&indirect_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[i])
-                    .dst_binding(2)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&albedo_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[i])
-                    .dst_binding(3)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&params_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[i])
-                    .dst_binding(4)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&depth_info),
-            ];
-            unsafe { device.update_descriptor_sets(&writes, &[]) };
-        }
+            // Recreate composite framebuffers (bound to swapchain views).
+            for &view in swapchain_views {
+                let attachments = [view];
+                let fb_info = vk::FramebufferCreateInfo::default()
+                    .render_pass(self.composite_render_pass)
+                    .attachments(&attachments)
+                    .width(width)
+                    .height(height)
+                    .layers(1);
+                let fb = unsafe { device.create_framebuffer(&fb_info, None)? };
+                self.composite_framebuffers.push(fb);
+            }
 
-        // Recreate composite framebuffers (bound to swapchain views).
-        for &view in swapchain_views {
-            let attachments = [view];
-            let fb_info = vk::FramebufferCreateInfo::default()
-                .render_pass(self.composite_render_pass)
-                .attachments(&attachments)
-                .width(width)
-                .height(height)
-                .layers(1);
-            let fb = unsafe { device.create_framebuffer(&fb_info, None)? };
-            self.composite_framebuffers.push(fb);
-        }
-
-        Ok(())
+            Ok(())
         })(); // end of closure
         if let Err(ref e) = result {
             log::error!("Composite recreate partial failure: {e} — cleaning up");
@@ -920,11 +910,7 @@ impl CompositePipeline {
         self.hdr_images.clear();
         for alloc in self.hdr_allocations.drain(..) {
             if let Some(a) = alloc {
-                allocator
-                    .lock()
-                    .expect("allocator lock")
-                    .free(a)
-                    .ok();
+                allocator.lock().expect("allocator lock").free(a).ok();
             }
         }
     }

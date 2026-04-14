@@ -16,7 +16,8 @@ pub struct ScreenshotBridge {
 
 impl ScreenshotBridge {
     pub fn request(&self) {
-        self.requested.store(true, std::sync::atomic::Ordering::Release);
+        self.requested
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     pub fn take_result(&self) -> Option<Vec<u8>> {

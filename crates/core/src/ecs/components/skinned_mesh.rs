@@ -108,20 +108,17 @@ impl SkinnedMesh {
         F: FnMut(EntityId) -> Option<Mat4>,
     {
         out.clear();
-        out.extend(
-            self.bones
-                .iter()
-                .zip(self.bind_inverses.iter())
-                .map(|(maybe_bone, bind_inv)| {
-                    let Some(bone) = maybe_bone else {
-                        return Mat4::IDENTITY;
-                    };
-                    match world_transform_of(*bone) {
-                        Some(world) => world * *bind_inv,
-                        None => Mat4::IDENTITY,
-                    }
-                }),
-        );
+        out.extend(self.bones.iter().zip(self.bind_inverses.iter()).map(
+            |(maybe_bone, bind_inv)| {
+                let Some(bone) = maybe_bone else {
+                    return Mat4::IDENTITY;
+                };
+                match world_transform_of(*bone) {
+                    Some(world) => world * *bind_inv,
+                    None => Mat4::IDENTITY,
+                }
+            },
+        ));
     }
 }
 
@@ -176,10 +173,7 @@ mod tests {
             Some(Mat4::from_translation(Vec3::new(1.0, 2.0, 3.0)))
         });
         assert_eq!(palette[0], Mat4::IDENTITY);
-        assert_eq!(
-            palette[1],
-            Mat4::from_translation(Vec3::new(1.0, 2.0, 3.0))
-        );
+        assert_eq!(palette[1], Mat4::from_translation(Vec3::new(1.0, 2.0, 3.0)));
     }
 
     #[test]

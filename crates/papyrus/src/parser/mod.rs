@@ -116,7 +116,9 @@ impl Parser {
     pub fn expect(&mut self, expected: &Token, label: &str) -> Result<Span, ParseError> {
         self.skip_newlines();
         if self.pos < self.tokens.len() {
-            if std::mem::discriminant(&self.tokens[self.pos].token) == std::mem::discriminant(expected) {
+            if std::mem::discriminant(&self.tokens[self.pos].token)
+                == std::mem::discriminant(expected)
+            {
                 let span = self.tokens[self.pos].span;
                 self.pos += 1;
                 Ok(span)

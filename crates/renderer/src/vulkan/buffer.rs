@@ -172,8 +172,7 @@ impl StagingPool {
     /// destroyed Vulkan resource. Pass `0` to drop the pool back to
     /// empty (useful after a cell load or archive flush).
     pub fn trim_to(&mut self, target: vk::DeviceSize) {
-        let capacities: Vec<vk::DeviceSize> =
-            self.free_list.iter().map(|e| e.capacity).collect();
+        let capacities: Vec<vk::DeviceSize> = self.free_list.iter().map(|e| e.capacity).collect();
         let evict = select_evictions(&capacities, target);
         for _ in 0..evict {
             // `free_list` is sorted ascending by capacity, so the last
@@ -847,11 +846,7 @@ mod tests {
         let evict = select_evictions(&caps, budget);
 
         // Post-eviction total must be ≤ budget.
-        let remaining: u64 = caps
-            .iter()
-            .take(caps.len() - evict)
-            .copied()
-            .sum();
+        let remaining: u64 = caps.iter().take(caps.len() - evict).copied().sum();
         assert!(
             remaining <= budget,
             "remaining {} bytes should fit under {} byte budget after evicting {} entries",

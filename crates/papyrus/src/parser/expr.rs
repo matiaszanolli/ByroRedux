@@ -77,7 +77,10 @@ impl Parser {
     fn parse_prefix(&mut self) -> Result<Spanned<Expr>, ParseError> {
         self.skip_newlines();
         let Some((tok, span)) = self.peek_with_span().map(|(t, s)| (t.clone(), s)) else {
-            return Err(ParseError::unexpected_eof("expression", self.current_span()));
+            return Err(ParseError::unexpected_eof(
+                "expression",
+                self.current_span(),
+            ));
         };
 
         match tok {
@@ -126,9 +129,7 @@ impl Parser {
             }
 
             // ── New expression ──
-            Token::KwNew => {
-                self.parse_new_expr()
-            }
+            Token::KwNew => self.parse_new_expr(),
 
             // ── Parenthesized expression ──
             Token::LParen => {
@@ -164,11 +165,7 @@ impl Parser {
                 ))
             }
 
-            _ => Err(ParseError::unexpected_token(
-                "expression",
-                Some(tok),
-                span,
-            )),
+            _ => Err(ParseError::unexpected_token("expression", Some(tok), span)),
         }
     }
 
@@ -189,10 +186,7 @@ impl Parser {
     }
 
     /// Parse `.member` access after an expression.
-    fn parse_member_access(
-        &mut self,
-        lhs: Spanned<Expr>,
-    ) -> Result<Spanned<Expr>, ParseError> {
+    fn parse_member_access(&mut self, lhs: Spanned<Expr>) -> Result<Spanned<Expr>, ParseError> {
         self.advance(); // consume '.'
         let member = self.expect_ident("member name")?;
         let span = lhs.span.merge(member.span);
@@ -285,8 +279,8 @@ impl Parser {
                 if check_pos < self.tokens.len() && self.tokens[check_pos].token == Token::Eq {
                     // Make sure it's not `==`
                     let eq_next = check_pos + 1;
-                    let is_eq_eq = eq_next < self.tokens.len()
-                        && self.tokens[eq_next].token == Token::Eq;
+                    let is_eq_eq =
+                        eq_next < self.tokens.len() && self.tokens[eq_next].token == Token::Eq;
                     if !is_eq_eq {
                         self.pos = check_pos + 1; // past the `=`
                         return Some(Spanned::new(Identifier::new(name), name_span));
@@ -661,7 +655,9 @@ mod tests {
                 expr, target_type, ..
             } => {
                 assert_ident(&expr.node, "x");
-                assert!(matches!(&target_type.node, Type::Object(id) if id.eq_ignore_case("Actor")));
+                assert!(
+                    matches!(&target_type.node, Type::Object(id) if id.eq_ignore_case("Actor"))
+                );
             }
             other => panic!("expected Cast, got {other:?}"),
         }
@@ -714,7 +710,9 @@ mod tests {
                                                 assert_ident(&object.node, "a");
                                                 assert!(member.node.eq_ignore_case("b"));
                                             }
-                                            other => panic!("expected MemberAccess a.b, got {other:?}"),
+                                            other => {
+                                                panic!("expected MemberAccess a.b, got {other:?}")
+                                            }
                                         }
                                     }
                                     other => panic!("expected Index, got {other:?}"),

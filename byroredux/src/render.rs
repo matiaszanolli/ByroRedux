@@ -10,7 +10,9 @@ use byroredux_renderer::SkyParams;
 use rayon::slice::ParallelSliceMut;
 use std::collections::HashMap;
 
-use crate::components::{AlphaBlend, CellLightingRes, DarkMapHandle, Decal, NormalMapHandle, SkyParamsRes, TwoSided};
+use crate::components::{
+    AlphaBlend, CellLightingRes, DarkMapHandle, Decal, NormalMapHandle, SkyParamsRes, TwoSided,
+};
 
 /// Six frustum half-planes extracted from a view-projection matrix.
 ///
@@ -149,7 +151,11 @@ pub(crate) fn build_render_data(
         let frustum = FrustumPlanes::from_view_proj(vp);
         (vp.to_cols_array(), frustum, vp)
     } else {
-        (Mat4::IDENTITY.to_cols_array(), FrustumPlanes::from_view_proj(Mat4::IDENTITY), Mat4::IDENTITY)
+        (
+            Mat4::IDENTITY.to_cols_array(),
+            FrustumPlanes::from_view_proj(Mat4::IDENTITY),
+            Mat4::IDENTITY,
+        )
     };
 
     // ── Render-data query bundle (#246) ──────────────────────────────
@@ -205,9 +211,7 @@ pub(crate) fn build_render_data(
             // uncull to avoid disappearing objects. See #237.
             if let Some(ref wbq) = wb_q {
                 if let Some(wb) = wbq.get(entity) {
-                    if wb.radius > 0.0
-                        && !frustum.contains_sphere(wb.center, wb.radius)
-                    {
+                    if wb.radius > 0.0 && !frustum.contains_sphere(wb.center, wb.radius) {
                         continue;
                     }
                 }
@@ -272,24 +276,36 @@ pub(crate) fn build_render_data(
                     }
                 }
 
-                let (roughness, metalness, emissive_mult, emissive_color, specular_strength, specular_color, alpha_threshold, alpha_test_func) =
-                    if let Some(m) = mat {
-                        let pbr = m.classify_pbr(m.texture_path.as_deref());
-                        let thresh = if m.alpha_test { m.alpha_threshold } else { 0.0 };
-                        let func = if m.alpha_test { m.alpha_test_func as u32 } else { 0 };
-                        (
-                            pbr.roughness,
-                            pbr.metalness,
-                            m.emissive_mult,
-                            m.emissive_color,
-                            m.specular_strength,
-                            m.specular_color,
-                            thresh,
-                            func,
-                        )
+                let (
+                    roughness,
+                    metalness,
+                    emissive_mult,
+                    emissive_color,
+                    specular_strength,
+                    specular_color,
+                    alpha_threshold,
+                    alpha_test_func,
+                ) = if let Some(m) = mat {
+                    let pbr = m.classify_pbr(m.texture_path.as_deref());
+                    let thresh = if m.alpha_test { m.alpha_threshold } else { 0.0 };
+                    let func = if m.alpha_test {
+                        m.alpha_test_func as u32
                     } else {
-                        (0.5, 0.0, 0.0, [0.0; 3], 1.0, [1.0; 3], 0.0, 0u32)
+                        0
                     };
+                    (
+                        pbr.roughness,
+                        pbr.metalness,
+                        m.emissive_mult,
+                        m.emissive_color,
+                        m.specular_strength,
+                        m.specular_color,
+                        thresh,
+                        func,
+                    )
+                } else {
+                    (0.5, 0.0, 0.0, [0.0; 3], 1.0, [1.0; 3], 0.0, 0u32)
+                };
 
                 // Geometry SSBO offsets for RT reflection UV lookups.
                 let (v_off, i_off, v_count) = {
@@ -357,7 +373,7 @@ pub(crate) fn build_render_data(
         if cmd.alpha_blend {
             // Transparent: depth-primary (back-to-front).
             (
-                1u8,           // after opaque
+                1u8, // after opaque
                 cmd.is_decal as u8,
                 cmd.two_sided as u8,
                 !cmd.sort_depth, // invert → larger depth first
@@ -372,7 +388,7 @@ pub(crate) fn build_render_data(
                 cmd.two_sided as u8,
                 cmd.mesh_handle, // group identical meshes
                 cmd.texture_handle,
-                cmd.sort_depth,  // front-to-back within group
+                cmd.sort_depth, // front-to-back within group
             )
         }
     });
@@ -513,7 +529,9 @@ pub(crate) fn build_render_data(
         SkyParams::default()
     };
 
-    (view_proj, camera_pos, ambient, fog_color, fog_near, fog_far, sky)
+    (
+        view_proj, camera_pos, ambient, fog_color, fog_near, fog_far, sky,
+    )
 }
 
 #[cfg(test)]

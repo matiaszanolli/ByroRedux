@@ -262,8 +262,7 @@ mod tests {
                     time: 2.0,
                     // Rotation axis changes — mixes in X so the
                     // derived tangent direction differs from pure Y.
-                    value: Quat::from_rotation_x(FRAC_PI_4)
-                        * Quat::from_rotation_y(FRAC_PI_4),
+                    value: Quat::from_rotation_x(FRAC_PI_4) * Quat::from_rotation_y(FRAC_PI_4),
                     tbc,
                 },
             ],
@@ -288,11 +287,12 @@ mod tests {
             dot
         );
         // Sanity: result is still a unit quaternion.
-        let norm_sq = q_tbc.x * q_tbc.x
-            + q_tbc.y * q_tbc.y
-            + q_tbc.z * q_tbc.z
-            + q_tbc.w * q_tbc.w;
-        assert!((norm_sq - 1.0).abs() < 1e-4, "quat not normalized: {}", norm_sq);
+        let norm_sq = q_tbc.x * q_tbc.x + q_tbc.y * q_tbc.y + q_tbc.z * q_tbc.z + q_tbc.w * q_tbc.w;
+        assert!(
+            (norm_sq - 1.0).abs() < 1e-4,
+            "quat not normalized: {}",
+            norm_sq
+        );
     }
 
     #[test]

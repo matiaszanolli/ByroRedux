@@ -10,7 +10,8 @@ const MAX_MESSAGE_SIZE: u32 = 16 * 1024 * 1024;
 
 /// Encode a message as length-prefixed JSON bytes.
 pub fn encode<T: Serialize>(msg: &T) -> io::Result<Vec<u8>> {
-    let json = serde_json::to_vec(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let json =
+        serde_json::to_vec(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let len = json.len() as u32;
     let mut buf = Vec::with_capacity(4 + json.len());
     buf.extend_from_slice(&len.to_be_bytes());
@@ -27,7 +28,10 @@ pub fn decode<T: DeserializeOwned>(reader: &mut impl Read) -> io::Result<T> {
     if len > MAX_MESSAGE_SIZE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("message too large: {} bytes (max {})", len, MAX_MESSAGE_SIZE),
+            format!(
+                "message too large: {} bytes (max {})",
+                len, MAX_MESSAGE_SIZE
+            ),
         ));
     }
 

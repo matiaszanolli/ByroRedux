@@ -77,9 +77,7 @@ fn handle_client(stream: TcpStream, queue: CommandQueue) {
     stream
         .set_nonblocking(false)
         .expect("failed to set client stream blocking");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(300)))
-        .ok();
+    stream.set_read_timeout(Some(Duration::from_secs(300))).ok();
 
     let mut reader = stream.try_clone().expect("failed to clone TCP stream");
     let mut writer = BufWriter::new(stream);

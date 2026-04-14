@@ -224,8 +224,7 @@ fn create_triangle_pipeline_with_layout(
         layout
     } else {
         let set_layouts = [descriptor_set_layout, scene_set_layout];
-        let layout_info = vk::PipelineLayoutCreateInfo::default()
-            .set_layouts(&set_layouts);
+        let layout_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts);
         unsafe {
             device
                 .create_pipeline_layout(&layout_info, None)

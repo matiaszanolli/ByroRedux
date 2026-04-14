@@ -160,7 +160,10 @@ impl Ba2Archive {
                 0 => Ba2Compression::Zlib,
                 3 => Ba2Compression::Lz4Block,
                 other => {
-                    log::warn!("BA2 v3: unknown compression method {}, assuming zlib", other);
+                    log::warn!(
+                        "BA2 v3: unknown compression method {}, assuming zlib",
+                        other
+                    );
                     Ba2Compression::Zlib
                 }
             };

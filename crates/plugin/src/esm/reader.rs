@@ -554,7 +554,10 @@ mod tests {
             EsmVariant::Oblivion,
             b"STAT",
             0x100,
-            &[(b"EDID", b"TestOblivion\0"), (b"MODL", b"meshes\\stat.nif\0")],
+            &[
+                (b"EDID", b"TestOblivion\0"),
+                (b"MODL", b"meshes\\stat.nif\0"),
+            ],
         );
         let mut reader = EsmReader::with_variant(&data, EsmVariant::Oblivion);
         let header = reader.read_record_header().unwrap();

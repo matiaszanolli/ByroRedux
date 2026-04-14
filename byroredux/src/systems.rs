@@ -3,8 +3,8 @@
 use byroredux_core::animation::{
     advance_stack, advance_time, collect_stack_text_events, collect_text_key_events,
     sample_blended_transform, sample_bool_channel, sample_color_channel, sample_float_channel,
-    sample_rotation, sample_scale, sample_translation, split_root_motion,
-    AnimationClipRegistry, AnimationPlayer, AnimationStack, FloatTarget, RootMotionDelta,
+    sample_rotation, sample_scale, sample_translation, split_root_motion, AnimationClipRegistry,
+    AnimationPlayer, AnimationStack, FloatTarget, RootMotionDelta,
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
@@ -263,9 +263,9 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
             }
         }
         let subtree_ref = world.try_resource::<SubtreeCache>();
-        let scoped_map = ps.root_entity.and_then(|root| {
-            subtree_ref.as_ref().and_then(|c| c.map.get(&root))
-        });
+        let scoped_map = ps
+            .root_entity
+            .and_then(|root| subtree_ref.as_ref().and_then(|c| c.map.get(&root)));
         let resolve_entity = |channel_name: &str| -> Option<EntityId> {
             let sym = pool.get(channel_name)?;
             if let Some(scoped) = scoped_map {
@@ -426,9 +426,9 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
             events = collect_stack_text_events(stack, &registry);
 
             // Scoped name resolver — reads subtree cache (outer lock).
-            let stack_scoped_map = stack.root_entity.and_then(|root| {
-                subtree_ref2.as_ref().and_then(|c| c.map.get(&root))
-            });
+            let stack_scoped_map = stack
+                .root_entity
+                .and_then(|root| subtree_ref2.as_ref().and_then(|c| c.map.get(&root)));
             let stack_resolve = |channel_name: &str| -> Option<EntityId> {
                 let sym = pool.get(channel_name)?;
                 if let Some(scoped) = stack_scoped_map {
@@ -467,7 +467,9 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
             let mut best: Option<(&str, f32)> = None;
             for layer in &stack.layers {
                 let ew = layer.effective_weight();
-                if ew < 0.001 { continue; }
+                if ew < 0.001 {
+                    continue;
+                }
                 if let Some(clip) = registry.get(layer.clip_handle) {
                     if let Some(ref name) = clip.accum_root_name {
                         if best.map_or(true, |(_, bw)| ew > bw) {
@@ -536,8 +538,8 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         // Phase 3c: apply non-transform channels from the dominant layer
         // (AR-01). Access channel Vecs through the registry directly —
         // no clones. #265.
-        let stack_scoped_map = stack_root
-            .and_then(|root| subtree_ref2.as_ref().and_then(|c| c.map.get(&root)));
+        let stack_scoped_map =
+            stack_root.and_then(|root| subtree_ref2.as_ref().and_then(|c| c.map.get(&root)));
         let stack_resolve = |channel_name: &str| -> Option<EntityId> {
             let sym = pool.get(channel_name)?;
             if let Some(scoped) = stack_scoped_map {
@@ -646,7 +648,8 @@ pub(crate) fn billboard_system(world: &World, _dt: f32) {
             continue;
         };
 
-        let new_rot = compute_billboard_rotation(billboard.mode, global.translation, cam_pos, cam_forward);
+        let new_rot =
+            compute_billboard_rotation(billboard.mode, global.translation, cam_pos, cam_forward);
         global.rotation = new_rot;
     }
 }
@@ -968,12 +971,36 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         ]
     };
 
-    let zenith = lerp3(wd.sky_colors[SKY_UPPER][slot_a], wd.sky_colors[SKY_UPPER][slot_b], t);
-    let horizon = lerp3(wd.sky_colors[SKY_HORIZON][slot_a], wd.sky_colors[SKY_HORIZON][slot_b], t);
-    let sun_col = lerp3(wd.sky_colors[SKY_SUN][slot_a], wd.sky_colors[SKY_SUN][slot_b], t);
-    let ambient = lerp3(wd.sky_colors[SKY_AMBIENT][slot_a], wd.sky_colors[SKY_AMBIENT][slot_b], t);
-    let sunlight = lerp3(wd.sky_colors[SKY_SUNLIGHT][slot_a], wd.sky_colors[SKY_SUNLIGHT][slot_b], t);
-    let fog_col = lerp3(wd.sky_colors[SKY_FOG][slot_a], wd.sky_colors[SKY_FOG][slot_b], t);
+    let zenith = lerp3(
+        wd.sky_colors[SKY_UPPER][slot_a],
+        wd.sky_colors[SKY_UPPER][slot_b],
+        t,
+    );
+    let horizon = lerp3(
+        wd.sky_colors[SKY_HORIZON][slot_a],
+        wd.sky_colors[SKY_HORIZON][slot_b],
+        t,
+    );
+    let sun_col = lerp3(
+        wd.sky_colors[SKY_SUN][slot_a],
+        wd.sky_colors[SKY_SUN][slot_b],
+        t,
+    );
+    let ambient = lerp3(
+        wd.sky_colors[SKY_AMBIENT][slot_a],
+        wd.sky_colors[SKY_AMBIENT][slot_b],
+        t,
+    );
+    let sunlight = lerp3(
+        wd.sky_colors[SKY_SUNLIGHT][slot_a],
+        wd.sky_colors[SKY_SUNLIGHT][slot_b],
+        t,
+    );
+    let fog_col = lerp3(
+        wd.sky_colors[SKY_FOG][slot_a],
+        wd.sky_colors[SKY_FOG][slot_b],
+        t,
+    );
 
     // Fog distance: interpolate between day and night based on
     // how "night-like" the current hour is (0 = full day, 1 = full night).
@@ -1048,9 +1075,9 @@ mod bound_propagation_tests {
     //! These cover leaf derivation, parent merging, and the scale path.
 
     use super::*;
+    use byroredux_core::ecs::World;
     use byroredux_core::ecs::{Children, GlobalTransform, LocalBound, Parent, WorldBound};
     use byroredux_core::math::{Quat, Vec3};
-    use byroredux_core::ecs::World;
 
     /// Spawn an entity with a LocalBound + GlobalTransform + empty WorldBound.
     fn spawn_leaf(
@@ -1061,10 +1088,7 @@ mod bound_propagation_tests {
         local_radius: f32,
     ) -> byroredux_core::ecs::storage::EntityId {
         let e = world.spawn();
-        world.insert(
-            e,
-            GlobalTransform::new(translation, Quat::IDENTITY, scale),
-        );
+        world.insert(e, GlobalTransform::new(translation, Quat::IDENTITY, scale));
         world.insert(e, LocalBound::new(local_center, local_radius));
         world.insert(e, WorldBound::ZERO);
         e
@@ -1073,13 +1097,7 @@ mod bound_propagation_tests {
     #[test]
     fn leaf_bound_composes_local_with_global_transform() {
         let mut world = World::new();
-        let e = spawn_leaf(
-            &mut world,
-            Vec3::new(10.0, 0.0, 0.0),
-            1.0,
-            Vec3::ZERO,
-            2.0,
-        );
+        let e = spawn_leaf(&mut world, Vec3::new(10.0, 0.0, 0.0), 1.0, Vec3::ZERO, 2.0);
 
         let mut sys = make_world_bound_propagation_system();
         sys(&world, 0.016);
@@ -1108,13 +1126,7 @@ mod bound_propagation_tests {
         let mut world = World::new();
         // Mesh sits at world origin, scale 2, but its local sphere is
         // centered at (1, 0, 0) local. World center should be (2, 0, 0).
-        let e = spawn_leaf(
-            &mut world,
-            Vec3::ZERO,
-            2.0,
-            Vec3::new(1.0, 0.0, 0.0),
-            0.5,
-        );
+        let e = spawn_leaf(&mut world, Vec3::ZERO, 2.0, Vec3::new(1.0, 0.0, 0.0), 0.5);
 
         let mut sys = make_world_bound_propagation_system();
         sys(&world, 0.016);
@@ -1135,20 +1147,8 @@ mod bound_propagation_tests {
         world.insert(parent, GlobalTransform::IDENTITY);
         world.insert(parent, WorldBound::ZERO);
 
-        let left = spawn_leaf(
-            &mut world,
-            Vec3::new(-10.0, 0.0, 0.0),
-            1.0,
-            Vec3::ZERO,
-            1.0,
-        );
-        let right = spawn_leaf(
-            &mut world,
-            Vec3::new(10.0, 0.0, 0.0),
-            1.0,
-            Vec3::ZERO,
-            1.0,
-        );
+        let left = spawn_leaf(&mut world, Vec3::new(-10.0, 0.0, 0.0), 1.0, Vec3::ZERO, 1.0);
+        let right = spawn_leaf(&mut world, Vec3::new(10.0, 0.0, 0.0), 1.0, Vec3::ZERO, 1.0);
 
         // Wire the hierarchy: both leaves are children of `parent`.
         world.insert(left, Parent(parent));

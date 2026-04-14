@@ -4,13 +4,13 @@ use crate::blocks::properties::{
     NiAlphaProperty, NiFlagProperty, NiMaterialProperty, NiStencilProperty, NiTexturingProperty,
     NiVertexColorProperty, TexDesc,
 };
-use crate::blocks::NiObject;
 use crate::blocks::shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
     BSShaderPPLightingProperty, BSShaderTextureSet, ShaderTypeData,
 };
 use crate::blocks::texture::NiSourceTexture;
 use crate::blocks::tri_shape::{BsTriShape, NiTriShape};
+use crate::blocks::NiObject;
 use crate::scene::NifScene;
 use crate::types::BlockRef;
 
@@ -355,9 +355,8 @@ pub(super) fn extract_material_info(
             // this branch is specifically for pre-Skyrim static meshes.
             // See issue #131.
             if info.normal_map.is_none() {
-                if let Some(path) =
-                    tex_desc_source_path(scene, tex_prop.normal_texture.as_ref())
-                        .or_else(|| tex_desc_source_path(scene, tex_prop.bump_texture.as_ref()))
+                if let Some(path) = tex_desc_source_path(scene, tex_prop.normal_texture.as_ref())
+                    .or_else(|| tex_desc_source_path(scene, tex_prop.bump_texture.as_ref()))
                 {
                     info.normal_map = Some(path);
                 }
@@ -372,32 +371,24 @@ pub(super) fn extract_material_info(
             // We only overwrite if a Skyrim+ BSShader path hasn't
             // already set them, matching the base/normal policy.
             if info.glow_map.is_none() {
-                if let Some(path) =
-                    tex_desc_source_path(scene, tex_prop.glow_texture.as_ref())
-                {
+                if let Some(path) = tex_desc_source_path(scene, tex_prop.glow_texture.as_ref()) {
                     info.glow_map = Some(path);
                 }
             }
             if info.detail_map.is_none() {
-                if let Some(path) =
-                    tex_desc_source_path(scene, tex_prop.detail_texture.as_ref())
-                {
+                if let Some(path) = tex_desc_source_path(scene, tex_prop.detail_texture.as_ref()) {
                     info.detail_map = Some(path);
                 }
             }
             if info.gloss_map.is_none() {
-                if let Some(path) =
-                    tex_desc_source_path(scene, tex_prop.gloss_texture.as_ref())
-                {
+                if let Some(path) = tex_desc_source_path(scene, tex_prop.gloss_texture.as_ref()) {
                     info.gloss_map = Some(path);
                 }
             }
             // Dark / multiplicative lightmap (slot 1). Baked shadow data
             // on Oblivion interior architecture — `albedo *= dark`. #264.
             if info.dark_map.is_none() {
-                if let Some(path) =
-                    tex_desc_source_path(scene, tex_prop.dark_texture.as_ref())
-                {
+                if let Some(path) = tex_desc_source_path(scene, tex_prop.dark_texture.as_ref()) {
                     info.dark_map = Some(path);
                 }
             }

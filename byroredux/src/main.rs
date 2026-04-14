@@ -31,7 +31,6 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::commands::build_command_registry;
 use crate::components::{InputState, NameIndex, SubtreeCache};
-use byroredux_core::ecs::SystemList;
 use crate::helpers::world_resource_set;
 use crate::render::build_render_data;
 use crate::systems::{
@@ -39,6 +38,7 @@ use crate::systems::{
     make_transform_propagation_system, make_world_bound_propagation_system, spin_system,
     weather_system,
 };
+use byroredux_core::ecs::SystemList;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -234,10 +234,11 @@ impl ApplicationHandler for App {
             Ok(ctx) => {
                 // Create screenshot bridge for debug server access.
                 let ss_handle = ctx.screenshot_handle();
-                self.world.insert_resource(byroredux_core::ecs::ScreenshotBridge {
-                    requested: ss_handle.requested,
-                    result: ss_handle.result,
-                });
+                self.world
+                    .insert_resource(byroredux_core::ecs::ScreenshotBridge {
+                        requested: ss_handle.requested,
+                        result: ss_handle.result,
+                    });
 
                 self.renderer = Some(ctx);
                 self.window = Some(win);
@@ -288,13 +289,14 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(ref mut ctx) = self.renderer {
-                    let (view_proj, camera_pos, ambient, fog_color, fog_near, fog_far, sky_params) = build_render_data(
-                        &self.world,
-                        &mut self.draw_commands,
-                        &mut self.gpu_lights,
-                        &mut self.bone_palette,
-                        &mut self.skin_offsets,
-                    );
+                    let (view_proj, camera_pos, ambient, fog_color, fog_near, fog_far, sky_params) =
+                        build_render_data(
+                            &self.world,
+                            &mut self.draw_commands,
+                            &mut self.gpu_lights,
+                            &mut self.bone_palette,
+                            &mut self.skin_offsets,
+                        );
 
                     // Rebuild the global geometry SSBO if new meshes were
                     // loaded since the last build (cell transitions, late

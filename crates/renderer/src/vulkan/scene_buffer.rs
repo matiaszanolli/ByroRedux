@@ -46,45 +46,45 @@ pub const MAX_INSTANCES: usize = 8192;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuInstance {
-    pub model: [[f32; 4]; 4],          // 64 B, offset 0
-    pub texture_index: u32,             // 4 B, offset 64
-    pub bone_offset: u32,               // 4 B, offset 68
-    pub normal_map_index: u32,           // 4 B, offset 72
-    pub roughness: f32,                  // 4 B, offset 76
-    pub metalness: f32,                  // 4 B, offset 80
-    pub emissive_mult: f32,              // 4 B, offset 84
+    pub model: [[f32; 4]; 4],  // 64 B, offset 0
+    pub texture_index: u32,    // 4 B, offset 64
+    pub bone_offset: u32,      // 4 B, offset 68
+    pub normal_map_index: u32, // 4 B, offset 72
+    pub roughness: f32,        // 4 B, offset 76
+    pub metalness: f32,        // 4 B, offset 80
+    pub emissive_mult: f32,    // 4 B, offset 84
     /// Emissive RGB + specular_strength packed as vec4 to avoid vec3 alignment.
-    pub emissive_r: f32,                 // 4 B, offset 88
-    pub emissive_g: f32,                 // 4 B, offset 92
-    pub emissive_b: f32,                 // 4 B, offset 96
-    pub specular_strength: f32,          // 4 B, offset 100
+    pub emissive_r: f32, // 4 B, offset 88
+    pub emissive_g: f32,       // 4 B, offset 92
+    pub emissive_b: f32,       // 4 B, offset 96
+    pub specular_strength: f32, // 4 B, offset 100
     /// Specular RGB + padding packed to avoid vec3.
-    pub specular_r: f32,                 // 4 B, offset 104
-    pub specular_g: f32,                 // 4 B, offset 108
-    pub specular_b: f32,                 // 4 B, offset 112
+    pub specular_r: f32, // 4 B, offset 104
+    pub specular_g: f32,       // 4 B, offset 108
+    pub specular_b: f32,       // 4 B, offset 112
     /// Offset into the global vertex SSBO (in vertices, not bytes).
-    pub vertex_offset: u32,              // 4 B, offset 116
+    pub vertex_offset: u32, // 4 B, offset 116
     /// Offset into the global index SSBO (in indices, not bytes).
-    pub index_offset: u32,               // 4 B, offset 120
+    pub index_offset: u32, // 4 B, offset 120
     /// Vertex count for this mesh (for bounds checking).
-    pub vertex_count: u32,               // 4 B, offset 124
+    pub vertex_count: u32, // 4 B, offset 124
     /// Alpha test threshold [0,1]. 0.0 = no alpha test. #263.
-    pub alpha_threshold: f32,            // 4 B, offset 128
+    pub alpha_threshold: f32, // 4 B, offset 128
     /// Alpha test comparison function (Gamebryo TestFunction). #263.
-    pub alpha_test_func: u32,            // 4 B, offset 132
+    pub alpha_test_func: u32, // 4 B, offset 132
     /// Bindless texture index for dark/lightmap (0 = none). #264.
-    pub dark_map_index: u32,             // 4 B, offset 136
+    pub dark_map_index: u32, // 4 B, offset 136
     /// Pre-computed average albedo for GI bounce approximation.
     /// Avoids 11 divergent memory ops per GI ray hit by replacing
     /// full UV lookup + texture sample with a single SSBO read.
-    pub avg_albedo_r: f32,               // 4 B, offset 140
-    pub avg_albedo_g: f32,               // 4 B, offset 144
-    pub avg_albedo_b: f32,               // 4 B, offset 148
+    pub avg_albedo_r: f32, // 4 B, offset 140
+    pub avg_albedo_g: f32,     // 4 B, offset 144
+    pub avg_albedo_b: f32,     // 4 B, offset 148
     /// Per-instance flags. Bit 0 = has non-uniform scale (needs
     /// inverse-transpose for normal transform). See #273.
-    pub flags: u32,                      // 4 B, offset 152
-    pub _pad1: u32,                      // 4 B, offset 156 → total 160
-    // Struct is 160 bytes (10×16), 16-byte aligned for std430.
+    pub flags: u32, // 4 B, offset 152
+    pub _pad1: u32,            // 4 B, offset 156 → total 160
+                               // Struct is 160 bytes (10×16), 16-byte aligned for std430.
 }
 
 impl Default for GpuInstance {
@@ -278,9 +278,7 @@ impl SceneBuffers {
                 .binding(1)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
-                .stage_flags(
-                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                ),
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
         ];
         if rt_enabled {
             bindings.push(
@@ -363,8 +361,7 @@ impl SceneBuffers {
             })
             .collect();
         let mut binding_flags_info =
-            vk::DescriptorSetLayoutBindingFlagsCreateInfo::default()
-                .binding_flags(&binding_flags);
+            vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
         let layout_info = vk::DescriptorSetLayoutCreateInfo::default()
             .bindings(&bindings)
             .push_next(&mut binding_flags_info);
@@ -622,10 +619,7 @@ impl SceneBuffers {
 
     /// Get a mutable reference to the mapped instance buffer for direct writes.
     /// Used by the UI overlay to append a single instance after the bulk upload.
-    pub fn instance_buffer_mapped_mut(
-        &mut self,
-        frame_index: usize,
-    ) -> Result<&mut [u8]> {
+    pub fn instance_buffer_mapped_mut(&mut self, frame_index: usize) -> Result<&mut [u8]> {
         self.instance_buffers[frame_index].mapped_slice_mut()
     }
 

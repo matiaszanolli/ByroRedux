@@ -40,11 +40,10 @@ use extra_data::{
     BsConnectPointParents, BsDecalPlacementVectorExtraData, BsInvMarker, NiExtraData,
 };
 use interpolator::{
-    NiBSplineBasisData, NiBSplineCompTransformInterpolator, NiBSplineData,
-    NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendPoint3Interpolator,
-    NiBlendTransformInterpolator, NiBoolData, NiBoolInterpolator, NiFloatData, NiFloatInterpolator,
-    NiPoint3Interpolator, NiPosData, NiTextKeyExtraData, NiTransformData, NiTransformInterpolator,
-    NiUVData,
+    NiBSplineBasisData, NiBSplineCompTransformInterpolator, NiBSplineData, NiBlendBoolInterpolator,
+    NiBlendFloatInterpolator, NiBlendPoint3Interpolator, NiBlendTransformInterpolator, NiBoolData,
+    NiBoolInterpolator, NiFloatData, NiFloatInterpolator, NiPoint3Interpolator, NiPosData,
+    NiTextKeyExtraData, NiTransformData, NiTransformInterpolator, NiUVData,
 };
 use multibound::{BsMultiBound, BsMultiBoundAABB, BsMultiBoundOBB};
 use node::{BsOrderedNode, BsValueNode, NiNode};
@@ -737,8 +736,12 @@ mod dispatch_tests {
         kf_bytes.extend_from_slice(&(-1i32).to_le_bytes()); // target_ref
         kf_bytes.extend_from_slice(&7i32.to_le_bytes()); // interpolator_ref
         let mut stream = NifStream::new(&kf_bytes, &header);
-        let block = parse_block("NiKeyframeController", &mut stream, Some(kf_bytes.len() as u32))
-            .expect("NiKeyframeController should dispatch through NiSingleInterpController");
+        let block = parse_block(
+            "NiKeyframeController",
+            &mut stream,
+            Some(kf_bytes.len() as u32),
+        )
+        .expect("NiKeyframeController should dispatch through NiSingleInterpController");
         let ctrl = block
             .as_any()
             .downcast_ref::<crate::blocks::controller::NiSingleInterpController>()
@@ -752,9 +755,12 @@ mod dispatch_tests {
         ssh_bytes.extend_from_slice(&0u32.to_le_bytes()); // extra_data count
         ssh_bytes.extend_from_slice(&(-1i32).to_le_bytes()); // controller
         let mut stream = NifStream::new(&ssh_bytes, &header);
-        let block =
-            parse_block("NiSequenceStreamHelper", &mut stream, Some(ssh_bytes.len() as u32))
-                .expect("NiSequenceStreamHelper should dispatch to its own parser");
+        let block = parse_block(
+            "NiSequenceStreamHelper",
+            &mut stream,
+            Some(ssh_bytes.len() as u32),
+        )
+        .expect("NiSequenceStreamHelper should dispatch to its own parser");
         assert!(block
             .as_any()
             .downcast_ref::<crate::blocks::controller::NiSequenceStreamHelper>()
@@ -817,7 +823,10 @@ mod dispatch_tests {
             .as_any()
             .downcast_ref::<NiExtraData>()
             .expect("downcast to NiExtraData");
-        let arr = ed.integers_array.as_ref().expect("integers_array populated");
+        let arr = ed
+            .integers_array
+            .as_ref()
+            .expect("integers_array populated");
         assert_eq!(arr, &vec![42u32, 0xDEADBEEF]);
     }
 
@@ -830,10 +839,10 @@ mod dispatch_tests {
         d.extend_from_slice(&0u32.to_le_bytes()); // name len
         d.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count
         d.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
-        // NiAVObject: flags (u16 for bsver<=26), identity transform (13 f32),
-        // empty properties list, null collision ref.
+                                                     // NiAVObject: flags (u16 for bsver<=26), identity transform (13 f32),
+                                                     // empty properties list, null collision ref.
         d.extend_from_slice(&0u16.to_le_bytes()); // flags
-        // transform: translation (3 f32)
+                                                  // transform: translation (3 f32)
         d.extend_from_slice(&0.0f32.to_le_bytes());
         d.extend_from_slice(&0.0f32.to_le_bytes());
         d.extend_from_slice(&0.0f32.to_le_bytes());
@@ -913,7 +922,12 @@ mod dispatch_tests {
         assert_eq!(stream.position(), sa.len() as u64);
 
         // BSRangeNode (and its subclasses) — base + 3 bytes.
-        for type_name in ["BSRangeNode", "BSBlastNode", "BSDamageStage", "BSDebrisNode"] {
+        for type_name in [
+            "BSRangeNode",
+            "BSBlastNode",
+            "BSDamageStage",
+            "BSDebrisNode",
+        ] {
             let mut r = base.clone();
             r.push(5); // min
             r.push(10); // max
@@ -933,7 +947,10 @@ mod dispatch_tests {
             let mut stream = NifStream::new(&base, &header);
             let block = parse_block(type_name, &mut stream, Some(base.len() as u32))
                 .unwrap_or_else(|e| panic!("{type_name} dispatch: {e}"));
-            assert!(block.as_any().downcast_ref::<crate::blocks::NiNode>().is_some());
+            assert!(block
+                .as_any()
+                .downcast_ref::<crate::blocks::NiNode>()
+                .is_some());
             assert_eq!(stream.position(), base.len() as u64);
         }
     }
@@ -1111,12 +1128,12 @@ mod dispatch_tests {
             }
         }
         data.extend_from_slice(&1.0f32.to_le_bytes()); // scale
-        // Properties list — this is the field `has_properties_list`
-        // gates. Old buggy path would skip it and misread the next
-        // 4 bytes as `collision_ref`.
+                                                       // Properties list — this is the field `has_properties_list`
+                                                       // gates. Old buggy path would skip it and misread the next
+                                                       // 4 bytes as `collision_ref`.
         data.extend_from_slice(&0u32.to_le_bytes()); // properties count
         data.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref (null)
-        // NiNode children + effects
+                                                        // NiNode children + effects
         data.extend_from_slice(&0u32.to_le_bytes()); // children count
         data.extend_from_slice(&0u32.to_le_bytes()); // effects count
 
@@ -1214,7 +1231,7 @@ mod dispatch_tests {
         let header = oblivion_header();
         let mut data = Vec::new();
         data.extend_from_slice(&0u32.to_le_bytes()); // name: empty inline string
-        // vertex_desc: arbitrary u64
+                                                     // vertex_desc: arbitrary u64
         data.extend_from_slice(&0x0123_4567_89AB_CDEFu64.to_le_bytes());
         // num_vertices
         data.extend_from_slice(&42u32.to_le_bytes());
@@ -1438,7 +1455,7 @@ mod dispatch_tests {
         uvd.extend_from_slice(&0.0f32.to_le_bytes()); // v=0
         uvd.extend_from_slice(&1.0f32.to_le_bytes()); // t=1
         uvd.extend_from_slice(&1.0f32.to_le_bytes()); // v=1
-        // Groups 1-3: num_keys=0 (no key_type field when empty).
+                                                      // Groups 1-3: num_keys=0 (no key_type field when empty).
         for _ in 0..3 {
             uvd.extend_from_slice(&0u32.to_le_bytes());
         }
@@ -1590,7 +1607,10 @@ mod dispatch_tests {
         bytes.extend_from_slice(&7i32.to_le_bytes());
         let mut s = NifStream::new(&bytes, &header);
         let b = parse_block("NiParticleColorModifier", &mut s, Some(bytes.len() as u32)).unwrap();
-        let m = b.as_any().downcast_ref::<NiParticleColorModifier>().unwrap();
+        let m = b
+            .as_any()
+            .downcast_ref::<NiParticleColorModifier>()
+            .unwrap();
         assert_eq!(m.color_data_ref.index(), Some(7));
         assert_eq!(s.position(), bytes.len() as u64);
 
@@ -1754,7 +1774,7 @@ mod dispatch_tests {
 
         bytes.extend_from_slice(&0u16.to_le_bytes()); // num_particles
         bytes.extend_from_slice(&0u16.to_le_bytes()); // num_valid
-        // No particle records.
+                                                      // No particle records.
         bytes.extend_from_slice(&(-1i32).to_le_bytes()); // unknown_ref
         bytes.extend_from_slice(&0u32.to_le_bytes()); // num_emitter_points
         bytes.extend_from_slice(&0u32.to_le_bytes()); // trailer_emitter_type

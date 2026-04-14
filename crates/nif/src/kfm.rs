@@ -613,7 +613,7 @@ mod tests {
         d.extend_from_slice(&0u32.to_le_bytes());
         write_cstring(&mut d, "Locomotion");
         d.extend_from_slice(&2u32.to_le_bytes()); // num_members
-        // Member 0: seq 0, priority 10, weight 1.0, ease 0.1/0.2, no sync.
+                                                  // Member 0: seq 0, priority 10, weight 1.0, ease 0.1/0.2, no sync.
         d.extend_from_slice(&0u32.to_le_bytes());
         d.extend_from_slice(&10i32.to_le_bytes());
         d.extend_from_slice(&1.0_f32.to_le_bytes());
@@ -687,7 +687,10 @@ mod tests {
         assert_eq!(group.members.len(), 2);
         assert_eq!(group.members[0].sequence_id, 0);
         assert_eq!(group.members[0].priority, 10);
-        assert_eq!(group.members[0].synchronize_sequence_id, SYNC_SEQUENCE_ID_NONE);
+        assert_eq!(
+            group.members[0].synchronize_sequence_id,
+            SYNC_SEQUENCE_ID_NONE
+        );
         assert_eq!(group.members[1].sequence_id, 1);
         assert_eq!(group.members[1].synchronize_sequence_id, 0);
     }
@@ -762,7 +765,7 @@ mod tests {
         d.push(0x01); // little-endian
         write_cstring(&mut d, "x.nif"); // model_path
         write_cstring(&mut d, ""); // model_root
-        // Default transitions
+                                   // Default transitions
         d.extend_from_slice(&0i32.to_le_bytes());
         d.extend_from_slice(&0i32.to_le_bytes());
         d.extend_from_slice(&0.0_f32.to_le_bytes());
@@ -775,8 +778,8 @@ mod tests {
         d.extend_from_slice(&1u32.to_le_bytes()); // num_transitions
         d.extend_from_slice(&1u32.to_le_bytes()); // dest_id
         d.extend_from_slice(&4i32.to_le_bytes()); // type = DEFAULT_SYNC
-                                                   // No further bytes for this transition.
-        // 0 sequence groups
+                                                  // No further bytes for this transition.
+                                                  // 0 sequence groups
         d.extend_from_slice(&0u32.to_le_bytes());
 
         let kfm = parse_kfm(&d).expect("should parse DEFAULT_SYNC transition");

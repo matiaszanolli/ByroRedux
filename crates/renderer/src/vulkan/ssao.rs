@@ -125,16 +125,15 @@ impl SsaoPipeline {
             };
             partial.ao_images.push(ao_image);
 
-            let ao_allocation = match allocator
-                .lock()
-                .expect("allocator lock")
-                .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+            let ao_allocation = match allocator.lock().expect("allocator lock").allocate(
+                &gpu_allocator::vulkan::AllocationCreateDesc {
                     name: &format!("ssao_output_{fi}"),
                     requirements: unsafe { device.get_image_memory_requirements(ao_image) },
                     location: gpu_allocator::MemoryLocation::GpuOnly,
                     linear: false,
                     allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-                }) {
+                },
+            ) {
                 Ok(a) => a,
                 Err(e) => {
                     unsafe { partial.destroy(device, allocator) };
@@ -145,7 +144,11 @@ impl SsaoPipeline {
             if let Err(e) = unsafe {
                 device.bind_image_memory(ao_image, ao_allocation.memory(), ao_allocation.offset())
             } {
-                allocator.lock().expect("allocator lock").free(ao_allocation).ok();
+                allocator
+                    .lock()
+                    .expect("allocator lock")
+                    .free(ao_allocation)
+                    .ok();
                 unsafe { partial.destroy(device, allocator) };
                 return Err(anyhow::anyhow!("Failed to bind AO image memory {fi}: {e}"));
             }

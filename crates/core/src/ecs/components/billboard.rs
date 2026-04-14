@@ -101,7 +101,10 @@ mod tests {
     #[test]
     fn from_nif_unknown_falls_back() {
         assert_eq!(BillboardMode::from_nif(42), BillboardMode::AlwaysFaceCamera);
-        assert_eq!(BillboardMode::from_nif(255), BillboardMode::AlwaysFaceCamera);
+        assert_eq!(
+            BillboardMode::from_nif(255),
+            BillboardMode::AlwaysFaceCamera
+        );
     }
 
     #[test]

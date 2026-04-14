@@ -54,16 +54,12 @@ impl System for DebugDrainSystem {
             if let Some(bridge) = world.try_resource::<ScreenshotBridge>() {
                 if let Some(png_bytes) = bridge.take_result() {
                     let response = match &pending.save_path {
-                        Some(path) => {
-                            match std::fs::write(path, &png_bytes) {
-                                Ok(()) => DebugResponse::ScreenshotSaved {
-                                    path: path.clone(),
-                                },
-                                Err(e) => DebugResponse::error(format!(
-                                    "failed to write screenshot: {}", e
-                                )),
+                        Some(path) => match std::fs::write(path, &png_bytes) {
+                            Ok(()) => DebugResponse::ScreenshotSaved { path: path.clone() },
+                            Err(e) => {
+                                DebugResponse::error(format!("failed to write screenshot: {}", e))
                             }
-                        }
+                        },
                         None => {
                             // No path specified — save to timestamped file.
                             let auto_path = format!(
@@ -74,11 +70,10 @@ impl System for DebugDrainSystem {
                                     .as_secs()
                             );
                             match std::fs::write(&auto_path, &png_bytes) {
-                                Ok(()) => DebugResponse::ScreenshotSaved {
-                                    path: auto_path,
-                                },
+                                Ok(()) => DebugResponse::ScreenshotSaved { path: auto_path },
                                 Err(e) => DebugResponse::error(format!(
-                                    "failed to write screenshot: {}", e
+                                    "failed to write screenshot: {}",
+                                    e
                                 )),
                             }
                         }
@@ -87,16 +82,16 @@ impl System for DebugDrainSystem {
                     self.pending_screenshot = None;
                 } else if pending.frames_waited > 10 {
                     // Timeout: renderer didn't produce a screenshot in 10 frames.
-                    let _ = pending.response_tx.send(
-                        DebugResponse::error("screenshot timed out (renderer did not respond)")
-                    );
+                    let _ = pending.response_tx.send(DebugResponse::error(
+                        "screenshot timed out (renderer did not respond)",
+                    ));
                     self.pending_screenshot = None;
                 }
             } else {
                 // No ScreenshotBridge — renderer not initialized yet.
-                let _ = pending.response_tx.send(
-                    DebugResponse::error("screenshot not available (renderer not initialized)")
-                );
+                let _ = pending.response_tx.send(DebugResponse::error(
+                    "screenshot not available (renderer not initialized)",
+                ));
                 self.pending_screenshot = None;
             }
         }
@@ -114,9 +109,9 @@ impl System for DebugDrainSystem {
             // Handle screenshot requests specially — they span multiple frames.
             if let DebugRequest::Screenshot { ref path } = cmd.request {
                 if self.pending_screenshot.is_some() {
-                    let _ = cmd.response_tx.send(
-                        DebugResponse::error("screenshot already in progress")
-                    );
+                    let _ = cmd
+                        .response_tx
+                        .send(DebugResponse::error("screenshot already in progress"));
                     continue;
                 }
 
@@ -130,9 +125,9 @@ impl System for DebugDrainSystem {
                         });
                     }
                     None => {
-                        let _ = cmd.response_tx.send(
-                            DebugResponse::error("screenshot not available (renderer not initialized)")
-                        );
+                        let _ = cmd.response_tx.send(DebugResponse::error(
+                            "screenshot not available (renderer not initialized)",
+                        ));
                     }
                 }
                 continue;

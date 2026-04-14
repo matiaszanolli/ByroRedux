@@ -106,7 +106,7 @@ impl Resource for GameTimeRes {}
 impl Default for GameTimeRes {
     fn default() -> Self {
         Self {
-            hour: 10.0, // late morning
+            hour: 10.0,       // late morning
             time_scale: 30.0, // 30× = ~2 min per game hour (Bethesda default)
         }
     }

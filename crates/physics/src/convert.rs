@@ -179,7 +179,10 @@ mod tests {
             && (back.y + q.y).abs() < 1e-5
             && (back.z + q.z).abs() < 1e-5
             && (back.w + q.w).abs() < 1e-5;
-        assert!(same || flipped, "quat roundtrip mismatch: {q:?} -> {back:?}");
+        assert!(
+            same || flipped,
+            "quat roundtrip mismatch: {q:?} -> {back:?}"
+        );
     }
 
     #[test]
@@ -232,11 +235,7 @@ mod tests {
             ],
         };
         let outer = CollisionShape::Compound {
-            children: vec![(
-                Vec3::new(0.0, 2.0, 0.0),
-                Quat::IDENTITY,
-                Box::new(inner),
-            )],
+            children: vec![(Vec3::new(0.0, 2.0, 0.0), Quat::IDENTITY, Box::new(inner))],
         };
 
         let shape = collision_shape_to_shared_shape(&outer);
@@ -279,18 +278,10 @@ mod tests {
             )],
         };
         let level2 = CollisionShape::Compound {
-            children: vec![(
-                Vec3::new(0.0, 1.0, 0.0),
-                Quat::IDENTITY,
-                Box::new(level3),
-            )],
+            children: vec![(Vec3::new(0.0, 1.0, 0.0), Quat::IDENTITY, Box::new(level3))],
         };
         let level1 = CollisionShape::Compound {
-            children: vec![(
-                Vec3::new(0.0, 1.0, 0.0),
-                Quat::IDENTITY,
-                Box::new(level2),
-            )],
+            children: vec![(Vec3::new(0.0, 1.0, 0.0), Quat::IDENTITY, Box::new(level2))],
         };
         let shape = collision_shape_to_shared_shape(&level1);
         // Single leaf after flattening → we unwrap the compound and

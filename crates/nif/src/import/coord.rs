@@ -20,8 +20,8 @@ pub(super) fn zup_matrix_to_yup_quat(m: &NiMatrix3) -> [f32; 4] {
     // C: (x,y,z)_zup → (x,z,-y)_yup
     // R_yup = C * R_zup * C^T
     let yup = [
-        [r[0][0], r[0][2], -r[0][1]], // X row, columns swapped
-        [r[2][0], r[2][2], -r[2][1]], // Z row becomes Y row
+        [r[0][0], r[0][2], -r[0][1]],  // X row, columns swapped
+        [r[2][0], r[2][2], -r[2][1]],  // Z row becomes Y row
         [-r[1][0], -r[1][2], r[1][1]], // -Y row becomes Z row
     ];
 
@@ -93,9 +93,8 @@ fn svd_repair_to_quat(yup: &[[f32; 3]; 3]) -> [f32; 4] {
     use nalgebra::Matrix3;
 
     let mat = Matrix3::new(
-        yup[0][0], yup[0][1], yup[0][2],
-        yup[1][0], yup[1][1], yup[1][2],
-        yup[2][0], yup[2][1], yup[2][2],
+        yup[0][0], yup[0][1], yup[0][2], yup[1][0], yup[1][1], yup[1][2], yup[2][0], yup[2][1],
+        yup[2][2],
     );
 
     let svd = mat.svd(true, true);

@@ -487,8 +487,7 @@ pub(super) fn extract_skin_ni_tri_shape(
     let skeleton_root = resolve_node_name(scene, skeleton_root_ref);
 
     // Build dense per-vertex weight tables.
-    let (vertex_bone_indices, vertex_bone_weights) =
-        densify_sparse_weights(num_vertices, data);
+    let (vertex_bone_indices, vertex_bone_weights) = densify_sparse_weights(num_vertices, data);
 
     Some(ImportedSkin {
         bones,
@@ -561,7 +560,8 @@ pub(super) fn extract_skin_bs_tri_shape(
         }
         let mut bones = Vec::with_capacity(inst.bone_refs.len());
         for (i, bone_ref) in inst.bone_refs.iter().enumerate() {
-            let name = resolve_node_name(scene, *bone_ref).unwrap_or_else(|| Arc::from(format!("Bone{}", i)));
+            let name = resolve_node_name(scene, *bone_ref)
+                .unwrap_or_else(|| Arc::from(format!("Bone{}", i)));
             let bt = &bone_data.bones[i];
             bones.push(ImportedBone {
                 name,
@@ -591,7 +591,8 @@ fn build_imported_bones(
 ) -> Option<Vec<ImportedBone>> {
     let mut bones = Vec::with_capacity(bone_refs.len());
     for (i, bone_ref) in bone_refs.iter().enumerate() {
-        let name = resolve_node_name(scene, *bone_ref).unwrap_or_else(|| Arc::from(format!("Bone{}", i)));
+        let name =
+            resolve_node_name(scene, *bone_ref).unwrap_or_else(|| Arc::from(format!("Bone{}", i)));
         let bone = &data.bones[i];
         bones.push(ImportedBone {
             name,
@@ -681,10 +682,7 @@ fn bs_bone_to_inverse_matrix(b: &crate::blocks::skin::BsSkinBoneTrans) -> [[f32;
 /// Vertices with no bone contribution get `([0, 0, 0, 0], [1, 0, 0, 0])`
 /// which binds them to bone 0 with full weight — safer than all-zeros
 /// which would collapse to the origin during matrix palette skinning.
-fn densify_sparse_weights(
-    num_vertices: usize,
-    data: &NiSkinData,
-) -> (Vec<[u8; 4]>, Vec<[f32; 4]>) {
+fn densify_sparse_weights(num_vertices: usize, data: &NiSkinData) -> (Vec<[u8; 4]>, Vec<[f32; 4]>) {
     // Per-vertex sorted top-4 contributions. Initialized to (255, 0.0)
     // so missing slots are obviously invalid until we replace them.
     let mut per_vertex: Vec<[(u8, f32); 4]> = vec![[(255u8, 0.0f32); 4]; num_vertices];
@@ -711,7 +709,11 @@ fn densify_sparse_weights(
             let (min_slot, min_weight) = slots
                 .iter()
                 .enumerate()
-                .min_by(|a, b| a.1 .1.partial_cmp(&b.1 .1).unwrap_or(std::cmp::Ordering::Equal))
+                .min_by(|a, b| {
+                    a.1 .1
+                        .partial_cmp(&b.1 .1)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
                 .map(|(i, s)| (i, s.1))
                 .unwrap_or((0, 0.0));
 

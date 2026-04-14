@@ -16,7 +16,9 @@ use super::mesh::{
     extract_bs_tri_shape, extract_bs_tri_shape_local, extract_mesh, extract_mesh_local,
 };
 use super::transform::compose_transforms;
-use super::{ImportedCollision, ImportedLight, ImportedMesh, ImportedNode, ImportedScene, LightKind};
+use super::{
+    ImportedCollision, ImportedLight, ImportedMesh, ImportedNode, ImportedScene, LightKind,
+};
 
 /// Downcast a `NiObject` to its underlying `NiNode` representation,
 /// unwrapping any known subclass that wraps a `base: NiNode` (directly
@@ -271,7 +273,14 @@ pub(super) fn walk_node_flat(
         let prev_len = inherited_props.len();
         inherited_props.extend_from_slice(&node.av.properties);
         for idx in active_children {
-            walk_node_flat(scene, idx, &world_transform, inherited_props, out, collisions.as_deref_mut());
+            walk_node_flat(
+                scene,
+                idx,
+                &world_transform,
+                inherited_props,
+                out,
+                collisions.as_deref_mut(),
+            );
         }
         inherited_props.truncate(prev_len);
         return;
@@ -305,7 +314,14 @@ pub(super) fn walk_node_flat(
         inherited_props.extend_from_slice(&node.av.properties);
         for child_ref in &node.children {
             if let Some(idx) = child_ref.index() {
-                walk_node_flat(scene, idx, &world_transform, inherited_props, out, collisions.as_deref_mut());
+                walk_node_flat(
+                    scene,
+                    idx,
+                    &world_transform,
+                    inherited_props,
+                    out,
+                    collisions.as_deref_mut(),
+                );
             }
         }
         inherited_props.truncate(prev_len);

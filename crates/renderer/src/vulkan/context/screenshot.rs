@@ -48,12 +48,7 @@ impl VulkanContext {
         {
             let encoder = image::codecs::png::PngEncoder::new(std::io::Cursor::new(&mut png_bytes));
             use image::ImageEncoder;
-            if let Err(e) = encoder.write_image(
-                &rgba,
-                width,
-                height,
-                image::ColorType::Rgba8,
-            ) {
+            if let Err(e) = encoder.write_image(&rgba, width, height, image::ColorType::Rgba8) {
                 log::warn!("Screenshot PNG encode failed: {e}");
                 return;
             }
