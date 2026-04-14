@@ -3,7 +3,7 @@
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::ecs::{Camera, DebugStats, MeshHandle, TextureHandle, Transform, World};
 
-use crate::components::SystemList;
+use byroredux_core::ecs::SystemList;
 
 struct HelpCommand;
 impl ConsoleCommand for HelpCommand {

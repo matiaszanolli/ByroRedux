@@ -12,6 +12,7 @@ use super::transform::Transform;
 /// Attach to an entity that also has a [`Transform`] component.
 /// The entity's Transform determines the camera's position and orientation.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct Camera {
     /// Vertical field of view in radians.
     pub fov_y: f32,

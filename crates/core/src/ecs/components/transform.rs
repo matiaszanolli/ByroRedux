@@ -13,6 +13,7 @@ use crate::math::{Mat4, Quat, Vec3};
 /// (36 bytes) — more compact, better for interpolation (SLERP), standard
 /// in modern engines. Convert from matrix on NIF import.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct Transform {
     pub translation: Vec3,
     pub rotation: Quat,

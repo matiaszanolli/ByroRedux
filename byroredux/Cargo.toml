@@ -3,7 +3,12 @@ name = "byroredux"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["debug-server"]
+debug-server = ["dep:byroredux-debug-server"]
+
 [dependencies]
+byroredux-debug-server = { workspace = true, optional = true }
 byroredux-core = { workspace = true }
 byroredux-renderer = { workspace = true }
 byroredux-platform = { workspace = true }

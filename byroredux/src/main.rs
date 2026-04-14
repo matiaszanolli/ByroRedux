@@ -30,7 +30,8 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::commands::build_command_registry;
-use crate::components::{InputState, NameIndex, SubtreeCache, SystemList};
+use crate::components::{InputState, NameIndex, SubtreeCache};
+use byroredux_core::ecs::SystemList;
 use crate::helpers::world_resource_set;
 use crate::render::build_render_data;
 use crate::systems::{
@@ -164,6 +165,16 @@ impl App {
             .collect();
         world.insert_resource(SystemList(system_names));
         world.insert_resource(build_command_registry());
+
+        // Start debug server (feature-gated, zero cost when disabled).
+        #[cfg(feature = "debug-server")]
+        {
+            let debug_port: u16 = std::env::var("BYRO_DEBUG_PORT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(9876);
+            byroredux_debug_server::start(&mut world, &mut scheduler, debug_port);
+        }
 
         Self {
             window: None,

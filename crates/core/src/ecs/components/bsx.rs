@@ -22,6 +22,7 @@ use crate::ecs::storage::Component;
 /// - Bit 8: Needs transform updates
 /// - Bit 9: External emit
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct BSXFlags(pub u32);
 
 impl BSXFlags {
@@ -62,6 +63,7 @@ impl Component for BSXFlags {
 /// Center and half-extents in the NIF's local space (Z-up in the NIF,
 /// converted to Y-up during import for consistency with the renderer).
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct BSBound {
     /// Center of the bounding box (Y-up, world-space after transform).
     pub center: [f32; 3],

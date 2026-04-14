@@ -8,6 +8,7 @@ use crate::ecs::storage::Component;
 /// Populated from LIGH record DATA subrecord (radius, color, flags).
 /// Not rendered yet — this is a data component for future lighting systems.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct LightSource {
     /// Light radius in Bethesda units.
     pub radius: f32,

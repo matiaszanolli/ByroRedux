@@ -2,6 +2,10 @@
 
 use super::resource::Resource;
 
+/// System names stored as a resource for debug and console queries.
+pub struct SystemList(pub Vec<String>);
+impl Resource for SystemList {}
+
 /// Per-frame delta time in seconds.
 pub struct DeltaTime(pub f32);
 impl Resource for DeltaTime {}

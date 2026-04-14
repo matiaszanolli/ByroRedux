@@ -20,6 +20,7 @@ use crate::math::Vec3;
 /// transforming the center through `GlobalTransform` and scaling the
 /// radius by the global scale.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct LocalBound {
     pub center: Vec3,
     pub radius: f32,

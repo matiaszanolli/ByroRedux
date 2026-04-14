@@ -1,0 +1,12 @@
+[package]
+name = "byro-dbg"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "byro-dbg"
+path = "src/main.rs"
+
+[dependencies]
+byroredux-debug-protocol = { workspace = true }
+serde_json = { workspace = true }

@@ -49,9 +49,7 @@ impl Component for DarkMapHandle {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// System names stored as a resource for the `systems` console command.
-pub(crate) struct SystemList(pub(crate) Vec<String>);
-impl Resource for SystemList {}
+// SystemList moved to byroredux_core::ecs::resources::SystemList
 
 /// Cell lighting from the ESM (ambient + directional + fog).
 pub(crate) struct CellLightingRes {

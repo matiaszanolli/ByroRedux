@@ -18,6 +18,7 @@ use crate::ecs::storage::Component;
 /// Values mirror `BillboardMode` in `nif.xml` — do not renumber without
 /// updating the NIF importer's mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 #[repr(u8)]
 pub enum BillboardMode {
     /// Align billboard and camera forward vector with minimized rotation.
@@ -70,6 +71,7 @@ impl BillboardMode {
 /// `GlobalTransform` rotation each frame based on the active camera's
 /// world position, applying the rule described by [`BillboardMode`].
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct Billboard {
     pub mode: BillboardMode,
 }

@@ -12,6 +12,7 @@ use crate::ecs::storage::Component;
 /// SparseSetStorage: most static geometry shares a small set of unique
 /// materials; sparse access pattern during rendering.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct Material {
     /// Emissive color (RGB, linear). Self-illumination independent of lighting.
     pub emissive_color: [f32; 3],
@@ -118,6 +119,7 @@ impl Component for Material {
 /// the original glossiness/env_map_scale values. This produces better
 /// lighting than faithfully reproducing the legacy Phong model.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct PbrMaterial {
     pub roughness: f32,
     pub metalness: f32,

@@ -14,6 +14,7 @@ use crate::math::{Mat4, Quat, Vec3};
 ///
 /// The renderer reads this (not `Transform`) for the model matrix.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct GlobalTransform {
     pub translation: Vec3,
     pub rotation: Quat,

@@ -17,6 +17,7 @@ use crate::math::Vec3;
 /// - Spatial queries (collision broadphase, AI visibility checks)
 /// - LOD selection (distance from camera to bound center)
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct WorldBound {
     pub center: Vec3,
     pub radius: f32,

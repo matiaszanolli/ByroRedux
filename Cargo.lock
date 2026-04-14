@@ -313,6 +313,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
+name = "byro-dbg"
+version = "0.1.0"
+dependencies = [
+ "byroredux-debug-protocol",
+ "serde_json",
+]
+
+[[package]]
 name = "byroredux"
 version = "0.1.0"
 dependencies = [
@@ -320,6 +328,7 @@ dependencies = [
  "byroredux-bsa",
  "byroredux-core",
  "byroredux-cxx-bridge",
+ "byroredux-debug-server",
  "byroredux-nif",
  "byroredux-physics",
  "byroredux-platform",
@@ -329,6 +338,7 @@ dependencies = [
  "byroredux-ui",
  "env_logger",
  "log",
+ "rayon",
  "winit",
 ]
 
@@ -350,6 +360,8 @@ dependencies = [
  "glam",
  "log",
  "rayon",
+ "serde",
+ "serde_json",
  "string-interner",
  "thiserror 2.0.18",
  "uuid",
@@ -361,6 +373,26 @@ version = "0.1.0"
 dependencies = [
  "cxx",
  "cxx-build",
+]
+
+[[package]]
+name = "byroredux-debug-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "byroredux-debug-server"
+version = "0.1.0"
+dependencies = [
+ "byroredux-core",
+ "byroredux-debug-protocol",
+ "byroredux-papyrus",
+ "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1538,6 +1570,9 @@ name = "glam"
 version = "0.29.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8babf46d4c1c9d92deac9f7be466f76dfc4482b6452fc5024b5e8daf6ffeb3ee"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "globset"
