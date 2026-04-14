@@ -165,9 +165,9 @@ pub(crate) fn setup_scene(
                             directional_color: [1.0, 0.95, 0.8],
                             directional_dir: sun_dir,
                             is_interior: false,
-                            fog_color: [0.7, 0.65, 0.55],
-                            fog_near: 3000.0,
-                            fog_far: 25000.0,
+                            fog_color: [0.65, 0.7, 0.8],
+                            fog_near: 15000.0,
+                            fog_far: 80000.0,
                         });
                         world.insert_resource(SkyParamsRes {
                             zenith_color: [0.15, 0.3, 0.65],

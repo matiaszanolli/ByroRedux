@@ -101,8 +101,8 @@ impl Default for SkyParams {
             horizon_color: [0.5, 0.5, 0.45],
             sun_direction: [-0.4, 0.8, -0.45],
             sun_color: [1.0, 0.95, 0.8],
-            sun_size: 0.9995,
-            sun_intensity: 3.0,
+            sun_size: 0.9994, // cos(~2°) — visible disc, larger than real sun
+            sun_intensity: 5.0,
             is_exterior: false,
         }
     }

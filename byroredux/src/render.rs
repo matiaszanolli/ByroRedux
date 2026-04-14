@@ -470,13 +470,13 @@ pub(crate) fn build_render_data(
     let mut fog_color = cell_lit.as_ref().map(|l| l.fog_color).unwrap_or([0.0; 3]);
     let mut fog_near = cell_lit.as_ref().map(|l| l.fog_near).unwrap_or(0.0);
     let mut fog_far = cell_lit.as_ref().map(|l| l.fog_far).unwrap_or(0.0);
+    let is_interior = cell_lit.as_ref().map(|l| l.is_interior).unwrap_or(true);
     drop(cell_lit);
 
-    // Procedural fog: when the cell doesn't define fog (near == far == 0),
-    // generate atmospheric fog from the ambient color. This adds depth and
-    // mood to interiors that the original game achieved via its fixed-function
-    // fog pipeline but didn't encode in the cell data.
-    if fog_far <= fog_near + 1.0 {
+    // Procedural fog: when an INTERIOR cell doesn't define fog (near == far == 0),
+    // generate atmospheric fog from the ambient color. Exterior cells always
+    // use their explicit fog settings (never procedural).
+    if is_interior && fog_far <= fog_near + 1.0 {
         // Fog color: blend ambient toward a cool desaturated tone.
         // Darker ambients → cooler, more blue-gray fog (dungeons).
         // Brighter ambients → warmer, amber-tinted fog (homes).
