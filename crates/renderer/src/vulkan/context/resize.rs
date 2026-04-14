@@ -6,7 +6,7 @@ use super::super::ssao::SsaoPipeline;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::super::{pipeline, swapchain};
 use super::helpers::{
-    allocate_command_buffers, create_depth_resources, create_main_framebuffers, create_render_pass,
+    create_depth_resources, create_main_framebuffers, create_render_pass,
 };
 use super::VulkanContext;
 use anyhow::{Context, Result};
@@ -302,16 +302,9 @@ impl VulkanContext {
             self.swapchain_state.extent,
         )?;
 
-        // Reallocate command buffers if image count changed.
-        unsafe {
-            self.device
-                .free_command_buffers(self.command_pool, &self.command_buffers);
-        }
-        self.command_buffers = allocate_command_buffers(
-            &self.device,
-            self.command_pool,
-            self.swapchain_state.images.len(),
-        )?;
+        // Command buffers are per frame-in-flight (fixed count), so they
+        // don't need reallocation on swapchain resize. They'll be reset
+        // before re-recording on the next draw_frame. See #259.
 
         // Recreate per-image semaphores and fence tracking for the new swapchain.
         unsafe {

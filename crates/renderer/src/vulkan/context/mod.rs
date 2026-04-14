@@ -608,9 +608,15 @@ impl VulkanContext {
             swapchain_state.extent,
         )?;
 
-        // 16. Command buffers
-        let command_buffers =
-            allocate_command_buffers(&device, command_pool, swapchain_state.images.len())?;
+        // 16. Command buffers — one per frame-in-flight (NOT per swapchain
+        // image). The in_flight fence is per-frame, so tying command buffer
+        // reuse to the same index makes the fence → cmd-buf relationship
+        // direct and obvious. See #259.
+        let command_buffers = allocate_command_buffers(
+            &device,
+            command_pool,
+            sync::MAX_FRAMES_IN_FLIGHT,
+        )?;
 
         // 17. Sync objects
         let frame_sync = sync::create_sync_objects(&device, swapchain_state.images.len())?;

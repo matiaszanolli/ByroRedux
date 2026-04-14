@@ -113,8 +113,11 @@ impl VulkanContext {
                 .context("reset_fences")?;
         }
 
-        // Record command buffer.
-        let cmd = self.command_buffers[image_index as usize];
+        // Record command buffer. Indexed by frame-in-flight (not swapchain
+        // image) so the fence and command buffer share the same slot — #259.
+        // Safe because in_flight[frame] was just waited on, guaranteeing
+        // the GPU has finished with this cmd buffer's previous recording.
+        let cmd = self.command_buffers[frame];
         unsafe {
             self.device
                 .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
