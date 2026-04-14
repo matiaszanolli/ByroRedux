@@ -29,7 +29,11 @@ pub struct BlasEntry {
 pub struct TlasState {
     pub accel: vk::AccelerationStructureKHR,
     pub buffer: GpuBuffer,
+    /// Host-visible staging buffer for CPU writes of instance data.
     pub instance_buffer: GpuBuffer,
+    /// Device-local copy for GPU reads during AS build. On discrete GPUs,
+    /// reads from VRAM avoid PCIe traversal (~10-30x faster). See #289.
+    pub instance_buffer_device: GpuBuffer,
     /// Max instances the instance_buffer can hold.
     pub max_instances: u32,
     /// BLAS device addresses submitted on the most recent BUILD, in
@@ -805,6 +809,7 @@ impl AccelerationManager {
                     .destroy_acceleration_structure(old.accel, None);
                 old.buffer.destroy(device, allocator);
                 old.instance_buffer.destroy(device, allocator);
+                old.instance_buffer_device.destroy(device, allocator);
             }
 
             // Pre-size generously to avoid future resizes. 8192 covers
@@ -814,16 +819,27 @@ impl AccelerationManager {
             let padded_size = (std::mem::size_of::<vk::AccelerationStructureInstanceKHR>()
                 * padded_count) as vk::DeviceSize;
 
+            // Host-visible staging buffer for CPU writes.
             let mut instance_buffer = GpuBuffer::create_host_visible(
                 device,
                 allocator,
                 padded_size,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+            )?;
+
+            // Device-local buffer for GPU reads during AS build. On discrete
+            // GPUs this avoids PCIe traversal (~10-30x faster). See #289.
+            let mut instance_buffer_device = GpuBuffer::create_device_local_uninit(
+                device,
+                allocator,
+                padded_size,
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                    | vk::BufferUsageFlags::TRANSFER_DST,
             )?;
 
             let instance_address = device.get_buffer_device_address(
-                &vk::BufferDeviceAddressInfo::default().buffer(instance_buffer.buffer),
+                &vk::BufferDeviceAddressInfo::default().buffer(instance_buffer_device.buffer),
             );
 
             // Query TLAS sizes.
@@ -870,7 +886,10 @@ impl AccelerationManager {
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
                     | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             )
-            .inspect_err(|_| instance_buffer.destroy(device, allocator))?;
+            .inspect_err(|_| {
+                instance_buffer.destroy(device, allocator);
+                instance_buffer_device.destroy(device, allocator);
+            })?;
 
             let accel_info = vk::AccelerationStructureCreateInfoKHR::default()
                 .buffer(tlas_buffer.buffer)
@@ -883,6 +902,7 @@ impl AccelerationManager {
                 .inspect_err(|_| {
                     tlas_buffer.destroy(device, allocator);
                     instance_buffer.destroy(device, allocator);
+                    instance_buffer_device.destroy(device, allocator);
                 })
                 .context("Failed to create TLAS")?;
 
@@ -905,6 +925,7 @@ impl AccelerationManager {
                         .destroy_acceleration_structure(accel, None);
                     tlas_buffer.destroy(device, allocator);
                     instance_buffer.destroy(device, allocator);
+                    instance_buffer_device.destroy(device, allocator);
                     return Err(e);
                 }
             }
@@ -913,6 +934,7 @@ impl AccelerationManager {
                 accel,
                 buffer: tlas_buffer,
                 instance_buffer,
+                instance_buffer_device,
                 max_instances: padded_count as u32,
                 last_blas_addresses: Vec::with_capacity(padded_count),
                 // A freshly-created TLAS has no source to refit from —
@@ -969,31 +991,63 @@ impl AccelerationManager {
             }
         }
 
-        // Write instances to buffer (host write).
+        // Write instances to host-visible staging buffer.
         tlas.instance_buffer.write_mapped(device, &instances)?;
 
-        // Barrier: ensure host write to instance buffer is visible to the
-        // AS build command that reads it. Required by Vulkan spec —
-        // host writes are not automatically visible to device commands.
-        let barrier = vk::BufferMemoryBarrier::default()
+        let copy_size = (instances.len()
+            * std::mem::size_of::<vk::AccelerationStructureInstanceKHR>())
+            as vk::DeviceSize;
+
+        // Barrier 1: make host write visible to the transfer engine.
+        let host_to_transfer = vk::BufferMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::HOST_WRITE)
-            .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR)
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
             .buffer(tlas.instance_buffer.buffer)
             .offset(0)
-            .size(vk::WHOLE_SIZE);
-
+            .size(copy_size);
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::HOST,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[host_to_transfer],
+            &[],
+        );
+
+        // Copy staging → device-local. On discrete GPUs, the AS build
+        // reads from VRAM instead of traversing PCIe. See #289.
+        let copy_region = vk::BufferCopy {
+            src_offset: 0,
+            dst_offset: 0,
+            size: copy_size,
+        };
+        device.cmd_copy_buffer(
+            cmd,
+            tlas.instance_buffer.buffer,
+            tlas.instance_buffer_device.buffer,
+            &[copy_region],
+        );
+
+        // Barrier 2: transfer write → AS build read on the device-local buffer.
+        let transfer_to_as = vk::BufferMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR)
+            .buffer(tlas.instance_buffer_device.buffer)
+            .offset(0)
+            .size(copy_size);
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::TRANSFER,
             vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
             vk::DependencyFlags::empty(),
             &[],
-            &[barrier],
+            &[transfer_to_as],
             &[],
         );
 
         let instance_address = device.get_buffer_device_address(
-            &vk::BufferDeviceAddressInfo::default().buffer(tlas.instance_buffer.buffer),
+            &vk::BufferDeviceAddressInfo::default().buffer(tlas.instance_buffer_device.buffer),
         );
 
         let geometry = vk::AccelerationStructureGeometryKHR::default()
@@ -1148,6 +1202,7 @@ impl AccelerationManager {
                     .destroy_acceleration_structure(tlas.accel, None);
                 tlas.buffer.destroy(device, allocator);
                 tlas.instance_buffer.destroy(device, allocator);
+                tlas.instance_buffer_device.destroy(device, allocator);
             }
         }
         for scratch in &mut self.scratch_buffers {
