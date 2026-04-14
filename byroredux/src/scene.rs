@@ -98,7 +98,8 @@ pub(crate) fn setup_scene(
             // Exterior cell mode: --esm <path> --grid <x>,<y>
             let (cx, cy) = parse_grid_coords(grid);
             let tex_provider = build_texture_provider(&args);
-            match cell_loader::load_exterior_cells(esm_path, cx, cy, 1, world, ctx, &tex_provider) {
+            // Radius 3 = 7×7 grid (49 cells), ~28K terrain units view distance.
+            match cell_loader::load_exterior_cells(esm_path, cx, cy, 3, world, ctx, &tex_provider) {
                 Ok(result) => {
                     cam_center = result.center;
                     has_nif_content = true;
