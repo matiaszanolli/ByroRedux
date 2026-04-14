@@ -90,23 +90,38 @@ impl SkinnedMesh {
     /// The closure takes an `EntityId` and returns its world-space matrix;
     /// this indirection keeps the function unit-testable without needing a
     /// full `World` — see the tests below.
-    pub fn compute_palette<F>(&self, mut world_transform_of: F) -> Vec<Mat4>
+    pub fn compute_palette<F>(&self, world_transform_of: F) -> Vec<Mat4>
     where
         F: FnMut(EntityId) -> Option<Mat4>,
     {
-        self.bones
-            .iter()
-            .zip(self.bind_inverses.iter())
-            .map(|(maybe_bone, bind_inv)| {
-                let Some(bone) = maybe_bone else {
-                    return Mat4::IDENTITY;
-                };
-                match world_transform_of(*bone) {
-                    Some(world) => world * *bind_inv,
-                    None => Mat4::IDENTITY,
-                }
-            })
-            .collect()
+        let mut out = Vec::with_capacity(self.bones.len());
+        self.compute_palette_into(&mut out, world_transform_of);
+        out
+    }
+
+    /// Compute the palette into a caller-owned buffer, avoiding per-call
+    /// heap allocation. The buffer is cleared and filled with one `Mat4`
+    /// per bone. Callers should `.clear()` their scratch Vec between
+    /// entities (this method does it internally).
+    pub fn compute_palette_into<F>(&self, out: &mut Vec<Mat4>, mut world_transform_of: F)
+    where
+        F: FnMut(EntityId) -> Option<Mat4>,
+    {
+        out.clear();
+        out.extend(
+            self.bones
+                .iter()
+                .zip(self.bind_inverses.iter())
+                .map(|(maybe_bone, bind_inv)| {
+                    let Some(bone) = maybe_bone else {
+                        return Mat4::IDENTITY;
+                    };
+                    match world_transform_of(*bone) {
+                        Some(world) => world * *bind_inv,
+                        None => Mat4::IDENTITY,
+                    }
+                }),
+        );
     }
 }
 
