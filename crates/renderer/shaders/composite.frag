@@ -18,7 +18,7 @@
 
 layout(set = 0, binding = 0) uniform sampler2D hdrTex;       // direct light
 layout(set = 0, binding = 1) uniform sampler2D indirectTex;  // demodulated indirect
-layout(set = 0, binding = 2) uniform sampler2D albedoTex;    // surface albedo (reserved for Phase 3 demodulated-indirect × albedo re-multiplication)
+layout(set = 0, binding = 2) uniform sampler2D albedoTex;    // surface albedo (multiplies demodulated indirect)
 layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 fog_color;      // xyz = RGB, w = enabled (1.0 = yes)
     vec4 fog_params;     // x = near, y = far, z/w = unused
@@ -118,9 +118,13 @@ void main() {
         const float exposure = 0.85;
         outColor = vec4(aces(sky * exposure), 1.0);
     } else {
-        // Geometry pixel: combine direct + indirect and tone map.
+        // Geometry pixel: combine direct + (indirect × albedo) and tone map.
+        // The shader wrote lighting-only indirect (no local albedo) so
+        // SVGF operates on a texture-free signal; multiply here to
+        // re-apply surface color. See #268.
         vec3 indirect = texture(indirectTex, fragUV).rgb;
-        vec3 combined = direct + indirect;
+        vec3 albedo = texture(albedoTex, fragUV).rgb;
+        vec3 combined = direct + indirect * albedo;
 
         const float exposure = 0.85;
         outColor = vec4(aces(combined * exposure), direct4.a);

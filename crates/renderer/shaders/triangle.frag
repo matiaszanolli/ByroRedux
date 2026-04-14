@@ -489,8 +489,10 @@ void main() {
         F0 = vec3(0.04);
     }
 
-    // Ambient base from cell lighting.
-    vec3 ambient = sceneFlags.yzw * albedo * (1.0 - metalness);
+    // Ambient base from cell lighting — LIGHTING ONLY, no local albedo.
+    // Albedo is re-applied in the composite pass so SVGF temporal/spatial
+    // filtering operates on a texture-free lighting signal. See #268.
+    vec3 ambient = sceneFlags.yzw * (1.0 - metalness);
     vec3 Lo = vec3(0.0); // Accumulated outgoing radiance.
 
     // ── RT reflection for metallic/glossy surfaces ──────────────────
@@ -506,8 +508,9 @@ void main() {
         vec3 F = fresnelSchlick(NdotV, F0);
 
         // Roughness blurs the reflection: mix toward ambient for rough metals.
+        // No *albedo — composite pass multiplies by albedo. See #268.
         float reflClarity = 1.0 - roughness;
-        vec3 envColor = mix(ambient, reflResult.rgb * albedo, reflClarity * reflResult.a);
+        vec3 envColor = mix(ambient, reflResult.rgb, reflClarity * reflResult.a);
 
         // Metals: reflection replaces ambient entirely.
         // Glossy dielectrics: reflection adds on top of ambient.
@@ -785,18 +788,19 @@ void main() {
     vec2 aoUV = gl_FragCoord.xy / screen.xy;
     float ao = max(texture(aoTexture, aoUV).r, 0.45);
 
-    // Phase 2: separate direct from indirect lighting.
+    // Phase 3: albedo-demodulated indirect lighting for SVGF.
     //
-    // outColor       = direct lighting (Lo + glass tint) + fog
-    // outRawIndirect = raw indirect light ((ambient + indirect) * ao)
-    // outAlbedo      = surface albedo (written for future SVGF phases)
+    // outColor       = direct lighting (Lo + glass tint) + fog [albedo-modulated]
+    // outRawIndirect = indirect LIGHTING ONLY, no local albedo (for SVGF)
+    // outAlbedo      = surface albedo (composite re-multiplies)
     //
-    // The composite pass reassembles: final = direct + indirect
+    // The composite pass reassembles: final = direct + indirect * albedo
     //
-    // NOTE: albedo demodulation is DEFERRED to Phase 3 where it pairs with
-    // SVGF denoising. In Phase 2 we write raw indirect (not divided by
-    // albedo) to avoid precision loss and dark-albedo amplification
-    // artifacts that were visible during isolated testing.
+    // The ambient and reflection terms above had `* albedo` factored out;
+    // the GI bounce at line 769 never had local albedo (it carries the
+    // ray-hit surface's color). Multiplying by local albedo at composite
+    // re-adds the correct modulation without division-based demodulation,
+    // avoiding dark-albedo amplification artifacts. See #268.
     vec3 directLight = Lo;
     vec3 indirectLight = (ambient + indirect) * ao;
 
