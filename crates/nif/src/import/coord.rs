@@ -10,48 +10,109 @@ use crate::types::NiMatrix3;
 /// regardless of convention — the matrix IS the rotation. So we can
 /// extract a quaternion directly from the NIF matrix without transposing.
 ///
-/// Uses SVD decomposition (via nalgebra) to handle degenerate matrices
-/// that Gamebryo NIF files sometimes contain (rank-deficient, det=0).
-/// The nearest valid rotation matrix is extracted as U*Vt from the SVD,
-/// then the Z-up → Y-up coordinate change is applied.
+/// Fast path (~99% of NIF matrices): hand-rolled Shepperd method for
+/// quaternion extraction (~20 FLOPs, no nalgebra). Falls back to nalgebra
+/// SVD only for degenerate matrices (rank-deficient, det≈0).
 pub(super) fn zup_matrix_to_yup_quat(m: &NiMatrix3) -> [f32; 4] {
-    use nalgebra::{Matrix3, UnitQuaternion};
-
     let r = &m.rows;
 
     // Apply the Z-up → Y-up axis swap to the rotation matrix:
     // C: (x,y,z)_zup → (x,z,-y)_yup
     // R_yup = C * R_zup * C^T
-    let yup = Matrix3::new(
-        r[0][0], r[0][2], -r[0][1], // X row, columns swapped
-        r[2][0], r[2][2], -r[2][1], // Z row becomes Y row
-        -r[1][0], -r[1][2], r[1][1], // -Y row becomes Z row
+    let yup = [
+        [r[0][0], r[0][2], -r[0][1]], // X row, columns swapped
+        [r[2][0], r[2][2], -r[2][1]], // Z row becomes Y row
+        [-r[1][0], -r[1][2], r[1][1]], // -Y row becomes Z row
+    ];
+
+    // Determinant — same formula as transform.rs:is_degenerate_rotation.
+    let det = yup[0][0] * (yup[1][1] * yup[2][2] - yup[1][2] * yup[2][1])
+        - yup[0][1] * (yup[1][0] * yup[2][2] - yup[1][2] * yup[2][0])
+        + yup[0][2] * (yup[1][0] * yup[2][1] - yup[1][1] * yup[2][0]);
+
+    if (det - 1.0).abs() < 0.1 {
+        // Fast path: valid rotation matrix — Shepperd method for quaternion
+        // extraction. Numerically stable for all rotation angles.
+        // Reference: Shepperd, "Quaternion from Rotation Matrix", JGCD 1978.
+        matrix3_to_quat(&yup)
+    } else {
+        // Degenerate — SVD repair via nalgebra.
+        svd_repair_to_quat(&yup)
+    }
+}
+
+/// Shepperd method: extract a unit quaternion from a 3×3 rotation matrix.
+///
+/// Picks the largest diagonal element to avoid division by near-zero,
+/// ensuring numerical stability for all rotation angles. ~20 FLOPs total.
+fn matrix3_to_quat(m: &[[f32; 3]; 3]) -> [f32; 4] {
+    let trace = m[0][0] + m[1][1] + m[2][2];
+
+    if trace > 0.0 {
+        // w is largest
+        let s = (trace + 1.0).sqrt();
+        let w = s * 0.5;
+        let inv = 0.5 / s;
+        let x = (m[2][1] - m[1][2]) * inv;
+        let y = (m[0][2] - m[2][0]) * inv;
+        let z = (m[1][0] - m[0][1]) * inv;
+        [x, y, z, w]
+    } else if m[0][0] >= m[1][1] && m[0][0] >= m[2][2] {
+        // x is largest
+        let s = (1.0 + m[0][0] - m[1][1] - m[2][2]).sqrt();
+        let x = s * 0.5;
+        let inv = 0.5 / s;
+        let y = (m[0][1] + m[1][0]) * inv;
+        let z = (m[0][2] + m[2][0]) * inv;
+        let w = (m[2][1] - m[1][2]) * inv;
+        [x, y, z, w]
+    } else if m[1][1] >= m[2][2] {
+        // y is largest
+        let s = (1.0 - m[0][0] + m[1][1] - m[2][2]).sqrt();
+        let y = s * 0.5;
+        let inv = 0.5 / s;
+        let x = (m[0][1] + m[1][0]) * inv;
+        let z = (m[1][2] + m[2][1]) * inv;
+        let w = (m[0][2] - m[2][0]) * inv;
+        [x, y, z, w]
+    } else {
+        // z is largest
+        let s = (1.0 - m[0][0] - m[1][1] + m[2][2]).sqrt();
+        let z = s * 0.5;
+        let inv = 0.5 / s;
+        let x = (m[0][2] + m[2][0]) * inv;
+        let y = (m[1][2] + m[2][1]) * inv;
+        let w = (m[1][0] - m[0][1]) * inv;
+        [x, y, z, w]
+    }
+}
+
+/// SVD-repair a degenerate matrix and extract a quaternion.
+/// Only called for ~1% of NIF matrices (zeroed BSFadeNode rotations, etc.).
+fn svd_repair_to_quat(yup: &[[f32; 3]; 3]) -> [f32; 4] {
+    use nalgebra::Matrix3;
+
+    let mat = Matrix3::new(
+        yup[0][0], yup[0][1], yup[0][2],
+        yup[1][0], yup[1][1], yup[1][2],
+        yup[2][0], yup[2][1], yup[2][2],
     );
 
-    // Fast path: if det ≈ 1.0, the matrix is already a valid rotation and
-    // we can extract the quaternion directly. This is the common case (~99%
-    // of NIF matrices). SVD is only needed for degenerate matrices (zeroed
-    // BSFadeNode rotations, scaled/sheared matrices from bad exports).
-    let det = yup.determinant();
-    let rotation_matrix = if (det - 1.0).abs() < 0.1 {
-        yup
-    } else {
-        // Degenerate — SVD repair: M = U*Σ*Vt → nearest rotation = U*Vt.
-        let svd = yup.svd(true, true);
-        let u = svd.u.unwrap();
-        let vt = svd.v_t.unwrap();
-        let mut nearest = u * vt;
+    let svd = mat.svd(true, true);
+    let u = svd.u.unwrap();
+    let vt = svd.v_t.unwrap();
+    let mut nearest = u * vt;
 
-        if nearest.determinant() < 0.0 {
-            let mut u_fixed = u;
-            u_fixed.column_mut(2).scale_mut(-1.0);
-            nearest = u_fixed * vt;
-        }
-        nearest
-    };
+    if nearest.determinant() < 0.0 {
+        let mut u_fixed = u;
+        u_fixed.column_mut(2).scale_mut(-1.0);
+        nearest = u_fixed * vt;
+    }
 
-    let rot = nalgebra::Rotation3::from_matrix_unchecked(rotation_matrix);
-    let q = UnitQuaternion::from_rotation_matrix(&rot);
-
-    [q.i, q.j, q.k, q.w]
+    let repaired = [
+        [nearest[(0, 0)], nearest[(0, 1)], nearest[(0, 2)]],
+        [nearest[(1, 0)], nearest[(1, 1)], nearest[(1, 2)]],
+        [nearest[(2, 0)], nearest[(2, 1)], nearest[(2, 2)]],
+    ];
+    matrix3_to_quat(&repaired)
 }
