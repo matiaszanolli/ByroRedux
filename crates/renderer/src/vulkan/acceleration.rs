@@ -378,7 +378,10 @@ impl AccelerationManager {
 
             let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                 .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-                .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+                .flags(
+                    vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+                        | vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION,
+                )
                 .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
                 .geometries(std::slice::from_ref(&geometry));
 
@@ -455,12 +458,25 @@ impl AccelerationManager {
             )
         };
 
-        // Phase 3: Record all builds into a single command buffer.
+        // Phase 3: Create query pool for compacted size readback.
+        let n = prepared.len() as u32;
+        let query_pool_info = vk::QueryPoolCreateInfo::default()
+            .query_type(vk::QueryType::ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR)
+            .query_count(n);
+        let query_pool = unsafe {
+            device
+                .create_query_pool(&query_pool_info, None)
+                .context("Failed to create compaction query pool")?
+        };
+        // Reset the query pool before use (required by Vulkan spec).
+        unsafe {
+            device.reset_query_pool(query_pool, 0, n);
+        }
+
+        // Phase 4: Record builds + compaction size queries into one command buffer.
         let build_result =
             super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
                 for (i, p) in prepared.iter().enumerate() {
-                    // Memory barrier between builds sharing the scratch buffer.
-                    // First build doesn't need a barrier.
                     if i > 0 {
                         let barrier = vk::MemoryBarrier::default()
                             .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
@@ -480,7 +496,10 @@ impl AccelerationManager {
 
                     let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                         .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-                        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+                        .flags(
+                            vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+                                | vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION,
+                        )
                         .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
                         .dst_acceleration_structure(p.accel)
                         .geometries(std::slice::from_ref(&p.geometry))
@@ -501,11 +520,41 @@ impl AccelerationManager {
                         );
                     }
                 }
+
+                // Barrier: all builds must complete before querying compacted sizes.
+                let barrier = vk::MemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
+                    .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR);
+                unsafe {
+                    device.cmd_pipeline_barrier(
+                        cmd,
+                        vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                        vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                        vk::DependencyFlags::empty(),
+                        &[barrier],
+                        &[],
+                        &[],
+                    );
+                }
+
+                // Query compacted sizes for all built BLAS.
+                let accel_handles: Vec<vk::AccelerationStructureKHR> =
+                    prepared.iter().map(|p| p.accel).collect();
+                unsafe {
+                    self.accel_loader
+                        .cmd_write_acceleration_structures_properties(
+                            cmd,
+                            &accel_handles,
+                            vk::QueryType::ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+                            query_pool,
+                            0,
+                        );
+                }
+
                 Ok(())
             });
 
         if let Err(e) = build_result {
-            // Clean up all prepared structures on failure.
             for mut p in prepared {
                 unsafe {
                     self.accel_loader
@@ -513,35 +562,140 @@ impl AccelerationManager {
                 }
                 p.buffer.destroy(device, allocator);
             }
+            unsafe { device.destroy_query_pool(query_pool, None); }
             return Err(e);
         }
 
-        // Phase 4: Store all BLAS entries and get device addresses.
-        let count = prepared.len();
-        for p in prepared {
+        // Phase 5: Read back compacted sizes from the query pool.
+        let mut compacted_sizes = vec![0u64; prepared.len()];
+        unsafe {
+            device
+                .get_query_pool_results(
+                    query_pool,
+                    0,
+                    &mut compacted_sizes,
+                    vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT,
+                )
+                .context("Failed to read compaction query results")?;
+        }
+
+        // Phase 6: Compact — allocate smaller buffers, copy, destroy originals.
+        let mut total_before: u64 = 0;
+        let mut total_after: u64 = 0;
+        let mut compact_accels: Vec<(u32, vk::AccelerationStructureKHR, GpuBuffer)> =
+            Vec::with_capacity(prepared.len());
+
+        for (i, p) in prepared.iter().enumerate() {
+            total_before += p.buffer.size;
+            let compact_size = compacted_sizes[i];
+            total_after += compact_size;
+
+            // Allocate the compacted result buffer.
+            let compact_buffer = GpuBuffer::create_device_local_uninit(
+                device,
+                allocator,
+                compact_size,
+                vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            )?;
+
+            let compact_accel_info = vk::AccelerationStructureCreateInfoKHR::default()
+                .buffer(compact_buffer.buffer)
+                .size(compact_size)
+                .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
+
+            let compact_accel = unsafe {
+                self.accel_loader
+                    .create_acceleration_structure(&compact_accel_info, None)
+                    .context("Failed to create compact BLAS")?
+            };
+
+            compact_accels.push((p.mesh_handle, compact_accel, compact_buffer));
+        }
+
+        // Record compaction copies in a second command buffer.
+        let copy_result =
+            super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
+                for (i, (_, compact_accel, _)) in compact_accels.iter().enumerate() {
+                    let copy_info = vk::CopyAccelerationStructureInfoKHR::default()
+                        .src(prepared[i].accel)
+                        .dst(*compact_accel)
+                        .mode(vk::CopyAccelerationStructureModeKHR::COMPACT);
+
+                    unsafe {
+                        self.accel_loader.cmd_copy_acceleration_structure(cmd, &copy_info);
+                    }
+                }
+                Ok(())
+            });
+
+        // Destroy the query pool — no longer needed.
+        unsafe { device.destroy_query_pool(query_pool, None); }
+
+        if let Err(e) = copy_result {
+            // Clean up both original and compact structures on failure.
+            for mut p in prepared {
+                unsafe {
+                    self.accel_loader
+                        .destroy_acceleration_structure(p.accel, None);
+                }
+                p.buffer.destroy(device, allocator);
+            }
+            for (_, accel, mut buf) in compact_accels {
+                unsafe {
+                    self.accel_loader
+                        .destroy_acceleration_structure(accel, None);
+                }
+                buf.destroy(device, allocator);
+            }
+            return Err(e);
+        }
+
+        // Phase 7: Destroy originals, store compacted entries.
+        for mut p in prepared {
+            unsafe {
+                self.accel_loader
+                    .destroy_acceleration_structure(p.accel, None);
+            }
+            p.buffer.destroy(device, allocator);
+        }
+
+        let count = compact_accels.len();
+        for (mesh_handle, accel, buffer) in compact_accels {
             let device_address = unsafe {
                 self.accel_loader.get_acceleration_structure_device_address(
                     &vk::AccelerationStructureDeviceAddressInfoKHR::default()
-                        .acceleration_structure(p.accel),
+                        .acceleration_structure(accel),
                 )
             };
 
-            let handle = p.mesh_handle as usize;
-            let blas_size = p.buffer.size;
+            let handle = mesh_handle as usize;
+            let blas_size = buffer.size;
             while self.blas_entries.len() <= handle {
                 self.blas_entries.push(None);
             }
             self.total_blas_bytes += blas_size;
             self.blas_entries[handle] = Some(BlasEntry {
-                accel: p.accel,
-                buffer: p.buffer,
+                accel,
+                buffer,
                 device_address,
                 last_used_frame: self.frame_counter,
                 size_bytes: blas_size,
             });
         }
 
-        log::info!("Batched BLAS build: {count} meshes in single submission");
+        let savings_pct = if total_before > 0 {
+            100.0 * (1.0 - total_after as f64 / total_before as f64)
+        } else {
+            0.0
+        };
+        log::info!(
+            "Batched BLAS build: {} meshes, compacted {:.1} KB → {:.1} KB ({:.0}% savings)",
+            count,
+            total_before as f64 / 1024.0,
+            total_after as f64 / 1024.0,
+            savings_pct,
+        );
         Ok(count)
     }
 
