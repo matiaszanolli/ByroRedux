@@ -19,6 +19,16 @@ pub fn create_allocator(
     physical_device: ash::vk::PhysicalDevice,
     buffer_device_address: bool,
 ) -> Result<SharedAllocator> {
+    // Tuned block sizes for game engine workload. The gpu-allocator
+    // defaults (256 MB device, 64 MB host) over-reserve on GPUs with
+    // 4–8 GB VRAM — a single 256 MB block at startup consumes 6% of a
+    // 4 GB GPU before any content loads. Smaller blocks (64 MB device,
+    // 16 MB host) let the allocator grow on demand with less waste.
+    // Typical cell load: ~250 MB across ~3000 allocations in 4–5 blocks.
+    let allocation_sizes = gpu_allocator::AllocationSizes::new(
+        64 * 1024 * 1024,  // 64 MB device-local blocks
+        16 * 1024 * 1024,  // 16 MB host-visible blocks
+    );
     let allocator = vulkan::Allocator::new(&vulkan::AllocatorCreateDesc {
         instance: instance.clone(),
         device: device.clone(),
@@ -29,7 +39,7 @@ pub fn create_allocator(
             ..Default::default()
         },
         buffer_device_address,
-        allocation_sizes: Default::default(),
+        allocation_sizes,
     })
     .context("Failed to create GPU allocator")?;
 
