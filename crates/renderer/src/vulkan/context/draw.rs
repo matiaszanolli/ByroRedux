@@ -20,6 +20,12 @@ pub(super) struct DrawBatch {
     pub first_instance: u32,
     pub instance_count: u32,
     pub index_count: u32,
+    /// Offset into the global index buffer (in indices). Used with the
+    /// global geometry SSBO as `first_index` in `cmd_draw_indexed`. #294.
+    pub global_index_offset: u32,
+    /// Offset into the global vertex buffer (in vertices). Used with the
+    /// global geometry SSBO as `vertex_offset` in `cmd_draw_indexed`. #294.
+    pub global_vertex_offset: i32,
 }
 
 impl VulkanContext {
@@ -434,6 +440,8 @@ impl VulkanContext {
                 first_instance: instance_idx,
                 instance_count: 1,
                 index_count: mesh.index_count,
+                global_index_offset: mesh.global_index_offset,
+                global_vertex_offset: mesh.global_vertex_offset as i32,
             });
         }
 
@@ -531,13 +539,29 @@ impl VulkanContext {
             // texture index, and bone offset — no push constants, no per-draw descriptor
             // set binds.
             let mut last_pipeline_key = (BlendType::Opaque, false);
-            let mut last_mesh_handle = u32::MAX;
             let mut last_is_decal = false;
 
             // Set initial depth bias to zero before first draw — Vulkan
             // requires the dynamic state to be set before any draw call
             // when the pipeline declares VK_DYNAMIC_STATE_DEPTH_BIAS.
             self.device.cmd_set_depth_bias(cmd, 0.0, 0.0, 0.0);
+
+            // Bind the global geometry buffer once for all scene draws.
+            // Each batch uses global_index_offset / global_vertex_offset
+            // to index into this single buffer, eliminating per-mesh
+            // vertex/index buffer rebinding (~200 rebinds/frame → 1). #294.
+            let global_bound = if let (Some(gvb), Some(gib)) = (
+                self.mesh_registry.global_vertex_buffer.as_ref(),
+                self.mesh_registry.global_index_buffer.as_ref(),
+            ) {
+                self.device
+                    .cmd_bind_vertex_buffers(cmd, 0, &[gvb.buffer], &[0]);
+                self.device
+                    .cmd_bind_index_buffer(cmd, gib.buffer, 0, vk::IndexType::UINT32);
+                true
+            } else {
+                false
+            };
 
             for batch in &batches {
                 // Switch pipeline when rendering mode changes.
@@ -572,8 +596,20 @@ impl VulkanContext {
                     last_is_decal = batch.is_decal;
                 }
 
-                // Rebind vertex + index buffers only when the mesh changes.
-                if batch.mesh_handle != last_mesh_handle {
+                if global_bound {
+                    // Global buffer path: use per-mesh offsets into the
+                    // single bound VB/IB. No per-mesh rebinding needed.
+                    self.device.cmd_draw_indexed(
+                        cmd,
+                        batch.index_count,
+                        batch.instance_count,
+                        batch.global_index_offset,
+                        batch.global_vertex_offset,
+                        batch.first_instance,
+                    );
+                } else {
+                    // Fallback: per-mesh buffers (before SSBO is built, or
+                    // for non-scene meshes like the spinning cube demo).
                     if let Some(mesh) = self.mesh_registry.get(batch.mesh_handle) {
                         self.device.cmd_bind_vertex_buffers(
                             cmd,
@@ -587,19 +623,16 @@ impl VulkanContext {
                             0,
                             vk::IndexType::UINT32,
                         );
-                        last_mesh_handle = batch.mesh_handle;
                     }
+                    self.device.cmd_draw_indexed(
+                        cmd,
+                        batch.index_count,
+                        batch.instance_count,
+                        0,
+                        0,
+                        batch.first_instance,
+                    );
                 }
-
-                // Single instanced draw call for the entire batch.
-                self.device.cmd_draw_indexed(
-                    cmd,
-                    batch.index_count,
-                    batch.instance_count,
-                    0,
-                    0,
-                    batch.first_instance,
-                );
             }
 
             // UI overlay: draw a fullscreen quad with the Ruffle-rendered texture.

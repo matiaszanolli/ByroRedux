@@ -196,21 +196,21 @@ impl MeshRegistry {
         let vertex_size = (std::mem::size_of::<Vertex>() * self.pending_vertices.len()) as vk::DeviceSize;
         let index_size = (std::mem::size_of::<u32>() * self.pending_indices.len()) as vk::DeviceSize;
 
-        // Create as STORAGE_BUFFER so the fragment shader can read vertex data
-        // for RT reflection UV lookups via barycentrics.
-        // Re-borrow the staging pool for two consecutive uploads.
+        // Create with STORAGE_BUFFER (RT reflection UV lookups) plus
+        // VERTEX_BUFFER / INDEX_BUFFER so the draw loop can bind this
+        // single global buffer instead of per-mesh rebinding. See #294.
         let mut pool = staging_pool;
         self.global_vertex_buffer = Some(GpuBuffer::create_device_local_buffer(
             device, allocator, queue, command_pool,
             vertex_size,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::VERTEX_BUFFER,
             &self.pending_vertices,
             pool.as_deref_mut(),
         )?);
         self.global_index_buffer = Some(GpuBuffer::create_device_local_buffer(
             device, allocator, queue, command_pool,
             index_size,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER,
             &self.pending_indices,
             pool.as_deref_mut(),
         )?);
