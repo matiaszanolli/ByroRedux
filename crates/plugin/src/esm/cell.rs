@@ -311,16 +311,21 @@ fn parse_cell_group(
                             // Oblivion: 36 bytes. FNV: 40 bytes.
                             // Skyrim+: 92 bytes with extended fields.
                             // Detect by length — unambiguous.
+                            //
+                            // RL-01: all colors stored here are authored in
+                            // sRGB "monitor space" per the D3D9 pipeline.
+                            // Linearize at parse time so cluster culling,
+                            // SVGF, and the PBR shader see correct energy.
                             let d = &sub.data;
                             let ambient = [
-                                d[0] as f32 / 255.0,
-                                d[1] as f32 / 255.0,
-                                d[2] as f32 / 255.0,
+                                byroredux_core::color::srgb_u8_to_linear(d[0]),
+                                byroredux_core::color::srgb_u8_to_linear(d[1]),
+                                byroredux_core::color::srgb_u8_to_linear(d[2]),
                             ];
                             let directional_color = [
-                                d[4] as f32 / 255.0,
-                                d[5] as f32 / 255.0,
-                                d[6] as f32 / 255.0,
+                                byroredux_core::color::srgb_u8_to_linear(d[4]),
+                                byroredux_core::color::srgb_u8_to_linear(d[5]),
+                                byroredux_core::color::srgb_u8_to_linear(d[6]),
                             ];
                             let rot_x = {
                                 let raw = i32::from_le_bytes([d[20], d[21], d[22], d[23]]);
@@ -331,9 +336,9 @@ fn parse_cell_group(
                                 (raw as f32).to_radians()
                             };
                             let (fog_color, fog_near, fog_far) = if d.len() >= 20 {
-                                let fog_r = d[8] as f32 / 255.0;
-                                let fog_g = d[9] as f32 / 255.0;
-                                let fog_b = d[10] as f32 / 255.0;
+                                let fog_r = byroredux_core::color::srgb_u8_to_linear(d[8]);
+                                let fog_g = byroredux_core::color::srgb_u8_to_linear(d[9]);
+                                let fog_b = byroredux_core::color::srgb_u8_to_linear(d[10]);
                                 let fog_near = f32::from_le_bytes([d[12], d[13], d[14], d[15]]);
                                 let fog_far = f32::from_le_bytes([d[16], d[17], d[18], d[19]]);
                                 ([fog_r, fog_g, fog_b], fog_near, fog_far)
@@ -367,9 +372,9 @@ fn parse_cell_group(
                                     Some(f32::from_le_bytes([d[32], d[33], d[34], d[35]])),
                                     Some(f32::from_le_bytes([d[36], d[37], d[38], d[39]])),
                                     Some([
-                                        d[72] as f32 / 255.0,
-                                        d[73] as f32 / 255.0,
-                                        d[74] as f32 / 255.0,
+                                        byroredux_core::color::srgb_u8_to_linear(d[72]),
+                                        byroredux_core::color::srgb_u8_to_linear(d[73]),
+                                        byroredux_core::color::srgb_u8_to_linear(d[74]),
                                     ]),
                                     Some(f32::from_le_bytes([d[76], d[77], d[78], d[79]])),
                                     Some(f32::from_le_bytes([d[80], d[81], d[82], d[83]])),
@@ -819,15 +824,17 @@ fn parse_modl_group(
                     b"MODL" => model_path = read_zstring(&sub.data),
                     b"DATA" if is_ligh && sub.data.len() >= 12 => {
                         // LIGH DATA: time(u32), radius(u32), color(RGBA u8×4), flags(u32), ...
+                        //
+                        // RL-01: authored sRGB → linearize at parse time.
                         let radius = u32::from_le_bytes([
                             sub.data[4],
                             sub.data[5],
                             sub.data[6],
                             sub.data[7],
                         ]) as f32;
-                        let r = sub.data[8] as f32 / 255.0;
-                        let g = sub.data[9] as f32 / 255.0;
-                        let b = sub.data[10] as f32 / 255.0;
+                        let r = byroredux_core::color::srgb_u8_to_linear(sub.data[8]);
+                        let g = byroredux_core::color::srgb_u8_to_linear(sub.data[9]);
+                        let b = byroredux_core::color::srgb_u8_to_linear(sub.data[10]);
                         let flags = if sub.data.len() >= 16 {
                             u32::from_le_bytes([
                                 sub.data[12],

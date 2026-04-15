@@ -462,13 +462,16 @@ fn imported_light_from_base(
 
     // Dimmer scales the diffuse contribution — the only channel the
     // engine currently consumes. Ambient/specular are stored for later.
-    // Gamebryo stores light colors as raw floats in "monitor space" —
-    // effectively sRGB values used as-is with no gamma conversion.  We
-    // pass them through unchanged because the legacy content was
-    // authored for this non-linear-aware pipeline.
+    //
+    // RL-01: Gamebryo authors light colors in sRGB "monitor space" (the
+    // D3D9 pipeline had no `D3DRS_SRGBWRITEENABLE`). The PBR shader,
+    // cluster culling, and SVGF require linear radiance, so linearize
+    // at parse time. Dimmer is a scalar gain and stays in linear space.
     let d = base.dimmer;
     let diffuse = base.diffuse_color;
-    let color = [diffuse.r * d, diffuse.g * d, diffuse.b * d];
+    let linear =
+        byroredux_core::color::srgb_rgb_to_linear([diffuse.r, diffuse.g, diffuse.b]);
+    let color = [linear[0] * d, linear[1] * d, linear[2] * d];
 
     ImportedLight {
         translation,

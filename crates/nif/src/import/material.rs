@@ -273,10 +273,12 @@ pub(super) fn extract_material_info(
             if shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 {
                 info.is_decal = true;
             }
-            // Capture rich material data.
-            info.emissive_color = shader.emissive_color;
+            // Capture rich material data. RL-01: BSShader color fields
+            // are authored in sRGB; linearize so downstream PBR math
+            // receives correct energy.
+            info.emissive_color = byroredux_core::color::srgb_rgb_to_linear(shader.emissive_color);
             info.emissive_mult = shader.emissive_multiple;
-            info.specular_color = shader.specular_color;
+            info.specular_color = byroredux_core::color::srgb_rgb_to_linear(shader.specular_color);
             info.specular_strength = shader.specular_strength;
             info.glossiness = shader.glossiness;
             info.uv_offset = shader.uv_offset;
@@ -292,11 +294,12 @@ pub(super) fn extract_material_info(
                 info.texture_path = Some(shader.source_texture.clone());
             }
             if !info.has_material_data {
-                info.emissive_color = [
+                // RL-01: linearize sRGB-authored emissive color.
+                info.emissive_color = byroredux_core::color::srgb_rgb_to_linear([
                     shader.emissive_color[0],
                     shader.emissive_color[1],
                     shader.emissive_color[2],
-                ];
+                ]);
                 info.emissive_mult = shader.emissive_multiple;
                 info.uv_offset = shader.uv_offset;
                 info.uv_scale = shader.uv_scale;
@@ -332,10 +335,14 @@ pub(super) fn extract_material_info(
         }
 
         // NiMaterialProperty — capture specular/emissive/shininess/alpha.
+        // RL-01: color fields are sRGB-authored; linearize for the PBR
+        // shader's linear-radiance path.
         if !info.has_material_data {
             if let Some(mat) = scene.get_as::<NiMaterialProperty>(idx) {
-                info.specular_color = [mat.specular.r, mat.specular.g, mat.specular.b];
-                info.emissive_color = [mat.emissive.r, mat.emissive.g, mat.emissive.b];
+                info.specular_color =
+                    byroredux_core::color::srgb_rgb_to_linear([mat.specular.r, mat.specular.g, mat.specular.b]);
+                info.emissive_color =
+                    byroredux_core::color::srgb_rgb_to_linear([mat.emissive.r, mat.emissive.g, mat.emissive.b]);
                 info.glossiness = mat.shininess;
                 info.alpha = mat.alpha;
                 info.emissive_mult = mat.emissive_mult;
