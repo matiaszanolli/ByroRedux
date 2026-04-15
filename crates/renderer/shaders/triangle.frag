@@ -497,9 +497,18 @@ void main() {
 
     // ── RT reflection for metallic/glossy surfaces ──────────────────
     //
-    // Metals reflect their environment. Cast a reflection ray and blend
-    // the result based on metalness and Fresnel. The reflected color
-    // replaces the ambient term for metals (they have no diffuse).
+    // Metals reflect their environment. Cast a reflection ray, weight by
+    // Fresnel, and add to the direct path. We deliberately route through
+    // Lo (not ambient/outRawIndirect) because reflResult.rgb already
+    // carries the HIT surface's albedo — sending it through the indirect
+    // path would have composite multiply by the LOCAL albedo a second
+    // time, losing 30-50% of reflection energy on tinted metals (#315).
+    //
+    // For metals, F ≈ F0 = albedo at normal incidence, so `* F * metalness`
+    // provides the single, correct metal-tint modulation that composite
+    // would otherwise apply via `indirect * albedo`. The direct path is
+    // not albedo-modulated by composite (Lo already bakes in albedo per
+    // dielectric kD), so this addition stays at full intensity.
     if (rtEnabled && metalness > 0.3 && roughness < 0.6) {
         vec3 R = reflect(-V, N);
         vec4 reflResult = traceReflection(fragWorldPos + N * 0.1, R, 5000.0);
@@ -507,14 +516,15 @@ void main() {
         // Fresnel-weighted reflection: stronger at grazing angles.
         vec3 F = fresnelSchlick(NdotV, F0);
 
-        // Roughness blurs the reflection: mix toward ambient for rough metals.
-        // No *albedo — composite pass multiplies by albedo. See #268.
+        // Roughness blurs the reflection: mix toward raw ambient (without
+        // the per-pixel metalness factor that line 495 zeroed) for rough
+        // metals so high-roughness surfaces still see environment color
+        // when the ray miss path returns weak signal.
         float reflClarity = 1.0 - roughness;
-        vec3 envColor = mix(ambient, reflResult.rgb, reflClarity * reflResult.a);
+        vec3 ambientFallback = sceneFlags.yzw;
+        vec3 envColor = mix(ambientFallback, reflResult.rgb, reflClarity * reflResult.a);
 
-        // Metals: reflection replaces ambient entirely.
-        // Glossy dielectrics: reflection adds on top of ambient.
-        ambient = mix(ambient, envColor, metalness * F);
+        Lo += envColor * F * metalness;
     }
 
     // World-space distance from camera for cluster depth slicing.
