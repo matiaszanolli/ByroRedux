@@ -586,58 +586,116 @@ pub fn parse_strip_particle_system(stream: &mut NifStream) -> io::Result<NiPSysB
 /// NiParticlesData / NiPSysData / NiMeshPSysData / BSStripPSysData:
 /// These inherit NiGeometryData (complex, variable-length).
 /// Reuses the existing geometry data base parser then reads particle-specific fields.
+///
+/// Schema source: `docs/legacy/nif.xml` NiParticlesData (lines 3990–4016)
+/// and NiPSysData (lines 4028–4038). Critical insight: Bethesda 20.2.0.7+
+/// streams (`#BS202#` = FO3, FNV, Skyrim LE/SE, FO4, FO76, Starfield)
+/// DROP all the per-particle arrays — only the bool headers are serialized,
+/// and the data is stored elsewhere. Before #322 the parser read those
+/// arrays unconditionally, walking thousands of bytes past the block end.
 pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Result<NiPSysBlock> {
-    // NiGeometryData base (shared with NiTriShapeData).
-    let (_verts, _flags, _normals, _center, _radius, _colors, _uvs) =
-        super::tri_shape::parse_geometry_data_base(stream)?;
+    use crate::version::NifVersion;
 
-    // NiParticlesData-specific fields:
-    let has_radii = stream.read_byte_bool()?;
-    if has_radii {
-        // Per-particle radii: num_vertices floats.
-        // We already consumed num_vertices in the base parser, but don't have it here.
-        // The base parser reads num_vertices — we need it. Rather than refactoring,
-        // count from the vertices vec.
-        let count = _verts.len();
-        stream.skip(count as u64 * 4)?;
+    // BS202 stream = Bethesda file at version 20.2.0.7+ (bsver != 0). All
+    // per-particle data arrays are *absent* on this path; only the bool
+    // headers are written. See nif.xml `vercond="!#BS202#"` on every array.
+    let is_bs_202 = stream.version() >= NifVersion(0x14020007) && stream.bsver() > 0;
+
+    // NiGeometryData base (shared with NiTriShapeData). For NiPSysData on
+    // BS_GTE_FO3, the Vertices/Normals/Tangents/Colors/UV arrays have length
+    // 0 regardless of the bools — use the psys variant to suppress them.
+    // See nif.xml line 3880 and #322.
+    let use_psys_base = is_bs_202 && type_name != "NiParticlesData";
+    let (_verts, _flags, _normals, _center, _radius, _colors, _uvs) = if use_psys_base {
+        super::tri_shape::parse_psys_geometry_data_base(stream)?
+    } else {
+        super::tri_shape::parse_geometry_data_base(stream)?
+    };
+    // For the particle-specific arrays after the base, `count` is the raw
+    // vertex count (non-zero on non-BS202, zero on BS202 via the psys base).
+    let count = _verts.len() as u64;
+
+    // Has Radii / Radii: since 10.1.0.0, array only on !BS202.
+    if stream.version() >= NifVersion(0x0A010000) {
+        let has_radii = stream.read_byte_bool()?;
+        if has_radii && !is_bs_202 {
+            stream.skip(count * 4)?;
+        }
     }
-    // Num Active Particles (u16) — since 10.0.1.0
+
+    // Num Active Particles (u16) — always present.
     let _active_particles = stream.read_u16_le()?;
+
+    // Has Sizes / Sizes: array only on !BS202.
     let has_sizes = stream.read_byte_bool()?;
-    if has_sizes {
-        stream.skip(_verts.len() as u64 * 4)?;
+    if has_sizes && !is_bs_202 {
+        stream.skip(count * 4)?;
     }
 
-    // Rotations: since v10.0.1.0
-    if stream.version() >= crate::version::NifVersion(0x0A000100) {
+    // Has Rotations / Rotations: since 10.0.1.0, array only on !BS202.
+    if stream.version() >= NifVersion(0x0A000100) {
         let has_rotations = stream.read_byte_bool()?;
-        if has_rotations {
-            stream.skip(_verts.len() as u64 * 16)?; // quaternions (4×f32)
+        if has_rotations && !is_bs_202 {
+            stream.skip(count * 16)?; // quaternion (4×f32)
         }
     }
 
-    // Rotation angles + axes: since v20.0.0.4
-    if stream.version() >= crate::version::NifVersion(0x14000004) {
+    // Has Rotation Angles / Rotation Angles: since 20.0.0.4, array only on !BS202.
+    if stream.version() >= NifVersion(0x14000004) {
         let has_rotation_angles = stream.read_byte_bool()?;
-        if has_rotation_angles {
-            stream.skip(_verts.len() as u64 * 4)?;
+        if has_rotation_angles && !is_bs_202 {
+            stream.skip(count * 4)?;
         }
+        // Has Rotation Axes / Rotation Axes — same gating.
         let has_rotation_axes = stream.read_byte_bool()?;
-        if has_rotation_axes {
-            stream.skip(_verts.len() as u64 * 12)?; // vec3
+        if has_rotation_axes && !is_bs_202 {
+            stream.skip(count * 12)?; // Vector3
         }
     }
 
-    // NiPSysData-specific fields (if not just NiParticlesData):
-    if type_name != "NiParticlesData" {
-        let has_rotation_speeds = stream.read_byte_bool()?;
-        if has_rotation_speeds {
-            stream.skip(_verts.len() as u64 * 4)?;
+    // BS202-only trailing fields (texture atlas / subtexture offsets). These
+    // were completely missing before #322 — they are the primary cause of
+    // the massive over-reads in the FNV corpus.
+    if is_bs_202 {
+        let _has_texture_indices = stream.read_byte_bool()?;
+        // Num Subtexture Offsets: byte for BSVER ≤ 34 (FO3/FNV), uint for
+        // BSVER > 34 (Skyrim LE+). nif.xml lines 4008–4009.
+        let num_subtex_offsets: u64 = if stream.bsver() <= 34 {
+            stream.read_u8()? as u64
+        } else {
+            stream.read_u32_le()? as u64
+        };
+        // Subtexture Offsets: Vector4 × count = 16 bytes each.
+        stream.skip(num_subtex_offsets * 16)?;
+
+        // Skyrim+ (BS_GT_FO3): aspect ratio, aspect flags, 3× speed-to-aspect.
+        if stream.bsver() > 34 {
+            let _aspect_ratio = stream.read_f32_le()?;
+            let _aspect_flags = stream.read_u16_le()?;
+            let _speed_to_aspect_aspect_2 = stream.read_f32_le()?;
+            let _speed_to_aspect_speed_1 = stream.read_f32_le()?;
+            let _speed_to_aspect_speed_2 = stream.read_f32_le()?;
         }
-        // Num Added + Added Particles Base: since 20.0.0.2 until 20.2.0.7
-        if stream.version() >= crate::version::NifVersion(0x14000002)
-            && stream.version() < crate::version::NifVersion(0x14020007)
-        {
+    }
+
+    // NiPSysData-specific fields. The Particle Info array (`!#BS202#`) and
+    // the Num Added / Added Particles Base fields (also `!#BS202#`) are all
+    // absent on Bethesda streams.
+    if type_name != "NiParticlesData" {
+        // Particle Info: NiParticleInfo × num_vertices. Non-Bethesda only.
+        // Size per entry: Vector3 velocity + Vector3 rotation_axis + f32 age +
+        // f32 life_span + f32 last_update + i16 generation + u16 code = 40 bytes.
+        // (Derived from NiParticleInfo struct; skip if we ever hit one.)
+        //
+        // Has Rotation Speeds (since 20.0.0.2) — bool always read; array !BS202.
+        if stream.version() >= NifVersion(0x14000002) {
+            let has_rotation_speeds = stream.read_byte_bool()?;
+            if has_rotation_speeds && !is_bs_202 {
+                stream.skip(count * 4)?;
+            }
+        }
+        // Num Added Particles + Added Particles Base: !#BS202# only.
+        if !is_bs_202 && stream.version() >= NifVersion(0x14000002) {
             let _num_added = stream.read_u16_le()?;
             let _added_particles_base = stream.read_u16_le()?;
         }

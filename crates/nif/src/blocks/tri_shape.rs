@@ -602,12 +602,49 @@ pub(crate) fn parse_geometry_data_base(
     Vec<[f32; 4]>,      // vertex_colors
     Vec<Vec<[f32; 2]>>, // uv_sets
 )> {
+    parse_geometry_data_base_inner(stream, false)
+}
+
+/// Variant that treats the per-vertex arrays (positions, normals, tangents,
+/// colors, UVs) as zero-length regardless of the `Has*` bools. Used by
+/// NiPSysData on BS_GTE_FO3 streams where nif.xml (line 3880) says:
+/// "Vertices, Normals, Tangents, Colors, and UV arrays do not have length
+/// for NiPSysData regardless of 'Num' or booleans." See #322.
+pub(crate) fn parse_psys_geometry_data_base(
+    stream: &mut NifStream,
+) -> io::Result<(
+    Vec<NiPoint3>,
+    u16,
+    Vec<NiPoint3>,
+    NiPoint3,
+    f32,
+    Vec<[f32; 4]>,
+    Vec<Vec<[f32; 2]>>,
+)> {
+    parse_geometry_data_base_inner(stream, true)
+}
+
+fn parse_geometry_data_base_inner(
+    stream: &mut NifStream,
+    zero_arrays: bool,
+) -> io::Result<(
+    Vec<NiPoint3>,
+    u16,
+    Vec<NiPoint3>,
+    NiPoint3,
+    f32,
+    Vec<[f32; 4]>,
+    Vec<Vec<[f32; 2]>>,
+)> {
     // Pre-Gamebryo (v < 10.0.1.0): NiGeometryData has no group_id, keep_flags, or
     // compress_flags. These were added when the format was extended for Gamebryo.
     if stream.version() >= NifVersion(0x0A000100) {
         let _group_id = stream.read_i32_le()?; // usually 0
     }
-    let num_vertices = stream.read_u16_le()? as usize;
+    let num_vertices_raw = stream.read_u16_le()? as usize;
+    // For NiPSysData on BS202, `num_vertices_raw` is BS Max Vertices — an
+    // upper bound on runtime particle count, not a serialized array length.
+    let array_count = if zero_arrays { 0 } else { num_vertices_raw };
     if stream.version() >= NifVersion(0x0A000100) {
         let _keep_flags = stream.read_u8()?;
         let _compress_flags = stream.read_u8()?;
@@ -615,7 +652,7 @@ pub(crate) fn parse_geometry_data_base(
 
     let has_vertices = stream.read_byte_bool()?;
     let vertices = if has_vertices {
-        stream.read_ni_point3_array(num_vertices)?
+        stream.read_ni_point3_array(array_count)?
     } else {
         Vec::new()
     };
@@ -634,17 +671,17 @@ pub(crate) fn parse_geometry_data_base(
 
     let has_normals = stream.read_byte_bool()?;
     let normals = if has_normals {
-        stream.read_ni_point3_array(num_vertices)?
+        stream.read_ni_point3_array(array_count)?
     } else {
         Vec::new()
     };
 
     // Tangents + bitangents (Gamebryo+: has_normals and dataFlags bit 12 set = NBT method)
     if has_normals && data_flags & 0xF000 != 0 {
-        // Skip tangents (num_vertices * 3 floats)
-        stream.skip(num_vertices as u64 * 12)?;
-        // Skip bitangents (num_vertices * 3 floats)
-        stream.skip(num_vertices as u64 * 12)?;
+        // Skip tangents (array_count * 3 floats)
+        stream.skip(array_count as u64 * 12)?;
+        // Skip bitangents (array_count * 3 floats)
+        stream.skip(array_count as u64 * 12)?;
     }
 
     // Bounding sphere
@@ -654,7 +691,7 @@ pub(crate) fn parse_geometry_data_base(
     // Vertex colors
     let has_vertex_colors = stream.read_byte_bool()?;
     let vertex_colors = if has_vertex_colors {
-        stream.read_ni_color4_array(num_vertices)?
+        stream.read_ni_color4_array(array_count)?
     } else {
         Vec::new()
     };
@@ -680,7 +717,7 @@ pub(crate) fn parse_geometry_data_base(
         // Ensure at least 1 UV set if has_uv is true but num_uv_sets is 0 (legacy)
         let count = num_uv_sets.max(1);
         for _ in 0..count {
-            uv_sets.push(stream.read_uv_array(num_vertices)?);
+            uv_sets.push(stream.read_uv_array(array_count)?);
         }
     }
 
