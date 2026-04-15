@@ -128,12 +128,16 @@ impl NifVariant {
     // Parsers call these instead of raw `user_version_2 >= N` checks.
 
     /// Bethesda compact material: ambient/diffuse omitted from NiMaterialProperty.
-    /// nif.xml: `BSVER >= 26` (i.e. FO3+, including FO76/Starfield).
+    /// nif.xml line 4366-4367: `#BSVER# #LT# 26`. FO3 at BSVER=21 is NOT
+    /// compact — the ambient/diffuse Color3 fields are present. See #323.
+    ///
+    /// Callers should generally prefer `stream.bsver() >= 26` directly so
+    /// in-file BSVER is honored even when the detected variant carries a
+    /// hardcoded value.
     pub fn compact_material(self) -> bool {
         matches!(
             self,
-            Self::Fallout3
-                | Self::FalloutNV
+            Self::FalloutNV
                 | Self::SkyrimLE
                 | Self::SkyrimSE
                 | Self::Fallout4
@@ -143,12 +147,16 @@ impl NifVariant {
     }
 
     /// NiMaterialProperty has an emissive multiplier float after alpha.
-    /// nif.xml: `BSVER > 21` (i.e. FO3+, including FO76/Starfield).
+    /// nif.xml line 4372: `#BSVER# #GT# 21` (strict greater-than). FO3 at
+    /// BSVER=21 is excluded. See #323.
+    ///
+    /// Callers should generally prefer `stream.bsver() > 21` directly so
+    /// in-file BSVER is honored even when the detected variant carries a
+    /// hardcoded value.
     pub fn has_emissive_mult(self) -> bool {
         matches!(
             self,
-            Self::Fallout3
-                | Self::FalloutNV
+            Self::FalloutNV
                 | Self::SkyrimLE
                 | Self::SkyrimSE
                 | Self::Fallout4
@@ -495,6 +503,8 @@ mod tests {
     #[test]
     fn feature_compact_material() {
         assert!(!NifVariant::Oblivion.compact_material());
+        // FO3 at BSVER=21 is NOT compact (21 < 26). nif.xml line 4366-4367.
+        assert!(!NifVariant::Fallout3.compact_material());
         assert!(NifVariant::FalloutNV.compact_material());
         assert!(NifVariant::SkyrimSE.compact_material());
         assert!(NifVariant::Fallout4.compact_material());
@@ -505,7 +515,8 @@ mod tests {
     #[test]
     fn feature_has_emissive_mult() {
         assert!(!NifVariant::Oblivion.has_emissive_mult());
-        assert!(NifVariant::Fallout3.has_emissive_mult());
+        // FO3 at BSVER=21 is NOT included (nif.xml strict >, not >=).
+        assert!(!NifVariant::Fallout3.has_emissive_mult());
         assert!(NifVariant::FalloutNV.has_emissive_mult());
         assert!(NifVariant::Fallout4.has_emissive_mult());
         assert!(NifVariant::Fallout76.has_emissive_mult());
