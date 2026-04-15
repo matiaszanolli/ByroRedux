@@ -704,12 +704,16 @@ fn parse_geometry_data_base_inner(
         (data_flags & 0x003F) as usize
     };
 
-    // nif.xml: Has UV flag (only for version >= 20.0.0.4, always true before)
-    let has_uv = if stream.version() >= NifVersion(0x14000004) {
-        num_uv_sets > 0
-    } else {
-        // Pre-20.0.0.4: read has_uv bool
+    // nif.xml: `<field name="Has UV" type="bool" until="4.0.0.2">` — the
+    // explicit bool is only serialized through 4.0.0.2. For 4.0.0.3 onward
+    // (Morrowind hybrid content, Oblivion, Gamebryo+) the presence of UV
+    // data is derived from `num_uv_sets`: in the pre-Gamebryo branch this
+    // came from the inline u16 at line 701-702, otherwise from
+    // `data_flags & 0x3F`. See #325.
+    let has_uv = if stream.version() <= NifVersion(0x04000002) {
         stream.read_byte_bool()?
+    } else {
+        num_uv_sets > 0
     };
 
     let mut uv_sets = Vec::with_capacity(if has_uv { num_uv_sets.max(1) } else { 0 });
