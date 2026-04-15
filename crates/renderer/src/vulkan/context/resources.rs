@@ -18,6 +18,7 @@ impl VulkanContext {
             allocator,
             &self.graphics_queue,
             self.transfer_pool,
+            Some(&self.transfer_fence),
             mesh_handle,
             mesh,
             vertex_count,
@@ -51,6 +52,7 @@ impl VulkanContext {
             allocator,
             &self.graphics_queue,
             self.transfer_pool,
+            Some(&self.transfer_fence),
             &meshes,
         ) {
             Ok(count) => count,

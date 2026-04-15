@@ -13,6 +13,26 @@ use crate::vulkan::context::DrawCommand;
 use anyhow::{Context, Result};
 use ash::vk;
 
+/// Dispatch helper: reuse the shared transfer fence when available,
+/// otherwise fall back to per-call create/destroy (#302).
+fn submit_one_time<F>(
+    device: &ash::Device,
+    queue: &std::sync::Mutex<vk::Queue>,
+    pool: vk::CommandPool,
+    fence: Option<&std::sync::Mutex<vk::Fence>>,
+    f: F,
+) -> Result<()>
+where
+    F: FnOnce(vk::CommandBuffer) -> Result<()>,
+{
+    match fence {
+        Some(f_mutex) => {
+            super::texture::with_one_time_commands_reuse_fence(device, queue, pool, f_mutex, f)
+        }
+        None => super::texture::with_one_time_commands(device, queue, pool, f),
+    }
+}
+
 /// A bottom-level acceleration structure for one mesh.
 pub struct BlasEntry {
     pub accel: vk::AccelerationStructureKHR,
@@ -111,6 +131,7 @@ impl AccelerationManager {
         allocator: &SharedAllocator,
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
+        transfer_fence: Option<&std::sync::Mutex<vk::Fence>>,
         mesh_handle: u32,
         mesh: &GpuMesh,
         vertex_count: u32,
@@ -247,7 +268,7 @@ impl AccelerationManager {
                 .primitive_offset(0)
                 .first_vertex(0);
 
-            super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
+            submit_one_time(device, queue, command_pool, transfer_fence, |cmd| {
                 unsafe {
                     self.accel_loader.cmd_build_acceleration_structures(
                         cmd,
@@ -314,6 +335,7 @@ impl AccelerationManager {
         allocator: &SharedAllocator,
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
+        transfer_fence: Option<&std::sync::Mutex<vk::Fence>>,
         meshes: &[(u32, &GpuMesh, u32, u32)], // (mesh_handle, mesh, vertex_count, index_count)
     ) -> Result<usize> {
         if meshes.is_empty() {
@@ -478,7 +500,7 @@ impl AccelerationManager {
 
         // Phase 4: Record builds + compaction size queries into one command buffer.
         let build_result =
-            super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
+            submit_one_time(device, queue, command_pool, transfer_fence, |cmd| {
                 for (i, p) in prepared.iter().enumerate() {
                     if i > 0 {
                         let barrier = vk::MemoryBarrier::default()
@@ -620,7 +642,7 @@ impl AccelerationManager {
 
         // Record compaction copies in a second command buffer.
         let copy_result =
-            super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
+            submit_one_time(device, queue, command_pool, transfer_fence, |cmd| {
                 for (i, (_, compact_accel, _)) in compact_accels.iter().enumerate() {
                     let copy_info = vk::CopyAccelerationStructureInfoKHR::default()
                         .src(prepared[i].accel)

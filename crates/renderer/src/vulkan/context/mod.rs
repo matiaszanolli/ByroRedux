@@ -179,6 +179,11 @@ pub struct VulkanContext {
     /// keeping upload commands on a separate pool avoids contention with
     /// draw command buffer reset/recording.
     pub transfer_pool: vk::CommandPool,
+    /// Persistent fence reused across one-time submits (texture upload,
+    /// BLAS build, mesh staging copy). Saves per-call VkFence
+    /// create/destroy overhead during cell load (#302). Mutex serializes
+    /// concurrent callers — only one reset+wait cycle at a time.
+    pub transfer_fence: Arc<Mutex<vk::Fence>>,
     framebuffers: Vec<vk::Framebuffer>,
     depth_image_view: vk::ImageView,
     depth_image: vk::Image,
@@ -343,6 +348,14 @@ impl VulkanContext {
         let command_pool = create_command_pool(&device, queue_indices.graphics)?;
         let transfer_pool = create_transfer_pool(&device, queue_indices.graphics)?;
 
+        // Persistent fence for one-time submits (#302). Created unsignaled;
+        // every use calls reset_fences then wait_for_fences.
+        let transfer_fence = Arc::new(Mutex::new(unsafe {
+            device
+                .create_fence(&vk::FenceCreateInfo::default(), None)
+                .context("create transfer fence")?
+        }));
+
         // 11. Texture registry with checkerboard fallback
         let mut texture_registry = TextureRegistry::new(
             &device,
@@ -380,10 +393,11 @@ impl VulkanContext {
             // with_one_time_commands), so no overlap between builds.
             let empty_draws: Vec<DrawCommand> = Vec::new();
             for f in 0..MAX_FRAMES_IN_FLIGHT {
-                super::texture::with_one_time_commands(
+                super::texture::with_one_time_commands_reuse_fence(
                     &device,
                     &graphics_queue,
                     transfer_pool,
+                    &transfer_fence,
                     |cmd| unsafe {
                         accel
                             .build_tlas(&device, &gpu_allocator, cmd, &empty_draws, f)
@@ -660,6 +674,7 @@ impl VulkanContext {
             framebuffers,
             command_pool,
             transfer_pool,
+            transfer_fence,
             command_buffers,
             frame_sync,
             current_frame: 0,
@@ -676,6 +691,22 @@ impl VulkanContext {
             screenshot_staging: None,
             screenshot_pending_readback: false,
         })
+    }
+
+    /// Run a closure in a one-time-submit command buffer, reusing the
+    /// persistent transfer fence (#302). Prefer this over the free-function
+    /// `with_one_time_commands` to avoid per-call fence create/destroy.
+    pub fn with_transfer_commands<F>(&self, f: F) -> Result<()>
+    where
+        F: FnOnce(vk::CommandBuffer) -> Result<()>,
+    {
+        super::texture::with_one_time_commands_reuse_fence(
+            &self.device,
+            &self.graphics_queue,
+            self.transfer_pool,
+            &self.transfer_fence,
+            f,
+        )
     }
 
     /// Get a handle for requesting screenshots from outside the render loop.
@@ -709,6 +740,12 @@ impl Drop for VulkanContext {
             self.destroy_screenshot_staging();
 
             self.frame_sync.destroy(&self.device);
+            // Destroy persistent transfer fence (#302). device_wait_idle
+            // above ensures it's not signaled in-flight.
+            {
+                let fence = *self.transfer_fence.lock().expect("transfer fence lock poisoned");
+                self.device.destroy_fence(fence, None);
+            }
             self.device.destroy_command_pool(self.transfer_pool, None);
             self.device
                 .free_command_buffers(self.command_pool, &self.command_buffers);

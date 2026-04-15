@@ -561,17 +561,24 @@ impl GpuBuffer {
 
         // Flush explicitly if the memory is not HOST_COHERENT.
         if !is_coherent {
+            // Flush only the range actually written (capped at `len`), not
+            // the entire allocation. The instance SSBO is 1.28 MB but a
+            // typical frame writes only a few KB — flushing the full range
+            // wastes bandwidth on non-coherent memory (#301).
+            //
             // Vulkan spec requires both offset and size to be multiples of
-            // nonCoherentAtomSize (or size == VK_WHOLE_SIZE). Using
-            // VK_WHOLE_SIZE here would over-flush past this sub-allocation
-            // into unrelated memory; instead bound the range to this
-            // allocation only, rounding outward to atom size.
-            let (aligned_offset, aligned_size) = aligned_flush_range(alloc.offset(), alloc.size());
+            // nonCoherentAtomSize (or size == VK_WHOLE_SIZE); aligned_flush_range
+            // rounds outward to satisfy that.
+            let (aligned_offset, aligned_size) =
+                aligned_flush_range(alloc.offset(), len as vk::DeviceSize);
 
             // SAFETY: alloc.memory() returns the VkDeviceMemory backing this
             // allocation, which is valid and mapped (verified above). The
             // range is contained within this allocation's region of the parent
-            // memory object — gpu-allocator pads sub-allocations to atom size.
+            // memory object — aligned_size is rounded up to atom size but
+            // capped at the written length, and gpu-allocator pads
+            // sub-allocations to atom size so the rounded-up tail stays
+            // within the allocation.
             unsafe {
                 let range = vk::MappedMemoryRange::default()
                     .memory(alloc.memory())
@@ -583,6 +590,48 @@ impl GpuBuffer {
             }
         }
 
+        Ok(())
+    }
+
+    /// Flush a specific range of mapped memory if not HOST_COHERENT.
+    ///
+    /// Use this after direct writes via [`mapped_slice_mut`] when you know
+    /// how many bytes were actually written — avoids flushing the entire
+    /// allocation. `offset` and `size` are relative to the start of this
+    /// buffer's allocation (not absolute device memory).
+    pub fn flush_range(
+        &mut self,
+        device: &ash::Device,
+        offset: vk::DeviceSize,
+        size: vk::DeviceSize,
+    ) -> Result<()> {
+        let alloc = self
+            .allocation
+            .as_ref()
+            .context("Buffer has no allocation")?;
+
+        let is_coherent = alloc
+            .memory_properties()
+            .contains(vk::MemoryPropertyFlags::HOST_COHERENT);
+
+        if is_coherent || size == 0 {
+            return Ok(());
+        }
+
+        let (aligned_offset, aligned_size) = aligned_flush_range(alloc.offset() + offset, size);
+
+        // SAFETY: alloc.memory() is valid and mapped. The range is contained
+        // within this allocation — caller is responsible for ensuring
+        // `offset + size <= alloc.size()`.
+        unsafe {
+            let range = vk::MappedMemoryRange::default()
+                .memory(alloc.memory())
+                .offset(aligned_offset)
+                .size(aligned_size);
+            device
+                .flush_mapped_memory_ranges(&[range])
+                .context("Failed to flush mapped memory")?;
+        }
         Ok(())
     }
 

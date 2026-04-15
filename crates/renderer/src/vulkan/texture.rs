@@ -609,6 +609,38 @@ pub(crate) fn with_one_time_commands<F>(
 where
     F: FnOnce(vk::CommandBuffer) -> Result<()>,
 {
+    with_one_time_commands_inner(device, queue, pool, None, f)
+}
+
+/// Variant of [`with_one_time_commands`] that reuses a persistent fence
+/// instead of creating and destroying a new fence per submission.
+///
+/// Saves ~5us per call × ~700 calls during cell load (~3.5 ms total).
+/// The fence must be created with no initial signal; this function will
+/// reset it before submitting (#302).
+pub(crate) fn with_one_time_commands_reuse_fence<F>(
+    device: &ash::Device,
+    queue: &std::sync::Mutex<vk::Queue>,
+    pool: vk::CommandPool,
+    fence: &std::sync::Mutex<vk::Fence>,
+    f: F,
+) -> Result<()>
+where
+    F: FnOnce(vk::CommandBuffer) -> Result<()>,
+{
+    with_one_time_commands_inner(device, queue, pool, Some(fence), f)
+}
+
+fn with_one_time_commands_inner<F>(
+    device: &ash::Device,
+    queue: &std::sync::Mutex<vk::Queue>,
+    pool: vk::CommandPool,
+    reusable_fence: Option<&std::sync::Mutex<vk::Fence>>,
+    f: F,
+) -> Result<()>
+where
+    F: FnOnce(vk::CommandBuffer) -> Result<()>,
+{
     let alloc_info = vk::CommandBufferAllocateInfo::default()
         .command_pool(pool)
         .level(vk::CommandBufferLevel::PRIMARY)
@@ -655,9 +687,28 @@ where
         // Use a dedicated fence instead of queue_wait_idle — waits only for
         // this submission, not the entire queue. Avoids serializing other
         // queue work during texture streaming or BLAS builds.
-        let fence = device
-            .create_fence(&vk::FenceCreateInfo::default(), None)
-            .context("create one-time fence")?;
+        //
+        // If a reusable fence was provided (#302), lock + reset it. The
+        // mutex serializes concurrent callers so only one submit+wait cycle
+        // uses the fence at a time. Otherwise fall back to per-call
+        // create/destroy for early-init paths that don't yet have a
+        // persistent fence.
+        let fence_guard = reusable_fence.map(|m| m.lock().expect("one-time fence lock poisoned"));
+        let (fence, owned) = match fence_guard.as_ref() {
+            Some(guard) => {
+                device
+                    .reset_fences(&[**guard])
+                    .context("reset reusable one-time fence")?;
+                (**guard, false)
+            }
+            None => {
+                let f = device
+                    .create_fence(&vk::FenceCreateInfo::default(), None)
+                    .context("create one-time fence")?;
+                (f, true)
+            }
+        };
+
         let q = *queue.lock().expect("graphics queue lock poisoned");
         device
             .queue_submit(q, &[submit_info], fence)
@@ -665,7 +716,10 @@ where
         device
             .wait_for_fences(&[fence], true, u64::MAX)
             .context("wait for one-time commands")?;
-        device.destroy_fence(fence, None);
+        if owned {
+            device.destroy_fence(fence, None);
+        }
+        drop(fence_guard);
         device.free_command_buffers(pool, &[cmd]);
     }
 
