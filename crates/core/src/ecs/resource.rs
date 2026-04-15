@@ -21,8 +21,11 @@ pub struct ResourceRead<'w, R: Resource> {
 }
 
 impl<'w, R: Resource> ResourceRead<'w, R> {
-    /// Caller must have already called `lock_tracker::track_read` before
-    /// acquiring the RwLock guard.
+    /// Create a new resource read. Caller owns a `lock_tracker::TrackedRead`
+    /// scope guard for `type_id`; this type's `Drop` impl untracks the read
+    /// when the wrapper is dropped. The caller must have called
+    /// `scope.defuse()` after successful lock acquisition so the scope hands
+    /// ownership of the tracker entry to this wrapper. (See #137.)
     pub(crate) fn new(
         guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>,
         type_id: TypeId,
@@ -65,8 +68,11 @@ pub struct ResourceWrite<'w, R: Resource> {
 }
 
 impl<'w, R: Resource> ResourceWrite<'w, R> {
-    /// Caller must have already called `lock_tracker::track_write` before
-    /// acquiring the RwLock guard.
+    /// Create a new resource write. Caller owns a `lock_tracker::TrackedWrite`
+    /// scope guard for `type_id`; this type's `Drop` impl untracks the write
+    /// when the wrapper is dropped. The caller must have called
+    /// `scope.defuse()` after successful lock acquisition so the scope hands
+    /// ownership of the tracker entry to this wrapper. (See #137.)
     pub(crate) fn new(
         guard: RwLockWriteGuard<'w, Box<dyn Any + Send + Sync>>,
         type_id: TypeId,

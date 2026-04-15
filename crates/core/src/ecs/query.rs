@@ -27,8 +27,11 @@ pub struct QueryRead<'w, T: Component> {
 }
 
 impl<'w, T: Component> QueryRead<'w, T> {
-    /// Create a new read query. Caller must have already called
-    /// `lock_tracker::track_read` before acquiring the RwLock guard.
+    /// Create a new read query. Caller owns a `lock_tracker::TrackedRead`
+    /// scope guard for `type_id`; this type's `Drop` impl untracks the read
+    /// when the wrapper is dropped. The caller must have called
+    /// `scope.defuse()` after successful lock acquisition so the scope hands
+    /// ownership of the tracker entry to this wrapper. (See #137.)
     pub(crate) fn new(
         guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>,
         type_id: TypeId,
@@ -80,8 +83,11 @@ pub struct QueryWrite<'w, T: Component> {
 }
 
 impl<'w, T: Component> QueryWrite<'w, T> {
-    /// Create a new write query. Caller must have already called
-    /// `lock_tracker::track_write` before acquiring the RwLock guard.
+    /// Create a new write query. Caller owns a `lock_tracker::TrackedWrite`
+    /// scope guard for `type_id`; this type's `Drop` impl untracks the write
+    /// when the wrapper is dropped. The caller must have called
+    /// `scope.defuse()` after successful lock acquisition so the scope hands
+    /// ownership of the tracker entry to this wrapper. (See #137.)
     pub(crate) fn new(
         guard: RwLockWriteGuard<'w, Box<dyn Any + Send + Sync>>,
         type_id: TypeId,
@@ -198,10 +204,17 @@ pub struct ComponentRef<'w, T: Component> {
 }
 
 impl<'w, T: Component> ComponentRef<'w, T> {
-    /// Create a new component reference. Caller must have already called
-    /// `lock_tracker::track_read` before acquiring the RwLock guard.
-    /// Returns `None` if the entity doesn't have this component — caller
-    /// must call `lock_tracker::untrack_read` in that case.
+    /// Create a new component reference. Caller owns a
+    /// `lock_tracker::TrackedRead` scope guard for `type_id`.
+    ///
+    /// On `Some`: the caller must call `scope.defuse()` to hand ownership of
+    /// the tracker entry to the returned `ComponentRef`; its `Drop` impl
+    /// untracks the read.
+    ///
+    /// On `None`: the caller must keep its `TrackedRead` armed (do **not**
+    /// defuse and do **not** call `untrack_read` manually); the scope's
+    /// natural `Drop` will untrack. See `World::get` for the canonical
+    /// pattern. (#137)
     pub(crate) fn new(
         guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>,
         entity: EntityId,
