@@ -442,7 +442,12 @@ void main() {
     // which the CPU side encodes as bit 1 of inst.flags.
     bool isAlphaBlend = (inst.flags & 2u) != 0u;
     bool isWindow = isAlphaBlend && texColor.a < 0.5 && texColor.a > 0.02;
-    bool isGlass = isAlphaBlend && roughness <= 0.1 && metalness < 0.1 && texColor.a < 0.5 && texColor.a > 0.02;
+    // Glass: any alpha-blended non-metal with visible transmission. We used
+    // to also gate on `roughness <= 0.1` but most Gamebryo glass props are
+    // authored with the default glossiness, not artist-tuned to near-zero
+    // roughness, so the gate excluded bottles, cups, and pitchers. The
+    // isWindow branch takes priority above for the flat-pane portal case.
+    bool isGlass = isAlphaBlend && metalness < 0.1 && texColor.a < 0.6 && texColor.a > 0.02;
 
     if (isWindow && rtEnabled) {
         // Cast a ray through the window in the view direction.
@@ -487,6 +492,85 @@ void main() {
         glassFresnel = fresnelSchlick(NdotV, vec3(0.04)).r;
         specStrength = max(specStrength, 3.0);
         F0 = vec3(0.04);
+    }
+
+    // ── RT glass: reflection + through-tint ────────────────────────────
+    //
+    // Glass surfaces transmit most of the scene but catch a strong
+    // Fresnel-weighted reflection at grazing angles. Under direct-view
+    // geometry (e.g. a pitcher on a bar) the shading was a flat albedo
+    // overlay with no reflection — glass read as "green plastic". Cast
+    // two rays: one along the reflection direction (for environment
+    // catch), one straight through (for transmitted color). Fresnel
+    // weights the mix; alpha is lifted toward opaque at glancing angles
+    // so the glass silhouette reads properly.
+    //
+    // Runs AFTER the isWindow branch so full-portal windows still
+    // return the sky; isGlass here is the curved-bottle / cup case.
+    if (isGlass && rtEnabled) {
+        vec3 dielectricF = fresnelSchlick(NdotV, vec3(0.04));
+        float fresnelScalar = dielectricF.r;
+
+        // Reflection ray — picks up ceiling fixtures, sky through windows,
+        // walls on either side of the pane. Uses the same helper as the
+        // metal path; reflResult.rgb carries the hit surface's textured
+        // color (no further albedo modulation needed here, we're going
+        // through the direct path).
+        vec3 R = reflect(-V, N);
+        vec4 reflRay = traceReflection(fragWorldPos + N * 0.05, R, 3000.0);
+        vec3 reflColor = reflRay.rgb;
+
+        // Through-ray — the transmitted half of the glass. Use the
+        // view-direction continuation with a short bias away from the
+        // surface to skip self-intersection. When the ray hits geometry
+        // we sample the hit surface's texture; when it misses we treat
+        // it as escaped-to-sky (matches the isWindow contract).
+        rayQueryEXT glassRQ;
+        rayQueryInitializeEXT(
+            glassRQ, topLevelAS,
+            gl_RayFlagsOpaqueEXT, 0xFF,
+            fragWorldPos - N * 0.1, 0.05, -V, 2000.0
+        );
+        rayQueryProceedEXT(glassRQ);
+
+        vec3 throughColor;
+        if (rayQueryGetIntersectionTypeEXT(glassRQ, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+            throughColor = vec3(0.6, 0.75, 1.0); // sky
+        } else {
+            int tIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(glassRQ, true);
+            int tPrim = rayQueryGetIntersectionPrimitiveIndexEXT(glassRQ, true);
+            vec2 tBary = rayQueryGetIntersectionBarycentricsEXT(glassRQ, true);
+            GpuInstance tInst = instances[tIdx];
+            vec2 tUV = getHitUV(uint(tIdx), uint(tPrim), tBary);
+            throughColor = texture(textures[nonuniformEXT(tInst.textureIndex)],
+                                   tUV).rgb;
+            // Soft distance attenuation so distant through-color doesn't
+            // glow through thick glass stacks.
+            float tDist = rayQueryGetIntersectionTEXT(glassRQ, true);
+            throughColor *= 1.0 / (1.0 + tDist * 0.01);
+        }
+
+        // Apply the glass tint to the transmitted light. texColor.rgb
+        // is the authored glass color (green for a beer bottle, clear
+        // for water glass). Stronger tint when the alpha is low
+        // (clearer glass → less tint), heavier when authored opaque-ish.
+        vec3 glassTint = mix(vec3(1.0), texColor.rgb, texColor.a * 1.2);
+        throughColor *= glassTint;
+
+        // Fresnel mix: at normal incidence fresnelScalar ≈ 0.04
+        // (mostly transmitted), at 85° it approaches 1.0 (mostly
+        // reflected). Gives the classic "see-through straight on, shiny
+        // at the edges" look.
+        vec3 glassSurface = mix(throughColor, reflColor, fresnelScalar);
+
+        // Write via the direct path; composite does not multiply by
+        // albedo, so the texture tint we already applied above stays
+        // intact.
+        outColor = vec4(glassSurface, mix(texColor.a, 1.0, fresnelScalar * 0.8));
+        outNormal = octEncode(N);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(albedo, 1.0);
+        return;
     }
 
     // Ambient base from cell lighting — LIGHTING ONLY, no local albedo.
