@@ -791,3 +791,53 @@ impl SceneBuffers {
         device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
     }
 }
+
+#[cfg(test)]
+mod gpu_instance_layout_tests {
+    use super::*;
+    use std::mem::{offset_of, size_of};
+
+    /// Regression guard for the Shader Struct Sync invariant (#318). The
+    /// `GpuInstance` struct is duplicated across three GLSL sources
+    /// (`triangle.vert`, `triangle.frag`, `ui.vert`) and must stay
+    /// byte-for-byte identical with the Rust definition. Any drift here
+    /// silently corrupts per-instance data on the GPU. Verified offsets
+    /// come from the explicit `// offset N` comments inside those shaders.
+    #[test]
+    fn gpu_instance_is_160_bytes_std430_compatible() {
+        assert_eq!(
+            size_of::<GpuInstance>(),
+            160,
+            "GpuInstance must stay 160 B to match std430 shader layout"
+        );
+    }
+
+    #[test]
+    fn gpu_instance_field_offsets_match_shader_contract() {
+        assert_eq!(offset_of!(GpuInstance, model), 0);
+        assert_eq!(offset_of!(GpuInstance, texture_index), 64);
+        assert_eq!(offset_of!(GpuInstance, bone_offset), 68);
+        assert_eq!(offset_of!(GpuInstance, normal_map_index), 72);
+        assert_eq!(offset_of!(GpuInstance, roughness), 76);
+        assert_eq!(offset_of!(GpuInstance, metalness), 80);
+        assert_eq!(offset_of!(GpuInstance, emissive_mult), 84);
+        assert_eq!(offset_of!(GpuInstance, emissive_r), 88);
+        assert_eq!(offset_of!(GpuInstance, emissive_g), 92);
+        assert_eq!(offset_of!(GpuInstance, emissive_b), 96);
+        assert_eq!(offset_of!(GpuInstance, specular_strength), 100);
+        assert_eq!(offset_of!(GpuInstance, specular_r), 104);
+        assert_eq!(offset_of!(GpuInstance, specular_g), 108);
+        assert_eq!(offset_of!(GpuInstance, specular_b), 112);
+        assert_eq!(offset_of!(GpuInstance, vertex_offset), 116);
+        assert_eq!(offset_of!(GpuInstance, index_offset), 120);
+        assert_eq!(offset_of!(GpuInstance, vertex_count), 124);
+        assert_eq!(offset_of!(GpuInstance, alpha_threshold), 128);
+        assert_eq!(offset_of!(GpuInstance, alpha_test_func), 132);
+        assert_eq!(offset_of!(GpuInstance, dark_map_index), 136);
+        assert_eq!(offset_of!(GpuInstance, avg_albedo_r), 140);
+        assert_eq!(offset_of!(GpuInstance, avg_albedo_g), 144);
+        assert_eq!(offset_of!(GpuInstance, avg_albedo_b), 148);
+        assert_eq!(offset_of!(GpuInstance, flags), 152);
+        assert_eq!(offset_of!(GpuInstance, _pad1), 156);
+    }
+}

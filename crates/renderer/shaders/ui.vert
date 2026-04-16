@@ -26,8 +26,11 @@ struct GpuInstance {
     uint alphaTestFunc;
     uint darkMapIndex;
     float avgAlbedoR, avgAlbedoG, avgAlbedoB;
-    uint _pad0;
-    uint _pad1;
+    uint flags;  // offset 152 — bit 0: non-uniform scale, bit 1: alpha blend enabled.
+                 // Currently unused by ui.vert but named in lockstep with
+                 // triangle.{vert,frag} and Rust `GpuInstance` (Shader Struct
+                 // Sync invariant). See #318.
+    uint _pad1;  // offset 156 → total 160
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
