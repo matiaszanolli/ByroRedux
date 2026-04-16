@@ -237,10 +237,11 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist) {
     // Sample the hit surface's texture.
     vec3 hitColor = texture(textures[nonuniformEXT(hitTexIdx)], hitUV).rgb;
 
-    // Apply a simple lighting approximation: darken based on the hit distance
-    // (distant reflections are dimmer). No full shading on the reflected surface.
+    // Exponential distance attenuation: distant reflections gracefully fade
+    // into ambient rather than persisting at near-full strength. The old
+    // 1/(1+d*0.005) barely attenuated over the 5000-unit ray length. #320.
     float hitDist = rayQueryGetIntersectionTEXT(rq, true);
-    float distFade = 1.0 / (1.0 + hitDist * 0.005);
+    float distFade = exp(-hitDist * 0.0015);
 
     return vec4(hitColor * distFade, 1.0);
 }
@@ -595,8 +596,18 @@ void main() {
     // not albedo-modulated by composite (Lo already bakes in albedo per
     // dielectric kD), so this addition stays at full intensity.
     if (rtEnabled && metalness > 0.3 && roughness < 0.6) {
+        // Roughness-driven ray jitter: GGX lobe widens with roughness^2.
+        // Single sample per pixel, accumulated via temporal noise (IGN seeded
+        // by frame counter). SVGF temporal filter smooths the result. #320.
         vec3 R = reflect(-V, N);
-        vec4 reflResult = traceReflection(fragWorldPos + N * 0.1, R, 5000.0);
+        float frameCount = cameraPos.w;
+        float n1 = interleavedGradientNoise(gl_FragCoord.xy, frameCount + 89.0);
+        float n2 = interleavedGradientNoise(gl_FragCoord.xy + vec2(53.7, 191.3), frameCount + 113.0);
+        vec3 T2, B2;
+        buildOrthoBasis(R, T2, B2);
+        vec2 cone = concentricDiskSample(n1, n2) * (roughness * roughness);
+        vec3 jitteredR = normalize(R + T2 * cone.x + B2 * cone.y);
+        vec4 reflResult = traceReflection(fragWorldPos + N * 0.1, jitteredR, 5000.0);
 
         // Fresnel-weighted reflection: stronger at grazing angles.
         vec3 F = fresnelSchlick(NdotV, F0);
