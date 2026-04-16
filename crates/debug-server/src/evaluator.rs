@@ -3,12 +3,13 @@
 //! Translates debug expressions into ECS queries using the component
 //! registry for type-erased access.
 
-use byroredux_core::ecs::components::Name;
+use byroredux_core::ecs::components::{Material, Name, TextureHandle};
 use byroredux_core::ecs::resources::DebugStats;
 use byroredux_core::ecs::world::World;
 use byroredux_core::string::StringPool;
 use byroredux_debug_protocol::registry::ComponentRegistry;
 use byroredux_debug_protocol::{DebugRequest, DebugResponse, EntityInfo};
+use std::collections::HashMap;
 
 use byroredux_papyrus::ast::{CallArg, Expr, Identifier};
 
@@ -421,8 +422,67 @@ fn eval_call(
                 DebugResponse::value(serde_json::Value::Number(count.into()))
             }
         }
+        "tex_missing" => eval_tex_missing(world),
+        "tex_loaded" => eval_tex_loaded(world),
         _ => DebugResponse::error(format!("unknown function '{}'", func_name)),
     }
+}
+
+// ── Texture debug ──────────────────────────────────────────────────────
+
+fn eval_tex_missing(world: &World) -> DebugResponse {
+    let (Some(tex_q), Some(mat_q)) = (world.query::<TextureHandle>(), world.query::<Material>())
+    else {
+        return DebugResponse::error("No TextureHandle or Material components");
+    };
+    let mut missing: HashMap<String, u32> = HashMap::new();
+    for (entity, tex) in tex_q.iter() {
+        if tex.0 != 0 {
+            continue;
+        }
+        let mat = mat_q.get(entity);
+        let path = mat
+            .and_then(|m| m.texture_path.as_deref())
+            .or_else(|| mat.and_then(|m| m.material_path.as_deref()))
+            .unwrap_or("<no path, no material>");
+        *missing.entry(path.to_string()).or_insert(0) += 1;
+    }
+    let mut sorted: Vec<_> = missing.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    let lines: Vec<String> = std::iter::once(format!("{} unique missing texture paths:", sorted.len()))
+        .chain(sorted.iter().take(80).map(|(p, c)| format!("  {:4}x  {}", c, p)))
+        .collect();
+    DebugResponse::value(serde_json::Value::String(lines.join("\n")))
+}
+
+fn eval_tex_loaded(world: &World) -> DebugResponse {
+    let (Some(tex_q), Some(mat_q)) = (world.query::<TextureHandle>(), world.query::<Material>())
+    else {
+        return DebugResponse::error("No TextureHandle or Material components");
+    };
+    let mut loaded: HashMap<String, u32> = HashMap::new();
+    let mut fallback = 0u32;
+    for (entity, tex) in tex_q.iter() {
+        if tex.0 == 0 {
+            fallback += 1;
+            continue;
+        }
+        let path = mat_q
+            .get(entity)
+            .and_then(|m| m.texture_path.as_deref())
+            .unwrap_or("<no path>");
+        *loaded.entry(path.to_string()).or_insert(0) += 1;
+    }
+    let mut sorted: Vec<_> = loaded.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    let lines: Vec<String> = std::iter::once(format!(
+        "{} unique loaded, {} fallback entities",
+        sorted.len(),
+        fallback
+    ))
+    .chain(sorted.iter().take(50).map(|(p, c)| format!("  {:4}x  {}", c, p)))
+    .collect();
+    DebugResponse::value(serde_json::Value::String(lines.join("\n")))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

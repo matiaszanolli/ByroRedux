@@ -420,6 +420,13 @@ fn spawn_terrain_mesh(
         }
     };
 
+    // Build BLAS so terrain occludes RT shadow/GI rays. Without this the
+    // terrain is in the TLAS-eligible draw list but has no BLAS, so
+    // acceleration.rs skips it and the ground casts no shadows.
+    if ctx.device_caps.ray_query_supported {
+        ctx.build_blas_for_mesh(mesh_handle, vertices.len() as u32, indices.len() as u32);
+    }
+
     // Spawn ECS entity at origin (vertices are already in world-space).
     let entity = world.spawn();
     world.insert(entity, Transform::IDENTITY);
@@ -911,6 +918,7 @@ fn spawn_placed_instances(
                 env_map_scale: mesh.env_map_scale,
                 normal_map: mesh.normal_map.clone(),
                 texture_path: mesh.texture_path.clone(),
+                material_path: mesh.material_path.clone(),
                 glow_map: mesh.glow_map.clone(),
                 detail_map: mesh.detail_map.clone(),
                 gloss_map: mesh.gloss_map.clone(),

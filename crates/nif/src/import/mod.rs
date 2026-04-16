@@ -105,8 +105,12 @@ pub struct ImportedMesh {
     /// Local-space rotation as quaternion [x, y, z, w] (Y-up).
     pub rotation: [f32; 4],
     pub scale: f32,
-    /// Texture file path (if a base texture was found).
+    /// Texture file path (if a base texture was found in BSShaderTextureSet).
     pub texture_path: Option<String>,
+    /// BGSM/BGEM material file path (FO4+). When present and texture_path is
+    /// None, the real texture paths live inside this .bgsm file in the
+    /// Materials BA2. Stored for debug diagnostics and future BGSM parsing.
+    pub material_path: Option<String>,
     /// Node name from the NIF. Uses `Arc<str>` to avoid heap copies from the string table.
     pub name: Option<Arc<str>>,
     /// Whether this mesh uses alpha blending (from NiAlphaProperty bit 0).

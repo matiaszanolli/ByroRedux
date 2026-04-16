@@ -636,6 +636,8 @@ expanding gameplay systems. Each milestone produces a visible improvement.
 |---|-----------|-------|------------|
 | M36 | BLAS Compaction | `ALLOW_COMPACTION` + query + compact copy. 20–50% BLAS memory reduction. | M31 |
 | M37 | SVGF Spatial Filter | A-trous wavelet filter using existing moments data. 3 iterations, edge-stopping on normal/depth/variance. Major GI noise reduction (1-SPP → ~8-SPP visual quality). | — |
+| M37.3 | ReSTIR-DI | Full spatiotemporal reservoir reuse for direct lighting. New GBuffer reservoir attachment (light index, wSum, M, selected target pdf). Temporal pass: motion-vector reprojection + reservoir combine. Spatial pass: k-neighborhood resample with normal/depth rejection. Drops shadow rays to 1/pixel while sampling from hundreds of lights. Streaming-RIS landed as M31.5 interim. | M31, M37 |
+| M37.5 | Antialiasing | TAA with motion-vector reprojection (reuse GBuffer motion vectors + SVGF history) as the baseline; FXAA fallback for low-motion post-pass cleanup. Subpixel jitter on the projection matrix, Catmull-Rom history resample, neighborhood clamp to kill ghosting. Optional DLSS2 integration (NVIDIA proprietary, 4070 Ti target) as a second pass after TAA is solid. Fixes the visible stair/column/tapestry edge shimmer. | — |
 | M29 | GPU Skinning | Compute shader bone palette evaluation. SkinnedMesh component → bone SSBO → unified vertex shader. Characters and creatures animate. | M25 |
 | M38 | Transparency & Water | Proper OIT or depth-peeled transparency. Water plane mesh with reflection/refraction (screen-space or planar). NIF alpha sort correctness. | — |
 | M39 | Texture Streaming | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Distance-based texture detail. Memory budget with LRU eviction. | — |
@@ -677,10 +679,12 @@ expanding gameplay systems. Each milestone produces a visible improvement.
 - [ ] NIF material properties beyond diffuse not fully wired to renderer
 - [ ] No skinned mesh rendering (GPU skinning deferred to M29)
 - [ ] Scheduler is single-threaded
+- [ ] No antialiasing — geometry edges (stair nosings, column silhouettes, tapestry fringe) shimmer. TAA planned in M37.5.
 - [ ] parry3d panics on nested compound collision shapes (catch_unwind guard in place)
 
 ### Resolved
 - [x] RT shadow budget was FIFO, not importance-sorted → top-K by contribution (M31)
+- [x] Top-K shadow rays dropped lights outside the top cliff → streaming RIS (weighted reservoir sampling) over the full cluster (M31.5 interim; full ReSTIR-DI tracked as M37.3)
 - [x] No distance fallback for shadow/GI rays → smooth fade at 600–800/1200–1500 units (M31)
 - [x] BLAS builds blocked per-mesh with fence stall → batched single-submission (M31)
 - [x] No BLAS eviction → LRU eviction with 256 MB memory budget (M31)

@@ -276,16 +276,47 @@ impl VulkanContext {
             )?;
         }
 
-        // Main framebuffers bind the new HDR + G-buffer views + depth.
-        let composite_ref = self
+        // Snapshot composite's HDR views (owned Vec) so subsequent &mut
+        // borrows for TAA + composite don't conflict.
+        let hdr_views_owned: Vec<vk::ImageView> = self
             .composite
             .as_ref()
-            .expect("composite must exist during resize");
+            .expect("composite must exist during resize")
+            .hdr_image_views
+            .clone();
+
+        // Recreate TAA history images + descriptor sets.
+        if let Some(ref mut taa) = self.taa {
+            taa.recreate_on_resize(
+                &self.device,
+                self.allocator
+                    .as_ref()
+                    .expect("allocator missing during resize"),
+                &hdr_views_owned,
+                &motion_views_in,
+                &mesh_id_views_in,
+                self.swapchain_state.extent.width,
+                self.swapchain_state.extent.height,
+            )?;
+            if let Err(e) = unsafe {
+                taa.initialize_layouts(&self.device, &self.graphics_queue, self.transfer_pool)
+            } {
+                log::warn!("TAA layout re-init after resize failed: {e}");
+            }
+        }
+        // Rewire composite's HDR binding to TAA output (if TAA is active).
+        if let (Some(ref t), Some(ref mut c)) = (&self.taa, &mut self.composite) {
+            let n = MAX_FRAMES_IN_FLIGHT;
+            let taa_views: Vec<vk::ImageView> = (0..n).map(|i| t.output_view(i)).collect();
+            c.rebind_hdr_views(&self.device, &taa_views, vk::ImageLayout::GENERAL);
+        }
+
+        // Main framebuffers bind the new HDR + G-buffer views + depth.
         let gbuffer_ref = self
             .gbuffer
             .as_ref()
             .expect("gbuffer must exist during resize");
-        let hdr_views = &composite_ref.hdr_image_views;
+        let hdr_views = &hdr_views_owned;
         let n = hdr_views.len();
         let normal_views: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.normal_view(i)).collect();
         let motion_views: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.motion_view(i)).collect();

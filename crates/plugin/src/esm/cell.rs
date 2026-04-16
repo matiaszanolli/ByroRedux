@@ -207,7 +207,8 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
             // Placed references (REFR/ACHR) can point to any of these.
             b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"ACTI" | b"CONT" | b"LIGH" | b"MISC"
             | b"FLOR" | b"TREE" | b"AMMO" | b"WEAP" | b"ARMO" | b"BOOK" | b"KEYM" | b"ALCH"
-            | b"INGR" | b"NOTE" | b"TACT" | b"IDLM" | b"BNDS" | b"ADDN" | b"TERM" | b"NPC_" => {
+            | b"INGR" | b"NOTE" | b"TACT" | b"IDLM" | b"BNDS" | b"ADDN" | b"TERM" | b"NPC_"
+            | b"SCOL" | b"MOVS" | b"PKIN" | b"TXST" => {
                 let end = reader.position() + group.total_size as usize - 24;
                 parse_modl_group(&mut reader, end, &mut statics)?;
             }

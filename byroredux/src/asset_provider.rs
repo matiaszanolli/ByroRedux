@@ -1,11 +1,49 @@
-//! BSA-backed texture and mesh extraction.
+//! BSA/BA2-backed texture and mesh extraction.
 
 use byroredux_renderer::VulkanContext;
 
-/// Provides file data by searching BSA archives.
+/// A game archive that can extract files by path.
+/// Wraps either a BSA (Oblivion–Skyrim SE) or BA2 (FO4–Starfield) archive.
+enum Archive {
+    Bsa(byroredux_bsa::BsaArchive),
+    Ba2(byroredux_bsa::Ba2Archive),
+}
+
+impl Archive {
+    /// Open an archive file, auto-detecting BSA vs BA2 from the file magic.
+    fn open(path: &str) -> Result<Self, String> {
+        let magic = std::fs::read(path)
+            .map_err(|e| format!("read '{}': {}", path, e))
+            .and_then(|data| {
+                if data.len() < 4 {
+                    Err(format!("'{}' too small", path))
+                } else {
+                    Ok([data[0], data[1], data[2], data[3]])
+                }
+            })?;
+        if &magic == b"BTDX" {
+            byroredux_bsa::Ba2Archive::open(path)
+                .map(Archive::Ba2)
+                .map_err(|e| format!("BA2 '{}': {}", path, e))
+        } else {
+            byroredux_bsa::BsaArchive::open(path)
+                .map(Archive::Bsa)
+                .map_err(|e| format!("BSA '{}': {}", path, e))
+        }
+    }
+
+    fn extract(&self, path: &str) -> Result<Vec<u8>, std::io::Error> {
+        match self {
+            Archive::Bsa(a) => a.extract(path),
+            Archive::Ba2(a) => a.extract(path),
+        }
+    }
+}
+
+/// Provides file data by searching BSA/BA2 archives.
 pub(crate) struct TextureProvider {
-    pub(crate) texture_archives: Vec<byroredux_bsa::BsaArchive>,
-    pub(crate) mesh_archives: Vec<byroredux_bsa::BsaArchive>,
+    texture_archives: Vec<Archive>,
+    mesh_archives: Vec<Archive>,
 }
 
 impl TextureProvider {
@@ -16,7 +54,7 @@ impl TextureProvider {
         }
     }
 
-    /// Extract a texture (DDS) from texture BSAs.
+    /// Extract a texture (DDS) from texture archives.
     pub(crate) fn extract(&self, path: &str) -> Option<Vec<u8>> {
         for archive in &self.texture_archives {
             if let Ok(data) = archive.extract(path) {
@@ -26,7 +64,7 @@ impl TextureProvider {
         None
     }
 
-    /// Extract a mesh (NIF) from mesh BSAs.
+    /// Extract a mesh (NIF) from mesh archives.
     pub(crate) fn extract_mesh(&self, path: &str) -> Option<Vec<u8>> {
         for archive in &self.mesh_archives {
             if let Ok(data) = archive.extract(path) {
@@ -58,12 +96,12 @@ pub(crate) fn build_texture_provider(args: &[String]) -> TextureProvider {
         match args[i].as_str() {
             "--textures-bsa" => {
                 if let Some(path) = args.get(i + 1) {
-                    match byroredux_bsa::BsaArchive::open(path) {
+                    match Archive::open(path) {
                         Ok(a) => {
-                            log::info!("Opened textures BSA: '{}'", path);
+                            log::info!("Opened textures archive: '{}'", path);
                             provider.texture_archives.push(a);
                         }
-                        Err(e) => log::warn!("Failed to open textures BSA '{}': {}", path, e),
+                        Err(e) => log::warn!("Failed to open textures archive: {}", e),
                     }
                     i += 2;
                     continue;
@@ -71,12 +109,12 @@ pub(crate) fn build_texture_provider(args: &[String]) -> TextureProvider {
             }
             "--bsa" => {
                 if let Some(path) = args.get(i + 1) {
-                    match byroredux_bsa::BsaArchive::open(path) {
+                    match Archive::open(path) {
                         Ok(a) => {
-                            log::info!("Opened mesh BSA: '{}'", path);
+                            log::info!("Opened mesh archive: '{}'", path);
                             provider.mesh_archives.push(a);
                         }
-                        Err(e) => log::warn!("Failed to open mesh BSA '{}': {}", path, e),
+                        Err(e) => log::warn!("Failed to open mesh archive: {}", e),
                     }
                     i += 2;
                     continue;
@@ -89,7 +127,7 @@ pub(crate) fn build_texture_provider(args: &[String]) -> TextureProvider {
     provider
 }
 
-/// Resolve a texture path to a texture handle, with BSA lookup and caching.
+/// Resolve a texture path to a texture handle, with BSA/BA2 lookup and caching.
 pub(crate) fn resolve_texture(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
@@ -120,7 +158,7 @@ pub(crate) fn resolve_texture(
             }
         }
     } else {
-        log::debug!("Texture not found in BSA: '{}'", tex_path);
+        log::debug!("Texture not found in archive: '{}'", tex_path);
     }
     ctx.texture_registry.fallback()
 }

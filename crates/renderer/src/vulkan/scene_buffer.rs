@@ -160,6 +160,10 @@ pub struct GpuCamera {
     pub screen: [f32; 4],
     /// xyz = fog color (RGB 0-1), w = fog enabled (1.0 = yes).
     pub fog: [f32; 4],
+    /// xy = sub-pixel projection jitter in NDC space (Halton 2,3 sequence),
+    /// applied to `gl_Position.xy` AFTER motion-vector clip positions are
+    /// captured so reprojection remains jitter-free. zw = reserved.
+    pub jitter: [f32; 4],
 }
 
 impl Default for GpuCamera {
@@ -178,6 +182,7 @@ impl Default for GpuCamera {
             flags: [0.0; 4],
             screen: [1280.0, 720.0, 0.0, 0.0],
             fog: [0.0, 0.0, 0.0, 0.0],
+            jitter: [0.0, 0.0, 0.0, 0.0],
         }
     }
 }

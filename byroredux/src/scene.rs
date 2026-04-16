@@ -470,36 +470,8 @@ pub(crate) fn setup_scene(
 fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> (usize, Option<EntityId>) {
     let args: Vec<String> = std::env::args().collect();
 
-    // Collect BSA archives.
-    let mut tex_provider = TextureProvider::new();
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--textures-bsa" {
-            if let Some(path) = args.get(i + 1) {
-                match byroredux_bsa::BsaArchive::open(path) {
-                    Ok(a) => {
-                        log::info!("Opened textures BSA: '{}'", path);
-                        tex_provider.texture_archives.push(a);
-                    }
-                    Err(e) => log::warn!("Failed to open textures BSA '{}': {}", path, e),
-                }
-                i += 2;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    // The --bsa mesh archive is also added to the provider for cell loading.
-    if let Some(bsa_idx) = args.iter().position(|a| a == "--bsa") {
-        if let Some(bsa_path) = args.get(bsa_idx + 1) {
-            match byroredux_bsa::BsaArchive::open(bsa_path) {
-                Ok(a) => {
-                    tex_provider.mesh_archives.push(a);
-                }
-                Err(_) => {} // Will be reported below in the mesh extraction path.
-            }
-        }
-    }
+    // Collect BSA/BA2 archives (auto-detects format).
+    let tex_provider = build_texture_provider(&args);
 
     if let Some(bsa_idx) = args.iter().position(|a| a == "--bsa") {
         // BSA mode: --bsa <archive> --mesh <path_in_archive>
@@ -786,6 +758,7 @@ pub(crate) fn load_nif_bytes(
                 env_map_scale: mesh.env_map_scale,
                 normal_map: mesh.normal_map.clone(),
                 texture_path: mesh.texture_path.clone(),
+                material_path: mesh.material_path.clone(),
                 glow_map: mesh.glow_map.clone(),
                 detail_map: mesh.detail_map.clone(),
                 gloss_map: mesh.gloss_map.clone(),

@@ -60,6 +60,9 @@ impl VertexColorMode {
 #[derive(Debug)]
 pub(super) struct MaterialInfo {
     pub texture_path: Option<String>,
+    /// BGSM/BGEM material file reference (FO4+). Present when the
+    /// BSLightingShaderProperty has a non-empty name.
+    pub material_path: Option<String>,
     pub normal_map: Option<String>,
     /// Glow / self-illumination texture (NiTexturingProperty slot 4).
     /// Filled on Oblivion/FO3/FNV meshes where a dedicated emissive
@@ -138,6 +141,7 @@ impl Default for MaterialInfo {
     fn default() -> Self {
         Self {
             texture_path: None,
+            material_path: None,
             normal_map: None,
             glow_map: None,
             detail_map: None,
@@ -246,6 +250,12 @@ pub(super) fn extract_material_info(
     // Skyrim+: dedicated shader_property_ref
     if let Some(idx) = shape.shader_property_ref.index() {
         if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
+            if let Some(name) = shader.net.name.as_deref() {
+                let lower = name.to_ascii_lowercase();
+                if lower.ends_with(".bgsm") || lower.ends_with(".bgem") {
+                    info.material_path = Some(name.to_string());
+                }
+            }
             if let Some(ts_idx) = shader.texture_set_ref.index() {
                 if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
                     if let Some(path) = tex_set.textures.first() {

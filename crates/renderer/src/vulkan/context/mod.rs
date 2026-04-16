@@ -16,6 +16,7 @@ use super::ssao::SsaoPipeline;
 use super::surface;
 use super::svgf::SvgfPipeline;
 use super::swapchain::{self, SwapchainState};
+use super::taa::TaaPipeline;
 use super::sync::{self, FrameSync, MAX_FRAMES_IN_FLIGHT};
 use super::texture::Texture;
 use crate::mesh::MeshRegistry;
@@ -197,6 +198,10 @@ pub struct VulkanContext {
     pub composite: Option<CompositePipeline>,
     pub gbuffer: Option<GBuffer>,
     pub svgf: Option<SvgfPipeline>,
+    /// TAA resolve pass — reprojects + clamps history to produce the final
+    /// HDR image that composite samples. None when allocation fails; the
+    /// fallback path feeds raw HDR directly into composite.
+    pub taa: Option<TaaPipeline>,
     pipeline_cache: vk::PipelineCache,
     pipeline: vk::Pipeline,
     pipeline_alpha: vk::Pipeline,
@@ -577,7 +582,7 @@ impl VulkanContext {
         // 14c. Composite pipeline: owns HDR intermediates + tone-map pass.
         // Its descriptor sets sample HDR (owned by composite), indirect
         // (from SVGF or raw G-buffer), and albedo (G-buffer).
-        let composite = match CompositePipeline::new(
+        let mut composite = match CompositePipeline::new(
             &device,
             &gpu_allocator,
             swapchain_state.format.format,
@@ -594,14 +599,56 @@ impl VulkanContext {
                 return Err(anyhow::anyhow!("Composite pipeline creation failed: {e}"));
             }
         };
-        let composite_ref = composite
+        // Snapshot composite's HDR image views into an owned Vec so the
+        // subsequent &mut borrow of `composite` (for TAA rewire) doesn't
+        // conflict with the main-framebuffer creation below.
+        let hdr_views_owned: Vec<vk::ImageView> = composite
             .as_ref()
-            .expect("composite must exist after construction");
+            .expect("composite must exist after construction")
+            .hdr_image_views
+            .clone();
+
+        // 14d. TAA resolve pass — needs the composite's HDR views (created
+        // above) as its "current HDR" input, plus per-FIF motion + mesh_id.
+        // If creation succeeds, composite's HDR descriptor is rewired to
+        // sample TAA's output; otherwise we keep the raw HDR path.
+        let mut taa = match TaaPipeline::new(
+            &device,
+            &gpu_allocator,
+            &hdr_views_owned,
+            &motion_views_seed,
+            &mesh_id_views_seed,
+            swapchain_state.extent.width,
+            swapchain_state.extent.height,
+        ) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                log::warn!("TAA pipeline creation failed: {e} — falling back to raw HDR");
+                None
+            }
+        };
+        if let Some(ref t) = taa {
+            if let Err(e) = unsafe { t.initialize_layouts(&device, &graphics_queue, transfer_pool) }
+            {
+                log::warn!("TAA layout init failed: {e} — disabling TAA");
+                if let Some(mut pipe) = taa.take() {
+                    unsafe { pipe.destroy(&device, &gpu_allocator) };
+                }
+            }
+        }
+        // Swap composite's HDR binding to TAA output so tone-map samples
+        // the anti-aliased image. When TAA is disabled composite keeps its
+        // original raw-HDR descriptors.
+        if let (Some(ref t), Some(ref mut c)) = (taa.as_ref(), composite.as_mut()) {
+            let taa_views: Vec<vk::ImageView> =
+                (0..n_frames).map(|i| t.output_view(i)).collect();
+            c.rebind_hdr_views(&device, &taa_views, vk::ImageLayout::GENERAL);
+        }
 
         // 15. Main framebuffers: one per frame-in-flight slot, binding that
         // slot's HDR + normal + motion + mesh_id + raw_indirect + albedo
         // views + shared depth view.
-        let hdr_views = &composite_ref.hdr_image_views;
+        let hdr_views: &[vk::ImageView] = &hdr_views_owned;
         let normal_views: Vec<vk::ImageView> =
             (0..n_frames).map(|i| gbuffer_ref.normal_view(i)).collect();
         let motion_views: Vec<vk::ImageView> =
@@ -668,6 +715,7 @@ impl VulkanContext {
             composite,
             gbuffer,
             svgf,
+            taa,
             depth_allocation: Some(depth_allocation),
             depth_image,
             depth_image_view,
@@ -771,6 +819,9 @@ impl Drop for VulkanContext {
                 }
                 if let Some(ref mut svgf) = self.svgf {
                     svgf.destroy(&self.device, alloc);
+                }
+                if let Some(ref mut taa) = self.taa {
+                    taa.destroy(&self.device, alloc);
                 }
                 if let Some(ref mut gbuffer) = self.gbuffer {
                     gbuffer.destroy(&self.device, alloc);

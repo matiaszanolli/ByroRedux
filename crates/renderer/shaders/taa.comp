@@ -1,0 +1,149 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+// Temporal Antialiasing (TAA) — reproject + neighborhood-clamp resolve.
+//
+// Runs after SVGF and before composite. Consumes the jittered current HDR
+// image + motion vectors + mesh IDs, produces an anti-aliased HDR image
+// plus an updated history that the NEXT frame reads as its prior.
+//
+// Jitter: the main render pass is rendered with a sub-pixel Halton(2,3)
+// offset baked into the projection matrix. Each frame samples a different
+// point inside every pixel; temporal blending over ~8 frames reconstructs
+// a super-sampled result. The jitter pattern is owned by the CPU-side
+// camera setup, not this shader.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D  uCurrHdr;
+layout(set = 0, binding = 1) uniform sampler2D  uMotion;
+layout(set = 0, binding = 2) uniform usampler2D uCurrMeshId;
+layout(set = 0, binding = 3) uniform usampler2D uPrevMeshId;
+layout(set = 0, binding = 4) uniform sampler2D  uPrevHistory;
+layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D uOutput;
+
+layout(set = 0, binding = 6) uniform TaaParams {
+    vec4 screen;   // xy = size, zw = 1/size
+    vec4 params;   // x = history blend α, y = first_frame, z/w = unused
+} params;
+
+// YCoCg helps variance clamping reject chroma outliers without killing
+// high-frequency luma detail. Space is cheap per-pixel, well worth it.
+vec3 rgb_to_ycocg(vec3 c) {
+    float y  = dot(c, vec3(0.25, 0.5, 0.25));
+    float co = dot(c, vec3(0.5, 0.0, -0.5));
+    float cg = dot(c, vec3(-0.25, 0.5, -0.25));
+    return vec3(y, co, cg);
+}
+vec3 ycocg_to_rgb(vec3 c) {
+    float y = c.x, co = c.y, cg = c.z;
+    return vec3(y + co - cg, y + cg, y - co - cg);
+}
+
+// Catmull-Rom 9-tap history sample. Sharper than bilinear on edges,
+// avoids the over-blur that naive lerp-only TAA produces. The 9-tap
+// variant (not 16) skips the corner taps for ~40% fewer fetches with
+// negligible quality loss. See Jorge Jimenez, SIGGRAPH 2016.
+vec3 sample_history_catmull_rom(sampler2D tex, vec2 uv, vec2 texel) {
+    vec2 samplePos = uv / texel;
+    vec2 texPos1 = floor(samplePos - 0.5) + 0.5;
+    vec2 f = samplePos - texPos1;
+
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+
+    vec2 w12 = w1 + w2;
+    vec2 offset12 = w2 / (w12);
+
+    vec2 texPos0  = (texPos1 - 1.0) * texel;
+    vec2 texPos3  = (texPos1 + 2.0) * texel;
+    vec2 texPos12 = (texPos1 + offset12) * texel;
+
+    vec3 result = vec3(0.0);
+    result += texture(tex, vec2(texPos12.x, texPos0.y)).rgb  * (w12.x * w0.y);
+    result += texture(tex, vec2(texPos0.x,  texPos12.y)).rgb * (w0.x  * w12.y);
+    result += texture(tex, vec2(texPos12.x, texPos12.y)).rgb * (w12.x * w12.y);
+    result += texture(tex, vec2(texPos3.x,  texPos12.y)).rgb * (w3.x  * w12.y);
+    result += texture(tex, vec2(texPos12.x, texPos3.y)).rgb  * (w12.x * w3.y);
+    return max(result, vec3(0.0));
+}
+
+void main() {
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dim = ivec2(params.screen.xy);
+    if (pix.x >= dim.x || pix.y >= dim.y) return;
+
+    vec2 texel = params.screen.zw;
+    vec2 uv = (vec2(pix) + 0.5) * texel;
+
+    vec3 currRgb = texelFetch(uCurrHdr, pix, 0).rgb;
+
+    // First frame or after swapchain resize: history is garbage, pass current.
+    if (params.params.y > 0.5) {
+        imageStore(uOutput, pix, vec4(currRgb, 1.0));
+        return;
+    }
+
+    // Motion vector is written as (current_uv - prev_uv). Reproject.
+    vec2 motion = texelFetch(uMotion, pix, 0).rg;
+    vec2 prevUv = uv - motion;
+
+    // Offscreen reprojection → no history.
+    bool offscreen = any(lessThan(prevUv, vec2(0.0))) || any(greaterThan(prevUv, vec2(1.0)));
+
+    // Disocclusion: current fragment belongs to a different instance than
+    // the one that was on-screen at prevUv. Uses nearest sample.
+    uint currMid = texelFetch(uCurrMeshId, pix, 0).r;
+    ivec2 prevPix = ivec2(prevUv * params.screen.xy);
+    prevPix = clamp(prevPix, ivec2(0), dim - 1);
+    uint prevMid = texelFetch(uPrevMeshId, prevPix, 0).r;
+    bool disocclusion = (currMid != prevMid);
+
+    if (offscreen || disocclusion) {
+        imageStore(uOutput, pix, vec4(currRgb, 1.0));
+        return;
+    }
+
+    // Neighborhood statistics in YCoCg for variance clipping.
+    vec3 currYc = rgb_to_ycocg(currRgb);
+    vec3 m1 = currYc;
+    vec3 m2 = currYc * currYc;
+    // 3×3 moments — 8 extra taps.
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            ivec2 p = clamp(pix + ivec2(dx, dy), ivec2(0), dim - 1);
+            vec3 s = rgb_to_ycocg(texelFetch(uCurrHdr, p, 0).rgb);
+            m1 += s;
+            m2 += s * s;
+        }
+    }
+    const float N = 9.0;
+    vec3 mean = m1 / N;
+    vec3 var  = max(m2 / N - mean * mean, vec3(0.0));
+    vec3 sigma = sqrt(var);
+    // Karis-style variance clipping window: mean ± γ·σ.
+    const float gamma = 1.25;
+    vec3 yMin = mean - gamma * sigma;
+    vec3 yMax = mean + gamma * sigma;
+
+    // Catmull-Rom history in RGB, then convert.
+    vec3 histRgb = sample_history_catmull_rom(uPrevHistory, prevUv, texel);
+    vec3 histYc  = rgb_to_ycocg(histRgb);
+    histYc = clamp(histYc, yMin, yMax);
+    vec3 clampedHist = ycocg_to_rgb(histYc);
+
+    // Luma-weighted blend reduces flicker on bright highlights.
+    float alpha = params.params.x;
+    float lumCurr = max(currRgb.r * 0.2126 + currRgb.g * 0.7152 + currRgb.b * 0.0722, 1e-4);
+    float lumHist = max(clampedHist.r * 0.2126 + clampedHist.g * 0.7152 + clampedHist.b * 0.0722, 1e-4);
+    float wCurr = 1.0 / (1.0 + lumCurr);
+    float wHist = 1.0 / (1.0 + lumHist);
+    // Weighted average under the temporal blend α.
+    vec3 outRgb = (currRgb * wCurr * alpha + clampedHist * wHist * (1.0 - alpha))
+                / max(wCurr * alpha + wHist * (1.0 - alpha), 1e-6);
+
+    imageStore(uOutput, pix, vec4(max(outRgb, vec3(0.0)), 1.0));
+}

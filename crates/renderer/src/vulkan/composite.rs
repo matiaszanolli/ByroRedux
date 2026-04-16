@@ -854,6 +854,34 @@ impl CompositePipeline {
         result
     }
 
+    /// Rewrite binding 0 (HDR sampler) across every per-frame descriptor
+    /// set to point at a different set of views. Used to switch composite's
+    /// input from raw HDR to TAA output once TAA is wired up.
+    ///
+    /// `hdr_layout` must be the current image layout of the new views:
+    /// `SHADER_READ_ONLY_OPTIMAL` for raw HDR from the render pass,
+    /// `GENERAL` for TAA storage-image output.
+    pub fn rebind_hdr_views(
+        &mut self,
+        device: &ash::Device,
+        hdr_views: &[vk::ImageView],
+        hdr_layout: vk::ImageLayout,
+    ) {
+        debug_assert_eq!(hdr_views.len(), MAX_FRAMES_IN_FLIGHT);
+        for i in 0..MAX_FRAMES_IN_FLIGHT {
+            let info = [vk::DescriptorImageInfo::default()
+                .sampler(self.hdr_sampler)
+                .image_view(hdr_views[i])
+                .image_layout(hdr_layout)];
+            let write = vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_sets[i])
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&info);
+            unsafe { device.update_descriptor_sets(&[write], &[]) };
+        }
+    }
+
     /// Upload per-frame composite parameters (fog state, etc.) to the
     /// frame's UBO. Call once per frame before `dispatch`.
     pub fn upload_params(

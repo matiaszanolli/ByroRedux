@@ -7,6 +7,19 @@ use super::{DrawCommand, SkyParams, VulkanContext};
 use anyhow::{Context, Result};
 use ash::vk;
 
+/// Halton low-discrepancy sequence value at `index` (1-indexed) for `base`.
+/// Returns a value in [0, 1).
+fn halton(mut index: u32, base: u32) -> f32 {
+    let mut result = 0.0_f32;
+    let mut f = 1.0 / base as f32;
+    while index > 0 {
+        result += f * (index % base) as f32;
+        index /= base;
+        f /= base as f32;
+    }
+    result
+}
+
 /// A batch of instances sharing the same mesh + pipeline state.
 /// Drawn with a single `cmd_draw_indexed` call.
 ///
@@ -221,6 +234,24 @@ impl VulkanContext {
             } else {
                 0.0
             };
+
+        // TAA sub-pixel jitter via Halton(2,3) sequence. Each frame shifts
+        // the projection by a different sub-pixel offset in NDC so that
+        // temporal blending over ~8 frames reconstructs a super-sampled
+        // result. The offset is applied in the vertex shader AFTER motion
+        // vector computation so reprojection is jitter-free.
+        let (jx, jy) = if self.taa.is_some() {
+            let idx = (self.frame_counter % 8) as u32 + 1; // 1-indexed
+            let hx = halton(idx, 2);
+            let hy = halton(idx, 3);
+            // Map [0,1] → [-0.5, 0.5] pixels, then to NDC.
+            let w = self.swapchain_state.extent.width as f32;
+            let h = self.swapchain_state.extent.height as f32;
+            ((hx - 0.5) * 2.0 / w, (hy - 0.5) * 2.0 / h)
+        } else {
+            (0.0, 0.0)
+        };
+
         let vp = view_proj;
         let pvp = &self.prev_view_proj;
         // Precompute inverse(viewProj) once on the CPU so shaders
@@ -294,6 +325,7 @@ impl VulkanContext {
                 fog_color[2],
                 if fog_far > fog_near { 1.0 } else { 0.0 }, // fog enabled flag
             ],
+            jitter: [jx, jy, 0.0, 0.0],
         };
         self.scene_buffers
             .upload_camera(&self.device, frame, &camera)
@@ -698,6 +730,16 @@ impl VulkanContext {
             if let Some(ref mut svgf) = self.svgf {
                 if let Err(e) = svgf.dispatch(&self.device, cmd, frame) {
                     log::warn!("SVGF dispatch failed: {e}");
+                }
+            }
+
+            // TAA resolve: reprojects previous frame's history via motion
+            // vectors, neighborhood-clamps in YCoCg, and writes the anti-
+            // aliased HDR result for composite to sample. Runs after SVGF
+            // (which denoises the indirect term) and before SSAO/composite.
+            if let Some(ref mut taa) = self.taa {
+                if let Err(e) = taa.dispatch(&self.device, cmd, frame) {
+                    log::warn!("TAA dispatch failed: {e}");
                 }
             }
 

@@ -77,6 +77,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 sceneFlags;  // x = RT enabled (1.0), yzw = ambient color (RGB)
     vec4 screen;      // x = width, y = height, z = fog near, w = fog far
     vec4 fog;         // xyz = fog color (RGB), w = fog enabled (1.0)
+    vec4 jitter;      // xy = sub-pixel TAA jitter in NDC, zw = reserved
 };
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
@@ -632,31 +633,47 @@ void main() {
         vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
         Lo = (kD * albedo / PI + specular * specStrength * specColor) * vec3(0.8) * NdotL;
     } else {
-        // Clustered lighting with importance-sorted shadow budget.
+        // Clustered lighting with streaming RIS shadow sampling.
         //
-        // Two-pass approach: first pass accumulates all lighting as if
-        // unshadowed and tracks the top-K lights by NdotL×atten
-        // contribution; second pass casts shadow rays for only those
-        // top-K lights and subtracts the shadowed portion. This ensures
-        // the brightest lights always get proper shadows instead of the
-        // FIFO order that previously wasted rays on dim fill lights.
+        // Each fragment maintains K weighted reservoirs that sample the
+        // full cluster proportional to each light's unshadowed luminance
+        // contribution (target pdf). A shadow ray is cast for each
+        // selected reservoir; the shadowed-subtraction is unbiased by
+        // the reservoir weight W = resWSum / (K · w_sel).
         //
-        // Distance fallback: beyond 800 units, shadow rays are skipped
-        // entirely (smooth fade 600-800 units) since shadows are
-        // imperceptible at distance.
-        float shadowFade = 1.0 - smoothstep(600.0, 800.0, worldDist);
-        const uint MAX_SHADOW_RAYS = 2;
+        // Replaces the previous deterministic top-K, which had a
+        // pathological failure: any light outside the top-K at a given
+        // fragment was treated as unshadowed forever at that pixel.
+        // WRS gives every light non-zero selection probability, so
+        // large occluders blocking any light (not just the brightest)
+        // cast shadows on large receivers. Temporal variance is
+        // absorbed by SVGF.
+        //
+        // Full ReSTIR-DI (temporal + spatial reservoir reuse across
+        // frames/neighbors) is a separate milestone — needs a GBuffer
+        // reservoir attachment and a dedicated resample compute pass.
+        //
+        // Distance fallback: shadows fade out past camera range at
+        // 4000–6000 units (~57–86 m at Bethesda's ~70u/m) so interior
+        // halls self-shadow end-to-end. 12 GB VRAM budget makes the
+        // extra ray cost fine.
+        float shadowFade = 1.0 - smoothstep(4000.0, 6000.0, worldDist);
+        const uint NUM_RESERVOIRS = 8;
+        // Cap per-reservoir unbiasing weight to tame fireflies when a
+        // dim light is sampled in a cluster dominated by bright ones.
+        // 64× matches the ratio of a dim fill light to a hero light.
+        const float RESERVOIR_W_CLAMP = 64.0;
 
-        // Top-K tracking: light index, contribution, and the radiance
-        // that would be removed if the light is fully shadowed.
-        uint topLightIdx[MAX_SHADOW_RAYS];
-        float topContrib[MAX_SHADOW_RAYS];
-        vec3 topRadiance[MAX_SHADOW_RAYS]; // unshadowed radiance for shadow subtraction
-        uint topCount = 0;
-        for (uint s = 0; s < MAX_SHADOW_RAYS; s++) {
-            topContrib[s] = 0.0;
-            topRadiance[s] = vec3(0.0);
+        uint  resLight[NUM_RESERVOIRS];
+        float resWSel[NUM_RESERVOIRS];
+        vec3  resRadiance[NUM_RESERVOIRS];
+        float resWSum = 0.0;
+        for (uint s = 0; s < NUM_RESERVOIRS; s++) {
+            resLight[s] = 0xFFFFFFFFu;
+            resWSel[s] = 0.0;
+            resRadiance[s] = vec3(0.0);
         }
+        float resFrameSeed = cameraPos.w;
 
         ClusterEntry cluster = clusters[clusterIdx];
         for (uint ci = 0; ci < cluster.count; ci++) {
@@ -725,39 +742,42 @@ void main() {
             // Per-light ambient fill.
             Lo += lightColor * atten * albedo * 0.08;
 
-            // Track top-K shadowable lights by contribution.
+            // Stream this light into every reservoir (WRS).
             bool unshadowed = radius < 0.0;
             if (rtEnabled && !unshadowed && shadowFade > 0.01) {
-                // The radiance to subtract if this light is fully shadowed.
                 vec3 shadowableRadiance = brdfResult * unshadowedRadiance;
-
-                // Insert into top-K sorted array (insertion sort, K=2).
-                if (topCount < MAX_SHADOW_RAYS) {
-                    // Array not full — append.
-                    uint slot = topCount;
-                    topLightIdx[slot] = i;
-                    topContrib[slot] = contribution;
-                    topRadiance[slot] = shadowableRadiance;
-                    topCount++;
-                } else if (contribution > topContrib[0] || contribution > topContrib[1]) {
-                    // Replace the weaker of the two tracked lights.
-                    uint weakSlot = topContrib[0] < topContrib[1] ? 0u : 1u;
-                    if (contribution > topContrib[weakSlot]) {
-                        topLightIdx[weakSlot] = i;
-                        topContrib[weakSlot] = contribution;
-                        topRadiance[weakSlot] = shadowableRadiance;
+                // Target pdf: luminance of the to-be-subtracted radiance.
+                // Sampling proportional to this approximates the optimal
+                // "importance sample by potential contribution".
+                float w_i = max(dot(shadowableRadiance, vec3(0.2126, 0.7152, 0.0722)), 1e-6);
+                resWSum += w_i;
+                // Independent reservoir streams via per-slot noise offset.
+                // With probability w_i / resWSum, replace the selection.
+                for (uint s = 0; s < NUM_RESERVOIRS; s++) {
+                    float u = interleavedGradientNoise(
+                        gl_FragCoord.xy + vec2(float(s) * 13.1, float(s) * 27.7),
+                        resFrameSeed + float(ci) * 0.37
+                    );
+                    if (u * resWSum < w_i) {
+                        resLight[s] = i;
+                        resWSel[s] = w_i;
+                        resRadiance[s] = shadowableRadiance;
                     }
                 }
             }
         }
 
-        // ── Pass 2: shadow rays for the top-K brightest lights ─────
+        // ── Pass 2: shadow rays for sampled reservoirs ─────────────
         //
-        // Cast shadow rays only for the lights that contribute the most.
-        // If a ray hits, subtract the full unshadowed radiance (scaled
-        // by shadowFade for distance-based soft transition).
-        for (uint s = 0; s < topCount; s++) {
-            uint i = topLightIdx[s];
+        // For each reservoir with a valid selection, cast a shadow ray
+        // to the chosen light and subtract its weighted contribution
+        // on hit. Weight W = resWSum / (K · w_sel) unbiases the
+        // streaming WRS estimator back to Σ radiance_i · (1 − V_i).
+        float invK = 1.0 / float(NUM_RESERVOIRS);
+        for (uint s = 0; s < NUM_RESERVOIRS; s++) {
+            if (resLight[s] == 0xFFFFFFFFu) continue;
+            uint i = resLight[s];
+            float W = min((resWSum / max(resWSel[s], 1e-6)) * invK, RESERVOIR_W_CLAMP);
             vec3 lightPos = lights[i].position_radius.xyz;
             float radius = lights[i].position_radius.w;
             float lightType = lights[i].color_type.w;
@@ -791,7 +811,11 @@ void main() {
                 rayDist = length(jitteredTarget - rayOrigin) - 0.1;
             } else {
                 // Directional: small angular cone for penumbra.
-                const float sunAngularRadius = 0.05;
+                // Real sun subtends ~0.0047 rad (~0.27°) from Earth. The
+                // previous 0.05 rad (~2.9°) was ~10× too soft, washing out
+                // sharp shadow detail. Keep slight inflation vs physical
+                // value to give visible penumbra at interior scale.
+                const float sunAngularRadius = 0.0047;
                 vec3 jitteredDir = L + (T * diskSample.x + B * diskSample.y) * sunAngularRadius;
                 rayDir = normalize(jitteredDir);
                 rayDist = 10000.0;
@@ -810,9 +834,10 @@ void main() {
             );
             rayQueryProceedEXT(rayQuery);
             if (rayQueryGetIntersectionTypeEXT(rayQuery, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
-                // Subtract the shadowed light's contribution, faded by distance.
-                // Clamp to prevent negative radiance from rounding / fill overlap.
-                Lo = max(Lo - topRadiance[s] * shadowFade, vec3(0.0));
+                // Unbiased shadow subtraction: W compensates for the
+                // WRS sampling probability. Clamp to prevent negative
+                // radiance from rounding / fill overlap.
+                Lo = max(Lo - resRadiance[s] * W * shadowFade, vec3(0.0));
             }
         }
     }
@@ -824,9 +849,15 @@ void main() {
     // by the ambient light level to approximate indirect illumination.
     // At 60+ FPS, temporal noise integration produces smooth color bleeding.
     vec3 indirect = vec3(0.0);
+    // RT ambient occlusion derived from the GI ray's hit distance. Close
+    // hits darken the ambient term so recesses/corners/behind-wall regions
+    // get real occlusion, not just the screen-space SSAO approximation
+    // (which can't see the hall-scale geometry off-screen). 1.0 = fully
+    // open, 0.0 = hard against adjacent geometry.
+    float rtAO = 1.0;
     if (rtEnabled && !isWindow && !isGlass && emissiveMult < 0.01) {
         float giDist = length(fragWorldPos - cameraPos.xyz);
-        float giFade = 1.0 - smoothstep(1200.0, 1500.0, giDist);
+        float giFade = 1.0 - smoothstep(4000.0, 6000.0, giDist);
         if (giFade > 0.01) {
             // Use a slowly-varying noise seed: floor(frameCount/4) makes
             // each noise pattern persist for 4 frames, reducing flicker
@@ -843,13 +874,20 @@ void main() {
             rayQueryInitializeEXT(
                 giRQ, topLevelAS,
                 gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0xFF,
-                giOrigin, 0.5, giDir, 500.0
+                giOrigin, 0.5, giDir, 3000.0
             );
             rayQueryProceedEXT(giRQ);
 
             if (rayQueryGetIntersectionTypeEXT(giRQ, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
                 int hitIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(giRQ, true);
                 float hitDist = rayQueryGetIntersectionTEXT(giRQ, true);
+
+                // RT AO: near hits = strong occlusion, far hits = open.
+                // Range tuned for Bethesda interior scale — a corner/wall
+                // within ~120 units (~1.7 m) drives rtAO toward 0.3,
+                // surfaces with 500+ unit clearance stay ~1.0.
+                rtAO = smoothstep(60.0, 500.0, hitDist);
+                rtAO = mix(0.3, 1.0, rtAO);
 
                 // Use pre-computed average albedo from the hit instance's
                 // SSBO entry instead of the full UV lookup + texture sample.
@@ -904,7 +942,11 @@ void main() {
     // re-adds the correct modulation without division-based demodulation,
     // avoiding dark-albedo amplification artifacts. See #268.
     vec3 directLight = Lo;
-    vec3 indirectLight = (ambient + indirect) * ao;
+    // Combine screen-space SSAO with RT AO. SSAO catches fine detail
+    // (texture crevices), RT AO catches hall-scale occlusion. Take min
+    // so whichever sees the occluder wins.
+    float combinedAO = min(ao, rtAO);
+    vec3 indirectLight = (ambient + indirect) * combinedAO;
 
     // Glass compositing: Fresnel controls the output alpha.
     float finalAlpha = texColor.a;

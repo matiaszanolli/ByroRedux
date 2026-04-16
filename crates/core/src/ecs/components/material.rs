@@ -36,6 +36,9 @@ pub struct Material {
     pub normal_map: Option<String>,
     /// Diffuse texture path (for PBR material classification from path keywords).
     pub texture_path: Option<String>,
+    /// BGSM/BGEM material file path (FO4+). When present with no texture_path,
+    /// the real textures are inside this material file in the Materials BA2.
+    pub material_path: Option<String>,
     /// Glow / self-illumination texture — `NiTexturingProperty` slot 4
     /// on Oblivion/FO3/FNV, or `BSShaderTextureSet` slot 2 on Skyrim+.
     /// Populated on import when the mesh has a dedicated emissive
@@ -94,6 +97,7 @@ impl Default for Material {
             env_map_scale: 1.0,
             normal_map: None,
             texture_path: None,
+            material_path: None,
             glow_map: None,
             detail_map: None,
             gloss_map: None,

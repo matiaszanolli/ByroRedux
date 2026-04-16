@@ -16,5 +16,6 @@ pub mod ssao;
 pub mod surface;
 pub mod svgf;
 pub mod swapchain;
+pub mod taa;
 pub mod sync;
 pub mod texture;

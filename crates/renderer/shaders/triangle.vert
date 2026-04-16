@@ -52,6 +52,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 sceneFlags;
     vec4 screen;
     vec4 fog;
+    vec4 jitter;         // xy = sub-pixel TAA jitter in NDC, zw = reserved.
 };
 
 // Bone palette SSBO (set 1, binding 3) — skinning matrices.
@@ -92,7 +93,8 @@ void main() {
 
     vec4 worldPos = xform * vec4(inPosition, 1.0);
     vec4 currClip = viewProj * worldPos;
-    gl_Position = currClip;
+    // NOTE: gl_Position is jittered below for TAA. fragCurrClipPos must
+    // remain un-jittered so motion vectors are correct across frames.
     fragColor = inColor;
     fragUV = inUV;
     // Normal transform. For orthogonal upper-3x3 (uniform or no scale),
@@ -116,6 +118,15 @@ void main() {
     // Motion vector: current + previous clip-space positions. Fragment
     // shader does the perspective divide and screen-space delta.
     // Assumes static geometry (same world position both frames).
+    // Both positions are UN-JITTERED — motion must reflect scene motion
+    // only, not the per-frame sub-pixel sampling offset.
     fragCurrClipPos = currClip;
     fragPrevClipPos = prevViewProj * worldPos;
+
+    // Apply sub-pixel jitter for TAA supersampling. jitter.xy is expressed
+    // in NDC, so we scale by clip.w so the offset is constant in NDC after
+    // the perspective divide. When jitter = vec2(0) (TAA disabled path),
+    // this is a no-op.
+    currClip.xy += jitter.xy * currClip.w;
+    gl_Position = currClip;
 }

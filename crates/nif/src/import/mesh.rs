@@ -131,6 +131,7 @@ pub(super) fn extract_mesh(
         scale: world_transform.scale,
         name: shape.av.net.name.clone(),
         texture_path: mat.texture_path,
+        material_path: mat.material_path,
         has_alpha: mat.alpha_blend,
         src_blend_mode: mat.src_blend_mode,
         dst_blend_mode: mat.dst_blend_mode,
@@ -249,6 +250,7 @@ pub(super) fn extract_bs_tri_shape(
     };
 
     let texture_path = find_texture_path_bs_tri_shape(scene, shape);
+    let material_path = find_material_path_bs_tri_shape(scene, shape);
 
     // NiAlphaProperty: bit 0 = alpha blend, bit 9 (0x200) = alpha test
     // (cutout). See issue #152. Prefer alpha-test over alpha-blend when
@@ -354,6 +356,7 @@ pub(super) fn extract_bs_tri_shape(
         scale: world_transform.scale,
         name: shape.av.net.name.clone(),
         texture_path,
+        material_path,
         has_alpha,
         src_blend_mode,
         dst_blend_mode,
@@ -428,6 +431,19 @@ pub(super) fn find_texture_path_bs_tri_shape(
         }
     }
     None
+}
+
+/// Find BGSM/BGEM material path for BsTriShape via shader property name.
+fn find_material_path_bs_tri_shape(scene: &NifScene, shape: &BsTriShape) -> Option<String> {
+    let idx = shape.shader_property_ref.index()?;
+    let shader = scene.get_as::<BSLightingShaderProperty>(idx)?;
+    let name = shader.net.name.as_deref()?;
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".bgsm") || lower.ends_with(".bgem") {
+        Some(name.to_string())
+    } else {
+        None
+    }
 }
 
 // ── Skinning extraction (issue #151) ──────────────────────────────────

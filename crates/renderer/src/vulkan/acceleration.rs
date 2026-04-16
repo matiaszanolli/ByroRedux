@@ -115,7 +115,7 @@ impl AccelerationManager {
             tlas_instances_scratch: Vec::new(),
             frame_counter: 0,
             total_blas_bytes: 0,
-            blas_budget_bytes: 1024 * 1024 * 1024, // 1 GB — fits comfortably in 6 GB minimum RT spec
+            blas_budget_bytes: 4 * 1024 * 1024 * 1024, // 4 GB — loose ceiling on 12 GB dev GPU; optimize later
         }
     }
 
