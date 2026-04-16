@@ -103,12 +103,23 @@ impl NiAVObjectData {
             Vec::new()
         };
 
-        // Pre-Gamebryo (v < 10.0.1.0): no collision_ref. Instead, there's
-        // a bounding volume (bool + variable-size struct). We read and discard it.
+        // Three version branches per nif.xml:
+        //  - v <= 4.2.2.0 (Morrowind / early NetImmerse): legacy
+        //    `Has Bounding Volume: bool` + optional body
+        //    (since="3.0" until="4.2.2.0").
+        //  - v in (4.2.2.0, 10.0.1.0) — the NetImmerse→Gamebryo gap
+        //    window: neither the bounding volume nor a collision ref
+        //    is serialized. Reading `has_bv` here consumes a phantom
+        //    byte and misaligns every downstream NiAVObject in the
+        //    [4.2.2.1, 10.0.0.x] range. See #328 / audit N1-04.
+        //  - v >= 10.0.1.0: dedicated `NiCollisionObject` ref
+        //    (since="10.0.1.0").
         let collision_ref = if stream.version() >= NifVersion(0x0A000100) {
             stream.read_block_ref()?
-        } else {
+        } else if stream.version() <= NifVersion(0x04020200) {
             skip_bounding_volume(stream)?;
+            BlockRef::NULL
+        } else {
             BlockRef::NULL
         };
 
@@ -235,4 +246,110 @@ fn read_and_skip_bounding_volume(stream: &mut NifStream) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod niavobject_version_gate_tests {
+    use super::*;
+    use crate::header::NifHeader;
+    use crate::stream::NifStream;
+
+    fn header_at(version: NifVersion) -> NifHeader {
+        NifHeader {
+            version,
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    /// Common prologue: NiObjectNET (pre-Gamebryo variant — single
+    /// extra_data ref) + flags (u16 at bsver=0) + identity transform.
+    fn pre_gamebryo_prologue() -> Vec<u8> {
+        let mut d = Vec::new();
+        // NiObjectNET at version < 20.1.0.1: name is an inline
+        // length-prefixed string (u32 length, 0 = empty ⇒ None). No body bytes.
+        d.extend_from_slice(&0u32.to_le_bytes()); // name length = 0
+        // extra_data_ref (single i32 ref, -1 = null) — pre-Gamebryo branch.
+        d.extend_from_slice(&(-1i32).to_le_bytes());
+        // controller_ref (-1 = null).
+        d.extend_from_slice(&(-1i32).to_le_bytes());
+        // flags (bsver=0 ⇒ u16 branch)
+        d.extend_from_slice(&0u16.to_le_bytes());
+        // translation (3 f32)
+        for _ in 0..3 {
+            d.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        // identity 3×3 rotation (9 f32)
+        for row in 0..3 {
+            for col in 0..3 {
+                let v: f32 = if row == col { 1.0 } else { 0.0 };
+                d.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        // scale
+        d.extend_from_slice(&1.0f32.to_le_bytes());
+        d
+    }
+
+    /// Regression: #328 / audit N1-04 — NiAVObject in the
+    /// (4.2.2.0, 10.0.1.0) gap window has neither `Has Bounding Volume`
+    /// (nif.xml until=4.2.2.0) nor `Collision Object` (since=10.0.1.0).
+    /// The parser must consume neither.
+    #[test]
+    fn gap_window_reads_neither_bv_nor_collision_ref() {
+        // 10.0.0.0 — firmly in the gap.
+        let header = header_at(NifVersion(0x0A000000));
+        let mut bytes = pre_gamebryo_prologue();
+        // Properties list (bsver=0 ≤ 34 ⇒ list present): zero entries.
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        // No velocity (version > 4.2.2.0).
+        // No bounding volume, no collision_ref — stream ends here.
+
+        let mut stream = NifStream::new(&bytes, &header);
+        let data = NiAVObjectData::parse(&mut stream)
+            .expect("NiAVObject should parse in the NetImmerse→Gamebryo gap");
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "gap-window NiAVObject must consume stream exactly — no phantom \
+             has_bv bool and no phantom collision_ref"
+        );
+        assert!(data.collision_ref.is_null());
+        assert!(data.properties.is_empty());
+    }
+
+    /// Pre-Gamebryo (v <= 4.2.2.0) still reads the legacy
+    /// `Has Bounding Volume` bool (plus the per-version velocity vector).
+    /// has_bv=false keeps the trailing body out of the fixture.
+    #[test]
+    fn pre_gamebryo_consumes_has_bounding_volume_bool() {
+        let header = header_at(NifVersion(0x04020200));
+        let mut bytes = pre_gamebryo_prologue();
+        // Pre-Gamebryo velocity vector (3 f32) — see existing parse() branch.
+        for _ in 0..3 {
+            bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        // Properties list: bsver=0 ≤ 34 ⇒ list present, zero entries.
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        // has_bv = false (no body follows).
+        bytes.push(0u8);
+
+        let mut stream = NifStream::new(&bytes, &header);
+        let data = NiAVObjectData::parse(&mut stream)
+            .expect("pre-Gamebryo NiAVObject should parse");
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "pre-Gamebryo NiAVObject must consume the velocity + has_bv bool"
+        );
+        assert!(data.collision_ref.is_null());
+    }
 }
