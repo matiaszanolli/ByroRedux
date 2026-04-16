@@ -220,20 +220,25 @@ pub(crate) fn setup_scene(
                         if nif_clips.is_empty() {
                             log::warn!("No animation clips found in '{}'", kf_path);
                         } else {
-                            let mut registry = world.resource_mut::<AnimationClipRegistry>();
-                            for nif_clip in &nif_clips {
-                                let clip = convert_nif_clip(nif_clip);
-                                let handle = registry.add(clip);
-                                log::info!(
-                                    "Loaded animation clip '{}' ({:.2}s, {} channels) → handle {}",
-                                    nif_clip.name,
-                                    nif_clip.duration,
-                                    nif_clip.channels.len(),
-                                    handle,
-                                );
+                            let first_handle;
+                            {
+                                let mut registry =
+                                    world.resource_mut::<AnimationClipRegistry>();
+                                let mut pool = world.resource_mut::<StringPool>();
+                                for nif_clip in &nif_clips {
+                                    let clip = convert_nif_clip(nif_clip, &mut pool);
+                                    let handle = registry.add(clip);
+                                    log::info!(
+                                        "Loaded animation clip '{}' ({:.2}s, {} channels) → handle {}",
+                                        nif_clip.name,
+                                        nif_clip.duration,
+                                        nif_clip.channels.len(),
+                                        handle,
+                                    );
+                                }
+                                first_handle =
+                                    registry.len() as u32 - nif_clips.len() as u32;
                             }
-                            let first_handle = registry.len() as u32 - nif_clips.len() as u32;
-                            drop(registry);
 
                             // Spawn an AnimationPlayer scoped to the NIF subtree.
                             let player_entity = world.spawn();

@@ -3,6 +3,7 @@
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::{Component, EntityId};
 use crate::math::{Quat, Vec3};
+use crate::string::FixedString;
 
 use super::interpolation::{sample_rotation, sample_scale, sample_translation};
 use super::registry::AnimationClipRegistry;
@@ -233,7 +234,7 @@ pub fn collect_stack_text_events(
 pub fn sample_blended_transform(
     stack: &AnimationStack,
     registry: &AnimationClipRegistry,
-    channel_name: &str,
+    channel_name: FixedString,
 ) -> Option<(Vec3, Quat, f32)> {
     // Pass 1+2 fused: find max priority AND compute total weight at that
     // priority in a single walk. Running max — when a strictly higher
@@ -248,7 +249,7 @@ pub fn sample_blended_transform(
         let Some(clip) = registry.get(layer.clip_handle) else {
             continue;
         };
-        let Some(channel) = clip.channels.get(channel_name) else {
+        let Some(channel) = clip.channels.get(&channel_name) else {
             continue;
         };
         let t = sample_translation(channel, layer.local_time);
@@ -291,7 +292,7 @@ pub fn sample_blended_transform(
         let Some(clip) = registry.get(layer.clip_handle) else {
             continue;
         };
-        let Some(channel) = clip.channels.get(channel_name) else {
+        let Some(channel) = clip.channels.get(&channel_name) else {
             continue;
         };
         if channel.priority != max_priority {

@@ -8,7 +8,7 @@ use byroredux_core::animation::{
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Children, Name, World};
 use byroredux_core::math::{Quat, Vec3};
-use byroredux_core::string::FixedString;
+use byroredux_core::string::{FixedString, StringPool};
 use std::collections::HashMap;
 
 /// Build a scoped name→entity map by walking the subtree rooted at `root`.
@@ -48,7 +48,13 @@ pub(crate) fn build_subtree_name_map(
 }
 
 /// Convert a NIF animation clip (byroredux_nif types) to a core animation clip (glam types).
-pub(crate) fn convert_nif_clip(nif: &byroredux_nif::anim::AnimationClip) -> AnimationClip {
+///
+/// Channel names are interned into `pool` at conversion time so the animation
+/// hot path can use `FixedString` (integer comparison, zero allocation). #340.
+pub(crate) fn convert_nif_clip(
+    nif: &byroredux_nif::anim::AnimationClip,
+    pool: &mut StringPool,
+) -> AnimationClip {
     use byroredux_nif::anim as na;
 
     let cycle_type = match nif.cycle_type {
@@ -61,6 +67,7 @@ pub(crate) fn convert_nif_clip(nif: &byroredux_nif::anim::AnimationClip) -> Anim
         .channels
         .iter()
         .map(|(name, ch)| {
+            let sym = pool.intern(name);
             let convert_key_type = |kt: byroredux_nif::blocks::interpolator::KeyType| match kt {
                 byroredux_nif::blocks::interpolator::KeyType::Linear => KeyType::Linear,
                 byroredux_nif::blocks::interpolator::KeyType::Quadratic => KeyType::Quadratic,
@@ -104,7 +111,7 @@ pub(crate) fn convert_nif_clip(nif: &byroredux_nif::anim::AnimationClip) -> Anim
                 .collect();
 
             (
-                name.clone(),
+                sym,
                 TransformChannel {
                     translation_keys,
                     translation_type: convert_key_type(ch.translation_type),
@@ -142,7 +149,7 @@ pub(crate) fn convert_nif_clip(nif: &byroredux_nif::anim::AnimationClip) -> Anim
         .iter()
         .map(|(name, ch)| {
             (
-                name.clone(),
+                pool.intern(name),
                 FloatChannel {
                     target: convert_float_target(ch.target),
                     keys: ch
@@ -163,7 +170,7 @@ pub(crate) fn convert_nif_clip(nif: &byroredux_nif::anim::AnimationClip) -> Anim
         .iter()
         .map(|(name, ch)| {
             (
-                name.clone(),
+                pool.intern(name),
                 ColorChannel {
                     target: convert_color_target(ch.target),
                     keys: ch
@@ -184,7 +191,7 @@ pub(crate) fn convert_nif_clip(nif: &byroredux_nif::anim::AnimationClip) -> Anim
         .iter()
         .map(|(name, ch)| {
             (
-                name.clone(),
+                pool.intern(name),
                 BoolChannel {
                     keys: ch
                         .keys
@@ -205,7 +212,7 @@ pub(crate) fn convert_nif_clip(nif: &byroredux_nif::anim::AnimationClip) -> Anim
         cycle_type,
         frequency: nif.frequency,
         weight: nif.weight,
-        accum_root_name: nif.accum_root_name.clone(),
+        accum_root_name: nif.accum_root_name.as_deref().map(|s| pool.intern(s)),
         channels,
         float_channels,
         color_channels,

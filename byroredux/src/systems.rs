@@ -13,7 +13,7 @@ use byroredux_core::ecs::{
     TotalTime, Transform, World, WorldBound,
 };
 use byroredux_core::math::{Quat, Vec3};
-use byroredux_core::string::StringPool;
+use byroredux_core::string::FixedString;
 
 use crate::anim_convert::build_subtree_name_map;
 use crate::components::{
@@ -173,9 +173,6 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         }
     }
 
-    let Some(pool) = world.try_resource::<StringPool>() else {
-        return;
-    };
     let name_index = world.try_resource::<NameIndex>().unwrap();
 
     // Iterate all animation players and apply.
@@ -266,17 +263,17 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         let scoped_map = ps
             .root_entity
             .and_then(|root| subtree_ref.as_ref().and_then(|c| c.map.get(&root)));
-        let resolve_entity = |channel_name: &str| -> Option<EntityId> {
-            let sym = pool.get(channel_name)?;
+        let resolve_entity = |sym: &FixedString| -> Option<EntityId> {
             if let Some(scoped) = scoped_map {
-                scoped.get(&sym).copied()
+                scoped.get(sym).copied()
             } else {
-                name_index.map.get(&sym).copied()
+                name_index.map.get(sym).copied()
             }
         };
 
         // Apply transform channels.
-        let is_accum_root = |name: &str| -> bool { clip.accum_root_name.as_deref() == Some(name) };
+        let is_accum_root =
+            |name: &FixedString| -> bool { clip.accum_root_name.as_ref() == Some(name) };
         {
             let mut transform_query = world.query_mut::<Transform>().unwrap();
             let mut root_motion = Vec3::ZERO;
@@ -374,8 +371,8 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
 
     // Scratch buffers reused across entities to avoid per-tick heap
     // allocations (#251, #252). Cleared at the start of each iteration.
-    let mut channel_names_scratch: Vec<&str> = Vec::new();
-    let mut updates_scratch: Vec<(&str, EntityId, Vec3, Quat, f32)> = Vec::new();
+    let mut channel_names_scratch: Vec<FixedString> = Vec::new();
+    let mut updates_scratch: Vec<(FixedString, EntityId, Vec3, Quat, f32)> = Vec::new();
 
     for entity in stack_entities {
         // Phase 1: advance all layers (write lock).
@@ -414,7 +411,7 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         // writes. Dominant info is stored as (clip_handle, local_time) —
         // NO channel Vec clones (#265).
         let events;
-        let accum_root: Option<&str>;
+        let accum_root: Option<FixedString>;
         let dominant_info: Option<(u32, f32)>;
         let stack_root: Option<EntityId>;
         {
@@ -429,12 +426,11 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
             let stack_scoped_map = stack
                 .root_entity
                 .and_then(|root| subtree_ref2.as_ref().and_then(|c| c.map.get(&root)));
-            let stack_resolve = |channel_name: &str| -> Option<EntityId> {
-                let sym = pool.get(channel_name)?;
+            let stack_resolve = |sym: &FixedString| -> Option<EntityId> {
                 if let Some(scoped) = stack_scoped_map {
-                    scoped.get(&sym).copied()
+                    scoped.get(sym).copied()
                 } else {
-                    name_index.map.get(&sym).copied()
+                    name_index.map.get(sym).copied()
                 }
             };
 
@@ -443,7 +439,7 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
             for layer in &stack.layers {
                 if let Some(clip) = registry.get(layer.clip_handle) {
                     for name in clip.channels.keys() {
-                        channel_names_scratch.push(&**name);
+                        channel_names_scratch.push(*name);
                     }
                 }
             }
@@ -452,8 +448,8 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
 
             // Sample blended transforms (#252 scratch reuse).
             updates_scratch.clear();
-            for channel_name in &channel_names_scratch {
-                let Some(target_entity) = stack_resolve(channel_name) else {
+            for &channel_name in &channel_names_scratch {
+                let Some(target_entity) = stack_resolve(&channel_name) else {
                     continue;
                 };
                 if let Some((pos, rot, scale)) =
@@ -464,16 +460,16 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
             }
 
             // Accum root name from highest-weight active layer (#279 D6-04).
-            let mut best: Option<(&str, f32)> = None;
+            let mut best: Option<(FixedString, f32)> = None;
             for layer in &stack.layers {
                 let ew = layer.effective_weight();
                 if ew < 0.001 {
                     continue;
                 }
                 if let Some(clip) = registry.get(layer.clip_handle) {
-                    if let Some(ref name) = clip.accum_root_name {
+                    if let Some(name) = clip.accum_root_name {
                         if best.is_none_or(|(_, bw)| ew > bw) {
-                            best = Some((name.as_str(), ew));
+                            best = Some((name, ew));
                         }
                     }
                 }
@@ -540,12 +536,11 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         // no clones. #265.
         let stack_scoped_map =
             stack_root.and_then(|root| subtree_ref2.as_ref().and_then(|c| c.map.get(&root)));
-        let stack_resolve = |channel_name: &str| -> Option<EntityId> {
-            let sym = pool.get(channel_name)?;
+        let stack_resolve = |sym: &FixedString| -> Option<EntityId> {
             if let Some(scoped) = stack_scoped_map {
-                scoped.get(&sym).copied()
+                scoped.get(sym).copied()
             } else {
-                name_index.map.get(&sym).copied()
+                name_index.map.get(sym).copied()
             }
         };
 
