@@ -124,12 +124,20 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
     let mut truncated = false;
     let mut dropped_block_count: usize = 0;
 
-    if header.block_sizes.is_empty() && header.num_blocks > 0 {
+    // For Oblivion-era NIFs (no block_sizes table), track the consumed
+    // byte count for each successfully parsed block type. When a block
+    // fails to parse, the cache provides a skip hint for that type —
+    // same concept as oblivion_skip_sizes but self-calibrating from the
+    // file itself rather than a manually-maintained table. See #324.
+    let mut parsed_size_cache: std::collections::HashMap<String, Vec<u32>> =
+        std::collections::HashMap::new();
+    let no_block_sizes = header.block_sizes.is_empty() && header.num_blocks > 0;
+
+    if no_block_sizes {
         log::debug!(
-            "NIF v{} has no block sizes — all {} block parsers must be byte-perfect (no recovery on error)",
+            "NIF v{} has no block sizes — runtime size cache will track parse sizes for error recovery",
             header.version,
-            header.num_blocks
-        );
+            );
     }
 
     // Pre-Gamebryo NetImmerse files (NIF v < 5.0.0.1, e.g. Morrowind at
@@ -200,6 +208,14 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                         stream.set_position(start_pos + size as u64);
                     }
                 }
+                // Cache consumed size for Oblivion recovery (#324).
+                if no_block_sizes {
+                    let final_consumed = (stream.position() - start_pos) as u32;
+                    parsed_size_cache
+                        .entry(type_name.to_string())
+                        .or_default()
+                        .push(final_consumed);
+                }
                 blocks.push(block);
             }
             Err(e) => {
@@ -229,11 +245,43 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                     continue;
                 }
                 // Without block_size (Oblivion), there's no header-driven
-                // recovery. Before giving up, check the caller's registered
-                // `oblivion_skip_sizes` map — if the type has a known fixed
-                // size, rewind any partial read, skip forward, insert a
-                // placeholder, and continue. This is the escape hatch for
-                // rare/undiscovered Oblivion block types (#224).
+                // recovery. Try three fallbacks in order:
+                //
+                // 1. Runtime size cache: if we successfully parsed another
+                //    instance of this type earlier in the file, use its
+                //    median consumed size as a skip hint. Self-calibrating
+                //    and file-specific — handles variable-size types where
+                //    instances in one NIF tend to be similarly sized. #324.
+                //
+                // 2. oblivion_skip_sizes: caller-registered fixed-size hints
+                //    for rare types that only appear once per NIF. #224.
+                //
+                // 3. Truncation: discard remaining blocks.
+                if let Some(sizes) = parsed_size_cache.get(type_name) {
+                    if !sizes.is_empty() {
+                        let mut sorted = sizes.clone();
+                        sorted.sort_unstable();
+                        let median_size = sorted[sorted.len() / 2];
+                        stream.set_position(start_pos);
+                        if stream.skip(median_size as u64).is_ok() {
+                            log::info!(
+                                "Block {} '{}' (offset {}): skipped {} bytes via \
+                                 runtime size cache (median of {} prior parses; was: {})",
+                                i,
+                                type_name,
+                                start_pos,
+                                median_size,
+                                sizes.len(),
+                                e
+                            );
+                            blocks.push(Box::new(blocks::NiUnknown {
+                                type_name: Arc::from(type_name),
+                                data: Vec::new(),
+                            }));
+                            continue;
+                        }
+                    }
+                }
                 if let Some(&skip_size) = options.oblivion_skip_sizes.get(type_name) {
                     // Rewind whatever the failed parse consumed, then skip
                     // the full registered size. `set_position` is safe; the
@@ -639,6 +687,106 @@ mod tests {
         assert!(scene.truncated);
         assert_eq!(scene.dropped_block_count, 1);
         assert!(scene.blocks.is_empty());
+    }
+
+    /// Regression test for #324: Oblivion NIFs (no block_sizes) recover
+    /// from a corrupted block using the runtime size cache built from
+    /// earlier successful parses of the same type.
+    #[test]
+    fn oblivion_runtime_size_cache_recovers_corrupted_block() {
+        // Build an Oblivion-style NIF (v20.0.0.5, no block_sizes) with
+        // 3 NiNode blocks. Block 0 and 2 are valid; block 1 is truncated
+        // (data too short → parse error). The runtime cache should learn
+        // the NiNode size from block 0, use it to skip block 1, and
+        // successfully parse block 2.
+        let mut buf = Vec::new();
+
+        // ── Header (Oblivion v20.0.0.5) ────────────────────────────
+        buf.extend_from_slice(b"Gamebryo File Format, Version 20.0.0.5\n");
+        buf.extend_from_slice(&0x14000005u32.to_le_bytes()); // version
+        buf.push(1); // little-endian
+        buf.extend_from_slice(&11u32.to_le_bytes()); // user_version
+        buf.extend_from_slice(&3u32.to_le_bytes()); // num_blocks = 3
+        buf.extend_from_slice(&21u32.to_le_bytes()); // user_version_2
+
+        // Short strings
+        buf.push(1); buf.push(0);
+        buf.push(1); buf.push(0);
+        buf.push(1); buf.push(0);
+
+        // Block types: 1 type "NiNode"
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&6u32.to_le_bytes());
+        buf.extend_from_slice(b"NiNode");
+
+        // Block type indices: all 3 blocks → type 0
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        buf.extend_from_slice(&0u16.to_le_bytes());
+
+        // NO block_sizes (v20.0.0.5 < 20.2.0.5 threshold).
+        // NO string table (v20.0.0.5 < 20.1.0.1 threshold).
+        // num_groups (v >= 5.0.0.6)
+        buf.extend_from_slice(&0u32.to_le_bytes());
+
+        // ── Build a valid NiNode block (v20.0.0.5 layout) ─────────
+        fn build_ninode_block() -> Vec<u8> {
+            let mut b = Vec::new();
+            // NiObjectNET: name (u32 length-prefixed string, 0 = empty)
+            b.extend_from_slice(&0u32.to_le_bytes());
+            // extra_data_refs: count=0
+            b.extend_from_slice(&0u32.to_le_bytes());
+            // controller_ref: -1
+            b.extend_from_slice(&(-1i32).to_le_bytes());
+            // NiAVObject: flags (u16 for v20.0.0.5)
+            b.extend_from_slice(&14u16.to_le_bytes());
+            // translation
+            b.extend_from_slice(&0.0f32.to_le_bytes());
+            b.extend_from_slice(&0.0f32.to_le_bytes());
+            b.extend_from_slice(&0.0f32.to_le_bytes());
+            // rotation (3×3 identity)
+            for &v in &[1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+            // scale
+            b.extend_from_slice(&1.0f32.to_le_bytes());
+            // properties: count=0
+            b.extend_from_slice(&0u32.to_le_bytes());
+            // collision_ref: -1
+            b.extend_from_slice(&(-1i32).to_le_bytes());
+            // NiNode: children count=0
+            b.extend_from_slice(&0u32.to_le_bytes());
+            // effects count=0
+            b.extend_from_slice(&0u32.to_le_bytes());
+            b
+        }
+
+        let good_block = build_ninode_block();
+        let block_len = good_block.len();
+
+        // Block 0: valid
+        buf.extend_from_slice(&good_block);
+
+        // Block 1: corrupted — write a huge string length (0xDEADBEEF)
+        // as the first field (name), which will fail with an I/O error
+        // when read_string tries to read 3.7 billion bytes. The rest is
+        // valid block data padded to block_len so the cache skip lands
+        // at the correct offset for block 2.
+        buf.extend_from_slice(&0xDEADBEEFu32.to_le_bytes()); // poison name length
+        buf.extend_from_slice(&vec![0xAA; block_len - 4]);
+
+        // Block 2: valid
+        buf.extend_from_slice(&good_block);
+
+        let scene = parse_nif(&buf).unwrap();
+
+        // Block 0 parsed successfully, block 1 recovered via cache → NiUnknown,
+        // block 2 parsed successfully. No truncation.
+        assert!(!scene.truncated, "scene should NOT be truncated — cache recovery should work");
+        assert_eq!(scene.len(), 3, "all 3 blocks should be present");
+        assert_eq!(scene.blocks[0].block_type_name(), "NiNode");
+        assert_eq!(scene.blocks[1].block_type_name(), "NiUnknown");
+        assert_eq!(scene.blocks[2].block_type_name(), "NiNode");
     }
 
     // Real-game NIF parse coverage lives in `tests/parse_real_nifs.rs`, which
