@@ -69,16 +69,16 @@ built, where the code lives, and what guarantees it makes.
 
 | Metric                              | Value          |
 |-------------------------------------|----------------|
-| Rust source files                   | 149            |
-| Lines of Rust                       | ~39,600        |
-| Workspace crates                    | 14             |
-| Unit tests passing                  | 396            |
-| Integration tests (`#[ignore]`'d)   | 22             |
+| Rust source files                   | 185            |
+| Lines of Rust                       | ~64,000        |
+| Workspace members                   | 15 (13 engine crates + binary + debug CLI) |
+| Unit tests passing                  | 623            |
+| Integration tests (`#[ignore]`'d)   | 27             |
 | NIFs in per-game integration sweeps | 177,286        |
 | Per-game NIF parse success rate     | 100% (7 games) |
 | External dependency crates          | ~30            |
 
-Numbers above are accurate as of M28 Phase 1 + N26 audit (April 2026).
+Numbers above are accurate as of M36 + M37.5 (2026-04-16).
 For the live counts run `cargo test` and
 `cargo test --test parse_real_nifs -- --ignored`.
 

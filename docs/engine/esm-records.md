@@ -451,6 +451,26 @@ cargo test -p byroredux-plugin                                                # 
 cargo test -p byroredux-plugin --release -- --ignored                         # both integration tests
 ```
 
+## FO4 architecture records (session 10)
+
+To render FO4 architectural cells, the ESM parser was extended with
+four additional record types that compose prefab buildings:
+
+- **`SCOL`** — static collections. A list of `(STAT reference, transforms[])`
+  tuples. One SCOL expands into many placements at cell-load time.
+- **`MOVS`** — movable statics. STATs that respond to havok impulses;
+  record-level we just treat them as STATs plus a "movable" flag.
+- **`PKIN`** — pack-ins. Pre-assembled groups of references used as
+  reusable room modules (bathroom, kitchen, etc.). Resolve to their
+  component references at spawn time.
+- **`TXST`** — texture sets. Six-slot texture arrays (diffuse / normal
+  / glow / height / env / env mask / specular) referenced by
+  `BSLightingShaderProperty` and by LAND texture splatting.
+
+These land in `EsmIndex` alongside the M24 record categories. The cell
+loader expands `SCOL` / `PKIN` inline when walking placements; `TXST`
+is keyed by `FormId` and resolved when the material layer references it.
+
 ## Phase 2 — deferred
 
 The following record types stay deferred until the runtime systems that

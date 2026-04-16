@@ -17,7 +17,7 @@ Latest run of `cargo test -p byroredux-nif --release --test parse_real_nifs -- -
 | Fallout 3         | BSA v104           | 10,989          | **10,989**        | **100.00%** |
 | Fallout New Vegas | BSA v104           | 14,881          | **14,881**        | **100.00%** |
 | Skyrim SE         | BSA v105 (LZ4)     | 18,862          | **18,862**        | **100.00%** |
-| Fallout 4         | BA2 BTDX v8 GNRL   | 34,995          | **34,995**        | **100.00%** |
+| Fallout 4         | BA2 BTDX v1/v7/v8  | 34,995          | **34,995**        | **100.00%** |
 | Fallout 76        | BA2 BTDX v1 GNRL   | 58,469          | **58,469**        | **100.00%** |
 | Starfield         | BA2 BTDX v2 GNRL   | 31,058          | **31,058**        | **100.00%** |
 | **Total**         |                    | **177,286**     | **177,286**       | **100.00%** |
@@ -118,8 +118,17 @@ cargo run -- --bsa "Skyrim - Meshes0.bsa" \
   BSClothExtraData, BSConnectPoint:: family — all from N23.7
 - **Header parser fix** (M26+): `BSStreamHeader` reads `Max Filepath` for
   BSVER ≥ 103, which fixed FO4 parsing entirely
-- **Cell loading**: stubbed (`legacy/fo4.rs`)
-- **Status**: parser side complete, cell loader needs the FO4 ESM parser
+- **Cell loading**: partial — ESM parser now handles `SCOL`, `MOVS`, `PKIN`,
+  and `TXST` record types (the building blocks of FO4's prefab architecture).
+  `asset_provider` auto-detects BSA vs BA2 from file magic. Full architecture
+  placements render; full ESM (QUST / DIAL / PERK / INFO / etc.) is still
+  deferred.
+- **BGSM / BGEM references**: `BSLightingShaderProperty.net.name` flows
+  through `ImportedMesh` → `Material.material_path` and surfaces in
+  `mesh.info` over the debug CLI. The external BGSM / BGEM files themselves
+  are not yet parsed (next milestone in the FO4 track).
+- **Status**: parser + archive complete, cell loader renders architecture,
+  material file parsing pending.
 
 #### Fallout 76
 

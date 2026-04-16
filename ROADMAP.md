@@ -3,7 +3,7 @@
 A clean Rust + C++ rebuild of the Gamebryo/Creation engine lineage with Vulkan rendering.
 This document tracks completed milestones, current capabilities, planned work, and known gaps.
 
-Last updated: 2026-04-13 (session 9 — M31: RT performance at scale, roadmap reprioritization to renderer-first)
+Last updated: 2026-04-16 (session 10 — M31.5 streaming RIS, M36 BLAS compaction, M37.5 TAA, FO4 architecture, audit bundle #314–#340)
 
 ---
 
@@ -34,11 +34,28 @@ Exterior cells load 3×3 grids from WastelandNV worldspace (placed objects only 
 with packed vertex data, BSLightingShaderProperty/BSEffectShaderProperty shaders,
 DDS textures. Sweetroll renders at 1615 FPS.
 
-**RT Performance (M31):** Batched BLAS builds (single GPU submission per cell load),
-importance-sorted shadow budget (top-2 brightest lights get rays), distance-based
+**RT Performance (M31 → M36):** Batched BLAS builds (single GPU submission per cell load),
+ALLOW_COMPACTION + query-based compact copy (M36: 20–50% BLAS memory reduction),
+streaming weighted reservoir shadow sampling (M31.5: 8 independent reservoirs per fragment
+proportional to luminance; every light has non-zero shadow probability), distance-based
 shadow/GI ray fallback, TLAS frustum culling, BLAS LRU eviction with 256 MB budget,
 deferred geometry SSBO rebuild (no device_wait_idle). Interior: 48 FPS.
 Exterior: loads and renders placed objects; landscape/sky/LOD pending (M32–M35).
+
+**TAA (M37.5):** `taa.comp` compute pass — Halton(2,3) sub-pixel projection jitter in
+the vertex shader, motion-vector reprojection with Catmull-Rom 9-tap history resample,
+3×3 YCoCg neighborhood variance clamp (γ=1.25), mesh_id disocclusion detection,
+luma-weighted α=0.1 blend. Per-FIF RGBA16F history images, ping-pong descriptor sets,
+first-frame guard, resize hooks. Composite HDR binding rewired through TAA output.
+
+**FO4 architecture:** Auto-detect BSA vs BA2 archives from file magic. ESM parser extended
+with SCOL / MOVS / PKIN / TXST record types. `BSLightingShaderProperty.net.name` flows
+through `ImportedMesh` → `Material` as `material_path` for BGSM / BGEM diagnostics.
+
+**Debug CLI additions (session 10):** Console commands `tex.missing`, `tex.loaded`,
+`mesh.info <entity_id>`. Evaluator functions `tex_missing()` / `tex_loaded()` exposed
+over the TCP protocol. Output shows BGSM material reference when `texture_path` is
+absent (correct FO4 behavior — the real material lives in the BGSM file).
 
 ---
 
@@ -603,6 +620,90 @@ into four buckets:
 
 Workspace test count: 396 → 472. Zero new warnings.
 
+## Session 10 — Shadow pipeline overhaul + TAA + BLAS compaction + FO4 architecture
+
+Renderer-quality push that retired the largest remaining visual regressions
+and shipped three renderer milestones (M31.5 streaming RIS, M36 BLAS
+compaction, M37.5 TAA). Audit bundle `#314`–`#340` produced alongside.
+
+**Streaming RIS (M31.5)**
+- Replaced the deterministic top-K shadow pipeline with 8 independent
+  weighted reservoirs per fragment, each sampled from the full light
+  cluster proportional to luminance. Every light now has non-zero
+  shadow probability — fixes the "large occluder never shadows large
+  receiver" pathology the top-K pipeline hit on big overhead lamps.
+- Unbiased weight `W = resWSum / (K · w_sel)`, clamped at 64× to tame
+  fireflies. Directional sun angular radius tightened 0.05 → 0.0047 rad
+  (physically correct).
+
+**TAA (M37.5) — `taa.comp` + `TaaPipeline`**
+- Halton(2,3) sub-pixel projection jitter applied in the vertex shader;
+  motion vectors stay un-jittered for correct reprojection.
+- Motion-vector reprojection with Catmull-Rom 9-tap history resample.
+- 3×3 YCoCg neighborhood variance clamp (γ = 1.25).
+- mesh_id disocclusion detection reuses the GBuffer mesh_id attachment.
+- Luma-weighted α = 0.1 history blend.
+- Per-FIF RGBA16F history images, ping-pong descriptor sets,
+  first-frame guard, resize hooks. Camera UBO extended with
+  `vec4 jitter` (all 4 shader UBO layouts updated in lockstep).
+- Composite's HDR binding rewired to the TAA output via
+  `rebind_hdr_views()`.
+
+**BLAS compaction (M36)**
+- `ALLOW_COMPACTION` flag on BLAS build, async occupancy query, compact
+  copy allocated at exact size, original BLAS destroyed via
+  `deferred_destroy`. 20–50% BLAS memory reduction on typical cells.
+
+**FO4 architecture**
+- `asset_provider` auto-detects BSA vs BA2 from file magic at open time
+  so the cell loader no longer hard-codes the archive type.
+- ESM parser extended with `SCOL`, `MOVS`, `PKIN`, `TXST` record types —
+  the building blocks of FO4's prefab architecture.
+- `BSLightingShaderProperty.net.name` now flows through `ImportedMesh`
+  → `Material.material_path` so BGSM / BGEM material references
+  surface in diagnostics even though the external material file itself
+  isn't parsed yet.
+
+**Debug CLI**
+- Console commands `tex.missing`, `tex.loaded`, `mesh.info <entity_id>`.
+- Evaluator functions `tex_missing()` / `tex_loaded()` over TCP.
+- `mesh.info` shows BGSM material reference when `texture_path` is
+  absent (correct FO4 behavior).
+
+**NIF parser fixes (`#322`–`#325`, `#340`)**
+- `#322`: NiPSysData over-reads — respect BS202 zero-array rule.
+- `#323`: NiMaterialProperty variant mapping was wrong for cross-game
+  files. Check file `BSVER` directly, not the `NifVariant`.
+- `#324`: Oblivion runtime size cache prevents cascading parse failure
+  after a single bad block (Oblivion has no per-block size table).
+- `#325`: NiGeometryData `Has UV` should only be read until 4.0.0.2.
+- `#340`: Pre-intern animation channel names as `FixedString` at clip
+  load time so the per-frame sampler hot path never touches the
+  `StringPool` lock.
+
+**Reflection + metal quality (`#315`, `#320`)**
+- `#315`: Route metal reflection into the direct path to avoid
+  albedo double-modulation (post-#268 demodulation invariant).
+- `#320`: Exponential distance falloff on reflection rays plus
+  roughness-driven angular jitter. Prevents the "infinite gold mirror"
+  look on distant glossy surfaces.
+
+**Quality fixes (`#301`, `#302`, `#314`)**
+- `#301` + `#302`: Narrow the HOST_VISIBLE flush range to the dirty
+  region and reuse a single one-time-submit fence across transfer
+  submissions.
+- `#314`: Refresh stale `lock_tracker` doc comments on
+  `Query`/`Resource` constructors.
+
+**Audit bundle (session 10)**
+- Renderer audit 2026-04-14 (3 parallel specialists, 10 dimensions,
+  5 findings — 1 MEDIUM, 4 LOW). NIF, legacy-compat, ECS audits dated
+  2026-04-14 / 2026-04-15. 31 issue reports (#314–#340 plus
+  consolidation dirs for #266–#292, #301–#302, #320–#321) staged for
+  GitHub sync.
+
+Workspace test count: 472 → 623. Zero new warnings.
+
 ## Previously Completed (M22–M30)
 
 | # | Milestone | Status |
@@ -613,6 +714,9 @@ Workspace test count: 396 → 472. Zero new warnings.
 | M28 | Physics Foundation | **Phase 1 DONE** — Rapier3D, dynamic capsule player body |
 | M30 | Papyrus Parser | **Phase 1 DONE** — logos lexer + Pratt expression parser + full AST. 45 tests |
 | M31 | RT Performance at Scale | **DONE** — batched BLAS builds, TLAS culling, importance-sorted shadow budget, distance-based ray fallback, GI hit simplification, BLAS LRU eviction, deferred SSBO rebuild |
+| M31.5 | Streaming RIS Direct Lighting | **DONE** — weighted reservoir shadow sampling (8 independent reservoirs / fragment, luminance-proportional), unbiased W = resWSum / (K·w_sel) clamped at 64× to tame fireflies. Replaces deterministic top-K. |
+| M36 | BLAS Compaction | **DONE** — ALLOW_COMPACTION flag, async occupancy query, compacted copy with original destroyed, 20–50% BLAS memory reduction |
+| M37.5 | TAA / Antialiasing | **DONE** — Halton(2,3) jitter, motion-vector reprojection, YCoCg variance clamp (γ=1.25), mesh-id disocclusion, luma-weighted blend. Kills stair/column/tapestry edge shimmer. |
 
 ---
 
@@ -634,13 +738,12 @@ expanding gameplay systems. Each milestone produces a visible improvement.
 
 | # | Milestone | Scope | Depends on |
 |---|-----------|-------|------------|
-| M36 | BLAS Compaction | `ALLOW_COMPACTION` + query + compact copy. 20–50% BLAS memory reduction. | M31 |
 | M37 | SVGF Spatial Filter | A-trous wavelet filter using existing moments data. 3 iterations, edge-stopping on normal/depth/variance. Major GI noise reduction (1-SPP → ~8-SPP visual quality). | — |
-| M37.3 | ReSTIR-DI | Full spatiotemporal reservoir reuse for direct lighting. New GBuffer reservoir attachment (light index, wSum, M, selected target pdf). Temporal pass: motion-vector reprojection + reservoir combine. Spatial pass: k-neighborhood resample with normal/depth rejection. Drops shadow rays to 1/pixel while sampling from hundreds of lights. Streaming-RIS landed as M31.5 interim. | M31, M37 |
-| M37.5 | Antialiasing | TAA with motion-vector reprojection (reuse GBuffer motion vectors + SVGF history) as the baseline; FXAA fallback for low-motion post-pass cleanup. Subpixel jitter on the projection matrix, Catmull-Rom history resample, neighborhood clamp to kill ghosting. Optional DLSS2 integration (NVIDIA proprietary, 4070 Ti target) as a second pass after TAA is solid. Fixes the visible stair/column/tapestry edge shimmer. | — |
+| M37.3 | ReSTIR-DI | Full spatiotemporal reservoir reuse for direct lighting. New GBuffer reservoir attachment (light index, wSum, M, selected target pdf). Temporal pass: motion-vector reprojection + reservoir combine. Spatial pass: k-neighborhood resample with normal/depth rejection. Drops shadow rays to 1/pixel while sampling from hundreds of lights. Streaming-RIS already shipped as M31.5. | M31.5, M37 |
 | M29 | GPU Skinning | Compute shader bone palette evaluation. SkinnedMesh component → bone SSBO → unified vertex shader. Characters and creatures animate. | M25 |
 | M38 | Transparency & Water | Proper OIT or depth-peeled transparency. Water plane mesh with reflection/refraction (screen-space or planar). NIF alpha sort correctness. | — |
 | M39 | Texture Streaming | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Distance-based texture detail. Memory budget with LRU eviction. | — |
+| M37.6 | DLSS2 integration (optional) | NVIDIA DLSS2 as an upscale pass after TAA. 4070 Ti target, proprietary. Nice-to-have on top of the TAA baseline. | M37.5 |
 
 ### Tier 3 — Engine Infrastructure
 
@@ -670,21 +773,24 @@ expanding gameplay systems. Each milestone produces a visible improvement.
 ## Known Issues
 
 ### Open
-- [ ] No landscape mesh (LAND records) — exterior cells have no ground
-- [ ] No sky, sun, clouds, or atmosphere — exterior uses hardcoded clear color
-- [ ] No terrain or object LOD — no distant rendering
-- [ ] Exterior lighting uses placed point lights only, no proper sun direction
+- [ ] No sky, sun, clouds, or atmosphere — exterior uses hardcoded clear color (M33)
+- [ ] No terrain or object LOD — no distant rendering (M35)
 - [ ] BSA v103 (Oblivion) decompression not working
-- [ ] Legacy ESM/ESP parsers are stubs for Morrowind, Oblivion, Skyrim, FO4
-- [ ] NIF material properties beyond diffuse not fully wired to renderer
+- [ ] Legacy ESM/ESP parsers are stubs for Morrowind, Oblivion, Skyrim (FO4 has SCOL/MOVS/PKIN/TXST + architecture)
+- [ ] NIF material properties beyond diffuse/normal/alpha not fully wired (M38 wetness/subsurface)
 - [ ] No skinned mesh rendering (GPU skinning deferred to M29)
-- [ ] Scheduler is single-threaded
-- [ ] No antialiasing — geometry edges (stair nosings, column silhouettes, tapestry fringe) shimmer. TAA planned in M37.5.
+- [ ] Scheduler is single-threaded (M27)
 - [ ] parry3d panics on nested compound collision shapes (catch_unwind guard in place)
 
 ### Resolved
-- [x] RT shadow budget was FIFO, not importance-sorted → top-K by contribution (M31)
-- [x] Top-K shadow rays dropped lights outside the top cliff → streaming RIS (weighted reservoir sampling) over the full cluster (M31.5 interim; full ReSTIR-DI tracked as M37.3)
+- [x] No antialiasing — stair/column/tapestry edge shimmer → TAA compute pass with Halton jitter, Catmull-Rom history, YCoCg neighborhood clamp (M37.5)
+- [x] Top-K shadow rays dropped lights outside the top cliff → streaming weighted reservoir sampling (M31.5)
+- [x] BLAS memory pressure → ALLOW_COMPACTION + query + compact copy, 20–50% reduction (M36)
+- [x] FO4 architecture invisible — no SCOL/MOVS/PKIN/TXST records → parser extended (session 10)
+- [x] BA2 vs BSA routing fragile → auto-detect from file magic in asset_provider (session 10)
+- [x] RT shadow budget was FIFO, not importance-sorted → top-K by contribution (M31), then streaming RIS (M31.5)
+- [x] Exterior lighting had no proper sun direction → default exterior directional sun (M34)
+- [x] No landscape mesh — exterior cells had no ground → LAND heightmap + LTEX/TXST splatting (M32)
 - [x] No distance fallback for shadow/GI rays → smooth fade at 600–800/1200–1500 units (M31)
 - [x] BLAS builds blocked per-mesh with fence stall → batched single-submission (M31)
 - [x] No BLAS eviction → LRU eviction with 256 MB memory budget (M31)
@@ -736,9 +842,9 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Metric | Value |
 |--------|-------|
-| Passing tests | 612 |
-| Workspace crates | 12 |
-| Completed milestones | 28+ (M1–M22, M24 Phase 1, M26, M28 Phase 1, M30 Phase 1, M31, M32 Phase 1+2, M34 Phase 1) + N23 + N26 + #178 |
+| Passing tests | 623 |
+| Workspace members | 15 (13 engine crates + `byroredux` binary + `byro-dbg` CLI) |
+| Completed milestones | 30+ (M1–M22, M24 Phase 1, M26, M28 Phase 1, M30 Phase 1, M31, M31.5, M32 Phase 1+2, M34 Phase 1, M36, M37.5) + N23 + N26 + #178 |
 | NIF block types | ~215 distinct type names, ~185 parsed + 30 Havok skip |
 | NifVariant games | 8 (Morrowind → Starfield) |
 | Per-game NIF parse rate | 100% across 177,286 NIFs (7 games) |
@@ -756,18 +862,21 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Crate | Milestones | Tests |
 |-------|------------|-------|
-| `byroredux-core` | M3 (ECS), M5 (Form IDs), M21 (Animation), #178A (SkinnedMesh), #137 (lock guards) | 193 |
-| `byroredux-renderer` | M1, M2, M4, M7, M8, M13, M14, M22, M31, #178B (bone palette), #136 (16× AF) | 33 |
+| `byroredux-core` | M3 (ECS), M5 (Form IDs), M21 (Animation), #178A (SkinnedMesh), #137 (lock guards), #340 (interned channel names) | 194 |
+| `byroredux-renderer` | M1, M2, M4, M7, M8, M13, M14, M22, M31, M31.5 (streaming RIS), M36 (BLAS compaction), M37.5 (TAA), #178B (bone palette), #136 (16× AF) | 33 |
 | `byroredux-platform` | M1 (windowing) | — |
-| `byroredux-plugin` | M5, M6, M19, M24 Phase 1 | 71 |
-| `byroredux-nif` | M9, M10, M17, M18, M21, N23.1–N23.10, N26 audit, #79 KFM, #263/#264 | 211 |
-| `byroredux-bsa` | M11, M18, M26 (BA2), session 7 (v3 LZ4) | 11 |
+| `byroredux-plugin` | M5, M6, M19, M24 Phase 1, FO4 SCOL/MOVS/PKIN/TXST | 75 |
+| `byroredux-nif` | M9, M10, M17, M18, M21, N23.1–N23.10, N26 audit, #79 KFM, #322/#323/#324/#325, BGSM material_path | 213 |
+| `byroredux-bsa` | M11, M18, M26 (BA2), session 7 (v3 LZ4), session 10 (archive auto-detect) | 11 |
 | `byroredux-physics` | M28 Phase 1 (Rapier3D bridge) | 17 |
 | `byroredux-scripting` | M12 | 8 |
 | `byroredux-papyrus` | M30 Phase 1 (Papyrus parser) | 45 |
 | `byroredux-ui` | M20 (Ruffle/SWF) | — |
+| `byroredux-debug-protocol` | Wire protocol + component registry | 9 |
+| `byroredux-debug-server` | TCP server + Papyrus evaluator (tex_missing, tex_loaded, mesh.info) | 4 |
 | `byroredux-cxx-bridge` | Cross-cutting | — |
-| `byroredux` (binary) | M4, M11, M14–M17, M19, M28, M32, M34, cell cache, terrain | — |
+| `byroredux` (binary) | M4, M11, M14–M17, M19, M28, M32, M34, cell cache, terrain, FO4 architecture | — |
+| `tools/byro-dbg` | Standalone debug CLI (TCP client, REPL) | — |
 
 ---
 

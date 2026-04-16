@@ -12,18 +12,39 @@ Source: `crates/renderer/src/vulkan/`
 
 - **Full Vulkan init chain** with validation layers in debug builds
 - **RT acceleration structures**: BLAS per mesh + TLAS rebuilt per frame in
-  `DEVICE_LOCAL` memory with HOST→AS_BUILD memory barriers
+  `DEVICE_LOCAL` memory with HOST→AS_BUILD memory barriers, LRU eviction
+  (256 MB budget), `ALLOW_COMPACTION` + async occupancy query + compacted
+  copy (M36: 20–50% BLAS memory reduction), batched build submission
 - **Multi-light SSBO**: point / spot / directional lights consumed by the
   fragment shader, with `VK_KHR_ray_query` shadow rays per light
+- **Streaming RIS direct lighting** (M31.5): 8 independent weighted reservoirs
+  per fragment, each sampled from the full cluster proportional to luminance;
+  unbiased W = resWSum / (K · w_sel) clamped at 64×
+- **G-buffer** (6 attachments): normal, motion vector, mesh ID, raw indirect,
+  albedo, plus the HDR color target
+- **SVGF temporal denoiser** for indirect lighting — motion-vector reprojection,
+  mesh-id disocclusion, albedo-demodulated accumulation
+- **Composite pass**: direct + denoised indirect reassembly (multiplies
+  indirect by local albedo per #268's invariant) with ACES tone mapping
+- **TAA** (M37.5): `taa.comp` with Halton(2,3) projection jitter,
+  motion-vector reprojection, Catmull-Rom 9-tap history resample,
+  3×3 YCoCg neighborhood variance clamp (γ = 1.25), mesh-id disocclusion,
+  luma-weighted α = 0.1 blend
+- **Clustered lighting** (`cluster_cull.comp`) — frustum assignment for
+  direct shading candidates
+- **SSAO** (`ssao.comp`) compute pass with noise texture + kernel samples
 - **Pipeline cache** persisted to disk (10–50 ms cold init → <1 ms warm)
-- **Shared `VkSampler`** across all textures (one descriptor type, many bindings)
+- **Shared `VkSampler`** across all textures, 16× anisotropic filtering
+  when the device exposes it
 - **Per-image semaphore synchronization** with 2 frames in flight
 - **Atomic swapchain handoff** during resize (no dropped frames, no torn submits)
-- **Deferred texture destruction** so dynamic UI texture updates don't stall
-  the graphics queue
+- **Deferred texture destruction** (two-frame countdown) so dynamic UI texture
+  updates don't stall the graphics queue
 - **Depth format autodetect** with fallback chain D32→D32S8→D24S8→D16
 - **Backface culling** with confirmed NIF/D3D clockwise winding convention
 - **DDS texture loading**: BC1 / BC3 / BC5 + DX10 with mipmaps
+- **Global geometry SSBO** (#294): per-draw vertex/index buffer rebinds
+  eliminated — one SSBO indexed by `mesh_handle` for all meshes
 
 ## Module map
 
@@ -41,15 +62,28 @@ crates/renderer/src/vulkan/
 ├── buffer.rs           Vertex / index / uniform buffer creation, staging
 ├── pipeline.rs         Graphics pipeline + pipeline cache persistence
 ├── descriptors.rs      Descriptor set layouts (UBO, SSBO, samplers, AS)
+├── compute.rs          Compute pipeline utilities (shared by SSAO/SVGF/TAA/cluster_cull)
 ├── scene_buffer.rs     SSBO for multi-light data; uploaded per frame
-├── acceleration.rs     BLAS + TLAS construction, scratch buffer reuse
+├── acceleration.rs     BLAS + TLAS construction, scratch buffer reuse,
+│                       LRU eviction, compaction (ALLOW_COMPACTION + query + copy)
+├── gbuffer.rs          G-buffer attachments: normal, motion vector, mesh ID,
+│                       raw indirect, albedo
+├── svgf.rs             SvgfPipeline — temporal accumulation denoiser for
+│                       indirect lighting (motion reprojection + mesh-id
+│                       disocclusion + albedo-demodulated history)
+├── taa.rs              TaaPipeline — Halton jitter, Catmull-Rom resample,
+│                       YCoCg variance clamp, per-FIF ping-pong history
+├── composite.rs        CompositePipeline — direct + denoised indirect
+│                       reassembly, ACES tone mapping
+├── ssao.rs             SSAO compute pipeline (noise texture, kernel)
 ├── texture.rs          DDS upload (RGBA + BC*), staging, layout transitions
 ├── dds.rs              DDS header parser (BC1/BC3/BC5 + DX10 extended, mips)
 └── context/
     ├── mod.rs          VulkanContext struct definition + new() / Drop
     ├── draw.rs         draw_frame() — per-frame command recording + submission
     ├── resize.rs       recreate_swapchain() — atomic handoff on window resize
-    ├── resources.rs    BLAS construction, register_ui_quad, log_memory_usage
+    ├── resources.rs    build_blas_for_mesh, register_ui_quad, log_memory_usage,
+    │                   swapchain_extent, rebind_hdr_views
     └── helpers.rs      find_depth_format, create_render_pass, create_framebuffers
 ```
 
@@ -92,15 +126,27 @@ everything down in reverse order under `device_wait_idle()`.
 1. Wait for the in-flight fence for this frame slot
 2. Acquire the next swapchain image (handle `ERROR_OUT_OF_DATE_KHR` → swap)
 3. Reset the fence and the command buffer
-4. Walk the ECS to collect render data: visible mesh handles, transforms,
-   materials, light sources, decals
-5. Update the scene SSBO with the per-frame light array (point/spot/dir)
-6. Rebuild the TLAS over all visible BLASes (or skip if RT disabled)
-7. Begin the render pass, bind pipeline + descriptor sets
-8. For each mesh: push the model matrix as a push constant, bind the mesh
-   vertex/index buffer, bind its texture descriptor set, draw indexed
-9. End render pass, end command buffer
-10. Submit to the graphics queue with semaphore sync, present to the swapchain
+4. Walk the ECS via `build_render_data` to collect visible mesh handles,
+   transforms, materials, light sources, decals, skinned-mesh bone offsets
+5. Update the camera UBO (view + proj + **Halton jitter** for TAA)
+6. Update the scene SSBO with the per-frame light array (point/spot/dir)
+7. Dispatch `cluster_cull.comp` to assign lights to froxel clusters
+8. Rebuild/refit the TLAS over visible BLASes (UPDATE mode when BLAS
+   layout is unchanged; full rebuild otherwise). HOST→AS_BUILD memory
+   barrier before the ray-query consumers.
+9. Begin the G-buffer render pass. Instanced draw batching merges
+   identical `mesh_handle` draws; `last_mesh_handle` cache avoids
+   redundant descriptor binds. Global geometry SSBO means no per-draw
+   VB/IB rebind — only push constants (`model_index`, `bone_offset`,
+   `material_index`) change per draw.
+10. Dispatch `ssao.comp` for screen-space ambient occlusion.
+11. Dispatch `svgf_temporal.comp` for indirect-light denoise.
+12. Dispatch the composite pass to assemble `direct + indirect * albedo`
+    with ACES tone mapping.
+13. Dispatch `taa.comp` for temporal AA; ping-pong history images.
+14. Blit/copy into the swapchain color attachment.
+15. End command buffer, submit to the graphics queue with semaphore
+    sync, present to the swapchain.
 
 Errors during step recording propagate as Rust `Result`s and abort the
 submit cleanly (see #85 in the changelog) so the swapchain stays consistent.
@@ -123,17 +169,99 @@ get reset; the next `draw_frame` runs through the standard acquire path.
 Located in [`vulkan/acceleration.rs`](../../crates/renderer/src/vulkan/acceleration.rs).
 
 - **BLAS per mesh**: built once when the mesh is uploaded, owned by the
-  mesh registry. Built from the vertex + index buffer in `DEVICE_LOCAL`
-  memory. The build is queued on a transfer command buffer and waited on
-  with a HOST→AS_BUILD memory barrier before the next frame's TLAS build.
+  `AccelerationManager` keyed by `MeshHandle`. Builds use
+  `PREFER_FAST_TRACE | ALLOW_COMPACTION`. Builds are **batched** into a
+  single submission per cell load (one fence, one scratch buffer shared
+  across the batch) rather than fencing per mesh.
+- **BLAS compaction (M36)**: after each batched build, an async occupancy
+  query reports the compacted size; a compact copy is allocated at that
+  exact size and the original BLAS is queued for `deferred_destroy`. 20–50%
+  memory reduction on typical cells.
+- **BLAS LRU eviction**: 256 MB budget. When a new build would exceed
+  budget, the LRU entries are evicted and their instances drop out of the
+  next TLAS rebuild.
 - **TLAS per frame**: rebuilt every frame from the visible mesh handles
-  and their world transforms. Scratch memory is reused between frames.
-- **Ray query in the fragment shader**: each light tests visibility against
-  the TLAS via `rayQueryEXT`, returning a hard-shadow boolean. Soft shadows
-  are deferred (M22+ polish on the deferred roadmap).
+  and their world transforms, with frustum culling against the camera.
+  Scratch memory is amortized across frames. Instance data is staged
+  through a **device-local instance buffer** (#289) with a two-stage
+  barrier chain (HOST_WRITE→TRANSFER_READ→AS_READ). `MAX_INSTANCES = 8192`.
+- **Ray query in the fragment shader**: four query sites — shadow,
+  reflection, 1-bounce GI, window-portal — all against the same TLAS
+  (set 1, binding 2). Shadow query is driven by the streaming-RIS
+  reservoir pipeline (M31.5). Reflection rays get exponential distance
+  falloff + roughness-driven angular jitter (#320). 1-bounce GI samples
+  cosine-weighted hemisphere directions; far hits fall back to a
+  simplified cost model beyond the GI ray horizon.
 
 The `VK_KHR_ray_query` extension is queried at device-pick time. When it's
 not present, the fragment shader falls back to non-shadowed multi-light.
+
+## G-buffer
+
+Located in [`vulkan/gbuffer.rs`](../../crates/renderer/src/vulkan/gbuffer.rs).
+
+Six render targets written by the main geometry pass (`triangle.frag`):
+
+| Attachment | Format | Purpose |
+|------------|--------|---------|
+| HDR color | R16G16B16A16_SFLOAT | Direct lighting + emissive + sky |
+| Normal | R16G16B16A16_SFLOAT | View-space normals for SVGF + TAA |
+| Motion vector | R16G16_SFLOAT | Screen-space delta for reprojection |
+| Mesh ID | R32_UINT | Disocclusion detection (SVGF + TAA) |
+| Raw indirect | R16G16B16A16_SFLOAT | Albedo-demodulated indirect (#268) |
+| Albedo | R8G8B8A8_UNORM | Re-modulation target in composite |
+
+The albedo demodulation invariant (#268): the main shader writes indirect
+lighting with the local albedo factored out so SVGF accumulates energy
+across neighbors with different albedos; composite re-multiplies by the
+local albedo. The metal/glossy reflection path routes through the direct
+target (#315) specifically because its contribution already carries the
+hit surface's albedo.
+
+## SVGF temporal denoiser
+
+Located in [`vulkan/svgf.rs`](../../crates/renderer/src/vulkan/svgf.rs)
+with `shaders/svgf_temporal.comp`.
+
+Temporal accumulation pass for the noisy 1-SPP indirect-light target.
+Reprojects the previous frame's history via the motion vector attachment,
+rejects samples where the reprojected mesh ID disagrees with the current
+sample's mesh ID (disocclusion), and blends into ping-pong history images
+with an α schedule that tightens after a few stable frames. Moments data
+(first + second raw moments) is written for the future M37 spatial
+(A-trous) pass.
+
+## TAA (M37.5)
+
+Located in [`vulkan/taa.rs`](../../crates/renderer/src/vulkan/taa.rs)
+with `shaders/taa.comp`.
+
+Structure mirrors `SvgfPipeline`: per-frame-in-flight RGBA16F history
+images, ping-pong descriptor sets, first-frame guard, resize hooks.
+
+Per-frame flow:
+
+1. Vertex shader applies a Halton(2,3) sub-pixel projection jitter
+   driven by `CameraUbo.jitter` (the motion-vector attachment is
+   computed from **un-jittered** positions so reprojection stays
+   correct).
+2. `taa.comp` samples current HDR color, reprojects history through
+   the motion vector via a Catmull-Rom 9-tap resample, clamps it
+   against the current-frame 3×3 YCoCg neighborhood min/max
+   (γ = 1.25), rejects it outright when mesh IDs disagree, and blends
+   with α = 0.1 weighted by luma to damp bright-pixel ghosting.
+3. `CompositePipeline::rebind_hdr_views()` swaps composite's input
+   to the active TAA output each frame.
+
+## Composite pass
+
+Located in [`vulkan/composite.rs`](../../crates/renderer/src/vulkan/composite.rs)
+with `shaders/composite.vert` + `shaders/composite.frag`.
+
+Fullscreen quad. Reads the direct HDR, the SVGF-denoised indirect, and
+the albedo attachment; computes `direct + indirect * albedo` (re-applying
+the #268 demodulation invariant), runs ACES tone mapping, and writes to
+the swapchain color attachment (or to the TAA input when TAA is enabled).
 
 ## Multi-light SSBO
 

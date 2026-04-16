@@ -154,6 +154,19 @@ count(LightSource)          → count entities with component
 stats                       → engine performance stats
 systems                     → list registered ECS systems
 components                  → list inspectable component types
+tex_missing()               → textures referenced but never loaded
+tex_loaded()                → currently-resident textures + byte size
+```
+
+Session-10 console commands (server-side, not evaluator):
+
+```
+tex.missing                 → same as tex_missing() but human formatted
+tex.loaded                  → same as tex_loaded(), sorted by size
+mesh.info <entity_id>       → material + texture paths + BGSM reference
+                             (shows material_path when texture_path is absent —
+                              correct FO4 behaviour since the real material
+                              lives in the external BGSM/BGEM file)
 ```
 
 ### Mutation

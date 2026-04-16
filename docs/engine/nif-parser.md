@@ -12,12 +12,13 @@ Source: [`crates/nif/src/`](../../crates/nif/src/)
 
 | | |
 |---|---|
-| Block types parsed       | ~180 (+30 Havok types skipped via `block_size`) |
-| Distinct type names      | 210+ |
+| Block types parsed       | ~185 (+30 Havok types skipped via `block_size`) |
+| Distinct type names      | 215+ |
 | Game variants supported  | 8 (Morrowind → Starfield) |
-| Tests (unit)             | 128 (includes 10 in the `dispatch_tests` module) |
+| Tests (unit)             | 213 (includes `dispatch_tests` + per-game regressions for #322–#325) |
 | Integration sweeps       | 7 games, 100% each |
 | Cumulative NIFs parsed   | 177,286 (full mesh archive sweeps) |
+| BGSM / BGEM references   | Surfaced as `ImportedMesh.material_path` when the NiNet name is a material file (BSVER ≥ 155) |
 
 ## Module map
 

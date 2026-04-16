@@ -3,34 +3,37 @@
 ByroRedux uses two layers of tests:
 
 1. **Unit tests** (`#[cfg(test)] mod tests` inside source files) — fast,
-   no game data required, run on every `cargo test`. **396 passing**.
+   no game data required, run on every `cargo test`. **623 passing**.
 2. **Integration tests** (`#[ignore]`'d by default) — exercise real game
    archives, parse rates, and end-to-end byte-level round-trips. Need
    the relevant game installed and resolve paths via env vars or Steam
-   defaults. Run with `cargo test ... -- --ignored`. **22 in total.**
+   defaults. Run with `cargo test ... -- --ignored`. **27 in total.**
 
 The split keeps CI fast and game-data-free while letting developers run
 the heavy sweeps locally on demand.
 
 ## Per-crate test counts
 
-Numbers are accurate at the time of writing (M28 Phase 1 + N26 audit,
-April 2026). For a live count, run
+Numbers are accurate at the time of writing (M36 + M37.5 + session 10,
+2026-04-16). For a live count, run
 `cargo test 2>&1 | grep "test result"`.
 
 | Crate | Unit tests | Ignored |
 |---|---|---|
-| `byroredux-core` | 153 | — |
-| `byroredux-nif` | 128 | — |
-| `byroredux-plugin` | 66 | 2 |
-| `byroredux-physics` | 14 | — |
-| `byroredux-renderer` | 19 (unit + doc-tests) | — |
+| `byroredux-core` | 194 | — |
+| `byroredux-nif` | 213 | — |
+| `byroredux-plugin` | 75 | 5 |
+| `byroredux-physics` | 17 | — |
+| `byroredux-renderer` | 33 | — |
+| `byroredux-papyrus` | 45 | — |
 | `byroredux-scripting` | 8 | — |
-| `byroredux-bsa` | 8 | 7 |
+| `byroredux-bsa` | 11 | 7 |
+| `byroredux-debug-protocol` | 9 | — |
+| `byroredux-debug-server` | 4 | — |
 | `byroredux-platform` | — | — |
-| `byroredux` (binary) | — | 2 |
-| Integration: `parse_real_nifs.rs` | — | 8 |
-| **Total** | **396** | **19** |
+| `byroredux` (binary) | 1 | 2 |
+| Integration: `parse_real_nifs.rs` | — | 8 / `synthetic_fixtures.rs` — |
+| **Total** | **623** | **27** |
 
 ## Unit test coverage by area
 

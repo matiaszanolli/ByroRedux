@@ -14,7 +14,7 @@ Not a port — a ground-up rebuild that understands the legacy architecture and 
 
 ## Current State
 
-**28+ milestones complete**, including RT performance at scale (M31), landscape terrain (M32), exterior sun lighting (M34), and Papyrus language parser (M30). Loads and renders both **interior and exterior cells** directly from unmodified Bethesda game data — interior cells with placed objects, lighting, and RT shadows; exterior cells with 3x3 grids and heightmap terrain meshes with texture splatting. NIF parser hits **100% on every supported game** across 177,286 NIFs. RT renderer features importance-sorted shadow ray budget (top-2 per fragment), instanced draw batching, BLAS LRU eviction, SVGF temporal denoiser, and distance-based ray fallback. Rapier3D physics, ESM record parsing (items, NPCs, factions), skeletal skinning pipeline, KFM animation state machines.
+**30+ milestones complete**, including RT performance at scale (M31), streaming RIS direct lighting (M31.5), landscape terrain (M32), exterior sun lighting (M34), BLAS compaction (M36), temporal antialiasing (M37.5), and Papyrus language parser (M30). Loads and renders both **interior and exterior cells** directly from unmodified Bethesda game data — interior cells with placed objects, lighting, and RT shadows; exterior cells with 3x3 grids and heightmap terrain meshes with texture splatting. NIF parser hits **100% on every supported game** across 177,286 NIFs. RT renderer features streaming weighted reservoir shadow sampling (8 reservoirs / fragment), instanced draw batching, BLAS LRU eviction + compaction, SVGF temporal denoiser, TAA with Halton jitter + YCoCg neighborhood clamp, and distance-based ray fallback. Rapier3D physics, ESM record parsing (items, NPCs, factions, FO4 SCOL/MOVS/PKIN/TXST), skeletal skinning pipeline, KFM animation state machines, debug CLI with BGSM material diagnostics.
 
 ```bash
 # Oblivion interior cell with XCLL lighting + per-mesh NiLight torches
@@ -55,7 +55,7 @@ Every supported Bethesda game parses its full mesh archive without errors. **Obl
 | Fallout 3         | BSA v104       | **100%** (10,989)  | ✓ Interior      | Megaton interior, full Wasteland                      |
 | Fallout New Vegas | BSA v104       | **100%** (14,881)  | ✓ Int + 3×3 ext | Prospector Saloon, exterior 3×3 grid                  |
 | Skyrim SE         | BSA v105 (LZ4) | **100%** (18,862)  | —               | Full mesh archive coverage                            |
-| Fallout 4         | BA2 v1/v7/v8   | **100%** (34,995)  | —               | BA2 GNRL + DX10 textures, 53 archives verified        |
+| Fallout 4         | BA2 v1/v7/v8   | **100%** (34,995)  | ✓ Architecture  | BA2 GNRL + DX10 textures, SCOL/MOVS/PKIN/TXST records |
 | Fallout 76        | BA2 v1         | **100%** (58,469)  | —               | FO76 stopcond shader paths                            |
 | Starfield         | BA2 v2/v3      | **100%** (31,058)  | —               | GNRL + DX10 textures, LZ4 compression, ~128K textures |
 
@@ -67,7 +67,8 @@ See [Game Compatibility](docs/engine/game-compatibility.md) for the per-game arc
 | Feature | Status |
 |---------|--------|
 | ECS with pluggable storage (SparseSet + Packed), hierarchy (Parent/Children) | Working |
-| Vulkan RT renderer with multi-light SSBO, ray query shadows, shadow ray budget (top-2), SVGF denoiser | Working |
+| Vulkan RT renderer with multi-light SSBO, ray query shadows, streaming RIS (8 reservoirs/fragment), SVGF denoiser, TAA | Working |
+| BLAS compaction + LRU eviction, batched builds, TLAS frustum culling, deferred SSBO rebuild | Working |
 | 16× anisotropic filtering on the shared sampler when the device exposes it | Working |
 | Per-mesh `NiLight` sources (ambient / directional / point / spot) → GpuLight | Working |
 | Skeletal skinning end-to-end: `SkinnedMesh` ECS component, bone-palette SSBO (4096 slots), shader skinning | Working |
@@ -139,8 +140,9 @@ World wraps each storage in `RwLock` so query methods take `&self`, enabling con
 Vulkan 1.3 via `ash` with RT ray query extensions:
 
 - Full initialization chain with validation layers in debug builds
-- RT acceleration structures (BLAS per mesh + TLAS per frame) with `DEVICE_LOCAL` memory, LRU eviction, batched builds
-- Multi-light SSBO with point/spot/directional lights and importance-sorted shadow ray budget (top-2 per fragment)
+- RT acceleration structures (BLAS per mesh + TLAS per frame) with `DEVICE_LOCAL` memory, LRU eviction, ALLOW_COMPACTION + query-based compact copy, batched builds
+- Multi-light SSBO with point/spot/directional lights and streaming weighted reservoir sampling (8 reservoirs/fragment, unbiased W = resWSum / (K·w_sel) clamped at 64×)
+- TAA compute pass with Halton(2,3) jitter, Catmull-Rom history resample, YCoCg neighborhood variance clamp (γ=1.25), mesh-id disocclusion
 - Pipeline cache with disk persistence (10–50 ms cold → <1 ms warm)
 - Shared `VkSampler` across all textures
 - Per-image semaphore synchronization with HOST→AS_BUILD memory barriers
@@ -285,13 +287,13 @@ See [Debug CLI](docs/engine/debug-cli.md) for the full protocol reference, archi
 
 | Metric                                | Value          |
 |---------------------------------------|----------------|
-| Rust source files                     | 170            |
-| Lines of Rust                         | ~58,000        |
-| Unit tests passing                    | 612            |
-| Integration tests (`#[ignore]`'d)     | 26             |
+| Rust source files                     | 185            |
+| Lines of Rust                         | ~64,000        |
+| Unit tests passing                    | 623            |
+| Integration tests (`#[ignore]`'d)     | 27             |
 | NIFs in per-game integration sweeps   | 177,286        |
 | Per-game parse success rate           | 100% (7 games) |
-| Workspace crates                      | 14             |
+| Workspace members                     | 15 (13 engine crates + binary + debug CLI) |
 
 ## Dependencies
 
