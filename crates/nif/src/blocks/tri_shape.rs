@@ -636,10 +636,11 @@ fn parse_geometry_data_base_inner(
     Vec<[f32; 4]>,
     Vec<Vec<[f32; 2]>>,
 )> {
-    // Pre-Gamebryo (v < 10.0.1.0): NiGeometryData has no group_id. Added for
-    // 10.0.1.0 when the format was extended for Gamebryo. (nif.xml strictly
-    // says `since=10.1.0.114` for Group ID; tracked separately as N1-01.)
-    if stream.version() >= NifVersion(0x0A000100) {
+    // Group ID: nif.xml says `since="10.1.0.114"` (0x0A010072), not
+    // 10.0.1.0. Files in the [10.0.1.0, 10.1.0.114) range (non-Bethesda
+    // Gamebryo, pre-Civ IV era) read 4 phantom bytes, misaligning every
+    // NiGeometryData afterward. See #326 / audit N1-01.
+    if stream.version() >= NifVersion(0x0A010072) {
         let _group_id = stream.read_i32_le()?; // usually 0
     }
     let num_vertices_raw = stream.read_u16_le()? as usize;
@@ -1224,14 +1225,20 @@ mod nigeometry_data_version_tests {
         }
     }
 
-    /// Minimal NiGeometryData body with zero vertices/normals/UVs/colors,
-    /// optionally including the 2-byte `keep_flags`/`compress_flags`
-    /// pair. `include_keep_compress = false` reproduces what the parser
-    /// expects when the threshold fix is applied in the gap window.
-    fn nigeometry_data_bytes(include_keep_compress: bool, include_consistency: bool) -> Vec<u8> {
+    /// Minimal NiGeometryData body with zero vertices/normals/UVs/colors.
+    /// Each optional pair matches one nif.xml version gate:
+    ///  - `include_group_id`      — `Group ID` (since 10.1.0.114, 4 B)
+    ///  - `include_keep_compress` — `Keep/Compress Flags` (since 10.1.0.0, 2 B)
+    ///  - `include_consistency`   — `Consistency Flags` (since 10.0.1.0, 2 B)
+    fn nigeometry_data_bytes(
+        include_group_id: bool,
+        include_keep_compress: bool,
+        include_consistency: bool,
+    ) -> Vec<u8> {
         let mut d = Vec::new();
-        // group_id (gated at >= 10.0.1.0 — always present for our test cases).
-        d.extend_from_slice(&0i32.to_le_bytes());
+        if include_group_id {
+            d.extend_from_slice(&0i32.to_le_bytes()); // group_id
+        }
         // num_vertices = 0
         d.extend_from_slice(&0u16.to_le_bytes());
         if include_keep_compress {
@@ -1259,27 +1266,37 @@ mod nigeometry_data_version_tests {
     /// NOT consume `keep_flags` / `compress_flags`. Those fields
     /// appear only from 10.1.0.0 per nif.xml. Previously this branch
     /// stole 2 bytes from `has_vertices` + `data_flags`, corrupting
-    /// every downstream field.
+    /// every downstream field. With #326 applied, `Group ID` is also
+    /// absent (since 10.1.0.114).
     #[test]
     fn nigeometry_data_at_10_0_1_0_skips_keep_compress_flags() {
         let header = header_at(NifVersion(0x0A000100)); // 10.0.1.0 — in the gap.
-        let bytes = nigeometry_data_bytes(/*include_keep_compress=*/ false, true);
+        let bytes = nigeometry_data_bytes(
+            /*include_group_id=*/ false,
+            /*include_keep_compress=*/ false,
+            /*include_consistency=*/ true,
+        );
         let mut stream = crate::stream::NifStream::new(&bytes, &header);
         let _ = parse_geometry_data_base(&mut stream)
             .expect("NiGeometryData base should parse at 10.0.1.0");
         assert_eq!(
             stream.position() as usize,
             bytes.len(),
-            "at 10.0.1.0 NiGeometryData must NOT consume keep/compress flags"
+            "at 10.0.1.0 NiGeometryData must NOT consume group_id or keep/compress"
         );
     }
 
-    /// Dual-side: at NIF 10.1.0.0 (the corrected threshold) the 2 bytes
-    /// ARE consumed.
+    /// At NIF 10.1.0.0 (the corrected keep/compress threshold) the 2
+    /// flags bytes ARE consumed. `Group ID` is still absent — it only
+    /// appears from 10.1.0.114.
     #[test]
     fn nigeometry_data_at_10_1_0_0_reads_keep_compress_flags() {
         let header = header_at(NifVersion(0x0A010000)); // 10.1.0.0 — threshold.
-        let bytes = nigeometry_data_bytes(/*include_keep_compress=*/ true, true);
+        let bytes = nigeometry_data_bytes(
+            /*include_group_id=*/ false,
+            /*include_keep_compress=*/ true,
+            /*include_consistency=*/ true,
+        );
         let mut stream = crate::stream::NifStream::new(&bytes, &header);
         let _ = parse_geometry_data_base(&mut stream)
             .expect("NiGeometryData base should parse at 10.1.0.0");
@@ -1287,6 +1304,47 @@ mod nigeometry_data_version_tests {
             stream.position() as usize,
             bytes.len(),
             "at 10.1.0.0 NiGeometryData MUST consume keep/compress flags"
+        );
+    }
+
+    /// Regression: #326 / audit N1-01 — `Group ID` is only serialized
+    /// from 10.1.0.114 onward per nif.xml. Previously read from 10.0.1.0,
+    /// stealing 4 bytes in the [10.0.1.0, 10.1.0.114) window (non-Bethesda
+    /// Gamebryo pre-Civ IV era).
+    #[test]
+    fn nigeometry_data_at_10_1_0_113_skips_group_id() {
+        let header = header_at(NifVersion(0x0A010071)); // 10.1.0.113 — one below.
+        let bytes = nigeometry_data_bytes(
+            /*include_group_id=*/ false,
+            /*include_keep_compress=*/ true,
+            /*include_consistency=*/ true,
+        );
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        let _ = parse_geometry_data_base(&mut stream)
+            .expect("NiGeometryData base should parse at 10.1.0.113");
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "at 10.1.0.113 NiGeometryData must NOT consume group_id"
+        );
+    }
+
+    /// Dual-side for #326: at 10.1.0.114 the `group_id` i32 IS consumed.
+    #[test]
+    fn nigeometry_data_at_10_1_0_114_reads_group_id() {
+        let header = header_at(NifVersion(0x0A010072)); // 10.1.0.114 — threshold.
+        let bytes = nigeometry_data_bytes(
+            /*include_group_id=*/ true,
+            /*include_keep_compress=*/ true,
+            /*include_consistency=*/ true,
+        );
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        let _ = parse_geometry_data_base(&mut stream)
+            .expect("NiGeometryData base should parse at 10.1.0.114");
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "at 10.1.0.114 NiGeometryData MUST consume group_id"
         );
     }
 }
