@@ -44,13 +44,18 @@ pub(super) fn create_render_pass(
     albedo_format: vk::Format,
     depth_format: vk::Format,
 ) -> Result<vk::RenderPass> {
-    // Phase 2: main render pass writes to 6 color attachments + depth:
-    //   0 — HDR color    (RGBA16F)       — direct lighting only
-    //   1 — normal       (RGBA16_SNORM)  — world-space surface normal
-    //   2 — motion       (R16G16_SFLOAT) — screen-space motion vector
-    //   3 — mesh_id      (R16_UINT)      — per-instance ID + 1
-    //   4 — raw_indirect (R11G11B10F)    — demodulated indirect light (for SVGF)
-    //   5 — albedo       (R11G11B10F)    — surface color (re-multiplied at composite)
+    // Phase 2: main render pass writes to 6 color attachments + depth.
+    // Formats are the authoritative constants in `vulkan/gbuffer.rs`; the
+    // list below names them for orientation.
+    //   0 — HDR color    (RGBA16F)        — direct lighting only
+    //   1 — normal       (RG16_SNORM)     — octahedral-encoded world-space
+    //                                       normal (#275, 4 B/px vs 8 B/px)
+    //   2 — motion       (R16G16_SFLOAT)  — screen-space motion vector
+    //   3 — mesh_id      (R16_UINT)       — per-instance ID + 1
+    //                                       (65534-instance ceiling; background = 0,
+    //                                        shader writes id+1 — see #318/R34-02)
+    //   4 — raw_indirect (B10G11R11_UFLOAT) — demodulated indirect light (for SVGF)
+    //   5 — albedo       (B10G11R11_UFLOAT) — surface color (re-multiplied at composite)
     //   6 — depth        (D32)
     //
     // All color attachments use final_layout SHADER_READ_ONLY_OPTIMAL so

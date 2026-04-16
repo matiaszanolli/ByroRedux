@@ -413,9 +413,12 @@ fn create_triangle_pipeline_with_layout(
 
 /// Creates the UI overlay pipeline (no depth, no lighting, alpha blend).
 ///
-/// Uses the same pipeline layout as the scene pipelines (push constants +
-/// descriptor set for texture sampler). The UI vertex shader ignores push
-/// constants — vertices are already in NDC clip space.
+/// Uses the same pipeline layout as the scene pipelines (set 0 = bindless
+/// textures, set 1 = scene UBO/SSBOs including the instance buffer at
+/// binding 4). No push constants exist on any pipeline — per-instance
+/// data lives in the instance SSBO. The UI vertex shader reads only the
+/// `textureIndex` field; vertices are already in NDC clip space so the
+/// `model` matrix is ignored.
 pub fn create_ui_pipeline(
     device: &ash::Device,
     render_pass: vk::RenderPass,

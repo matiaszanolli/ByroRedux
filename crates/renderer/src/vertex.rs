@@ -8,9 +8,10 @@ use ash::vk;
 ///
 /// The skinning fields are zeroed for rigid (non-skinned) vertices. The
 /// vertex shader detects the rigid case by `sum(bone_weights) < epsilon`
-/// and falls through to the push-constant `model` matrix in that case —
-/// so every mesh (cube, quad, UI overlay, NIF rigid, NIF skinned) runs
-/// through a single pipeline without a second vertex format. See issue #178.
+/// and falls through to the per-instance `model` matrix in the instance
+/// SSBO (set 1, binding 4) in that case — so every mesh (cube, quad, UI
+/// overlay, NIF rigid, NIF skinned) runs through a single pipeline without
+/// a second vertex format. See issue #178.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Vertex {
@@ -20,8 +21,8 @@ pub struct Vertex {
     pub uv: [f32; 2],
     /// Per-vertex bone indices (up to 4). Used only when `bone_weights`
     /// sums to > epsilon. Indices are local to the mesh's bone palette
-    /// slot (see `VulkanContext::bone_palette` and the per-draw
-    /// `bone_offset` push constant).
+    /// slot (see `VulkanContext::bone_palette` and the `bone_offset`
+    /// field on `GpuInstance` in the instance SSBO).
     pub bone_indices: [u32; 4],
     /// Per-vertex bone weights (up to 4). Must sum to 1.0 for skinned
     /// vertices, or 0.0 for rigid vertices (the shader's rigid-path tag).
@@ -31,8 +32,8 @@ pub struct Vertex {
 impl Vertex {
     /// Construct a rigid (non-skinned) vertex. Bone indices and weights
     /// are zeroed; the shader's `sum(weights) < epsilon` check routes
-    /// the vertex through the push-constant `model` matrix instead of
-    /// the bone palette.
+    /// the vertex through the per-instance `model` matrix (instance SSBO)
+    /// instead of the bone palette.
     pub const fn new(position: [f32; 3], color: [f32; 3], normal: [f32; 3], uv: [f32; 2]) -> Self {
         Self {
             position,
