@@ -636,8 +636,9 @@ fn parse_geometry_data_base_inner(
     Vec<[f32; 4]>,
     Vec<Vec<[f32; 2]>>,
 )> {
-    // Pre-Gamebryo (v < 10.0.1.0): NiGeometryData has no group_id, keep_flags, or
-    // compress_flags. These were added when the format was extended for Gamebryo.
+    // Pre-Gamebryo (v < 10.0.1.0): NiGeometryData has no group_id. Added for
+    // 10.0.1.0 when the format was extended for Gamebryo. (nif.xml strictly
+    // says `since=10.1.0.114` for Group ID; tracked separately as N1-01.)
     if stream.version() >= NifVersion(0x0A000100) {
         let _group_id = stream.read_i32_le()?; // usually 0
     }
@@ -645,7 +646,11 @@ fn parse_geometry_data_base_inner(
     // For NiPSysData on BS202, `num_vertices_raw` is BS Max Vertices — an
     // upper bound on runtime particle count, not a serialized array length.
     let array_count = if zero_arrays { 0 } else { num_vertices_raw };
-    if stream.version() >= NifVersion(0x0A000100) {
+    // Keep / Compress Flags: nif.xml says `since="10.1.0.0"` (0x0A010000),
+    // not 10.0.1.0. Files in the [10.0.1.0, 10.1.0.0) gap window (non-Bethesda
+    // Gamebryo) had 2 phantom bytes consumed before `has_vertices`, corrupting
+    // every NiGeometryData downstream. See #327 / audit N1-02.
+    if stream.version() >= NifVersion(0x0A010000) {
         let _keep_flags = stream.read_u8()?;
         let _compress_flags = stream.read_u8()?;
     }
@@ -1195,5 +1200,93 @@ mod skin_vertex_tests {
             assert!((w - 0.25).abs() < 1e-3);
         }
         assert_eq!(indices, [3, 7, 12, 42]);
+    }
+}
+
+#[cfg(test)]
+mod nigeometry_data_version_tests {
+    use super::*;
+    use crate::header::NifHeader;
+
+    fn header_at(version: NifVersion) -> NifHeader {
+        NifHeader {
+            version,
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    /// Minimal NiGeometryData body with zero vertices/normals/UVs/colors,
+    /// optionally including the 2-byte `keep_flags`/`compress_flags`
+    /// pair. `include_keep_compress = false` reproduces what the parser
+    /// expects when the threshold fix is applied in the gap window.
+    fn nigeometry_data_bytes(include_keep_compress: bool, include_consistency: bool) -> Vec<u8> {
+        let mut d = Vec::new();
+        // group_id (gated at >= 10.0.1.0 — always present for our test cases).
+        d.extend_from_slice(&0i32.to_le_bytes());
+        // num_vertices = 0
+        d.extend_from_slice(&0u16.to_le_bytes());
+        if include_keep_compress {
+            d.push(0u8); // keep_flags
+            d.push(0u8); // compress_flags
+        }
+        d.push(0u8); // has_vertices = false
+                     // data_flags (u16) — version >= 10.0.1.0 branch.
+        d.extend_from_slice(&0u16.to_le_bytes());
+        d.push(0u8); // has_normals = false
+                     // bounding sphere: center(3 f32) + radius(f32)
+        for _ in 0..3 {
+            d.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        d.extend_from_slice(&0.0f32.to_le_bytes());
+        d.push(0u8); // has_vertex_colors = false
+                     // (data_flags=0 ⇒ num_uv_sets=0 ⇒ has_uv=false, no UV arrays)
+        if include_consistency {
+            d.extend_from_slice(&0u16.to_le_bytes()); // consistency_flags
+        }
+        d
+    }
+
+    /// Regression: #327 / audit N1-02 — at NIF 10.0.1.0 the parser must
+    /// NOT consume `keep_flags` / `compress_flags`. Those fields
+    /// appear only from 10.1.0.0 per nif.xml. Previously this branch
+    /// stole 2 bytes from `has_vertices` + `data_flags`, corrupting
+    /// every downstream field.
+    #[test]
+    fn nigeometry_data_at_10_0_1_0_skips_keep_compress_flags() {
+        let header = header_at(NifVersion(0x0A000100)); // 10.0.1.0 — in the gap.
+        let bytes = nigeometry_data_bytes(/*include_keep_compress=*/ false, true);
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        let _ = parse_geometry_data_base(&mut stream)
+            .expect("NiGeometryData base should parse at 10.0.1.0");
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "at 10.0.1.0 NiGeometryData must NOT consume keep/compress flags"
+        );
+    }
+
+    /// Dual-side: at NIF 10.1.0.0 (the corrected threshold) the 2 bytes
+    /// ARE consumed.
+    #[test]
+    fn nigeometry_data_at_10_1_0_0_reads_keep_compress_flags() {
+        let header = header_at(NifVersion(0x0A010000)); // 10.1.0.0 — threshold.
+        let bytes = nigeometry_data_bytes(/*include_keep_compress=*/ true, true);
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        let _ = parse_geometry_data_base(&mut stream)
+            .expect("NiGeometryData base should parse at 10.1.0.0");
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "at 10.1.0.0 NiGeometryData MUST consume keep/compress flags"
+        );
     }
 }
