@@ -135,12 +135,16 @@ impl Material {
     /// The texture path is the primary signal — keywords like "metal",
     /// "glass", "wood" map to physically-plausible defaults. Fallback
     /// uses the NIF glossiness value converted to roughness.
+    ///
+    /// Matching is case-insensitive but **does not allocate** — the
+    /// previous `to_ascii_lowercase` copy ran per draw per frame (~39k
+    /// allocations/sec on Prospector Saloon at 48 FPS). See #375.
     pub fn classify_pbr(&self, texture_path: Option<&str>) -> PbrMaterial {
-        let path = texture_path.unwrap_or("").to_ascii_lowercase();
+        let path = texture_path.unwrap_or("");
 
         // Keyword-based classification (highest priority).
-        if contains_any(
-            &path,
+        if contains_any_ci(
+            path,
             &["metal", "iron", "steel", "dwemer", "dwarven", "chainmail"],
         ) {
             return PbrMaterial {
@@ -148,26 +152,26 @@ impl Material {
                 metalness: 0.9,
             };
         }
-        if contains_any(&path, &["gold", "silver", "bronze", "copper"]) {
+        if contains_any_ci(path, &["gold", "silver", "bronze", "copper"]) {
             return PbrMaterial {
                 roughness: 0.25,
                 metalness: 0.95,
             };
         }
-        if contains_any(&path, &["glass", "crystal", "ice", "gem"]) {
+        if contains_any_ci(path, &["glass", "crystal", "ice", "gem"]) {
             return PbrMaterial {
                 roughness: 0.1,
                 metalness: 0.0,
             };
         }
-        if contains_any(&path, &["wood", "plank", "barrel", "crate", "log"]) {
+        if contains_any_ci(path, &["wood", "plank", "barrel", "crate", "log"]) {
             return PbrMaterial {
                 roughness: 0.7,
                 metalness: 0.0,
             };
         }
-        if contains_any(
-            &path,
+        if contains_any_ci(
+            path,
             &["stone", "rock", "cave", "brick", "ruins", "cobble"],
         ) {
             return PbrMaterial {
@@ -175,8 +179,8 @@ impl Material {
                 metalness: 0.0,
             };
         }
-        if contains_any(
-            &path,
+        if contains_any_ci(
+            path,
             &[
                 "fabric", "cloth", "leather", "fur", "linen", "carpet", "rug", "tapestry",
                 "banner", "curtain", "drape", "bedding", "pillow", "sack", "burlap", "wool",
@@ -187,13 +191,13 @@ impl Material {
                 metalness: 0.0,
             };
         }
-        if contains_any(&path, &["skin", "body", "head", "hand", "face"]) {
+        if contains_any_ci(path, &["skin", "body", "head", "hand", "face"]) {
             return PbrMaterial {
                 roughness: 0.5,
                 metalness: 0.0,
             };
         }
-        if contains_any(&path, &["hair"]) {
+        if contains_any_ci(path, &["hair"]) {
             return PbrMaterial {
                 roughness: 0.6,
                 metalness: 0.0,
@@ -223,8 +227,18 @@ impl Material {
     }
 }
 
-fn contains_any(path: &str, keywords: &[&str]) -> bool {
-    keywords.iter().any(|kw| path.contains(kw))
+/// ASCII case-insensitive substring match. Zero allocations. Assumes
+/// every keyword in `keywords` is non-empty and ASCII — both hold for
+/// the hard-coded lists in [`Material::classify_pbr`].
+fn contains_any_ci(haystack: &str, keywords: &[&str]) -> bool {
+    let hs = haystack.as_bytes();
+    keywords.iter().any(|kw| {
+        let kb = kw.as_bytes();
+        if kb.is_empty() || kb.len() > hs.len() {
+            return false;
+        }
+        hs.windows(kb.len()).any(|w| w.eq_ignore_ascii_case(kb))
+    })
 }
 
 #[cfg(test)]
@@ -241,5 +255,46 @@ mod tests {
         assert_eq!(m.alpha, 1.0);
         assert!(m.normal_map.is_none());
         assert!(m.texture_path.is_none());
+    }
+
+    #[test]
+    fn contains_any_ci_matches_case_insensitively() {
+        // Real texture paths ship mixed case (e.g. "Textures\Clutter").
+        // The classifier must still match lowercase keywords.
+        assert!(contains_any_ci(r"Textures\Metal\Iron01.dds", &["metal"]));
+        assert!(contains_any_ci("TEXTURES/WOOD/plank.dds", &["wood"]));
+        assert!(contains_any_ci("effects/FxGlowSoft01.dds", &["fxglow"]));
+        assert!(!contains_any_ci("textures/cloth/linen.dds", &["metal"]));
+    }
+
+    #[test]
+    fn contains_any_ci_rejects_empty_needle_and_overlong_needle() {
+        assert!(!contains_any_ci("short", &[""]));
+        assert!(!contains_any_ci("short", &["longerthanhaystack"]));
+    }
+
+    #[test]
+    fn classify_pbr_keyword_dispatch() {
+        let m = Material::default();
+        let metal = m.classify_pbr(Some(r"Textures\Weapons\Iron\IronSword.dds"));
+        assert!(metal.metalness > 0.8);
+        assert!(metal.roughness < 0.4);
+
+        let wood = m.classify_pbr(Some("textures/clutter/barrel/barrel01.dds"));
+        assert_eq!(wood.metalness, 0.0);
+        assert!(wood.roughness > 0.6);
+
+        let glass = m.classify_pbr(Some("textures/clutter/ICE/IceShard01.dds"));
+        assert!(glass.roughness < 0.2);
+    }
+
+    #[test]
+    fn classify_pbr_falls_back_to_glossiness() {
+        let mut m = Material::default();
+        m.glossiness = 20.0; // matte
+        m.env_map_scale = 0.0; // disable env-map branch so glossiness wins
+        let p = m.classify_pbr(Some("textures/unknown/thing.dds"));
+        assert_eq!(p.metalness, 0.0);
+        assert!(p.roughness > 0.5);
     }
 }
