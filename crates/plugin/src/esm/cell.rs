@@ -108,6 +108,32 @@ pub struct CellData {
     /// not render at all or clamp to Y/Z=0. Same f32 semantics across
     /// Oblivion / FO3 / FNV / Skyrim. See #397.
     pub water_height: Option<f32>,
+
+    // ── Skyrim+ extended sub-records (#356). FormIDs are stored raw —
+    // resolution against the records index happens at the consumer.
+    /// Image-space modifier (XCIM, FormID). Skyrim's per-cell tone-
+    /// mapping LUT / colour-grading reference. `None` if the cell
+    /// doesn't override the worldspace default.
+    pub image_space_form: Option<u32>,
+    /// Water type (XCWT, FormID — references a WATR record on Skyrim+,
+    /// an LTEX form on FNV/Oblivion). Selects the water material to
+    /// use when rendering the plane at `water_height`.
+    pub water_type_form: Option<u32>,
+    /// Acoustic space (XCAS, FormID — references an ASPC record).
+    /// Drives reverb / occlusion presets for cell audio.
+    pub acoustic_space_form: Option<u32>,
+    /// Music type (XCMO, FormID — references an MUSC record). Selects
+    /// which music track plays while the player is in this cell.
+    pub music_type_form: Option<u32>,
+    /// Location (XLCN, FormID — references an LCTN record). Used by
+    /// quest / Story Manager systems for "player is in location X"
+    /// conditions.
+    pub location_form: Option<u32>,
+    /// Region list (XCLR, FormID array — each entry references a REGN
+    /// record). Empty when the cell isn't tagged with any regions.
+    /// Regions drive ambient SFX, weather overrides, and encounter
+    /// tables in worldspace cells.
+    pub regions: Vec<u32>,
 }
 
 /// A placed object reference within a cell (REFR or ACHR).
@@ -324,6 +350,12 @@ fn parse_cell_group(
                 let mut is_interior = false;
                 let mut lighting = None;
                 let mut water_height: Option<f32> = None;
+                let mut image_space_form: Option<u32> = None;
+                let mut water_type_form: Option<u32> = None;
+                let mut acoustic_space_form: Option<u32> = None;
+                let mut music_type_form: Option<u32> = None;
+                let mut location_form: Option<u32> = None;
+                let mut regions: Vec<u32> = Vec::new();
 
                 for sub in &subs {
                     match &sub.sub_type {
@@ -342,6 +374,19 @@ fn parse_cell_group(
                                 sub.data[3],
                             ]));
                         }
+                        // Skyrim extended CELL sub-records (#356). Each is
+                        // a 4-byte FormID; the walker previously dropped
+                        // them on the `_` arm so the renderer / audio /
+                        // quest system had no per-cell context.
+                        b"XCIM" => image_space_form = read_form_id(&sub.data),
+                        b"XCWT" => water_type_form = read_form_id(&sub.data),
+                        b"XCAS" => acoustic_space_form = read_form_id(&sub.data),
+                        b"XCMO" => music_type_form = read_form_id(&sub.data),
+                        b"XLCN" => location_form = read_form_id(&sub.data),
+                        // XCLR is a packed FormID array — region tags
+                        // referenced by REGN records. Variable length;
+                        // empty list is normal.
+                        b"XCLR" => regions = read_form_id_array(&sub.data),
                         b"XCLL" if sub.data.len() >= 28 => {
                             // XCLL layout (shared prefix for all games):
                             //   0-3:   Ambient RGBA
@@ -456,6 +501,12 @@ fn parse_cell_group(
                             lighting: lighting.clone(),
                             landscape: None,
                             water_height,
+                            image_space_form,
+                            water_type_form,
+                            acoustic_space_form,
+                            music_type_form,
+                            location_form,
+                            regions: regions.clone(),
                         },
                     );
                     current_cell = Some((header.form_id, editor_id));
@@ -788,6 +839,12 @@ fn parse_wrld_children(
                 let mut editor_id = String::new();
                 let mut grid = None;
                 let mut water_height: Option<f32> = None;
+                let mut image_space_form: Option<u32> = None;
+                let mut water_type_form: Option<u32> = None;
+                let mut acoustic_space_form: Option<u32> = None;
+                let mut music_type_form: Option<u32> = None;
+                let mut location_form: Option<u32> = None;
+                let mut regions: Vec<u32> = Vec::new();
 
                 for sub in &subs {
                     match &sub.sub_type {
@@ -815,6 +872,15 @@ fn parse_wrld_children(
                                 sub.data[3],
                             ]));
                         }
+                        // Skyrim extended sub-records — see the interior
+                        // walker above for semantics. Exterior cells use
+                        // the same encoding. #356.
+                        b"XCIM" => image_space_form = read_form_id(&sub.data),
+                        b"XCWT" => water_type_form = read_form_id(&sub.data),
+                        b"XCAS" => acoustic_space_form = read_form_id(&sub.data),
+                        b"XCMO" => music_type_form = read_form_id(&sub.data),
+                        b"XLCN" => location_form = read_form_id(&sub.data),
+                        b"XCLR" => regions = read_form_id_array(&sub.data),
                         _ => {}
                     }
                 }
@@ -831,6 +897,12 @@ fn parse_wrld_children(
                             lighting: None,
                             landscape: None,
                             water_height,
+                            image_space_form,
+                            water_type_form,
+                            acoustic_space_form,
+                            music_type_form,
+                            location_form,
+                            regions,
                         },
                     );
                     current_cell = Some(g);
@@ -967,6 +1039,25 @@ fn parse_modl_group(
 fn read_zstring(data: &[u8]) -> String {
     let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
     String::from_utf8_lossy(&data[..end]).to_string()
+}
+
+/// Read a 4-byte FormID from a sub-record payload. Returns `None` when
+/// the payload is too short to hold a u32 — defensive against truncated
+/// records the walker would otherwise pass through. Used by the
+/// Skyrim-extended CELL sub-record arms (XCIM / XCWT / XCAS / XCMO /
+/// XLCN — see #356).
+fn read_form_id(data: &[u8]) -> Option<u32> {
+    (data.len() >= 4).then(|| u32::from_le_bytes([data[0], data[1], data[2], data[3]]))
+}
+
+/// Read an array of 4-byte FormIDs packed back-to-back. Used for XCLR
+/// (region list) and any other list-of-FormIDs sub-record. Trailing
+/// bytes that don't make a full FormID are silently dropped — they're
+/// always alignment padding rather than a partial entry.
+fn read_form_id_array(data: &[u8]) -> Vec<u32> {
+    data.chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
 }
 
 /// Parse LTEX (Landscape Texture) records.
@@ -1455,6 +1546,109 @@ mod tests {
             Some(10.0),
             "XCLW water height must flow through to CellData"
         );
+    }
+
+    #[test]
+    fn parse_cell_skyrim_extended_subrecords() {
+        // Regression: #356 — Skyrim CELL extended sub-records were
+        // dropped on the walker's `_` arm. Build an interior CELL with
+        // every extended FormID + a 3-entry XCLR region list and assert
+        // they all flow through to `CellData`.
+        let mut sub_data = Vec::new();
+        let edid = "SkyrimRoom\0";
+        sub_data.extend_from_slice(b"EDID");
+        sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(edid.as_bytes());
+
+        sub_data.extend_from_slice(b"DATA");
+        sub_data.extend_from_slice(&1u16.to_le_bytes());
+        sub_data.push(0x01); // is_interior
+
+        // Helper to append a 4-byte FormID sub-record.
+        fn push_form_sub(out: &mut Vec<u8>, ty: &[u8; 4], form_id: u32) {
+            out.extend_from_slice(ty);
+            out.extend_from_slice(&4u16.to_le_bytes());
+            out.extend_from_slice(&form_id.to_le_bytes());
+        }
+        push_form_sub(&mut sub_data, b"XCIM", 0x000A1234); // image space
+        push_form_sub(&mut sub_data, b"XCWT", 0x000B5678); // water type
+        push_form_sub(&mut sub_data, b"XCAS", 0x000C9ABC); // acoustic space
+        push_form_sub(&mut sub_data, b"XCMO", 0x000DEF01); // music type
+        push_form_sub(&mut sub_data, b"XLCN", 0x000E2345); // location
+
+        // XCLR: variable-length packed FormID array — three entries.
+        let regions = [0x111u32, 0x222u32, 0x333u32];
+        sub_data.extend_from_slice(b"XCLR");
+        sub_data.extend_from_slice(&(regions.len() as u16 * 4).to_le_bytes());
+        for r in regions {
+            sub_data.extend_from_slice(&r.to_le_bytes());
+        }
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"CELL");
+        buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+        buf.extend_from_slice(&0xCAFEBABEu32.to_le_bytes()); // form_id
+        buf.extend_from_slice(&[0u8; 8]); // padding
+        buf.extend_from_slice(&sub_data);
+
+        let mut reader = super::super::reader::EsmReader::with_variant(
+            &buf,
+            super::super::reader::EsmVariant::Tes5Plus,
+        );
+        let end = buf.len();
+        let mut cells = HashMap::new();
+        parse_cell_group(&mut reader, end, &mut cells).unwrap();
+
+        let cell = cells.get("skyrimroom").expect("interior CELL present");
+        assert_eq!(cell.image_space_form, Some(0x000A1234));
+        assert_eq!(cell.water_type_form, Some(0x000B5678));
+        assert_eq!(cell.acoustic_space_form, Some(0x000C9ABC));
+        assert_eq!(cell.music_type_form, Some(0x000DEF01));
+        assert_eq!(cell.location_form, Some(0x000E2345));
+        assert_eq!(cell.regions, vec![0x111, 0x222, 0x333]);
+        // Sanity: `water_height` stays None because no XCLW present.
+        assert_eq!(cell.water_height, None);
+    }
+
+    #[test]
+    fn parse_cell_without_skyrim_extras_leaves_them_default() {
+        // Sibling check for the new arms — a CELL with only EDID + DATA
+        // must keep every extended FormID at None and `regions` empty.
+        // Catches a regression where one of the new arms accidentally
+        // captures another sub-record's payload.
+        let mut sub_data = Vec::new();
+        let edid = "BareRoom\0";
+        sub_data.extend_from_slice(b"EDID");
+        sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(edid.as_bytes());
+        sub_data.extend_from_slice(b"DATA");
+        sub_data.extend_from_slice(&1u16.to_le_bytes());
+        sub_data.push(0x01);
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"CELL");
+        buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&0x42u32.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&sub_data);
+
+        let mut reader = super::super::reader::EsmReader::with_variant(
+            &buf,
+            super::super::reader::EsmVariant::Tes5Plus,
+        );
+        let end = buf.len();
+        let mut cells = HashMap::new();
+        parse_cell_group(&mut reader, end, &mut cells).unwrap();
+
+        let cell = cells.get("bareroom").expect("interior CELL present");
+        assert_eq!(cell.image_space_form, None);
+        assert_eq!(cell.water_type_form, None);
+        assert_eq!(cell.acoustic_space_form, None);
+        assert_eq!(cell.music_type_form, None);
+        assert_eq!(cell.location_form, None);
+        assert!(cell.regions.is_empty());
     }
 
     #[test]
