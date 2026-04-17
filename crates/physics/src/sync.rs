@@ -21,7 +21,7 @@ use rapier3d::prelude::{ColliderBuilder, RigidBodyBuilder, RigidBodyType};
 
 use crate::components::{PlayerBody, RapierHandles};
 use crate::convert::{
-    collision_shape_to_shared_shape, iso_from_trs, quat_from_na, vec3_from_translation, vec3_to_na,
+    collision_shape_to_parts, iso_from_trs, quat_from_na, vec3_from_translation, vec3_to_na,
 };
 use crate::world::PhysicsWorld;
 
@@ -180,26 +180,28 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
     let mut registered: Vec<(EntityId, RapierHandles)> = Vec::with_capacity(newcomers.len());
 
     for n in newcomers {
-        // parry3d panics on nested compound shapes (Bethesda NIFs can
-        // produce deeply nested bhkListShape / bhkTransformShape chains).
-        // Guard conversion so one bad shape doesn't kill the frame.
-        let shape = match &n.source {
-            NewcomerSource::Shape(s) => {
-                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    collision_shape_to_shared_shape(s)
-                })) {
-                    Ok(sh) => sh,
-                    Err(_) => {
-                        log::warn!("Skipping collision shape (parry3d panic) for entity");
-                        continue;
-                    }
-                }
-            }
+        // Convert the engine shape into a flat list of Rapier parts.
+        // Compounds are fully flattened and TriMeshes surface as their
+        // own parts — attaching one collider per part is Rapier's
+        // idiomatic path for mixed-composite compositions (#373, which
+        // eliminated the 9,555/30s parry3d panic storm the previous
+        // single-compound path produced on exterior cells).
+        let parts: Vec<(
+            rapier3d::prelude::Isometry<f32>,
+            rapier3d::prelude::SharedShape,
+        )> = match &n.source {
+            NewcomerSource::Shape(s) => collision_shape_to_parts(s),
             NewcomerSource::Player(p) => {
                 use rapier3d::prelude::SharedShape;
-                SharedShape::capsule_y(p.half_height.max(1e-3), p.radius.max(1e-3))
+                vec![(
+                    rapier3d::prelude::Isometry::identity(),
+                    SharedShape::capsule_y(p.half_height.max(1e-3), p.radius.max(1e-3)),
+                )]
             }
         };
+        if parts.is_empty() {
+            continue;
+        }
 
         let mut body_builder = RigidBodyBuilder::new(n.body_type)
             .position(iso_from_trs(n.global.translation, n.global.rotation))
@@ -211,24 +213,40 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         let body = body_builder.build();
         let body_handle = pw.bodies.insert(body);
 
-        let collider = ColliderBuilder::new(shape)
-            .friction(n.body_data.friction)
-            .restitution(n.body_data.restitution)
-            .mass(n.body_data.mass.max(0.0))
-            .build();
         // Split-borrow: destructure to avoid "&mut pw twice" through field access.
         let PhysicsWorld {
             ref mut bodies,
             ref mut colliders,
             ..
         } = *pw;
-        let collider_handle = colliders.insert_with_parent(collider, body_handle, bodies);
+
+        // Distribute mass across parts so the total matches the body's
+        // configured mass — Rapier sums collider masses on insertion.
+        // Friction/restitution copy onto every collider identically.
+        let part_mass = n.body_data.mass.max(0.0) / parts.len() as f32;
+        let mut first_collider_handle: Option<rapier3d::prelude::ColliderHandle> = None;
+        for (iso, shape) in parts {
+            let collider = ColliderBuilder::new(shape)
+                .position(iso)
+                .friction(n.body_data.friction)
+                .restitution(n.body_data.restitution)
+                .mass(part_mass)
+                .build();
+            let handle = colliders.insert_with_parent(collider, body_handle, bodies);
+            if first_collider_handle.is_none() {
+                first_collider_handle = Some(handle);
+            }
+        }
 
         registered.push((
             n.entity,
             RapierHandles {
                 body: body_handle,
-                collider: collider_handle,
+                // The first collider is the representative handle the
+                // ECS keeps a reference to — Rapier owns the rest of
+                // the parts through the parent body relationship.
+                collider: first_collider_handle
+                    .expect("at least one part was appended above"),
             },
         ));
     }

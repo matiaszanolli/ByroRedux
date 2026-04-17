@@ -112,9 +112,18 @@ impl Resource for PhysicsWorld {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::convert::{collision_shape_to_shared_shape, iso_from_trs};
+    use crate::convert::{collision_shape_to_parts, iso_from_trs};
     use byroredux_core::ecs::components::collision::CollisionShape;
     use byroredux_core::math::{Quat, Vec3};
+
+    /// Test helper: legacy single-`SharedShape` API. Assumes the input
+    /// produces exactly one part (every primitive variant does; the
+    /// tests here only feed primitives).
+    fn single_shape(s: &CollisionShape) -> rapier3d::prelude::SharedShape {
+        let mut parts = collision_shape_to_parts(s);
+        assert_eq!(parts.len(), 1, "test helper expects a single part");
+        parts.swap_remove(0).1
+    }
 
     #[test]
     fn empty_world_has_no_bodies() {
@@ -127,7 +136,7 @@ mod tests {
         let mut w = PhysicsWorld::new();
 
         // Spawn a dynamic ball at y = 1000 BU, well above any floor.
-        let shape = collision_shape_to_shared_shape(&CollisionShape::Ball { radius: 10.0 });
+        let shape = single_shape(&CollisionShape::Ball { radius: 10.0 });
         let body = RigidBodyBuilder::dynamic()
             .position(iso_from_trs(Vec3::new(0.0, 1000.0, 0.0), Quat::IDENTITY))
             .build();
@@ -150,7 +159,7 @@ mod tests {
         let mut w = PhysicsWorld::new();
 
         // Large static floor at y = 0.
-        let floor_shape = collision_shape_to_shared_shape(&CollisionShape::Cuboid {
+        let floor_shape = single_shape(&CollisionShape::Cuboid {
             half_extents: Vec3::new(500.0, 1.0, 500.0),
         });
         let floor = RigidBodyBuilder::fixed().build();
@@ -162,7 +171,7 @@ mod tests {
         );
 
         // Dynamic ball at y = 200.
-        let ball_shape = collision_shape_to_shared_shape(&CollisionShape::Ball { radius: 10.0 });
+        let ball_shape = single_shape(&CollisionShape::Ball { radius: 10.0 });
         let ball = RigidBodyBuilder::dynamic()
             .position(iso_from_trs(Vec3::new(0.0, 200.0, 0.0), Quat::IDENTITY))
             .build();
