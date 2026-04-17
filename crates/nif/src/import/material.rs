@@ -135,6 +135,45 @@ pub(super) struct MaterialInfo {
     pub z_test: bool,
     /// Depth write enabled (from NiZBufferProperty). Default: true.
     pub z_write: bool,
+
+    // ── BSLightingShaderProperty.shader_type dispatch (SK-D3-01) ────
+    // Each variant of `ShaderTypeData` exposes different trailing
+    // fields. Capturing them at import time lets the renderer later
+    // branch on `material_kind` without re-reading the NIF. Renderer-
+    // side dispatch is tracked separately (SK-D3-02); until that lands
+    // these values ride unused on `MaterialInfo`.
+    /// Raw `BSLightingShaderProperty.shader_type` (0–19). 0 when the
+    /// shape has no BSLightingShaderProperty (pre-Skyrim).
+    pub material_kind: u8,
+    /// SkinTint (type 5) — race/character skin color. FO76 variant
+    /// stores alpha in `skin_tint_alpha`.
+    pub skin_tint_color: Option<[f32; 3]>,
+    /// FO76 SkinTint (type 4, BSShaderType155) — alpha channel that
+    /// the Color4 variant of SkinTint carries in addition to RGB.
+    pub skin_tint_alpha: Option<f32>,
+    /// HairTint (type 6) — per-NPC hair color multiplier.
+    pub hair_tint_color: Option<[f32; 3]>,
+    /// EyeEnvmap (type 16) — cubemap reflection strength on eye shapes.
+    pub eye_cubemap_scale: Option<f32>,
+    /// EyeEnvmap left-eye reflection center, world-space.
+    pub eye_left_reflection_center: Option<[f32; 3]>,
+    /// EyeEnvmap right-eye reflection center, world-space.
+    pub eye_right_reflection_center: Option<[f32; 3]>,
+    /// ParallaxOcc (type 7) — height-sample passes (stepping quality).
+    pub parallax_max_passes: Option<f32>,
+    /// ParallaxOcc (type 7) — height-map scale.
+    pub parallax_height_scale: Option<f32>,
+    /// MultiLayerParallax (type 11) — inner layer thickness.
+    pub multi_layer_inner_thickness: Option<f32>,
+    /// MultiLayerParallax (type 11) — refraction scale.
+    pub multi_layer_refraction_scale: Option<f32>,
+    /// MultiLayerParallax (type 11) — inner texture scale u/v.
+    pub multi_layer_inner_layer_scale: Option<[f32; 2]>,
+    /// MultiLayerParallax (type 11) — envmap strength.
+    pub multi_layer_envmap_strength: Option<f32>,
+    /// SparkleSnow (type 14) — packed rgba parameters (rgb color +
+    /// alpha strength).
+    pub sparkle_parameters: Option<[f32; 4]>,
 }
 
 impl Default for MaterialInfo {
@@ -169,6 +208,20 @@ impl Default for MaterialInfo {
             has_material_data: false,
             z_test: true,
             z_write: true,
+            material_kind: 0,
+            skin_tint_color: None,
+            skin_tint_alpha: None,
+            hair_tint_color: None,
+            eye_cubemap_scale: None,
+            eye_left_reflection_center: None,
+            eye_right_reflection_center: None,
+            parallax_max_passes: None,
+            parallax_height_scale: None,
+            multi_layer_inner_thickness: None,
+            multi_layer_refraction_scale: None,
+            multi_layer_inner_layer_scale: None,
+            multi_layer_envmap_strength: None,
+            sparkle_parameters: None,
         }
     }
 }
@@ -292,9 +345,8 @@ pub(super) fn extract_material_info(
             info.uv_offset = shader.uv_offset;
             info.uv_scale = shader.uv_scale;
             info.alpha = shader.alpha;
-            if let ShaderTypeData::EnvironmentMap { env_map_scale } = shader.shader_type_data {
-                info.env_map_scale = env_map_scale;
-            }
+            info.material_kind = shader.shader_type as u8;
+            apply_shader_type_data(&mut info, &shader.shader_type_data);
             info.has_material_data = true;
         }
         if let Some(shader) = scene.get_as::<BSEffectShaderProperty>(idx) {
@@ -523,6 +575,67 @@ pub(super) fn extract_material_info(
 /// artifacts that plague back-to-front blend on statics. `alpha_blend`
 /// is intentionally set to `false` in that case so the renderer binds
 /// the opaque pipeline.
+/// Write every `ShaderTypeData` variant's trailing fields onto
+/// `MaterialInfo`. Previously only `EnvironmentMap` was consumed; the
+/// remaining 8 variants (SkinTint, Fo76SkinTint, HairTint, ParallaxOcc,
+/// MultiLayerParallax, SparkleSnow, EyeEnvmap, and the `None`
+/// pass-through for types that carry no trailing data) were pattern-
+/// matched out and dropped. Issue #343 / SK-D3-01.
+///
+/// Renderer-side dispatch on `MaterialInfo.material_kind` is tracked
+/// separately (SK-D3-02). Until that lands these values ride unused on
+/// the `Material` component; the purpose here is to ensure no variant
+/// is silently discarded at the import boundary.
+pub(super) fn apply_shader_type_data(info: &mut MaterialInfo, data: &ShaderTypeData) {
+    match *data {
+        ShaderTypeData::None => {}
+        ShaderTypeData::EnvironmentMap { env_map_scale } => {
+            info.env_map_scale = env_map_scale;
+        }
+        ShaderTypeData::SkinTint { skin_tint_color } => {
+            info.skin_tint_color = Some(skin_tint_color);
+        }
+        ShaderTypeData::Fo76SkinTint { skin_tint_color } => {
+            info.skin_tint_color = Some([
+                skin_tint_color[0],
+                skin_tint_color[1],
+                skin_tint_color[2],
+            ]);
+            info.skin_tint_alpha = Some(skin_tint_color[3]);
+        }
+        ShaderTypeData::HairTint { hair_tint_color } => {
+            info.hair_tint_color = Some(hair_tint_color);
+        }
+        ShaderTypeData::ParallaxOcc { max_passes, scale } => {
+            info.parallax_max_passes = Some(max_passes);
+            info.parallax_height_scale = Some(scale);
+        }
+        ShaderTypeData::MultiLayerParallax {
+            inner_layer_thickness,
+            refraction_scale,
+            inner_layer_texture_scale,
+            envmap_strength,
+        } => {
+            info.multi_layer_inner_thickness = Some(inner_layer_thickness);
+            info.multi_layer_refraction_scale = Some(refraction_scale);
+            info.multi_layer_inner_layer_scale = Some(inner_layer_texture_scale);
+            info.multi_layer_envmap_strength = Some(envmap_strength);
+        }
+        ShaderTypeData::SparkleSnow { sparkle_parameters } => {
+            info.sparkle_parameters = Some(sparkle_parameters);
+        }
+        ShaderTypeData::EyeEnvmap {
+            eye_cubemap_scale,
+            left_eye_reflection_center,
+            right_eye_reflection_center,
+        } => {
+            info.eye_cubemap_scale = Some(eye_cubemap_scale);
+            info.eye_left_reflection_center = Some(left_eye_reflection_center);
+            info.eye_right_reflection_center = Some(right_eye_reflection_center);
+        }
+    }
+}
+
 pub(super) fn apply_alpha_flags(info: &mut MaterialInfo, alpha: &NiAlphaProperty) {
     let blend = alpha.flags & 0x001 != 0;
     let test = alpha.flags & 0x200 != 0;
@@ -670,6 +783,163 @@ mod alpha_flag_tests {
         // When alpha test is disabled, func should stay at default (6).
         let info = MaterialInfo::default();
         assert_eq!(info.alpha_test_func, 6); // GREATEREQUAL default
+    }
+}
+
+/// Regression tests for issue #343 — exhaustive ShaderTypeData dispatch.
+/// Previously only `EnvironmentMap` reached MaterialInfo; the remaining
+/// 8 variants (SkinTint, Fo76SkinTint, HairTint, ParallaxOcc,
+/// MultiLayerParallax, SparkleSnow, EyeEnvmap, None) were dropped. Each
+/// test exercises one arm of `apply_shader_type_data`.
+#[cfg(test)]
+mod shader_type_data_tests {
+    use super::*;
+
+    #[test]
+    fn none_variant_leaves_all_shader_type_fields_at_defaults() {
+        let mut info = MaterialInfo::default();
+        apply_shader_type_data(&mut info, &ShaderTypeData::None);
+        assert_eq!(info.env_map_scale, 0.0);
+        assert_eq!(info.skin_tint_color, None);
+        assert_eq!(info.hair_tint_color, None);
+        assert_eq!(info.parallax_max_passes, None);
+        assert_eq!(info.multi_layer_inner_thickness, None);
+        assert_eq!(info.sparkle_parameters, None);
+        assert_eq!(info.eye_cubemap_scale, None);
+    }
+
+    #[test]
+    fn environment_map_writes_scale() {
+        let mut info = MaterialInfo::default();
+        apply_shader_type_data(
+            &mut info,
+            &ShaderTypeData::EnvironmentMap {
+                env_map_scale: 2.5,
+            },
+        );
+        assert_eq!(info.env_map_scale, 2.5);
+    }
+
+    #[test]
+    fn skin_tint_writes_rgb() {
+        let mut info = MaterialInfo::default();
+        apply_shader_type_data(
+            &mut info,
+            &ShaderTypeData::SkinTint {
+                skin_tint_color: [0.8, 0.6, 0.5],
+            },
+        );
+        assert_eq!(info.skin_tint_color, Some([0.8, 0.6, 0.5]));
+        assert_eq!(info.skin_tint_alpha, None);
+    }
+
+    #[test]
+    fn fo76_skin_tint_splits_rgba_into_rgb_plus_alpha() {
+        let mut info = MaterialInfo::default();
+        apply_shader_type_data(
+            &mut info,
+            &ShaderTypeData::Fo76SkinTint {
+                skin_tint_color: [0.9, 0.7, 0.55, 0.25],
+            },
+        );
+        assert_eq!(info.skin_tint_color, Some([0.9, 0.7, 0.55]));
+        assert_eq!(info.skin_tint_alpha, Some(0.25));
+    }
+
+    #[test]
+    fn hair_tint_writes_rgb() {
+        let mut info = MaterialInfo::default();
+        apply_shader_type_data(
+            &mut info,
+            &ShaderTypeData::HairTint {
+                hair_tint_color: [0.3, 0.15, 0.05],
+            },
+        );
+        assert_eq!(info.hair_tint_color, Some([0.3, 0.15, 0.05]));
+    }
+
+    #[test]
+    fn parallax_occ_writes_passes_and_scale() {
+        let mut info = MaterialInfo::default();
+        apply_shader_type_data(
+            &mut info,
+            &ShaderTypeData::ParallaxOcc {
+                max_passes: 16.0,
+                scale: 0.04,
+            },
+        );
+        assert_eq!(info.parallax_max_passes, Some(16.0));
+        assert_eq!(info.parallax_height_scale, Some(0.04));
+    }
+
+    #[test]
+    fn multi_layer_parallax_writes_all_four_fields() {
+        let mut info = MaterialInfo::default();
+        apply_shader_type_data(
+            &mut info,
+            &ShaderTypeData::MultiLayerParallax {
+                inner_layer_thickness: 0.1,
+                refraction_scale: 1.2,
+                inner_layer_texture_scale: [2.0, 3.0],
+                envmap_strength: 0.75,
+            },
+        );
+        assert_eq!(info.multi_layer_inner_thickness, Some(0.1));
+        assert_eq!(info.multi_layer_refraction_scale, Some(1.2));
+        assert_eq!(info.multi_layer_inner_layer_scale, Some([2.0, 3.0]));
+        assert_eq!(info.multi_layer_envmap_strength, Some(0.75));
+    }
+
+    #[test]
+    fn sparkle_snow_writes_all_four_parameters() {
+        let mut info = MaterialInfo::default();
+        apply_shader_type_data(
+            &mut info,
+            &ShaderTypeData::SparkleSnow {
+                sparkle_parameters: [1.0, 0.5, 0.25, 2.0],
+            },
+        );
+        assert_eq!(info.sparkle_parameters, Some([1.0, 0.5, 0.25, 2.0]));
+    }
+
+    #[test]
+    fn eye_envmap_writes_scale_and_both_reflection_centers() {
+        let mut info = MaterialInfo::default();
+        apply_shader_type_data(
+            &mut info,
+            &ShaderTypeData::EyeEnvmap {
+                eye_cubemap_scale: 1.5,
+                left_eye_reflection_center: [-0.03, 0.05, 0.0],
+                right_eye_reflection_center: [0.03, 0.05, 0.0],
+            },
+        );
+        assert_eq!(info.eye_cubemap_scale, Some(1.5));
+        assert_eq!(
+            info.eye_left_reflection_center,
+            Some([-0.03, 0.05, 0.0])
+        );
+        assert_eq!(
+            info.eye_right_reflection_center,
+            Some([0.03, 0.05, 0.0])
+        );
+    }
+
+    #[test]
+    fn environment_map_does_not_touch_other_variants_fields() {
+        // Sanity: a mesh with env-map shader leaves skin/hair/eye/etc.
+        // fields at None. Previous behavior was an if-let that matched
+        // only EnvironmentMap, so this test would have passed before too
+        // — but it's a guard against a future "clear all variants"
+        // regression where the match arm accidentally stomps fields.
+        let mut info = MaterialInfo::default();
+        info.hair_tint_color = Some([0.1, 0.2, 0.3]); // pretend something else set this first
+        apply_shader_type_data(
+            &mut info,
+            &ShaderTypeData::EnvironmentMap {
+                env_map_scale: 1.0,
+            },
+        );
+        assert_eq!(info.hair_tint_color, Some([0.1, 0.2, 0.3]));
     }
 }
 

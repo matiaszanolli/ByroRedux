@@ -307,12 +307,25 @@ pub(super) fn extract_bs_tri_shape(
                 .and_then(|ts_idx| scene.get_as::<BSShaderTextureSet>(ts_idx))
                 .and_then(|ts| ts.textures.get(1).cloned())
                 .filter(|s| !s.is_empty());
-            let ems =
-                if let ShaderTypeData::EnvironmentMap { env_map_scale } = shader.shader_type_data {
-                    env_map_scale
-                } else {
-                    1.0
-                };
+            // Exhaustive match on the 9 `ShaderTypeData` variants so
+            // future additions must be decided here. Only EnvironmentMap
+            // affects `env_map_scale`; the rest (SkinTint, HairTint,
+            // ParallaxOcc, MultiLayerParallax, SparkleSnow, EyeEnvmap,
+            // Fo76SkinTint) carry per-NPC/per-effect data that doesn't
+            // have a counterpart field on `ImportedMesh` yet — tracked
+            // at SK-D3-01 via the `extract_material_info` path. Default
+            // `ems = 1.0` matches pre-fix behavior.
+            let ems = match shader.shader_type_data {
+                ShaderTypeData::EnvironmentMap { env_map_scale } => env_map_scale,
+                ShaderTypeData::None
+                | ShaderTypeData::SkinTint { .. }
+                | ShaderTypeData::Fo76SkinTint { .. }
+                | ShaderTypeData::HairTint { .. }
+                | ShaderTypeData::ParallaxOcc { .. }
+                | ShaderTypeData::MultiLayerParallax { .. }
+                | ShaderTypeData::SparkleSnow { .. }
+                | ShaderTypeData::EyeEnvmap { .. } => 1.0,
+            };
             (
                 shader.emissive_color,
                 shader.emissive_multiple,
