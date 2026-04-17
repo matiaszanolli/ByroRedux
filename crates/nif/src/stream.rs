@@ -17,6 +17,17 @@ pub struct NifStream<'a> {
     variant: NifVariant,
 }
 
+/// Hard cap on any single file-driven allocation. A corrupt or malicious
+/// NIF can claim an arbitrary 32-bit size in a `ByteArray`, `read_bytes`
+/// caller, or `vec![0u8; n]` bulk read; without a cap the parser would
+/// allocate gigabytes before `read_exact` fails.
+///
+/// 256 MB is well above any legitimate single-block payload (the fattest
+/// Gamebryo shader-map binary or Havok physics blob we've seen on the
+/// seven supported games is ~12 MB on FO76 actor NIFs), and well below
+/// host RAM pressure on our 16-GB dev target. See #113 / audit NIF-13.
+pub const MAX_SINGLE_ALLOC_BYTES: usize = 256 * 1024 * 1024;
+
 impl<'a> NifStream<'a> {
     pub fn new(data: &'a [u8], header: &'a NifHeader) -> Self {
         let variant =
@@ -151,9 +162,47 @@ impl<'a> NifStream<'a> {
     }
 
     pub fn read_bytes(&mut self, len: usize) -> io::Result<Vec<u8>> {
+        self.check_alloc(len)?;
         let mut buf = vec![0u8; len];
         self.cursor.read_exact(&mut buf)?;
         Ok(buf)
+    }
+
+    /// Validate a file-driven allocation request before `vec![0u8; n]`.
+    ///
+    /// Rejects claims that (a) exceed the remaining bytes in the stream
+    /// — preventing the parser from allocating gigabytes for a block
+    /// that physically can't contain them — and (b) breach the hard
+    /// [`MAX_SINGLE_ALLOC_BYTES`] cap. Failure short-circuits BEFORE
+    /// the allocation, so a corrupt file can't OOM the process.
+    ///
+    /// Called by every size-prefixed reader (`read_bytes`,
+    /// `read_sized_string`, and the bulk array helpers) that would
+    /// otherwise trust an attacker-controlled length.
+    /// See #113 / audit NIF-13.
+    fn check_alloc(&self, bytes: usize) -> io::Result<()> {
+        if bytes > MAX_SINGLE_ALLOC_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "NIF requested {bytes}-byte allocation, exceeds hard cap \
+                     ({MAX_SINGLE_ALLOC_BYTES})"
+                ),
+            ));
+        }
+        let pos = self.cursor.position() as usize;
+        let total = self.cursor.get_ref().len();
+        let remaining = total.saturating_sub(pos);
+        if bytes > remaining {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "NIF requested {bytes}-byte read at position {pos}, \
+                     only {remaining} bytes remaining in {total}-byte stream"
+                ),
+            ));
+        }
+        Ok(())
     }
 
     // ── Bulk reads (geometry hot path) ────────────────────────────────
@@ -165,6 +214,7 @@ impl<'a> NifStream<'a> {
     /// Read `count` NiPoint3 values (3×f32 each) in one bulk read.
     pub fn read_ni_point3_array(&mut self, count: usize) -> io::Result<Vec<NiPoint3>> {
         let byte_count = count * 12;
+        self.check_alloc(byte_count)?;
         let mut buf = vec![0u8; byte_count];
         self.cursor.read_exact(&mut buf)?;
         Ok(buf
@@ -180,6 +230,7 @@ impl<'a> NifStream<'a> {
     /// Read `count` RGBA color values (4×f32 each) in one bulk read.
     pub fn read_ni_color4_array(&mut self, count: usize) -> io::Result<Vec<[f32; 4]>> {
         let byte_count = count * 16;
+        self.check_alloc(byte_count)?;
         let mut buf = vec![0u8; byte_count];
         self.cursor.read_exact(&mut buf)?;
         Ok(buf
@@ -198,6 +249,7 @@ impl<'a> NifStream<'a> {
     /// Read `count` UV pairs (2×f32 each) in one bulk read.
     pub fn read_uv_array(&mut self, count: usize) -> io::Result<Vec<[f32; 2]>> {
         let byte_count = count * 8;
+        self.check_alloc(byte_count)?;
         let mut buf = vec![0u8; byte_count];
         self.cursor.read_exact(&mut buf)?;
         Ok(buf
@@ -214,6 +266,7 @@ impl<'a> NifStream<'a> {
     /// Read `count` u16 values in one bulk read.
     pub fn read_u16_array(&mut self, count: usize) -> io::Result<Vec<u16>> {
         let byte_count = count * 2;
+        self.check_alloc(byte_count)?;
         let mut buf = vec![0u8; byte_count];
         self.cursor.read_exact(&mut buf)?;
         Ok(buf
@@ -225,6 +278,7 @@ impl<'a> NifStream<'a> {
     /// Read `count` u32 values in one bulk read.
     pub fn read_u32_array(&mut self, count: usize) -> io::Result<Vec<u32>> {
         let byte_count = count * 4;
+        self.check_alloc(byte_count)?;
         let mut buf = vec![0u8; byte_count];
         self.cursor.read_exact(&mut buf)?;
         Ok(buf
@@ -236,6 +290,7 @@ impl<'a> NifStream<'a> {
     /// Read `count` f32 values in one bulk read.
     pub fn read_f32_array(&mut self, count: usize) -> io::Result<Vec<f32>> {
         let byte_count = count * 4;
+        self.check_alloc(byte_count)?;
         let mut buf = vec![0u8; byte_count];
         self.cursor.read_exact(&mut buf)?;
         Ok(buf
@@ -661,5 +716,49 @@ mod tests {
         let err = stream.skip(u64::MAX).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
         assert_eq!(stream.position(), 5);
+    }
+
+    /// Regression: #113 / audit NIF-13 — `read_bytes` with a size larger
+    /// than what remains in the stream must fail before allocating, and
+    /// fail specifically with `UnexpectedEof` so block-size recovery can
+    /// swallow the error.
+    #[test]
+    fn read_bytes_oversized_request_errors_before_alloc() {
+        let data = [0u8; 64];
+        let header = test_header(NifVersion::V20_2_0_7);
+        let mut stream = NifStream::new(&data, &header);
+        let err = stream.read_bytes(1_000_000).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        // Cursor untouched on the early check.
+        assert_eq!(stream.position(), 0);
+    }
+
+    /// Regression: #113 / audit NIF-13 — requests over the hard cap
+    /// fail with `InvalidData` regardless of how much data the stream
+    /// actually has. Guards against a corrupt file that claims e.g. a
+    /// 1 GB ByteArray.
+    #[test]
+    fn read_bytes_over_hard_cap_errors_regardless_of_stream_size() {
+        // Backing buffer larger than the cap — pretend we mmapped a
+        // huge file — so the only remaining safeguard is the cap.
+        let data = vec![0u8; MAX_SINGLE_ALLOC_BYTES + 1];
+        let header = test_header(NifVersion::V20_2_0_7);
+        let mut stream = NifStream::new(&data, &header);
+        let err = stream.read_bytes(MAX_SINGLE_ALLOC_BYTES + 1).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(stream.position(), 0);
+    }
+
+    /// Legitimate use at the exact cap must succeed — the cap is
+    /// inclusive at the limit.
+    #[test]
+    fn read_bytes_at_cap_succeeds() {
+        let cap = 16; // miniature "cap" for test speed
+        let data = vec![0u8; cap];
+        let header = test_header(NifVersion::V20_2_0_7);
+        let mut stream = NifStream::new(&data, &header);
+        let out = stream.read_bytes(cap).unwrap();
+        assert_eq!(out.len(), cap);
+        assert_eq!(stream.position() as usize, cap);
     }
 }
