@@ -295,6 +295,10 @@ pub fn load_exterior_cells(
     let mut all_refs = Vec::new();
     let mut cells_loaded = 0u32;
     let mut terrain_entities = 0usize;
+    // Accumulator for terrain BLAS specs across the whole grid — built in
+    // one batched submission below instead of N one-shots (#382). On a
+    // 7×7 load that's ~49 GPU submits collapsed into 1.
+    let mut terrain_blas_specs: Vec<(u32, u32, u32)> = Vec::new();
     if let Some(cells_map) = wrld_cells {
         for gx in (center_x - radius)..=(center_x + radius) {
             for gy in (center_y - radius)..=(center_y + radius) {
@@ -319,6 +323,7 @@ pub fn load_exterior_cells(
                             gx,
                             gy,
                             land,
+                            &mut terrain_blas_specs,
                         ) {
                             terrain_entities += count;
                         }
@@ -327,6 +332,20 @@ pub fn load_exterior_cells(
                 }
             }
         }
+    }
+
+    // Single batched terrain BLAS build for the entire grid (#382).
+    // Done before `load_references` so terrain appears in the TLAS for
+    // the first frame; clutter BLAS still builds per-spawn inside
+    // `spawn_placed_instances` (consolidating that path is a separate
+    // follow-up — see audit's "AND clutter" extension).
+    if !terrain_blas_specs.is_empty() {
+        let built = ctx.build_blas_batched(&terrain_blas_specs);
+        log::info!(
+            "Terrain BLAS batch: {built}/{} tiles (one submit, was {} submits pre-#382)",
+            terrain_blas_specs.len(),
+            terrain_blas_specs.len()
+        );
     }
 
     let grid_size = (radius * 2 + 1) as u32;
@@ -420,6 +439,7 @@ fn spawn_terrain_mesh(
     grid_x: i32,
     grid_y: i32,
     land: &esm::cell::LandscapeData,
+    blas_specs: &mut Vec<(u32, u32, u32)>,
 ) -> Option<usize> {
     use byroredux_renderer::Vertex;
 
@@ -552,11 +572,13 @@ fn spawn_terrain_mesh(
         }
     };
 
-    // Build BLAS so terrain occludes RT shadow/GI rays. Without this the
-    // terrain is in the TLAS-eligible draw list but has no BLAS, so
-    // acceleration.rs skips it and the ground casts no shadows.
+    // Queue BLAS build into the caller's batched-spec list rather than
+    // submitting one-shot per tile (#382). Terrain must be in the TLAS
+    // for RT shadows/GI; the actual `build_blas_batched` call happens
+    // after every tile in the grid is uploaded, collapsing what used to
+    // be N separate submits + barriers (one per cell) into one.
     if ctx.device_caps.ray_query_supported {
-        ctx.build_blas_for_mesh(mesh_handle, vertices.len() as u32, indices.len() as u32);
+        blas_specs.push((mesh_handle, vertices.len() as u32, indices.len() as u32));
     }
 
     // Spawn ECS entity at origin (vertices are already in world-space).
