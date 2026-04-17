@@ -1814,4 +1814,87 @@ mod dispatch_tests {
             .downcast_ref::<NiParticleSystemController>()
             .is_some());
     }
+
+    // ── #124 / audit NIF-513 — bhkNPCollisionObject family ──────────
+
+    /// FO4 header (bsver=130) used by the NP-physics dispatch tests.
+    fn fo4_header() -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 12,
+            user_version_2: 130,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    #[test]
+    fn fo4_bhk_np_collision_object_dispatches_and_consumes() {
+        let header = fo4_header();
+        // NiCollisionObject::target_ref (i32) + flags (u16) + data_ref (i32) + body_id (u32).
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0x01020304i32.to_le_bytes()); // target_ref
+        bytes.extend_from_slice(&0x0080u16.to_le_bytes()); // flags (default 0x80)
+        bytes.extend_from_slice(&0x00000005i32.to_le_bytes()); // data_ref = 5
+        bytes.extend_from_slice(&0xDEADBEEFu32.to_le_bytes()); // body_id
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block("bhkNPCollisionObject", &mut stream, Some(bytes.len() as u32))
+            .expect("bhkNPCollisionObject should dispatch through a real parser");
+        let obj = block
+            .as_any()
+            .downcast_ref::<collision::BhkNPCollisionObject>()
+            .expect("bhkNPCollisionObject did not downcast");
+        assert_eq!(obj.flags, 0x0080);
+        assert_eq!(obj.body_id, 0xDEADBEEF);
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "bhkNPCollisionObject must consume the stream exactly"
+        );
+    }
+
+    #[test]
+    fn fo4_bhk_physics_system_keeps_byte_array_verbatim() {
+        let header = fo4_header();
+        // ByteArray: u32 size + raw bytes.
+        let payload: &[u8] = b"PHYSICS-BLOB-123";
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(payload);
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block("bhkPhysicsSystem", &mut stream, Some(bytes.len() as u32))
+            .expect("bhkPhysicsSystem dispatch");
+        let sys = block
+            .as_any()
+            .downcast_ref::<collision::BhkSystemBinary>()
+            .expect("bhkPhysicsSystem downcast");
+        assert_eq!(sys.type_name, "bhkPhysicsSystem");
+        assert_eq!(sys.data.as_slice(), payload);
+        assert_eq!(stream.position() as usize, bytes.len());
+    }
+
+    #[test]
+    fn fo4_bhk_ragdoll_system_keeps_byte_array_verbatim() {
+        let header = fo4_header();
+        let payload: &[u8] = b"RAGDOLL";
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(payload);
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block("bhkRagdollSystem", &mut stream, Some(bytes.len() as u32))
+            .expect("bhkRagdollSystem dispatch");
+        let sys = block
+            .as_any()
+            .downcast_ref::<collision::BhkSystemBinary>()
+            .expect("bhkRagdollSystem downcast");
+        assert_eq!(sys.type_name, "bhkRagdollSystem");
+        assert_eq!(sys.data.as_slice(), payload);
+        assert_eq!(stream.position() as usize, bytes.len());
+    }
 }
