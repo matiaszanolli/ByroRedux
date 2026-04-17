@@ -161,6 +161,7 @@ pub(super) fn extract_mesh(
         z_write: mat.z_write,
         local_bound_center,
         local_bound_radius,
+        effect_shader: mat.effect_shader,
     })
 }
 
@@ -409,6 +410,10 @@ pub(super) fn extract_bs_tri_shape(
         z_write: true,
         local_bound_center,
         local_bound_radius,
+        // BsTriShape effect-shader capture is S4-02 (sibling of #345);
+        // wire it once that ticket lands. The pre-Skyrim NiTriShape
+        // path already populates this field via `extract_material_info`.
+        effect_shader: None,
     })
 }
 

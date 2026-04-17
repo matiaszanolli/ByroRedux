@@ -14,6 +14,11 @@ mod mesh;
 mod transform;
 mod walk;
 
+// Re-export the public material capture types so `ImportedMesh`'s
+// `effect_shader` field can name `BsEffectShaderData` without leaking
+// the internal module path.
+pub use material::BsEffectShaderData;
+
 use crate::scene::NifScene;
 use crate::types::NiTransform;
 use byroredux_core::ecs::components::collision::{CollisionShape, RigidBodyData};
@@ -198,6 +203,17 @@ pub struct ImportedMesh {
     /// Expressed in the mesh's own local units — the propagation system
     /// multiplies by the world scale to produce the world-space radius.
     pub local_bound_radius: f32,
+    /// Skyrim+ effect-shader (`BSEffectShaderProperty`) rich material
+    /// data — soft-falloff cone, greyscale palette, FO4+/FO76 companion
+    /// textures, lighting influence. `None` for non-effect materials
+    /// (the common case for static / clutter / actor meshes).
+    ///
+    /// Captured by the importer so the renderer-side effect-shader
+    /// dispatch (SK-D3-02) can route it to a dedicated VFX pipeline
+    /// without re-reading the NIF. Until that lands, this rides along
+    /// unused — the audit's "VISUAL: soft falloff edge visible" check
+    /// can only be satisfied once the renderer hookup is in. See #345.
+    pub effect_shader: Option<BsEffectShaderData>,
 }
 
 /// Per-bone binding for a skinned mesh. Bone space is Y-up (converted

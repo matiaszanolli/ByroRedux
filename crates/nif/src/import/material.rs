@@ -174,6 +174,56 @@ pub(super) struct MaterialInfo {
     /// SparkleSnow (type 14) — packed rgba parameters (rgb color +
     /// alpha strength).
     pub sparkle_parameters: Option<[f32; 4]>,
+
+    /// Rich Skyrim+ effect-shader (`BSEffectShaderProperty`) data —
+    /// soft falloff cone, greyscale palette, FO4+/FO76 companion
+    /// textures, lighting influence, etc. `None` for non-effect
+    /// materials. The parser already extracted every field; before
+    /// #345 the importer dropped all but `texture_path`, `emissive_*`
+    /// and `uv_*`. Now they ride through to the renderer (separate
+    /// dispatch hookup tracked at SK-D3-02).
+    pub effect_shader: Option<BsEffectShaderData>,
+}
+
+/// Fields imported from a `BSEffectShaderProperty` block. Only present
+/// on materials backed by an effect shader (VFX surfaces, force fields,
+/// glow-edged shields, Dwemer steam, BGEM-keyed surfaces). See #345 /
+/// audit S4-01.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BsEffectShaderData {
+    /// Soft falloff cone — start angle (cos) where alpha = `start_opacity`.
+    pub falloff_start_angle: f32,
+    /// Soft falloff cone — stop angle (cos) where alpha = `stop_opacity`.
+    pub falloff_stop_angle: f32,
+    pub falloff_start_opacity: f32,
+    pub falloff_stop_opacity: f32,
+    /// Soft-particles depth — fades the surface as it approaches the
+    /// scene depth behind it. 0.0 = no soft-particle effect.
+    pub soft_falloff_depth: f32,
+    /// Greyscale palette / gradient lookup texture (fire / electricity
+    /// gradients reference this). `None` when the effect shader
+    /// supplies an empty path.
+    pub greyscale_texture: Option<String>,
+    /// Environment map texture (FO4+ — BSVER >= 130).
+    pub env_map_texture: Option<String>,
+    /// Normal texture (FO4+ — BSVER >= 130).
+    pub normal_texture: Option<String>,
+    /// Environment mask texture (FO4+ — BSVER >= 130).
+    pub env_mask_texture: Option<String>,
+    /// Environment-map scale (FO4+ — BSVER >= 130).
+    pub env_map_scale: f32,
+    /// FO76 refraction power (BSVER == 155). `None` on pre-FO76.
+    pub refraction_power: Option<f32>,
+    /// Lighting influence 0–255 — how much the scene's directional
+    /// light tints the effect. Carried as raw u8 to avoid lossy
+    /// normalisation; the shader path can divide by 255 when sampling.
+    pub lighting_influence: u8,
+    /// Environment-map minimum mip-level clamp (raw u8).
+    pub env_map_min_lod: u8,
+    /// Texture clamp mode: `0=Clamp_S_Clamp_T`, `1=Clamp_S_Wrap_T`,
+    /// `2=Wrap_S_Clamp_T`, `3=Wrap_S_Wrap_T` (the Skyrim default).
+    /// Raw u8 — renderer maps to `vk::SamplerAddressMode` per axis.
+    pub texture_clamp_mode: u8,
 }
 
 impl Default for MaterialInfo {
@@ -222,7 +272,42 @@ impl Default for MaterialInfo {
             multi_layer_inner_layer_scale: None,
             multi_layer_envmap_strength: None,
             sparkle_parameters: None,
+            effect_shader: None,
         }
+    }
+}
+
+/// Lift a `BSEffectShaderProperty` into the importer's
+/// [`BsEffectShaderData`] capture struct. Empty string fields collapse
+/// to `None`. Pre-FO76 inputs leave `refraction_power = None`. See
+/// #345 / audit S4-01.
+fn capture_effect_shader_data(shader: &BSEffectShaderProperty) -> BsEffectShaderData {
+    fn opt(s: &str) -> Option<String> {
+        if s.is_empty() {
+            None
+        } else {
+            Some(s.to_string())
+        }
+    }
+    BsEffectShaderData {
+        falloff_start_angle: shader.falloff_start_angle,
+        falloff_stop_angle: shader.falloff_stop_angle,
+        falloff_start_opacity: shader.falloff_start_opacity,
+        falloff_stop_opacity: shader.falloff_stop_opacity,
+        soft_falloff_depth: shader.soft_falloff_depth,
+        greyscale_texture: opt(&shader.greyscale_texture),
+        env_map_texture: opt(&shader.env_map_texture),
+        normal_texture: opt(&shader.normal_texture),
+        env_mask_texture: opt(&shader.env_mask_texture),
+        env_map_scale: shader.env_map_scale,
+        // refraction_power is FO76-only; the parser fills it with 0.0
+        // on pre-FO76. Surface as `None` so the shader-side dispatch
+        // can branch on `Some(p)` instead of guessing whether 0.0
+        // means "off" or "FO76 with literal 0".
+        refraction_power: (shader.refraction_power != 0.0).then_some(shader.refraction_power),
+        lighting_influence: shader.lighting_influence,
+        env_map_min_lod: shader.env_map_min_lod,
+        texture_clamp_mode: shader.texture_clamp_mode,
     }
 }
 
@@ -364,6 +449,11 @@ pub(super) fn extract_material_info(
                 info.uv_scale = shader.uv_scale;
                 info.has_material_data = true;
             }
+            // Capture the rich effect-shader fields (falloff cone,
+            // greyscale palette, FO4+/FO76 companion textures, etc.)
+            // so downstream consumers can route them when the renderer-
+            // side dispatch lands. See #345 / audit S4-01.
+            info.effect_shader = Some(capture_effect_shader_data(shader));
         }
     }
 
@@ -780,6 +870,113 @@ mod alpha_flag_tests {
         // When alpha test is disabled, func should stay at default (6).
         let info = MaterialInfo::default();
         assert_eq!(info.alpha_test_func, 6); // GREATEREQUAL default
+    }
+}
+
+/// Regression tests for issue #345 — `BSEffectShaderProperty` rich
+/// material fields used to be dropped on import. The capture path is
+/// covered by direct `capture_effect_shader_data` tests; full
+/// `extract_material_info` coverage requires a synthetic NIF and is
+/// blocked on test infrastructure (`NifScene` doesn't expose enough
+/// mutators to wire one up cheaply). The capture helper is the entire
+/// transform under test — `extract_material_info` just calls it.
+#[cfg(test)]
+mod effect_shader_capture_tests {
+    use super::*;
+    use crate::blocks::base::NiObjectNETData;
+    use crate::blocks::shader::BSEffectShaderProperty;
+    use crate::types::BlockRef;
+
+    /// Build a fully-populated FO4-style `BSEffectShaderProperty` with
+    /// every field set to a distinct, recognisable value.
+    fn fully_populated_fo4_shader() -> BSEffectShaderProperty {
+        BSEffectShaderProperty {
+            net: NiObjectNETData {
+                name: None,
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            material_reference: false,
+            shader_flags_1: 0,
+            shader_flags_2: 0,
+            sf1_crcs: Vec::new(),
+            sf2_crcs: Vec::new(),
+            uv_offset: [0.0, 0.0],
+            uv_scale: [1.0, 1.0],
+            source_texture: "fx/glow.dds".to_string(),
+            texture_clamp_mode: 3,
+            lighting_influence: 200,
+            env_map_min_lod: 4,
+            falloff_start_angle: 0.95,
+            falloff_stop_angle: 0.30,
+            falloff_start_opacity: 1.0,
+            falloff_stop_opacity: 0.0,
+            refraction_power: 0.0, // pre-FO76 default
+            emissive_color: [0.0; 4],
+            emissive_multiple: 1.0,
+            soft_falloff_depth: 8.0,
+            greyscale_texture: "fx/grad.dds".to_string(),
+            env_map_texture: "fx/env.dds".to_string(),
+            normal_texture: "fx/n.dds".to_string(),
+            env_mask_texture: "fx/mask.dds".to_string(),
+            env_map_scale: 1.5,
+            reflectance_texture: String::new(),
+            lighting_texture: String::new(),
+            emittance_color: [0.0; 3],
+            emit_gradient_texture: String::new(),
+            luminance: None,
+        }
+    }
+
+    #[test]
+    fn capture_lifts_every_rich_field() {
+        let shader = fully_populated_fo4_shader();
+        let captured = capture_effect_shader_data(&shader);
+        assert_eq!(captured.falloff_start_angle, 0.95);
+        assert_eq!(captured.falloff_stop_angle, 0.30);
+        assert_eq!(captured.falloff_start_opacity, 1.0);
+        assert_eq!(captured.falloff_stop_opacity, 0.0);
+        assert_eq!(captured.soft_falloff_depth, 8.0);
+        assert_eq!(captured.lighting_influence, 200);
+        assert_eq!(captured.env_map_min_lod, 4);
+        assert_eq!(captured.texture_clamp_mode, 3);
+        assert_eq!(captured.env_map_scale, 1.5);
+        assert_eq!(captured.greyscale_texture.as_deref(), Some("fx/grad.dds"));
+        assert_eq!(captured.env_map_texture.as_deref(), Some("fx/env.dds"));
+        assert_eq!(captured.normal_texture.as_deref(), Some("fx/n.dds"));
+        assert_eq!(captured.env_mask_texture.as_deref(), Some("fx/mask.dds"));
+        // Pre-FO76: refraction_power = 0.0 surfaces as None.
+        assert_eq!(captured.refraction_power, None);
+    }
+
+    #[test]
+    fn capture_collapses_empty_texture_strings_to_none() {
+        let mut shader = fully_populated_fo4_shader();
+        shader.greyscale_texture.clear();
+        shader.env_map_texture.clear();
+        shader.normal_texture.clear();
+        shader.env_mask_texture.clear();
+        let captured = capture_effect_shader_data(&shader);
+        assert_eq!(captured.greyscale_texture, None);
+        assert_eq!(captured.env_map_texture, None);
+        assert_eq!(captured.normal_texture, None);
+        assert_eq!(captured.env_mask_texture, None);
+    }
+
+    #[test]
+    fn capture_surfaces_fo76_refraction_power() {
+        let mut shader = fully_populated_fo4_shader();
+        shader.refraction_power = 0.5;
+        let captured = capture_effect_shader_data(&shader);
+        assert_eq!(captured.refraction_power, Some(0.5));
+    }
+
+    #[test]
+    fn material_info_default_has_no_effect_shader() {
+        // Sibling check — the new field defaults to `None` so non-effect
+        // materials don't get spurious capture data.
+        let info = MaterialInfo::default();
+        assert!(info.effect_shader.is_none());
     }
 }
 
