@@ -313,11 +313,14 @@ impl NiTexturingProperty {
             for _ in 0..num_shader_textures {
                 let has = stream.read_byte_bool()?;
                 if has {
-                    // Each shader Map shares the base Map::LoadBinary
-                    // layout: source_ref, clamp/filter/uv or flags,
-                    // optional texture transform. The trailing
-                    // `map_id` is an extra u32 per shader map that
-                    // Gamebryo stores but the importer doesn't need.
+                    // Each shader Map is a full TexDesc (sans leading
+                    // `Has Map`, which we already consumed above) plus
+                    // a trailing `Map ID` u32. That means the body
+                    // includes `Has Texture Transform` + optional
+                    // 32-byte transform for version >= 10.1.0.0 — the
+                    // old code skipped it, putting the parser 1 or
+                    // 33 bytes short per entry and cascading into every
+                    // following block. See #119 / audit NIF-302.
                     let _source_ref = stream.read_block_ref()?;
                     if stream.version() >= crate::version::NifVersion(0x14010003) {
                         let _flags = stream.read_u16_le()?;
@@ -325,6 +328,15 @@ impl NiTexturingProperty {
                         let _clamp = stream.read_u32_le()?;
                         let _filter = stream.read_u32_le()?;
                         let _uv_set = stream.read_u32_le()?;
+                    }
+                    // nif.xml: `Has Texture Transform` + conditional
+                    // 32-byte body are both `since="10.1.0.0"`. Mirrors
+                    // the same gate inside `read_tex_desc`.
+                    if stream.version() >= crate::version::NifVersion(0x0A010000) {
+                        let has_transform = stream.read_byte_bool()?;
+                        if has_transform {
+                            let _ = Self::read_tex_transform(stream)?;
+                        }
                     }
                     let _map_id = stream.read_u32_le()?;
                 }
@@ -621,6 +633,86 @@ mod tests {
             "NiTexturingProperty consumed {} bytes, expected exactly {}",
             stream.position(),
             expected_len
+        );
+    }
+
+    /// Regression: #119 / audit NIF-302 — a shader map entry with
+    /// `has_map = 1` at v >= 10.1.0.0 MUST consume its
+    /// `Has Texture Transform` bool and, if set, the 32-byte
+    /// transform body. Previously the loop skipped straight from
+    /// `flags` to `map_id`, putting the parser 1-33 bytes short per
+    /// non-empty shader map entry and cascading into every following
+    /// block. Two variants: has_transform=0 (just the bool) and
+    /// has_transform=1 (bool + 32-byte body).
+    #[test]
+    fn parse_ni_texturing_property_shader_map_consumes_has_transform_bool() {
+        let header = make_header(12, 83); // Skyrim LE — v20.2.0.7, >= 20.1.0.3 flags path
+        let mut data = Vec::new();
+        // NiObjectNET base
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // NiProperty flags + texture_count = 0 (no slot-0 textures).
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // `read_tex_desc` for base_texture runs unconditionally — reads
+        // `has: bool` even when texture_count=0. Set it to 0 for an empty
+        // slot entry.
+        data.push(0); // base_texture has = 0
+        // num_shader_textures = 1
+        data.extend_from_slice(&1u32.to_le_bytes());
+        // Shader map entry — has_map = 1, then body.
+        data.push(1); // has_map
+        data.extend_from_slice(&7i32.to_le_bytes()); // source_ref
+        data.extend_from_slice(&0x0102u16.to_le_bytes()); // flags (v >= 20.1.0.3)
+        data.push(0); // has_transform = 0 (no trailing body)
+        data.extend_from_slice(&42u32.to_le_bytes()); // map_id
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let _prop = NiTexturingProperty::parse(&mut stream).unwrap();
+        assert_eq!(
+            stream.position() as usize,
+            expected_len,
+            "shader map entry with has_transform=0 must consume the bool \
+             between flags and map_id"
+        );
+    }
+
+    #[test]
+    fn parse_ni_texturing_property_shader_map_consumes_full_transform() {
+        let header = make_header(12, 83);
+        let mut data = Vec::new();
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // base_texture has = 0 (unconditional read).
+        data.push(0);
+        data.extend_from_slice(&1u32.to_le_bytes());
+        // has_map = 1
+        data.push(1);
+        data.extend_from_slice(&11i32.to_le_bytes()); // source_ref
+        data.extend_from_slice(&0x0304u16.to_le_bytes()); // flags
+        data.push(1); // has_transform = 1 → 32-byte body follows
+                      // TexTransform: translation(2) + scale(2) + rotation(1) + method(1 u32) + center(2) = 8 × 4B.
+        for f in [0.25f32, -0.5, 2.0, 3.0, 0.75] {
+            data.extend_from_slice(&f.to_le_bytes());
+        }
+        data.extend_from_slice(&2u32.to_le_bytes()); // transform_method
+        data.extend_from_slice(&0.1f32.to_le_bytes()); // center x
+        data.extend_from_slice(&0.2f32.to_le_bytes()); // center y
+        data.extend_from_slice(&99u32.to_le_bytes()); // map_id
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let _prop = NiTexturingProperty::parse(&mut stream).unwrap();
+        assert_eq!(
+            stream.position() as usize,
+            expected_len,
+            "shader map entry with has_transform=1 must consume the \
+             32-byte TexTransform body between flags and map_id"
         );
     }
 
