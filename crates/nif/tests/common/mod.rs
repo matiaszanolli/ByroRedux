@@ -205,61 +205,133 @@ pub fn open_mesh_archive(game: Game) -> Option<MeshArchive> {
     }
 }
 
-/// Parse outcome for a single NIF.
+/// Per-file parse outcome: a parse that returned `Err`, or a parse
+/// that returned `Ok` but with a scene that aborted mid-file. See #393.
+#[derive(Debug)]
+pub enum ParseStatus {
+    /// `parse_nif` returned `Ok` and the scene graph is complete.
+    Clean { block_count: usize },
+    /// `parse_nif` returned `Ok` but `scene.truncated == true` — one
+    /// or more blocks were dropped because the parser bailed before
+    /// reading every block. `dropped` counts the missing entries.
+    /// Counts as a **failure** for the rate metric.
+    Truncated {
+        block_count: usize,
+        dropped: usize,
+    },
+    /// `parse_nif` returned `Err`.
+    Failed(String),
+}
+
 #[derive(Debug)]
 pub struct ParseOutcome {
     pub path: String,
-    pub result: Result<usize, String>,
+    pub status: ParseStatus,
 }
 
 impl ParseOutcome {
-    pub fn is_ok(&self) -> bool {
-        self.result.is_ok()
+    pub fn is_clean(&self) -> bool {
+        matches!(self.status, ParseStatus::Clean { .. })
     }
 }
 
 /// Parse statistics across a batch of NIFs.
+///
+/// `success_rate()` is now the **clean-parse** rate — truncated scenes
+/// count as failures. A truncated scene is a silent data loss (root
+/// NiNode may be missing, descendants unreachable), not a recoverable
+/// parse (#393). Secondary counters are surfaced by `print_summary`
+/// for diagnostics.
 #[derive(Debug, Default)]
 pub struct ParseStats {
     pub total: usize,
-    pub ok: usize,
+    /// Clean parses (Ok + not truncated).
+    pub clean: usize,
+    /// Truncated scenes: parse returned Ok but dropped at least one
+    /// block. Kept separately so consumers can track recovery rate.
+    pub truncated: Vec<ParseOutcome>,
+    /// Hard parse failures (parse_nif returned Err).
     pub failures: Vec<ParseOutcome>,
 }
 
 impl ParseStats {
+    /// Clean-parse rate: clean / total. Treats truncated as failure
+    /// because geometry is silently missing in that case.
     pub fn success_rate(&self) -> f64 {
         if self.total == 0 {
             return 1.0;
         }
-        self.ok as f64 / self.total as f64
+        self.clean as f64 / self.total as f64
+    }
+
+    /// Recoverable rate: (clean + truncated) / total. Used as a
+    /// secondary metric — a NIF that truncates still yields some
+    /// renderable blocks; losing zero files to hard parse errors is
+    /// what this tracks.
+    pub fn recoverable_rate(&self) -> f64 {
+        if self.total == 0 {
+            return 1.0;
+        }
+        (self.clean + self.truncated.len()) as f64 / self.total as f64
     }
 
     pub fn record(&mut self, outcome: ParseOutcome) {
         self.total += 1;
-        if outcome.is_ok() {
-            self.ok += 1;
-        } else {
-            self.failures.push(outcome);
+        match &outcome.status {
+            ParseStatus::Clean { .. } => self.clean += 1,
+            ParseStatus::Truncated { .. } => self.truncated.push(outcome),
+            ParseStatus::Failed(_) => self.failures.push(outcome),
         }
     }
 
+    /// Test helper: inject a synthetic outcome without touching real
+    /// NIF data. Used by the metric-split regression tests in this
+    /// module.
+    #[cfg(test)]
+    fn record_status(&mut self, path: &str, status: ParseStatus) {
+        self.record(ParseOutcome {
+            path: path.to_string(),
+            status,
+        });
+    }
+
     pub fn print_summary(&self, label: &str) {
-        let rate = self.success_rate() * 100.0;
+        let clean_rate = self.success_rate() * 100.0;
+        let recoverable_rate = self.recoverable_rate() * 100.0;
         eprintln!(
-            "[{label}] parsed {}/{} NIFs ({:.2}% success, {} failures)",
-            self.ok,
+            "[{label}] parsed {}/{} NIFs: clean {:.2}% ({} clean / {} truncated / {} failed), recoverable {:.2}%",
+            self.clean + self.truncated.len(),
             self.total,
-            rate,
-            self.failures.len()
+            clean_rate,
+            self.clean,
+            self.truncated.len(),
+            self.failures.len(),
+            recoverable_rate,
         );
-        // Print up to 5 failure examples.
+        // Print up to 3 truncated examples — these hide silent data loss.
+        for outcome in self.truncated.iter().take(3) {
+            if let ParseStatus::Truncated {
+                block_count,
+                dropped,
+            } = &outcome.status
+            {
+                eprintln!(
+                    "  TRUNC {}: kept {} blocks, dropped {}",
+                    outcome.path, block_count, dropped
+                );
+            }
+        }
+        if self.truncated.len() > 3 {
+            eprintln!("  ... and {} more truncated", self.truncated.len() - 3);
+        }
+        // Print up to 5 hard failure examples.
         for outcome in self.failures.iter().take(5) {
-            if let Err(e) = &outcome.result {
+            if let ParseStatus::Failed(e) = &outcome.status {
                 eprintln!("  FAIL {}: {}", outcome.path, e);
             }
         }
         if self.failures.len() > 5 {
-            eprintln!("  ... and {} more", self.failures.len() - 5);
+            eprintln!("  ... and {} more failures", self.failures.len() - 5);
         }
     }
 }
@@ -283,16 +355,28 @@ pub fn parse_all_nifs_in_archive(archive: &MeshArchive, limit: Option<usize>) ->
         let outcome = match archive.extract(path) {
             Err(e) => ParseOutcome {
                 path: path.clone(),
-                result: Err(format!("extract: {e}")),
+                status: ParseStatus::Failed(format!("extract: {e}")),
             },
             Ok(bytes) => match byroredux_nif::parse_nif(&bytes) {
-                Ok(scene) => ParseOutcome {
-                    path: path.clone(),
-                    result: Ok(scene.len()),
-                },
+                Ok(scene) => {
+                    let status = if scene.truncated {
+                        ParseStatus::Truncated {
+                            block_count: scene.len(),
+                            dropped: scene.dropped_block_count,
+                        }
+                    } else {
+                        ParseStatus::Clean {
+                            block_count: scene.len(),
+                        }
+                    };
+                    ParseOutcome {
+                        path: path.clone(),
+                        status,
+                    }
+                }
                 Err(e) => ParseOutcome {
                     path: path.clone(),
-                    result: Err(format!("parse: {e}")),
+                    status: ParseStatus::Failed(format!("parse: {e}")),
                 },
             },
         };
@@ -335,16 +419,28 @@ pub fn parse_all_nifs_in_dir(root: &Path, limit: Option<usize>) -> ParseStats {
             let outcome = match std::fs::read(&path) {
                 Err(e) => ParseOutcome {
                     path: display,
-                    result: Err(format!("read: {e}")),
+                    status: ParseStatus::Failed(format!("read: {e}")),
                 },
                 Ok(bytes) => match byroredux_nif::parse_nif(&bytes) {
-                    Ok(scene) => ParseOutcome {
-                        path: display,
-                        result: Ok(scene.len()),
-                    },
+                    Ok(scene) => {
+                        let status = if scene.truncated {
+                            ParseStatus::Truncated {
+                                block_count: scene.len(),
+                                dropped: scene.dropped_block_count,
+                            }
+                        } else {
+                            ParseStatus::Clean {
+                                block_count: scene.len(),
+                            }
+                        };
+                        ParseOutcome {
+                            path: display,
+                            status,
+                        }
+                    }
                     Err(e) => ParseOutcome {
                         path: display,
-                        result: Err(format!("parse: {e}")),
+                        status: ParseStatus::Failed(format!("parse: {e}")),
                     },
                 },
             };
@@ -352,4 +448,61 @@ pub fn parse_all_nifs_in_dir(root: &Path, limit: Option<usize>) -> ParseStats {
         }
     }
     stats
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression #393: truncated scenes must NOT count toward the
+    // clean-parse rate. They are silent data loss (one or more blocks
+    // dropped) and their prior classification as "success" hid a ~9%
+    // real failure rate on Oblivion content.
+
+    #[test]
+    fn clean_rate_counts_truncated_as_failure() {
+        let mut stats = ParseStats::default();
+        stats.record_status("a.nif", ParseStatus::Clean { block_count: 10 });
+        stats.record_status("b.nif", ParseStatus::Clean { block_count: 12 });
+        stats.record_status(
+            "c.nif",
+            ParseStatus::Truncated {
+                block_count: 3,
+                dropped: 37,
+            },
+        );
+        stats.record_status("d.nif", ParseStatus::Failed("parse: oops".into()));
+
+        assert_eq!(stats.total, 4);
+        assert_eq!(stats.clean, 2);
+        assert_eq!(stats.truncated.len(), 1);
+        assert_eq!(stats.failures.len(), 1);
+        // clean / total = 2/4 = 0.5
+        assert!((stats.success_rate() - 0.5).abs() < 1e-6);
+        // recoverable = (clean + truncated) / total = 3/4 = 0.75
+        assert!((stats.recoverable_rate() - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn empty_stats_report_perfect_rates() {
+        let stats = ParseStats::default();
+        assert_eq!(stats.success_rate(), 1.0);
+        assert_eq!(stats.recoverable_rate(), 1.0);
+    }
+
+    #[test]
+    fn all_truncated_gives_zero_clean_one_hundred_recoverable() {
+        let mut stats = ParseStats::default();
+        for i in 0..10 {
+            stats.record_status(
+                &format!("t{i}.nif"),
+                ParseStatus::Truncated {
+                    block_count: 0,
+                    dropped: 1,
+                },
+            );
+        }
+        assert_eq!(stats.success_rate(), 0.0);
+        assert_eq!(stats.recoverable_rate(), 1.0);
+    }
 }

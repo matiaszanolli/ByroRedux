@@ -23,7 +23,18 @@ const MIN_SUCCESS_RATE: f64 = 0.95;
 
 struct Stats {
     total: usize,
-    ok: usize,
+    /// Parses that returned Ok with a complete scene graph.
+    clean: usize,
+    /// Parses that returned Ok but with `scene.truncated == true`.
+    /// Tracked separately from `clean` because they represent silent
+    /// data loss (one or more blocks dropped). See #393.
+    truncated: usize,
+    /// Sum of `dropped_block_count` across every truncated scene —
+    /// gives a rough "blocks lost" telemetry figure.
+    dropped_blocks: usize,
+    /// Examples of truncated files (path, dropped count), capped for
+    /// the summary output.
+    truncated_examples: Vec<(String, usize)>,
     block_histogram: BTreeMap<String, usize>,
     /// Grouped by the first line of the error message.
     failure_groups: BTreeMap<String, Vec<String>>,
@@ -33,7 +44,10 @@ impl Stats {
     fn new() -> Self {
         Self {
             total: 0,
-            ok: 0,
+            clean: 0,
+            truncated: 0,
+            dropped_blocks: 0,
+            truncated_examples: Vec::new(),
             block_histogram: BTreeMap::new(),
             failure_groups: BTreeMap::new(),
         }
@@ -41,7 +55,27 @@ impl Stats {
 
     fn record_success(&mut self, block_names: impl Iterator<Item = String>) {
         self.total += 1;
-        self.ok += 1;
+        self.clean += 1;
+        for name in block_names {
+            *self.block_histogram.entry(name).or_insert(0) += 1;
+        }
+    }
+
+    /// A truncated scene still contributes block histogram data (the
+    /// partial parse is useful for telemetry), but does NOT count
+    /// toward the clean-parse rate used by the exit-code gate. See #393.
+    fn record_truncated(
+        &mut self,
+        path: String,
+        dropped: usize,
+        block_names: impl Iterator<Item = String>,
+    ) {
+        self.total += 1;
+        self.truncated += 1;
+        self.dropped_blocks += dropped;
+        if self.truncated_examples.len() < 20 {
+            self.truncated_examples.push((path, dropped));
+        }
         for name in block_names {
             *self.block_histogram.entry(name).or_insert(0) += 1;
         }
@@ -54,24 +88,31 @@ impl Stats {
         self.failure_groups.entry(group_key).or_default().push(path);
     }
 
+    /// Clean-parse rate — the exit-code gate metric. Truncated files
+    /// count as failures because they represent silent data loss.
     fn success_rate(&self) -> f64 {
         if self.total == 0 {
             1.0
         } else {
-            self.ok as f64 / self.total as f64
+            self.clean as f64 / self.total as f64
         }
     }
 
     fn print(&self) {
+        let failures = self.total - self.clean - self.truncated;
         println!();
         println!("─── Parse stats ──────────────────────────────────────────────");
-        println!("  total:    {:>6}", self.total);
+        println!("  total:     {:>6}", self.total);
         println!(
-            "  ok:       {:>6}  ({:.2}%)",
-            self.ok,
+            "  clean:     {:>6}  ({:.2}%)",
+            self.clean,
             self.success_rate() * 100.0
         );
-        println!("  failures: {:>6}", self.total - self.ok);
+        println!(
+            "  truncated: {:>6}  ({} blocks dropped)",
+            self.truncated, self.dropped_blocks
+        );
+        println!("  failures:  {:>6}", failures);
 
         if !self.block_histogram.is_empty() {
             let mut sorted: Vec<(&String, &usize)> = self.block_histogram.iter().collect();
@@ -82,6 +123,20 @@ impl Stats {
                 println!("  {:>6}  {}", count, name);
             }
             println!("  ({} distinct block types)", sorted.len());
+        }
+
+        if !self.truncated_examples.is_empty() {
+            println!();
+            println!("─── Truncated scenes (sample) ─────────────────────────────────");
+            for (path, dropped) in &self.truncated_examples {
+                println!("  dropped {} blocks  {}", dropped, path);
+            }
+            if self.truncated > self.truncated_examples.len() {
+                println!(
+                    "  ... and {} more truncated",
+                    self.truncated - self.truncated_examples.len()
+                );
+            }
         }
 
         if !self.failure_groups.is_empty() {
@@ -105,8 +160,16 @@ impl Stats {
 fn process_bytes(stats: &mut Stats, label: String, bytes: &[u8]) {
     match parse_nif(bytes) {
         Ok(scene) => {
-            let names = scene.blocks.iter().map(|b| b.block_type_name().to_string());
-            stats.record_success(names);
+            let names: Vec<String> = scene
+                .blocks
+                .iter()
+                .map(|b| b.block_type_name().to_string())
+                .collect();
+            if scene.truncated {
+                stats.record_truncated(label, scene.dropped_block_count, names.into_iter());
+            } else {
+                stats.record_success(names.into_iter());
+            }
         }
         Err(e) => {
             stats.record_failure(label, e.to_string());

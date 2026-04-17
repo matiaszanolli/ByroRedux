@@ -271,6 +271,18 @@ pub fn import_nif_scene(scene: &NifScene) -> ImportedScene {
         bs_bound: None,
     };
 
+    // A truncated scene means at least one block was lost to a mid-parse
+    // abort. The root NiNode heuristic may pick a sibling subtree
+    // instead of the real root, and block refs inside descendant nodes
+    // may dangle. Surface this to any caller (cell_loader, etc.) so the
+    // partial import isn't silently accepted as complete. See #393.
+    if scene.truncated {
+        log::warn!(
+            "importing truncated NIF scene — {} blocks dropped; root/refs may be incomplete",
+            scene.dropped_block_count,
+        );
+    }
+
     let Some(root_idx) = scene.root_index else {
         return imported;
     };
