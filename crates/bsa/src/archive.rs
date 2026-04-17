@@ -6,6 +6,97 @@ use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
+/// Bethesda BSA v103+ folder-name hash. Used by the v103/v104/v105
+/// directory tables to identify folders without scanning names.
+///
+/// Algorithm (lower-cased, UTF-8):
+/// - `hash_low` packs: last char (b7..b0), second-to-last char (b15..b8),
+///   length (b23..b16), first char (b31..b24).
+/// - `hash_high` is a rolling `(h * 0x1003f) + c` over the middle chars
+///   `[1 .. len-2)`.
+///
+/// See UESP `Oblivion_Mod:BSA_File_Format#Hash_Calculation` and the
+/// BSArch / libbsarch reference implementations. See #361.
+#[allow(dead_code)]
+fn genhash_folder(name: &str) -> u64 {
+    let lower: Vec<u8> = name
+        .as_bytes()
+        .iter()
+        .map(|b| b.to_ascii_lowercase())
+        .collect();
+    let len = lower.len();
+
+    let mut hash_low: u32 = 0;
+    if len > 0 {
+        hash_low |= lower[len - 1] as u32;
+    }
+    if len >= 3 {
+        hash_low |= (lower[len - 2] as u32) << 8;
+    }
+    hash_low |= (len as u32) << 16;
+    if len > 0 {
+        hash_low |= (lower[0] as u32) << 24;
+    }
+
+    let mut hash_high: u32 = 0;
+    // Middle range `[1, len - 2)` — empty for len <= 3.
+    if len > 3 {
+        for &c in &lower[1..len - 2] {
+            hash_high = hash_high.wrapping_mul(0x1003f).wrapping_add(c as u32);
+        }
+    }
+
+    ((hash_high as u64) << 32) | (hash_low as u64)
+}
+
+/// Bethesda BSA v103+ file-name hash. The stem uses the same algorithm
+/// as `genhash_folder`; the extension contributes both a stem XOR (for a
+/// handful of privileged extensions) and an extra rolling hash pass
+/// that gets folded into the high word.
+///
+/// `name` is the filename only — no directory component.
+#[allow(dead_code)]
+fn genhash_file(name: &str) -> u64 {
+    let lower: Vec<u8> = name
+        .as_bytes()
+        .iter()
+        .map(|b| b.to_ascii_lowercase())
+        .collect();
+    let (stem_bytes, ext_bytes) = match lower.iter().rposition(|&c| c == b'.') {
+        Some(i) => (&lower[..i], &lower[i..]),
+        None => (&lower[..], &lower[..0]),
+    };
+
+    // Base hash over the stem.
+    let stem = std::str::from_utf8(stem_bytes).unwrap_or("");
+    let mut hash = genhash_folder(stem);
+
+    // Extension adds a known XOR constant to the low word for the most
+    // common asset types.
+    let ext = std::str::from_utf8(ext_bytes).unwrap_or("");
+    let ext_xor: u32 = match ext {
+        ".kf" => 0x80,
+        ".nif" => 0x8000,
+        ".dds" => 0x8080,
+        ".wav" => 0x80000000,
+        ".adp" => 0x00202e1a,
+        _ => 0,
+    };
+    let hash_low = (hash as u32) ^ ext_xor;
+
+    // Rolling hash over the whole extension (including the leading dot)
+    // folds into the high word on top of the stem's contribution.
+    let mut hash_high = (hash >> 32) as u32;
+    for &c in ext_bytes {
+        hash_high = hash_high.wrapping_mul(0x1003f).wrapping_add(c as u32);
+    }
+
+    // Preserve the low-word XOR by folding back in; this matches
+    // BSArch's final combine step for filenames.
+    hash = ((hash_high as u64) << 32) | (hash_low as u64);
+    hash
+}
+
 /// A BSA v103/v104/v105 archive opened for reading.
 ///
 /// v103: Oblivion (16-byte folder records, zlib compression)
@@ -90,15 +181,36 @@ impl BsaArchive {
         // -- Folder Records (16 bytes v104 / 24 bytes v105) ----------------------
         // v104: [hash:u64, count:u32, offset:u32]
         // v105: [hash:u64, count:u32, _padding:u32, offset:u64]
+        //
+        // The offset is the absolute file position where the folder's
+        // name + file records start, **with the `_total_file_name_length`
+        // header quantity added to it** on disk — subtract that at
+        // validation time. See `expected_offset` below. (#362)
         let folder_record_size: usize = if version == 105 { 24 } else { 16 };
-        let mut folder_records = Vec::with_capacity(folder_count);
+        struct FolderRecord {
+            hash: u64,
+            count: usize,
+            /// v104: u32 at [12..16]. v105: u64 at [16..24]. Used to
+            /// validate folder-block layout in debug builds (#362).
+            offset: u64,
+        }
+        let mut folder_records: Vec<FolderRecord> = Vec::with_capacity(folder_count);
         for _ in 0..folder_count {
             let mut rec = [0u8; 24];
             reader.read_exact(&mut rec[..folder_record_size])?;
-            let _hash = u64::from_le_bytes(rec[0..8].try_into().unwrap());
+            let hash = u64::from_le_bytes(rec[0..8].try_into().unwrap());
             let count = u32::from_le_bytes(rec[8..12].try_into().unwrap()) as usize;
-            // v105 has padding at [12..16] and u64 offset at [16..24]; we don't use offset.
-            folder_records.push(count);
+            let offset = if version == 105 {
+                u64::from_le_bytes(rec[16..24].try_into().unwrap())
+            } else {
+                // v103/v104 offset is u32 at [12..16].
+                u32::from_le_bytes(rec[12..16].try_into().unwrap()) as u64
+            };
+            folder_records.push(FolderRecord {
+                hash,
+                count,
+                offset,
+            });
         }
 
         // -- Folder Name Blocks + File Records ----------------------------------
@@ -107,11 +219,36 @@ impl BsaArchive {
             size: u32,
             offset: u32,
             compression_toggle: bool,
+            /// Stored file hash — only retained in debug builds for the
+            /// later file-name-pass validation (#361). Release builds
+            /// drop the field entirely.
+            #[cfg(debug_assertions)]
+            hash: u64,
         }
 
         let mut raw_files: Vec<RawFileRecord> = Vec::with_capacity(file_count);
 
-        for &count in &folder_records {
+        for folder in &folder_records {
+            // B2-04 (#362): verify the folder offset in the header matches
+            // where we actually are. The on-disk offset is biased by
+            // `total_file_name_length`, so we subtract it back out.
+            // Mismatch means the table was reordered or padded by a
+            // tool — not impossible but worth surfacing during dev.
+            #[cfg(debug_assertions)]
+            {
+                let here = reader.stream_position().unwrap_or(0);
+                let expected = folder
+                    .offset
+                    .saturating_sub(_total_file_name_length as u64);
+                if expected != here {
+                    log::warn!(
+                        "BSA folder offset mismatch: expected {} (from record), got {} — archive may have been reordered",
+                        expected,
+                        here,
+                    );
+                }
+            }
+
             // Read folder name (u8 length + null-terminated string)
             let mut len_buf = [0u8; 1];
             reader.read_exact(&mut len_buf)?;
@@ -124,11 +261,29 @@ impl BsaArchive {
             }
             let folder_name = String::from_utf8_lossy(&name_buf).to_lowercase();
 
+            // B2-03 (#361): warn if the stored folder hash disagrees
+            // with the computed hash of the name we just read. A
+            // mismatch points at either a hand-crafted archive or a
+            // bug in our hash algorithm — either way, worth surfacing
+            // in debug builds.
+            #[cfg(debug_assertions)]
+            {
+                let computed = genhash_folder(&folder_name);
+                if computed != folder.hash {
+                    log::warn!(
+                        "BSA folder hash mismatch for '{}': stored {:#018x}, computed {:#018x}",
+                        folder_name,
+                        folder.hash,
+                        computed,
+                    );
+                }
+            }
+
             // Read file records (16 bytes each)
-            for _ in 0..count {
+            for _ in 0..folder.count {
                 let mut frec = [0u8; 16];
                 reader.read_exact(&mut frec)?;
-                let _hash = u64::from_le_bytes(frec[0..8].try_into().unwrap());
+                let hash = u64::from_le_bytes(frec[0..8].try_into().unwrap());
                 let size_raw = u32::from_le_bytes(frec[8..12].try_into().unwrap());
                 let offset = u32::from_le_bytes(frec[12..16].try_into().unwrap());
                 let compression_toggle = size_raw & 0x40000000 != 0;
@@ -139,7 +294,11 @@ impl BsaArchive {
                     size,
                     offset,
                     compression_toggle,
+                    #[cfg(debug_assertions)]
+                    hash,
                 });
+                #[cfg(not(debug_assertions))]
+                let _ = hash;
             }
         }
 
@@ -158,6 +317,24 @@ impl BsaArchive {
                 name.push(byte[0]);
             }
             let file_name = String::from_utf8_lossy(&name).to_lowercase();
+
+            // B2-03 (#361): file hash validation mirrors the folder one.
+            // A mismatch in either points at a mangled archive or a
+            // bug in our hash algorithm — either way, surface in debug.
+            #[cfg(debug_assertions)]
+            {
+                let computed = genhash_file(&file_name);
+                if computed != raw.hash {
+                    log::warn!(
+                        "BSA file hash mismatch for '{}\\{}': stored {:#018x}, computed {:#018x}",
+                        raw.folder_name,
+                        file_name,
+                        raw.hash,
+                        computed,
+                    );
+                }
+            }
+
             let full_path = format!("{}\\{}", raw.folder_name, file_name);
 
             files.insert(
@@ -273,6 +450,50 @@ mod tests {
 
     fn skip_if_missing() -> bool {
         !Path::new(FNV_MESHES_BSA).exists()
+    }
+
+    // ── Hash function unit tests (#361) ────────────────────────────────
+
+    #[test]
+    fn genhash_folder_empty_string_is_zero() {
+        // Edge case: empty folder name. Algorithm returns 0 because no
+        // bytes contribute to either word.
+        assert_eq!(genhash_folder(""), 0);
+    }
+
+    #[test]
+    fn genhash_folder_is_case_insensitive() {
+        assert_eq!(
+            genhash_folder("meshes\\clutter"),
+            genhash_folder("MESHES\\CLUTTER"),
+        );
+    }
+
+    #[test]
+    fn genhash_folder_depends_on_content() {
+        // Different folder names should produce different hashes.
+        // (Not cryptographically guaranteed, but true for any two
+        // distinct non-trivial Bethesda folder names.)
+        assert_ne!(
+            genhash_folder("meshes\\clutter"),
+            genhash_folder("meshes\\architecture"),
+        );
+    }
+
+    #[test]
+    fn genhash_file_splits_on_last_dot() {
+        // Extension should affect the hash; two files with the same
+        // stem but different extensions must hash differently.
+        assert_ne!(
+            genhash_file("beerbottle01.nif"),
+            genhash_file("beerbottle01.dds"),
+        );
+    }
+
+    #[test]
+    fn genhash_file_handles_no_extension() {
+        // A name without `.` shouldn't panic. Falls back to empty ext.
+        let _ = genhash_file("noextension");
     }
 
     #[test]
