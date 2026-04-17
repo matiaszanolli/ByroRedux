@@ -368,9 +368,13 @@ fn spawn_terrain_mesh(
         }
     }
 
-    // Upload to GPU.
+    // Upload to GPU via upload_scene_mesh so the terrain participates in
+    // the global geometry SSBO that RT reflection/GI rays sample from.
+    // Plain upload() leaves global_vertex_offset/global_index_offset at 0,
+    // which would make RT rays hitting terrain read whichever clutter mesh
+    // landed at SSBO offset 0. See #371.
     let allocator = ctx.allocator.as_ref()?;
-    let mesh_handle = match ctx.mesh_registry.upload(
+    let mesh_handle = match ctx.mesh_registry.upload_scene_mesh(
         &ctx.device,
         allocator,
         &ctx.graphics_queue,

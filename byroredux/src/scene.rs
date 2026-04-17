@@ -725,7 +725,10 @@ pub(crate) fn load_nif_bytes(
             .collect();
 
         let alloc = ctx.allocator.as_ref().unwrap();
-        let mesh_handle = match ctx.mesh_registry.upload(
+        // upload_scene_mesh registers the vertices/indices into the global
+        // geometry SSBO that RT ray queries sample for reflection UVs.
+        // See #371.
+        let mesh_handle = match ctx.mesh_registry.upload_scene_mesh(
             &ctx.device,
             alloc,
             &ctx.graphics_queue,
