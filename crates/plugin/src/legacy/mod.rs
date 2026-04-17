@@ -21,11 +21,15 @@
 //!
 //! **Save-generated (slot 0xFF):** ephemeral references (PlaceAtMe, fired
 //! arrows, ash piles) — must never be interned as stable identities.
-
-pub mod fo4;
-pub mod tes3;
-pub mod tes4;
-pub mod tes5;
+//!
+//! # Per-game parsers
+//!
+//! There used to be `tes3` / `tes4` / `tes5` / `fo4` submodules here, but
+//! they were `todo!()` stubs with no callers — the working ESM path
+//! lives in [`crate::esm`] and never produces [`Record`](crate::record::Record)
+//! bundles. The plumbing for converting parsed records into the stable
+//! `Record` form will land alongside its first real consumer; until then
+//! the stubs were just misleading. See #390.
 
 use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
 
