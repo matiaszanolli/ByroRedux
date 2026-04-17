@@ -2,6 +2,7 @@
 
 use super::acceleration::AccelerationManager;
 use super::allocator::{self, SharedAllocator};
+use super::caustic::CausticPipeline;
 use super::composite::{CompositePipeline, HDR_FORMAT};
 use super::compute::ClusterCullPipeline;
 use super::debug;
@@ -202,6 +203,12 @@ pub struct VulkanContext {
     /// HDR image that composite samples. None when allocation fails; the
     /// fallback path feeds raw HDR directly into composite.
     pub taa: Option<TaaPipeline>,
+    /// Caustic scatter pass (#321) — per-frame refracted-light accumulator
+    /// sampled by the composite pass as a `usampler2D`. Created after SVGF
+    /// and before composite so composite's binding 5 can point at its
+    /// sampled views. Non-optional: the R32_UINT atomic storage image the
+    /// pass needs is universally supported on desktop GPUs.
+    pub caustic: Option<CausticPipeline>,
     pipeline_cache: vk::PipelineCache,
     pipeline: vk::Pipeline,
     pipeline_alpha: vk::Pipeline,
@@ -579,6 +586,56 @@ impl VulkanContext {
                 (raw_indirect_views.clone(), false)
             };
 
+        // 14b-bis. Caustic scatter pass (#321). Sits between SVGF and
+        // composite so composite's binding 5 can sample its R32_UINT
+        // accumulator. The compute shader fires ray queries against the
+        // TLAS and uses the full set of per-FIF scene buffers, so all of
+        // those need to exist (they do — this runs after SceneBuffers and
+        // AccelerationManager are built).
+        let normal_views_seed: Vec<vk::ImageView> =
+            (0..n_frames).map(|i| gbuffer_ref.normal_view(i)).collect();
+        let mut caustic: Option<CausticPipeline> = match CausticPipeline::new(
+            &device,
+            &gpu_allocator,
+            depth_image_view,
+            &normal_views_seed,
+            &mesh_id_views_seed,
+            scene_buffers.light_buffers(),
+            scene_buffers.light_buffer_size(),
+            scene_buffers.camera_buffers(),
+            scene_buffers.camera_buffer_size(),
+            scene_buffers.instance_buffers(),
+            scene_buffers.instance_buffer_size(),
+            swapchain_state.extent.width,
+            swapchain_state.extent.height,
+        ) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                return Err(anyhow::anyhow!("Caustic pipeline creation failed: {e}"));
+            }
+        };
+        if let Some(ref c) = caustic {
+            if let Err(e) =
+                unsafe { c.initialize_layouts(&device, &graphics_queue, transfer_pool) }
+            {
+                log::warn!("Caustic layout init failed: {e} — disabling caustic");
+                if let Some(mut pipe) = caustic.take() {
+                    unsafe { pipe.destroy(&device, &gpu_allocator) };
+                }
+            }
+        }
+        // Build caustic view list for composite. When caustic is disabled
+        // we reuse the mesh_id views as a harmless placeholder (composite
+        // samples with texelFetch as usampler2D; R16_UINT is narrower than
+        // R32_UINT but SPIR-V's usampler2D reads undefined-for-bits-above-
+        // format anyway, yielding small values and ~zero caustic). This
+        // avoids a dedicated dummy image while keeping the descriptor slot
+        // populated.
+        let caustic_views: Vec<vk::ImageView> = match caustic {
+            Some(ref c) => (0..n_frames).map(|i| c.sampled_view(i)).collect(),
+            None => mesh_id_views_seed.clone(),
+        };
+
         // 14c. Composite pipeline: owns HDR intermediates + tone-map pass.
         // Its descriptor sets sample HDR (owned by composite), indirect
         // (from SVGF or raw G-buffer), and albedo (G-buffer).
@@ -591,6 +648,7 @@ impl VulkanContext {
             indirect_is_general,
             &albedo_views,
             depth_image_view,
+            &caustic_views,
             swapchain_state.extent.width,
             swapchain_state.extent.height,
         ) {
@@ -716,6 +774,7 @@ impl VulkanContext {
             gbuffer,
             svgf,
             taa,
+            caustic,
             depth_allocation: Some(depth_allocation),
             depth_image,
             depth_image_view,
@@ -816,6 +875,9 @@ impl Drop for VulkanContext {
                 }
                 if let Some(ref mut composite) = self.composite {
                     composite.destroy(&self.device, alloc);
+                }
+                if let Some(ref mut caustic) = self.caustic {
+                    caustic.destroy(&self.device, alloc);
                 }
                 if let Some(ref mut svgf) = self.svgf {
                     svgf.destroy(&self.device, alloc);

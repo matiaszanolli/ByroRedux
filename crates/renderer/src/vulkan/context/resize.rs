@@ -257,9 +257,51 @@ impl VulkanContext {
                 (raw_indirect_views.clone(), false)
             };
 
+        // Recreate caustic accumulator images + rewrite its descriptor sets
+        // before composite (composite samples caustic's views).
+        let normal_views_in: Vec<vk::ImageView> = {
+            let gb = self
+                .gbuffer
+                .as_ref()
+                .expect("gbuffer must exist during resize");
+            (0..MAX_FRAMES_IN_FLIGHT)
+                .map(|i| gb.normal_view(i))
+                .collect()
+        };
+        if let Some(ref mut caustic) = self.caustic {
+            caustic.recreate_on_resize(
+                &self.device,
+                self.allocator
+                    .as_ref()
+                    .expect("allocator missing during resize"),
+                self.depth_image_view,
+                &normal_views_in,
+                &mesh_id_views_in,
+                self.scene_buffers.light_buffers(),
+                self.scene_buffers.light_buffer_size(),
+                self.scene_buffers.camera_buffers(),
+                self.scene_buffers.camera_buffer_size(),
+                self.scene_buffers.instance_buffers(),
+                self.scene_buffers.instance_buffer_size(),
+                self.swapchain_state.extent.width,
+                self.swapchain_state.extent.height,
+            )?;
+            if let Err(e) = unsafe {
+                caustic.initialize_layouts(&self.device, &self.graphics_queue, self.transfer_pool)
+            } {
+                log::warn!("Caustic layout re-init after resize failed: {e}");
+            }
+        }
+        let caustic_views: Vec<vk::ImageView> = match self.caustic {
+            Some(ref c) => (0..MAX_FRAMES_IN_FLIGHT)
+                .map(|i| c.sampled_view(i))
+                .collect(),
+            None => mesh_id_views_in.clone(),
+        };
+
         // Recreate composite pipeline's HDR images + swapchain framebuffers
         // with the new extent. Also rewrites descriptor sets to point at
-        // the new indirect + albedo views.
+        // the new indirect + albedo + caustic views.
         if let Some(ref mut composite) = self.composite {
             composite.recreate_on_resize(
                 &self.device,
@@ -271,6 +313,7 @@ impl VulkanContext {
                 indirect_is_general,
                 &albedo_views,
                 self.depth_image_view,
+                &caustic_views,
                 self.swapchain_state.extent.width,
                 self.swapchain_state.extent.height,
             )?;

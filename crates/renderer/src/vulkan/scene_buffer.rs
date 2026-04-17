@@ -80,8 +80,13 @@ pub struct GpuInstance {
     pub avg_albedo_r: f32, // 4 B, offset 140
     pub avg_albedo_g: f32,     // 4 B, offset 144
     pub avg_albedo_b: f32,     // 4 B, offset 148
-    /// Per-instance flags. Bit 0 = has non-uniform scale (needs
-    /// inverse-transpose for normal transform). See #273.
+    /// Per-instance flags.
+    ///   bit 0 — has non-uniform scale (needs inverse-transpose normal transform). See #273.
+    ///   bit 1 — `alpha_blend` enabled (NiAlphaProperty blend bit). Used by the
+    ///           fragment shader for its `isGlass`/`isWindow` classification.
+    ///   bit 2 — caustic source: mesh is a plausible refractive surface
+    ///           (alpha-blend, non-metal). The caustic compute pass scatters
+    ///           caustic splats from every pixel whose instance has this bit. #321.
     pub flags: u32, // 4 B, offset 152
     pub _pad1: u32,            // 4 B, offset 156 → total 160
                                // Struct is 160 bytes (10×16), 16-byte aligned for std430.
@@ -638,6 +643,11 @@ impl SceneBuffers {
         &self.camera_buffers
     }
 
+    /// Get the instance buffers (for the caustic pipeline's descriptor writes).
+    pub fn instance_buffers(&self) -> &[GpuBuffer] {
+        &self.instance_buffers
+    }
+
     /// Light buffer size in bytes.
     pub fn light_buffer_size(&self) -> vk::DeviceSize {
         (std::mem::size_of::<LightHeader>() + std::mem::size_of::<GpuLight>() * MAX_LIGHTS)
@@ -647,6 +657,11 @@ impl SceneBuffers {
     /// Camera buffer size in bytes.
     pub fn camera_buffer_size(&self) -> vk::DeviceSize {
         std::mem::size_of::<GpuCamera>() as vk::DeviceSize
+    }
+
+    /// Instance buffer size in bytes.
+    pub fn instance_buffer_size(&self) -> vk::DeviceSize {
+        (std::mem::size_of::<GpuInstance>() * MAX_INSTANCES) as vk::DeviceSize
     }
 
     /// Get the descriptor set for the current frame-in-flight.

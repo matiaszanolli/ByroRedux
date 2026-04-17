@@ -107,6 +107,7 @@ impl CompositePipeline {
     /// Which layout the indirect is in is baked into the descriptor sets
     /// at write time — callers must pass `indirect_is_general=true` when
     /// wiring up the SVGF output.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
@@ -116,6 +117,7 @@ impl CompositePipeline {
         indirect_is_general: bool,
         albedo_views: &[vk::ImageView],
         depth_view: vk::ImageView,
+        caustic_views: &[vk::ImageView],
         width: u32,
         height: u32,
     ) -> Result<Self> {
@@ -128,6 +130,7 @@ impl CompositePipeline {
             indirect_is_general,
             albedo_views,
             depth_view,
+            caustic_views,
             width,
             height,
         );
@@ -137,6 +140,7 @@ impl CompositePipeline {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_inner(
         device: &ash::Device,
         allocator: &SharedAllocator,
@@ -146,11 +150,13 @@ impl CompositePipeline {
         indirect_is_general: bool,
         albedo_views: &[vk::ImageView],
         depth_view: vk::ImageView,
+        caustic_views: &[vk::ImageView],
         width: u32,
         height: u32,
     ) -> Result<Self> {
         debug_assert_eq!(indirect_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(albedo_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(caustic_views.len(), MAX_FRAMES_IN_FLIGHT);
         // Build a partially-valid Self so we can use destroy() for cleanup
         // on any error. Fields that haven't been created yet use null
         // handles — destroy() calls vkDestroy* on null (always a no-op).
@@ -350,7 +356,7 @@ impl CompositePipeline {
         }
 
         // ── 6. Descriptor set layout + pipeline layout ───────────────
-        // 5 bindings — HDR, indirect, albedo, params UBO, depth.
+        // 6 bindings — HDR, indirect, albedo, params UBO, depth, caustic.
         let ds_bindings = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
@@ -374,6 +380,12 @@ impl CompositePipeline {
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
             vk::DescriptorSetLayoutBinding::default()
                 .binding(4)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            // 5: caustic accumulator as usampler2D — R32_UINT sampled view.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(5)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
@@ -401,7 +413,7 @@ impl CompositePipeline {
         let pool_sizes = [
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 4) as u32,
+                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 5) as u32,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::UNIFORM_BUFFER,
@@ -462,6 +474,10 @@ impl CompositePipeline {
                 .sampler(partial.hdr_sampler)
                 .image_view(depth_view)
                 .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
+            let caustic_info = [vk::DescriptorImageInfo::default()
+                .sampler(partial.hdr_sampler)
+                .image_view(caustic_views[i])
+                .image_layout(vk::ImageLayout::GENERAL)];
             let writes = [
                 vk::WriteDescriptorSet::default()
                     .dst_set(partial.descriptor_sets[i])
@@ -488,6 +504,11 @@ impl CompositePipeline {
                     .dst_binding(4)
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .image_info(&depth_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(partial.descriptor_sets[i])
+                    .dst_binding(5)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&caustic_info),
             ];
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
@@ -665,6 +686,7 @@ impl CompositePipeline {
     /// swapchain resize. The HDR images themselves are recreated because
     /// their size matches the swapchain. Caller must also pass the new
     /// indirect + albedo views (SVGF/GBuffer just recreated them).
+    #[allow(clippy::too_many_arguments)]
     pub fn recreate_on_resize(
         &mut self,
         device: &ash::Device,
@@ -674,6 +696,7 @@ impl CompositePipeline {
         indirect_is_general: bool,
         albedo_views: &[vk::ImageView],
         depth_view: vk::ImageView,
+        caustic_views: &[vk::ImageView],
         width: u32,
         height: u32,
     ) -> Result<()> {
@@ -784,6 +807,10 @@ impl CompositePipeline {
                     .sampler(self.hdr_sampler)
                     .image_view(depth_view)
                     .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
+                let caustic_info = [vk::DescriptorImageInfo::default()
+                    .sampler(self.hdr_sampler)
+                    .image_view(caustic_views[i])
+                    .image_layout(vk::ImageLayout::GENERAL)];
                 let writes = [
                     vk::WriteDescriptorSet::default()
                         .dst_set(self.descriptor_sets[i])
@@ -810,6 +837,11 @@ impl CompositePipeline {
                         .dst_binding(4)
                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                         .image_info(&depth_info),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(self.descriptor_sets[i])
+                        .dst_binding(5)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(&caustic_info),
                 ];
                 unsafe { device.update_descriptor_sets(&writes, &[]) };
             }

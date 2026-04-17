@@ -1,0 +1,209 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+// Caustic scatter pass (#321 Option A).
+//
+// One compute invocation per screen pixel. Only pixels whose instance has
+// bit 2 of `flags` (the caustic-source bit, set CPU-side by the refractive-
+// material heuristic in draw.rs) do work. For each such pixel, we:
+//   1. Reconstruct the refractive surface's world pos + normal from the
+//      G-buffer (depth + octahedral normal).
+//   2. For each of the first N lights, refract the light's incidence
+//      direction through the surface normal with IOR 1.5 (glass default).
+//   3. Fire a ray query along the refracted direction to find where the
+//      refracted light lands.
+//   4. Project that hit back into screen space and atomicAdd a fixed-point
+//      luminance contribution into the caustic accumulator at the hit pixel.
+//
+// The accumulator is a single R32_UINT storage image so the shader can use
+// `imageAtomicAdd`. Composite converts uint → float when sampling. The
+// fixed-point scale is CAUSTIC_FIXED_SCALE (see params); composite divides
+// by the same value to recover the accumulated luminance.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// ── G-buffer inputs (previous pass already wrote these) ─────────────
+layout(set = 0, binding = 0) uniform sampler2D depthTex;
+layout(set = 0, binding = 1) uniform sampler2D normalTex;   // RG16_SNORM octahedral
+layout(set = 0, binding = 2) uniform usampler2D meshIdTex;  // R16_UINT, id + 1
+
+// ── Scene (copied from triangle.{vert,frag}) ────────────────────────
+struct GpuLight {
+    vec4 position_radius;
+    vec4 color_type;
+    vec4 direction_angle;
+};
+
+layout(std430, set = 0, binding = 3) readonly buffer LightBuffer {
+    uint lightCount;
+    uint _lpad0, _lpad1, _lpad2;
+    GpuLight lights[];
+};
+
+layout(set = 0, binding = 4) uniform CameraUBO {
+    mat4 viewProj;
+    mat4 prevViewProj;
+    mat4 invViewProj;
+    vec4 cameraPos;
+    vec4 sceneFlags;
+    vec4 screen;
+    vec4 fog;
+    vec4 jitter;
+};
+
+struct GpuInstance {
+    mat4 model;
+    uint textureIndex;
+    uint boneOffset;
+    uint normalMapIndex;
+    float roughness;
+    float metalness;
+    float emissiveMult;
+    float emissiveR, emissiveG, emissiveB;
+    float specularStrength;
+    float specularR, specularG, specularB;
+    uint vertexOffset;
+    uint indexOffset;
+    uint vertexCount;
+    float alphaThreshold;
+    uint alphaTestFunc;
+    uint darkMapIndex;
+    float avgAlbedoR, avgAlbedoG, avgAlbedoB;
+    uint flags;
+    uint _pad1;
+};
+
+layout(std430, set = 0, binding = 5) readonly buffer InstanceBuffer {
+    GpuInstance instances[];
+};
+
+layout(set = 0, binding = 6) uniform accelerationStructureEXT topLevelAS;
+
+// ── Output: scalar caustic accumulator (R32_UINT, atomic add) ───────
+layout(set = 0, binding = 7, r32ui) uniform uimage2D causticAccum;
+
+// ── Params ──────────────────────────────────────────────────────────
+layout(set = 0, binding = 8) uniform CausticParams {
+    vec4 causticScreen;   // xy = pixel size, zw = 1/size
+    vec4 causticTune;     // x = fixed-point scale, y = IOR, z = max_lights, w = strength
+};
+
+// Octahedral decode (mirror triangle.frag's implementation).
+vec3 octDecode(vec2 e) {
+    vec3 n = vec3(e.xy, 1.0 - abs(e.x) - abs(e.y));
+    if (n.z < 0.0) {
+        n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0,
+                                        n.y >= 0.0 ? 1.0 : -1.0);
+    }
+    return normalize(n);
+}
+
+vec3 reconstructWorldPos(ivec2 pixel, float depth) {
+    vec2 uv = (vec2(pixel) + 0.5) * causticScreen.zw;
+    vec4 ndc = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 world = invViewProj * ndc;
+    return world.xyz / world.w;
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = ivec2(causticScreen.xy);
+    if (any(greaterThanEqual(pixel, size))) return;
+
+    // Reject background (meshId = 0 means "empty").
+    uint meshId = texelFetch(meshIdTex, pixel, 0).r;
+    if (meshId == 0u) return;
+
+    // Instance flag gate — only caustic-source pixels splat.
+    uint instIdx = meshId - 1u;
+    uint flags = instances[instIdx].flags;
+    if ((flags & 4u) == 0u) return;
+
+    // Reconstruct the refractive surface point.
+    float depth = texelFetch(depthTex, pixel, 0).r;
+    if (depth >= 1.0) return; // far plane
+    vec3 G = reconstructWorldPos(pixel, depth);
+
+    vec2 nEnc = texelFetch(normalTex, pixel, 0).rg;
+    vec3 N = octDecode(nEnc);
+
+    // Average albedo is pre-computed per instance — use it to tint the
+    // caustic luminance so red glass dims caustic luminance appropriately.
+    // (Scalar accumulator means we lose chromatic tint, but the darkening
+    // term still communicates "this is a colored glass" intensity drop.)
+    vec3 avgAlbedo = vec3(instances[instIdx].avgAlbedoR,
+                          instances[instIdx].avgAlbedoG,
+                          instances[instIdx].avgAlbedoB);
+    float tintLum = dot(avgAlbedo, vec3(0.2126, 0.7152, 0.0722));
+    tintLum = max(tintLum, 0.05); // don't zero out purely black glass
+
+    float ior = max(causticTune.y, 1.01);
+    uint maxLights = uint(causticTune.z);
+    float strength = causticTune.w;
+    float scale = causticTune.x;
+
+    uint N_LIGHTS = min(lightCount, maxLights);
+    for (uint li = 0u; li < N_LIGHTS; ++li) {
+        GpuLight L = lights[li];
+        vec3 Lp = L.position_radius.xyz;
+        vec3 Lc = L.color_type.rgb;
+        float Lrad = max(L.position_radius.w, 0.01);
+        uint Ltype = uint(L.color_type.w);
+
+        // Direction of light arrival at G.
+        vec3 LtoG;
+        if (Ltype == 2u) {
+            // Directional light: `direction_angle.xyz` is the light direction.
+            LtoG = normalize(L.direction_angle.xyz);
+        } else {
+            LtoG = G - Lp;
+            float d2 = dot(LtoG, LtoG);
+            if (d2 > Lrad * Lrad) continue; // outside light radius
+            LtoG = LtoG * inversesqrt(d2);
+        }
+
+        // Refract through the outward-facing surface normal. If the light
+        // hits the back of the surface, flip the normal.
+        vec3 ns = (dot(N, -LtoG) > 0.0) ? N : -N;
+        vec3 refr = refract(LtoG, ns, 1.0 / ior);
+        if (dot(refr, refr) < 0.0001) continue; // total internal reflection
+
+        // Trace along the refracted direction to find the receiving surface.
+        rayQueryEXT rq;
+        rayQueryInitializeEXT(rq, topLevelAS, 0u, 0xFFu,
+                              G + refr * 0.5, 0.0,
+                              refr, 1000.0);
+        rayQueryProceedEXT(rq);
+        if (rayQueryGetIntersectionTypeEXT(rq, true)
+            == gl_RayQueryCommittedIntersectionNoneEXT) continue;
+
+        float hitT = rayQueryGetIntersectionTEXT(rq, true);
+        vec3 P = G + refr * hitT;
+
+        // Project P to screen space.
+        vec4 clip = viewProj * vec4(P, 1.0);
+        if (clip.w <= 0.0) continue;
+        vec3 ndc = clip.xyz / clip.w;
+        if (any(greaterThan(abs(ndc.xy), vec2(1.0))) || ndc.z < 0.0 || ndc.z > 1.0) continue;
+        ivec2 hitPixel = ivec2((ndc.xy * 0.5 + 0.5) * causticScreen.xy);
+        if (any(lessThan(hitPixel, ivec2(0))) || any(greaterThanEqual(hitPixel, size))) continue;
+
+        // Caustic brightness falls off with light distance² and refracted
+        // travel distance. Approximate everything with a single polynomial.
+        float lightFall;
+        if (Ltype == 2u) {
+            lightFall = 1.0;
+        } else {
+            float d = length(Lp - G);
+            lightFall = 1.0 / (1.0 + d * d * 1e-5);
+        }
+        float travelFall = 1.0 / (1.0 + hitT * hitT * 1e-4);
+        float lum = dot(Lc, vec3(0.2126, 0.7152, 0.0722));
+        float contrib = lum * lightFall * travelFall * tintLum * strength;
+
+        uint fixed_val = uint(clamp(contrib * scale, 0.0, 4.0e7));
+        if (fixed_val == 0u) continue;
+        imageAtomicAdd(causticAccum, hitPixel, fixed_val);
+    }
+}

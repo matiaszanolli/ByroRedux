@@ -30,6 +30,11 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     mat4 inv_view_proj;  // inverse view-projection for ray reconstruction
 } params;
 layout(set = 0, binding = 4) uniform sampler2D depthTex;     // depth buffer
+layout(set = 0, binding = 5) uniform usampler2D causticTex;  // R32_UINT caustic accumulator (#321)
+// CAUSTIC_FIXED_SCALE from caustic.rs — divide uint accumulator by this to
+// recover luminance. Kept in sync manually; if it changes in caustic.rs, the
+// layout test there will not fail (it's Rust-only), so update this constant.
+const float CAUSTIC_FIXED_SCALE = 65536.0;
 
 layout(location = 0) in vec2 fragUV;
 layout(location = 0) out vec4 outColor;
@@ -124,7 +129,17 @@ void main() {
         // re-apply surface color. See #268.
         vec3 indirect = texture(indirectTex, fragUV).rgb;
         vec3 albedo = texture(albedoTex, fragUV).rgb;
-        vec3 combined = direct + indirect * albedo;
+
+        // Caustic (#321): refracted-light scatter from the caustic_splat
+        // pass. Stored as fixed-point luminance in a R32_UINT accumulator;
+        // decode here and add a warm-white contribution scaled by the
+        // receiver's own albedo so colored surfaces pick up the caustic
+        // with their own tint.
+        uint causticRaw = texelFetch(causticTex, ivec2(gl_FragCoord.xy), 0).r;
+        float causticLum = float(causticRaw) / CAUSTIC_FIXED_SCALE;
+        vec3 caustic = albedo * causticLum;
+
+        vec3 combined = direct + indirect * albedo + caustic;
 
         const float exposure = 0.85;
         outColor = vec4(aces(combined * exposure), direct4.a);

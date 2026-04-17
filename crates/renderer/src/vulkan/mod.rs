@@ -1,6 +1,7 @@
 pub mod acceleration;
 pub mod allocator;
 pub mod buffer;
+pub mod caustic;
 pub mod composite;
 pub mod compute;
 pub mod context;

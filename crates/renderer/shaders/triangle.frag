@@ -49,7 +49,7 @@ struct GpuInstance {
     float avgAlbedoR;        // offset 140 — pre-computed average albedo for GI bounce
     float avgAlbedoG;        // offset 144
     float avgAlbedoB;        // offset 148
-    uint flags;              // offset 152 — bit 0: non-uniform scale, bit 1: alpha blend enabled
+    uint flags;              // offset 152 — bit 0: non-uniform scale, bit 1: alpha blend, bit 2: caustic source (#321)
     uint _pad1;              // offset 156 → total 160
 };
 

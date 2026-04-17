@@ -431,13 +431,20 @@ impl VulkanContext {
                 let tol = 0.001;
                 (col0_sq - col1_sq).abs() > tol || (col0_sq - col2_sq).abs() > tol
             };
-            // Per-instance flags: bit 0 = non-uniform scale, bit 1 = alpha blend.
-            // The alpha_blend flag tells the shader this mesh has NiAlphaProperty
-            // with blend enabled — its texture alpha controls transparency.
-            // Without this flag, texture alpha is a specular/env mask, NOT transparency.
+            // Per-instance flags.
+            //   bit 0 = non-uniform scale
+            //   bit 1 = NiAlphaProperty blend bit (texture alpha = transparency)
+            //   bit 2 = caustic source — mesh is a plausible refractive surface.
+            //           We gate on `alpha_blend && metalness < 0.3` CPU-side:
+            //           this matches the fragment-shader `isGlass` check closely
+            //           enough that the caustic pass doesn't spuriously splat from
+            //           alpha-tested foliage or translucent metal. See #321.
             let mut flags = if has_non_uniform_scale { 1u32 } else { 0u32 };
             if draw_cmd.alpha_blend {
                 flags |= 2;
+                if draw_cmd.metalness < 0.3 {
+                    flags |= 4;
+                }
             }
 
             gpu_instances.push(GpuInstance {
@@ -730,6 +737,25 @@ impl VulkanContext {
             if let Some(ref mut svgf) = self.svgf {
                 if let Err(e) = svgf.dispatch(&self.device, cmd, frame) {
                     log::warn!("SVGF dispatch failed: {e}");
+                }
+            }
+
+            // Caustic scatter (#321): per-refractive-pixel refracted-light
+            // splat. Runs after SVGF (reads the same G-buffer slots that
+            // are now in SHADER_READ_ONLY_OPTIMAL) and before composite
+            // (which samples the caustic accumulator). Writes binding 5
+            // of the composite descriptor set.
+            if let Some(ref mut caustic) = self.caustic {
+                // Bind this frame's TLAS before dispatch — the AccelerationManager
+                // rebuilds/refits per frame but the handle is stable across frames
+                // once created, so we write it once and then again defensively.
+                if let Some(ref accel) = self.accel_manager {
+                    if let Some(tlas) = accel.tlas_handle(frame) {
+                        caustic.write_tlas(&self.device, frame, tlas);
+                    }
+                }
+                if let Err(e) = caustic.dispatch(&self.device, cmd, frame) {
+                    log::warn!("Caustic dispatch failed: {e}");
                 }
             }
 
