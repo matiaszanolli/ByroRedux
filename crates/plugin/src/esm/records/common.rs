@@ -93,9 +93,18 @@ pub struct CommonItemFields {
     pub full_name: String,
     pub model_path: String,
     pub icon_path: String,
+    /// Legacy attached-script reference (`SCRI`, Oblivion / FO3 / FNV).
+    /// Form ID of the SCPT record bound to this item. Skyrim+ records
+    /// use `VMAD` (Papyrus VM attached data) instead — see `has_script`.
     pub script_form_id: u32,
     pub value: u32,
     pub weight: f32,
+    /// True when the record carries a `VMAD` sub-record — Skyrim+'s
+    /// Papyrus VM attached-script blob. Full VMAD decoding (script
+    /// names + property bindings) is gated on the scripting-as-ECS
+    /// work tracked at M30.2 / M48; for now this flag at least makes
+    /// the count of script-bearing records discoverable. See #369.
+    pub has_script: bool,
 }
 
 impl CommonItemFields {
@@ -113,9 +122,43 @@ impl CommonItemFields {
                 b"SCRI" if sub.data.len() >= 4 => {
                     out.script_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
                 }
+                // VMAD presence-only flag — see `has_script` field doc.
+                b"VMAD" => out.has_script = true,
                 _ => {}
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sub(typ: &[u8; 4], data: &[u8]) -> SubRecord {
+        SubRecord {
+            sub_type: *typ,
+            data: data.to_vec(),
+        }
+    }
+
+    /// Regression: #369 — VMAD presence on item records flips
+    /// `has_script`. Full Papyrus VM data decoding is deferred.
+    #[test]
+    fn item_vmad_flips_has_script() {
+        let subs = vec![
+            sub(b"EDID", b"ScriptedItem\0"),
+            sub(b"VMAD", b"\x05\x00\x02\x00\x00\x00"),
+        ];
+        let c = CommonItemFields::from_subs(&subs);
+        assert!(c.has_script);
+        assert_eq!(c.editor_id, "ScriptedItem");
+    }
+
+    #[test]
+    fn item_without_vmad_has_script_false() {
+        let subs = vec![sub(b"EDID", b"PlainItem\0")];
+        let c = CommonItemFields::from_subs(&subs);
+        assert!(!c.has_script);
     }
 }

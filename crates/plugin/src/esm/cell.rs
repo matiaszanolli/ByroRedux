@@ -185,6 +185,13 @@ pub struct StaticObject {
     pub light_data: Option<LightData>,
     /// Addon-node properties (only populated for ADDN records). See #370.
     pub addon_data: Option<AddonData>,
+    /// True when the record carries a `VMAD` sub-record (Skyrim+
+    /// Papyrus VM attached-script blob). Presence flag only — full
+    /// VMAD decoding (script names + property bindings) is gated on
+    /// the scripting-as-ECS work tracked at M30.2 / M48; this flag
+    /// at least makes the count of script-bearing records discoverable.
+    /// See #369.
+    pub has_script: bool,
 }
 
 /// Result of parsing an ESM file for cell loading.
@@ -942,11 +949,16 @@ fn parse_modl_group(
             let mut light_data = None;
             let mut addon_index: Option<i32> = None;
             let mut addon_dnam: Option<(u16, u16)> = None;
+            let mut has_script = false;
 
             for sub in &subs {
                 match &sub.sub_type {
                     b"EDID" => editor_id = read_zstring(&sub.data),
                     b"MODL" => model_path = read_zstring(&sub.data),
+                    // VMAD presence-only flag — see `has_script` field doc on
+                    // `StaticObject`. Full decoding deferred to scripting-as-
+                    // ECS work. See #369.
+                    b"VMAD" => has_script = true,
                     b"DATA" if is_ligh && sub.data.len() >= 12 => {
                         // LIGH DATA: time(u32), radius(u32), color(BGRA u8×4), flags(u32), ...
                         //
@@ -1027,6 +1039,7 @@ fn parse_modl_group(
                         model_path,
                         light_data,
                         addon_data,
+                        has_script,
                     },
                 );
             }
@@ -1321,6 +1334,82 @@ mod tests {
         assert_eq!(ad.addon_index, 7);
         assert_eq!(ad.master_particle_cap, 64);
         assert_eq!(ad.flags, 1);
+    }
+
+    #[test]
+    fn parse_stat_with_vmad_sets_has_script() {
+        // Regression: #369 — Skyrim VMAD sub-records on STAT records
+        // were dropped on the walker's `_` arm. The minimum-viable
+        // signal is a `has_script: bool` on `StaticObject` so the count
+        // of script-bearing records is at least visible. Full VMAD
+        // decoding (Papyrus script names + property bindings) stays
+        // gated on the scripting-as-ECS work.
+        let mut sub_data = Vec::new();
+        let edid = "ScriptedDoor\0";
+        sub_data.extend_from_slice(b"EDID");
+        sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(edid.as_bytes());
+        let modl = "meshes\\door.nif\0";
+        sub_data.extend_from_slice(b"MODL");
+        sub_data.extend_from_slice(&(modl.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(modl.as_bytes());
+        // VMAD: opaque payload — content doesn't matter for the
+        // presence flag, only that the sub-record exists.
+        let vmad_payload: &[u8] = b"\x05\x00\x02\x00\x00\x00";
+        sub_data.extend_from_slice(b"VMAD");
+        sub_data.extend_from_slice(&(vmad_payload.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(vmad_payload);
+
+        let mut stat = Vec::new();
+        stat.extend_from_slice(b"STAT");
+        stat.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        stat.extend_from_slice(&0u32.to_le_bytes());
+        stat.extend_from_slice(&0x77u32.to_le_bytes());
+        stat.extend_from_slice(&[0u8; 8]);
+        stat.extend_from_slice(&sub_data);
+
+        let total_size = 24 + stat.len();
+        let mut group = Vec::new();
+        group.extend_from_slice(b"GRUP");
+        group.extend_from_slice(&(total_size as u32).to_le_bytes());
+        group.extend_from_slice(b"STAT");
+        group.extend_from_slice(&0u32.to_le_bytes());
+        group.extend_from_slice(&[0u8; 8]);
+        group.extend_from_slice(&stat);
+
+        let mut reader = EsmReader::new(&group);
+        let gh = reader.read_group_header().unwrap();
+        let end = reader.group_content_end(&gh);
+        let mut statics = HashMap::new();
+        parse_modl_group(&mut reader, end, &mut statics).unwrap();
+
+        let s = statics.get(&0x77).expect("STAT entry present");
+        assert!(s.has_script, "VMAD presence must flip has_script");
+    }
+
+    #[test]
+    fn parse_stat_without_vmad_leaves_has_script_false() {
+        // Sibling check — a STAT with only EDID + MODL keeps has_script
+        // at false. Catches a regression where the new arm captures
+        // some other neighbour sub-record.
+        let stat = build_stat_record(0x88, "PlainStatic", "meshes\\stat.nif");
+        let total_size = 24 + stat.len();
+        let mut group = Vec::new();
+        group.extend_from_slice(b"GRUP");
+        group.extend_from_slice(&(total_size as u32).to_le_bytes());
+        group.extend_from_slice(b"STAT");
+        group.extend_from_slice(&0u32.to_le_bytes());
+        group.extend_from_slice(&[0u8; 8]);
+        group.extend_from_slice(&stat);
+
+        let mut reader = EsmReader::new(&group);
+        let gh = reader.read_group_header().unwrap();
+        let end = reader.group_content_end(&gh);
+        let mut statics = HashMap::new();
+        parse_modl_group(&mut reader, end, &mut statics).unwrap();
+
+        let s = statics.get(&0x88).expect("STAT entry present");
+        assert!(!s.has_script);
     }
 
     #[test]

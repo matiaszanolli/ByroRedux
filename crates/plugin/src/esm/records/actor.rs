@@ -50,6 +50,10 @@ pub struct NpcRecord {
     pub disposition_base: u8,
     /// Flags (from ACBS).
     pub acbs_flags: u32,
+    /// True when the NPC record carries a `VMAD` sub-record (Skyrim+
+    /// Papyrus VM attached-script blob). Presence flag only; full
+    /// decoding deferred to scripting-as-ECS work. See #369.
+    pub has_script: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +121,7 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord]) -> NpcRecord {
         level: 1,
         disposition_base: 50,
         acbs_flags: 0,
+        has_script: false,
     };
 
     for sub in subs {
@@ -167,6 +172,8 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord]) -> NpcRecord {
                     record.disposition_base = sub.data[20];
                 }
             }
+            // VMAD presence-only flag — see `has_script` field doc.
+            b"VMAD" => record.has_script = true,
             _ => {}
         }
     }
@@ -346,6 +353,27 @@ mod tests {
         assert_eq!(n.ai_packages, vec![0xEEEE]);
         assert_eq!(n.acbs_flags, 0x100);
         assert_eq!(n.level, 5);
+    }
+
+    #[test]
+    fn npc_vmad_flips_has_script() {
+        // Regression: #369 — Skyrim NPCs with attached Papyrus scripts
+        // were not discoverable. The presence-only `has_script` flag
+        // is the audit's minimum-viable signal.
+        let subs = vec![
+            sub(b"EDID", b"ScriptedActor\0"),
+            sub(b"VMAD", b"\x05\x00\x02\x00\x00\x00"),
+        ];
+        let n = parse_npc(0x501, &subs);
+        assert!(n.has_script);
+    }
+
+    #[test]
+    fn npc_without_vmad_has_script_false() {
+        // Sibling check — bare NPC must keep has_script at default.
+        let subs = vec![sub(b"EDID", b"PlainActor\0")];
+        let n = parse_npc(0x502, &subs);
+        assert!(!n.has_script);
     }
 
     #[test]

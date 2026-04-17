@@ -466,6 +466,7 @@ mod tests {
                 level: 1,
                 disposition_base: 50,
                 acbs_flags: 0,
+                has_script: false,
             },
         );
         assert_eq!(idx.total(), 2);
