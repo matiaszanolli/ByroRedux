@@ -844,16 +844,24 @@ fn parse_modl_group(
                     b"EDID" => editor_id = read_zstring(&sub.data),
                     b"MODL" => model_path = read_zstring(&sub.data),
                     b"DATA" if is_ligh && sub.data.len() >= 12 => {
-                        // LIGH DATA: time(u32), radius(u32), color(RGBA u8×4), flags(u32), ...
+                        // LIGH DATA: time(u32), radius(u32), color(BGRA u8×4), flags(u32), ...
+                        //
+                        // Bytes 8..12 are the D3DCOLOR_XRGB little-endian packed
+                        // u32: byte 8 = B, 9 = G, 10 = R, 11 = unused. Sampled
+                        // from Oblivion `RootGreenBright0650` (issue #389):
+                        //   DATA[8..12] = 36 74 66 00  → B=54, G=116, R=102
+                        // which matches the EDID ("green bright"). Reading
+                        // this as RGB instead swaps every torch/brazier into
+                        // its complementary colour.
                         let radius = u32::from_le_bytes([
                             sub.data[4],
                             sub.data[5],
                             sub.data[6],
                             sub.data[7],
                         ]) as f32;
-                        let r = sub.data[8] as f32 / 255.0;
+                        let b = sub.data[8] as f32 / 255.0;
                         let g = sub.data[9] as f32 / 255.0;
-                        let b = sub.data[10] as f32 / 255.0;
+                        let r = sub.data[10] as f32 / 255.0;
                         let flags = if sub.data.len() >= 16 {
                             u32::from_le_bytes([
                                 sub.data[12],
@@ -1081,6 +1089,79 @@ mod tests {
         buf.extend_from_slice(&[0u8; 8]); // padding
         buf.extend_from_slice(&sub_data);
         buf
+    }
+
+    // Helper: build minimal LIGH record with DATA subrecord. The DATA
+    // payload uses the real on-disk layout: time(u32) + radius(u32) +
+    // color(BGRA u8×4) + flags(u32) = 16 bytes. EDID comes first.
+    fn build_ligh_record(
+        form_id: u32,
+        editor_id: &str,
+        radius: u32,
+        bgr: [u8; 3],
+        flags: u32,
+    ) -> Vec<u8> {
+        let mut sub_data = Vec::new();
+        let edid = format!("{}\0", editor_id);
+        sub_data.extend_from_slice(b"EDID");
+        sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(edid.as_bytes());
+
+        sub_data.extend_from_slice(b"DATA");
+        sub_data.extend_from_slice(&16u16.to_le_bytes());
+        sub_data.extend_from_slice(&u32::MAX.to_le_bytes()); // time = -1
+        sub_data.extend_from_slice(&radius.to_le_bytes());
+        sub_data.extend_from_slice(&[bgr[0], bgr[1], bgr[2], 0u8]); // BGRA on disk
+        sub_data.extend_from_slice(&flags.to_le_bytes());
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"LIGH");
+        buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+        buf.extend_from_slice(&form_id.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 8]); // padding
+        buf.extend_from_slice(&sub_data);
+        buf
+    }
+
+    #[test]
+    fn parse_ligh_decodes_color_as_bgra() {
+        // Regression: #389 — LIGH DATA color bytes are laid out as BGRA
+        // on disk (D3DCOLOR_XRGB little-endian pack), not RGB+pad. The
+        // reference sample is Oblivion `RootGreenBright0650`:
+        //   DATA[8..12] = 36 74 66 00   → B=0x36, G=0x74, R=0x66
+        // A green-authored light must surface with G as the max channel.
+        let ligh = build_ligh_record(
+            0xABCD,
+            "RootGreenBright0650",
+            650,
+            [0x36, 0x74, 0x66],
+            0x400,
+        );
+        let total_size = 24 + ligh.len();
+        let mut group = Vec::new();
+        group.extend_from_slice(b"GRUP");
+        group.extend_from_slice(&(total_size as u32).to_le_bytes());
+        group.extend_from_slice(b"LIGH");
+        group.extend_from_slice(&0u32.to_le_bytes());
+        group.extend_from_slice(&[0u8; 8]);
+        group.extend_from_slice(&ligh);
+
+        let mut reader = EsmReader::new(&group);
+        let gh = reader.read_group_header().unwrap();
+        let end = reader.position() + gh.total_size as usize - 24;
+        let mut statics = HashMap::new();
+        parse_modl_group(&mut reader, end, &mut statics).unwrap();
+
+        let s = statics.get(&0xABCD).expect("LIGH entry present");
+        let ld = s.light_data.as_ref().expect("light_data populated");
+        assert!((ld.radius - 650.0).abs() < 0.5);
+        let [r, g, b] = ld.color;
+        assert!((r - 0x66 as f32 / 255.0).abs() < 1e-4, "R mismatch: {r}");
+        assert!((g - 0x74 as f32 / 255.0).abs() < 1e-4, "G mismatch: {g}");
+        assert!((b - 0x36 as f32 / 255.0).abs() < 1e-4, "B mismatch: {b}");
+        assert!(g > r && g > b, "green-authored light must peak on G");
+        assert_eq!(ld.flags, 0x400);
     }
 
     #[test]
