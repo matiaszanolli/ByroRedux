@@ -175,7 +175,7 @@ impl NiPixelData {
             let palette_ref = stream.read_block_ref()?;
             let num_mipmaps = stream.read_u32_le()?;
             let bytes_per_pixel = stream.read_u32_le()?;
-            let mut mipmaps = Vec::with_capacity(num_mipmaps as usize);
+            let mut mipmaps: Vec<MipMapInfo> = stream.allocate_vec(num_mipmaps)?;
             for _ in 0..num_mipmaps {
                 let width = stream.read_u32_le()?;
                 let height = stream.read_u32_le()?;
@@ -256,7 +256,7 @@ impl NiPixelData {
         let num_mipmaps = stream.read_u32_le()?;
         let bytes_per_pixel = stream.read_u32_le()?;
 
-        let mut mipmaps = Vec::with_capacity(num_mipmaps as usize);
+        let mut mipmaps: Vec<MipMapInfo> = stream.allocate_vec(num_mipmaps)?;
         for _ in 0..num_mipmaps {
             let width = stream.read_u32_le()?;
             let height = stream.read_u32_le()?;

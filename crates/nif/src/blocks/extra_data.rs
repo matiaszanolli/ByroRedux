@@ -574,7 +574,9 @@ impl BsPackedCombinedGeomDataExtra {
         let payload = if type_name == "BSPackedCombinedSharedGeomDataExtra" {
             // Shared variant: N × GeomObject (8 bytes each) then N ×
             // SharedGeomData (header-only, no vertex / triangle arrays).
-            let mut objects = Vec::with_capacity(num_data as usize);
+            // #388: allocate_vec bounds the count against the stream
+            // budget so a corrupt num_data can't OOM.
+            let mut objects: Vec<BsPackedGeomObject> = stream.allocate_vec(num_data)?;
             for _ in 0..num_data {
                 let filename_hash = stream.read_u32_le()?;
                 let data_offset = stream.read_u32_le()?;
@@ -583,14 +585,14 @@ impl BsPackedCombinedGeomDataExtra {
                     data_offset,
                 });
             }
-            let mut data = Vec::with_capacity(num_data as usize);
+            let mut data: Vec<BsPackedSharedGeomData> = stream.allocate_vec(num_data)?;
             for _ in 0..num_data {
                 data.push(parse_shared_geom_data(stream)?);
             }
             BsPackedCombinedPayload::Shared { objects, data }
         } else {
             // Baked variant: N × BSPackedGeomData.
-            let mut baked = Vec::with_capacity(num_data as usize);
+            let mut baked: Vec<BsPackedGeomData> = stream.allocate_vec(num_data)?;
             for _ in 0..num_data {
                 baked.push(parse_baked_geom_data(stream)?);
             }
@@ -623,7 +625,7 @@ fn parse_common_geom_header(
     let tri_count_lod2 = stream.read_u32_le()?;
     let tri_offset_lod2 = stream.read_u32_le()?;
     let num_combined = stream.read_u32_le()?;
-    let mut combined = Vec::with_capacity(num_combined as usize);
+    let mut combined: Vec<BsPackedGeomDataCombined> = stream.allocate_vec(num_combined)?;
     for _ in 0..num_combined {
         combined.push(BsPackedGeomDataCombined::parse(stream)?);
     }

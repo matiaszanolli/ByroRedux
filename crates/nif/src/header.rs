@@ -129,11 +129,31 @@ impl NifHeader {
 
         // Block types table — nif.xml: since 5.0.0.1. Previously gated at
         // 10.0.1.0 which missed any 5.x–10.0.0.x file. See #171.
+        //
+        // #388: bound `num_blocks` against the byte budget for the
+        // following block-index / block-size arrays so a corrupt header
+        // u32 (e.g. drifted from a CRC) can't OOM the parser.
+        let total_bytes = cursor.get_ref().len();
+        let pos = cursor.position() as usize;
+        let remaining = total_bytes.saturating_sub(pos);
         let (block_types, block_type_indices) = if version >= NifVersion(0x05000001) {
             let num_block_types = read_u16_le(&mut cursor)? as usize;
             let mut types = Vec::with_capacity(num_block_types);
             for _ in 0..num_block_types {
                 types.push(read_sized_string(&mut cursor)?);
+            }
+            // Each block_type_index entry is a u16; the indices array
+            // must fit in what's left of the file.
+            if (num_blocks as usize)
+                .checked_mul(2)
+                .map_or(true, |n| n > remaining)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "NIF header claims {num_blocks} blocks but only {remaining} bytes remain",
+                    ),
+                ));
             }
             let mut indices = Vec::with_capacity(num_blocks as usize);
             for _ in 0..num_blocks {
@@ -147,6 +167,20 @@ impl NifHeader {
         // Block sizes — nif.xml: since 20.2.0.5. Previously gated at
         // 20.2.0.7 which missed 20.2.0.5 and 20.2.0.6 files. See #171.
         let block_sizes = if version >= NifVersion(0x14020005) {
+            // Per #388 — same byte-budget guard as the indices table.
+            let pos = cursor.position() as usize;
+            let remaining = total_bytes.saturating_sub(pos);
+            if (num_blocks as usize)
+                .checked_mul(4)
+                .map_or(true, |n| n > remaining)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "NIF header claims {num_blocks} block sizes but only {remaining} bytes remain",
+                    ),
+                ));
+            }
             let mut sizes = Vec::with_capacity(num_blocks as usize);
             for _ in 0..num_blocks {
                 sizes.push(read_u32_le(&mut cursor)?);

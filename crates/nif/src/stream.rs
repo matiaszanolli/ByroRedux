@@ -168,6 +168,41 @@ impl<'a> NifStream<'a> {
         Ok(buf)
     }
 
+    /// File-driven pre-allocation for `Vec<T>` of length `count`.
+    ///
+    /// Bounds `count` against the bytes remaining in the stream — each
+    /// on-disk element occupies at least one byte (even an `Option`
+    /// reference is a 4-byte BlockRef), so a claimed count larger than
+    /// the rest of the file is necessarily corrupt and we reject it
+    /// before allocating any capacity.
+    ///
+    /// Used in place of the raw `Vec::with_capacity(count as usize)`
+    /// anywhere `count` is a `u32` / `u16` read straight out of the
+    /// stream — otherwise a corrupt NIF can trip a giant allocation
+    /// before the subsequent reads discover the truncation.
+    ///
+    /// The bound is on-disk bytes, **not** `size_of::<T>()`, because
+    /// element types like `(f32, String)` carry heap pointers far
+    /// larger than their serialized representation; a `size_of`-based
+    /// check produces false positives on legitimate small NIFs.
+    ///
+    /// See #388 / OBL-D5-C1 — every Oblivion content sweep used to
+    /// abort the process on a crafted or drifted `NiTextKeyExtraData`.
+    pub fn allocate_vec<T>(&self, count: u32) -> io::Result<Vec<T>> {
+        let pos = self.cursor.position() as usize;
+        let total = self.cursor.get_ref().len();
+        let remaining = total.saturating_sub(pos);
+        if (count as usize) > remaining {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "NIF claims {count} elements but only {remaining} bytes remain at position {pos} in {total}-byte stream"
+                ),
+            ));
+        }
+        Ok(Vec::with_capacity(count as usize))
+    }
+
     /// Validate a file-driven allocation request before `vec![0u8; n]`.
     ///
     /// Rejects claims that (a) exceed the remaining bytes in the stream
@@ -178,9 +213,10 @@ impl<'a> NifStream<'a> {
     ///
     /// Called by every size-prefixed reader (`read_bytes`,
     /// `read_sized_string`, and the bulk array helpers) that would
-    /// otherwise trust an attacker-controlled length.
-    /// See #113 / audit NIF-13.
-    fn check_alloc(&self, bytes: usize) -> io::Result<()> {
+    /// otherwise trust an attacker-controlled length. `pub` so that
+    /// non-stream call sites (e.g. the header block-size table) can
+    /// validate before pre-sizing their own buffers. See #113, #388.
+    pub fn check_alloc(&self, bytes: usize) -> io::Result<()> {
         if bytes > MAX_SINGLE_ALLOC_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

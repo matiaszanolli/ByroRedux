@@ -87,7 +87,7 @@ impl KeyGroup<FloatKey> {
             });
         }
         let key_type = KeyType::from_u32(stream.read_u32_le()?)?;
-        let mut keys = Vec::with_capacity(num_keys as usize);
+        let mut keys: Vec<FloatKey> = stream.allocate_vec(num_keys)?;
         for _ in 0..num_keys {
             let time = stream.read_f32_le()?;
             let value = stream.read_f32_le()?;
@@ -136,7 +136,7 @@ impl KeyGroup<Vec3Key> {
             });
         }
         let key_type = KeyType::from_u32(stream.read_u32_le()?)?;
-        let mut keys = Vec::with_capacity(num_keys as usize);
+        let mut keys: Vec<Vec3Key> = stream.allocate_vec(num_keys)?;
         for _ in 0..num_keys {
             let time = stream.read_f32_le()?;
             let x = stream.read_f32_le()?;
@@ -429,7 +429,11 @@ impl NiTextKeyExtraData {
         // For 20.1+ there's no next_extra_data_ref, just the string index above
         // num_text_keys
         let num_text_keys = stream.read_u32_le()?;
-        let mut text_keys = Vec::with_capacity(num_text_keys as usize);
+        // #388: allocate_vec gates `count * size_of::<(f32, String)>` against
+        // the stream budget before any capacity is reserved — a corrupt
+        // u32 that used to OOM the process (135 GB abort on Oblivion
+        // `upperclassdisplaycaseblue01.nif`) now returns `Err` cleanly.
+        let mut text_keys: Vec<(f32, String)> = stream.allocate_vec(num_text_keys)?;
         for _ in 0..num_text_keys {
             let time = stream.read_f32_le()?;
             let text = stream
@@ -502,7 +506,7 @@ impl NiBoolData {
             });
         }
         let key_type = KeyType::from_u32(stream.read_u32_le()?)?;
-        let mut keys = Vec::with_capacity(num_keys as usize);
+        let mut keys: Vec<FloatKey> = stream.allocate_vec(num_keys)?;
         for _ in 0..num_keys {
             let time = stream.read_f32_le()?;
             // Bool keys store the value as a u8 (byte)
@@ -705,6 +709,36 @@ mod tests {
         assert_eq!(tk.text_keys.len(), 1);
         assert_eq!(tk.text_keys[0].0, 0.0);
         assert_eq!(tk.text_keys[0].1, "start");
+    }
+
+    #[test]
+    fn parse_text_key_extra_data_rejects_malicious_count() {
+        // Regression #388 / OBL-D5-C1: a corrupt/drifted u32 used to
+        // OOM the process via `Vec::with_capacity(num_text_keys as usize)`.
+        // The reproducer was Oblivion's `upperclassdisplaycaseblue01.nif`
+        // — a 218 KB file claimed 4.24 G text keys, prompting a
+        // 135 GB allocation that aborted the process. The new
+        // `allocate_vec` bound rejects any count larger than the bytes
+        // remaining in the stream.
+        let header = make_header_fnv();
+        let mut data = Vec::new();
+        // name: empty string-table index
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // num_text_keys = u32::MAX → must be rejected, not OOM
+        data.extend_from_slice(&u32::MAX.to_le_bytes());
+        // No payload follows; if the bound check were missing, parse
+        // would call `Vec::with_capacity(u32::MAX as usize)` and
+        // potentially abort the process before any read fails.
+
+        let mut stream = NifStream::new(&data, &header);
+        let result = NiTextKeyExtraData::parse(&mut stream);
+        assert!(result.is_err(), "expected Err on malicious count");
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("only") && msg.contains("bytes remain"),
+            "expected allocate_vec budget message, got: {msg}"
+        );
     }
 
     #[test]

@@ -340,7 +340,7 @@ pub fn parse_kfm(bytes: &[u8]) -> io::Result<KfmFile> {
 
     // ── Sequences ──────────────────────────────────────────────────
     let num_sequences = r.read_u32_le()?;
-    let mut sequences = Vec::with_capacity(num_sequences as usize);
+    let mut sequences = r.allocate_vec::<KfmSequence>(num_sequences)?;
     for _ in 0..num_sequences {
         let sequence_id = r.read_u32_le()?;
 
@@ -354,7 +354,7 @@ pub fn parse_kfm(bytes: &[u8]) -> io::Result<KfmFile> {
 
         // Transitions.
         let num_transitions = r.read_u32_le()?;
-        let mut transitions = Vec::with_capacity(num_transitions as usize);
+        let mut transitions = r.allocate_vec::<KfmTransition>(num_transitions)?;
         for _ in 0..num_transitions {
             let dest_sequence_id = r.read_u32_le()?;
             let transition_type = KfmTransitionType::from_i32(r.read_i32_le()?);
@@ -379,7 +379,7 @@ pub fn parse_kfm(bytes: &[u8]) -> io::Result<KfmFile> {
 
             // Blend pairs.
             let num_blend_pairs = r.read_u32_le()?;
-            let mut blend_pairs = Vec::with_capacity(num_blend_pairs as usize);
+            let mut blend_pairs = r.allocate_vec::<KfmBlendPair>(num_blend_pairs)?;
             for _ in 0..num_blend_pairs {
                 let start_key = r.read_cstring()?;
                 let target_key = r.read_cstring()?;
@@ -398,7 +398,7 @@ pub fn parse_kfm(bytes: &[u8]) -> io::Result<KfmFile> {
                 let _legacy_src_dur = r.read_f32_le()?;
                 num_chain -= 1;
             }
-            let mut chain = Vec::with_capacity(num_chain as usize);
+            let mut chain = r.allocate_vec::<KfmChainEntry>(num_chain)?;
             for _ in 0..num_chain {
                 let seq = r.read_u32_le()?;
                 let dur = r.read_f32_le()?;
@@ -427,12 +427,12 @@ pub fn parse_kfm(bytes: &[u8]) -> io::Result<KfmFile> {
 
     // ── Sequence groups ────────────────────────────────────────────
     let num_groups = r.read_u32_le()?;
-    let mut sequence_groups = Vec::with_capacity(num_groups as usize);
+    let mut sequence_groups = r.allocate_vec::<KfmSequenceGroup>(num_groups)?;
     for _ in 0..num_groups {
         let group_id = r.read_u32_le()?;
         let name = r.read_cstring()?;
         let num_members = r.read_u32_le()?;
-        let mut members = Vec::with_capacity(num_members as usize);
+        let mut members = r.allocate_vec::<KfmSequenceGroupMember>(num_members)?;
         for _ in 0..num_members {
             let sequence_id = r.read_u32_le()?;
             let priority = r.read_i32_le()?;
@@ -529,6 +529,28 @@ impl<'a> KfmReader<'a> {
         let mut buf = [0u8; 1];
         self.cursor.read_exact(&mut buf)?;
         Ok(buf[0] != 0)
+    }
+
+    /// Bound a file-driven `Vec::with_capacity(count)` against the
+    /// remaining bytes in the KFM blob. KFM headers carry several
+    /// `u32` counts (sequences, transitions, blend pairs, chain
+    /// entries, sequence groups) — without this guard a corrupt count
+    /// would trip a multi-GB allocation. The bound is on-disk bytes
+    /// (each element is at least one byte on disk), not
+    /// `size_of::<T>()` — see the equivalent rationale on
+    /// [`NifStream::allocate_vec`]. See #388.
+    fn allocate_vec<T>(&self, count: u32) -> io::Result<Vec<T>> {
+        let pos = self.cursor.position() as usize;
+        let remaining = self.cursor.get_ref().len().saturating_sub(pos);
+        if (count as usize) > remaining {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "KFM claims {count} entries but only {remaining} bytes remain at position {pos}"
+                ),
+            ));
+        }
+        Ok(Vec::with_capacity(count as usize))
     }
 
     /// Read an `i32` length prefix followed by that many bytes as a

@@ -459,7 +459,8 @@ impl NiParticleSystemController {
 
         // Particle records: 32 bytes each. Skip by reading raw bytes
         // because the layout is compact and the engine doesn't read them.
-        let mut particles = Vec::with_capacity(num_particles as usize);
+        // #388: allocate_vec bounds the count against stream budget.
+        let mut particles: Vec<[u8; 32]> = stream.allocate_vec(num_particles as u32)?;
         for _ in 0..num_particles {
             let chunk = stream.read_bytes(32)?;
             let mut arr = [0u8; 32];
@@ -469,7 +470,7 @@ impl NiParticleSystemController {
 
         let unknown_ref = stream.read_block_ref()?;
         let num_emitter_points = stream.read_u32_le()?;
-        let mut emitter_points = Vec::with_capacity(num_emitter_points as usize);
+        let mut emitter_points: Vec<u32> = stream.allocate_vec(num_emitter_points)?;
         for _ in 0..num_emitter_points {
             emitter_points.push(stream.read_u32_le()?);
         }

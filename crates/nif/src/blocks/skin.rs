@@ -207,7 +207,8 @@ impl NiSkinPartition {
             let num_weights_per_vertex = stream.read_u16_le()?;
 
             // Bones array.
-            let mut bones = Vec::with_capacity(num_bones as usize);
+            // #388: `num_bones` is a file-driven u16; bound through allocate_vec.
+            let mut bones: Vec<u16> = stream.allocate_vec(num_bones as u32)?;
             for _ in 0..num_bones {
                 bones.push(stream.read_u16_le()?);
             }
@@ -216,7 +217,7 @@ impl NiSkinPartition {
             let vertex_map = if has_conditionals {
                 let has = stream.read_byte_bool()?;
                 if has {
-                    let mut map = Vec::with_capacity(num_vertices as usize);
+                    let mut map: Vec<u16> = stream.allocate_vec(num_vertices as u32)?;
                     for _ in 0..num_vertices {
                         map.push(stream.read_u16_le()?);
                     }
@@ -225,7 +226,7 @@ impl NiSkinPartition {
                     Vec::new()
                 }
             } else {
-                let mut map = Vec::with_capacity(num_vertices as usize);
+                let mut map: Vec<u16> = stream.allocate_vec(num_vertices as u32)?;
                 for _ in 0..num_vertices {
                     map.push(stream.read_u16_le()?);
                 }
@@ -255,7 +256,7 @@ impl NiSkinPartition {
             };
 
             // Strip lengths.
-            let mut strip_lengths = Vec::with_capacity(num_strips as usize);
+            let mut strip_lengths: Vec<u16> = stream.allocate_vec(num_strips as u32)?;
             for _ in 0..num_strips {
                 strip_lengths.push(stream.read_u16_le()?);
             }
@@ -276,7 +277,7 @@ impl NiSkinPartition {
                         stream.skip(len as u64 * 2)?;
                     }
                 } else {
-                    triangles = Vec::with_capacity(num_triangles as usize);
+                    triangles = stream.allocate_vec(num_triangles as u32)?;
                     for _ in 0..num_triangles {
                         let a = stream.read_u16_le()?;
                         let b = stream.read_u16_le()?;

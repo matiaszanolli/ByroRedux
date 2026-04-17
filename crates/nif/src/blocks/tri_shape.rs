@@ -307,7 +307,8 @@ impl BsTriShape {
         let mut uvs = Vec::with_capacity(nv);
         let mut normals = Vec::with_capacity(nv);
         let mut vertex_colors = Vec::with_capacity(nv);
-        let mut triangles = Vec::with_capacity(num_triangles as usize);
+        // #388: bounds-check the file-driven count before allocating.
+        let mut triangles: Vec<[u16; 3]> = stream.allocate_vec(num_triangles)?;
         let is_skinned = vertex_attrs & VF_SKINNED != 0;
         let mut bone_weights: Vec<[f32; 4]> = if is_skinned {
             Vec::with_capacity(nv)
@@ -476,7 +477,10 @@ impl BsTriShape {
         let vertex_data_size = stream.read_u32_le()?;
         let _unknown = stream.read_u32_le()?;
         if vertex_data_size > 0 {
-            let mut dynamic_vertices = Vec::with_capacity(shape.num_vertices as usize);
+            // #388: shape.num_vertices is a u16 read from the stream;
+            // bound it through allocate_vec like every other file count.
+            let mut dynamic_vertices: Vec<NiPoint3> =
+                stream.allocate_vec(shape.num_vertices as u32)?;
             for _ in 0..shape.num_vertices {
                 let x = stream.read_f32_le()?;
                 let y = stream.read_f32_le()?;
@@ -846,7 +850,9 @@ impl NiTriStripsData {
         let mut strips = Vec::with_capacity(num_strips);
         if has_strips {
             for &len in &strip_lengths {
-                let mut strip = Vec::with_capacity(len as usize);
+                // #388: `len` is a u16 read from the stream; the
+                // `allocate_vec` budget check bounds the total.
+                let mut strip: Vec<u16> = stream.allocate_vec(len as u32)?;
                 for _ in 0..len {
                     strip.push(stream.read_u16_le()?);
                 }

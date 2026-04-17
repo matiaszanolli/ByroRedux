@@ -117,7 +117,11 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
     // Phase 2: Parse blocks
     let block_data = &data[block_data_offset..];
     let mut stream = NifStream::new(block_data, &header);
-    let mut blocks: Vec<Box<dyn NiObject>> = Vec::with_capacity(header.num_blocks as usize);
+    // #388: bound `num_blocks` against the remaining stream so a header
+    // u32 that drifted past validation can't trip a 16-bytes-per-slot
+    // multi-GB allocation. Each block consumes at least one byte
+    // (BlockRef in older streams) so num_blocks > remaining is corrupt.
+    let mut blocks: Vec<Box<dyn NiObject>> = stream.allocate_vec(header.num_blocks)?;
     // Set to `true` if an Oblivion-style (no block-sizes) parse bails out
     // early — `NifScene.truncated` exposes the state to downstream
     // consumers so they can decide how to handle the incomplete graph.
