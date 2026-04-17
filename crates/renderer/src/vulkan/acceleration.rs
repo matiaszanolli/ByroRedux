@@ -69,6 +69,14 @@ pub struct TlasState {
     /// TLAS was just (re)created, or the instance layout changed).
     /// Reset to `false` after each successful BUILD.
     pub needs_full_rebuild: bool,
+    /// Value of `AccelerationManager.blas_map_generation` the last
+    /// time this TLAS was BUILT. When the manager's counter is ahead
+    /// of this one, the BLAS map mutated since the last build (a
+    /// BLAS was added, dropped, rebuilt, or evicted) and we can
+    /// short-circuit straight to BUILD without running the O(N)
+    /// per-instance BLAS-address zip-compare that gates UPDATE
+    /// eligibility otherwise. See #300.
+    pub last_blas_map_gen: u64,
 }
 
 /// Manages BLAS and TLAS for RT ray queries.
@@ -109,6 +117,48 @@ pub struct AccelerationManager {
     /// `MAX_FRAMES_IN_FLIGHT` frames; when it hits zero the underlying
     /// `VkAccelerationStructureKHR` + buffer are finally destroyed. See #372.
     pending_destroy_blas: Vec<(BlasEntry, u32)>,
+    /// Monotonic counter bumped whenever the `blas_entries` map mutates
+    /// (add via [`build_blas`] / [`build_blas_batched`], remove via
+    /// [`drop_blas`] / [`evict_unused_blas`]). Each [`TlasState`] caches
+    /// the value seen at its last BUILD; when the counters disagree the
+    /// next [`build_tlas`] knows the per-instance BLAS device addresses
+    /// could have shifted and short-circuits to BUILD without paying
+    /// the O(N) zip-compare against the cached address list. Steady-
+    /// state frames where no BLAS lifecycle events fired keep paying
+    /// the zip (it still has to run to detect frustum / draw-list
+    /// composition changes), but cell load / unload / eviction frames
+    /// — where the comparison is guaranteed to mismatch — skip it. See #300.
+    blas_map_generation: u64,
+}
+
+/// Decide whether the next TLAS build can `UPDATE` (refit) or must
+/// `BUILD` from scratch. Pulled out as a pure function so the dirty-
+/// flag short-circuit logic introduced in #300 can be unit-tested
+/// without a Vulkan context.
+///
+/// Returns `(use_update, did_zip)`:
+///   - `use_update` is the gate fed to `build_geometry_info.mode`.
+///   - `did_zip` reports whether the per-instance address comparison
+///     actually ran. Used by tests to assert the short-circuit fires
+///     in the cases the audit cares about.
+fn decide_use_update(
+    needs_full_rebuild: bool,
+    tlas_last_gen: u64,
+    current_gen: u64,
+    cached_addresses: &[vk::DeviceAddress],
+    current_addresses: &[vk::DeviceAddress],
+) -> (bool, bool) {
+    let blas_map_dirty = tlas_last_gen != current_gen;
+    if needs_full_rebuild || blas_map_dirty {
+        // Headed to BUILD regardless — skip the O(N) comparison.
+        return (false, false);
+    }
+    let layout_matches = cached_addresses.len() == current_addresses.len()
+        && cached_addresses
+            .iter()
+            .zip(current_addresses.iter())
+            .all(|(a, b)| a == b);
+    (layout_matches, true)
 }
 
 /// Compute the BLAS memory budget as `VRAM / 3` with a 256 MB floor.
@@ -160,6 +210,7 @@ impl AccelerationManager {
             total_blas_bytes: 0,
             blas_budget_bytes,
             pending_destroy_blas: Vec::new(),
+            blas_map_generation: 0,
         }
     }
 
@@ -187,6 +238,9 @@ impl AccelerationManager {
         self.total_blas_bytes = self.total_blas_bytes.saturating_sub(entry.size_bytes);
         // Two-frame countdown matches the existing SSBO rebuild pattern.
         self.pending_destroy_blas.push((entry, 2));
+        // BLAS map mutated — bump generation so the next build_tlas
+        // can short-circuit the per-instance zip-compare. #300.
+        self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
         for tlas_slot in &mut self.tlas {
             if let Some(ref mut t) = tlas_slot {
                 t.needs_full_rebuild = true;
@@ -409,6 +463,8 @@ impl AccelerationManager {
             last_used_frame: self.frame_counter,
             size_bytes: blas_size,
         });
+        // BLAS map mutated — see #300.
+        self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
 
         Ok(())
     }
@@ -807,6 +863,11 @@ impl AccelerationManager {
                 size_bytes: blas_size,
             });
         }
+        // BLAS map mutated (one bump for the whole batch — generation is
+        // a "did anything change" flag, not a count). See #300.
+        if count > 0 {
+            self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
+        }
 
         let savings_pct = if total_before > 0 {
             100.0 * (1.0 - total_after as f64 / total_before as f64)
@@ -1057,6 +1118,11 @@ impl AccelerationManager {
                 // A freshly-created TLAS has no source to refit from —
                 // the first frame after creation must do a full BUILD.
                 needs_full_rebuild: true,
+                // Sentinel that no real generation can match — forces
+                // the first build_tlas after (re)creation to take the
+                // gen-mismatch short-circuit, skipping the zip-compare
+                // since `last_blas_addresses` is empty anyway.
+                last_blas_map_gen: u64::MAX,
             });
         }
 
@@ -1069,32 +1135,43 @@ impl AccelerationManager {
         // `acceleration_structure_reference` field is off-limits.
         //
         // Gate: if `needs_full_rebuild` is set (freshly created or
-        // previous frame BUILT), or the current BLAS address sequence
-        // differs from the last BUILD, we BUILD. Otherwise UPDATE.
-        let blas_layout_matches =
-            tlas.last_blas_addresses.len() == instances.len()
-                && tlas.last_blas_addresses.iter().zip(instances.iter()).all(
-                    |(prev, inst)| unsafe {
-                        // SAFETY: AccelerationStructureReferenceKHR is a
-                        // union. Our BLAS entries are always device-built,
-                        // so `device_handle` is the live variant — same
-                        // invariant as the push site above.
-                        *prev == inst.acceleration_structure_reference.device_handle
-                    },
-                );
-        let use_update = !tlas.needs_full_rebuild && blas_layout_matches;
+        // previous frame BUILT), or the BLAS map mutated since the
+        // last build (#300 dirty flag), or the current BLAS address
+        // sequence differs from the last BUILD, we BUILD. Otherwise
+        // UPDATE. The dirty-flag short-circuit lets cell load /
+        // unload / eviction frames skip the O(N) per-instance
+        // zip-compare entirely — the gen mismatch already proves the
+        // address sequence could have shifted.
+        let map_gen = self.blas_map_generation;
+        // Materialise the current address sequence as `&[u64]` so the
+        // pure decision helper can compare it without re-reading the
+        // union field — same invariant as the push loop below.
+        // SAFETY: AccelerationStructureReferenceKHR is a union; our
+        // BLAS entries are always device-built so `device_handle` is
+        // the live variant on every push site in this manager.
+        let mut current_addresses_scratch: Vec<vk::DeviceAddress> =
+            Vec::with_capacity(instances.len());
+        for inst in &instances {
+            current_addresses_scratch
+                .push(unsafe { inst.acceleration_structure_reference.device_handle });
+        }
+        let (use_update, _did_zip) = decide_use_update(
+            tlas.needs_full_rebuild,
+            tlas.last_blas_map_gen,
+            map_gen,
+            &tlas.last_blas_addresses,
+            &current_addresses_scratch,
+        );
 
         // Cache the current BLAS sequence so the next frame can compare.
-        // Do this regardless of mode so a BUILD-after-UPDATE transition
-        // sees the up-to-date baseline.
-        tlas.last_blas_addresses.clear();
-        for inst in &instances {
-            tlas.last_blas_addresses
-                .push(inst.acceleration_structure_reference.device_handle);
-        }
+        // Move-from-scratch avoids the second `union -> u64` round-trip
+        // since `decide_use_update` already needed the materialised
+        // sequence.
+        tlas.last_blas_addresses = current_addresses_scratch;
         // After this BUILD/UPDATE completes, the next frame can refit
         // unless something invalidates it (resize, layout change).
         tlas.needs_full_rebuild = false;
+        tlas.last_blas_map_gen = map_gen;
 
         // Mark referenced BLAS entries as used for LRU eviction.
         for draw_cmd in draw_commands {
@@ -1286,6 +1363,8 @@ impl AccelerationManager {
                 self.total_blas_bytes as f64 / (1024.0 * 1024.0),
                 self.blas_budget_bytes as f64 / (1024.0 * 1024.0),
             );
+            // BLAS map mutated — see #300.
+            self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
             // Force full TLAS rebuild next frame since BLAS addresses changed.
             for slot in &mut self.tlas {
                 if let Some(ref mut t) = slot {
@@ -1326,5 +1405,87 @@ impl AccelerationManager {
         if let Some(mut scratch) = self.blas_scratch_buffer.take() {
             scratch.destroy(device, allocator);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: #300 — when `needs_full_rebuild` is set, the
+    /// per-instance address zip-compare must be skipped (the call is
+    /// going to BUILD regardless, so paying O(N) is pure waste).
+    #[test]
+    fn decide_skips_zip_when_needs_full_rebuild() {
+        // Even with identical address lists, needs_full_rebuild forces
+        // BUILD and the zip is not run.
+        let cached = vec![1u64, 2, 3];
+        let current = vec![1u64, 2, 3];
+        let (use_update, did_zip) = decide_use_update(true, 0, 0, &cached, &current);
+        assert!(!use_update, "needs_full_rebuild forces BUILD");
+        assert!(!did_zip, "comparison must be skipped — short-circuit");
+    }
+
+    /// Regression: #300 — when the BLAS map generation has bumped
+    /// since the last build (cell load / unload / eviction frame),
+    /// the per-instance address compare is also skipped because
+    /// addresses might have shifted and we're going to BUILD anyway.
+    #[test]
+    fn decide_skips_zip_when_blas_map_dirty() {
+        let cached = vec![1u64, 2, 3];
+        let current = vec![1u64, 2, 3];
+        // last_gen=5, current=7 → BLAS map changed since last build.
+        let (use_update, did_zip) = decide_use_update(false, 5, 7, &cached, &current);
+        assert!(!use_update, "blas_map_dirty forces BUILD");
+        assert!(!did_zip, "comparison must be skipped — short-circuit");
+    }
+
+    /// Steady state — no rebuild needed, BLAS map unchanged. The zip
+    /// runs to detect frustum / draw-list composition changes (which
+    /// are invisible to the dirty flag).
+    #[test]
+    fn decide_runs_zip_when_steady_state_layout_matches() {
+        let cached = vec![1u64, 2, 3];
+        let current = vec![1u64, 2, 3];
+        let (use_update, did_zip) = decide_use_update(false, 7, 7, &cached, &current);
+        assert!(use_update, "matching steady state must use UPDATE");
+        assert!(did_zip, "comparison must run to verify per-slot match");
+    }
+
+    /// Steady state but composition shifted (frustum culling brought
+    /// a different mesh into a slot). The zip catches the mismatch
+    /// and forces BUILD.
+    #[test]
+    fn decide_forces_build_when_layout_diverges() {
+        let cached = vec![1u64, 2, 3];
+        let current = vec![1u64, 2, 99]; // slot 2 now refers to a different BLAS
+        let (use_update, did_zip) = decide_use_update(false, 7, 7, &cached, &current);
+        assert!(!use_update, "diverging slot forces BUILD");
+        assert!(did_zip, "comparison must run — that's how we noticed");
+    }
+
+    /// Length mismatch (entity spawned/despawned without the BLAS map
+    /// noticing — e.g. an entity with an existing-mesh handle joined
+    /// the in_tlas set). The zip-compare's length check catches this.
+    #[test]
+    fn decide_forces_build_when_lengths_differ() {
+        let cached = vec![1u64, 2, 3];
+        let current = vec![1u64, 2, 3, 4];
+        let (use_update, did_zip) = decide_use_update(false, 7, 7, &cached, &current);
+        assert!(!use_update);
+        assert!(did_zip);
+    }
+
+    /// Sentinel from the freshly-created TlasState (`u64::MAX`) must
+    /// never accidentally match a real generation. Forces BUILD on
+    /// the very first frame after creation regardless of input
+    /// identity.
+    #[test]
+    fn decide_first_frame_after_tlas_creation_builds() {
+        let cached: Vec<u64> = Vec::new();
+        let current = vec![1u64, 2, 3];
+        let (use_update, did_zip) = decide_use_update(true, u64::MAX, 0, &cached, &current);
+        assert!(!use_update);
+        assert!(!did_zip);
     }
 }
