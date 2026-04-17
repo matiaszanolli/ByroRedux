@@ -28,39 +28,65 @@ pub fn load_shader_module(device: &ash::Device, spv: &[u8]) -> Result<vk::Shader
     Ok(module)
 }
 
-/// Blend type for pipeline selection — classifies the NiAlphaProperty
-/// blend factor pair into a small set of pipeline variants.
+/// Pipeline selection key for a single draw.
+///
+/// The renderer keeps two pipelines that always exist (`Opaque` and
+/// `Opaque { two_sided: true }`, depth-write on, no blend) plus a
+/// lazily-populated cache of blended pipelines keyed by the exact
+/// Gamebryo (src, dst) factor pair. This key is what batching logic
+/// in `draw.rs` groups by. See #392.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BlendType {
-    /// No blending — opaque pipeline.
-    Opaque,
-    /// Standard transparency: SRC_ALPHA / ONE_MINUS_SRC_ALPHA.
-    Alpha,
-    /// Additive blending: SRC_ALPHA / ONE (fire, magic glow, light flares).
-    Additive,
+pub enum PipelineKey {
+    /// Opaque: depth write on, no blend. Optionally two-sided (no
+    /// backface culling for foliage / glass panes / cloth).
+    Opaque { two_sided: bool },
+    /// Blended: depth write off, blend on. `src`/`dst` are raw
+    /// Gamebryo `AlphaFunction` enum values (0=ONE ... 10=SRC_ALPHA_SATURATE);
+    /// see [`gamebryo_to_vk_blend_factor`].
+    Blended { src: u8, dst: u8, two_sided: bool },
 }
 
-impl BlendType {
-    /// Classify a Gamebryo (src_blend, dst_blend) pair into a BlendType.
-    /// Unknown combinations fall back to Alpha (safe default — transparent).
-    pub fn from_nif_blend(src: u8, dst: u8) -> Self {
-        match (src, dst) {
-            // Additive: SRC_ALPHA/ONE or ONE/ONE
-            (6, 0) | (0, 0) => Self::Additive,
-            // Standard alpha blend (default)
-            _ => Self::Alpha,
-        }
+/// Convert a Gamebryo `AlphaFunction` enum value (from `NiAlphaProperty`
+/// flags, bits 1–4 = src, bits 5–8 = dst) into the matching
+/// [`vk::BlendFactor`].
+///
+/// Gamebryo's 11-value enum:
+/// ```text
+/// 0  ONE                 5  INV_DEST_COLOR
+/// 1  ZERO                6  SRC_ALPHA
+/// 2  SRC_COLOR           7  INV_SRC_ALPHA
+/// 3  INV_SRC_COLOR       8  DEST_ALPHA
+/// 4  DEST_COLOR          9  INV_DEST_ALPHA
+///                        10 SRC_ALPHA_SATURATE
+/// ```
+///
+/// Any out-of-range value falls back to `SRC_ALPHA` (the Gamebryo
+/// default). Defensive — NiAlphaProperty storage is a nibble, so the
+/// maximum parsed value is 15.
+pub fn gamebryo_to_vk_blend_factor(v: u8) -> vk::BlendFactor {
+    match v {
+        0 => vk::BlendFactor::ONE,
+        1 => vk::BlendFactor::ZERO,
+        2 => vk::BlendFactor::SRC_COLOR,
+        3 => vk::BlendFactor::ONE_MINUS_SRC_COLOR,
+        4 => vk::BlendFactor::DST_COLOR,
+        5 => vk::BlendFactor::ONE_MINUS_DST_COLOR,
+        6 => vk::BlendFactor::SRC_ALPHA,
+        7 => vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+        8 => vk::BlendFactor::DST_ALPHA,
+        9 => vk::BlendFactor::ONE_MINUS_DST_ALPHA,
+        10 => vk::BlendFactor::SRC_ALPHA_SATURATE,
+        _ => vk::BlendFactor::SRC_ALPHA,
     }
 }
 
-/// Pipeline set: opaque, alpha, additive, and two-sided variants.
+/// Pipeline set: the two pipelines that always exist (opaque + opaque
+/// two-sided) plus the shared layout. All blended variants are created
+/// lazily via [`create_blend_pipeline`] and cached on the VulkanContext
+/// by (src, dst, two_sided).
 pub struct PipelineSet {
     pub opaque: vk::Pipeline,
-    pub alpha: vk::Pipeline,
-    pub additive: vk::Pipeline,
     pub opaque_two_sided: vk::Pipeline,
-    pub alpha_two_sided: vk::Pipeline,
-    pub additive_two_sided: vk::Pipeline,
     pub layout: vk::PipelineLayout,
 }
 
@@ -239,64 +265,8 @@ fn create_triangle_pipeline_with_layout(
         .depth_bounds_test_enable(false)
         .stencil_test_enable(false);
 
-    // Alpha blend pipeline: standard src-alpha, one-minus-src-alpha.
-    // Depth test on but depth write OFF (transparent objects shouldn't occlude).
-    // Attachment 0 (HDR) blends. Attachments 1/2/3 (normal/motion/mesh_id)
-    // overwrite — the alpha surface's normal/motion/id replaces the opaque
-    // one behind it because the alpha fragment IS the new visible surface.
-    let color_blend_hdr_alpha = vk::PipelineColorBlendAttachmentState::default()
-        .color_write_mask(vk::ColorComponentFlags::RGBA)
-        .blend_enable(true)
-        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-        .color_blend_op(vk::BlendOp::ADD)
-        .src_alpha_blend_factor(vk::BlendFactor::ONE)
-        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-        .alpha_blend_op(vk::BlendOp::ADD);
-    let color_blend_alpha = [
-        color_blend_hdr_alpha,
-        color_blend_none, // normal: overwrite
-        color_blend_none, // motion: overwrite
-        color_blend_none, // mesh_id: overwrite
-        color_blend_none, // raw_indirect: overwrite (alpha surface's own indirect)
-        color_blend_none, // albedo: overwrite
-    ];
-    let color_blending_alpha = vk::PipelineColorBlendStateCreateInfo::default()
-        .logic_op_enable(false)
-        .attachments(&color_blend_alpha);
-
-    let depth_stencil_alpha = vk::PipelineDepthStencilStateCreateInfo::default()
-        .depth_test_enable(true)
-        .depth_write_enable(false) // transparent objects don't write depth
-        .depth_compare_op(vk::CompareOp::LESS)
-        .depth_bounds_test_enable(false)
-        .stencil_test_enable(false);
-
-    // Additive blend: SRC_ALPHA + ONE — adds light without modulating
-    // the existing framebuffer. Used for fire, magic effects, glow.
-    let color_blend_hdr_additive = vk::PipelineColorBlendAttachmentState::default()
-        .color_write_mask(vk::ColorComponentFlags::RGBA)
-        .blend_enable(true)
-        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-        .dst_color_blend_factor(vk::BlendFactor::ONE)
-        .color_blend_op(vk::BlendOp::ADD)
-        .src_alpha_blend_factor(vk::BlendFactor::ONE)
-        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-        .alpha_blend_op(vk::BlendOp::ADD);
-    let color_blend_additive = [
-        color_blend_hdr_additive,
-        color_blend_none, // normal: overwrite
-        color_blend_none, // motion: overwrite
-        color_blend_none, // mesh_id: overwrite
-        color_blend_none, // raw_indirect: overwrite
-        color_blend_none, // albedo: overwrite
-    ];
-    let color_blending_additive = vk::PipelineColorBlendStateCreateInfo::default()
-        .logic_op_enable(false)
-        .attachments(&color_blend_additive);
-
     let pipeline_infos = [
-        // [0] Opaque pipeline.
+        // [0] Opaque pipeline — depth write on, no blend.
         vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
             .vertex_input_state(&vertex_input)
@@ -310,21 +280,8 @@ fn create_triangle_pipeline_with_layout(
             .layout(pipeline_layout)
             .render_pass(render_pass)
             .subpass(0),
-        // [1] Alpha-blended pipeline.
-        vk::GraphicsPipelineCreateInfo::default()
-            .stages(&shader_stages)
-            .vertex_input_state(&vertex_input)
-            .input_assembly_state(&input_assembly)
-            .viewport_state(&viewport_state)
-            .rasterization_state(&rasterizer)
-            .multisample_state(&multisampling)
-            .depth_stencil_state(&depth_stencil_alpha)
-            .color_blend_state(&color_blending_alpha)
-            .dynamic_state(&dynamic_state)
-            .layout(pipeline_layout)
-            .render_pass(render_pass)
-            .subpass(0),
-        // [2] Opaque two-sided (no backface culling).
+        // [1] Opaque two-sided — same as [0] but no backface culling
+        //     (foliage, glass panes with no real back-face geometry, cloth).
         vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
             .vertex_input_state(&vertex_input)
@@ -334,48 +291,6 @@ fn create_triangle_pipeline_with_layout(
             .multisample_state(&multisampling)
             .depth_stencil_state(&depth_stencil_opaque)
             .color_blend_state(&color_blending)
-            .dynamic_state(&dynamic_state)
-            .layout(pipeline_layout)
-            .render_pass(render_pass)
-            .subpass(0),
-        // [3] Alpha-blended two-sided (no backface culling).
-        vk::GraphicsPipelineCreateInfo::default()
-            .stages(&shader_stages)
-            .vertex_input_state(&vertex_input)
-            .input_assembly_state(&input_assembly)
-            .viewport_state(&viewport_state)
-            .rasterization_state(&rasterizer_no_cull)
-            .multisample_state(&multisampling)
-            .depth_stencil_state(&depth_stencil_alpha)
-            .color_blend_state(&color_blending_alpha)
-            .dynamic_state(&dynamic_state)
-            .layout(pipeline_layout)
-            .render_pass(render_pass)
-            .subpass(0),
-        // [4] Additive blend (fire, magic, glow effects).
-        vk::GraphicsPipelineCreateInfo::default()
-            .stages(&shader_stages)
-            .vertex_input_state(&vertex_input)
-            .input_assembly_state(&input_assembly)
-            .viewport_state(&viewport_state)
-            .rasterization_state(&rasterizer)
-            .multisample_state(&multisampling)
-            .depth_stencil_state(&depth_stencil_alpha)
-            .color_blend_state(&color_blending_additive)
-            .dynamic_state(&dynamic_state)
-            .layout(pipeline_layout)
-            .render_pass(render_pass)
-            .subpass(0),
-        // [5] Additive blend two-sided.
-        vk::GraphicsPipelineCreateInfo::default()
-            .stages(&shader_stages)
-            .vertex_input_state(&vertex_input)
-            .input_assembly_state(&input_assembly)
-            .viewport_state(&viewport_state)
-            .rasterization_state(&rasterizer_no_cull)
-            .multisample_state(&multisampling)
-            .depth_stencil_state(&depth_stencil_alpha)
-            .color_blend_state(&color_blending_additive)
             .dynamic_state(&dynamic_state)
             .layout(pipeline_layout)
             .render_pass(render_pass)
@@ -389,7 +304,7 @@ fn create_triangle_pipeline_with_layout(
             .context("Failed to create graphics pipelines")?
     };
 
-    log::info!("Graphics pipelines created (opaque + alpha + additive + two-sided variants)");
+    log::info!("Graphics pipelines created (opaque + opaque two-sided; blend variants lazy-cached by NiAlphaProperty (src, dst))");
 
     // SAFETY: Shader modules are compiled into the pipeline objects during
     // create_graphics_pipelines and are no longer needed. Destroy them
@@ -402,13 +317,164 @@ fn create_triangle_pipeline_with_layout(
 
     Ok(PipelineSet {
         opaque: pipelines[0],
-        alpha: pipelines[1],
-        opaque_two_sided: pipelines[2],
-        alpha_two_sided: pipelines[3],
-        additive: pipelines[4],
-        additive_two_sided: pipelines[5],
+        opaque_two_sided: pipelines[1],
         layout: pipeline_layout,
     })
+}
+
+/// Create a single blended pipeline for a specific Gamebryo (src, dst)
+/// factor pair, with depth-write disabled (correct for translucent
+/// surfaces). Consumed by the lazy cache in `VulkanContext` when a draw
+/// presents a factor pair that hasn't been seen yet (#392).
+///
+/// Shares the same render pass, pipeline layout, and shader pair as the
+/// opaque pipelines. `src` / `dst` are raw Gamebryo AlphaFunction enum
+/// values; [`gamebryo_to_vk_blend_factor`] maps them. Only the HDR
+/// attachment (0) blends — G-buffer attachments (normal/motion/mesh_id/
+/// raw_indirect/albedo) overwrite, matching the behaviour the old
+/// `Alpha` / `Additive` static pipelines had.
+pub fn create_blend_pipeline(
+    device: &ash::Device,
+    render_pass: vk::RenderPass,
+    extent: vk::Extent2D,
+    pipeline_cache: vk::PipelineCache,
+    pipeline_layout: vk::PipelineLayout,
+    src: u8,
+    dst: u8,
+    two_sided: bool,
+) -> Result<vk::Pipeline> {
+    let vert_spv = include_bytes!("../../shaders/triangle.vert.spv");
+    let frag_spv = include_bytes!("../../shaders/triangle.frag.spv");
+
+    let vert_module = load_shader_module(device, vert_spv)?;
+    let frag_module = load_shader_module(device, frag_spv)?;
+
+    let entry_point = c"main";
+    let shader_stages = [
+        vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(vert_module)
+            .name(entry_point),
+        vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(frag_module)
+            .name(entry_point),
+    ];
+
+    let binding_descriptions = [Vertex::binding_description()];
+    let attribute_descriptions = Vertex::attribute_descriptions();
+    let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+        .vertex_binding_descriptions(&binding_descriptions)
+        .vertex_attribute_descriptions(&attribute_descriptions);
+
+    let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+        .primitive_restart_enable(false);
+
+    let viewports = [vk::Viewport {
+        x: 0.0,
+        y: 0.0,
+        width: extent.width as f32,
+        height: extent.height as f32,
+        min_depth: 0.0,
+        max_depth: 1.0,
+    }];
+    let scissors = [vk::Rect2D {
+        offset: vk::Offset2D { x: 0, y: 0 },
+        extent,
+    }];
+    let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+        .viewports(&viewports)
+        .scissors(&scissors);
+
+    let cull_mode = if two_sided {
+        vk::CullModeFlags::NONE
+    } else {
+        vk::CullModeFlags::BACK
+    };
+    let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+        .depth_clamp_enable(false)
+        .rasterizer_discard_enable(false)
+        .polygon_mode(vk::PolygonMode::FILL)
+        .line_width(1.0)
+        .cull_mode(cull_mode)
+        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+        .depth_bias_enable(true);
+
+    let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
+        .sample_shading_enable(false)
+        .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+
+    let src_factor = gamebryo_to_vk_blend_factor(src);
+    let dst_factor = gamebryo_to_vk_blend_factor(dst);
+    let hdr_blend = vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::RGBA)
+        .blend_enable(true)
+        .src_color_blend_factor(src_factor)
+        .dst_color_blend_factor(dst_factor)
+        .color_blend_op(vk::BlendOp::ADD)
+        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+        .alpha_blend_op(vk::BlendOp::ADD);
+    let overwrite = vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::RGBA)
+        .blend_enable(false);
+    let attachments = [
+        hdr_blend, overwrite, overwrite, overwrite, overwrite, overwrite,
+    ];
+    let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
+        .logic_op_enable(false)
+        .attachments(&attachments);
+
+    // Transparent surfaces never write depth — prevents z-fight with
+    // other translucents at the same depth and keeps opaque geometry
+    // visible behind glass / decals.
+    let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+        .depth_test_enable(true)
+        .depth_write_enable(false)
+        .depth_compare_op(vk::CompareOp::LESS)
+        .depth_bounds_test_enable(false)
+        .stencil_test_enable(false);
+
+    let dynamic_states = [
+        vk::DynamicState::VIEWPORT,
+        vk::DynamicState::SCISSOR,
+        vk::DynamicState::DEPTH_BIAS,
+    ];
+    let dynamic_state =
+        vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+
+    let infos = [vk::GraphicsPipelineCreateInfo::default()
+        .stages(&shader_stages)
+        .vertex_input_state(&vertex_input)
+        .input_assembly_state(&input_assembly)
+        .viewport_state(&viewport_state)
+        .rasterization_state(&rasterizer)
+        .multisample_state(&multisampling)
+        .depth_stencil_state(&depth_stencil)
+        .color_blend_state(&color_blending)
+        .dynamic_state(&dynamic_state)
+        .layout(pipeline_layout)
+        .render_pass(render_pass)
+        .subpass(0)];
+
+    let pipelines = unsafe {
+        device
+            .create_graphics_pipelines(pipeline_cache, &infos, None)
+            .map_err(|(_, err)| err)
+            .context("Failed to create blend pipeline variant")?
+    };
+
+    unsafe {
+        device.destroy_shader_module(vert_module, None);
+        device.destroy_shader_module(frag_module, None);
+    }
+
+    log::debug!(
+        "Blend pipeline created: src={src} ({src_factor:?}), dst={dst} ({dst_factor:?}), two_sided={two_sided}"
+    );
+
+    Ok(pipelines[0])
 }
 
 /// Creates the UI overlay pipeline (no depth, no lighting, alpha blend).
@@ -556,4 +622,99 @@ pub fn create_ui_pipeline(
     }
 
     Ok(pipelines[0])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: #392 — every Gamebryo `AlphaFunction` value (0..10)
+    /// must map to a distinct, correct `vk::BlendFactor`. The previous
+    /// `BlendType::from_nif_blend` collapsed 11×11 = 121 possible
+    /// (src, dst) pairs into 3 buckets, dropping enough information to
+    /// render glass / additive premultiplied / DST_COLOR-modulated
+    /// content incorrectly across every supported game.
+    #[test]
+    fn gamebryo_to_vk_blend_factor_covers_all_11_values() {
+        let cases = [
+            (0u8, vk::BlendFactor::ONE),
+            (1, vk::BlendFactor::ZERO),
+            (2, vk::BlendFactor::SRC_COLOR),
+            (3, vk::BlendFactor::ONE_MINUS_SRC_COLOR),
+            (4, vk::BlendFactor::DST_COLOR),
+            (5, vk::BlendFactor::ONE_MINUS_DST_COLOR),
+            (6, vk::BlendFactor::SRC_ALPHA),
+            (7, vk::BlendFactor::ONE_MINUS_SRC_ALPHA),
+            (8, vk::BlendFactor::DST_ALPHA),
+            (9, vk::BlendFactor::ONE_MINUS_DST_ALPHA),
+            (10, vk::BlendFactor::SRC_ALPHA_SATURATE),
+        ];
+        for (gb, vk_expected) in cases {
+            assert_eq!(
+                gamebryo_to_vk_blend_factor(gb),
+                vk_expected,
+                "Gamebryo factor {gb} must map to {vk_expected:?}"
+            );
+        }
+
+        // Out-of-range falls back to SRC_ALPHA (the Gamebryo default).
+        // NiAlphaProperty stores src/dst as nibbles so 11..=15 is the
+        // realistic out-of-range space.
+        for v in 11u8..=15 {
+            assert_eq!(
+                gamebryo_to_vk_blend_factor(v),
+                vk::BlendFactor::SRC_ALPHA,
+                "out-of-range factor {v} must default to SRC_ALPHA"
+            );
+        }
+    }
+
+    /// Regression: the cache key must distinguish all the combos that
+    /// previously collapsed to the same static pipeline. `(6, 7)` (alpha)
+    /// and `(6, 0)` (additive) are the two combos the old code handled;
+    /// `(4, 0)` (DEST_COLOR/ONE — Oblivion glass modulation) and
+    /// `(0, 0)` (ONE/ONE — premultiplied additive) are the two it
+    /// silently aliased to the wrong bucket.
+    #[test]
+    fn pipeline_key_distinguishes_combos_old_code_collapsed() {
+        let alpha = PipelineKey::Blended {
+            src: 6,
+            dst: 7,
+            two_sided: false,
+        };
+        let additive = PipelineKey::Blended {
+            src: 6,
+            dst: 0,
+            two_sided: false,
+        };
+        let glass_modulate = PipelineKey::Blended {
+            src: 4,
+            dst: 0,
+            two_sided: false,
+        };
+        let premul_additive = PipelineKey::Blended {
+            src: 0,
+            dst: 0,
+            two_sided: false,
+        };
+        let opaque = PipelineKey::Opaque { two_sided: false };
+
+        let all = [alpha, additive, glass_modulate, premul_additive, opaque];
+        for (i, a) in all.iter().enumerate() {
+            for (j, b) in all.iter().enumerate() {
+                if i == j {
+                    assert_eq!(a, b);
+                } else {
+                    assert_ne!(a, b, "{a:?} vs {b:?}");
+                }
+            }
+        }
+
+        let alpha_2s = PipelineKey::Blended {
+            src: 6,
+            dst: 7,
+            two_sided: true,
+        };
+        assert_ne!(alpha, alpha_2s);
+    }
 }

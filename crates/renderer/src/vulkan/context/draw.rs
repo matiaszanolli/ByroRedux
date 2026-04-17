@@ -1,6 +1,6 @@
 //! Frame recording and submission — the per-frame hot path.
 
-use super::super::pipeline::BlendType;
+use super::super::pipeline::PipelineKey;
 use super::super::scene_buffer::{self, GpuInstance};
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::{DrawCommand, SkyParams, VulkanContext};
@@ -28,7 +28,10 @@ fn halton(mut index: u32, base: u32) -> f32 {
 /// across frames. See issue #243.
 pub(super) struct DrawBatch {
     pub mesh_handle: u32,
-    pub pipeline_key: (BlendType, bool), // (blend_type, two_sided)
+    /// Pipeline selector. `Opaque` uses one of two prebuilt pipelines;
+    /// `Blended { src, dst, two_sided }` resolves through the lazy
+    /// blend pipeline cache on `VulkanContext`. See #392.
+    pub pipeline_key: PipelineKey,
     pub is_decal: bool,
     pub first_instance: u32,
     pub instance_count: u32,
@@ -488,12 +491,17 @@ impl VulkanContext {
                 _pad1: 0,
             });
 
-            let blend_type = if draw_cmd.alpha_blend {
-                BlendType::from_nif_blend(draw_cmd.src_blend, draw_cmd.dst_blend)
+            let pipeline_key = if draw_cmd.alpha_blend {
+                PipelineKey::Blended {
+                    src: draw_cmd.src_blend,
+                    dst: draw_cmd.dst_blend,
+                    two_sided: draw_cmd.two_sided,
+                }
             } else {
-                BlendType::Opaque
+                PipelineKey::Opaque {
+                    two_sided: draw_cmd.two_sided,
+                }
             };
-            let pipeline_key = (blend_type, draw_cmd.two_sided);
 
             // Extend the current batch if this draw shares the same state.
             if let Some(batch) = batches.last_mut() {
@@ -539,6 +547,33 @@ impl VulkanContext {
             self.scene_buffers
                 .upload_instances(&self.device, frame, &gpu_instances)
                 .unwrap_or_else(|e| log::warn!("Failed to upload instances: {e}"));
+        }
+
+        // Pre-populate the blend pipeline cache for any new (src, dst,
+        // two_sided) combos this frame. Resolved up-front because the
+        // hot draw loop only takes `&self.device` for `cmd_bind_pipeline`
+        // and can't reborrow `&mut self` to lazy-create. After this loop
+        // every `PipelineKey::Blended` has a corresponding cache entry.
+        // See #392.
+        for batch in &batches {
+            if let PipelineKey::Blended {
+                src,
+                dst,
+                two_sided,
+            } = batch.pipeline_key
+            {
+                if !self
+                    .blend_pipeline_cache
+                    .contains_key(&(src, dst, two_sided))
+                {
+                    if let Err(e) = self.get_or_create_blend_pipeline(src, dst, two_sided) {
+                        log::error!(
+                            "Failed to create blend pipeline (src={src}, dst={dst}, two_sided={two_sided}): {e}; \
+                             draws using this combo will fall back to opaque pipeline"
+                        );
+                    }
+                }
+            }
         }
 
         // Barrier: make the instance SSBO host write (and any remaining
@@ -613,7 +648,14 @@ impl VulkanContext {
             // The vertex shader reads instances[gl_InstanceIndex] for the model matrix,
             // texture index, and bone offset — no push constants, no per-draw descriptor
             // set binds.
-            let mut last_pipeline_key = (BlendType::Opaque, false);
+            // Sentinel that no real batch can match — forces the first
+            // batch to bind its pipeline. (`PipelineKey` is `PartialEq`
+            // so we just pick a value distinct from any draw input.)
+            let mut last_pipeline_key = PipelineKey::Blended {
+                src: u8::MAX,
+                dst: u8::MAX,
+                two_sided: false,
+            };
             let mut last_is_decal = false;
 
             // Set initial depth bias to zero before first draw — Vulkan
@@ -642,12 +684,28 @@ impl VulkanContext {
                 // Switch pipeline when rendering mode changes.
                 if batch.pipeline_key != last_pipeline_key {
                     let pipe = match batch.pipeline_key {
-                        (BlendType::Opaque, false) => self.pipeline,
-                        (BlendType::Alpha, false) => self.pipeline_alpha,
-                        (BlendType::Additive, false) => self.pipeline_additive,
-                        (BlendType::Opaque, true) => self.pipeline_two_sided,
-                        (BlendType::Alpha, true) => self.pipeline_alpha_two_sided,
-                        (BlendType::Additive, true) => self.pipeline_additive_two_sided,
+                        PipelineKey::Opaque { two_sided: false } => self.pipeline,
+                        PipelineKey::Opaque { two_sided: true } => self.pipeline_two_sided,
+                        PipelineKey::Blended {
+                            src,
+                            dst,
+                            two_sided,
+                        } => {
+                            // Always present after the pre-population
+                            // pass above. If creation failed earlier we
+                            // fall back to the opaque pipeline rather
+                            // than skipping the draw entirely — better
+                            // a wrong-blend visible mesh than a vanished
+                            // one. See #392.
+                            *self
+                                .blend_pipeline_cache
+                                .get(&(src, dst, two_sided))
+                                .unwrap_or(if two_sided {
+                                    &self.pipeline_two_sided
+                                } else {
+                                    &self.pipeline
+                                })
+                        }
                     };
                     self.device
                         .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipe);

@@ -26,6 +26,7 @@ use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -220,12 +221,20 @@ pub struct VulkanContext {
     /// pass needs is universally supported on desktop GPUs.
     pub caustic: Option<CausticPipeline>,
     pipeline_cache: vk::PipelineCache,
+    /// Opaque pipeline (depth write on, no blend, BACK culling).
     pipeline: vk::Pipeline,
-    pipeline_alpha: vk::Pipeline,
-    pipeline_additive: vk::Pipeline,
+    /// Opaque two-sided pipeline (depth write on, no blend, no culling).
     pipeline_two_sided: vk::Pipeline,
-    pipeline_alpha_two_sided: vk::Pipeline,
-    pipeline_additive_two_sided: vk::Pipeline,
+    /// Lazy cache of blended pipelines, keyed by `(src, dst, two_sided)`
+    /// from `NiAlphaProperty.flags` (Gamebryo `AlphaFunction` enum). Each
+    /// entry has depth-write disabled, blend on with the exact factor
+    /// pair the source NIF authored. See #392 for why this replaced the
+    /// earlier 6-pipeline `(opaque|alpha|additive) × (one|two)-sided`
+    /// scheme: collapsing 11×11 = 121 possible Gamebryo factor pairs
+    /// down to two `Alpha`/`Additive` buckets dropped half the
+    /// pipeline-state information for content that depends on it (glass
+    /// modulation, premultiplied alpha, etc.).
+    blend_pipeline_cache: HashMap<(u8, u8, bool), vk::Pipeline>,
     pipeline_ui: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     /// Mesh handle for the fullscreen quad used by UI overlay.
@@ -765,11 +774,8 @@ impl VulkanContext {
             render_pass,
             pipeline_cache,
             pipeline: pipelines.opaque,
-            pipeline_alpha: pipelines.alpha,
-            pipeline_additive: pipelines.additive,
             pipeline_two_sided: pipelines.opaque_two_sided,
-            pipeline_alpha_two_sided: pipelines.alpha_two_sided,
-            pipeline_additive_two_sided: pipelines.additive_two_sided,
+            blend_pipeline_cache: HashMap::new(),
             pipeline_ui,
             pipeline_layout: pipelines.layout,
             ui_quad_handle: None,
@@ -823,6 +829,43 @@ impl VulkanContext {
             &self.transfer_fence,
             f,
         )
+    }
+
+    /// Look up the cached blended pipeline for a given Gamebryo
+    /// `(src, dst)` factor pair (with two-sided rasterizer flag), or
+    /// create + cache it on first use. The cache is keyed by the raw
+    /// `NiAlphaProperty.flags` nibbles, so identical factor pairs across
+    /// different materials share one pipeline.
+    ///
+    /// Returns the cached pipeline on cache hit (no allocation, no
+    /// device call). On cache miss, creates a pipeline through
+    /// [`pipeline::create_blend_pipeline`] and inserts it.
+    ///
+    /// Pipelines created here are tied to the current render pass and
+    /// must be destroyed and re-created on swapchain recreate
+    /// ([`recreate_swapchain`](Self::recreate_swapchain)).
+    pub fn get_or_create_blend_pipeline(
+        &mut self,
+        src: u8,
+        dst: u8,
+        two_sided: bool,
+    ) -> Result<vk::Pipeline> {
+        let key = (src, dst, two_sided);
+        if let Some(&pipe) = self.blend_pipeline_cache.get(&key) {
+            return Ok(pipe);
+        }
+        let pipe = pipeline::create_blend_pipeline(
+            &self.device,
+            self.render_pass,
+            self.swapchain_state.extent,
+            self.pipeline_cache,
+            self.pipeline_layout,
+            src,
+            dst,
+            two_sided,
+        )?;
+        self.blend_pipeline_cache.insert(key, pipe);
+        Ok(pipe)
     }
 
     /// Get a handle for requesting screenshots from outside the render loop.
@@ -919,13 +962,11 @@ impl Drop for VulkanContext {
             }
 
             self.device.destroy_pipeline(self.pipeline, None);
-            self.device.destroy_pipeline(self.pipeline_alpha, None);
-            self.device.destroy_pipeline(self.pipeline_additive, None);
             self.device.destroy_pipeline(self.pipeline_two_sided, None);
-            self.device
-                .destroy_pipeline(self.pipeline_alpha_two_sided, None);
-            self.device
-                .destroy_pipeline(self.pipeline_additive_two_sided, None);
+            for &pipe in self.blend_pipeline_cache.values() {
+                self.device.destroy_pipeline(pipe, None);
+            }
+            self.blend_pipeline_cache.clear();
             self.device.destroy_pipeline(self.pipeline_ui, None);
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
