@@ -876,15 +876,16 @@ impl AccelerationManager {
                         }),
                 });
 
-            // ALLOW_UPDATE enables REFIT on subsequent frames (#247).
-            // PREFER_FAST_BUILD is retained — we rebuild often enough
-            // that trace-time wins from PREFER_FAST_TRACE don't pay back
-            // the slower build; REFIT is the actual optimization for
-            // static content.
+            // PREFER_FAST_TRACE + ALLOW_UPDATE: REFIT (#247) handles most
+            // per-frame TLAS changes, so full rebuilds are rare and the
+            // trace-time wins from a higher-quality BVH pay off on every
+            // ray query (shadows, reflections, GI, caustics, window
+            // portal). Matches the BLAS flag choice. See #307 / audit
+            // AUDIT_PERFORMANCE_2026-04-13b P1-09.
             let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                 .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
                 .flags(
-                    vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD
+                    vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
                         | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE,
                 )
                 .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
@@ -1089,11 +1090,12 @@ impl AccelerationManager {
 
         // Mirror the flags used at creation time so Vulkan's validation
         // layer matches source and dst flags. ALLOW_UPDATE must be set
-        // on both BUILD and UPDATE submissions.
+        // on both BUILD and UPDATE submissions. PREFER_FAST_TRACE here
+        // must stay in lockstep with the BUILD path above (#307).
         let mut build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
             .flags(
-                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD
+                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
                     | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE,
             )
             .dst_acceleration_structure(tlas.accel)
