@@ -180,9 +180,14 @@ impl NiSkinPartition {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let num_partitions = stream.read_u32_le()? as usize;
 
-        // SSE (bsver==100): global vertex data before partitions.
+        // SSE (bsver in [100, 130)): global vertex data before partitions.
+        // The variant classifier maps BSVER 101-129 to SkyrimSE; the exact
+        // `bsver == 100` check here dropped the SSE-specific data for every
+        // minor above 100, desynchronising the stream on all subsequent
+        // partition reads. See #126 / audit NIF-206.
         let bsver = stream.bsver();
-        if bsver == 100 {
+        let is_sse = (100..130).contains(&bsver);
+        if is_sse {
             let data_size = stream.read_u32_le()?;
             let _vertex_size = stream.read_u32_le()?;
             let _vertex_desc = stream.read_u64_le()?;
@@ -298,8 +303,9 @@ impl NiSkinPartition {
                 let _global_vb = stream.read_byte_bool()?;
             }
 
-            // SSE (bsver==100): per-partition vertex desc + triangles copy.
-            if bsver == 100 {
+            // SSE (bsver in [100, 130)): per-partition vertex desc + triangles copy.
+            // Same reasoning as the global gate above (#126 / audit NIF-206).
+            if is_sse {
                 let _vertex_desc = stream.read_u64_le()?;
                 // Triangles copy — same data as above, skip.
                 stream.skip(num_triangles as u64 * 6)?;
@@ -565,5 +571,84 @@ mod tests {
         assert_eq!(p.triangles[0], [0, 1, 2]);
         assert_eq!(p.bone_indices, vec![0, 1, 0, 1, 1, 0]);
         assert_eq!(stream.position() as usize, data.len());
+    }
+
+    fn make_sse_header(user_version_2: u32) -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 12,
+            user_version_2,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    /// Build a minimal SSE-shaped NiSkinPartition with a single empty
+    /// partition. The SSE-specific global + per-partition fields MUST be
+    /// consumed for the stream to land at `data.len()`.
+    fn sse_skin_partition_bytes() -> Vec<u8> {
+        let mut d = Vec::new();
+        // num_partitions = 1
+        d.extend_from_slice(&1u32.to_le_bytes());
+        // SSE global: data_size=0, vertex_size=0, vertex_desc=0 (u64).
+        d.extend_from_slice(&0u32.to_le_bytes()); // data_size
+        d.extend_from_slice(&0u32.to_le_bytes()); // vertex_size
+        d.extend_from_slice(&0u64.to_le_bytes()); // vertex_desc
+                                                    // Partition 0 — all zeros: 0 verts, 0 tris, 0 bones, 0 strips, 0 wpv.
+        for _ in 0..5 {
+            d.extend_from_slice(&0u16.to_le_bytes());
+        }
+        // has_vertex_map=false, has_vertex_weights=false, has_faces=false, has_bone_indices=false.
+        d.extend(&[0u8, 0, 0, 0]);
+        // Skyrim+ trailing (bsver > 34): lod_level(u8) + global_vb(bool).
+        d.push(0u8);
+        d.push(0u8);
+        // SSE per-partition: vertex_desc(u64) + triangles copy (0 bytes since num_tris=0).
+        d.extend_from_slice(&0u64.to_le_bytes());
+        d
+    }
+
+    /// Regression: #126 / audit NIF-206 — SSE-specific partition fields
+    /// must be consumed for bsver == 100 AND for the [101, 130) gap range
+    /// (the variant classifier maps those to `SkyrimSE`). Previously
+    /// gated on `bsver == 100` exactly, so any minor above 100 produced
+    /// a stream desync on the first partition.
+    #[test]
+    fn skin_partition_sse_100_consumes_sse_fields() {
+        let header = make_sse_header(100);
+        let bytes = sse_skin_partition_bytes();
+        let mut stream = NifStream::new(&bytes, &header);
+        let part = NiSkinPartition::parse(&mut stream).unwrap();
+        assert_eq!(part.partitions.len(), 1);
+        assert_eq!(stream.position() as usize, bytes.len());
+    }
+
+    #[test]
+    fn skin_partition_sse_105_consumes_sse_fields() {
+        // 101-129 is the "unknown gap" the classifier folds into SkyrimSE;
+        // pick 105 as a representative value inside the gap.
+        let header = make_sse_header(105);
+        let bytes = sse_skin_partition_bytes();
+        let mut stream = NifStream::new(&bytes, &header);
+        let part = NiSkinPartition::parse(&mut stream).unwrap();
+        assert_eq!(part.partitions.len(), 1);
+        assert_eq!(stream.position() as usize, bytes.len());
+    }
+
+    #[test]
+    fn skin_partition_sse_129_consumes_sse_fields() {
+        // Upper edge of the [100, 130) SSE range.
+        let header = make_sse_header(129);
+        let bytes = sse_skin_partition_bytes();
+        let mut stream = NifStream::new(&bytes, &header);
+        let part = NiSkinPartition::parse(&mut stream).unwrap();
+        assert_eq!(part.partitions.len(), 1);
+        assert_eq!(stream.position() as usize, bytes.len());
     }
 }
