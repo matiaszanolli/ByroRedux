@@ -101,6 +101,13 @@ pub struct CellData {
     pub lighting: Option<CellLighting>,
     /// Landscape terrain data (from LAND record, exterior cells only).
     pub landscape: Option<LandscapeData>,
+    /// Water plane height in Bethesda world units (Z-up), from the
+    /// CELL record's XCLW sub-record. `None` when the cell has no
+    /// water plane. Critical for flooded Ayleid ruins, sewer interiors,
+    /// coastal exterior cells — omitting it makes water geometry either
+    /// not render at all or clamp to Y/Z=0. Same f32 semantics across
+    /// Oblivion / FO3 / FNV / Skyrim. See #397.
+    pub water_height: Option<f32>,
 }
 
 /// A placed object reference within a cell (REFR or ACHR).
@@ -316,11 +323,25 @@ fn parse_cell_group(
                 let mut editor_id = String::new();
                 let mut is_interior = false;
                 let mut lighting = None;
+                let mut water_height: Option<f32> = None;
 
                 for sub in &subs {
                     match &sub.sub_type {
                         b"EDID" => editor_id = read_zstring(&sub.data),
                         b"DATA" if sub.data.len() >= 1 => is_interior = sub.data[0] & 1 != 0,
+                        b"XCLW" if sub.data.len() >= 4 => {
+                            // XCLW: f32 water plane height in world units
+                            // (Z-up). Same layout across Oblivion / FO3 / FNV
+                            // / Skyrim — the cell's water surface sits at
+                            // this Z (interior) or Z-in-worldspace (exterior).
+                            // See #397 / #356.
+                            water_height = Some(f32::from_le_bytes([
+                                sub.data[0],
+                                sub.data[1],
+                                sub.data[2],
+                                sub.data[3],
+                            ]));
+                        }
                         b"XCLL" if sub.data.len() >= 28 => {
                             // XCLL layout (shared prefix for all games):
                             //   0-3:   Ambient RGBA
@@ -434,6 +455,7 @@ fn parse_cell_group(
                             grid: None,
                             lighting: lighting.clone(),
                             landscape: None,
+                            water_height,
                         },
                     );
                     current_cell = Some((header.form_id, editor_id));
@@ -765,6 +787,7 @@ fn parse_wrld_children(
                 let subs = reader.read_sub_records(&header)?;
                 let mut editor_id = String::new();
                 let mut grid = None;
+                let mut water_height: Option<f32> = None;
 
                 for sub in &subs {
                     match &sub.sub_type {
@@ -784,6 +807,14 @@ fn parse_wrld_children(
                             ]);
                             grid = Some((grid_x, grid_y));
                         }
+                        b"XCLW" if sub.data.len() >= 4 => {
+                            water_height = Some(f32::from_le_bytes([
+                                sub.data[0],
+                                sub.data[1],
+                                sub.data[2],
+                                sub.data[3],
+                            ]));
+                        }
                         _ => {}
                     }
                 }
@@ -799,6 +830,7 @@ fn parse_wrld_children(
                             grid: Some(g),
                             lighting: None,
                             landscape: None,
+                            water_height,
                         },
                     );
                     current_cell = Some(g);
@@ -1370,6 +1402,94 @@ mod tests {
         assert!((r.position[2] - 300.0).abs() < 1e-6);
         assert!((r.rotation[1] - 1.57).abs() < 0.01);
         assert!((r.scale - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_cell_xclw_populates_water_height() {
+        // Regression: #397 — CELL XCLW (f32 water plane height) was
+        // silently dropped by the walker, so flooded Ayleid ruins /
+        // sewer interiors / coastal exteriors rendered without water.
+        // Build an interior CELL record with EDID + DATA(interior) +
+        // XCLW(10.0) and run it through `parse_cell_group`, which is
+        // reachable directly once the CELL record is followed by no
+        // further groups.
+        let water_bytes = 10.0_f32.to_le_bytes();
+
+        // Sub-record payload (type(4) + size(2) + bytes).
+        let mut sub_data = Vec::new();
+        let edid = "FloodedRuin\0";
+        sub_data.extend_from_slice(b"EDID");
+        sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(edid.as_bytes());
+
+        sub_data.extend_from_slice(b"DATA");
+        sub_data.extend_from_slice(&1u16.to_le_bytes());
+        sub_data.push(0x01); // is_interior bit.
+
+        sub_data.extend_from_slice(b"XCLW");
+        sub_data.extend_from_slice(&4u16.to_le_bytes());
+        sub_data.extend_from_slice(&water_bytes);
+
+        // CELL record (Tes5Plus layout — 24-byte header).
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"CELL");
+        buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+        buf.extend_from_slice(&0xDEADBEEFu32.to_le_bytes()); // form_id
+        buf.extend_from_slice(&[0u8; 8]); // padding
+        buf.extend_from_slice(&sub_data);
+
+        let mut reader = super::super::reader::EsmReader::with_variant(
+            &buf,
+            super::super::reader::EsmVariant::Tes5Plus,
+        );
+        let end = buf.len();
+        let mut cells = HashMap::new();
+        parse_cell_group(&mut reader, end, &mut cells).unwrap();
+
+        assert_eq!(cells.len(), 1, "interior CELL must be registered");
+        let cell = cells.get("floodedruin").expect("lowercase key");
+        assert!(cell.is_interior);
+        assert_eq!(
+            cell.water_height,
+            Some(10.0),
+            "XCLW water height must flow through to CellData"
+        );
+    }
+
+    #[test]
+    fn parse_cell_without_xclw_leaves_water_height_none() {
+        // Sibling check for the XCLW match arm: a CELL with no XCLW
+        // sub-record keeps `water_height = None`. Catches a regression
+        // where the arm accidentally consumed some other sub-record.
+        let mut sub_data = Vec::new();
+        let edid = "DryRoom\0";
+        sub_data.extend_from_slice(b"EDID");
+        sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(edid.as_bytes());
+
+        sub_data.extend_from_slice(b"DATA");
+        sub_data.extend_from_slice(&1u16.to_le_bytes());
+        sub_data.push(0x01);
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"CELL");
+        buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&0x01u32.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&sub_data);
+
+        let mut reader = super::super::reader::EsmReader::with_variant(
+            &buf,
+            super::super::reader::EsmVariant::Tes5Plus,
+        );
+        let end = buf.len();
+        let mut cells = HashMap::new();
+        parse_cell_group(&mut reader, end, &mut cells).unwrap();
+
+        let cell = cells.get("dryroom").expect("interior CELL present");
+        assert_eq!(cell.water_height, None);
     }
 
     #[test]
