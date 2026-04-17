@@ -44,6 +44,14 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let debug_mode = args.iter().any(|a| a == "--debug");
 
+    // --bench-frames N: run N frames, emit a single `bench:` summary
+    // line to stdout, then exit. Intended for CI perf tracking and for
+    // reproducing the ROADMAP's sweetroll FPS claim without interactive
+    // window-title reading. See #366.
+    let bench_frames = args.iter().position(|a| a == "--bench-frames").and_then(|i| {
+        args.get(i + 1).and_then(|v| v.parse::<u32>().ok())
+    });
+
     // Set up logging. --debug forces debug level.
     if debug_mode {
         std::env::set_var(
@@ -81,6 +89,7 @@ fn main() -> Result<()> {
     event_loop.set_control_flow(ControlFlow::Poll);
 
     let mut app = App::new(debug_mode);
+    app.bench_frames_target = bench_frames;
     event_loop.run_app(&mut app)?;
 
     Ok(())
@@ -108,6 +117,12 @@ struct App {
     /// command emission. Retained across frames so the HashMap's bucket
     /// allocation persists — see #253.
     skin_offsets: HashMap<byroredux_core::ecs::EntityId, u32>,
+    /// When `Some(N)`, run exactly N frames then print a `bench:` line
+    /// to stdout and exit. See `--bench-frames` in main() and #366.
+    bench_frames_target: Option<u32>,
+    /// Frames rendered since startup. Paired with `bench_frames_target`
+    /// to drive the automated benchmark exit.
+    bench_frames_count: u32,
 }
 
 impl App {
@@ -188,6 +203,8 @@ impl App {
             gpu_lights: Vec::new(),
             bone_palette: Vec::new(),
             skin_offsets: HashMap::new(),
+            bench_frames_target: None,
+            bench_frames_count: 0,
         }
     }
 
@@ -447,7 +464,7 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
@@ -487,6 +504,41 @@ impl ApplicationHandler for App {
 
         if let Some(ref win) = self.window {
             win.request_redraw();
+        }
+
+        // --bench-frames: once we've rendered the target number of
+        // frames, emit a single machine-readable summary line and exit.
+        // The renderer must be up (bench counts start after the first
+        // real frame); a `--bench-frames N` that never renders (window
+        // creation fails, etc.) does nothing here.
+        if let Some(target) = self.bench_frames_target {
+            if self.renderer.is_some() {
+                self.bench_frames_count += 1;
+                if self.bench_frames_count >= target {
+                    let stats = self.world.resource::<DebugStats>();
+                    let (min_dt, max_dt) = stats.min_max_frame_time();
+                    let avg_dt = if stats.fps > 0.0 { 1.0 / stats.avg_fps() } else { 0.0 };
+                    let min_fps = if max_dt > 0.0 { 1.0 / max_dt } else { 0.0 };
+                    let max_fps = if min_dt > 0.0 { 1.0 / min_dt } else { 0.0 };
+                    println!(
+                        "bench: frames={} avg_fps={:.1} min_fps={:.1} max_fps={:.1} \
+                         avg_ms={:.2} min_ms={:.2} max_ms={:.2} \
+                         entities={} meshes={} textures={} draws={}",
+                        self.bench_frames_count,
+                        stats.avg_fps(),
+                        min_fps,
+                        max_fps,
+                        avg_dt * 1000.0,
+                        min_dt * 1000.0,
+                        max_dt * 1000.0,
+                        stats.entity_count,
+                        stats.mesh_count,
+                        stats.texture_count,
+                        stats.draw_call_count,
+                    );
+                    event_loop.exit();
+                }
+            }
         }
     }
 }

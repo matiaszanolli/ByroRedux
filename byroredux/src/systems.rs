@@ -9,7 +9,7 @@ use byroredux_core::animation::{
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
     ActiveCamera, AnimatedAlpha, AnimatedColor, AnimatedVisibility, Billboard, BillboardMode,
-    Children, DebugStats, DeltaTime, EngineConfig, GlobalTransform, LocalBound, Name, Parent,
+    Children, DebugStats, DeltaTime, GlobalTransform, LocalBound, Name, Parent,
     TotalTime, Transform, World, WorldBound,
 };
 use byroredux_core::math::{Quat, Vec3};
@@ -872,12 +872,13 @@ pub(crate) fn spin_system(world: &World, dt: f32) {
 }
 
 /// Logs engine stats once per second using DebugStats.
+///
+/// Writes at `log::info!` / target `engine::stats`, so `env_logger`'s
+/// default filter (info) surfaces it in release builds without needing
+/// `--debug`. Users who want a quieter console can set
+/// `RUST_LOG=warn` or target-filter
+/// `RUST_LOG=info,engine::stats=warn`. See #366.
 pub(crate) fn log_stats_system(world: &World, _dt: f32) {
-    let config = world.resource::<EngineConfig>();
-    if !config.debug_logging {
-        return;
-    }
-
     let total = world.resource::<TotalTime>().0;
     let dt = world.resource::<DeltaTime>().0;
     let prev = total - dt;
