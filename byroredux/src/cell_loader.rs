@@ -5,12 +5,13 @@
 //! and spawns ECS entities with correct world-space transforms.
 
 use byroredux_core::ecs::{
-    GlobalTransform, LightSource, Material, MeshHandle, TextureHandle, Transform, World,
+    CellRoot, GlobalTransform, LightSource, Material, MeshHandle, TextureHandle, Transform, World,
 };
+use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::VulkanContext;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::asset_provider::{resolve_texture, TextureProvider};
@@ -42,6 +43,111 @@ pub struct CellLoadResult {
     pub lighting: Option<byroredux_plugin::esm::cell::CellLighting>,
     /// Weather data for exterior cells (from WRLD→CLMT→WTHR chain).
     pub weather: Option<byroredux_plugin::esm::records::WeatherRecord>,
+    /// Owner token for every entity this load produced. Pass to
+    /// [`unload_cell`] to tear the cell down (despawn entities + free
+    /// mesh/BLAS/texture resources). See #372.
+    pub cell_root: EntityId,
+}
+
+/// Stamp every entity spawned in `first..last` (exclusive) with
+/// `CellRoot(cell_root)`. The range is obtained from
+/// [`World::next_entity_id`] before/after the load. `cell_root` itself
+/// also gets the component so it's picked up by the same query in
+/// [`unload_cell`].
+fn stamp_cell_root(world: &mut World, cell_root: EntityId, first: EntityId, last: EntityId) {
+    world.insert(cell_root, CellRoot(cell_root));
+    for eid in first..last {
+        // `insert` is overwrite-safe, and entities that were never
+        // given any component never created a CellRoot storage entry
+        // — the row just stays in the sparse set for lookup.
+        world.insert(eid, CellRoot(cell_root));
+    }
+}
+
+/// Tear down a cell: despawn every entity owned by `cell_root` and
+/// release the mesh/BLAS/texture GPU resources they referenced.
+///
+/// Handles are not reused — dropped mesh/texture slots remain as
+/// placeholders in the registries to guarantee that any dangling
+/// `GpuInstance.mesh_id` / `texture_index` can't reappear pointing at
+/// a new mesh or texture. Entity IDs likewise grow monotonically (see
+/// `World::despawn` docs). See #372.
+///
+/// Textures are freed best-effort: if another still-live cell shares a
+/// texture through the path cache, its bindless slot falls back to the
+/// checkerboard until the next load re-creates a fresh entry. Callers
+/// that need concurrent multi-cell residency should ref-count texture
+/// usage themselves (out of scope for #372).
+#[allow(dead_code)] // exposed for scripting / doorwalking wiring (M40)
+pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: EntityId) {
+    // Collect victims that the query iterator can see. Hold the lock
+    // only for the iteration, then release before calling despawn
+    // (which takes `&mut World`).
+    let victims: Vec<EntityId> = {
+        let Some(q) = world.query::<CellRoot>() else {
+            return;
+        };
+        q.iter()
+            .filter(|(_, root)| root.0 == cell_root)
+            .map(|(eid, _)| eid)
+            .collect()
+    };
+
+    // Gather every unique mesh and texture handle referenced by the
+    // victim set. Using `HashSet` deduplicates shared NIF clutter and
+    // path-cached textures so we don't call `drop_*` twice on the same
+    // handle.
+    let mut mesh_handles: HashSet<u32> = HashSet::new();
+    let mut texture_handles: HashSet<u32> = HashSet::new();
+    if let Some(mq) = world.query::<MeshHandle>() {
+        for &eid in &victims {
+            if let Some(mh) = mq.get(eid) {
+                mesh_handles.insert(mh.0);
+            }
+        }
+    }
+    if let Some(tq) = world.query::<TextureHandle>() {
+        for &eid in &victims {
+            if let Some(th) = tq.get(eid) {
+                // Fallback texture (handle 0) is process-wide; never drop it.
+                let fallback = ctx.texture_registry.fallback();
+                if th.0 != fallback {
+                    texture_handles.insert(th.0);
+                }
+            }
+        }
+    }
+
+    // Free GPU resources. BLAS entries are keyed by mesh handle, so
+    // `drop_blas` runs first over the same set. Order matters: BLAS
+    // must be detached from any TLAS before its mesh's VkBuffer is
+    // queued for destruction — both use the same MAX_FRAMES_IN_FLIGHT
+    // countdown, which covers the overlap.
+    if let Some(ref mut accel) = ctx.accel_manager {
+        for &mh in &mesh_handles {
+            accel.drop_blas(mh);
+        }
+    }
+    for &mh in &mesh_handles {
+        ctx.mesh_registry.drop_mesh(mh);
+    }
+    for &th in &texture_handles {
+        ctx.texture_registry.drop_texture(&ctx.device, th);
+    }
+
+    // Remove every surviving component row for the victim entities.
+    let victim_count = victims.len();
+    for eid in victims {
+        world.despawn(eid);
+    }
+
+    log::info!(
+        "Cell unload: {} entities, {} meshes, {} textures freed (cell_root {})",
+        victim_count,
+        mesh_handles.len(),
+        texture_handles.len(),
+        cell_root,
+    );
 }
 
 /// Load an interior cell by editor ID.
@@ -54,6 +160,11 @@ pub fn load_cell(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
 ) -> anyhow::Result<CellLoadResult> {
+    // Mark the high-water entity id before loading. Everything spawned
+    // by this load (including the designated cell_root at the end) gets
+    // CellRoot stamped on it for later unload. See #372.
+    let first_entity = world.next_entity_id();
+
     // 1. Parse the ESM.
     let esm_data = std::fs::read(esm_path)
         .map_err(|e| anyhow::anyhow!("Failed to read ESM '{}': {}", esm_path, e))?;
@@ -102,6 +213,14 @@ pub fn load_cell(
 
     log::info!("Cell lighting: {:?}", cell.lighting);
 
+    // Reserve a dedicated root entity and stamp CellRoot on every
+    // entity in [first_entity, last_entity). The stamp is sparse-set
+    // backed, so entities that never received any component simply
+    // don't show up in the CellRoot storage — fine.
+    let last_entity = world.next_entity_id();
+    let cell_root = world.spawn();
+    stamp_cell_root(world, cell_root, first_entity, last_entity);
+
     Ok(CellLoadResult {
         cell_name: cell.editor_id.clone(),
         entity_count: result.entity_count,
@@ -109,6 +228,7 @@ pub fn load_cell(
         center: result.center,
         lighting: cell.lighting.clone(),
         weather: None,
+        cell_root,
     })
 }
 
@@ -122,6 +242,9 @@ pub fn load_exterior_cells(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
 ) -> anyhow::Result<CellLoadResult> {
+    // See `load_cell` — same pattern for unload tracking (#372).
+    let first_entity = world.next_entity_id();
+
     let esm_data = std::fs::read(esm_path)
         .map_err(|e| anyhow::anyhow!("Failed to read ESM '{}': {}", esm_path, e))?;
 
@@ -263,6 +386,10 @@ pub fn load_exterior_cells(
         Some(wthr.clone())
     });
 
+    let last_entity = world.next_entity_id();
+    let cell_root = world.spawn();
+    stamp_cell_root(world, cell_root, first_entity, last_entity);
+
     Ok(CellLoadResult {
         cell_name: format!("{} ({},{})", wrld_name, center_x, center_y),
         entity_count: result.entity_count + terrain_entities,
@@ -270,6 +397,7 @@ pub fn load_exterior_cells(
         center: spawn_center,
         lighting: None,
         weather,
+        cell_root,
     })
 }
 

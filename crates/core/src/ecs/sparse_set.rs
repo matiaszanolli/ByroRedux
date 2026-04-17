@@ -5,7 +5,8 @@
 //! Best for gameplay logic, AI states, status effects, inventory —
 //! anything that mutates frequently.
 
-use super::storage::{Component, ComponentStorage, EntityId};
+use super::storage::{Component, ComponentStorage, DynStorage, EntityId};
+use std::any::Any;
 
 pub struct SparseSetStorage<T> {
     /// entity → dense index. `None` means the entity has no component.
@@ -102,6 +103,20 @@ impl<T: Component<Storage = Self>> ComponentStorage<T> for SparseSetStorage<T> {
 
     fn iter_mut(&mut self) -> Box<dyn Iterator<Item = (EntityId, &mut T)> + '_> {
         Box::new(self.dense.iter().copied().zip(self.data.iter_mut()))
+    }
+}
+
+impl<T: Component<Storage = Self>> DynStorage for SparseSetStorage<T> {
+    fn remove_entity_erased(&mut self, entity: EntityId) {
+        <Self as ComponentStorage<T>>::remove(self, entity);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 

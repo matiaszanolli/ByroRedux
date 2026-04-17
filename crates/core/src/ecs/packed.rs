@@ -7,7 +7,8 @@
 //! Best for components read every frame by many systems: Transform, Velocity,
 //! mesh references, etc.
 
-use super::storage::{Component, ComponentStorage, EntityId};
+use super::storage::{Component, ComponentStorage, DynStorage, EntityId};
+use std::any::Any;
 
 pub struct PackedStorage<T> {
     /// Sorted by EntityId, parallel to `data`.
@@ -74,6 +75,20 @@ impl<T: Component<Storage = Self>> ComponentStorage<T> for PackedStorage<T> {
 
     fn iter_mut(&mut self) -> Box<dyn Iterator<Item = (EntityId, &mut T)> + '_> {
         Box::new(self.entities.iter().copied().zip(self.data.iter_mut()))
+    }
+}
+
+impl<T: Component<Storage = Self>> DynStorage for PackedStorage<T> {
+    fn remove_entity_erased(&mut self, entity: EntityId) {
+        <Self as ComponentStorage<T>>::remove(self, entity);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 

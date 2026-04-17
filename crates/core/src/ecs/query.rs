@@ -9,8 +9,8 @@
 //! deadlocks — regardless of declaration order in user code.
 
 use super::lock_tracker;
-use super::storage::{Component, ComponentStorage, EntityId};
-use std::any::{Any, TypeId};
+use super::storage::{Component, ComponentStorage, DynStorage, EntityId};
+use std::any::TypeId;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::RwLockReadGuard;
@@ -21,7 +21,7 @@ use std::sync::RwLockWriteGuard;
 /// Holds a `RwLockReadGuard` — multiple `QueryRead`s can coexist, even
 /// for the same component type.
 pub struct QueryRead<'w, T: Component> {
-    guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>,
+    guard: RwLockReadGuard<'w, Box<dyn DynStorage>>,
     type_id: TypeId,
     _marker: PhantomData<T>,
 }
@@ -33,7 +33,7 @@ impl<'w, T: Component> QueryRead<'w, T> {
     /// `scope.defuse()` after successful lock acquisition so the scope hands
     /// ownership of the tracker entry to this wrapper. (See #137.)
     pub(crate) fn new(
-        guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>,
+        guard: RwLockReadGuard<'w, Box<dyn DynStorage>>,
         type_id: TypeId,
     ) -> Self {
         Self {
@@ -46,6 +46,7 @@ impl<'w, T: Component> QueryRead<'w, T> {
     /// Access the underlying typed storage.
     pub fn storage(&self) -> &T::Storage {
         self.guard
+            .as_any()
             .downcast_ref::<T::Storage>()
             .expect("storage type mismatch (bug in World)")
     }
@@ -77,7 +78,7 @@ impl<'w, T: Component> QueryRead<'w, T> {
 /// given component type at a time. Other `QueryRead`s for the same type
 /// will block until this is dropped.
 pub struct QueryWrite<'w, T: Component> {
-    guard: RwLockWriteGuard<'w, Box<dyn Any + Send + Sync>>,
+    guard: RwLockWriteGuard<'w, Box<dyn DynStorage>>,
     type_id: TypeId,
     _marker: PhantomData<T>,
 }
@@ -89,7 +90,7 @@ impl<'w, T: Component> QueryWrite<'w, T> {
     /// `scope.defuse()` after successful lock acquisition so the scope hands
     /// ownership of the tracker entry to this wrapper. (See #137.)
     pub(crate) fn new(
-        guard: RwLockWriteGuard<'w, Box<dyn Any + Send + Sync>>,
+        guard: RwLockWriteGuard<'w, Box<dyn DynStorage>>,
         type_id: TypeId,
     ) -> Self {
         Self {
@@ -102,6 +103,7 @@ impl<'w, T: Component> QueryWrite<'w, T> {
     /// Access the underlying typed storage immutably.
     pub fn storage(&self) -> &T::Storage {
         self.guard
+            .as_any()
             .downcast_ref::<T::Storage>()
             .expect("storage type mismatch (bug in World)")
     }
@@ -109,6 +111,7 @@ impl<'w, T: Component> QueryWrite<'w, T> {
     /// Access the underlying typed storage mutably.
     pub fn storage_mut(&mut self) -> &mut T::Storage {
         self.guard
+            .as_any_mut()
             .downcast_mut::<T::Storage>()
             .expect("storage type mismatch (bug in World)")
     }
@@ -197,7 +200,7 @@ impl<T: Component> DerefMut for QueryWrite<'_, T> {
 /// This replaces the previous unsound pattern where `World::get()` dropped
 /// the guard and returned a raw pointer — see issue #35.
 pub struct ComponentRef<'w, T: Component> {
-    guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>,
+    guard: RwLockReadGuard<'w, Box<dyn DynStorage>>,
     entity: EntityId,
     type_id: TypeId,
     _marker: PhantomData<T>,
@@ -216,12 +219,13 @@ impl<'w, T: Component> ComponentRef<'w, T> {
     /// natural `Drop` will untrack. See `World::get` for the canonical
     /// pattern. (#137)
     pub(crate) fn new(
-        guard: RwLockReadGuard<'w, Box<dyn Any + Send + Sync>>,
+        guard: RwLockReadGuard<'w, Box<dyn DynStorage>>,
         entity: EntityId,
         type_id: TypeId,
     ) -> Option<Self> {
         // Verify the entity has the component before constructing.
         let storage = guard
+            .as_any()
             .downcast_ref::<T::Storage>()
             .expect("storage type mismatch");
         if storage.contains(entity) {
@@ -249,6 +253,7 @@ impl<T: Component> Deref for ComponentRef<'_, T> {
         // The entity's presence was verified in new(). The guard is held,
         // so the storage cannot be mutated. This unwrap is safe.
         self.guard
+            .as_any()
             .downcast_ref::<T::Storage>()
             .expect("storage type mismatch")
             .get(self.entity)

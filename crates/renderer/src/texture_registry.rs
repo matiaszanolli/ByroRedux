@@ -22,9 +22,14 @@ pub type TextureHandle = u32;
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 struct TextureEntry {
-    texture: Texture,
-    /// Ring of replaced textures awaiting deferred destruction.
-    /// See issue #134.
+    /// Live texture, or `None` after the handle has been dropped via
+    /// [`TextureRegistry::drop_texture`]. Bindless indexing still works
+    /// for dropped handles: they are redirected to the fallback
+    /// checkerboard so a stale draw call degrades gracefully instead of
+    /// reading a freed `VkImageView`. See #372.
+    texture: Option<Texture>,
+    /// Ring of replaced / dropped textures awaiting deferred destruction.
+    /// See issues #134, #372.
     pending_destroy: VecDeque<(u64, Texture)>,
 }
 
@@ -170,7 +175,7 @@ impl TextureRegistry {
         let handle = self.textures.len() as TextureHandle;
         self.write_texture_to_all_sets(device, handle, &fallback_texture);
         self.textures.push(TextureEntry {
-            texture: fallback_texture,
+            texture: Some(fallback_texture),
             pending_destroy: VecDeque::new(),
         });
         self.fallback_handle = handle;
@@ -206,7 +211,7 @@ impl TextureRegistry {
         let handle = self.textures.len() as TextureHandle;
         self.write_texture_to_all_sets(device, handle, &texture);
         self.textures.push(TextureEntry {
-            texture,
+            texture: Some(texture),
             pending_destroy: VecDeque::new(),
         });
         self.path_map.insert(normalized, handle);
@@ -259,11 +264,87 @@ impl TextureRegistry {
         let handle = self.textures.len() as TextureHandle;
         self.write_texture_to_all_sets(device, handle, &texture);
         self.textures.push(TextureEntry {
-            texture,
+            texture: Some(texture),
             pending_destroy: VecDeque::new(),
         });
 
         Ok(handle)
+    }
+
+    /// Drop a texture. Its GPU resources move into the deferred-destroy
+    /// ring, the bindless descriptor slot is redirected to the fallback
+    /// checkerboard (so any stale draw call degrades gracefully instead
+    /// of sampling a freed `VkImageView`), and the path-cache entry is
+    /// purged so a re-upload of the same path produces a fresh handle.
+    ///
+    /// Handles stay stable: the dropped slot retains its index in the
+    /// bindless array forever — reuse would produce silent material
+    /// corruption on any dangling `GpuInstance.texture_index` reference.
+    /// See #372. No-op on an unknown or already-dropped handle.
+    pub fn drop_texture(&mut self, device: &ash::Device, handle: TextureHandle) {
+        let Some(entry) = self.textures.get_mut(handle as usize) else {
+            return;
+        };
+        let Some(old) = entry.texture.take() else {
+            return;
+        };
+        entry
+            .pending_destroy
+            .push_back((self.current_frame_id, old));
+
+        // Redirect the bindless slot to the fallback texture so any
+        // GpuInstance still referencing this handle reads the
+        // checkerboard instead of a freed image view.
+        let fallback_idx = self.fallback_handle as usize;
+        if fallback_idx < self.textures.len() {
+            if let Some(fallback) = self.textures[fallback_idx].texture.as_ref() {
+                let image_view = fallback.image_view;
+                let sampler = fallback.sampler;
+                let image_info = vk::DescriptorImageInfo::default()
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image_view(image_view)
+                    .sampler(sampler);
+                for &set in &self.bindless_sets {
+                    let write = vk::WriteDescriptorSet::default()
+                        .dst_set(set)
+                        .dst_binding(0)
+                        .dst_array_element(handle)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(std::slice::from_ref(&image_info));
+                    unsafe {
+                        device.update_descriptor_sets(&[write], &[]);
+                    }
+                }
+            }
+        }
+
+        // Purge path_map entries pointing at this handle so a subsequent
+        // load_dds of the same path creates a fresh texture. Linear scan
+        // is fine: drops happen on cell unload, not per-frame.
+        self.path_map.retain(|_, &mut h| h != handle);
+    }
+
+    /// Drain deferred-destroy queues across all entries, destroying
+    /// textures whose age is now `>= MAX_FRAMES_IN_FLIGHT`. Called once
+    /// per frame alongside the mesh/BLAS deferred-destroy ticks. The
+    /// `update_rgba` path also drains inline; this pass catches entries
+    /// queued by [`drop_texture`] where no subsequent update call fires.
+    pub fn tick_deferred_destroy(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+    ) {
+        let current_frame_id = self.current_frame_id;
+        for entry in &mut self.textures {
+            while let Some(&(queued, _)) = entry.pending_destroy.front() {
+                if !should_destroy_pending(current_frame_id, queued) {
+                    break;
+                }
+                if let Some((_, mut old)) = entry.pending_destroy.pop_front() {
+                    old.destroy(device, allocator);
+                }
+            }
+        }
     }
 
     /// Advance the frame counter for deferred-destroy aging (issue #134).
@@ -304,8 +385,10 @@ impl TextureRegistry {
             }
         }
 
-        // Swap in the new texture.
-        let mut prev = Texture::from_rgba(
+        // Swap in the new texture. If the entry was dropped earlier this
+        // quietly revives it (bindless slot reactivates on the descriptor
+        // write below).
+        let new_texture = Texture::from_rgba(
             device,
             allocator,
             queue,
@@ -316,13 +399,18 @@ impl TextureRegistry {
             self.shared_sampler,
         )
         .context("Failed to create updated dynamic RGBA texture")?;
-        std::mem::swap(&mut entry.texture, &mut prev);
-        entry.pending_destroy.push_back((current_frame_id, prev));
+        if let Some(prev) = entry.texture.replace(new_texture) {
+            entry.pending_destroy.push_back((current_frame_id, prev));
+        }
 
         // Update the bindless array entry in all frame sets.
         // Extract the data we need before re-borrowing self.
-        let image_view = self.textures[handle as usize].texture.image_view;
-        let sampler = self.textures[handle as usize].texture.sampler;
+        let live = self.textures[handle as usize]
+            .texture
+            .as_ref()
+            .expect("entry was just populated above");
+        let image_view = live.image_view;
+        let sampler = live.sampler;
         let image_info = vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .image_view(image_view)
@@ -387,9 +475,13 @@ impl TextureRegistry {
                 .context("Failed to reallocate bindless texture descriptor sets")?
         };
 
-        // Re-write all texture bindings.
+        // Re-write all texture bindings. Skip dropped slots — the new
+        // descriptor set starts fresh, and the loop in drop_texture will
+        // redirect them to the fallback on their next update.
         for (i, entry) in self.textures.iter().enumerate() {
-            self.write_texture_to_sets_inner(device, i as TextureHandle, &entry.texture);
+            if let Some(ref texture) = entry.texture {
+                self.write_texture_to_sets_inner(device, i as TextureHandle, texture);
+            }
         }
 
         log::info!(
@@ -406,7 +498,9 @@ impl TextureRegistry {
             for (_, mut pending) in entry.pending_destroy.drain(..) {
                 pending.destroy(device, allocator);
             }
-            entry.texture.destroy(device, allocator);
+            if let Some(mut t) = entry.texture.take() {
+                t.destroy(device, allocator);
+            }
         }
         self.textures.clear();
         self.path_map.clear();

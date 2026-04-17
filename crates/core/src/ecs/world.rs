@@ -10,7 +10,7 @@
 use super::lock_tracker;
 use super::query::{ComponentRef, QueryRead, QueryWrite};
 use super::resource::{Resource, ResourceRead, ResourceWrite};
-use super::storage::{Component, ComponentStorage, EntityId};
+use super::storage::{Component, ComponentStorage, DynStorage, EntityId};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -27,6 +27,18 @@ fn storage_lock_poisoned<T: Component>() -> ! {
     );
 }
 
+/// Panic (without a type name) when a component storage lock is poisoned in
+/// a type-erased context (e.g. during [`World::despawn`]).
+#[cold]
+#[inline(never)]
+fn storage_lock_poisoned_erased(type_name: &'static str) -> ! {
+    panic!(
+        "Storage `{}` RwLock is poisoned — a system panicked while holding this lock. \
+         Check the test or system that ran before this panic.",
+        type_name
+    );
+}
+
 /// Panic with a type-aware message when a resource lock is poisoned.
 #[cold]
 #[inline(never)]
@@ -39,7 +51,7 @@ fn resource_lock_poisoned<R: Resource>() -> ! {
 }
 
 pub struct World {
-    storages: HashMap<TypeId, RwLock<Box<dyn Any + Send + Sync>>>,
+    storages: HashMap<TypeId, RwLock<Box<dyn DynStorage>>>,
     resources: HashMap<TypeId, RwLock<Box<dyn Any + Send + Sync>>>,
     next_entity: EntityId,
 }
@@ -78,9 +90,32 @@ impl World {
     /// succeed for a type before any entity has that component.
     /// Otherwise, storage is created lazily on first `insert()`.
     pub fn register<T: Component>(&mut self) {
-        self.storages
-            .entry(TypeId::of::<T>())
-            .or_insert_with(|| RwLock::new(Box::new(T::Storage::default())));
+        self.storages.entry(TypeId::of::<T>()).or_insert_with(|| {
+            let storage: Box<dyn DynStorage> = Box::new(T::Storage::default());
+            RwLock::new(storage)
+        });
+    }
+
+    /// Despawn an entity, removing all of its components from every
+    /// registered storage.
+    ///
+    /// Entity IDs are NOT reclaimed — `next_entity` keeps growing. Reuse
+    /// without generational tagging would cause silent component-data
+    /// corruption on any dangling reference (`Parent(entity)`, script
+    /// targets, etc.). See #372 and the companion note on #36.
+    ///
+    /// No-op if `entity` was never spawned or has already been despawned.
+    pub fn despawn(&mut self, entity: EntityId) {
+        if entity >= self.next_entity {
+            return;
+        }
+        for (type_id, lock) in self.storages.iter_mut() {
+            lock.get_mut()
+                .unwrap_or_else(|_| storage_lock_poisoned_erased("<unknown>"))
+                .remove_entity_erased(entity);
+            // `type_id` is present but not used for naming — keep it suppressed.
+            let _ = type_id;
+        }
     }
 
     /// Attach a component to an entity. Overwrites if already present.
@@ -107,6 +142,7 @@ impl World {
             .get_mut(&TypeId::of::<T>())?
             .get_mut()
             .unwrap_or_else(|_| storage_lock_poisoned::<T>())
+            .as_any_mut()
             .downcast_mut::<T::Storage>()?;
         storage.remove(entity)
     }
@@ -147,6 +183,7 @@ impl World {
             .get_mut(&TypeId::of::<T>())?
             .get_mut()
             .unwrap_or_else(|_| storage_lock_poisoned::<T>())
+            .as_any_mut()
             .downcast_mut::<T::Storage>()?;
         storage.get_mut(entity)
     }
@@ -505,9 +542,13 @@ impl World {
     fn storage_write<T: Component>(&mut self) -> &mut T::Storage {
         self.storages
             .entry(TypeId::of::<T>())
-            .or_insert_with(|| RwLock::new(Box::new(T::Storage::default())))
+            .or_insert_with(|| {
+                let storage: Box<dyn DynStorage> = Box::new(T::Storage::default());
+                RwLock::new(storage)
+            })
             .get_mut()
             .unwrap_or_else(|_| storage_lock_poisoned::<T>())
+            .as_any_mut()
             .downcast_mut::<T::Storage>()
             .expect("storage type mismatch (bug in World)")
     }
@@ -557,6 +598,67 @@ mod tests {
 
         assert_eq!(world.get::<Health>(e).unwrap().0, 100.0);
         assert_eq!(world.get::<Position>(e).unwrap().x, 1.0);
+    }
+
+    #[test]
+    fn despawn_removes_every_component() {
+        let mut world = World::new();
+        let a = world.spawn();
+        let b = world.spawn();
+
+        world.insert(a, Health(100.0));
+        world.insert(a, Position { x: 1.0, y: 2.0 });
+        world.insert(a, Velocity { dx: 3.0, dy: 4.0 });
+        world.insert(b, Health(50.0));
+        world.insert(b, Position { x: 5.0, y: 6.0 });
+
+        world.despawn(a);
+
+        assert!(world.get::<Health>(a).is_none(), "Health not removed");
+        assert!(world.get::<Position>(a).is_none(), "Position not removed");
+        assert!(world.query::<Velocity>().unwrap().get(a).is_none());
+
+        // b is untouched.
+        assert_eq!(world.get::<Health>(b).unwrap().0, 50.0);
+        assert_eq!(world.get::<Position>(b).unwrap().x, 5.0);
+    }
+
+    #[test]
+    fn despawn_nonexistent_entity_is_noop() {
+        let mut world = World::new();
+        let a = world.spawn();
+        world.insert(a, Health(100.0));
+
+        // Entity id beyond next_entity — no-op, not a panic.
+        world.despawn(12345);
+
+        assert_eq!(world.get::<Health>(a).unwrap().0, 100.0);
+    }
+
+    #[test]
+    fn despawn_empty_storages_is_noop() {
+        let mut world = World::new();
+        world.register::<Health>();
+        let a = world.spawn();
+        // Entity was spawned but never got any component.
+        world.despawn(a);
+        assert!(world.get::<Health>(a).is_none());
+    }
+
+    #[test]
+    fn despawn_does_not_reclaim_entity_ids() {
+        // next_entity must keep growing — reusing IDs without generation
+        // tagging would cause silent component aliasing (see #36, #372).
+        let mut world = World::new();
+        let a = world.spawn();
+        world.insert(a, Health(1.0));
+        let next_before = world.next_entity_id();
+
+        world.despawn(a);
+        let c = world.spawn();
+
+        assert_eq!(c, next_before, "spawn should advance, not reclaim");
+        assert_ne!(c, a, "reclaimed id would alias stale component data");
     }
 
     #[test]

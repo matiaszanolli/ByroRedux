@@ -104,6 +104,11 @@ pub struct AccelerationManager {
     /// virtually never fires); on a 6 GB GPU it yields 2 GB (eviction
     /// fires before OOM).
     blas_budget_bytes: vk::DeviceSize,
+    /// Entries removed by [`drop_blas`] still referenced by an in-flight
+    /// TLAS build. Each entry carries a countdown measured in
+    /// `MAX_FRAMES_IN_FLIGHT` frames; when it hits zero the underlying
+    /// `VkAccelerationStructureKHR` + buffer are finally destroyed. See #372.
+    pending_destroy_blas: Vec<(BlasEntry, u32)>,
 }
 
 /// Compute the BLAS memory budget as `VRAM / 3` with a 256 MB floor.
@@ -154,7 +159,64 @@ impl AccelerationManager {
             frame_counter: 0,
             total_blas_bytes: 0,
             blas_budget_bytes,
+            pending_destroy_blas: Vec::new(),
         }
+    }
+
+    /// Queue a BLAS for deferred destruction.
+    ///
+    /// Unlike [`evict_unused_blas`](Self::evict_unused_blas) — which runs
+    /// only on entries idle for `MAX_FRAMES_IN_FLIGHT` frames and so can
+    /// destroy immediately — `drop_blas` is called by the cell loader on
+    /// unload and the entry may still be in-flight. The entry moves to
+    /// `pending_destroy_blas` and the actual `VkAccelerationStructureKHR`
+    /// + buffer destruction is delayed until the countdown expires in
+    /// [`tick_deferred_destroy`](Self::tick_deferred_destroy).
+    ///
+    /// Also forces a full TLAS rebuild on both frame slots so no
+    /// subsequent `BUILD`/`UPDATE` references the dropped BLAS address.
+    /// See #372. No-op if the handle is not a live BLAS.
+    pub fn drop_blas(&mut self, handle: u32) {
+        let idx = handle as usize;
+        let Some(slot) = self.blas_entries.get_mut(idx) else {
+            return;
+        };
+        let Some(entry) = slot.take() else {
+            return;
+        };
+        self.total_blas_bytes = self.total_blas_bytes.saturating_sub(entry.size_bytes);
+        // Two-frame countdown matches the existing SSBO rebuild pattern.
+        self.pending_destroy_blas.push((entry, 2));
+        for tlas_slot in &mut self.tlas {
+            if let Some(ref mut t) = tlas_slot {
+                t.needs_full_rebuild = true;
+            }
+        }
+    }
+
+    /// Drain and destroy BLAS entries whose defer countdown has reached
+    /// zero. Call once per frame alongside
+    /// `MeshRegistry::tick_deferred_destroy`.
+    pub fn tick_deferred_destroy(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+    ) {
+        self.pending_destroy_blas.retain_mut(|(entry, countdown)| {
+            if *countdown == 0 {
+                // SAFETY: the countdown guarantees no in-flight command
+                // buffer still references this acceleration structure.
+                unsafe {
+                    self.accel_loader
+                        .destroy_acceleration_structure(entry.accel, None);
+                }
+                entry.buffer.destroy(device, allocator);
+                false
+            } else {
+                *countdown -= 1;
+                true
+            }
+        });
     }
 
     /// Build a BLAS for a mesh. Call after uploading the mesh to GPU.

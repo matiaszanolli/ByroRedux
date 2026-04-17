@@ -17,6 +17,11 @@ pub struct GpuMesh {
     pub global_index_offset: u32,
     /// Number of vertices in this mesh.
     pub vertex_count: u32,
+    /// `true` when this mesh's data lives in `pending_vertices` /
+    /// `pending_indices` and must be retained during SSBO compaction.
+    /// UI overlays (uploaded via plain [`MeshRegistry::upload`]) are
+    /// `false`; scene meshes (terrain, NIF, clutter) are `true`.
+    pub is_scene_mesh: bool,
 }
 
 impl GpuMesh {
@@ -27,8 +32,12 @@ impl GpuMesh {
 }
 
 /// Registry mapping mesh handle IDs to GPU-side geometry.
+///
+/// Handles are stable — dropping a mesh leaves a `None` in its slot
+/// rather than shifting subsequent handles. This keeps `GpuInstance`
+/// and cached handle lookups valid across cell transitions (#372).
 pub struct MeshRegistry {
-    meshes: Vec<GpuMesh>,
+    meshes: Vec<Option<GpuMesh>>,
     /// Accumulated vertex data for building the global geometry SSBO.
     /// Kept alive after `build_geometry_ssbo()` so late-loaded meshes
     /// can append and trigger a rebuild. See #258.
@@ -123,14 +132,15 @@ impl MeshRegistry {
         let index_count = indices.len() as u32;
 
         let id = self.meshes.len() as u32;
-        self.meshes.push(GpuMesh {
+        self.meshes.push(Some(GpuMesh {
             vertex_buffer,
             index_buffer,
             index_count,
             global_vertex_offset: 0,
             global_index_offset: 0,
             vertex_count: vertices.len() as u32,
-        });
+            is_scene_mesh: false,
+        }));
 
         Ok(id)
     }
@@ -169,9 +179,12 @@ impl MeshRegistry {
         )?;
 
         // Store offsets.
-        let mesh = &mut self.meshes[id as usize];
+        let mesh = self.meshes[id as usize]
+            .as_mut()
+            .expect("upload just pushed this slot");
         mesh.global_vertex_offset = v_offset;
         mesh.global_index_offset = i_offset;
+        mesh.is_scene_mesh = true;
 
         // If the SSBO has already been built, mark dirty so the frame
         // loop knows to call rebuild_geometry_ssbo. See #258.
@@ -182,6 +195,82 @@ impl MeshRegistry {
         }
 
         Ok(id)
+    }
+
+    /// Drop a mesh. Its per-mesh vertex/index buffers are queued for
+    /// deferred destruction (2 frames, matching `MAX_FRAMES_IN_FLIGHT`)
+    /// so no in-flight command buffer that still references them can
+    /// use-after-free. Scene meshes additionally mark the global SSBO
+    /// dirty — the next `rebuild_geometry_ssbo` call will compact the
+    /// dead mesh's range out of `pending_vertices`/`pending_indices`
+    /// and rewrite live meshes' offsets. See #372.
+    ///
+    /// Handles stay stable: the dropped slot holds `None` forever.
+    /// Re-using a handle would re-enter the same `GpuInstance.mesh_id`
+    /// for a different mesh and produce silent data corruption.
+    /// No-op if the handle was never allocated or is already dropped.
+    pub fn drop_mesh(&mut self, handle: u32) {
+        let idx = handle as usize;
+        let Some(slot) = self.meshes.get_mut(idx) else {
+            return;
+        };
+        let Some(mesh) = slot.take() else {
+            return;
+        };
+
+        let was_scene_mesh = mesh.is_scene_mesh;
+        // Stage the GPU buffers for deferred destruction. Countdown of
+        // MAX_FRAMES_IN_FLIGHT frames matches the existing SSBO rebuild
+        // pattern — safe because any command buffer referencing the
+        // buffer is at most MAX_FRAMES_IN_FLIGHT frames old.
+        self.deferred_destroy
+            .push((Some(mesh.vertex_buffer), Some(mesh.index_buffer), 2));
+
+        if was_scene_mesh {
+            self.geometry_dirty = true;
+        }
+    }
+
+    /// Compact `pending_vertices`/`pending_indices` to contain only live
+    /// scene meshes' data, and rewrite each survivor's
+    /// `global_vertex_offset`/`global_index_offset` to its new position.
+    ///
+    /// Called implicitly by [`rebuild_geometry_ssbo`](Self::rebuild_geometry_ssbo)
+    /// when any scene mesh has been dropped. Safe to call with no drops
+    /// — it exits early if no dead slots are present.
+    fn compact_pending_geometry(&mut self) {
+        // Fast path: no holes → nothing to compact.
+        let any_dead = self.meshes.iter().any(|slot| slot.is_none());
+        if !any_dead {
+            return;
+        }
+
+        let mut new_vertices: Vec<Vertex> = Vec::with_capacity(self.pending_vertices.len());
+        let mut new_indices: Vec<u32> = Vec::with_capacity(self.pending_indices.len());
+
+        // Snapshot old offsets so we can rewrite them without aliasing.
+        for slot in self.meshes.iter_mut() {
+            let Some(mesh) = slot.as_mut() else { continue };
+            if !mesh.is_scene_mesh {
+                continue;
+            }
+            let v_start = mesh.global_vertex_offset as usize;
+            let v_end = v_start + mesh.vertex_count as usize;
+            let i_start = mesh.global_index_offset as usize;
+            let i_end = i_start + mesh.index_count as usize;
+
+            let new_v_offset = new_vertices.len() as u32;
+            let new_i_offset = new_indices.len() as u32;
+
+            new_vertices.extend_from_slice(&self.pending_vertices[v_start..v_end]);
+            new_indices.extend_from_slice(&self.pending_indices[i_start..i_end]);
+
+            mesh.global_vertex_offset = new_v_offset;
+            mesh.global_index_offset = new_i_offset;
+        }
+
+        self.pending_vertices = new_vertices;
+        self.pending_indices = new_indices;
     }
 
     /// Build the global geometry SSBO from accumulated vertex/index data.
@@ -263,6 +352,11 @@ impl MeshRegistry {
         command_pool: vk::CommandPool,
         staging_pool: Option<&mut StagingPool>,
     ) -> Result<()> {
+        // If any scene meshes were dropped since the last build, compact
+        // the pending buffers and rewrite every live mesh's offsets. Pure
+        // appends (no drops) skip this pass.
+        self.compact_pending_geometry();
+
         // Defer destruction of old SSBOs instead of stalling with
         // device_wait_idle. The old buffers survive for MAX_FRAMES_IN_FLIGHT
         // frames, guaranteeing no in-flight command buffer references them
@@ -292,7 +386,7 @@ impl MeshRegistry {
     }
 
     pub fn get(&self, id: u32) -> Option<&GpuMesh> {
-        self.meshes.get(id as usize)
+        self.meshes.get(id as usize).and_then(|slot| slot.as_ref())
     }
 
     pub fn len(&self) -> usize {
@@ -300,8 +394,10 @@ impl MeshRegistry {
     }
 
     pub fn destroy_all(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        for mesh in &mut self.meshes {
-            mesh.destroy(device, allocator);
+        for slot in &mut self.meshes {
+            if let Some(mesh) = slot.as_mut() {
+                mesh.destroy(device, allocator);
+            }
         }
         self.meshes.clear();
         if let Some(ref mut vb) = self.global_vertex_buffer {

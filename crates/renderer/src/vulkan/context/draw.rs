@@ -66,10 +66,17 @@ impl VulkanContext {
         // Advance the texture registry's deferred-destroy frame counter.
         self.texture_registry.begin_frame();
 
-        // Tick the mesh registry's deferred SSBO destroy list.
+        // Tick the mesh registry's deferred SSBO destroy list, the
+        // acceleration manager's deferred-BLAS destroy list, and the
+        // texture registry's deferred-destroy queue — all use the same
+        // MAX_FRAMES_IN_FLIGHT-based countdown for cell unload. See #372.
         if let Some(ref alloc) = self.allocator {
             self.mesh_registry
                 .tick_deferred_destroy(&self.device, alloc);
+            self.texture_registry.tick_deferred_destroy(&self.device, alloc);
+            if let Some(ref mut accel) = self.accel_manager {
+                accel.tick_deferred_destroy(&self.device, alloc);
+            }
         }
 
         // Wait for this frame-in-flight slot AND the previous slot to be
