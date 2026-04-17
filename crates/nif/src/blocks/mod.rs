@@ -350,10 +350,6 @@ pub fn parse_block(
         | "NiKeyframeController"
         | "NiVisController"
         | "NiAlphaController"
-        | "BSEffectShaderPropertyFloatController"
-        | "BSEffectShaderPropertyColorController"
-        | "BSLightingShaderPropertyFloatController"
-        | "BSLightingShaderPropertyColorController"
         // Pure NiFloatInterpController subclasses (no extra fields beyond
         // NiSingleInterpController). FO3+ era — block_size recovery catches
         // any stream drift. See issue #235.
@@ -361,6 +357,23 @@ pub fn parse_block(
         | "BSRefractionStrengthController"
         | "BSFrustumFOVController" => {
             Ok(Box::new(NiSingleInterpController::parse(stream)?))
+        }
+        // BSEffectShader / BSLightingShader property-controller family —
+        // each adds a single trailing `controlled_variable: u32` enum to
+        // NiSingleInterpController per nif.xml line 6253-6276. Before
+        // #407 this u32 was unconsumed, so every block over-read by 4
+        // bytes and `block_size` recovery seeked past — 5,264 occurrences
+        // in vanilla `Meshes.ba2` alone (the largest single source of
+        // drift in the FO4 corpus). The wrapper preserves the original
+        // type name in telemetry while consuming the extra u32.
+        "BSEffectShaderPropertyFloatController"
+        | "BSEffectShaderPropertyColorController"
+        | "BSLightingShaderPropertyFloatController"
+        | "BSLightingShaderPropertyColorController"
+        | "BSLightingShaderPropertyUShortController" => {
+            let base = NiSingleInterpController::parse(stream)?;
+            let _controlled_variable = stream.read_u32_le()?;
+            Ok(Box::new(base))
         }
         // Bethesda / Fallout controller types that extend NiTimeController
         // or NiInterpController with additional fields we don't model yet.

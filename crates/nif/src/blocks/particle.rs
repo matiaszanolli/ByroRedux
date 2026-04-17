@@ -538,21 +538,83 @@ pub fn parse_multi_target_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiP
 
 // ── Geometry node parsers (NiParticleSystem etc.) ────────────────────
 
-/// NiParticles / NiParticleSystem / NiMeshParticleSystem:
-/// These inherit NiGeometry (same as NiTriShape). Parse NiAVObject + data/skin refs.
-/// NiParticleSystem adds: world_space(bool) + num_modifiers(u32) + modifier_refs[N].
+/// NiParticles / NiParticleSystem / NiMeshParticleSystem / BSStripParticleSystem.
+///
+/// Inherits NiGeometry. The NiGeometry layout shifts at BSVER >= 100
+/// (Skyrim SE, FO4, FO76, Starfield) — `onlyT="NiParticleSystem"` in
+/// nif.xml swaps `data_ref` + `skin_instance_ref` + `material_data`
+/// for an inline `bounding_sphere` (4 floats) + a single `skin` ref.
+/// Shader / alpha property refs land at the end on every BSVER > 34
+/// path. NiParticleSystem then adds (BSVER >= 100): `vertex_desc`
+/// (u64), four `Far/Near Begin/End` (u16s), and a separate `data` ref
+/// before the universal `world_space` (bool) + `num_modifiers` (u32) +
+/// `modifier_refs[N]`.
+///
+/// Before #407 the parser missed the BS_GTE_SSE prefix on FO4 content
+/// (~32 bytes per block), so `num_modifiers` read a junk u32 from
+/// inside the missing payload. With a junk count of e.g. 3000, the
+/// modifier-ref loop walked ~12 KB into the next block — the 75×
+/// over-read the audit flagged.
 pub fn parse_particle_system(stream: &mut NifStream, type_name: &str) -> io::Result<NiPSysBlock> {
     use super::base::NiAVObjectData;
+    use crate::version::NifVersion;
 
     let _av = NiAVObjectData::parse(stream)?;
-    let _data_ref = stream.read_block_ref()?;
 
-    // NiGeometry: skin_ref (since v3.3.0.13)
-    let _skin_ref = stream.read_block_ref()?;
+    // BS_GTE_SSE = BSVER >= 100 (Skyrim SE / FO4 / FO76 / Starfield).
+    // On this path NiGeometry's structure is overridden for
+    // NiParticleSystem: bounding_sphere + skin ref replace the usual
+    // data_ref + skin_instance_ref + material_data triplet.
+    let is_bs_gte_sse = stream.bsver() >= 100;
+    // FO76 (BSVER == 155) adds a 6-float `bound_min_max` after
+    // `bounding_sphere`. Other SSE+ titles do not.
+    let is_bs_f76 = stream.bsver() == 155;
 
-    // Shader/alpha refs for Skyrim+ (BSVER > 34). Use raw bsver() rather than
-    // a variant predicate so non-Bethesda Gamebryo content at BSVER > 34 stays
-    // aligned (matches base.rs:73 and node.rs:107).
+    if is_bs_gte_sse {
+        // Bounding sphere: 3 floats center + 1 float radius = 16 bytes.
+        stream.skip(16)?;
+        if is_bs_f76 {
+            // Bound Min Max: 6 floats = 24 bytes.
+            stream.skip(24)?;
+        }
+        let _skin_ref = stream.read_block_ref()?;
+    } else {
+        // Pre-SSE NiGeometry: data ref + skin instance ref + material data.
+        let _data_ref = stream.read_block_ref()?;
+        let _skin_ref = stream.read_block_ref()?;
+
+        // Material data: num_materials(u32) + (name_idx, extra_data)[N] +
+        // active_material_index(u32) + dirty_flag(u8 since v20.2.0.7).
+        // Present since v20.2.0.5, only on the pre-SSE branch — same
+        // gate `NiTriShape::parse` uses (see tri_shape.rs:108).
+        if stream.version() >= NifVersion(0x14020005) {
+            let num_materials = stream.read_u32_le()?;
+            // Each entry is 8 on-disk bytes (name_idx + extra_data); bound
+            // the loop so a junk count can't OOM. See #388 / #407.
+            stream.check_alloc((num_materials as usize).saturating_mul(8))?;
+            for _ in 0..num_materials {
+                let _mat_name_idx = stream.read_u32_le()?;
+                let _mat_extra_data = stream.read_u32_le()?;
+            }
+            let _active_material_index = stream.read_u32_le()?;
+            if stream.version() >= NifVersion::V20_2_0_7 {
+                let _dirty_flag = stream.read_u8()?;
+            }
+        } else if stream.version() >= NifVersion(0x0A000100)
+            && stream.version() <= NifVersion(0x14010003)
+        {
+            // NiGeometry "Has Shader" + name + impl (10.0.1.0 → 20.1.0.3).
+            let has_shader = stream.read_bool()?;
+            if has_shader {
+                let _shader_name = stream.read_sized_string()?;
+                let _implementation = stream.read_i32_le()?;
+            }
+        }
+    }
+
+    // Shader / alpha refs land on every BSVER > 34 path. Use raw bsver()
+    // rather than a variant predicate so non-Bethesda Gamebryo content at
+    // BSVER > 34 stays aligned (matches base.rs:73 and node.rs:107).
     if stream.bsver() > 34 {
         let _shader_ref = stream.read_block_ref()?;
         let _alpha_ref = stream.read_block_ref()?;
@@ -560,8 +622,30 @@ pub fn parse_particle_system(stream: &mut NifStream, type_name: &str) -> io::Res
 
     // NiParticleSystem-specific fields (NiParticles has none).
     if type_name != "NiParticles" {
+        // SSE+ (BSVER >= 100): vertex_desc (u64) + Far/Near Begin/End
+        // (4 × u16) + data ref. Skyrim LE (BSVER >= 83) has just the
+        // Far/Near pairs without vertex_desc + data. Pre-Skyrim has
+        // none of these.
+        if is_bs_gte_sse {
+            let _vertex_desc = stream.read_u64_le()?;
+        }
+        if stream.bsver() >= 83 {
+            let _far_begin = stream.read_u16_le()?;
+            let _far_end = stream.read_u16_le()?;
+            let _near_begin = stream.read_u16_le()?;
+            let _near_end = stream.read_u16_le()?;
+        }
+        if is_bs_gte_sse {
+            let _data_ref = stream.read_block_ref()?;
+        }
+
         let _world_space = stream.read_byte_bool()?;
-        let num_modifiers = stream.read_u32_le()? as usize;
+        let num_modifiers = stream.read_u32_le()?;
+        // Bound the modifier-ref loop against the remaining stream so a
+        // junk count from drifted bytes can't OOM the process or walk
+        // 12 KB into the next block. Each ref is 4 bytes on disk.
+        // See #388 / #407.
+        stream.check_alloc((num_modifiers as usize).saturating_mul(4))?;
         for _ in 0..num_modifiers {
             let _modifier_ref = stream.read_block_ref()?;
         }
@@ -771,11 +855,154 @@ pub fn parse_master_particle_system(stream: &mut NifStream) -> io::Result<NiPSys
         let _effects = stream.read_block_ref_list()?;
     }
     let _max_emitter_count = stream.read_u16_le()?;
-    let num_ptrs = stream.read_u32_le()? as usize;
+    let num_ptrs = stream.read_u32_le()?;
+    // Bound the ptr loop against remaining stream — same defense as
+    // NiParticleSystem's modifier_refs (#388 / #407).
+    stream.check_alloc((num_ptrs as usize).saturating_mul(4))?;
     for _ in 0..num_ptrs {
         let _ptr = stream.read_block_ref()?;
     }
     Ok(NiPSysBlock {
         original_type: "BSMasterParticleSystem".to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::header::NifHeader;
+    use crate::version::NifVersion;
+
+    /// FO4-style header (version 20.2.0.7, BSVER 130). The `strings`
+    /// table has one entry so a name index of 0 resolves; -1 = None.
+    fn make_header_fo4() -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 12,
+            user_version_2: 130,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: vec![Arc::from("Sparks")],
+            max_string_length: 8,
+            num_groups: 0,
+        }
+    }
+
+    /// Hand-build the byte sequence for a minimal FO4 NiParticleSystem
+    /// with `num_modifiers` modifier refs. Layout follows nif.xml's
+    /// BS_GTE_SSE branch — see [`parse_particle_system`].
+    fn build_fo4_particle_system_bytes(num_modifiers: u32) -> Vec<u8> {
+        let mut d = Vec::new();
+
+        // ── NiObjectNETData ─────────────────────────────────────────
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // name = None (string index -1)
+        d.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count = 0
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = NULL
+
+        // ── NiAVObject extension (bsver > 26 ⇒ flags=u32) ──────────
+        d.extend_from_slice(&14u32.to_le_bytes()); // flags
+        for _ in 0..3 {
+            // translation
+            d.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        for row in 0..3 {
+            for col in 0..3 {
+                let v: f32 = if row == col { 1.0 } else { 0.0 };
+                d.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        d.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+                                                    // No properties list (bsver > 34).
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
+
+        // ── BS_GTE_SSE NiGeometry override ─────────────────────────
+        // Bounding sphere: 4 floats.
+        for _ in 0..4 {
+            d.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // skin_ref
+
+        // ── Shader / alpha refs (bsver > 34) ───────────────────────
+        d.extend_from_slice(&(-1i32).to_le_bytes());
+        d.extend_from_slice(&(-1i32).to_le_bytes());
+
+        // ── NiParticleSystem own (BS_GTE_SSE) ──────────────────────
+        d.extend_from_slice(&0u64.to_le_bytes()); // vertex_desc
+        d.extend_from_slice(&0u16.to_le_bytes()); // far_begin
+        d.extend_from_slice(&0u16.to_le_bytes()); // far_end
+        d.extend_from_slice(&0u16.to_le_bytes()); // near_begin
+        d.extend_from_slice(&0u16.to_le_bytes()); // near_end
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // data_ref
+
+        // ── Universal trailer ──────────────────────────────────────
+        d.push(1u8); // world_space = true
+        d.extend_from_slice(&num_modifiers.to_le_bytes());
+        for i in 0..num_modifiers {
+            d.extend_from_slice(&(i as i32).to_le_bytes());
+        }
+
+        d
+    }
+
+    /// Regression: #407 — pre-fix, parse_particle_system on FO4
+    /// (BSVER 130) skipped the BS_GTE_SSE bounding-sphere/skin/vertex_desc/
+    /// far-near/data prefix and read `world_space` + `num_modifiers` from
+    /// inside that missing payload. With even one byte of stream beyond the
+    /// real block, `num_modifiers` would soak up an arbitrary u32 and
+    /// the loop walked thousands of bytes into the next block (the 75×
+    /// over-read). The fix consumes the prefix correctly so the parser
+    /// lands exactly on the trailing modifier refs.
+    #[test]
+    fn parse_particle_system_fo4_consumes_full_block() {
+        let header = make_header_fo4();
+        let bytes = build_fo4_particle_system_bytes(2);
+
+        // 72 (NiAVObject) + 20 (BS_GTE_SSE NiGeo) + 8 (shader/alpha)
+        // + 20 (vertex_desc + far/near + data ref) + 13 (world_space +
+        // num_modifiers + 2 refs) = 133.
+        assert_eq!(
+            bytes.len(),
+            133,
+            "fixture size drift — recheck the BS_GTE_SSE field list"
+        );
+
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_particle_system(&mut stream, "NiParticleSystem")
+            .expect("FO4 NiParticleSystem should parse cleanly");
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "parser must consume the full block — drift here is the #407 over-read"
+        );
+        assert_eq!(block.original_type, "NiParticleSystem");
+    }
+
+    /// Regression: a junk `num_modifiers` (here `u32::MAX`) must be
+    /// rejected by the in-stream `check_alloc` gate before the loop
+    /// can spin trying to read 16 GB of refs. Pre-#407 this would
+    /// have consumed the rest of the stream + EOF'd; now it short-
+    /// circuits with `InvalidData`.
+    #[test]
+    fn parse_particle_system_rejects_junk_num_modifiers() {
+        let header = make_header_fo4();
+        // Build a fixture with 0 trailing refs but a corrupt count.
+        let mut bytes = build_fo4_particle_system_bytes(0);
+        // Overwrite the num_modifiers field. It sits 4 bytes before
+        // the end (just after world_space).
+        let nm_offset = bytes.len() - 4;
+        bytes[nm_offset..nm_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        let mut stream = NifStream::new(&bytes, &header);
+        let err = parse_particle_system(&mut stream, "NiParticleSystem")
+            .expect_err("junk num_modifiers must short-circuit");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exceeds hard cap")
+                || msg.contains("only ") && msg.contains("bytes remaining"),
+            "expected check_alloc rejection, got: {msg}"
+        );
+    }
 }
