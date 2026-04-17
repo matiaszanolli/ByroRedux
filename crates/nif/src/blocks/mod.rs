@@ -37,7 +37,8 @@ use controller::{
 };
 use extra_data::{
     BsBehaviorGraphExtraData, BsBound, BsClothExtraData, BsConnectPointChildren,
-    BsConnectPointParents, BsDecalPlacementVectorExtraData, BsInvMarker, NiExtraData,
+    BsConnectPointParents, BsDecalPlacementVectorExtraData, BsFurnitureMarker, BsInvMarker,
+    NiExtraData,
 };
 use interpolator::{
     NiBSplineBasisData, NiBSplineCompTransformInterpolator, NiBSplineData, NiBlendBoolInterpolator,
@@ -302,6 +303,16 @@ pub fn parse_block(
         }
         "BSBehaviorGraphExtraData" => Ok(Box::new(BsBehaviorGraphExtraData::parse(stream)?)),
         "BSInvMarker" => Ok(Box::new(BsInvMarker::parse(stream)?)),
+        // BSFurnitureMarker / BSFurnitureMarkerNode — sitting/sleeping/leaning
+        // positions attached to furniture meshes (chairs, beds, leaning spots).
+        // BSVER ≤ 34 (Oblivion/FO3/FNV) uses orientation+refs; BSVER > 34
+        // (Skyrim+) uses heading+animation type+entry properties. BSFurnitureMarkerNode
+        // (Skyrim+) shares the BSFurnitureMarker wire layout.
+        "BSFurnitureMarker" => Ok(Box::new(BsFurnitureMarker::parse(stream, "BSFurnitureMarker")?)),
+        "BSFurnitureMarkerNode" => Ok(Box::new(BsFurnitureMarker::parse(
+            stream,
+            "BSFurnitureMarkerNode",
+        )?)),
         "BSClothExtraData" => Ok(Box::new(BsClothExtraData::parse(stream)?)),
         "BSConnectPoint::Parents" => Ok(Box::new(BsConnectPointParents::parse(stream)?)),
         "BSConnectPoint::Children" => Ok(Box::new(BsConnectPointChildren::parse(stream)?)),
@@ -578,26 +589,20 @@ pub fn parse_block(
         "bhkMalleableConstraint" => {
             Ok(Box::new(BhkConstraint::parse(stream, "bhkMalleableConstraint")?))
         }
-        // Havok blocks that remain skip-only. Constraint CHAINS and
-        // system wrappers stay here — their internal layouts aren't
-        // yet modelled, and they only appear on FO3+ (where
-        // block_size recovery is available).
-        "bhkNPCollisionObject"
-        | "bhkPhysicsSystem"
-        | "bhkRagdollSystem" => {
-            if let Some(size) = block_size {
-                stream.skip(size as u64)?;
-                Ok(Box::new(NiUnknown {
-                    type_name: Arc::from(type_name),
-                    data: Vec::new(),
-                }))
-            } else {
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Havok block '{}' requires block_size to skip", type_name),
-                ))
-            }
-        }
+        // FO4 / FO76 NP physics family (#124 / audit NIF-513). Parsing
+        // the outer NIF shells so downstream systems can resolve the
+        // references without the full Havok-serialised body inside
+        // `ByteArray`. The binary blob is kept verbatim in the parsed
+        // struct for eventual hand-off to a Havok parser.
+        "bhkNPCollisionObject" => Ok(Box::new(collision::BhkNPCollisionObject::parse(stream)?)),
+        "bhkPhysicsSystem" => Ok(Box::new(collision::BhkSystemBinary::parse(
+            stream,
+            "bhkPhysicsSystem",
+        )?)),
+        "bhkRagdollSystem" => Ok(Box::new(collision::BhkSystemBinary::parse(
+            stream,
+            "bhkRagdollSystem",
+        )?)),
         _ => {
             // Unknown block type — skip it if we know the size
             if let Some(size) = block_size {

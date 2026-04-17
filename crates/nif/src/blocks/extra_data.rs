@@ -485,6 +485,89 @@ impl BsPackedCombinedGeomDataExtra {
     }
 }
 
+// ── BSFurnitureMarker ──────────────────────────────────────────────
+
+/// A single furniture marker position — where an actor sits, sleeps, or leans.
+///
+/// Wire layout is version-split: BSVER ≤ 34 (up to and including FO3/FNV)
+/// uses orientation + 2 position refs; BSVER > 34 (Skyrim+) replaces them
+/// with heading + animation type + entry properties. Per nif.xml FurniturePosition.
+#[derive(Debug, Clone)]
+pub struct FurniturePosition {
+    pub offset: [f32; 3],
+    /// Oblivion/FO3/FNV: orientation + ref1 + ref2. Skyrim+: heading + anim + entry.
+    pub data: FurniturePositionData,
+}
+
+#[derive(Debug, Clone)]
+pub enum FurniturePositionData {
+    /// BSVER ≤ 34 (Oblivion, FO3, FNV).
+    Legacy {
+        orientation: u16,
+        position_ref_1: u8,
+        position_ref_2: u8,
+    },
+    /// BSVER > 34 (Skyrim, Skyrim SE, FO4).
+    Modern {
+        heading: f32,
+        animation_type: u16,
+        entry_properties: u16,
+    },
+}
+
+/// BSFurnitureMarker — sitting/sleeping/leaning position list on furniture meshes.
+/// Introduced in Oblivion (v20.0.0.5, BSVER=11).
+#[derive(Debug)]
+pub struct BsFurnitureMarker {
+    pub type_name: &'static str,
+    pub name: Option<Arc<str>>,
+    pub positions: Vec<FurniturePosition>,
+}
+
+impl NiObject for BsFurnitureMarker {
+    fn block_type_name(&self) -> &'static str {
+        self.type_name
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsFurnitureMarker {
+    pub fn parse(stream: &mut NifStream, type_name: &'static str) -> io::Result<Self> {
+        let name = stream.read_string()?;
+        let count = stream.read_u32_le()? as usize;
+        let legacy = stream.bsver() <= 34;
+        let mut positions = Vec::with_capacity(count);
+        for _ in 0..count {
+            let offset = [
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+            ];
+            let data = if legacy {
+                FurniturePositionData::Legacy {
+                    orientation: stream.read_u16_le()?,
+                    position_ref_1: stream.read_u8()?,
+                    position_ref_2: stream.read_u8()?,
+                }
+            } else {
+                FurniturePositionData::Modern {
+                    heading: stream.read_f32_le()?,
+                    animation_type: stream.read_u16_le()?,
+                    entry_properties: stream.read_u16_le()?,
+                }
+            };
+            positions.push(FurniturePosition { offset, data });
+        }
+        Ok(Self {
+            type_name,
+            name,
+            positions,
+        })
+    }
+}
+
 // ── BSConnectPoint::Children ───────────────────────────────────────
 
 /// Workshop connection point child references. FO4+.
@@ -521,5 +604,125 @@ impl BsConnectPointChildren {
             skinned,
             point_names,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::header::NifHeader;
+    use crate::stream::NifStream;
+    use crate::version::NifVersion;
+
+    fn oblivion_header() -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_0_0_5,
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 11, // BSVER=11 for Oblivion
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    fn skyrim_header() -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 12,
+            user_version_2: 83, // BSVER=83 for Skyrim
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    #[test]
+    fn bs_furniture_marker_oblivion() {
+        // Oblivion wire layout: inline name (len=0 → None), u32 count,
+        // then each position: vec3 offset + u16 orientation + u8 ref1 + u8 ref2.
+        let header = oblivion_header();
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u32.to_le_bytes()); // inline string: empty
+        data.extend_from_slice(&2u32.to_le_bytes()); // 2 positions
+        // Position 0
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data.extend_from_slice(&2.0f32.to_le_bytes());
+        data.extend_from_slice(&3.0f32.to_le_bytes());
+        data.extend_from_slice(&0x1234u16.to_le_bytes()); // orientation
+        data.push(0x56u8); // ref1
+        data.push(0x78u8); // ref2
+        // Position 1
+        data.extend_from_slice(&4.0f32.to_le_bytes());
+        data.extend_from_slice(&5.0f32.to_le_bytes());
+        data.extend_from_slice(&6.0f32.to_le_bytes());
+        data.extend_from_slice(&0x9abcu16.to_le_bytes());
+        data.push(0xdeu8);
+        data.push(0xefu8);
+
+        let mut stream = NifStream::new(&data, &header);
+        let marker = BsFurnitureMarker::parse(&mut stream, "BSFurnitureMarker").unwrap();
+
+        assert_eq!(marker.type_name, "BSFurnitureMarker");
+        assert_eq!(marker.positions.len(), 2);
+        assert_eq!(marker.positions[0].offset, [1.0, 2.0, 3.0]);
+        match marker.positions[0].data {
+            FurniturePositionData::Legacy {
+                orientation,
+                position_ref_1,
+                position_ref_2,
+            } => {
+                assert_eq!(orientation, 0x1234);
+                assert_eq!(position_ref_1, 0x56);
+                assert_eq!(position_ref_2, 0x78);
+            }
+            _ => panic!("expected Legacy variant for Oblivion (BSVER=11)"),
+        }
+        assert_eq!(stream.position() as usize, data.len());
+    }
+
+    #[test]
+    fn bs_furniture_marker_skyrim() {
+        // Skyrim wire layout: string-table name (-1 = None), u32 count,
+        // then each position: vec3 offset + f32 heading + u16 anim + u16 entry.
+        let header = skyrim_header();
+        let mut data = Vec::new();
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // string table: None
+        data.extend_from_slice(&1u32.to_le_bytes()); // 1 position
+        data.extend_from_slice(&10.0f32.to_le_bytes());
+        data.extend_from_slice(&20.0f32.to_le_bytes());
+        data.extend_from_slice(&30.0f32.to_le_bytes());
+        data.extend_from_slice(&1.5707964f32.to_le_bytes()); // heading ≈ π/2
+        data.extend_from_slice(&1u16.to_le_bytes()); // AnimationType::Sit
+        data.extend_from_slice(&0x0003u16.to_le_bytes()); // Entry: Front|Behind
+
+        let mut stream = NifStream::new(&data, &header);
+        let marker = BsFurnitureMarker::parse(&mut stream, "BSFurnitureMarkerNode").unwrap();
+
+        assert_eq!(marker.type_name, "BSFurnitureMarkerNode");
+        assert_eq!(marker.positions.len(), 1);
+        assert_eq!(marker.positions[0].offset, [10.0, 20.0, 30.0]);
+        match marker.positions[0].data {
+            FurniturePositionData::Modern {
+                heading,
+                animation_type,
+                entry_properties,
+            } => {
+                assert!((heading - 1.5707964).abs() < 1e-6);
+                assert_eq!(animation_type, 1);
+                assert_eq!(entry_properties, 0x0003);
+            }
+            _ => panic!("expected Modern variant for Skyrim (BSVER=83)"),
+        }
+        assert_eq!(stream.position() as usize, data.len());
     }
 }
