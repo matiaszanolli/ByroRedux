@@ -122,6 +122,26 @@ pub struct LightData {
     pub flags: u32,
 }
 
+/// Addon-node record data extracted from ADDN sub-records.
+///
+/// Skyrim/FO3/FNV addon nodes are particle emitters / auxiliary visual
+/// effects (moth swarms, ash motes, torch flames) that placed REFRs
+/// reference via `XADN` to select one of the ADDN pool. The renderer
+/// doesn't yet instantiate particle systems (tracked separately), but
+/// the parsed data is kept so a future particle subsystem can resolve
+/// the XADN → ADDN → master-particle-cap chain. See #370.
+#[derive(Debug, Clone, Copy)]
+pub struct AddonData {
+    /// Signed 4-byte index (`DATA`). Negative indexes are reserved by
+    /// the engine; positive values key into the master particle pool.
+    pub addon_index: i32,
+    /// Master particle cap (`DNAM` bytes 0..2). Upper bound on the
+    /// number of particle instances spawned from this addon.
+    pub master_particle_cap: u16,
+    /// Addon flags (`DNAM` bytes 2..4). Bit 0 = "always loaded".
+    pub flags: u16,
+}
+
 /// A base form with its NIF model path (STAT, MSTT, FURN, DOOR, LIGH, NPC_, etc.).
 #[derive(Debug, Clone)]
 pub struct StaticObject {
@@ -130,6 +150,8 @@ pub struct StaticObject {
     pub model_path: String,
     /// Light properties (only populated for LIGH records).
     pub light_data: Option<LightData>,
+    /// Addon-node properties (only populated for ADDN records). See #370.
+    pub addon_data: Option<AddonData>,
 }
 
 /// Result of parsing an ESM file for cell loading.
@@ -809,10 +831,13 @@ fn parse_modl_group(
         let header = reader.read_record_header()?;
         {
             let is_ligh = &header.record_type == b"LIGH";
+            let is_addn = &header.record_type == b"ADDN";
             let subs = reader.read_sub_records(&header)?;
             let mut editor_id = String::new();
             let mut model_path = String::new();
             let mut light_data = None;
+            let mut addon_index: Option<i32> = None;
+            let mut addon_dnam: Option<(u16, u16)> = None;
 
             for sub in &subs {
                 match &sub.sub_type {
@@ -845,13 +870,43 @@ fn parse_modl_group(
                             flags,
                         });
                     }
+                    b"DATA" if is_addn && sub.data.len() >= 4 => {
+                        // ADDN DATA: signed 4-byte addon index. Negative
+                        // values are engine-reserved; positive indexes
+                        // select a master particle pool slot (#370).
+                        addon_index = Some(i32::from_le_bytes([
+                            sub.data[0],
+                            sub.data[1],
+                            sub.data[2],
+                            sub.data[3],
+                        ]));
+                    }
+                    b"DNAM" if is_addn && sub.data.len() >= 4 => {
+                        // ADDN DNAM: u16 master_particle_cap + u16 flags.
+                        let cap = u16::from_le_bytes([sub.data[0], sub.data[1]]);
+                        let flags = u16::from_le_bytes([sub.data[2], sub.data[3]]);
+                        addon_dnam = Some((cap, flags));
+                    }
                     _ => {}
                 }
             }
 
-            // Insert if we have a model path, or if it's a LIGH with light data
-            // (some lights have no mesh — they're just point lights).
-            if !model_path.is_empty() || light_data.is_some() {
+            let addon_data = if is_addn && (addon_index.is_some() || addon_dnam.is_some()) {
+                let (master_particle_cap, flags) = addon_dnam.unwrap_or((0, 0));
+                Some(AddonData {
+                    addon_index: addon_index.unwrap_or(0),
+                    master_particle_cap,
+                    flags,
+                })
+            } else {
+                None
+            };
+
+            // Insert if we have a model path, a LIGH with light data
+            // (some lights have no mesh — just point lights), or an
+            // ADDN with its addon-data payload (some ADDN records are
+            // pure particle emitters with no MODL).
+            if !model_path.is_empty() || light_data.is_some() || addon_data.is_some() {
                 statics.insert(
                     header.form_id,
                     StaticObject {
@@ -859,6 +914,7 @@ fn parse_modl_group(
                         editor_id,
                         model_path,
                         light_data,
+                        addon_data,
                     },
                 );
             }
@@ -984,6 +1040,107 @@ mod tests {
         buf.extend_from_slice(&[0u8; 8]); // padding
         buf.extend_from_slice(&sub_data);
         buf
+    }
+
+    // Helper: build minimal ADDN record bytes with DATA (s32 index) +
+    // DNAM (u16 cap, u16 flags). Optional EDID / MODL included. See #370.
+    fn build_addn_record(
+        form_id: u32,
+        editor_id: &str,
+        model_path: &str,
+        addon_index: i32,
+        cap: u16,
+        flags: u16,
+    ) -> Vec<u8> {
+        let mut sub_data = Vec::new();
+        // EDID
+        let edid = format!("{}\0", editor_id);
+        sub_data.extend_from_slice(b"EDID");
+        sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(edid.as_bytes());
+        // MODL
+        let modl = format!("{}\0", model_path);
+        sub_data.extend_from_slice(b"MODL");
+        sub_data.extend_from_slice(&(modl.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(modl.as_bytes());
+        // DATA: s32 addon_index
+        sub_data.extend_from_slice(b"DATA");
+        sub_data.extend_from_slice(&4u16.to_le_bytes());
+        sub_data.extend_from_slice(&addon_index.to_le_bytes());
+        // DNAM: u16 cap + u16 flags
+        sub_data.extend_from_slice(b"DNAM");
+        sub_data.extend_from_slice(&4u16.to_le_bytes());
+        sub_data.extend_from_slice(&cap.to_le_bytes());
+        sub_data.extend_from_slice(&flags.to_le_bytes());
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"ADDN");
+        buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+        buf.extend_from_slice(&form_id.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 8]); // padding
+        buf.extend_from_slice(&sub_data);
+        buf
+    }
+
+    #[test]
+    fn parse_addn_extracts_data_and_dnam() {
+        // Regression: #370 — ADDN DATA (s32 addon index) and DNAM
+        // (u16 cap + u16 flags) must both land on StaticObject.addon_data.
+        let addn = build_addn_record(
+            0x4567,
+            "MothSwarm01",
+            "meshes\\effects\\moths.nif",
+            7,
+            64,
+            1,
+        );
+        let total_size = 24 + addn.len();
+        let mut group = Vec::new();
+        group.extend_from_slice(b"GRUP");
+        group.extend_from_slice(&(total_size as u32).to_le_bytes());
+        group.extend_from_slice(b"ADDN");
+        group.extend_from_slice(&0u32.to_le_bytes());
+        group.extend_from_slice(&[0u8; 8]);
+        group.extend_from_slice(&addn);
+
+        let mut reader = EsmReader::new(&group);
+        let gh = reader.read_group_header().unwrap();
+        let end = reader.position() + gh.total_size as usize - 24;
+        let mut statics = HashMap::new();
+        parse_modl_group(&mut reader, end, &mut statics).unwrap();
+
+        let s = statics.get(&0x4567).expect("ADDN entry present");
+        assert_eq!(s.editor_id, "MothSwarm01");
+        assert_eq!(s.model_path, "meshes\\effects\\moths.nif");
+        let ad = s.addon_data.expect("addon_data populated");
+        assert_eq!(ad.addon_index, 7);
+        assert_eq!(ad.master_particle_cap, 64);
+        assert_eq!(ad.flags, 1);
+    }
+
+    #[test]
+    fn parse_non_addn_record_has_no_addon_data() {
+        // STATs must not accidentally populate addon_data even if a
+        // same-named DATA sub-record happens to exist.
+        let stat = build_stat_record(0x9999, "RegularWall", "meshes\\wall.nif");
+        let total_size = 24 + stat.len();
+        let mut group = Vec::new();
+        group.extend_from_slice(b"GRUP");
+        group.extend_from_slice(&(total_size as u32).to_le_bytes());
+        group.extend_from_slice(b"STAT");
+        group.extend_from_slice(&0u32.to_le_bytes());
+        group.extend_from_slice(&[0u8; 8]);
+        group.extend_from_slice(&stat);
+
+        let mut reader = EsmReader::new(&group);
+        let gh = reader.read_group_header().unwrap();
+        let end = reader.position() + gh.total_size as usize - 24;
+        let mut statics = HashMap::new();
+        parse_modl_group(&mut reader, end, &mut statics).unwrap();
+
+        let s = statics.get(&0x9999).expect("STAT entry");
+        assert!(s.addon_data.is_none(), "STAT must not carry addon data");
     }
 
     #[test]
