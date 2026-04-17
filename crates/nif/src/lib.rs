@@ -215,6 +215,27 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                 // Cache consumed size for Oblivion recovery (#324).
                 if no_block_sizes {
                     let final_consumed = (stream.position() - start_pos) as u32;
+                    // Drift detector — debug builds only (#395). Catches
+                    // the earliest sign of an upstream parser drifting
+                    // the stream by an unexpected number of bytes; the
+                    // perpetrator is silent in the success path so
+                    // without this hook the first symptom is a much
+                    // later block surfacing garbage enum values.
+                    #[cfg(debug_assertions)]
+                    if let Some(prior) = parsed_size_cache.get(type_name) {
+                        if let Some(msg) = drift_warning(final_consumed, prior) {
+                            log::warn!(
+                                "Stream drift suspect: block {} '{}' (offset {}) {} \
+                                 — a previous block likely under- or over-consumed; \
+                                 treat downstream garbage reads as symptoms, not the \
+                                 cause. See #395.",
+                                i,
+                                type_name,
+                                start_pos,
+                                msg
+                            );
+                        }
+                    }
                     parsed_size_cache
                         .entry(type_name.to_string())
                         .or_default()
@@ -361,6 +382,60 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         truncated,
         dropped_block_count,
     })
+}
+
+/// Heuristic stream-drift detector for Oblivion-style NIFs (no
+/// per-block size table). Returns `Some(msg)` when the freshly-parsed
+/// `consumed` byte count disagrees with previously-parsed instances of
+/// the same type, indicating an upstream parser likely consumed the
+/// wrong number of bytes and shifted the stream forward (or backward).
+///
+/// Gated to debug + test builds: the call site in `parse_nif_with_options`
+/// is `#[cfg(debug_assertions)]`, so this function is unreferenced in
+/// release. `cfg(any(debug_assertions, test))` keeps both build paths
+/// clean — release strips the dead code, and `cargo test --release` (a
+/// rare but valid invocation) still compiles the regression suite.
+///
+/// The detector intentionally only fires when prior samples agree with
+/// each other within ±2 bytes — a low-variance signature that suggests
+/// a fixed-size type. Variable-size types (NiTriShapeData, NiSkinData,
+/// any block carrying a `Vec<T>` whose count varies per instance)
+/// generate cache entries with high natural variance and are
+/// silently ignored to keep false positives near zero.
+///
+/// The actual buggy parser is almost always one or two blocks
+/// upstream of where the warning fires — by the time a downstream
+/// block sees the drift, the perpetrator has already returned `Ok`
+/// with a wrong byte count. The earliest detector firing is the most
+/// useful breadcrumb. See #395.
+#[cfg(any(debug_assertions, test))]
+fn drift_warning(consumed: u32, prior: &[u32]) -> Option<String> {
+    if prior.len() < 2 {
+        return None;
+    }
+    let &min = prior.iter().min().unwrap();
+    let &max = prior.iter().max().unwrap();
+    // High-variance type — drift detection unreliable; skip silently.
+    if max.saturating_sub(min) > 2 {
+        return None;
+    }
+    let dist = prior
+        .iter()
+        .map(|&s| (s as i64 - consumed as i64).abs())
+        .min()
+        .unwrap_or(0);
+    if dist <= 2 {
+        return None;
+    }
+    let mut sorted = prior.to_vec();
+    sorted.sort_unstable();
+    let median = sorted[sorted.len() / 2];
+    Some(format!(
+        "consumed {consumed} bytes, but {prior_count} prior parse(s) of this type \
+         all consumed {min}±{spread} bytes (median {median})",
+        prior_count = prior.len(),
+        spread = max - min,
+    ))
 }
 
 #[cfg(test)]
@@ -802,4 +877,73 @@ mod tests {
     // Real-game NIF parse coverage lives in `tests/parse_real_nifs.rs`, which
     // walks entire mesh archives and asserts a per-game success-rate threshold.
     // The old /tmp-based single-file smoke tests were removed in N23.10.
+
+    // ── #395: stream-position drift detector ─────────────────────────
+
+    #[test]
+    fn drift_warning_silent_with_too_few_samples() {
+        // Need at least two prior samples to characterise the type.
+        assert!(super::drift_warning(100, &[]).is_none());
+        assert!(super::drift_warning(100, &[42]).is_none());
+    }
+
+    #[test]
+    fn drift_warning_silent_when_consumed_matches_cache() {
+        // Fixed-size type, new sample matches → no fire.
+        assert!(super::drift_warning(48, &[48, 48, 48]).is_none());
+        // Within ±2 byte tolerance — still considered a match.
+        assert!(super::drift_warning(50, &[48, 48, 48]).is_none());
+        assert!(super::drift_warning(46, &[48, 48, 48]).is_none());
+    }
+
+    #[test]
+    fn drift_warning_silent_for_high_variance_types() {
+        // NiTriShapeData / NiSkinData / NiNode-with-children all have
+        // wildly varying consumed sizes legitimately. The detector
+        // recognises this from the cache spread (> 2 bytes) and stays
+        // silent regardless of the new sample.
+        let prior = [40, 200, 1024];
+        assert!(super::drift_warning(48, &prior).is_none());
+        assert!(super::drift_warning(99999, &prior).is_none());
+    }
+
+    #[test]
+    fn drift_warning_fires_on_fixed_size_disagreement() {
+        // Cache has 3 prior samples all = 48 (clearly a fixed-size
+        // type). New sample 68 differs by 20 — > 2 byte tolerance,
+        // unambiguous drift.
+        let msg = super::drift_warning(68, &[48, 48, 48])
+            .expect("drift warning should fire on +20 byte deviation from fixed-size cache");
+        assert!(
+            msg.contains("consumed 68 bytes"),
+            "warning must report the offending consumed count, got: {msg}"
+        );
+        assert!(
+            msg.contains("median 48"),
+            "warning must report the cached median, got: {msg}"
+        );
+        assert!(
+            msg.contains("3 prior parse(s)"),
+            "warning must report sample count, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn drift_warning_fires_on_short_consumed_too() {
+        // Drift can be backward as well as forward — a parser that
+        // under-consumed leaves bytes for the next reader to overshoot.
+        let msg = super::drift_warning(40, &[48, 48, 48])
+            .expect("drift warning should fire on -8 byte deviation");
+        assert!(msg.contains("consumed 40 bytes"));
+    }
+
+    #[test]
+    fn drift_warning_uses_min_distance_not_first_sample() {
+        // Cache has slight variance ([46, 47, 48], range = 2 → still
+        // considered fixed-size). New sample 50 is 2 away from 48
+        // (within tolerance) → no fire. New sample 60 is 12 away from
+        // the closest sample (48) → fire.
+        assert!(super::drift_warning(50, &[46, 47, 48]).is_none());
+        assert!(super::drift_warning(60, &[46, 47, 48]).is_some());
+    }
 }
