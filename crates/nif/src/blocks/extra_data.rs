@@ -412,34 +412,124 @@ impl BsConnectPointParents {
 
 // ── BSPackedCombined[Shared]GeomDataExtra ──────────────────────────
 
-/// Shared fields for `BSPackedCombinedGeomDataExtra` and
+/// One placed instance inside a packed-combined batch — grayscale
+/// tint, engine-space transform, and a bounding sphere. 72 bytes.
+/// `size="72"` per nif.xml `BSPackedGeomDataCombined`.
+#[derive(Debug, Clone)]
+pub struct BsPackedGeomDataCombined {
+    /// Per-instance tint / palette index (f32). Drives the
+    /// grayscale_to_palette shader input for merged LOD dressing.
+    pub grayscale_to_palette_scale: f32,
+    pub transform: crate::types::NiTransform,
+    /// Bounding sphere: `[cx, cy, cz, radius]`.
+    pub bounding_sphere: [f32; 4],
+}
+
+impl BsPackedGeomDataCombined {
+    fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let grayscale_to_palette_scale = stream.read_f32_le()?;
+        let transform = stream.read_ni_transform()?;
+        let cx = stream.read_f32_le()?;
+        let cy = stream.read_f32_le()?;
+        let cz = stream.read_f32_le()?;
+        let radius = stream.read_f32_le()?;
+        Ok(Self {
+            grayscale_to_palette_scale,
+            transform,
+            bounding_sphere: [cx, cy, cz, radius],
+        })
+    }
+}
+
+/// One baked-geometry object inside a `BSPackedCombinedGeomDataExtra`.
+/// Carries metadata (LOD counts/offsets, per-instance transforms) plus
+/// the raw vertex and triangle bytes — they are retained as
+/// `Vec<u8>` / `Vec<[u16; 3]>` so a downstream LOD importer can decode
+/// them once the terrain-streaming milestone needs them. See #158 and
+/// #365.
+#[derive(Debug, Clone)]
+pub struct BsPackedGeomData {
+    pub num_verts: u32,
+    pub lod_levels: u32,
+    pub tri_count_lod0: u32,
+    pub tri_offset_lod0: u32,
+    pub tri_count_lod1: u32,
+    pub tri_offset_lod1: u32,
+    pub tri_count_lod2: u32,
+    pub tri_offset_lod2: u32,
+    pub combined: Vec<BsPackedGeomDataCombined>,
+    pub vertex_desc: u64,
+    /// Raw vertex bytes — `num_verts * vertex_stride(vertex_desc)`.
+    /// Stored verbatim; the downstream importer decodes per-vertex via
+    /// the same `vertex_desc` machinery `BsTriShape` already uses.
+    pub vertex_data: Vec<u8>,
+    /// Triangle indices for all LODs concatenated, in order
+    /// LOD0 → LOD1 → LOD2. Each triangle is 3 u16s.
+    pub triangles: Vec<[u16; 3]>,
+}
+
+/// One shared-geometry reference inside a
+/// `BSPackedCombinedSharedGeomDataExtra`. The actual vertex/triangle
+/// data lives in an external PSG/CSG file addressed by filename hash
+/// + byte offset. 8 bytes.
+#[derive(Debug, Clone, Copy)]
+pub struct BsPackedGeomObject {
+    /// BSCRC32 of the `.psg`/`.csg` filename (without extension).
+    pub filename_hash: u32,
+    /// Byte offset into the PSG/CSG blob where this object's geometry
+    /// starts.
+    pub data_offset: u32,
+}
+
+/// Shared-geometry metadata — identical header layout to
+/// `BsPackedGeomData` but with the vertex and triangle arrays elided
+/// (they live in the external PSG/CSG file).
+#[derive(Debug, Clone)]
+pub struct BsPackedSharedGeomData {
+    pub num_verts: u32,
+    pub lod_levels: u32,
+    pub tri_count_lod0: u32,
+    pub tri_offset_lod0: u32,
+    pub tri_count_lod1: u32,
+    pub tri_offset_lod1: u32,
+    pub tri_count_lod2: u32,
+    pub tri_offset_lod2: u32,
+    pub combined: Vec<BsPackedGeomDataCombined>,
+    pub vertex_desc: u64,
+}
+
+/// Two-variant payload: baked geometry is self-contained; shared
+/// geometry defers to an external PSG/CSG file.
+#[derive(Debug, Clone)]
+pub enum BsPackedCombinedPayload {
+    /// `BSPackedCombinedGeomDataExtra` — vertex/triangle data is
+    /// baked into this NIF.
+    Baked(Vec<BsPackedGeomData>),
+    /// `BSPackedCombinedSharedGeomDataExtra` — vertex/triangle data
+    /// is in a companion `.psg`/`.csg` file, addressed by hash +
+    /// offset in each `BsPackedGeomObject`.
+    Shared {
+        objects: Vec<BsPackedGeomObject>,
+        data: Vec<BsPackedSharedGeomData>,
+    },
+}
+
+/// `BSPackedCombinedGeomDataExtra` and
 /// `BSPackedCombinedSharedGeomDataExtra` — FO4+ distant-LOD merged
-/// geometry batches attached to BSMultiBoundNode roots in cell LOD NIFs.
+/// geometry batches attached to `BSMultiBoundNode` roots in cell LOD
+/// NIFs. The two variants differ in whether vertex/triangle data is
+/// baked into the NIF (`Baked`) or deferred to a PSG/CSG companion
+/// file (`Shared`).
 ///
-/// Wire layout (niflib nif.xml):
-/// ```text
-/// NiExtraData base (name)
-/// uint64  vertex_desc       ; BSVertexDesc bitfield
-/// uint    num_vertices
-/// uint    num_triangles
-/// uint    unknown_flags_1
-/// uint    unknown_flags_2
-/// uint    num_data
-/// <variable-size per-object data + vertex/triangle pools>
-/// ```
-///
-/// The renderer does not yet reconstruct merged LOD meshes from this
-/// data (distant terrain decoration is a downstream importer task that
-/// lands with the terrain streaming milestone). This struct classifies
-/// the block and captures the fixed-layout header so scene walkers can
-/// identify it by type and name; the variable-size tail is skipped via
-/// the caller-supplied `block_size`. See issue #158.
+/// The full wire format is now parsed (issue #365 / regression of
+/// #158). Downstream LOD rendering — reconstructing merged
+/// BSTriShape-equivalent batches from the baked-geometry arrays — is
+/// still future work (tied to the terrain-streaming milestone), but
+/// the structural data is no longer silently skipped.
 #[derive(Debug)]
 pub struct BsPackedCombinedGeomDataExtra {
     /// Discriminator: `"BSPackedCombinedGeomDataExtra"` or
-    /// `"BSPackedCombinedSharedGeomDataExtra"`. The two variants differ
-    /// only in how the downstream engine assembles the object pool —
-    /// on the wire they share the identical header layout.
+    /// `"BSPackedCombinedSharedGeomDataExtra"`.
     pub type_name: &'static str,
     pub name: Option<Arc<str>>,
     pub vertex_desc: u64,
@@ -448,6 +538,7 @@ pub struct BsPackedCombinedGeomDataExtra {
     pub unknown_flags_1: u32,
     pub unknown_flags_2: u32,
     pub num_data: u32,
+    pub payload: BsPackedCombinedPayload,
 }
 
 impl NiObject for BsPackedCombinedGeomDataExtra {
@@ -459,11 +550,18 @@ impl NiObject for BsPackedCombinedGeomDataExtra {
     }
 }
 
+/// Extract the per-vertex stride in bytes from a BSVertexDesc bitfield.
+///
+/// The low nibble stores "size-in-quads" — multiply by 4 to get bytes.
+/// Matches the formula used by `BsTriShape` in tri_shape.rs.
+#[inline]
+fn vertex_stride_from_desc(vertex_desc: u64) -> usize {
+    ((vertex_desc & 0xF) as usize) * 4
+}
+
 impl BsPackedCombinedGeomDataExtra {
-    /// Parse the NiExtraData name + fixed-layout geometry header.
-    /// The variable-size tail (per-object records + vertex/triangle
-    /// pools) is left on the stream — the dispatcher uses `block_size`
-    /// to bound the skip, same pattern as BSSubIndexTriShape (#147).
+    /// Parse the full wire format. See the struct doc comment for
+    /// variant differences.
     pub fn parse(stream: &mut NifStream, type_name: &'static str) -> io::Result<Self> {
         let name = stream.read_string()?;
         let vertex_desc = stream.read_u64_le()?;
@@ -472,6 +570,33 @@ impl BsPackedCombinedGeomDataExtra {
         let unknown_flags_1 = stream.read_u32_le()?;
         let unknown_flags_2 = stream.read_u32_le()?;
         let num_data = stream.read_u32_le()?;
+
+        let payload = if type_name == "BSPackedCombinedSharedGeomDataExtra" {
+            // Shared variant: N × GeomObject (8 bytes each) then N ×
+            // SharedGeomData (header-only, no vertex / triangle arrays).
+            let mut objects = Vec::with_capacity(num_data as usize);
+            for _ in 0..num_data {
+                let filename_hash = stream.read_u32_le()?;
+                let data_offset = stream.read_u32_le()?;
+                objects.push(BsPackedGeomObject {
+                    filename_hash,
+                    data_offset,
+                });
+            }
+            let mut data = Vec::with_capacity(num_data as usize);
+            for _ in 0..num_data {
+                data.push(parse_shared_geom_data(stream)?);
+            }
+            BsPackedCombinedPayload::Shared { objects, data }
+        } else {
+            // Baked variant: N × BSPackedGeomData.
+            let mut baked = Vec::with_capacity(num_data as usize);
+            for _ in 0..num_data {
+                baked.push(parse_baked_geom_data(stream)?);
+            }
+            BsPackedCombinedPayload::Baked(baked)
+        };
+
         Ok(Self {
             type_name,
             name,
@@ -481,8 +606,113 @@ impl BsPackedCombinedGeomDataExtra {
             unknown_flags_1,
             unknown_flags_2,
             num_data,
+            payload,
         })
     }
+}
+
+fn parse_common_geom_header(
+    stream: &mut NifStream,
+) -> io::Result<(u32, u32, u32, u32, u32, u32, u32, u32, Vec<BsPackedGeomDataCombined>, u64)> {
+    let num_verts = stream.read_u32_le()?;
+    let lod_levels = stream.read_u32_le()?;
+    let tri_count_lod0 = stream.read_u32_le()?;
+    let tri_offset_lod0 = stream.read_u32_le()?;
+    let tri_count_lod1 = stream.read_u32_le()?;
+    let tri_offset_lod1 = stream.read_u32_le()?;
+    let tri_count_lod2 = stream.read_u32_le()?;
+    let tri_offset_lod2 = stream.read_u32_le()?;
+    let num_combined = stream.read_u32_le()?;
+    let mut combined = Vec::with_capacity(num_combined as usize);
+    for _ in 0..num_combined {
+        combined.push(BsPackedGeomDataCombined::parse(stream)?);
+    }
+    let vertex_desc = stream.read_u64_le()?;
+    Ok((
+        num_verts,
+        lod_levels,
+        tri_count_lod0,
+        tri_offset_lod0,
+        tri_count_lod1,
+        tri_offset_lod1,
+        tri_count_lod2,
+        tri_offset_lod2,
+        combined,
+        vertex_desc,
+    ))
+}
+
+fn parse_baked_geom_data(stream: &mut NifStream) -> io::Result<BsPackedGeomData> {
+    let (
+        num_verts,
+        lod_levels,
+        tri_count_lod0,
+        tri_offset_lod0,
+        tri_count_lod1,
+        tri_offset_lod1,
+        tri_count_lod2,
+        tri_offset_lod2,
+        combined,
+        vertex_desc,
+    ) = parse_common_geom_header(stream)?;
+
+    let stride = vertex_stride_from_desc(vertex_desc);
+    let vertex_bytes = (num_verts as usize).saturating_mul(stride);
+    let vertex_data = stream.read_bytes(vertex_bytes)?;
+
+    let total_triangles = tri_count_lod0
+        .saturating_add(tri_count_lod1)
+        .saturating_add(tri_count_lod2) as usize;
+    let mut triangles = Vec::with_capacity(total_triangles);
+    for _ in 0..total_triangles {
+        let a = stream.read_u16_le()?;
+        let b = stream.read_u16_le()?;
+        let c = stream.read_u16_le()?;
+        triangles.push([a, b, c]);
+    }
+
+    Ok(BsPackedGeomData {
+        num_verts,
+        lod_levels,
+        tri_count_lod0,
+        tri_offset_lod0,
+        tri_count_lod1,
+        tri_offset_lod1,
+        tri_count_lod2,
+        tri_offset_lod2,
+        combined,
+        vertex_desc,
+        vertex_data,
+        triangles,
+    })
+}
+
+fn parse_shared_geom_data(stream: &mut NifStream) -> io::Result<BsPackedSharedGeomData> {
+    let (
+        num_verts,
+        lod_levels,
+        tri_count_lod0,
+        tri_offset_lod0,
+        tri_count_lod1,
+        tri_offset_lod1,
+        tri_count_lod2,
+        tri_offset_lod2,
+        combined,
+        vertex_desc,
+    ) = parse_common_geom_header(stream)?;
+
+    Ok(BsPackedSharedGeomData {
+        num_verts,
+        lod_levels,
+        tri_count_lod0,
+        tri_offset_lod0,
+        tri_count_lod1,
+        tri_offset_lod1,
+        tri_count_lod2,
+        tri_offset_lod2,
+        combined,
+        vertex_desc,
+    })
 }
 
 // ── BSFurnitureMarker ──────────────────────────────────────────────

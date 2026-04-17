@@ -1221,60 +1221,155 @@ mod dispatch_tests {
         assert_eq!(stream.position(), bytes.len() as u64);
     }
 
-    /// Regression: #158 — BSPackedCombined[Shared]GeomDataExtra must
-    /// dispatch to its own parser, read the fixed-layout geometry
-    /// header (vertex_desc u64 + 5 × u32), and consume any remaining
-    /// variable-size per-object data via block_size. Previously fell
-    /// through to the default NiUnknown arm, losing the type
-    /// classification.
+    /// Regression #158 / #365: BSPackedCombined[Shared]GeomDataExtra
+    /// must dispatch to its own parser and fully decode the
+    /// variable-size per-object tail (not just skip-via-block_size).
+    ///
+    /// Constructs a valid wire payload with `num_data = 1` per
+    /// variant — one `BSPackedGeomData` (baked) or one
+    /// `BSPackedGeomObject` + one `BSPackedSharedGeomData` (shared) —
+    /// and checks that counts, per-instance combined records, vertex
+    /// bytes (for the baked variant), and triangle indices all
+    /// round-trip.
     #[test]
-    fn bs_packed_combined_geom_data_extra_dispatches_and_consumes_variable_tail() {
-        use crate::blocks::extra_data::BsPackedCombinedGeomDataExtra;
+    fn bs_packed_combined_geom_data_extra_fully_parses_variable_tail() {
+        use crate::blocks::extra_data::{
+            BsPackedCombinedGeomDataExtra, BsPackedCombinedPayload,
+        };
 
-        // Oblivion uses inline length-prefixed strings (pre-20.1.0.1).
-        // Write a zero-length inline string for `name`.
         let header = oblivion_header();
-        let mut data = Vec::new();
-        data.extend_from_slice(&0u32.to_le_bytes()); // name: empty inline string
-                                                     // vertex_desc: arbitrary u64
-        data.extend_from_slice(&0x0123_4567_89AB_CDEFu64.to_le_bytes());
-        // num_vertices
-        data.extend_from_slice(&42u32.to_le_bytes());
-        // num_triangles
-        data.extend_from_slice(&24u32.to_le_bytes());
-        // unknown_flags_1, _2
-        data.extend_from_slice(&1u32.to_le_bytes());
-        data.extend_from_slice(&2u32.to_le_bytes());
-        // num_data
-        data.extend_from_slice(&3u32.to_le_bytes());
-        // Simulate 32 bytes of variable per-object tail payload. The
-        // invariant is that block_size bounds the skip regardless of
-        // the tail's internal shape.
-        data.extend_from_slice(&[0xBBu8; 32]);
 
-        for variant in [
-            "BSPackedCombinedGeomDataExtra",
-            "BSPackedCombinedSharedGeomDataExtra",
-        ] {
-            let mut stream = NifStream::new(&data, &header);
-            let block = parse_block(variant, &mut stream, Some(data.len() as u32))
-                .unwrap_or_else(|e| panic!("{variant} dispatch failed: {e}"));
+        // Fixed header — identical between the two variants except for
+        // what follows the top-level `num_data`.
+        let mut fixed = Vec::new();
+        fixed.extend_from_slice(&0u32.to_le_bytes()); // name: empty inline string
+        // vertex_desc: low nibble = 4 → 16-byte per-vertex stride.
+        let outer_desc: u64 = 0x0000_0000_0000_0004;
+        fixed.extend_from_slice(&outer_desc.to_le_bytes());
+        fixed.extend_from_slice(&42u32.to_le_bytes()); // num_vertices
+        fixed.extend_from_slice(&24u32.to_le_bytes()); // num_triangles
+        fixed.extend_from_slice(&1u32.to_le_bytes()); // unknown_flags_1
+        fixed.extend_from_slice(&2u32.to_le_bytes()); // unknown_flags_2
+        fixed.extend_from_slice(&1u32.to_le_bytes()); // num_data = 1
+
+        // One `BSPackedGeomDataCombined` — 72 bytes: f32 + NiTransform + NiBound.
+        // NiTransform = 9 f32 rotation + 3 f32 translation + 1 f32 scale.
+        let mut combined = Vec::new();
+        combined.extend_from_slice(&0.5f32.to_le_bytes()); // grayscale_to_palette_scale
+        // rotation rows (identity)
+        for f in [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
+            combined.extend_from_slice(&f.to_le_bytes());
+        }
+        for f in [10.0f32, 20.0, 30.0] {
+            // translation
+            combined.extend_from_slice(&f.to_le_bytes());
+        }
+        combined.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+        for f in [5.0f32, 6.0, 7.0, 42.0] {
+            // bounding sphere
+            combined.extend_from_slice(&f.to_le_bytes());
+        }
+        assert_eq!(combined.len(), 72);
+
+        // Baked variant tail: one BSPackedGeomData with num_verts=2,
+        // one combined record, vertex_desc (stride 16), 2×16 vertex
+        // bytes, and tri_count_lod0=1 triangle.
+        let mut baked_tail = Vec::new();
+        baked_tail.extend_from_slice(&2u32.to_le_bytes()); // num_verts
+        baked_tail.extend_from_slice(&1u32.to_le_bytes()); // lod_levels
+        baked_tail.extend_from_slice(&1u32.to_le_bytes()); // tri_count_lod0
+        baked_tail.extend_from_slice(&0u32.to_le_bytes()); // tri_offset_lod0
+        baked_tail.extend_from_slice(&0u32.to_le_bytes()); // tri_count_lod1
+        baked_tail.extend_from_slice(&0u32.to_le_bytes()); // tri_offset_lod1
+        baked_tail.extend_from_slice(&0u32.to_le_bytes()); // tri_count_lod2
+        baked_tail.extend_from_slice(&0u32.to_le_bytes()); // tri_offset_lod2
+        baked_tail.extend_from_slice(&1u32.to_le_bytes()); // num_combined
+        baked_tail.extend_from_slice(&combined);
+        // Per-vertex stride comes from low nibble of `inner_desc` (4 quads = 16 bytes).
+        let inner_desc: u64 = 0x0000_0000_0000_0004;
+        baked_tail.extend_from_slice(&inner_desc.to_le_bytes());
+        // 2 vertices × 16 bytes = 32 bytes of vertex data.
+        baked_tail.extend_from_slice(&[0xAAu8; 32]);
+        // 1 triangle: u16 indices [0, 1, 0]
+        for idx in [0u16, 1, 0] {
+            baked_tail.extend_from_slice(&idx.to_le_bytes());
+        }
+
+        // Shared variant tail: one BSPackedGeomObject (8 bytes) then
+        // one BSPackedSharedGeomData (header-only, same shape as baked
+        // but no vertex / triangle arrays).
+        let mut shared_tail = Vec::new();
+        shared_tail.extend_from_slice(&0xCAFEBABEu32.to_le_bytes()); // filename_hash
+        shared_tail.extend_from_slice(&0x10u32.to_le_bytes()); // data_offset
+        shared_tail.extend_from_slice(&2u32.to_le_bytes()); // num_verts
+        shared_tail.extend_from_slice(&1u32.to_le_bytes()); // lod_levels
+        shared_tail.extend_from_slice(&1u32.to_le_bytes());
+        shared_tail.extend_from_slice(&0u32.to_le_bytes());
+        shared_tail.extend_from_slice(&0u32.to_le_bytes());
+        shared_tail.extend_from_slice(&0u32.to_le_bytes());
+        shared_tail.extend_from_slice(&0u32.to_le_bytes());
+        shared_tail.extend_from_slice(&0u32.to_le_bytes());
+        shared_tail.extend_from_slice(&1u32.to_le_bytes()); // num_combined
+        shared_tail.extend_from_slice(&combined);
+        shared_tail.extend_from_slice(&inner_desc.to_le_bytes());
+
+        // ---- Baked ----
+        let mut baked_bytes = fixed.clone();
+        baked_bytes.extend_from_slice(&baked_tail);
+        {
+            let mut stream = NifStream::new(&baked_bytes, &header);
+            let block = parse_block(
+                "BSPackedCombinedGeomDataExtra",
+                &mut stream,
+                Some(baked_bytes.len() as u32),
+            )
+            .expect("baked parse");
             let extra = block
                 .as_any()
                 .downcast_ref::<BsPackedCombinedGeomDataExtra>()
-                .unwrap_or_else(|| panic!("{variant} did not downcast"));
-            assert_eq!(extra.type_name, variant);
-            assert_eq!(extra.vertex_desc, 0x0123_4567_89AB_CDEF);
-            assert_eq!(extra.num_vertices, 42);
-            assert_eq!(extra.num_triangles, 24);
-            assert_eq!(extra.unknown_flags_1, 1);
-            assert_eq!(extra.unknown_flags_2, 2);
-            assert_eq!(extra.num_data, 3);
-            assert_eq!(
-                stream.position() as usize,
-                data.len(),
-                "{variant} did not fully consume the variable-size tail"
-            );
+                .expect("baked downcast");
+            assert_eq!(extra.num_data, 1);
+            let baked = match &extra.payload {
+                BsPackedCombinedPayload::Baked(v) => v,
+                _ => panic!("baked variant should produce Baked payload"),
+            };
+            assert_eq!(baked.len(), 1);
+            assert_eq!(baked[0].num_verts, 2);
+            assert_eq!(baked[0].tri_count_lod0, 1);
+            assert_eq!(baked[0].combined.len(), 1);
+            assert!((baked[0].combined[0].grayscale_to_palette_scale - 0.5).abs() < 1e-6);
+            assert_eq!(baked[0].vertex_data.len(), 32);
+            assert_eq!(baked[0].triangles, vec![[0, 1, 0]]);
+            assert_eq!(stream.position() as usize, baked_bytes.len());
+        }
+
+        // ---- Shared ----
+        let mut shared_bytes = fixed.clone();
+        shared_bytes.extend_from_slice(&shared_tail);
+        {
+            let mut stream = NifStream::new(&shared_bytes, &header);
+            let block = parse_block(
+                "BSPackedCombinedSharedGeomDataExtra",
+                &mut stream,
+                Some(shared_bytes.len() as u32),
+            )
+            .expect("shared parse");
+            let extra = block
+                .as_any()
+                .downcast_ref::<BsPackedCombinedGeomDataExtra>()
+                .expect("shared downcast");
+            assert_eq!(extra.num_data, 1);
+            let (objects, data) = match &extra.payload {
+                BsPackedCombinedPayload::Shared { objects, data } => (objects, data),
+                _ => panic!("shared variant should produce Shared payload"),
+            };
+            assert_eq!(objects.len(), 1);
+            assert_eq!(objects[0].filename_hash, 0xCAFEBABE);
+            assert_eq!(objects[0].data_offset, 0x10);
+            assert_eq!(data.len(), 1);
+            assert_eq!(data[0].num_verts, 2);
+            assert_eq!(data[0].combined.len(), 1);
+            assert_eq!(stream.position() as usize, shared_bytes.len());
         }
     }
 
