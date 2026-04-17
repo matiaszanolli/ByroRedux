@@ -36,7 +36,7 @@ pub use items::{
 pub use weather::{parse_wthr, SkyColor, WeatherRecord};
 
 use super::cell::{parse_esm_cells, EsmCellIndex};
-use super::reader::{EsmReader, SubRecord};
+use super::reader::{EsmReader, GameKind, SubRecord};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
@@ -99,8 +99,16 @@ pub fn parse_esm(data: &[u8]) -> Result<EsmIndex> {
     };
 
     let mut reader = EsmReader::new(data);
-    // Skip the TES4 file header — we don't need it again here.
-    let _ = reader.read_file_header();
+    // Peek the TES4 file header so we can derive a GameKind from HEDR's
+    // `Version` f32. ARMO/WEAP/AMMO DATA/DNAM layouts diverge across
+    // FO3/FNV → Skyrim → FO4; without the HEDR discriminator every
+    // Skyrim record would be parsed with the FO3/FNV schema and get
+    // garbage stats (issue #347).
+    let file_header = reader.read_file_header().ok();
+    let game = GameKind::from_header(
+        reader.variant(),
+        file_header.as_ref().map(|h| h.hedr_version).unwrap_or(0.0),
+    );
 
     // Walk top-level groups and dispatch by record-type label.
     while reader.remaining() > 0 {
@@ -115,15 +123,17 @@ pub fn parse_esm(data: &[u8]) -> Result<EsmIndex> {
         let label = group.label;
 
         match &label {
-            // Item categories — each handled by a per-type parser.
+            // Item categories — each handled by a per-type parser. ARMO,
+            // WEAP, AMMO are game-aware: their DATA/DNAM layouts differ
+            // between FO3/FNV and Skyrim+ (see items.rs regression tests).
             b"WEAP" => extract_records(&mut reader, end, b"WEAP", &mut |fid, subs| {
-                index.items.insert(fid, parse_weap(fid, subs));
+                index.items.insert(fid, parse_weap(fid, subs, game));
             })?,
             b"ARMO" => extract_records(&mut reader, end, b"ARMO", &mut |fid, subs| {
-                index.items.insert(fid, parse_armo(fid, subs));
+                index.items.insert(fid, parse_armo(fid, subs, game));
             })?,
             b"AMMO" => extract_records(&mut reader, end, b"AMMO", &mut |fid, subs| {
-                index.items.insert(fid, parse_ammo(fid, subs));
+                index.items.insert(fid, parse_ammo(fid, subs, game));
             })?,
             b"MISC" => extract_records(&mut reader, end, b"MISC", &mut |fid, subs| {
                 index.items.insert(fid, parse_misc(fid, subs));

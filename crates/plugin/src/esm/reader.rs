@@ -72,6 +72,71 @@ impl EsmVariant {
     }
 }
 
+/// Fine-grained game identity for sub-record layout dispatch.
+///
+/// [`EsmVariant`] only splits "Oblivion (20-byte headers)" from "everything
+/// else (24-byte headers)" because that's what the low-level walker needs.
+/// Per-record layouts diverge within the Tes5Plus family: FO3/FNV share one
+/// schema for ARMO/WEAP/AMMO DATA, Skyrim uses a different one (no health
+/// field, BOD2 instead of BMDT, DNAM as packed armor rating), and FO4 adds
+/// its own variants again. Callers that parse body data need this finer
+/// distinction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GameKind {
+    /// Oblivion (TES4, HEDR 1.0).
+    Oblivion,
+    /// Fallout 3 (HEDR 0.85) and Fallout: New Vegas (HEDR 1.34). These two
+    /// share their DATA/DNAM layouts everywhere the current parser cares
+    /// about, so they collapse to one game kind.
+    #[default]
+    Fallout3NV,
+    /// Skyrim LE + SE (HEDR 1.7). New ARMO/WEAP/AMMO sub-record schemas.
+    Skyrim,
+    /// Fallout 4 (HEDR 0.95). SCOL/PKIN/TXST and yet another item schema.
+    Fallout4,
+    /// Fallout 76 (HEDR 68.0 — unusually large).
+    Fallout76,
+    /// Starfield (HEDR 0.96).
+    Starfield,
+}
+
+impl GameKind {
+    /// Derive the game kind from the ESM variant plus the HEDR `Version`
+    /// f32 (sub-record offset 0 of the TES4 record's HEDR). Callers that
+    /// don't have a HEDR version should pass `0.0`, which falls back to
+    /// [`GameKind::Fallout3NV`] (the most common Tes5Plus case — keeps
+    /// existing synthetic test fixtures working).
+    pub fn from_header(variant: EsmVariant, hedr_version: f32) -> Self {
+        match variant {
+            EsmVariant::Oblivion => Self::Oblivion,
+            EsmVariant::Tes5Plus => {
+                // HEDR versions (cross-referenced against UESP + real
+                // vanilla master files):
+                //   FO3       = 0.85
+                //   FO4       = 0.95
+                //   Starfield = 0.96
+                //   FNV       = 1.34
+                //   Skyrim    = 1.7 (LE and SE both)
+                //   FO76      = 68.0
+                // Exact float equality is unsafe — match on small bands.
+                if hedr_version >= 60.0 {
+                    Self::Fallout76
+                } else if (1.6..=1.8).contains(&hedr_version) {
+                    Self::Skyrim
+                } else if (0.94..=0.955).contains(&hedr_version) {
+                    Self::Fallout4
+                } else if (0.955..=0.975).contains(&hedr_version) {
+                    Self::Starfield
+                } else {
+                    // FO3 (0.85), FNV (1.34), or unknown → treat as the
+                    // legacy "Fallout" family.
+                    Self::Fallout3NV
+                }
+            }
+        }
+    }
+}
+
 /// Binary reader for ESM/ESP files.
 pub struct EsmReader<'a> {
     data: &'a [u8],
@@ -109,6 +174,9 @@ pub struct SubRecord {
 pub struct FileHeader {
     pub master_files: Vec<String>,
     pub record_count: u32,
+    /// HEDR `Version` f32 (sub-record offset 0). 0.0 when absent (synthetic
+    /// test fixtures often omit HEDR). Feed into [`GameKind::from_header`].
+    pub hedr_version: f32,
 }
 
 impl<'a> EsmReader<'a> {
@@ -302,10 +370,13 @@ impl<'a> EsmReader<'a> {
         let subs = self.read_sub_records(&header)?;
         let mut masters = Vec::new();
         let mut record_count = 0;
+        let mut hedr_version = 0.0f32;
 
         for sub in &subs {
             match &sub.sub_type {
                 b"HEDR" if sub.data.len() >= 12 => {
+                    hedr_version =
+                        f32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
                     record_count =
                         u32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]);
                 }
@@ -321,6 +392,7 @@ impl<'a> EsmReader<'a> {
         Ok(FileHeader {
             master_files: masters,
             record_count,
+            hedr_version,
         })
     }
 
