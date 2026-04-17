@@ -525,7 +525,16 @@ impl BSLightingShaderProperty {
             };
             let fresnel = stream.read_f32_le()?;
             let metalness = stream.read_f32_le()?;
-            let unknown_1 = if bsver > 130 {
+            // `Unknown 1` is nominally gated on `#BS_GT_130#` per nif.xml,
+            // but the 2026-04-17 FO4 audit (Dim 1 C-1) swept all 8 FO4
+            // main + DLC mesh archives (226k NIFs) and found 1,876,931
+            // four-byte under-reads on `BSLightingShaderProperty`,
+            // every single one at BSVER=130 (the vanilla FO4 ship
+            // stream). The field is present from BSVER=130 onward —
+            // widen the gate to `>= 130` so the whole wetness tail
+            // aligns on FO4 (130), FO4 DLC (131-139), FO76 (155), and
+            // Starfield (168+). See #403 / FO4-D1-C1.
+            let unknown_1 = if bsver >= 130 {
                 stream.read_f32_le()?
             } else {
                 0.0
@@ -1474,8 +1483,11 @@ mod tests {
         data.extend_from_slice(&1.0f32.to_le_bytes()); // backlight_power
         data.extend_from_slice(&0.7f32.to_le_bytes()); // grayscale_to_palette_scale
         data.extend_from_slice(&5.0f32.to_le_bytes()); // fresnel_power
-                                                       // WetnessParams (BSVER=130: 6 floats, env_map_scale present)
-        for v in [0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6] {
+                                                       // WetnessParams (BSVER=130: 7 floats — #403 widened
+                                                       // unknown_1 gate to the full 130..155 FO4/FO76 range).
+                                                       // Order: spec_scale, spec_power, min_var, env_map_scale,
+                                                       // fresnel, metalness, unknown_1.
+        for v in [0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6, 0.95] {
             data.extend_from_slice(&v.to_le_bytes());
         }
         // Shader type 1 trailing: env_map_scale + 2 bools (FO4 BSVER 130)
@@ -1840,11 +1852,19 @@ mod tests {
         assert!((prop.backlight_power - 1.0).abs() < 1e-6);
         assert!((prop.grayscale_to_palette_scale - 0.7).abs() < 1e-6);
         assert!((prop.fresnel_power - 5.0).abs() < 1e-6);
-        // Wetness params
+        // Wetness params — BSVER=130 reads 7 floats (see #403).
         let w = prop.wetness.as_ref().unwrap();
         assert!((w.spec_scale - 0.1).abs() < 1e-6);
         assert!((w.env_map_scale - 0.4).abs() < 1e-6); // BSVER=130 has this
         assert!((w.metalness - 0.6).abs() < 1e-6);
+        // #403 regression: unknown_1 is now read for the whole 130..155
+        // range (was gated on `> 130` and silently dropped 4 bytes per
+        // FO4 lit mesh — observed as 1.87M "4-byte short" warnings on
+        // the real FO4 archive sweep).
+        assert!(
+            (w.unknown_1 - 0.95).abs() < 1e-6,
+            "wetness.unknown_1 should round-trip at BSVER=130 (#403)"
+        );
         // Shader type data: EnvironmentMap
         match prop.shader_type_data {
             ShaderTypeData::EnvironmentMap { env_map_scale } => {
