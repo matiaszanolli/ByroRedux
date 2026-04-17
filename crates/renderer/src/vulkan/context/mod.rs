@@ -408,7 +408,7 @@ impl VulkanContext {
         // 12b. Acceleration manager (RT only) — build empty TLAS so descriptors are valid
         let mut scene_buffers = scene_buffers;
         let accel_manager = if device_caps.ray_query_supported {
-            let mut accel = AccelerationManager::new(&vk_instance, &device);
+            let mut accel = AccelerationManager::new(&vk_instance, &device, physical_device);
             // Build an empty TLAS per frame-in-flight slot via one-time command
             // buffers so all descriptor sets have a valid acceleration structure
             // from frame 0. Each build blocks until complete (fence wait inside

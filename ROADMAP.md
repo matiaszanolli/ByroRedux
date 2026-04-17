@@ -38,7 +38,7 @@ DDS textures. Sweetroll renders at 1615 FPS.
 ALLOW_COMPACTION + query-based compact copy (M36: 20–50% BLAS memory reduction),
 streaming weighted reservoir shadow sampling (M31.5: 8 independent reservoirs per fragment
 proportional to luminance; every light has non-zero shadow probability), distance-based
-shadow/GI ray fallback, TLAS frustum culling, BLAS LRU eviction with 256 MB budget,
+shadow/GI ray fallback, TLAS frustum culling, BLAS LRU eviction with VRAM/3 budget,
 deferred geometry SSBO rebuild (no device_wait_idle). Interior: 48 FPS.
 Exterior: loads and renders placed objects; landscape/sky/LOD pending (M32–M35).
 
@@ -793,7 +793,7 @@ expanding gameplay systems. Each milestone produces a visible improvement.
 - [x] No landscape mesh — exterior cells had no ground → LAND heightmap + LTEX/TXST splatting (M32)
 - [x] No distance fallback for shadow/GI rays → smooth fade at 600–800/1200–1500 units (M31)
 - [x] BLAS builds blocked per-mesh with fence stall → batched single-submission (M31)
-- [x] No BLAS eviction → LRU eviction with 256 MB memory budget (M31)
+- [x] No BLAS eviction → LRU eviction with VRAM/3 memory budget (M31, refined #387)
 - [x] Geometry SSBO rebuild called device_wait_idle → deferred destroy (M31)
 - [x] TLAS instance Vec allocated fresh each frame → amortized scratch (M31)
 - [x] MAX_INSTANCES 4096 too small for exteriors → 8192 (M31)

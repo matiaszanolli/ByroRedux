@@ -99,13 +99,51 @@ pub struct AccelerationManager {
     /// Total BLAS memory currently allocated (sum of all BlasEntry.size_bytes).
     total_blas_bytes: vk::DeviceSize,
     /// Maximum BLAS memory budget in bytes. Eviction triggers when exceeded.
-    /// Default: 256 MB — fits comfortably on 4+ GB GPUs.
+    /// Derived at construction time from DEVICE_LOCAL heap size (VRAM / 3)
+    /// with a 256 MB floor. On a 12 GB GPU this yields 4 GB (eviction
+    /// virtually never fires); on a 6 GB GPU it yields 2 GB (eviction
+    /// fires before OOM).
     blas_budget_bytes: vk::DeviceSize,
 }
 
+/// Compute the BLAS memory budget as `VRAM / 3` with a 256 MB floor.
+///
+/// The budget must bound BLAS memory so smaller-VRAM GPUs evict before
+/// hitting an out-of-memory condition, while leaving the bulk of the
+/// device-local heap available for textures, vertex/index buffers, and
+/// the framebuffer. See #387.
+fn compute_blas_budget(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+) -> vk::DeviceSize {
+    const MIN_BUDGET: vk::DeviceSize = 256 * 1024 * 1024; // 256 MB floor
+
+    // SAFETY: get_physical_device_memory_properties is a simple query with
+    // no preconditions beyond a valid physical device handle, which the
+    // caller already holds through the VulkanContext construction chain.
+    let mem_props = unsafe { instance.get_physical_device_memory_properties(physical_device) };
+    let device_local_bytes: vk::DeviceSize = mem_props.memory_heaps
+        [..mem_props.memory_heap_count as usize]
+        .iter()
+        .filter(|heap| heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL))
+        .map(|heap| heap.size)
+        .sum();
+
+    (device_local_bytes / 3).max(MIN_BUDGET)
+}
+
 impl AccelerationManager {
-    pub fn new(instance: &ash::Instance, device: &ash::Device) -> Self {
+    pub fn new(
+        instance: &ash::Instance,
+        device: &ash::Device,
+        physical_device: vk::PhysicalDevice,
+    ) -> Self {
         let accel_loader = ash::khr::acceleration_structure::Device::new(instance, device);
+        let blas_budget_bytes = compute_blas_budget(instance, physical_device);
+        log::info!(
+            "BLAS memory budget: {} MB (derived from VRAM)",
+            blas_budget_bytes / (1024 * 1024)
+        );
         Self {
             accel_loader,
             blas_entries: Vec::new(),
@@ -115,7 +153,7 @@ impl AccelerationManager {
             tlas_instances_scratch: Vec::new(),
             frame_counter: 0,
             total_blas_bytes: 0,
-            blas_budget_bytes: 4 * 1024 * 1024 * 1024, // 4 GB — loose ceiling on 12 GB dev GPU; optimize later
+            blas_budget_bytes,
         }
     }
 
