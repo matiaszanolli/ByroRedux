@@ -1233,9 +1233,7 @@ mod dispatch_tests {
     /// round-trip.
     #[test]
     fn bs_packed_combined_geom_data_extra_fully_parses_variable_tail() {
-        use crate::blocks::extra_data::{
-            BsPackedCombinedGeomDataExtra, BsPackedCombinedPayload,
-        };
+        use crate::blocks::extra_data::{BsPackedCombinedGeomDataExtra, BsPackedCombinedPayload};
 
         let header = oblivion_header();
 
@@ -1243,7 +1241,7 @@ mod dispatch_tests {
         // what follows the top-level `num_data`.
         let mut fixed = Vec::new();
         fixed.extend_from_slice(&0u32.to_le_bytes()); // name: empty inline string
-        // vertex_desc: low nibble = 4 → 16-byte per-vertex stride.
+                                                      // vertex_desc: low nibble = 4 → 16-byte per-vertex stride.
         let outer_desc: u64 = 0x0000_0000_0000_0004;
         fixed.extend_from_slice(&outer_desc.to_le_bytes());
         fixed.extend_from_slice(&42u32.to_le_bytes()); // num_vertices
@@ -1256,7 +1254,7 @@ mod dispatch_tests {
         // NiTransform = 9 f32 rotation + 3 f32 translation + 1 f32 scale.
         let mut combined = Vec::new();
         combined.extend_from_slice(&0.5f32.to_le_bytes()); // grayscale_to_palette_scale
-        // rotation rows (identity)
+                                                           // rotation rows (identity)
         for f in [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
             combined.extend_from_slice(&f.to_le_bytes());
         }
@@ -1939,8 +1937,12 @@ mod dispatch_tests {
         bytes.extend_from_slice(&0x00000005i32.to_le_bytes()); // data_ref = 5
         bytes.extend_from_slice(&0xDEADBEEFu32.to_le_bytes()); // body_id
         let mut stream = NifStream::new(&bytes, &header);
-        let block = parse_block("bhkNPCollisionObject", &mut stream, Some(bytes.len() as u32))
-            .expect("bhkNPCollisionObject should dispatch through a real parser");
+        let block = parse_block(
+            "bhkNPCollisionObject",
+            &mut stream,
+            Some(bytes.len() as u32),
+        )
+        .expect("bhkNPCollisionObject should dispatch through a real parser");
         let obj = block
             .as_any()
             .downcast_ref::<collision::BhkNPCollisionObject>()

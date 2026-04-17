@@ -341,8 +341,9 @@ pub fn parse_ammo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
             // DAT2 (FO3/FNV only): projPerShot(u32), proj(formID),
             // weight(f32), consumedAmmo(formID), consumedPercentage(f32).
             // Skyrim doesn't emit DAT2.
-            b"DAT2" if matches!(game, GameKind::Fallout3NV | GameKind::Oblivion)
-                && sub.data.len() >= 16 =>
+            b"DAT2"
+                if matches!(game, GameKind::Fallout3NV | GameKind::Oblivion)
+                    && sub.data.len() >= 16 =>
             {
                 let _proj_count = read_u32_at(&sub.data, 0).unwrap_or(0);
                 let _proj = read_u32_at(&sub.data, 4).unwrap_or(0);
@@ -741,7 +742,10 @@ mod tests {
                 ..
             } => {
                 assert!((damage - 8.0).abs() < 1e-6);
-                assert_eq!(casing_form, 0xC0DE, "projectile_form lands in casing_form slot");
+                assert_eq!(
+                    casing_form, 0xC0DE,
+                    "projectile_form lands in casing_form slot"
+                );
                 assert_eq!(clip_rounds, 0);
             }
             _ => panic!("expected Ammo kind"),

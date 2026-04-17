@@ -17,8 +17,8 @@ use super::ssao::SsaoPipeline;
 use super::surface;
 use super::svgf::SvgfPipeline;
 use super::swapchain::{self, SwapchainState};
-use super::taa::TaaPipeline;
 use super::sync::{self, FrameSync, MAX_FRAMES_IN_FLIGHT};
+use super::taa::TaaPipeline;
 use super::texture::Texture;
 use crate::mesh::MeshRegistry;
 use crate::texture_registry::TextureRegistry;
@@ -625,8 +625,7 @@ impl VulkanContext {
             }
         };
         if let Some(ref c) = caustic {
-            if let Err(e) =
-                unsafe { c.initialize_layouts(&device, &graphics_queue, transfer_pool) }
+            if let Err(e) = unsafe { c.initialize_layouts(&device, &graphics_queue, transfer_pool) }
             {
                 log::warn!("Caustic layout init failed: {e} — disabling caustic");
                 if let Some(mut pipe) = caustic.take() {
@@ -709,8 +708,7 @@ impl VulkanContext {
         // the anti-aliased image. When TAA is disabled composite keeps its
         // original raw-HDR descriptors.
         if let (Some(ref t), Some(ref mut c)) = (taa.as_ref(), composite.as_mut()) {
-            let taa_views: Vec<vk::ImageView> =
-                (0..n_frames).map(|i| t.output_view(i)).collect();
+            let taa_views: Vec<vk::ImageView> = (0..n_frames).map(|i| t.output_view(i)).collect();
             c.rebind_hdr_views(&device, &taa_views, vk::ImageLayout::GENERAL);
         }
 
@@ -861,7 +859,10 @@ impl Drop for VulkanContext {
             // Destroy persistent transfer fence (#302). device_wait_idle
             // above ensures it's not signaled in-flight.
             {
-                let fence = *self.transfer_fence.lock().expect("transfer fence lock poisoned");
+                let fence = *self
+                    .transfer_fence
+                    .lock()
+                    .expect("transfer fence lock poisoned");
                 self.device.destroy_fence(fence, None);
             }
             self.device.destroy_command_pool(self.transfer_pool, None);

@@ -144,44 +144,45 @@ pub(crate) fn setup_scene(
                         // On failure (no path / archive miss / corrupt DDS) we keep
                         // cloud rendering disabled rather than falling back to the
                         // checkerboard — a magenta sky dome is worse than no clouds.
-                        let (cloud_tex_index, cloud_tile_scale) =
-                            match wthr.cloud_textures[0].as_deref() {
-                                Some(path) => match tex_provider.extract(path) {
-                                    Some(dds_bytes) => {
-                                        let alloc = ctx.allocator.as_ref().unwrap();
-                                        match ctx.texture_registry.load_dds(
-                                            &ctx.device,
-                                            alloc,
-                                            &ctx.graphics_queue,
-                                            ctx.transfer_pool,
-                                            path,
-                                            &dds_bytes,
-                                        ) {
-                                            Ok(h) => {
-                                                log::info!("Cloud texture '{}' → handle {}", path, h);
-                                                // Tile scale 0.15 spreads one texture
-                                                // over ~6.7 view-direction units above
-                                                // the horizon — looks right at typical
-                                                // Bethesda 512² cloud authoring.
-                                                (h, 0.15_f32)
-                                            }
-                                            Err(e) => {
-                                                log::warn!(
-                                                    "Cloud DDS load failed '{}': {} — disabling clouds",
-                                                    path,
-                                                    e
-                                                );
-                                                (0u32, 0.0_f32)
-                                            }
+                        let (cloud_tex_index, cloud_tile_scale) = match wthr.cloud_textures[0]
+                            .as_deref()
+                        {
+                            Some(path) => match tex_provider.extract(path) {
+                                Some(dds_bytes) => {
+                                    let alloc = ctx.allocator.as_ref().unwrap();
+                                    match ctx.texture_registry.load_dds(
+                                        &ctx.device,
+                                        alloc,
+                                        &ctx.graphics_queue,
+                                        ctx.transfer_pool,
+                                        path,
+                                        &dds_bytes,
+                                    ) {
+                                        Ok(h) => {
+                                            log::info!("Cloud texture '{}' → handle {}", path, h);
+                                            // Tile scale 0.15 spreads one texture
+                                            // over ~6.7 view-direction units above
+                                            // the horizon — looks right at typical
+                                            // Bethesda 512² cloud authoring.
+                                            (h, 0.15_f32)
+                                        }
+                                        Err(e) => {
+                                            log::warn!(
+                                                "Cloud DDS load failed '{}': {} — disabling clouds",
+                                                path,
+                                                e
+                                            );
+                                            (0u32, 0.0_f32)
                                         }
                                     }
-                                    None => {
-                                        log::debug!("Cloud texture '{}' not in archives", path);
-                                        (0u32, 0.0_f32)
-                                    }
-                                },
-                                None => (0u32, 0.0_f32),
-                            };
+                                }
+                                None => {
+                                    log::debug!("Cloud texture '{}' not in archives", path);
+                                    (0u32, 0.0_f32)
+                                }
+                            },
+                            None => (0u32, 0.0_f32),
+                        };
                         world.insert_resource(SkyParamsRes {
                             zenith_color: zenith,
                             horizon_color: horizon,
@@ -273,8 +274,7 @@ pub(crate) fn setup_scene(
                         } else {
                             let first_handle;
                             {
-                                let mut registry =
-                                    world.resource_mut::<AnimationClipRegistry>();
+                                let mut registry = world.resource_mut::<AnimationClipRegistry>();
                                 let mut pool = world.resource_mut::<StringPool>();
                                 for nif_clip in &nif_clips {
                                     let clip = convert_nif_clip(nif_clip, &mut pool);
@@ -287,8 +287,7 @@ pub(crate) fn setup_scene(
                                         handle,
                                     );
                                 }
-                                first_handle =
-                                    registry.len() as u32 - nif_clips.len() as u32;
+                                first_handle = registry.len() as u32 - nif_clips.len() as u32;
                             }
 
                             // Spawn an AnimationPlayer scoped to the NIF subtree.

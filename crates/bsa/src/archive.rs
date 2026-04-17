@@ -237,9 +237,7 @@ impl BsaArchive {
             #[cfg(debug_assertions)]
             {
                 let here = reader.stream_position().unwrap_or(0);
-                let expected = folder
-                    .offset
-                    .saturating_sub(_total_file_name_length as u64);
+                let expected = folder.offset.saturating_sub(_total_file_name_length as u64);
                 if expected != here {
                     log::warn!(
                         "BSA folder offset mismatch: expected {} (from record), got {} — archive may have been reordered",

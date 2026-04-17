@@ -596,11 +596,8 @@ pub(super) fn apply_shader_type_data(info: &mut MaterialInfo, data: &ShaderTypeD
             info.skin_tint_color = Some(skin_tint_color);
         }
         ShaderTypeData::Fo76SkinTint { skin_tint_color } => {
-            info.skin_tint_color = Some([
-                skin_tint_color[0],
-                skin_tint_color[1],
-                skin_tint_color[2],
-            ]);
+            info.skin_tint_color =
+                Some([skin_tint_color[0], skin_tint_color[1], skin_tint_color[2]]);
             info.skin_tint_alpha = Some(skin_tint_color[3]);
         }
         ShaderTypeData::HairTint { hair_tint_color } => {
@@ -813,9 +810,7 @@ mod shader_type_data_tests {
         let mut info = MaterialInfo::default();
         apply_shader_type_data(
             &mut info,
-            &ShaderTypeData::EnvironmentMap {
-                env_map_scale: 2.5,
-            },
+            &ShaderTypeData::EnvironmentMap { env_map_scale: 2.5 },
         );
         assert_eq!(info.env_map_scale, 2.5);
     }
@@ -914,14 +909,8 @@ mod shader_type_data_tests {
             },
         );
         assert_eq!(info.eye_cubemap_scale, Some(1.5));
-        assert_eq!(
-            info.eye_left_reflection_center,
-            Some([-0.03, 0.05, 0.0])
-        );
-        assert_eq!(
-            info.eye_right_reflection_center,
-            Some([0.03, 0.05, 0.0])
-        );
+        assert_eq!(info.eye_left_reflection_center, Some([-0.03, 0.05, 0.0]));
+        assert_eq!(info.eye_right_reflection_center, Some([0.03, 0.05, 0.0]));
     }
 
     #[test]
@@ -935,9 +924,7 @@ mod shader_type_data_tests {
         info.hair_tint_color = Some([0.1, 0.2, 0.3]); // pretend something else set this first
         apply_shader_type_data(
             &mut info,
-            &ShaderTypeData::EnvironmentMap {
-                env_map_scale: 1.0,
-            },
+            &ShaderTypeData::EnvironmentMap { env_map_scale: 1.0 },
         );
         assert_eq!(info.hair_tint_color, Some([0.1, 0.2, 0.3]));
     }

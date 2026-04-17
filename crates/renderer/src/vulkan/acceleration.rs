@@ -197,11 +197,7 @@ impl AccelerationManager {
     /// Drain and destroy BLAS entries whose defer countdown has reached
     /// zero. Call once per frame alongside
     /// `MeshRegistry::tick_deferred_destroy`.
-    pub fn tick_deferred_destroy(
-        &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-    ) {
+    pub fn tick_deferred_destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         self.pending_destroy_blas.retain_mut(|(entry, countdown)| {
             if *countdown == 0 {
                 // SAFETY: the countdown guarantees no in-flight command
@@ -599,85 +595,84 @@ impl AccelerationManager {
         }
 
         // Phase 4: Record builds + compaction size queries into one command buffer.
-        let build_result =
-            submit_one_time(device, queue, command_pool, transfer_fence, |cmd| {
-                for (i, p) in prepared.iter().enumerate() {
-                    if i > 0 {
-                        let barrier = vk::MemoryBarrier::default()
-                            .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
-                            .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR);
-                        unsafe {
-                            device.cmd_pipeline_barrier(
-                                cmd,
-                                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                                vk::DependencyFlags::empty(),
-                                &[barrier],
-                                &[],
-                                &[],
-                            );
-                        }
-                    }
-
-                    let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
-                        .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-                        .flags(
-                            vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
-                                | vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION,
-                        )
-                        .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-                        .dst_acceleration_structure(p.accel)
-                        .geometries(std::slice::from_ref(&p.geometry))
-                        .scratch_data(vk::DeviceOrHostAddressKHR {
-                            device_address: scratch_address,
-                        });
-
-                    let range_info = vk::AccelerationStructureBuildRangeInfoKHR::default()
-                        .primitive_count(p.primitive_count)
-                        .primitive_offset(0)
-                        .first_vertex(0);
-
+        let build_result = submit_one_time(device, queue, command_pool, transfer_fence, |cmd| {
+            for (i, p) in prepared.iter().enumerate() {
+                if i > 0 {
+                    let barrier = vk::MemoryBarrier::default()
+                        .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
+                        .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR);
                     unsafe {
-                        self.accel_loader.cmd_build_acceleration_structures(
+                        device.cmd_pipeline_barrier(
                             cmd,
-                            &[build_info],
-                            &[std::slice::from_ref(&range_info)],
+                            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                            vk::DependencyFlags::empty(),
+                            &[barrier],
+                            &[],
+                            &[],
                         );
                     }
                 }
 
-                // Barrier: all builds must complete before querying compacted sizes.
-                let barrier = vk::MemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
-                    .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR);
+                let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+                    .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+                    .flags(
+                        vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+                            | vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION,
+                    )
+                    .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+                    .dst_acceleration_structure(p.accel)
+                    .geometries(std::slice::from_ref(&p.geometry))
+                    .scratch_data(vk::DeviceOrHostAddressKHR {
+                        device_address: scratch_address,
+                    });
+
+                let range_info = vk::AccelerationStructureBuildRangeInfoKHR::default()
+                    .primitive_count(p.primitive_count)
+                    .primitive_offset(0)
+                    .first_vertex(0);
+
                 unsafe {
-                    device.cmd_pipeline_barrier(
+                    self.accel_loader.cmd_build_acceleration_structures(
                         cmd,
-                        vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                        vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                        vk::DependencyFlags::empty(),
-                        &[barrier],
-                        &[],
-                        &[],
+                        &[build_info],
+                        &[std::slice::from_ref(&range_info)],
                     );
                 }
+            }
 
-                // Query compacted sizes for all built BLAS.
-                let accel_handles: Vec<vk::AccelerationStructureKHR> =
-                    prepared.iter().map(|p| p.accel).collect();
-                unsafe {
-                    self.accel_loader
-                        .cmd_write_acceleration_structures_properties(
-                            cmd,
-                            &accel_handles,
-                            vk::QueryType::ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
-                            query_pool,
-                            0,
-                        );
-                }
+            // Barrier: all builds must complete before querying compacted sizes.
+            let barrier = vk::MemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
+                .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR);
+            unsafe {
+                device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                    vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                    vk::DependencyFlags::empty(),
+                    &[barrier],
+                    &[],
+                    &[],
+                );
+            }
 
-                Ok(())
-            });
+            // Query compacted sizes for all built BLAS.
+            let accel_handles: Vec<vk::AccelerationStructureKHR> =
+                prepared.iter().map(|p| p.accel).collect();
+            unsafe {
+                self.accel_loader
+                    .cmd_write_acceleration_structures_properties(
+                        cmd,
+                        &accel_handles,
+                        vk::QueryType::ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+                        query_pool,
+                        0,
+                    );
+            }
+
+            Ok(())
+        });
 
         if let Err(e) = build_result {
             for mut p in prepared {
@@ -741,21 +736,20 @@ impl AccelerationManager {
         }
 
         // Record compaction copies in a second command buffer.
-        let copy_result =
-            submit_one_time(device, queue, command_pool, transfer_fence, |cmd| {
-                for (i, (_, compact_accel, _)) in compact_accels.iter().enumerate() {
-                    let copy_info = vk::CopyAccelerationStructureInfoKHR::default()
-                        .src(prepared[i].accel)
-                        .dst(*compact_accel)
-                        .mode(vk::CopyAccelerationStructureModeKHR::COMPACT);
+        let copy_result = submit_one_time(device, queue, command_pool, transfer_fence, |cmd| {
+            for (i, (_, compact_accel, _)) in compact_accels.iter().enumerate() {
+                let copy_info = vk::CopyAccelerationStructureInfoKHR::default()
+                    .src(prepared[i].accel)
+                    .dst(*compact_accel)
+                    .mode(vk::CopyAccelerationStructureModeKHR::COMPACT);
 
-                    unsafe {
-                        self.accel_loader
-                            .cmd_copy_acceleration_structure(cmd, &copy_info);
-                    }
+                unsafe {
+                    self.accel_loader
+                        .cmd_copy_acceleration_structure(cmd, &copy_info);
                 }
-                Ok(())
-            });
+            }
+            Ok(())
+        });
 
         // Destroy the query pool — no longer needed.
         unsafe {

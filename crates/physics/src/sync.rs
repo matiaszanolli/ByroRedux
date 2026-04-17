@@ -245,8 +245,7 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
                 // The first collider is the representative handle the
                 // ECS keeps a reference to — Rapier owns the rest of
                 // the parts through the parent body relationship.
-                collider: first_collider_handle
-                    .expect("at least one part was appended above"),
+                collider: first_collider_handle.expect("at least one part was appended above"),
             },
         ));
     }

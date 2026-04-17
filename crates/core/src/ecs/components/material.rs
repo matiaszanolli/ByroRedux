@@ -170,10 +170,7 @@ impl Material {
                 metalness: 0.0,
             };
         }
-        if contains_any_ci(
-            path,
-            &["stone", "rock", "cave", "brick", "ruins", "cobble"],
-        ) {
+        if contains_any_ci(path, &["stone", "rock", "cave", "brick", "ruins", "cobble"]) {
             return PbrMaterial {
                 roughness: 0.85,
                 metalness: 0.0,

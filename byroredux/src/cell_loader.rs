@@ -4,10 +4,10 @@
 //! Resolves placed references (REFR/ACHR) to base objects, loads NIFs,
 //! and spawns ECS entities with correct world-space transforms.
 
+use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
     CellRoot, GlobalTransform, LightSource, Material, MeshHandle, TextureHandle, Transform, World,
 };
-use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::VulkanContext;

@@ -277,7 +277,7 @@ mod niavobject_version_gate_tests {
         // NiObjectNET at version < 20.1.0.1: name is an inline
         // length-prefixed string (u32 length, 0 = empty ⇒ None). No body bytes.
         d.extend_from_slice(&0u32.to_le_bytes()); // name length = 0
-        // extra_data_ref (single i32 ref, -1 = null) — pre-Gamebryo branch.
+                                                  // extra_data_ref (single i32 ref, -1 = null) — pre-Gamebryo branch.
         d.extend_from_slice(&(-1i32).to_le_bytes());
         // controller_ref (-1 = null).
         d.extend_from_slice(&(-1i32).to_le_bytes());
@@ -343,8 +343,8 @@ mod niavobject_version_gate_tests {
         bytes.push(0u8);
 
         let mut stream = NifStream::new(&bytes, &header);
-        let data = NiAVObjectData::parse(&mut stream)
-            .expect("pre-Gamebryo NiAVObject should parse");
+        let data =
+            NiAVObjectData::parse(&mut stream).expect("pre-Gamebryo NiAVObject should parse");
         assert_eq!(
             stream.position() as usize,
             bytes.len(),

@@ -1,7 +1,9 @@
 //! Console commands for the engine's built-in command system.
 
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
-use byroredux_core::ecs::{Camera, DebugStats, Material, MeshHandle, TextureHandle, Transform, World};
+use byroredux_core::ecs::{
+    Camera, DebugStats, Material, MeshHandle, TextureHandle, Transform, World,
+};
 use std::collections::HashMap;
 
 use byroredux_core::ecs::SystemList;
@@ -123,7 +125,9 @@ impl ConsoleCommand for TexMissingCommand {
         }
 
         if missing.is_empty() {
-            return CommandOutput::line("No missing textures — all entities have resolved textures");
+            return CommandOutput::line(
+                "No missing textures — all entities have resolved textures",
+            );
         }
 
         let mut sorted: Vec<_> = missing.into_iter().collect();

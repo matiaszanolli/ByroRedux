@@ -73,7 +73,8 @@ impl VulkanContext {
         if let Some(ref alloc) = self.allocator {
             self.mesh_registry
                 .tick_deferred_destroy(&self.device, alloc);
-            self.texture_registry.tick_deferred_destroy(&self.device, alloc);
+            self.texture_registry
+                .tick_deferred_destroy(&self.device, alloc);
             if let Some(ref mut accel) = self.accel_manager {
                 accel.tick_deferred_destroy(&self.device, alloc);
             }

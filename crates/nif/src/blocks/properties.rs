@@ -659,7 +659,7 @@ mod tests {
         // `has: bool` even when texture_count=0. Set it to 0 for an empty
         // slot entry.
         data.push(0); // base_texture has = 0
-        // num_shader_textures = 1
+                      // num_shader_textures = 1
         data.extend_from_slice(&1u32.to_le_bytes());
         // Shader map entry — has_map = 1, then body.
         data.push(1); // has_map

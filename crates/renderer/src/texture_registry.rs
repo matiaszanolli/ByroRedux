@@ -329,11 +329,7 @@ impl TextureRegistry {
     /// per frame alongside the mesh/BLAS deferred-destroy ticks. The
     /// `update_rgba` path also drains inline; this pass catches entries
     /// queued by [`drop_texture`] where no subsequent update call fires.
-    pub fn tick_deferred_destroy(
-        &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-    ) {
+    pub fn tick_deferred_destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         let current_frame_id = self.current_frame_id;
         for entry in &mut self.textures {
             while let Some(&(queued, _)) = entry.pending_destroy.front() {

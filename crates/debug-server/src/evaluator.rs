@@ -449,9 +449,15 @@ fn eval_tex_missing(world: &World) -> DebugResponse {
     }
     let mut sorted: Vec<_> = missing.into_iter().collect();
     sorted.sort_by(|a, b| b.1.cmp(&a.1));
-    let lines: Vec<String> = std::iter::once(format!("{} unique missing texture paths:", sorted.len()))
-        .chain(sorted.iter().take(80).map(|(p, c)| format!("  {:4}x  {}", c, p)))
-        .collect();
+    let lines: Vec<String> =
+        std::iter::once(format!("{} unique missing texture paths:", sorted.len()))
+            .chain(
+                sorted
+                    .iter()
+                    .take(80)
+                    .map(|(p, c)| format!("  {:4}x  {}", c, p)),
+            )
+            .collect();
     DebugResponse::value(serde_json::Value::String(lines.join("\n")))
 }
 
@@ -480,7 +486,12 @@ fn eval_tex_loaded(world: &World) -> DebugResponse {
         sorted.len(),
         fallback
     ))
-    .chain(sorted.iter().take(50).map(|(p, c)| format!("  {:4}x  {}", c, p)))
+    .chain(
+        sorted
+            .iter()
+            .take(50)
+            .map(|(p, c)| format!("  {:4}x  {}", c, p)),
+    )
     .collect();
     DebugResponse::value(serde_json::Value::String(lines.join("\n")))
 }

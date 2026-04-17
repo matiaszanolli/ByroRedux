@@ -714,9 +714,12 @@ mod tests {
         buf.extend_from_slice(&21u32.to_le_bytes()); // user_version_2
 
         // Short strings
-        buf.push(1); buf.push(0);
-        buf.push(1); buf.push(0);
-        buf.push(1); buf.push(0);
+        buf.push(1);
+        buf.push(0);
+        buf.push(1);
+        buf.push(0);
+        buf.push(1);
+        buf.push(0);
 
         // Block types: 1 type "NiNode"
         buf.extend_from_slice(&1u16.to_le_bytes());
@@ -786,7 +789,10 @@ mod tests {
 
         // Block 0 parsed successfully, block 1 recovered via cache → NiUnknown,
         // block 2 parsed successfully. No truncation.
-        assert!(!scene.truncated, "scene should NOT be truncated — cache recovery should work");
+        assert!(
+            !scene.truncated,
+            "scene should NOT be truncated — cache recovery should work"
+        );
         assert_eq!(scene.len(), 3, "all 3 blocks should be present");
         assert_eq!(scene.blocks[0].block_type_name(), "NiNode");
         assert_eq!(scene.blocks[1].block_type_name(), "NiUnknown");

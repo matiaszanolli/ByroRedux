@@ -24,13 +24,13 @@ pub use components::{
     MeshHandle, Name, Parent, SkinnedMesh, TextureHandle, Transform, WorldBound,
     MAX_BONES_PER_MESH,
 };
-pub use storage::DynStorage;
 pub use packed::PackedStorage;
 pub use query::{ComponentRef, QueryRead, QueryWrite};
 pub use resource::{Resource, ResourceRead, ResourceWrite};
 pub use resources::{DebugStats, DeltaTime, EngineConfig, ScreenshotBridge, SystemList, TotalTime};
 pub use scheduler::{Scheduler, Stage};
 pub use sparse_set::SparseSetStorage;
+pub use storage::DynStorage;
 pub use storage::{Component, ComponentStorage, EntityId};
 pub use system::System;
 pub use systems::make_transform_propagation_system;

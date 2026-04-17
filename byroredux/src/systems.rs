@@ -9,8 +9,8 @@ use byroredux_core::animation::{
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
     ActiveCamera, AnimatedAlpha, AnimatedColor, AnimatedVisibility, Billboard, BillboardMode,
-    Children, DebugStats, DeltaTime, GlobalTransform, LocalBound, Name, Parent,
-    TotalTime, Transform, World, WorldBound,
+    Children, DebugStats, DeltaTime, GlobalTransform, LocalBound, Name, Parent, TotalTime,
+    Transform, World, WorldBound,
 };
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::FixedString;

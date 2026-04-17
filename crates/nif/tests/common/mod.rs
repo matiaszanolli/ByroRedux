@@ -215,10 +215,7 @@ pub enum ParseStatus {
     /// or more blocks were dropped because the parser bailed before
     /// reading every block. `dropped` counts the missing entries.
     /// Counts as a **failure** for the rate metric.
-    Truncated {
-        block_count: usize,
-        dropped: usize,
-    },
+    Truncated { block_count: usize, dropped: usize },
     /// `parse_nif` returned `Err`.
     Failed(String),
 }

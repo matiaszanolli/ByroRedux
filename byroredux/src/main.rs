@@ -48,9 +48,10 @@ fn main() -> Result<()> {
     // line to stdout, then exit. Intended for CI perf tracking and for
     // reproducing the ROADMAP's sweetroll FPS claim without interactive
     // window-title reading. See #366.
-    let bench_frames = args.iter().position(|a| a == "--bench-frames").and_then(|i| {
-        args.get(i + 1).and_then(|v| v.parse::<u32>().ok())
-    });
+    let bench_frames = args
+        .iter()
+        .position(|a| a == "--bench-frames")
+        .and_then(|i| args.get(i + 1).and_then(|v| v.parse::<u32>().ok()));
 
     // Set up logging. --debug forces debug level.
     if debug_mode {
@@ -517,7 +518,11 @@ impl ApplicationHandler for App {
                 if self.bench_frames_count >= target {
                     let stats = self.world.resource::<DebugStats>();
                     let (min_dt, max_dt) = stats.min_max_frame_time();
-                    let avg_dt = if stats.fps > 0.0 { 1.0 / stats.avg_fps() } else { 0.0 };
+                    let avg_dt = if stats.fps > 0.0 {
+                        1.0 / stats.avg_fps()
+                    } else {
+                        0.0
+                    };
                     let min_fps = if max_dt > 0.0 { 1.0 / max_dt } else { 0.0 };
                     let max_fps = if min_dt > 0.0 { 1.0 / min_dt } else { 0.0 };
                     println!(

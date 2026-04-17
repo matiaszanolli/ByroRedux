@@ -32,10 +32,7 @@ impl<'w, T: Component> QueryRead<'w, T> {
     /// when the wrapper is dropped. The caller must have called
     /// `scope.defuse()` after successful lock acquisition so the scope hands
     /// ownership of the tracker entry to this wrapper. (See #137.)
-    pub(crate) fn new(
-        guard: RwLockReadGuard<'w, Box<dyn DynStorage>>,
-        type_id: TypeId,
-    ) -> Self {
+    pub(crate) fn new(guard: RwLockReadGuard<'w, Box<dyn DynStorage>>, type_id: TypeId) -> Self {
         Self {
             guard,
             type_id,
@@ -89,10 +86,7 @@ impl<'w, T: Component> QueryWrite<'w, T> {
     /// when the wrapper is dropped. The caller must have called
     /// `scope.defuse()` after successful lock acquisition so the scope hands
     /// ownership of the tracker entry to this wrapper. (See #137.)
-    pub(crate) fn new(
-        guard: RwLockWriteGuard<'w, Box<dyn DynStorage>>,
-        type_id: TypeId,
-    ) -> Self {
+    pub(crate) fn new(guard: RwLockWriteGuard<'w, Box<dyn DynStorage>>, type_id: TypeId) -> Self {
         Self {
             guard,
             type_id,

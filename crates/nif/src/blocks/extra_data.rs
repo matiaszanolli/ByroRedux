@@ -615,7 +615,18 @@ impl BsPackedCombinedGeomDataExtra {
 
 fn parse_common_geom_header(
     stream: &mut NifStream,
-) -> io::Result<(u32, u32, u32, u32, u32, u32, u32, u32, Vec<BsPackedGeomDataCombined>, u64)> {
+) -> io::Result<(
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    Vec<BsPackedGeomDataCombined>,
+    u64,
+)> {
     let num_verts = stream.read_u32_le()?;
     let lod_levels = stream.read_u32_le()?;
     let tri_count_lod0 = stream.read_u32_le()?;
@@ -886,14 +897,14 @@ mod tests {
         let mut data = Vec::new();
         data.extend_from_slice(&0u32.to_le_bytes()); // inline string: empty
         data.extend_from_slice(&2u32.to_le_bytes()); // 2 positions
-        // Position 0
+                                                     // Position 0
         data.extend_from_slice(&1.0f32.to_le_bytes());
         data.extend_from_slice(&2.0f32.to_le_bytes());
         data.extend_from_slice(&3.0f32.to_le_bytes());
         data.extend_from_slice(&0x1234u16.to_le_bytes()); // orientation
         data.push(0x56u8); // ref1
         data.push(0x78u8); // ref2
-        // Position 1
+                           // Position 1
         data.extend_from_slice(&4.0f32.to_le_bytes());
         data.extend_from_slice(&5.0f32.to_le_bytes());
         data.extend_from_slice(&6.0f32.to_le_bytes());

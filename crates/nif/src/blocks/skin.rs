@@ -601,7 +601,7 @@ mod tests {
         d.extend_from_slice(&0u32.to_le_bytes()); // data_size
         d.extend_from_slice(&0u32.to_le_bytes()); // vertex_size
         d.extend_from_slice(&0u64.to_le_bytes()); // vertex_desc
-                                                    // Partition 0 — all zeros: 0 verts, 0 tris, 0 bones, 0 strips, 0 wpv.
+                                                  // Partition 0 — all zeros: 0 verts, 0 tris, 0 bones, 0 strips, 0 wpv.
         for _ in 0..5 {
             d.extend_from_slice(&0u16.to_le_bytes());
         }
