@@ -119,7 +119,7 @@ pub fn parse_esm(data: &[u8]) -> Result<EsmIndex> {
             continue;
         }
         let group = reader.read_group_header()?;
-        let end = reader.position() + group.total_size as usize - 24;
+        let end = reader.group_content_end(&group);
         let label = group.label;
 
         match &label {
@@ -239,7 +239,7 @@ fn extract_records(
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub_group = reader.read_group_header()?;
-            let sub_end = reader.position() + sub_group.total_size as usize - 24;
+            let sub_end = reader.group_content_end(&sub_group);
             extract_records(reader, sub_end, expected_type, f)?;
             continue;
         }

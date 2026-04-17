@@ -205,11 +205,11 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
 
         match &group.label {
             b"CELL" => {
-                let end = reader.position() + group.total_size as usize - 24;
+                let end = reader.group_content_end(&group);
                 parse_cell_group(&mut reader, end, &mut cells)?;
             }
             b"WRLD" => {
-                let end = reader.position() + group.total_size as usize - 24;
+                let end = reader.group_content_end(&group);
                 parse_wrld_group(
                     &mut reader,
                     end,
@@ -218,11 +218,11 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
                 )?;
             }
             b"LTEX" => {
-                let end = reader.position() + group.total_size as usize - 24;
+                let end = reader.group_content_end(&group);
                 parse_ltex_group(&mut reader, end, &mut ltex_to_txst, &mut landscape_textures)?;
             }
             b"TXST" => {
-                let end = reader.position() + group.total_size as usize - 24;
+                let end = reader.group_content_end(&group);
                 parse_txst_group(&mut reader, end, &mut txst_textures)?;
             }
             // All record types that have a MODL sub-record (NIF model path).
@@ -231,7 +231,7 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
             | b"FLOR" | b"TREE" | b"AMMO" | b"WEAP" | b"ARMO" | b"BOOK" | b"KEYM" | b"ALCH"
             | b"INGR" | b"NOTE" | b"TACT" | b"IDLM" | b"BNDS" | b"ADDN" | b"TERM" | b"NPC_"
             | b"SCOL" | b"MOVS" | b"PKIN" | b"TXST" => {
-                let end = reader.position() + group.total_size as usize - 24;
+                let end = reader.group_content_end(&group);
                 parse_modl_group(&mut reader, end, &mut statics)?;
             }
             _ => {
@@ -284,7 +284,7 @@ fn parse_cell_group(
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub_group = reader.read_group_header()?;
-            let sub_end = reader.position() + sub_group.total_size as usize - 24;
+            let sub_end = reader.group_content_end(&sub_group);
 
             match sub_group.group_type {
                 // Interior cell block (2) and sub-block (3): recurse.
@@ -459,7 +459,7 @@ fn parse_refr_group(
         if reader.is_group() {
             // Nested groups within cell children — recurse.
             let sub = reader.read_group_header()?;
-            let sub_end = reader.position() + sub.total_size as usize - 24;
+            let sub_end = reader.group_content_end(&sub);
             parse_refr_group(reader, sub_end, refs, landscape)?;
             continue;
         }
@@ -660,7 +660,7 @@ fn parse_wrld_group(
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub_group = reader.read_group_header()?;
-            let sub_end = reader.position() + sub_group.total_size as usize - 24;
+            let sub_end = reader.group_content_end(&sub_group);
 
             match sub_group.group_type {
                 // World children (type 1): contains exterior cell blocks for the current WRLD.
@@ -732,7 +732,7 @@ fn parse_wrld_children(
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub_group = reader.read_group_header()?;
-            let sub_end = reader.position() + sub_group.total_size as usize - 24;
+            let sub_end = reader.group_content_end(&sub_group);
 
             match sub_group.group_type {
                 // Exterior block (4) and sub-block (5): recurse.
@@ -823,7 +823,7 @@ fn parse_modl_group(
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
-            let sub_end = reader.position() + sub.total_size as usize - 24;
+            let sub_end = reader.group_content_end(&sub);
             parse_modl_group(reader, sub_end, statics)?;
             continue;
         }
@@ -950,7 +950,7 @@ fn parse_ltex_group(
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
-            let sub_end = reader.position() + sub.total_size as usize - 24;
+            let sub_end = reader.group_content_end(&sub);
             parse_ltex_group(reader, sub_end, ltex_to_txst, direct_paths)?;
             continue;
         }
@@ -996,7 +996,7 @@ fn parse_txst_group(
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
-            let sub_end = reader.position() + sub.total_size as usize - 24;
+            let sub_end = reader.group_content_end(&sub);
             parse_txst_group(reader, sub_end, txst_textures)?;
             continue;
         }
@@ -1149,7 +1149,7 @@ mod tests {
 
         let mut reader = EsmReader::new(&group);
         let gh = reader.read_group_header().unwrap();
-        let end = reader.position() + gh.total_size as usize - 24;
+        let end = reader.group_content_end(&gh);
         let mut statics = HashMap::new();
         parse_modl_group(&mut reader, end, &mut statics).unwrap();
 
@@ -1187,7 +1187,7 @@ mod tests {
 
         let mut reader = EsmReader::new(&group);
         let gh = reader.read_group_header().unwrap();
-        let end = reader.position() + gh.total_size as usize - 24;
+        let end = reader.group_content_end(&gh);
         let mut statics = HashMap::new();
         parse_modl_group(&mut reader, end, &mut statics).unwrap();
 
@@ -1216,7 +1216,7 @@ mod tests {
 
         let mut reader = EsmReader::new(&group);
         let gh = reader.read_group_header().unwrap();
-        let end = reader.position() + gh.total_size as usize - 24;
+        let end = reader.group_content_end(&gh);
         let mut statics = HashMap::new();
         parse_modl_group(&mut reader, end, &mut statics).unwrap();
 
@@ -1239,7 +1239,7 @@ mod tests {
 
         let mut reader = EsmReader::new(&group);
         let gh = reader.read_group_header().unwrap();
-        let end = reader.position() + gh.total_size as usize - 24;
+        let end = reader.group_content_end(&gh);
         let mut statics = HashMap::new();
         parse_modl_group(&mut reader, end, &mut statics).unwrap();
 
@@ -1247,6 +1247,83 @@ mod tests {
         let s = statics.get(&0x1234).unwrap();
         assert_eq!(s.editor_id, "TestWall");
         assert_eq!(s.model_path, "meshes\\architecture\\wall01.nif");
+    }
+
+    #[test]
+    fn parse_modl_group_walks_oblivion_20byte_headers() {
+        // Regression: #391 — the walker used to compute a group's content
+        // end as `position + total_size - 24`, hardcoding the Tes5Plus
+        // header size. On Oblivion that over-reads by 4 bytes; symptoms
+        // were latent (the next read happened to land on a self-delimiting
+        // GRUP) but any bounds-checked nested parse would have read junk.
+        //
+        // Build an Oblivion-shaped (20-byte header) STAT group with two
+        // STAT records, run it through `parse_modl_group` using the
+        // explicit `Oblivion` reader variant, and assert: both records
+        // extracted, no leftover bytes, no junk record dispatched after
+        // the second.
+        use super::super::reader::EsmVariant;
+
+        // Build a 20-byte-header STAT record (Oblivion layout).
+        fn build_stat_oblivion(form_id: u32, edid: &str, modl: &str) -> Vec<u8> {
+            let mut sub_data = Vec::new();
+            let edid_z = format!("{}\0", edid);
+            sub_data.extend_from_slice(b"EDID");
+            sub_data.extend_from_slice(&(edid_z.len() as u16).to_le_bytes());
+            sub_data.extend_from_slice(edid_z.as_bytes());
+            let modl_z = format!("{}\0", modl);
+            sub_data.extend_from_slice(b"MODL");
+            sub_data.extend_from_slice(&(modl_z.len() as u16).to_le_bytes());
+            sub_data.extend_from_slice(modl_z.as_bytes());
+
+            let mut buf = Vec::new();
+            buf.extend_from_slice(b"STAT");
+            buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+            buf.extend_from_slice(&form_id.to_le_bytes());
+            buf.extend_from_slice(&[0u8; 4]); // Oblivion vc_info (4 bytes)
+            buf.extend_from_slice(&sub_data);
+            buf
+        }
+
+        let r1 = build_stat_oblivion(0x111, "WallA", "meshes\\a.nif");
+        let r2 = build_stat_oblivion(0x222, "WallB", "meshes\\b.nif");
+        let mut content = Vec::new();
+        content.extend_from_slice(&r1);
+        content.extend_from_slice(&r2);
+
+        // 20-byte group header.
+        let total_size = 20 + content.len();
+        let mut group = Vec::new();
+        group.extend_from_slice(b"GRUP");
+        group.extend_from_slice(&(total_size as u32).to_le_bytes());
+        group.extend_from_slice(b"STAT");
+        group.extend_from_slice(&0u32.to_le_bytes()); // group_type
+        group.extend_from_slice(&[0u8; 4]); // Oblivion stamp (4 bytes)
+        group.extend_from_slice(&content);
+
+        // Append a sentinel byte beyond the group end. With the old
+        // `-24` walker this byte would land inside the computed end and
+        // get dispatched as part of the next read; with the fix the
+        // walker stops cleanly at byte `total_size`.
+        group.push(0xEE);
+
+        let mut reader = EsmReader::with_variant(&group, EsmVariant::Oblivion);
+        let gh = reader.read_group_header().unwrap();
+        let end = reader.group_content_end(&gh);
+        // Content end must sit immediately before the sentinel, not past it.
+        assert_eq!(end, total_size);
+
+        let mut statics = HashMap::new();
+        parse_modl_group(&mut reader, end, &mut statics).unwrap();
+
+        assert_eq!(statics.len(), 2, "both Oblivion STATs must be parsed");
+        assert_eq!(statics.get(&0x111).unwrap().editor_id, "WallA");
+        assert_eq!(statics.get(&0x222).unwrap().editor_id, "WallB");
+        // Walker must have stopped exactly at `end`, leaving the
+        // sentinel byte for the caller.
+        assert_eq!(reader.position(), end);
+        assert_eq!(reader.remaining(), 1);
     }
 
     #[test]

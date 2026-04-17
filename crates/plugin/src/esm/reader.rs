@@ -354,8 +354,23 @@ impl<'a> EsmReader<'a> {
     /// already read, so subtract the variant's header size to get the
     /// remaining content length.
     pub fn skip_group(&mut self, header: &GroupHeader) {
-        let remaining = header.total_size as usize - self.variant.group_header_size();
-        self.pos += remaining;
+        self.pos += self.group_content_len(header);
+    }
+
+    /// Remaining content length for a group the caller has just read.
+    /// Equivalent to `total_size - group_header_size`, variant-aware.
+    pub fn group_content_len(&self, header: &GroupHeader) -> usize {
+        (header.total_size as usize).saturating_sub(self.variant.group_header_size())
+    }
+
+    /// Absolute byte offset of the end of a group's content. The caller
+    /// must have already consumed the group header — `position()` is
+    /// expected to sit at the first byte of the content. Replaces the
+    /// error-prone `reader.position() + total_size - 24` pattern, which
+    /// bakes in a Tes5Plus header size and breaks on Oblivion's 20-byte
+    /// group header (#391).
+    pub fn group_content_end(&self, header: &GroupHeader) -> usize {
+        self.pos + self.group_content_len(header)
     }
 
     /// Parse the TES4 file header record.
@@ -650,6 +665,47 @@ mod tests {
         let header = reader.read_group_header().unwrap();
         reader.skip_group(&header);
         assert_eq!(reader.remaining(), 0);
+    }
+
+    #[test]
+    fn group_content_end_is_variant_aware() {
+        // Regression: #391 — the walker used to hardcode `-24` when
+        // deriving a group's content end, which over-read by 4 bytes on
+        // Oblivion (20-byte group header). The helper on the reader
+        // must produce different absolute positions for the two
+        // variants given identical `total_size` payload.
+        let inner_tes5 = build_record_for(EsmVariant::Tes5Plus, b"STAT", 1, &[]);
+        let group_tes5 = build_group_for(EsmVariant::Tes5Plus, b"STAT", 0, &inner_tes5);
+        let mut r5 = EsmReader::with_variant(&group_tes5, EsmVariant::Tes5Plus);
+        let gh5 = r5.read_group_header().unwrap();
+        assert_eq!(
+            r5.group_content_end(&gh5),
+            group_tes5.len(),
+            "Tes5Plus: end of content must equal buffer length"
+        );
+        assert_eq!(r5.group_content_len(&gh5), group_tes5.len() - 24);
+
+        let inner_obl = build_record_for(EsmVariant::Oblivion, b"STAT", 1, &[]);
+        let group_obl = build_group_for(EsmVariant::Oblivion, b"STAT", 0, &inner_obl);
+        let mut ro = EsmReader::with_variant(&group_obl, EsmVariant::Oblivion);
+        let gho = ro.read_group_header().unwrap();
+        assert_eq!(
+            ro.group_content_end(&gho),
+            group_obl.len(),
+            "Oblivion: end of content must equal buffer length (20-byte header)"
+        );
+        assert_eq!(ro.group_content_len(&gho), group_obl.len() - 20);
+
+        // Same payload, different header sizes — the variant decides.
+        let fake_header = GroupHeader {
+            label: *b"STAT",
+            group_type: 0,
+            total_size: 100,
+        };
+        let r5 = EsmReader::with_variant(&[], EsmVariant::Tes5Plus);
+        let ro = EsmReader::with_variant(&[], EsmVariant::Oblivion);
+        assert_eq!(r5.group_content_len(&fake_header), 76); // 100 - 24
+        assert_eq!(ro.group_content_len(&fake_header), 80); // 100 - 20
     }
 
     #[test]
