@@ -826,6 +826,12 @@ impl VulkanContext {
                         sky_params.sun_color[2],
                         0.0,
                     ],
+                    cloud_params: [
+                        sky_params.cloud_scroll[0],
+                        sky_params.cloud_scroll[1],
+                        sky_params.cloud_tile_scale,
+                        f32::from_bits(sky_params.cloud_texture_index),
+                    ],
                     inv_view_proj: inv_vp_arr,
                 };
                 if let Err(e) = composite.upload_params(&self.device, frame, &composite_params) {
@@ -860,7 +866,8 @@ impl VulkanContext {
             // the layout transitions of all input attachments to
             // SHADER_READ_ONLY_OPTIMAL.
             if let Some(ref composite) = self.composite {
-                composite.dispatch(&self.device, cmd, frame, img);
+                let bindless_set = self.texture_registry.descriptor_set(frame);
+                composite.dispatch(&self.device, cmd, frame, img, bindless_set);
             }
 
             // Screenshot capture: copy swapchain image to staging buffer

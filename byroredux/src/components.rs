@@ -89,6 +89,13 @@ pub(crate) struct SkyParamsRes {
     pub(crate) sun_size: f32,
     pub(crate) sun_intensity: f32,
     pub(crate) is_exterior: bool,
+    /// Cloud layer 0 scroll offset accumulated by `weather_system` each frame.
+    pub(crate) cloud_scroll: [f32; 2],
+    /// Cloud layer 0 UV tile scale. `0.0` disables clouds (shader skips the sample).
+    pub(crate) cloud_tile_scale: f32,
+    /// Bindless texture handle for cloud_textures[0]. Only meaningful when
+    /// `cloud_tile_scale > 0.0`.
+    pub(crate) cloud_texture_index: u32,
 }
 impl Resource for SkyParamsRes {}
 
@@ -115,11 +122,14 @@ impl Default for GameTimeRes {
 /// Full WTHR NAM0 sky color data stored for per-frame time-of-day interpolation.
 /// Inserted alongside SkyParamsRes when loading an exterior cell with weather.
 pub(crate) struct WeatherDataRes {
-    /// 10 color groups × 6 time-of-day slots, as linear RGB f32.
+    /// 10 color groups × 6 time-of-day slots, raw monitor-space f32 per 0e8efc6.
     /// Indexed by `weather::SKY_*` and `weather::TOD_*` constants.
     pub(crate) sky_colors: [[[f32; 3]; 6]; 10],
     /// Fog distances: [day_near, day_far, night_near, night_far].
     pub(crate) fog: [f32; 4],
+    /// Cloud layer scroll speeds from WTHR DNAM (0-255, one per layer).
+    /// `weather_system` uses index 0 to drive `SkyParamsRes::cloud_scroll`.
+    pub(crate) cloud_speeds: [u8; 4],
 }
 impl Resource for WeatherDataRes {}
 

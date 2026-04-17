@@ -54,6 +54,14 @@ pub struct CompositeParams {
     pub sun_dir: [f32; 4],
     /// xyz = sun disc color in linear RGB, w = unused.
     pub sun_color: [f32; 4],
+    /// Cloud layer 0 parameters.
+    ///
+    /// - `x` = scroll U (accumulated over time × wind speed)
+    /// - `y` = scroll V
+    /// - `z` = tile scale (0.0 disables clouds — shader skips the sample)
+    /// - `w` = bindless texture index for cloud_textures[0], stored via
+    ///         `f32::from_bits(idx as u32)`; reinterpreted as uint in the shader.
+    pub cloud_params: [f32; 4],
     /// Inverse view-projection matrix for reconstructing world-space ray direction
     /// from screen UV in the composite shader.
     pub inv_view_proj: [[f32; 4]; 4],
@@ -118,6 +126,7 @@ impl CompositePipeline {
         albedo_views: &[vk::ImageView],
         depth_view: vk::ImageView,
         caustic_views: &[vk::ImageView],
+        bindless_layout: vk::DescriptorSetLayout,
         width: u32,
         height: u32,
     ) -> Result<Self> {
@@ -131,6 +140,7 @@ impl CompositePipeline {
             albedo_views,
             depth_view,
             caustic_views,
+            bindless_layout,
             width,
             height,
         );
@@ -151,6 +161,7 @@ impl CompositePipeline {
         albedo_views: &[vk::ImageView],
         depth_view: vk::ImageView,
         caustic_views: &[vk::ImageView],
+        bindless_layout: vk::DescriptorSetLayout,
         width: u32,
         height: u32,
     ) -> Result<Self> {
@@ -399,11 +410,15 @@ impl CompositePipeline {
                 .context("composite descriptor set layout")
         });
 
+        // Pipeline layout uses set 0 = composite's own bindings,
+        // set 1 = bindless texture array from TextureRegistry. The composite
+        // shader samples cloud textures through the bindless array at an
+        // index provided in CompositeParams.cloud_params.w.
+        let set_layouts = [partial.descriptor_set_layout, bindless_layout];
         partial.pipeline_layout = try_or_cleanup!(unsafe {
             device
                 .create_pipeline_layout(
-                    &vk::PipelineLayoutCreateInfo::default()
-                        .set_layouts(std::slice::from_ref(&partial.descriptor_set_layout)),
+                    &vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts),
                     None,
                 )
                 .context("composite pipeline layout")
@@ -627,6 +642,7 @@ impl CompositePipeline {
         cmd: vk::CommandBuffer,
         frame: usize,
         swapchain_image_index: usize,
+        bindless_set: vk::DescriptorSet,
     ) {
         let clear_values = [vk::ClearValue {
             color: vk::ClearColorValue {
@@ -671,7 +687,7 @@ impl CompositePipeline {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline_layout,
                 0,
-                &[self.descriptor_sets[frame]],
+                &[self.descriptor_sets[frame], bindless_set],
                 &[],
             );
 

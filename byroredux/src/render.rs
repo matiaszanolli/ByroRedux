@@ -524,6 +524,9 @@ pub(crate) fn build_render_data(
             sun_size: sky_res.sun_size,
             sun_intensity: sky_res.sun_intensity,
             is_exterior: sky_res.is_exterior,
+            cloud_scroll: sky_res.cloud_scroll,
+            cloud_tile_scale: sky_res.cloud_tile_scale,
+            cloud_texture_index: sky_res.cloud_texture_index,
         }
     } else {
         SkyParams::default()

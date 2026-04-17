@@ -1,4 +1,5 @@
 #version 450
+#extension GL_EXT_nonuniform_qualifier : require
 
 // Composite pass: combines the main render pass outputs into the final
 // tone-mapped swapchain image, with sky rendering for background pixels.
@@ -9,7 +10,7 @@
 //
 //   For sky pixels (depth == 1.0, exterior only):
 //     Reconstruct world-space view direction from screen UV + inv_view_proj.
-//     Compute sky gradient (horizon → zenith) + sun disc.
+//     Compute sky gradient (horizon → zenith) + cloud layer + sun disc.
 //     output = aces(sky * exposure)
 //
 // Direct and indirect are separated so SVGF can filter only the noisy
@@ -27,10 +28,15 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 sky_horizon;    // xyz = horizon color (linear RGB), w = unused
     vec4 sun_dir;        // xyz = sun direction (world-space, normalized), w = sun_intensity
     vec4 sun_color;      // xyz = sun disc color (linear RGB), w = unused
+    vec4 cloud_params;   // x=scroll_u, y=scroll_v, z=tile_scale (0=disabled), w=texture_idx(uintBits)
     mat4 inv_view_proj;  // inverse view-projection for ray reconstruction
 } params;
 layout(set = 0, binding = 4) uniform sampler2D depthTex;     // depth buffer
 layout(set = 0, binding = 5) uniform usampler2D causticTex;  // R32_UINT caustic accumulator (#321)
+
+// Set 1: bindless texture array from TextureRegistry — shared with the
+// main geometry pipeline. Used here to sample WTHR cloud textures by index.
+layout(set = 1, binding = 0) uniform sampler2D textures[];
 // CAUSTIC_FIXED_SCALE from caustic.rs — divide uint accumulator by this to
 // recover luminance. Kept in sync manually; if it changes in caustic.rs, the
 // layout test there will not fail (it's Rust-only), so update this constant.
@@ -83,6 +89,30 @@ vec3 compute_sky(vec3 dir) {
         float below = clamp(-elevation * 3.0, 0.0, 1.0);
         vec3 ground = horizon * 0.3;
         sky = mix(horizon, ground, below);
+    }
+
+    // Cloud layer 0 (from WTHR cloud_textures[0]).
+    //
+    // Project the upper hemisphere onto an infinite horizontal plane
+    // overhead: uv = (dir.xz / dir.y) × tile_scale. This gives perspective-
+    // correct foreshortening at low elevations (clouds at the horizon look
+    // stretched and tile densely, directly overhead they look large and
+    // slow-moving) without needing a real dome mesh.
+    //
+    // cloud_params.z == 0 disables the sample so the checkerboard fallback
+    // handle is never read on cells without WTHR cloud data.
+    float tile_scale = params.cloud_params.z;
+    if (tile_scale > 0.0 && elevation > 0.0) {
+        uint cloud_idx = floatBitsToUint(params.cloud_params.w);
+        // max() floor guards against the overhead singularity (dir.y → 0)
+        // producing NaN UVs. 0.05 matches ~3° of remaining foreshortening.
+        vec2 uv = dir.xz / max(elevation, 0.05) * tile_scale
+                + params.cloud_params.xy;
+        vec4 cloud = texture(textures[nonuniformEXT(cloud_idx)], uv);
+        // Fade clouds out at the horizon so the projection singularity
+        // doesn't produce an ugly stretched band right at elevation=0.
+        float horizon_fade = smoothstep(0.0, 0.12, elevation);
+        sky = mix(sky, cloud.rgb, cloud.a * horizon_fade);
     }
 
     // Sun disc: bright circular spot with a soft edge.

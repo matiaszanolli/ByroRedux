@@ -114,12 +114,14 @@ pub(crate) fn setup_scene(
                     if let Some(ref wthr) = result.weather {
                         use byroredux_plugin::esm::records::weather::*;
                         // Extract "day" time slot colors (initial state).
-                        let ambient = wthr.sky_colors[SKY_AMBIENT][TOD_DAY].to_linear_rgb();
-                        let sunlight = wthr.sky_colors[SKY_SUNLIGHT][TOD_DAY].to_linear_rgb();
-                        let fog_col = wthr.sky_colors[SKY_FOG][TOD_DAY].to_linear_rgb();
-                        let zenith = wthr.sky_colors[SKY_UPPER][TOD_DAY].to_linear_rgb();
-                        let horizon = wthr.sky_colors[SKY_HORIZON][TOD_DAY].to_linear_rgb();
-                        let sun_col = wthr.sky_colors[SKY_SUN][TOD_DAY].to_linear_rgb();
+                        // Raw monitor-space per commit 0e8efc6 — matches XCLL / LIGH /
+                        // NIF material policy. sRGB decode would darken every warm hue.
+                        let ambient = wthr.sky_colors[SKY_AMBIENT][TOD_DAY].to_rgb_f32();
+                        let sunlight = wthr.sky_colors[SKY_SUNLIGHT][TOD_DAY].to_rgb_f32();
+                        let fog_col = wthr.sky_colors[SKY_FOG][TOD_DAY].to_rgb_f32();
+                        let zenith = wthr.sky_colors[SKY_UPPER][TOD_DAY].to_rgb_f32();
+                        let horizon = wthr.sky_colors[SKY_HORIZON][TOD_DAY].to_rgb_f32();
+                        let sun_col = wthr.sky_colors[SKY_SUN][TOD_DAY].to_rgb_f32();
                         log::info!(
                             "WTHR '{}': zenith={:?} horizon={:?} sun={:?} fog_day={:.0}–{:.0}",
                             wthr.editor_id,
@@ -138,6 +140,48 @@ pub(crate) fn setup_scene(
                             fog_near: wthr.fog_day_near,
                             fog_far: wthr.fog_day_far,
                         });
+                        // Resolve WTHR cloud layer 0 through the texture provider.
+                        // On failure (no path / archive miss / corrupt DDS) we keep
+                        // cloud rendering disabled rather than falling back to the
+                        // checkerboard — a magenta sky dome is worse than no clouds.
+                        let (cloud_tex_index, cloud_tile_scale) =
+                            match wthr.cloud_textures[0].as_deref() {
+                                Some(path) => match tex_provider.extract(path) {
+                                    Some(dds_bytes) => {
+                                        let alloc = ctx.allocator.as_ref().unwrap();
+                                        match ctx.texture_registry.load_dds(
+                                            &ctx.device,
+                                            alloc,
+                                            &ctx.graphics_queue,
+                                            ctx.transfer_pool,
+                                            path,
+                                            &dds_bytes,
+                                        ) {
+                                            Ok(h) => {
+                                                log::info!("Cloud texture '{}' → handle {}", path, h);
+                                                // Tile scale 0.15 spreads one texture
+                                                // over ~6.7 view-direction units above
+                                                // the horizon — looks right at typical
+                                                // Bethesda 512² cloud authoring.
+                                                (h, 0.15_f32)
+                                            }
+                                            Err(e) => {
+                                                log::warn!(
+                                                    "Cloud DDS load failed '{}': {} — disabling clouds",
+                                                    path,
+                                                    e
+                                                );
+                                                (0u32, 0.0_f32)
+                                            }
+                                        }
+                                    }
+                                    None => {
+                                        log::debug!("Cloud texture '{}' not in archives", path);
+                                        (0u32, 0.0_f32)
+                                    }
+                                },
+                                None => (0u32, 0.0_f32),
+                            };
                         world.insert_resource(SkyParamsRes {
                             zenith_color: zenith,
                             horizon_color: horizon,
@@ -146,12 +190,15 @@ pub(crate) fn setup_scene(
                             sun_size: 0.9995,
                             sun_intensity: 4.0,
                             is_exterior: true,
+                            cloud_scroll: [0.0, 0.0],
+                            cloud_tile_scale,
+                            cloud_texture_index: cloud_tex_index,
                         });
                         // Store full NAM0 color table for per-frame time-of-day interpolation.
                         let mut sky_colors = [[[0.0f32; 3]; 6]; 10];
                         for g in 0..SKY_COLOR_GROUPS {
                             for s in 0..SKY_TIME_SLOTS {
-                                sky_colors[g][s] = wthr.sky_colors[g][s].to_linear_rgb();
+                                sky_colors[g][s] = wthr.sky_colors[g][s].to_rgb_f32();
                             }
                         }
                         world.insert_resource(WeatherDataRes {
@@ -162,6 +209,7 @@ pub(crate) fn setup_scene(
                                 wthr.fog_night_near,
                                 wthr.fog_night_far,
                             ],
+                            cloud_speeds: wthr.cloud_speeds,
                         });
                         world.insert_resource(GameTimeRes::default());
                     } else {
@@ -183,6 +231,9 @@ pub(crate) fn setup_scene(
                             sun_size: 0.9995,
                             sun_intensity: 4.0,
                             is_exterior: true,
+                            cloud_scroll: [0.0, 0.0],
+                            cloud_tile_scale: 0.0, // no WTHR → no clouds
+                            cloud_texture_index: 0,
                         });
                     }
                 }

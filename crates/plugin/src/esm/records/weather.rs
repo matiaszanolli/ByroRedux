@@ -48,16 +48,12 @@ pub struct SkyColor {
 }
 
 impl SkyColor {
-    /// Convert to linear-space f32 RGB (sRGB → linear approximation via gamma 2.2).
-    pub fn to_linear_rgb(&self) -> [f32; 3] {
-        let to_linear = |v: u8| -> f32 {
-            let s = v as f32 / 255.0;
-            s.powf(2.2)
-        };
-        [to_linear(self.r), to_linear(self.g), to_linear(self.b)]
-    }
-
-    /// Convert to f32 RGB without gamma correction (already linear or don't care).
+    /// Convert to f32 RGB in raw monitor-space (no gamma correction).
+    ///
+    /// Per commit `0e8efc6`: Gamebryo / Bethesda ESM colors (LIGH, XCLL, NIF
+    /// material, WTHR NAM0) are authored as raw monitor-space floats. The
+    /// engine feeds them directly into the ACES tone mapper — applying an
+    /// sRGB→linear decode darkens every warm hue (e.g. 0.78 → 0.58).
     pub fn to_rgb_f32(&self) -> [f32; 3] {
         [
             self.r as f32 / 255.0,
@@ -283,20 +279,6 @@ mod tests {
         assert_eq!(w.cloud_speeds, [10, 20, 30, 40]);
         assert_eq!(w.cloud_textures[0].as_deref(), Some("sky\\clouds_01.dds"));
         assert!(w.cloud_textures[1].is_none());
-    }
-
-    #[test]
-    fn sky_color_to_linear() {
-        let c = SkyColor {
-            r: 255,
-            g: 128,
-            b: 0,
-            a: 255,
-        };
-        let lin = c.to_linear_rgb();
-        assert!((lin[0] - 1.0).abs() < 0.01); // 255 → 1.0
-        assert!(lin[1] > 0.2 && lin[1] < 0.3); // 128/255 ≈ 0.502 → ~0.218 linear
-        assert!((lin[2]).abs() < 0.001); // 0 → 0.0
     }
 
     #[test]

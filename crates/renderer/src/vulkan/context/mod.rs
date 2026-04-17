@@ -89,13 +89,13 @@ pub struct DrawCommand {
 /// Sky rendering parameters passed per-frame to the composite shader.
 /// Populated from WTHR records for exterior cells or a procedural fallback.
 pub struct SkyParams {
-    /// Zenith (top-of-sky) color in linear RGB.
+    /// Zenith (top-of-sky) color, raw monitor-space per 0e8efc6.
     pub zenith_color: [f32; 3],
-    /// Horizon color in linear RGB.
+    /// Horizon color, raw monitor-space per 0e8efc6.
     pub horizon_color: [f32; 3],
     /// Sun direction (normalized, world-space Y-up).
     pub sun_direction: [f32; 3],
-    /// Sun disc color in linear RGB.
+    /// Sun disc color, raw monitor-space per 0e8efc6.
     pub sun_color: [f32; 3],
     /// Angular size of the sun disc as cos(half-angle). ~0.9998 for real sun.
     pub sun_size: f32,
@@ -103,6 +103,13 @@ pub struct SkyParams {
     pub sun_intensity: f32,
     /// Whether sky rendering is enabled (true for exterior cells).
     pub is_exterior: bool,
+    /// Cloud layer 0 scroll offset in UV space (accumulated by weather_system).
+    pub cloud_scroll: [f32; 2],
+    /// Cloud layer 0 UV tile scale. `0.0` disables the cloud sample in the shader.
+    pub cloud_tile_scale: f32,
+    /// Bindless texture handle for cloud_textures[0]. Ignored when
+    /// `cloud_tile_scale == 0.0`; otherwise must be a valid TextureRegistry index.
+    pub cloud_texture_index: u32,
 }
 
 impl Default for SkyParams {
@@ -115,6 +122,9 @@ impl Default for SkyParams {
             sun_size: 0.9994, // cos(~2°) — visible disc, larger than real sun
             sun_intensity: 5.0,
             is_exterior: false,
+            cloud_scroll: [0.0, 0.0],
+            cloud_tile_scale: 0.0, // disabled until WTHR supplies a cloud texture
+            cloud_texture_index: 0,
         }
     }
 }
@@ -649,6 +659,7 @@ impl VulkanContext {
             &albedo_views,
             depth_image_view,
             &caustic_views,
+            texture_registry.descriptor_set_layout,
             swapchain_state.extent.width,
             swapchain_state.extent.height,
         ) {

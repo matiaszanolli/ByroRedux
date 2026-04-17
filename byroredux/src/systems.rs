@@ -1042,6 +1042,13 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         0.0 // night
     };
 
+    // Cloud layer 0 scroll rate. DNAM speeds are u8 (0-255). At 128 we want
+    // a noticeable but not blurry drift — empirically ~0.02 UV/sec feels right
+    // at the 0.15 tile scale set in scene.rs. Scroll uses dt (real seconds),
+    // not game-time: clouds drift with wall-clock wind, not the day/night cycle.
+    let cloud_speed_01 = wd.cloud_speeds[0] as f32 / 128.0;
+    let cloud_scroll_rate = 0.02 * cloud_speed_01;
+
     drop(wd);
 
     // Update SkyParamsRes.
@@ -1051,6 +1058,10 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         sky.sun_color = sun_col;
         sky.sun_direction = sun_dir;
         sky.sun_intensity = sun_intensity;
+        // Wrap scroll at 1.0 so it never grows unboundedly; sampler REPEAT
+        // makes the wrap invisible.
+        sky.cloud_scroll[0] = (sky.cloud_scroll[0] + cloud_scroll_rate * dt).rem_euclid(1.0);
+        sky.cloud_scroll[1] = (sky.cloud_scroll[1] + cloud_scroll_rate * 0.3 * dt).rem_euclid(1.0);
     }
 
     // Update CellLightingRes.
