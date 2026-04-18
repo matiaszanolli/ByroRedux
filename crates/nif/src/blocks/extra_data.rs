@@ -273,7 +273,12 @@ impl BsBehaviorGraphExtraData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let name = stream.read_string()?;
         let behaviour_graph_file = stream.read_string()?;
-        let controls_base_skeleton = stream.read_u32_le()? != 0;
+        // nif.xml line 8192: `Controls Base Skeleton: bool`. Pre-#106 we
+        // read 4 bytes (u32-as-bool), desyncing every Skyrim skeleton
+        // NIF with a behavior-graph reference by 3 bytes. The version-
+        // aware `read_bool` helper does the right thing for both pre-
+        // and post-4.1.0.1 (= 1 byte everywhere Skyrim+ cares about).
+        let controls_base_skeleton = stream.read_bool()?;
         Ok(Self {
             name,
             behaviour_graph_file,
@@ -966,6 +971,53 @@ mod tests {
             }
             _ => panic!("expected Modern variant for Skyrim (BSVER=83)"),
         }
+        assert_eq!(stream.position() as usize, data.len());
+    }
+
+    /// Regression: #106 — `BSBehaviorGraphExtraData.Controls Base
+    /// Skeleton` is a 1-byte bool per nif.xml line 8192. Pre-fix the
+    /// parser read a u32 (4 bytes), desyncing every Skyrim skeleton
+    /// NIF with a behavior-graph reference by 3 bytes. Block-size
+    /// recovery realigned the next block, but the tail of every
+    /// behavior-graph block was silently misread.
+    #[test]
+    fn behavior_graph_extra_data_reads_bool_as_one_byte_on_skyrim() {
+        let header = skyrim_header();
+        let mut data = Vec::new();
+        // name: string-table index = -1 (None).
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // behaviour_graph_file: string-table index = -1 (None).
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // controls_base_skeleton: 1 byte (true).
+        data.push(0x01u8);
+        // Block end. Total: 4 + 4 + 1 = 9 bytes.
+        assert_eq!(data.len(), 9);
+
+        let mut stream = NifStream::new(&data, &header);
+        let block = BsBehaviorGraphExtraData::parse(&mut stream).unwrap();
+        assert!(block.controls_base_skeleton);
+        // Critical assertion — the parser must consume EXACTLY 9 bytes,
+        // not 12. Pre-fix we'd consume 4 + 4 + 4 = 12 and trip a
+        // truncation EOF or read 3 bytes from the next block.
+        assert_eq!(
+            stream.position() as usize,
+            data.len(),
+            "BSBehaviorGraphExtraData must consume the bool as 1 byte on Skyrim"
+        );
+    }
+
+    /// Sibling — the `false` case must also consume exactly 1 byte.
+    #[test]
+    fn behavior_graph_extra_data_reads_false_as_one_byte() {
+        let header = skyrim_header();
+        let mut data = Vec::new();
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.push(0x00u8); // false
+
+        let mut stream = NifStream::new(&data, &header);
+        let block = BsBehaviorGraphExtraData::parse(&mut stream).unwrap();
+        assert!(!block.controls_base_skeleton);
         assert_eq!(stream.position() as usize, data.len());
     }
 }
