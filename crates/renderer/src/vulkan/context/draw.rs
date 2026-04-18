@@ -211,14 +211,30 @@ impl VulkanContext {
                     {
                         log::warn!("TLAS build failed: {e}");
                     } else {
-                        // Memory barrier: TLAS build → fragment shader read.
+                        // Memory barrier: TLAS build → ray-query consumers.
+                        // Two distinct stages consume the TLAS:
+                        //   - FRAGMENT_SHADER: main render pass
+                        //     (triangle.frag uses rayQueryEXT for shadows,
+                        //     reflections, GI; see triangle.frag:212 /
+                        //     :457 / :530).
+                        //   - COMPUTE_SHADER: caustic_splat.comp
+                        //     (caustic.rs:276 / caustic_splat.comp:173).
+                        // Pre-#415 the mask only covered FRAGMENT_SHADER,
+                        // so the caustic dispatch could race the build on
+                        // strict drivers — validation-layer flagged it
+                        // under synchronization2 and real hardware masked
+                        // it via tight TLAS-build/dispatch sequencing.
+                        // Widening the dst stage to include COMPUTE_SHADER
+                        // closes the gap. If SVGF/TAA ever take a ray
+                        // query dependency, revisit.
                         let barrier = vk::MemoryBarrier::default()
                             .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
                             .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR);
                         self.device.cmd_pipeline_barrier(
                             cmd,
                             vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                            vk::PipelineStageFlags::FRAGMENT_SHADER,
+                            vk::PipelineStageFlags::FRAGMENT_SHADER
+                                | vk::PipelineStageFlags::COMPUTE_SHADER,
                             vk::DependencyFlags::empty(),
                             &[barrier],
                             &[],
