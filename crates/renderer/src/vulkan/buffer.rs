@@ -394,6 +394,20 @@ impl GpuBuffer {
 
     /// Create a host-visible buffer for per-frame CPU writes (no staging needed).
     /// Used for SSBO/UBO data that changes every frame.
+    ///
+    /// **Audit guard (#423):** every call site of this function MUST be
+    /// per-frame mutable (UBOs / per-frame SSBOs / instance buffers).
+    /// Static-data buffers (vertex / index / global geometry SSBO)
+    /// must instead use [`Self::create_device_local_buffer`] (or the
+    /// `create_vertex_buffer` / `create_index_buffer` wrappers), which
+    /// stage→copy to `MemoryLocation::GpuOnly` and avoid the small
+    /// pinned-host-visible BAR heap (~256 MB on most NVIDIA parts).
+    /// Routing static data through this function would exhaust the BAR
+    /// heap on cells with thousands of unique meshes long before VRAM
+    /// runs out. Verified survey 2026-04-18: every caller (ssao /
+    /// taa / caustic / svgf / composite param_buffers, scene_buffer's
+    /// light/camera/bone/instance/indirect, acceleration's TLAS
+    /// instance staging) is per-frame mutable.
     pub fn create_host_visible(
         device: &ash::Device,
         allocator: &SharedAllocator,
