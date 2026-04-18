@@ -1236,13 +1236,18 @@ impl AccelerationManager {
             as vk::DeviceSize;
 
         // Skip the host→device staging copy entirely when there are no
-        // instances this frame. Vulkan's spec rejects `VkBufferCopy.size`
-        // and `VkBufferMemoryBarrier.size` of 0 (VUID-VkBufferCopy-size-01988
-        // and VUID-VkBufferMemoryBarrier-size-01188); pre-fix we tripped
-        // four validation errors per empty-TLAS frame (two barriers + one
+        // instances this frame (#317 / audit D1-02). Vulkan's spec
+        // rejects `VkBufferCopy.size` and `VkBufferMemoryBarrier.size`
+        // of 0 (VUID-VkBufferCopy-size-01988 and
+        // VUID-VkBufferMemoryBarrier-size-01188), and the spec leaves
+        // `size = 0` driver-defined: NVIDIA treats it as a no-op,
+        // AMD / Intel historically have not — this guard keeps the
+        // path portable across vendors. Pre-fix we tripped four
+        // validation errors per empty-TLAS frame (two barriers + one
         // copy per TLAS slot × two frame-in-flight slots). The empty-
-        // instance TLAS BUILD below is still legal — `primitiveCount = 0`
-        // produces an empty AS that ray queries return "no hit" against.
+        // instance TLAS BUILD below is still legal —
+        // `primitiveCount = 0` produces an empty AS that ray queries
+        // return "no hit" against.
         if copy_size > 0 {
             // Barrier 1: make host write visible to the transfer engine.
             let host_to_transfer = vk::BufferMemoryBarrier::default()
