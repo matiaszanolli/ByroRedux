@@ -876,8 +876,23 @@ pub struct BSEffectShaderProperty {
     pub falloff_stop_opacity: f32,
     /// FO76+ refraction power (BSVER == 155).
     pub refraction_power: f32,
-    pub emissive_color: [f32; 4],
-    pub emissive_multiple: f32,
+    /// Base color (Color4) — multiplicative diffuse tint applied on
+    /// top of the source texture sample. Pre-#166 this was called
+    /// `emissive_color`, a holdover from an early nif.xml misread
+    /// that conflated BSLightingShader's emissive slot with
+    /// BSEffect's base-color slot. Per nif.xml `BSEffectShaderProperty`,
+    /// byte offsets align with `emissive_color` — this is a
+    /// semantic-name fix only, not a parse layout change.
+    /// Downstream consumers in `import/material.rs` and
+    /// `import/mesh.rs` still map it into [`MaterialInfo::emissive_color`]
+    /// because the effect shader's visible "glow" is driven by
+    /// `base_color * base_color_scale` with the current fragment
+    /// shader path — a proper diffuse-tint remapping is downstream
+    /// work once the effect shader gets its own render path.
+    pub base_color: [f32; 4],
+    /// Base color scale — scalar multiplier for `base_color`.
+    /// Renamed from `emissive_multiple` alongside `base_color` (#166).
+    pub base_color_scale: f32,
     pub soft_falloff_depth: f32,
     pub greyscale_texture: String,
     /// Environment map texture path (FO4+ only, BSVER >= 130).
@@ -920,8 +935,8 @@ impl BSEffectShaderProperty {
             falloff_start_opacity: 0.0,
             falloff_stop_opacity: 0.0,
             refraction_power: 0.0,
-            emissive_color: [1.0, 1.0, 1.0, 1.0],
-            emissive_multiple: 1.0,
+            base_color: [1.0, 1.0, 1.0, 1.0],
+            base_color_scale: 1.0,
             soft_falloff_depth: 100.0,
             greyscale_texture: String::new(),
             env_map_texture: String::new(),
@@ -1013,13 +1028,20 @@ impl BSEffectShaderProperty {
             0.0
         };
 
-        let emissive_color = [
+        // Per nif.xml `BSEffectShaderProperty`, these fields are
+        // Base Color (Color4) + Base Color Scale (float) — NOT
+        // emissive. BSEffect's visible "glow" comes from the base
+        // color multiplied by the base-color-scale tint over the
+        // source texture. Pre-#166 these were named emissive_* and
+        // material.rs folded them into MaterialInfo.emissive_*;
+        // byte layout identical so downstream behavior unchanged.
+        let base_color = [
             stream.read_f32_le()?,
             stream.read_f32_le()?,
             stream.read_f32_le()?,
             stream.read_f32_le()?,
         ];
-        let emissive_multiple = stream.read_f32_le()?;
+        let base_color_scale = stream.read_f32_le()?;
 
         // Soft falloff depth — present in all versions.
         let soft_falloff_depth = stream.read_f32_le()?;
@@ -1079,8 +1101,8 @@ impl BSEffectShaderProperty {
             falloff_start_opacity,
             falloff_stop_opacity,
             refraction_power,
-            emissive_color,
-            emissive_multiple,
+            base_color,
+            base_color_scale,
             soft_falloff_depth,
             greyscale_texture,
             env_map_texture,

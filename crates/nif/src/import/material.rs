@@ -439,12 +439,20 @@ pub(super) fn extract_material_info(
                 info.texture_path = Some(shader.source_texture.clone());
             }
             if !info.has_material_data {
+                // BSEffect's base_color is semantically a diffuse
+                // tint, not emissive (#166 renamed from emissive_*).
+                // We still route it into emissive_color/emissive_mult
+                // because the effect shader's visible "glow" comes
+                // from `base_color * base_color_scale` in the current
+                // fragment-shader path. A proper diffuse-tint
+                // remapping is downstream work once effect-shader
+                // surfaces get their own render path.
                 info.emissive_color = [
-                    shader.emissive_color[0],
-                    shader.emissive_color[1],
-                    shader.emissive_color[2],
+                    shader.base_color[0],
+                    shader.base_color[1],
+                    shader.base_color[2],
                 ];
-                info.emissive_mult = shader.emissive_multiple;
+                info.emissive_mult = shader.base_color_scale;
                 info.uv_offset = shader.uv_offset;
                 info.uv_scale = shader.uv_scale;
                 info.has_material_data = true;
@@ -942,8 +950,8 @@ mod effect_shader_capture_tests {
             falloff_start_opacity: 1.0,
             falloff_stop_opacity: 0.0,
             refraction_power: 0.0, // pre-FO76 default
-            emissive_color: [0.0; 4],
-            emissive_multiple: 1.0,
+            base_color: [0.0; 4],
+            base_color_scale: 1.0,
             soft_falloff_depth: 8.0,
             greyscale_texture: "fx/grad.dds".to_string(),
             env_map_texture: "fx/env.dds".to_string(),

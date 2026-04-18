@@ -341,16 +341,19 @@ pub(super) fn extract_bs_tri_shape(
             // UV transform, alpha, env-map scale, and the FO4+ normal
             // texture all dropped to their defaults. Mirror the same
             // fields the legacy NiTriShape `extract_material_info` path
-            // already pulls from `BSEffectShaderProperty`.
+            // already pulls from `BSEffectShaderProperty`. Fields
+            // renamed to base_color/base_color_scale per #166; still
+            // routed into emissive_* because the current fragment
+            // shader drives effect-shader glow off the emissive slot.
             emissive_color = [
-                shader.emissive_color[0],
-                shader.emissive_color[1],
-                shader.emissive_color[2],
+                shader.base_color[0],
+                shader.base_color[1],
+                shader.base_color[2],
             ];
-            emissive_mult = shader.emissive_multiple;
+            emissive_mult = shader.base_color_scale;
             uv_offset = shader.uv_offset;
             uv_scale = shader.uv_scale;
-            mat_alpha = shader.emissive_color[3]; // BGEM uses alpha channel of emissive color
+            mat_alpha = shader.base_color[3]; // BGEM uses alpha channel of base color
             // FO4+ effect shaders carry their own normal/env textures
             // (BSVER >= 130). Pre-FO4 those strings are empty.
             if !shader.normal_texture.is_empty() {
@@ -1095,8 +1098,8 @@ mod two_sided_lookup_tests {
             falloff_start_opacity: 0.0,
             falloff_stop_opacity: 0.0,
             refraction_power: 0.0,
-            emissive_color: [0.0; 4],
-            emissive_multiple: 1.0,
+            base_color: [0.0; 4],
+            base_color_scale: 1.0,
             soft_falloff_depth: 0.0,
             greyscale_texture: String::new(),
             env_map_texture: String::new(),
@@ -1176,8 +1179,8 @@ mod two_sided_lookup_tests {
         let mut s = effect_shader(0);
         s.uv_offset = [0.25, 0.5];
         s.uv_scale = [2.0, 4.0];
-        s.emissive_color = [0.7, 0.8, 0.9, 0.5]; // alpha = 0.5
-        s.emissive_multiple = 3.5;
+        s.base_color = [0.7, 0.8, 0.9, 0.5]; // alpha = 0.5
+        s.base_color_scale = 3.5;
         s.env_map_scale = 0.75;
         s.normal_texture = "fx/glow_n.dds".to_string();
         s.greyscale_texture = "fx/fire_palette.dds".to_string();
