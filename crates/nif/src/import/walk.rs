@@ -219,7 +219,12 @@ pub(super) fn walk_node_hierarchical(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<NiTriShape>() {
-        if shape.av.flags & 0x01 != 0 {
+        // bit 0 = Hidden, bit 5 = EditorMarker (0x21 mask). Matches
+        // the NiNode gate above so shape-level editor markers (common
+        // on Skyrim+ MapMarker geometry where the flag rides on the
+        // shape, not the containing node) don't render as untextured
+        // debug pyramids. See #165 / audit N26-4-06.
+        if shape.av.flags & 0x21 != 0 {
             return;
         }
         if is_editor_marker(shape.av.net.name.as_deref()) {
@@ -234,7 +239,12 @@ pub(super) fn walk_node_hierarchical(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<BsTriShape>() {
-        if shape.av.flags & 0x01 != 0 {
+        // bit 0 = Hidden, bit 5 = EditorMarker (0x21 mask). Matches
+        // the NiNode gate above so shape-level editor markers (common
+        // on Skyrim+ MapMarker geometry where the flag rides on the
+        // shape, not the containing node) don't render as untextured
+        // debug pyramids. See #165 / audit N26-4-06.
+        if shape.av.flags & 0x21 != 0 {
             return;
         }
         if is_editor_marker(shape.av.net.name.as_deref()) {
@@ -371,7 +381,12 @@ pub(super) fn walk_node_flat(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<NiTriShape>() {
-        if shape.av.flags & 0x01 != 0 {
+        // bit 0 = Hidden, bit 5 = EditorMarker (0x21 mask). Matches
+        // the NiNode gate above so shape-level editor markers (common
+        // on Skyrim+ MapMarker geometry where the flag rides on the
+        // shape, not the containing node) don't render as untextured
+        // debug pyramids. See #165 / audit N26-4-06.
+        if shape.av.flags & 0x21 != 0 {
             return;
         }
         if is_editor_marker(shape.av.net.name.as_deref()) {
@@ -385,7 +400,12 @@ pub(super) fn walk_node_flat(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<BsTriShape>() {
-        if shape.av.flags & 0x01 != 0 {
+        // bit 0 = Hidden, bit 5 = EditorMarker (0x21 mask). Matches
+        // the NiNode gate above so shape-level editor markers (common
+        // on Skyrim+ MapMarker geometry where the flag rides on the
+        // shape, not the containing node) don't render as untextured
+        // debug pyramids. See #165 / audit N26-4-06.
+        if shape.av.flags & 0x21 != 0 {
             return;
         }
         if is_editor_marker(shape.av.net.name.as_deref()) {
@@ -721,6 +741,18 @@ fn extract_billboard_mode(block: &dyn NiObject, av_flags: u32) -> Option<u16> {
 }
 
 /// Check if a node name is an editor marker that should be skipped.
+///
+/// Matches the NiNode name prefixes Bethesda uses for editor-only
+/// geometry across Oblivion / FO3 / FNV / Skyrim / FO4 / FO76 /
+/// Starfield:
+///
+/// - `EditorMarker*` — catch-all Bethesda placeholder (every game).
+/// - `marker_*` / `marker:*` / `MarkerX` — Gamebryo editor pins
+///   (quest / patrol / navmesh markers).
+/// - `MapMarker` — exterior-cell world map pin. Skyrim+ ships one
+///   of these per settlement / POI; without the match they render
+///   as untextured pyramids scattered across the overworld
+///   (audit N26-4-06 / #165).
 fn is_editor_marker(name: Option<&str>) -> bool {
     let Some(name) = name else { return false };
     fn starts_with_ci(s: &str, prefix: &str) -> bool {
@@ -731,6 +763,7 @@ fn is_editor_marker(name: Option<&str>) -> bool {
         || starts_with_ci(name, "marker_")
         || name.eq_ignore_ascii_case("markerx")
         || starts_with_ci(name, "marker:")
+        || starts_with_ci(name, "mapmarker")
 }
 
 #[cfg(test)]
@@ -822,5 +855,52 @@ mod affected_nodes_tests {
         let names = resolve_affected_node_names(&scene, &[0u32, u32::MAX, 99u32]);
         assert_eq!(names.len(), 1);
         assert_eq!(&*names[0], "OnlyValid");
+    }
+}
+
+#[cfg(test)]
+mod editor_marker_tests {
+    //! Regression tests for `is_editor_marker` (#165 / audit N26-4-06).
+    //! Exhaustive list of the prefixes the walker must filter across
+    //! Gamebryo-lineage games. Missed patterns render as untextured
+    //! debug geometry in the live scene (map pins, quest targets,
+    //! patrol route markers, editor bounding pyramids).
+    use super::is_editor_marker;
+
+    #[test]
+    fn matches_known_editor_marker_prefixes() {
+        // Gamebryo editor / quest / patrol markers — every game.
+        assert!(is_editor_marker(Some("EditorMarker")));
+        assert!(is_editor_marker(Some("EDITORMARKER")));
+        assert!(is_editor_marker(Some("EditorMarker_QuestNode")));
+        assert!(is_editor_marker(Some("Marker_01")));
+        assert!(is_editor_marker(Some("marker:patrol")));
+        assert!(is_editor_marker(Some("MarkerX")));
+        assert!(is_editor_marker(Some("markerx")));
+    }
+
+    /// Regression: #165 — Skyrim+ exterior-cell world map pins
+    /// ("MapMarker") were rendering as untextured pyramids in the
+    /// overworld. The match now catches the prefix (case-insensitive).
+    #[test]
+    fn matches_skyrim_map_marker() {
+        assert!(is_editor_marker(Some("MapMarker")));
+        assert!(is_editor_marker(Some("mapmarker")));
+        assert!(is_editor_marker(Some("MapMarker_Whiterun")));
+        assert!(is_editor_marker(Some("MAPMARKER")));
+    }
+
+    #[test]
+    fn does_not_match_legitimate_names() {
+        // False-positive regression guards — these are real NIF node
+        // names that must NOT be filtered.
+        assert!(!is_editor_marker(None));
+        assert!(!is_editor_marker(Some("")));
+        assert!(!is_editor_marker(Some("Bip01 Head")));
+        assert!(!is_editor_marker(Some("NPC Torso [Tors]")));
+        // "MapMarkerMesh" does get filtered — that's correct, any
+        // prefix match is intentional (vanilla doesn't author non-
+        // marker nodes starting with these prefixes).
+        assert!(is_editor_marker(Some("MapMarkerMesh")));
     }
 }
