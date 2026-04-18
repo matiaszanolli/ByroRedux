@@ -354,6 +354,11 @@ pub(crate) fn build_render_data(
                     // downsample the texture to 1×1 during asset load;
                     // for now we derive a heuristic from the material.
                     avg_albedo: [0.5, 0.5, 0.5],
+                    // BSLightingShaderProperty.shader_type → fragment
+                    // shader variant dispatch (#344). 0 = Default lit
+                    // when the entity has no Material component (e.g.
+                    // the spinning cube demo).
+                    material_kind: mat.map(|m| m.material_kind as u32).unwrap_or(0),
                 });
             }
         }

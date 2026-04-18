@@ -85,6 +85,12 @@ pub struct DrawCommand {
     /// Pre-computed average albedo (RGB) for fast GI bounce approximation.
     /// Replaces per-hit UV lookup + texture sample in the GI ray hit shader.
     pub avg_albedo: [f32; 3],
+    /// `BSLightingShaderProperty.shader_type` enum value (0–19) — fed
+    /// to `GpuInstance.material_kind` for the fragment shader's
+    /// per-variant dispatch (SkinTint / HairTint / EyeEnvmap / etc.).
+    /// 0 = Default lit. Plumbing only — variant rendering branches
+    /// are per-variant follow-up work. See #344.
+    pub material_kind: u32,
 }
 
 /// Sky rendering parameters passed per-frame to the composite shader.

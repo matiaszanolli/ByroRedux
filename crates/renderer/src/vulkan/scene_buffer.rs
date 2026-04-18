@@ -88,7 +88,15 @@ pub struct GpuInstance {
     ///           (alpha-blend, non-metal). The caustic compute pass scatters
     ///           caustic splats from every pixel whose instance has this bit. #321.
     pub flags: u32, // 4 B, offset 152
-    pub _pad1: u32,            // 4 B, offset 156 → total 160
+    /// `BSLightingShaderProperty.shader_type` enum value (0–19), used by
+    /// the fragment shader's per-variant dispatch (SkinTint, HairTint,
+    /// EyeEnvmap, SparkleSnow, MultiLayerParallax, …). 0 = Default lit
+    /// — the safe fall-through for non-Skyrim+ meshes that have no
+    /// BSLightingShaderProperty backing. Repurposed from the previous
+    /// `_pad1` field so the struct stays at 160 bytes (10×16, std430).
+    /// Plumbing only here — the actual variant branches in
+    /// `triangle.frag` land per-variant in follow-up PRs. See #344.
+    pub material_kind: u32, // 4 B, offset 156 → total 160
                                // Struct is 160 bytes (10×16), 16-byte aligned for std430.
 }
 
@@ -124,7 +132,7 @@ impl Default for GpuInstance {
             avg_albedo_g: 0.5,
             avg_albedo_b: 0.5,
             flags: 0,
-            _pad1: 0,
+            material_kind: 0,
         }
     }
 }
@@ -853,6 +861,9 @@ mod gpu_instance_layout_tests {
         assert_eq!(offset_of!(GpuInstance, avg_albedo_g), 144);
         assert_eq!(offset_of!(GpuInstance, avg_albedo_b), 148);
         assert_eq!(offset_of!(GpuInstance, flags), 152);
-        assert_eq!(offset_of!(GpuInstance, _pad1), 156);
+        // material_kind reuses the previous _pad1 slot — kept at the
+        // same offset so every shader-side `pad1` reference renamed to
+        // `materialKind` continues to alias the same 4 bytes. See #344.
+        assert_eq!(offset_of!(GpuInstance, material_kind), 156);
     }
 }

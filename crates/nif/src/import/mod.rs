@@ -222,6 +222,18 @@ pub struct ImportedMesh {
     /// unused — the audit's "VISUAL: soft falloff edge visible" check
     /// can only be satisfied once the renderer hookup is in. See #345.
     pub effect_shader: Option<BsEffectShaderData>,
+    /// Raw `BSLightingShaderProperty.shader_type` enum value (0–19),
+    /// captured for the renderer-side variant dispatch in
+    /// `triangle.frag`. 0 = Default lit (the safe fall-through, also
+    /// emitted for non-Skyrim+ meshes that have no
+    /// BSLightingShaderProperty backing). Surfacing this on
+    /// `ImportedMesh` is the data side of #344 — pre-fix the importer
+    /// captured `material_kind` on the internal `MaterialInfo` but
+    /// dropped it on the way out, so the renderer had no way to
+    /// branch on SkinTint / HairTint / EyeEnvmap / SparkleSnow /
+    /// MultiLayerParallax. Variant rendering wiring inside the
+    /// fragment shader is per-variant follow-up work.
+    pub material_kind: u8,
 }
 
 /// Per-bone binding for a skinned mesh. Bone space is Y-up (converted

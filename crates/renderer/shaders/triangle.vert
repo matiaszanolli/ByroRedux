@@ -36,7 +36,7 @@ struct GpuInstance {
     float avgAlbedoG;        // offset 144
     float avgAlbedoB;        // offset 148
     uint flags;              // offset 152 — bit 0: non-uniform scale, bit 1: alpha blend, bit 2: caustic source (#321)
-    uint _pad1;              // offset 156 → total 160
+    uint materialKind;       // offset 156 → total 160 — BSLightingShaderProperty.shader_type (0–19) for fragment-shader variant dispatch (#344). 0 = Default lit.
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

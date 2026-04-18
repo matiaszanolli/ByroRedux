@@ -1086,6 +1086,7 @@ fn spawn_placed_instances(
                 alpha_test: mesh.alpha_test,
                 alpha_threshold: mesh.alpha_threshold,
                 alpha_test_func: mesh.alpha_test_func,
+                material_kind: mesh.material_kind,
             },
         );
         // Load and attach normal map if the material specifies one.

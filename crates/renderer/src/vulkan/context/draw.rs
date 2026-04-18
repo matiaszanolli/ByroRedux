@@ -488,7 +488,7 @@ impl VulkanContext {
                 avg_albedo_g: draw_cmd.avg_albedo[1],
                 avg_albedo_b: draw_cmd.avg_albedo[2],
                 flags,
-                _pad1: 0,
+                material_kind: draw_cmd.material_kind,
             });
 
             let pipeline_key = if draw_cmd.alpha_blend {

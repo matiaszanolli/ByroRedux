@@ -30,7 +30,7 @@ struct GpuInstance {
                  // Currently unused by ui.vert but named in lockstep with
                  // triangle.{vert,frag} and Rust `GpuInstance` (Shader Struct
                  // Sync invariant). See #318.
-    uint _pad1;  // offset 156 → total 160
+    uint materialKind;  // offset 156 → total 160 — BSLightingShaderProperty.shader_type (0–19), unused by the UI pipeline; named in lockstep with the scene shaders. See #344.
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

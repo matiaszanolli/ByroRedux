@@ -162,6 +162,7 @@ pub(super) fn extract_mesh(
         local_bound_center,
         local_bound_radius,
         effect_shader: mat.effect_shader,
+        material_kind: mat.material_kind,
     })
 }
 
@@ -407,6 +408,17 @@ pub(super) fn extract_bs_tri_shape(
         // wire it once that ticket lands. The pre-Skyrim NiTriShape
         // path already populates this field via `extract_material_info`.
         effect_shader: None,
+        // BsTriShape's BSLightingShaderProperty does carry a
+        // shader_type — capture it directly off the linked shader so
+        // Skyrim+ characters get the right `material_kind` (#344).
+        // Falls back to 0 (Default lit) when the shape has no shader
+        // or the shader isn't a BSLightingShaderProperty.
+        material_kind: shape
+            .shader_property_ref
+            .index()
+            .and_then(|i| scene.get_as::<BSLightingShaderProperty>(i))
+            .map(|s| s.shader_type as u8)
+            .unwrap_or(0),
     })
 }
 
