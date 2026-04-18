@@ -145,6 +145,42 @@ pub struct PlacedRef {
     /// Euler rotation in radians (X, Y, Z).
     pub rotation: [f32; 3],
     pub scale: f32,
+    /// Enable-parent gating from the REFR's `XESP` sub-record. When
+    /// `Some`, the REFR's spawn visibility is controlled by another
+    /// REFR's enable state (and optionally inverted). `None` means the
+    /// REFR is unconditionally placed at cell-load time.
+    ///
+    /// The cell loader uses this to skip REFRs that are default-
+    /// disabled (XESP set + not inverted) — pre-#349 every "spawn after
+    /// quest stage" REFR rendered immediately on cell load. See #349.
+    pub enable_parent: Option<EnableParent>,
+}
+
+/// REFR enable-parent gating from the `XESP` sub-record (Skyrim+).
+/// Layout: 4-byte parent FormID + 1-byte flags. Bit 0 of the flags
+/// inverts the enable state (so `inverted = true` means the REFR is
+/// visible when the parent is *disabled*).
+#[derive(Debug, Clone, Copy)]
+pub struct EnableParent {
+    /// FormID of the parent REFR whose enable state controls this
+    /// REFR's visibility.
+    pub form_id: u32,
+    /// When `true`, this REFR is visible when the parent is disabled
+    /// (and hidden when the parent is enabled).
+    pub inverted: bool,
+}
+
+impl EnableParent {
+    /// Returns `true` if the REFR should be skipped at cell-load time
+    /// because its parent isn't yet enabled. The minimal heuristic
+    /// pre-#349's renderer uses: any REFR with a non-zero parent and
+    /// no inversion stays hidden until a future quest / script system
+    /// can toggle visibility based on the parent's state. The sound
+    /// long-term fix is a state machine; for now we just filter the
+    /// initial-default-off case.
+    pub fn default_disabled(self) -> bool {
+        self.form_id != 0 && !self.inverted
+    }
 }
 
 /// Light-specific data extracted from LIGH record DATA subrecord.
@@ -554,6 +590,7 @@ fn parse_refr_group(
             let mut position = [0.0f32; 3];
             let mut rotation = [0.0f32; 3];
             let mut scale = 1.0f32;
+            let mut enable_parent: Option<EnableParent> = None;
 
             for sub in &subs {
                 match &sub.sub_type {
@@ -594,6 +631,22 @@ fn parse_refr_group(
                             sub.data[3],
                         ]);
                     }
+                    // XESP — enable-parent gating (Skyrim+). 4-byte
+                    // parent FormID + 1-byte flags; bit 0 = inverted.
+                    // Pre-#349 every default-disabled "spawn after
+                    // quest stage" REFR rendered immediately on cell
+                    // load; the cell loader now skips these via
+                    // `enable_parent.default_disabled()`.
+                    b"XESP" if sub.data.len() >= 5 => {
+                        let form_id = u32::from_le_bytes([
+                            sub.data[0],
+                            sub.data[1],
+                            sub.data[2],
+                            sub.data[3],
+                        ]);
+                        let inverted = sub.data[4] & 1 != 0;
+                        enable_parent = Some(EnableParent { form_id, inverted });
+                    }
                     _ => {}
                 }
             }
@@ -604,6 +657,7 @@ fn parse_refr_group(
                     position,
                     rotation,
                     scale,
+                    enable_parent,
                 });
             }
         } else if &header.record_type == b"LAND" {
@@ -1585,6 +1639,143 @@ mod tests {
         assert!((r.position[2] - 300.0).abs() < 1e-6);
         assert!((r.rotation[1] - 1.57).abs() < 0.01);
         assert!((r.scale - 2.0).abs() < 1e-6);
+        // No XESP → enable_parent stays None.
+        assert!(r.enable_parent.is_none());
+    }
+
+    /// Helper for the #349 XESP regression tests — build a REFR with
+    /// just NAME + DATA + XESP. The minimum sub-record set
+    /// `parse_refr_group` needs to register a placement.
+    fn build_refr_with_xesp(form_id: u32, parent_form: u32, inverted_flag: u8) -> Vec<u8> {
+        let mut sub_data = Vec::new();
+        sub_data.extend_from_slice(b"NAME");
+        sub_data.extend_from_slice(&4u16.to_le_bytes());
+        sub_data.extend_from_slice(&form_id.to_le_bytes());
+
+        sub_data.extend_from_slice(b"DATA");
+        sub_data.extend_from_slice(&24u16.to_le_bytes());
+        sub_data.extend_from_slice(&[0u8; 24]); // zero pos + rot
+
+        sub_data.extend_from_slice(b"XESP");
+        sub_data.extend_from_slice(&5u16.to_le_bytes());
+        sub_data.extend_from_slice(&parent_form.to_le_bytes());
+        sub_data.push(inverted_flag);
+
+        let mut record = Vec::new();
+        record.extend_from_slice(b"REFR");
+        record.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        record.extend_from_slice(&0u32.to_le_bytes());
+        record.extend_from_slice(&0x9999u32.to_le_bytes()); // record form_id
+        record.extend_from_slice(&[0u8; 8]);
+        record.extend_from_slice(&sub_data);
+        record
+    }
+
+    /// Regression: #349 — XESP enable-parent gating must surface on
+    /// PlacedRef. Default-disabled (parent_form != 0, inverted bit
+    /// off) is the case the cell loader must skip.
+    #[test]
+    fn parse_refr_extracts_default_disabled_xesp() {
+        let record = build_refr_with_xesp(0xABCD, 0xCAFE, 0); // not inverted
+        let mut reader = EsmReader::new(&record);
+        let end = record.len();
+        let mut refs = Vec::new();
+        let mut land = None;
+        parse_refr_group(&mut reader, end, &mut refs, &mut land).unwrap();
+
+        assert_eq!(refs.len(), 1);
+        let ep = refs[0]
+            .enable_parent
+            .expect("XESP must populate enable_parent");
+        assert_eq!(ep.form_id, 0xCAFE);
+        assert!(!ep.inverted);
+        assert!(
+            ep.default_disabled(),
+            "non-zero parent + not inverted = default-disabled"
+        );
+    }
+
+    /// XESP with the inverted flag set means the REFR is visible when
+    /// the parent is *disabled* — so it should be considered enabled
+    /// at cell load (the parent has its default-disabled state).
+    #[test]
+    fn parse_refr_extracts_inverted_xesp() {
+        let record = build_refr_with_xesp(0xABCD, 0xCAFE, 0x01); // inverted bit set
+        let mut reader = EsmReader::new(&record);
+        let end = record.len();
+        let mut refs = Vec::new();
+        let mut land = None;
+        parse_refr_group(&mut reader, end, &mut refs, &mut land).unwrap();
+
+        assert_eq!(refs.len(), 1);
+        let ep = refs[0]
+            .enable_parent
+            .expect("XESP must populate enable_parent");
+        assert_eq!(ep.form_id, 0xCAFE);
+        assert!(ep.inverted);
+        assert!(
+            !ep.default_disabled(),
+            "inverted XESP must not be default-disabled"
+        );
+    }
+
+    /// Sibling: a REFR with no XESP at all keeps `enable_parent = None`
+    /// — `default_disabled()` is irrelevant because the cell loader
+    /// only inspects `Some(ep)`. The pre-#349 behaviour is preserved
+    /// for the common (non-quest-gated) case.
+    #[test]
+    fn parse_refr_without_xesp_has_no_enable_parent() {
+        let record = build_refr_with_xesp(0xABCD, 0, 0);
+        // `build_refr_with_xesp` always emits an XESP — strip it for
+        // this test by hand-building a NAME+DATA-only REFR.
+        let _ = record;
+
+        let mut sub_data = Vec::new();
+        sub_data.extend_from_slice(b"NAME");
+        sub_data.extend_from_slice(&4u16.to_le_bytes());
+        sub_data.extend_from_slice(&0xBEEFu32.to_le_bytes());
+        sub_data.extend_from_slice(b"DATA");
+        sub_data.extend_from_slice(&24u16.to_le_bytes());
+        sub_data.extend_from_slice(&[0u8; 24]);
+
+        let mut record = Vec::new();
+        record.extend_from_slice(b"REFR");
+        record.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        record.extend_from_slice(&0u32.to_le_bytes());
+        record.extend_from_slice(&0x42u32.to_le_bytes());
+        record.extend_from_slice(&[0u8; 8]);
+        record.extend_from_slice(&sub_data);
+
+        let mut reader = EsmReader::new(&record);
+        let end = record.len();
+        let mut refs = Vec::new();
+        let mut land = None;
+        parse_refr_group(&mut reader, end, &mut refs, &mut land).unwrap();
+
+        assert_eq!(refs.len(), 1);
+        assert!(refs[0].enable_parent.is_none());
+    }
+
+    /// Edge case: XESP with a zero parent FormID (NULL parent — rare
+    /// but legal in vanilla content). Treated as "no real parent" so
+    /// the REFR is NOT default-disabled even though XESP is present.
+    #[test]
+    fn parse_refr_xesp_with_null_parent_is_not_default_disabled() {
+        let record = build_refr_with_xesp(0xABCD, 0, 0);
+        let mut reader = EsmReader::new(&record);
+        let end = record.len();
+        let mut refs = Vec::new();
+        let mut land = None;
+        parse_refr_group(&mut reader, end, &mut refs, &mut land).unwrap();
+
+        let ep = refs[0]
+            .enable_parent
+            .expect("XESP populates enable_parent even with null parent");
+        assert_eq!(ep.form_id, 0);
+        assert!(
+            !ep.default_disabled(),
+            "null parent FormID = no real gating, so not default-disabled"
+        );
     }
 
     #[test]

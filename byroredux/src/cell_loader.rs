@@ -643,7 +643,21 @@ fn load_references(
 
     let mut stat_miss = 0u32;
     let mut stat_hit = 0u32;
+    let mut enable_skipped = 0u32;
     for placed_ref in refs {
+        // Skip default-disabled REFRs — those gated on a parent REFR's
+        // enable state (XESP without the inverted bit). Quest-spawn
+        // NPCs / placement-after-stage-trigger objects are placed with
+        // an enable parent and stay invisible until a future quest /
+        // script system can flip the parent's state. Pre-#349 every
+        // such REFR rendered immediately on cell load. See #349.
+        if let Some(ep) = placed_ref.enable_parent {
+            if ep.default_disabled() {
+                enable_skipped += 1;
+                continue;
+            }
+        }
+
         let stat = match index.statics.get(&placed_ref.base_form_id) {
             Some(s) => {
                 stat_hit += 1;
@@ -800,6 +814,12 @@ fn load_references(
         log::warn!(
             "  {} base forms not found in statics table — run with RUST_LOG=debug for details",
             stat_miss,
+        );
+    }
+    if enable_skipped > 0 {
+        log::info!(
+            "  {} REFRs skipped via XESP enable-parent gating (#349)",
+            enable_skipped,
         );
     }
 
