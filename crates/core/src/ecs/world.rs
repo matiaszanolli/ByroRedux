@@ -292,11 +292,14 @@ impl World {
         let lock_a = self.storages.get(&id_a)?;
         let lock_b = self.storages.get(&id_b)?;
 
-        let scope_a = lock_tracker::TrackedRead::new(id_a, std::any::type_name::<A>());
-        let scope_b = lock_tracker::TrackedWrite::new(id_b, std::any::type_name::<B>());
-
-        // Always lock in TypeId order to prevent deadlocks.
+        // Set up tracker scopes *in TypeId-ascending order* — same order
+        // the real locks are acquired below. Pre-#313 the scopes were
+        // set up in generic-parameter order (A then B) regardless of
+        // TypeId, which looked like ABBA to the global lock-order graph
+        // whenever the caller spelled `<B, A>` where TypeId(A) < TypeId(B).
         if id_a < id_b {
+            let scope_a = lock_tracker::TrackedRead::new(id_a, std::any::type_name::<A>());
+            let scope_b = lock_tracker::TrackedWrite::new(id_b, std::any::type_name::<B>());
             let guard_a = lock_a
                 .read()
                 .unwrap_or_else(|_| storage_lock_poisoned::<A>());
@@ -310,6 +313,8 @@ impl World {
                 QueryWrite::new(guard_b, id_b),
             ))
         } else {
+            let scope_b = lock_tracker::TrackedWrite::new(id_b, std::any::type_name::<B>());
+            let scope_a = lock_tracker::TrackedRead::new(id_a, std::any::type_name::<A>());
             let guard_b = lock_b
                 .write()
                 .unwrap_or_else(|_| storage_lock_poisoned::<B>());
@@ -348,10 +353,10 @@ impl World {
         let lock_a = self.storages.get(&id_a)?;
         let lock_b = self.storages.get(&id_b)?;
 
-        let scope_a = lock_tracker::TrackedWrite::new(id_a, std::any::type_name::<A>());
-        let scope_b = lock_tracker::TrackedWrite::new(id_b, std::any::type_name::<B>());
-
+        // TypeId-sorted tracker setup — see `query_2_mut` for rationale (#313).
         if id_a < id_b {
+            let scope_a = lock_tracker::TrackedWrite::new(id_a, std::any::type_name::<A>());
+            let scope_b = lock_tracker::TrackedWrite::new(id_b, std::any::type_name::<B>());
             let guard_a = lock_a
                 .write()
                 .unwrap_or_else(|_| storage_lock_poisoned::<A>());
@@ -365,6 +370,8 @@ impl World {
                 QueryWrite::new(guard_b, id_b),
             ))
         } else {
+            let scope_b = lock_tracker::TrackedWrite::new(id_b, std::any::type_name::<B>());
+            let scope_a = lock_tracker::TrackedWrite::new(id_a, std::any::type_name::<A>());
             let guard_b = lock_b
                 .write()
                 .unwrap_or_else(|_| storage_lock_poisoned::<B>());
@@ -479,11 +486,10 @@ impl World {
             )
         });
 
-        let scope_a = lock_tracker::TrackedWrite::new(id_a, std::any::type_name::<A>());
-        let scope_b = lock_tracker::TrackedWrite::new(id_b, std::any::type_name::<B>());
-
-        // Always lock in TypeId order to prevent deadlocks.
+        // TypeId-sorted tracker setup — see `query_2_mut` for rationale (#313).
         if id_a < id_b {
+            let scope_a = lock_tracker::TrackedWrite::new(id_a, std::any::type_name::<A>());
+            let scope_b = lock_tracker::TrackedWrite::new(id_b, std::any::type_name::<B>());
             let guard_a = lock_a
                 .write()
                 .unwrap_or_else(|_| resource_lock_poisoned::<A>());
@@ -497,6 +503,8 @@ impl World {
                 ResourceWrite::new(guard_b, id_b),
             )
         } else {
+            let scope_b = lock_tracker::TrackedWrite::new(id_b, std::any::type_name::<B>());
+            let scope_a = lock_tracker::TrackedWrite::new(id_a, std::any::type_name::<A>());
             let guard_b = lock_b
                 .write()
                 .unwrap_or_else(|_| resource_lock_poisoned::<B>());
