@@ -896,12 +896,16 @@ mod gpu_instance_layout_tests {
     use super::*;
     use std::mem::{offset_of, size_of};
 
-    /// Regression guard for the Shader Struct Sync invariant (#318). The
-    /// `GpuInstance` struct is duplicated across three GLSL sources
-    /// (`triangle.vert`, `triangle.frag`, `ui.vert`) and must stay
+    /// Regression guard for the Shader Struct Sync invariant (#318 / #417).
+    /// The `GpuInstance` struct is duplicated across **four** GLSL
+    /// sources — `triangle.vert`, `triangle.frag`, `ui.vert`, and (since
+    /// the caustic pass #321) `caustic_splat.comp` — and must stay
     /// byte-for-byte identical with the Rust definition. Any drift here
     /// silently corrupts per-instance data on the GPU. Verified offsets
     /// come from the explicit `// offset N` comments inside those shaders.
+    /// See the `feedback_shader_struct_sync` memory note for the lockstep
+    /// update protocol (grep for `struct GpuInstance` in the shaders tree
+    /// before touching this struct).
     #[test]
     fn gpu_instance_is_160_bytes_std430_compatible() {
         assert_eq!(
@@ -973,5 +977,59 @@ mod gpu_instance_layout_tests {
             "MAX_INDIRECT_DRAWS × sizeof(VkDrawIndexedIndirectCommand) \
              must match the per-frame indirect buffer allocation"
         );
+    }
+
+    /// Regression: #417 — every shader that declares its own copy of
+    /// `struct GpuInstance` must name the final u32 slot
+    /// `materialKind`, not `_pad1` or any other legacy placeholder.
+    /// The Rust side guards offsets via
+    /// `gpu_instance_field_offsets_match_shader_contract`; this test
+    /// guards name-level drift across the four shader copies so a
+    /// future refactor that actually reads the field (currently unused
+    /// on the caustic path) doesn't silently alias it to padding.
+    ///
+    /// Walks the shaders tree at compile time via `include_str!` —
+    /// works in `cargo test` even on machines that don't have
+    /// glslangValidator installed, and catches the missed-rename
+    /// failure mode from #417 (caustic_splat.comp still said
+    /// `uint _pad1;` after the triangle.* / ui.vert rename).
+    #[test]
+    fn every_shader_struct_gpu_instance_names_material_kind_slot() {
+        const SOURCES: &[(&str, &str)] = &[
+            (
+                "triangle.vert",
+                include_str!("../../shaders/triangle.vert"),
+            ),
+            (
+                "triangle.frag",
+                include_str!("../../shaders/triangle.frag"),
+            ),
+            ("ui.vert", include_str!("../../shaders/ui.vert")),
+            (
+                "caustic_splat.comp",
+                include_str!("../../shaders/caustic_splat.comp"),
+            ),
+        ];
+        for (name, src) in SOURCES {
+            assert!(
+                src.contains("struct GpuInstance"),
+                "{name} no longer declares `struct GpuInstance` — update \
+                 the sync list at feedback_shader_struct_sync.md"
+            );
+            // The struct must declare the trailing slot as
+            // `materialKind`, not `_pad1` / `_pad` / `pad1`.
+            assert!(
+                src.contains("materialKind"),
+                "{name}: GpuInstance final slot must be named \
+                 `materialKind` (see #417). Found no mention — did \
+                 the shader revert to `_pad1`?"
+            );
+            assert!(
+                !src.contains("uint _pad1"),
+                "{name}: GpuInstance slot is still named `_pad1` — \
+                 rename to `materialKind` to match the other 3 \
+                 shaders (Shader Struct Sync invariant #318 / #417)."
+            );
+        }
     }
 }

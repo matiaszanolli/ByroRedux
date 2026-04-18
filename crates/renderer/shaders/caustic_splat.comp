@@ -71,7 +71,12 @@ struct GpuInstance {
     uint darkMapIndex;
     float avgAlbedoR, avgAlbedoG, avgAlbedoB;
     uint flags;
-    uint _pad1;
+    uint materialKind;  // offset 156 → total 160. Shader Struct Sync
+                        // invariant #318 / #417: the same slot is
+                        // materialKind in triangle.vert / triangle.frag
+                        // / ui.vert. Caustic_splat.comp doesn't branch
+                        // on it today, but the name must match so the
+                        // 4-shader cross-file contract stays coherent.
 };
 
 layout(std430, set = 0, binding = 5) readonly buffer InstanceBuffer {
