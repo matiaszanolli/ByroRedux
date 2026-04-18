@@ -978,12 +978,27 @@ impl AccelerationManager {
             // SAFETY: AccelerationStructureReferenceKHR is a union — device_handle field
             // is used because our BLAS is on-device (not host-built). The address was
             // obtained from get_acceleration_structure_device_address after BLAS creation.
+            //
+            // Gate TRIANGLE_FACING_CULL_DISABLE on `draw_cmd.two_sided` so RT
+            // traversal matches what the rasterizer renders. Pre-#416 every
+            // instance disabled backface culling, so shadow / GI rays hit the
+            // interior backfaces of closed single-sided meshes (rooms,
+            // buildings) from outside — self-shadowing on far walls, ~2× ray
+            // cost on closed meshes. The `two_sided` bit already rides on
+            // `DrawCommand` (set from NiTriShape's NIF properties) and the
+            // rasterizer pipeline cache keys on it via `PipelineKey`; the RT
+            // path now honors the same bit.
+            let instance_flags = if draw_cmd.two_sided {
+                vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw()
+            } else {
+                0
+            };
             instances.push(vk::AccelerationStructureInstanceKHR {
                 transform,
                 instance_custom_index_and_mask: vk::Packed24_8::new(i as u32, 0xFF),
                 instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
                     0,
-                    vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
+                    instance_flags as u8,
                 ),
                 acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
                     device_handle: blas.device_address,
