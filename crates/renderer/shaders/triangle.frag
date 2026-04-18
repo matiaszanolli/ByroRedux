@@ -208,11 +208,16 @@ vec2 getHitUV(uint instanceIdx, uint primitiveIdx, vec2 barycentrics) {
 
 // Cast a reflection ray and return the reflected color.
 // Returns (color, hit) where hit is 1.0 if the ray hit geometry, 0.0 if it missed.
+//
+// Uses gl_RayFlagsTerminateOnFirstHitEXT — we only need ANY opaque hit
+// (the first one becomes the reflection surface). Without the flag the
+// driver pays "find closest hit" cost across the full maxDist=5000 unit
+// reach. Fix #420.
 vec4 traceReflection(vec3 origin, vec3 direction, float maxDist) {
     rayQueryEXT rq;
     rayQueryInitializeEXT(
         rq, topLevelAS,
-        gl_RayFlagsOpaqueEXT, 0xFF,
+        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFF,
         origin, 0.01, direction, maxDist
     );
     rayQueryProceedEXT(rq);
@@ -527,10 +532,13 @@ void main() {
         // surface to skip self-intersection. When the ray hits geometry
         // we sample the hit surface's texture; when it misses we treat
         // it as escaped-to-sky (matches the isWindow contract).
+        // gl_RayFlagsTerminateOnFirstHitEXT: we only read the first
+        // committed opaque hit; the maxDist=2000 unit reach made the
+        // closest-hit search wasteful. Fix #420.
         rayQueryEXT glassRQ;
         rayQueryInitializeEXT(
             glassRQ, topLevelAS,
-            gl_RayFlagsOpaqueEXT, 0xFF,
+            gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFF,
             fragWorldPos - N * 0.1, 0.05, -V, 2000.0
         );
         rayQueryProceedEXT(glassRQ);
