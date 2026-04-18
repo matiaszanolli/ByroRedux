@@ -277,14 +277,7 @@ pub(super) fn extract_bs_tri_shape(
             (false, false, 0.0, 6, 6, 7)
         };
 
-    let two_sided = if let Some(idx) = shape.shader_property_ref.index() {
-        scene
-            .get_as::<BSLightingShaderProperty>(idx)
-            .map(|s| s.shader_flags_2 & 0x10 != 0)
-            .unwrap_or(false)
-    } else {
-        false
-    };
+    let two_sided = bs_tri_shape_two_sided(scene, shape);
 
     let t = &world_transform.translation;
     let quat = zup_matrix_to_yup_quat(&world_transform.rotation);
@@ -423,6 +416,30 @@ pub(super) fn extract_bs_tri_shape_local(
     shape: &BsTriShape,
 ) -> Option<ImportedMesh> {
     extract_bs_tri_shape(scene, shape, &shape.av.transform)
+}
+
+/// Resolve the double-sided flag for a BsTriShape from either of the
+/// two shader-property variants Skyrim+ binds. Both
+/// `BSLightingShaderProperty` (the common case for static / clutter /
+/// actor meshes) and `BSEffectShaderProperty` (Skyrim+ VFX surfaces:
+/// force fields, magic auras, glow shells, Dwemer steam) use bit
+/// `0x10` of `shader_flags_2` for the same double-sided semantics.
+///
+/// Pre-#128 only the BSLightingShaderProperty branch was checked, so
+/// effect-shader-backed meshes silently dropped the flag and rendered
+/// backface-culled glow geometry that should have been visible from
+/// either side.
+fn bs_tri_shape_two_sided(scene: &NifScene, shape: &BsTriShape) -> bool {
+    let Some(idx) = shape.shader_property_ref.index() else {
+        return false;
+    };
+    if let Some(s) = scene.get_as::<BSLightingShaderProperty>(idx) {
+        return s.shader_flags_2 & 0x10 != 0;
+    }
+    if let Some(s) = scene.get_as::<BSEffectShaderProperty>(idx) {
+        return s.shader_flags_2 & 0x10 != 0;
+    }
+    false
 }
 
 /// Find texture path for BsTriShape via its shader_property_ref.
@@ -966,5 +983,153 @@ mod skin_tests {
         assert!((m[2][2] - 2.5).abs() < 1e-6);
         // W column still identity.
         assert!((m[3][3] - 1.0).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod two_sided_lookup_tests {
+    //! Regression tests for issue #128 — `bs_tri_shape_two_sided` must
+    //! check `BSEffectShaderProperty` in addition to
+    //! `BSLightingShaderProperty`. Skyrim+ VFX surfaces (force fields,
+    //! glow shells, magic auras) bind the effect-shader variant and
+    //! use the same `shader_flags_2 & 0x10` semantics; pre-fix the
+    //! lookup only tried `BSLightingShaderProperty`, so every
+    //! effect-shader-backed mesh silently dropped the flag and
+    //! rendered backface-culled.
+    use super::*;
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::shader::BSEffectShaderProperty;
+    use crate::scene::NifScene;
+    use crate::types::{BlockRef, NiPoint3};
+
+    fn empty_net() -> NiObjectNETData {
+        NiObjectNETData {
+            name: None,
+            extra_data_refs: Vec::new(),
+            controller_ref: BlockRef::NULL,
+        }
+    }
+
+    /// Build a minimal `BsTriShape` whose `shader_property_ref` points
+    /// at the given block index.
+    fn shape_with_shader(idx: u32) -> BsTriShape {
+        BsTriShape {
+            av: NiAVObjectData {
+                net: empty_net(),
+                flags: 0,
+                transform: crate::types::NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            center: NiPoint3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            radius: 0.0,
+            skin_ref: BlockRef::NULL,
+            shader_property_ref: BlockRef(idx),
+            alpha_property_ref: BlockRef::NULL,
+            vertex_desc: 0,
+            num_triangles: 0,
+            num_vertices: 0,
+            vertices: Vec::new(),
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            vertex_colors: Vec::new(),
+            triangles: Vec::new(),
+            bone_weights: Vec::new(),
+            bone_indices: Vec::new(),
+        }
+    }
+
+    /// Minimal `BSEffectShaderProperty` with only the bit under test
+    /// set; everything else stays at safe defaults.
+    fn effect_shader(flags2: u32) -> BSEffectShaderProperty {
+        BSEffectShaderProperty {
+            net: empty_net(),
+            material_reference: false,
+            shader_flags_1: 0,
+            shader_flags_2: flags2,
+            sf1_crcs: Vec::new(),
+            sf2_crcs: Vec::new(),
+            uv_offset: [0.0, 0.0],
+            uv_scale: [1.0, 1.0],
+            source_texture: String::new(),
+            texture_clamp_mode: 3,
+            lighting_influence: 0,
+            env_map_min_lod: 0,
+            falloff_start_angle: 1.0,
+            falloff_stop_angle: 1.0,
+            falloff_start_opacity: 0.0,
+            falloff_stop_opacity: 0.0,
+            refraction_power: 0.0,
+            emissive_color: [0.0; 4],
+            emissive_multiple: 1.0,
+            soft_falloff_depth: 0.0,
+            greyscale_texture: String::new(),
+            env_map_texture: String::new(),
+            normal_texture: String::new(),
+            env_mask_texture: String::new(),
+            env_map_scale: 1.0,
+            reflectance_texture: String::new(),
+            lighting_texture: String::new(),
+            emittance_color: [0.0; 3],
+            emit_gradient_texture: String::new(),
+            luminance: None,
+        }
+    }
+
+    /// Regression: #128 — pre-fix, this test failed because the
+    /// `BSLightingShaderProperty::get_as` lookup returned None and
+    /// the function fell through to `false`, silently dropping the
+    /// double-sided flag on every Skyrim+ VFX surface (force fields,
+    /// glow shells, magic auras, Dwemer steam).
+    #[test]
+    fn two_sided_via_bs_effect_shader_property() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(effect_shader(0x10)));
+        let shape = shape_with_shader(0);
+        assert!(bs_tri_shape_two_sided(&scene, &shape));
+    }
+
+    #[test]
+    fn not_two_sided_via_bs_effect_shader_without_flag() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(effect_shader(0x00)));
+        let shape = shape_with_shader(0);
+        assert!(!bs_tri_shape_two_sided(&scene, &shape));
+    }
+
+    #[test]
+    fn null_shader_ref_yields_single_sided() {
+        let scene = NifScene::default();
+        let mut shape = shape_with_shader(0);
+        shape.shader_property_ref = BlockRef::NULL;
+        assert!(!bs_tri_shape_two_sided(&scene, &shape));
+    }
+
+    #[test]
+    fn shader_ref_pointing_at_unrelated_block_yields_single_sided() {
+        // Sibling check — a `shader_property_ref` index that points
+        // at a block which is neither of the two shader-property
+        // variants must return `false` (no spurious flag from
+        // mistaking some other block as a shader).
+        let mut scene = NifScene::default();
+        // Push a non-shader block. Use a NiNode to keep the test
+        // self-contained; NiNode is the universal scene-graph block.
+        scene.blocks.push(Box::new(crate::blocks::node::NiNode {
+            av: NiAVObjectData {
+                net: empty_net(),
+                flags: 0,
+                transform: crate::types::NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            children: Vec::new(),
+            effects: Vec::new(),
+        }));
+        let shape = shape_with_shader(0);
+        assert!(!bs_tri_shape_two_sided(&scene, &shape));
     }
 }
