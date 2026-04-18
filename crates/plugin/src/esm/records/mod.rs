@@ -18,7 +18,10 @@ pub mod common;
 pub mod container;
 pub mod global;
 pub mod items;
+pub mod scol;
 pub mod weather;
+
+pub use scol::{parse_scol, ScolPart, ScolPlacement, ScolRecord};
 
 pub use actor::{
     parse_clas, parse_fact, parse_npc, parse_race, ClassRecord, FactionMembership, FactionRecord,

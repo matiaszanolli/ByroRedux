@@ -125,6 +125,7 @@ pub struct RecordType(pub [u8; 4]);
 impl RecordType {
     // ── WorldObjects ────────────────────────────────────────────────────
     pub const STAT: Self = Self(*b"STAT");
+    pub const SCOL: Self = Self(*b"SCOL");
     pub const MSTT: Self = Self(*b"MSTT");
     pub const DOOR: Self = Self(*b"DOOR");
     pub const FURN: Self = Self(*b"FURN");

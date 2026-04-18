@@ -283,6 +283,18 @@ pub struct EsmCellIndex {
     /// full set instead of silently dropping 7 of 8 channels. See
     /// audit S6-11.
     pub texture_sets: HashMap<u32, TextureSet>,
+    /// FO4+ SCOL (Static Collection) records keyed by form ID —
+    /// each packages N child base forms + per-child placement arrays.
+    /// Pre-#405 every SCOL was routed through the MODL-only parser
+    /// and the 15,878 ONAM/DATA placement entries in vanilla
+    /// Fallout4.esm were silently discarded. Vanilla rendering
+    /// mostly worked via the cached combined mesh at
+    /// `SCOL\Fallout4.esm\CM*.NIF`, but mod-added SCOLs (which
+    /// rarely ship a CM-file — previsibine is author-gated) rendered
+    /// as nothing. The cell loader expands an SCOL REFR into N
+    /// synthetic placed refs when the cached NIF is unavailable.
+    /// See audit FO4-D4-C2.
+    pub scols: HashMap<u32, super::records::ScolRecord>,
 }
 
 /// Parse an ESM file and extract cells, worldspaces, and base object definitions.
@@ -307,6 +319,7 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
     let mut txst_textures: HashMap<u32, String> = HashMap::new();
     let mut texture_sets: HashMap<u32, TextureSet> = HashMap::new();
     let mut ltex_to_txst: HashMap<u32, u32> = HashMap::new();
+    let mut scols: HashMap<u32, super::records::ScolRecord> = HashMap::new();
 
     // Walk top-level groups.
     while reader.remaining() > 0 {
@@ -348,9 +361,20 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
             b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"ACTI" | b"CONT" | b"LIGH" | b"MISC"
             | b"FLOR" | b"TREE" | b"AMMO" | b"WEAP" | b"ARMO" | b"BOOK" | b"KEYM" | b"ALCH"
             | b"INGR" | b"NOTE" | b"TACT" | b"IDLM" | b"BNDS" | b"ADDN" | b"TERM" | b"NPC_"
-            | b"SCOL" | b"MOVS" | b"PKIN" => {
+            | b"MOVS" | b"PKIN" => {
                 let end = reader.group_content_end(&group);
                 parse_modl_group(&mut reader, end, &mut statics)?;
+            }
+            // SCOL — FO4+ Static Collection. Has a MODL (cached
+            // combined mesh) but ALSO carries ONAM/DATA placement
+            // arrays that the MODL-only parser would discard. Route
+            // through a dedicated parser that captures every child
+            // placement while still registering the record in the
+            // `statics` map (so REFRs targeting the SCOL still find
+            // its cached-mesh model_path). See audit FO4-D4-C2 / #405.
+            b"SCOL" => {
+                let end = reader.group_content_end(&group);
+                parse_scol_group(&mut reader, end, &mut statics, &mut scols)?;
             }
             _ => {
                 reader.skip_group(&group);
@@ -388,6 +412,7 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
         landscape_textures,
         worldspace_climates,
         texture_sets,
+        scols,
     })
 }
 
@@ -1276,6 +1301,61 @@ fn parse_txst_group(
             if set != TextureSet::default() {
                 texture_sets.insert(header.form_id, set);
             }
+        } else {
+            reader.skip_record(&header);
+        }
+    }
+    Ok(())
+}
+
+/// Parse SCOL (Static Collection) records. Each record is captured
+/// both in the legacy `statics` map (so REFRs targeting the SCOL
+/// still resolve its cached combined mesh via MODL) and in the new
+/// `scols` map which carries the full ONAM/DATA child-placement
+/// data the cell loader needs to expand mod-added SCOLs whose
+/// cached `CM*.NIF` isn't shipped. Pre-#405 SCOLs were routed
+/// through `parse_modl_group` and the placement arrays were
+/// discarded. See audit FO4-D4-C2.
+fn parse_scol_group(
+    reader: &mut EsmReader,
+    end: usize,
+    statics: &mut HashMap<u32, StaticObject>,
+    scols: &mut HashMap<u32, super::records::ScolRecord>,
+) -> Result<()> {
+    while reader.position() < end && reader.remaining() > 0 {
+        if reader.is_group() {
+            let sub = reader.read_group_header()?;
+            let sub_end = reader.group_content_end(&sub);
+            parse_scol_group(reader, sub_end, statics, scols)?;
+            continue;
+        }
+
+        let header = reader.read_record_header()?;
+        if &header.record_type == b"SCOL" {
+            let subs = reader.read_sub_records(&header)?;
+            let record = super::records::parse_scol(header.form_id, &subs);
+            // Preserve the MODL-backed StaticObject entry so REFR
+            // resolution against the SCOL form ID keeps finding the
+            // cached combined mesh. Mirror `parse_modl_group`'s
+            // (empty light_data / empty addon_data / has_script)
+            // defaults — SCOL carries none of those.
+            if !record.model_path.is_empty() || !record.editor_id.is_empty() {
+                statics.insert(
+                    header.form_id,
+                    StaticObject {
+                        form_id: header.form_id,
+                        editor_id: record.editor_id.clone(),
+                        model_path: record.model_path.clone(),
+                        light_data: None,
+                        addon_data: None,
+                        // `parse_scol` doesn't currently capture VMAD
+                        // presence — vanilla FO4 has no script-bearing
+                        // SCOLs; revisit if mods add them.
+                        has_script: false,
+                    },
+                );
+            }
+            scols.insert(header.form_id, record);
         } else {
             reader.skip_record(&header);
         }
@@ -2323,6 +2403,56 @@ mod tests {
         assert_eq!(read_zstring(b"NoNull"), "NoNull");
         assert_eq!(read_zstring(b"\0"), "");
         assert_eq!(read_zstring(b""), "");
+    }
+
+    /// Regression: #405 — vanilla Fallout4.esm must surface every SCOL
+    /// record with its full ONAM/DATA child-placement data. Pre-fix
+    /// the MODL-only parser discarded 15,878 placement entries across
+    /// 2617 SCOL records. The exact counts drift with DLC patches;
+    /// this test just asserts we're in the right order of magnitude.
+    #[test]
+    #[ignore]
+    fn parse_real_fo4_esm_surfaces_scol_placements() {
+        let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data/Fallout4.esm";
+        if !std::path::Path::new(path).exists() {
+            eprintln!("Skipping: Fallout4.esm not found");
+            return;
+        }
+        let data = std::fs::read(path).unwrap();
+        let idx = parse_esm_cells(&data).expect("parse_esm_cells");
+
+        let total_placements: usize = idx
+            .scols
+            .values()
+            .flat_map(|s| s.parts.iter())
+            .map(|p| p.placements.len())
+            .sum();
+        let scol_count = idx.scols.len();
+        let parts_count: usize = idx.scols.values().map(|s| s.parts.len()).sum();
+        eprintln!(
+            "FO4 SCOL: {} records, {} parts, {} total placements",
+            scol_count, parts_count, total_placements,
+        );
+
+        // Audit numbers from April 2026 Fallout4.esm scan:
+        //   2617 SCOL records, 15878 ONAM/DATA pairs. Floors are set
+        //   ~5% below observed so the test stays stable across
+        //   patches without becoming meaningless.
+        assert!(
+            scol_count > 2400,
+            "expected >2.4k SCOL records, got {}",
+            scol_count
+        );
+        assert!(
+            parts_count > 15000,
+            "expected >15k ONAM/DATA parts, got {}",
+            parts_count
+        );
+        assert!(
+            total_placements > 15000,
+            "expected >15k per-child placements, got {}",
+            total_placements
+        );
     }
 
     /// Build a TXST record byte stream with the given (sub_type, path)
