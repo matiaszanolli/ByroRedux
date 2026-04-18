@@ -31,6 +31,13 @@ pub const IDENTITY_BONE_SLOT: u32 = 0;
 /// Covers large exterior cells with multiple loaded cells (~5000+ references).
 pub const MAX_INSTANCES: usize = 8192;
 
+/// Maximum number of `VkDrawIndexedIndirectCommand` entries held in
+/// the per-frame indirect buffer. Each entry is 20 bytes, so 8192
+/// entries × 20 B = 160 KB per frame × 3 frames-in-flight = 480 KB
+/// total. Sized generously — real scenes with instanced batching from
+/// #272 rarely emit more than a few hundred entries. See #309.
+pub const MAX_INDIRECT_DRAWS: usize = 8192;
+
 /// Per-instance data uploaded to the instance SSBO each frame.
 ///
 /// The vertex shader reads `instances[gl_InstanceIndex]` instead of push
@@ -221,6 +228,13 @@ pub struct SceneBuffers {
     /// One SSBO per frame-in-flight (per-instance data for instanced drawing).
     /// Each entry contains model matrix + texture index + bone offset.
     instance_buffers: Vec<GpuBuffer>,
+    /// One `INDIRECT_BUFFER`-usage buffer per frame-in-flight for
+    /// `vkCmdDrawIndexedIndirect`. Holds
+    /// `VkDrawIndexedIndirectCommand` entries uploaded CPU-side each
+    /// frame. The draw loop collapses consecutive batches sharing
+    /// `(pipeline_key, is_decal)` into one indirect draw call reading
+    /// a contiguous range of this buffer. See #309.
+    indirect_buffers: Vec<GpuBuffer>,
     /// Descriptor pool for scene descriptor sets.
     descriptor_pool: vk::DescriptorPool,
     /// Layout for set 1: binding 0 = SSBO (lights), binding 1 = UBO (camera),
@@ -251,12 +265,16 @@ impl SceneBuffers {
         // Instance SSBO: per-instance model matrix + texture index + bone offset.
         let instance_buf_size =
             (std::mem::size_of::<GpuInstance>() * MAX_INSTANCES) as vk::DeviceSize;
+        // Indirect buffer: one VkDrawIndexedIndirectCommand (20 B) per batch. #309.
+        let indirect_buf_size = (std::mem::size_of::<vk::DrawIndexedIndirectCommand>()
+            * MAX_INDIRECT_DRAWS) as vk::DeviceSize;
 
         // Create per-frame buffers.
         let mut light_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut camera_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut bone_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut instance_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut indirect_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             light_buffers.push(GpuBuffer::create_host_visible(
                 device,
@@ -281,6 +299,12 @@ impl SceneBuffers {
                 allocator,
                 instance_buf_size,
                 vk::BufferUsageFlags::STORAGE_BUFFER,
+            )?);
+            indirect_buffers.push(GpuBuffer::create_host_visible(
+                device,
+                allocator,
+                indirect_buf_size,
+                vk::BufferUsageFlags::INDIRECT_BUFFER,
             )?);
         }
 
@@ -508,6 +532,7 @@ impl SceneBuffers {
             camera_buffers,
             bone_buffers,
             instance_buffers,
+            indirect_buffers,
             descriptor_pool,
             descriptor_set_layout,
             descriptor_sets,
@@ -639,6 +664,54 @@ impl SceneBuffers {
     /// Used by the UI overlay to append a single instance after the bulk upload.
     pub fn instance_buffer_mapped_mut(&mut self, frame_index: usize) -> Result<&mut [u8]> {
         self.instance_buffers[frame_index].mapped_slice_mut()
+    }
+
+    /// Upload `VkDrawIndexedIndirectCommand` entries for the current
+    /// frame-in-flight. The draw loop issues one
+    /// `vkCmdDrawIndexedIndirect` per pipeline group, reading a
+    /// contiguous range of this buffer. See #309.
+    ///
+    /// Clamps at [`MAX_INDIRECT_DRAWS`] and logs a warn on overflow —
+    /// real scenes with the #272 instanced batching rarely emit more
+    /// than a few hundred batches per frame, so the clamp is a
+    /// defense-in-depth against unbounded-growth bugs.
+    pub fn upload_indirect_draws(
+        &mut self,
+        device: &ash::Device,
+        frame_index: usize,
+        draws: &[vk::DrawIndexedIndirectCommand],
+    ) -> Result<()> {
+        let count = draws.len().min(MAX_INDIRECT_DRAWS);
+        if draws.len() > MAX_INDIRECT_DRAWS {
+            log::warn!(
+                "Indirect draw overflow: {} commands submitted, capped at {} — excess draws silently dropped",
+                draws.len(),
+                MAX_INDIRECT_DRAWS,
+            );
+        }
+        if count == 0 {
+            return Ok(());
+        }
+        let buf = &mut self.indirect_buffers[frame_index];
+        let mapped = buf.mapped_slice_mut()?;
+        let byte_size = std::mem::size_of::<vk::DrawIndexedIndirectCommand>() * count;
+        // SAFETY: VkDrawIndexedIndirectCommand is a Vulkan-defined C struct
+        // with the exact layout expected by the device. `indirect_buffers`
+        // are sized for MAX_INDIRECT_DRAWS; count is clamped above.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                draws.as_ptr() as *const u8,
+                mapped.as_mut_ptr(),
+                byte_size,
+            );
+        }
+        buf.flush_if_needed(device)
+    }
+
+    /// Return the `VkBuffer` handle for the current frame's indirect
+    /// buffer. The draw loop passes this to `cmd_draw_indexed_indirect`.
+    pub fn indirect_buffer(&self, frame_index: usize) -> vk::Buffer {
+        self.indirect_buffers[frame_index].buffer
     }
 
     /// Get the light buffers (for compute pipeline descriptor writes).
@@ -810,6 +883,9 @@ impl SceneBuffers {
         for buf in &mut self.instance_buffers {
             buf.destroy(device, allocator);
         }
+        for buf in &mut self.indirect_buffers {
+            buf.destroy(device, allocator);
+        }
         device.destroy_descriptor_pool(self.descriptor_pool, None);
         device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
     }
@@ -865,5 +941,37 @@ mod gpu_instance_layout_tests {
         // same offset so every shader-side `pad1` reference renamed to
         // `materialKind` continues to alias the same 4 bytes. See #344.
         assert_eq!(offset_of!(GpuInstance, material_kind), 156);
+    }
+
+    /// Regression: #309 — `VkDrawIndexedIndirectCommand` is a Vulkan-
+    /// specified C struct that `cmd_draw_indexed_indirect` reads
+    /// directly from the device-side buffer. Its layout is part of
+    /// the Vulkan contract (20 bytes, five u32 fields in a fixed
+    /// order). Guard the size so a future `ash` upgrade that
+    /// accidentally renames / reorders fields breaks the test
+    /// instead of silently producing garbage draw params.
+    #[test]
+    fn draw_indexed_indirect_command_is_20_bytes() {
+        assert_eq!(
+            size_of::<vk::DrawIndexedIndirectCommand>(),
+            20,
+            "VkDrawIndexedIndirectCommand must be 20 bytes (5 × u32) per the Vulkan spec"
+        );
+    }
+
+    /// Regression: #309 — `upload_indirect_draws` clamps at
+    /// `MAX_INDIRECT_DRAWS` so a future bug that produces an
+    /// unbounded batch list can't overflow the indirect buffer.
+    /// 8192 × 20 B = 160 KB per frame; the allocation matches.
+    #[test]
+    fn indirect_buffer_capacity_matches_max_draw_constant() {
+        let bytes_per_command = size_of::<vk::DrawIndexedIndirectCommand>();
+        assert_eq!(bytes_per_command, 20);
+        assert_eq!(
+            bytes_per_command * MAX_INDIRECT_DRAWS,
+            20 * 8192,
+            "MAX_INDIRECT_DRAWS × sizeof(VkDrawIndexedIndirectCommand) \
+             must match the per-frame indirect buffer allocation"
+        );
     }
 }

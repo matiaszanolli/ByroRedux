@@ -25,6 +25,15 @@ pub struct DeviceCapabilities {
     /// clamped to our configured target (16×). Zero when
     /// `sampler_anisotropy_supported` is false.
     pub max_sampler_anisotropy: f32,
+    /// True if the physical device exposes `multiDrawIndirect` in
+    /// `VkPhysicalDeviceFeatures`. Enables `vkCmdDrawIndexedIndirect`
+    /// with `drawCount > 1` — one API call dispatches an arbitrary
+    /// number of draws reading their parameters from an
+    /// `INDIRECT_BUFFER`. Universally supported on desktop GPUs since
+    /// Vulkan 1.0. The draw path uses it to collapse consecutive
+    /// batches sharing `(pipeline_key, is_decal)` into a single
+    /// command-buffer entry. See #309.
+    pub multi_draw_indirect_supported: bool,
 }
 
 /// Required device extensions (always needed).
@@ -117,6 +126,7 @@ fn is_device_suitable(
     } else {
         0.0
     };
+    let multi_draw_indirect_supported = features.multi_draw_indirect == vk::TRUE;
 
     // Find queue families.
     let queue_families = unsafe { instance.get_physical_device_queue_family_properties(device) };
@@ -156,6 +166,7 @@ fn is_device_suitable(
                 ray_query_supported,
                 sampler_anisotropy_supported,
                 max_sampler_anisotropy,
+                multi_draw_indirect_supported,
             },
         ))),
         _ => Ok(None),
@@ -194,7 +205,14 @@ pub fn create_logical_device(
     // rejects any pipeline where pAttachments[i] != pAttachments[0].
     let device_features = vk::PhysicalDeviceFeatures::default()
         .sampler_anisotropy(caps.sampler_anisotropy_supported)
-        .independent_blend(true);
+        .independent_blend(true)
+        // #309 — `vkCmdDrawIndexedIndirect` with drawCount > 1
+        // collapses the per-batch `cmd_draw_indexed` loop into one API
+        // call per pipeline group. Universally supported on desktop
+        // GPUs since Vulkan 1.0 and the fallback path (the
+        // pre-#309 per-batch loop) kicks in if the device doesn't
+        // expose it.
+        .multi_draw_indirect(caps.multi_draw_indirect_supported);
 
     // Build extension list: required + optional RT.
     let mut extensions: Vec<*const i8> = REQUIRED_EXTENSIONS.iter().map(|e| e.as_ptr()).collect();

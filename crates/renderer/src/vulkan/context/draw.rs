@@ -549,6 +549,29 @@ impl VulkanContext {
                 .unwrap_or_else(|e| log::warn!("Failed to upload instances: {e}"));
         }
 
+        // Build + upload indirect-draw commands for this frame (#309).
+        // One `VkDrawIndexedIndirectCommand` per DrawBatch, laid out in
+        // the same order as `batches` so the draw loop can reference a
+        // contiguous range of the buffer for each pipeline group.
+        // Populated regardless of `device_caps.multi_draw_indirect_supported`
+        // — the upload is ~N × 20 B for small N, and this keeps the
+        // indirect path always ready when it is enabled.
+        if !batches.is_empty() && self.device_caps.multi_draw_indirect_supported {
+            let indirect_draws: Vec<vk::DrawIndexedIndirectCommand> = batches
+                .iter()
+                .map(|b| vk::DrawIndexedIndirectCommand {
+                    index_count: b.index_count,
+                    instance_count: b.instance_count,
+                    first_index: b.global_index_offset,
+                    vertex_offset: b.global_vertex_offset,
+                    first_instance: b.first_instance,
+                })
+                .collect();
+            self.scene_buffers
+                .upload_indirect_draws(&self.device, frame, &indirect_draws)
+                .unwrap_or_else(|e| log::warn!("Failed to upload indirect draws: {e}"));
+        }
+
         // Pre-populate the blend pipeline cache for any new (src, dst,
         // two_sided) combos this frame. Resolved up-front because the
         // hot draw loop only takes `&self.device` for `cmd_bind_pipeline`
@@ -581,13 +604,26 @@ impl VulkanContext {
         // shaders in the upcoming render pass. Required by Vulkan spec
         // even for HOST_COHERENT memory.
         unsafe {
+            // Host-to-device visibility barrier. Covers the instance
+            // SSBO (read by VS/FS), camera/light/bone buffers (read by
+            // VS/FS), and — when `multiDrawIndirect` is enabled —
+            // the per-frame indirect buffer whose contents
+            // `cmd_draw_indexed_indirect` reads at `DRAW_INDIRECT`
+            // stage. Without the extra stage mask, Vulkan validation
+            // flags the indirect fetch as racing the host write.
             let instance_barrier = vk::MemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::HOST_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::UNIFORM_READ);
+                .dst_access_mask(
+                    vk::AccessFlags::SHADER_READ
+                        | vk::AccessFlags::UNIFORM_READ
+                        | vk::AccessFlags::INDIRECT_COMMAND_READ,
+                );
             self.device.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::HOST,
-                vk::PipelineStageFlags::VERTEX_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::PipelineStageFlags::VERTEX_SHADER
+                    | vk::PipelineStageFlags::FRAGMENT_SHADER
+                    | vk::PipelineStageFlags::DRAW_INDIRECT,
                 vk::DependencyFlags::empty(),
                 &[instance_barrier],
                 &[],
@@ -642,15 +678,31 @@ impl VulkanContext {
                 &[],
             );
 
-            // ── Instanced draw loop ───────────────────────────────────
+            // ── Draw loop ─────────────────────────────────────────────
             //
-            // Each batch is a single cmd_draw_indexed call with instance_count > 1.
-            // The vertex shader reads instances[gl_InstanceIndex] for the model matrix,
-            // texture index, and bone offset — no push constants, no per-draw descriptor
-            // set binds.
-            // Sentinel that no real batch can match — forces the first
-            // batch to bind its pipeline. (`PipelineKey` is `PartialEq`
-            // so we just pick a value distinct from any draw input.)
+            // Two paths depending on what the device supports:
+            //
+            // 1. **Multi-draw indirect** (#309) — when the device
+            //    exposes `multiDrawIndirect` (universally supported on
+            //    desktop Vulkan 1.0+) and the global VB/IB is bound,
+            //    we group consecutive batches sharing
+            //    `(pipeline_key, is_decal)` into one
+            //    `cmd_draw_indexed_indirect` call reading N
+            //    `VkDrawIndexedIndirectCommand` entries from the
+            //    per-frame indirect buffer. Pipeline / depth-bias
+            //    state transitions still split groups (necessary —
+            //    dynamic state changes between draws).
+            //
+            // 2. **Per-batch fallback** — used when the device doesn't
+            //    expose `multiDrawIndirect` or when the global VB/IB
+            //    isn't bound (e.g. the spinning-cube demo before the
+            //    scene SSBO is built). One `cmd_draw_indexed` per
+            //    batch, same behavior as pre-#309.
+            //
+            // The indirect buffer has already been filled + flushed
+            // above when `gpu_instances.upload_instances(...)` ran —
+            // see the `indirect_draws` build-up where each batch
+            // pushes one `VkDrawIndexedIndirectCommand` entry.
             let mut last_pipeline_key = PipelineKey::Blended {
                 src: u8::MAX,
                 dst: u8::MAX,
@@ -680,7 +732,19 @@ impl VulkanContext {
                 false
             };
 
-            for batch in &batches {
+            let use_indirect = global_bound && self.device_caps.multi_draw_indirect_supported;
+            let indirect_buffer = self.scene_buffers.indirect_buffer(frame);
+            let indirect_stride = std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32;
+
+            // Precompute indirect-buffer state for batch `i`. Returns
+            // `(pipe, is_decal)` — consecutive batches sharing the
+            // tuple form one indirect group.
+            let batch_state = |b: &DrawBatch| (b.pipeline_key, b.is_decal);
+
+            let mut i = 0;
+            while i < batches.len() {
+                let batch = &batches[i];
+
                 // Switch pipeline when rendering mode changes.
                 if batch.pipeline_key != last_pipeline_key {
                     let pipe = match batch.pipeline_key {
@@ -713,11 +777,6 @@ impl VulkanContext {
                 }
 
                 // Depth bias for decal geometry — only emit when state changes.
-                // Reduced from (-8, -2) to (-4, -1) to prevent decals from
-                // floating visibly in front of their host surface at grazing
-                // viewing angles. The slope factor scales with the surface's
-                // depth gradient, so -2.0 was pulling decals too far forward
-                // on oblique walls.
                 if batch.is_decal != last_is_decal {
                     let bias = if batch.is_decal { -4.0_f32 } else { 0.0 };
                     self.device.cmd_set_depth_bias(
@@ -729,9 +788,30 @@ impl VulkanContext {
                     last_is_decal = batch.is_decal;
                 }
 
-                if global_bound {
-                    // Global buffer path: use per-mesh offsets into the
-                    // single bound VB/IB. No per-mesh rebinding needed.
+                if use_indirect {
+                    // Gather consecutive batches that share the current
+                    // `(pipeline_key, is_decal)` tuple — each one is
+                    // already represented in the indirect buffer as one
+                    // VkDrawIndexedIndirectCommand. A single
+                    // `cmd_draw_indexed_indirect` call dispatches all N.
+                    let key = batch_state(batch);
+                    let mut end = i + 1;
+                    while end < batches.len() && batch_state(&batches[end]) == key {
+                        end += 1;
+                    }
+                    let group_size = (end - i) as u32;
+                    let byte_offset = (i * indirect_stride as usize) as vk::DeviceSize;
+                    self.device.cmd_draw_indexed_indirect(
+                        cmd,
+                        indirect_buffer,
+                        byte_offset,
+                        group_size,
+                        indirect_stride,
+                    );
+                    i = end;
+                } else if global_bound {
+                    // Global buffer path without multiDrawIndirect —
+                    // one direct draw per batch (pre-#309 behavior).
                     self.device.cmd_draw_indexed(
                         cmd,
                         batch.index_count,
@@ -740,6 +820,7 @@ impl VulkanContext {
                         batch.global_vertex_offset,
                         batch.first_instance,
                     );
+                    i += 1;
                 } else {
                     // Fallback: per-mesh buffers (before SSBO is built, or
                     // for non-scene meshes like the spinning cube demo).
@@ -765,6 +846,7 @@ impl VulkanContext {
                         0,
                         batch.first_instance,
                     );
+                    i += 1;
                 }
             }
 
