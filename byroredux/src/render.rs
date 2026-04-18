@@ -2,9 +2,10 @@
 
 use byroredux_core::ecs::{
     ActiveCamera, AnimatedVisibility, Camera, EntityId, GlobalTransform, LightSource, Material,
-    MeshHandle, SkinnedMesh, TextureHandle, Transform, World, WorldBound, MAX_BONES_PER_MESH,
+    MeshHandle, ParticleEmitter, SkinnedMesh, TextureHandle, Transform, World, WorldBound,
+    MAX_BONES_PER_MESH,
 };
-use byroredux_core::math::{Mat4, Vec3, Vec4};
+use byroredux_core::math::{Mat4, Quat, Vec3, Vec4};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::SkyParams;
 use rayon::slice::ParallelSliceMut;
@@ -73,6 +74,7 @@ pub(crate) fn build_render_data(
     gpu_lights: &mut Vec<byroredux_renderer::GpuLight>,
     bone_palette: &mut Vec<[[f32; 4]; 4]>,
     skin_offsets: &mut HashMap<EntityId, u32>,
+    particle_quad_handle: Option<u32>,
 ) -> ([f32; 16], [f32; 3], [f32; 3], [f32; 3], f32, f32, SkyParams) {
     draw_commands.clear();
     gpu_lights.clear();
@@ -130,6 +132,10 @@ pub(crate) fn build_render_data(
     }
 
     // Get camera view-projection + build frustum planes for culling.
+    // `cam_pos` is also captured here for the particle billboard pass —
+    // each live particle needs the active camera's world position to
+    // compute a face-camera rotation matrix in `build_particle_draws`.
+    let mut cam_pos = Vec3::ZERO;
     let (view_proj, frustum, vp_mat) = if let Some(active) = world.try_resource::<ActiveCamera>() {
         let cam_entity = active.0;
         drop(active);
@@ -142,7 +148,10 @@ pub(crate) fn build_render_data(
                 let cam = cq.get(cam_entity);
                 let t = tq.get(cam_entity);
                 match (cam, t) {
-                    (Some(c), Some(t)) => c.projection_matrix() * Camera::view_matrix(t),
+                    (Some(c), Some(t)) => {
+                        cam_pos = t.translation;
+                        c.projection_matrix() * Camera::view_matrix(t)
+                    }
                     _ => Mat4::IDENTITY,
                 }
             }
@@ -363,6 +372,105 @@ pub(crate) fn build_render_data(
             }
         }
     }
+    // ── Particle billboards (#401) ──────────────────────────────────
+    //
+    // Each live particle becomes one DrawCommand referencing the unit
+    // particle quad mesh. The model matrix is `translate(world_pos) ·
+    // face_camera_rot · scale(size)`, so all per-particle dynamics live
+    // in the model matrix and the existing instanced batching from #272
+    // collapses every particle (consecutive in the sorted list,
+    // sharing mesh+pipeline) into a single instanced cmd_draw_indexed.
+    //
+    // Color comes through `emissive_color` * `emissive_mult` — the
+    // existing fragment shader already adds the emissive contribution
+    // unconditionally, so an untextured quad lit only by emissive
+    // produces the desired glowing-billboard look. Particles default to
+    // additive blending (src=SRC_ALPHA, dst=ONE) per ParticleEmitter
+    // defaults; per-emitter `(src_blend, dst_blend)` overrides ride
+    // through the existing per-(src, dst, two_sided) pipeline cache
+    // from #392.
+    if let Some(particle_mesh) = particle_quad_handle {
+        if let (Some(gtq), Some(eq)) = (
+            world.query::<GlobalTransform>(),
+            world.query::<ParticleEmitter>(),
+        ) {
+            for (entity, em) in eq.iter() {
+                let _ = gtq.get(entity); // transform sampled by the system at spawn
+                if em.particles.is_empty() {
+                    continue;
+                }
+                let particle_count = em.particles.len();
+                for i in 0..particle_count {
+                    let p = em.particles.positions[i];
+                    let world_pos = Vec3::new(p[0], p[1], p[2]);
+                    // Face-camera rotation: align the quad's local +Z
+                    // (its outward normal — see `quad_vertices` which
+                    // sets normals to (0,0,1)) toward the camera.
+                    let to_cam = cam_pos - world_pos;
+                    let rot = if to_cam.length_squared() > 1.0e-6 {
+                        Quat::from_rotation_arc(Vec3::Z, to_cam.normalize())
+                    } else {
+                        Quat::IDENTITY
+                    };
+                    // LERP color and size against age/life so particles
+                    // fade out smoothly and grow/shrink as configured.
+                    let t = (em.particles.ages[i] / em.particles.lifes[i]).clamp(0.0, 1.0);
+                    let start_c = em.start_color;
+                    let end_c = em.end_color;
+                    let color = [
+                        start_c[0] + (end_c[0] - start_c[0]) * t,
+                        start_c[1] + (end_c[1] - start_c[1]) * t,
+                        start_c[2] + (end_c[2] - start_c[2]) * t,
+                        start_c[3] + (end_c[3] - start_c[3]) * t,
+                    ];
+                    let size = em.start_size + (em.end_size - em.start_size) * t;
+
+                    let model = Mat4::from_scale_rotation_translation(
+                        Vec3::splat(size),
+                        rot,
+                        world_pos,
+                    );
+                    let pos_clip = vp_mat * Vec4::new(world_pos.x, world_pos.y, world_pos.z, 1.0);
+                    let sort_depth = pos_clip.w.to_bits();
+
+                    draw_commands.push(DrawCommand {
+                        mesh_handle: particle_mesh,
+                        texture_handle: 0,
+                        model_matrix: model.to_cols_array(),
+                        alpha_blend: true,
+                        src_blend: em.src_blend,
+                        dst_blend: em.dst_blend,
+                        two_sided: true, // billboard quads are single-faced; cull-off avoids back-face flicker on extreme angles
+                        is_decal: false,
+                        bone_offset: 0,
+                        normal_map_index: 0,
+                        dark_map_index: 0,
+                        alpha_threshold: 0.0,
+                        alpha_test_func: 0,
+                        roughness: 1.0,
+                        metalness: 0.0,
+                        // Emissive carries the particle color * alpha so
+                        // the existing fragment-shader emissive add lights
+                        // the quad with no scene-light dependency. Alpha
+                        // is folded into emissive_mult so the LERP-to-0
+                        // end-color drives a true fade-out.
+                        emissive_mult: color[3],
+                        emissive_color: [color[0], color[1], color[2]],
+                        specular_strength: 0.0,
+                        specular_color: [0.0, 0.0, 0.0],
+                        vertex_offset: 0,
+                        index_offset: 0,
+                        vertex_count: 0,
+                        sort_depth,
+                        in_tlas: false,
+                        avg_albedo: [0.0, 0.0, 0.0],
+                        material_kind: 0,
+                    });
+                }
+            }
+        }
+    }
+
     // Sort: opaque → decal → alpha.
     //
     // Opaque: group by (pipeline_key, mesh, texture) to maximize instanced

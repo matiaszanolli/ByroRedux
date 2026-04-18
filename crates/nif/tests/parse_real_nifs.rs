@@ -128,3 +128,99 @@ fn parse_rate_smoke_all_games() {
         }
     }
 }
+
+/// #401 — particle emitters must surface from real game content. Walks
+/// the first up-to-200 NIFs in any candidate folder (`fire`, `smoke`,
+/// `fx`, etc.) of an available reference archive, parses each, and
+/// asserts that at least one produces an [`ImportedParticleEmitterFlat`].
+/// Pre-fix the importer dropped every NiPSysBlock and every torch
+/// rendered as an invisible node — this test would have caught it.
+///
+/// Robust to archive layout differences across games and mods: tries
+/// FNV, Fallout 3, Oblivion, Skyrim SE in turn until one of them has
+/// the expected folders. Fails only if every available archive yields
+/// zero emitters across the full sweep, which would mean the importer
+/// regressed (not that the archive layout drifted).
+#[test]
+#[ignore]
+fn real_archive_torch_meshes_surface_particle_emitters() {
+    use byroredux_nif::import::import_nif_particle_emitters;
+
+    let candidate_folders = ["fire", "fx", "smoke", "fxsmoke", "magic", "effects"];
+    let games_to_try = [
+        Game::FalloutNV,
+        Game::Fallout3,
+        Game::Oblivion,
+        Game::SkyrimSE,
+    ];
+
+    let mut tried_any_archive = false;
+    for game in games_to_try {
+        let Some(archive) = open_mesh_archive(game) else {
+            continue;
+        };
+        tried_any_archive = true;
+        let all_files = archive.list_files();
+        let mut total_emitters = 0usize;
+        let mut paths_with_emitters: Vec<String> = Vec::new();
+        // Walk up to 200 candidate NIFs per game so the test stays
+        // fast (a few seconds) but has enough samples to find at least
+        // one emitter in any reasonable mesh archive.
+        let candidates: Vec<&String> = all_files
+            .iter()
+            .filter(|f| {
+                let lower = f.to_ascii_lowercase();
+                lower.ends_with(".nif")
+                    && candidate_folders.iter().any(|c| lower.contains(c))
+            })
+            .take(200)
+            .collect();
+
+        for path in &candidates {
+            let bytes = match archive.extract(path) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let scene = match byroredux_nif::parse_nif(&bytes) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let emitters = import_nif_particle_emitters(&scene);
+            if !emitters.is_empty() {
+                total_emitters += emitters.len();
+                if paths_with_emitters.len() < 5 {
+                    paths_with_emitters.push((*path).clone());
+                }
+            }
+        }
+
+        if total_emitters > 0 {
+            eprintln!(
+                "[{}] {} emitters across {} meshes (sampled {} NIFs from candidate folders)",
+                game.label(),
+                total_emitters,
+                paths_with_emitters.len(),
+                candidates.len(),
+            );
+            for p in &paths_with_emitters {
+                eprintln!("  example: {}", p);
+            }
+            return; // pass on the first game that yields any emitters
+        }
+        eprintln!(
+            "[{}] no emitters in {} candidate NIFs — trying next game",
+            game.label(),
+            candidates.len(),
+        );
+    }
+
+    if !tried_any_archive {
+        eprintln!("no reference game data available — skipping (set BYROREDUX_*_DATA env vars)");
+        return;
+    }
+    panic!(
+        "no particle emitters surfaced from any reference archive — \
+         the importer regressed (the audit's invisible-torch failure \
+         mode is back)"
+    );
+}

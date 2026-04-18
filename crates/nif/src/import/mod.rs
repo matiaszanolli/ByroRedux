@@ -286,12 +286,70 @@ pub struct ImportedScene {
     pub nodes: Vec<ImportedNode>,
     /// Leaf geometry meshes.
     pub meshes: Vec<ImportedMesh>,
+    /// Parsed particle systems (NiParticleSystem / NiParticles /
+    /// NiMeshParticleSystem / NiParticleSystemController). The current
+    /// parser keeps `NiPSysBlock` opaque (every numeric field is
+    /// discarded — see `crates/nif/src/blocks/particle.rs`), so the
+    /// importer only flags presence + the host node index. The scene
+    /// builder picks a heuristic [`crate::ParticleEmitter`] preset
+    /// (torch_flame / smoke / magic_sparkles) by inspecting the host
+    /// NiNode's name. See #401.
+    pub particle_emitters: Vec<ImportedParticleEmitter>,
     /// BSXFlags value from the root node's extra data (physics/animation hints).
     /// Bits: 0=animated, 1=havok, 2=ragdoll, 3=complex, 4=addon, 5=editor marker,
     /// 6=dynamic, 7=articulated, 8=needs_transform_updates, 9=external_emit.
     pub bsx_flags: Option<u32>,
     /// BSBound from the root node's extra data (object-level bounding box).
     pub bs_bound: Option<([f32; 3], [f32; 3])>, // (center, half_extents)
+}
+
+/// One particle emitter discovered while walking the NIF scene graph.
+/// See [`ImportedScene::particle_emitters`] for the full picture.
+#[derive(Debug, Clone)]
+pub struct ImportedParticleEmitter {
+    /// Index into [`ImportedScene::nodes`] for the host scene-graph
+    /// node — the scene builder anchors the spawned ECS emitter entity
+    /// at this node so the particles inherit its world position.
+    pub parent_node: Option<usize>,
+    /// Original NIF block type name — `"NiParticleSystem"`,
+    /// `"NiParticles"`, `"NiMeshParticleSystem"`,
+    /// `"NiParticleSystemController"`, etc. The scene builder reads
+    /// this only for telemetry; the heuristic preset is driven off the
+    /// host node's name (`torch` / `fire` → flame, `smoke` → smoke,
+    /// `magic` / `enchant` → sparkles, fallback → flame).
+    pub original_type: String,
+}
+
+/// Flat-import variant of [`ImportedParticleEmitter`] used by the cell
+/// loader, which doesn't reconstruct the NIF hierarchy. Carries the
+/// emitter's NIF-local position (composed up to the host node), the
+/// nearest named ancestor's name (for heuristic preset selection), and
+/// the original NIF block type name. The cell loader composes
+/// `local_position` with the REFR placement transform to land the
+/// spawned emitter entity at the correct world position. See #401.
+#[derive(Debug, Clone)]
+pub struct ImportedParticleEmitterFlat {
+    /// Y-up local position of the emitter inside its source NIF.
+    pub local_position: [f32; 3],
+    /// Nearest named ancestor's name in the NIF hierarchy. Used by the
+    /// heuristic preset selector (`torch`/`fire`/`flame`/`brazier`/
+    /// `candle` → flame, `smoke`/`steam` → smoke, `magic`/`enchant`/
+    /// `sparkle`/`glow` → sparkles, fallback → flame).
+    pub host_name: Option<std::sync::Arc<str>>,
+    /// Original NIF block type name — used only for telemetry.
+    pub original_type: String,
+}
+
+/// Walk a parsed NIF scene flat and return every renderable particle
+/// emitter (`NiParticleSystem` and friends), with NIF-local positions
+/// and the nearest named ancestor's name. See #401.
+pub fn import_nif_particle_emitters(scene: &NifScene) -> Vec<ImportedParticleEmitterFlat> {
+    let mut out = Vec::new();
+    let Some(root_idx) = scene.root_index else {
+        return out;
+    };
+    walk::walk_node_particle_emitters_flat(scene, root_idx, &NiTransform::default(), None, &mut out);
+    out
 }
 
 /// Import all renderable meshes from a parsed NIF scene, preserving hierarchy.
@@ -303,6 +361,7 @@ pub fn import_nif_scene(scene: &NifScene) -> ImportedScene {
     let mut imported = ImportedScene {
         nodes: Vec::new(),
         meshes: Vec::new(),
+        particle_emitters: Vec::new(),
         bsx_flags: None,
         bs_bound: None,
     };
@@ -1315,5 +1374,104 @@ mod tests {
         let meshes = import_nif(&scene);
         assert_eq!(meshes.len(), 1);
         assert_eq!(meshes[0].name, Some(Arc::from("ValueChild")));
+    }
+
+    /// Build a synthetic NIF scene where the root NiNode has a single
+    /// NiParticleSystem child. The hierarchical importer must surface
+    /// the emitter via `ImportedScene::particle_emitters` and the flat
+    /// importer must surface it via `import_nif_particle_emitters`.
+    /// Pre-#401 both paths discarded the block silently.
+    fn ni_psys_block(type_name: &str) -> crate::blocks::particle::NiPSysBlock {
+        crate::blocks::particle::NiPSysBlock {
+            original_type: type_name.to_string(),
+        }
+    }
+
+    #[test]
+    fn hierarchical_import_surfaces_particle_emitter_under_named_host() {
+        // Root NiNode named "TorchNode" with a NiParticleSystem child at index 1.
+        let root = make_ni_node(identity_transform(), vec![BlockRef(1)]);
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+            Box::new(root),
+            Box::new(ni_psys_block("NiParticleSystem")),
+        ];
+        let scene = scene_from_blocks(blocks);
+        let imported = import_nif_scene(&scene);
+        assert_eq!(imported.particle_emitters.len(), 1);
+        let em = &imported.particle_emitters[0];
+        assert_eq!(em.original_type, "NiParticleSystem");
+        // Host is the root NiNode (index 0 in imported.nodes).
+        assert_eq!(em.parent_node, Some(0));
+    }
+
+    #[test]
+    fn flat_import_surfaces_particle_emitter_with_nearest_named_host() {
+        // Root NiNode at translation (5, 10, 20), with NiParticleSystem child.
+        let root = make_ni_node(translated(5.0, 10.0, 20.0), vec![BlockRef(1)]);
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+            Box::new(root),
+            Box::new(ni_psys_block("NiParticleSystem")),
+        ];
+        let scene = scene_from_blocks(blocks);
+        let emitters = import_nif_particle_emitters(&scene);
+        assert_eq!(emitters.len(), 1);
+        let em = &emitters[0];
+        // Y-up conversion: (5, 10, 20) → (5, 20, -10).
+        assert!((em.local_position[0] - 5.0).abs() < 1e-5);
+        assert!((em.local_position[1] - 20.0).abs() < 1e-5);
+        assert!((em.local_position[2] + 10.0).abs() < 1e-5);
+        // Host name is the root node's name ("TestNode" per make_ni_node).
+        assert_eq!(em.host_name.as_deref(), Some("TestNode"));
+        assert_eq!(em.original_type, "NiParticleSystem");
+    }
+
+    #[test]
+    fn flat_import_recognizes_legacy_particle_block_types() {
+        // Each variant's original_type comes from the NIF dispatcher;
+        // the importer must recognize all of them, not just "NiParticleSystem".
+        for variant in [
+            "NiMeshParticleSystem",
+            "NiParticles",
+            "NiParticleSystemController",
+            "NiBSPArrayController",
+            "NiAutoNormalParticles",
+            "NiRotatingParticles",
+        ] {
+            let root = make_ni_node(identity_transform(), vec![BlockRef(1)]);
+            let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+                Box::new(root),
+                Box::new(ni_psys_block(variant)),
+            ];
+            let scene = scene_from_blocks(blocks);
+            let emitters = import_nif_particle_emitters(&scene);
+            assert_eq!(
+                emitters.len(),
+                1,
+                "{} should surface as a particle emitter",
+                variant
+            );
+            assert_eq!(emitters[0].original_type, variant);
+        }
+    }
+
+    #[test]
+    fn flat_import_skips_modifier_only_blocks() {
+        // NiPSysGravity / NiPSysColorModifier / etc. are NiPSysBlock too,
+        // but they're not renderable emitters — only modifier inputs to a
+        // host NiParticleSystem. Surfacing them as emitters would spawn
+        // duplicates; the importer must filter them out by original_type.
+        let root = make_ni_node(identity_transform(), vec![BlockRef(1), BlockRef(2)]);
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+            Box::new(root),
+            Box::new(ni_psys_block("NiPSysGravity")),
+            Box::new(ni_psys_block("NiPSysColorModifier")),
+        ];
+        let scene = scene_from_blocks(blocks);
+        let emitters = import_nif_particle_emitters(&scene);
+        assert!(
+            emitters.is_empty(),
+            "modifier-only NiPSysBlocks must not surface as emitters, got {} entries",
+            emitters.len(),
+        );
     }
 }

@@ -6,7 +6,8 @@
 
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
-    CellRoot, GlobalTransform, LightSource, Material, MeshHandle, TextureHandle, Transform, World,
+    CellRoot, GlobalTransform, LightSource, Material, MeshHandle, ParticleEmitter, TextureHandle,
+    Transform, World,
 };
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
@@ -29,6 +30,11 @@ struct CachedNifImport {
     meshes: Vec<byroredux_nif::import::ImportedMesh>,
     collisions: Vec<byroredux_nif::import::ImportedCollision>,
     lights: Vec<byroredux_nif::import::ImportedLight>,
+    /// Particle emitters detected in the NIF scene graph (NiParticleSystem
+    /// and friends). Carries NIF-local position + nearest named ancestor's
+    /// name, which the spawn step composes with the REFR placement and
+    /// translates to a heuristic [`ParticleEmitter`] preset. See #401.
+    particle_emitters: Vec<byroredux_nif::import::ImportedParticleEmitterFlat>,
 }
 
 /// Result of loading a cell.
@@ -866,10 +872,12 @@ fn parse_and_import_nif(nif_data: &[u8], label: &str) -> Option<Arc<CachedNifImp
 
     let (meshes, collisions) = byroredux_nif::import::import_nif_with_collision(&scene);
     let lights = byroredux_nif::import::import_nif_lights(&scene);
+    let particle_emitters = byroredux_nif::import::import_nif_particle_emitters(&scene);
     Some(Arc::new(CachedNifImport {
         meshes,
         collisions,
         lights,
+        particle_emitters,
     }))
 }
 
@@ -937,6 +945,42 @@ fn spawn_placed_instances(
                 flags: 0,
             },
         );
+    }
+
+    // Spawn particle emitter entities (#401). One ECS entity per
+    // detected NiParticleSystem, positioned at the composed REFR + NIF-
+    // local transform. The heuristic preset is picked from the nearest
+    // named ancestor in the NIF (host_name) — torch/fire/flame/brazier/
+    // candle → torch_flame, smoke/steam → smoke, magic/enchant/sparkle/
+    // glow → magic_sparkles, fallback → torch_flame so the audit's
+    // "every torch invisible" failure is resolved end-to-end even when
+    // the host node carries no descriptive name.
+    for em in &cached.particle_emitters {
+        let nif_pos = Vec3::new(em.local_position[0], em.local_position[1], em.local_position[2]);
+        let world_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
+        let host = em.host_name.as_deref().unwrap_or("").to_ascii_lowercase();
+        let preset = if host.contains("torch")
+            || host.contains("fire")
+            || host.contains("flame")
+            || host.contains("brazier")
+            || host.contains("candle")
+        {
+            ParticleEmitter::torch_flame()
+        } else if host.contains("smoke") || host.contains("steam") {
+            ParticleEmitter::smoke()
+        } else if host.contains("magic")
+            || host.contains("enchant")
+            || host.contains("sparkle")
+            || host.contains("glow")
+        {
+            ParticleEmitter::magic_sparkles()
+        } else {
+            ParticleEmitter::torch_flame()
+        };
+        let entity = world.spawn();
+        world.insert(entity, Transform::from_translation(world_pos));
+        world.insert(entity, GlobalTransform::new(world_pos, Quat::IDENTITY, 1.0));
+        world.insert(entity, preset);
     }
 
     // Spawn collision entities from NiNode collision data.

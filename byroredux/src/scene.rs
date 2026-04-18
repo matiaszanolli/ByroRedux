@@ -4,8 +4,8 @@ use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
     ActiveCamera, Billboard, BillboardMode, Camera, GlobalTransform, LocalBound, Material,
-    MeshHandle, Name, Parent, SkinnedMesh, TextureHandle, Transform, World, WorldBound,
-    MAX_BONES_PER_MESH,
+    MeshHandle, Name, Parent, ParticleEmitter, SkinnedMesh, TextureHandle, Transform, World,
+    WorldBound, MAX_BONES_PER_MESH,
 };
 use byroredux_core::math::{Mat4, Quat, Vec3};
 use byroredux_core::string::StringPool;
@@ -475,6 +475,11 @@ pub(crate) fn setup_scene(
     if let Err(e) = ctx.register_ui_quad() {
         log::error!("Failed to register UI quad: {e:#}");
     }
+    // Register the unit XY quad used by the CPU particle billboard path
+    // (#401). One DrawCommand per live particle references this handle.
+    if let Err(e) = ctx.register_particle_quad() {
+        log::error!("Failed to register particle quad: {e:#}");
+    }
 
     // UI: --swf <path> loads a SWF menu overlay.
     if let Some(swf_idx) = args.iter().position(|a| a == "--swf") {
@@ -668,6 +673,53 @@ pub(crate) fn load_nif_bytes(
             world.insert(child_entity, Parent(parent_entity));
             add_child(world, parent_entity, child_entity);
         }
+    }
+
+    // Phase 2.5: Particle emitters. The NIF importer surfaces every
+    // NiParticleSystem / NiParticles / NiBSPArrayController as an
+    // [`ImportedParticleEmitter`] tagged with its host node index, but
+    // it doesn't carry per-emitter values — `NiPSysBlock` discards
+    // every parsed field. We pick a heuristic ParticleEmitter preset
+    // (torch_flame / smoke / magic_sparkles / generic flame fallback)
+    // by scanning the host node's name. Every emitter is attached
+    // directly to the host entity so the simulation sources its
+    // world-space spawn origin from the host's GlobalTransform. See
+    // #401 / audit OBL-D6-2.
+    for emitter in &imported.particle_emitters {
+        let Some(host_idx) = emitter.parent_node else {
+            continue;
+        };
+        let Some(&host_entity) = node_entities.get(host_idx) else {
+            continue;
+        };
+        let host_name = imported.nodes[host_idx]
+            .name
+            .as_deref()
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        let preset = if host_name.contains("torch")
+            || host_name.contains("fire")
+            || host_name.contains("flame")
+            || host_name.contains("brazier")
+            || host_name.contains("candle")
+        {
+            ParticleEmitter::torch_flame()
+        } else if host_name.contains("smoke") || host_name.contains("steam") {
+            ParticleEmitter::smoke()
+        } else if host_name.contains("magic")
+            || host_name.contains("enchant")
+            || host_name.contains("sparkle")
+            || host_name.contains("glow")
+        {
+            ParticleEmitter::magic_sparkles()
+        } else {
+            // Fallback — many vanilla NIFs don't name the host node
+            // descriptively (e.g. just "EmitterNode"). Default to a
+            // visible flame so the audit's "every torch invisible"
+            // failure is still resolved end-to-end.
+            ParticleEmitter::torch_flame()
+        };
+        world.insert(host_entity, preset);
     }
 
     // Phase 3: Spawn mesh entities with parent links.

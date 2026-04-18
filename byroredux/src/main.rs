@@ -35,8 +35,8 @@ use crate::helpers::world_resource_set;
 use crate::render::build_render_data;
 use crate::systems::{
     animation_system, billboard_system, fly_camera_system, log_stats_system,
-    make_transform_propagation_system, make_world_bound_propagation_system, spin_system,
-    weather_system,
+    make_transform_propagation_system, make_world_bound_propagation_system, particle_system,
+    spin_system, weather_system,
 };
 use byroredux_core::ecs::SystemList;
 
@@ -161,6 +161,9 @@ impl App {
         scheduler.add_to(Stage::Update, animation_system);
         scheduler.add_to(Stage::Update, spin_system);
         scheduler.add_to(Stage::PostUpdate, make_transform_propagation_system());
+        // Particle simulation runs after transform propagation so emitter
+        // entities have their final world-space spawn origin (#401).
+        scheduler.add_exclusive(Stage::PostUpdate, particle_system);
         // Billboards must run AFTER transform propagation so they can
         // overwrite the computed world rotation. Registered as exclusive
         // so the scheduler sequences it after the PostUpdate parallel
@@ -314,6 +317,7 @@ impl ApplicationHandler for App {
                             &mut self.gpu_lights,
                             &mut self.bone_palette,
                             &mut self.skin_offsets,
+                            ctx.particle_quad_handle,
                         );
 
                     // Rebuild the global geometry SSBO if new meshes were

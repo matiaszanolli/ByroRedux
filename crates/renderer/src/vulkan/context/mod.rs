@@ -245,6 +245,13 @@ pub struct VulkanContext {
     pipeline_layout: vk::PipelineLayout,
     /// Mesh handle for the fullscreen quad used by UI overlay.
     pub ui_quad_handle: Option<u32>,
+    /// Mesh handle for the unit XY quad used by the CPU particle billboard
+    /// path (#401). Emitter entities push one DrawCommand per live particle
+    /// referencing this handle, with the per-particle position + size baked
+    /// into the model matrix and the camera-facing rotation precomputed
+    /// CPU-side. The existing instanced batching from #272 collapses all
+    /// per-frame particle draws into a single instanced cmd_draw_indexed.
+    pub particle_quad_handle: Option<u32>,
     render_pass: vk::RenderPass,
     swapchain_state: SwapchainState,
 
@@ -785,6 +792,7 @@ impl VulkanContext {
             pipeline_ui,
             pipeline_layout: pipelines.layout,
             ui_quad_handle: None,
+            particle_quad_handle: None,
             mesh_registry,
             texture_registry,
             scene_buffers,

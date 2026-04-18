@@ -230,6 +230,31 @@ pub(super) fn walk_node_hierarchical(
             out.meshes.push(mesh);
         }
     }
+
+    // Particle systems — see #401 / `ImportedParticleEmitter`.
+    // The parser keeps every NiPSys* variant opaque (`NiPSysBlock`), so
+    // we identify the renderable subset by the original_type string.
+    // Only the top-level emitter blocks produce an ImportedParticleEmitter;
+    // modifier blocks ride along inside the same scene and are walked but
+    // not surfaced (the heuristic preset on the host node carries the
+    // visual config until the parsers retain real emitter fields).
+    if let Some(ps) = block
+        .as_any()
+        .downcast_ref::<crate::blocks::particle::NiPSysBlock>()
+    {
+        match ps.original_type.as_str() {
+            "NiParticleSystem" | "NiMeshParticleSystem" | "NiParticles"
+            | "NiParticleSystemController" | "NiBSPArrayController"
+            | "NiAutoNormalParticles" | "NiRotatingParticles" => {
+                out.particle_emitters
+                    .push(crate::import::ImportedParticleEmitter {
+                        parent_node: parent_node_idx,
+                        original_type: ps.original_type.clone(),
+                    });
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Recursively walk the scene graph, accumulating world-space transforms (flat, no hierarchy).
@@ -444,6 +469,67 @@ pub(super) fn walk_node_lights(
             0.0,
         ));
         // no return — directional lights are leaves
+    }
+}
+
+/// Flat counterpart to the particle-emitter detection in
+/// `walk_node_hierarchical`: walks the scene graph accumulating world-
+/// space transforms and emits one [`crate::import::ImportedParticleEmitterFlat`]
+/// per renderable particle block (`NiParticleSystem` and friends). Used
+/// by the cell loader, which spawns one entity per emitter at the
+/// composed REFR-times-host-NIF-local world position. See #401.
+pub(super) fn walk_node_particle_emitters_flat(
+    scene: &NifScene,
+    block_idx: usize,
+    parent_transform: &NiTransform,
+    parent_node_name: Option<std::sync::Arc<str>>,
+    out: &mut Vec<crate::import::ImportedParticleEmitterFlat>,
+) {
+    let Some(block) = scene.get(block_idx) else {
+        return;
+    };
+
+    if let Some(node) = as_ni_node(block) {
+        if node.av.flags & 0x21 != 0 {
+            return;
+        }
+        let world_transform = compose_transforms(parent_transform, &node.av.transform);
+        // Pass this node's name down so descendant emitters inherit a
+        // sensible host name even when the emitter block itself is
+        // unnamed (the common case in vanilla content).
+        let new_parent_name = node.av.net.name.clone().or(parent_node_name);
+        for child_ref in &node.children {
+            if let Some(idx) = child_ref.index() {
+                walk_node_particle_emitters_flat(
+                    scene,
+                    idx,
+                    &world_transform,
+                    new_parent_name.clone(),
+                    out,
+                );
+            }
+        }
+        return;
+    }
+
+    if let Some(ps) = block
+        .as_any()
+        .downcast_ref::<crate::blocks::particle::NiPSysBlock>()
+    {
+        match ps.original_type.as_str() {
+            "NiParticleSystem" | "NiMeshParticleSystem" | "NiParticles"
+            | "NiParticleSystemController" | "NiBSPArrayController"
+            | "NiAutoNormalParticles" | "NiRotatingParticles" => {
+                // Z-up → Y-up: (x, y, z) → (x, z, -y).
+                let t = &parent_transform.translation;
+                out.push(crate::import::ImportedParticleEmitterFlat {
+                    local_position: [t.x, t.z, -t.y],
+                    host_name: parent_node_name,
+                    original_type: ps.original_type.clone(),
+                });
+            }
+            _ => {}
+        }
     }
 }
 

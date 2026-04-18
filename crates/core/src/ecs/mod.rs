@@ -20,9 +20,9 @@ pub mod world;
 
 pub use components::{
     ActiveCamera, AnimatedAlpha, AnimatedColor, AnimatedVisibility, BSBound, BSXFlags, Billboard,
-    BillboardMode, Camera, CellRoot, Children, GlobalTransform, LightSource, LocalBound, Material,
-    MeshHandle, Name, Parent, SkinnedMesh, TextureHandle, Transform, WorldBound,
-    MAX_BONES_PER_MESH,
+    BillboardMode, Camera, CellRoot, Children, EmitterShape, GlobalTransform, LightSource,
+    LocalBound, Material, MeshHandle, Name, Parent, ParticleEmitter, ParticleSoA, SkinnedMesh,
+    TextureHandle, Transform, WorldBound, MAX_BONES_PER_MESH,
 };
 pub use packed::PackedStorage;
 pub use query::{ComponentRef, QueryRead, QueryWrite};

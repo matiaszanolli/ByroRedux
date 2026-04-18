@@ -83,6 +83,32 @@ impl VulkanContext {
         Ok(())
     }
 
+    /// Register the unit XY quad used by the CPU particle billboard path
+    /// (#401). Pushed per-particle by `build_render_data` with a precomputed
+    /// face-camera rotation in the model matrix. RT is skipped because
+    /// particles are screen-space alpha-blend overlays, not world geometry
+    /// that needs to participate in shadow / GI ray queries.
+    pub fn register_particle_quad(&mut self) -> Result<()> {
+        let (vertices, indices) = crate::mesh::quad_vertices();
+        let allocator = self.allocator.as_ref().expect("allocator missing");
+        let handle = self.mesh_registry.upload(
+            &self.device,
+            allocator,
+            &self.graphics_queue,
+            self.transfer_pool,
+            &vertices,
+            &indices,
+            false, // particles skip TLAS
+            None,
+        )?;
+        self.particle_quad_handle = Some(handle);
+        log::info!(
+            "Particle billboard quad registered (mesh handle {})",
+            handle
+        );
+        Ok(())
+    }
+
     /// Get the current swapchain extent (viewport dimensions).
     pub fn swapchain_extent(&self) -> (u32, u32) {
         (
