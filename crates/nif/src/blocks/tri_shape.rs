@@ -420,17 +420,23 @@ impl BsTriShape {
                     triangles.push([tri[0], tri[1], tri[2]]);
                 }
             }
+        }
 
-            // Skyrim SE: particle data (skip)
-            if stream.bsver() < 130 {
-                let particle_data_size = stream.read_u32_le()?;
-                if particle_data_size > 0 {
-                    // particle vertices (num_vertices × 6 bytes) + particle normals + particle triangles
-                    let skip_bytes = (num_vertices as u64) * 6 // half-float positions
-                        + (num_vertices as u64) * 6 // half-float normals
-                        + (num_triangles as u64) * 6; // triangle indices
-                    stream.skip(skip_bytes)?;
-                }
+        // Skyrim SE: particle data size is **unconditionally** present per
+        // nif.xml (`#BS_SSE#` vercond is version-only, not data-size-gated).
+        // Only the trailing particle arrays are gated by `particle_data_size > 0`.
+        // Issue #341: previously this read was inside `if data_size > 0`, so for
+        // every BSDynamicTriShape (data_size==0, real vertex data lives in the
+        // trailing dynamic Vector4 array) the 4-byte size was never consumed,
+        // misaligning `parse_dynamic` and dropping every Skyrim NPC face mesh.
+        if stream.bsver() < 130 {
+            let particle_data_size = stream.read_u32_le()?;
+            if particle_data_size > 0 {
+                // particle vertices (num_vertices × 6 bytes) + particle normals + particle triangles
+                let skip_bytes = (num_vertices as u64) * 6 // half-float positions
+                    + (num_vertices as u64) * 6 // half-float normals
+                    + (num_triangles as u64) * 6; // triangle indices
+                stream.skip(skip_bytes)?;
             }
         }
 
@@ -456,32 +462,30 @@ impl BsTriShape {
 
     /// Parse `BSDynamicTriShape` — a BSTriShape subclass used for Skyrim
     /// facegen head meshes. The block contains the full BSTriShape body
-    /// followed by a CPU-mutable per-vertex `Vector4` array that the
-    /// engine updates at runtime to apply head morphs.
+    /// (including the unconditional SSE `Particle Data Size` u32 — see
+    /// `parse()` issue #341) followed by a CPU-mutable per-vertex
+    /// `Vector4` array that the engine updates at runtime for morphs.
     ///
-    /// Wire layout (niflib nif.xml):
+    /// Wire layout (niflib nif.xml `<niobject name="BSDynamicTriShape">`):
     /// ```text
     /// BSTriShape body
-    /// uint vertex_data_size  ; bytes of trailing vertex array (num_vertices * 16)
-    /// uint unknown           ; always 0
-    /// if vertex_data_size != 0:
-    ///     Vector4[num_vertices] dynamic_vertices
+    /// uint dynamic_data_size  ; calc = num_vertices * 16
+    /// Vector4[dynamic_data_size / 16] vertices
     /// ```
     ///
     /// When the dynamic-vertex array is present we overwrite the BSTriShape
     /// positions with it — on facegen meshes the base-packed positions are
-    /// often zeros placeholder data, and the trailing float4 array carries
-    /// the actual head shape. See issue #157.
+    /// often zero placeholders, and the trailing float4 array carries the
+    /// actual head shape. See issues #157 and #341.
     pub fn parse_dynamic(stream: &mut NifStream) -> io::Result<Self> {
         let mut shape = Self::parse(stream)?;
-        let vertex_data_size = stream.read_u32_le()?;
-        let _unknown = stream.read_u32_le()?;
-        if vertex_data_size > 0 {
-            // #388: shape.num_vertices is a u16 read from the stream;
-            // bound it through allocate_vec like every other file count.
+        let dynamic_data_size = stream.read_u32_le()?;
+        let dynamic_count = (dynamic_data_size / 16) as usize;
+        if dynamic_count > 0 {
+            // #388: bound the file-driven count through allocate_vec.
             let mut dynamic_vertices: Vec<NiPoint3> =
-                stream.allocate_vec(shape.num_vertices as u32)?;
-            for _ in 0..shape.num_vertices {
+                stream.allocate_vec(dynamic_count as u32)?;
+            for _ in 0..dynamic_count {
                 let x = stream.read_f32_le()?;
                 let y = stream.read_f32_le()?;
                 let z = stream.read_f32_le()?;
@@ -958,9 +962,56 @@ mod skin_vertex_tests {
         d.extend_from_slice(&0u16.to_le_bytes());
         d.extend_from_slice(&0u16.to_le_bytes()); // num_vertices
         d.extend_from_slice(&0u32.to_le_bytes()); // data_size — skip the vertex/tri loops
-                                                  // Note: when data_size == 0, the SSE particle-data block is not
-                                                  // read — the parser's particle section is inside `if data_size > 0`.
+                                                  // SSE (bsver<130): particle_data_size is unconditional (#341).
+        d.extend_from_slice(&0u32.to_le_bytes());
         d
+    }
+
+    /// Regression: #341 — when `data_size == 0` (the BSDynamicTriShape case
+    /// for facegen heads — real positions live in the trailing dynamic
+    /// Vector4 array), the SSE `particle_data_size` u32 must still be
+    /// consumed unconditionally. Previously the read was nested inside
+    /// `if data_size > 0`, misaligning `parse_dynamic` by 4 bytes so it
+    /// read `vertex_data_size`/`unknown` from the wrong offsets, dropped
+    /// every NPC head, and spammed 21,140 "expected N consumed 124"
+    /// warnings on a Skyrim - Meshes0.bsa scan.
+    #[test]
+    fn bs_dynamic_tri_shape_with_zero_data_size_imports_dynamic_vertices() {
+        let header = test_header();
+        let mut bytes = minimal_bs_tri_shape_bytes();
+        // BSDynamicTriShape trailing for 2 dynamic vertices:
+        //   dynamic_data_size = 2 * 16 = 32, then 2 × Vector4 (x, y, z, w).
+        // Per nif.xml the dynamic-vertex count is `dynamic_data_size / 16`
+        // — independent of the base BSTriShape `num_vertices` — so we
+        // don't need to patch that field here.
+        let dyn_verts: [[f32; 4]; 2] = [[1.0, 2.0, 3.0, 0.0], [4.0, 5.0, 6.0, 0.0]];
+        bytes.extend_from_slice(&32u32.to_le_bytes()); // dynamic_data_size
+        for v in &dyn_verts {
+            for f in v {
+                bytes.extend_from_slice(&f.to_le_bytes());
+            }
+        }
+
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        let block = parse_block("BSDynamicTriShape", &mut stream, Some(bytes.len() as u32))
+            .expect("BSDynamicTriShape with data_size==0 should parse");
+        let shape = block
+            .as_any()
+            .downcast_ref::<BsTriShape>()
+            .expect("BSDynamicTriShape did not downcast to BsTriShape");
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "BSDynamicTriShape (#341): trailing bytes not fully consumed — \
+             SSE particle_data_size was probably misaligned again"
+        );
+        assert_eq!(
+            shape.vertices.len(),
+            2,
+            "dynamic_vertices override should populate shape.vertices"
+        );
+        assert!((shape.vertices[0].x - 1.0).abs() < 1e-6);
+        assert!((shape.vertices[1].x - 4.0).abs() < 1e-6);
     }
 
     /// Regression: #157 — BSDynamicTriShape must dispatch to the Dynamic
@@ -971,8 +1022,9 @@ mod skin_vertex_tests {
     fn bs_dynamic_tri_shape_dispatches_and_consumes_trailing_bytes() {
         let header = test_header();
         let mut bytes = minimal_bs_tri_shape_bytes();
-        // BSDynamicTriShape trailing: vertex_data_size=0, unknown=0.
-        bytes.extend_from_slice(&0u32.to_le_bytes());
+        // BSDynamicTriShape trailing: dynamic_data_size=0 (#341 — the
+        // bogus `_unknown` u32 was removed; nif.xml only specifies one
+        // u32 between the BSTriShape body and the Vector4 array).
         bytes.extend_from_slice(&0u32.to_le_bytes());
 
         let mut stream = crate::stream::NifStream::new(&bytes, &header);
