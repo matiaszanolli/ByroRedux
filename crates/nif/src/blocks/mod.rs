@@ -146,11 +146,22 @@ pub fn parse_block(
         "NiLODNode" => Ok(Box::new(node::NiLODNode::parse(stream)?)),
         "NiSortAdjustNode" => Ok(Box::new(node::NiSortAdjustNode::parse(stream)?)),
         // BSRangeNode + subclasses — all carry the same (min, max, current)
-        // byte triple and are FO3+. BSBlastNode/BSDamageStage/BSDebrisNode
-        // inherit BSRangeNode and add nothing on the wire.
-        "BSRangeNode" | "BSBlastNode" | "BSDamageStage" | "BSDebrisNode" => {
-            Ok(Box::new(node::BsRangeNode::parse(stream)?))
-        }
+        // byte triple and are FO3+. BSBlastNode / BSDamageStage / BSDebrisNode
+        // inherit BSRangeNode and add nothing on the wire — but the
+        // discriminator matters to gameplay-side systems (destruction
+        // sequence vs blast effect vs debris ejection root). Stamp the
+        // wire type name onto `BsRangeNode.kind` so consumers can branch
+        // without re-running the dispatch from `original_type`. See #364.
+        "BSRangeNode" => Ok(Box::new(node::BsRangeNode::parse(stream)?)),
+        "BSDamageStage" => Ok(Box::new(
+            node::BsRangeNode::parse(stream)?.with_kind(node::BsRangeKind::DamageStage),
+        )),
+        "BSBlastNode" => Ok(Box::new(
+            node::BsRangeNode::parse(stream)?.with_kind(node::BsRangeKind::Blast),
+        )),
+        "BSDebrisNode" => Ok(Box::new(
+            node::BsRangeNode::parse(stream)?.with_kind(node::BsRangeKind::Debris),
+        )),
         // NiCamera — embedded cinematic camera block. See issue #153.
         "NiCamera" => Ok(Box::new(node::NiCamera::parse(stream)?)),
         // NiTextureEffect — projected env-map / gobo / fog projector.

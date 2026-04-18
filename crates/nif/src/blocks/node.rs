@@ -510,19 +510,53 @@ impl NiSortAdjustNode {
 //
 // Bethesda node with (min, max, current) byte range values. FO3 and later.
 // Its subclasses BSBlastNode, BSDamageStage, BSDebrisNode add no extra
-// fields and share the exact same layout.
+// fields and share the exact same layout — the discriminator only
+// matters to gameplay-side systems (destruction sequence vs blast
+// effect vs debris ejection root). The dispatcher in
+// `crates/nif/src/blocks/mod.rs` populates `kind` from the matched
+// type-name arm so downstream consumers can branch without the
+// gameplay system having to redo the dispatch from `original_type`.
+
+/// Discriminator for the four wire-distinct types that all share the
+/// `BsRangeNode` Rust struct. Pre-#364 the dispatcher merged all four
+/// into a single struct and `block_type_name()` reported `"BSRangeNode"`
+/// for each — gameplay-side systems (destructible-object switching,
+/// blast-effect spawning, debris ejection) couldn't tell them apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BsRangeKind {
+    /// Generic range node — no special gameplay role on its own.
+    Range,
+    /// Damage-stage holder — `current` selects which child geometry
+    /// (the visible damage stage 0..max) is rendered. Used by
+    /// destructible architecture.
+    DamageStage,
+    /// Blast-effect root — child geometry is the blast / explosion
+    /// hull, conditionally enabled by the destructible-object system.
+    Blast,
+    /// Debris ejection root — child geometry detaches and spawns as
+    /// physics-driven debris when the destructible threshold is hit.
+    Debris,
+}
 
 /// BSRangeNode — Bethesda-specific node carrying min/max/current bytes.
+/// Now also carries the wire-type [`BsRangeKind`] discriminator (#364).
 #[derive(Debug)]
 pub struct BsRangeNode {
     pub base: NiNode,
     pub min: u8,
     pub max: u8,
     pub current: u8,
+    /// Discriminator preserved from the dispatcher's matched type-name
+    /// arm. Defaults to [`BsRangeKind::Range`] for `BSRangeNode` itself.
+    /// See #364.
+    pub kind: BsRangeKind,
 }
 
 impl NiObject for BsRangeNode {
     fn block_type_name(&self) -> &'static str {
+        // Static-string contract on the trait — return the *base*
+        // wire type name. Consumers that need the original subclass
+        // name should branch on the `kind` field instead.
         "BSRangeNode"
     }
     fn as_any(&self) -> &dyn Any {
@@ -537,6 +571,10 @@ impl NiObject for BsRangeNode {
 }
 
 impl BsRangeNode {
+    /// Parse the wire-shared `(min, max, current)` triple. The
+    /// discriminator [`Self::kind`] defaults to `Range` here — the
+    /// dispatcher overwrites it via [`Self::with_kind`] for the
+    /// BSBlastNode / BSDamageStage / BSDebrisNode arms.
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiNode::parse(stream)?;
         let min = stream.read_u8()?;
@@ -547,7 +585,15 @@ impl BsRangeNode {
             min,
             max,
             current,
+            kind: BsRangeKind::Range,
         })
+    }
+
+    /// Builder helper used by the block dispatcher to stamp the wire
+    /// type-name discriminator after `parse()` runs.
+    pub fn with_kind(mut self, kind: BsRangeKind) -> Self {
+        self.kind = kind;
+        self
     }
 }
 

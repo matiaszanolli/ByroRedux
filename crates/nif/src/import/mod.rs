@@ -98,7 +98,51 @@ pub struct ImportedNode {
     /// `None` for regular NiNode and its non-billboard subclasses.
     /// The consumer maps this to the `Billboard` ECS component. See #225.
     pub billboard_mode: Option<u16>,
+    /// SpeedTree bone metadata when this node is a `BSTreeNode` —
+    /// `(branch_root_bone_names, trunk_bone_names)` resolved via
+    /// each `BlockRef`'s `NiObjectNET.name`. Pre-#363 the parser
+    /// kept the lists but the walker stripped them down to plain
+    /// NiNode, blocking any future SpeedTree wind / bend simulation
+    /// from finding the bones it would animate. The geometry renders
+    /// correctly today via the regular `NiNode.children` path; this
+    /// field exists purely so downstream consumers can branch on it.
+    /// Mirrors the [`ImportedLight::affected_node_names`] resolution
+    /// pattern from #335 — names are looked up by the scene builder
+    /// against its `node_by_name` index. See audit S4-05.
+    pub tree_bones: Option<TreeBones>,
+    /// Wire-type discriminator when this node is a `BSRangeNode` /
+    /// `BSDamageStage` / `BSBlastNode` / `BSDebrisNode`. Pre-#364 all
+    /// four collapsed into a single `BsRangeNode` with no surviving
+    /// discriminator; gameplay-side systems (destructible-object
+    /// switching, blast-effect spawning, debris ejection) couldn't
+    /// tell them apart. `None` when the source block was a plain
+    /// `NiNode` or one of its non-range subclasses. See audit S4-06.
+    pub range_kind: Option<BsRangeKind>,
 }
+
+/// SpeedTree bone metadata surfaced from a [`BSTreeNode`] — bone
+/// references resolved to scene-graph node names. The SpeedTree tool
+/// labels the lists as "branch roots" and "trunk bones"; the future
+/// SpeedTree wind / bend simulation animates the associated entities
+/// under wind loads. The scene builder resolves names → entities via
+/// its `node_by_name` index (same pattern as
+/// [`ImportedLight::affected_node_names`] from #335).
+/// See audit S4-05 / #363.
+#[derive(Debug, Clone, Default)]
+pub struct TreeBones {
+    /// Branch-root bone names — the entities the wind sim swings the
+    /// outer canopy from. Null refs and refs that don't resolve to a
+    /// named NiObjectNET-bearing block are dropped silently.
+    pub branch_roots: Vec<Arc<str>>,
+    /// Trunk bone names — the entities the wind sim bends the trunk
+    /// across. Same drop rules as `branch_roots`.
+    pub trunk: Vec<Arc<str>>,
+}
+
+/// Re-export the `BsRangeKind` discriminator from the parser side so
+/// callers downstream of `ImportedNode` don't have to reach into
+/// `crate::blocks::node` directly.
+pub use crate::blocks::node::BsRangeKind;
 
 /// A mesh extracted from a NIF file, ready for GPU upload.
 #[derive(Debug)]
@@ -1473,5 +1517,183 @@ mod tests {
             "modifier-only NiPSysBlocks must not surface as emitters, got {} entries",
             emitters.len(),
         );
+    }
+
+    /// Helper for the #364 test: build a `BsRangeNode` block with the
+    /// given discriminator + the canonical (min, max, current) triple.
+    fn ni_range_node(
+        kind: crate::blocks::node::BsRangeKind,
+        min: u8,
+        max: u8,
+        current: u8,
+    ) -> crate::blocks::node::BsRangeNode {
+        use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+        let inner_node = crate::blocks::node::NiNode {
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: Some(Arc::from("RangeHost")),
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef::NULL,
+                },
+                flags: 0,
+                transform: identity_transform(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            children: Vec::new(),
+            effects: Vec::new(),
+        };
+        crate::blocks::node::BsRangeNode {
+            base: inner_node,
+            min,
+            max,
+            current,
+            kind,
+        }
+    }
+
+    /// Regression: #364 — BSRangeNode subclasses (BSBlastNode /
+    /// BSDamageStage / BSDebrisNode) must surface their wire-type
+    /// discriminator on the resulting `ImportedNode.range_kind`.
+    /// Pre-fix all four collapsed into a `BsRangeNode` with no
+    /// surviving discriminator and the walker stripped them down to
+    /// plain NiNode — gameplay-side systems couldn't tell apart
+    /// "switch the visible damage stage" from "spawn debris on
+    /// detach" from "fire the blast effect".
+    #[test]
+    fn import_surfaces_bs_range_kind_for_each_subclass() {
+        for kind in [
+            crate::blocks::node::BsRangeKind::Range,
+            crate::blocks::node::BsRangeKind::DamageStage,
+            crate::blocks::node::BsRangeKind::Blast,
+            crate::blocks::node::BsRangeKind::Debris,
+        ] {
+            let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![Box::new(ni_range_node(
+                kind, 0, 5, 2,
+            ))];
+            let scene = scene_from_blocks(blocks);
+            let imported = import_nif_scene(&scene);
+            assert_eq!(imported.nodes.len(), 1, "{:?}", kind);
+            assert_eq!(
+                imported.nodes[0].range_kind,
+                Some(kind),
+                "range_kind should round-trip the dispatcher discriminator for {:?}",
+                kind,
+            );
+        }
+    }
+
+    /// Regression: #364 — plain NiNode produces `range_kind: None`.
+    /// Catches a regression that defaults the discriminator to
+    /// `Some(BsRangeKind::Range)` for every node.
+    #[test]
+    fn import_plain_ninode_has_no_range_kind() {
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
+            vec![Box::new(make_ni_node(identity_transform(), Vec::new()))];
+        let scene = scene_from_blocks(blocks);
+        let imported = import_nif_scene(&scene);
+        assert_eq!(imported.nodes.len(), 1);
+        assert!(imported.nodes[0].range_kind.is_none());
+    }
+
+    /// Regression: #363 — `BSTreeNode` bone-list metadata must surface
+    /// on `ImportedNode.tree_bones` resolved to the targets'
+    /// `NiObjectNET.name` (mirrors the `#335` affected-node-names
+    /// pattern). Pre-fix the walker stripped the BSTreeNode down to
+    /// plain NiNode and dropped both bone lists, blocking any future
+    /// SpeedTree wind / bend simulation from finding what to animate.
+    #[test]
+    fn import_surfaces_bs_tree_node_bones_by_name() {
+        use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+        // Build three bone targets (NiNodes with names) at indices 1, 2, 3.
+        // Then a BSTreeNode at index 0 whose:
+        //   bones_1 = [1, 3]  (branch roots)
+        //   bones_2 = [2]     (trunk)
+        let bone = |name: &str| -> Box<dyn crate::blocks::NiObject> {
+            Box::new(crate::blocks::node::NiNode {
+                av: NiAVObjectData {
+                    net: NiObjectNETData {
+                        name: Some(Arc::from(name)),
+                        extra_data_refs: Vec::new(),
+                        controller_ref: BlockRef::NULL,
+                    },
+                    flags: 0,
+                    transform: identity_transform(),
+                    properties: Vec::new(),
+                    collision_ref: BlockRef::NULL,
+                },
+                children: Vec::new(),
+                effects: Vec::new(),
+            })
+        };
+        let host = crate::blocks::node::NiNode {
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: Some(Arc::from("TreeRoot")),
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef::NULL,
+                },
+                flags: 0,
+                transform: identity_transform(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            children: Vec::new(),
+            effects: Vec::new(),
+        };
+        let tree = crate::blocks::node::BsTreeNode {
+            base: host,
+            bones_1: vec![BlockRef(1), BlockRef(3)],
+            bones_2: vec![BlockRef(2)],
+        };
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+            Box::new(tree),
+            bone("Branch_A"),
+            bone("Trunk_0"),
+            bone("Branch_B"),
+        ];
+        let scene = scene_from_blocks(blocks);
+        let imported = import_nif_scene(&scene);
+        let host_node = &imported.nodes[0];
+        let bones = host_node
+            .tree_bones
+            .as_ref()
+            .expect("BSTreeNode should surface tree_bones");
+        let branch: Vec<&str> = bones.branch_roots.iter().map(|s| s.as_ref()).collect();
+        let trunk: Vec<&str> = bones.trunk.iter().map(|s| s.as_ref()).collect();
+        assert_eq!(branch, vec!["Branch_A", "Branch_B"]);
+        assert_eq!(trunk, vec!["Trunk_0"]);
+    }
+
+    /// Regression: #363 — when every bone ref in a BSTreeNode is null
+    /// or unresolvable, surface `tree_bones: None` rather than a
+    /// `Some(TreeBones { empty, empty })` so the consumer doesn't have
+    /// to filter empty payloads downstream.
+    #[test]
+    fn import_drops_bs_tree_node_with_only_unresolvable_bones() {
+        use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+        let host = crate::blocks::node::NiNode {
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: Some(Arc::from("EmptyTree")),
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef::NULL,
+                },
+                flags: 0,
+                transform: identity_transform(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            children: Vec::new(),
+            effects: Vec::new(),
+        };
+        let tree = crate::blocks::node::BsTreeNode {
+            base: host,
+            bones_1: vec![BlockRef::NULL, BlockRef(99)], // null + out-of-range
+            bones_2: Vec::new(),
+        };
+        let scene = scene_from_blocks(vec![Box::new(tree)]);
+        let imported = import_nif_scene(&scene);
+        assert!(imported.nodes[0].tree_bones.is_none());
     }
 }

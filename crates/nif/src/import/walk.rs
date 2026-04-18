@@ -18,7 +18,9 @@ use super::mesh::{
 use super::transform::compose_transforms;
 use super::{
     ImportedCollision, ImportedLight, ImportedMesh, ImportedNode, ImportedScene, LightKind,
+    TreeBones,
 };
+use crate::blocks::node::BsRangeKind;
 
 /// Downcast a `NiObject` to its underlying `NiNode` representation,
 /// unwrapping any known subclass that wraps a `base: NiNode` (directly
@@ -133,6 +135,13 @@ pub(super) fn walk_node_hierarchical(
         let quat = zup_matrix_to_yup_quat(&node.av.transform.rotation);
         let collision = extract_collision(scene, node.av.collision_ref);
         let billboard_mode = extract_billboard_mode(block, node.av.flags);
+        // BSRangeKind / BSTreeNode metadata — populated only when the
+        // source block was the matching subclass. NiSwitchNode /
+        // NiLODNode (the only types reaching this branch) are never
+        // BSRangeNode or BSTreeNode in shipped content, so both stay
+        // None here. See #363 / #364.
+        let range_kind = extract_range_kind(block);
+        let tree_bones = extract_tree_bones(scene, block);
 
         let this_node_idx = out.nodes.len();
         out.nodes.push(ImportedNode {
@@ -143,6 +152,8 @@ pub(super) fn walk_node_hierarchical(
             parent_node: parent_node_idx,
             collision,
             billboard_mode,
+            tree_bones,
+            range_kind,
         });
 
         let prev_len = inherited_props.len();
@@ -174,6 +185,10 @@ pub(super) fn walk_node_hierarchical(
         // `BillboardMode`. The importer hands the raw u16 to the consumer
         // which maps it to the `Billboard` ECS component.
         let billboard_mode = extract_billboard_mode(block, node.av.flags);
+        // BSRangeKind discriminator (#364) and BSTreeNode bone lists
+        // (#363). Both default to None for plain NiNode.
+        let range_kind = extract_range_kind(block);
+        let tree_bones = extract_tree_bones(scene, block);
 
         let this_node_idx = out.nodes.len();
         out.nodes.push(ImportedNode {
@@ -184,6 +199,8 @@ pub(super) fn walk_node_hierarchical(
             parent_node: parent_node_idx,
             collision,
             billboard_mode,
+            tree_bones,
+            range_kind,
         });
 
         // Merge this node's properties with the inherited set via stack
@@ -603,6 +620,55 @@ fn resolve_affected_node_names(scene: &NifScene, ptrs: &[u32]) -> Vec<std::sync:
         out.push(std::sync::Arc::from(name));
     }
     out
+}
+
+/// Resolve a list of `BlockRef`s to scene-graph node names, dropping
+/// null refs and refs that don't resolve to a named NiObjectNET-bearing
+/// block. Mirrors [`resolve_affected_node_names`] but operates on
+/// `BlockRef` (the type [`BSTreeNode`] uses for its bone lists).
+fn resolve_block_ref_names(scene: &NifScene, refs: &[BlockRef]) -> Vec<std::sync::Arc<str>> {
+    let mut out: Vec<std::sync::Arc<str>> = Vec::with_capacity(refs.len());
+    for r in refs {
+        let Some(idx) = r.index() else { continue };
+        let Some(block) = scene.get(idx) else { continue };
+        let Some(net) = block.as_object_net() else {
+            continue;
+        };
+        let Some(name) = net.name() else { continue };
+        if name.is_empty() {
+            continue;
+        }
+        out.push(std::sync::Arc::from(name));
+    }
+    out
+}
+
+/// Extract the [`crate::import::TreeBones`] payload when `block` is a
+/// [`BSTreeNode`]. Returns `None` for any other block type (including
+/// the regular `NiNode` and its non-tree subclasses). See #363.
+pub(super) fn extract_tree_bones(scene: &NifScene, block: &dyn NiObject) -> Option<TreeBones> {
+    let tree = block.as_any().downcast_ref::<BsTreeNode>()?;
+    let branch_roots = resolve_block_ref_names(scene, &tree.bones_1);
+    let trunk = resolve_block_ref_names(scene, &tree.bones_2);
+    if branch_roots.is_empty() && trunk.is_empty() {
+        // No surviving bones — treat as if the wire data was absent so
+        // the consumer doesn't have to filter out empty-payload tree
+        // nodes downstream.
+        None
+    } else {
+        Some(TreeBones {
+            branch_roots,
+            trunk,
+        })
+    }
+}
+
+/// Extract the [`BsRangeKind`] discriminator when `block` is a
+/// [`BsRangeNode`] (or one of its dispatcher-aliased subclasses
+/// `BSDamageStage` / `BSBlastNode` / `BSDebrisNode`). Returns `None`
+/// for any other block type. See #364.
+pub(super) fn extract_range_kind(block: &dyn NiObject) -> Option<BsRangeKind> {
+    block.as_any().downcast_ref::<BsRangeNode>().map(|n| n.kind)
 }
 
 /// Solve `1 / (const + lin·d + quad·d²) = THRESHOLD` for distance.
