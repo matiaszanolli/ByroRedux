@@ -106,13 +106,23 @@ void main() {
             float w = bilinear[i];
             histInd += w * sInd;
             histMom += w * sMom.xy;
-            histAge  = max(histAge, sMom.z);
+            // Weighted-average history age (Schied 2017 §4.2). Pre-#422
+            // this used max(), which over-committed to the oldest tap
+            // at disocclusion boundaries — one stale neighbour (age=255)
+            // dominated even when 3 of 4 taps were age=1, driving alphaC
+            // into the slow blend (0.2) and making freshly-disoccluded
+            // pixels inherit history they shouldn't have. The weighted
+            // average puts the new pixel's α on the fast-recovery path
+            // (~0.5) and clears the ghosting on pillar / character /
+            // table-edge silhouettes as the camera orbits.
+            histAge += w * sMom.z;
             wTotal  += w;
         }
 
         if (wTotal > 0.01) {
             histInd /= wTotal;
             histMom /= wTotal;
+            histAge /= wTotal;
             hasHistory = true;
         }
     }
