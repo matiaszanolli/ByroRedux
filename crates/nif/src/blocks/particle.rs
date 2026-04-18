@@ -44,11 +44,23 @@ impl NiPSysModifierBase {
 
 /// Base fields for NiPSysEmitter: speed, variation, declination, color, etc.
 fn skip_emitter_base(stream: &mut NifStream) -> io::Result<()> {
-    // NiPSysEmitter adds: speed(f32) + speed_variation(f32) + declination(f32) +
-    // declination_variation(f32) + planar_angle(f32) + planar_angle_variation(f32) +
-    // initial_color(Color4=4×f32) + initial_radius(f32) + radius_variation(f32) +
-    // life_span(f32) + life_span_variation(f32)
-    stream.skip(4 * 12)?; // 12 floats = 48 bytes
+    // NiPSysEmitter (nif.xml line 3579) — base 12 floats are universal:
+    //   speed + speed_variation + declination + declination_variation +
+    //   planar_angle + planar_angle_variation +
+    //   initial_color (Color4 = 4 floats) +
+    //   initial_radius + life_span = 12 floats = 48 bytes.
+    stream.skip(4 * 12)?;
+    // Bethesda BS_GTE_FO3 (BSVER >= 34) adds two trailing floats:
+    // `radius_variation` (since 10.4.0.1) and `life_span_variation`,
+    // bumping the base to 14 floats = 56 bytes. Empirically:
+    //   FNV (BSVER 34, version 20.2.0.7): 14 floats (audit D5-F2 — 8-byte
+    //   under-read on every Box/Cylinder/Sphere/Mesh emitter pre-#383).
+    //   Oblivion (BSVER 11, version 20.0.0.5): 12 floats (the BS_GTE_FO3
+    //   gate keeps these 2 floats out, so we don't over-read and shift
+    //   downstream blocks into garbage).
+    if stream.bsver() >= 34 {
+        stream.skip(4 * 2)?;
+    }
     Ok(())
 }
 
@@ -200,26 +212,46 @@ pub fn parse_gravity_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock>
 }
 
 /// NiPSysGrowFadeModifier: base + grow_time(f32) + grow_generation(u16) +
-/// fade_time(f32) + fade_generation(u16)
+/// fade_time(f32) + fade_generation(u16) + base_scale(f32) [BS_GTE_FO3 +
+/// version 20.2.0.7]
 pub fn parse_grow_fade_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     let _grow_time = stream.read_f32_le()?;
     let _grow_generation = stream.read_u16_le()?;
     let _fade_time = stream.read_f32_le()?;
     let _fade_generation = stream.read_u16_le()?;
+    // Bethesda 20.2.0.7 + BS_GTE_FO3 (BSVER >= 34): adds Base Scale.
+    // Per nif.xml line 4803. FNV/Skyrim/FO4 all match this gate. Pre-#383
+    // these 4 bytes were dropped on every grow-fade modifier (890
+    // occurrences in vanilla `Fallout - Meshes.bsa`).
+    if stream.version() == crate::version::NifVersion::V20_2_0_7 && stream.bsver() >= 34 {
+        let _base_scale = stream.read_f32_le()?;
+    }
     Ok(NiPSysBlock {
         original_type: "NiPSysGrowFadeModifier".to_string(),
     })
 }
 
-/// NiPSysRotationModifier: base + initial_speed(f32) + speed_variation(f32) +
-/// initial_angle(f32) + angle_variation(f32) + random_axis(bool) + axis(vec3)
+/// NiPSysRotationModifier: base + initial_speed(f32) + [since 20.0.0.2]
+/// speed_variation(f32) + initial_angle(f32) + angle_variation(f32) +
+/// random_rot_speed_sign(bool) + random_axis(bool) + axis(vec3)
 pub fn parse_rotation_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     let _initial_speed = stream.read_f32_le()?;
     // speed_variation + initial_angle + angle_variation: since v20.0.0.2
     if stream.version() >= crate::version::NifVersion(0x14000002) {
         stream.skip(4 * 3)?; // 3 floats
+    }
+    // Random Rot Speed Sign — nif.xml line 4878 says `since 20.0.0.2`,
+    // but empirically Oblivion (BSVER 11, version 20.0.0.5) does NOT
+    // emit this byte (pre-#383 the 42-byte parser ran clean on every
+    // Oblivion mesh). FNV (BSVER 34, version 20.2.0.7) DOES emit it
+    // (the audit measured a 1-byte under-read). Gate on BS_GTE_FO3
+    // (BSVER >= 34) — empirical match instead of nif.xml's overly-broad
+    // version gate. 1,149 occurrences fixed in vanilla
+    // `Fallout - Meshes.bsa`.
+    if stream.bsver() >= 34 {
+        let _random_rot_speed_sign = stream.read_byte_bool()?;
     }
     let _random_axis = stream.read_byte_bool()?;
     stream.skip(12)?; // axis vec3
@@ -392,7 +424,13 @@ pub fn parse_array_emitter(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
 pub fn parse_mesh_emitter(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     skip_emitter_base(stream)?;
-    let num_meshes = stream.read_u32_le()? as usize;
+    let num_meshes = stream.read_u32_le()?;
+    // Bound the mesh-ref loop against the remaining stream — same
+    // defense as #388 / #407's NiParticleSystem path. Pre-#383 a junk
+    // count from the broken emitter base could send this loop walking
+    // 5 KB into the next block (visible in nif_stats as 5058-byte
+    // over-reads on 97-byte blocks).
+    stream.check_alloc((num_meshes as usize).saturating_mul(4))?;
     for _ in 0..num_meshes {
         let _mesh_ptr = stream.read_block_ref()?;
     }
@@ -1004,5 +1042,121 @@ mod tests {
                 || msg.contains("only ") && msg.contains("bytes remaining"),
             "expected check_alloc rejection, got: {msg}"
         );
+    }
+
+    /// FNV-style header (version 20.2.0.7, BSVER 34). Used by the #383
+    /// regression tests for FNV-era particle modifiers / emitters.
+    fn make_header_fnv() -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 11,
+            user_version_2: 34,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: vec![Arc::from("Mod")],
+            max_string_length: 4,
+            num_groups: 0,
+        }
+    }
+
+    /// `NiPSysModifierBase` payload (string index + order + target + active).
+    /// 13 bytes on the v20.2.0.7 path (string is a 4-byte index).
+    fn modifier_base_bytes() -> Vec<u8> {
+        let mut d = Vec::new();
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // name = None
+        d.extend_from_slice(&0u32.to_le_bytes()); // order
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // target ref
+        d.push(1u8); // active
+        d
+    }
+
+    /// Regression: #383 — `skip_emitter_base` was reading 12 floats
+    /// (48 bytes) where nif.xml requires 14 (56 bytes). Every Box /
+    /// Cylinder / Sphere / Mesh emitter under-read by 8 bytes; the
+    /// downstream consequence on `parse_mesh_emitter` was that
+    /// `num_meshes` got a junk u32 from inside the missing fields and
+    /// the loop walked thousands of bytes into the next block (5,058-
+    /// byte over-reads on 97-byte blocks observed pre-fix).
+    ///
+    /// Verified directly on `parse_sphere_emitter` since it's the
+    /// shortest of the volume emitters and exercises the entire
+    /// modifier+emitter+volume+radius chain.
+    #[test]
+    fn parse_sphere_emitter_consumes_full_block() {
+        let header = make_header_fnv();
+        let mut d = modifier_base_bytes();
+        // 56 bytes of emitter base (14 floats), zeroed.
+        d.extend_from_slice(&[0u8; 56]);
+        // 4 bytes for the volume emitter object ref.
+        d.extend_from_slice(&(-1i32).to_le_bytes());
+        // 4 bytes radius.
+        d.extend_from_slice(&1.5f32.to_le_bytes());
+
+        // 13 base + 56 emitter + 4 volume + 4 radius = 77 bytes
+        // (matches the FNV nif_stats observed `expected 77`).
+        assert_eq!(d.len(), 77);
+
+        let mut stream = NifStream::new(&d, &header);
+        let block = parse_sphere_emitter(&mut stream)
+            .expect("FNV NiPSysSphereEmitter should parse cleanly");
+        assert_eq!(stream.position() as usize, d.len());
+        assert_eq!(block.original_type, "NiPSysSphereEmitter");
+    }
+
+    /// Regression: #383 — `parse_grow_fade_modifier` on FNV
+    /// (BS_GTE_FO3 + version 20.2.0.7) was missing the trailing
+    /// `Base Scale: f32` per nif.xml line 4803. 890 occurrences in
+    /// vanilla `Fallout - Meshes.bsa` under-read by 4 bytes.
+    #[test]
+    fn parse_grow_fade_modifier_reads_base_scale_on_bs_gte_fo3() {
+        let header = make_header_fnv();
+        let mut d = modifier_base_bytes();
+        d.extend_from_slice(&1.0f32.to_le_bytes()); // grow_time
+        d.extend_from_slice(&0u16.to_le_bytes()); // grow_generation
+        d.extend_from_slice(&2.0f32.to_le_bytes()); // fade_time
+        d.extend_from_slice(&0u16.to_le_bytes()); // fade_generation
+        d.extend_from_slice(&3.0f32.to_le_bytes()); // base_scale (BS_GTE_FO3)
+
+        // 13 base + 12 (grow_time + grow_gen + fade_time + fade_gen) +
+        // 4 (base_scale) = 29 bytes (matches FNV nif_stats observed
+        // `expected 29`).
+        assert_eq!(d.len(), 29);
+
+        let mut stream = NifStream::new(&d, &header);
+        let block = parse_grow_fade_modifier(&mut stream)
+            .expect("FNV NiPSysGrowFadeModifier should parse cleanly");
+        assert_eq!(stream.position() as usize, d.len());
+        assert_eq!(block.original_type, "NiPSysGrowFadeModifier");
+    }
+
+    /// Regression: #383 — `parse_rotation_modifier` was missing the
+    /// `Random Rot Speed Sign: bool` field (since 20.0.0.2 per nif.xml
+    /// line 4878). 1,149 occurrences in vanilla `Fallout - Meshes.bsa`
+    /// under-read by 1 byte.
+    #[test]
+    fn parse_rotation_modifier_reads_random_rot_speed_sign_post_20_0_0_2() {
+        let header = make_header_fnv();
+        let mut d = modifier_base_bytes();
+        d.extend_from_slice(&1.0f32.to_le_bytes()); // initial_speed
+        d.extend_from_slice(&0.5f32.to_le_bytes()); // speed_variation
+        d.extend_from_slice(&0.0f32.to_le_bytes()); // initial_angle
+        d.extend_from_slice(&0.1f32.to_le_bytes()); // angle_variation
+        d.push(0u8); // random_rot_speed_sign (since 20.0.0.2)
+        d.push(1u8); // random_axis
+        d.extend_from_slice(&[0u8; 12]); // axis vec3
+
+        // 13 base + 16 (initial_speed + 3 vars) + 1 (rot_sign) +
+        // 1 (random_axis) + 12 (vec3) = 43 bytes (matches FNV
+        // nif_stats observed `expected 43`).
+        assert_eq!(d.len(), 43);
+
+        let mut stream = NifStream::new(&d, &header);
+        let block = parse_rotation_modifier(&mut stream)
+            .expect("FNV NiPSysRotationModifier should parse cleanly");
+        assert_eq!(stream.position() as usize, d.len());
+        assert_eq!(block.original_type, "NiPSysRotationModifier");
     }
 }
