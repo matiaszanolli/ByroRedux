@@ -744,52 +744,96 @@ impl AccelerationManager {
             return Err(e);
         }
 
-        // Phase 5: Read back compacted sizes from the query pool.
-        let mut compacted_sizes = vec![0u64; prepared.len()];
-        unsafe {
-            device
-                .get_query_pool_results(
-                    query_pool,
-                    0,
-                    &mut compacted_sizes,
-                    vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT,
-                )
-                .context("Failed to read compaction query results")?;
-        }
+        // Phases 5 + 6: Read back compacted sizes, then allocate compacted
+        // destination buffers + acceleration structures. Wrapped in a
+        // closure so that any mid-loop allocation failure can roll back
+        // the partial compact-side state plus the still-owned `prepared`
+        // originals and the `query_pool`. Pre-#316 these `?` exits leaked
+        // every Vulkan handle whose Drop relies on the explicit `destroy`
+        // calls in phase 7. Mirrors the build/copy-phase cleanup pattern
+        // at lines 733-745 / 815-832.
+        let alloc_compact = || -> Result<(
+            Vec<(u32, vk::AccelerationStructureKHR, GpuBuffer)>,
+            u64,
+            u64,
+        )> {
+            let mut compacted_sizes = vec![0u64; prepared.len()];
+            unsafe {
+                device
+                    .get_query_pool_results(
+                        query_pool,
+                        0,
+                        &mut compacted_sizes,
+                        vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT,
+                    )
+                    .context("Failed to read compaction query results")?;
+            }
 
-        // Phase 6: Compact — allocate smaller buffers, copy, destroy originals.
-        let mut total_before: u64 = 0;
-        let mut total_after: u64 = 0;
-        let mut compact_accels: Vec<(u32, vk::AccelerationStructureKHR, GpuBuffer)> =
-            Vec::with_capacity(prepared.len());
+            let total_before: u64 = prepared.iter().map(|p| p.buffer.size).sum();
+            let total_after: u64 = compacted_sizes.iter().sum();
 
-        for (i, p) in prepared.iter().enumerate() {
-            total_before += p.buffer.size;
-            let compact_size = compacted_sizes[i];
-            total_after += compact_size;
+            let mut compact_accels: Vec<(u32, vk::AccelerationStructureKHR, GpuBuffer)> =
+                Vec::with_capacity(prepared.len());
 
-            // Allocate the compacted result buffer.
-            let compact_buffer = GpuBuffer::create_device_local_uninit(
-                device,
-                allocator,
-                compact_size,
-                vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
-                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            )?;
+            for (i, p) in prepared.iter().enumerate() {
+                let compact_size = compacted_sizes[i];
 
-            let compact_accel_info = vk::AccelerationStructureCreateInfoKHR::default()
-                .buffer(compact_buffer.buffer)
-                .size(compact_size)
-                .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
+                let compact_buffer = GpuBuffer::create_device_local_uninit(
+                    device,
+                    allocator,
+                    compact_size,
+                    vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
+                        | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                )?;
 
-            let compact_accel = unsafe {
-                self.accel_loader
-                    .create_acceleration_structure(&compact_accel_info, None)
-                    .context("Failed to create compact BLAS")?
-            };
+                let compact_accel_info = vk::AccelerationStructureCreateInfoKHR::default()
+                    .buffer(compact_buffer.buffer)
+                    .size(compact_size)
+                    .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
 
-            compact_accels.push((p.mesh_handle, compact_accel, compact_buffer));
-        }
+                let compact_accel = unsafe {
+                    match self
+                        .accel_loader
+                        .create_acceleration_structure(&compact_accel_info, None)
+                    {
+                        Ok(a) => a,
+                        Err(e) => {
+                            // Buffer was created in this iteration but not
+                            // yet pushed into `compact_accels`, so the outer
+                            // cleanup loop won't see it — destroy it locally
+                            // before bubbling so the OOM path is leak-free.
+                            let mut b = compact_buffer;
+                            b.destroy(device, allocator);
+                            anyhow::bail!("Failed to create compact BLAS: {e}");
+                        }
+                    }
+                };
+
+                compact_accels.push((p.mesh_handle, compact_accel, compact_buffer));
+            }
+
+            Ok((compact_accels, total_before, total_after))
+        };
+
+        let (compact_accels, total_before, total_after) = match alloc_compact() {
+            Ok(v) => v,
+            Err(e) => {
+                // Roll back: destroy the originals (phase 7's job on the
+                // happy path) and the query pool. Partial phase-6 compact
+                // state was already cleaned up inside `alloc_compact`.
+                for mut p in prepared {
+                    unsafe {
+                        self.accel_loader
+                            .destroy_acceleration_structure(p.accel, None);
+                    }
+                    p.buffer.destroy(device, allocator);
+                }
+                unsafe {
+                    device.destroy_query_pool(query_pool, None);
+                }
+                return Err(e);
+            }
+        };
 
         // Record compaction copies in a second command buffer.
         let copy_result = submit_one_time(device, queue, command_pool, transfer_fence, |cmd| {
