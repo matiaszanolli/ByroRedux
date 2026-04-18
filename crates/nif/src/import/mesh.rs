@@ -15,7 +15,9 @@ use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
 
 use super::coord::zup_matrix_to_yup_quat;
-use super::material::{extract_material_info, extract_vertex_colors, find_decal_bs};
+use super::material::{
+    extract_material_info, extract_vertex_colors, find_decal_bs, find_effect_shader_bs,
+};
 use super::{ImportedBone, ImportedMesh, ImportedSkin};
 
 /// Intermediate geometry data extracted from either NiTriShapeData or NiTriStripsData.
@@ -283,20 +285,23 @@ pub(super) fn extract_bs_tri_shape(
     let t = &world_transform.translation;
     let quat = zup_matrix_to_yup_quat(&world_transform.rotation);
 
-    let (
-        emissive_color,
-        emissive_mult,
-        specular_color,
-        specular_strength,
-        glossiness,
-        uv_offset,
-        uv_scale,
-        mat_alpha,
-        normal_map,
-        env_map_scale,
-    ) = if let Some(idx) = shape.shader_property_ref.index() {
+    // Material defaults — used when the shape has no shader property or
+    // when the linked block is neither BSLightingShaderProperty nor
+    // BSEffectShaderProperty. `ems = 1.0` matches pre-#346 behavior.
+    let mut emissive_color = [0.0_f32; 3];
+    let mut emissive_mult = 1.0_f32;
+    let mut specular_color = [1.0_f32; 3];
+    let mut specular_strength = 1.0_f32;
+    let mut glossiness = 80.0_f32;
+    let mut uv_offset = [0.0_f32; 2];
+    let mut uv_scale = [1.0_f32; 2];
+    let mut mat_alpha = 1.0_f32;
+    let mut normal_map: Option<String> = None;
+    let mut env_map_scale = 1.0_f32;
+
+    if let Some(idx) = shape.shader_property_ref.index() {
         if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
-            let nm = shader
+            normal_map = shader
                 .texture_set_ref
                 .index()
                 .and_then(|ts_idx| scene.get_as::<BSShaderTextureSet>(ts_idx))
@@ -308,9 +313,8 @@ pub(super) fn extract_bs_tri_shape(
             // ParallaxOcc, MultiLayerParallax, SparkleSnow, EyeEnvmap,
             // Fo76SkinTint) carry per-NPC/per-effect data that doesn't
             // have a counterpart field on `ImportedMesh` yet — tracked
-            // at SK-D3-01 via the `extract_material_info` path. Default
-            // `ems = 1.0` matches pre-fix behavior.
-            let ems = match shader.shader_type_data {
+            // at SK-D3-01 via the `extract_material_info` path.
+            env_map_scale = match shader.shader_type_data {
                 ShaderTypeData::EnvironmentMap { env_map_scale } => env_map_scale,
                 ShaderTypeData::None
                 | ShaderTypeData::SkinTint { .. }
@@ -321,28 +325,40 @@ pub(super) fn extract_bs_tri_shape(
                 | ShaderTypeData::SparkleSnow { .. }
                 | ShaderTypeData::EyeEnvmap { .. } => 1.0,
             };
-            (
-                shader.emissive_color,
-                shader.emissive_multiple,
-                shader.specular_color,
-                shader.specular_strength,
-                shader.glossiness,
-                shader.uv_offset,
-                shader.uv_scale,
-                shader.alpha,
-                nm,
-                ems,
-            )
-        } else {
-            (
-                [0.0; 3], 1.0, [1.0; 3], 1.0, 80.0, [0.0; 2], [1.0; 2], 1.0, None, 1.0,
-            )
+            emissive_color = shader.emissive_color;
+            emissive_mult = shader.emissive_multiple;
+            specular_color = shader.specular_color;
+            specular_strength = shader.specular_strength;
+            glossiness = shader.glossiness;
+            uv_offset = shader.uv_offset;
+            uv_scale = shader.uv_scale;
+            mat_alpha = shader.alpha;
+        } else if let Some(shader) = scene.get_as::<BSEffectShaderProperty>(idx) {
+            // BSEffectShaderProperty path — VFX surfaces, magic FX,
+            // particle-on-mesh emissives. Pre-#346 the importer ignored
+            // this block entirely (apart from `texture_path`, picked up
+            // by `find_texture_path_bs_tri_shape`), so emissive multiplier,
+            // UV transform, alpha, env-map scale, and the FO4+ normal
+            // texture all dropped to their defaults. Mirror the same
+            // fields the legacy NiTriShape `extract_material_info` path
+            // already pulls from `BSEffectShaderProperty`.
+            emissive_color = [
+                shader.emissive_color[0],
+                shader.emissive_color[1],
+                shader.emissive_color[2],
+            ];
+            emissive_mult = shader.emissive_multiple;
+            uv_offset = shader.uv_offset;
+            uv_scale = shader.uv_scale;
+            mat_alpha = shader.emissive_color[3]; // BGEM uses alpha channel of emissive color
+            // FO4+ effect shaders carry their own normal/env textures
+            // (BSVER >= 130). Pre-FO4 those strings are empty.
+            if !shader.normal_texture.is_empty() {
+                normal_map = Some(shader.normal_texture.clone());
+            }
+            env_map_scale = shader.env_map_scale;
         }
-    } else {
-        (
-            [0.0; 3], 1.0, [1.0; 3], 1.0, 80.0, [0.0; 2], [1.0; 2], 1.0, None, 1.0,
-        )
-    };
+    }
 
     // Skinning data. BSTriShape per-vertex weights live in the packed
     // vertex buffer (VF_SKINNED), decoded at parse time (#177).
@@ -404,10 +420,13 @@ pub(super) fn extract_bs_tri_shape(
         z_write: true,
         local_bound_center,
         local_bound_radius,
-        // BsTriShape effect-shader capture is S4-02 (sibling of #345);
-        // wire it once that ticket lands. The pre-Skyrim NiTriShape
-        // path already populates this field via `extract_material_info`.
-        effect_shader: None,
+        // BsTriShape with an effect-shader parent (VFX surfaces, magic
+        // overlays, BGEM materials) — capture the rich shader fields
+        // (falloff cone, greyscale palette, FO4+/FO76 companion
+        // textures, lighting influence, etc.) so downstream consumers
+        // can route them. `None` for BSLightingShaderProperty and for
+        // shapes with no shader. See #346 / audit S4-02.
+        effect_shader: find_effect_shader_bs(scene, shape),
         // BsTriShape's BSLightingShaderProperty does carry a
         // shader_type — capture it directly off the linked shader so
         // Skyrim+ characters get the right `material_kind` (#344).
@@ -1143,5 +1162,91 @@ mod two_sided_lookup_tests {
         }));
         let shape = shape_with_shader(0);
         assert!(!bs_tri_shape_two_sided(&scene, &shape));
+    }
+
+    /// Regression: #346 — BsTriShape import must read material fields
+    /// (emissive, UV transform, alpha, env-map scale, FO4+ normal map)
+    /// from `BSEffectShaderProperty`, mirror the `find_decal_bs` decal
+    /// check across both shader variants, and populate the
+    /// `effect_shader` capture struct. Pre-fix every Skyrim+ effect-
+    /// shader-backed mesh fell back to defaults — magic FX, particle-on-
+    /// mesh emissives, blood-decals all rendered untransformed, opaque,
+    /// and without the emissive multiplier.
+    fn effect_shader_with_payload() -> BSEffectShaderProperty {
+        let mut s = effect_shader(0);
+        s.uv_offset = [0.25, 0.5];
+        s.uv_scale = [2.0, 4.0];
+        s.emissive_color = [0.7, 0.8, 0.9, 0.5]; // alpha = 0.5
+        s.emissive_multiple = 3.5;
+        s.env_map_scale = 0.75;
+        s.normal_texture = "fx/glow_n.dds".to_string();
+        s.greyscale_texture = "fx/fire_palette.dds".to_string();
+        s
+    }
+
+    #[test]
+    fn extract_bs_tri_shape_pulls_effect_shader_emissive_uv_alpha_normal() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(effect_shader_with_payload()));
+        let mut shape = shape_with_shader(0);
+        // One degenerate triangle so `extract_bs_tri_shape` returns Some.
+        shape.vertices.push(NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        });
+        shape.vertices.push(NiPoint3 {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        });
+        shape.vertices.push(NiPoint3 {
+            x: 0.0,
+            y: 1.0,
+            z: 0.0,
+        });
+        shape.triangles.push([0, 1, 2]);
+        shape.num_vertices = 3;
+        shape.num_triangles = 1;
+
+        let mesh =
+            extract_bs_tri_shape(&scene, &shape, &crate::types::NiTransform::default()).unwrap();
+        assert_eq!(mesh.emissive_color, [0.7, 0.8, 0.9]);
+        assert!((mesh.emissive_mult - 3.5).abs() < 1e-6);
+        assert_eq!(mesh.uv_offset, [0.25, 0.5]);
+        assert_eq!(mesh.uv_scale, [2.0, 4.0]);
+        assert!((mesh.mat_alpha - 0.5).abs() < 1e-6);
+        assert!((mesh.env_map_scale - 0.75).abs() < 1e-6);
+        assert_eq!(mesh.normal_map.as_deref(), Some("fx/glow_n.dds"));
+        let fx = mesh.effect_shader.expect("effect_shader should populate");
+        assert_eq!(fx.greyscale_texture.as_deref(), Some("fx/fire_palette.dds"));
+        assert!((fx.env_map_scale - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn find_decal_bs_via_effect_shader_alpha_decal_flag() {
+        // ALPHA_DECAL_F2 = 0x00200000 in shader_flags_2 — used by Skyrim+
+        // blood splats and similar overlay effects bound to an
+        // BSEffectShaderProperty. Pre-#346 this fell through to false
+        // and the decal got no z-bias, z-fighting against its host.
+        let mut scene = NifScene::default();
+        scene
+            .blocks
+            .push(Box::new(effect_shader(0x0020_0000)));
+        let shape = shape_with_shader(0);
+        assert!(super::find_decal_bs(&scene, &shape));
+    }
+
+    #[test]
+    fn find_decal_bs_via_effect_shader_decal_single_pass() {
+        // DECAL_SINGLE_PASS = 0x04000000 in shader_flags_1 — universal
+        // decal flag the engine honors regardless of which shader
+        // variant the artist bound. Mirror across BSLighting/BSEffect.
+        let mut scene = NifScene::default();
+        let mut shader = effect_shader(0);
+        shader.shader_flags_1 = 0x0400_0000;
+        scene.blocks.push(Box::new(shader));
+        let shape = shape_with_shader(0);
+        assert!(super::find_decal_bs(&scene, &shape));
     }
 }

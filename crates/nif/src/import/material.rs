@@ -757,15 +757,45 @@ fn tex_desc_source_path(scene: &NifScene, desc: Option<&TexDesc>) -> Option<Stri
 }
 
 /// Check if a BsTriShape is decal geometry (Skyrim+).
+///
+/// Both shader-property variants Skyrim+ binds carry the same flag bits:
+/// `BSLightingShaderProperty` (the common case for static / clutter /
+/// actor meshes) and `BSEffectShaderProperty` (VFX surfaces — blood
+/// splats, gore overlays, magic decals, scorch marks). Pre-#346 only
+/// the BSLightingShaderProperty branch was checked, so effect-shader
+/// decals rendered as opaque coplanar triangles → z-fighting against
+/// the surface they overlay.
 pub(super) fn find_decal_bs(scene: &NifScene, shape: &BsTriShape) -> bool {
-    if let Some(idx) = shape.shader_property_ref.index() {
-        if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
-            if shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 {
-                return true;
-            }
+    let Some(idx) = shape.shader_property_ref.index() else {
+        return false;
+    };
+    if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
+        if shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 {
+            return true;
+        }
+    }
+    if let Some(shader) = scene.get_as::<BSEffectShaderProperty>(idx) {
+        if shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0
+            || shader.shader_flags_2 & ALPHA_DECAL_F2 != 0
+        {
+            return true;
         }
     }
     false
+}
+
+/// Resolve the [`BsEffectShaderData`] for a BsTriShape — returns
+/// `None` when the linked shader is not a `BSEffectShaderProperty`.
+/// Used by [`crate::import::mesh::extract_bs_tri_shape`] to populate
+/// the `effect_shader` field that previously was hardcoded to `None`.
+/// See #346 / audit S4-02.
+pub(super) fn find_effect_shader_bs(
+    scene: &NifScene,
+    shape: &BsTriShape,
+) -> Option<BsEffectShaderData> {
+    let idx = shape.shader_property_ref.index()?;
+    let shader = scene.get_as::<BSEffectShaderProperty>(idx)?;
+    Some(capture_effect_shader_data(shader))
 }
 
 #[cfg(test)]
