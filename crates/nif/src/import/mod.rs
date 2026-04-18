@@ -333,11 +333,12 @@ pub fn import_nif_scene(scene: &NifScene) -> ImportedScene {
             .downcast_ref::<crate::blocks::node::NiNode>()
         {
             for &ref_idx in &node.av.net.extra_data_refs {
-                let idx = ref_idx.0;
-                if idx < 0 {
-                    continue;
-                }
-                if let Some(block) = scene.blocks.get(idx as usize) {
+                // BlockRef::NULL (`u32::MAX`) maps to `None`; non-null
+                // refs to `Some(usize)`. Pre-cleanup the code did
+                // `if idx < 0` on the raw `u32` (always false), tripping
+                // an `unused_comparisons` warning.
+                let Some(idx) = ref_idx.index() else { continue };
+                if let Some(block) = scene.blocks.get(idx) {
                     if let Some(ed) = block
                         .as_any()
                         .downcast_ref::<crate::blocks::extra_data::NiExtraData>()
@@ -405,11 +406,9 @@ pub fn extract_bsx_flags(scene: &NifScene) -> u32 {
         return 0;
     };
     for &ref_idx in &node.av.net.extra_data_refs {
-        let idx = ref_idx.0;
-        if idx < 0 {
-            continue;
-        }
-        if let Some(block) = scene.blocks.get(idx as usize) {
+        // BlockRef::NULL (`u32::MAX`) → `None`; non-null → `Some(usize)`.
+        let Some(idx) = ref_idx.index() else { continue };
+        if let Some(block) = scene.blocks.get(idx) {
             if let Some(ed) = block
                 .as_any()
                 .downcast_ref::<crate::blocks::extra_data::NiExtraData>()
