@@ -15,10 +15,11 @@ Source: [`crates/nif/src/`](../../crates/nif/src/)
 | Block types parsed       | ~185 (+30 Havok types skipped via `block_size`) |
 | Distinct type names      | 215+ |
 | Game variants supported  | 8 (Morrowind → Starfield) |
-| Tests (unit)             | 213 (includes `dispatch_tests` + per-game regressions for #322–#325) |
+| Tests (unit)             | 286 (includes `dispatch_tests`, per-game regressions for #322–#325, and session-11 closeout tests) |
 | Integration sweeps       | 7 games, 100% each |
 | Cumulative NIFs parsed   | 177,286 (full mesh archive sweeps) |
 | BGSM / BGEM references   | Surfaced as `ImportedMesh.material_path` when the NiNet name is a material file (BSVER ≥ 155) |
+| Import cache             | Process-lifetime resource (#381) — each unique NIF parses once per process, not once per cell |
 
 ## Module map
 
@@ -515,3 +516,69 @@ every known CRITICAL / HIGH audit item. Known follow-ups that
   regression.
 - Soft shadows / emissive bypass / RT lighting polish (M22+) — render-side,
   not parser-side.
+
+## Session 11 closeout — audit bundle #341–#438
+
+A 72-commit bug-bash on top of the session-10 audit bundle. No new milestones
+landed; the focus was paying down every known CRITICAL/HIGH issue surfaced by
+the `/audit-nif` and `/audit-renderer` sweeps.
+
+**Parser correctness (Oblivion / v20.0.0.5 stability):**
+- `#324` — runtime size cache prevents cascade failure when one block's parser
+  under-reads on Oblivion (no per-block size table to resync).
+- `#395` — stream-drift detector for Oblivion NIF parses emits a warning with
+  the first block that goes off the rails, so drift is measurable rather than
+  an unexplained parse-rate regression.
+- `#429` — gate `NiTexturingProperty` normal + parallax slots on v20.2.0.5+;
+  older files have no normal slot and the previous unconditional reads shifted
+  the stream past the real trailing fields.
+
+**Import path correctness (what ends up on `ImportedMesh` / `ImportedLight`):**
+- `#106` — `BSBehaviorGraphExtraData.controls_baseline_level` is a bool (1 byte),
+  not a u32 (4 bytes). Would shift every block after it on FO3/FNV rigs with
+  behaviour graphs.
+- `#128` — `BsTriShape.two_sided` lookup also checks `BSEffectShaderProperty`
+  (was LightingShader only) so foliage / particles respect the no-cull flag.
+- `#165` — editor culling now catches the Skyrim+ `EditorMarker` flag bit on
+  top of name-prefix matching, plus the `MapMarker` NiNode subclass.
+- `#166` — `BSEffectShaderProperty.emissive_*` renamed to
+  `base_color`/`base_color_scale` to match nif.xml semantics — the field is the
+  tint modulating the base texture, not an emissive added on top.
+- `#335` — `NiDynamicEffect.affected_nodes` pointer list now surfaces on
+  `ImportedLight`, so the import layer can honour per-light affect-set scoping
+  instead of flooding every fragment.
+- `#341` — `BSDynamicTriShape` import path now extracts vertices (was dropping
+  every Skyrim NPC head / face mesh silently).
+- `#344` — `material_kind` now flows through `ImportedMesh` → `Material` so the
+  RT path can route metal / glass / translucent distinctly.
+- `#346` — `BsTriShape` import reads `BSEffectShaderProperty` in addition to
+  `BSLightingShaderProperty` (previously only the lighting path was wired).
+- `#357` — extract **all 8 TXST texture slots**, not just TX00 (diffuse).
+  Normal, glow, parallax, cubemap, env mask, multilayer, and specular now
+  land on `ImportedMesh` for FO4 architecture.
+- `#358`/`#359` — `VF_INSTANCE` constant introduced and `BSTriShape.data_size`
+  is sanity-checked against `num_vertices * vertex_size`.
+- `#363`/`#364` — `BSTreeNode` bones and `BSRangeNode` discriminator now surface
+  on the import scene (Skyrim SpeedTree wind-bone lists + FO4 LOD range tags).
+- `#369` — surface VMAD script attachments via a `has_script` flag.
+- `#381` — NIF import cache promoted from per-cell to a **process-lifetime
+  resource**. Each unique mesh is now parsed + imported exactly once per
+  process, eliminating the O(cells × unique meshes) re-parse on exterior
+  grid streaming.
+- `#401` — end-to-end CPU particle system so torches + FX are visible.
+  Previously the particle parsers landed but the import → render plumbing
+  was incomplete.
+- `#403` — widen `BSLightingShaderProperty.wetness.unknown_1` read to BSVER
+  ≥ 130 (was gated too narrowly).
+- `#407` — parse FO4 `NiParticleSystem` + `BS*ShaderProperty` controllers that
+  were falling through to the generic skip path.
+
+**Robustness:**
+- `#383` — catch missing trailing fields on FNV particle blocks (Bethesda
+  ships NIFs with the declared fields absent; hard-fail was wrong).
+- `#388` — bound file-driven `Vec::with_capacity` against the remaining stream
+  budget so a corrupted count field can't OOM the process.
+
+Dispatch table is unchanged; this session was all semantic corrections and
+import-layer follow-through. Per-game parse rates stayed at 100% across all
+177,286 NIFs.

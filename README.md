@@ -14,7 +14,7 @@ Not a port — a ground-up rebuild that understands the legacy architecture and 
 
 ## Current State
 
-**30+ milestones complete**, including RT performance at scale (M31), streaming RIS direct lighting (M31.5), landscape terrain (M32), exterior sun lighting (M34), BLAS compaction (M36), temporal antialiasing (M37.5), and Papyrus language parser (M30). Loads and renders both **interior and exterior cells** directly from unmodified Bethesda game data — interior cells with placed objects, lighting, and RT shadows; exterior cells with 3x3 grids and heightmap terrain meshes with texture splatting. NIF parser hits **100% on every supported game** across 177,286 NIFs. RT renderer features streaming weighted reservoir shadow sampling (8 reservoirs / fragment), instanced draw batching, BLAS LRU eviction + compaction, SVGF temporal denoiser, TAA with Halton jitter + YCoCg neighborhood clamp, and distance-based ray fallback. Rapier3D physics, ESM record parsing (items, NPCs, factions, FO4 SCOL/MOVS/PKIN/TXST), skeletal skinning pipeline, KFM animation state machines, debug CLI with BGSM material diagnostics.
+**30+ milestones complete**, including RT performance at scale (M31), streaming RIS direct lighting (M31.5), landscape terrain (M32), exterior sun lighting (M34), BLAS compaction (M36), temporal antialiasing (M37.5), and Papyrus language parser (M30). Loads and renders both **interior and exterior cells** directly from unmodified Bethesda game data — interior cells with placed objects, lighting, and RT shadows; exterior cells with 3x3 grids and heightmap terrain meshes with texture splatting. NIF parser hits **100% on every supported game** across 177,286 NIFs. RT renderer features streaming weighted reservoir shadow sampling (8 reservoirs / fragment), instanced draw batching, BLAS LRU eviction + compaction, SVGF temporal denoiser, TAA with Halton jitter + YCoCg neighborhood clamp, and distance-based ray fallback. Rapier3D physics, ESM record parsing (items, NPCs, factions, FO4 SCOL/MOVS/PKIN/TXST plus SCOL body + XCLW water + XESP gating), full 8-slot TXST texture extraction, skeletal skinning pipeline, KFM animation state machines, end-to-end CPU particle system for torches/FX, process-lifetime NIF import cache, persistent BSA/BA2 file handles, pipeline cache threaded through every create site with disk persistence, debug CLI with BGSM material diagnostics.
 
 ```bash
 # Oblivion interior cell with XCLL lighting + per-mesh NiLight torches
@@ -84,7 +84,12 @@ See [Game Compatibility](docs/engine/game-compatibility.md) for the per-game arc
 | BSA reader (v103/v104/v105) — Oblivion through Skyrim SE | Working |
 | BA2 reader (v1/v2/v3/v7/v8) — FO4, FO76, Starfield, GNRL + DX10 with reconstructed DDS headers, zlib + LZ4 | Working |
 | ESM/ESP parser — cells, statics, items, NPCs, factions, leveled lists, globals (10+ record categories) | Working |
+| FO4 architecture placements — SCOL body (ONAM/DATA child list), MOVS, PKIN, all 8 TXST slots | Working |
+| CELL XCLW water plane height + REFR XESP default-disabled gating | Working |
 | Interior + exterior cell loading with placed objects, 3x3 exterior grid | Working |
+| End-to-end CPU particle system — torches, magic FX render from NIF particle data | Working |
+| Process-lifetime NIF import cache + long-lived BSA/BA2 file handles across cell extracts | Working |
+| VkPipelineCache threaded through every pipeline create site with disk persistence | Working |
 | DDS texture loading (BC1/BC3/BC5 + DX10, mipmaps, shared sampler cache) | Working |
 | Animation playback (.kf files, linear/Hermite/TBC, 8 controller types, blending stack) | Working |
 | NiControllerManager embedded animation discovery + text key events as ECS markers | Working |
@@ -287,10 +292,10 @@ See [Debug CLI](docs/engine/debug-cli.md) for the full protocol reference, archi
 
 | Metric                                | Value          |
 |---------------------------------------|----------------|
-| Rust source files                     | 185            |
-| Lines of Rust                         | ~64,000        |
-| Unit tests passing                    | 623            |
-| Integration tests (`#[ignore]`'d)     | 27             |
+| Rust source files                     | 182            |
+| Lines of Rust                         | ~75,000        |
+| Unit tests passing                    | 770+           |
+| Integration tests (`#[ignore]`'d)     | 29             |
 | NIFs in per-game integration sweeps   | 177,286        |
 | Per-game parse success rate           | 100% (7 games) |
 | Workspace members                     | 15 (13 engine crates + binary + debug CLI) |

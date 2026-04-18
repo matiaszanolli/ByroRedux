@@ -32,8 +32,9 @@ Source: [`crates/plugin/src/esm/`](../../crates/plugin/src/esm/)
 | Records parser | 6 files in `records/` (~1900 lines) |
 | Record categories supported | 10 (items, containers, leveled lists, NPCs, races, classes, factions, globals, game settings, cells) |
 | Specific record types | 35+ |
-| Tests (unit) | 64 |
+| Tests (unit) | 105 |
 | Real FNV.esm record count | 13,684 (release-mode parse: 0.19 s) |
+| Exterior grid load | Single ESM walk (#374), was three |
 
 ## Module map
 
@@ -458,18 +459,53 @@ four additional record types that compose prefab buildings:
 
 - **`SCOL`** — static collections. A list of `(STAT reference, transforms[])`
   tuples. One SCOL expands into many placements at cell-load time.
+  The body parser (#405) walks every `ONAM` (STAT reference) and collects
+  all following `DATA` blocks as the transform list for that part, so a
+  single SCOL can expand into hundreds of placements in one pass.
 - **`MOVS`** — movable statics. STATs that respond to havok impulses;
   record-level we just treat them as STATs plus a "movable" flag.
 - **`PKIN`** — pack-ins. Pre-assembled groups of references used as
   reusable room modules (bathroom, kitchen, etc.). Resolve to their
   component references at spawn time.
-- **`TXST`** — texture sets. Six-slot texture arrays (diffuse / normal
-  / glow / height / env / env mask / specular) referenced by
-  `BSLightingShaderProperty` and by LAND texture splatting.
+- **`TXST`** — texture sets. Parsed as an 8-slot texture array (#357):
+  diffuse / normal / glow / parallax / env / env mask / multilayer /
+  specular (TX00–TX07). Referenced by `BSLightingShaderProperty` and by
+  LAND texture splatting. Earlier revisions extracted only TX00 — FO4
+  architecture now surfaces the full slot list on `ImportedMesh`.
 
 These land in `EsmIndex` alongside the M24 record categories. The cell
 loader expands `SCOL` / `PKIN` inline when walking placements; `TXST`
 is keyed by `FormId` and resolved when the material layer references it.
+
+## Session 11 fixes
+
+A batch of correctness + performance fixes landed on top of the FO4
+architecture work:
+
+- **`XCLW` water plane height** (#397) — CELL sub-record. Surfaced on the
+  cell descriptor so water rendering can pick up the correct plane height
+  instead of defaulting to z=0.
+- **`XESP` ref gating** (#349) — REFR sub-record. The default-disabled
+  flag is honoured at cell load, so ruined walls, stage placeholders, and
+  quest-spawn markers that ship "off" in the ESM don't render until a
+  quest enables them.
+- **Skyrim CELL extended sub-records** (#356) — Skyrim adds several
+  sub-records the FNV-first walker didn't recognise; they now parse
+  cleanly instead of emitting warnings.
+- **`VMAD` script attachments** (#369) — surface `has_script` on REFR /
+  base records so the eventual script runtime can see which references
+  carry Papyrus attachments without re-scanning the ESM.
+- **Variant-aware group end** (#391) — thread the game variant through
+  the ESM walker so per-game GRUP end-marker differences (Skyrim vs
+  FNV vs FO4) no longer mis-align the walk.
+- **Single-pass exterior cell load** (#374) — collapsed three separate
+  ESM walks (world, block, sub-block) into one. Exterior 3×3 grid load
+  time dropped proportionally.
+- **`LIGH` DATA color byte order** (#389) — colour bytes are `BGRA`, not
+  `RGB` as the earlier reader assumed. Light colors now match the CK.
+- **Legacy ESM parser stub cleanup** (#390) — the per-game legacy stubs
+  (`tes3.rs` / `tes4.rs` / etc.) were dead; deleted and the live
+  `EsmIndex` aggregator is now the only entry point.
 
 ## Phase 2 — deferred
 

@@ -3,37 +3,38 @@
 ByroRedux uses two layers of tests:
 
 1. **Unit tests** (`#[cfg(test)] mod tests` inside source files) — fast,
-   no game data required, run on every `cargo test`. **623 passing**.
+   no game data required, run on every `cargo test`. **770+ passing**.
 2. **Integration tests** (`#[ignore]`'d by default) — exercise real game
    archives, parse rates, and end-to-end byte-level round-trips. Need
    the relevant game installed and resolve paths via env vars or Steam
-   defaults. Run with `cargo test ... -- --ignored`. **27 in total.**
+   defaults. Run with `cargo test ... -- --ignored`. **29 in total.**
 
 The split keeps CI fast and game-data-free while letting developers run
 the heavy sweeps locally on demand.
 
 ## Per-crate test counts
 
-Numbers are accurate at the time of writing (M36 + M37.5 + session 10,
-2026-04-16). For a live count, run
-`cargo test 2>&1 | grep "test result"`.
+Numbers are accurate at the time of writing (session 11 closeout,
+2026-04-18). For a live count, run
+`cargo test 2>&1 | grep "test result" | awk '{sum += $4} END {print sum}'`.
 
 | Crate | Unit tests | Ignored |
 |---|---|---|
-| `byroredux-core` | 194 | — |
-| `byroredux-nif` | 213 | — |
-| `byroredux-plugin` | 75 | 5 |
+| `byroredux-core` | 207 | — |
+| `byroredux-nif` | 286 | 9 (parse_real_nifs) |
+| `byroredux-plugin` | 105 | 6 |
 | `byroredux-physics` | 17 | — |
-| `byroredux-renderer` | 33 | — |
+| `byroredux-renderer` | 46 | — |
 | `byroredux-papyrus` | 45 | — |
 | `byroredux-scripting` | 8 | — |
-| `byroredux-bsa` | 11 | 7 |
-| `byroredux-debug-protocol` | 9 | — |
-| `byroredux-debug-server` | 4 | — |
+| `byroredux-bsa` | 19 | 7 |
+| `byroredux-debug-protocol` | 4 | — |
+| `byroredux-debug-server` | — | — |
 | `byroredux-platform` | — | — |
-| `byroredux` (binary) | 1 | 2 |
-| Integration: `parse_real_nifs.rs` | — | 8 / `synthetic_fixtures.rs` — |
-| **Total** | **623** | **27** |
+| `byroredux` (binary) | 21 | 2 |
+| Integration: `synthetic_fixtures.rs` | 9 | — |
+| Integration: `parse_real_nifs.rs` | 3 | (included above) |
+| **Total** | **770+** | **24+** |
 
 ## Unit test coverage by area
 

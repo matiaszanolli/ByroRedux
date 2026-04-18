@@ -45,6 +45,19 @@ Source: `crates/renderer/src/vulkan/`
 - **DDS texture loading**: BC1 / BC3 / BC5 + DX10 with mipmaps
 - **Global geometry SSBO** (#294): per-draw vertex/index buffer rebinds
   eliminated — one SSBO indexed by `mesh_handle` for all meshes
+- **Multi-draw indirect**: identical meshes collapse into one
+  `cmd_draw_indexed_indirect` per batch (#309), instead of per-batch
+  per-instance `cmd_draw_indexed`
+- **Session 11 sync/cache hardening** (#313, #316, #317, #392, #415, #416,
+  #420, #422, #426): `VkPipelineCache` threaded through every pipeline
+  create site, per-(src, dst, two_sided) blend pipeline cache, TLAS build
+  barrier widened to COMPUTE_SHADER, `TRIANGLE_FACING_CULL_DISABLE` on
+  TLAS instances gated on the `two_sided` flag, `gl_RayFlagsTerminateOnFirstHitEXT`
+  on reflection + glass rays, SVGF history age as a weighted average
+  (Schied 2017 §4.2), BLAS compaction leak fixed on partial OOM,
+  empty-TLAS `VUID-VkBufferCopy-size-01988` / `-size-01188` suppression
+  via size=0 guard, and an opt-in global lock-order graph for cross-thread
+  ABBA detection
 
 ## Module map
 

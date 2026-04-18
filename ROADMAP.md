@@ -3,7 +3,7 @@
 A clean Rust + C++ rebuild of the Gamebryo/Creation engine lineage with Vulkan rendering.
 This document tracks completed milestones, current capabilities, planned work, and known gaps.
 
-Last updated: 2026-04-16 (session 10 — M31.5 streaming RIS, M36 BLAS compaction, M37.5 TAA, FO4 architecture, audit bundle #314–#340)
+Last updated: 2026-04-18 (session 11 — audit closeout bundle #341–#438, 72 fixes across NIF parser + renderer + ESM, promoted NIF import cache, persistent archive handles, SCOL body parser)
 
 ---
 
@@ -56,6 +56,52 @@ through `ImportedMesh` → `Material` as `material_path` for BGSM / BGEM diagnos
 `mesh.info <entity_id>`. Evaluator functions `tex_missing()` / `tex_loaded()` exposed
 over the TCP protocol. Output shows BGSM material reference when `texture_path` is
 absent (correct FO4 behavior — the real material lives in the BGSM file).
+
+**Session 11 closeout (72 commits, zero milestone churn):** audit follow-through
+bundle `#341`–`#438`. Major themes:
+
+- **NIF parser correctness** — Oblivion stream-drift detector (`#395`), runtime
+  size cache after a bad block (`#324`), NiTexturingProperty normal/parallax
+  slot version gates (`#429`), BSDynamicTriShape import (`#341`) restores every
+  Skyrim NPC head/face mesh, BSTriShape reads BSEffectShaderProperty (`#346`),
+  BSTreeNode bones + BSRangeNode discriminator surfaced on import (`#363`/`#364`),
+  VMAD `has_script` flag via script attachments (`#369`), BSBehaviorGraphExtraData
+  reads bool (`#106`), FO4 NiParticleSystem + BS*ShaderProperty controllers
+  (`#407`), BSLightingShaderProperty wetness.unknown_1 for BSVER ≥ 130 (`#403`),
+  FNV particle trailing fields (`#383`), file-driven `Vec::with_capacity` budget
+  guard (`#388`).
+- **NIF → import → render plumbing** — `material_kind` threaded end-to-end
+  through the import/render path (`#344`), all 8 TXST texture slots extracted
+  (`#357`, was TX00 only), `NiDynamicEffect.affected_nodes` surfaced on
+  `ImportedLight` (`#335`), BGRA color byte order on LIGH DATA (`#389`),
+  NIF import cache promoted to a process-lifetime resource (`#381`),
+  end-to-end CPU particle system so torches/FX are visible (`#401`),
+  BSEffectShaderProperty emissive → base_color field rename (`#166`),
+  MapMarker + Skyrim+ EditorMarker flag bit in editor culling (`#165`),
+  BsTriShape two_sided lookup checks BSEffectShaderProperty (`#128`).
+- **ESM parser** — SCOL body parses all ONAM/DATA child placements (`#405`),
+  CELL `XCLW` water plane height (`#397`), REFR `XESP` gating skips default-
+  disabled refs at cell load (`#349`), Skyrim CELL extended sub-records (`#356`),
+  variant-aware group end in the walker (`#391`), triple exterior ESM parse
+  collapsed to single pass (`#374`), dead legacy ESM parser stubs deleted
+  (`#390`).
+- **Archive reader** — long-lived file handle across extracts (`#360`, was
+  re-opening per call), BSA extract arithmetic underflow guard (`#352`).
+- **Renderer — sync + resource management** — `VkPipelineCache` threaded
+  through every pipeline create site (`#426`, 10–50 ms cold → <1 ms warm),
+  per-(src, dst, two_sided) blend pipeline cache (`#392`), TLAS build barrier
+  widened to cover COMPUTE_SHADER (`#415`), TRIANGLE_FACING_CULL_DISABLE on
+  TLAS instances gated on two_sided (`#416`), gl_RayFlagsTerminateOnFirstHitEXT
+  on reflection + glass rays (`#420`), SVGF history age as weighted average
+  per Schied 2017 §4.2 (`#422`), `caustic_splat.comp` _pad1 → materialKind
+  sync (`#417`), BLAS compaction phases 5-6 GPU memory leak on partial OOM
+  (`#316`), multi-draw indirect path collapses per-batch `cmd_draw_indexed`
+  (`#309`), empty-TLAS size=0 guard plus VUID-VkBufferCopy-size-01988 and
+  VUID-VkBufferMemoryBarrier-size-01188 suppression (`#317`), opt-in global
+  lock-order graph for cross-thread ABBA detection (`#313`), terrain BLAS
+  builds batched across the whole exterior grid (`#382`).
+
+Workspace test count: 623 → 770+. Net source growth: ~64K → ~75K lines of Rust.
 
 ---
 
@@ -783,6 +829,19 @@ expanding gameplay systems. Each milestone produces a visible improvement.
 - [ ] parry3d panics on nested compound collision shapes (catch_unwind guard in place)
 
 ### Resolved
+- [x] Pipeline cache bypassed on some create sites (cold shader compile on every run) → VkPipelineCache threaded through every create site with disk persistence (#426)
+- [x] BLAS compaction leaked GPU memory when the occupancy query failed partway through → fenced teardown across all five phases (#316)
+- [x] Multi-draw indirect path used per-batch `cmd_draw_indexed` → collapsed to a single `cmd_draw_indexed_indirect` (#309)
+- [x] Skyrim NPC heads/faces invisible (BSDynamicTriShape import path missing) → full BSDynamicTriShape mesh extraction (#341)
+- [x] Torches + magic FX invisible (CPU particle data present but unrendered) → end-to-end CPU particle system (#401)
+- [x] NIF import recomputed per cell load → promoted to process-lifetime resource (#381)
+- [x] BSA/BA2 file handle re-opened per extract on exterior cell loads → long-lived handle (#360)
+- [x] Exterior cell ESM parse ran three times per load → collapsed to a single pass (#374)
+- [x] TXST record surfaced only the diffuse slot (TX00) → extract all 8 texture slots (#357)
+- [x] SCOL placements on FO4 cells invisible → parse ONAM/DATA child placements (#405)
+- [x] CELL XCLW water plane height not parsed → surfaced on the cell descriptor (#397)
+- [x] REFR default-disabled references rendered anyway → XESP gating at cell load (#349)
+- [x] Oblivion parser cascade-failed after one bad block (no per-block size table) → runtime size cache + stream-drift detector (#324, #395)
 - [x] No antialiasing — stair/column/tapestry edge shimmer → TAA compute pass with Halton jitter, Catmull-Rom history, YCoCg neighborhood clamp (M37.5)
 - [x] Top-K shadow rays dropped lights outside the top cliff → streaming weighted reservoir sampling (M31.5)
 - [x] BLAS memory pressure → ALLOW_COMPACTION + query + compact copy, 20–50% reduction (M36)
@@ -842,9 +901,9 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Metric | Value |
 |--------|-------|
-| Passing tests | 623 |
+| Passing tests | 770+ (207 core, 286 nif, 105 plugin, 46 renderer, 45 papyrus, 21 binary, 19 bsa, 17 physics, 8 scripting, 4 debug-protocol, + integration) |
 | Workspace members | 15 (13 engine crates + `byroredux` binary + `byro-dbg` CLI) |
-| Completed milestones | 30+ (M1–M22, M24 Phase 1, M26, M28 Phase 1, M30 Phase 1, M31, M31.5, M32 Phase 1+2, M34 Phase 1, M36, M37.5) + N23 + N26 + #178 |
+| Completed milestones | 30+ (M1–M22, M24 Phase 1, M26, M28 Phase 1, M30 Phase 1, M31, M31.5, M32 Phase 1+2, M34 Phase 1, M36, M37.5) + N23 + N26 + #178 + #316/#381/#401/#405/#426 session-11 closeout bundle |
 | NIF block types | ~215 distinct type names, ~185 parsed + 30 Havok skip |
 | NifVariant games | 8 (Morrowind → Starfield) |
 | Per-game NIF parse rate | 100% across 177,286 NIFs (7 games) |
@@ -862,20 +921,20 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Crate | Milestones | Tests |
 |-------|------------|-------|
-| `byroredux-core` | M3 (ECS), M5 (Form IDs), M21 (Animation), #178A (SkinnedMesh), #137 (lock guards), #340 (interned channel names) | 194 |
-| `byroredux-renderer` | M1, M2, M4, M7, M8, M13, M14, M22, M31, M31.5 (streaming RIS), M36 (BLAS compaction), M37.5 (TAA), #178B (bone palette), #136 (16× AF) | 33 |
+| `byroredux-core` | M3 (ECS), M5 (Form IDs), M21 (Animation), #178A (SkinnedMesh), #137 (lock guards), #340 (interned channel names), #313 (lock-order graph) | 207 |
+| `byroredux-renderer` | M1, M2, M4, M7, M8, M13, M14, M22, M31, M31.5 (streaming RIS), M36 (BLAS compaction), M37.5 (TAA), #178B (bone palette), #136 (16× AF), #309/#316/#317/#392/#415/#416/#420/#422/#426 | 46 |
 | `byroredux-platform` | M1 (windowing) | — |
-| `byroredux-plugin` | M5, M6, M19, M24 Phase 1, FO4 SCOL/MOVS/PKIN/TXST | 75 |
-| `byroredux-nif` | M9, M10, M17, M18, M21, N23.1–N23.10, N26 audit, #79 KFM, #322/#323/#324/#325, BGSM material_path | 213 |
-| `byroredux-bsa` | M11, M18, M26 (BA2), session 7 (v3 LZ4), session 10 (archive auto-detect) | 11 |
+| `byroredux-plugin` | M5, M6, M19, M24 Phase 1, FO4 SCOL/MOVS/PKIN/TXST, #349 XESP, #356 Skyrim CELL, #374 single-pass exterior, #389 BGRA LIGH, #391 variant group end, #397 XCLW, #405 SCOL body, #357 all 8 TXST slots | 105 |
+| `byroredux-nif` | M9, M10, M17, M18, M21, N23.1–N23.10, N26 audit, #79 KFM, #322/#323/#324/#325/#395 Oblivion robustness, #106/#128/#165/#166/#335/#341/#344/#346/#363/#364/#369/#381/#401/#403/#407/#429 closeout, BGSM material_path | 286 |
+| `byroredux-bsa` | M11, M18, M26 (BA2), session 7 (v3 LZ4), session 10 (archive auto-detect), #352/#360 extract robustness | 19 |
 | `byroredux-physics` | M28 Phase 1 (Rapier3D bridge) | 17 |
 | `byroredux-scripting` | M12 | 8 |
 | `byroredux-papyrus` | M30 Phase 1 (Papyrus parser) | 45 |
 | `byroredux-ui` | M20 (Ruffle/SWF) | — |
-| `byroredux-debug-protocol` | Wire protocol + component registry | 9 |
-| `byroredux-debug-server` | TCP server + Papyrus evaluator (tex_missing, tex_loaded, mesh.info) | 4 |
+| `byroredux-debug-protocol` | Wire protocol + component registry | 4 |
+| `byroredux-debug-server` | TCP server + Papyrus evaluator (tex_missing, tex_loaded, mesh.info) | — |
 | `byroredux-cxx-bridge` | Cross-cutting | — |
-| `byroredux` (binary) | M4, M11, M14–M17, M19, M28, M32, M34, cell cache, terrain, FO4 architecture | — |
+| `byroredux` (binary) | M4, M11, M14–M17, M19, M28, M32, M34, cell cache, terrain, FO4 architecture, #401 CPU particle system | 21 |
 | `tools/byro-dbg` | Standalone debug CLI (TCP client, REPL) | — |
 
 ---

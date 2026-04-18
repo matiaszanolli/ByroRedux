@@ -335,6 +335,24 @@ pulls one specific file out of an Oblivion BSA and writes it to disk —
 used during the M26+ Oblivion follow-up to investigate parser failures
 on real Oblivion NetImmerse-era content.
 
+## Session 11 robustness fixes
+
+- **Persistent file handles** (#360) — both readers now hold the archive
+  file handle open for the lifetime of the archive object instead of
+  re-opening on every `extract()`. Exterior 3×3 grid loads hit the same
+  archive dozens of times per cell; the re-open cost was dominating
+  extraction time. Handles are thread-safe (`Arc<Mutex<File>>` internally)
+  so the cell-loader worker pool can share the same archive.
+- **Arithmetic underflow guard** (#352) — a malformed BSA could trigger
+  `u32` underflow when computing remaining bytes after the embedded-name
+  prefix skip. Guarded with a checked subtraction that returns an
+  `InvalidData` error instead of wrapping.
+- **Auto-detection from magic** (session 10, `asset_provider.rs`) — the
+  cell loader no longer hard-codes BSA vs BA2 per game; the loader peeks
+  the 4-byte magic (`BSA\0` vs `BTDX`) and picks the reader. FO4
+  installations with a mix of `.ba2` and `.bsa` (modded content) now
+  work without changes to the loader.
+
 ## Resolved gaps (session 7)
 
 All three previously-deferred Starfield BA2 gaps are now resolved:
