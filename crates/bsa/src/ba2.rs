@@ -33,7 +33,8 @@ use flate2::read::ZlibDecoder;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::Mutex;
 
 const MAGIC_BTDX: &[u8; 4] = b"BTDX";
 const MAGIC_GNRL: &[u8; 4] = b"GNRL";
@@ -60,7 +61,10 @@ enum Ba2Compression {
 
 /// BA2 archive opened for reading.
 pub struct Ba2Archive {
-    path: PathBuf,
+    /// Long-lived file handle reused across `extract` calls — see #360.
+    /// Mutex serialises seek/read pairs so concurrent extracts can't
+    /// trample each other's file cursor.
+    file: Mutex<File>,
     version: u32,
     variant: Ba2Variant,
     compression: Ba2Compression,
@@ -204,8 +208,14 @@ impl Ba2Archive {
             map.insert(name, entry);
         }
 
+        // Take ownership of the file handle for reuse across extracts
+        // — see the `BsaArchive` Drop / locking notes; the same #360
+        // rationale applies. BufReader was right for the sequential
+        // header parse above; for the random-access extract path we
+        // use the bare File so each seek doesn't waste read-ahead.
+        let file = reader.into_inner();
         Ok(Self {
-            path: path.to_path_buf(),
+            file: Mutex::new(file),
             version,
             variant,
             compression,
@@ -250,14 +260,15 @@ impl Ba2Archive {
             )
         })?;
 
-        let mut reader = BufReader::new(File::open(&self.path)?);
+        // Reuse the long-lived file handle — see #360.
+        let mut file = self.file.lock().expect("BA2 file mutex poisoned");
         match entry {
             Ba2Entry::General {
                 offset,
                 packed_size,
                 unpacked_size,
             } => extract_general(
-                &mut reader,
+                &mut *file,
                 *offset,
                 *packed_size,
                 *unpacked_size,
@@ -271,7 +282,7 @@ impl Ba2Archive {
                 is_cubemap,
                 chunks,
             } => extract_dx10(
-                &mut reader,
+                &mut *file,
                 *dxgi_format,
                 *width,
                 *height,
@@ -407,8 +418,8 @@ fn decompress_chunk(
     }
 }
 
-fn extract_general(
-    reader: &mut BufReader<File>,
+fn extract_general<R: Read + Seek>(
+    reader: &mut R,
     offset: u64,
     packed_size: u32,
     unpacked_size: u32,
@@ -427,8 +438,8 @@ fn extract_general(
     }
 }
 
-fn extract_dx10(
-    reader: &mut BufReader<File>,
+fn extract_dx10<R: Read + Seek>(
+    reader: &mut R,
     dxgi_format: u8,
     width: u16,
     height: u16,

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::Mutex;
 
 /// Bethesda BSA v103+ folder-name hash. Used by the v103/v104/v105
 /// directory tables to identify folders without scanning names.
@@ -103,7 +104,11 @@ fn genhash_file(name: &str) -> u64 {
 /// v104: Fallout 3, Fallout NV, Skyrim LE (16-byte folder records, zlib compression)
 /// v105: Skyrim SE, Fallout 4 (24-byte folder records, LZ4 compression, u64 offsets)
 pub struct BsaArchive {
-    path: std::path::PathBuf,
+    /// Long-lived file handle reused across `extract` calls. Pre-#360
+    /// every extract reopened the archive (one `open()` syscall per
+    /// extracted file — hundreds per cell load); the mutex lets us
+    /// reuse a single FD even though `extract` takes `&self`.
+    file: Mutex<File>,
     version: u32,
     compressed_by_default: bool,
     /// When set (flag 0x100), each file's data starts with a bstring name prefix to skip.
@@ -345,8 +350,15 @@ impl BsaArchive {
             );
         }
 
+        // Take ownership of the file handle (BufReader::into_inner is
+        // infallible — it just returns the wrapped reader). The buffered
+        // reader was right for the sequential header parse above; for
+        // the random-access seek-and-read pattern in `extract`, an
+        // unbuffered `File` is what we want anyway (each seek would
+        // invalidate the BufReader's read-ahead). See #360.
+        let file = reader.into_inner();
         Ok(BsaArchive {
-            path: path.to_path_buf(),
+            file: Mutex::new(file),
             version,
             compressed_by_default,
             embed_file_names,
@@ -382,16 +394,21 @@ impl BsaArchive {
             )
         })?;
 
-        let mut reader = BufReader::new(File::open(&self.path)?);
-        reader.seek(SeekFrom::Start(entry.offset))?;
+        // Reuse the long-lived file handle stored at open time. Pre-#360
+        // every extract did `BufReader::new(File::open(&self.path)?)` —
+        // one `open()` syscall per file with hundreds of meshes per cell
+        // load. Mutex serialises the seek/read pair so concurrent
+        // extracts can't trample each other's file cursor.
+        let mut file = self.file.lock().expect("BSA file mutex poisoned");
+        file.seek(SeekFrom::Start(entry.offset))?;
 
         // Skip embedded file name prefix (bstring: 1 byte length + name).
         // Present when archive flag 0x100 is set. The size field includes these bytes.
         let name_prefix_len = if self.embed_file_names {
             let mut len_buf = [0u8; 1];
-            reader.read_exact(&mut len_buf)?;
+            file.read_exact(&mut len_buf)?;
             let name_len = len_buf[0] as usize;
-            reader.seek(SeekFrom::Current(name_len as i64))?;
+            file.seek(SeekFrom::Current(name_len as i64))?;
             1 + name_len
         } else {
             0
@@ -404,13 +421,17 @@ impl BsaArchive {
         if is_compressed {
             // First 4 bytes are the original uncompressed size
             let mut size_buf = [0u8; 4];
-            reader.read_exact(&mut size_buf)?;
+            file.read_exact(&mut size_buf)?;
             let original_size = u32::from_le_bytes(size_buf) as usize;
 
             // Read remaining compressed data
             let compressed_len = data_size - 4;
             let mut compressed = vec![0u8; compressed_len];
-            reader.read_exact(&mut compressed)?;
+            file.read_exact(&mut compressed)?;
+            // Drop the lock before the decompression CPU work — the file
+            // handle isn't needed for decompression and other extracts
+            // shouldn't have to wait.
+            drop(file);
 
             // v104 uses zlib, v105 uses LZ4 frame format.
             let decompressed = if self.version >= 105 {
@@ -428,7 +449,7 @@ impl BsaArchive {
             Ok(decompressed)
         } else {
             let mut data = vec![0u8; data_size];
-            reader.read_exact(&mut data)?;
+            file.read_exact(&mut data)?;
             Ok(data)
         }
     }
