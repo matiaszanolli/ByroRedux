@@ -256,32 +256,55 @@ impl NiTexturingProperty {
             let _m10 = stream.read_f32_le()?;
             let _m11 = stream.read_f32_le()?;
         }
-        let normal_texture = if texture_count > 6 {
+        // Per nif.xml `NiTexturingProperty`, slots 6-7 (`Has Normal
+        // Texture` / `Has Parallax Texture`) are gated `since 20.2.0.5`
+        // — they don't exist on Oblivion (v20.0.0.5). Pre-#429 the
+        // bool reads were unconditional; on Oblivion NIFs with
+        // `texture_count > 6` (decal-heavy clutter), each read consumed
+        // 1 stray byte from what should have been a decal-slot bool,
+        // misaligning every following block. Oblivion has no
+        // `block_sizes` table to recover from the drift, so downstream
+        // blocks eventually read junk counts and either crashed
+        // (#388 OOM-class) or got demoted to NiUnknown via the
+        // recovery path (#395). The decal loop below is already
+        // correctly version-branched and will absorb the slot
+        // accounting once these reads stop poking through.
+        let is_v20_2_0_5_plus = stream.version() >= crate::version::NifVersion(0x14020005);
+
+        let normal_texture = if is_v20_2_0_5_plus && texture_count > 6 {
             Self::read_tex_desc(stream)?
         } else {
             None
         };
 
-        if texture_count > 7 {
-            // Parallax texture (slot 7).
+        if is_v20_2_0_5_plus && texture_count > 7 {
+            // Parallax texture (slot 7) — v20.2.0.5+ only.
             let parallax = Self::read_tex_desc(stream)?;
             // nif.xml: Parallax Offset float after parallax TexDesc.
             if parallax.is_some() {
                 let _parallax_offset = stream.read_f32_le()?;
             }
         }
-        // Decal texture slots. nif.xml gates each decal at count > 8, > 9, > 10, > 11.
-        // Slots 0-7 (base through parallax) are already consumed above, so decals
-        // start at slot 8: num_decals = texture_count - 8.
+        // Decal texture slots. nif.xml gates each decal at count > 8, > 9, > 10, > 11
+        // (v20.2.0.5+) or count > 6, > 7, > 8, > 9 (pre-20.2.0.5). Slot count
+        // depends on whether normal+parallax exist:
+        //   v20.2.0.5+: slots 0-7 (base/dark/detail/gloss/glow/bump/normal/parallax)
+        //               consumed above; decals start at slot 8.
+        //   Pre-20.2.0.5 (Oblivion / older): slots 0-5 only — no normal, no
+        //               parallax. Decals start at slot 6, num_decals =
+        //               texture_count - 6. Pre-#429 the formula was
+        //               `texture_count - 7` (off by one), which masked the
+        //               unconditional normal_texture read above (`>6` slot
+        //               accidentally aligned with what was actually decal 0).
+        //               Both bugs needed fixing together; either alone
+        //               misaligns downstream blocks.
         if stream.version() >= crate::version::NifVersion(0x14020005) {
-            // v20.2.0.5+: slots 0-7 consumed (base..parallax)
             let num_decals = texture_count.saturating_sub(8);
             for _ in 0..num_decals {
                 let _ = Self::read_tex_desc(stream)?;
             }
         } else {
-            // Pre-20.2.0.5: slots 0-6 consumed (base..normal), no parallax slot
-            let num_decals = texture_count.saturating_sub(7);
+            let num_decals = texture_count.saturating_sub(6);
             for _ in 0..num_decals {
                 let _ = Self::read_tex_desc(stream)?;
             }
@@ -832,6 +855,74 @@ mod tests {
         let base = prop.base_texture.as_ref().unwrap();
         assert_eq!(base.source_ref.0, 7);
         assert!(base.transform.is_none());
+    }
+
+    /// Regression: #429 — at v20.0.0.5 (Oblivion), slots 6-7
+    /// (`Has Normal Texture` / `Has Parallax Texture`) do NOT exist
+    /// per nif.xml — they're gated `since 20.2.0.5`. Pre-fix the
+    /// parser read those bools unconditionally, so an Oblivion NIF
+    /// with `texture_count == 8` over-consumed 2 bytes of what
+    /// should have been decal-slot bools, then potentially more
+    /// bytes if those phantom bools came back as `1`. With no
+    /// `block_sizes` table to resync, every following block
+    /// misaligned. This test exercises the exact failure shape:
+    /// build a v20.0.0.5 NiTexturingProperty with `texture_count = 8`
+    /// (base + 5 absent slots + 2 decals), assert byte-exact
+    /// consumption, and confirm the decal `has = 0` bools after
+    /// position survive.
+    #[test]
+    fn parse_ni_texturing_property_oblivion_skips_normal_parallax_slots() {
+        let mut header = make_header(11, 11);
+        header.version = NifVersion(0x14000005); // v20.0.0.5 — Oblivion
+        let mut data = Vec::new();
+        // NiObjectNET on Oblivion (v20.0.0.5 < 20.1.0.1): name is a
+        // length-prefixed inline string (u32 length, then bytes), not
+        // a string-table index. Write zero-length to mean "no name".
+        data.extend_from_slice(&0u32.to_le_bytes()); // name length = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count = 0
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = NULL
+        // No flags field — Oblivion sits in the 10.0.1.3..20.1.0.1
+        // gap where NiTexturingProperty has neither the legacy u16
+        // flags nor the modern TexturingFlags. Apply mode IS still
+        // present (until 20.1.0.1) — write the u32.
+        data.extend_from_slice(&0u32.to_le_bytes()); // apply_mode
+        data.extend_from_slice(&8u32.to_le_bytes()); // texture_count = 8
+        // Slots 0-5: each is a `has = 0` bool (no body). Slots 6-7
+        // do NOT exist on this version — pre-fix the parser would
+        // also try to read those, eating 2 bytes from below.
+        for _ in 0..6 {
+            data.push(0); // has = false
+        }
+        // Pre-v20.2.0.5: decals start at slot 6. With texture_count=8,
+        // num_decals = 8-6 = 2 decal slots, each a `has = 0` bool
+        // (no body since has=false).
+        for _ in 0..2 {
+            data.push(0); // decal has = false
+        }
+
+        // Trailer: shader textures count = 0 (since v10.0.1.0+).
+        data.extend_from_slice(&0u32.to_le_bytes());
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let prop = NiTexturingProperty::parse(&mut stream).unwrap();
+        assert_eq!(
+            stream.position() as usize,
+            expected_len,
+            "Oblivion NiTexturingProperty must consume exactly the bytes \
+             it authored — pre-#429 the parser ate `has_normal` + \
+             `has_parallax` bools that v20.0.0.5 doesn't carry, \
+             over-consuming 2 bytes from the decal slot below"
+        );
+        // Sanity: every slot read came back empty (we wrote `has=0`
+        // for everything).
+        assert!(prop.base_texture.is_none());
+        assert!(prop.dark_texture.is_none());
+        assert!(prop.bump_texture.is_none());
+        // normal_texture must be `None` because Oblivion doesn't
+        // have the slot — pre-#429 it would have been Some(...) or
+        // a parse error from over-reading.
+        assert!(prop.normal_texture.is_none());
     }
 }
 
