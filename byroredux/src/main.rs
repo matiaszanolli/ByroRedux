@@ -144,6 +144,10 @@ impl App {
         world.insert_resource(NameIndex::new());
         world.insert_resource(SubtreeCache::new());
         world.insert_resource(byroredux_physics::PhysicsWorld::new());
+        // Process-lifetime cache of parsed-and-imported NIF scenes.
+        // Persists across cell transitions so repeat visits don't re-
+        // parse every clutter mesh. See #381.
+        world.insert_resource(crate::cell_loader::NifImportRegistry::new());
 
         // Pre-register component storages that the physics sync system
         // queries on the first frame (before anything has been inserted).

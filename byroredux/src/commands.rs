@@ -239,6 +239,36 @@ impl ConsoleCommand for MeshInfoCommand {
     }
 }
 
+/// `mesh.cache` — inspect the process-lifetime NIF import cache.
+/// Reports cache size, parsed/failed counts, and lifetime hit rate.
+/// See [`crate::cell_loader::NifImportRegistry`] / #381.
+struct MeshCacheCommand;
+impl ConsoleCommand for MeshCacheCommand {
+    fn name(&self) -> &str {
+        "mesh.cache"
+    }
+    fn description(&self) -> &str {
+        "Show NIF import cache stats (size, hits, misses, hit rate)"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(reg) = world.try_resource::<crate::cell_loader::NifImportRegistry>() else {
+            return CommandOutput::line("NifImportRegistry resource not present");
+        };
+        CommandOutput::lines(vec![
+            "NIF import cache:".to_string(),
+            format!(
+                "  entries:       {} ({} parsed, {} failed)",
+                reg.len(),
+                reg.parsed_count,
+                reg.failed_count,
+            ),
+            format!("  lifetime hits: {}", reg.hits),
+            format!("  lifetime miss: {}", reg.misses),
+            format!("  hit rate:      {:.1}%", reg.hit_rate_pct()),
+        ])
+    }
+}
+
 pub(crate) fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
     registry.register(HelpCommand);
@@ -248,5 +278,6 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(TexMissingCommand);
     registry.register(TexLoadedCommand);
     registry.register(MeshInfoCommand);
+    registry.register(MeshCacheCommand);
     registry
 }

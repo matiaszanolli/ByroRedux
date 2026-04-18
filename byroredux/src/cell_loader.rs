@@ -6,8 +6,8 @@
 
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
-    CellRoot, GlobalTransform, LightSource, Material, MeshHandle, ParticleEmitter, TextureHandle,
-    Transform, World,
+    CellRoot, GlobalTransform, LightSource, Material, MeshHandle, ParticleEmitter, Resource,
+    TextureHandle, Transform, World,
 };
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
@@ -36,6 +36,75 @@ struct CachedNifImport {
     /// translates to a heuristic [`ParticleEmitter`] preset. See #401.
     particle_emitters: Vec<byroredux_nif::import::ImportedParticleEmitterFlat>,
 }
+
+/// Process-lifetime cache of parsed-and-imported NIF scenes keyed by
+/// lowercased model path. Promotes the per-`load_references`
+/// `import_cache` (#383) to a world-resource so cell-to-cell traversal
+/// re-uses every previously-parsed mesh.
+///
+/// Without this, a second visit to a cell (or an adjacent cell sharing
+/// 90% of its clutter meshes) re-parses every NIF — the Session 6
+/// optimization's win is real *within* one cell but doesn't persist.
+/// That cost is invisible today because cells load exactly once per
+/// process lifetime, but turns into a HIGH-severity per-doorwalk stall
+/// once #372 (despawn/unload) lands. See audit F3-11 / #381.
+///
+/// `None` entries record a model that failed to parse (or had zero
+/// useful geometry) so we don't re-try the parse on every placement.
+///
+/// **Memory bound:** unbounded for now. A full FNV mesh-archive sweep
+/// would resolve into ~14k entries totaling a few hundred MB at most;
+/// the engine's other registries (texture, mesh) are similarly
+/// unbounded. An LRU cap is a follow-up if memory pressure justifies
+/// it, exposed via the `mesh.cache` debug command.
+#[derive(Default)]
+pub(crate) struct NifImportRegistry {
+    cache: HashMap<String, Option<Arc<CachedNifImport>>>,
+    /// Cumulative cache hits across the process lifetime.
+    pub(crate) hits: u64,
+    /// Cumulative cache misses (a parse was performed) across the
+    /// process lifetime. `hits + misses == total NIF lookups`.
+    pub(crate) misses: u64,
+    /// Successfully-parsed entries currently in the cache. Mirrors
+    /// `cache.values().filter(|v| v.is_some()).count()` for O(1) reads
+    /// from the `mesh.cache` debug command.
+    pub(crate) parsed_count: u64,
+    /// Failed-parse entries currently in the cache (`None` entries).
+    pub(crate) failed_count: u64,
+}
+
+impl NifImportRegistry {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Clear all entries (e.g. before a hard world reset). Counters are
+    /// preserved so the debug command can still display lifetime stats.
+    #[allow(dead_code)]
+    pub(crate) fn clear(&mut self) {
+        self.cache.clear();
+        self.parsed_count = 0;
+        self.failed_count = 0;
+    }
+
+    /// Total number of cached entries (parsed + failed).
+    pub(crate) fn len(&self) -> usize {
+        self.cache.len()
+    }
+
+    /// Hit rate as a percentage `[0, 100]`. `0.0` when no lookups have
+    /// happened yet (avoid NaN).
+    pub(crate) fn hit_rate_pct(&self) -> f64 {
+        let total = self.hits + self.misses;
+        if total == 0 {
+            0.0
+        } else {
+            100.0 * self.hits as f64 / total as f64
+        }
+    }
+}
+
+impl Resource for NifImportRegistry {}
 
 /// Result of loading a cell.
 #[allow(dead_code)]
@@ -634,16 +703,20 @@ fn load_references(
     label: &str,
 ) -> RefLoadResult {
     let mut entity_count = 0;
-    // Cache parsed-and-imported NIF scene data keyed by model path.
-    // Each unique mesh is parsed exactly once per cell load; subsequent
-    // placements of the same model reuse the shared `Arc` and only pay
-    // the per-reference spawn cost (vertex upload, texture resolve,
-    // entity insertion). Previously we cached only the raw bytes and
-    // re-parsed on every placement, producing N× the parser warning
-    // spam and N× the parse CPU cost for a cell with N placements.
-    // A `None` entry records a mesh that failed to parse — we skip
-    // subsequent placements of the same model silently.
-    let mut import_cache: HashMap<String, Option<Arc<CachedNifImport>>> = HashMap::new();
+    // Process-lifetime cache of parsed-and-imported NIF scene data
+    // (`NifImportRegistry`, #381). Each unique mesh is parsed exactly
+    // once across the entire process — subsequent placements of the
+    // same model in this cell *and* later cells reuse the shared
+    // `Arc` and only pay the per-reference spawn cost (vertex upload,
+    // texture resolve, entity insertion). A `None` entry records a
+    // mesh that failed to parse — we skip subsequent placements of
+    // the same model silently. Per-cell hit/miss accounting (the
+    // numbers logged at end-of-cell) is computed against the lifetime
+    // counters by snapshotting them at entry.
+    let (cache_hits_at_entry, cache_misses_at_entry, cache_size_at_entry) = {
+        let reg = world.resource::<NifImportRegistry>();
+        (reg.hits, reg.misses, reg.len())
+    };
     let mut bounds_min = Vec3::splat(f32::INFINITY);
     let mut bounds_max = Vec3::splat(f32::NEG_INFINITY);
 
@@ -767,20 +840,40 @@ fn load_references(
                 format!("meshes\\{}", stat.model_path)
             };
 
-        // Fetch parsed+imported NIF from cache, or load+parse once.
-        let cached = match import_cache.get(&model_path) {
-            Some(entry) => entry.clone(),
-            None => {
-                let nif_data = match tex_provider.extract_mesh(&model_path) {
-                    Some(d) => d,
+        // Fetch parsed+imported NIF from the process-lifetime registry,
+        // or load+parse once. Lookup, parse, and insert each happen in
+        // their own brief borrow of the resource so the borrow checker
+        // accepts the subsequent `&mut World` pass to
+        // `spawn_placed_instances`. See #381.
+        let cache_key = model_path.to_ascii_lowercase();
+        let cached = {
+            // Fast-path: already in the cache (hit or remembered failure).
+            let mut reg = world.resource_mut::<NifImportRegistry>();
+            let hit = reg.cache.get(&cache_key).cloned();
+            if let Some(entry) = hit {
+                reg.hits += 1;
+                entry
+            } else {
+                drop(reg);
+                // Slow-path: extract bytes, parse, then re-borrow the
+                // registry to insert. The intermediate `tex_provider`
+                // call doesn't touch the registry, so the brief borrow
+                // gap is safe.
+                let parsed = match tex_provider.extract_mesh(&model_path) {
+                    Some(d) => parse_and_import_nif(&d, &model_path),
                     None => {
                         log::debug!("NIF not found in BSA: '{}'", model_path);
-                        import_cache.insert(model_path.clone(), None);
-                        continue;
+                        None
                     }
                 };
-                let parsed = parse_and_import_nif(&nif_data, &model_path);
-                import_cache.insert(model_path.clone(), parsed.clone());
+                let mut reg = world.resource_mut::<NifImportRegistry>();
+                reg.misses += 1;
+                if parsed.is_some() {
+                    reg.parsed_count += 1;
+                } else {
+                    reg.failed_count += 1;
+                }
+                reg.cache.insert(cache_key, parsed.clone());
                 parsed
             }
         };
@@ -801,11 +894,24 @@ fn load_references(
 
     let center = (bounds_min + bounds_max) * 0.5;
     let dims = bounds_max - bounds_min;
+    let (this_cell_hits, this_cell_misses, this_cell_unique, lifetime_hit_rate) = {
+        let reg = world.resource::<NifImportRegistry>();
+        let new_entries = reg.len().saturating_sub(cache_size_at_entry);
+        (
+            reg.hits.saturating_sub(cache_hits_at_entry),
+            reg.misses.saturating_sub(cache_misses_at_entry),
+            new_entries,
+            reg.hit_rate_pct(),
+        )
+    };
     log::info!(
-        "'{}' loaded: {} entities, {} unique meshes, {} hits, {} misses",
+        "'{}' loaded: {} entities, {} new unique meshes parsed, NIF cache hits/misses {}/{} this cell ({:.1}% lifetime hit rate), {} statics hits, {} statics misses",
         label,
         entity_count,
-        import_cache.len(),
+        this_cell_unique,
+        this_cell_hits,
+        this_cell_misses,
+        lifetime_hit_rate,
         stat_hit,
         stat_miss,
     );
@@ -831,8 +937,13 @@ fn load_references(
 
     RefLoadResult {
         entity_count,
-        // Count only successfully-parsed entries.
-        mesh_count: import_cache.values().filter(|e| e.is_some()).count(),
+        // Count only entries newly parsed during this load (lifetime
+        // total minus entry snapshot). Failed-parse entries count too
+        // — they reflect work performed even though no mesh shipped.
+        mesh_count: {
+            let reg = world.resource::<NifImportRegistry>();
+            reg.len().saturating_sub(cache_size_at_entry)
+        },
         center,
     }
 }
@@ -1226,4 +1337,90 @@ fn spawn_placed_instances(
 /// Result: R_yup = Ry(-rz) · Rz(ry) · Rx(-rx)
 fn euler_zup_to_quat_yup(rx: f32, ry: f32, rz: f32) -> Quat {
     Quat::from_rotation_y(-rz) * Quat::from_rotation_z(ry) * Quat::from_rotation_x(-rx)
+}
+
+#[cfg(test)]
+mod nif_import_registry_tests {
+    //! Regression tests for #381 — process-lifetime NIF import cache.
+    //! Doesn't exercise the cell loader end-to-end (which would require
+    //! a real BSA + ESM); instead verifies the registry's hit/miss
+    //! counters and `hit_rate_pct` math, which is the contract the
+    //! `mesh.cache` debug command surfaces.
+    use super::*;
+
+    fn dummy_cached() -> Arc<CachedNifImport> {
+        Arc::new(CachedNifImport {
+            meshes: Vec::new(),
+            collisions: Vec::new(),
+            lights: Vec::new(),
+            particle_emitters: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn fresh_registry_has_zero_counters_and_zero_hit_rate() {
+        let reg = NifImportRegistry::new();
+        assert_eq!(reg.len(), 0);
+        assert_eq!(reg.hits, 0);
+        assert_eq!(reg.misses, 0);
+        assert_eq!(reg.parsed_count, 0);
+        assert_eq!(reg.failed_count, 0);
+        // Avoid NaN when no lookups have happened.
+        assert_eq!(reg.hit_rate_pct(), 0.0);
+    }
+
+    #[test]
+    fn hit_rate_reflects_hit_miss_ratio() {
+        let mut reg = NifImportRegistry::new();
+        // Simulate the cell-loader workflow: 1 miss + 3 hits on the
+        // same model path → 75% lifetime hit rate.
+        reg.cache.insert("torch.nif".into(), Some(dummy_cached()));
+        reg.misses += 1;
+        reg.parsed_count += 1;
+        for _ in 0..3 {
+            reg.hits += 1;
+        }
+        assert_eq!(reg.hits, 3);
+        assert_eq!(reg.misses, 1);
+        assert!((reg.hit_rate_pct() - 75.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn clear_drops_entries_but_preserves_lifetime_counters() {
+        let mut reg = NifImportRegistry::new();
+        reg.cache.insert("a".into(), Some(dummy_cached()));
+        reg.cache.insert("b".into(), None);
+        reg.parsed_count = 1;
+        reg.failed_count = 1;
+        reg.hits = 5;
+        reg.misses = 2;
+
+        reg.clear();
+        assert_eq!(reg.len(), 0);
+        assert_eq!(reg.parsed_count, 0);
+        assert_eq!(reg.failed_count, 0);
+        // Lifetime counters survive — debug command can still report
+        // historical activity after a forced cache flush.
+        assert_eq!(reg.hits, 5);
+        assert_eq!(reg.misses, 2);
+    }
+
+    #[test]
+    fn failed_parse_entry_is_remembered_and_reused() {
+        // The cell loader inserts `None` on parse failure so subsequent
+        // placements of the same broken model don't re-attempt the parse.
+        // Verifies the cache contract that lookups distinguish "not yet
+        // tried" from "tried, failed".
+        let mut reg = NifImportRegistry::new();
+        reg.cache.insert("broken.nif".into(), None);
+        reg.misses += 1;
+        reg.failed_count += 1;
+
+        // Subsequent get → Some(None) (entry exists, value is None) —
+        // distinct from None (entry doesn't exist).
+        let entry = reg.cache.get("broken.nif");
+        assert!(matches!(entry, Some(None)));
+        assert_eq!(reg.failed_count, 1);
+        assert_eq!(reg.parsed_count, 0);
+    }
 }
