@@ -265,6 +265,7 @@ impl traits::HasShaderRefs for BsTriShape {
 }
 
 /// Vertex attribute flags from BSVertexDesc bits [44:55].
+/// See nif.xml `VertexAttribute` (lines 2077-2090).
 const VF_VERTEX: u16 = 0x001;
 const VF_UVS: u16 = 0x002;
 const VF_NORMALS: u16 = 0x008;
@@ -272,6 +273,18 @@ const VF_TANGENTS: u16 = 0x010;
 const VF_VERTEX_COLORS: u16 = 0x020;
 const VF_SKINNED: u16 = 0x040;
 const VF_EYE_DATA: u16 = 0x100;
+/// GPU-instancing flag (bit 9). Defined for completeness with the
+/// nif.xml schema; no shipped FO4 / FO76 / Starfield content sets this
+/// today, but modded geometry can. The trailing skip at the end of the
+/// per-vertex parse loop already absorbs whatever bytes the bit asks
+/// for via `vertex_size_quads * 4`, so flagging the constant doesn't
+/// change runtime behavior — it just closes a defense-in-depth gap
+/// flagged by audit S1-02 and makes the constant set match the schema
+/// for code-review clarity. Field-level extraction (when the bit
+/// becomes load-bearing) is tracked separately at #336 alongside
+/// VF_UVS_2 / VF_LAND_DATA. See #358.
+#[allow(dead_code)]
+const VF_INSTANCE: u16 = 0x200;
 /// FO4+: full-precision vertex positions (bit 10). When clear, positions are half-float.
 const VF_FULL_PRECISION: u16 = 0x400;
 
@@ -301,6 +314,40 @@ impl BsTriShape {
         };
         let num_vertices = stream.read_u16_le()?;
         let data_size = stream.read_u32_le()?;
+
+        // #359 — Defense-in-depth structural assertion: nif.xml's
+        // `Data Size` is derived from `(vertex_size_quads * 4) *
+        // num_vertices + num_triangles * 6` (line 8239). A mismatch
+        // proves that one of `vertex_desc`, `num_vertices`, or
+        // `num_triangles` was misparsed upstream — exactly the kind
+        // of cheap check that would have caught audit findings S1-01
+        // (FO76 Bound Min Max slip) and S5-01 (BSDynamicTriShape
+        // mis-aligned by 4 bytes) before manual inspection.
+        //
+        // Don't hard-fail — some shipped FO4 content uses non-standard
+        // padding and we don't want to break parse-rate on those. Log
+        // at WARN so the regression is visible in `nif_stats` runs.
+        // Skip the warning when `data_size == 0`, since #341's
+        // BSDynamicTriShape facegen path legitimately ships a zero
+        // here (real positions live in the trailing dynamic Vector4
+        // array) — flagging that case would mean 21k false positives
+        // per Skyrim - Meshes0.bsa scan.
+        if data_size != 0 {
+            let expected_data_size =
+                (vertex_size_quads * num_vertices as usize * 4) + (num_triangles as usize * 6);
+            if (data_size as usize) != expected_data_size {
+                log::warn!(
+                    "BSTriShape data_size mismatch: stored {} vs derived {} \
+                     (vertex_size_quads={}, num_vertices={}, num_triangles={}) — \
+                     vertex_desc / num_vertices / num_triangles may be misparsed",
+                    data_size,
+                    expected_data_size,
+                    vertex_size_quads,
+                    num_vertices,
+                    num_triangles,
+                );
+            }
+        }
 
         let nv = num_vertices as usize;
         let mut vertices = Vec::with_capacity(nv);
@@ -965,6 +1012,46 @@ mod skin_vertex_tests {
                                                   // SSE (bsver<130): particle_data_size is unconditional (#341).
         d.extend_from_slice(&0u32.to_le_bytes());
         d
+    }
+
+    /// Regression: #359 — a BSTriShape whose stored `data_size`
+    /// disagrees with the value derived from `vertex_size_quads ·
+    /// num_vertices · 4 + num_triangles · 6` must still parse
+    /// successfully (no hard fail). The mismatch fires a `log::warn!`
+    /// that's visible in `nif_stats` runs and would have caught audit
+    /// findings S1-01 (FO76 Bound Min Max slip) and S5-01
+    /// (BSDynamicTriShape misalignment) before manual inspection.
+    /// Don't hard-fail — some shipped FO4 content has non-standard
+    /// padding in this field.
+    #[test]
+    fn bs_tri_shape_with_mismatched_data_size_still_parses() {
+        let header = test_header();
+        // Patch the minimal-helper bytes: replace data_size = 0 with
+        // a deliberately wrong non-zero value. With num_vertices = 0
+        // and num_triangles = 0 the derived value is 0, so any
+        // nonzero stored value triggers the mismatch warning.
+        // Helper layout (see minimal_bs_tri_shape_bytes): NiObjectNET(12)
+        // + flags(4) + transform(52) + collision_ref(4) + center(12)
+        // + radius(4) + 3 refs(12) + vertex_desc(8) + num_triangles(2)
+        // + num_vertices(2) = 112 bytes before data_size.
+        let mut bytes = minimal_bs_tri_shape_bytes();
+        let data_size_offset = 112;
+        bytes[data_size_offset..data_size_offset + 4]
+            .copy_from_slice(&999u32.to_le_bytes());
+        // Length unchanged, no trailing data needed because
+        // num_vertices == num_triangles == 0 → no vertex/triangle
+        // arrays are read regardless of `data_size` value.
+
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        let shape = parse_block("BSTriShape", &mut stream, Some(bytes.len() as u32))
+            .expect("data_size mismatch must NOT hard-fail the parse");
+        assert!(shape.as_any().downcast_ref::<BsTriShape>().is_some());
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "trailing bytes should still be consumed cleanly even when \
+             data_size disagrees with the derived value"
+        );
     }
 
     /// Regression: #341 — when `data_size == 0` (the BSDynamicTriShape case
