@@ -230,6 +230,36 @@ pub struct StaticObject {
     pub has_script: bool,
 }
 
+/// Full Skyrim+ Texture Set — eight named slots from a single TXST
+/// record. Pre-#357 the parser kept only `diffuse` (TX00); REFR
+/// XTNM/XPRD overrides referencing a TXST silently degraded normal /
+/// glow / parallax / env / specular back to the host mesh's textures.
+///
+/// Slot meanings per `docs/legacy/nif.xml` and the Skyrim Creation Kit:
+/// - **TX00** — diffuse / albedo
+/// - **TX01** — normal / tangent space
+/// - **TX02** — glow / skin / detail (Skyrim shader-type-dependent)
+/// - **TX03** — height / parallax
+/// - **TX04** — environment cubemap
+/// - **TX05** — environment mask
+/// - **TX06** — multi-layer parallax inner layer
+/// - **TX07** — specular / back-lighting
+///
+/// All slots are optional; an empty path is normalized to `None`.
+/// Pre-Skyrim TXST records (FO3 / FNV) author only TX00 in shipped
+/// content, so the other slots will simply read as `None` there.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TextureSet {
+    pub diffuse: Option<String>,
+    pub normal: Option<String>,
+    pub glow: Option<String>,
+    pub height: Option<String>,
+    pub env: Option<String>,
+    pub env_mask: Option<String>,
+    pub inner: Option<String>,
+    pub specular: Option<String>,
+}
+
 /// Result of parsing an ESM file for cell loading.
 #[derive(Debug, Default)]
 pub struct EsmCellIndex {
@@ -245,6 +275,14 @@ pub struct EsmCellIndex {
     /// Worldspace climate form IDs: worldspace_name_lowercase → CLMT form ID.
     /// Extracted from the WRLD record's CNAM sub-record.
     pub worldspace_climates: HashMap<String, u32>,
+    /// Full TXST records keyed by form ID — all 8 texture slots
+    /// (diffuse/normal/glow/parallax/env/env_mask/inner/specular).
+    /// Pre-#357 only the diffuse slot was retained (via the
+    /// `landscape_textures` LTEX→TXST.TX00 path), so any future REFR
+    /// XTNM/XPRD override that points to a TXST can now apply the
+    /// full set instead of silently dropping 7 of 8 channels. See
+    /// audit S6-11.
+    pub texture_sets: HashMap<u32, TextureSet>,
 }
 
 /// Parse an ESM file and extract cells, worldspaces, and base object definitions.
@@ -267,6 +305,7 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
     let mut worldspace_climates: HashMap<String, u32> = HashMap::new();
     // First pass collects TXST form IDs; second resolves LTEX → TXST → path.
     let mut txst_textures: HashMap<u32, String> = HashMap::new();
+    let mut texture_sets: HashMap<u32, TextureSet> = HashMap::new();
     let mut ltex_to_txst: HashMap<u32, u32> = HashMap::new();
 
     // Walk top-level groups.
@@ -299,7 +338,7 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
             }
             b"TXST" => {
                 let end = reader.group_content_end(&group);
-                parse_txst_group(&mut reader, end, &mut txst_textures)?;
+                parse_txst_group(&mut reader, end, &mut txst_textures, &mut texture_sets)?;
             }
             // All record types that have a MODL sub-record (NIF model path).
             // Placed references (REFR/ACHR) can point to any of these.
@@ -348,6 +387,7 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
         statics,
         landscape_textures,
         worldspace_climates,
+        texture_sets,
     })
 }
 
@@ -1180,32 +1220,61 @@ fn parse_ltex_group(
     Ok(())
 }
 
-/// Parse TXST (Texture Set) records. Extracts the TX00 (diffuse) texture path.
+/// Parse TXST (Texture Set) records. Extracts all 8 texture slots
+/// (TX00..TX07) into a [`TextureSet`] entry, plus the legacy
+/// `txst_textures: form_id → diffuse_path` map kept for the LTEX
+/// resolver downstream. Pre-#357 only TX00 was retained — REFR
+/// XTNM/XPRD overrides referencing a TXST silently dropped 7 of 8
+/// channels (visible on Skyrim re-skinned statics as "wrong material
+/// on a re-textured prop"). See audit S6-11.
 fn parse_txst_group(
     reader: &mut EsmReader,
     end: usize,
     txst_textures: &mut HashMap<u32, String>,
+    texture_sets: &mut HashMap<u32, TextureSet>,
 ) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
             let sub_end = reader.group_content_end(&sub);
-            parse_txst_group(reader, sub_end, txst_textures)?;
+            parse_txst_group(reader, sub_end, txst_textures, texture_sets)?;
             continue;
         }
 
         let header = reader.read_record_header()?;
         if &header.record_type == b"TXST" {
             let subs = reader.read_sub_records(&header)?;
+            let mut set = TextureSet::default();
             for sub in &subs {
-                // TX00 = diffuse/color map (the primary texture).
-                if sub.sub_type.as_slice() == b"TX00" {
-                    let path = read_zstring(&sub.data);
-                    if !path.is_empty() {
-                        txst_textures.insert(header.form_id, path);
+                // Helper: extract a non-empty zstring path for one slot.
+                let extract = |bytes: &[u8]| -> Option<String> {
+                    let s = read_zstring(bytes);
+                    if s.is_empty() {
+                        None
+                    } else {
+                        Some(s)
                     }
-                    break;
+                };
+                match sub.sub_type.as_slice() {
+                    b"TX00" => set.diffuse = extract(&sub.data),
+                    b"TX01" => set.normal = extract(&sub.data),
+                    b"TX02" => set.glow = extract(&sub.data),
+                    b"TX03" => set.height = extract(&sub.data),
+                    b"TX04" => set.env = extract(&sub.data),
+                    b"TX05" => set.env_mask = extract(&sub.data),
+                    b"TX06" => set.inner = extract(&sub.data),
+                    b"TX07" => set.specular = extract(&sub.data),
+                    _ => {}
                 }
+            }
+            // Backward-compat LTEX resolver: legacy diffuse-only map.
+            if let Some(diffuse) = set.diffuse.as_ref() {
+                txst_textures.insert(header.form_id, diffuse.clone());
+            }
+            // Skip the all-empty case (a TXST with no readable slots
+            // is uninteresting and would just bloat the map).
+            if set != TextureSet::default() {
+                texture_sets.insert(header.form_id, set);
             }
         } else {
             reader.skip_record(&header);
@@ -2254,5 +2323,136 @@ mod tests {
         assert_eq!(read_zstring(b"NoNull"), "NoNull");
         assert_eq!(read_zstring(b"\0"), "");
         assert_eq!(read_zstring(b""), "");
+    }
+
+    /// Build a TXST record byte stream with the given (sub_type, path)
+    /// pairs encoded as MODL-style zstring sub-records. Used by the
+    /// #357 regression tests below.
+    fn build_txst_record(form_id: u32, slots: &[(&[u8; 4], &str)]) -> Vec<u8> {
+        let mut sub_data = Vec::new();
+        for (sub_type, path) in slots {
+            let z = format!("{}\0", path);
+            sub_data.extend_from_slice(*sub_type);
+            sub_data.extend_from_slice(&(z.len() as u16).to_le_bytes());
+            sub_data.extend_from_slice(z.as_bytes());
+        }
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"TXST");
+        buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+        buf.extend_from_slice(&form_id.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 8]); // padding (timestamp + version)
+        buf.extend_from_slice(&sub_data);
+        buf
+    }
+
+    /// Wrap one or more TXST records in a top-level GRUP so the
+    /// `parse_txst_group` recursion path matches the production loop.
+    fn wrap_in_txst_group(records: &[Vec<u8>]) -> Vec<u8> {
+        let inner: Vec<u8> = records.iter().flatten().copied().collect();
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GRUP");
+        buf.extend_from_slice(&((inner.len() + 24) as u32).to_le_bytes()); // total_size includes 24-byte header
+        buf.extend_from_slice(b"TXST");
+        buf.extend_from_slice(&0u32.to_le_bytes()); // group_type = top-level
+        buf.extend_from_slice(&[0u8; 8]); // timestamp + version
+        buf.extend_from_slice(&inner);
+        buf
+    }
+
+    /// Regression: #357 — TXST parser must extract all 8 texture slots
+    /// (TX00..TX07) into a `TextureSet`, not just the diffuse path.
+    /// Pre-fix every Skyrim TXST-driven REFR override silently dropped
+    /// 7 of 8 channels.
+    #[test]
+    fn parse_txst_extracts_all_eight_texture_slots() {
+        let txst = build_txst_record(
+            0xCAFE,
+            &[
+                (b"TX00", "textures/diffuse.dds"),
+                (b"TX01", "textures/normal.dds"),
+                (b"TX02", "textures/glow.dds"),
+                (b"TX03", "textures/height.dds"),
+                (b"TX04", "textures/env.dds"),
+                (b"TX05", "textures/env_mask.dds"),
+                (b"TX06", "textures/inner.dds"),
+                (b"TX07", "textures/specular.dds"),
+            ],
+        );
+        let group = wrap_in_txst_group(&[txst]);
+
+        let mut reader = EsmReader::new(&group);
+        let header = reader.read_group_header().expect("group header");
+        let end = reader.group_content_end(&header);
+        let mut diffuse_only: HashMap<u32, String> = HashMap::new();
+        let mut sets: HashMap<u32, TextureSet> = HashMap::new();
+        parse_txst_group(&mut reader, end, &mut diffuse_only, &mut sets).expect("parse");
+
+        // Backward-compat diffuse-only map still populated.
+        assert_eq!(
+            diffuse_only.get(&0xCAFE),
+            Some(&"textures/diffuse.dds".to_string()),
+        );
+        // Full slot set now also captured.
+        let set = sets.get(&0xCAFE).expect("TextureSet missing for TXST 0xCAFE");
+        assert_eq!(set.diffuse.as_deref(), Some("textures/diffuse.dds"));
+        assert_eq!(set.normal.as_deref(), Some("textures/normal.dds"));
+        assert_eq!(set.glow.as_deref(), Some("textures/glow.dds"));
+        assert_eq!(set.height.as_deref(), Some("textures/height.dds"));
+        assert_eq!(set.env.as_deref(), Some("textures/env.dds"));
+        assert_eq!(set.env_mask.as_deref(), Some("textures/env_mask.dds"));
+        assert_eq!(set.inner.as_deref(), Some("textures/inner.dds"));
+        assert_eq!(set.specular.as_deref(), Some("textures/specular.dds"));
+    }
+
+    /// Regression: #357 — partial TXST (e.g. FO3/FNV which only authors
+    /// TX00) must surface the populated slot and leave the rest as
+    /// `None`. Verifies the optional-slot semantics.
+    #[test]
+    fn parse_txst_diffuse_only_leaves_other_slots_none() {
+        let txst = build_txst_record(
+            0xBEEF,
+            &[(b"TX00", "textures/landscape/dirt.dds")],
+        );
+        let group = wrap_in_txst_group(&[txst]);
+
+        let mut reader = EsmReader::new(&group);
+        let header = reader.read_group_header().expect("group header");
+        let end = reader.group_content_end(&header);
+        let mut diffuse_only: HashMap<u32, String> = HashMap::new();
+        let mut sets: HashMap<u32, TextureSet> = HashMap::new();
+        parse_txst_group(&mut reader, end, &mut diffuse_only, &mut sets).expect("parse");
+
+        let set = sets.get(&0xBEEF).expect("TextureSet missing for diffuse-only TXST");
+        assert_eq!(set.diffuse.as_deref(), Some("textures/landscape/dirt.dds"));
+        assert!(set.normal.is_none());
+        assert!(set.glow.is_none());
+        assert!(set.specular.is_none());
+        assert!(set.env.is_none());
+    }
+
+    /// Regression: #357 — empty zstrings (`""`) on any slot collapse
+    /// to `None` so the consumer doesn't have to redo the empty check.
+    #[test]
+    fn parse_txst_empty_string_slot_collapses_to_none() {
+        let txst = build_txst_record(
+            0xDEAD,
+            &[
+                (b"TX00", "textures/diffuse.dds"),
+                (b"TX01", ""), // empty path — should collapse to None
+            ],
+        );
+        let group = wrap_in_txst_group(&[txst]);
+
+        let mut reader = EsmReader::new(&group);
+        let header = reader.read_group_header().expect("group header");
+        let end = reader.group_content_end(&header);
+        let mut diffuse_only: HashMap<u32, String> = HashMap::new();
+        let mut sets: HashMap<u32, TextureSet> = HashMap::new();
+        parse_txst_group(&mut reader, end, &mut diffuse_only, &mut sets).expect("parse");
+
+        let set = sets.get(&0xDEAD).expect("set missing");
+        assert_eq!(set.diffuse.as_deref(), Some("textures/diffuse.dds"));
+        assert!(set.normal.is_none(), "empty TX01 must surface as None");
     }
 }
