@@ -1191,53 +1191,63 @@ impl AccelerationManager {
             * std::mem::size_of::<vk::AccelerationStructureInstanceKHR>())
             as vk::DeviceSize;
 
-        // Barrier 1: make host write visible to the transfer engine.
-        let host_to_transfer = vk::BufferMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::HOST_WRITE)
-            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-            .buffer(tlas.instance_buffer.buffer)
-            .offset(0)
-            .size(copy_size);
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::HOST,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[host_to_transfer],
-            &[],
-        );
+        // Skip the host→device staging copy entirely when there are no
+        // instances this frame. Vulkan's spec rejects `VkBufferCopy.size`
+        // and `VkBufferMemoryBarrier.size` of 0 (VUID-VkBufferCopy-size-01988
+        // and VUID-VkBufferMemoryBarrier-size-01188); pre-fix we tripped
+        // four validation errors per empty-TLAS frame (two barriers + one
+        // copy per TLAS slot × two frame-in-flight slots). The empty-
+        // instance TLAS BUILD below is still legal — `primitiveCount = 0`
+        // produces an empty AS that ray queries return "no hit" against.
+        if copy_size > 0 {
+            // Barrier 1: make host write visible to the transfer engine.
+            let host_to_transfer = vk::BufferMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::HOST_WRITE)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                .buffer(tlas.instance_buffer.buffer)
+                .offset(0)
+                .size(copy_size);
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::HOST,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[host_to_transfer],
+                &[],
+            );
 
-        // Copy staging → device-local. On discrete GPUs, the AS build
-        // reads from VRAM instead of traversing PCIe. See #289.
-        let copy_region = vk::BufferCopy {
-            src_offset: 0,
-            dst_offset: 0,
-            size: copy_size,
-        };
-        device.cmd_copy_buffer(
-            cmd,
-            tlas.instance_buffer.buffer,
-            tlas.instance_buffer_device.buffer,
-            &[copy_region],
-        );
+            // Copy staging → device-local. On discrete GPUs, the AS build
+            // reads from VRAM instead of traversing PCIe. See #289.
+            let copy_region = vk::BufferCopy {
+                src_offset: 0,
+                dst_offset: 0,
+                size: copy_size,
+            };
+            device.cmd_copy_buffer(
+                cmd,
+                tlas.instance_buffer.buffer,
+                tlas.instance_buffer_device.buffer,
+                &[copy_region],
+            );
 
-        // Barrier 2: transfer write → AS build read on the device-local buffer.
-        let transfer_to_as = vk::BufferMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR)
-            .buffer(tlas.instance_buffer_device.buffer)
-            .offset(0)
-            .size(copy_size);
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[transfer_to_as],
-            &[],
-        );
+            // Barrier 2: transfer write → AS build read on the device-local buffer.
+            let transfer_to_as = vk::BufferMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR)
+                .buffer(tlas.instance_buffer_device.buffer)
+                .offset(0)
+                .size(copy_size);
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[transfer_to_as],
+                &[],
+            );
+        }
 
         let instance_address = device.get_buffer_device_address(
             &vk::BufferDeviceAddressInfo::default().buffer(tlas.instance_buffer_device.buffer),
