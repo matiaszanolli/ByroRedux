@@ -28,7 +28,7 @@ use std::sync::Arc;
 ///
 /// Populated from NiAmbientLight / NiDirectionalLight / NiPointLight /
 /// NiSpotLight blocks during the flat walk. See issue #156.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ImportedLight {
     /// World-space position (Y-up).
     pub translation: [f32; 3],
@@ -45,6 +45,14 @@ pub struct ImportedLight {
     pub kind: LightKind,
     /// Outer cone half-angle in radians (0.0 for non-spot).
     pub outer_angle: f32,
+    /// Names of the scene-graph nodes this light is restricted to,
+    /// resolved from the `NiDynamicEffect.Affected Nodes` Ptr list. An
+    /// empty `Vec` means "no restriction" (the light affects every
+    /// nearby surface). Skyrim+ FO4 (BSVER >= 130) drops this list at
+    /// the wire level, so it's always empty there. Renderer-side
+    /// light-target filtering wiring is a separate change — pre-#335
+    /// the importer dropped the field entirely. See #335.
+    pub affected_node_names: Vec<Arc<str>>,
 }
 
 /// Kind of a parsed NIF light.

@@ -395,6 +395,7 @@ pub(super) fn walk_node_lights(
             l.quadratic_attenuation,
         );
         out.push(imported_light_from_base(
+            scene,
             &world,
             &l.base,
             LightKind::Point,
@@ -411,6 +412,7 @@ pub(super) fn walk_node_lights(
             l.point.quadratic_attenuation,
         );
         out.push(imported_light_from_base(
+            scene,
             &world,
             &l.point.base,
             LightKind::Spot,
@@ -422,6 +424,7 @@ pub(super) fn walk_node_lights(
     if let Some(l) = block.as_any().downcast_ref::<NiAmbientLight>() {
         let world = compose_transforms(parent_transform, &l.base.av.transform);
         out.push(imported_light_from_base(
+            scene,
             &world,
             &l.base,
             LightKind::Ambient,
@@ -433,6 +436,7 @@ pub(super) fn walk_node_lights(
     if let Some(l) = block.as_any().downcast_ref::<NiDirectionalLight>() {
         let world = compose_transforms(parent_transform, &l.base.av.transform);
         out.push(imported_light_from_base(
+            scene,
             &world,
             &l.base,
             LightKind::Directional,
@@ -444,6 +448,7 @@ pub(super) fn walk_node_lights(
 }
 
 fn imported_light_from_base(
+    scene: &NifScene,
     world: &NiTransform,
     base: &crate::blocks::light::NiLightBase,
     kind: LightKind,
@@ -470,6 +475,8 @@ fn imported_light_from_base(
     let diffuse = base.diffuse_color;
     let color = [diffuse.r * d, diffuse.g * d, diffuse.b * d];
 
+    let affected_node_names = resolve_affected_node_names(scene, &base.affected_nodes);
+
     ImportedLight {
         translation,
         direction,
@@ -477,7 +484,39 @@ fn imported_light_from_base(
         radius,
         kind,
         outer_angle,
+        affected_node_names,
     }
+}
+
+/// Resolve the `NiDynamicEffect.Affected Nodes` Ptr list to a list of
+/// node names. The on-disk values are 4-byte `Ptr<NiAVObject>` entries:
+/// `u32::MAX` = null pointer, otherwise a block index. Names are
+/// pulled from each target's `NiObjectNET.name`. Null entries and
+/// targets that fail to resolve to a named scene-graph block are
+/// dropped silently — empty list = "no restriction" by convention,
+/// so partial restrictions stay meaningful even with unresolvable
+/// pointers (corrupt content). See #335.
+fn resolve_affected_node_names(scene: &NifScene, ptrs: &[u32]) -> Vec<std::sync::Arc<str>> {
+    let mut out: Vec<std::sync::Arc<str>> = Vec::with_capacity(ptrs.len());
+    for &p in ptrs {
+        if p == u32::MAX {
+            continue;
+        }
+        let Some(block) = scene.get(p as usize) else {
+            continue;
+        };
+        let Some(net) = block.as_object_net() else {
+            continue;
+        };
+        let Some(name) = net.name() else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+        out.push(std::sync::Arc::from(name));
+    }
+    out
 }
 
 /// Solve `1 / (const + lin·d + quad·d²) = THRESHOLD` for distance.
@@ -540,4 +579,96 @@ fn is_editor_marker(name: Option<&str>) -> bool {
         || starts_with_ci(name, "marker_")
         || name.eq_ignore_ascii_case("markerx")
         || starts_with_ci(name, "marker:")
+}
+
+#[cfg(test)]
+mod affected_nodes_tests {
+    //! Regression tests for issue #335 — `NiDynamicEffect.Affected
+    //! Nodes` Ptr list must surface on `ImportedLight` so the
+    //! renderer's per-light filter can later restrict the light's
+    //! effect to the named subtrees.
+    use super::*;
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::node::NiNode;
+    use crate::types::BlockRef;
+    use std::sync::Arc;
+
+    fn node_with_name(name: &str) -> NiNode {
+        NiNode {
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: Some(Arc::from(name)),
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef::NULL,
+                },
+                flags: 0,
+                transform: crate::types::NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            children: Vec::new(),
+            effects: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn resolve_skips_null_pointer() {
+        let scene = NifScene::default();
+        let names = resolve_affected_node_names(&scene, &[u32::MAX]);
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn resolve_skips_out_of_range_pointer() {
+        // Empty scene — index 0 is out of range. Must be silently
+        // dropped rather than panic.
+        let scene = NifScene::default();
+        let names = resolve_affected_node_names(&scene, &[0u32]);
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn resolve_extracts_node_name() {
+        // Regression: pre-#335 the `affected_nodes` Vec was parsed
+        // (light.rs:48) but never read. Now the importer surfaces the
+        // names on `ImportedLight` for the renderer's per-light filter.
+        let mut scene = NifScene::default();
+        scene
+            .blocks
+            .push(Box::new(node_with_name("HandLanternBone")));
+        scene.blocks.push(Box::new(node_with_name("BipedHead")));
+        let names = resolve_affected_node_names(&scene, &[0u32, 1u32]);
+        assert_eq!(names.len(), 2);
+        assert_eq!(&*names[0], "HandLanternBone");
+        assert_eq!(&*names[1], "BipedHead");
+    }
+
+    #[test]
+    fn resolve_drops_unnamed_target() {
+        // Sibling check — a target block that exists but has no name
+        // (`net.name == None`) must drop out of the result rather
+        // than emitting an empty string. Empty names break consumer
+        // hash-set lookups silently.
+        let mut scene = NifScene::default();
+        let mut anon = node_with_name("");
+        anon.av.net.name = None;
+        scene.blocks.push(Box::new(anon));
+        scene.blocks.push(Box::new(node_with_name("Named")));
+        let names = resolve_affected_node_names(&scene, &[0u32, 1u32]);
+        assert_eq!(names.len(), 1);
+        assert_eq!(&*names[0], "Named");
+    }
+
+    #[test]
+    fn resolve_partial_failure_keeps_recoverable_entries() {
+        // A mix of [valid, null, out-of-range] must yield exactly the
+        // one valid entry — the null-as-no-restriction convention
+        // means we'd lose meaning if a single bad pointer collapsed
+        // the whole list to empty.
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(node_with_name("OnlyValid")));
+        let names = resolve_affected_node_names(&scene, &[0u32, u32::MAX, 99u32]);
+        assert_eq!(names.len(), 1);
+        assert_eq!(&*names[0], "OnlyValid");
+    }
 }
