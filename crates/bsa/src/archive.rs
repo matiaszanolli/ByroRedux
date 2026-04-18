@@ -416,7 +416,23 @@ impl BsaArchive {
 
         // Determine if this file is compressed
         let is_compressed = self.compressed_by_default != entry.compression_toggle;
-        let data_size = entry.size as usize - name_prefix_len;
+        // Guard against malformed records whose `entry.size` is smaller
+        // than the embedded-name prefix the same record claimed. Pre-#352
+        // this underflowed in release builds (wrapping to ~4 GB → giant
+        // `vec![0u8; ...]` abort) and panicked in debug builds. Vanilla
+        // Bethesda archives never trip either path; this is a defense
+        // against hostile or corrupt third-party BSAs.
+        let data_size = (entry.size as usize)
+            .checked_sub(name_prefix_len)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "BSA file '{}' record size {} smaller than embedded name prefix {}",
+                        path, entry.size, name_prefix_len
+                    ),
+                )
+            })?;
 
         if is_compressed {
             // First 4 bytes are the original uncompressed size
@@ -424,8 +440,20 @@ impl BsaArchive {
             file.read_exact(&mut size_buf)?;
             let original_size = u32::from_le_bytes(size_buf) as usize;
 
-            // Read remaining compressed data
-            let compressed_len = data_size - 4;
+            // Read remaining compressed data. Same #352 underflow guard
+            // as above: a malformed record can flag the file compressed
+            // while sizing the payload at < 4 bytes (too short to even
+            // hold the original-size header we just read).
+            let compressed_len = data_size.checked_sub(4).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "BSA file '{}' compressed payload too short \
+                         ({} bytes) to hold the 4-byte original-size header",
+                        path, data_size
+                    ),
+                )
+            })?;
             let mut compressed = vec![0u8; compressed_len];
             file.read_exact(&mut compressed)?;
             // Drop the lock before the decompression CPU work — the file
@@ -641,5 +669,135 @@ mod tests {
             normalize_path("MESHES\\ARMOR\\test.NIF"),
             "meshes\\armor\\test.nif"
         );
+    }
+
+    /// Build a `BsaArchive` directly from in-memory state for tests that
+    /// need to exercise `extract` with a hand-crafted `FileEntry`. The
+    /// constructed archive points at a small temp file containing
+    /// `payload`; the test controls every field of the `FileEntry` it
+    /// inserts so it can drive specific malformed-record paths without
+    /// having to forge a complete BSA on-disk header.
+    fn archive_with_payload(
+        payload: &[u8],
+        embed_file_names: bool,
+        compressed_by_default: bool,
+        version: u32,
+        entry_path: &str,
+        entry: FileEntry,
+    ) -> BsaArchive {
+        // Write the payload to a unique temp file. Using a process-id +
+        // entry-path key avoids collisions when the test runner runs
+        // multiple tests concurrently.
+        let path = std::env::temp_dir().join(format!(
+            "byroredux-bsa-#352-{}-{}.bsa",
+            std::process::id(),
+            entry_path.replace(['\\', '/', ':'], "_"),
+        ));
+        std::fs::write(&path, payload).expect("write temp BSA payload");
+        let file = File::open(&path).expect("open temp BSA");
+        let mut files = HashMap::new();
+        files.insert(normalize_path(entry_path), entry);
+        BsaArchive {
+            file: Mutex::new(file),
+            version,
+            compressed_by_default,
+            embed_file_names,
+            files,
+        }
+    }
+
+    /// Regression: #352 — extracting an entry whose record `size` is
+    /// smaller than the embedded-name prefix (impossible in vanilla
+    /// Bethesda BSAs but achievable in a hostile or corrupt third-party
+    /// archive) used to underflow `entry.size - name_prefix_len` in the
+    /// release build (wrapping to ~4 GB → giant `vec![0u8; ...]` abort)
+    /// and panic in the debug build. The fix uses `checked_sub` and
+    /// returns `InvalidData`.
+    #[test]
+    fn extract_rejects_size_smaller_than_embedded_name_prefix() {
+        // Payload: 1 byte name length (5) + 5 name bytes. The total
+        // recorded `size` (3) is intentionally less than 1 + 5 = 6.
+        let payload = [5u8, b'h', b'e', b'l', b'l', b'o', 0, 0, 0, 0];
+        let archive = archive_with_payload(
+            &payload,
+            true, // embed_file_names ON
+            false,
+            104,
+            "x.dds",
+            FileEntry {
+                offset: 0,
+                size: 3,
+                compression_toggle: false,
+            },
+        );
+        let err = archive
+            .extract("x.dds")
+            .expect_err("malformed entry must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "got: {err}");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("smaller than embedded name prefix"),
+            "expected name-prefix error, got: {msg}"
+        );
+    }
+
+    /// Regression: #352 — extracting a compressed entry whose payload
+    /// size after the embedded-name strip is smaller than 4 (too short
+    /// to even hold the original-size header) used to underflow
+    /// `data_size - 4`. Same wrap-then-OOM/abort vector.
+    #[test]
+    fn extract_rejects_compressed_payload_too_short() {
+        // 4 bytes are needed for the original-size header alone. We
+        // make `entry.size = 3` with no embedded-name prefix; the
+        // `data_size.checked_sub(4)` must reject before we read past
+        // the (1-byte-too-short) buffer.
+        let payload = [0u8, 0, 0, 0, 0, 0, 0, 0]; // 8 bytes is plenty for the test
+        let archive = archive_with_payload(
+            &payload,
+            false, // no embedded names
+            true,  // compressed-by-default ON
+            104,
+            "y.dds",
+            FileEntry {
+                offset: 0,
+                size: 3, // < 4 bytes — too short to hold the size header
+                compression_toggle: false,
+            },
+        );
+        let err = archive
+            .extract("y.dds")
+            .expect_err("compressed-but-too-short entry must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "got: {err}");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("compressed payload too short"),
+            "expected payload-too-short error, got: {msg}"
+        );
+    }
+
+    /// Sibling check — a record whose `size` exactly equals
+    /// `1 + name_len` (so `data_size = 0`) is technically valid (an
+    /// empty file with an embedded name), and must NOT be rejected by
+    /// the new `checked_sub` guard. This pins the boundary so the
+    /// guard doesn't overshoot.
+    #[test]
+    fn extract_zero_data_size_with_embedded_name_is_ok() {
+        let payload = [5u8, b'h', b'e', b'l', b'l', b'o'];
+        let archive = archive_with_payload(
+            &payload,
+            true,  // embed_file_names ON
+            false, // not compressed
+            104,
+            "z.dds",
+            FileEntry {
+                offset: 0,
+                size: 6, // exactly 1 + 5
+                compression_toggle: false,
+            },
+        );
+        let data = archive
+            .extract("z.dds")
+            .expect("zero-data-size entry must extract as empty Vec");
+        assert!(data.is_empty());
     }
 }
