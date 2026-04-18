@@ -51,6 +51,7 @@ impl ClusterCullPipeline {
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
+        pipeline_cache: vk::PipelineCache,
         light_buffers: &[GpuBuffer],
         camera_buffers: &[GpuBuffer],
         light_buf_size: vk::DeviceSize,
@@ -158,7 +159,7 @@ impl ClusterCullPipeline {
         partial.pipeline = match unsafe {
             device
                 .create_compute_pipelines(
-                    vk::PipelineCache::null(),
+                    pipeline_cache,
                     &[vk::ComputePipelineCreateInfo::default()
                         .stage(
                             vk::PipelineShaderStageCreateInfo::default()

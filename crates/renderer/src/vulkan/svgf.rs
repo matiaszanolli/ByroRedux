@@ -102,6 +102,7 @@ impl SvgfPipeline {
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
+        pipeline_cache: vk::PipelineCache,
         raw_indirect_views: &[vk::ImageView],
         motion_views: &[vk::ImageView],
         mesh_id_views: &[vk::ImageView],
@@ -115,6 +116,7 @@ impl SvgfPipeline {
         let result = Self::new_inner(
             device,
             allocator,
+            pipeline_cache,
             raw_indirect_views,
             motion_views,
             mesh_id_views,
@@ -130,6 +132,7 @@ impl SvgfPipeline {
     fn new_inner(
         device: &ash::Device,
         allocator: &SharedAllocator,
+        pipeline_cache: vk::PipelineCache,
         raw_indirect_views: &[vk::ImageView],
         motion_views: &[vk::ImageView],
         mesh_id_views: &[vk::ImageView],
@@ -299,7 +302,7 @@ impl SvgfPipeline {
         partial.pipeline = match unsafe {
             device
                 .create_compute_pipelines(
-                    vk::PipelineCache::null(),
+                    pipeline_cache,
                     &[vk::ComputePipelineCreateInfo::default()
                         .stage(stage)
                         .layout(partial.pipeline_layout)],

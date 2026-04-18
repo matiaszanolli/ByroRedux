@@ -87,6 +87,7 @@ impl TaaPipeline {
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
+        pipeline_cache: vk::PipelineCache,
         hdr_views: &[vk::ImageView],
         motion_views: &[vk::ImageView],
         mesh_id_views: &[vk::ImageView],
@@ -100,6 +101,7 @@ impl TaaPipeline {
         let result = Self::new_inner(
             device,
             allocator,
+            pipeline_cache,
             hdr_views,
             motion_views,
             mesh_id_views,
@@ -115,6 +117,7 @@ impl TaaPipeline {
     fn new_inner(
         device: &ash::Device,
         allocator: &SharedAllocator,
+        pipeline_cache: vk::PipelineCache,
         hdr_views: &[vk::ImageView],
         motion_views: &[vk::ImageView],
         mesh_id_views: &[vk::ImageView],
@@ -263,7 +266,7 @@ impl TaaPipeline {
         partial.pipeline = match unsafe {
             device
                 .create_compute_pipelines(
-                    vk::PipelineCache::null(),
+                    pipeline_cache,
                     &[vk::ComputePipelineCreateInfo::default()
                         .stage(stage)
                         .layout(partial.pipeline_layout)],

@@ -457,10 +457,17 @@ impl VulkanContext {
             None
         };
 
+        // 12b. Pipeline cache (load from disk if available).
+        // Created before ANY pipeline-create call so every compile
+        // writes into the shared cache — warm-start second-launch
+        // skips most driver IR compilation (#426).
+        let pipeline_cache = load_or_create_pipeline_cache(&device)?;
+
         // 12c. Cluster cull compute pipeline (light culling)
         let cluster_cull = match ClusterCullPipeline::new(
             &device,
             &gpu_allocator,
+            pipeline_cache,
             scene_buffers.light_buffers(),
             scene_buffers.camera_buffers(),
             scene_buffers.light_buffer_size(),
@@ -488,9 +495,6 @@ impl VulkanContext {
             }
         };
 
-        // 13. Pipeline cache (load from disk if available)
-        let pipeline_cache = load_or_create_pipeline_cache(&device)?;
-
         // 14. Graphics pipeline (with depth test + descriptor set layouts for set 0 + set 1)
         let pipelines = pipeline::create_triangle_pipeline(
             &device,
@@ -514,6 +518,7 @@ impl VulkanContext {
         let ssao = match SsaoPipeline::new(
             &device,
             &gpu_allocator,
+            pipeline_cache,
             depth_image_view,
             swapchain_state.extent.width,
             swapchain_state.extent.height,
@@ -583,6 +588,7 @@ impl VulkanContext {
         let mut svgf = match SvgfPipeline::new(
             &device,
             &gpu_allocator,
+            pipeline_cache,
             &raw_indirect_views,
             &motion_views_seed,
             &mesh_id_views_seed,
@@ -629,6 +635,7 @@ impl VulkanContext {
         let mut caustic: Option<CausticPipeline> = match CausticPipeline::new(
             &device,
             &gpu_allocator,
+            pipeline_cache,
             depth_image_view,
             &normal_views_seed,
             &mesh_id_views_seed,
@@ -673,6 +680,7 @@ impl VulkanContext {
         let mut composite = match CompositePipeline::new(
             &device,
             &gpu_allocator,
+            pipeline_cache,
             swapchain_state.format.format,
             &swapchain_state.image_views,
             &composite_indirect_views,
@@ -705,6 +713,7 @@ impl VulkanContext {
         let mut taa = match TaaPipeline::new(
             &device,
             &gpu_allocator,
+            pipeline_cache,
             &hdr_views_owned,
             &motion_views_seed,
             &mesh_id_views_seed,

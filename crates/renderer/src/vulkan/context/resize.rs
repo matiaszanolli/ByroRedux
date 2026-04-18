@@ -150,6 +150,7 @@ impl VulkanContext {
             match SsaoPipeline::new(
                 &self.device,
                 allocator,
+                self.pipeline_cache,
                 self.depth_image_view,
                 self.swapchain_state.extent.width,
                 self.swapchain_state.extent.height,

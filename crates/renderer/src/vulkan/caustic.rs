@@ -109,6 +109,7 @@ impl CausticPipeline {
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
+        pipeline_cache: vk::PipelineCache,
         depth_view: vk::ImageView,
         normal_views: &[vk::ImageView],
         mesh_id_views: &[vk::ImageView],
@@ -124,6 +125,7 @@ impl CausticPipeline {
         let result = Self::new_inner(
             device,
             allocator,
+            pipeline_cache,
             depth_view,
             normal_views,
             mesh_id_views,
@@ -146,6 +148,7 @@ impl CausticPipeline {
     fn new_inner(
         device: &ash::Device,
         allocator: &SharedAllocator,
+        pipeline_cache: vk::PipelineCache,
         depth_view: vk::ImageView,
         normal_views: &[vk::ImageView],
         mesh_id_views: &[vk::ImageView],
@@ -318,7 +321,7 @@ impl CausticPipeline {
         partial.pipeline = match unsafe {
             device
                 .create_compute_pipelines(
-                    vk::PipelineCache::null(),
+                    pipeline_cache,
                     &[vk::ComputePipelineCreateInfo::default()
                         .stage(stage)
                         .layout(partial.pipeline_layout)],

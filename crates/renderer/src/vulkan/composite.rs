@@ -119,6 +119,7 @@ impl CompositePipeline {
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
+        pipeline_cache: vk::PipelineCache,
         swapchain_format: vk::Format,
         swapchain_views: &[vk::ImageView],
         indirect_views: &[vk::ImageView],
@@ -133,6 +134,7 @@ impl CompositePipeline {
         let result = Self::new_inner(
             device,
             allocator,
+            pipeline_cache,
             swapchain_format,
             swapchain_views,
             indirect_views,
@@ -154,6 +156,7 @@ impl CompositePipeline {
     fn new_inner(
         device: &ash::Device,
         allocator: &SharedAllocator,
+        pipeline_cache: vk::PipelineCache,
         swapchain_format: vk::Format,
         swapchain_views: &[vk::ImageView],
         indirect_views: &[vk::ImageView],
@@ -617,7 +620,7 @@ impl CompositePipeline {
             .subpass(0);
 
         partial.pipeline = match unsafe {
-            device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+            device.create_graphics_pipelines(pipeline_cache, &[pipeline_info], None)
         } {
             Ok(pipelines) => pipelines[0],
             Err((_, e)) => {

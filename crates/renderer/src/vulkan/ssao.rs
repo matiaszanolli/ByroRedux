@@ -52,13 +52,21 @@ impl SsaoPipeline {
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
+        pipeline_cache: vk::PipelineCache,
         depth_image_view: vk::ImageView,
         width: u32,
         height: u32,
     ) -> Result<Self> {
         // Inner function does the actual work. On error, the caller
         // cleans up any resources that were partially created.
-        let result = Self::new_inner(device, allocator, depth_image_view, width, height);
+        let result = Self::new_inner(
+            device,
+            allocator,
+            pipeline_cache,
+            depth_image_view,
+            width,
+            height,
+        );
         if let Err(ref e) = result {
             log::debug!("SSAO pipeline creation failed at: {e}");
         }
@@ -68,6 +76,7 @@ impl SsaoPipeline {
     fn new_inner(
         device: &ash::Device,
         allocator: &SharedAllocator,
+        pipeline_cache: vk::PipelineCache,
         depth_image_view: vk::ImageView,
         width: u32,
         height: u32,
@@ -278,7 +287,7 @@ impl SsaoPipeline {
         partial.pipeline = match unsafe {
             device
                 .create_compute_pipelines(
-                    vk::PipelineCache::null(),
+                    pipeline_cache,
                     &[vk::ComputePipelineCreateInfo::default()
                         .stage(stage)
                         .layout(partial.pipeline_layout)],
