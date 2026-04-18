@@ -253,13 +253,18 @@ pub fn load_exterior_cells(
         esm_path,
         esm_data.len() as f64 / 1_048_576.0
     );
-    let index = esm::cell::parse_esm_cells(&esm_data)?;
-
-    // Second pass: extract WTHR + CLMT records for weather resolution.
+    // Single combined parse: `parse_esm` already calls `parse_esm_cells`
+    // internally for its `cells` field, so calling them separately ran a
+    // second full walk over the (potentially 500 MB) ESM buffer for no
+    // gain. Pre-#374 this triggered three "ESM parsed: ..." log lines
+    // per exterior load (1 from the standalone cell parse + 2 from the
+    // record parse's internal cell parse + record-walk pass) and added
+    // ~1.2 s of avoidable load stall on FNV.
     let record_index = esm::records::parse_esm(&esm_data).unwrap_or_else(|e| {
-        log::warn!("Record parse pass failed (weather unavailable): {e}");
+        log::warn!("Record parse failed: {e}");
         esm::records::EsmIndex::default()
     });
+    let index = &record_index.cells;
 
     // Find the best worldspace. Try common FNV names, then fall back to largest.
     let wrld_key = {
@@ -359,7 +364,7 @@ pub fn load_exterior_cells(
     );
 
     let label = format!("exterior({},{})", center_x, center_y);
-    let result = load_references(&all_refs, &index, world, ctx, tex_provider, &label);
+    let result = load_references(&all_refs, index, world, ctx, tex_provider, &label);
 
     // Camera spawn: use terrain height at the center cell's midpoint
     // so the camera starts at ground level instead of inside the terrain.
