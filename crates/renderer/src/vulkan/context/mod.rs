@@ -400,11 +400,14 @@ impl VulkanContext {
                 .context("create transfer fence")?
         }));
 
-        // 11. Texture registry with checkerboard fallback
+        // 11. Texture registry with checkerboard fallback.
+        // Bindless array size is driven by the device limit (query in
+        // device.rs, clamped at the R16_UINT mesh_id ceiling) instead of a
+        // hardcoded 1024 that large cells would silently overflow. See #425.
         let mut texture_registry = TextureRegistry::new(
             &device,
             swapchain_state.images.len() as u32,
-            1024,
+            device_caps.max_bindless_sampled_images,
             device_caps.max_sampler_anisotropy,
         )?;
         let checkerboard = super::texture::generate_checkerboard(256, 256, 32);

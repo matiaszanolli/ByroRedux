@@ -34,6 +34,12 @@ pub struct DeviceCapabilities {
     /// batches sharing `(pipeline_key, is_decal)` into a single
     /// command-buffer entry. See #309.
     pub multi_draw_indirect_supported: bool,
+    /// `maxPerStageDescriptorUpdateAfterBindSampledImages` from
+    /// `VkPhysicalDeviceDescriptorIndexingProperties` (Vulkan 1.2 core),
+    /// already clamped to a sane ceiling. The `TextureRegistry` sizes its
+    /// bindless array with this so we don't silently truncate on cells with
+    /// many unique textures. Fixes the REN-MEM-C3 residency cliff (#425).
+    pub max_bindless_sampled_images: u32,
 }
 
 /// Required device extensions (always needed).
@@ -128,6 +134,29 @@ fn is_device_suitable(
     };
     let multi_draw_indirect_supported = features.multi_draw_indirect == vk::TRUE;
 
+    // Query descriptor indexing properties for the UPDATE_AFTER_BIND bindless
+    // array ceiling. Vulkan 1.2 core exposes this via the pNext chain on
+    // `vkGetPhysicalDeviceProperties2`. Falls back to the plain
+    // `maxPerStageDescriptorSampledImages` limit on older drivers — still
+    // vastly larger than the hardcoded 1024 we were using before (#425).
+    let mut indexing_props = vk::PhysicalDeviceDescriptorIndexingProperties::default();
+    let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut indexing_props);
+    unsafe {
+        instance.get_physical_device_properties2(device, &mut props2);
+    }
+    // 65535 is the hard ceiling imposed by `R16_UINT` mesh_id encoding in the
+    // G-buffer (#275/#318) — no point sizing the bindless array larger than
+    // the maximum instance count can reference.
+    const BINDLESS_CEILING: u32 = 65535;
+    let reported_limit = if indexing_props.max_per_stage_descriptor_update_after_bind_sampled_images
+        > 0
+    {
+        indexing_props.max_per_stage_descriptor_update_after_bind_sampled_images
+    } else {
+        properties.limits.max_per_stage_descriptor_sampled_images
+    };
+    let max_bindless_sampled_images = reported_limit.min(BINDLESS_CEILING);
+
     // Find queue families.
     let queue_families = unsafe { instance.get_physical_device_queue_family_properties(device) };
 
@@ -167,6 +196,7 @@ fn is_device_suitable(
                 sampler_anisotropy_supported,
                 max_sampler_anisotropy,
                 multi_draw_indirect_supported,
+                max_bindless_sampled_images,
             },
         ))),
         _ => Ok(None),

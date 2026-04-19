@@ -54,6 +54,28 @@ pub struct TextureRegistry {
 }
 
 impl TextureRegistry {
+    /// Reject a registration that would exceed the bindless array bound.
+    ///
+    /// Before #425 the array was sized to a hardcoded 1024 and callers
+    /// would silently write past the bound once a cell loaded more unique
+    /// textures, producing corrupted descriptor state or driver crashes.
+    /// Now `max_textures` is driven by the device's
+    /// `maxPerStageDescriptorUpdateAfterBindSampledImages` limit (clamped
+    /// at the R16_UINT mesh-id ceiling), and this check returns an error
+    /// when the slot count is truly exhausted — the caller
+    /// (`asset_provider::resolve_texture`) already falls back to the
+    /// checkerboard handle on `Err`, so overflow degrades gracefully.
+    fn check_slot_available(&self) -> Result<()> {
+        if self.textures.len() as u32 >= self.max_textures {
+            anyhow::bail!(
+                "TextureRegistry is full: {} of {} bindless slots in use — raise the device's maxPerStageDescriptorUpdateAfterBindSampledImages limit or reduce unique texture count (#425)",
+                self.textures.len(),
+                self.max_textures
+            );
+        }
+        Ok(())
+    }
+
     /// Create a new bindless texture registry.
     ///
     /// Requires `descriptorBindingPartiallyBound` and `runtimeDescriptorArray`
@@ -220,6 +242,9 @@ impl TextureRegistry {
             return Ok(handle);
         }
 
+        // Reject before paying the upload cost if the bindless array is full.
+        self.check_slot_available()?;
+
         let texture = Texture::from_dds(
             device,
             allocator,
@@ -271,6 +296,8 @@ impl TextureRegistry {
         height: u32,
         pixels: &[u8],
     ) -> Result<TextureHandle> {
+        self.check_slot_available()?;
+
         let texture = Texture::from_rgba(
             device,
             allocator,
@@ -622,5 +649,53 @@ mod tests {
         assert!(should_destroy_pending(current, queued));
         let current = queued.wrapping_add(MAX_FRAMES_IN_FLIGHT as u64 - 1);
         assert!(!should_destroy_pending(current, queued));
+    }
+
+    /// Build a registry in a test-only state: `check_slot_available` only
+    /// reads `textures` + `max_textures`, so we forge a partial
+    /// `TextureRegistry` without touching Vulkan.
+    fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> TextureRegistry {
+        TextureRegistry {
+            textures: (0..occupied)
+                .map(|_| TextureEntry {
+                    texture: None,
+                    pending_destroy: VecDeque::new(),
+                })
+                .collect(),
+            path_map: HashMap::new(),
+            fallback_handle: 0,
+            descriptor_pool: vk::DescriptorPool::null(),
+            descriptor_set_layout: vk::DescriptorSetLayout::null(),
+            bindless_sets: Vec::new(),
+            shared_sampler: vk::Sampler::null(),
+            max_textures,
+            current_frame_id: 0,
+        }
+    }
+
+    #[test]
+    fn slot_available_when_under_bound() {
+        let reg = make_registry_for_overflow_test(1024, 512);
+        reg.check_slot_available()
+            .expect("half-full registry should accept new textures");
+    }
+
+    #[test]
+    fn slot_rejected_at_exact_bound() {
+        // Regression for #425 — old code silently wrote past the bindless
+        // array bound once textures.len() == max_textures.
+        let reg = make_registry_for_overflow_test(1024, 1024);
+        let err = reg
+            .check_slot_available()
+            .expect_err("full registry must refuse new textures");
+        let msg = format!("{err}");
+        assert!(msg.contains("1024 of 1024"), "message reports counts: {msg}");
+        assert!(msg.contains("#425"), "message references the issue: {msg}");
+    }
+
+    #[test]
+    fn slot_rejected_beyond_bound() {
+        let reg = make_registry_for_overflow_test(16, 16);
+        assert!(reg.check_slot_available().is_err());
     }
 }
