@@ -910,13 +910,27 @@ pub(crate) fn load_nif_bytes(
         let glow_h = resolve(&mesh.glow_map);
         let detail_h = resolve(&mesh.detail_map);
         let gloss_h = resolve(&mesh.gloss_map);
-        if glow_h != 0 || detail_h != 0 || gloss_h != 0 {
+        let parallax_h = resolve(&mesh.parallax_map);
+        let env_h = resolve(&mesh.env_map);
+        let env_mask_h = resolve(&mesh.env_mask);
+        if glow_h != 0
+            || detail_h != 0
+            || gloss_h != 0
+            || parallax_h != 0
+            || env_h != 0
+            || env_mask_h != 0
+        {
             world.insert(
                 entity,
                 ExtraTextureMaps {
                     glow: glow_h,
                     detail: detail_h,
                     gloss: gloss_h,
+                    parallax: parallax_h,
+                    env: env_h,
+                    env_mask: env_mask_h,
+                    parallax_height_scale: mesh.parallax_height_scale.unwrap_or(0.04),
+                    parallax_max_passes: mesh.parallax_max_passes.unwrap_or(4.0),
                 },
             );
         }

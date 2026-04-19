@@ -49,7 +49,14 @@ pub const MAX_INDIRECT_DRAWS: usize = 8192;
 /// 16 bytes (same as vec4), which would silently mismatch a tightly-packed
 /// `#[repr(C)]` Rust struct where `[f32; 3]` is only 12 bytes.
 ///
-/// Layout: 160 bytes per instance, 16-byte aligned (10×16).
+/// **Shader Struct Sync**: the matching `struct GpuInstance` declaration
+/// in `triangle.vert`, `triangle.frag`, `ui.vert` and `caustic_splat.comp`
+/// MUST be updated in lockstep. The `struct_gpuinstance_matches_all_shaders`
+/// test below greps the four .comp/.vert/.frag files for the final trailing
+/// u32 slot name — when you add a field here, update the expected suffix
+/// in the assertion and rename the sentinel to match the new last field.
+///
+/// Layout: 192 bytes per instance, 16-byte aligned (12×16).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuInstance {
@@ -118,10 +125,35 @@ pub struct GpuInstance {
     /// multiplier; the .r channel scales the inline
     /// `specular_strength`. 0 = no gloss map.
     pub gloss_map_index: u32, // 4 B, offset 168
-    /// Padding — keeps the struct at 176 bytes (11 × 16) so std430
-    /// alignment matches the `instances[]` SSBO stride.
-    pub _pad_extra_textures: u32, // 4 B, offset 172 → total 176
-                                  // Struct is 176 bytes (11×16), 16-byte aligned for std430.
+    /// Bindless texture index for the parallax / height map
+    /// (`BSShaderTextureSet` slot 3). FO3/FNV `shader_type = 3`
+    /// (Parallax_Shader_Index_15) and `shader_type = 7`
+    /// (Parallax_Occlusion) — plus Skyrim+ ParallaxOcc /
+    /// MultiLayerParallax — drive POM ray-marching off this slot.
+    /// 0 = no parallax map; the fragment shader skips the POM branch
+    /// and falls back to flat normal-mapped sampling. See #453.
+    pub parallax_map_index: u32, // 4 B, offset 172
+    /// POM height-map scale multiplier (from
+    /// `BSShaderPPLightingProperty.parallax_scale` on FO3/FNV or
+    /// Skyrim `ShaderTypeData::ParallaxOcc.scale`). Default `0.04`
+    /// matches Bethesda's typical brick-wall depth. See #453.
+    pub parallax_height_scale: f32, // 4 B, offset 176
+    /// POM ray-march sample budget (typically 4–16). Default `4.0`
+    /// matches BSShaderPPLightingProperty's default. See #453.
+    pub parallax_max_passes: f32, // 4 B, offset 180
+    /// Bindless texture index for the environment reflection map
+    /// (`BSShaderTextureSet` slot 4). Currently treated as a 2D
+    /// sphere-map sample; full cubemap support (separate
+    /// `samplerCube` descriptor binding) is deferred. 0 = no env
+    /// map; combined with `env_map_scale` on `material_kind == 1`
+    /// (BSLightingShaderProperty EnvironmentMap). See #453.
+    pub env_map_index: u32, // 4 B, offset 184
+    /// Bindless texture index for the env-reflection mask
+    /// (`BSShaderTextureSet` slot 5). Per-texel attenuation of
+    /// the env reflection. 0 = no mask → reflection is unmasked.
+    /// See #453.
+    pub env_mask_index: u32, // 4 B, offset 188 → total 192
+                               // Struct is 192 bytes (12×16), 16-byte aligned for std430.
 }
 
 impl Default for GpuInstance {
@@ -160,7 +192,11 @@ impl Default for GpuInstance {
             glow_map_index: 0,
             detail_map_index: 0,
             gloss_map_index: 0,
-            _pad_extra_textures: 0,
+            parallax_map_index: 0,
+            parallax_height_scale: 0.04,
+            parallax_max_passes: 4.0,
+            env_map_index: 0,
+            env_mask_index: 0,
         }
     }
 }
@@ -950,14 +986,15 @@ mod gpu_instance_layout_tests {
     /// update protocol (grep for `struct GpuInstance` in the shaders tree
     /// before touching this struct).
     #[test]
-    fn gpu_instance_is_176_bytes_std430_compatible() {
-        // Grew 160 → 176 in #399 (added glow/detail/gloss texture
-        // indices + 4-byte padding to keep the 16-byte alignment).
-        // 11 × 16 = 176, std430 stride for the `instances[]` SSBO.
+    fn gpu_instance_is_192_bytes_std430_compatible() {
+        // Grew 176 → 192 in #453 — reclaimed the 4-byte
+        // `_pad_extra_textures` slot and appended
+        // parallax/height/passes/env/env_mask (5 × u32/f32 = 20 bytes).
+        // 12 × 16 = 192, std430 stride for the `instances[]` SSBO.
         assert_eq!(
             size_of::<GpuInstance>(),
-            176,
-            "GpuInstance must stay 176 B to match std430 shader layout"
+            192,
+            "GpuInstance must stay 192 B to match std430 shader layout"
         );
     }
 
@@ -992,11 +1029,18 @@ mod gpu_instance_layout_tests {
         // `materialKind` continues to alias the same 4 bytes. See #344.
         assert_eq!(offset_of!(GpuInstance, material_kind), 156);
         // #399 — three NiTexturingProperty texture-slot indices appended
-        // after material_kind, each 4 bytes, followed by 4 bytes of
-        // padding so the struct stays 11 × 16 = 176.
+        // after material_kind, each 4 bytes.
         assert_eq!(offset_of!(GpuInstance, glow_map_index), 160);
         assert_eq!(offset_of!(GpuInstance, detail_map_index), 164);
         assert_eq!(offset_of!(GpuInstance, gloss_map_index), 168);
+        // #453 — BSShaderTextureSet slots 3/4/5 + POM scalars. The
+        // `_pad_extra_textures` u32 at offset 172 was reclaimed as
+        // `parallax_map_index`; the new fields extend to offset 192.
+        assert_eq!(offset_of!(GpuInstance, parallax_map_index), 172);
+        assert_eq!(offset_of!(GpuInstance, parallax_height_scale), 176);
+        assert_eq!(offset_of!(GpuInstance, parallax_max_passes), 180);
+        assert_eq!(offset_of!(GpuInstance, env_map_index), 184);
+        assert_eq!(offset_of!(GpuInstance, env_mask_index), 188);
     }
 
     /// Regression: #309 — `VkDrawIndexedIndirectCommand` is a Vulkan-
@@ -1081,6 +1125,33 @@ mod gpu_instance_layout_tests {
                 "{name}: GpuInstance slot is still named `_pad1` — \
                  rename to `materialKind` to match the other 3 \
                  shaders (Shader Struct Sync invariant #318 / #417)."
+            );
+            // #453 — the BSShaderTextureSet slots 3/4/5 + POM scalars
+            // must land in every copy so the 192-byte Rust struct and
+            // the GLSL structs stay byte-identical.
+            for needle in [
+                "parallaxMapIndex",
+                "parallaxHeightScale",
+                "parallaxMaxPasses",
+                "envMapIndex",
+                "envMaskIndex",
+            ] {
+                assert!(
+                    src.contains(needle),
+                    "{name}: GpuInstance must declare `{needle}` (#453). \
+                     Every copy updates in lockstep — see the \
+                     feedback_shader_struct_sync memory note."
+                );
+            }
+            // The old `_pad_extra_textures` slot was reclaimed for
+            // `parallaxMapIndex`. A stale `_pad_extra_textures` mention
+            // means the shader still has the pre-#453 layout.
+            assert!(
+                !src.contains("_pad_extra_textures"),
+                "{name}: GpuInstance still declares the reclaimed \
+                 `_pad_extra_textures` slot — rename to \
+                 `parallaxMapIndex` so the byte layout matches the \
+                 192-byte Rust struct."
             );
         }
     }

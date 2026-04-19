@@ -65,6 +65,24 @@ pub struct DrawCommand {
     /// multiplier; the .r channel scales the inline
     /// `specular_strength`. 0 = no gloss map. See #399.
     pub gloss_map_index: u32,
+    /// Bindless texture index for the parallax / height map
+    /// (`BSShaderTextureSet` slot 3). 0 = no POM; fragment shader
+    /// falls back to flat normal mapping. See #453.
+    pub parallax_map_index: u32,
+    /// POM height scale (`BSShaderPPLightingProperty.parallax_scale`
+    /// or Skyrim `ShaderTypeData::ParallaxOcc.scale`). Typical
+    /// range 0.02–0.08. Default 0.04. See #453.
+    pub parallax_height_scale: f32,
+    /// POM ray-march sample budget (typically 4–16). Default 4.0
+    /// matches the Gamebryo PPLighting default. See #453.
+    pub parallax_max_passes: f32,
+    /// Bindless texture index for the environment reflection map
+    /// (`BSShaderTextureSet` slot 4). Currently sampled as a 2D
+    /// texture; cubemap support is deferred. 0 = no env map. See #453.
+    pub env_map_index: u32,
+    /// Bindless texture index for the env-reflection mask
+    /// (`BSShaderTextureSet` slot 5). 0 = unmasked. See #453.
+    pub env_mask_index: u32,
     /// Alpha test threshold in [0,1]. 0.0 when alpha test is disabled. #263.
     pub alpha_threshold: f32,
     /// Alpha test comparison function (Gamebryo TestFunction enum). #263.

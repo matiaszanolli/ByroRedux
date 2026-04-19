@@ -289,11 +289,31 @@ pub(crate) fn build_render_data(
                 // Default to 0 (= no map; fragment shader falls through
                 // to the inline material constants) for entities that
                 // never had `ExtraTextureMaps` attached at cell load.
-                let (glow_map_index, detail_map_index, gloss_map_index) = extra_q
+                let (
+                    glow_map_index,
+                    detail_map_index,
+                    gloss_map_index,
+                    parallax_map_index,
+                    env_map_index,
+                    env_mask_index,
+                    parallax_height_scale,
+                    parallax_max_passes,
+                ) = extra_q
                     .as_ref()
                     .and_then(|q| q.get(entity))
-                    .map(|e| (e.glow, e.detail, e.gloss))
-                    .unwrap_or((0, 0, 0));
+                    .map(|e| {
+                        (
+                            e.glow,
+                            e.detail,
+                            e.gloss,
+                            e.parallax,
+                            e.env,
+                            e.env_mask,
+                            e.parallax_height_scale,
+                            e.parallax_max_passes,
+                        )
+                    })
+                    .unwrap_or((0, 0, 0, 0, 0, 0, 0.04, 4.0));
 
                 // Material data + PBR classification.
                 let mat = mat_q.as_ref().and_then(|q| q.get(entity));
@@ -393,6 +413,11 @@ pub(crate) fn build_render_data(
                     glow_map_index,
                     detail_map_index,
                     gloss_map_index,
+                    parallax_map_index,
+                    parallax_height_scale,
+                    parallax_max_passes,
+                    env_map_index,
+                    env_mask_index,
                     alpha_threshold,
                     alpha_test_func,
                     roughness,
@@ -500,6 +525,11 @@ pub(crate) fn build_render_data(
                         glow_map_index: 0,
                         detail_map_index: 0,
                         gloss_map_index: 0,
+                        parallax_map_index: 0,
+                        parallax_height_scale: 0.04,
+                        parallax_max_passes: 4.0,
+                        env_map_index: 0,
+                        env_mask_index: 0,
                         alpha_threshold: 0.0,
                         alpha_test_func: 0,
                         roughness: 1.0,

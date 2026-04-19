@@ -56,7 +56,13 @@ struct GpuInstance {
     uint glowMapIndex;       // offset 160 — slot 4 emissive overlay
     uint detailMapIndex;     // offset 164 — slot 2 high-frequency 2× UV overlay
     uint glossMapIndex;      // offset 168 — slot 3 specular mask (.r)
-    uint _padExtraTextures;  // offset 172 → total 176 — keeps std430 16-byte alignment
+    // #453 — BSShaderTextureSet slots 3/4/5 + POM scalars. Reclaims the
+    // old `_padExtraTextures` slot and extends the struct to 192 B.
+    uint parallaxMapIndex;   // offset 172 — slot 3 height/POM (0 = disable POM)
+    float parallaxHeightScale; // offset 176 — POM depth multiplier
+    float parallaxMaxPasses;   // offset 180 — POM ray-march budget
+    uint envMapIndex;        // offset 184 — slot 4 env reflection (2D proxy)
+    uint envMaskIndex;       // offset 188 → total 192 — slot 5 env-reflection mask
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
@@ -299,6 +305,80 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+// ── Parallax occlusion mapping ──────────────────────────────────────
+//
+// Standard step + linear-interpolate POM using screen-space derivatives
+// (no vertex tangents needed). Height values live in `parallaxMapIdx`'s
+// `.r` channel in [0,1]; the surface is displaced INWARD (along -N) as
+// the view grazes, so the sampled UV slides along -viewTS.xy.
+//
+// Returns the displaced UV. When `parallaxMapIdx == 0` the caller
+// short-circuits and this function is never entered.
+//
+// `heightScale` is typically 0.02–0.08 (Bethesda brickwork range);
+// `maxPasses` is clamped to [4, 32] — below 4 the stair-step artifacts
+// are visible, above 32 the per-pixel cost spikes without a quality
+// benefit at typical FOV. Caller feeds `BSShaderPPLightingProperty.
+// parallax_max_passes` (default 4) and `parallax_scale` (default 0.04),
+// matching the Gamebryo runtime defaults. See #453.
+vec2 parallaxDisplaceUV(
+    vec2 uv,
+    vec3 viewWorld,
+    vec3 N,
+    vec3 worldPos,
+    uint parallaxMapIdx,
+    float heightScale,
+    float maxPasses
+) {
+    // Build TBN from screen-space derivatives (same recipe as
+    // perturbNormal — keep the derivation identical so the tangent
+    // basis is consistent across the two passes).
+    vec3 dPdx = dFdx(worldPos);
+    vec3 dPdy = dFdy(worldPos);
+    vec2 dUVdx = dFdx(uv);
+    vec2 dUVdy = dFdy(uv);
+    vec3 T = normalize(dPdx * dUVdy.y - dPdy * dUVdx.y);
+    vec3 B = normalize(dPdy * dUVdx.x - dPdx * dUVdy.x);
+    T = normalize(T - dot(T, N) * N);
+    B = cross(N, T);
+
+    // View direction in tangent space. xy is the planar slide the
+    // ray makes per unit of depth; z > 0 means we're looking into
+    // the surface (which is always the case for back-face-culled
+    // draws we parallax-map anyway).
+    vec3 V_ts = vec3(dot(viewWorld, T), dot(viewWorld, B), dot(viewWorld, N));
+    float vz = max(V_ts.z, 0.05);
+    vec2 planarSlide = V_ts.xy / vz * heightScale;
+
+    int steps = int(clamp(maxPasses, 4.0, 32.0));
+    float layerDepth = 1.0 / float(steps);
+    vec2 deltaUV = planarSlide / float(steps);
+
+    vec2 currentUV = uv;
+    float currentDepth = 0.0;
+    float sampledHeight =
+        texture(textures[nonuniformEXT(parallaxMapIdx)], currentUV).r;
+    for (int i = 0; i < steps; ++i) {
+        if (currentDepth >= sampledHeight) {
+            break;
+        }
+        currentUV -= deltaUV;
+        currentDepth += layerDepth;
+        sampledHeight = texture(textures[nonuniformEXT(parallaxMapIdx)], currentUV).r;
+    }
+
+    // Linear interpolate against the previous layer for smoother
+    // transitions — avoids visible stair-stepping when the step count
+    // is low.
+    vec2 prevUV = currentUV + deltaUV;
+    float afterDepth = sampledHeight - currentDepth;
+    float beforeDepth =
+        texture(textures[nonuniformEXT(parallaxMapIdx)], prevUV).r
+        - (currentDepth - layerDepth);
+    float weight = afterDepth / (afterDepth - beforeDepth + 1e-6);
+    return mix(currentUV, prevUV, clamp(weight, 0.0, 1.0));
+}
+
 // ── Normal mapping via screen-space derivatives ─────────────────────
 
 vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx) {
@@ -327,10 +407,34 @@ vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx) {
 // ── Main ────────────────────────────────────────────────────────────
 
 void main() {
-    vec4 texColor = texture(textures[nonuniformEXT(fragTexIndex)], fragUV);
-
-    // Read per-instance material data (needed by alpha test and lighting).
+    // Read per-instance material data up-front — parallax-occlusion
+    // mapping displaces `fragUV` before the base-albedo sample, and
+    // the POM parameters + parallax map index live on the instance.
     GpuInstance inst = instances[fragInstanceIndex];
+
+    // #453 — parallax-occlusion mapping. Displace UV inward along the
+    // view direction projected into tangent space, using the height
+    // map in `parallaxMapIndex`. No-op when the instance has no
+    // parallax map bound (the dominant case — every non-POM material
+    // falls through to plain `fragUV`). The displaced UV is then
+    // used for every subsequent texture sample (base, normal, detail,
+    // glow, gloss, dark) so the material stays visually consistent.
+    vec2 sampleUV = fragUV;
+    if (inst.parallaxMapIndex != 0u) {
+        vec3 N0 = normalize(fragNormal);
+        vec3 V0 = normalize(cameraPos.xyz - fragWorldPos);
+        sampleUV = parallaxDisplaceUV(
+            fragUV,
+            V0,
+            N0,
+            fragWorldPos,
+            inst.parallaxMapIndex,
+            inst.parallaxHeightScale,
+            inst.parallaxMaxPasses
+        );
+    }
+
+    vec4 texColor = texture(textures[nonuniformEXT(fragTexIndex)], sampleUV);
 
     // Per-instance alpha test (#263). When alphaThreshold > 0 the material
     // has an alpha test enabled; alphaTestFunc selects the Gamebryo comparison:
@@ -360,9 +464,12 @@ void main() {
     uint normalMapIdx = inst.normalMapIndex;
 
     // Surface normal — perturbed by normal map if available.
+    // Normal sampling uses `sampleUV` so the parallax displacement
+    // propagates into the bump detail (otherwise the normal map and
+    // albedo would disagree on which texel belongs to each fragment).
     vec3 N = normalize(fragNormal);
     if (normalMapIdx != 0u) {
-        N = perturbNormal(N, fragWorldPos, fragUV, normalMapIdx);
+        N = perturbNormal(N, fragWorldPos, sampleUV, normalMapIdx);
     }
 
     // ── G-buffer outputs (Phase 1) ────────────────────────────────────
@@ -398,7 +505,7 @@ void main() {
 
     // Dark / multiplicative lightmap (#264): baked shadow modulation.
     if (inst.darkMapIndex != 0u) {
-        vec3 darkSample = texture(textures[nonuniformEXT(inst.darkMapIndex)], fragUV).rgb;
+        vec3 darkSample = texture(textures[nonuniformEXT(inst.darkMapIndex)], sampleUV).rgb;
         albedo *= darkSample;
     }
 
@@ -410,7 +517,7 @@ void main() {
     if (inst.detailMapIndex != 0u) {
         vec3 detailSample = texture(
             textures[nonuniformEXT(inst.detailMapIndex)],
-            fragUV * 2.0
+            sampleUV * 2.0
         ).rgb;
         albedo *= detailSample * 2.0;
     }
@@ -422,7 +529,7 @@ void main() {
     if (inst.glossMapIndex != 0u) {
         float glossSample = texture(
             textures[nonuniformEXT(inst.glossMapIndex)],
-            fragUV
+            sampleUV
         ).r;
         specStrength *= glossSample;
     }
@@ -437,7 +544,7 @@ void main() {
     if (inst.glowMapIndex != 0u) {
         vec3 glowSample = texture(
             textures[nonuniformEXT(inst.glowMapIndex)],
-            fragUV
+            sampleUV
         ).rgb;
         emissiveColor *= glowSample;
     }

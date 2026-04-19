@@ -40,7 +40,13 @@ struct GpuInstance {
     uint glowMapIndex;       // offset 160 — NiTexturingProperty slot 4 (#399). Vertex stage doesn't sample, but the layout must mirror.
     uint detailMapIndex;     // offset 164 — NiTexturingProperty slot 2 (#399).
     uint glossMapIndex;      // offset 168 — NiTexturingProperty slot 3 (#399).
-    uint _padExtraTextures;  // offset 172 → total 176
+    // #453 — BSShaderTextureSet slots 3/4/5 + POM scalars. Vertex
+    // stage doesn't sample these either; layout mirror only.
+    uint parallaxMapIndex;   // offset 172 — slot 3 (reclaimed from _padExtraTextures)
+    float parallaxHeightScale; // offset 176
+    float parallaxMaxPasses;   // offset 180
+    uint envMapIndex;        // offset 184 — slot 4
+    uint envMaskIndex;       // offset 188 → total 192
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

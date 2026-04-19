@@ -152,6 +152,11 @@ pub(super) fn extract_mesh(
         detail_map: mat.detail_map,
         gloss_map: mat.gloss_map,
         dark_map: mat.dark_map,
+        parallax_map: mat.parallax_map,
+        env_map: mat.env_map,
+        env_mask: mat.env_mask,
+        parallax_max_passes: mat.parallax_max_passes,
+        parallax_height_scale: mat.parallax_height_scale,
         vertex_color_mode: mat.vertex_color_mode as u8,
         emissive_color: mat.emissive_color,
         emissive_mult: mat.emissive_mult,
@@ -308,17 +313,28 @@ pub(super) fn extract_bs_tri_shape(
     let mut uv_scale = [1.0_f32; 2];
     let mut mat_alpha = 1.0_f32;
     let mut normal_map: Option<String> = None;
+    let mut parallax_map: Option<String> = None;
+    let mut env_map: Option<String> = None;
+    let mut env_mask: Option<String> = None;
     let mut env_map_scale = 1.0_f32;
     let mut shader_type_fields = super::material::ShaderTypeFields::default();
 
     if let Some(idx) = shape.shader_property_ref.index() {
         if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
-            normal_map = shader
+            if let Some(ts) = shader
                 .texture_set_ref
                 .index()
                 .and_then(|ts_idx| scene.get_as::<BSShaderTextureSet>(ts_idx))
-                .and_then(|ts| ts.textures.get(1).cloned())
-                .filter(|s| !s.is_empty());
+            {
+                normal_map = ts.textures.get(1).cloned().filter(|s| !s.is_empty());
+                // #452 / #453 — slots 3/4/5 reach the BSTriShape path
+                // alongside the existing slot-1 (normal) pull. Without
+                // this, Skyrim+ parallax / env materials dropped every
+                // non-base texture regardless of what the NIF carried.
+                parallax_map = ts.textures.get(3).cloned().filter(|s| !s.is_empty());
+                env_map = ts.textures.get(4).cloned().filter(|s| !s.is_empty());
+                env_mask = ts.textures.get(5).cloned().filter(|s| !s.is_empty());
+            }
             // `EnvironmentMap` feeds `env_map_scale`; every other variant
             // (SkinTint, HairTint, ParallaxOcc, MultiLayerParallax,
             // SparkleSnow, EyeEnvmap, Fo76SkinTint) carries per-variant
@@ -412,6 +428,17 @@ pub(super) fn extract_bs_tri_shape(
         detail_map: None,
         gloss_map: None,
         dark_map: None, // BSTriShape doesn't use NiTexturingProperty slots
+        // BSShaderTextureSet slots 3/4/5 — pulled above from the
+        // BSLightingShaderProperty texture set. #453.
+        parallax_map,
+        env_map,
+        env_mask,
+        // ParallaxOcc / MultiLayerParallax scalars arrive via
+        // `shader_type_fields` (captured from ShaderTypeData). Mirror
+        // them into the dedicated Option<f32>s so the renderer side
+        // of #453 reads a single canonical field regardless of path.
+        parallax_max_passes: shader_type_fields.parallax_max_passes,
+        parallax_height_scale: shader_type_fields.parallax_height_scale,
         // BsTriShape vertex colors are driven by the shader
         // properties, not an NiVertexColorProperty — pass the default
         // (AmbientDiffuse = 2) so downstream consumers behave the same

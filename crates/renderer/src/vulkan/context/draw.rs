@@ -544,7 +544,11 @@ impl VulkanContext {
                 glow_map_index: draw_cmd.glow_map_index,
                 detail_map_index: draw_cmd.detail_map_index,
                 gloss_map_index: draw_cmd.gloss_map_index,
-                _pad_extra_textures: 0,
+                parallax_map_index: draw_cmd.parallax_map_index,
+                parallax_height_scale: draw_cmd.parallax_height_scale,
+                parallax_max_passes: draw_cmd.parallax_max_passes,
+                env_map_index: draw_cmd.env_map_index,
+                env_mask_index: draw_cmd.env_mask_index,
             });
 
             let pipeline_key = if draw_cmd.alpha_blend {

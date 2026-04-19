@@ -210,6 +210,21 @@ pub struct ImportedMesh {
     /// Dark / multiplicative lightmap (NiTexturingProperty slot 1).
     /// Baked shadow modulation for Oblivion interior architecture. #264.
     pub dark_map: Option<String>,
+    /// Parallax / height texture (BSShaderTextureSet slot 3). FO3/FNV
+    /// `shader_type = 3` / `7` surfaces plus Skyrim ParallaxOcc /
+    /// MultiLayerParallax materials route through this. See #452.
+    pub parallax_map: Option<String>,
+    /// Environment cubemap (BSShaderTextureSet slot 4). Paired with
+    /// `env_map_scale` — glass, polished metal, power armor. See #452.
+    pub env_map: Option<String>,
+    /// Environment-reflection mask (BSShaderTextureSet slot 5). #452.
+    pub env_mask: Option<String>,
+    /// Parallax-occlusion max ray-march passes (from
+    /// `BSShaderPPLightingProperty` or Skyrim `ShaderTypeData::ParallaxOcc`).
+    /// `None` when the material doesn't author a value. See #452.
+    pub parallax_max_passes: Option<f32>,
+    /// Parallax-occlusion height scale. See #452.
+    pub parallax_height_scale: Option<f32>,
     /// Vertex-color source mode from `NiVertexColorProperty`
     /// (`vertex_mode`). Values match Gamebryo's `SourceMode` enum:
     /// `0 = Ignore`, `1 = Emissive`, `2 = AmbientDiffuse` (default).

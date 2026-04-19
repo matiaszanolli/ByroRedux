@@ -37,7 +37,14 @@ struct GpuInstance {
     uint glowMapIndex;       // offset 160
     uint detailMapIndex;     // offset 164
     uint glossMapIndex;      // offset 168
-    uint _padExtraTextures;  // offset 172 → total 176
+    // #453 — BSShaderTextureSet slots 3/4/5 + POM scalars. Named in
+    // lockstep with triangle.{vert,frag}; UI pipeline doesn't sample
+    // them but the SSBO stride must match the 192 B Rust struct.
+    uint parallaxMapIndex;   // offset 172 (reclaimed from _padExtraTextures)
+    float parallaxHeightScale; // offset 176
+    float parallaxMaxPasses;   // offset 180
+    uint envMapIndex;        // offset 184
+    uint envMaskIndex;       // offset 188 → total 192
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

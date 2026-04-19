@@ -71,6 +71,17 @@ pub(crate) struct ExtraTextureMaps {
     pub(crate) glow: u32,
     pub(crate) detail: u32,
     pub(crate) gloss: u32,
+    /// Parallax / height map (`BSShaderTextureSet` slot 3). 0 = no POM.
+    /// See #453 (renderer-side plumbing) and #452 (import-side path).
+    pub(crate) parallax: u32,
+    /// Env reflection map (slot 4). 0 = no env map. See #453.
+    pub(crate) env: u32,
+    /// Env reflection mask (slot 5). 0 = unmasked. See #453.
+    pub(crate) env_mask: u32,
+    /// POM height scale (default 0.04). See #453.
+    pub(crate) parallax_height_scale: f32,
+    /// POM ray-march sample budget (default 4.0). See #453.
+    pub(crate) parallax_max_passes: f32,
 }
 impl Component for ExtraTextureMaps {
     type Storage = SparseSetStorage<Self>;

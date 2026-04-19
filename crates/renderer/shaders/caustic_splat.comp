@@ -71,12 +71,27 @@ struct GpuInstance {
     uint darkMapIndex;
     float avgAlbedoR, avgAlbedoG, avgAlbedoB;
     uint flags;
-    uint materialKind;  // offset 156 → total 160. Shader Struct Sync
-                        // invariant #318 / #417: the same slot is
-                        // materialKind in triangle.vert / triangle.frag
-                        // / ui.vert. Caustic_splat.comp doesn't branch
-                        // on it today, but the name must match so the
-                        // 4-shader cross-file contract stays coherent.
+    uint materialKind;  // offset 156 — Shader Struct Sync invariant
+                        // #318 / #417: same slot name in triangle.{vert,frag}
+                        // and ui.vert. Caustic_splat.comp doesn't branch on
+                        // it today, but the full layout has to match so the
+                        // 192-byte SSBO stride stays aligned with the Rust
+                        // GpuInstance. Pre-#453 this struct was truncated at
+                        // materialKind, which meant the compute shader
+                        // indexed with a 160 B stride while the Rust side
+                        // uploaded at 176 B — caustic_splat.comp happened
+                        // to sample only instance[0] per frame so the drift
+                        // was latent. Padding out to 192 B closes that too.
+    // #399 — NiTexturingProperty extra slots.
+    uint glowMapIndex;       // offset 160
+    uint detailMapIndex;     // offset 164
+    uint glossMapIndex;      // offset 168
+    // #453 — BSShaderTextureSet slots 3/4/5 + POM scalars.
+    uint parallaxMapIndex;   // offset 172
+    float parallaxHeightScale; // offset 176
+    float parallaxMaxPasses;   // offset 180
+    uint envMapIndex;        // offset 184
+    uint envMaskIndex;       // offset 188 → total 192
 };
 
 layout(std430, set = 0, binding = 5) readonly buffer InstanceBuffer {
