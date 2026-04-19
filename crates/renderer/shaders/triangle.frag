@@ -975,21 +975,10 @@ void main() {
         directLight = directLight + albedo * 0.15;
     }
 
-    // Distance fog — applied to direct lighting only. Indirect is assumed
-    // to be local enough that fog attenuation is a minor visual artifact.
-    // (A more correct approach would be to pass linear depth to the
-    //  composite pass and fog the combined signal — deferred to later.)
-    if (fog.w > 0.5) {
-        // Cap fog opacity at 70% — the original D3D9 pipeline rendered fog
-        // in sRGB space where the blend appeared softer. Our linear-space
-        // fog is perceptually stronger, so we cap it to keep distant
-        // geometry readable while maintaining the atmospheric haze.
-        float fogFactor = smoothstep(screen.z, screen.w, worldDist) * 0.7;
-        directLight = mix(directLight, fog.xyz, fogFactor);
-        // Also fade indirect toward zero in fog so distant bounces don't
-        // weirdly show through — matches the spatial locality assumption.
-        indirectLight *= (1.0 - fogFactor);
-    }
+    // Distance fog is applied in the composite pass (#428) after SVGF
+    // denoise, so fog attenuation is NOT baked into indirect history —
+    // avoiding multi-frame ghosting on fog transitions. `fog` UBO is
+    // still read above for the RT ray-miss background color.
 
     outColor = vec4(directLight, finalAlpha);
     outRawIndirect = vec4(indirectLight, 1.0);

@@ -29,6 +29,7 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 sun_dir;        // xyz = sun direction (world-space, normalized), w = sun_intensity
     vec4 sun_color;      // xyz = sun disc color (linear RGB), w = unused
     vec4 cloud_params;   // x=scroll_u, y=scroll_v, z=tile_scale (0=disabled), w=texture_idx(uintBits)
+    vec4 camera_pos;     // xyz = world position, w = unused. Fog distance origin (#428).
     mat4 inv_view_proj;  // inverse view-projection for ray reconstruction
 } params;
 layout(set = 0, binding = 4) uniform sampler2D depthTex;     // depth buffer
@@ -170,6 +171,32 @@ void main() {
         vec3 caustic = albedo * causticLum;
 
         vec3 combined = direct + indirect * albedo + caustic;
+
+        // Distance fog — applied here rather than in the geometry pass
+        // so SVGF history carries un-fogged indirect. Pre-#428 fog was
+        // baked into both direct and indirect attachments in
+        // triangle.frag, which meant the SVGF history retained the
+        // previous frame's fog values after transitions (cell load,
+        // weather change) and produced multi-frame ghosting until the
+        // α=0.2 accumulation washed it out.
+        //
+        // Reconstruct world-space fragment position from depth +
+        // inv_view_proj, then fog-blend the combined signal by the
+        // camera-to-fragment distance.
+        if (params.fog_color.w > 0.5 && params.fog_params.y > params.fog_params.x) {
+            vec2 ndc_xy = fragUV * 2.0 - 1.0;
+            vec4 clip = vec4(ndc_xy, depth, 1.0);
+            vec4 world = params.inv_view_proj * clip;
+            vec3 worldPos = world.xyz / world.w;
+            float worldDist = length(worldPos - params.camera_pos.xyz);
+
+            // Cap at 70% opacity — same rationale as the pre-#428
+            // triangle.frag code: D3D9 rendered fog in sRGB where the
+            // blend appeared softer; linear-space fog is perceptually
+            // stronger, so the cap keeps distant geometry readable.
+            float fogFactor = smoothstep(params.fog_params.x, params.fog_params.y, worldDist) * 0.7;
+            combined = mix(combined, params.fog_color.xyz, fogFactor);
+        }
 
         const float exposure = 0.85;
         outColor = vec4(aces(combined * exposure), direct4.a);

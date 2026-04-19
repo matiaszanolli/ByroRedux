@@ -66,8 +66,15 @@ pub struct CompositeParams {
     /// - `w` = bindless texture index for cloud_textures[0], stored via
     ///         `f32::from_bits(idx as u32)`; reinterpreted as uint in the shader.
     pub cloud_params: [f32; 4],
+    /// `xyz` = camera world position; `w` unused. Needed for per-pixel
+    /// world-space fog distance in composite (#428). Before this field
+    /// landed, fog was computed in `triangle.frag` and baked into the
+    /// G-buffer indirect-light attachment — which leaked into SVGF
+    /// history and produced multi-frame ghosting on fog transitions.
+    pub camera_pos: [f32; 4],
     /// Inverse view-projection matrix for reconstructing world-space ray direction
-    /// from screen UV in the composite shader.
+    /// (and, with `camera_pos`, world-space fragment positions for fog) from
+    /// screen UV in the composite shader.
     pub inv_view_proj: [[f32; 4]; 4],
 }
 
@@ -1047,5 +1054,45 @@ impl CompositePipeline {
                 allocator.lock().expect("allocator lock").free(a).ok();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod composite_params_layout_tests {
+    //! Guards against drift between the Rust `CompositeParams` struct and
+    //! the `CompositeParams` block declared in `composite.frag`. The
+    //! descriptor-set reflection from #427 cross-checks bindings at
+    //! startup, but the field offsets inside the UBO block are invisible
+    //! to Vulkan — a silent reorder would miscompute fog distance etc.
+    //! until someone notices visually. Offsets follow std140 layout,
+    //! which for an all-vec4/mat4 block is just the sum of the field
+    //! sizes in declaration order.
+
+    use super::*;
+    use std::mem::{offset_of, size_of};
+
+    #[test]
+    fn composite_params_is_16_byte_aligned_std140_shape() {
+        // Every field is vec4 (16 B) or mat4 (64 B = 4 × vec4). std140
+        // requires vec4 alignment on both, so offsets are trivially
+        // 16-byte-aligned sums.
+        assert_eq!(offset_of!(CompositeParams, fog_color), 0);
+        assert_eq!(offset_of!(CompositeParams, fog_params), 16);
+        assert_eq!(offset_of!(CompositeParams, depth_params), 32);
+        assert_eq!(offset_of!(CompositeParams, sky_zenith), 48);
+        assert_eq!(offset_of!(CompositeParams, sky_horizon), 64);
+        assert_eq!(offset_of!(CompositeParams, sun_dir), 80);
+        assert_eq!(offset_of!(CompositeParams, sun_color), 96);
+        assert_eq!(offset_of!(CompositeParams, cloud_params), 112);
+        // #428 — `camera_pos` was added after `cloud_params` and before
+        // `inv_view_proj`. Fixing the offset here prevents a future
+        // reorder from silently corrupting the fog-distance origin.
+        assert_eq!(offset_of!(CompositeParams, camera_pos), 128);
+        assert_eq!(offset_of!(CompositeParams, inv_view_proj), 144);
+        assert_eq!(
+            size_of::<CompositeParams>(),
+            144 + 64,
+            "CompositeParams must be 208 bytes (9 × vec4 + mat4)"
+        );
     }
 }
