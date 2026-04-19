@@ -354,6 +354,14 @@ pub(crate) fn build_render_data(
                     (0.5, 0.0, 0.0, [0.0; 3], 1.0, [1.0; 3], 0.0, 0u32)
                 };
 
+                // #398 — depth state from NiZBufferProperty (Material).
+                // Defaults match the Gamebryo runtime defaults the
+                // pre-#398 hardcoded pipeline state used: depth test+
+                // write on, LESSEQUAL.
+                let (z_test, z_write, z_function) = mat
+                    .map(|m| (m.z_test, m.z_write, m.z_function))
+                    .unwrap_or((true, true, 3));
+
                 // Geometry SSBO offsets for RT reflection UV lookups.
                 let (v_off, i_off, v_count) = {
                     // SAFETY: mesh_registry is accessed immutably through the
@@ -404,6 +412,9 @@ pub(crate) fn build_render_data(
                     // downsample the texture to 1×1 during asset load;
                     // for now we derive a heuristic from the material.
                     avg_albedo: [0.5, 0.5, 0.5],
+                    z_test,
+                    z_write,
+                    z_function,
                     // BSLightingShaderProperty.shader_type → fragment
                     // shader variant dispatch (#344). 0 = Default lit
                     // when the entity has no Material component (e.g.
@@ -509,6 +520,12 @@ pub(crate) fn build_render_data(
                         in_tlas: false,
                         avg_albedo: [0.0, 0.0, 0.0],
                         material_kind: 0,
+                        // Particles render with depth test on, depth
+                        // write off (alpha-blended billboards). Default
+                        // LESSEQUAL. See #398.
+                        z_test: true,
+                        z_write: false,
+                        z_function: 3,
                     });
                 }
             }
@@ -517,32 +534,45 @@ pub(crate) fn build_render_data(
 
     // Sort: opaque → decal → alpha.
     //
-    // Opaque: group by (pipeline_key, mesh, texture) to maximize instanced
-    // draw batching — consecutive draws sharing mesh+pipeline merge into a
-    // single cmd_draw_indexed. Depth is a tie-breaker within each group
-    // (front-to-back for early-Z). This trades some early-Z benefit for
-    // dramatically fewer draw calls on scenes with many identical meshes
-    // (e.g. 400 rocks → 1 instanced draw instead of 400). #272.
+    // Opaque: group by (pipeline_key, depth_state, mesh, texture) to
+    // maximize instanced draw batching — consecutive draws sharing
+    // mesh+pipeline+depth_state merge into a single cmd_draw_indexed
+    // and pay zero state-change cost across the batch boundary. Depth
+    // is a tie-breaker within each group (front-to-back for early-Z).
+    // This trades some early-Z benefit for dramatically fewer draw
+    // calls on scenes with many identical meshes (e.g. 400 rocks → 1
+    // instanced draw instead of 400). #272 + #398.
     //
     // Alpha-blend: must remain back-to-front (depth-primary) for correct
     // transparency ordering — instancing is irrelevant here.
+    fn pack_depth_state(cmd: &DrawCommand) -> u8 {
+        // Bit 0 = z_test, bit 1 = z_write, bits 4-7 = z_function (0-7).
+        // Packs the per-draw depth state into a single sort key
+        // component so consecutive same-state draws cluster.
+        (cmd.z_test as u8) | ((cmd.z_write as u8) << 1) | ((cmd.z_function & 0x0F) << 4)
+    }
+    // Both branches return the same 7-tuple shape (u8, u8, u8, u32, u32,
+    // u32, u32) so the compiler accepts a single closure. Per-branch
+    // semantics are encoded by which field gets the depth value:
+    //   Opaque   — slot 3 = depth_state; slot 6 = sort_depth (front-to-back)
+    //   Transparent — slot 3 = !sort_depth (back-to-front); slot 4 = depth_state
     draw_commands.par_sort_unstable_by_key(|cmd| {
         if cmd.alpha_blend {
-            // Transparent: depth-primary (back-to-front).
             (
                 1u8, // after opaque
                 cmd.is_decal as u8,
                 cmd.two_sided as u8,
-                !cmd.sort_depth, // invert → larger depth first
+                !cmd.sort_depth,            // invert → larger depth first
+                pack_depth_state(cmd) as u32,
                 cmd.texture_handle,
                 cmd.mesh_handle,
             )
         } else {
-            // Opaque: batch-primary (mesh+texture, then depth).
             (
                 0u8,
                 cmd.is_decal as u8,
                 cmd.two_sided as u8,
+                pack_depth_state(cmd) as u32,
                 cmd.mesh_handle, // group identical meshes
                 cmd.texture_handle,
                 cmd.sort_depth, // front-to-back within group

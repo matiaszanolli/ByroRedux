@@ -244,6 +244,10 @@ pub struct ImportedMesh {
     pub z_test: bool,
     /// Depth write enabled (from NiZBufferProperty). Default: true.
     pub z_write: bool,
+    /// Depth comparison function (Gamebryo `TestFunction` enum from
+    /// `NiZBufferProperty.z_function`). Default 3 (LESSEQUAL). See
+    /// `MaterialInfo::z_function` for the enum values + #398.
+    pub z_function: u8,
     /// Mesh-local bounding sphere center in Y-up renderer space. Extracted
     /// from `NiTriShapeData.center` / `BsTriShape.center` when present, or
     /// computed from the vertex positions when the NIF bound is zero.

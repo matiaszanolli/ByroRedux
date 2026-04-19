@@ -166,6 +166,7 @@ pub(super) fn extract_mesh(
         skin,
         z_test: mat.z_test,
         z_write: mat.z_write,
+        z_function: mat.z_function,
         local_bound_center,
         local_bound_radius,
         effect_shader: mat.effect_shader,
@@ -427,8 +428,11 @@ pub(super) fn extract_bs_tri_shape(
         env_map_scale,
         parent_node: None,
         skin,
+        // BSTriShape (Skyrim+) has no NiZBufferProperty; defaults to
+        // Gamebryo runtime defaults (z_test+write on, LESSEQUAL).
         z_test: true,
         z_write: true,
+        z_function: 3,
         local_bound_center,
         local_bound_radius,
         // BsTriShape with an effect-shader parent (VFX surfaces, magic

@@ -878,6 +878,9 @@ pub(crate) fn load_nif_bytes(
                 alpha_threshold: mesh.alpha_threshold,
                 alpha_test_func: mesh.alpha_test_func,
                 material_kind: mesh.material_kind,
+                z_test: mesh.z_test,
+                z_write: mesh.z_write,
+                z_function: mesh.z_function,
             },
         );
 

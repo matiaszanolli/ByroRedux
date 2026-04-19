@@ -105,6 +105,19 @@ pub struct DrawCommand {
     /// 0 = Default lit. Plumbing only — variant rendering branches
     /// are per-variant follow-up work. See #344.
     pub material_kind: u32,
+    /// Depth test enabled (`NiZBufferProperty.z_test`). Forwarded into
+    /// `vkCmdSetDepthTestEnable` per draw batch via Vulkan 1.3 core
+    /// extended dynamic state. Default true. See #398 (OBL-D4-H1).
+    pub z_test: bool,
+    /// Depth write enabled (`NiZBufferProperty.z_write`). Forwarded
+    /// into `vkCmdSetDepthWriteEnable`. Default true. `false` for sky
+    /// domes / viewmodels / glow halos / billboarded particles.
+    pub z_write: bool,
+    /// Depth comparison function (Gamebryo `TestFunction` enum).
+    /// 0=ALWAYS, 1=LESS, 2=EQUAL, 3=LESSEQUAL (default), 4=GREATER,
+    /// 5=NOTEQUAL, 6=GREATEREQUAL, 7=NEVER. Mapped to
+    /// `vk::CompareOp` and forwarded into `vkCmdSetDepthCompareOp`.
+    pub z_function: u8,
 }
 
 /// Sky rendering parameters passed per-frame to the composite shader.

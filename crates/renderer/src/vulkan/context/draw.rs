@@ -1,6 +1,6 @@
 //! Frame recording and submission — the per-frame hot path.
 
-use super::super::pipeline::PipelineKey;
+use super::super::pipeline::{gamebryo_to_vk_compare_op, PipelineKey};
 use super::super::scene_buffer::{self, GpuInstance};
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::{DrawCommand, SkyParams, VulkanContext};
@@ -42,6 +42,16 @@ pub(super) struct DrawBatch {
     /// Offset into the global vertex buffer (in vertices). Used with the
     /// global geometry SSBO as `vertex_offset` in `cmd_draw_indexed`. #294.
     pub global_vertex_offset: i32,
+    /// `NiZBufferProperty.z_test` — fed to `vkCmdSetDepthTestEnable`
+    /// before the batch (extended dynamic state, Vulkan 1.3 core).
+    /// Batched into the merge key so consecutive draws sharing depth
+    /// state pay zero state-change cost. See #398.
+    pub z_test: bool,
+    /// `NiZBufferProperty.z_write` — fed to `vkCmdSetDepthWriteEnable`.
+    pub z_write: bool,
+    /// `NiZBufferProperty.z_function` — fed to `vkCmdSetDepthCompareOp`
+    /// (Gamebryo `TestFunction` enum mapped to `vk::CompareOp`).
+    pub z_function: u8,
 }
 
 impl VulkanContext {
@@ -554,6 +564,9 @@ impl VulkanContext {
                 if batch.mesh_handle == draw_cmd.mesh_handle
                     && batch.pipeline_key == pipeline_key
                     && batch.is_decal == draw_cmd.is_decal
+                    && batch.z_test == draw_cmd.z_test
+                    && batch.z_write == draw_cmd.z_write
+                    && batch.z_function == draw_cmd.z_function
                 {
                     batch.instance_count += 1;
                     continue;
@@ -570,6 +583,9 @@ impl VulkanContext {
                 index_count: mesh.index_count,
                 global_index_offset: mesh.global_index_offset,
                 global_vertex_offset: mesh.global_vertex_offset as i32,
+                z_test: draw_cmd.z_test,
+                z_write: draw_cmd.z_write,
+                z_function: draw_cmd.z_function,
             });
         }
 
@@ -755,11 +771,26 @@ impl VulkanContext {
                 two_sided: false,
             };
             let mut last_is_decal = false;
+            // #398 — extended dynamic depth state. Vulkan requires the
+            // dynamic state to be set BEFORE any draw call when the
+            // pipeline declares the corresponding `vk::DynamicState`.
+            // Initialise with the Gamebryo runtime defaults so the
+            // first batch's "did this change?" check sees a sensible
+            // baseline. Sentinel `last_z_function = u8::MAX` forces an
+            // explicit set on the first batch regardless of value.
+            let mut last_z_test = true;
+            let mut last_z_write = true;
+            let mut last_z_function: u8 = u8::MAX;
 
             // Set initial depth bias to zero before first draw — Vulkan
             // requires the dynamic state to be set before any draw call
             // when the pipeline declares VK_DYNAMIC_STATE_DEPTH_BIAS.
             self.device.cmd_set_depth_bias(cmd, 0.0, 0.0, 0.0);
+            // Same requirement for the new dynamic depth state.
+            self.device.cmd_set_depth_test_enable(cmd, true);
+            self.device.cmd_set_depth_write_enable(cmd, true);
+            self.device
+                .cmd_set_depth_compare_op(cmd, vk::CompareOp::LESS_OR_EQUAL);
 
             // Bind the global geometry buffer once for all scene draws.
             // Each batch uses global_index_offset / global_vertex_offset
@@ -832,6 +863,25 @@ impl VulkanContext {
                         if batch.is_decal { -1.0 } else { 0.0 },
                     );
                     last_is_decal = batch.is_decal;
+                }
+
+                // #398 — extended dynamic depth state. Emit only on
+                // change so consecutive batches sharing depth state pay
+                // zero state-change cost. Sky domes / viewmodels / glow
+                // halos that author `z_write=0` now actually skip the
+                // depth write instead of z-fighting world geometry.
+                if batch.z_test != last_z_test {
+                    self.device.cmd_set_depth_test_enable(cmd, batch.z_test);
+                    last_z_test = batch.z_test;
+                }
+                if batch.z_write != last_z_write {
+                    self.device.cmd_set_depth_write_enable(cmd, batch.z_write);
+                    last_z_write = batch.z_write;
+                }
+                if batch.z_function != last_z_function {
+                    self.device
+                        .cmd_set_depth_compare_op(cmd, gamebryo_to_vk_compare_op(batch.z_function));
+                    last_z_function = batch.z_function;
                 }
 
                 if use_indirect {

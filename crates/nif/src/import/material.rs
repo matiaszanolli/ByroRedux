@@ -135,6 +135,18 @@ pub(super) struct MaterialInfo {
     pub z_test: bool,
     /// Depth write enabled (from NiZBufferProperty). Default: true.
     pub z_write: bool,
+    /// Depth comparison function from `NiZBufferProperty.z_function`.
+    /// Maps to the Gamebryo `TestFunction` enum:
+    /// 0=ALWAYS, 1=LESS, 2=EQUAL, 3=LESSEQUAL, 4=GREATER, 5=NOTEQUAL,
+    /// 6=GREATEREQUAL, 7=NEVER. Default 3 (LESSEQUAL) — matches the
+    /// Gamebryo runtime default and the renderer's pre-#398 hardcoded
+    /// `vk::CompareOp::LESS` (close enough that everything depth-tested
+    /// strictly less still passes equal-depth co-planar geometry as
+    /// LESSEQUAL would). Pre-#398 the value was extracted into
+    /// `MaterialInfo` but never reached the GPU; sky domes / viewmodels
+    /// / glow halos that author non-default depth state z-fought
+    /// against world geometry.
+    pub z_function: u8,
 
     // ── BSLightingShaderProperty.shader_type dispatch (SK-D3-01) ────
     // Each variant of `ShaderTypeData` exposes different trailing
@@ -258,6 +270,8 @@ impl Default for MaterialInfo {
             has_material_data: false,
             z_test: true,
             z_write: true,
+            z_function: 3, // LESSEQUAL — Gamebryo default
+
             material_kind: 0,
             skin_tint_color: None,
             skin_tint_alpha: None,
@@ -489,10 +503,16 @@ pub(super) fn extract_material_info(
             }
         }
 
-        // NiZBufferProperty — depth test/write mode.
+        // NiZBufferProperty — depth test/write mode + comparison function (#398).
         if let Some(zbuf) = scene.get_as::<crate::blocks::properties::NiZBufferProperty>(idx) {
             info.z_test = zbuf.z_test_enabled;
             info.z_write = zbuf.z_write_enabled;
+            // Clamp to the 8 Gamebryo TestFunction values; out-of-range
+            // (file corruption / unimplemented variant) falls back to
+            // LESSEQUAL via the Default.
+            if zbuf.z_function < 8 {
+                info.z_function = zbuf.z_function as u8;
+            }
         }
 
         // NiMaterialProperty — capture specular/emissive/shininess/alpha.

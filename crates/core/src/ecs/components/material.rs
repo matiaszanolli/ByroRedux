@@ -90,6 +90,20 @@ pub struct Material {
     /// is per-variant follow-up; this field just exposes the data so
     /// the next renderer milestone has something to consume. See #344.
     pub material_kind: u8,
+    /// Depth test enabled (`NiZBufferProperty.z_test`). Default true.
+    /// Forwarded into the per-batch `vkCmdSetDepthTestEnable` call
+    /// in the draw loop. See #398 (OBL-D4-H1).
+    pub z_test: bool,
+    /// Depth write enabled (`NiZBufferProperty.z_write`). Default true.
+    /// `false` is set by sky domes, first-person viewmodels, ghost
+    /// overlays, HUD markers, billboarded particles, glow halos —
+    /// pre-#398 it was extracted but never reached the GPU, causing
+    /// z-fighting against world geometry.
+    pub z_write: bool,
+    /// Depth comparison function (Gamebryo `TestFunction` enum). 3
+    /// (LESSEQUAL) is the Gamebryo default and the value used pre-#398
+    /// for every mesh.
+    pub z_function: u8,
 }
 
 impl Default for Material {
@@ -118,6 +132,9 @@ impl Default for Material {
             alpha_threshold: 0.0,
             alpha_test_func: 6, // GREATEREQUAL default
             material_kind: 0,   // Default lit
+            z_test: true,
+            z_write: true,
+            z_function: 3, // LESSEQUAL — Gamebryo default
         }
     }
 }

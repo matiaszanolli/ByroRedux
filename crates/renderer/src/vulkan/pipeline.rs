@@ -53,6 +53,27 @@ pub enum PipelineKey {
     Blended { src: u8, dst: u8, two_sided: bool },
 }
 
+/// Convert a Gamebryo `TestFunction` enum value (from
+/// `NiZBufferProperty.z_function` or `NiAlphaProperty` test bits) into
+/// the matching [`vk::CompareOp`]. The TestFunction enum is shared
+/// between depth + alpha test in Gamebryo. Default 3 (LESSEQUAL)
+/// matches the Gamebryo runtime default and the renderer's pre-#398
+/// hardcoded `vk::CompareOp::LESS_OR_EQUAL`. Out-of-range values fall
+/// back to LESS_OR_EQUAL.
+pub fn gamebryo_to_vk_compare_op(v: u8) -> vk::CompareOp {
+    match v {
+        0 => vk::CompareOp::ALWAYS,
+        1 => vk::CompareOp::LESS,
+        2 => vk::CompareOp::EQUAL,
+        3 => vk::CompareOp::LESS_OR_EQUAL,
+        4 => vk::CompareOp::GREATER,
+        5 => vk::CompareOp::NOT_EQUAL,
+        6 => vk::CompareOp::GREATER_OR_EQUAL,
+        7 => vk::CompareOp::NEVER,
+        _ => vk::CompareOp::LESS_OR_EQUAL,
+    }
+}
+
 /// Convert a Gamebryo `AlphaFunction` enum value (from `NiAlphaProperty`
 /// flags, bits 1–4 = src, bits 5–8 = dst) into the matching
 /// [`vk::BlendFactor`].
@@ -239,10 +260,21 @@ fn create_triangle_pipeline_with_layout(
         .attachments(&color_blend_attachment);
 
     // Use dynamic viewport/scissor so we don't need to recreate the pipeline on resize.
+    // Depth test/write/compare-op are dynamic per #398 — every NIF mesh
+    // can author its own NiZBufferProperty state, but baking each
+    // (z_test, z_write, z_func) combo into a separate pipeline would
+    // explode the cache. Vulkan 1.3 core extended dynamic state covers
+    // exactly this case; the depth-stencil state below stays at the
+    // pre-#398 hardcoded defaults and `draw.rs` issues per-batch
+    // `cmd_set_depth_test_enable` / `_write_enable` / `_compare_op`
+    // before each draw.
     let dynamic_states = [
         vk::DynamicState::VIEWPORT,
         vk::DynamicState::SCISSOR,
         vk::DynamicState::DEPTH_BIAS,
+        vk::DynamicState::DEPTH_TEST_ENABLE,
+        vk::DynamicState::DEPTH_WRITE_ENABLE,
+        vk::DynamicState::DEPTH_COMPARE_OP,
     ];
     let dynamic_state =
         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
@@ -437,10 +469,16 @@ pub fn create_blend_pipeline(
         .depth_bounds_test_enable(false)
         .stencil_test_enable(false);
 
+    // Same #398 extended-dynamic-state additions as the opaque path —
+    // blended draws can also author non-default z_test / z_write /
+    // z_function (HUD overlays + ghost effects + fade halos).
     let dynamic_states = [
         vk::DynamicState::VIEWPORT,
         vk::DynamicState::SCISSOR,
         vk::DynamicState::DEPTH_BIAS,
+        vk::DynamicState::DEPTH_TEST_ENABLE,
+        vk::DynamicState::DEPTH_WRITE_ENABLE,
+        vk::DynamicState::DEPTH_COMPARE_OP,
     ];
     let dynamic_state =
         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
@@ -714,5 +752,38 @@ mod tests {
             two_sided: true,
         };
         assert_ne!(alpha, alpha_2s);
+    }
+
+    /// Regression: #398 (OBL-D4-H1) — every Gamebryo `TestFunction`
+    /// enum value must round-trip to the right `vk::CompareOp`. Out-
+    /// of-range falls back to `LESS_OR_EQUAL` (the renderer's pre-#398
+    /// hardcoded default and Gamebryo's runtime default).
+    #[test]
+    fn gamebryo_to_vk_compare_op_covers_all_8_values() {
+        let cases: &[(u8, vk::CompareOp)] = &[
+            (0, vk::CompareOp::ALWAYS),
+            (1, vk::CompareOp::LESS),
+            (2, vk::CompareOp::EQUAL),
+            (3, vk::CompareOp::LESS_OR_EQUAL),
+            (4, vk::CompareOp::GREATER),
+            (5, vk::CompareOp::NOT_EQUAL),
+            (6, vk::CompareOp::GREATER_OR_EQUAL),
+            (7, vk::CompareOp::NEVER),
+        ];
+        for (gb, vk_expected) in cases {
+            assert_eq!(
+                gamebryo_to_vk_compare_op(*gb),
+                *vk_expected,
+                "Gamebryo TestFunction {gb} must map to {vk_expected:?}"
+            );
+        }
+        // Out-of-range falls back to LESS_OR_EQUAL.
+        for v in 8u8..=15 {
+            assert_eq!(
+                gamebryo_to_vk_compare_op(v),
+                vk::CompareOp::LESS_OR_EQUAL,
+                "out-of-range TestFunction {v} must default to LESS_OR_EQUAL"
+            );
+        }
     }
 }
