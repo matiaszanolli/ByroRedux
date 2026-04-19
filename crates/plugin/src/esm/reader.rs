@@ -110,26 +110,43 @@ impl GameKind {
         match variant {
             EsmVariant::Oblivion => Self::Oblivion,
             EsmVariant::Tes5Plus => {
-                // HEDR versions (cross-referenced against UESP + real
-                // vanilla master files):
-                //   FO3       = 0.85
-                //   FO4       = 0.95
-                //   Starfield = 0.96
-                //   FNV       = 1.34
-                //   Skyrim    = 1.7 (LE and SE both)
-                //   FO76      = 68.0
-                // Exact float equality is unsafe — match on small bands.
+                // HEDR versions sampled from real vanilla masters at
+                // 2026-04-19 (all six FO3 GOTY, FNV, FO4, Skyrim SE,
+                // Starfield):
+                //   FO3 (GOTY) = 0.94    (bytes d7 a3 70 3f)
+                //   FO4        = 1.0     (bytes 00 00 80 3f)
+                //   Starfield  = 0.96    (bytes 8f c2 75 3f)
+                //   FNV        = 1.34    (bytes 1f 85 ab 3f)
+                //   Skyrim SE  = 1.71    (bytes 48 e1 da 3f)
+                //   FO76       = 68.0
+                // Exact float equality is unsafe — match on small bands
+                // that leave clear gaps between the known values.
+                //
+                // Pre-fix the FO3 band (0.94..=0.955) routed every FO3
+                // master to Fallout4 — and FO4's real 1.0 fell through
+                // to Fallout3NV — so the FO3↔FO4 classification was
+                // inverted. Latent because WEAP/ARMO/AMMO DATA arms in
+                // items.rs bucket Fallout4 with Fallout3NV/Oblivion;
+                // the first schema split (BGSM, dual-weapon SCOL, BOD2
+                // typing) would have silently corrupted FO3 data.
+                // See #439 / audit FO3-3-01.
                 if hedr_version >= 60.0 {
                     Self::Fallout76
                 } else if (1.6..=1.8).contains(&hedr_version) {
                     Self::Skyrim
-                } else if (0.94..=0.955).contains(&hedr_version) {
+                } else if (0.98..=1.04).contains(&hedr_version) {
                     Self::Fallout4
-                } else if (0.955..=0.975).contains(&hedr_version) {
+                } else if (0.955..=0.97).contains(&hedr_version) {
                     Self::Starfield
+                } else if (0.93..=0.95).contains(&hedr_version) {
+                    // FO3 GOTY (0.94). Pre-GOTY FO3 shipped 0.85 which
+                    // falls through to the Fallout3NV tail branch — same
+                    // parsing family, so the distinction is purely
+                    // cosmetic.
+                    Self::Fallout3NV
                 } else {
-                    // FO3 (0.85), FNV (1.34), or unknown → treat as the
-                    // legacy "Fallout" family.
+                    // FNV (1.34), pre-GOTY FO3 (0.85), or unknown →
+                    // treat as the legacy "Fallout" family.
                     Self::Fallout3NV
                 }
             }
@@ -493,6 +510,56 @@ mod tests {
         buf.resize(buf.len() + (variant.group_header_size() - 16), 0);
         buf.extend_from_slice(content);
         buf
+    }
+
+    /// Regression: #439 / FO3-3-01. Pin the HEDR → GameKind mapping
+    /// against real vanilla master values sampled from disk on
+    /// 2026-04-19. Pre-fix FO3's 0.94 routed to Fallout4 and FO4's 1.0
+    /// fell through to Fallout3NV, inverting the FO3↔FO4
+    /// classification.
+    #[test]
+    fn game_kind_from_header_maps_real_master_hedr_values() {
+        // FO3 GOTY — bytes d7 a3 70 3f → f32 0.94.
+        assert_eq!(
+            GameKind::from_header(EsmVariant::Tes5Plus, 0.94),
+            GameKind::Fallout3NV,
+            "FO3 GOTY (HEDR=0.94) must classify as Fallout3NV",
+        );
+        // FNV — bytes 1f 85 ab 3f → f32 ≈ 1.34.
+        assert_eq!(
+            GameKind::from_header(EsmVariant::Tes5Plus, 1.34),
+            GameKind::Fallout3NV,
+            "FNV (HEDR=1.34) must classify as Fallout3NV",
+        );
+        // FO4 — bytes 00 00 80 3f → f32 1.0.
+        assert_eq!(
+            GameKind::from_header(EsmVariant::Tes5Plus, 1.0),
+            GameKind::Fallout4,
+            "FO4 (HEDR=1.0) must classify as Fallout4",
+        );
+        // Skyrim SE — bytes 48 e1 da 3f → f32 ≈ 1.71.
+        assert_eq!(
+            GameKind::from_header(EsmVariant::Tes5Plus, 1.71),
+            GameKind::Skyrim,
+            "Skyrim SE (HEDR=1.71) must classify as Skyrim",
+        );
+        // Starfield — bytes 8f c2 75 3f → f32 ≈ 0.96.
+        assert_eq!(
+            GameKind::from_header(EsmVariant::Tes5Plus, 0.96),
+            GameKind::Starfield,
+            "Starfield (HEDR=0.96) must classify as Starfield",
+        );
+        // FO76 — HEDR=68.0 per UESP.
+        assert_eq!(
+            GameKind::from_header(EsmVariant::Tes5Plus, 68.0),
+            GameKind::Fallout76,
+            "FO76 (HEDR=68.0) must classify as Fallout76",
+        );
+        // Oblivion — variant-dispatched regardless of HEDR.
+        assert_eq!(
+            GameKind::from_header(EsmVariant::Oblivion, 1.0),
+            GameKind::Oblivion,
+        );
     }
 
     #[test]
