@@ -38,8 +38,8 @@ impl NiSkinInstance {
         let data_ref = stream.read_block_ref()?;
         let skin_partition_ref = stream.read_block_ref()?;
         let skeleton_root_ref = stream.read_block_ref()?;
-        let num_bones = stream.read_u32_le()? as usize;
-        let mut bone_refs = Vec::with_capacity(num_bones);
+        let num_bones = stream.read_u32_le()?;
+        let mut bone_refs = stream.allocate_vec(num_bones)?;
         for _ in 0..num_bones {
             bone_refs.push(stream.read_block_ref()?);
         }
@@ -93,12 +93,12 @@ impl NiObject for NiSkinData {
 impl NiSkinData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let skin_transform = stream.read_ni_transform()?;
-        let num_bones = stream.read_u32_le()? as usize;
+        let num_bones = stream.read_u32_le()?;
 
         // has_vertex_weights (version >= 4.2.1.0, always true for Bethesda games)
         let has_vertex_weights = stream.read_u8()? != 0;
 
-        let mut bones = Vec::with_capacity(num_bones);
+        let mut bones = stream.allocate_vec(num_bones)?;
         for _ in 0..num_bones {
             let bone_transform = stream.read_ni_transform()?;
 
@@ -108,10 +108,10 @@ impl NiSkinData {
             let cz = stream.read_f32_le()?;
             let radius = stream.read_f32_le()?;
 
-            let num_vertices = stream.read_u16_le()? as usize;
+            let num_vertices = stream.read_u16_le()? as u32;
 
             let vertex_weights = if has_vertex_weights {
-                let mut weights = Vec::with_capacity(num_vertices);
+                let mut weights = stream.allocate_vec(num_vertices)?;
                 for _ in 0..num_vertices {
                     let vertex_index = stream.read_u16_le()?;
                     let weight = stream.read_f32_le()?;
@@ -178,7 +178,7 @@ impl NiObject for NiSkinPartition {
 
 impl NiSkinPartition {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let num_partitions = stream.read_u32_le()? as usize;
+        let num_partitions = stream.read_u32_le()?;
 
         // SSE (bsver in [100, 130)): global vertex data before partitions.
         // The variant classifier maps BSVER 101-129 to SkyrimSE; the exact
@@ -198,7 +198,7 @@ impl NiSkinPartition {
 
         let has_conditionals = stream.version() >= crate::version::NifVersion(0x0A010000);
 
-        let mut partitions = Vec::with_capacity(num_partitions);
+        let mut partitions = stream.allocate_vec(num_partitions)?;
         for _ in 0..num_partitions {
             let num_vertices = stream.read_u16_le()?;
             let num_triangles = stream.read_u16_le()?;
@@ -237,8 +237,8 @@ impl NiSkinPartition {
             let vertex_weights = if has_conditionals {
                 let has = stream.read_byte_bool()?;
                 if has {
-                    let count = num_vertices as usize * num_weights_per_vertex as usize;
-                    let mut weights = Vec::with_capacity(count);
+                    let count = num_vertices as u32 * num_weights_per_vertex as u32;
+                    let mut weights: Vec<f32> = stream.allocate_vec(count)?;
                     for _ in 0..count {
                         weights.push(stream.read_f32_le()?);
                     }
@@ -357,8 +357,8 @@ impl NiObject for BsDismemberSkinInstance {
 impl BsDismemberSkinInstance {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiSkinInstance::parse(stream)?;
-        let num_partitions = stream.read_u32_le()? as usize;
-        let mut partitions = Vec::with_capacity(num_partitions);
+        let num_partitions = stream.read_u32_le()?;
+        let mut partitions = stream.allocate_vec(num_partitions)?;
         for _ in 0..num_partitions {
             let part_flag = stream.read_u16_le()?;
             let body_part = stream.read_u16_le()?;
@@ -398,13 +398,13 @@ impl BsSkinInstance {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let skeleton_root_ref = stream.read_block_ref()?;
         let bone_data_ref = stream.read_block_ref()?;
-        let num_bones = stream.read_u32_le()? as usize;
-        let mut bone_refs = Vec::with_capacity(num_bones);
+        let num_bones = stream.read_u32_le()?;
+        let mut bone_refs = stream.allocate_vec(num_bones)?;
         for _ in 0..num_bones {
             bone_refs.push(stream.read_block_ref()?);
         }
-        let num_scales = stream.read_u32_le()? as usize;
-        let mut scales = Vec::with_capacity(num_scales);
+        let num_scales = stream.read_u32_le()?;
+        let mut scales = stream.allocate_vec(num_scales)?;
         for _ in 0..num_scales {
             scales.push([
                 stream.read_f32_le()?,
@@ -456,8 +456,8 @@ impl NiObject for BsSkinBoneData {
 
 impl BsSkinBoneData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let num_bones = stream.read_u32_le()? as usize;
-        let mut bones = Vec::with_capacity(num_bones);
+        let num_bones = stream.read_u32_le()?;
+        let mut bones = stream.allocate_vec(num_bones)?;
         for _ in 0..num_bones {
             let bounding_sphere = [
                 stream.read_f32_le()?,

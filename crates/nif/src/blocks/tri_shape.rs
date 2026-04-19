@@ -363,21 +363,21 @@ impl BsTriShape {
             }
         }
 
-        let nv = num_vertices as usize;
-        let mut vertices = Vec::with_capacity(nv);
-        let mut uvs = Vec::with_capacity(nv);
-        let mut normals = Vec::with_capacity(nv);
-        let mut vertex_colors = Vec::with_capacity(nv);
-        // #388: bounds-check the file-driven count before allocating.
+        let nv_u32 = num_vertices as u32;
+        // #388/#408 — bounds-check every file-driven count before allocation.
+        let mut vertices = stream.allocate_vec(nv_u32)?;
+        let mut uvs = stream.allocate_vec(nv_u32)?;
+        let mut normals = stream.allocate_vec(nv_u32)?;
+        let mut vertex_colors = stream.allocate_vec(nv_u32)?;
         let mut triangles: Vec<[u16; 3]> = stream.allocate_vec(num_triangles)?;
         let is_skinned = vertex_attrs & VF_SKINNED != 0;
         let mut bone_weights: Vec<[f32; 4]> = if is_skinned {
-            Vec::with_capacity(nv)
+            stream.allocate_vec(nv_u32)?
         } else {
             Vec::new()
         };
         let mut bone_indices: Vec<[u8; 4]> = if is_skinned {
-            Vec::with_capacity(nv)
+            stream.allocate_vec(nv_u32)?
         } else {
             Vec::new()
         };
@@ -791,7 +791,9 @@ fn parse_geometry_data_base_inner(
         num_uv_sets > 0
     };
 
-    let mut uv_sets = Vec::with_capacity(if has_uv { num_uv_sets.max(1) } else { 0 });
+    // #408 — file-driven count via allocate_vec.
+    let uv_set_capacity = if has_uv { num_uv_sets.max(1) } else { 0 };
+    let mut uv_sets = stream.allocate_vec(uv_set_capacity as u32)?;
     if has_uv {
         // Ensure at least 1 UV set if has_uv is true but num_uv_sets is 0 (legacy)
         let count = num_uv_sets.max(1);
@@ -900,8 +902,8 @@ impl NiTriStripsData {
         let num_triangles = stream.read_u16_le()?;
 
         // NiTriStripsData specific
-        let num_strips = stream.read_u16_le()? as usize;
-        let mut strip_lengths = Vec::with_capacity(num_strips);
+        let num_strips = stream.read_u16_le()? as u32;
+        let mut strip_lengths: Vec<u16> = stream.allocate_vec(num_strips)?;
         for _ in 0..num_strips {
             strip_lengths.push(stream.read_u16_le()?);
         }
@@ -912,7 +914,7 @@ impl NiTriStripsData {
         } else {
             num_strips > 0
         };
-        let mut strips = Vec::with_capacity(num_strips);
+        let mut strips: Vec<Vec<u16>> = stream.allocate_vec(num_strips)?;
         if has_strips {
             for &len in &strip_lengths {
                 // #388: `len` is a u16 read from the stream; the

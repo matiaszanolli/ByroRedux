@@ -669,7 +669,7 @@ impl NiLegacyParticlesData {
         // has_radii + radii (since 10.1.0.0 — always present for Oblivion).
         let has_radii = stream.read_byte_bool()?;
         let radii = if has_radii {
-            let mut v = Vec::with_capacity(num_vertices as usize);
+            let mut v = stream.allocate_vec(num_vertices as u32)?;
             for _ in 0..num_vertices {
                 v.push(stream.read_f32_le()?);
             }
@@ -682,7 +682,7 @@ impl NiLegacyParticlesData {
 
         let has_sizes = stream.read_byte_bool()?;
         let sizes = if has_sizes {
-            let mut v = Vec::with_capacity(num_vertices as usize);
+            let mut v = stream.allocate_vec(num_vertices as u32)?;
             for _ in 0..num_vertices {
                 v.push(stream.read_f32_le()?);
             }
@@ -693,7 +693,7 @@ impl NiLegacyParticlesData {
 
         let has_rotations = stream.read_byte_bool()?;
         let rotations = if has_rotations {
-            let mut v = Vec::with_capacity(num_vertices as usize);
+            let mut v = stream.allocate_vec(num_vertices as u32)?;
             for _ in 0..num_vertices {
                 // Gamebryo Quaternion serialization is w, x, y, z.
                 let w = stream.read_f32_le()?;
@@ -711,7 +711,7 @@ impl NiLegacyParticlesData {
         // in Oblivion v20.0.0.5.
         let has_rotation_angles = stream.read_byte_bool()?;
         let rotation_angles = if has_rotation_angles {
-            let mut v = Vec::with_capacity(num_vertices as usize);
+            let mut v = stream.allocate_vec(num_vertices as u32)?;
             for _ in 0..num_vertices {
                 v.push(stream.read_f32_le()?);
             }
@@ -722,7 +722,7 @@ impl NiLegacyParticlesData {
 
         let has_rotation_axes = stream.read_byte_bool()?;
         let rotation_axes = if has_rotation_axes {
-            let mut v = Vec::with_capacity(num_vertices as usize);
+            let mut v = stream.allocate_vec(num_vertices as u32)?;
             for _ in 0..num_vertices {
                 let p = stream.read_ni_point3()?;
                 v.push([p.x, p.y, p.z]);

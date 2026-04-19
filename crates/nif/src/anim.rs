@@ -679,7 +679,12 @@ fn dequantize_channel(
     half_range: f32,
 ) -> Vec<f32> {
     let end = start + count * stride;
-    let mut out = Vec::with_capacity(count * stride);
+    // #408 — `count` and `stride` originate from `NiBSplineBasisData`
+    // / per-channel STRIDE constants. Caller already validates `end`
+    // against `raw.len()` via the `channel_slice` callers above, but
+    // pre-allocate against the input slice length so a malformed
+    // basis can't request more capacity than the data could justify.
+    let mut out = Vec::with_capacity((count * stride).min(raw.len()));
     for &r in &raw[start..end] {
         out.push(dequant(r, offset, half_range));
     }
@@ -704,9 +709,13 @@ fn extract_transform_channel_bspline(
     }
 
     // Determine number of samples from the animation duration.
+    // #408 — clamp to a 1 M sample ceiling per channel (~9 hours of
+    // animation at 30 Hz) so a malicious or corrupt `stop_time` can't
+    // request `usize::MAX` slots and OOM the importer. Real anims top
+    // out at a few thousand samples even for the longest cinematics.
     let duration = (interp.stop_time - interp.start_time).max(0.0);
     let n_samples_f = (duration * BSPLINE_SAMPLE_HZ).ceil();
-    let n_samples = (n_samples_f as usize).max(2);
+    let n_samples = (n_samples_f as usize).max(2).min(1_000_000);
 
     // Per-channel setup. Each handle is an offset in i16 units into
     // `data.compact_control_points` where that channel's run of

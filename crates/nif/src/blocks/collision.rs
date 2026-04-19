@@ -503,13 +503,13 @@ impl BhkConvexVerticesShape {
         let radius = stream.read_f32_le()?;
         // Two bhkWorldObjCInfoProperty structs (12 bytes each)
         stream.skip(24)?;
-        let num_vertices = stream.read_u32_le()? as usize;
-        let mut vertices = Vec::with_capacity(num_vertices);
+        let num_vertices = stream.read_u32_le()?;
+        let mut vertices = stream.allocate_vec(num_vertices)?;
         for _ in 0..num_vertices {
             vertices.push(read_vec4(stream)?);
         }
-        let num_normals = stream.read_u32_le()? as usize;
-        let mut normals = Vec::with_capacity(num_normals);
+        let num_normals = stream.read_u32_le()?;
+        let mut normals = stream.allocate_vec(num_normals)?;
         for _ in 0..num_normals {
             normals.push(read_vec4(stream)?);
         }
@@ -543,16 +543,16 @@ impl NiObject for BhkListShape {
 
 impl BhkListShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let num_sub_shapes = stream.read_u32_le()? as usize;
-        let mut sub_shape_refs = Vec::with_capacity(num_sub_shapes);
+        let num_sub_shapes = stream.read_u32_le()?;
+        let mut sub_shape_refs = stream.allocate_vec(num_sub_shapes)?;
         for _ in 0..num_sub_shapes {
             sub_shape_refs.push(stream.read_block_ref()?);
         }
         let material = stream.read_u32_le()?;
         // Two bhkWorldObjCInfoProperty structs (12 bytes each)
         stream.skip(24)?;
-        let num_filters = stream.read_u32_le()? as usize;
-        let mut filters = Vec::with_capacity(num_filters);
+        let num_filters = stream.read_u32_le()?;
+        let mut filters = stream.allocate_vec(num_filters)?;
         for _ in 0..num_filters {
             filters.push(stream.read_u32_le()?);
         }
@@ -673,13 +673,13 @@ impl BhkNiTriStripsShape {
         let _grow_by = stream.read_u32_le()?;
         // Scale: since 10.1.0.0 (always present for Oblivion+)
         let _scale = read_vec4(stream)?;
-        let num_data = stream.read_u32_le()? as usize;
-        let mut data_refs = Vec::with_capacity(num_data);
+        let num_data = stream.read_u32_le()?;
+        let mut data_refs = stream.allocate_vec(num_data)?;
         for _ in 0..num_data {
             data_refs.push(stream.read_block_ref()?);
         }
-        let num_filters = stream.read_u32_le()? as usize;
-        let mut filters = Vec::with_capacity(num_filters);
+        let num_filters = stream.read_u32_le()?;
+        let mut filters = stream.allocate_vec(num_filters)?;
         for _ in 0..num_filters {
             filters.push(stream.read_u32_le()?);
         }
@@ -722,8 +722,8 @@ impl BhkPackedNiTriStripsShape {
         let version = stream.version();
         let sub_shapes = if version <= crate::version::NifVersion::V20_0_0_5 {
             // Oblivion: sub-shapes inline (until="20.0.0.5")
-            let count = stream.read_u16_le()? as usize;
-            let mut subs = Vec::with_capacity(count);
+            let count = stream.read_u16_le()? as u32;
+            let mut subs = stream.allocate_vec(count)?;
             for _ in 0..count {
                 let havok_filter = stream.read_u32_le()?;
                 let num_vertices = stream.read_u32_le()?;
@@ -786,8 +786,8 @@ impl NiObject for HkPackedNiTriStripsData {
 impl HkPackedNiTriStripsData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let version = stream.version();
-        let num_triangles = stream.read_u32_le()? as usize;
-        let mut triangles = Vec::with_capacity(num_triangles);
+        let num_triangles = stream.read_u32_le()?;
+        let mut triangles = stream.allocate_vec(num_triangles)?;
         for _ in 0..num_triangles {
             let v0 = stream.read_u16_le()?;
             let v1 = stream.read_u16_le()?;
@@ -812,12 +812,12 @@ impl HkPackedNiTriStripsData {
             });
         }
 
-        let num_vertices = stream.read_u32_le()? as usize;
+        let num_vertices = stream.read_u32_le()?;
         // FO3+ (since 20.2.0.7): compressed bool + optional half-float vertices
         if version >= crate::version::NifVersion::V20_2_0_7 {
             let _compressed = stream.read_byte_bool()?;
         }
-        let mut vertices = Vec::with_capacity(num_vertices);
+        let mut vertices: Vec<[f32; 3]> = stream.allocate_vec(num_vertices)?;
         for _ in 0..num_vertices {
             let x = stream.read_f32_le()?;
             let y = stream.read_f32_le()?;
@@ -1047,8 +1047,8 @@ impl BhkCompressedMeshShapeData {
         stream.skip(num_mat8 as u64 * 4)?;
 
         // Chunk materials: (SkyrimHavokMaterial, HavokFilter) = 2×u32 = 8 bytes each
-        let num_chunk_materials = stream.read_u32_le()? as usize;
-        let mut chunk_materials = Vec::with_capacity(num_chunk_materials);
+        let num_chunk_materials = stream.read_u32_le()?;
+        let mut chunk_materials = stream.allocate_vec(num_chunk_materials)?;
         for _ in 0..num_chunk_materials {
             chunk_materials.push([stream.read_u32_le()?, stream.read_u32_le()?]);
         }
@@ -1056,8 +1056,8 @@ impl BhkCompressedMeshShapeData {
         let _num_named_materials = stream.read_u32_le()?;
 
         // Chunk transforms
-        let num_transforms = stream.read_u32_le()? as usize;
-        let mut chunk_transforms = Vec::with_capacity(num_transforms);
+        let num_transforms = stream.read_u32_le()?;
+        let mut chunk_transforms = stream.allocate_vec(num_transforms)?;
         for _ in 0..num_transforms {
             let translation = [
                 stream.read_f32_le()?,
@@ -1078,8 +1078,8 @@ impl BhkCompressedMeshShapeData {
         }
 
         // Big verts (full-precision)
-        let num_big_verts = stream.read_u32_le()? as usize;
-        let mut big_verts = Vec::with_capacity(num_big_verts);
+        let num_big_verts = stream.read_u32_le()?;
+        let mut big_verts = stream.allocate_vec(num_big_verts)?;
         for _ in 0..num_big_verts {
             big_verts.push([
                 stream.read_f32_le()?,
@@ -1090,8 +1090,8 @@ impl BhkCompressedMeshShapeData {
         }
 
         // Big tris
-        let num_big_tris = stream.read_u32_le()? as usize;
-        let mut big_tris = Vec::with_capacity(num_big_tris);
+        let num_big_tris = stream.read_u32_le()?;
+        let mut big_tris = stream.allocate_vec(num_big_tris)?;
         for _ in 0..num_big_tris {
             let v1 = stream.read_u16_le()?;
             let v2 = stream.read_u16_le()?;
@@ -1107,8 +1107,8 @@ impl BhkCompressedMeshShapeData {
         }
 
         // Chunks (variable-size)
-        let num_chunks = stream.read_u32_le()? as usize;
-        let mut chunks = Vec::with_capacity(num_chunks);
+        let num_chunks = stream.read_u32_le()?;
+        let mut chunks = stream.allocate_vec(num_chunks)?;
         for _ in 0..num_chunks {
             let translation = [
                 stream.read_f32_le()?,
@@ -1124,9 +1124,9 @@ impl BhkCompressedMeshShapeData {
             // Divide by 3 to get the number of (x, y, z) vertex positions.
             // Confirmed via Havok source: Chunk::m_vertices is hkArray<hkUint16>,
             // count = actual_vertices * 3.
-            let num_vertex_components = stream.read_u32_le()? as usize;
+            let num_vertex_components = stream.read_u32_le()?;
             let num_vertices = num_vertex_components / 3;
-            let mut vertices = Vec::with_capacity(num_vertices);
+            let mut vertices: Vec<[u16; 3]> = stream.allocate_vec(num_vertices)?;
             for _ in 0..num_vertices {
                 vertices.push([
                     stream.read_u16_le()?,
@@ -1136,15 +1136,15 @@ impl BhkCompressedMeshShapeData {
             }
 
             // Indices
-            let num_indices = stream.read_u32_le()? as usize;
-            let mut indices = Vec::with_capacity(num_indices);
+            let num_indices = stream.read_u32_le()?;
+            let mut indices: Vec<u16> = stream.allocate_vec(num_indices)?;
             for _ in 0..num_indices {
                 indices.push(stream.read_u16_le()?);
             }
 
             // Strips
-            let num_strips = stream.read_u32_le()? as usize;
-            let mut strips = Vec::with_capacity(num_strips);
+            let num_strips = stream.read_u32_le()?;
+            let mut strips: Vec<u16> = stream.allocate_vec(num_strips)?;
             for _ in 0..num_strips {
                 strips.push(stream.read_u16_le()?);
             }

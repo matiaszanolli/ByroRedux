@@ -38,8 +38,8 @@ impl NiObject for NiDefaultAVObjectPalette {
 impl NiDefaultAVObjectPalette {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let scene_ref = stream.read_block_ref()?;
-        let num_objs = stream.read_u32_le()? as usize;
-        let mut objs = Vec::with_capacity(num_objs);
+        let num_objs = stream.read_u32_le()?;
+        let mut objs = stream.allocate_vec(num_objs)?;
         for _ in 0..num_objs {
             let name = stream.read_sized_string()?;
             let av_object_ref = stream.read_block_ref()?;

@@ -137,7 +137,23 @@ impl NifHeader {
         let pos = cursor.position() as usize;
         let remaining = total_bytes.saturating_sub(pos);
         let (block_types, block_type_indices) = if version >= NifVersion(0x05000001) {
+            // #408 — the type-strings array follows immediately. Each
+            // entry is a length-prefixed string with a 4-byte length
+            // prefix, so `count * 4` is a defensible byte-budget lower
+            // bound. u16 max already constrains `num_block_types` to
+            // 65535 but the explicit check makes the invariant local.
             let num_block_types = read_u16_le(&mut cursor)? as usize;
+            if num_block_types
+                .checked_mul(4)
+                .map_or(true, |n| n > remaining)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "NIF header claims {num_block_types} block types but only {remaining} bytes remain",
+                    ),
+                ));
+            }
             let mut types = Vec::with_capacity(num_block_types);
             for _ in 0..num_block_types {
                 types.push(read_sized_string(&mut cursor)?);
@@ -196,6 +212,22 @@ impl NifHeader {
         let (strings, max_string_length) = if version >= NifVersion(0x14010001) {
             let num_strings = read_u32_le(&mut cursor)? as usize;
             let max_len = read_u32_le(&mut cursor)?;
+            // #408 — same byte-budget guard as the indices/sizes
+            // tables above. Each string entry is at minimum a 4-byte
+            // length prefix; without this guard a corrupt
+            // `num_strings = u32::MAX` requests
+            // 4_294_967_295 × sizeof(Arc<str>) ≈ 64 GB of capacity
+            // before the first read fails.
+            let pos = cursor.position() as usize;
+            let remaining = total_bytes.saturating_sub(pos);
+            if num_strings.checked_mul(4).map_or(true, |n| n > remaining) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "NIF header claims {num_strings} strings but only {remaining} bytes remain",
+                    ),
+                ));
+            }
             let mut strs: Vec<Arc<str>> = Vec::with_capacity(num_strings);
             for _ in 0..num_strings {
                 strs.push(Arc::from(read_sized_string(&mut cursor)?));

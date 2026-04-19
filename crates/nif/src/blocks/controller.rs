@@ -214,8 +214,8 @@ impl NiObject for NiMultiTargetTransformController {
 impl NiMultiTargetTransformController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiTimeControllerBase::parse(stream)?;
-        let num_extra_targets = stream.read_u16_le()? as usize;
-        let mut extra_targets = Vec::with_capacity(num_extra_targets);
+        let num_extra_targets = stream.read_u16_le()? as u32;
+        let mut extra_targets = stream.allocate_vec(num_extra_targets)?;
         for _ in 0..num_extra_targets {
             extra_targets.push(stream.read_block_ref()?);
         }
@@ -251,8 +251,8 @@ impl NiControllerManager {
         let base = NiTimeControllerBase::parse(stream)?;
         // cumulative is a byte bool based on observed block sizes
         let cumulative = stream.read_byte_bool()?;
-        let num_sequences = stream.read_u32_le()? as usize;
-        let mut sequence_refs = Vec::with_capacity(num_sequences);
+        let num_sequences = stream.read_u32_le()?;
+        let mut sequence_refs = stream.allocate_vec(num_sequences)?;
         for _ in 0..num_sequences {
             sequence_refs.push(stream.read_block_ref()?);
         }
@@ -344,7 +344,7 @@ impl NiControllerSequence {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         // NiSequence fields (for v >= 20.1.0.1, string table format)
         let name = stream.read_string()?;
-        let num_controlled_blocks = stream.read_u32_le()? as usize;
+        let num_controlled_blocks = stream.read_u32_le()?;
 
         // Array Grow By (since 10.1.0.106)
         let array_grow_by = if stream.version() >= NifVersion(0x0A01006A) {
@@ -375,7 +375,7 @@ impl NiControllerSequence {
         let bsver = stream.bsver();
         let uses_string_palette =
             stream.version() >= NifVersion(0x0A020000) && stream.version() < NifVersion(0x14010001);
-        let mut controlled_blocks = Vec::with_capacity(num_controlled_blocks);
+        let mut controlled_blocks = stream.allocate_vec(num_controlled_blocks)?;
         for _ in 0..num_controlled_blocks {
             let interpolator_ref = stream.read_block_ref()?;
             let controller_ref = stream.read_block_ref()?;
@@ -448,8 +448,8 @@ impl NiControllerSequence {
         // Normalise both into the same Vec so downstream consumers only
         // see one shape. Older BSVERs (< 24) carry no anim notes at all.
         let anim_note_refs = if bsver > 28 {
-            let num = stream.read_u16_le()? as usize;
-            let mut refs = Vec::with_capacity(num);
+            let num = stream.read_u16_le()? as u32;
+            let mut refs = stream.allocate_vec(num)?;
             for _ in 0..num {
                 refs.push(stream.read_block_ref()?);
             }
@@ -766,9 +766,9 @@ impl NiGeomMorpherController {
         let morpher_flags = stream.read_u16_le()?;
         let data_ref = stream.read_block_ref()?;
         let always_update = stream.read_u8()?;
-        let num_interpolators = stream.read_u32_le()? as usize;
+        let num_interpolators = stream.read_u32_le()?;
 
-        let mut interpolator_weights = Vec::with_capacity(num_interpolators);
+        let mut interpolator_weights = stream.allocate_vec(num_interpolators)?;
         for _ in 0..num_interpolators {
             let interpolator_ref = stream.read_block_ref()?;
             let weight = stream.read_f32_le()?;
@@ -864,7 +864,9 @@ impl NiMorphData {
         let has_legacy_weight =
             version >= NifVersion(0x0A010068) && version <= NifVersion(0x14010002) && bsver < 10;
 
-        let mut morphs = Vec::with_capacity(num_morphs);
+        // Already bounded by the 65_536 sanity check above; route
+        // through allocate_vec for consistency with #408 sweep.
+        let mut morphs = stream.allocate_vec(num_morphs as u32)?;
         for _ in 0..num_morphs {
             // Frame name (string table indexed from 10.1.0.106).
             let name = if version >= NifVersion(0x0A01006A) {
@@ -899,7 +901,10 @@ impl NiMorphData {
 
             // Vertex deltas — guarded against an absurd num_vertices
             // that would otherwise OOM the process on a corrupt block.
-            let mut vectors = Vec::with_capacity((num_vertices as usize).min(1_000_000));
+            // The hard cap stays as defensive belt; allocate_vec also
+            // bounds against remaining stream bytes (#408).
+            let mut vectors: Vec<[f32; 3]> =
+                stream.allocate_vec((num_vertices as u32).min(1_000_000))?;
             for _ in 0..num_vertices {
                 let x = stream.read_f32_le()?;
                 let y = stream.read_f32_le()?;

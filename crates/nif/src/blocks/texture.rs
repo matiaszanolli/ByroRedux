@@ -472,8 +472,8 @@ impl NiTextureEffect {
             true
         };
         let affected_nodes = if stream.version() >= NifVersion(0x0A010000) {
-            let count = stream.read_u32_le()? as usize;
-            let mut nodes = Vec::with_capacity(count);
+            let count = stream.read_u32_le()?;
+            let mut nodes = stream.allocate_vec(count)?;
             for _ in 0..count {
                 nodes.push(stream.read_u32_le()?);
             }

@@ -1028,13 +1028,13 @@ impl NiObject for NiBSplineData {
 
 impl NiBSplineData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let num_float = stream.read_u32_le()? as usize;
-        let mut float_control_points = Vec::with_capacity(num_float);
+        let num_float = stream.read_u32_le()?;
+        let mut float_control_points: Vec<f32> = stream.allocate_vec(num_float)?;
         for _ in 0..num_float {
             float_control_points.push(stream.read_f32_le()?);
         }
-        let num_compact = stream.read_u32_le()? as usize;
-        let mut compact_control_points = Vec::with_capacity(num_compact);
+        let num_compact = stream.read_u32_le()?;
+        let mut compact_control_points: Vec<i16> = stream.allocate_vec(num_compact)?;
         for _ in 0..num_compact {
             // `short` in nif.xml — signed 16-bit.
             let raw = stream.read_u16_le()?;

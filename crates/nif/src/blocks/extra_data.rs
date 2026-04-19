@@ -71,16 +71,16 @@ impl NiExtraData {
             }
             // Array variants — count (u32) followed by N items. See #164.
             "NiStringsExtraData" => {
-                let count = stream.read_u32_le()? as usize;
-                let mut arr = Vec::with_capacity(count);
+                let count = stream.read_u32_le()?;
+                let mut arr = stream.allocate_vec(count)?;
                 for _ in 0..count {
                     arr.push(stream.read_string()?);
                 }
                 strings_array = Some(arr);
             }
             "NiIntegersExtraData" => {
-                let count = stream.read_u32_le()? as usize;
-                let mut arr = Vec::with_capacity(count);
+                let count = stream.read_u32_le()?;
+                let mut arr = stream.allocate_vec(count)?;
                 for _ in 0..count {
                     arr.push(stream.read_u32_le()?);
                 }
@@ -220,11 +220,11 @@ impl BsDecalPlacementVectorExtraData {
         // NiFloatExtraData: float value
         let float_value = stream.read_f32_le()?;
         // BSDecalPlacementVectorExtraData: vector blocks
-        let num_blocks = stream.read_u16_le()? as usize;
-        let mut vector_blocks = Vec::with_capacity(num_blocks);
+        let num_blocks = stream.read_u16_le()? as u32;
+        let mut vector_blocks: Vec<DecalVectorBlock> = stream.allocate_vec(num_blocks)?;
         for _ in 0..num_blocks {
-            let num_vectors = stream.read_u16_le()? as usize;
-            let mut points = Vec::with_capacity(num_vectors);
+            let num_vectors = stream.read_u16_le()? as u32;
+            let mut points: Vec<[f32; 3]> = stream.allocate_vec(num_vectors)?;
             for _ in 0..num_vectors {
                 points.push([
                     stream.read_f32_le()?,
@@ -232,7 +232,7 @@ impl BsDecalPlacementVectorExtraData {
                     stream.read_f32_le()?,
                 ]);
             }
-            let mut normals = Vec::with_capacity(num_vectors);
+            let mut normals: Vec<[f32; 3]> = stream.allocate_vec(num_vectors)?;
             for _ in 0..num_vectors {
                 normals.push([
                     stream.read_f32_le()?,
@@ -384,8 +384,8 @@ impl NiObject for BsConnectPointParents {
 impl BsConnectPointParents {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let name = stream.read_string()?;
-        let count = stream.read_u32_le()? as usize;
-        let mut connect_points = Vec::with_capacity(count);
+        let count = stream.read_u32_le()?;
+        let mut connect_points = stream.allocate_vec(count)?;
         for _ in 0..count {
             let parent = stream.read_sized_string()?;
             let cp_name = stream.read_sized_string()?;
@@ -681,8 +681,8 @@ fn parse_baked_geom_data(stream: &mut NifStream) -> io::Result<BsPackedGeomData>
 
     let total_triangles = tri_count_lod0
         .saturating_add(tri_count_lod1)
-        .saturating_add(tri_count_lod2) as usize;
-    let mut triangles = Vec::with_capacity(total_triangles);
+        .saturating_add(tri_count_lod2);
+    let mut triangles: Vec<[u16; 3]> = stream.allocate_vec(total_triangles)?;
     for _ in 0..total_triangles {
         let a = stream.read_u16_le()?;
         let b = stream.read_u16_le()?;
@@ -785,9 +785,9 @@ impl NiObject for BsFurnitureMarker {
 impl BsFurnitureMarker {
     pub fn parse(stream: &mut NifStream, type_name: &'static str) -> io::Result<Self> {
         let name = stream.read_string()?;
-        let count = stream.read_u32_le()? as usize;
+        let count = stream.read_u32_le()?;
         let legacy = stream.bsver() <= 34;
-        let mut positions = Vec::with_capacity(count);
+        let mut positions = stream.allocate_vec(count)?;
         for _ in 0..count {
             let offset = [
                 stream.read_f32_le()?,
@@ -843,8 +843,8 @@ impl BsConnectPointChildren {
         // a u32 over-consumes 3 bytes of the following `Num Connect
         // Points` count. See issue #108.
         let skinned = stream.read_u8()? != 0;
-        let count = stream.read_u32_le()? as usize;
-        let mut point_names = Vec::with_capacity(count);
+        let count = stream.read_u32_le()?;
+        let mut point_names = stream.allocate_vec(count)?;
         for _ in 0..count {
             point_names.push(stream.read_sized_string()?);
         }
@@ -972,8 +972,8 @@ impl NiObject for BsAnimNotes {
 
 impl BsAnimNotes {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let count = stream.read_u16_le()? as usize;
-        let mut notes = Vec::with_capacity(count);
+        let count = stream.read_u16_le()? as u32;
+        let mut notes = stream.allocate_vec(count)?;
         for _ in 0..count {
             notes.push(stream.read_block_ref()?);
         }
@@ -1249,5 +1249,21 @@ mod tests {
         let notes = BsAnimNotes::parse(&mut stream).unwrap();
         assert!(notes.notes.is_empty());
         assert_eq!(stream.position() as usize, 2);
+    }
+
+    #[test]
+    fn bs_anim_notes_malicious_count_errors_without_panic() {
+        // Regression test for #408: a corrupt/malicious count must not OOM
+        // via Vec::with_capacity. allocate_vec bounds count against
+        // remaining bytes and returns an io::Error instead of panicking.
+        let header = skyrim_header();
+        let data = u16::MAX.to_le_bytes(); // count = 65535, zero body bytes
+        let mut stream = NifStream::new(&data, &header);
+        let err = BsAnimNotes::parse(&mut stream).expect_err("expected bounds error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bytes remain") || msg.contains("only"),
+            "expected allocate_vec bounds error, got: {msg}"
+        );
     }
 }

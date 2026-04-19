@@ -173,7 +173,7 @@ impl BSShaderTextureSet {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         // NiObject base reads nothing for modern versions.
         let num_textures = stream.read_i32_le()?;
-        let mut textures = Vec::with_capacity(num_textures.max(0) as usize);
+        let mut textures = stream.allocate_vec(num_textures.max(0) as u32)?;
         for _ in 0..num_textures {
             // Texture paths are always sized strings (u32 len + bytes),
             // NOT string table indices.
@@ -588,11 +588,13 @@ impl BSLightingShaderProperty {
 
             let has_texture_arrays = stream.read_u8()? != 0;
             if has_texture_arrays {
-                let num_arrays = stream.read_u32_le()? as usize;
-                texture_arrays.reserve(num_arrays);
+                // #408 — preferred allocate_vec for both the outer
+                // count and per-array width; both are file-driven u32s.
+                let num_arrays = stream.read_u32_le()?;
+                texture_arrays = stream.allocate_vec(num_arrays)?;
                 for _ in 0..num_arrays {
-                    let width = stream.read_u32_le()? as usize;
-                    let mut textures = Vec::with_capacity(width);
+                    let width = stream.read_u32_le()?;
+                    let mut textures = stream.allocate_vec(width)?;
                     for _ in 0..width {
                         textures.push(stream.read_sized_string()?);
                     }
