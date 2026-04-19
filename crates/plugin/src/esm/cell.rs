@@ -372,14 +372,24 @@ pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
                 parse_txst_group(&mut reader, end, &mut txst_textures, &mut texture_sets)?;
             }
             // All record types that have a MODL sub-record (NIF model path).
-            // Placed references (REFR/ACHR) can point to any of these.
+            // Placed references (REFR/ACHR/ACRE) can point to any of these.
             // TXST is intentionally NOT in this list — it has a dedicated
             // parser at the `b"TXST"` arm above (line 264) that pulls
             // texture paths instead of model paths.
+            //
+            // CREA — Oblivion/FO3/FNV creature record (#396). FO3+ folded
+            // creatures into NPC_ so the MODL match arm never needed it
+            // for those games; Oblivion shipped 250+ creatures in a
+            // dedicated 440 KB CREA group (goblin/rat/zombie/daedra) and
+            // every Ayleid ruin / Oblivion gate / cave placement
+            // referenced one. Without CREA in the statics map every
+            // ACRE placement failed the base-ref lookup and silently
+            // skipped rendering. CREA uses the standard MODL sub-record,
+            // identical to STAT — no per-record field work needed.
             b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"ACTI" | b"CONT" | b"LIGH" | b"MISC"
             | b"FLOR" | b"TREE" | b"AMMO" | b"WEAP" | b"ARMO" | b"BOOK" | b"KEYM" | b"ALCH"
             | b"INGR" | b"NOTE" | b"TACT" | b"IDLM" | b"BNDS" | b"ADDN" | b"TERM" | b"NPC_"
-            | b"MOVS" | b"PKIN" => {
+            | b"CREA" | b"MOVS" | b"PKIN" => {
                 let end = reader.group_content_end(&group);
                 parse_modl_group(&mut reader, end, &mut statics)?;
             }
@@ -696,7 +706,14 @@ fn parse_refr_group(
         }
 
         let header = reader.read_record_header()?;
-        if &header.record_type == b"REFR" || &header.record_type == b"ACHR" {
+        // ACRE — Oblivion-only placed-creature reference (#396). FO3+
+        // folded creature placements into ACHR; ACRE's wire layout
+        // matches ACHR byte-for-byte on Oblivion (NAME/DATA/XSCL/XESP),
+        // so it routes through the same handler.
+        if &header.record_type == b"REFR"
+            || &header.record_type == b"ACHR"
+            || &header.record_type == b"ACRE"
+        {
             let subs = reader.read_sub_records(&header)?;
             let mut base_form_id = 0u32;
             let mut position = [0.0f32; 3];
@@ -1961,6 +1978,110 @@ mod tests {
 
         assert_eq!(refs.len(), 1);
         assert!(refs[0].enable_parent.is_none());
+    }
+
+    /// Regression: #396 (OBL-D3-H2) — Oblivion ACRE (placed-creature
+    /// reference) was missing from the placement-record matcher.
+    /// FO3+ folded creature placements into ACHR; on Oblivion ACRE
+    /// has the same wire layout as ACHR (NAME + DATA + optional
+    /// XSCL + XESP), and pre-fix every Ayleid ruin / Oblivion gate /
+    /// dungeon creature placement was silently skipped.
+    #[test]
+    fn parse_refr_group_recognises_oblivion_acre_placement() {
+        // ACRE record: NAME (CREA base form) + DATA (pos+rot) + XSCL.
+        let mut sub_data = Vec::new();
+        sub_data.extend_from_slice(b"NAME");
+        sub_data.extend_from_slice(&4u16.to_le_bytes());
+        sub_data.extend_from_slice(&0xCAFEu32.to_le_bytes()); // base CREA form
+        sub_data.extend_from_slice(b"DATA");
+        sub_data.extend_from_slice(&24u16.to_le_bytes());
+        sub_data.extend_from_slice(&50.0f32.to_le_bytes()); // pos x
+        sub_data.extend_from_slice(&75.0f32.to_le_bytes()); // pos y
+        sub_data.extend_from_slice(&100.0f32.to_le_bytes()); // pos z
+        sub_data.extend_from_slice(&[0u8; 12]); // zero rotation
+        sub_data.extend_from_slice(b"XSCL");
+        sub_data.extend_from_slice(&4u16.to_le_bytes());
+        sub_data.extend_from_slice(&1.5f32.to_le_bytes());
+
+        let mut record = Vec::new();
+        record.extend_from_slice(b"ACRE");
+        record.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        record.extend_from_slice(&0u32.to_le_bytes());
+        record.extend_from_slice(&0x1234u32.to_le_bytes());
+        record.extend_from_slice(&[0u8; 8]);
+        record.extend_from_slice(&sub_data);
+
+        let mut reader = EsmReader::new(&record);
+        let end = record.len();
+        let mut refs = Vec::new();
+        let mut land = None;
+        parse_refr_group(&mut reader, end, &mut refs, &mut land).unwrap();
+
+        assert_eq!(refs.len(), 1, "ACRE placement must be recognised");
+        let r = &refs[0];
+        assert_eq!(r.base_form_id, 0xCAFE);
+        assert!((r.position[0] - 50.0).abs() < 1e-6);
+        assert!((r.position[1] - 75.0).abs() < 1e-6);
+        assert!((r.position[2] - 100.0).abs() < 1e-6);
+        assert!((r.scale - 1.5).abs() < 1e-6);
+    }
+
+    /// Regression: #396 — Oblivion CREA (base creature record) must
+    /// reach `parse_modl_group` so its EDID + MODL land in the
+    /// statics map. Pre-fix `parse_esm_cells` didn't include CREA in
+    /// the MODL match arm, so the CREA group was skipped wholesale
+    /// before parse_modl_group ever saw a record. CREA uses the
+    /// standard MODL sub-record (identical layout to STAT), so once
+    /// the dispatcher routes it through, the data path is unchanged.
+    ///
+    /// Mirrors `parse_modl_group_walks_oblivion_20byte_headers` but
+    /// with a single CREA record + Oblivion 20-byte headers (CREA
+    /// only ships on Oblivion / FO3 / FNV — FO3+ folded creatures
+    /// into NPC_).
+    #[test]
+    fn parse_modl_group_indexes_oblivion_crea_records() {
+        use super::super::reader::EsmVariant;
+
+        // CREA record with EDID + MODL (Oblivion 20-byte header).
+        let mut crea_sub = Vec::new();
+        let edid = "Goblin\0";
+        crea_sub.extend_from_slice(b"EDID");
+        crea_sub.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+        crea_sub.extend_from_slice(edid.as_bytes());
+        let model = "creatures\\goblin\\goblin.nif\0";
+        crea_sub.extend_from_slice(b"MODL");
+        crea_sub.extend_from_slice(&(model.len() as u16).to_le_bytes());
+        crea_sub.extend_from_slice(model.as_bytes());
+
+        let mut crea_record = Vec::new();
+        crea_record.extend_from_slice(b"CREA");
+        crea_record.extend_from_slice(&(crea_sub.len() as u32).to_le_bytes());
+        crea_record.extend_from_slice(&0u32.to_le_bytes()); // flags
+        crea_record.extend_from_slice(&0x000A_0001u32.to_le_bytes()); // form_id
+        crea_record.extend_from_slice(&[0u8; 4]); // Oblivion vc_info (4 bytes)
+        crea_record.extend_from_slice(&crea_sub);
+
+        // 20-byte GRUP header wrapping the CREA record.
+        let total_size = 20 + crea_record.len();
+        let mut group = Vec::new();
+        group.extend_from_slice(b"GRUP");
+        group.extend_from_slice(&(total_size as u32).to_le_bytes());
+        group.extend_from_slice(b"CREA");
+        group.extend_from_slice(&0u32.to_le_bytes()); // group_type = 0 (top-level)
+        group.extend_from_slice(&[0u8; 4]); // Oblivion stamp (4 bytes)
+        group.extend_from_slice(&crea_record);
+
+        let mut reader = EsmReader::with_variant(&group, EsmVariant::Oblivion);
+        let gh = reader.read_group_header().unwrap();
+        let end = reader.group_content_end(&gh);
+        let mut statics = HashMap::new();
+        parse_modl_group(&mut reader, end, &mut statics).unwrap();
+
+        let crea = statics
+            .get(&0x000A_0001)
+            .expect("CREA record must be indexed by form_id");
+        assert_eq!(crea.editor_id, "Goblin");
+        assert_eq!(crea.model_path, "creatures\\goblin\\goblin.nif");
     }
 
     /// Edge case: XESP with a zero parent FormID (NULL parent — rare
