@@ -384,13 +384,32 @@ pub fn parse_block(
         // drift in the FO4 corpus). The wrapper preserves the original
         // type name in telemetry while consuming the extra u32.
         "BSEffectShaderPropertyFloatController"
-        | "BSEffectShaderPropertyColorController"
         | "BSLightingShaderPropertyFloatController"
+        | "BSEffectShaderPropertyColorController"
         | "BSLightingShaderPropertyColorController"
         | "BSLightingShaderPropertyUShortController" => {
-            let base = NiSingleInterpController::parse(stream)?;
-            let _controlled_variable = stream.read_u32_le()?;
-            Ok(Box::new(base))
+            let type_name_static: &'static str = match type_name {
+                "BSEffectShaderPropertyFloatController" => {
+                    "BSEffectShaderPropertyFloatController"
+                }
+                "BSLightingShaderPropertyFloatController" => {
+                    "BSLightingShaderPropertyFloatController"
+                }
+                "BSEffectShaderPropertyColorController" => {
+                    "BSEffectShaderPropertyColorController"
+                }
+                "BSLightingShaderPropertyColorController" => {
+                    "BSLightingShaderPropertyColorController"
+                }
+                "BSLightingShaderPropertyUShortController" => {
+                    "BSLightingShaderPropertyUShortController"
+                }
+                _ => unreachable!(),
+            };
+            Ok(Box::new(controller::BsShaderController::parse(
+                stream,
+                type_name_static,
+            )?))
         }
         // Bethesda / Fallout controller types that extend NiTimeController
         // or NiInterpController with additional fields we don't model yet.

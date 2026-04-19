@@ -112,6 +112,104 @@ impl NiSingleInterpController {
     }
 }
 
+// ── BSShaderController family ──────────────────────────────────────────
+//
+// The four (+1) Bethesda shader property controllers each wrap
+// `NiSingleInterpController` with a trailing `uint` enum identifying
+// which shader slot the animation drives. Pre-#407 the trailing u32
+// was unconsumed and block_size recovery seeked past; #407 added the
+// read but dropped the value on the floor. This block preserves the
+// value on a typed `BsShaderController` so the animation importer
+// can route key streams to the correct shader uniform once the
+// animated-shader pipeline lands. See #350 / audit S5-02.
+
+/// Which shader-property controller kind and its enum payload.
+///
+/// The enum value decodes differently per block type (per nif.xml
+/// `EffectShaderControlledVariable` / `EffectShaderControlledColor` /
+/// `LightingShaderControlledFloat` / `LightingShaderControlledColor`),
+/// so keep each variant as its own newtype until the importer grows a
+/// real dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShaderControllerKind {
+    /// `BSEffectShaderPropertyFloatController.Controlled Variable` — drives
+    /// `EmissiveMultiple`, `Falloff Start Angle`, `Alpha`, `U Offset`, etc.
+    EffectFloat(u32),
+    /// `BSEffectShaderPropertyColorController.Controlled Color` — drives
+    /// the base-color tint slot (alpha component ignored).
+    EffectColor(u32),
+    /// `BSLightingShaderPropertyFloatController.Controlled Variable` —
+    /// drives `RefractionStrength`, `GlossinessMultiple`, shader-specific
+    /// slots (skin tint, parallax, multi-layer, etc.).
+    LightingFloat(u32),
+    /// `BSLightingShaderPropertyColorController.Controlled Color` — drives
+    /// emissive / skin tint / hair tint / sparkle colors per shader type.
+    LightingColor(u32),
+    /// `BSLightingShaderPropertyUShortController.Controlled Variable` —
+    /// short-valued slot (wetness index, snow-material index).
+    LightingUShort(u32),
+}
+
+/// Skyrim+ shader-property controller — `NiSingleInterpController` plus
+/// a 4-byte controlled-variable enum.
+#[derive(Debug)]
+pub struct BsShaderController {
+    /// Original block type name (e.g. `"BSEffectShaderPropertyFloatController"`)
+    /// so telemetry and downstream dispatch can match the RTTI. One of 5
+    /// values: `BSEffectShaderPropertyFloatController`,
+    /// `BSEffectShaderPropertyColorController`,
+    /// `BSLightingShaderPropertyFloatController`,
+    /// `BSLightingShaderPropertyColorController`,
+    /// `BSLightingShaderPropertyUShortController`.
+    pub type_name: &'static str,
+    pub base: NiSingleInterpController,
+    pub kind: ShaderControllerKind,
+}
+
+impl NiObject for BsShaderController {
+    fn block_type_name(&self) -> &'static str {
+        self.type_name
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsShaderController {
+    pub fn parse(stream: &mut NifStream, type_name: &'static str) -> io::Result<Self> {
+        let base = NiSingleInterpController::parse(stream)?;
+        let controlled_variable = stream.read_u32_le()?;
+        let kind = match type_name {
+            "BSEffectShaderPropertyFloatController" => {
+                ShaderControllerKind::EffectFloat(controlled_variable)
+            }
+            "BSEffectShaderPropertyColorController" => {
+                ShaderControllerKind::EffectColor(controlled_variable)
+            }
+            "BSLightingShaderPropertyFloatController" => {
+                ShaderControllerKind::LightingFloat(controlled_variable)
+            }
+            "BSLightingShaderPropertyColorController" => {
+                ShaderControllerKind::LightingColor(controlled_variable)
+            }
+            "BSLightingShaderPropertyUShortController" => {
+                ShaderControllerKind::LightingUShort(controlled_variable)
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unknown BsShaderController type name: {other}"),
+                ));
+            }
+        };
+        Ok(Self {
+            type_name,
+            base,
+            kind,
+        })
+    }
+}
+
 // ── NiMaterialColorController ──────────────────────────────────────────
 // Inherits NiSingleInterpController, adds: target_color (MaterialColor enum, u16).
 
@@ -615,6 +713,82 @@ mod tests {
         assert_eq!(ctrl.sequence_refs.len(), 1);
         assert_eq!(ctrl.sequence_refs[0].index(), Some(7));
         assert_eq!(ctrl.object_palette_ref.index(), Some(8));
+    }
+
+    /// Regression: #350 / S5-02. Every BSShaderProperty*Controller
+    /// block carries a trailing u32 enum identifying the driven slot.
+    /// Pre-fix the dispatch discarded the value (`_controlled_variable`)
+    /// and emitted `Box<NiSingleInterpController>`, so the animation
+    /// importer had no way to learn which shader uniform to drive. The
+    /// typed `BsShaderController` now preserves the enum in
+    /// `ShaderControllerKind` and reports its original RTTI name.
+    #[test]
+    fn parse_bs_shader_controller_preserves_controlled_variable() {
+        let header = make_header_fnv();
+        let mut data = Vec::new();
+        write_time_controller_base(&mut data); // 26 bytes
+                                                 // NiSingleInterpController: interpolator_ref (since 10.1.0.104,
+                                                 // FNV v=20.2.0.7 is above that).
+        data.extend_from_slice(&5i32.to_le_bytes()); // interpolator_ref
+                                                      // BSShaderController trailing enum.
+        data.extend_from_slice(&3u32.to_le_bytes()); // controlled_variable = 3
+        assert_eq!(data.len(), 34);
+
+        let mut stream = NifStream::new(&data, &header);
+        let ctrl = BsShaderController::parse(&mut stream, "BSEffectShaderPropertyFloatController")
+            .expect("shader controller with 4-byte enum tail must parse");
+        assert_eq!(stream.position() as usize, data.len());
+        assert_eq!(ctrl.type_name, "BSEffectShaderPropertyFloatController");
+        assert_eq!(ctrl.base.interpolator_ref.index(), Some(5));
+        assert_eq!(ctrl.kind, ShaderControllerKind::EffectFloat(3));
+    }
+
+    /// Each of the five controller type names must map to its own
+    /// `ShaderControllerKind` variant so downstream dispatch can match
+    /// on the kind rather than re-parsing the type string. Verifies the
+    /// u32 payload rides through identically on all five.
+    #[test]
+    fn parse_bs_shader_controller_dispatches_all_five_kinds() {
+        let header = make_header_fnv();
+        for (type_name, expected) in [
+            (
+                "BSEffectShaderPropertyFloatController",
+                ShaderControllerKind::EffectFloat(7),
+            ),
+            (
+                "BSEffectShaderPropertyColorController",
+                ShaderControllerKind::EffectColor(7),
+            ),
+            (
+                "BSLightingShaderPropertyFloatController",
+                ShaderControllerKind::LightingFloat(7),
+            ),
+            (
+                "BSLightingShaderPropertyColorController",
+                ShaderControllerKind::LightingColor(7),
+            ),
+            (
+                "BSLightingShaderPropertyUShortController",
+                ShaderControllerKind::LightingUShort(7),
+            ),
+        ] {
+            let mut data = Vec::new();
+            write_time_controller_base(&mut data);
+            data.extend_from_slice(&0i32.to_le_bytes()); // interpolator_ref
+            data.extend_from_slice(&7u32.to_le_bytes()); // controlled_variable
+
+            let mut stream = NifStream::new(&data, &header);
+            let ctrl = BsShaderController::parse(&mut stream, type_name).unwrap_or_else(|e| {
+                panic!("{type_name} should parse: {e}");
+            });
+            assert_eq!(
+                stream.position() as usize,
+                data.len(),
+                "{type_name} must consume all 34 bytes"
+            );
+            assert_eq!(ctrl.kind, expected, "{type_name} dispatched to wrong kind");
+            assert_eq!(ctrl.type_name, type_name);
+        }
     }
 
     #[test]
