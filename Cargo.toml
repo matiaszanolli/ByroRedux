@@ -43,6 +43,7 @@ byroredux-debug-server = { path = "crates/debug-server" }
 ash = "0.38"
 ash-window = "0.13"
 gpu-allocator = { version = "0.27", features = ["vulkan"] }
+rspirv = "0.12"
 
 # Windowing
 winit = "0.30"

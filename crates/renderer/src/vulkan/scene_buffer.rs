@@ -404,6 +404,28 @@ impl SceneBuffers {
             .collect();
         let mut binding_flags_info =
             vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
+        // Validate against triangle.vert/frag SPIR-V before creating the layout (#427).
+        // When rt_enabled=false the TLAS binding (2) is declared in the shader
+        // but intentionally omitted from the layout — the fragment gates every
+        // rayQuery behind a uniform flag.
+        let optional_bindings: &[u32] = if rt_enabled { &[] } else { &[2] };
+        super::reflect::validate_set_layout(
+            1,
+            &bindings,
+            &[
+                super::reflect::ReflectedShader {
+                    name: "triangle.vert",
+                    spirv: super::pipeline::TRIANGLE_VERT_SPV,
+                },
+                super::reflect::ReflectedShader {
+                    name: "triangle.frag",
+                    spirv: super::pipeline::TRIANGLE_FRAG_SPV,
+                },
+            ],
+            "scene (set=1)",
+            optional_bindings,
+        )
+        .expect("scene descriptor layout drifted against triangle.vert/frag (see #427)");
         let layout_info = vk::DescriptorSetLayoutCreateInfo::default()
             .bindings(&bindings)
             .push_next(&mut binding_flags_info);

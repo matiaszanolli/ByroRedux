@@ -30,10 +30,13 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
+
+const TAA_COMP_SPV: &[u8] = include_bytes!("../../shaders/taa.comp.spv");
 
 /// History format. RGBA16F matches the HDR render target so no precision
 /// is lost on reprojection. Alpha is always 1.0 and is never read.
@@ -238,6 +241,17 @@ impl TaaPipeline {
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
+        validate_set_layout(
+            0,
+            &bindings,
+            &[ReflectedShader {
+                name: "taa.comp",
+                spirv: TAA_COMP_SPV,
+            }],
+            "taa",
+            &[],
+        )
+        .expect("taa descriptor layout drifted against taa.comp (see #427)");
         partial.descriptor_set_layout = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_set_layout(
@@ -257,8 +271,10 @@ impl TaaPipeline {
                 .context("TAA pipeline layout")
         });
 
-        let spv = include_bytes!("../../shaders/taa.comp.spv");
-        partial.shader_module = try_or_cleanup!(super::pipeline::load_shader_module(device, spv));
+        partial.shader_module = try_or_cleanup!(super::pipeline::load_shader_module(
+            device,
+            TAA_COMP_SPV
+        ));
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(partial.shader_module)

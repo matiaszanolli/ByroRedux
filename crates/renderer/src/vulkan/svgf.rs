@@ -42,10 +42,13 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
+
+const SVGF_TEMPORAL_COMP_SPV: &[u8] = include_bytes!("../../shaders/svgf_temporal.comp.spv");
 
 /// Accumulated indirect light format. R11G11B10F saves 50% vs RGBA16F
 /// (4B vs 8B/pixel). Alpha is always 1.0 and never read. Storage image
@@ -273,6 +276,17 @@ impl SvgfPipeline {
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
+        validate_set_layout(
+            0,
+            &bindings,
+            &[ReflectedShader {
+                name: "svgf_temporal.comp",
+                spirv: SVGF_TEMPORAL_COMP_SPV,
+            }],
+            "svgf",
+            &[],
+        )
+        .expect("svgf descriptor layout drifted against svgf_temporal.comp (see #427)");
         partial.descriptor_set_layout = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_set_layout(
@@ -293,8 +307,10 @@ impl SvgfPipeline {
         });
 
         // ── 5. Compute pipeline ───────────────────────────────────────
-        let spv = include_bytes!("../../shaders/svgf_temporal.comp.spv");
-        partial.shader_module = try_or_cleanup!(super::pipeline::load_shader_module(device, spv));
+        partial.shader_module = try_or_cleanup!(super::pipeline::load_shader_module(
+            device,
+            SVGF_TEMPORAL_COMP_SPV
+        ));
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(partial.shader_module)

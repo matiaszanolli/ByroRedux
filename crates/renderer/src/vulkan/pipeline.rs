@@ -4,6 +4,13 @@ use crate::vertex::{UiVertex, Vertex};
 use anyhow::{Context, Result};
 use ash::vk;
 
+/// Main graphics pipeline SPIR-V bytes — exposed so other modules (scene_buffer,
+/// texture_registry) can reflect them during descriptor layout validation (#427).
+pub const TRIANGLE_VERT_SPV: &[u8] = include_bytes!("../../shaders/triangle.vert.spv");
+pub const TRIANGLE_FRAG_SPV: &[u8] = include_bytes!("../../shaders/triangle.frag.spv");
+pub const UI_VERT_SPV: &[u8] = include_bytes!("../../shaders/ui.vert.spv");
+pub const UI_FRAG_SPV: &[u8] = include_bytes!("../../shaders/ui.frag.spv");
+
 /// Load a SPIR-V shader module from raw bytes.
 pub fn load_shader_module(device: &ash::Device, spv: &[u8]) -> Result<vk::ShaderModule> {
     // ash requires the data as &[u32]. SPIR-V is always 4-byte aligned.
@@ -139,11 +146,8 @@ fn create_triangle_pipeline_with_layout(
     descriptor_set_layout: vk::DescriptorSetLayout,
     scene_set_layout: vk::DescriptorSetLayout,
 ) -> Result<PipelineSet> {
-    let vert_spv = include_bytes!("../../shaders/triangle.vert.spv");
-    let frag_spv = include_bytes!("../../shaders/triangle.frag.spv");
-
-    let vert_module = load_shader_module(device, vert_spv)?;
-    let frag_module = load_shader_module(device, frag_spv)?;
+    let vert_module = load_shader_module(device, TRIANGLE_VERT_SPV)?;
+    let frag_module = load_shader_module(device, TRIANGLE_FRAG_SPV)?;
 
     let entry_point = c"main";
 
@@ -343,11 +347,8 @@ pub fn create_blend_pipeline(
     dst: u8,
     two_sided: bool,
 ) -> Result<vk::Pipeline> {
-    let vert_spv = include_bytes!("../../shaders/triangle.vert.spv");
-    let frag_spv = include_bytes!("../../shaders/triangle.frag.spv");
-
-    let vert_module = load_shader_module(device, vert_spv)?;
-    let frag_module = load_shader_module(device, frag_spv)?;
+    let vert_module = load_shader_module(device, TRIANGLE_VERT_SPV)?;
+    let frag_module = load_shader_module(device, TRIANGLE_FRAG_SPV)?;
 
     let entry_point = c"main";
     let shader_stages = [
@@ -492,11 +493,8 @@ pub fn create_ui_pipeline(
     pipeline_layout: vk::PipelineLayout,
     pipeline_cache: vk::PipelineCache,
 ) -> Result<vk::Pipeline> {
-    let vert_spv = include_bytes!("../../shaders/ui.vert.spv");
-    let frag_spv = include_bytes!("../../shaders/ui.frag.spv");
-
-    let vert_module = load_shader_module(device, vert_spv)?;
-    let frag_module = load_shader_module(device, frag_spv)?;
+    let vert_module = load_shader_module(device, UI_VERT_SPV)?;
+    let frag_module = load_shader_module(device, UI_FRAG_SPV)?;
 
     let entry_point = c"main";
 

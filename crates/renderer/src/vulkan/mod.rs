@@ -12,6 +12,7 @@ pub mod device;
 pub mod gbuffer;
 pub mod instance;
 pub mod pipeline;
+pub mod reflect;
 pub mod scene_buffer;
 pub mod ssao;
 pub mod surface;

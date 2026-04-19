@@ -6,8 +6,11 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::reflect::{validate_set_layout, ReflectedShader};
 use anyhow::{Context, Result};
 use ash::vk;
+
+const SSAO_COMP_SPV: &[u8] = include_bytes!("../../shaders/ssao.comp.spv");
 
 /// SSAO parameters uploaded as a UBO.
 #[repr(C)]
@@ -258,6 +261,17 @@ impl SsaoPipeline {
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
+        validate_set_layout(
+            0,
+            &bindings,
+            &[ReflectedShader {
+                name: "ssao.comp",
+                spirv: SSAO_COMP_SPV,
+            }],
+            "ssao",
+            &[],
+        )
+        .expect("ssao descriptor layout drifted against ssao.comp (see #427)");
         partial.descriptor_set_layout = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_set_layout(
@@ -278,8 +292,8 @@ impl SsaoPipeline {
         });
 
         // Compute pipeline.
-        let comp_spv = include_bytes!("../../shaders/ssao.comp.spv");
-        let shader_module = try_or_cleanup!(super::pipeline::load_shader_module(device, comp_spv));
+        let shader_module =
+            try_or_cleanup!(super::pipeline::load_shader_module(device, SSAO_COMP_SPV));
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(shader_module)

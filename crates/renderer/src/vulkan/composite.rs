@@ -28,10 +28,14 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
+
+const COMPOSITE_VERT_SPV: &[u8] = include_bytes!("../../shaders/composite.vert.spv");
+const COMPOSITE_FRAG_SPV: &[u8] = include_bytes!("../../shaders/composite.frag.spv");
 
 /// Composite parameter UBO — fog state + sky rendering parameters.
 ///
@@ -404,6 +408,23 @@ impl CompositePipeline {
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
+        validate_set_layout(
+            0,
+            &ds_bindings,
+            &[
+                ReflectedShader {
+                    name: "composite.vert",
+                    spirv: COMPOSITE_VERT_SPV,
+                },
+                ReflectedShader {
+                    name: "composite.frag",
+                    spirv: COMPOSITE_FRAG_SPV,
+                },
+            ],
+            "composite",
+            &[],
+        )
+        .expect("composite descriptor layout drifted against composite.vert/frag (see #427)");
         partial.descriptor_set_layout = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_set_layout(
@@ -532,12 +553,14 @@ impl CompositePipeline {
         }
 
         // ── 8. Shader modules ────────────────────────────────────────
-        let vert_spv = include_bytes!("../../shaders/composite.vert.spv");
-        let frag_spv = include_bytes!("../../shaders/composite.frag.spv");
-        partial.vert_module =
-            try_or_cleanup!(super::pipeline::load_shader_module(device, vert_spv));
-        partial.frag_module =
-            try_or_cleanup!(super::pipeline::load_shader_module(device, frag_spv));
+        partial.vert_module = try_or_cleanup!(super::pipeline::load_shader_module(
+            device,
+            COMPOSITE_VERT_SPV
+        ));
+        partial.frag_module = try_or_cleanup!(super::pipeline::load_shader_module(
+            device,
+            COMPOSITE_FRAG_SPV
+        ));
 
         // ── 9. Graphics pipeline ─────────────────────────────────────
         let entry_point = c"main";

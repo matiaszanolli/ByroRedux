@@ -41,10 +41,13 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
+
+const CAUSTIC_SPLAT_COMP_SPV: &[u8] = include_bytes!("../../shaders/caustic_splat.comp.spv");
 
 /// Scalar caustic accumulator — luminance packed as 16.16 fixed-point per
 /// `imageAtomicAdd`. Composite divides by `CAUSTIC_FIXED_SCALE` on read to
@@ -292,6 +295,17 @@ impl CausticPipeline {
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
+        validate_set_layout(
+            0,
+            &bindings,
+            &[ReflectedShader {
+                name: "caustic_splat.comp",
+                spirv: CAUSTIC_SPLAT_COMP_SPV,
+            }],
+            "caustic",
+            &[],
+        )
+        .expect("caustic descriptor layout drifted against caustic_splat.comp (see #427)");
         partial.descriptor_set_layout = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_set_layout(
@@ -312,8 +326,10 @@ impl CausticPipeline {
         });
 
         // ── 5. Compute pipeline ───────────────────────────────────────
-        let spv = include_bytes!("../../shaders/caustic_splat.comp.spv");
-        partial.shader_module = try_or_cleanup!(super::pipeline::load_shader_module(device, spv));
+        partial.shader_module = try_or_cleanup!(super::pipeline::load_shader_module(
+            device,
+            CAUSTIC_SPLAT_COMP_SPV
+        ));
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(partial.shader_module)

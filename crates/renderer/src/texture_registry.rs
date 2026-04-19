@@ -81,6 +81,28 @@ impl TextureRegistry {
             .descriptor_count(max_textures)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
+        // Validate against every shader that consumes the bindless texture
+        // array — triangle.frag, ui.frag, composite.vert/frag (#427).
+        // Composite references the bindless array via set=1 in the pipeline
+        // layout, but validation here asserts set=0 agreement with triangle/ui.
+        crate::vulkan::reflect::validate_set_layout(
+            0,
+            std::slice::from_ref(&binding),
+            &[
+                crate::vulkan::reflect::ReflectedShader {
+                    name: "triangle.frag",
+                    spirv: crate::vulkan::pipeline::TRIANGLE_FRAG_SPV,
+                },
+                crate::vulkan::reflect::ReflectedShader {
+                    name: "ui.frag",
+                    spirv: crate::vulkan::pipeline::UI_FRAG_SPV,
+                },
+            ],
+            "bindless textures (set=0)",
+            &[],
+        )
+        .expect("bindless texture layout drifted against triangle/ui frag shaders (see #427)");
+
         let layout_info = vk::DescriptorSetLayoutCreateInfo::default()
             .flags(vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL)
             .bindings(std::slice::from_ref(&binding))
