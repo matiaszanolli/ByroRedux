@@ -102,6 +102,14 @@ pub struct CompositePipeline {
     frag_module: vk::ShaderModule,
     /// Sampler for reading all the input textures (HDR, indirect, albedo).
     hdr_sampler: vk::Sampler,
+    /// Separate NEAREST sampler for integer-format attachments (R32_UINT
+    /// caustic accumulator). `hdr_sampler` uses `VK_FILTER_LINEAR` which
+    /// is illegal on UINT formats under VUID-vkCmdDraw-magFilter-04553
+    /// (integer formats don't expose `SAMPLED_IMAGE_FILTER_LINEAR_BIT`).
+    /// The fragment shader texelFetches this texture — filter mode is
+    /// cosmetically irrelevant, but the validation layer checks it
+    /// regardless.
+    caustic_sampler: vk::Sampler,
     /// Per-frame parameter UBOs.
     param_buffers: Vec<GpuBuffer>,
 
@@ -192,6 +200,7 @@ impl CompositePipeline {
             vert_module: vk::ShaderModule::null(),
             frag_module: vk::ShaderModule::null(),
             hdr_sampler: vk::Sampler::null(),
+            caustic_sampler: vk::Sampler::null(),
             param_buffers: Vec::new(),
             width,
             height,
@@ -287,6 +296,26 @@ impl CompositePipeline {
                     None,
                 )
                 .context("HDR sampler")
+        });
+
+        // Separate NEAREST sampler for the R32_UINT caustic accumulator.
+        // Integer-format views don't expose FILTER_LINEAR, and binding an
+        // LINEAR sampler to a `usampler2D` trips
+        // VUID-vkCmdDraw-magFilter-04553 even though the fragment shader
+        // only ever uses `texelFetch` against this view.
+        partial.caustic_sampler = try_or_cleanup!(unsafe {
+            device
+                .create_sampler(
+                    &vk::SamplerCreateInfo::default()
+                        .mag_filter(vk::Filter::NEAREST)
+                        .min_filter(vk::Filter::NEAREST)
+                        .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
+                    None,
+                )
+                .context("Caustic (R32_UINT) sampler")
         });
 
         // ── 3. Composite render pass ─────────────────────────────────
@@ -514,7 +543,7 @@ impl CompositePipeline {
                 .image_view(depth_view)
                 .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
             let caustic_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.hdr_sampler)
+                .sampler(partial.caustic_sampler)
                 .image_view(caustic_views[i])
                 .image_layout(vk::ImageLayout::GENERAL)];
             let writes = [
@@ -850,7 +879,7 @@ impl CompositePipeline {
                     .image_view(depth_view)
                     .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
                 let caustic_info = [vk::DescriptorImageInfo::default()
-                    .sampler(self.hdr_sampler)
+                    .sampler(self.caustic_sampler)
                     .image_view(caustic_views[i])
                     .image_layout(vk::ImageLayout::GENERAL)];
                 let writes = [
@@ -1001,6 +1030,9 @@ impl CompositePipeline {
         }
         if self.hdr_sampler != vk::Sampler::null() {
             unsafe { device.destroy_sampler(self.hdr_sampler, None) };
+        }
+        if self.caustic_sampler != vk::Sampler::null() {
+            unsafe { device.destroy_sampler(self.caustic_sampler, None) };
         }
         for &view in &self.hdr_image_views {
             unsafe { device.destroy_image_view(view, None) };
