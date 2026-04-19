@@ -203,12 +203,38 @@ impl VulkanContext {
             })
             .clear_values(&clear_values);
 
+        // Pre-compute the shared `draw_idx → ssbo_idx` map once so the
+        // TLAS `instance_custom_index` values stay in lockstep with the
+        // compacted SSBO positions regardless of which filter rejects a
+        // draw_cmd. Before #419 the TLAS path used the raw enumerate
+        // index while the SSBO builder used `gpu_instances.len()` —
+        // identical only while `mesh_registry.get()` never returned None
+        // for a submitted command. A single evicted mesh would shift
+        // every subsequent SSBO entry by one while TLAS custom indices
+        // stayed put, producing silently-wrong material/transform reads
+        // on every RT hit downstream (shadows / reflections / GI /
+        // caustics / primary-hit fallback in `triangle.frag`). See
+        // `crates/renderer/src/vulkan/acceleration.rs::build_tlas` and
+        // the SSBO builder below — both must honour this map.
+        let instance_map: Vec<Option<u32>> =
+            super::super::acceleration::build_instance_map(draw_commands.len(), |i| {
+                self.mesh_registry
+                    .get(draw_commands[i].mesh_handle)
+                    .is_some()
+            });
+
         // Build TLAS if RT is available (before render pass).
         unsafe {
             if let Some(ref mut accel) = self.accel_manager {
                 if let Some(alloc) = self.allocator.as_ref() {
-                    if let Err(e) = accel.build_tlas(&self.device, alloc, cmd, draw_commands, frame)
-                    {
+                    if let Err(e) = accel.build_tlas(
+                        &self.device,
+                        alloc,
+                        cmd,
+                        draw_commands,
+                        &instance_map,
+                        frame,
+                    ) {
                         log::warn!("TLAS build failed: {e}");
                     } else {
                         // Memory barrier: TLAS build → ray-query consumers.

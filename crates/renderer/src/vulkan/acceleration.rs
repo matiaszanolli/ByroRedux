@@ -172,6 +172,30 @@ fn decide_use_update(
 /// hitting an out-of-memory condition, while leaving the bulk of the
 /// device-local heap available for textures, vertex/index buffers, and
 /// the framebuffer. See #387.
+/// Build the shared `draw_idx → ssbo_idx` mapping that
+/// [`AccelerationManager::build_tlas`] and the SSBO builder in
+/// `draw_frame` both honour. `keep(draw_idx)` returns true when the
+/// corresponding draw command survives the SSBO filter (typically
+/// `mesh_registry.get(handle).is_some()` in the caller). The returned
+/// map is `Some(compacted_idx)` for every kept command in enumeration
+/// order and `None` for every dropped one. See #419 — this is the
+/// single source of truth the TLAS `instance_custom_index` and the
+/// SSBO position must agree on; before it landed the two filter
+/// predicates were independent and could silently diverge.
+pub fn build_instance_map(len: usize, mut keep: impl FnMut(usize) -> bool) -> Vec<Option<u32>> {
+    let mut out = Vec::with_capacity(len);
+    let mut next: u32 = 0;
+    for i in 0..len {
+        if keep(i) {
+            out.push(Some(next));
+            next += 1;
+        } else {
+            out.push(None);
+        }
+    }
+    out
+}
+
 /// Grow-only policy for BLAS / TLAS scratch buffers. Returns `true`
 /// when the current buffer is absent or its capacity is strictly less
 /// than the required size — so a cell whose scratch footprint is
@@ -956,6 +980,16 @@ impl AccelerationManager {
     /// scratch buffer), so overlapping frames cannot interfere. The caller's fence
     /// wait guarantees the previous use of this slot is complete.
     ///
+    /// `instance_map[i]` is `Some(ssbo_idx)` when `draw_commands[i]` is present
+    /// in the compacted SSBO produced by the draw-frame builder, or `None`
+    /// when the draw command was filtered out (e.g. the mesh handle no longer
+    /// resolves). `instance_custom_index` is set from this map so the shader
+    /// always indexes a valid SSBO entry regardless of which filter rejected
+    /// a draw command. Before #419 the TLAS encoded the raw enumerate index
+    /// here, which diverged from the SSBO's compacted index the moment any
+    /// filter rejected anything — silent material/transform corruption on
+    /// every RT hit downstream.
+    ///
     /// Records commands into `cmd` — caller must ensure a memory barrier after.
     pub unsafe fn build_tlas(
         &mut self,
@@ -963,29 +997,40 @@ impl AccelerationManager {
         allocator: &SharedAllocator,
         cmd: vk::CommandBuffer,
         draw_commands: &[DrawCommand],
+        instance_map: &[Option<u32>],
         frame_index: usize,
     ) -> Result<()> {
         // Advance the frame counter for LRU tracking.
         self.frame_counter += 1;
 
-        // Build instance array. The enumeration index `i` matches the SSBO
-        // instance index in draw_frame (both iterate draw_commands in order and
-        // the mesh_registry.get() guard in draw.rs always succeeds for submitted
-        // draw commands). We encode `i` as instance_custom_index so the shader
-        // can map a TLAS hit back to the correct SSBO entry — the TLAS may be
-        // sparse (some draw commands lack a BLAS), so InstanceId != SSBO index.
+        debug_assert_eq!(
+            instance_map.len(),
+            draw_commands.len(),
+            "instance_map must be 1:1 with draw_commands (see #419)"
+        );
+
+        // Build instance array. `instance_custom_index` comes from the shared
+        // `instance_map` so it matches the SSBO position exactly — the TLAS
+        // is always sparse (frustum culling + missing BLAS drop instances),
+        // but the shader's `rayQueryGetIntersectionInstanceCustomIndexEXT`
+        // is guaranteed to land on the right SSBO entry. See #419.
         let mut instances = std::mem::take(&mut self.tlas_instances_scratch);
         instances.clear();
         instances.reserve(draw_commands.len());
         for (i, draw_cmd) in draw_commands.iter().enumerate() {
             // Skip instances not flagged for TLAS inclusion (frustum-culled).
-            // The enumeration index `i` is preserved as instance_custom_index
-            // so it always matches the SSBO layout regardless of filtering.
             if !draw_cmd.in_tlas {
                 continue;
             }
             let mesh_handle = draw_cmd.mesh_handle as usize;
             let Some(Some(blas)) = self.blas_entries.get(mesh_handle) else {
+                continue;
+            };
+            // Skip commands that the SSBO builder also skipped. This
+            // keeps the two filters in lockstep even when `blas_entries`
+            // and `mesh_registry` diverge (e.g. a BLAS briefly survives
+            // its source mesh during eviction).
+            let Some(ssbo_idx) = instance_map.get(i).copied().flatten() else {
                 continue;
             };
 
@@ -1017,7 +1062,11 @@ impl AccelerationManager {
             };
             instances.push(vk::AccelerationStructureInstanceKHR {
                 transform,
-                instance_custom_index_and_mask: vk::Packed24_8::new(i as u32, 0xFF),
+                // #419 — SSBO-compacted index from the shared map, NOT
+                // the raw enumerate index. The 24-bit field holds the
+                // `instances[ssbo_idx]` position the shader reads via
+                // `rayQueryGetIntersectionInstanceCustomIndexEXT`.
+                instance_custom_index_and_mask: vk::Packed24_8::new(ssbo_idx, 0xFF),
                 instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
                     0,
                     instance_flags as u8,
@@ -1591,6 +1640,70 @@ mod tests {
         let (use_update, did_zip) = decide_use_update(true, u64::MAX, 0, &cached, &current);
         assert!(!use_update);
         assert!(!did_zip);
+    }
+
+    // ── build_instance_map (#419) ──────────────────────────────────
+    //
+    // The shared `draw_idx → ssbo_idx` mapping is the single source of
+    // truth the TLAS `instance_custom_index` and SSBO position must
+    // agree on. Before #419 the TLAS used the raw enumerate index and
+    // the SSBO used `gpu_instances.len()` (compacted) — identical only
+    // when the filter in `draw.rs` never rejected a draw_cmd. A single
+    // mesh eviction shifted every subsequent SSBO entry by one while
+    // TLAS custom indices stayed put, silently corrupting material /
+    // transform reads on every RT hit downstream.
+
+    #[test]
+    fn instance_map_empty_list_produces_empty_map() {
+        let map = build_instance_map(0, |_| true);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn instance_map_all_kept_matches_iota() {
+        // Happy path: every draw_cmd survives the filter. compacted
+        // index equals the enumerate index, which is exactly the pre-fix
+        // behaviour — so the mapping must be a no-op in this case.
+        let map = build_instance_map(4, |_| true);
+        assert_eq!(map, vec![Some(0), Some(1), Some(2), Some(3)]);
+    }
+
+    #[test]
+    fn instance_map_all_dropped_produces_all_none() {
+        let map = build_instance_map(3, |_| false);
+        assert_eq!(map, vec![None, None, None]);
+    }
+
+    #[test]
+    fn instance_map_skips_compact_subsequent_indices() {
+        // The failure mode from the audit: draw_cmds = [A, B, C, D, E]
+        // where B and D are filtered out. Before #419 the TLAS would
+        // encode custom_index = 2 for C but the SSBO compacted to
+        // [A, C, E] at positions 0, 1, 2 — so the shader's ray hit on
+        // C would read gpu_instances[2] = E. After #419 C's
+        // custom_index is the compacted 1, which matches gpu_instances[1].
+        let map = build_instance_map(5, |i| i != 1 && i != 3);
+        assert_eq!(map, vec![Some(0), None, Some(1), None, Some(2)]);
+    }
+
+    #[test]
+    fn instance_map_only_first_kept() {
+        let map = build_instance_map(4, |i| i == 0);
+        assert_eq!(map, vec![Some(0), None, None, None]);
+    }
+
+    #[test]
+    fn instance_map_next_idx_never_overlaps_a_dropped_slot() {
+        // Every `Some(x)` value must be unique and strictly increasing.
+        // A regression that decremented or double-assigned `next` would
+        // pass the "count matches" check but break SSBO indexing.
+        let map = build_instance_map(10, |i| i % 2 == 0);
+        let kept: Vec<u32> = map.iter().filter_map(|x| *x).collect();
+        assert_eq!(kept, vec![0, 1, 2, 3, 4]);
+        assert!(
+            kept.windows(2).all(|w| w[0] < w[1]),
+            "compacted indices must be strictly increasing"
+        );
     }
 
     /// Regression: #60 + #424 SIBLING. Scratch pool growth policy is a

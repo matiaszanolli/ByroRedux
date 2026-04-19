@@ -439,6 +439,7 @@ impl VulkanContext {
             // from frame 0. Each build blocks until complete (fence wait inside
             // with_one_time_commands), so no overlap between builds.
             let empty_draws: Vec<DrawCommand> = Vec::new();
+            let empty_map: Vec<Option<u32>> = Vec::new();
             for f in 0..MAX_FRAMES_IN_FLIGHT {
                 super::texture::with_one_time_commands_reuse_fence(
                     &device,
@@ -447,7 +448,7 @@ impl VulkanContext {
                     &transfer_fence,
                     |cmd| unsafe {
                         accel
-                            .build_tlas(&device, &gpu_allocator, cmd, &empty_draws, f)
+                            .build_tlas(&device, &gpu_allocator, cmd, &empty_draws, &empty_map, f)
                             .context("initial empty TLAS build")
                     },
                 )?;
