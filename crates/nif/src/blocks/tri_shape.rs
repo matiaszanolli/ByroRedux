@@ -751,8 +751,18 @@ fn parse_geometry_data_base_inner(
         Vec::new()
     };
 
-    // Tangents + bitangents (Gamebryo+: has_normals and dataFlags bit 12 set = NBT method)
-    if has_normals && data_flags & 0xF000 != 0 {
+    // Tangents + bitangents. Per nif.xml `NiGeometryData.Tangents`,
+    // the NBT vectors are present only when bit 12 (`NBT_METHOD = 0x1000`)
+    // is set. Bits 13–15 carry unrelated payload pointers (FO3 FaceGen
+    // heads set bit 13/14 for VAS_MATERIAL_DATA / VAS_MORPH_DATA) and
+    // must NOT trigger the 24-bytes-per-vertex skip.
+    //
+    // Pre-fix the mask was `0xF000`, which mis-triggered on every FO3
+    // FaceGen head — the resulting 24 * num_vertices over-read ran the
+    // parser past the end of the block and `block_sizes` recovery
+    // demoted the NiTriShapeData to `NiUnknown`, leaving the NPC face
+    // with no geometry. See #440 / audit FO3-5-01.
+    if has_normals && data_flags & 0x1000 != 0 {
         // Skip tangents (array_count * 3 floats)
         stream.skip(array_count as u64 * 12)?;
         // Skip bitangents (array_count * 3 floats)
@@ -771,10 +781,31 @@ fn parse_geometry_data_base_inner(
         Vec::new()
     };
 
-    // UV sets: Gamebryo+ packs count in dataFlags bits [0..5].
-    // Pre-Gamebryo (v < 10.0.1.0) has a separate num_uv_sets u16 field.
+    // UV sets. Two disjoint encodings share these bits depending on the
+    // stream:
+    //   - `NiGeometryDataFlags` (non-Bethesda Gamebryo v3.x+): bits 0..5
+    //     encode `Num UV Sets` as a 6-bit count (0..63).
+    //   - `BSGeometryDataFlags` (Bethesda #BS202# — NIF 20.2.0.7 with
+    //     `bsver > 0`): bit 0 is `Has UV` (bool — 0 or 1 UV sets), bits
+    //     1..5 are unused, bits 6..11 are Havok Material index.
+    // nif.xml (line 3914) reconciles them with `UV_count =
+    // (DataFlags & 63) | (BSDataFlags & 1)` — exactly one side is zero
+    // per the vercond gating.
+    //
+    // Pre-fix every Bethesda stream used the NiGeometry decode, so a
+    // FO3 FaceGen head with `data_flags = 0x1003` asked for 3 UV sets
+    // when only 1 was serialized; the resulting 20,912-byte over-read
+    // chained into a garbage `num_match_groups` u16 whose skip blew
+    // past EOF and demoted the NiTriShapeData to NiUnknown → every
+    // FO3 NPC face rendered as empty geometry. See #440 / audit
+    // FO3-5-01.
+    //
+    // Pre-Gamebryo (v < 10.0.1.0) has a separate `num_uv_sets` u16 field.
     let num_uv_sets = if stream.version() < NifVersion(0x0A000100) {
         stream.read_u16_le()? as usize
+    } else if stream.bsver() > 0 && stream.version() == NifVersion(0x14020007) {
+        // BSGeometryDataFlags path.
+        (data_flags & 0x0001) as usize
     } else {
         (data_flags & 0x003F) as usize
     };
@@ -1644,6 +1675,129 @@ mod nigeometry_data_version_tests {
             bytes.len(),
             "at 10.1.0.113 NiGeometryData must NOT consume group_id"
         );
+    }
+
+    /// Regression: #440 / FO3-5-01. Bethesda streams (BSVER > 0,
+    /// version 20.2.0.7) interpret `dataFlags` as `BSGeometryDataFlags`,
+    /// where bit 0 is a `Has UV` bool — exactly 0 or 1 UV sets. The
+    /// non-Bethesda `NiGeometryDataFlags` decode (bits 0..5 = count)
+    /// would read bits 1..5 as additional UV slots, over-reading N ×
+    /// `num_vertices × 8` bytes. On a real FO3 FaceGen head
+    /// (`headfemalefacegen.nif`, 1307 vertices, `data_flags = 0x1003`)
+    /// the pre-fix decode asked for 3 UV sets and over-read enough to
+    /// demote every FO3 NPC face to `NiUnknown`.
+    #[test]
+    fn bs_geometry_data_flags_decodes_has_uv_bit0_only() {
+        // FO3/FNV header: NIF 20.2.0.7, user_version=11, bsver=34.
+        let header = NifHeader {
+            version: NifVersion(0x14020007),
+            little_endian: true,
+            user_version: 11,
+            user_version_2: 34,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        // Build a minimal NiGeometryData body for 2 vertices, no normals,
+        // no vcolor, 1 UV set, data_flags = 0x1003 (bits 0, 1, 12 set).
+        let mut data = Vec::new();
+        data.extend_from_slice(&0i32.to_le_bytes()); // group_id
+        data.extend_from_slice(&2u16.to_le_bytes()); // num_vertices
+        data.push(0u8); // keep_flags
+        data.push(0u8); // compress_flags
+        data.push(1u8); // has_vertices
+                         // Two vertices, 12 bytes each.
+        for _ in 0..2 {
+            for _ in 0..3 {
+                data.extend_from_slice(&0.0f32.to_le_bytes());
+            }
+        }
+        // data_flags: bit 0 = HasUV, bit 1 = unused noise, bit 12 = tangents
+        data.extend_from_slice(&0x1003u16.to_le_bytes());
+        data.push(0u8); // has_normals = false (no NBT payload to read)
+                         // bounding sphere
+        for _ in 0..3 {
+            data.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        data.push(0u8); // has_vertex_colors = false
+                         // Exactly 1 UV set (per BS decode) × 2 vertices × 8 bytes = 16 bytes
+        for _ in 0..2 {
+            data.extend_from_slice(&0.0f32.to_le_bytes());
+            data.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        data.extend_from_slice(&0u16.to_le_bytes()); // consistency
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // additional_data_ref
+        let expected_len = data.len();
+
+        let mut stream = crate::stream::NifStream::new(&data, &header);
+        let (verts, flags, _norms, _c, _r, _vc, uvs) =
+            parse_geometry_data_base(&mut stream)
+                .expect("FO3 NiGeometryData should parse with BS data flag decode");
+        assert_eq!(
+            stream.position() as usize,
+            expected_len,
+            "BS decode must consume exactly 1 UV set; got position {} expected {}",
+            stream.position(),
+            expected_len
+        );
+        assert_eq!(flags, 0x1003);
+        assert_eq!(verts.len(), 2);
+        assert_eq!(uvs.len(), 1, "BS decode: bit 0 = 1 UV set, bit 1 is noise");
+    }
+
+    /// Non-Bethesda Gamebryo streams (bsver = 0) keep the
+    /// `NiGeometryDataFlags` decode where bits 0..5 encode a 6-bit
+    /// count. `data_flags = 0x0003` must still mean 3 UV sets on that
+    /// path — the BS fix must not break vanilla Gamebryo content.
+    #[test]
+    fn ni_geometry_data_flags_decodes_count_on_non_bethesda() {
+        let header = NifHeader {
+            version: NifVersion(0x14020007),
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0, // bsver=0 → NiGeometryDataFlags path
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        let mut data = Vec::new();
+        data.extend_from_slice(&0i32.to_le_bytes()); // group_id
+        data.extend_from_slice(&1u16.to_le_bytes()); // num_vertices = 1
+        data.push(0u8); // keep
+        data.push(0u8); // compress
+        data.push(1u8); // has_vertices
+        for _ in 0..3 {
+            data.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        // data_flags = 3 → NiGeometryDataFlags count = 3 UV sets
+        data.extend_from_slice(&0x0003u16.to_le_bytes());
+        data.push(0u8); // has_normals
+        for _ in 0..3 {
+            data.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        data.push(0u8); // has_vertex_colors
+                         // 3 UV sets × 1 vertex × 8 bytes = 24
+        for _ in 0..3 {
+            data.extend_from_slice(&0.0f32.to_le_bytes());
+            data.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        data.extend_from_slice(&0u16.to_le_bytes()); // consistency
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // additional_data
+
+        let mut stream = crate::stream::NifStream::new(&data, &header);
+        let (_v, _f, _n, _c, _r, _vc, uvs) = parse_geometry_data_base(&mut stream)
+            .expect("non-Bethesda NiGeometryData should parse with count decode");
+        assert_eq!(uvs.len(), 3, "non-Bethesda: bits 0..5 encode UV count");
     }
 
     /// Dual-side for #326: at 10.1.0.114 the `group_id` i32 IS consumed.
