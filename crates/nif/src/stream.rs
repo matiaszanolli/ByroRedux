@@ -348,6 +348,24 @@ impl<'a> NifStream<'a> {
     /// NOTE: the threshold `0x14010001` must match the one in
     /// `header.rs` that decides whether to populate `header.strings`.
     /// A mismatch would corrupt reads on 20.1.0.1/20.1.0.2 files.
+    /// Read an `NiExtraData.Name` field respecting the nif.xml version
+    /// gate. The name was added in v10.0.1.0 (`since="10.0.1.0"`); on
+    /// earlier streams the field does not exist on disk and consuming a
+    /// phantom string length would misalign every extra-data block.
+    ///
+    /// All subclass parsers (`BSBound`, `BSFurnitureMarker`,
+    /// `BSBehaviorGraphExtraData`, `BSInvMarker`, `BSDecalPlacementVectorExtraData`,
+    /// `BSPackedCombinedGeomDataExtra`, `BSConnectPointParents`,
+    /// `BSConnectPointChildren`, `BSPackedAdditionalGeometryData`, etc.)
+    /// must read the name through this helper so the gate is in one
+    /// place. See #329.
+    pub fn read_extra_data_name(&mut self) -> io::Result<Option<Arc<str>>> {
+        if self.header.version < NifVersion(0x0A000100) {
+            return Ok(None);
+        }
+        self.read_string()
+    }
+
     pub fn read_string(&mut self) -> io::Result<Option<Arc<str>>> {
         if self.header.version >= NifVersion(0x14010001) {
             // String table index — Arc::clone is just a refcount bump.

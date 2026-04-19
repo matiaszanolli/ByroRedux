@@ -38,12 +38,22 @@ impl NiObject for NiExtraData {
 
 impl NiExtraData {
     pub fn parse(stream: &mut NifStream, type_name: &str) -> io::Result<Self> {
-        // Pre-Gamebryo (v < 5.0.0.1): NiExtraData does NOT inherit NiObjectNET.
-        // Format is: next_extra_data_ref (Ref) + bytes_remaining (u32) + subclass data.
-        // Gamebryo+ (v >= 10.0.1.0): inherits NiObjectNET (name + extra_data_refs + controller).
-        // We only need the name; the rest comes from the subclass match below.
-        if stream.version() < NifVersion(0x0A000100) {
+        // Three branches per nif.xml:
+        //  - v <= 4.2.2.0: linked-list format with `Next Extra Data`
+        //    (until=4.2.2.0) + `Num Bytes` (since=4.0.0.0, until=4.2.2.0)
+        //    + subclass body. No `Name` field.
+        //  - v in (4.2.2.0, 10.0.1.0): neither `Next Extra Data` nor
+        //    `Num Bytes` is serialized; `Name` arrives at 10.0.1.0.
+        //    Just read the subclass body. Fixes N1-06 / #330 — pre-fix
+        //    `parse_legacy` claimed this entire window and consumed
+        //    phantom ref + length bytes on every extra-data block.
+        //  - v >= 10.0.1.0: inherits NiObjectNET's Name field
+        //    (string-table at 20.1.0.1+, inline length-prefixed earlier).
+        if stream.version() <= NifVersion(0x04020200) {
             return Self::parse_legacy(stream, type_name);
+        }
+        if stream.version() < NifVersion(0x0A000100) {
+            return Self::parse_gap(stream, type_name);
         }
 
         let name = stream.read_string()?;
@@ -102,9 +112,49 @@ impl NiExtraData {
         })
     }
 
-    /// Parse pre-Gamebryo NiExtraData (v < 5.0.0.1, e.g. Morrowind).
-    /// Old format: next_extra_data_ref + bytes_remaining + subclass data.
-    /// No NiObjectNET inheritance (no name field).
+    /// Parse the (4.2.2.0, 10.0.1.0) gap-window variant: no linked-list
+    /// ref, no bytes-remaining, no Name. Only the subclass body is on
+    /// disk. See N1-06 / #330. Mirrors [`Self::parse_legacy`] modulo the
+    /// two header fields the legacy branch pre-reads.
+    fn parse_gap(stream: &mut NifStream, type_name: &str) -> io::Result<Self> {
+        let mut string_value = None;
+        let mut integer_value = None;
+
+        match type_name {
+            "NiStringExtraData" => {
+                // Pre-10.0.1.0 variant drops the `bytes_remaining`
+                // prefix, but the subclass still serializes its payload
+                // as a sized string (inline u32 length + bytes).
+                let s = stream.read_sized_string()?;
+                string_value = Some(Arc::from(s.as_str()));
+            }
+            "NiIntegerExtraData" => {
+                integer_value = Some(stream.read_u32_le()?);
+            }
+            _ => {
+                // Unknown subtype in the gap window — we have no way to
+                // advance past an arbitrary body because `Num Bytes`
+                // only exists until 4.2.2.0. Leave the stream untouched
+                // and let the outer parse loop reconcile via block_size
+                // (or fall through to NiUnknown on pre-block_size
+                // content). Same policy the modern branch applies.
+            }
+        }
+
+        Ok(Self {
+            type_name: type_name.to_string(),
+            name: None,
+            string_value,
+            integer_value,
+            binary_data: None,
+            strings_array: None,
+            integers_array: None,
+        })
+    }
+
+    /// Parse pre-Gamebryo NiExtraData (v <= 4.2.2.0, Morrowind / early
+    /// NetImmerse). Old format: next_extra_data_ref + bytes_remaining +
+    /// subclass data. No NiObjectNET inheritance (no name field).
     fn parse_legacy(stream: &mut NifStream, type_name: &str) -> io::Result<Self> {
         let _next_extra_data_ref = stream.read_block_ref()?;
         let bytes_remaining = stream.read_u32_le()?;
@@ -164,8 +214,8 @@ impl NiObject for BsBound {
 
 impl BsBound {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // NiExtraData base: name (string table or inline)
-        let name = stream.read_string()?;
+        // NiExtraData base: name — gated since 10.0.1.0 per nif.xml. See #329.
+        let name = stream.read_extra_data_name()?;
         let center = [
             stream.read_f32_le()?,
             stream.read_f32_le()?,
@@ -215,8 +265,8 @@ impl NiObject for BsDecalPlacementVectorExtraData {
 
 impl BsDecalPlacementVectorExtraData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // NiExtraData base: name
-        let name = stream.read_string()?;
+        // NiExtraData base: name — gated since 10.0.1.0 per nif.xml. See #329.
+        let name = stream.read_extra_data_name()?;
         // NiFloatExtraData: float value
         let float_value = stream.read_f32_le()?;
         // BSDecalPlacementVectorExtraData: vector blocks
@@ -272,7 +322,8 @@ impl NiObject for BsBehaviorGraphExtraData {
 
 impl BsBehaviorGraphExtraData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let name = stream.read_string()?;
+        // NiExtraData base — gated since 10.0.1.0 per nif.xml. See #329.
+        let name = stream.read_extra_data_name()?;
         let behaviour_graph_file = stream.read_string()?;
         // nif.xml line 8192: `Controls Base Skeleton: bool`. Pre-#106 we
         // read 4 bytes (u32-as-bool), desyncing every Skyrim skeleton
@@ -312,7 +363,8 @@ impl NiObject for BsInvMarker {
 
 impl BsInvMarker {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let name = stream.read_string()?;
+        // NiExtraData base — gated since 10.0.1.0 per nif.xml. See #329.
+        let name = stream.read_extra_data_name()?;
         let rotation_x = stream.read_u16_le()?;
         let rotation_y = stream.read_u16_le()?;
         let rotation_z = stream.read_u16_le()?;
@@ -347,7 +399,8 @@ impl NiObject for BsClothExtraData {
 
 impl BsClothExtraData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let name = stream.read_string()?;
+        // NiExtraData base — gated since 10.0.1.0 per nif.xml. See #329.
+        let name = stream.read_extra_data_name()?;
         let length = stream.read_u32_le()? as usize;
         let data = stream.read_bytes(length)?;
         Ok(Self { name, data })
@@ -383,7 +436,8 @@ impl NiObject for BsConnectPointParents {
 
 impl BsConnectPointParents {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let name = stream.read_string()?;
+        // NiExtraData base — gated since 10.0.1.0 per nif.xml. See #329.
+        let name = stream.read_extra_data_name()?;
         let count = stream.read_u32_le()?;
         let mut connect_points = stream.allocate_vec(count)?;
         for _ in 0..count {
@@ -569,7 +623,8 @@ impl BsPackedCombinedGeomDataExtra {
     /// Parse the full wire format. See the struct doc comment for
     /// variant differences.
     pub fn parse(stream: &mut NifStream, type_name: &'static str) -> io::Result<Self> {
-        let name = stream.read_string()?;
+        // NiExtraData base — gated since 10.0.1.0 per nif.xml. See #329.
+        let name = stream.read_extra_data_name()?;
         let vertex_desc = stream.read_u64_le()?;
         let num_vertices = stream.read_u32_le()?;
         let num_triangles = stream.read_u32_le()?;
@@ -784,7 +839,8 @@ impl NiObject for BsFurnitureMarker {
 
 impl BsFurnitureMarker {
     pub fn parse(stream: &mut NifStream, type_name: &'static str) -> io::Result<Self> {
-        let name = stream.read_string()?;
+        // NiExtraData base — gated since 10.0.1.0 per nif.xml. See #329.
+        let name = stream.read_extra_data_name()?;
         let count = stream.read_u32_le()?;
         let legacy = stream.bsver() <= 34;
         let mut positions = stream.allocate_vec(count)?;
@@ -838,7 +894,8 @@ impl NiObject for BsConnectPointChildren {
 
 impl BsConnectPointChildren {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let name = stream.read_string()?;
+        // NiExtraData base — gated since 10.0.1.0 per nif.xml. See #329.
+        let name = stream.read_extra_data_name()?;
         // nif.xml: `Skinned` is type `byte`, not `uint` — reading it as
         // a u32 over-consumes 3 bytes of the following `Num Connect
         // Points` count. See issue #108.
@@ -1249,6 +1306,76 @@ mod tests {
         let notes = BsAnimNotes::parse(&mut stream).unwrap();
         assert!(notes.notes.is_empty());
         assert_eq!(stream.position() as usize, 2);
+    }
+
+    /// Regression: #329. Pre-10.0.1.0 streams have no `Name` field on
+    /// `NiExtraData` per nif.xml (`since="10.0.1.0"`). BsBound is only
+    /// ever parsed via the subclass dispatcher on Bethesda content
+    /// (which is >= 10.0.1.0), but a fuzzed or non-Bethesda file can
+    /// hit these subclass parsers directly — `read_extra_data_name`
+    /// must NOT consume any bytes on those streams.
+    #[test]
+    fn read_extra_data_name_returns_none_pre_10_0_1_0() {
+        let header = NifHeader {
+            version: NifVersion(0x0A000006), // 10.0.0.6 — just below the gate
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        // Body is 24 bytes of BsBound (center + dimensions); no name
+        // prefix on this version per the gate.
+        let mut data = Vec::new();
+        for v in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        let mut stream = NifStream::new(&data, &header);
+        let bound = BsBound::parse(&mut stream).expect("pre-10.0.1.0 BsBound should parse");
+        assert!(bound.name.is_none(), "pre-10.0.1.0 has no Name field");
+        assert_eq!(bound.center, [1.0, 2.0, 3.0]);
+        assert_eq!(bound.dimensions, [4.0, 5.0, 6.0]);
+        assert_eq!(stream.position() as usize, data.len());
+    }
+
+    /// Regression: #330. Files in the NetImmerse→Gamebryo gap window
+    /// (v ∈ (4.2.2.0, 10.0.1.0)) have neither `Next Extra Data` /
+    /// `Num Bytes` (until 4.2.2.0) nor `Name` (since 10.0.1.0). Before
+    /// the fix, `NiExtraData::parse` treated this entire range as
+    /// `parse_legacy` and consumed phantom 8 bytes (ref + u32 length),
+    /// misaligning every subsequent block.
+    #[test]
+    fn ni_extra_data_gap_window_reads_only_subclass_body() {
+        let header = NifHeader {
+            version: NifVersion(0x0A000006), // 10.0.0.6 — in the gap
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        // NiStringExtraData body only — no name, no next_ref, no
+        // bytes_remaining. Just a sized-string payload.
+        let mut data = Vec::new();
+        data.extend_from_slice(&5u32.to_le_bytes()); // payload length
+        data.extend_from_slice(b"hello");
+
+        let mut stream = NifStream::new(&data, &header);
+        let extra = NiExtraData::parse(&mut stream, "NiStringExtraData")
+            .expect("gap-window NiExtraData should parse");
+        assert!(extra.name.is_none());
+        assert_eq!(extra.string_value.as_deref(), Some("hello"));
+        assert_eq!(stream.position() as usize, data.len());
     }
 
     #[test]
