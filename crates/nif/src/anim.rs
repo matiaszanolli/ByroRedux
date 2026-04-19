@@ -12,8 +12,10 @@ use crate::blocks::extra_data::{AnimNoteType, BsAnimNote, BsAnimNotes};
 use crate::blocks::interpolator::NiTextKeyExtraData;
 use crate::blocks::interpolator::{
     FloatKey, KeyGroup, KeyType, NiBSplineBasisData, NiBSplineCompTransformInterpolator,
-    NiBSplineData, NiBoolInterpolator, NiFloatData, NiFloatInterpolator, NiPoint3Interpolator,
-    NiPosData, NiTransformData, NiTransformInterpolator, Vec3Key,
+    NiBSplineData, NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendInterpolator,
+    NiBlendPoint3Interpolator, NiBlendTransformInterpolator, NiBoolInterpolator, NiFloatData,
+    NiFloatInterpolator, NiPoint3Interpolator, NiPosData, NiTransformData,
+    NiTransformInterpolator, Vec3Key,
 };
 use crate::scene::NifScene;
 use std::collections::{BTreeSet, HashMap};
@@ -457,8 +459,58 @@ fn format_anim_note_label(note: &BsAnimNote) -> String {
     }
 }
 
+/// Follow a `NiBlend*Interpolator` indirection to its dominant sub-
+/// interpolator. Returns the picked sub-interpolator's block index, or
+/// `None` when `interp_idx` is not a blend variant or has no usable
+/// weighted items (e.g. the common "manager-controlled" case where the
+/// manager supplies the sub-interpolator externally via sibling
+/// sequences — those are driven through their own `ControlledBlock`s
+/// and this extractor has nothing to pull off the blend block itself).
+///
+/// "Dominant" = the item with the highest `normalized_weight` that has
+/// a non-null interpolator_ref. This is a single-layer resolution —
+/// the AnimationStack performs layer-based blending at the ECS level,
+/// so picking one representative interpolator here gets the data
+/// through the bottleneck without faking a runtime blend at import
+/// time. See #334 (AR-08).
+fn resolve_blend_interpolator_target(scene: &NifScene, interp_idx: usize) -> Option<usize> {
+    let base: &NiBlendInterpolator =
+        if let Some(b) = scene.get_as::<NiBlendTransformInterpolator>(interp_idx) {
+            &b.base
+        } else if let Some(b) = scene.get_as::<NiBlendFloatInterpolator>(interp_idx) {
+            &b.base
+        } else if let Some(b) = scene.get_as::<NiBlendPoint3Interpolator>(interp_idx) {
+            &b.base
+        } else if let Some(b) = scene.get_as::<NiBlendBoolInterpolator>(interp_idx) {
+            &b.base
+        } else {
+            return None;
+        };
+
+    // Manager-controlled blends carry an empty `items` array — the
+    // NiControllerManager drives the sub-interpolators externally via
+    // sibling ControlledBlocks. Fall through to None so the caller
+    // logs nothing; those sequences import cleanly through their own
+    // interpolator_refs.
+    base.items
+        .iter()
+        .filter_map(|it| it.interpolator_ref.index().map(|i| (i, it.normalized_weight)))
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(idx, _)| idx)
+}
+
 fn extract_transform_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<TransformChannel> {
-    let interp_idx = cb.interpolator_ref.index()?;
+    let mut interp_idx = cb.interpolator_ref.index()?;
+
+    // #334 (AR-08) — NIFs with embedded controller managers commonly
+    // bind a `NiBlendTransformInterpolator` between the ControlledBlock
+    // and the real NiTransformInterpolator so runtime can weight
+    // multiple active sequences. Follow the blend's dominant
+    // sub-interpolator so the channel extraction reaches the real
+    // keyframe data instead of silently returning None.
+    if let Some(resolved) = resolve_blend_interpolator_target(scene, interp_idx) {
+        interp_idx = resolved;
+    }
 
     // Try the modern NiTransformInterpolator → NiTransformData path first.
     if let Some(interp) = scene.get_as::<NiTransformInterpolator>(interp_idx) {
@@ -886,7 +938,12 @@ fn extract_float_channel(
     cb: &ControlledBlock,
     target: FloatTarget,
 ) -> Option<FloatChannel> {
-    let interp_idx = cb.interpolator_ref.index()?;
+    let mut interp_idx = cb.interpolator_ref.index()?;
+    // #334 — follow a NiBlendFloatInterpolator to its dominant sub-
+    // interpolator. See `resolve_blend_interpolator_target` for why.
+    if let Some(resolved) = resolve_blend_interpolator_target(scene, interp_idx) {
+        interp_idx = resolved;
+    }
     let interp = scene.get_as::<NiFloatInterpolator>(interp_idx)?;
     let data_idx = interp.data_ref.index()?;
     let data = scene.get_as::<NiFloatData>(data_idx)?;
@@ -910,7 +967,11 @@ fn extract_float_channel(
 /// Extract a color channel from NiPoint3Interpolator → NiPosData.
 /// Used by NiMaterialColorController.
 fn extract_color_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<ColorChannel> {
-    let interp_idx = cb.interpolator_ref.index()?;
+    let mut interp_idx = cb.interpolator_ref.index()?;
+    // #334 — follow NiBlendPoint3Interpolator. See resolver docs.
+    if let Some(resolved) = resolve_blend_interpolator_target(scene, interp_idx) {
+        interp_idx = resolved;
+    }
     let interp = scene.get_as::<NiPoint3Interpolator>(interp_idx)?;
     let data_idx = interp.data_ref.index()?;
     let data = scene.get_as::<NiPosData>(data_idx)?;
@@ -951,7 +1012,11 @@ fn extract_color_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<Color
 
 /// Extract a shader color channel from NiPoint3Interpolator → NiPosData.
 fn extract_shader_color_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<ColorChannel> {
-    let interp_idx = cb.interpolator_ref.index()?;
+    let mut interp_idx = cb.interpolator_ref.index()?;
+    // #334 — follow NiBlendPoint3Interpolator. See resolver docs.
+    if let Some(resolved) = resolve_blend_interpolator_target(scene, interp_idx) {
+        interp_idx = resolved;
+    }
     let interp = scene.get_as::<NiPoint3Interpolator>(interp_idx)?;
     let data_idx = interp.data_ref.index()?;
     let data = scene.get_as::<NiPosData>(data_idx)?;
@@ -977,7 +1042,11 @@ fn extract_shader_color_channel(scene: &NifScene, cb: &ControlledBlock) -> Optio
 
 /// Extract a bool (visibility) channel from NiBoolInterpolator.
 fn extract_bool_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<BoolChannel> {
-    let interp_idx = cb.interpolator_ref.index()?;
+    let mut interp_idx = cb.interpolator_ref.index()?;
+    // #334 — follow NiBlendBoolInterpolator. See resolver docs.
+    if let Some(resolved) = resolve_blend_interpolator_target(scene, interp_idx) {
+        interp_idx = resolved;
+    }
     let interp = scene.get_as::<NiBoolInterpolator>(interp_idx)?;
 
     // NiBoolInterpolator may have inline data or reference NiBoolData.
@@ -1302,6 +1371,208 @@ mod tests {
             controller_id_offset: 0,
             interpolator_id_offset: 0,
         }
+    }
+
+    /// Regression: #334 (AR-08). A ControlledBlock pointing at a
+    /// NiBlendTransformInterpolator must still produce a transform
+    /// channel — the resolver picks the dominant sub-interpolator
+    /// (highest normalized_weight) and the extractor recurses into it.
+    /// Pre-fix the extractor returned None on the blend type and
+    /// multi-sequence NPC animations silently lost every channel.
+    #[test]
+    fn extract_transform_channel_follows_blend_to_dominant_sub_interp() {
+        use crate::blocks::interpolator::{
+            InterpBlendItem, KeyGroup, NiBlendInterpolator, NiBlendTransformInterpolator,
+            NiTransformData, NiTransformInterpolator,
+        };
+        use crate::types::{BlockRef, NiQuatTransform};
+
+        // Scene layout:
+        //   [0] NiTransformData (dominant — carries a single scale key)
+        //   [1] NiTransformData (secondary — empty)
+        //   [2] NiTransformInterpolator referencing [0]
+        //   [3] NiTransformInterpolator referencing [1]
+        //   [4] NiBlendTransformInterpolator with items [2]@0.8 + [3]@0.2
+        let empty_floats = KeyGroup::<FloatKey> {
+            key_type: KeyType::Linear,
+            keys: Vec::new(),
+        };
+        let empty_vec3s = KeyGroup::<Vec3Key> {
+            key_type: KeyType::Linear,
+            keys: Vec::new(),
+        };
+        let dominant_data = NiTransformData {
+            rotation_type: None,
+            rotation_keys: Vec::new(),
+            xyz_rotations: None,
+            translations: empty_vec3s.clone(),
+            scales: KeyGroup {
+                key_type: KeyType::Linear,
+                keys: vec![FloatKey {
+                    time: 0.0,
+                    value: 1.5,
+                    tangent_forward: 0.0,
+                    tangent_backward: 0.0,
+                    tbc: None,
+                }],
+            },
+        };
+        let secondary_data = NiTransformData {
+            rotation_type: None,
+            rotation_keys: Vec::new(),
+            xyz_rotations: None,
+            translations: empty_vec3s,
+            scales: empty_floats,
+        };
+        let dom_interp = NiTransformInterpolator {
+            transform: NiQuatTransform::default(),
+            data_ref: BlockRef(0),
+        };
+        let sec_interp = NiTransformInterpolator {
+            transform: NiQuatTransform::default(),
+            data_ref: BlockRef(1),
+        };
+        let blend = NiBlendTransformInterpolator {
+            base: NiBlendInterpolator {
+                flags: 0, // not manager-controlled, so items is live
+                array_size: 2,
+                weight_threshold: 0.0,
+                manager_controlled: false,
+                interp_count: 2,
+                single_index: 0,
+                items: vec![
+                    InterpBlendItem {
+                        interpolator_ref: BlockRef(2),
+                        weight: 0.8,
+                        normalized_weight: 0.8,
+                        priority: 0,
+                        ease_spinner: 0.0,
+                    },
+                    InterpBlendItem {
+                        interpolator_ref: BlockRef(3),
+                        weight: 0.2,
+                        normalized_weight: 0.2,
+                        priority: 0,
+                        ease_spinner: 0.0,
+                    },
+                ],
+            },
+        };
+        let scene = NifScene {
+            blocks: vec![
+                Box::new(dominant_data),
+                Box::new(secondary_data),
+                Box::new(dom_interp),
+                Box::new(sec_interp),
+                Box::new(blend),
+            ],
+            ..NifScene::default()
+        };
+
+        let mut cb = dummy_controlled_block();
+        cb.interpolator_ref = BlockRef(4); // point at the blend
+
+        let channel = extract_transform_channel(&scene, &cb)
+            .expect("blend transform interpolator must resolve to the dominant sub-interp");
+        assert_eq!(channel.scale_keys.len(), 1, "must reach dominant data's scales");
+        assert!((channel.scale_keys[0].value - 1.5).abs() < 1e-6);
+    }
+
+    /// The resolver picks the item with the HIGHEST normalized_weight.
+    /// Ties go to either item (we pick deterministically via
+    /// `max_by` → first-max-wins-in-iteration-order) but the test
+    /// asserts the non-tied case explicitly.
+    #[test]
+    fn resolve_blend_picks_highest_normalized_weight() {
+        use crate::blocks::interpolator::{
+            InterpBlendItem, NiBlendInterpolator, NiBlendTransformInterpolator,
+        };
+        use crate::types::BlockRef;
+
+        let blend = NiBlendTransformInterpolator {
+            base: NiBlendInterpolator {
+                flags: 0,
+                array_size: 3,
+                weight_threshold: 0.0,
+                manager_controlled: false,
+                interp_count: 3,
+                single_index: 0,
+                items: vec![
+                    InterpBlendItem {
+                        interpolator_ref: BlockRef(10),
+                        weight: 0.1,
+                        normalized_weight: 0.1,
+                        priority: 0,
+                        ease_spinner: 0.0,
+                    },
+                    InterpBlendItem {
+                        interpolator_ref: BlockRef(20),
+                        weight: 0.9,
+                        normalized_weight: 0.9, // dominant
+                        priority: 0,
+                        ease_spinner: 0.0,
+                    },
+                    InterpBlendItem {
+                        interpolator_ref: BlockRef(30),
+                        weight: 0.3,
+                        normalized_weight: 0.3,
+                        priority: 0,
+                        ease_spinner: 0.0,
+                    },
+                ],
+            },
+        };
+        let scene = NifScene {
+            blocks: vec![Box::new(blend)],
+            ..NifScene::default()
+        };
+        assert_eq!(resolve_blend_interpolator_target(&scene, 0), Some(20));
+    }
+
+    /// Manager-controlled blend (flag bit 0) has an empty `items`
+    /// array — sub-interpolators are driven externally by the
+    /// NiControllerManager via sibling ControlledBlocks. Resolver
+    /// returns None so the caller cleanly produces no channel; the
+    /// manager's other sequences supply the data through their own
+    /// interpolator_refs.
+    #[test]
+    fn resolve_blend_returns_none_for_manager_controlled() {
+        use crate::blocks::interpolator::{NiBlendInterpolator, NiBlendTransformInterpolator};
+
+        let blend = NiBlendTransformInterpolator {
+            base: NiBlendInterpolator {
+                flags: 1, // bit 0 = manager_controlled
+                array_size: 0,
+                weight_threshold: 0.0,
+                manager_controlled: true,
+                interp_count: 0,
+                single_index: 0,
+                items: Vec::new(),
+            },
+        };
+        let scene = NifScene {
+            blocks: vec![Box::new(blend)],
+            ..NifScene::default()
+        };
+        assert_eq!(resolve_blend_interpolator_target(&scene, 0), None);
+    }
+
+    /// Non-blend interpolators must not be touched by the resolver —
+    /// it returns None so the caller falls through to the direct path.
+    #[test]
+    fn resolve_blend_returns_none_for_non_blend_interpolator() {
+        use crate::blocks::interpolator::NiTransformInterpolator;
+        use crate::types::{BlockRef, NiQuatTransform};
+
+        let interp = NiTransformInterpolator {
+            transform: NiQuatTransform::default(),
+            data_ref: BlockRef::NULL,
+        };
+        let scene = NifScene {
+            blocks: vec![Box::new(interp)],
+            ..NifScene::default()
+        };
+        assert_eq!(resolve_blend_interpolator_target(&scene, 0), None);
     }
 
     #[test]
