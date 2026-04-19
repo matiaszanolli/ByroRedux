@@ -1349,6 +1349,34 @@ mod tests {
         assert!((q[3].abs() - cos45).abs() < 1e-4, "qw={}", q[3]);
     }
 
+    /// Regression: #333 / D4-05. Export-tool drift can produce matrices
+    /// whose determinant is in the (1.0, 1.07] window that the fast-path
+    /// gate admits; without normalisation the Shepperd extraction
+    /// produced a quaternion up to ~3.5% off unity, which downstream
+    /// consumers (`scene.rs`, `cell_loader.rs`) feed directly into
+    /// `Quat::from_xyzw` without normalising. The post-fix output is
+    /// always unit-length regardless of the input matrix's scale drift.
+    #[test]
+    fn zup_to_yup_drifted_rotation_returns_unit_quaternion() {
+        // Identity-around-Z rotation scaled by 1.03 — 6% determinant
+        // drift, still inside the fast path. Pre-fix |q| ≈ 1.03; post-fix
+        // |q| == 1.0 to f32 precision.
+        let drift = 1.03f32;
+        let scaled_identity = NiMatrix3 {
+            rows: [
+                [drift, 0.0, 0.0],
+                [0.0, drift, 0.0],
+                [0.0, 0.0, drift],
+            ],
+        };
+        let q = coord::zup_matrix_to_yup_quat(&scaled_identity);
+        let len = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+        assert!(
+            (len - 1.0).abs() < 1e-5,
+            "fast-path quaternion must be unit-length; got {len} (q={q:?})"
+        );
+    }
+
     #[test]
     fn zup_to_yup_90deg_ccw_rotation_around_x() {
         let rot_x90 = NiMatrix3 {

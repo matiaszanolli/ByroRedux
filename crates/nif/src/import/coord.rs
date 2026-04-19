@@ -45,10 +45,19 @@ pub(super) fn zup_matrix_to_yup_quat(m: &NiMatrix3) -> [f32; 4] {
 ///
 /// Picks the largest diagonal element to avoid division by near-zero,
 /// ensuring numerical stability for all rotation angles. ~20 FLOPs total.
+///
+/// Shepperd's formula only produces a unit quaternion when the input is
+/// a proper rotation; the fast-path gate in `zup_matrix_to_yup_quat`
+/// admits matrices with determinant in ~[0.93, 1.07] (scaled-by-drift
+/// rotations from export-tool quirks or hand-authored content), so the
+/// raw output can be up to ~3.5% off unity. Downstream consumers build
+/// `glam::Quat::from_xyzw` without normalising, which would propagate
+/// a shear/scale error into the ECS Transform rotation. Normalise here
+/// so the invariant holds regardless of input drift. See #333.
 fn matrix3_to_quat(m: &[[f32; 3]; 3]) -> [f32; 4] {
     let trace = m[0][0] + m[1][1] + m[2][2];
 
-    if trace > 0.0 {
+    let q = if trace > 0.0 {
         // w is largest
         let s = (trace + 1.0).sqrt();
         let w = s * 0.5;
@@ -84,7 +93,23 @@ fn matrix3_to_quat(m: &[[f32; 3]; 3]) -> [f32; 4] {
         let y = (m[1][2] + m[2][1]) * inv;
         let w = (m[1][0] - m[0][1]) * inv;
         [x, y, z, w]
+    };
+
+    normalize_quat(q)
+}
+
+/// Normalise a quaternion to unit length. Zero-length input (impossible
+/// from Shepperd on any non-NaN matrix) is returned unchanged to avoid
+/// producing NaN; the SVD repair path never hits that case because
+/// `U * V^T` already has determinant ±1.
+#[inline]
+fn normalize_quat(q: [f32; 4]) -> [f32; 4] {
+    let len_sq = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+    if len_sq == 0.0 {
+        return q;
     }
+    let inv = len_sq.sqrt().recip();
+    [q[0] * inv, q[1] * inv, q[2] * inv, q[3] * inv]
 }
 
 /// SVD-repair a degenerate matrix and extract a quaternion.
