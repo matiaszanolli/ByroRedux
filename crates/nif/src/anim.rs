@@ -10,6 +10,7 @@ use crate::blocks::controller::{
 };
 use crate::blocks::extra_data::{AnimNoteType, BsAnimNote, BsAnimNotes};
 use crate::blocks::interpolator::NiTextKeyExtraData;
+use crate::blocks::properties::NiStringPalette;
 use crate::blocks::interpolator::{
     FloatKey, KeyGroup, KeyType, NiBSplineBasisData, NiBSplineCompTransformInterpolator,
     NiBSplineData, NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendInterpolator,
@@ -310,46 +311,48 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
     let mut bool_channels = Vec::new();
 
     for cb in &seq.controlled_blocks {
-        let controller_type = cb.controller_type.as_deref().unwrap_or("");
-        let Some(node_name) = cb.node_name.as_ref() else {
+        let resolved_node_name = resolve_cb_string(scene, cb, CbString::NodeName);
+        let resolved_ctrl_type = resolve_cb_string(scene, cb, CbString::ControllerType);
+        let Some(node_name) = resolved_node_name else {
             continue;
         };
+        let controller_type = resolved_ctrl_type.as_deref().unwrap_or("");
 
         match controller_type {
             "NiTransformController" => {
                 if let Some(mut channel) = extract_transform_channel(scene, cb) {
                     channel.priority = cb.priority;
-                    channels.insert(Arc::clone(node_name), channel);
+                    channels.insert(Arc::clone(&node_name), channel);
                 }
             }
             "NiMaterialColorController" => {
                 if let Some(ch) = extract_color_channel(scene, cb) {
-                    color_channels.push((Arc::clone(node_name), ch));
+                    color_channels.push((Arc::clone(&node_name), ch));
                 }
             }
             "NiAlphaController" => {
                 if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::Alpha) {
-                    float_channels.push((Arc::clone(node_name), ch));
+                    float_channels.push((Arc::clone(&node_name), ch));
                 }
             }
             "NiVisController" => {
                 if let Some(ch) = extract_bool_channel(scene, cb) {
-                    bool_channels.push((Arc::clone(node_name), ch));
+                    bool_channels.push((Arc::clone(&node_name), ch));
                 }
             }
             "NiTextureTransformController" => {
                 if let Some(ch) = extract_texture_transform_channel(scene, cb) {
-                    float_channels.push((Arc::clone(node_name), ch));
+                    float_channels.push((Arc::clone(&node_name), ch));
                 }
             }
             "BSEffectShaderPropertyFloatController" | "BSLightingShaderPropertyFloatController" => {
                 if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::ShaderFloat) {
-                    float_channels.push((Arc::clone(node_name), ch));
+                    float_channels.push((Arc::clone(&node_name), ch));
                 }
             }
             "BSEffectShaderPropertyColorController" | "BSLightingShaderPropertyColorController" => {
                 if let Some(ch) = extract_shader_color_channel(scene, cb) {
-                    color_channels.push((Arc::clone(node_name), ch));
+                    color_channels.push((Arc::clone(&node_name), ch));
                 }
             }
             "NiGeomMorpherController" => {
@@ -361,14 +364,14 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
                 if let Some(ch) =
                     extract_float_channel(scene, cb, FloatTarget::MorphWeight(target_idx))
                 {
-                    float_channels.push((Arc::clone(node_name), ch));
+                    float_channels.push((Arc::clone(&node_name), ch));
                 }
             }
             "NiUVController" => {
                 // UV scrolling — maps to UvOffsetU/V float channels.
                 // The default UV scroll is offset U (horizontal scroll).
                 if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::UvOffsetU) {
-                    float_channels.push((Arc::clone(node_name), ch));
+                    float_channels.push((Arc::clone(&node_name), ch));
                 }
             }
             _ => {
@@ -436,6 +439,47 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
         bool_channels,
         text_keys,
     }
+}
+
+/// Which of the five `ControlledBlock` string fields to resolve when
+/// walking the dual string-table / string-palette layouts.
+#[derive(Debug, Clone, Copy)]
+enum CbString {
+    NodeName,
+    ControllerType,
+}
+
+/// Resolve a `ControlledBlock` string field across both on-disk layouts.
+///
+/// NIFs from Oblivion / pre-FNV Bethesda titles (`10.2.0.0 ≤ v < 20.1.0.1`)
+/// store the five per-block strings as byte offsets into a sibling
+/// `NiStringPalette`; newer files inline them via the header's string
+/// table and the parser pre-resolves them into `cb.node_name` et al.
+/// Before #402 the importer only checked the string-table fields, so
+/// every Oblivion `ControlledBlock` short-circuited at the `node_name`
+/// guard and `import_kf` returned zero clips on all 1843 Oblivion KF
+/// files. Falling through to the palette lookup fixes the whole range
+/// of pre-Skyrim animations (Oblivion / Morrowind BBBB-era content)
+/// without changing modern-path semantics.
+fn resolve_cb_string(
+    scene: &NifScene,
+    cb: &ControlledBlock,
+    which: CbString,
+) -> Option<Arc<str>> {
+    let (inline, offset) = match which {
+        CbString::NodeName => (cb.node_name.as_ref(), cb.node_name_offset),
+        CbString::ControllerType => (cb.controller_type.as_ref(), cb.controller_type_offset),
+    };
+    if let Some(s) = inline {
+        return Some(Arc::clone(s));
+    }
+    let pal_idx = cb.string_palette_ref.index()?;
+    let palette = scene.get_as::<NiStringPalette>(pal_idx)?;
+    let s = palette.get_string(offset)?;
+    if s.is_empty() {
+        return None;
+    }
+    Some(Arc::from(s))
 }
 
 /// Serialize a `BSAnimNote` into a label suitable for the `text_keys`
@@ -1582,6 +1626,58 @@ mod tests {
             ..NifScene::default()
         };
         assert_eq!(resolve_blend_interpolator_target(&scene, 0), None);
+    }
+
+    /// Regression: #402. Oblivion-era `NiControllerSequence` blocks
+    /// reference their node/controller strings through an
+    /// `NiStringPalette` + byte offsets rather than the modern header
+    /// string table. Before the fix, `resolve_cb_string` returned None
+    /// for palette-backed ControlledBlocks → every `cb.node_name` guard
+    /// in `import_sequence` short-circuited → zero clips imported on
+    /// every Oblivion KF. This test builds a minimal scene with a
+    /// palette-backed transform ControlledBlock and asserts the
+    /// resolver returns the expected string.
+    #[test]
+    fn resolve_cb_string_reads_oblivion_palette() {
+        use crate::blocks::properties::NiStringPalette;
+        use crate::types::BlockRef;
+
+        let palette = NiStringPalette {
+            palette: "Bip01\0NiTransformController\0".to_string(),
+        };
+        let scene = NifScene {
+            blocks: vec![Box::new(palette)],
+            ..NifScene::default()
+        };
+        let mut cb = dummy_controlled_block();
+        cb.string_palette_ref = BlockRef(0);
+        cb.node_name_offset = 0;
+        cb.controller_type_offset = 6;
+
+        let node = resolve_cb_string(&scene, &cb, CbString::NodeName)
+            .expect("palette-backed node_name must resolve");
+        assert_eq!(&*node, "Bip01");
+        let ctrl = resolve_cb_string(&scene, &cb, CbString::ControllerType)
+            .expect("palette-backed controller_type must resolve");
+        assert_eq!(&*ctrl, "NiTransformController");
+    }
+
+    /// #402 sibling: modern string-table-backed ControlledBlocks (Skyrim+
+    /// and FNV) still resolve through the inline `Option<Arc<str>>`
+    /// path. This makes sure the palette fallback doesn't shadow the
+    /// fast path.
+    #[test]
+    fn resolve_cb_string_prefers_inline_when_present() {
+        let scene = NifScene::default();
+        let mut cb = dummy_controlled_block();
+        cb.node_name = Some(Arc::from("Bip01 Head"));
+        // Palette offset would point at a completely different string,
+        // but the inline field takes precedence.
+        cb.node_name_offset = 42;
+
+        let node = resolve_cb_string(&scene, &cb, CbString::NodeName)
+            .expect("inline name must win over palette fallback");
+        assert_eq!(&*node, "Bip01 Head");
     }
 
     #[test]

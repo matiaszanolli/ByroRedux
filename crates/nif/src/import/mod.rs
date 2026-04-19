@@ -903,6 +903,7 @@ mod tests {
                 transform: None,
             }),
             normal_texture: None,
+            decal_textures: Vec::new(),
         };
         let bump_src = NiSourceTexture {
             net: crate::blocks::base::NiObjectNETData {
@@ -1011,6 +1012,7 @@ mod tests {
                 flags: 0,
                 transform: None,
             }),
+            decal_textures: Vec::new(),
         };
 
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![

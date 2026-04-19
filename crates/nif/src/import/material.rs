@@ -80,6 +80,14 @@ pub(super) struct MaterialInfo {
     /// Baked shadow/grime modulation on Oblivion interior architecture.
     /// Applied as `albedo.rgb *= dark_sample.rgb`. See #264.
     pub dark_map: Option<String>,
+    /// Decal overlay textures (NiTexturingProperty decal slots 0..=3).
+    /// Oblivion uses these for blood splatters, wall paintings / map
+    /// decals, and faction symbols — content that persists in the world
+    /// but lives on top of the base material. Before #400 the parser
+    /// dropped the slots silently; now populated entries ride through to
+    /// the renderer for alpha-blend overlay. Empty slots are omitted so
+    /// downstream consumers only see reachable textures.
+    pub decal_maps: Vec<String>,
     /// How vertex colors should participate in shading. See #214 /
     /// `VertexColorMode`. Defaults to `AmbientDiffuse` — the value
     /// Gamebryo uses when the NIF has no `NiVertexColorProperty`.
@@ -248,6 +256,7 @@ impl Default for MaterialInfo {
             detail_map: None,
             gloss_map: None,
             dark_map: None,
+            decal_maps: Vec::new(),
             vertex_color_mode: VertexColorMode::AmbientDiffuse,
             alpha_blend: false,
             src_blend_mode: 6, // SRC_ALPHA — Gamebryo default
@@ -574,6 +583,18 @@ pub(super) fn extract_material_info(
             if info.dark_map.is_none() {
                 if let Some(path) = tex_desc_source_path(scene, tex_prop.dark_texture.as_ref()) {
                     info.dark_map = Some(path);
+                }
+            }
+            // Decal slots (0..=3 per nif.xml). Append every slot whose
+            // `source_ref` resolves to a real filename; inherited props
+            // only contribute when the shape itself has no decals yet,
+            // matching the precedence rule used by the other slots.
+            // #400 / OBL-D4-H4.
+            if info.decal_maps.is_empty() {
+                for desc in &tex_prop.decal_textures {
+                    if let Some(path) = tex_desc_source_path(scene, Some(desc)) {
+                        info.decal_maps.push(path);
+                    }
                 }
             }
             // Propagate the base slot's UV transform to the shared

@@ -142,6 +142,12 @@ pub struct NiTexturingProperty {
     pub glow_texture: Option<TexDesc>,
     pub bump_texture: Option<TexDesc>,
     pub normal_texture: Option<TexDesc>,
+    /// Decal texture slots (0-indexed from the first decal slot). Oblivion
+    /// uses these for blood splatters, wall paintings / map decals, faction
+    /// symbols, and other persistent per-triangle overlays. Up to 4 decals
+    /// per nif.xml (`Has Decal 0..3 Texture`). Before #400 the parser read
+    /// and discarded each `TexDesc`; now they ride through to the importer.
+    pub decal_textures: Vec<TexDesc>,
 }
 
 /// Description of a single texture slot.
@@ -298,15 +304,18 @@ impl NiTexturingProperty {
         //               accidentally aligned with what was actually decal 0).
         //               Both bugs needed fixing together; either alone
         //               misaligns downstream blocks.
-        if stream.version() >= crate::version::NifVersion(0x14020005) {
-            let num_decals = texture_count.saturating_sub(8);
-            for _ in 0..num_decals {
-                let _ = Self::read_tex_desc(stream)?;
-            }
+        let num_decals = if stream.version() >= crate::version::NifVersion(0x14020005) {
+            texture_count.saturating_sub(8)
         } else {
-            let num_decals = texture_count.saturating_sub(6);
-            for _ in 0..num_decals {
-                let _ = Self::read_tex_desc(stream)?;
+            texture_count.saturating_sub(6)
+        };
+        // #400 — retain decal TexDescs so the importer can surface them
+        // to the renderer. `TexDesc::None` entries (empty slot flag) are
+        // skipped so downstream consumers only see populated slots.
+        let mut decal_textures: Vec<TexDesc> = stream.allocate_vec(num_decals)?;
+        for _ in 0..num_decals {
+            if let Some(desc) = Self::read_tex_desc(stream)? {
+                decal_textures.push(desc);
             }
         }
 
@@ -377,6 +386,7 @@ impl NiTexturingProperty {
             glow_texture,
             bump_texture,
             normal_texture,
+            decal_textures,
         })
     }
 
@@ -615,6 +625,90 @@ mod tests {
         assert_eq!(pal.get_string(17), Some("Bip01 L Hand"));
         assert_eq!(pal.get_string(999), None);
         assert_eq!(stream.position() as usize, data.len());
+    }
+
+    /// Regression test for issue #400 — NiTexturingProperty decal slots
+    /// (Oblivion pre-20.2.0.5 path, slots 6..=texture_count-1) are now
+    /// retained on the block instead of silently discarded. Builds a
+    /// header with texture_count=8 → 2 populated decal TexDescs, checks
+    /// both are reachable.
+    #[test]
+    fn parse_ni_texturing_property_retains_oblivion_decal_slots() {
+        // Oblivion — v20.0.0.5, user_version=11. Pre-20.2.0.5 layout:
+        // slots 0..=5 are base/dark/detail/gloss/glow/bump; decals
+        // start at slot 6. No normal/parallax slots in this version.
+        let header = NifHeader {
+            version: NifVersion::V20_0_0_5,
+            little_endian: true,
+            user_version: 11,
+            user_version_2: 11,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        let mut data = Vec::new();
+        // NiObjectNET base: inline name (empty) + 0 extras + null controller.
+        data.extend_from_slice(&0u32.to_le_bytes()); // name: empty inline
+        data.extend_from_slice(&0u32.to_le_bytes()); // extra_data count
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+                                                        // flags u16 (v <= 10.0.1.2 OR v >= 20.1.0.2) — 20.0.0.5 is
+                                                        // in the middle gap, so NO flags field. apply_mode u32 reads
+                                                        // (v <= 20.1.0.1).
+        data.extend_from_slice(&1u32.to_le_bytes()); // apply_mode
+                                                      // texture_count = 8 → slots 0..=7 consumed, slots 6 and 7
+                                                      // become decals 0 and 1.
+        data.extend_from_slice(&8u32.to_le_bytes());
+        // Helper: minimal TexDesc for v=20.0.0.5 with has=1.
+        // v < 10.1.0.3 → ELSE branch: source_ref + 3 × u32 (clamp / filter /
+        // uv_set) + has_transform bool. (20.0.0.5 is below 20.1.0.3.)
+        let push_populated = |data: &mut Vec<u8>, source: i32| {
+            data.push(1); // has
+            data.extend_from_slice(&source.to_le_bytes());
+            data.extend_from_slice(&0u32.to_le_bytes()); // clamp_mode
+            data.extend_from_slice(&0u32.to_le_bytes()); // filter_mode
+            data.extend_from_slice(&0u32.to_le_bytes()); // uv_set
+            data.push(0); // has_transform = 0
+        };
+        let push_empty = |data: &mut Vec<u8>| {
+            data.push(0); // has = 0 → TexDesc is None, 1 byte total
+        };
+        // Slots 0..=5 all empty.
+        push_empty(&mut data); // base
+        push_empty(&mut data); // dark
+        push_empty(&mut data); // detail
+        push_empty(&mut data); // gloss
+        push_empty(&mut data); // glow
+        push_empty(&mut data); // bump
+                               // 20.0.0.5 is NOT >= 20.2.0.5 → the normal/parallax slots are
+                               // skipped. Decal loop picks up 8-6 = 2 slots.
+        push_populated(&mut data, 101); // decal 0
+        push_populated(&mut data, 202); // decal 1
+        // Shader map list trailer (since v >= 10.0.1.0).
+        data.extend_from_slice(&0u32.to_le_bytes()); // num_shader_textures = 0
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let prop = NiTexturingProperty::parse(&mut stream)
+            .expect("Oblivion NiTexturingProperty should parse");
+        assert_eq!(
+            stream.position() as usize,
+            expected_len,
+            "parse consumed {} bytes, expected {}",
+            stream.position(),
+            expected_len
+        );
+        assert_eq!(prop.texture_count, 8);
+        assert_eq!(
+            prop.decal_textures.len(),
+            2,
+            "expected 2 decal TexDescs (slots 6 + 7) in retained vec"
+        );
+        assert_eq!(prop.decal_textures[0].source_ref.index(), Some(101));
+        assert_eq!(prop.decal_textures[1].source_ref.index(), Some(202));
     }
 
     /// Regression test for issue #149 / runtime Oblivion trace:

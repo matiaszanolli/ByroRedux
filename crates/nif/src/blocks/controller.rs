@@ -442,6 +442,25 @@ impl NiControllerSequence {
         let manager_ref = stream.read_block_ref()?;
         let accum_root_name = stream.read_string()?;
 
+        // Deprecated string-palette link (Gamebryo 2.3
+        // `NiControllerSequence::LoadBinary`, v ∈ [10.1.0.113, 20.1.0.1)):
+        // a trailing Ref<NiStringPalette> that was kept so the conversion
+        // code could resolve the IDTag handle offsets into real strings
+        // when loading older content. Oblivion (20.0.0.4 / 20.0.0.5) sits
+        // in that window; skipping this field left a 4-byte drift that
+        // mis-started every block after block 0 in every Oblivion KF —
+        // `NiTransformInterpolator` and `NiStringPalette` then read
+        // garbage counts and aborted the parse, so `import_kf` returned
+        // zero clips on all 1843 Oblivion KF files. FO3/FNV (v20.0.0.5+
+        // with BSVER >= 24) use the modern string-table layout and
+        // skip this field. See #402 (audit premise was wrong — Oblivion
+        // uses NiControllerSequence, not NiSequenceStreamHelper).
+        if stream.version() >= NifVersion(0x0A010071)
+            && stream.version() < NifVersion(0x14010001)
+        {
+            let _deprecated_string_palette_ref = stream.read_block_ref()?;
+        }
+
         // Anim notes — layout diverges by BSVER (#432):
         //   FO3/FNV (BSVER 24–28):  single Ref<BSAnimNotes>
         //   Skyrim+ (BSVER > 28):   u16 count + Vec<Ref<BSAnimNotes>>
@@ -696,6 +715,12 @@ mod tests {
         data.extend_from_slice(&1.0f32.to_le_bytes()); // stop_time
         data.extend_from_slice(&(-1i32).to_le_bytes()); // manager_ref
         data.extend_from_slice(&0u32.to_le_bytes()); // accum_root_name: empty inline
+        // #402 — Oblivion (v ∈ [10.1.0.113, 20.1.0.1)) trails a
+        // Ref<NiStringPalette>. Gamebryo 2.3's LoadBinary reads this so
+        // the legacy IDTag palette offsets can be converted to
+        // NiFixedStrings during link; on-disk it sits between
+        // accum_root_name and the anim-note block.
+        data.extend_from_slice(&9i32.to_le_bytes()); // deprecated string palette ref
 
         // Oblivion bsver=11, 11 <= 28 → no anim note list, so don't
         // append anything here.
