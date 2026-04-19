@@ -54,7 +54,20 @@ pub struct EsmIndex {
     pub containers: HashMap<u32, ContainerRecord>,
     pub leveled_items: HashMap<u32, LeveledList>,
     pub leveled_npcs: HashMap<u32, LeveledList>,
+    /// Leveled creature lists (CREA spawn tables). Byte-compatible with
+    /// LVLI / LVLN so the same `parse_leveled_list` handles them. FO3
+    /// uses LVLC for most enemy encounters; FNV migrated the bulk to
+    /// LVLN but still ships some legacy LVLC entries. See #448.
+    pub leveled_creatures: HashMap<u32, LeveledList>,
     pub npcs: HashMap<u32, NpcRecord>,
+    /// Creature base records (FO3 bestiary: super mutants, deathclaws,
+    /// radroaches, robots, brahmin, etc.). CREA shares EDID / FULL /
+    /// MODL / RNAM / CNAM / SNAM / CNTO / PKID / ACBS with NPC_ so the
+    /// same `parse_npc` populates `NpcRecord`; the only divergence is
+    /// ACBS flags semantics, which the current reader ignores.
+    /// FNV migrated most combat to NPC_ but vanilla still keeps ~70
+    /// CREA entries for legacy content. See #442.
+    pub creatures: HashMap<u32, NpcRecord>,
     pub races: HashMap<u32, RaceRecord>,
     pub classes: HashMap<u32, ClassRecord>,
     pub factions: HashMap<u32, FactionRecord>,
@@ -72,7 +85,9 @@ impl EsmIndex {
             + self.containers.len()
             + self.leveled_items.len()
             + self.leveled_npcs.len()
+            + self.leveled_creatures.len()
             + self.npcs.len()
+            + self.creatures.len()
             + self.races.len()
             + self.classes.len()
             + self.factions.len()
@@ -170,9 +185,27 @@ pub fn parse_esm(data: &[u8]) -> Result<EsmIndex> {
                     .leveled_npcs
                     .insert(fid, parse_leveled_list(fid, subs));
             })?,
+            // Leveled creatures (CREA spawn tables) — byte-identical to
+            // LVLI / LVLN. FO3 wires most enemy encounters through LVLC;
+            // FNV migrated most combat to LVLN but still ships legacy
+            // LVLC entries. See #448 / audit FO3-3-06.
+            b"LVLC" => extract_records(&mut reader, end, b"LVLC", &mut |fid, subs| {
+                index
+                    .leveled_creatures
+                    .insert(fid, parse_leveled_list(fid, subs));
+            })?,
             // Actors and supporting records.
             b"NPC_" => extract_records(&mut reader, end, b"NPC_", &mut |fid, subs| {
                 index.npcs.insert(fid, parse_npc(fid, subs));
+            })?,
+            // Creatures share EDID / FULL / MODL / RNAM / CNAM / SNAM /
+            // CNTO / PKID / ACBS with NPC_ — `parse_npc` populates the
+            // same `NpcRecord` shape. FO3 bestiary (super mutants,
+            // deathclaws, radroaches, robots) lives here; pre-fix the
+            // whole top-level group was dropped at the catch-all skip.
+            // See #442 / audit FO3-3-02.
+            b"CREA" => extract_records(&mut reader, end, b"CREA", &mut |fid, subs| {
+                index.creatures.insert(fid, parse_npc(fid, subs));
             })?,
             b"RACE" => extract_records(&mut reader, end, b"RACE", &mut |fid, subs| {
                 index.races.insert(fid, parse_race(fid, subs));
@@ -205,15 +238,18 @@ pub fn parse_esm(data: &[u8]) -> Result<EsmIndex> {
     }
 
     log::info!(
-        "ESM parsed: {} cells, {} statics, {} items, {} containers, {} LVLI, {} LVLN, {} NPCs, \
-         {} races, {} classes, {} factions, {} globals, {} game settings, {} weathers, {} climates",
+        "ESM parsed: {} cells, {} statics, {} items, {} containers, {} LVLI, {} LVLN, {} LVLC, \
+         {} NPCs, {} creatures, {} races, {} classes, {} factions, {} globals, {} game settings, \
+         {} weathers, {} climates",
         index.cells.cells.len(),
         index.cells.statics.len(),
         index.items.len(),
         index.containers.len(),
         index.leveled_items.len(),
         index.leveled_npcs.len(),
+        index.leveled_creatures.len(),
         index.npcs.len(),
+        index.creatures.len(),
         index.races.len(),
         index.classes.len(),
         index.factions.len(),
@@ -439,6 +475,117 @@ mod tests {
             .values()
             .any(|f| f.full_name.contains("NCR") || f.editor_id.starts_with("NCR"));
         assert!(has_ncr, "expected an NCR-related faction");
+    }
+
+    /// Regression: #442 — a top-level `CREA` GRUP must dispatch to
+    /// `parse_npc` (schema is NPC_-shaped) and land in
+    /// `EsmIndex.creatures`. Pre-fix the whole group fell through to
+    /// the catch-all skip.
+    #[test]
+    fn crea_group_dispatches_to_creatures_map() {
+        let mut subs: Vec<(&[u8; 4], Vec<u8>)> = Vec::new();
+        subs.push((b"EDID", b"Radroach\0".to_vec()));
+        subs.push((b"FULL", b"Radroach\0".to_vec()));
+        subs.push((b"MODL", b"Creatures\\Radroach.nif\0".to_vec()));
+        let record = build_record(b"CREA", 0xBEEF_0001, &subs);
+        let group = wrap_group(b"CREA", &record);
+
+        let mut tes4 = build_record(b"TES4", 0, &[]);
+        tes4.extend_from_slice(&group);
+        let index = parse_esm(&tes4).unwrap();
+
+        assert_eq!(index.creatures.len(), 1, "CREA must populate the creatures map");
+        let crea = index.creatures.get(&0xBEEF_0001).expect("CREA indexed");
+        assert_eq!(crea.editor_id, "Radroach");
+        assert_eq!(crea.full_name, "Radroach");
+        assert_eq!(crea.model_path, "Creatures\\Radroach.nif");
+        // CREA must not leak into NPC_'s map.
+        assert!(index.npcs.is_empty());
+    }
+
+    /// Regression: #448 — a top-level `LVLC` GRUP must dispatch to
+    /// `parse_leveled_list` and land in `EsmIndex.leveled_creatures`.
+    /// Pre-fix the whole group fell through to the catch-all skip,
+    /// so every FO3 encounter zone's creature spawn table came back
+    /// empty.
+    #[test]
+    fn lvlc_group_dispatches_to_leveled_creatures_map() {
+        // LVLC shares the LVLI/LVLN layout: LVLD (u8 chance_none),
+        // LVLF (u8 flags), LVLO (12 bytes: level u16 + pad u16 + form u32 + count u16 + pad u16).
+        let mut subs: Vec<(&[u8; 4], Vec<u8>)> = Vec::new();
+        subs.push((b"EDID", b"LL_Raider\0".to_vec()));
+        subs.push((b"LVLD", vec![50u8])); // 50% chance none
+        subs.push((b"LVLF", vec![1u8])); // calculate_from_all flag
+        subs.push((b"LVLO", {
+            let mut d = Vec::new();
+            d.extend_from_slice(&1u16.to_le_bytes()); // level
+            d.extend_from_slice(&0u16.to_le_bytes()); // pad
+            d.extend_from_slice(&0xCAFE_F00Du32.to_le_bytes()); // form
+            d.extend_from_slice(&1u16.to_le_bytes()); // count
+            d.extend_from_slice(&0u16.to_le_bytes()); // pad
+            d
+        }));
+        let record = build_record(b"LVLC", 0xBEEF_0002, &subs);
+        let group = wrap_group(b"LVLC", &record);
+
+        let mut tes4 = build_record(b"TES4", 0, &[]);
+        tes4.extend_from_slice(&group);
+        let index = parse_esm(&tes4).unwrap();
+
+        assert_eq!(
+            index.leveled_creatures.len(),
+            1,
+            "LVLC must populate the leveled_creatures map"
+        );
+        let lvlc = index
+            .leveled_creatures
+            .get(&0xBEEF_0002)
+            .expect("LVLC indexed");
+        assert_eq!(lvlc.editor_id, "LL_Raider");
+        assert_eq!(lvlc.entries.len(), 1);
+        assert_eq!(lvlc.entries[0].form_id, 0xCAFE_F00D);
+        // LVLC must not leak into LVLI / LVLN.
+        assert!(index.leveled_items.is_empty());
+        assert!(index.leveled_npcs.is_empty());
+    }
+
+    /// Parse real Fallout3.esm and assert the bestiary + spawn tables
+    /// arrive populated. Ignored by default — opt in with
+    /// `cargo test -p byroredux-plugin -- --ignored`.
+    ///
+    /// Sampled counts against FO3 GOTY HEDR=0.94 master on 2026-04-19:
+    /// 1647 NPCs, 533 creatures, 89 LVLN, 60 LVLC. Floors are set a
+    /// few percent below observed so the test stays stable across DLC
+    /// patches without becoming meaningless. The audit body predicted
+    /// ~700-800 CREA / ~400-500 LVLC; the real numbers are lower, so
+    /// don't chase the audit's estimates — use the disk-sampled ones.
+    #[test]
+    #[ignore]
+    fn parse_real_fo3_esm_crea_and_lvlc_counts() {
+        let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data/Fallout3.esm";
+        if !std::path::Path::new(path).exists() {
+            eprintln!("Skipping: Fallout3.esm not found");
+            return;
+        }
+        let data = std::fs::read(path).unwrap();
+        let index = parse_esm(&data).expect("parse_esm");
+        eprintln!(
+            "FO3 index: {} NPCs, {} creatures, {} LVLN, {} LVLC",
+            index.npcs.len(),
+            index.creatures.len(),
+            index.leveled_npcs.len(),
+            index.leveled_creatures.len(),
+        );
+        assert!(
+            index.creatures.len() > 400,
+            "expected >400 CREA records (observed 533), got {}",
+            index.creatures.len()
+        );
+        assert!(
+            index.leveled_creatures.len() > 40,
+            "expected >40 LVLC records (observed 60), got {}",
+            index.leveled_creatures.len()
+        );
     }
 
     #[test]
