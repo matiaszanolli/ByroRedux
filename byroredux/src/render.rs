@@ -12,7 +12,8 @@ use rayon::slice::ParallelSliceMut;
 use std::collections::HashMap;
 
 use crate::components::{
-    AlphaBlend, CellLightingRes, DarkMapHandle, Decal, NormalMapHandle, SkyParamsRes, TwoSided,
+    AlphaBlend, CellLightingRes, DarkMapHandle, Decal, ExtraTextureMaps, NormalMapHandle,
+    SkyParamsRes, TwoSided,
 };
 
 /// Convert an `f32` to a `u32` key whose unsigned ordering matches
@@ -227,6 +228,7 @@ pub(crate) fn build_render_data(
     let mat_q = world.query::<Material>();
     let nmap_q = world.query::<NormalMapHandle>();
     let dmap_q = world.query::<DarkMapHandle>();
+    let extra_q = world.query::<ExtraTextureMaps>();
     let wb_q = world.query::<WorldBound>();
     if let (Some(tq), Some(mq)) = (tq, mq) {
         for (entity, mesh) in mq.iter() {
@@ -282,6 +284,16 @@ pub(crate) fn build_render_data(
                     .and_then(|q| q.get(entity))
                     .map(|d| d.0)
                     .unwrap_or(0);
+                // #399 — three NiTexturingProperty extra slots packed in
+                // one component to keep the per-frame query count fixed.
+                // Default to 0 (= no map; fragment shader falls through
+                // to the inline material constants) for entities that
+                // never had `ExtraTextureMaps` attached at cell load.
+                let (glow_map_index, detail_map_index, gloss_map_index) = extra_q
+                    .as_ref()
+                    .and_then(|q| q.get(entity))
+                    .map(|e| (e.glow, e.detail, e.gloss))
+                    .unwrap_or((0, 0, 0));
 
                 // Material data + PBR classification.
                 let mat = mat_q.as_ref().and_then(|q| q.get(entity));
@@ -370,6 +382,9 @@ pub(crate) fn build_render_data(
                     bone_offset,
                     normal_map_index,
                     dark_map_index,
+                    glow_map_index,
+                    detail_map_index,
+                    gloss_map_index,
                     alpha_threshold,
                     alpha_test_func,
                     roughness,
@@ -471,6 +486,9 @@ pub(crate) fn build_render_data(
                         bone_offset: 0,
                         normal_map_index: 0,
                         dark_map_index: 0,
+                        glow_map_index: 0,
+                        detail_map_index: 0,
+                        gloss_map_index: 0,
                         alpha_threshold: 0.0,
                         alpha_test_func: 0,
                         roughness: 1.0,

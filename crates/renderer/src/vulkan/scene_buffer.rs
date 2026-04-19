@@ -100,11 +100,28 @@ pub struct GpuInstance {
     /// EyeEnvmap, SparkleSnow, MultiLayerParallax, …). 0 = Default lit
     /// — the safe fall-through for non-Skyrim+ meshes that have no
     /// BSLightingShaderProperty backing. Repurposed from the previous
-    /// `_pad1` field so the struct stays at 160 bytes (10×16, std430).
-    /// Plumbing only here — the actual variant branches in
-    /// `triangle.frag` land per-variant in follow-up PRs. See #344.
-    pub material_kind: u32, // 4 B, offset 156 → total 160
-                               // Struct is 160 bytes (10×16), 16-byte aligned for std430.
+    /// `_pad1` field. Plumbing only here — the actual variant branches
+    /// in `triangle.frag` land per-variant in follow-up PRs. See #344.
+    pub material_kind: u32, // 4 B, offset 156
+    /// Bindless texture index for the glow / self-illumination map
+    /// (NiTexturingProperty slot 4 on Oblivion/FO3/FNV; BSShaderTextureSet
+    /// slot 2 on Skyrim+). 0 = no glow map; fragment shader falls back
+    /// to the inline `emissive_color` × `emissive_mult` constant.
+    /// See #399 (OBL-D4-H3).
+    pub glow_map_index: u32, // 4 B, offset 160
+    /// Bindless texture index for the detail overlay (NiTexturingProperty
+    /// slot 2). Sampled at 2× UV scale and modulated into the base
+    /// albedo (`base.rgb *= detail.rgb * 2`). 0 = no detail map.
+    pub detail_map_index: u32, // 4 B, offset 164
+    /// Bindless texture index for the gloss / specular mask
+    /// (NiTexturingProperty slot 3). Per-texel specular strength
+    /// multiplier; the .r channel scales the inline
+    /// `specular_strength`. 0 = no gloss map.
+    pub gloss_map_index: u32, // 4 B, offset 168
+    /// Padding — keeps the struct at 176 bytes (11 × 16) so std430
+    /// alignment matches the `instances[]` SSBO stride.
+    pub _pad_extra_textures: u32, // 4 B, offset 172 → total 176
+                                  // Struct is 176 bytes (11×16), 16-byte aligned for std430.
 }
 
 impl Default for GpuInstance {
@@ -140,6 +157,10 @@ impl Default for GpuInstance {
             avg_albedo_b: 0.5,
             flags: 0,
             material_kind: 0,
+            glow_map_index: 0,
+            detail_map_index: 0,
+            gloss_map_index: 0,
+            _pad_extra_textures: 0,
         }
     }
 }
@@ -929,11 +950,14 @@ mod gpu_instance_layout_tests {
     /// update protocol (grep for `struct GpuInstance` in the shaders tree
     /// before touching this struct).
     #[test]
-    fn gpu_instance_is_160_bytes_std430_compatible() {
+    fn gpu_instance_is_176_bytes_std430_compatible() {
+        // Grew 160 → 176 in #399 (added glow/detail/gloss texture
+        // indices + 4-byte padding to keep the 16-byte alignment).
+        // 11 × 16 = 176, std430 stride for the `instances[]` SSBO.
         assert_eq!(
             size_of::<GpuInstance>(),
-            160,
-            "GpuInstance must stay 160 B to match std430 shader layout"
+            176,
+            "GpuInstance must stay 176 B to match std430 shader layout"
         );
     }
 
@@ -967,6 +991,12 @@ mod gpu_instance_layout_tests {
         // same offset so every shader-side `pad1` reference renamed to
         // `materialKind` continues to alias the same 4 bytes. See #344.
         assert_eq!(offset_of!(GpuInstance, material_kind), 156);
+        // #399 — three NiTexturingProperty texture-slot indices appended
+        // after material_kind, each 4 bytes, followed by 4 bytes of
+        // padding so the struct stays 11 × 16 = 176.
+        assert_eq!(offset_of!(GpuInstance, glow_map_index), 160);
+        assert_eq!(offset_of!(GpuInstance, detail_map_index), 164);
+        assert_eq!(offset_of!(GpuInstance, gloss_map_index), 168);
     }
 
     /// Regression: #309 — `VkDrawIndexedIndirectCommand` is a Vulkan-

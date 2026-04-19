@@ -51,6 +51,20 @@ pub struct DrawCommand {
     pub normal_map_index: u32,
     /// Bindless texture index for the dark/lightmap (0 = no dark map). #264.
     pub dark_map_index: u32,
+    /// Bindless texture index for the glow / self-illumination map
+    /// (NiTexturingProperty slot 4). 0 = no glow map; the shader falls
+    /// back to the inline `emissive_color` × `emissive_mult` constant.
+    /// See #399.
+    pub glow_map_index: u32,
+    /// Bindless texture index for the detail overlay (NiTexturingProperty
+    /// slot 2). Sampled at 2× UV scale and modulated into the base
+    /// albedo. 0 = no detail map. See #399.
+    pub detail_map_index: u32,
+    /// Bindless texture index for the gloss / specular mask
+    /// (NiTexturingProperty slot 3). Per-texel specular strength
+    /// multiplier; the .r channel scales the inline
+    /// `specular_strength`. 0 = no gloss map. See #399.
+    pub gloss_map_index: u32,
     /// Alpha test threshold in [0,1]. 0.0 when alpha test is disabled. #263.
     pub alpha_threshold: f32,
     /// Alpha test comparison function (Gamebryo TestFunction enum). #263.

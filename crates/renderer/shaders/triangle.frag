@@ -50,7 +50,13 @@ struct GpuInstance {
     float avgAlbedoG;        // offset 144
     float avgAlbedoB;        // offset 148
     uint flags;              // offset 152 — bit 0: non-uniform scale, bit 1: alpha blend, bit 2: caustic source (#321)
-    uint materialKind;       // offset 156 → total 160 — BSLightingShaderProperty.shader_type (0–19) for variant dispatch (#344). 0 = Default lit (the safe fall-through). Per-variant shading branches land in follow-up PRs; this frag still single-paths every fragment for now.
+    uint materialKind;       // offset 156 — BSLightingShaderProperty.shader_type (0–19) for variant dispatch (#344). 0 = Default lit.
+    // #399 — NiTexturingProperty extra slots (Oblivion glow/detail/gloss).
+    // 0 = no map; sampling code below falls through to the inline material constants.
+    uint glowMapIndex;       // offset 160 — slot 4 emissive overlay
+    uint detailMapIndex;     // offset 164 — slot 2 high-frequency 2× UV overlay
+    uint glossMapIndex;      // offset 168 — slot 3 specular mask (.r)
+    uint _padExtraTextures;  // offset 172 → total 176 — keeps std430 16-byte alignment
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
@@ -394,6 +400,46 @@ void main() {
     if (inst.darkMapIndex != 0u) {
         vec3 darkSample = texture(textures[nonuniformEXT(inst.darkMapIndex)], fragUV).rgb;
         albedo *= darkSample;
+    }
+
+    // #399 — NiTexturingProperty slot 2 detail overlay. Sampled at
+    // 2× UV scale (Gamebryo convention — high-frequency variation at
+    // half the wavelength of the base diffuse) and modulated into the
+    // albedo. Center the modulation around 1.0 so a 0.5 grey detail
+    // sample is a no-op rather than halving the surface brightness.
+    if (inst.detailMapIndex != 0u) {
+        vec3 detailSample = texture(
+            textures[nonuniformEXT(inst.detailMapIndex)],
+            fragUV * 2.0
+        ).rgb;
+        albedo *= detailSample * 2.0;
+    }
+
+    // #399 — NiTexturingProperty slot 3 gloss / specular mask. The
+    // .r channel is per-texel specular strength (polished metal trim
+    // vs. dull leather straps on the same armor mesh). Multiply the
+    // inline `specularStrength` constant.
+    if (inst.glossMapIndex != 0u) {
+        float glossSample = texture(
+            textures[nonuniformEXT(inst.glossMapIndex)],
+            fragUV
+        ).r;
+        specStrength *= glossSample;
+    }
+
+    // #399 — NiTexturingProperty slot 4 glow / self-illumination map.
+    // Multiplies the inline `emissiveColor`. Enchanted weapon runes,
+    // sigil stones, lava — all author the actual glow shape here and
+    // leave the inline emissive as a tint constant. The sampled RGB
+    // becomes the new emissive base; downstream emissive code below
+    // multiplies by `emissiveMult` and any dark-cell amplification
+    // unchanged.
+    if (inst.glowMapIndex != 0u) {
+        vec3 glowSample = texture(
+            textures[nonuniformEXT(inst.glowMapIndex)],
+            fragUV
+        ).rgb;
+        emissiveColor *= glowSample;
     }
 
     vec3 F0 = mix(vec3(0.04), albedo, metalness);

@@ -30,7 +30,14 @@ struct GpuInstance {
                  // Currently unused by ui.vert but named in lockstep with
                  // triangle.{vert,frag} and Rust `GpuInstance` (Shader Struct
                  // Sync invariant). See #318.
-    uint materialKind;  // offset 156 → total 160 — BSLightingShaderProperty.shader_type (0–19), unused by the UI pipeline; named in lockstep with the scene shaders. See #344.
+    uint materialKind;  // offset 156 — BSLightingShaderProperty.shader_type (0–19), unused by the UI pipeline; named in lockstep with the scene shaders. See #344.
+    // #399 — NiTexturingProperty extra slots, named in lockstep with
+    // triangle.{vert,frag}. UI pipeline doesn't sample them but the
+    // SSBO stride must match (Shader Struct Sync invariant).
+    uint glowMapIndex;       // offset 160
+    uint detailMapIndex;     // offset 164
+    uint glossMapIndex;      // offset 168
+    uint _padExtraTextures;  // offset 172 → total 176
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

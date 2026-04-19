@@ -18,8 +18,8 @@ use crate::asset_provider::{
 };
 use crate::cell_loader;
 use crate::components::{
-    AlphaBlend, CellLightingRes, DarkMapHandle, Decal, GameTimeRes, InputState, NormalMapHandle,
-    SkyParamsRes, Spinning, TwoSided, WeatherDataRes,
+    AlphaBlend, CellLightingRes, DarkMapHandle, Decal, ExtraTextureMaps, GameTimeRes, InputState,
+    NormalMapHandle, SkyParamsRes, Spinning, TwoSided, WeatherDataRes,
 };
 use crate::helpers::add_child;
 
@@ -894,6 +894,28 @@ pub(crate) fn load_nif_bytes(
             if h != ctx.texture_registry.fallback() {
                 world.insert(entity, DarkMapHandle(h));
             }
+        }
+        // #399 — three NiTexturingProperty extra slots packed into one
+        // ECS component. Mirrors the cell_loader.rs path; only attached
+        // when at least one slot resolved to a real texture handle.
+        let mut resolve = |path: &Option<String>| -> u32 {
+            path.as_deref()
+                .map(|p| resolve_texture(ctx, tex_provider, Some(p)))
+                .filter(|&h| h != ctx.texture_registry.fallback())
+                .unwrap_or(0)
+        };
+        let glow_h = resolve(&mesh.glow_map);
+        let detail_h = resolve(&mesh.detail_map);
+        let gloss_h = resolve(&mesh.gloss_map);
+        if glow_h != 0 || detail_h != 0 || gloss_h != 0 {
+            world.insert(
+                entity,
+                ExtraTextureMaps {
+                    glow: glow_h,
+                    detail: detail_h,
+                    gloss: gloss_h,
+                },
+            );
         }
 
         if let Some(ref name) = mesh.name {

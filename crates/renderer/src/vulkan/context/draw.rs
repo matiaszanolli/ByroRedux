@@ -531,6 +531,10 @@ impl VulkanContext {
                 avg_albedo_b: draw_cmd.avg_albedo[2],
                 flags,
                 material_kind: draw_cmd.material_kind,
+                glow_map_index: draw_cmd.glow_map_index,
+                detail_map_index: draw_cmd.detail_map_index,
+                gloss_map_index: draw_cmd.gloss_map_index,
+                _pad_extra_textures: 0,
             });
 
             let pipeline_key = if draw_cmd.alpha_blend {

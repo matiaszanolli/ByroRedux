@@ -16,7 +16,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::asset_provider::{resolve_texture, TextureProvider};
-use crate::components::{AlphaBlend, DarkMapHandle, Decal, NormalMapHandle, TwoSided};
+use crate::components::{
+    AlphaBlend, DarkMapHandle, Decal, ExtraTextureMaps, NormalMapHandle, TwoSided,
+};
 
 /// Parsed + imported NIF scene data cached per unique model path.
 ///
@@ -1277,6 +1279,30 @@ fn spawn_placed_instances(
             if h != ctx.texture_registry.fallback() {
                 world.insert(entity, DarkMapHandle(h));
             }
+        }
+        // #399 — Resolve glow / detail / gloss texture handles. All three
+        // default to 0 (no map; shader falls through to inline material
+        // constants). The component is only attached when at least one
+        // path resolved to a real handle, keeping the SparseSet small
+        // for the bulk of meshes that have no extra maps.
+        let mut resolve = |path: &Option<String>| -> u32 {
+            path.as_deref()
+                .map(|p| resolve_texture(ctx, tex_provider, Some(p)))
+                .filter(|&h| h != ctx.texture_registry.fallback())
+                .unwrap_or(0)
+        };
+        let glow_h = resolve(&mesh.glow_map);
+        let detail_h = resolve(&mesh.detail_map);
+        let gloss_h = resolve(&mesh.gloss_map);
+        if glow_h != 0 || detail_h != 0 || gloss_h != 0 {
+            world.insert(
+                entity,
+                ExtraTextureMaps {
+                    glow: glow_h,
+                    detail: detail_h,
+                    gloss: gloss_h,
+                },
+            );
         }
         if mesh.has_alpha {
             world.insert(

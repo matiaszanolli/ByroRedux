@@ -58,6 +58,24 @@ impl Component for DarkMapHandle {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Bindless texture indices for the three NiTexturingProperty slots that
+/// previously populated `Material` but never reached `GpuInstance`:
+/// glow (slot 4 — emissive overlay), detail (slot 2 — high-frequency
+/// 2× UV overlay), and gloss (slot 3 — per-texel specular mask). All
+/// three default to `0` (= no map; shader falls through to the inline
+/// material constants). Combined into a single component to keep the
+/// per-frame query count fixed regardless of which slots a mesh uses.
+/// See #399 (OBL-D4-H3).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ExtraTextureMaps {
+    pub(crate) glow: u32,
+    pub(crate) detail: u32,
+    pub(crate) gloss: u32,
+}
+impl Component for ExtraTextureMaps {
+    type Storage = SparseSetStorage<Self>;
+}
+
 // SystemList moved to byroredux_core::ecs::resources::SystemList
 
 /// Cell lighting from the ESM (ambient + directional + fog).
