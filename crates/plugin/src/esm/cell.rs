@@ -727,10 +727,21 @@ fn parse_refr_group(
             }
         } else if &header.record_type == b"LAND" {
             // Parse landscape heightmap, normals, and vertex colors.
-            if let Ok(land) = parse_land_record(reader, &header) {
-                *landscape = Some(land);
-            } else {
-                log::warn!("LAND record parse failed (form {:08X})", header.form_id);
+            //
+            // At least one vanilla FNV LAND record (form `0x00150FC0`)
+            // reliably fails the body read on every ESM open — cause
+            // not yet identified, single cell affected. Observable
+            // symptom is a flat/untextured tile if that cell is ever
+            // rendered. Demoted from `warn` to `debug` per the audit's
+            // soft-fail guidance (#385 / D5-F5); the error context
+            // rides through so anyone investigating sees the real
+            // failure mode instead of a generic message.
+            match parse_land_record(reader, &header) {
+                Ok(land) => *landscape = Some(land),
+                Err(e) => log::debug!(
+                    "LAND record parse failed (form {:08X}): {e:#}",
+                    header.form_id
+                ),
             }
         } else {
             // Skip other record types (PGRE, PMIS, NAVM, etc.)
