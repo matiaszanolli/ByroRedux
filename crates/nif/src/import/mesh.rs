@@ -16,7 +16,8 @@ use crate::types::{BlockRef, NiPoint3, NiTransform};
 
 use super::coord::zup_matrix_to_yup_quat;
 use super::material::{
-    extract_material_info, extract_vertex_colors, find_decal_bs, find_effect_shader_bs,
+    capture_shader_type_fields, extract_material_info, extract_vertex_colors, find_decal_bs,
+    find_effect_shader_bs,
 };
 use super::{ImportedBone, ImportedMesh, ImportedSkin};
 
@@ -122,6 +123,10 @@ pub(super) fn extract_mesh(
     let (local_bound_center, local_bound_radius) =
         extract_local_bound(geom.bound_center, geom.bound_radius, &positions);
 
+    // Capture the shader-type fields before moving other `mat` fields into
+    // the `ImportedMesh` literal. See #430.
+    let shader_type_fields = mat.shader_type_fields();
+
     Some(ImportedMesh {
         positions,
         colors,
@@ -165,6 +170,11 @@ pub(super) fn extract_mesh(
         local_bound_radius,
         effect_shader: mat.effect_shader,
         material_kind: mat.material_kind,
+        // #430 — surface SkinTint / HairTint / EyeEnvmap / ParallaxOcc /
+        // MultiLayerParallax / SparkleSnow fields on the mesh.
+        // `extract_material_info` already populated them on MaterialInfo
+        // via `apply_shader_type_data`; before this fix they died here.
+        shader_type_fields,
     })
 }
 
@@ -298,6 +308,7 @@ pub(super) fn extract_bs_tri_shape(
     let mut mat_alpha = 1.0_f32;
     let mut normal_map: Option<String> = None;
     let mut env_map_scale = 1.0_f32;
+    let mut shader_type_fields = super::material::ShaderTypeFields::default();
 
     if let Some(idx) = shape.shader_property_ref.index() {
         if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
@@ -307,24 +318,21 @@ pub(super) fn extract_bs_tri_shape(
                 .and_then(|ts_idx| scene.get_as::<BSShaderTextureSet>(ts_idx))
                 .and_then(|ts| ts.textures.get(1).cloned())
                 .filter(|s| !s.is_empty());
-            // Exhaustive match on the 9 `ShaderTypeData` variants so
-            // future additions must be decided here. Only EnvironmentMap
-            // affects `env_map_scale`; the rest (SkinTint, HairTint,
-            // ParallaxOcc, MultiLayerParallax, SparkleSnow, EyeEnvmap,
-            // Fo76SkinTint) carry per-NPC/per-effect data that doesn't
-            // have a counterpart field on `ImportedMesh` yet — tracked
-            // at SK-D3-01 via the `extract_material_info` path.
-            env_map_scale = match shader.shader_type_data {
-                ShaderTypeData::EnvironmentMap { env_map_scale } => env_map_scale,
-                ShaderTypeData::None
-                | ShaderTypeData::SkinTint { .. }
-                | ShaderTypeData::Fo76SkinTint { .. }
-                | ShaderTypeData::HairTint { .. }
-                | ShaderTypeData::ParallaxOcc { .. }
-                | ShaderTypeData::MultiLayerParallax { .. }
-                | ShaderTypeData::SparkleSnow { .. }
-                | ShaderTypeData::EyeEnvmap { .. } => 1.0,
-            };
+            // `EnvironmentMap` feeds `env_map_scale`; every other variant
+            // (SkinTint, HairTint, ParallaxOcc, MultiLayerParallax,
+            // SparkleSnow, EyeEnvmap, Fo76SkinTint) carries per-variant
+            // data that rides through `ShaderTypeFields` onto the mesh so
+            // the renderer can branch on `material_kind`. Fixes #430 —
+            // before this change the BsTriShape path silently dropped
+            // every SkinTint/HairTint/etc. payload on Skyrim+/FO4/FO76/
+            // Starfield characters.
+            if let ShaderTypeData::EnvironmentMap {
+                env_map_scale: ems,
+            } = shader.shader_type_data
+            {
+                env_map_scale = ems;
+            }
+            shader_type_fields = capture_shader_type_fields(&shader.shader_type_data);
             emissive_color = shader.emissive_color;
             emissive_mult = shader.emissive_multiple;
             specular_color = shader.specular_color;
@@ -441,6 +449,9 @@ pub(super) fn extract_bs_tri_shape(
             .and_then(|i| scene.get_as::<BSLightingShaderProperty>(i))
             .map(|s| s.shader_type as u8)
             .unwrap_or(0),
+        // #430 — populated from `capture_shader_type_fields` above when
+        // the shape has a BSLightingShaderProperty backing, else default.
+        shader_type_fields,
     })
 }
 
@@ -1251,5 +1262,228 @@ mod two_sided_lookup_tests {
         scene.blocks.push(Box::new(shader));
         let shape = shape_with_shader(0);
         assert!(super::find_decal_bs(&scene, &shape));
+    }
+}
+
+/// Regression tests for issue #430 — the BsTriShape import path must
+/// capture `BSLightingShaderProperty.shader_type_data` payload onto
+/// `ImportedMesh.shader_type_fields`. Pre-fix the match collapsed every
+/// non-`EnvironmentMap` variant to `1.0` and silently dropped SkinTint /
+/// HairTint / EyeEnvmap / ParallaxOcc / MultiLayerParallax / SparkleSnow
+/// payloads on Skyrim+ / FO4 / FO76 / Starfield characters.
+#[cfg(test)]
+mod shader_type_fields_tests {
+    use super::*;
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::shader::{BSLightingShaderProperty, ShaderTypeData};
+    use crate::scene::NifScene;
+    use crate::types::{BlockRef, NiPoint3, NiTransform};
+
+    fn empty_net() -> NiObjectNETData {
+        NiObjectNETData {
+            name: None,
+            extra_data_refs: Vec::new(),
+            controller_ref: BlockRef::NULL,
+        }
+    }
+
+    fn lighting_shader_with(shader_type: u32, data: ShaderTypeData) -> BSLightingShaderProperty {
+        BSLightingShaderProperty {
+            shader_type,
+            net: empty_net(),
+            material_reference: false,
+            shader_flags_1: 0,
+            shader_flags_2: 0,
+            sf1_crcs: Vec::new(),
+            sf2_crcs: Vec::new(),
+            uv_offset: [0.0, 0.0],
+            uv_scale: [1.0, 1.0],
+            texture_set_ref: BlockRef::NULL,
+            emissive_color: [0.0; 3],
+            emissive_multiple: 1.0,
+            texture_clamp_mode: 3,
+            alpha: 1.0,
+            refraction_strength: 0.0,
+            glossiness: 80.0,
+            specular_color: [1.0; 3],
+            specular_strength: 1.0,
+            lighting_effect_1: 0.0,
+            lighting_effect_2: 0.0,
+            subsurface_rolloff: 0.0,
+            rimlight_power: 0.0,
+            backlight_power: 0.0,
+            grayscale_to_palette_scale: 1.0,
+            fresnel_power: 5.0,
+            wetness: None,
+            luminance: None,
+            do_translucency: false,
+            translucency: None,
+            texture_arrays: Vec::new(),
+            shader_type_data: data,
+        }
+    }
+
+    /// Minimal renderable `BsTriShape` (one triangle, three vertices) bound
+    /// to a shader block at index `shader_idx` on the scene.
+    fn renderable_shape(shader_idx: u32) -> BsTriShape {
+        BsTriShape {
+            av: NiAVObjectData {
+                net: empty_net(),
+                flags: 0,
+                transform: NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            center: NiPoint3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            radius: 0.0,
+            skin_ref: BlockRef::NULL,
+            shader_property_ref: BlockRef(shader_idx),
+            alpha_property_ref: BlockRef::NULL,
+            vertex_desc: 0,
+            num_triangles: 1,
+            num_vertices: 3,
+            vertices: vec![
+                NiPoint3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                NiPoint3 {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                NiPoint3 {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+            ],
+            uvs: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            normals: Vec::new(),
+            vertex_colors: Vec::new(),
+            triangles: vec![[0, 1, 2]],
+            bone_weights: Vec::new(),
+            bone_indices: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn bs_tri_shape_captures_skin_tint_color() {
+        // Skyrim SE NPC head — shader_type = 5 (SkinTint). Pre-#430 the
+        // match arm dropped the color silently.
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(lighting_shader_with(
+            5,
+            ShaderTypeData::SkinTint {
+                skin_tint_color: [0.87, 0.65, 0.54],
+            },
+        )));
+        let shape = renderable_shape(0);
+        let imported = extract_bs_tri_shape(&scene, &shape, &NiTransform::default())
+            .expect("synthetic shape should import");
+        assert_eq!(imported.material_kind, 5);
+        assert_eq!(
+            imported.shader_type_fields.skin_tint_color,
+            Some([0.87, 0.65, 0.54])
+        );
+        assert_eq!(imported.shader_type_fields.skin_tint_alpha, None);
+    }
+
+    #[test]
+    fn bs_tri_shape_captures_hair_tint_color() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(lighting_shader_with(
+            6,
+            ShaderTypeData::HairTint {
+                hair_tint_color: [0.3, 0.15, 0.05],
+            },
+        )));
+        let shape = renderable_shape(0);
+        let imported = extract_bs_tri_shape(&scene, &shape, &NiTransform::default()).unwrap();
+        assert_eq!(imported.material_kind, 6);
+        assert_eq!(
+            imported.shader_type_fields.hair_tint_color,
+            Some([0.3, 0.15, 0.05])
+        );
+    }
+
+    #[test]
+    fn bs_tri_shape_captures_eye_envmap_centers() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(lighting_shader_with(
+            16,
+            ShaderTypeData::EyeEnvmap {
+                eye_cubemap_scale: 1.5,
+                left_eye_reflection_center: [0.1, 0.2, 0.3],
+                right_eye_reflection_center: [0.4, 0.5, 0.6],
+            },
+        )));
+        let shape = renderable_shape(0);
+        let imported = extract_bs_tri_shape(&scene, &shape, &NiTransform::default()).unwrap();
+        assert_eq!(imported.shader_type_fields.eye_cubemap_scale, Some(1.5));
+        assert_eq!(
+            imported.shader_type_fields.eye_left_reflection_center,
+            Some([0.1, 0.2, 0.3])
+        );
+        assert_eq!(
+            imported.shader_type_fields.eye_right_reflection_center,
+            Some([0.4, 0.5, 0.6])
+        );
+    }
+
+    #[test]
+    fn bs_tri_shape_fo76_skin_tint_splits_rgba() {
+        // FO76 BSShaderType155::SkinTint — the 4-wide variant. Must split
+        // into rgb + alpha exactly the way MaterialInfo's copy does.
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(lighting_shader_with(
+            4,
+            ShaderTypeData::Fo76SkinTint {
+                skin_tint_color: [0.9, 0.7, 0.55, 0.25],
+            },
+        )));
+        let shape = renderable_shape(0);
+        let imported = extract_bs_tri_shape(&scene, &shape, &NiTransform::default()).unwrap();
+        assert_eq!(
+            imported.shader_type_fields.skin_tint_color,
+            Some([0.9, 0.7, 0.55])
+        );
+        assert_eq!(imported.shader_type_fields.skin_tint_alpha, Some(0.25));
+    }
+
+    #[test]
+    fn bs_tri_shape_environment_map_routes_scale_not_fields() {
+        // EnvironmentMap lives on `env_map_scale`, not `shader_type_fields`.
+        // The default / no-variant-match ShaderTypeFields should stay clean.
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(lighting_shader_with(
+            1,
+            ShaderTypeData::EnvironmentMap { env_map_scale: 2.5 },
+        )));
+        let shape = renderable_shape(0);
+        let imported = extract_bs_tri_shape(&scene, &shape, &NiTransform::default()).unwrap();
+        assert_eq!(imported.env_map_scale, 2.5);
+        assert_eq!(
+            imported.shader_type_fields,
+            super::super::material::ShaderTypeFields::default()
+        );
+    }
+
+    #[test]
+    fn bs_tri_shape_without_shader_has_default_fields() {
+        let scene = NifScene::default();
+        let mut shape = renderable_shape(0);
+        shape.shader_property_ref = BlockRef::NULL;
+        let imported = extract_bs_tri_shape(&scene, &shape, &NiTransform::default()).unwrap();
+        assert_eq!(imported.material_kind, 0);
+        assert_eq!(
+            imported.shader_type_fields,
+            super::super::material::ShaderTypeFields::default()
+        );
     }
 }

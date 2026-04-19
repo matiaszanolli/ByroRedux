@@ -17,7 +17,7 @@ mod walk;
 // Re-export the public material capture types so `ImportedMesh`'s
 // `effect_shader` field can name `BsEffectShaderData` without leaking
 // the internal module path.
-pub use material::BsEffectShaderData;
+pub use material::{BsEffectShaderData, ShaderTypeFields};
 
 use crate::scene::NifScene;
 use crate::types::NiTransform;
@@ -278,6 +278,16 @@ pub struct ImportedMesh {
     /// MultiLayerParallax. Variant rendering wiring inside the
     /// fragment shader is per-variant follow-up work.
     pub material_kind: u8,
+    /// Shader-type-specific trailing fields decoded off
+    /// `BSLightingShaderProperty.shader_type_data` — SkinTint color,
+    /// HairTint color, EyeEnvmap centers, ParallaxOcc / MultiLayerParallax
+    /// depth parameters, SparkleSnow packed rgba. Every variant is
+    /// capture-ready here; renderer-side consumption happens as each
+    /// `material_kind` branch is wired into `triangle.frag`. Before #430
+    /// these fields were populated on `MaterialInfo` (NiTriShape path) but
+    /// dropped in the construction of `ImportedMesh`, and the BsTriShape
+    /// path ignored them entirely — both sides now populate uniformly.
+    pub shader_type_fields: ShaderTypeFields,
 }
 
 /// Per-bone binding for a skinned mesh. Bone space is Y-up (converted

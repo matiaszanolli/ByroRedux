@@ -685,25 +685,84 @@ pub(super) fn extract_material_info(
 /// the `Material` component; the purpose here is to ensure no variant
 /// is silently discarded at the import boundary.
 pub(super) fn apply_shader_type_data(info: &mut MaterialInfo, data: &ShaderTypeData) {
+    // Env-map scale lives on its own field for backwards compatibility with
+    // pre-#343 readers; the other variants copy through `ShaderTypeFields`.
+    if let ShaderTypeData::EnvironmentMap { env_map_scale } = *data {
+        info.env_map_scale = env_map_scale;
+    }
+    let fields = capture_shader_type_fields(data);
+    info.skin_tint_color = fields.skin_tint_color.or(info.skin_tint_color);
+    info.skin_tint_alpha = fields.skin_tint_alpha.or(info.skin_tint_alpha);
+    info.hair_tint_color = fields.hair_tint_color.or(info.hair_tint_color);
+    info.eye_cubemap_scale = fields.eye_cubemap_scale.or(info.eye_cubemap_scale);
+    info.eye_left_reflection_center = fields
+        .eye_left_reflection_center
+        .or(info.eye_left_reflection_center);
+    info.eye_right_reflection_center = fields
+        .eye_right_reflection_center
+        .or(info.eye_right_reflection_center);
+    info.parallax_max_passes = fields.parallax_max_passes.or(info.parallax_max_passes);
+    info.parallax_height_scale = fields
+        .parallax_height_scale
+        .or(info.parallax_height_scale);
+    info.multi_layer_inner_thickness = fields
+        .multi_layer_inner_thickness
+        .or(info.multi_layer_inner_thickness);
+    info.multi_layer_refraction_scale = fields
+        .multi_layer_refraction_scale
+        .or(info.multi_layer_refraction_scale);
+    info.multi_layer_inner_layer_scale = fields
+        .multi_layer_inner_layer_scale
+        .or(info.multi_layer_inner_layer_scale);
+    info.multi_layer_envmap_strength = fields
+        .multi_layer_envmap_strength
+        .or(info.multi_layer_envmap_strength);
+    info.sparkle_parameters = fields.sparkle_parameters.or(info.sparkle_parameters);
+}
+
+/// The 13 shader-type-specific fields pulled off `BSLightingShaderProperty`'s
+/// `shader_type_data` variant. Mirrors the flat fields on `MaterialInfo` so
+/// both the NiTriShape path (via `MaterialInfo`) and the BsTriShape path
+/// (direct) can populate the same `ImportedMesh` fields without duplication.
+/// See #430 / NIF-D4-N01.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ShaderTypeFields {
+    pub skin_tint_color: Option<[f32; 3]>,
+    pub skin_tint_alpha: Option<f32>,
+    pub hair_tint_color: Option<[f32; 3]>,
+    pub eye_cubemap_scale: Option<f32>,
+    pub eye_left_reflection_center: Option<[f32; 3]>,
+    pub eye_right_reflection_center: Option<[f32; 3]>,
+    pub parallax_max_passes: Option<f32>,
+    pub parallax_height_scale: Option<f32>,
+    pub multi_layer_inner_thickness: Option<f32>,
+    pub multi_layer_refraction_scale: Option<f32>,
+    pub multi_layer_inner_layer_scale: Option<[f32; 2]>,
+    pub multi_layer_envmap_strength: Option<f32>,
+    pub sparkle_parameters: Option<[f32; 4]>,
+}
+
+/// Pull the shader-type-specific trailing fields out of a `ShaderTypeData`
+/// into a flat `ShaderTypeFields` bundle. Complements
+/// [`apply_shader_type_data`] — both are exhaustive on the 9 variants so
+/// any future addition fails compilation here.
+pub(crate) fn capture_shader_type_fields(data: &ShaderTypeData) -> ShaderTypeFields {
+    let mut f = ShaderTypeFields::default();
     match *data {
-        ShaderTypeData::None => {}
-        ShaderTypeData::EnvironmentMap { env_map_scale } => {
-            info.env_map_scale = env_map_scale;
-        }
+        ShaderTypeData::None | ShaderTypeData::EnvironmentMap { .. } => {}
         ShaderTypeData::SkinTint { skin_tint_color } => {
-            info.skin_tint_color = Some(skin_tint_color);
+            f.skin_tint_color = Some(skin_tint_color);
         }
         ShaderTypeData::Fo76SkinTint { skin_tint_color } => {
-            info.skin_tint_color =
-                Some([skin_tint_color[0], skin_tint_color[1], skin_tint_color[2]]);
-            info.skin_tint_alpha = Some(skin_tint_color[3]);
+            f.skin_tint_color = Some([skin_tint_color[0], skin_tint_color[1], skin_tint_color[2]]);
+            f.skin_tint_alpha = Some(skin_tint_color[3]);
         }
         ShaderTypeData::HairTint { hair_tint_color } => {
-            info.hair_tint_color = Some(hair_tint_color);
+            f.hair_tint_color = Some(hair_tint_color);
         }
         ShaderTypeData::ParallaxOcc { max_passes, scale } => {
-            info.parallax_max_passes = Some(max_passes);
-            info.parallax_height_scale = Some(scale);
+            f.parallax_max_passes = Some(max_passes);
+            f.parallax_height_scale = Some(scale);
         }
         ShaderTypeData::MultiLayerParallax {
             inner_layer_thickness,
@@ -711,22 +770,45 @@ pub(super) fn apply_shader_type_data(info: &mut MaterialInfo, data: &ShaderTypeD
             inner_layer_texture_scale,
             envmap_strength,
         } => {
-            info.multi_layer_inner_thickness = Some(inner_layer_thickness);
-            info.multi_layer_refraction_scale = Some(refraction_scale);
-            info.multi_layer_inner_layer_scale = Some(inner_layer_texture_scale);
-            info.multi_layer_envmap_strength = Some(envmap_strength);
+            f.multi_layer_inner_thickness = Some(inner_layer_thickness);
+            f.multi_layer_refraction_scale = Some(refraction_scale);
+            f.multi_layer_inner_layer_scale = Some(inner_layer_texture_scale);
+            f.multi_layer_envmap_strength = Some(envmap_strength);
         }
         ShaderTypeData::SparkleSnow { sparkle_parameters } => {
-            info.sparkle_parameters = Some(sparkle_parameters);
+            f.sparkle_parameters = Some(sparkle_parameters);
         }
         ShaderTypeData::EyeEnvmap {
             eye_cubemap_scale,
             left_eye_reflection_center,
             right_eye_reflection_center,
         } => {
-            info.eye_cubemap_scale = Some(eye_cubemap_scale);
-            info.eye_left_reflection_center = Some(left_eye_reflection_center);
-            info.eye_right_reflection_center = Some(right_eye_reflection_center);
+            f.eye_cubemap_scale = Some(eye_cubemap_scale);
+            f.eye_left_reflection_center = Some(left_eye_reflection_center);
+            f.eye_right_reflection_center = Some(right_eye_reflection_center);
+        }
+    }
+    f
+}
+
+impl MaterialInfo {
+    /// Project this `MaterialInfo`'s shader-type fields into a
+    /// `ShaderTypeFields` bundle for `ImportedMesh`. See #430.
+    pub(super) fn shader_type_fields(&self) -> ShaderTypeFields {
+        ShaderTypeFields {
+            skin_tint_color: self.skin_tint_color,
+            skin_tint_alpha: self.skin_tint_alpha,
+            hair_tint_color: self.hair_tint_color,
+            eye_cubemap_scale: self.eye_cubemap_scale,
+            eye_left_reflection_center: self.eye_left_reflection_center,
+            eye_right_reflection_center: self.eye_right_reflection_center,
+            parallax_max_passes: self.parallax_max_passes,
+            parallax_height_scale: self.parallax_height_scale,
+            multi_layer_inner_thickness: self.multi_layer_inner_thickness,
+            multi_layer_refraction_scale: self.multi_layer_refraction_scale,
+            multi_layer_inner_layer_scale: self.multi_layer_inner_layer_scale,
+            multi_layer_envmap_strength: self.multi_layer_envmap_strength,
+            sparkle_parameters: self.sparkle_parameters,
         }
     }
 }
@@ -1048,6 +1130,54 @@ mod shader_type_data_tests {
             &ShaderTypeData::EnvironmentMap { env_map_scale: 2.5 },
         );
         assert_eq!(info.env_map_scale, 2.5);
+    }
+
+    /// #430 — `capture_shader_type_fields` is the shared helper the
+    /// BsTriShape import path uses. Exhaustive per-variant check that the
+    /// returned bundle matches what `apply_shader_type_data` writes into
+    /// MaterialInfo.
+    #[test]
+    fn capture_helper_parity_with_apply() {
+        for data in &[
+            ShaderTypeData::None,
+            ShaderTypeData::EnvironmentMap { env_map_scale: 2.5 },
+            ShaderTypeData::SkinTint {
+                skin_tint_color: [0.8, 0.6, 0.5],
+            },
+            ShaderTypeData::Fo76SkinTint {
+                skin_tint_color: [0.9, 0.7, 0.55, 0.25],
+            },
+            ShaderTypeData::HairTint {
+                hair_tint_color: [0.3, 0.15, 0.05],
+            },
+            ShaderTypeData::ParallaxOcc {
+                max_passes: 16.0,
+                scale: 0.05,
+            },
+            ShaderTypeData::MultiLayerParallax {
+                inner_layer_thickness: 0.1,
+                refraction_scale: 0.5,
+                inner_layer_texture_scale: [2.0, 2.0],
+                envmap_strength: 1.25,
+            },
+            ShaderTypeData::SparkleSnow {
+                sparkle_parameters: [1.0, 0.5, 0.25, 2.0],
+            },
+            ShaderTypeData::EyeEnvmap {
+                eye_cubemap_scale: 1.5,
+                left_eye_reflection_center: [0.1, 0.2, 0.3],
+                right_eye_reflection_center: [0.4, 0.5, 0.6],
+            },
+        ] {
+            let mut info = MaterialInfo::default();
+            apply_shader_type_data(&mut info, data);
+            assert_eq!(
+                info.shader_type_fields(),
+                capture_shader_type_fields(data),
+                "variant {:?} must produce identical fields via apply and capture",
+                data
+            );
+        }
     }
 
     #[test]
