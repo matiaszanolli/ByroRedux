@@ -296,6 +296,20 @@ impl BsTriShape {
         let center = stream.read_ni_point3()?;
         let radius = stream.read_f32_le()?;
 
+        // FO76 only (`BS_F76` = BSVER == 155): 6 × f32 `Bound Min Max`
+        // AABB between the bounding sphere and the skin ref. Pre-#342
+        // the parser jumped straight from `radius` to `skin_ref`,
+        // eating the first 4 bytes of the AABB into the skin_ref
+        // field and cascading 24 bytes of slip through every
+        // subsequent field (shader_ref, alpha_ref, vertex_desc). The
+        // per-block `block_size` realignment swallowed the slip
+        // silently — parse rate stayed at 100% while block contents
+        // were wrong. Starfield (BSVER 172) is NOT affected because
+        // `BS_F76` is strict equality. See nif.xml:8231.
+        if stream.bsver() == 155 {
+            stream.skip(24)?;
+        }
+
         // Refs
         let skin_ref = stream.read_block_ref()?;
         let shader_property_ref = stream.read_block_ref()?;
@@ -1125,6 +1139,165 @@ mod skin_vertex_tests {
             stream.position() as usize,
             bytes.len(),
             "BSDynamicTriShape trailing extras not fully consumed"
+        );
+    }
+
+    /// FO76 header — BSVER 155. `BS_F76` condition in nif.xml gates the
+    /// 24-byte `Bound Min Max` AABB between the bounding sphere and the
+    /// skin ref on BSTriShape. See #342.
+    fn fo76_header() -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 12,
+            user_version_2: 155, // Fallout 76 — BS_F76
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    /// Build a minimal valid FO76 BSTriShape body with a non-zero
+    /// `Bound Min Max` payload. Reads `num_triangles` as u32 (BSVER
+    /// >= 130) and omits `particle_data_size` (BS_SSE only). Used by
+    /// the S1-01 / #342 regression test.
+    fn minimal_fo76_bs_tri_shape_bytes() -> Vec<u8> {
+        let mut d = Vec::new();
+        // NiObjectNET: name=-1, extra_data count=0, controller=-1
+        d.extend_from_slice(&(-1i32).to_le_bytes());
+        d.extend_from_slice(&0u32.to_le_bytes());
+        d.extend_from_slice(&(-1i32).to_le_bytes());
+        // NiAVObject (no properties): flags u32, transform, collision_ref
+        d.extend_from_slice(&0u32.to_le_bytes()); // flags
+        for _ in 0..3 {
+            d.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        for row in 0..3 {
+            for col in 0..3 {
+                let v: f32 = if row == col { 1.0 } else { 0.0 };
+                d.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        d.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
+        // BSTriShape: center (3 f32) + radius + Bound Min Max (6 f32, F76)
+        for _ in 0..3 {
+            d.extend_from_slice(&0.0f32.to_le_bytes()); // center
+        }
+        d.extend_from_slice(&0.0f32.to_le_bytes()); // radius
+        // #342 — Bound Min Max payload. Non-zero so a regression that
+        // skipped past it (or still consumed it as skin_ref) would
+        // produce a wildly wrong BlockRef index and fail the test's
+        // skin_ref / shader_ref / alpha_ref assertions.
+        for v in [-1.0f32, -2.0, -3.0, 4.0, 5.0, 6.0] {
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+        // Refs — distinct sentinel values so a byte-slip shows up
+        // immediately in the assertions.
+        d.extend_from_slice(&7i32.to_le_bytes()); // skin_ref
+        d.extend_from_slice(&8i32.to_le_bytes()); // shader_property_ref
+        d.extend_from_slice(&9i32.to_le_bytes()); // alpha_property_ref
+        d.extend_from_slice(&0u64.to_le_bytes()); // vertex_desc
+        // FO76 (BSVER >= 130): num_triangles as u32
+        d.extend_from_slice(&0u32.to_le_bytes()); // num_triangles
+        d.extend_from_slice(&0u16.to_le_bytes()); // num_vertices
+        d.extend_from_slice(&0u32.to_le_bytes()); // data_size
+        // BS_SSE-only particle_data_size is NOT present on FO76.
+        d
+    }
+
+    /// Regression: #342 (S1-01) — FO76 BSTriShape must skip the 24-byte
+    /// `Bound Min Max` AABB between the bounding sphere and the skin
+    /// ref. Pre-fix every FO76 BSTriShape mis-parsed skin_ref,
+    /// shader_property_ref, alpha_property_ref, and vertex_desc by 24
+    /// bytes; per-block `block_size` realignment hid the slip from
+    /// parse-rate metrics but every block's *contents* were wrong.
+    #[test]
+    fn bs_tri_shape_fo76_consumes_bound_min_max() {
+        let header = fo76_header();
+        let bytes = minimal_fo76_bs_tri_shape_bytes();
+
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        let block = parse_block("BSTriShape", &mut stream, Some(bytes.len() as u32))
+            .expect("BSTriShape on FO76 header should parse");
+        let shape = block
+            .as_any()
+            .downcast_ref::<BsTriShape>()
+            .expect("BSTriShape did not downcast");
+
+        // The refs must resolve to the sentinel values we wrote into
+        // the bytes. A 24-byte slip would shift skin_ref to
+        // (-1.0f32 reinterpreted as u32) ≈ 0xBF800000, blowing past
+        // any reasonable block index.
+        assert_eq!(
+            shape.skin_ref.index(),
+            Some(7),
+            "skin_ref misaligned — Bound Min Max was not consumed"
+        );
+        assert_eq!(
+            shape.shader_property_ref.index(),
+            Some(8),
+            "shader_property_ref misaligned (#342 cascade)"
+        );
+        assert_eq!(
+            shape.alpha_property_ref.index(),
+            Some(9),
+            "alpha_property_ref misaligned (#342 cascade)"
+        );
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "FO76 BSTriShape must consume exactly the body (no trailing bytes)"
+        );
+    }
+
+    /// Sibling — Skyrim SE (BSVER 100) must NOT consume the
+    /// Bound Min Max bytes. The condition is strict equality on 155,
+    /// so SkyrimSE / SkyrimLE / FO4 / Starfield stay at the pre-#342
+    /// layout. Regression guard against a future `>= 155` or
+    /// `>= 130` typo.
+    #[test]
+    fn bs_tri_shape_skyrim_sse_skips_no_bound_min_max() {
+        let header = test_header(); // BSVER 100 (SSE)
+        let bytes = minimal_bs_tri_shape_bytes();
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        parse_block("BSTriShape", &mut stream, Some(bytes.len() as u32))
+            .expect("SSE BSTriShape must still parse after the FO76 gate lands");
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "SSE body length unchanged — BSVER != 155 must not skip Bound Min Max"
+        );
+    }
+
+    /// Sibling — Starfield (BSVER 172) also NOT affected. The pre-fix
+    /// issue description called this out explicitly; test pins the
+    /// boundary. Reuses `minimal_fo76_bs_tri_shape_bytes` (same FO4+
+    /// layout: num_triangles u32, no particle_data_size) but patches
+    /// BSVER to 172 and removes the 24-byte Bound Min Max payload —
+    /// a strict-equality `BSVER == 155` gate must NOT fire here.
+    #[test]
+    fn bs_tri_shape_starfield_skips_no_bound_min_max() {
+        let mut header = fo76_header();
+        header.user_version_2 = 172;
+        // Starfield body is identical to FO76 minus the Bound Min Max.
+        // Build from the FO76 bytes and splice out the 24 bytes at the
+        // Bound Min Max offset: NiObjectNET(12) + flags(4) + transform(52)
+        // + collision_ref(4) + center(12) + radius(4) = 88 → Bound Min Max
+        // occupies offsets 88..112.
+        let mut sf = minimal_fo76_bs_tri_shape_bytes();
+        sf.drain(88..112);
+        let mut stream = crate::stream::NifStream::new(&sf, &header);
+        parse_block("BSTriShape", &mut stream, Some(sf.len() as u32))
+            .expect("Starfield BSTriShape must still parse after the FO76 gate lands");
+        assert_eq!(
+            stream.position() as usize,
+            sf.len(),
+            "Starfield body length unchanged — BSVER 172 != 155 must not skip Bound Min Max"
         );
     }
 
