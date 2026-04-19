@@ -36,9 +36,9 @@ use controller::{
     NiSequenceStreamHelper, NiSingleInterpController, NiTimeController, NiUVController,
 };
 use extra_data::{
-    BsBehaviorGraphExtraData, BsBound, BsClothExtraData, BsConnectPointChildren,
-    BsConnectPointParents, BsDecalPlacementVectorExtraData, BsFurnitureMarker, BsInvMarker,
-    NiExtraData,
+    BsAnimNote, BsAnimNotes, BsBehaviorGraphExtraData, BsBound, BsClothExtraData,
+    BsConnectPointChildren, BsConnectPointParents, BsDecalPlacementVectorExtraData,
+    BsFurnitureMarker, BsInvMarker, NiExtraData,
 };
 use interpolator::{
     NiBSplineBasisData, NiBSplineCompTransformInterpolator, NiBSplineData, NiBlendBoolInterpolator,
@@ -313,6 +313,12 @@ pub fn parse_block(
             Ok(Box::new(BsDecalPlacementVectorExtraData::parse(stream)?))
         }
         "BSBehaviorGraphExtraData" => Ok(Box::new(BsBehaviorGraphExtraData::parse(stream)?)),
+        // BSAnimNote / BSAnimNotes — IK event hints on FO3+ animation
+        // sequences (grab-IK arm picks, look-IK target tracking). Before
+        // #432 these landed on `NiUnknown`, silently dropping the hint
+        // data after `block_size` recovery consumed the bytes.
+        "BSAnimNote" => Ok(Box::new(BsAnimNote::parse(stream)?)),
+        "BSAnimNotes" => Ok(Box::new(BsAnimNotes::parse(stream)?)),
         "BSInvMarker" => Ok(Box::new(BsInvMarker::parse(stream)?)),
         // BSFurnitureMarker / BSFurnitureMarkerNode — sitting/sleeping/leaning
         // positions attached to furniture meshes (chairs, beds, leaning spots).

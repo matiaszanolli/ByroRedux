@@ -8,6 +8,7 @@ use crate::blocks::controller::{
     ControlledBlock, NiControllerManager, NiControllerSequence, NiGeomMorpherController,
     NiMorphData,
 };
+use crate::blocks::extra_data::{AnimNoteType, BsAnimNote, BsAnimNotes};
 use crate::blocks::interpolator::NiTextKeyExtraData;
 use crate::blocks::interpolator::{
     FloatKey, KeyGroup, KeyType, NiBSplineBasisData, NiBSplineCompTransformInterpolator,
@@ -378,17 +379,44 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
     }
 
     // Import text keys from NiTextKeyExtraData if referenced.
-    let text_keys = seq
+    let mut text_keys = seq
         .text_keys_ref
         .index()
         .and_then(|idx| scene.get_as::<NiTextKeyExtraData>(idx))
         .map(|tkd| tkd.text_keys.clone())
         .unwrap_or_default();
 
+    // Import BSAnimNote IK hints (#432). Each `BSAnimNotes` referenced by
+    // `seq.anim_note_refs` holds a list of `BSAnimNote` refs; each note
+    // has a time + IK kind (grab / look) + conditional payload. Serialize
+    // each as a labeled text-key entry so the existing
+    // `collect_text_key_events` dispatch feeds them into the ECS text-
+    // event channel alongside the gameplay triggers — consumers can
+    // filter on the `animnote:` prefix to pick up IK hints specifically.
+    let anim_notes_before = text_keys.len();
+    for notes_ref in &seq.anim_note_refs {
+        let Some(notes_idx) = notes_ref.index() else {
+            continue;
+        };
+        let Some(notes) = scene.get_as::<BsAnimNotes>(notes_idx) else {
+            continue;
+        };
+        for note_ref in &notes.notes {
+            let Some(note_idx) = note_ref.index() else {
+                continue;
+            };
+            let Some(note) = scene.get_as::<BsAnimNote>(note_idx) else {
+                continue;
+            };
+            text_keys.push((note.time, format_anim_note_label(note)));
+        }
+    }
+
     if !text_keys.is_empty() {
         log::debug!(
-            "Imported {} text keys for sequence '{}'",
+            "Imported {} text keys ({} anim-note hints) for sequence '{}'",
             text_keys.len(),
+            text_keys.len() - anim_notes_before,
             name
         );
     }
@@ -405,6 +433,27 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
         color_channels,
         bool_channels,
         text_keys,
+    }
+}
+
+/// Serialize a `BSAnimNote` into a label suitable for the `text_keys`
+/// channel. Downstream consumers filter on the `animnote:` prefix to
+/// pick up IK hints specifically and ignore gameplay text events. See
+/// the `BSAnimNote` type for field semantics.
+fn format_anim_note_label(note: &BsAnimNote) -> String {
+    match note.kind {
+        AnimNoteType::GrabIk => {
+            format!("animnote:grabik:arm={}", note.arm.unwrap_or(0))
+        }
+        AnimNoteType::LookIk => {
+            format!(
+                "animnote:lookik:gain={};state={}",
+                note.gain.unwrap_or(0.0),
+                note.state.unwrap_or(0)
+            )
+        }
+        AnimNoteType::Invalid => "animnote:invalid".to_string(),
+        AnimNoteType::Unknown(raw) => format!("animnote:unknown={raw}"),
     }
 }
 

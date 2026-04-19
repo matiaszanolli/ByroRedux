@@ -5,6 +5,7 @@
 
 use super::NiObject;
 use crate::stream::NifStream;
+use crate::types::BlockRef;
 use crate::version::NifVersion;
 use std::any::Any;
 use std::io;
@@ -855,6 +856,131 @@ impl BsConnectPointChildren {
     }
 }
 
+// ── BSAnimNote / BSAnimNotes ──────────────────────────────────────────
+//
+// Bethesda IK hint blocks attached to `NiControllerSequence` via
+// `anim_note_refs` / the singular `anim_notes` ref. Before #432 these
+// blocks hit the `NiUnknown` fallback on every FO3/FNV/Skyrim/FO4 .kf
+// file, which — combined with the per-block recovery seek — silently
+// dropped the IK hints. Layout per `docs/legacy/nif.xml:6871-6891`:
+//
+// ```
+// enum AnimNoteType : uint { 0 = INVALID, 1 = GRABIK, 2 = LOOKIK }
+// BSAnimNote : NiObject {
+//     Type  : AnimNoteType,
+//     Time  : f32,
+//     Arm   : u32   cond Type == 1  (GRABIK arm index)
+//     Gain  : f32   cond Type == 2  (LOOKIK blend gain)
+//     State : u32   cond Type == 2  (LOOKIK target state)
+// }
+// BSAnimNotes : NiObject {
+//     Num Anim Notes : u16,
+//     Anim Notes     : Vec<Ref<BSAnimNote>>,
+// }
+// ```
+//
+// Note: these are IK hints (grab-IK arm picking, look-IK target tracking),
+// NOT the generic gameplay text events that `NiTextKeyExtraData` carries.
+// Footsteps / weapon-impact / SFX triggers flow through `text_keys` as
+// before.
+
+/// Type of a [`BsAnimNote`] — matches the `AnimNoteType` enum in nif.xml.
+/// Unknown numeric values preserve the raw u32 so the importer can
+/// diagnose corrupted content without losing information.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AnimNoteType {
+    Invalid,
+    GrabIk,
+    LookIk,
+    Unknown(u32),
+}
+
+impl AnimNoteType {
+    pub fn from_u32(v: u32) -> Self {
+        match v {
+            0 => AnimNoteType::Invalid,
+            1 => AnimNoteType::GrabIk,
+            2 => AnimNoteType::LookIk,
+            other => AnimNoteType::Unknown(other),
+        }
+    }
+}
+
+/// Single IK hint attached to an animation sequence. See the module
+/// comment above for the nif.xml layout.
+#[derive(Debug, Clone)]
+pub struct BsAnimNote {
+    pub kind: AnimNoteType,
+    pub time: f32,
+    /// GRABIK — arm index (0 = left, 1 = right per Bethesda convention).
+    /// Present only when `kind == GrabIk`.
+    pub arm: Option<u32>,
+    /// LOOKIK — blend-in gain. Present only when `kind == LookIk`.
+    pub gain: Option<f32>,
+    /// LOOKIK — target state. Present only when `kind == LookIk`.
+    pub state: Option<u32>,
+}
+
+impl NiObject for BsAnimNote {
+    fn block_type_name(&self) -> &'static str {
+        "BSAnimNote"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsAnimNote {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let raw_type = stream.read_u32_le()?;
+        let time = stream.read_f32_le()?;
+        let kind = AnimNoteType::from_u32(raw_type);
+        let (arm, gain, state) = match kind {
+            AnimNoteType::GrabIk => (Some(stream.read_u32_le()?), None, None),
+            AnimNoteType::LookIk => {
+                let gain = stream.read_f32_le()?;
+                let state = stream.read_u32_le()?;
+                (None, Some(gain), Some(state))
+            }
+            // Invalid / Unknown — no conditional tail.
+            AnimNoteType::Invalid | AnimNoteType::Unknown(_) => (None, None, None),
+        };
+        Ok(Self {
+            kind,
+            time,
+            arm,
+            gain,
+            state,
+        })
+    }
+}
+
+/// Collection of [`BsAnimNote`] refs — one per IK event in the sequence.
+#[derive(Debug, Clone)]
+pub struct BsAnimNotes {
+    pub notes: Vec<BlockRef>,
+}
+
+impl NiObject for BsAnimNotes {
+    fn block_type_name(&self) -> &'static str {
+        "BSAnimNotes"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsAnimNotes {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let count = stream.read_u16_le()? as usize;
+        let mut notes = Vec::with_capacity(count);
+        for _ in 0..count {
+            notes.push(stream.read_block_ref()?);
+        }
+        Ok(Self { notes })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1019,5 +1145,109 @@ mod tests {
         let block = BsBehaviorGraphExtraData::parse(&mut stream).unwrap();
         assert!(!block.controls_base_skeleton);
         assert_eq!(stream.position() as usize, data.len());
+    }
+
+    // ── BSAnimNote / BSAnimNotes regression tests (#432) ──────────────
+    //
+    // Each test asserts the parser consumes exactly the right number of
+    // bytes and produces the right typed payload. Exact consumption is
+    // load-bearing for Oblivion's block-sizes-less recovery path — if we
+    // under-read, the next block's start offset is wrong and the whole
+    // file cascades into NiUnknown.
+
+    #[test]
+    fn bs_anim_note_invalid_consumes_type_plus_time() {
+        let header = skyrim_header();
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u32.to_le_bytes()); // type = INVALID
+        data.extend_from_slice(&1.25f32.to_le_bytes()); // time
+        let mut stream = NifStream::new(&data, &header);
+        let note = BsAnimNote::parse(&mut stream).unwrap();
+        assert_eq!(note.kind, AnimNoteType::Invalid);
+        assert_eq!(note.time, 1.25);
+        assert!(note.arm.is_none() && note.gain.is_none() && note.state.is_none());
+        assert_eq!(stream.position() as usize, 8, "INVALID reads only 8 bytes");
+    }
+
+    #[test]
+    fn bs_anim_note_grabik_reads_arm_only() {
+        let header = skyrim_header();
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u32.to_le_bytes()); // type = GRABIK
+        data.extend_from_slice(&0.5f32.to_le_bytes()); // time
+        data.extend_from_slice(&1u32.to_le_bytes()); // arm (right hand)
+        let mut stream = NifStream::new(&data, &header);
+        let note = BsAnimNote::parse(&mut stream).unwrap();
+        assert_eq!(note.kind, AnimNoteType::GrabIk);
+        assert_eq!(note.time, 0.5);
+        assert_eq!(note.arm, Some(1));
+        assert!(note.gain.is_none());
+        assert!(note.state.is_none());
+        assert_eq!(stream.position() as usize, 12, "GRABIK reads 4+4+4");
+    }
+
+    #[test]
+    fn bs_anim_note_lookik_reads_gain_and_state() {
+        let header = skyrim_header();
+        let mut data = Vec::new();
+        data.extend_from_slice(&2u32.to_le_bytes()); // type = LOOKIK
+        data.extend_from_slice(&2.0f32.to_le_bytes()); // time
+        data.extend_from_slice(&0.75f32.to_le_bytes()); // gain
+        data.extend_from_slice(&3u32.to_le_bytes()); // state
+        let mut stream = NifStream::new(&data, &header);
+        let note = BsAnimNote::parse(&mut stream).unwrap();
+        assert_eq!(note.kind, AnimNoteType::LookIk);
+        assert_eq!(note.time, 2.0);
+        assert_eq!(note.gain, Some(0.75));
+        assert_eq!(note.state, Some(3));
+        assert!(note.arm.is_none());
+        assert_eq!(stream.position() as usize, 16, "LOOKIK reads 4+4+4+4");
+    }
+
+    #[test]
+    fn bs_anim_note_unknown_type_is_preserved_and_stops_at_time() {
+        // Bethesda occasionally ships out-of-range AnimNoteType values
+        // on older content. The parser preserves the raw value and
+        // stops reading — the conditional tail is only present for the
+        // known enum values, not for the unknown ones.
+        let header = skyrim_header();
+        let mut data = Vec::new();
+        data.extend_from_slice(&42u32.to_le_bytes());
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        let mut stream = NifStream::new(&data, &header);
+        let note = BsAnimNote::parse(&mut stream).unwrap();
+        assert_eq!(note.kind, AnimNoteType::Unknown(42));
+        assert_eq!(stream.position() as usize, 8);
+    }
+
+    #[test]
+    fn bs_anim_notes_parses_array_of_refs() {
+        let header = skyrim_header();
+        let mut data = Vec::new();
+        data.extend_from_slice(&3u16.to_le_bytes()); // count = 3
+        data.extend_from_slice(&10i32.to_le_bytes());
+        data.extend_from_slice(&11i32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // NULL ref
+        let mut stream = NifStream::new(&data, &header);
+        let notes = BsAnimNotes::parse(&mut stream).unwrap();
+        assert_eq!(notes.notes.len(), 3);
+        assert_eq!(notes.notes[0].index(), Some(10));
+        assert_eq!(notes.notes[1].index(), Some(11));
+        assert_eq!(notes.notes[2].index(), None);
+        assert_eq!(
+            stream.position() as usize,
+            14,
+            "2 bytes for count + 3 × 4 bytes for refs = 14"
+        );
+    }
+
+    #[test]
+    fn bs_anim_notes_zero_count_reads_only_header() {
+        let header = skyrim_header();
+        let data = 0u16.to_le_bytes();
+        let mut stream = NifStream::new(&data, &header);
+        let notes = BsAnimNotes::parse(&mut stream).unwrap();
+        assert!(notes.notes.is_empty());
+        assert_eq!(stream.position() as usize, 2);
     }
 }
