@@ -88,6 +88,23 @@ pub(super) struct MaterialInfo {
     /// the renderer for alpha-blend overlay. Empty slots are omitted so
     /// downstream consumers only see reachable textures.
     pub decal_maps: Vec<String>,
+    /// Parallax / height texture (`BSShaderTextureSet` slot 3). FO3/FNV
+    /// architecture relies on this for brick-wall / concrete
+    /// parallax-occlusion mapping on `shader_type = 3` (Parallax_Shader_Index_15)
+    /// and `shader_type = 7` (Parallax_Occlusion) PPLighting materials.
+    /// Pre-#452 the importer stopped reading at slot 2, so every Pitt /
+    /// Point Lookout / Hoover Dam parallax wall landed flat. See #452.
+    pub parallax_map: Option<String>,
+    /// Environment cubemap (`BSShaderTextureSet` slot 4). Drives the
+    /// glass bottle / power-armor / smooth-metal reflection branch.
+    /// `env_map_scale` is already captured but had no texture route
+    /// until #452.
+    pub env_map: Option<String>,
+    /// Environment-reflection mask (`BSShaderTextureSet` slot 5). Per-
+    /// texel attenuation of the `env_map` reflection — used on armor
+    /// edges and rim highlights so only the polished surface reflects.
+    /// See #452.
+    pub env_mask: Option<String>,
     /// How vertex colors should participate in shading. See #214 /
     /// `VertexColorMode`. Defaults to `AmbientDiffuse` — the value
     /// Gamebryo uses when the NIF has no `NiVertexColorProperty`.
@@ -257,6 +274,9 @@ impl Default for MaterialInfo {
             gloss_map: None,
             dark_map: None,
             decal_maps: Vec::new(),
+            parallax_map: None,
+            env_map: None,
+            env_mask: None,
             vertex_color_mode: VertexColorMode::AmbientDiffuse,
             alpha_blend: false,
             src_blend_mode: 6, // SRC_ALPHA — Gamebryo default
@@ -434,6 +454,30 @@ pub(super) fn extract_material_info(
                     if info.glow_map.is_none() {
                         if let Some(glow) = tex_set.textures.get(2).filter(|s| !s.is_empty()) {
                             info.glow_map = Some(glow.clone());
+                        }
+                    }
+                    // Parallax / height (textures[3]). Used by
+                    // BSLightingShaderProperty ParallaxOcc +
+                    // MultiLayerParallax shader-type variants. The
+                    // scale / passes scalars already arrive via
+                    // `apply_shader_type_data`; pair them with the
+                    // texture here. #452.
+                    if info.parallax_map.is_none() {
+                        if let Some(px) = tex_set.textures.get(3).filter(|s| !s.is_empty()) {
+                            info.parallax_map = Some(px.clone());
+                        }
+                    }
+                    // Env cube (textures[4]) + env mask (textures[5])
+                    // — reach the renderer alongside the existing
+                    // `env_map_scale`. #452.
+                    if info.env_map.is_none() {
+                        if let Some(env) = tex_set.textures.get(4).filter(|s| !s.is_empty()) {
+                            info.env_map = Some(env.clone());
+                        }
+                    }
+                    if info.env_mask.is_none() {
+                        if let Some(mask) = tex_set.textures.get(5).filter(|s| !s.is_empty()) {
+                            info.env_mask = Some(mask.clone());
                         }
                     }
                 }
@@ -638,7 +682,43 @@ pub(super) fn extract_material_info(
                             info.glow_map = Some(glow.clone());
                         }
                     }
+                    // Parallax / height map is textures[3] (FO3/FNV
+                    // Parallax_Shader_Index_15 / Parallax_Occlusion).
+                    // See #452.
+                    if info.parallax_map.is_none() {
+                        if let Some(px) = tex_set.textures.get(3).filter(|s| !s.is_empty()) {
+                            info.parallax_map = Some(px.clone());
+                        }
+                    }
+                    // Environment cubemap is textures[4]. Glass bottles,
+                    // power armor, polished metal — pre-#452 the path was
+                    // read and thrown away. env_map_scale was captured
+                    // but had no texture to route to.
+                    if info.env_map.is_none() {
+                        if let Some(env) = tex_set.textures.get(4).filter(|s| !s.is_empty()) {
+                            info.env_map = Some(env.clone());
+                        }
+                    }
+                    // Environment-reflection mask is textures[5]. #452.
+                    if info.env_mask.is_none() {
+                        if let Some(mask) = tex_set.textures.get(5).filter(|s| !s.is_empty()) {
+                            info.env_mask = Some(mask.clone());
+                        }
+                    }
                 }
+            }
+            // `BSShaderPPLightingProperty.parallax_max_passes` /
+            // `parallax_scale` (parsed since BSVER >= 24 per
+            // `blocks/shader.rs:70`) flow straight through. Only
+            // overwrite when the material hasn't already bound them
+            // from a Skyrim+ BSLightingShaderProperty ParallaxOcc
+            // variant — the shader-type capture path in
+            // `apply_shader_type_data` keeps those values. #452.
+            if info.parallax_max_passes.is_none() {
+                info.parallax_max_passes = Some(shader.parallax_max_passes);
+            }
+            if info.parallax_height_scale.is_none() {
+                info.parallax_height_scale = Some(shader.parallax_scale);
             }
             if shader.shader.shader_flags_1 & SF_DOUBLE_SIDED != 0 {
                 info.two_sided = true;
@@ -1396,5 +1476,229 @@ mod secondary_slot_tests {
         assert!(info.detail_map.is_none());
         assert!(info.gloss_map.is_none());
         assert_eq!(info.vertex_color_mode, VertexColorMode::AmbientDiffuse);
+    }
+}
+
+/// Regression tests for #452 — `BSShaderTextureSet` slots 3/4/5 must
+/// reach the importer via both the FO3/FNV `BSShaderPPLightingProperty`
+/// path and the Skyrim+ `BSLightingShaderProperty` path. Previously
+/// the importer stopped at slot 2 so parallax walls rendered flat and
+/// glass/power-armor env reflections never bound.
+#[cfg(test)]
+mod texture_slot_3_4_5_tests {
+    use super::*;
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::node::NiNode;
+    use crate::blocks::properties::NiTexturingProperty;
+    use crate::blocks::shader::{
+        BSLightingShaderProperty, BSShaderPPLightingProperty, BSShaderTextureSet, ShaderTypeData,
+    };
+    use crate::blocks::tri_shape::NiTriShape;
+    use crate::blocks::NiObject;
+    use crate::types::{BlockRef, NiTransform};
+    use std::sync::Arc;
+
+    fn identity_transform() -> NiTransform {
+        NiTransform::default()
+    }
+
+    fn empty_net() -> NiObjectNETData {
+        NiObjectNETData {
+            name: None,
+            extra_data_refs: Vec::new(),
+            controller_ref: BlockRef::NULL,
+        }
+    }
+
+    fn fo3_pp_lighting_with_texture_set(tex_set_idx: u32) -> BSShaderPPLightingProperty {
+        use crate::blocks::base::BSShaderPropertyData;
+        BSShaderPPLightingProperty {
+            net: empty_net(),
+            shader: BSShaderPropertyData {
+                shade_flags: 0,
+                shader_type: 7, // Parallax_Occlusion
+                shader_flags_1: 0,
+                shader_flags_2: 0,
+                env_map_scale: 0.5,
+            },
+            texture_clamp_mode: 0,
+            texture_set_ref: BlockRef(tex_set_idx),
+            refraction_strength: 0.0,
+            refraction_fire_period: 0,
+            parallax_max_passes: 4.0,
+            parallax_scale: 0.04,
+        }
+    }
+
+    fn make_tri_shape_with_props(properties: Vec<BlockRef>) -> NiTriShape {
+        NiTriShape {
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: Some(Arc::from("TestShape")),
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef::NULL,
+                },
+                flags: 0,
+                transform: identity_transform(),
+                properties,
+                collision_ref: BlockRef::NULL,
+            },
+            data_ref: BlockRef::NULL,
+            skin_instance_ref: BlockRef::NULL,
+            shader_property_ref: BlockRef::NULL,
+            alpha_property_ref: BlockRef::NULL,
+            num_materials: 0,
+            active_material_index: 0,
+        }
+    }
+
+    #[test]
+    fn pp_lighting_populates_parallax_env_env_mask_from_slots_3_4_5() {
+        // Scene layout:
+        //   [0] NiNode (root)  — not used by extract_material_info
+        //   [1] BSShaderPPLightingProperty referencing block 2
+        //   [2] BSShaderTextureSet with 6 populated slots
+        let tex_set = BSShaderTextureSet {
+            textures: vec![
+                "textures\\wall_d.dds".to_string(),
+                "textures\\wall_n.dds".to_string(),
+                "textures\\wall_g.dds".to_string(),
+                "textures\\wall_p.dds".to_string(),
+                "textures\\wall_e.dds".to_string(),
+                "textures\\wall_em.dds".to_string(),
+            ],
+        };
+        let blocks: Vec<Box<dyn NiObject>> = vec![
+            Box::new(NiNode {
+                av: NiAVObjectData {
+                    net: empty_net(),
+                    flags: 0,
+                    transform: identity_transform(),
+                    properties: Vec::new(),
+                    collision_ref: BlockRef::NULL,
+                },
+                children: Vec::new(),
+                effects: Vec::new(),
+            }),
+            Box::new(fo3_pp_lighting_with_texture_set(2)),
+            Box::new(tex_set),
+        ];
+        let scene = NifScene {
+            blocks,
+            ..NifScene::default()
+        };
+        let shape = make_tri_shape_with_props(vec![BlockRef(1)]);
+        let info = extract_material_info(&scene, &shape, &[]);
+        assert_eq!(info.texture_path.as_deref(), Some("textures\\wall_d.dds"));
+        assert_eq!(info.normal_map.as_deref(), Some("textures\\wall_n.dds"));
+        assert_eq!(info.glow_map.as_deref(), Some("textures\\wall_g.dds"));
+        assert_eq!(info.parallax_map.as_deref(), Some("textures\\wall_p.dds"));
+        assert_eq!(info.env_map.as_deref(), Some("textures\\wall_e.dds"));
+        assert_eq!(info.env_mask.as_deref(), Some("textures\\wall_em.dds"));
+        // Scalars ride through from BSShaderPPLightingProperty.
+        assert_eq!(info.parallax_max_passes, Some(4.0));
+        assert_eq!(info.parallax_height_scale, Some(0.04));
+    }
+
+    #[test]
+    fn pp_lighting_with_only_3_slots_leaves_parallax_and_env_none() {
+        // Old-style texture set with just base/normal/glow — parallax
+        // slots stay None so downstream consumers (FO3-REN-M2) skip
+        // the parallax branch cleanly.
+        let tex_set = BSShaderTextureSet {
+            textures: vec![
+                "textures\\wall_d.dds".to_string(),
+                "textures\\wall_n.dds".to_string(),
+                "textures\\wall_g.dds".to_string(),
+            ],
+        };
+        let blocks: Vec<Box<dyn NiObject>> = vec![
+            Box::new(fo3_pp_lighting_with_texture_set(1)),
+            Box::new(tex_set),
+        ];
+        let scene = NifScene {
+            blocks,
+            ..NifScene::default()
+        };
+        let shape = make_tri_shape_with_props(vec![BlockRef(0)]);
+        let info = extract_material_info(&scene, &shape, &[]);
+        assert!(info.parallax_map.is_none());
+        assert!(info.env_map.is_none());
+        assert!(info.env_mask.is_none());
+    }
+
+    #[test]
+    fn bs_lighting_shader_populates_parallax_env_slots() {
+        // Skyrim+ path: same 6-slot texture set should flow through.
+        let tex_set = BSShaderTextureSet {
+            textures: vec![
+                "d.dds".to_string(),
+                "n.dds".to_string(),
+                "g.dds".to_string(),
+                "p.dds".to_string(),
+                "e.dds".to_string(),
+                "em.dds".to_string(),
+            ],
+        };
+        let shader = BSLightingShaderProperty {
+            shader_type: 7, // ParallaxOcc
+            net: empty_net(),
+            material_reference: false,
+            shader_flags_1: 0,
+            shader_flags_2: 0,
+            sf1_crcs: Vec::new(),
+            sf2_crcs: Vec::new(),
+            uv_offset: [0.0, 0.0],
+            uv_scale: [1.0, 1.0],
+            texture_set_ref: BlockRef(1),
+            emissive_color: [0.0; 3],
+            emissive_multiple: 1.0,
+            texture_clamp_mode: 0,
+            alpha: 1.0,
+            refraction_strength: 0.0,
+            glossiness: 80.0,
+            specular_color: [1.0; 3],
+            specular_strength: 1.0,
+            lighting_effect_1: 0.0,
+            lighting_effect_2: 0.0,
+            subsurface_rolloff: 0.0,
+            rimlight_power: 0.0,
+            backlight_power: 0.0,
+            grayscale_to_palette_scale: 0.0,
+            fresnel_power: 0.0,
+            wetness: None,
+            luminance: None,
+            do_translucency: false,
+            translucency: None,
+            texture_arrays: Vec::new(),
+            shader_type_data: ShaderTypeData::None,
+        };
+        let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader), Box::new(tex_set)];
+        let scene = NifScene {
+            blocks,
+            ..NifScene::default()
+        };
+        let mut shape = make_tri_shape_with_props(Vec::new());
+        shape.shader_property_ref = BlockRef(0);
+        let info = extract_material_info(&scene, &shape, &[]);
+        assert_eq!(info.parallax_map.as_deref(), Some("p.dds"));
+        assert_eq!(info.env_map.as_deref(), Some("e.dds"));
+        assert_eq!(info.env_mask.as_deref(), Some("em.dds"));
+    }
+
+    // Keep the MaterialInfo default honest: new fields land as None.
+    #[test]
+    fn default_material_info_has_none_for_parallax_env_slots() {
+        let info = MaterialInfo::default();
+        assert!(info.parallax_map.is_none());
+        assert!(info.env_map.is_none());
+        assert!(info.env_mask.is_none());
+    }
+
+    // Keep `NiTexturingProperty` imports working — referenced by the
+    // outer test module via `use super::*`. Otherwise clippy complains.
+    #[allow(dead_code)]
+    fn _uses_ni_texturing_property() -> NiTexturingProperty {
+        panic!()
     }
 }
