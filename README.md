@@ -6,7 +6,7 @@ Not a port — a ground-up rebuild that understands the legacy architecture and 
 
 ![*Anvil Heinrich Oaken Halls* from The Elder Scrolls IV: Oblivion, rendered in ByroRedux](docs/screenshots/anvil-oaken-halls.png)
 
-*Anvil Heinrich Oaken Halls House (Oblivion) loaded directly from `Oblivion.esm` + `Oblivion - Meshes.bsa` + `Oblivion - Textures - Compressed.bsa` — 379 entities, 376 meshes, 104 DDS textures, 12 lights (cell XCLL ambient + per-mesh NiLight torches), RT multi-light with ray query shadows at ~1600 FPS on RTX 4070 Ti.*
+*Anvil Heinrich Oaken Halls House (Oblivion) loaded directly from `Oblivion.esm` + `Oblivion - Meshes.bsa` + `Oblivion - Textures - Compressed.bsa` — 379 entities, 376 meshes, 104 DDS textures, 12 lights (cell XCLL ambient + per-mesh NiLight torches), RT multi-light with ray query shadows at ~100 FPS on RTX 4070 Ti.*
 
 ![*Prospector Saloon* from Fallout: New Vegas, rendered in ByroRedux](docs/screenshots/prospector-saloon.png)
 
