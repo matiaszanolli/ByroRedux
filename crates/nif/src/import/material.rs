@@ -435,6 +435,10 @@ pub(super) fn extract_material_info(
             info.has_material_data = true;
         }
         if let Some(shader) = scene.get_as::<BSEffectShaderProperty>(idx) {
+            if info.material_path.is_none() {
+                info.material_path =
+                    crate::import::mesh::material_path_from_name(shader.net.name.as_deref());
+            }
             if info.texture_path.is_none() && !shader.source_texture.is_empty() {
                 info.texture_path = Some(shader.source_texture.clone());
             }
