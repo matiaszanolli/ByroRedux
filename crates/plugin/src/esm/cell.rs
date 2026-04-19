@@ -44,6 +44,24 @@ pub struct CellLighting {
     pub light_fade_begin: Option<f32>,
     /// Light fade end distance (bytes 84-87).
     pub light_fade_end: Option<f32>,
+    /// Directional ambient cube — one RGB triplet per cardinal axis
+    /// (bytes 40-63 as 6×RGBA). The face order follows Creation Kit /
+    /// niflib convention: `[+X, -X, +Y, -Y, +Z, -Z]`. Alpha bytes are
+    /// discarded — vanilla Skyrim stores zero there anyway. Drives the
+    /// per-cell ambient probe: ±Z asymmetry is what makes cave floors
+    /// read warm while ceilings read cool without a dedicated IBL pass.
+    /// Pre-#367 these 24 bytes were parsed-past-but-dropped, so every
+    /// Skyrim interior used a single `ambient` color. `None` on pre-
+    /// Skyrim XCLL (36 / 40 bytes).
+    pub directional_ambient: Option<[[f32; 3]; 6]>,
+    /// Specular color (bytes 64-67 as RGBA → RGB triplet). `None` on
+    /// pre-Skyrim XCLL.
+    pub specular_color: Option<[f32; 3]>,
+    /// Specular alpha (byte 67). Stored separately so consumers can
+    /// decide whether the RGBA packing was intentional or padding.
+    pub specular_alpha: Option<f32>,
+    /// Fresnel power exponent (bytes 68-71). `None` on pre-Skyrim XCLL.
+    pub fresnel_power: Option<f32>,
 }
 
 /// A texture layer within a terrain quadrant.
@@ -545,9 +563,10 @@ fn parse_cell_group(
                             //   28-31: Directional fade (f32)
                             //   32-35: Fog clip distance (f32)
                             //   36-39: Fog power (f32)
-                            //   40-63: Directional ambient 6×RGBA (24 bytes, unused for now)
-                            //   64-67: Specular color RGBA (unused)
-                            //   68-71: Fresnel power (f32, unused)
+                            //   40-63: Directional ambient 6×RGBA — per-face
+                            //          ambient cube in CK order (+X,-X,+Y,-Y,+Z,-Z)
+                            //   64-67: Specular color RGBA
+                            //   68-71: Fresnel power (f32)
                             //   72-75: Fog far color RGBA
                             //   76-79: Fog max (f32)
                             //   80-83: Light fade begin (f32)
@@ -557,15 +576,39 @@ fn parse_cell_group(
                                 dir_fade,
                                 fog_clip,
                                 fog_power,
+                                directional_ambient,
+                                specular_color,
+                                specular_alpha,
+                                fresnel_power,
                                 fog_far_color,
                                 fog_max,
                                 lf_begin,
                                 lf_end,
                             ) = if d.len() >= 92 {
+                                // Unpack the 6 × RGBA ambient cube (#367). RGB
+                                // goes into the output; alpha is vanilla-zero
+                                // and dropped here.
+                                let mut ambient_cube = [[0.0f32; 3]; 6];
+                                for (face, out) in ambient_cube.iter_mut().enumerate() {
+                                    let o = 40 + face * 4;
+                                    *out = [
+                                        d[o] as f32 / 255.0,
+                                        d[o + 1] as f32 / 255.0,
+                                        d[o + 2] as f32 / 255.0,
+                                    ];
+                                }
                                 (
                                     Some(f32::from_le_bytes([d[28], d[29], d[30], d[31]])),
                                     Some(f32::from_le_bytes([d[32], d[33], d[34], d[35]])),
                                     Some(f32::from_le_bytes([d[36], d[37], d[38], d[39]])),
+                                    Some(ambient_cube),
+                                    Some([
+                                        d[64] as f32 / 255.0,
+                                        d[65] as f32 / 255.0,
+                                        d[66] as f32 / 255.0,
+                                    ]),
+                                    Some(d[67] as f32 / 255.0),
+                                    Some(f32::from_le_bytes([d[68], d[69], d[70], d[71]])),
                                     Some([
                                         d[72] as f32 / 255.0,
                                         d[73] as f32 / 255.0,
@@ -576,7 +619,7 @@ fn parse_cell_group(
                                     Some(f32::from_le_bytes([d[84], d[85], d[86], d[87]])),
                                 )
                             } else {
-                                (None, None, None, None, None, None, None)
+                                (None, None, None, None, None, None, None, None, None, None, None)
                             };
 
                             lighting = Some(CellLighting {
@@ -593,6 +636,10 @@ fn parse_cell_group(
                                 fog_max,
                                 light_fade_begin: lf_begin,
                                 light_fade_end: lf_end,
+                                directional_ambient,
+                                specular_color,
+                                specular_alpha,
+                                fresnel_power,
                             });
                         }
                         _ => {}
@@ -2092,6 +2139,194 @@ mod tests {
         assert_eq!(cell.music_type_form, None);
         assert_eq!(cell.location_form, None);
         assert!(cell.regions.is_empty());
+    }
+
+    #[test]
+    fn parse_cell_skyrim_xcll_extracts_directional_ambient_cube() {
+        // Regression: #367 (S6-05) — the 92-byte Skyrim XCLL's
+        // bytes 40-71 (6×RGBA ambient cube + specular RGBA + fresnel
+        // f32) were parsed-past and dropped. Build a synthetic 92-byte
+        // XCLL with distinctive per-face colours and assert all six
+        // slots round-trip along with the specular / fresnel fields.
+        let mut xcll = Vec::with_capacity(92);
+
+        // Bytes 0-7: Ambient RGBA + Directional RGBA (just need valid bytes).
+        xcll.extend_from_slice(&[80, 82, 85, 0]); // ambient
+        xcll.extend_from_slice(&[200, 195, 180, 0]); // directional
+        // Bytes 8-11: Fog color RGBA (fog_near color).
+        xcll.extend_from_slice(&[50, 55, 60, 0]);
+        // Byte 11 == 0 is the alpha; already appended above.
+        // Bytes 12-15: fog near (f32).
+        xcll.extend_from_slice(&100.0f32.to_le_bytes());
+        // Bytes 16-19: fog far (f32).
+        xcll.extend_from_slice(&5000.0f32.to_le_bytes());
+        // Bytes 20-23: directional rot X (i32, degrees).
+        xcll.extend_from_slice(&(45i32).to_le_bytes());
+        // Bytes 24-27: directional rot Y.
+        xcll.extend_from_slice(&(30i32).to_le_bytes());
+        // Bytes 28-31: directional fade (f32).
+        xcll.extend_from_slice(&1.25f32.to_le_bytes());
+        // Bytes 32-35: fog clip.
+        xcll.extend_from_slice(&7500.0f32.to_le_bytes());
+        // Bytes 36-39: fog power.
+        xcll.extend_from_slice(&1.5f32.to_le_bytes());
+
+        // Bytes 40-63: 6 × RGBA ambient cube. CK order: +X, -X, +Y, -Y, +Z, -Z.
+        //   Face colors chosen so every byte is distinct — catches a
+        //   wrong-stride / wrong-offset bug that shuffles the cube.
+        //   (r=10, g=20, b=30) for +X, +10 per channel per face.
+        for face in 0u8..6 {
+            let base = (face * 10) + 10;
+            xcll.push(base); // R
+            xcll.push(base + 1); // G
+            xcll.push(base + 2); // B
+            xcll.push(0); // A (vanilla-zero)
+        }
+
+        // Bytes 64-67: specular RGBA (255, 200, 150, 128).
+        xcll.extend_from_slice(&[255, 200, 150, 128]);
+        // Bytes 68-71: fresnel power (f32).
+        xcll.extend_from_slice(&2.5f32.to_le_bytes());
+        // Bytes 72-75: fog far color RGBA.
+        xcll.extend_from_slice(&[120, 130, 140, 0]);
+        // Bytes 76-79: fog max (f32).
+        xcll.extend_from_slice(&0.85f32.to_le_bytes());
+        // Bytes 80-83: light fade begin.
+        xcll.extend_from_slice(&500.0f32.to_le_bytes());
+        // Bytes 84-87: light fade end.
+        xcll.extend_from_slice(&800.0f32.to_le_bytes());
+        // Bytes 88-91: inherits flags (u32, unused by the parser).
+        xcll.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(xcll.len(), 92, "Skyrim XCLL must be 92 bytes");
+
+        let mut sub_data = Vec::new();
+        let edid = "SkyrimCave\0";
+        sub_data.extend_from_slice(b"EDID");
+        sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(edid.as_bytes());
+
+        sub_data.extend_from_slice(b"DATA");
+        sub_data.extend_from_slice(&1u16.to_le_bytes());
+        sub_data.push(0x01); // interior
+
+        sub_data.extend_from_slice(b"XCLL");
+        sub_data.extend_from_slice(&(xcll.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(&xcll);
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"CELL");
+        buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&0xCAFEu32.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&sub_data);
+
+        let mut reader = super::super::reader::EsmReader::with_variant(
+            &buf,
+            super::super::reader::EsmVariant::Tes5Plus,
+        );
+        let end = buf.len();
+        let mut cells = HashMap::new();
+        parse_cell_group(&mut reader, end, &mut cells).unwrap();
+
+        let cell = cells.get("skyrimcave").expect("interior CELL present");
+        let lit = cell.lighting.as_ref().expect("XCLL must populate lighting");
+
+        // Directional ambient cube — all 6 faces extracted with the
+        // expected distinctive RGB per face.
+        let cube = lit
+            .directional_ambient
+            .expect("Skyrim XCLL must populate directional_ambient");
+        for (face, rgb) in cube.iter().enumerate() {
+            let base = (face as u8 * 10) + 10;
+            assert!(
+                (rgb[0] - base as f32 / 255.0).abs() < 1e-6,
+                "face {face} R mismatch: got {}, expected {}",
+                rgb[0],
+                base as f32 / 255.0,
+            );
+            assert!(
+                (rgb[1] - (base + 1) as f32 / 255.0).abs() < 1e-6,
+                "face {face} G mismatch"
+            );
+            assert!(
+                (rgb[2] - (base + 2) as f32 / 255.0).abs() < 1e-6,
+                "face {face} B mismatch"
+            );
+        }
+
+        // Specular + fresnel.
+        assert_eq!(
+            lit.specular_color,
+            Some([255.0 / 255.0, 200.0 / 255.0, 150.0 / 255.0])
+        );
+        assert_eq!(lit.specular_alpha, Some(128.0 / 255.0));
+        assert_eq!(lit.fresnel_power, Some(2.5));
+
+        // Pre-existing extended fields still ride along unchanged.
+        assert_eq!(lit.directional_fade, Some(1.25));
+        assert_eq!(lit.fog_clip, Some(7500.0));
+        assert_eq!(lit.fog_power, Some(1.5));
+        assert_eq!(lit.fog_max, Some(0.85));
+        assert_eq!(lit.light_fade_begin, Some(500.0));
+        assert_eq!(lit.light_fade_end, Some(800.0));
+    }
+
+    #[test]
+    fn parse_cell_fnv_xcll_leaves_skyrim_fields_none() {
+        // Sibling of the Skyrim test above — the 40-byte FNV XCLL
+        // (shared with Oblivion's 36-byte layout for the fields we
+        // consume) must NOT populate the Skyrim-only fields including
+        // the ambient cube. Guards against a `>= 40` typo in the
+        // 92-byte branch that would overwrite Skyrim-specific fields
+        // with garbage read past the end of a shorter record.
+        let mut xcll = vec![0u8; 40];
+        // Populate only the shared prefix (bytes 0-27).
+        xcll[0..4].copy_from_slice(&[80, 82, 85, 0]); // ambient
+        xcll[4..8].copy_from_slice(&[200, 195, 180, 0]); // directional
+        // Fog near / far — valid enough to parse.
+        xcll[12..16].copy_from_slice(&100.0f32.to_le_bytes());
+        xcll[16..20].copy_from_slice(&5000.0f32.to_le_bytes());
+
+        let mut sub_data = Vec::new();
+        let edid = "FnvRoom\0";
+        sub_data.extend_from_slice(b"EDID");
+        sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(edid.as_bytes());
+
+        sub_data.extend_from_slice(b"DATA");
+        sub_data.extend_from_slice(&1u16.to_le_bytes());
+        sub_data.push(0x01);
+
+        sub_data.extend_from_slice(b"XCLL");
+        sub_data.extend_from_slice(&(xcll.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(&xcll);
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"CELL");
+        buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&0xF00Du32.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&sub_data);
+
+        let mut reader = super::super::reader::EsmReader::with_variant(
+            &buf,
+            super::super::reader::EsmVariant::Tes5Plus,
+        );
+        let end = buf.len();
+        let mut cells = HashMap::new();
+        parse_cell_group(&mut reader, end, &mut cells).unwrap();
+
+        let cell = cells.get("fnvroom").expect("FNV-shaped interior CELL");
+        let lit = cell.lighting.as_ref().unwrap();
+        assert!(lit.directional_ambient.is_none(), "FNV XCLL has no ambient cube");
+        assert!(lit.specular_color.is_none());
+        assert!(lit.specular_alpha.is_none());
+        assert!(lit.fresnel_power.is_none());
+        // Pre-existing Skyrim-only fields also None.
+        assert!(lit.directional_fade.is_none());
+        assert!(lit.fog_clip.is_none());
     }
 
     #[test]
