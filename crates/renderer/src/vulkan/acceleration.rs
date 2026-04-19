@@ -93,11 +93,16 @@ pub struct AccelerationManager {
     /// Per-frame-in-flight TLAS state. Each slot is independently
     /// created/resized when that frame slot first needs it.
     pub tlas: [Option<TlasState>; MAX_FRAMES_IN_FLIGHT],
-    /// Per-frame-in-flight TLAS scratch buffers (reused across rebuilds).
+    /// Per-frame-in-flight TLAS scratch buffer. Grows to the high-water
+    /// mark across full rebuilds (`need_new_tlas`); refit/update passes
+    /// reuse the existing buffer. See #60 / #424 SIBLING — never a
+    /// per-build allocation.
     scratch_buffers: [Option<GpuBuffer>; MAX_FRAMES_IN_FLIGHT],
-    /// Persisted BLAS scratch buffer (reused across builds, grows to high-water mark).
-    /// BLAS builds use one-time command buffers with a fence wait, so a single
-    /// shared buffer is safe (no overlapping BLAS builds).
+    /// Shared BLAS scratch buffer (reused across builds, grows to the
+    /// high-water mark across single and batched builds). BLAS builds
+    /// use one-time command buffers with a fence wait, so a single
+    /// shared buffer is safe (no overlapping BLAS builds). Fix #60,
+    /// extended to the batched path in M31.
     blas_scratch_buffer: Option<GpuBuffer>,
     /// Reusable scratch buffer for TLAS instance data. Amortized across
     /// frames to avoid ~320KB/frame heap allocation for large scenes.
@@ -167,6 +172,21 @@ fn decide_use_update(
 /// hitting an out-of-memory condition, while leaving the bulk of the
 /// device-local heap available for textures, vertex/index buffers, and
 /// the framebuffer. See #387.
+/// Grow-only policy for BLAS / TLAS scratch buffers. Returns `true`
+/// when the current buffer is absent or its capacity is strictly less
+/// than the required size — so a cell whose scratch footprint is
+/// smaller than the high-water mark reuses the existing allocation
+/// instead of churning through `gpu-allocator`. Pulled out as a pure
+/// function so the BLAS single-build, BLAS batched-build, and TLAS
+/// rebuild call sites can share one decision rule and a unit test can
+/// guard against drift. See #60 (BLAS pool) + #424 SIBLING (TLAS pool).
+fn scratch_needs_growth(current_capacity: Option<vk::DeviceSize>, required: vk::DeviceSize) -> bool {
+    match current_capacity {
+        Some(cap) => cap < required,
+        None => true,
+    }
+}
+
 fn compute_blas_budget(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
@@ -367,11 +387,12 @@ impl AccelerationManager {
         // a scratch allocation or command submission error would leak both.
         let build_result = (|| -> Result<()> {
             // Reuse persisted BLAS scratch buffer; only reallocate if the current
-            // one is too small for this build.
-            let need_new_scratch = self
-                .blas_scratch_buffer
-                .as_ref()
-                .map_or(true, |b| b.size < sizes.build_scratch_size);
+            // one is too small for this build. Grow-only policy via shared
+            // helper — see #60 / #424 SIBLING.
+            let need_new_scratch = scratch_needs_growth(
+                self.blas_scratch_buffer.as_ref().map(|b| b.size),
+                sizes.build_scratch_size,
+            );
 
             if need_new_scratch {
                 if let Some(mut old) = self.blas_scratch_buffer.take() {
@@ -610,11 +631,12 @@ impl AccelerationManager {
             });
         }
 
-        // Phase 2: Ensure scratch buffer is large enough.
-        let need_new_scratch = self
-            .blas_scratch_buffer
-            .as_ref()
-            .map_or(true, |b| b.size < max_scratch_size);
+        // Phase 2: Ensure scratch buffer is large enough. Grow-only
+        // policy via shared helper — see #60 / #424 SIBLING.
+        let need_new_scratch = scratch_needs_growth(
+            self.blas_scratch_buffer.as_ref().map(|b| b.size),
+            max_scratch_size,
+        );
 
         if need_new_scratch {
             if let Some(mut old) = self.blas_scratch_buffer.take() {
@@ -1143,27 +1165,35 @@ impl AccelerationManager {
                 })
                 .context("Failed to create TLAS")?;
 
-            // Allocate scratch for this frame slot.
-            if let Some(mut old_scratch) = self.scratch_buffers[frame_index].take() {
-                old_scratch.destroy(device, allocator);
-            }
-            // DEVICE_LOCAL: GPU-only scratch space during TLAS build.
-            // NOTE: same scratch alignment caveat as BLAS — see #260 (R-05).
-            let scratch_result = GpuBuffer::create_device_local_uninit(
-                device,
-                allocator,
+            // Grow-only per-frame scratch buffer (#424 SIBLING) — reuse
+            // the existing allocation when it still fits the new build.
+            // DEVICE_LOCAL: GPU-only scratch during TLAS build. Same
+            // scratch alignment caveat as BLAS (#260 R-05).
+            let needs_new_scratch = scratch_needs_growth(
+                self.scratch_buffers[frame_index].as_ref().map(|b| b.size),
                 sizes.build_scratch_size,
-                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             );
-            match scratch_result {
-                Ok(scratch) => self.scratch_buffers[frame_index] = Some(scratch),
-                Err(e) => {
-                    self.accel_loader
-                        .destroy_acceleration_structure(accel, None);
-                    tlas_buffer.destroy(device, allocator);
-                    instance_buffer.destroy(device, allocator);
-                    instance_buffer_device.destroy(device, allocator);
-                    return Err(e);
+            if needs_new_scratch {
+                if let Some(mut old_scratch) = self.scratch_buffers[frame_index].take() {
+                    old_scratch.destroy(device, allocator);
+                }
+                let scratch_result = GpuBuffer::create_device_local_uninit(
+                    device,
+                    allocator,
+                    sizes.build_scratch_size,
+                    vk::BufferUsageFlags::STORAGE_BUFFER
+                        | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                );
+                match scratch_result {
+                    Ok(scratch) => self.scratch_buffers[frame_index] = Some(scratch),
+                    Err(e) => {
+                        self.accel_loader
+                            .destroy_acceleration_structure(accel, None);
+                        tlas_buffer.destroy(device, allocator);
+                        instance_buffer.destroy(device, allocator);
+                        instance_buffer_device.destroy(device, allocator);
+                        return Err(e);
+                    }
                 }
             }
 
@@ -1561,5 +1591,31 @@ mod tests {
         let (use_update, did_zip) = decide_use_update(true, u64::MAX, 0, &cached, &current);
         assert!(!use_update);
         assert!(!did_zip);
+    }
+
+    /// Regression: #60 + #424 SIBLING. Scratch pool growth policy is a
+    /// pure `Option<size> + required -> bool` decision shared by both
+    /// BLAS paths and the TLAS full-rebuild path. Must:
+    ///   - grow on first use (no buffer yet)
+    ///   - grow when the required size exceeds current capacity
+    ///   - reuse when the existing buffer meets or exceeds the need
+    ///     (including equality — the edge where pre-#424 TLAS code
+    ///     would still destroy+recreate)
+    #[test]
+    fn scratch_pool_growth_policy() {
+        // First use — no existing buffer.
+        assert!(scratch_needs_growth(None, 1024));
+
+        // Existing buffer too small — grow.
+        assert!(scratch_needs_growth(Some(1024), 2048));
+
+        // Existing buffer exactly the required size — REUSE.
+        assert!(!scratch_needs_growth(Some(2048), 2048));
+
+        // Existing buffer larger than required — REUSE (high-water mark).
+        assert!(!scratch_needs_growth(Some(1 << 20), 1024));
+
+        // Zero required (empty TLAS) — REUSE whatever's there.
+        assert!(!scratch_needs_growth(Some(1), 0));
     }
 }
