@@ -1040,6 +1040,156 @@ mod tests {
         // a parse error from over-reading.
         assert!(prop.normal_texture.is_none());
     }
+
+    /// Regression: #484 — pin the `num_decals` boundary for v20.2.0.5+.
+    ///
+    /// The #400/#429 fix computes `num_decals = texture_count.saturating_sub(8)`
+    /// on v20.2.0.5+ (FO3/FNV/SkyrimLE pre-BSTriShape path). `count == 8`
+    /// is the exact threshold where slots 0..7 are consumed (base/dark/
+    /// detail/gloss/glow/bump/normal/parallax) and no decals remain.
+    /// A future rewrite that flips the comparison (e.g. `saturating_sub(7)`,
+    /// or `>` instead of `>=`) would silently consume one extra decal
+    /// byte here and misalign every downstream block. The next-larger
+    /// test pins `count == 9 → 1 decal` from the other side of the boundary.
+    #[test]
+    fn num_decals_boundary_v20_2_0_5_count_8_yields_zero() {
+        let header = make_header(11, 34); // FNV bsver=34
+        let mut data = Vec::new();
+        // NiObjectNET: string-table index for `name` (v >= 20.1.0.1).
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // name index = -1
+        data.extend_from_slice(&0u32.to_le_bytes()); // extra_data count
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+        // NiProperty.Flags (u16) present since 20.1.0.2.
+        data.extend_from_slice(&0u16.to_le_bytes());
+        // apply_mode omitted (gated `<= 20.1.0.1`) — v20.2.0.7 skips it.
+        data.extend_from_slice(&8u32.to_le_bytes()); // texture_count = 8
+        // Slots 0..=7: base/dark/detail/gloss/glow/bump/normal/parallax.
+        // All `has = 0` — the parser's fixed-slot loop consumes every
+        // one so slot accounting lines up. No decals at count=8.
+        for _ in 0..8 {
+            data.push(0); // has = 0
+        }
+        // Shader textures trailer.
+        data.extend_from_slice(&0u32.to_le_bytes());
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let prop = NiTexturingProperty::parse(&mut stream).expect("parse");
+        assert_eq!(stream.position() as usize, expected_len);
+        assert_eq!(prop.texture_count, 8);
+        assert_eq!(
+            prop.decal_textures.len(),
+            0,
+            "v20.2.0.5+ texture_count=8 must yield zero decals — slots 0..=7 consume the fixed allocation"
+        );
+    }
+
+    /// Regression: #484 — v20.2.0.5+ `count == 9 → num_decals == 1`.
+    /// Pairs with the `count == 8` test above to lock both sides of the
+    /// `saturating_sub(8)` threshold.
+    #[test]
+    fn num_decals_boundary_v20_2_0_5_count_9_yields_one() {
+        let header = make_header(11, 34);
+        let mut data = Vec::new();
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes()); // flags
+        data.extend_from_slice(&9u32.to_le_bytes()); // texture_count = 9
+        // Slots 0..=7 empty + 1 populated decal.
+        for _ in 0..8 {
+            data.push(0);
+        }
+        // Decal 0 — v20.2.0.7 uses the modern TexDesc (v >= 20.1.0.3):
+        //   has(bool) + source_ref(i32) + flags(u16) + has_transform(bool).
+        data.push(1);
+        data.extend_from_slice(&42i32.to_le_bytes()); // source_ref = 42
+        data.extend_from_slice(&0u16.to_le_bytes()); // flags
+        data.push(0); // has_transform = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // shader textures trailer
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let prop = NiTexturingProperty::parse(&mut stream).expect("parse");
+        assert_eq!(stream.position() as usize, expected_len);
+        assert_eq!(prop.texture_count, 9);
+        assert_eq!(
+            prop.decal_textures.len(),
+            1,
+            "v20.2.0.5+ texture_count=9 must yield exactly one decal — locks saturating_sub(8) against off-by-one regressions"
+        );
+        assert_eq!(prop.decal_textures[0].source_ref.index(), Some(42));
+    }
+
+    /// Regression: #484 — pre-20.2.0.5 `count == 6 → num_decals == 0`.
+    /// Mirrors the v20.2.0.5+ test above but for the Oblivion-era
+    /// `saturating_sub(6)` branch (no normal + parallax slots).
+    #[test]
+    fn num_decals_boundary_pre_v20_2_0_5_count_6_yields_zero() {
+        let mut header = make_header(11, 11);
+        header.version = NifVersion(0x14000005); // v20.0.0.5 — Oblivion
+        let mut data = Vec::new();
+        // Oblivion NiObjectNET: inline-string name (u32 length + bytes).
+        data.extend_from_slice(&0u32.to_le_bytes()); // name length = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+        // No flags field on v20.0.0.5 (10.0.1.3..20.1.0.1 gap).
+        data.extend_from_slice(&0u32.to_le_bytes()); // apply_mode
+        data.extend_from_slice(&6u32.to_le_bytes()); // texture_count = 6
+        for _ in 0..6 {
+            data.push(0); // each slot `has = 0`
+        }
+        data.extend_from_slice(&0u32.to_le_bytes()); // shader textures trailer
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let prop = NiTexturingProperty::parse(&mut stream).expect("parse");
+        assert_eq!(stream.position() as usize, expected_len);
+        assert_eq!(prop.texture_count, 6);
+        assert_eq!(
+            prop.decal_textures.len(),
+            0,
+            "pre-20.2.0.5 texture_count=6 must yield zero decals — locks saturating_sub(6) threshold"
+        );
+    }
+
+    /// Regression: #484 — pre-20.2.0.5 `count == 7 → num_decals == 1`.
+    /// Pairs with the `count == 6` test above for the Oblivion branch.
+    #[test]
+    fn num_decals_boundary_pre_v20_2_0_5_count_7_yields_one() {
+        let mut header = make_header(11, 11);
+        header.version = NifVersion(0x14000005);
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u32.to_le_bytes()); // name length
+        data.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+        data.extend_from_slice(&0u32.to_le_bytes()); // apply_mode
+        data.extend_from_slice(&7u32.to_le_bytes()); // texture_count = 7
+        for _ in 0..6 {
+            data.push(0); // slots 0..=5 empty
+        }
+        // Decal 0 — v20.0.0.5 is below 20.1.0.3, so TexDesc ELSE branch:
+        //   has(bool) + source_ref + 3×u32 (clamp/filter/uv_set) + has_transform
+        data.push(1);
+        data.extend_from_slice(&99i32.to_le_bytes()); // source_ref = 99
+        data.extend_from_slice(&0u32.to_le_bytes()); // clamp
+        data.extend_from_slice(&0u32.to_le_bytes()); // filter
+        data.extend_from_slice(&0u32.to_le_bytes()); // uv_set
+        data.push(0); // has_transform
+        data.extend_from_slice(&0u32.to_le_bytes()); // shader textures trailer
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let prop = NiTexturingProperty::parse(&mut stream).expect("parse");
+        assert_eq!(stream.position() as usize, expected_len);
+        assert_eq!(prop.texture_count, 7);
+        assert_eq!(
+            prop.decal_textures.len(),
+            1,
+            "pre-20.2.0.5 texture_count=7 must yield exactly one decal"
+        );
+        assert_eq!(prop.decal_textures[0].source_ref.index(), Some(99));
+    }
 }
 
 // ── Simple flag-only properties (Oblivion) ──────────────────────────
