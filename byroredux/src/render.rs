@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use crate::components::{
     AlphaBlend, CellLightingRes, DarkMapHandle, Decal, ExtraTextureMaps, NormalMapHandle,
-    SkyParamsRes, TwoSided,
+    SkyParamsRes, TerrainTileSlot, TwoSided,
 };
 
 /// Convert an `f32` to a `u32` key whose unsigned ordering matches
@@ -229,6 +229,7 @@ pub(crate) fn build_render_data(
     let nmap_q = world.query::<NormalMapHandle>();
     let dmap_q = world.query::<DarkMapHandle>();
     let extra_q = world.query::<ExtraTextureMaps>();
+    let terrain_tile_q = world.query::<TerrainTileSlot>();
     let wb_q = world.query::<WorldBound>();
     if let (Some(tq), Some(mq)) = (tq, mq) {
         for (entity, mesh) in mq.iter() {
@@ -314,6 +315,11 @@ pub(crate) fn build_render_data(
                         )
                     })
                     .unwrap_or((0, 0, 0, 0, 0, 0, 0.04, 4.0));
+
+                // Terrain splat tile index (#470). Only LAND terrain
+                // entities carry the component; statics pass `None`.
+                let terrain_tile_index =
+                    terrain_tile_q.as_ref().and_then(|q| q.get(entity)).map(|s| s.0);
 
                 // Material data + PBR classification.
                 let mat = mat_q.as_ref().and_then(|q| q.get(entity));
@@ -445,6 +451,7 @@ pub(crate) fn build_render_data(
                     // when the entity has no Material component (e.g.
                     // the spinning cube demo).
                     material_kind: mat.map(|m| m.material_kind as u32).unwrap_or(0),
+                    terrain_tile_index,
                 });
             }
         }
@@ -556,6 +563,7 @@ pub(crate) fn build_render_data(
                         z_test: true,
                         z_write: false,
                         z_function: 3,
+                        terrain_tile_index: None,
                     });
                 }
             }

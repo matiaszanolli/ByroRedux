@@ -1,7 +1,11 @@
 //! Frame recording and submission — the per-frame hot path.
 
 use super::super::pipeline::{gamebryo_to_vk_compare_op, PipelineKey};
-use super::super::scene_buffer::{self, GpuInstance};
+use super::super::scene_buffer::{
+    self, GpuInstance, INSTANCE_FLAG_ALPHA_BLEND, INSTANCE_FLAG_CAUSTIC_SOURCE,
+    INSTANCE_FLAG_NON_UNIFORM_SCALE, INSTANCE_FLAG_TERRAIN_SPLAT, INSTANCE_TERRAIN_TILE_MASK,
+    INSTANCE_TERRAIN_TILE_SHIFT,
+};
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::{DrawCommand, SkyParams, VulkanContext};
 use anyhow::{Context, Result};
@@ -494,20 +498,27 @@ impl VulkanContext {
                 let tol = 0.001;
                 (col0_sq - col1_sq).abs() > tol || (col0_sq - col2_sq).abs() > tol
             };
-            // Per-instance flags.
+            // Per-instance flags — see INSTANCE_FLAG_* constants in
+            // scene_buffer.rs. CPU-side assembly must stay in lockstep
+            // with the fragment shader's `flags & N` checks.
             //   bit 0 = non-uniform scale
-            //   bit 1 = NiAlphaProperty blend bit (texture alpha = transparency)
-            //   bit 2 = caustic source — mesh is a plausible refractive surface.
-            //           We gate on `alpha_blend && metalness < 0.3` CPU-side:
-            //           this matches the fragment-shader `isGlass` check closely
-            //           enough that the caustic pass doesn't spuriously splat from
-            //           alpha-tested foliage or translucent metal. See #321.
-            let mut flags = if has_non_uniform_scale { 1u32 } else { 0u32 };
+            //   bit 1 = NiAlphaProperty blend bit
+            //   bit 2 = caustic source (alpha-blend + metalness < 0.3). See #321.
+            //   bit 3 = terrain splat (set in cell_loader for LAND entities, #470).
+            let mut flags = if has_non_uniform_scale {
+                INSTANCE_FLAG_NON_UNIFORM_SCALE
+            } else {
+                0u32
+            };
             if draw_cmd.alpha_blend {
-                flags |= 2;
+                flags |= INSTANCE_FLAG_ALPHA_BLEND;
                 if draw_cmd.metalness < 0.3 {
-                    flags |= 4;
+                    flags |= INSTANCE_FLAG_CAUSTIC_SOURCE;
                 }
+            }
+            if let Some(tile_idx) = draw_cmd.terrain_tile_index {
+                flags |= INSTANCE_FLAG_TERRAIN_SPLAT;
+                flags |= (tile_idx & INSTANCE_TERRAIN_TILE_MASK) << INSTANCE_TERRAIN_TILE_SHIFT;
             }
 
             gpu_instances.push(GpuInstance {
@@ -613,6 +624,15 @@ impl VulkanContext {
             self.scene_buffers
                 .upload_instances(&self.device, frame, &gpu_instances)
                 .unwrap_or_else(|e| log::warn!("Failed to upload instances: {e}"));
+        }
+
+        // Reupload the terrain tile SSBO when cell load mutated it.
+        // The slab is static until the next cell transition, so the
+        // dirty flag prevents per-frame copies. See #470.
+        if let Some(tiles) = self.drain_terrain_tile_uploads() {
+            self.scene_buffers
+                .upload_terrain_tiles(&self.device, frame, &tiles)
+                .unwrap_or_else(|e| log::warn!("Failed to upload terrain tiles: {e}"));
         }
 
         // Build + upload indirect-draw commands for this frame (#309).

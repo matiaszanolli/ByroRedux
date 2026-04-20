@@ -87,6 +87,18 @@ impl Component for ExtraTextureMaps {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Terrain splat-layer tile index into the renderer's
+/// `GpuTerrainTile` SSBO (scene set 1, binding 10). Attached only to
+/// LAND terrain entities when ATXT/VTXT splat layers are present.
+/// `render.rs` forwards this into `DrawCommand::terrain_tile_index`,
+/// which `draw.rs` packs into the top 16 bits of `GpuInstance.flags`
+/// alongside the `INSTANCE_FLAG_TERRAIN_SPLAT` bit. See #470.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TerrainTileSlot(pub(crate) u32);
+impl Component for TerrainTileSlot {
+    type Storage = SparseSetStorage<Self>;
+}
+
 // SystemList moved to byroredux_core::ecs::resources::SystemList
 
 /// Cell lighting from the ESM (ambient + directional + fog).

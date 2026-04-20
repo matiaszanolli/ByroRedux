@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use crate::asset_provider::{resolve_texture, TextureProvider};
 use crate::components::{
-    AlphaBlend, DarkMapHandle, Decal, ExtraTextureMaps, NormalMapHandle, TwoSided,
+    AlphaBlend, DarkMapHandle, Decal, ExtraTextureMaps, NormalMapHandle, TerrainTileSlot, TwoSided,
 };
 
 /// Parsed + imported NIF scene data cached per unique model path.
@@ -181,6 +181,7 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     // handle.
     let mut mesh_handles: HashSet<u32> = HashSet::new();
     let mut texture_handles: HashSet<u32> = HashSet::new();
+    let mut terrain_tile_slots: HashSet<u32> = HashSet::new();
     if let Some(mq) = world.query::<MeshHandle>() {
         for &eid in &victims {
             if let Some(mh) = mq.get(eid) {
@@ -198,6 +199,21 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
                 }
             }
         }
+    }
+    if let Some(ttq) = world.query::<TerrainTileSlot>() {
+        for &eid in &victims {
+            if let Some(slot) = ttq.get(eid) {
+                terrain_tile_slots.insert(slot.0);
+            }
+        }
+    }
+
+    // Free terrain tile slots FIRST — late frames-in-flight reading the
+    // SSBO then see either stale-but-valid data (if the slot was
+    // reallocated) or the same data (no reuse this frame), rather than
+    // undefined. See #470.
+    for &slot in &terrain_tile_slots {
+        ctx.free_terrain_tile(slot);
     }
 
     // Free GPU resources. BLAS entries are keyed by mesh handle, so
@@ -574,6 +590,180 @@ pub fn load_exterior_cells(
 ///   world_x = grid_x * 4096 + col * 128  → X
 ///   world_z = heights[row][col]           → Y (up)
 ///   world_y = grid_y * 4096 + row * 128   → -Z (negate for Y-up)
+/// Resolved terrain splat layers for one cell — up to 8 cell-global
+/// layers, each with its resolved bindless texture handle and the
+/// per-quadrant alpha grids contributed by every quadrant that painted
+/// that LTEX. Produced by [`build_cell_splat_layers`] and consumed by
+/// the vertex packer below. See #470.
+#[derive(Default)]
+struct CellSplatLayers {
+    /// 0–8 entries sorted by ascending `layer_sort_key`, then by
+    /// `ltex_form_id` for deterministic tiebreak.
+    layers: Vec<CellSplatLayer>,
+}
+
+struct CellSplatLayer {
+    /// Bindless texture handle (resolved via LTEX → TXST → diffuse path).
+    /// 0 means the texture failed to load; fragment shader skips (index 0
+    /// is the fallback checkerboard).
+    texture_index: u32,
+    /// Per-quadrant contribution. `[SW, SE, NW, NE]` — `None` means the
+    /// quadrant didn't paint this LTEX. Each `Some` is a 17×17 alpha grid.
+    per_quadrant_alpha: [Option<Vec<f32>>; 4],
+}
+
+/// Collect cell-global splat layers from the 4 quadrants. Dedup by
+/// `ltex_form_id`; take the minimum `layer` field as the sort key so
+/// seam vertices across quadrants resolve to the same cell-global
+/// layer. Caps at 8 per UESP's LAND format spec; excess is dropped
+/// with a warning.
+fn build_cell_splat_layers(
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    landscape_textures: &HashMap<u32, String>,
+    land: &esm::cell::LandscapeData,
+) -> CellSplatLayers {
+    use std::collections::hash_map::Entry;
+
+    // Collect (ltex_form_id, min_layer_sort_key, per-quadrant alpha).
+    // Use the indexmap-style approach with a HashMap for dedup + a
+    // Vec for insertion order — small N, linear scan is fine.
+    let mut by_ltex: HashMap<u32, (u16, [Option<Vec<f32>>; 4])> = HashMap::new();
+    for (q_idx, q) in land.quadrants.iter().enumerate() {
+        for l in &q.layers {
+            let Some(ref alpha) = l.alpha else {
+                // Malformed ATXT without VTXT — nothing to paint. #470.
+                log::debug!(
+                    "Terrain quadrant {}: ATXT LTEX {:08X} layer {} has no VTXT; skipped",
+                    q_idx,
+                    l.ltex_form_id,
+                    l.layer
+                );
+                continue;
+            };
+            match by_ltex.entry(l.ltex_form_id) {
+                Entry::Vacant(v) => {
+                    let mut slots: [Option<Vec<f32>>; 4] = Default::default();
+                    slots[q_idx] = Some(alpha.clone());
+                    v.insert((l.layer, slots));
+                }
+                Entry::Occupied(mut o) => {
+                    let (min_layer, slots) = o.get_mut();
+                    if l.layer < *min_layer {
+                        *min_layer = l.layer;
+                    }
+                    // Merge into the same quadrant slot (should be rare —
+                    // one LTEX per quadrant is the vanilla pattern).
+                    if let Some(existing) = slots[q_idx].as_mut() {
+                        for (dst, src) in existing.iter_mut().zip(alpha.iter()) {
+                            *dst = dst.max(*src);
+                        }
+                    } else {
+                        slots[q_idx] = Some(alpha.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by (layer_sort_key, ltex_form_id) for deterministic order.
+    let mut sorted: Vec<(u32, u16, [Option<Vec<f32>>; 4])> = by_ltex
+        .into_iter()
+        .map(|(ltex, (layer, slots))| (ltex, layer, slots))
+        .collect();
+    sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+
+    // Cap at 8. Bethesda's own LAND authoring tool caps at 8 per
+    // UESP, but modded content (TTW, Project Nevada, DLC merges) has
+    // been observed going higher.
+    if sorted.len() > 8 {
+        log::warn!(
+            "Terrain cell has {} splat layers, capping at 8 (dropping {} with highest `layer` field). #470",
+            sorted.len(),
+            sorted.len() - 8,
+        );
+        sorted.truncate(8);
+    }
+
+    // Resolve each LTEX → bindless texture handle.
+    let mut layers = Vec::with_capacity(sorted.len());
+    for (ltex, _layer_key, per_quadrant_alpha) in sorted {
+        let texture_index = if let Some(tex_path) = landscape_textures.get(&ltex) {
+            resolve_texture(ctx, tex_provider, Some(tex_path.as_str()))
+        } else {
+            log::debug!(
+                "Terrain splat: LTEX {:08X} not in landscape_textures map; skipping layer",
+                ltex
+            );
+            0
+        };
+        layers.push(CellSplatLayer {
+            texture_index,
+            per_quadrant_alpha,
+        });
+    }
+
+    CellSplatLayers { layers }
+}
+
+/// Map a global 33×33 `(row, col)` to the list of contributing
+/// `(quadrant_index, local_row_in_17, local_col_in_17)` tuples. Most
+/// vertices belong to exactly one quadrant; edges belong to two,
+/// corners to four.
+fn quadrant_samples_for_vertex(row: usize, col: usize) -> [(u8, u8, u8); 4] {
+    // Sentinel: 0xFF means "unused slot" — the caller checks `q < 4`
+    // to decide whether to sample. Using u8 keeps the return POD.
+    let mut out = [(0xFFu8, 0u8, 0u8); 4];
+    let mut n = 0;
+    // SW quadrant (0): rows [0..=16], cols [0..=16].
+    if row <= 16 && col <= 16 {
+        out[n] = (0, row as u8, col as u8);
+        n += 1;
+    }
+    // SE quadrant (1): rows [0..=16], cols [16..=32]. Local col = col-16.
+    if row <= 16 && col >= 16 {
+        out[n] = (1, row as u8, (col - 16) as u8);
+        n += 1;
+    }
+    // NW quadrant (2): rows [16..=32], cols [0..=16]. Local row = row-16.
+    if row >= 16 && col <= 16 {
+        out[n] = (2, (row - 16) as u8, col as u8);
+        n += 1;
+    }
+    // NE quadrant (3): rows [16..=32], cols [16..=32].
+    if row >= 16 && col >= 16 {
+        out[n] = (3, (row - 16) as u8, (col - 16) as u8);
+        n += 1;
+    }
+    let _ = n;
+    out
+}
+
+/// Sample one splat weight for a global vertex by taking the max
+/// across every contributing quadrant's alpha grid. Absent quadrants
+/// contribute 0. Returns a u8 ready to pack into the vertex attribute.
+fn splat_weight_for_vertex(
+    layer: &CellSplatLayer,
+    row: usize,
+    col: usize,
+) -> u8 {
+    let samples = quadrant_samples_for_vertex(row, col);
+    let mut best = 0.0_f32;
+    for (q, lr, lc) in samples {
+        if q >= 4 {
+            continue;
+        }
+        let Some(ref alpha) = layer.per_quadrant_alpha[q as usize] else {
+            continue;
+        };
+        let local_idx = (lr as usize) * 17 + (lc as usize);
+        if local_idx < alpha.len() {
+            best = best.max(alpha[local_idx]);
+        }
+    }
+    (best.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
 fn spawn_terrain_mesh(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -592,6 +782,10 @@ fn spawn_terrain_mesh(
 
     let origin_x = grid_x as f32 * CELL_SIZE;
     let origin_y = grid_y as f32 * CELL_SIZE;
+
+    // Collect cell-global splat layers before the vertex loop — we
+    // need all 8 resolved before we can pack per-vertex weights. #470.
+    let splat_layers = build_cell_splat_layers(ctx, tex_provider, landscape_textures, land);
 
     // Build vertices (33×33 = 1089).
     let mut vertices = Vec::with_capacity(GRID * GRID);
@@ -635,7 +829,22 @@ fn spawn_terrain_mesh(
             // UV: tile across the cell (0–1 per cell, repeats for texture).
             let uv = [col as f32 / 32.0, 1.0 - row as f32 / 32.0];
 
-            vertices.push(Vertex::new(position, color, normal, uv));
+            // Pack up to 8 splat weights into 2× RGBA8 unorm (#470).
+            // Layers beyond what the cell actually contains get 0.
+            let mut splat0 = [0u8; 4];
+            let mut splat1 = [0u8; 4];
+            for (i, layer) in splat_layers.layers.iter().enumerate() {
+                let w = splat_weight_for_vertex(layer, row, col);
+                if i < 4 {
+                    splat0[i] = w;
+                } else {
+                    splat1[i - 4] = w;
+                }
+            }
+
+            vertices.push(Vertex::new_terrain(
+                position, color, normal, uv, splat0, splat1,
+            ));
         }
     }
 
@@ -689,8 +898,11 @@ fn spawn_terrain_mesh(
 
     // Resolve terrain base texture: pick the first available BTXT from
     // any quadrant, resolve via LTEX → texture path, load from BSA.
-    // Full per-quadrant multi-layer splatting is deferred — for now the
-    // entire cell gets one texture (the base layer of the first quadrant).
+    // Per-quadrant BTXT disagreement is handled best-effort: we pick
+    // the first non-zero base and rely on the ATXT splat layers above
+    // to paint the other quadrants' bases as additional layers (the
+    // quadrants that share the chosen BTXT get it as their floor; the
+    // rest see ATXT layers on top). See #470 (D7 follow-up).
     let tex_handle = {
         let base_ltex = land.quadrants.iter().find_map(|q| q.base);
         if let Some(ltex_id) = base_ltex {
@@ -715,6 +927,21 @@ fn spawn_terrain_mesh(
         }
     };
 
+    // Allocate a terrain tile slot and upload its 8-layer texture
+    // indices. The slot is freed in `unload_cell` via
+    // `VulkanContext::free_terrain_tile_slot`. Only enabled when the
+    // cell actually has splat layers; BTXT-only cells skip this and
+    // render with the pre-#470 single-texture path for free. See #470.
+    let terrain_tile_index = if !splat_layers.layers.is_empty() {
+        let mut indices_arr = [0u32; 8];
+        for (i, layer) in splat_layers.layers.iter().enumerate() {
+            indices_arr[i] = layer.texture_index;
+        }
+        ctx.allocate_terrain_tile(indices_arr)
+    } else {
+        None
+    };
+
     // Queue BLAS build into the caller's batched-spec list rather than
     // submitting one-shot per tile (#382). Terrain must be in the TLAS
     // for RT shadows/GI; the actual `build_blas_batched` call happens
@@ -731,6 +958,9 @@ fn spawn_terrain_mesh(
     world.insert(entity, MeshHandle(mesh_handle));
     if tex_handle != 0 {
         world.insert(entity, TextureHandle(tex_handle));
+    }
+    if let Some(slot) = terrain_tile_index {
+        world.insert(entity, TerrainTileSlot(slot));
     }
 
     log::debug!(
@@ -1527,5 +1757,98 @@ mod nif_import_registry_tests {
         assert!(matches!(entry, Some(None)));
         assert_eq!(reg.failed_count, 1);
         assert_eq!(reg.parsed_count, 0);
+    }
+}
+
+#[cfg(test)]
+mod terrain_splat_tests {
+    //! Regression tests for #470 — LAND splat layer packing. Covers
+    //! quantization, seam max-reconciliation, and absent-quadrant
+    //! handling. Pure-Rust, no GPU.
+    use super::{quadrant_samples_for_vertex, splat_weight_for_vertex, CellSplatLayer};
+
+    fn mk_layer(per_quadrant_alpha: [Option<Vec<f32>>; 4]) -> CellSplatLayer {
+        CellSplatLayer {
+            texture_index: 1,
+            per_quadrant_alpha,
+        }
+    }
+
+    #[test]
+    fn splat_quantization_full_and_empty_map_to_boundary_bytes() {
+        // Single-quadrant full-coverage grid → every vertex in SW
+        // reads 255; vertices outside SW (NE corner) read 0.
+        let alpha = vec![1.0_f32; 17 * 17];
+        let layer = mk_layer([Some(alpha), None, None, None]);
+        // (0,0) is SW(0,0) only.
+        assert_eq!(splat_weight_for_vertex(&layer, 0, 0), 255);
+        // (32,32) is NE(16,16) only, which has no alpha.
+        assert_eq!(splat_weight_for_vertex(&layer, 32, 32), 0);
+    }
+
+    #[test]
+    fn splat_seam_reconciliation_takes_max_across_quadrants() {
+        // Col 16 is shared between SW (local col 16) and SE (local col 0).
+        // SW paints alpha=1.0 on its east edge; SE paints alpha=0.0.
+        // Max wins → seam vertex reads 255, not 127.
+        let mut sw_alpha = vec![0.0_f32; 17 * 17];
+        for row in 0..17 {
+            sw_alpha[row * 17 + 16] = 1.0; // SW east edge
+        }
+        let se_alpha = vec![0.0_f32; 17 * 17]; // SE paints nothing
+        let layer = mk_layer([Some(sw_alpha), Some(se_alpha), None, None]);
+        // Global (row=0, col=16) is on the SW/SE seam.
+        assert_eq!(splat_weight_for_vertex(&layer, 0, 16), 255);
+    }
+
+    #[test]
+    fn quadrant_samples_classify_corner_as_four_way() {
+        // The dead-center vertex (16,16) sits on SW/SE/NW/NE.
+        let samples = quadrant_samples_for_vertex(16, 16);
+        let present: Vec<u8> = samples.iter().map(|(q, _, _)| *q).filter(|q| *q < 4).collect();
+        assert_eq!(present, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn quadrant_samples_interior_vertex_belongs_to_single_quadrant() {
+        let samples = quadrant_samples_for_vertex(5, 10);
+        let present: Vec<u8> = samples.iter().map(|(q, _, _)| *q).filter(|q| *q < 4).collect();
+        assert_eq!(present, vec![0]); // SW only
+        // Local coords match global for SW.
+        assert_eq!(samples[0], (0, 5, 10));
+    }
+
+    #[test]
+    fn splat_round_trip_through_u8_preserves_half_alpha_within_tolerance() {
+        // alpha = 0.5 → quantized 128 (round(127.5) = 128 under
+        // banker's rounding; Rust's f32::round is half-away-from-zero
+        // so 127.5 → 128).
+        let alpha = vec![0.5_f32; 17 * 17];
+        let layer = mk_layer([Some(alpha), None, None, None]);
+        let w = splat_weight_for_vertex(&layer, 0, 0);
+        assert!(
+            w == 127 || w == 128,
+            "alpha=0.5 should quantize to ~128, got {}",
+            w
+        );
+    }
+
+    #[test]
+    fn splat_absent_quadrant_yields_zero() {
+        // A layer with `None` on every quadrant — e.g. the no-ATXT
+        // case — must produce zero everywhere. Guards against a
+        // sampler that forgets to short-circuit on None.
+        let layer = mk_layer([None, None, None, None]);
+        for row in [0, 16, 32] {
+            for col in [0, 16, 32] {
+                assert_eq!(
+                    splat_weight_for_vertex(&layer, row, col),
+                    0,
+                    "absent-everywhere layer must read 0 at ({},{})",
+                    row,
+                    col
+                );
+            }
+        }
     }
 }

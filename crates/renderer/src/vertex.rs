@@ -27,6 +27,13 @@ pub struct Vertex {
     /// Per-vertex bone weights (up to 4). Must sum to 1.0 for skinned
     /// vertices, or 0.0 for rigid vertices (the shader's rigid-path tag).
     pub bone_weights: [f32; 4],
+    /// Terrain splat weights, layers 0–3. Unorm bytes → `vec4` in the
+    /// vertex shader. Zero on non-terrain meshes. Paired with
+    /// `splat_weights_1` for the 8-layer UESP LAND cap. See #470.
+    pub splat_weights_0: [u8; 4],
+    /// Terrain splat weights, layers 4–7. Unorm bytes → `vec4`. Zero
+    /// on non-terrain meshes.
+    pub splat_weights_1: [u8; 4],
 }
 
 impl Vertex {
@@ -42,6 +49,8 @@ impl Vertex {
             uv,
             bone_indices: [0, 0, 0, 0],
             bone_weights: [0.0, 0.0, 0.0, 0.0],
+            splat_weights_0: [0, 0, 0, 0],
+            splat_weights_1: [0, 0, 0, 0],
         }
     }
 
@@ -62,6 +71,32 @@ impl Vertex {
             uv,
             bone_indices,
             bone_weights,
+            splat_weights_0: [0, 0, 0, 0],
+            splat_weights_1: [0, 0, 0, 0],
+        }
+    }
+
+    /// Construct a terrain vertex with explicit per-vertex splat weights.
+    /// `splat_0` carries layers 0–3, `splat_1` carries layers 4–7 (each
+    /// as 0–255 unorm bytes). The renderer's `TERRAIN_SPLAT_FLAG` bit on
+    /// `GpuInstance.flags` tells the fragment shader to consume them.
+    pub const fn new_terrain(
+        position: [f32; 3],
+        color: [f32; 3],
+        normal: [f32; 3],
+        uv: [f32; 2],
+        splat_0: [u8; 4],
+        splat_1: [u8; 4],
+    ) -> Self {
+        Self {
+            position,
+            color,
+            normal,
+            uv,
+            bone_indices: [0, 0, 0, 0],
+            bone_weights: [0.0, 0.0, 0.0, 0.0],
+            splat_weights_0: splat_0,
+            splat_weights_1: splat_1,
         }
     }
 
@@ -75,7 +110,7 @@ impl Vertex {
     }
 
     /// Per-attribute layout within a vertex.
-    pub fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 6] {
+    pub fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 8] {
         // Field offsets computed via memoffset-style arithmetic. `repr(C)`
         // guarantees no padding between the POD fields we use, so raw
         // prefix-sum math matches the struct layout.
@@ -85,6 +120,8 @@ impl Vertex {
         const OFF_UV: u32 = OFF_NORMAL + 12;
         const OFF_BONE_INDICES: u32 = OFF_UV + 8; // after [f32; 2]
         const OFF_BONE_WEIGHTS: u32 = OFF_BONE_INDICES + 16; // after [u32; 4]
+        const OFF_SPLAT_0: u32 = OFF_BONE_WEIGHTS + 16; // after [f32; 4]
+        const OFF_SPLAT_1: u32 = OFF_SPLAT_0 + 4; // after [u8; 4]
         [
             // location 0: position (vec3)
             vk::VertexInputAttributeDescription {
@@ -127,6 +164,20 @@ impl Vertex {
                 binding: 0,
                 format: vk::Format::R32G32B32A32_SFLOAT,
                 offset: OFF_BONE_WEIGHTS,
+            },
+            // location 6: splat_weights_0 (vec4 unorm) — terrain layers 0-3.
+            vk::VertexInputAttributeDescription {
+                location: 6,
+                binding: 0,
+                format: vk::Format::R8G8B8A8_UNORM,
+                offset: OFF_SPLAT_0,
+            },
+            // location 7: splat_weights_1 (vec4 unorm) — terrain layers 4-7.
+            vk::VertexInputAttributeDescription {
+                location: 7,
+                binding: 0,
+                format: vk::Format::R8G8B8A8_UNORM,
+                offset: OFF_SPLAT_1,
             },
         ]
     }
@@ -184,8 +235,9 @@ mod tests {
 
     #[test]
     fn vertex_size_matches_attribute_stride() {
-        // Total = 12 (pos) + 12 (color) + 12 (normal) + 8 (uv) + 16 (indices) + 16 (weights) = 76
-        assert_eq!(size_of::<Vertex>(), 76);
+        // 12 (pos) + 12 (color) + 12 (normal) + 8 (uv) + 16 (indices) +
+        // 16 (weights) + 4 (splat_0) + 4 (splat_1) = 84.
+        assert_eq!(size_of::<Vertex>(), 84);
     }
 
     #[test]
@@ -196,6 +248,8 @@ mod tests {
         assert_eq!(offset_of!(Vertex, uv), 36);
         assert_eq!(offset_of!(Vertex, bone_indices), 44);
         assert_eq!(offset_of!(Vertex, bone_weights), 60);
+        assert_eq!(offset_of!(Vertex, splat_weights_0), 76);
+        assert_eq!(offset_of!(Vertex, splat_weights_1), 80);
     }
 
     #[test]

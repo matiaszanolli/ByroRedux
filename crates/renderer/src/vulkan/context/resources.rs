@@ -3,7 +3,62 @@
 use super::VulkanContext;
 use anyhow::Result;
 
+use crate::vulkan::scene_buffer::GpuTerrainTile;
+use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
+
 impl VulkanContext {
+    /// Allocate a terrain tile slot and store its 8 bindless texture
+    /// indices. Returns the slot index (0..`MAX_TERRAIN_TILES`) that
+    /// the caller packs into the top 16 bits of `GpuInstance.flags`
+    /// alongside `INSTANCE_FLAG_TERRAIN_SPLAT`. Returns `None` when the
+    /// registry is full — caller falls back to the single-texture
+    /// path. See #470.
+    pub fn allocate_terrain_tile(&mut self, layer_texture_index: [u32; 8]) -> Option<u32> {
+        let slot = self.terrain_tile_free_list.pop()?;
+        let idx = slot as usize;
+        debug_assert!(idx < self.terrain_tiles.len());
+        self.terrain_tiles[idx] = Some(GpuTerrainTile {
+            layer_texture_index,
+        });
+        self.terrain_tiles_dirty_frames = MAX_FRAMES_IN_FLIGHT as u32;
+        Some(slot)
+    }
+
+    /// Release a terrain tile slot back to the free list and schedule
+    /// the SSBO to be reuploaded to every frame-in-flight. Must be
+    /// called from `unload_cell` before the mesh / BLAS drop so a late
+    /// frame-in-flight reads stale-but-valid data rather than
+    /// undefined.
+    pub fn free_terrain_tile(&mut self, slot: u32) {
+        let idx = slot as usize;
+        if idx >= self.terrain_tiles.len() {
+            return;
+        }
+        if self.terrain_tiles[idx].take().is_some() {
+            self.terrain_tile_free_list.push(slot);
+            self.terrain_tiles_dirty_frames = MAX_FRAMES_IN_FLIGHT as u32;
+        }
+    }
+
+    /// Snapshot every allocated terrain tile into a contiguous `Vec`
+    /// ready for `SceneBuffers::upload_terrain_tiles`. Empty slots are
+    /// filled with a default zero tile so the fragment shader's
+    /// `if (layerIdx == 0u) continue;` guard skips them. Decrements
+    /// the dirty-frame counter so every frame-in-flight observes the
+    /// update before writes stop. Called once per frame before
+    /// instance upload.
+    pub(super) fn drain_terrain_tile_uploads(&mut self) -> Option<Vec<GpuTerrainTile>> {
+        if self.terrain_tiles_dirty_frames == 0 {
+            return None;
+        }
+        self.terrain_tiles_dirty_frames -= 1;
+        Some(
+            self.terrain_tiles
+                .iter()
+                .map(|t| t.unwrap_or_default())
+                .collect(),
+        )
+    }
     /// Build a BLAS for a mesh (RT only). Call after uploading a mesh.
     pub fn build_blas_for_mesh(&mut self, mesh_handle: u32, vertex_count: u32, index_count: u32) {
         let Some(ref mut accel) = self.accel_manager else {

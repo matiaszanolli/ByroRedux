@@ -38,6 +38,42 @@ pub const MAX_INSTANCES: usize = 8192;
 /// #272 rarely emit more than a few hundred entries. See #309.
 pub const MAX_INDIRECT_DRAWS: usize = 8192;
 
+/// Maximum number of `GpuTerrainTile` slots held in the per-frame
+/// terrain-tile SSBO. 1024 × 32 B = 32 KB per frame — one slot per
+/// terrain-mesh entity. A 3×3 loaded-cell grid emits 9 tiles; larger
+/// exterior loads stay well under the cap. Capped at 65535 by the
+/// 16-bit index packed into `GpuInstance.flags` (bits 16..31). See #470.
+pub const MAX_TERRAIN_TILES: usize = 1024;
+
+/// Per-instance flag bits on [`GpuInstance::flags`].
+/// Kept in lockstep with the inline comments in `draw.rs` flag assembly
+/// and with the fragment shader's `flags & N` checks.
+pub const INSTANCE_FLAG_NON_UNIFORM_SCALE: u32 = 1 << 0;
+pub const INSTANCE_FLAG_ALPHA_BLEND: u32 = 1 << 1;
+pub const INSTANCE_FLAG_CAUSTIC_SOURCE: u32 = 1 << 2;
+/// Terrain splat bit — tells the fragment shader to consume the
+/// per-vertex splat weights (locations 6/7) and sample the 8 layer
+/// textures indexed by `GpuTerrainTile` at the tile index packed into
+/// the top 16 bits of `flags`. See #470.
+pub const INSTANCE_FLAG_TERRAIN_SPLAT: u32 = 1 << 3;
+/// Bit offset for the terrain tile index inside `GpuInstance.flags`.
+/// `(flags >> INSTANCE_TERRAIN_TILE_SHIFT) & 0xFFFF` yields the tile slot.
+pub const INSTANCE_TERRAIN_TILE_SHIFT: u32 = 16;
+pub const INSTANCE_TERRAIN_TILE_MASK: u32 = 0xFFFF;
+
+/// Per-terrain-tile data uploaded to the terrain-tile SSBO each cell load.
+/// Indexed in the fragment shader via
+/// `(instance.flags >> 16) & 0xFFFF` when the splat bit is set.
+/// 8 × u32 = 32 bytes, std430-compatible.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct GpuTerrainTile {
+    /// Bindless texture indices for layers 0-7. Unused slots are 0
+    /// (the fallback "error" texture); splat weights for unused layers
+    /// are zero so the fragment's `mix` is a no-op.
+    pub layer_texture_index: [u32; 8],
+}
+
 /// Per-instance data uploaded to the instance SSBO each frame.
 ///
 /// The vertex shader reads `instances[gl_InstanceIndex]` instead of push
@@ -292,6 +328,12 @@ pub struct SceneBuffers {
     /// `(pipeline_key, is_decal)` into one indirect draw call reading
     /// a contiguous range of this buffer. See #309.
     indirect_buffers: Vec<GpuBuffer>,
+    /// One SSBO per frame-in-flight holding `MAX_TERRAIN_TILES`
+    /// `GpuTerrainTile` entries. Populated on cell load via
+    /// [`SceneBuffers::upload_terrain_tiles`] — not rewritten per
+    /// frame. Fragment shader reads `terrainTiles[tile_idx]` when the
+    /// `INSTANCE_FLAG_TERRAIN_SPLAT` bit is set on the instance. See #470.
+    terrain_tile_buffers: Vec<GpuBuffer>,
     /// Descriptor pool for scene descriptor sets.
     descriptor_pool: vk::DescriptorPool,
     /// Layout for set 1: binding 0 = SSBO (lights), binding 1 = UBO (camera),
@@ -325,6 +367,9 @@ impl SceneBuffers {
         // Indirect buffer: one VkDrawIndexedIndirectCommand (20 B) per batch. #309.
         let indirect_buf_size = (std::mem::size_of::<vk::DrawIndexedIndirectCommand>()
             * MAX_INDIRECT_DRAWS) as vk::DeviceSize;
+        // Terrain tile SSBO: 32 B per slot × MAX_TERRAIN_TILES. #470.
+        let terrain_tile_buf_size =
+            (std::mem::size_of::<GpuTerrainTile>() * MAX_TERRAIN_TILES) as vk::DeviceSize;
 
         // Create per-frame buffers.
         let mut light_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
@@ -332,6 +377,7 @@ impl SceneBuffers {
         let mut bone_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut instance_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut indirect_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut terrain_tile_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             light_buffers.push(GpuBuffer::create_host_visible(
                 device,
@@ -362,6 +408,12 @@ impl SceneBuffers {
                 allocator,
                 indirect_buf_size,
                 vk::BufferUsageFlags::INDIRECT_BUFFER,
+            )?);
+            terrain_tile_buffers.push(GpuBuffer::create_host_visible(
+                device,
+                allocator,
+                terrain_tile_buf_size,
+                vk::BufferUsageFlags::STORAGE_BUFFER,
             )?);
         }
 
@@ -444,6 +496,15 @@ impl SceneBuffers {
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         );
+        // Binding 10: terrain tile SSBO (fragment shader — LAND splat layer
+        // texture indices, one entry per terrain entity). #470.
+        bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(10)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        );
         // Mark bindings 5+6 (cluster data) as PARTIALLY_BOUND so they are
         // valid even when unwritten (cluster cull pipeline may fail to create).
         // The fragment shader guards access with a lightCount > 0 check.
@@ -497,8 +558,9 @@ impl SceneBuffers {
         let mut pool_sizes = vec![
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
-                // 7 SSBOs per frame: lights(0), bones(3), instances(4), cluster grid(5), light indices(6), vertices(8), indices(9).
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 7) as u32,
+                // 8 SSBOs per frame: lights(0), bones(3), instances(4), cluster grid(5),
+                // light indices(6), vertices(8), indices(9), terrain tiles(10).
+                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 8) as u32,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
@@ -558,6 +620,11 @@ impl SceneBuffers {
                 offset: 0,
                 range: instance_buf_size,
             }];
+            let terrain_tile_buf_info = [vk::DescriptorBufferInfo {
+                buffer: terrain_tile_buffers[i].buffer,
+                offset: 0,
+                range: terrain_tile_buf_size,
+            }];
             let writes = [
                 vk::WriteDescriptorSet::default()
                     .dst_set(descriptor_sets[i])
@@ -579,6 +646,11 @@ impl SceneBuffers {
                     .dst_binding(4)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .buffer_info(&instance_buf_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_sets[i])
+                    .dst_binding(10)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(&terrain_tile_buf_info),
             ];
             unsafe {
                 device.update_descriptor_sets(&writes, &[]);
@@ -612,6 +684,7 @@ impl SceneBuffers {
             bone_buffers,
             instance_buffers,
             indirect_buffers,
+            terrain_tile_buffers,
             descriptor_pool,
             descriptor_set_layout,
             descriptor_sets,
@@ -793,6 +866,44 @@ impl SceneBuffers {
         self.indirect_buffers[frame_index].buffer
     }
 
+    /// Upload terrain tile data for the current frame-in-flight. Called
+    /// from the cell loader after `spawn_terrain_mesh` packs per-tile
+    /// layer texture indices. Writes are not required every frame —
+    /// once per cell load is enough because the data is static until
+    /// the next cell transition. See #470.
+    pub fn upload_terrain_tiles(
+        &mut self,
+        device: &ash::Device,
+        frame_index: usize,
+        tiles: &[GpuTerrainTile],
+    ) -> Result<()> {
+        let count = tiles.len().min(MAX_TERRAIN_TILES);
+        if tiles.len() > MAX_TERRAIN_TILES {
+            log::warn!(
+                "Terrain tile SSBO overflow: {} tiles submitted, capped at {} — excess slots silently dropped. #470",
+                tiles.len(),
+                MAX_TERRAIN_TILES,
+            );
+        }
+        if count == 0 {
+            return Ok(());
+        }
+        let buf = &mut self.terrain_tile_buffers[frame_index];
+        let mapped = buf.mapped_slice_mut()?;
+        let byte_size = std::mem::size_of::<GpuTerrainTile>() * count;
+        // SAFETY: GpuTerrainTile is #[repr(C)] with u32-only fields
+        // matching std430. terrain_tile_buffers are sized for
+        // MAX_TERRAIN_TILES; count is clamped above.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                tiles.as_ptr() as *const u8,
+                mapped.as_mut_ptr(),
+                byte_size,
+            );
+        }
+        buf.flush_if_needed(device)
+    }
+
     /// Get the light buffers (for compute pipeline descriptor writes).
     pub fn light_buffers(&self) -> &[GpuBuffer] {
         &self.light_buffers
@@ -963,6 +1074,9 @@ impl SceneBuffers {
             buf.destroy(device, allocator);
         }
         for buf in &mut self.indirect_buffers {
+            buf.destroy(device, allocator);
+        }
+        for buf in &mut self.terrain_tile_buffers {
             buf.destroy(device, allocator);
         }
         device.destroy_descriptor_pool(self.descriptor_pool, None);

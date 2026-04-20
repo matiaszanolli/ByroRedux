@@ -136,6 +136,12 @@ pub struct DrawCommand {
     /// 5=NOTEQUAL, 6=GREATEREQUAL, 7=NEVER. Mapped to
     /// `vk::CompareOp` and forwarded into `vkCmdSetDepthCompareOp`.
     pub z_function: u8,
+    /// Terrain tile slot for LAND splat meshes. `None` on every non-
+    /// terrain draw. When present, the draw assembler sets
+    /// `INSTANCE_FLAG_TERRAIN_SPLAT` and packs the slot into the top
+    /// 16 bits of `GpuInstance.flags` so the fragment shader can
+    /// sample the 8 layer textures per `GpuTerrainTile`. See #470.
+    pub terrain_tile_index: Option<u32>,
 }
 
 /// Sky rendering parameters passed per-frame to the composite shader.
@@ -297,6 +303,21 @@ pub struct VulkanContext {
     /// CPU-side. The existing instanced batching from #272 collapses all
     /// per-frame particle draws into a single instanced cmd_draw_indexed.
     pub particle_quad_handle: Option<u32>,
+    /// Cell-load-time registry of active terrain splat tiles. Parallel
+    /// to the mesh / texture registries; maps a tile slot (0..1023) to
+    /// its 8 bindless texture indices. Uploaded to the `GpuTerrainTile`
+    /// SSBO once per cell load and referenced by fragment shaders via
+    /// `(instance.flags >> 16) & 0xFFFF`. Vacant slots are tracked in
+    /// a free list. See #470.
+    terrain_tiles: Vec<Option<scene_buffer::GpuTerrainTile>>,
+    /// LIFO free list of vacant terrain tile slots.
+    terrain_tile_free_list: Vec<u32>,
+    /// Countdown of how many more frames must reupload the terrain
+    /// tile SSBO. Set to `MAX_FRAMES_IN_FLIGHT` on every mutation and
+    /// decremented each draw after the per-frame upload runs — ensures
+    /// every frame-in-flight observes the new slab before the flag
+    /// stops triggering writes. A single per-frame upload is 32 KB.
+    terrain_tiles_dirty_frames: u32,
     render_pass: vk::RenderPass,
     swapchain_state: SwapchainState,
 
@@ -851,6 +872,12 @@ impl VulkanContext {
             pipeline_layout: pipelines.layout,
             ui_quad_handle: None,
             particle_quad_handle: None,
+            terrain_tiles: vec![None; scene_buffer::MAX_TERRAIN_TILES],
+            // Free list seeded with every slot in reverse order so
+            // `pop()` returns slots in ascending order (deterministic
+            // test behaviour).
+            terrain_tile_free_list: (0..scene_buffer::MAX_TERRAIN_TILES as u32).rev().collect(),
+            terrain_tiles_dirty_frames: 0,
             mesh_registry,
             texture_registry,
             scene_buffers,

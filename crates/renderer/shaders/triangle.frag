@@ -10,6 +10,12 @@ layout(location = 4) flat in uint fragTexIndex;
 layout(location = 5) flat in int fragInstanceIndex;
 layout(location = 6) in vec4 fragCurrClipPos;
 layout(location = 7) in vec4 fragPrevClipPos;
+// Terrain splat weights — unorm bytes → vec4 in [0,1] (#470).
+// Interpolated linearly across the triangle. Non-terrain meshes
+// carry zero bytes here; the splat branch is gated on
+// `(inst.flags & 8u) != 0u`.
+layout(location = 8) in vec4 fragSplat0; // layers 0-3
+layout(location = 9) in vec4 fragSplat1; // layers 4-7
 
 // Main render pass has 6 color attachments (Phase 2).
 layout(location = 0) out vec4 outColor;        // HDR color (direct light only)
@@ -49,7 +55,14 @@ struct GpuInstance {
     float avgAlbedoR;        // offset 140 — pre-computed average albedo for GI bounce
     float avgAlbedoG;        // offset 144
     float avgAlbedoB;        // offset 148
-    uint flags;              // offset 152 — bit 0: non-uniform scale, bit 1: alpha blend, bit 2: caustic source (#321)
+    // offset 152: per-instance bit flags + packed fields.
+    //   bit 0      — non-uniform scale (#273)
+    //   bit 1      — NiAlphaProperty blend bit (#263)
+    //   bit 2      — caustic source (#321)
+    //   bit 3      — terrain splat (#470); enables the ATXT blend loop
+    //                against `terrainTiles[flags >> 16]`
+    //   bits 16-31 — terrain tile index (only meaningful with bit 3)
+    uint flags;
     uint materialKind;       // offset 156 — BSLightingShaderProperty.shader_type (0–19) for variant dispatch (#344). 0 = Default lit.
     // #399 — NiTexturingProperty extra slots (Oblivion glow/detail/gloss).
     // 0 = no map; sampling code below falls through to the inline material constants.
@@ -112,13 +125,26 @@ layout(std430, set = 1, binding = 6) readonly buffer ClusterLightIndices {
 layout(set = 1, binding = 7) uniform sampler2D aoTexture;
 
 // Global geometry SSBOs for RT reflection UV lookups.
-// Vertex data: position (vec3) + color (vec3) + normal (vec3) + uv (vec2) + bones = 76 bytes/vertex.
-// We only need the UV at offset 36 bytes (9 floats into each vertex).
+// Vertex data: position (vec3) + color (vec3) + normal (vec3) + uv (vec2)
+// + bone_indices (uvec4) + bone_weights (vec4) + splat_0/1 (2× u32 unorm)
+// = 84 bytes/vertex. We only need the UV at offset 36 bytes
+// (9 floats into each vertex). See #470 — splat bytes grew the stride.
 layout(std430, set = 1, binding = 8) readonly buffer GlobalVertices {
-    float vertexData[]; // flat array, stride = 19 floats (76 bytes)
+    float vertexData[]; // flat array, stride = 21 floats (84 bytes)
 };
 layout(std430, set = 1, binding = 9) readonly buffer GlobalIndices {
     uint indexData[];
+};
+
+// Per-terrain-tile bindless texture indices for LAND splat layers
+// (#470). Fragment shader reads `terrainTiles[tileIdx]` when the
+// `INSTANCE_FLAG_TERRAIN_SPLAT` bit (flags bit 3) is set. The tile
+// index is packed into the top 16 bits of `flags`.
+struct GpuTerrainTile {
+    uint layerTextureIndex[8];
+};
+layout(std430, set = 1, binding = 10) readonly buffer TerrainTileBuffer {
+    GpuTerrainTile terrainTiles[];
 };
 
 // Must match cluster_cull.comp constants.
@@ -202,8 +228,8 @@ vec2 getHitUV(uint instanceIdx, uint primitiveIdx, vec2 barycentrics) {
     uint i1 = indexData[iOff + primitiveIdx * 3 + 1];
     uint i2 = indexData[iOff + primitiveIdx * 3 + 2];
 
-    // Vertex stride: 19 floats (76 bytes). UV starts at float offset 9 (byte 36).
-    const uint STRIDE = 19;
+    // Vertex stride: 21 floats (84 bytes). UV starts at float offset 9 (byte 36).
+    const uint STRIDE = 21;
     const uint UV_OFFSET = 9;
 
     vec2 uv0 = vec2(vertexData[(vOff + i0) * STRIDE + UV_OFFSET],
@@ -435,6 +461,30 @@ void main() {
     }
 
     vec4 texColor = texture(textures[nonuniformEXT(fragTexIndex)], sampleUV);
+
+    // Terrain splat blending (#470). When the instance has the
+    // TERRAIN_SPLAT flag set, BTXT (read above via `fragTexIndex`)
+    // becomes the base layer, and up to 8 additional layers from the
+    // per-tile `GpuTerrainTile` alpha-blend on top in layer order via
+    // `mix(prev, layer, weight)`. Matches the UESP-documented ATXT
+    // blend semantics. Static meshes skip the branch entirely.
+    if ((inst.flags & 8u) != 0u) {
+        uint tileIdx = (inst.flags >> 16) & 0xFFFFu;
+        GpuTerrainTile tile = terrainTiles[nonuniformEXT(tileIdx)];
+        vec4 splat[2] = vec4[2](fragSplat0, fragSplat1);
+        for (uint i = 0u; i < 8u; ++i) {
+            float w = splat[i / 4u][i & 3u];
+            if (w <= 0.0) continue;
+            uint layerIdx = tile.layerTextureIndex[i];
+            if (layerIdx == 0u) continue; // layer slot unused
+            vec4 layerColor = texture(
+                textures[nonuniformEXT(layerIdx)], sampleUV);
+            texColor.rgb = mix(texColor.rgb, layerColor.rgb, w);
+            // Keep texColor.a from the base — terrain is opaque,
+            // the alpha-test / alpha-blend machinery below must see
+            // the base's alpha, not a splat layer's.
+        }
+    }
 
     // Per-instance alpha test (#263). When alphaThreshold > 0 the material
     // has an alpha test enabled; alphaTestFunc selects the Gamebryo comparison:

@@ -7,6 +7,11 @@ layout(location = 2) in vec3 inNormal;
 layout(location = 3) in vec2 inUV;
 layout(location = 4) in uvec4 inBoneIndices;
 layout(location = 5) in vec4  inBoneWeights;
+// Terrain splat weights — R8G8B8A8_UNORM → vec4 in [0,1] (#470).
+// Zero for every non-terrain mesh; the fragment shader only consumes
+// them when `instance.flags & INSTANCE_FLAG_TERRAIN_SPLAT` is set.
+layout(location = 6) in vec4 inSplat0; // layers 0-3
+layout(location = 7) in vec4 inSplat1; // layers 4-7
 
 // Per-instance data from the instance SSBO. Each draw's gl_InstanceIndex
 // maps to one entry containing model matrix, texture index, and bone offset.
@@ -83,6 +88,12 @@ layout(location = 5) flat out int fragInstanceIndex;
 // wrong motion vector but SVGF will detect that as a disocclusion.
 layout(location = 6) out vec4 fragCurrClipPos;
 layout(location = 7) out vec4 fragPrevClipPos;
+// Splat weights forwarded flat — terrain tile data is constant across
+// a mesh draw, and per-vertex splat values interpolate linearly
+// through the rasterizer by default (`flat` is not used because we
+// *want* the blend to be smooth across the triangle).
+layout(location = 8) out vec4 fragSplat0;
+layout(location = 9) out vec4 fragSplat1;
 
 void main() {
     GpuInstance inst = instances[gl_InstanceIndex];
@@ -132,6 +143,8 @@ void main() {
     // only, not the per-frame sub-pixel sampling offset.
     fragCurrClipPos = currClip;
     fragPrevClipPos = prevViewProj * worldPos;
+    fragSplat0 = inSplat0;
+    fragSplat1 = inSplat1;
 
     // Apply sub-pixel jitter for TAA supersampling. jitter.xy is expressed
     // in NDC, so we scale by clip.w so the offset is constant in NDC after

@@ -26,10 +26,11 @@ struct GpuInstance {
     uint alphaTestFunc;
     uint darkMapIndex;
     float avgAlbedoR, avgAlbedoG, avgAlbedoB;
-    uint flags;  // offset 152 — bit 0: non-uniform scale, bit 1: alpha blend, bit 2: caustic source (#321).
-                 // Currently unused by ui.vert but named in lockstep with
-                 // triangle.{vert,frag} and Rust `GpuInstance` (Shader Struct
-                 // Sync invariant). See #318.
+    uint flags;  // offset 152 — bits 0-2 = scale/blend/caustic; bit 3 =
+                 // terrain splat (#470), upper 16 bits = terrain tile
+                 // index. Unused by ui.vert but named in lockstep with
+                 // triangle.{vert,frag} and Rust `GpuInstance` (Shader
+                 // Struct Sync invariant). See #318.
     uint materialKind;  // offset 156 — BSLightingShaderProperty.shader_type (0–19), unused by the UI pipeline; named in lockstep with the scene shaders. See #344.
     // #399 — NiTexturingProperty extra slots, named in lockstep with
     // triangle.{vert,frag}. UI pipeline doesn't sample them but the
