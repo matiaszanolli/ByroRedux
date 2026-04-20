@@ -17,7 +17,7 @@ mod walk;
 // Re-export the public material capture types so `ImportedMesh`'s
 // `effect_shader` field can name `BsEffectShaderData` without leaking
 // the internal module path.
-pub use material::{BsEffectShaderData, ShaderTypeFields};
+pub use material::{BsEffectShaderData, NoLightingFalloff, ShaderTypeFields};
 
 use crate::scene::NifScene;
 use crate::types::NiTransform;
@@ -318,6 +318,14 @@ pub struct ImportedMesh {
     /// dropped in the construction of `ImportedMesh`, and the BsTriShape
     /// path ignored them entirely — both sides now populate uniformly.
     pub shader_type_fields: ShaderTypeFields,
+    /// FO3/FNV `BSShaderNoLightingProperty` soft-falloff cone —
+    /// four scalars that drive the angular alpha gradient on HUD
+    /// overlays, VATS crosshair, scope reticles, Pip-Boy glow, and
+    /// heat-shimmer planes. `None` for every non-NoLighting mesh.
+    /// Renderer dispatch is follow-up work (same track as the
+    /// BSEffectShaderProperty soft-falloff consumption). Pre-#451
+    /// the parser captured these but the importer dropped them.
+    pub no_lighting_falloff: Option<NoLightingFalloff>,
 }
 
 /// Per-bone binding for a skinned mesh. Bone space is Y-up (converted

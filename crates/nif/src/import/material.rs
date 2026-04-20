@@ -257,6 +257,35 @@ pub(super) struct MaterialInfo {
     /// and `uv_*`. Now they ride through to the renderer (separate
     /// dispatch hookup tracked at SK-D3-02).
     pub effect_shader: Option<BsEffectShaderData>,
+
+    /// FO3/FNV `BSShaderNoLightingProperty` soft-falloff cone. Four
+    /// floats pulled from the parsed block when bsver > 26; on older
+    /// Oblivion content they sit at the parser-side defaults. `None`
+    /// when the material has no NoLighting backing.
+    /// Pre-#451 these four fields were silently discarded by the
+    /// importer even though the parser had captured them — FO3 UI
+    /// overlays, VATS crosshair, scope reticles, Pip-Boy glow, heat-
+    /// shimmer planes lost their angular falloff. Renderer dispatch
+    /// is follow-up work (tracked separately alongside the BSEffect
+    /// soft-falloff hookup under SK-D3-02).
+    pub no_lighting_falloff: Option<NoLightingFalloff>,
+}
+
+/// Soft-falloff cone captured from `BSShaderNoLightingProperty` (FO3/FNV
+/// HUD overlays + UI tiles + scope reticles). Sibling of the richer
+/// [`BsEffectShaderData`] that covers `BSEffectShaderProperty`; the
+/// NoLighting block only emits the four cone scalars plus its file
+/// name (already routed to `MaterialInfo::texture_path`). See #451.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NoLightingFalloff {
+    /// Cos-of-angle where alpha = `start_opacity`.
+    pub start_angle: f32,
+    /// Cos-of-angle where alpha = `stop_opacity`.
+    pub stop_angle: f32,
+    /// Alpha at the start angle.
+    pub start_opacity: f32,
+    /// Alpha at the stop angle.
+    pub stop_opacity: f32,
 }
 
 /// Fields imported from a `BSEffectShaderProperty` block. Only present
@@ -353,6 +382,7 @@ impl Default for MaterialInfo {
             multi_layer_envmap_strength: None,
             sparkle_parameters: None,
             effect_shader: None,
+            no_lighting_falloff: None,
         }
     }
 }
@@ -791,6 +821,20 @@ pub(super) fn extract_material_info(
             ) {
                 info.is_decal = true;
             }
+            // Capture the soft-falloff cone so the HUD / VATS / scope
+            // overlay pipelines can eventually consume it. Pre-#451 the
+            // four scalars were silently discarded (parser extracted
+            // them but the importer had no field to receive them).
+            // Don't overwrite a previously-captured falloff set: if the
+            // mesh somehow binds both a NoLighting and an effect block
+            // the caller-most wins, matching the other shader-field
+            // merging in this loop.
+            info.no_lighting_falloff.get_or_insert(NoLightingFalloff {
+                start_angle: shader.falloff_start_angle,
+                stop_angle: shader.falloff_stop_angle,
+                start_opacity: shader.falloff_start_opacity,
+                stop_opacity: shader.falloff_stop_opacity,
+            });
         }
 
         // NiStencilProperty — proper parser replaces NiUnknown heuristic.

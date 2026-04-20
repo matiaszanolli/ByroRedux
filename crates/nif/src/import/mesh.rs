@@ -181,6 +181,9 @@ pub(super) fn extract_mesh(
         // `extract_material_info` already populated them on MaterialInfo
         // via `apply_shader_type_data`; before this fix they died here.
         shader_type_fields,
+        // #451 — forward the BSShaderNoLightingProperty soft-falloff
+        // cone (FO3/FNV HUD overlays). `None` for non-NoLighting meshes.
+        no_lighting_falloff: mat.no_lighting_falloff,
         flags: shape.av.flags,
     })
 }
@@ -484,6 +487,10 @@ pub(super) fn extract_bs_tri_shape(
         // #430 — populated from `capture_shader_type_fields` above when
         // the shape has a BSLightingShaderProperty backing, else default.
         shader_type_fields,
+        // BSShaderNoLightingProperty is an FO3/FNV-era property and
+        // doesn't bind to BsTriShape (Skyrim+). Always None on this
+        // path. See #451.
+        no_lighting_falloff: None,
         flags: shape.av.flags,
     })
 }
