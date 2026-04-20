@@ -965,12 +965,18 @@ impl CompositePipeline {
     }
 
     /// Rewrite binding 0 (HDR sampler) across every per-frame descriptor
-    /// set to point at a different set of views. Used to switch composite's
-    /// input from raw HDR to TAA output once TAA is wired up.
+    /// set to point at a different set of views. Called from init
+    /// (`context/mod.rs:792`) and resize (`context/resize.rs:347`) to
+    /// switch composite between raw HDR (from the render pass) and the
+    /// TAA storage-image output.
     ///
-    /// `hdr_layout` must be the current image layout of the new views:
-    /// `SHADER_READ_ONLY_OPTIMAL` for raw HDR from the render pass,
-    /// `GENERAL` for TAA storage-image output.
+    /// `hdr_layout` must match the new views' current image layout:
+    ///   - `SHADER_READ_ONLY_OPTIMAL` for raw HDR (render-pass final layout)
+    ///   - `GENERAL` for TAA storage-image output (current default)
+    ///
+    /// Current usage: both callers pass the TAA output views at
+    /// `GENERAL` layout — the raw-HDR path is dormant but kept available
+    /// for diagnostic A/B testing or a future TAA-disable flag.
     pub fn rebind_hdr_views(
         &mut self,
         device: &ash::Device,
