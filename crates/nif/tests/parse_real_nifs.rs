@@ -16,9 +16,16 @@ mod common;
 
 use common::{open_mesh_archive, parse_all_nifs_in_archive, Game};
 
-/// Acceptance threshold per N23.10. A game is considered "supported" when
-/// at least this fraction of its mesh NIFs parse without error.
-const MIN_SUCCESS_RATE: f64 = 0.95;
+/// Acceptance threshold per N23.10 + ROADMAP. All 7 supported games
+/// currently ship at 100% parse rate (177,286 NIFs total — see
+/// ROADMAP.md "Full-archive parse rates"). Any vanilla NIF that fails
+/// to parse is a regression.
+///
+/// Intentionally tight (1.0) so a single regressed NIF fails the per-game
+/// test loud and clear. If a future mod-content test tolerates partial
+/// coverage, define a separate `MIN_SUCCESS_RATE_MOD` and use it there
+/// rather than loosening the vanilla gate. See issue #487.
+const MIN_SUCCESS_RATE: f64 = 1.0;
 
 fn run_game(game: Game, limit: Option<usize>) {
     let Some(archive) = open_mesh_archive(game) else {
@@ -71,9 +78,9 @@ fn parse_rate_skyrim_se() {
 #[test]
 #[ignore]
 fn parse_rate_oblivion() {
-    // Oblivion BSA v103 decompression is not yet implemented, so this test
-    // will skip cleanly (archive opens but extract fails). Once decompression
-    // lands, the threshold applies.
+    // Oblivion BSA v103 uses zlib compression (handled in
+    // `crates/bsa/src/archive.rs:470-475`). Previous "decompression not
+    // yet implemented" comment was stale after M26+.
     run_game(Game::Oblivion, None);
 }
 

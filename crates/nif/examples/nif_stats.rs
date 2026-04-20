@@ -12,14 +12,31 @@
 //! a few examples), a histogram of block types seen in successful
 //! parses, and a sorted list of error messages for the failing parses.
 //!
-//! Exit code is non-zero when parse success rate drops below 95%.
+//! Exit code is non-zero when parse success rate drops below 100% (the
+//! vanilla-content commitment per ROADMAP). Override with
+//! `NIF_STATS_MIN_SUCCESS_RATE=<0.0..=1.0>` for modded content where
+//! partial coverage is expected.
 
 use byroredux_bsa::{Ba2Archive, BsaArchive};
 use byroredux_nif::parse_nif;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-const MIN_SUCCESS_RATE: f64 = 0.95;
+/// Default success rate gate. All 7 supported games ship at 100%
+/// (ROADMAP "Full-archive parse rates: ALL 7 games at 100%") — any drop
+/// is a vanilla regression. Override via `NIF_STATS_MIN_SUCCESS_RATE`
+/// env var when running against modded or unknown content.
+///
+/// See issue #487 for the gate-tightening rationale.
+const DEFAULT_MIN_SUCCESS_RATE: f64 = 1.0;
+
+fn min_success_rate() -> f64 {
+    std::env::var("NIF_STATS_MIN_SUCCESS_RATE")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|r| (0.0..=1.0).contains(r))
+        .unwrap_or(DEFAULT_MIN_SUCCESS_RATE)
+}
 
 struct Stats {
     total: usize,
@@ -311,11 +328,12 @@ fn main() {
 
     stats.print();
 
-    if stats.total > 0 && stats.success_rate() < MIN_SUCCESS_RATE {
+    let threshold = min_success_rate();
+    if stats.total > 0 && stats.success_rate() < threshold {
         eprintln!(
-            "\nparse success rate {:.2}% is below the {:.0}% threshold",
+            "\nparse success rate {:.2}% is below the {:.2}% threshold",
             stats.success_rate() * 100.0,
-            MIN_SUCCESS_RATE * 100.0
+            threshold * 100.0
         );
         std::process::exit(1);
     }
