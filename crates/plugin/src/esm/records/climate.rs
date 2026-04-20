@@ -12,8 +12,12 @@ use crate::esm::reader::SubRecord;
 pub struct ClimateWeather {
     /// Form ID of the WTHR record.
     pub weather_form_id: u32,
-    /// Relative chance (higher = more likely). FNV uses u32.
-    pub chance: u32,
+    /// Relative chance (higher = more likely). UESP + in-tree WLST parser
+    /// comment both describe this as **i32**. Pre-#476 it was typed u32;
+    /// negative-chance entries (used by mods as sentinels or subtractive
+    /// weights) wrapped to huge positive and silently won `max_by_key`
+    /// during default-weather selection.
+    pub chance: i32,
 }
 
 /// Parsed CLMT record.
@@ -59,24 +63,25 @@ pub fn parse_clmt(form_id: u32, subs: &[SubRecord]) -> ClimateRecord {
         match &sub.sub_type {
             b"EDID" => record.editor_id = read_zstring(&sub.data),
 
-            // WLST: weather list — array of (form_id: u32, chance: u32) pairs.
-            // FNV uses 8 bytes per entry; Skyrim uses 12 (adds global form ID).
+            // WLST: weather list — array of (form_id: u32, chance: i32) pairs.
+            // FNV and Skyrim use 12-byte entries: (form_id: u32, chance: i32, global: u32).
+            // Oblivion uses 8-byte entries: (form_id: u32, chance: i32).
+            // Prefer 12 when divisible; fall back to 8.
             b"WLST" => {
-                // FNV and Skyrim use 12-byte entries: (form_id: u32, chance: i32, global: u32).
-                // Oblivion uses 8-byte entries: (form_id: u32, chance: i32).
-                // Prefer 12 when divisible; fall back to 8.
                 let entry_size = if sub.data.len() % 12 == 0 { 12 } else { 8 };
                 let count = sub.data.len() / entry_size;
                 for i in 0..count {
                     let offset = i * entry_size;
-                    if let (Some(fid), Some(chance)) = (
+                    if let (Some(fid), Some(chance_bits)) = (
                         read_u32_at(&sub.data, offset),
                         read_u32_at(&sub.data, offset + 4),
                     ) {
                         if fid != 0 {
                             record.weathers.push(ClimateWeather {
                                 weather_form_id: fid,
-                                chance,
+                                // Reinterpret the 4-byte little-endian slot as
+                                // signed — UESP WLST schema says i32. See #476.
+                                chance: chance_bits as i32,
                             });
                         }
                     }
@@ -118,10 +123,10 @@ mod tests {
         // Build a WLST with 2 weather entries (12-byte format: fid + chance + global).
         let mut wlst_data = Vec::new();
         wlst_data.extend_from_slice(&0x1000u32.to_le_bytes()); // weather 1 form ID
-        wlst_data.extend_from_slice(&60u32.to_le_bytes()); // 60% chance
+        wlst_data.extend_from_slice(&60i32.to_le_bytes()); // 60% chance
         wlst_data.extend_from_slice(&0u32.to_le_bytes()); // global form ID (unused)
         wlst_data.extend_from_slice(&0x2000u32.to_le_bytes()); // weather 2 form ID
-        wlst_data.extend_from_slice(&40u32.to_le_bytes()); // 40% chance
+        wlst_data.extend_from_slice(&40i32.to_le_bytes()); // 40% chance
         wlst_data.extend_from_slice(&0u32.to_le_bytes()); // global form ID (unused)
 
         let subs = vec![
@@ -142,5 +147,28 @@ mod tests {
         assert_eq!(c.sun_texture.as_deref(), Some("sky\\sun_01.dds"));
         assert_eq!(c.sunrise_begin, 6);
         assert_eq!(c.sunset_end, 20);
+    }
+
+    /// Regression: #476 — negative-chance WLST entries must decode as
+    /// signed (not wrap to huge u32). Mods use -1 as a sentinel /
+    /// subtractive weight; pre-#476 the u32 reinterpretation made -1
+    /// win `max_by_key` against legitimate positive chances.
+    #[test]
+    fn parse_clmt_wlst_decodes_negative_chance() {
+        let mut wlst_data = Vec::new();
+        wlst_data.extend_from_slice(&0x1000u32.to_le_bytes()); // weather 1
+        wlst_data.extend_from_slice(&(-1i32).to_le_bytes());    // negative sentinel
+        wlst_data.extend_from_slice(&0u32.to_le_bytes());       // global unused
+        wlst_data.extend_from_slice(&0x2000u32.to_le_bytes()); // weather 2
+        wlst_data.extend_from_slice(&75i32.to_le_bytes());      // 75% chance
+        wlst_data.extend_from_slice(&0u32.to_le_bytes());
+
+        let subs = vec![make_sub(b"WLST", wlst_data)];
+        let c = parse_clmt(0xBEEF, &subs);
+        assert_eq!(c.weathers.len(), 2);
+        assert_eq!(c.weathers[0].chance, -1);
+        assert_eq!(c.weathers[1].chance, 75);
+        // Consumers that `max_by_key` over chance must filter < 0 first;
+        // see cell_loader.rs default-weather selection (#476 consumer fix).
     }
 }

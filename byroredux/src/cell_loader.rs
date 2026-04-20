@@ -552,7 +552,13 @@ pub fn load_exterior_cells(
     });
     let weather = climate.as_ref().and_then(|climate| {
         // Pick the weather with the highest chance (most common / default).
-        let best = climate.weathers.iter().max_by_key(|w| w.chance)?;
+        // Skip entries with negative chance — mods use -1 as a sentinel
+        // or subtractive weight, not a valid selection score. See #476.
+        let best = climate
+            .weathers
+            .iter()
+            .filter(|w| w.chance >= 0)
+            .max_by_key(|w| w.chance)?;
         let wthr = record_index.weathers.get(&best.weather_form_id)?;
         log::info!(
             "Default weather: '{}' ({:08X}, chance {})",
