@@ -181,6 +181,7 @@ pub(super) fn extract_mesh(
         // `extract_material_info` already populated them on MaterialInfo
         // via `apply_shader_type_data`; before this fix they died here.
         shader_type_fields,
+        flags: shape.av.flags,
     })
 }
 
@@ -483,6 +484,7 @@ pub(super) fn extract_bs_tri_shape(
         // #430 — populated from `capture_shader_type_fields` above when
         // the shape has a BSLightingShaderProperty backing, else default.
         shader_type_fields,
+        flags: shape.av.flags,
     })
 }
 

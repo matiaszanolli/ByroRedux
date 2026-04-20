@@ -118,6 +118,14 @@ pub struct ImportedNode {
     /// tell them apart. `None` when the source block was a plain
     /// `NiNode` or one of its non-range subclasses. See audit S4-06.
     pub range_kind: Option<BsRangeKind>,
+    /// Raw `NiAVObject.flags` value. Carried through so the scene
+    /// builder can spawn a `SceneFlags` component per entity. APP_CULLED
+    /// (bit 0) is already consumed by the import-time visibility filter
+    /// in `walk.rs`; this field preserves every other bit
+    /// (SELECTIVE_UPDATE, DISABLE_SORTING, IS_NODE, DISPLAY_OBJECT,
+    /// etc.) so gameplay-side systems can branch on them instead of
+    /// re-reading the source NIF. See #222.
+    pub flags: u32,
 }
 
 /// SpeedTree bone metadata surfaced from a [`BSTreeNode`] — bone
@@ -297,6 +305,9 @@ pub struct ImportedMesh {
     /// MultiLayerParallax. Variant rendering wiring inside the
     /// fragment shader is per-variant follow-up work.
     pub material_kind: u8,
+    /// Raw `NiAVObject.flags` value (sibling of `ImportedNode.flags`).
+    /// Consumers emit a `SceneFlags` component per shape entity. See #222.
+    pub flags: u32,
     /// Shader-type-specific trailing fields decoded off
     /// `BSLightingShaderProperty.shader_type_data` — SkinTint color,
     /// HairTint color, EyeEnvmap centers, ParallaxOcc / MultiLayerParallax

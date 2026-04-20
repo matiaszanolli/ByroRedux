@@ -154,6 +154,7 @@ pub(super) fn walk_node_hierarchical(
             billboard_mode,
             tree_bones,
             range_kind,
+            flags: node.av.flags,
         });
 
         let prev_len = inherited_props.len();
@@ -201,6 +202,7 @@ pub(super) fn walk_node_hierarchical(
             billboard_mode,
             tree_bones,
             range_kind,
+            flags: node.av.flags,
         });
 
         // Merge this node's properties with the inherited set via stack

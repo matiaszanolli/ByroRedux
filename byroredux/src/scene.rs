@@ -4,8 +4,8 @@ use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
     ActiveCamera, Billboard, BillboardMode, Camera, GlobalTransform, LocalBound, Material,
-    MeshHandle, Name, Parent, ParticleEmitter, SkinnedMesh, TextureHandle, Transform, World,
-    WorldBound, MAX_BONES_PER_MESH,
+    MeshHandle, Name, Parent, ParticleEmitter, SceneFlags, SkinnedMesh, TextureHandle, Transform,
+    World, WorldBound, MAX_BONES_PER_MESH,
 };
 use byroredux_core::math::{Mat4, Quat, Vec3};
 use byroredux_core::string::StringPool;
@@ -705,6 +705,18 @@ pub(crate) fn load_nif_bytes(
             world.insert(entity, Billboard::new(BillboardMode::from_nif(raw)));
         }
 
+        // Attach raw NiAVObject flags so gameplay systems can branch on
+        // DISABLE_SORTING, SELECTIVE_UPDATE, IS_NODE, DISPLAY_OBJECT,
+        // etc. without re-reading the source NIF. APP_CULLED (bit 0) is
+        // already consumed by the import-time visibility filter in
+        // `walk.rs`, so every spawned node arrives with that bit clear.
+        // We still emit the component unconditionally (not gated on
+        // `flags != 0`) so a future toggle-visible system can just flip
+        // the bit on the existing component. See #222.
+        if node.flags != 0 {
+            world.insert(entity, SceneFlags::from_nif(node.flags));
+        }
+
         node_entities.push(entity);
     }
 
@@ -895,6 +907,13 @@ pub(crate) fn load_nif_bytes(
         }
         if mesh.is_decal {
             world.insert(entity, Decal);
+        }
+        // Carry `NiAVObject.flags` across — gameplay systems branch on
+        // DISABLE_SORTING / SELECTIVE_UPDATE / DISPLAY_OBJECT bits
+        // without touching the NIF source. APP_CULLED shapes never
+        // reach this point (filtered import-side in walk.rs). See #222.
+        if mesh.flags != 0 {
+            world.insert(entity, SceneFlags::from_nif(mesh.flags));
         }
         // Attach material data (specular, emissive, glossiness, UV transform, etc.)
         world.insert(
