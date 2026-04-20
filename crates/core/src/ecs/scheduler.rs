@@ -84,8 +84,17 @@ impl Scheduler {
     pub fn add_to<S: System + 'static>(&mut self, stage: Stage, system: S) -> &mut Self {
         let name = system.name().to_string();
         if self.has_system(&name) {
+            // Duplicate name push is intentional for use-cases like
+            // registering multiple closures of the same signature —
+            // `std::any::type_name` collapses all matching closures to
+            // a single name so the scheduler can't distinguish them.
+            // For named struct systems (`impl System with fn name`) the
+            // warning catches honest mistakes. See #312 +
+            // `try_add_to` for the strict form.
             log::warn!(
-                "Scheduler: duplicate system name '{}' in stage {:?}",
+                "Scheduler: duplicate system name '{}' in stage {:?} \
+                 (closures with identical signatures share type_name; \
+                 for named structs, prefer `try_add_to`)",
                 name,
                 stage,
             );
@@ -98,6 +107,31 @@ impl Scheduler {
         self
     }
 
+    /// Add a parallel system to `stage`, rejecting duplicates by name.
+    ///
+    /// Returns `Err(name)` when a system with the same name is already
+    /// registered; the system is NOT added. Prefer this in engine
+    /// setup when you want a loud failure if someone accidentally
+    /// registers the same named struct twice (#312). Closures share a
+    /// `type_name` with siblings of the same signature, so use
+    /// `add_to` for those.
+    pub fn try_add_to<S: System + 'static>(
+        &mut self,
+        stage: Stage,
+        system: S,
+    ) -> Result<&mut Self, String> {
+        let name = system.name().to_string();
+        if self.has_system(&name) {
+            return Err(name);
+        }
+        self.stages
+            .entry(stage)
+            .or_insert_with(StageData::new)
+            .parallel
+            .push(Box::new(system));
+        Ok(self)
+    }
+
     /// Add an exclusive system to a specific stage.
     ///
     /// Exclusive systems run sequentially *after* all parallel systems
@@ -106,8 +140,10 @@ impl Scheduler {
     pub fn add_exclusive<S: System + 'static>(&mut self, stage: Stage, system: S) -> &mut Self {
         let name = system.name().to_string();
         if self.has_system(&name) {
+            // Same-name-allowed contract as add_to — see its comment.
             log::warn!(
-                "Scheduler: duplicate system name '{}' in stage {:?}",
+                "Scheduler: duplicate exclusive system name '{}' in stage {:?} \
+                 (prefer `try_add_exclusive` for named struct systems)",
                 name,
                 stage,
             );
@@ -118,6 +154,26 @@ impl Scheduler {
             .exclusive
             .push(Box::new(system));
         self
+    }
+
+    /// Add an exclusive system to `stage`, rejecting duplicates by name.
+    ///
+    /// Sibling of `try_add_to` for the exclusive phase. See #312.
+    pub fn try_add_exclusive<S: System + 'static>(
+        &mut self,
+        stage: Stage,
+        system: S,
+    ) -> Result<&mut Self, String> {
+        let name = system.name().to_string();
+        if self.has_system(&name) {
+            return Err(name);
+        }
+        self.stages
+            .entry(stage)
+            .or_insert_with(StageData::new)
+            .exclusive
+            .push(Box::new(system));
+        Ok(self)
     }
 
     /// Run all systems: stages in order, parallel within each stage.
@@ -423,5 +479,64 @@ mod tests {
         // Early system should come first (even though Late was added first).
         // The DamageOverTime struct system is in Late, so it should be second.
         assert_eq!(names[1], "DamageOverTime");
+    }
+
+    // ── try_add_* rejects duplicate system names (#312) ─────────────────
+
+    #[test]
+    fn try_add_to_rejects_duplicate() {
+        // Registering the same-named struct twice via `try_add_to`
+        // returns `Err(name)` on the second call and leaves the
+        // scheduler with a single entry. The lax `add_to` is retained
+        // for closure ergonomics (see #312).
+        let mut scheduler = Scheduler::new();
+        scheduler
+            .try_add_to(Stage::Update, DamageOverTime { dps: 60.0 })
+            .ok();
+        let result = scheduler.try_add_to(Stage::Update, DamageOverTime { dps: 999.0 });
+        match result {
+            Err(name) => assert_eq!(name, "DamageOverTime"),
+            Ok(_) => panic!("duplicate should be rejected"),
+        }
+        assert_eq!(scheduler.system_names().len(), 1);
+    }
+
+    #[test]
+    fn try_add_exclusive_rejects_duplicate() {
+        let mut scheduler = Scheduler::new();
+        scheduler
+            .try_add_exclusive(Stage::Late, DamageOverTime { dps: 10.0 })
+            .ok();
+        let result = scheduler.try_add_exclusive(Stage::Late, DamageOverTime { dps: 99.0 });
+        match result {
+            Err(name) => assert_eq!(name, "DamageOverTime"),
+            Ok(_) => panic!("duplicate should be rejected"),
+        }
+        assert_eq!(scheduler.system_names().len(), 1);
+    }
+
+    #[test]
+    fn try_add_to_rejects_duplicate_across_stages() {
+        // Same-named system across two different stages is also a
+        // duplicate — the scheduler has a single flat name space.
+        let mut scheduler = Scheduler::new();
+        scheduler
+            .try_add_to(Stage::Early, DamageOverTime { dps: 10.0 })
+            .ok();
+        let result = scheduler.try_add_to(Stage::Late, DamageOverTime { dps: 99.0 });
+        assert!(result.is_err(), "duplicate across stages still rejected");
+        assert_eq!(scheduler.system_names().len(), 1);
+    }
+
+    #[test]
+    fn add_to_still_accepts_duplicate_with_warning() {
+        // Closures and intentional re-registration paths still work
+        // via the lax `add_to`. This preserves parallel_within_stage,
+        // stages_run_in_order, etc. which register multiple closures
+        // that happen to share a type_name.
+        let mut scheduler = Scheduler::new();
+        scheduler.add_to(Stage::Update, DamageOverTime { dps: 10.0 });
+        scheduler.add_to(Stage::Update, DamageOverTime { dps: 20.0 });
+        assert_eq!(scheduler.system_names().len(), 2);
     }
 }
