@@ -573,6 +573,70 @@ mod tests {
             index.game_settings.len()
         );
 
+        // Supplementary records (#458). Floors based on a live FNV.esm
+        // parse run on the April 2026 patch — each floor sits a few
+        // percent below the observed count so DLC patches stay green.
+        //
+        // Observed on FalloutNV.esm:
+        //   WATR=78, NAVI=1, NAVM=0 (NAVM entries live nested under
+        //   CELL children groups on FO3/FNV, not at top level — a
+        //   follow-up can walk those if needed), REGN=276, ECZN=17,
+        //   LGTM=31, HDPT=61, EYES=12, HAIR=67.
+        eprintln!(
+            "FNV misc: {} water, {} navi, {} navm, {} region, {} eczn, \
+             {} lgtm, {} hdpt, {} eyes, {} hair",
+            index.waters.len(),
+            index.navi_info.len(),
+            index.navmeshes.len(),
+            index.regions.len(),
+            index.encounter_zones.len(),
+            index.lighting_templates.len(),
+            index.head_parts.len(),
+            index.eyes.len(),
+            index.hair.len(),
+        );
+        assert!(
+            index.waters.len() >= 50,
+            "expected ≥50 WATR water types, got {}",
+            index.waters.len()
+        );
+        assert_eq!(
+            index.navi_info.len(),
+            1,
+            "expected exactly 1 NAVI master (FNV ships one), got {}",
+            index.navi_info.len()
+        );
+        assert!(
+            index.regions.len() >= 200,
+            "expected ≥200 REGN regions, got {}",
+            index.regions.len()
+        );
+        assert!(
+            index.encounter_zones.len() >= 10,
+            "expected ≥10 ECZN encounter zones, got {}",
+            index.encounter_zones.len()
+        );
+        assert!(
+            index.lighting_templates.len() >= 20,
+            "expected ≥20 LGTM templates, got {}",
+            index.lighting_templates.len()
+        );
+        assert!(
+            index.head_parts.len() >= 40,
+            "expected ≥40 HDPT head parts, got {}",
+            index.head_parts.len()
+        );
+        assert!(
+            index.eyes.len() >= 8,
+            "expected ≥8 EYES definitions, got {}",
+            index.eyes.len()
+        );
+        assert!(
+            index.hair.len() >= 50,
+            "expected ≥50 HAIR definitions, got {}",
+            index.hair.len()
+        );
+
         // Spot-check a known FNV item: Varmint Rifle (form 0x000086A8) should
         // be a Weapon kind with damage and a clip size.
         if let Some(varmint) = index.items.get(&0x000086A8) {
