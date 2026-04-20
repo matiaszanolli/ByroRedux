@@ -24,34 +24,37 @@ Last updated: 2026-04-20 (session 12 — audit closeout bundle #306–#463 + #46
 from BSA v104 archives, correct coordinate transforms (Gamebryo CW rotation convention),
 RT multi-light with ray query shadows, cell XCLL interior lighting (ambient + directional),
 alpha blending with NIF decal detection, fly camera (WASD + mouse),
-and per-frame debug stats. Prospector Saloon renders at ~48 FPS on
-RTX 4070 Ti (RT enabled) — last measured pre-M31; a re-bench via
-`--bench-frames` is tracked in #456 since M31+/M36/M37/M37.5 have
-shifted the cost curve substantially. Exterior cells load 3×3 grids
-from WastelandNV worldspace (placed objects only — no landscape yet).
+and per-frame debug stats. **Prospector Saloon — avg 251.6 FPS / 3.97 ms
+on RTX 4070 Ti (RT enabled), 1200 entities, 777 meshes, 208 textures,
+773 draws — bench at commit bee6d48 (`--bench-frames 300`, 2026-04-20).**
+M31.5 RIS + M36 BLAS compaction + M37 SVGF + M37.5 TAA collectively cut
+frametime ~5× vs the pre-M31 ~48 FPS baseline while entity coverage
+grew ~48% via post-M18 record expansion (MSTT / FURN / DOOR / ACTI).
+Exterior cells load 3×3 grids from WastelandNV worldspace (placed
+objects only — no landscape yet).
 
 **Fallout 3:** Interior cells load with zero NIF parse failures. Megaton Player House parses with
 929 REFRs (validated 2026-04-19 via
-`parse_real_fo3_megaton_cell_baseline`). After NIF expansion the
-~1609 ECS entities / 199 textures claim from the N23.4 validation demo
-covered the whole cell — that figure pre-dates M31/M36/M37/M37.5 and
-needs a fresh GPU bench; track via #456. Same BSA v104 + ESM
-pipeline as FNV.
+`parse_real_fo3_megaton_cell_baseline`). The ~1609 ECS entities /
+199 textures figures from the N23.4 validation demo pre-date the
+M31+ renderer work that lifted FNV Prospector to 251.6 FPS; a fresh
+GPU bench for Megaton is still pending (run with
+`--esm Fallout3.esm --cell MegatonHouseInt --bench-frames 300`).
+Same BSA v104 + ESM pipeline as FNV.
 
 **Skyrim SE:** Individual meshes load from BSA v105 (LZ4 decompression), BSTriShape geometry
 with packed vertex data, BSLightingShaderProperty/BSEffectShaderProperty shaders,
 DDS textures. Sweetroll single-mesh bench historically renders at
->1000 FPS on RTX 4070 Ti; exact figure tracked via `--bench-frames`
-per #456 since it drifts with TAA / SVGF / BLAS cost.
+>1000 FPS on RTX 4070 Ti; fresh bench pending via
+`cargo run -- --bsa 'Skyrim - Meshes0.bsa' --mesh meshes\clutter\ingredients\sweetroll01.nif --textures-bsa 'Skyrim - Textures3.bsa' --bench-frames 300`.
 
 **RT Performance (M31 → M36):** Batched BLAS builds (single GPU submission per cell load),
 ALLOW_COMPACTION + query-based compact copy (M36: 20–50% BLAS memory reduction),
 streaming weighted reservoir shadow sampling (M31.5: 8 independent reservoirs per fragment
 proportional to luminance; every light has non-zero shadow probability), distance-based
 shadow/GI ray fallback, TLAS frustum culling, BLAS LRU eviction with VRAM/3 budget,
-deferred geometry SSBO rebuild (no device_wait_idle). Interior
-frametime historical baseline ~48 FPS (Prospector Saloon, pre-M37.5);
-current figure pending a re-bench per #456.
+deferred geometry SSBO rebuild (no device_wait_idle). **Interior frametime
+251.6 FPS / 3.97 ms (Prospector Saloon, commit bee6d48 — 5.2× the pre-M31 48 FPS baseline).**
 Exterior: loads and renders placed objects; landscape/sky/LOD pending (M32–M35).
 
 **TAA (M37.5):** `taa.comp` compute pass — Halton(2,3) sub-pixel projection jitter in
@@ -400,8 +403,10 @@ parse_real_nifs -- --ignored`.
 **Status:** Complete
 **Scope:** All renderable record types (STAT, MSTT, FURN, DOOR, ACTI, CONT, LIGH, ACHR/NPC_),
 WRLD exterior cell parsing with grid loading, LightSource ECS component, refactored cell loader.
-**Result:** FNV Prospector Saloon: 809 entities. WastelandNV exterior 3x3 grid: 720 entities.
-14 worldspaces, 30096 exterior cells, 17129 base objects parsed from FalloutNV.esm.
+**Result:** FNV Prospector Saloon: 1200 entities (bench at bee6d48; M18 shipped 809,
+post-M18 record expansion added the remainder). WastelandNV exterior 3x3 grid:
+720 entities. 14 worldspaces, 30096 exterior cells, 17129 base objects parsed
+from FalloutNV.esm.
 
 ### M20: Scaleform/SWF UI System (Ruffle Integration) — DONE
 **Status:** Complete
@@ -442,9 +447,9 @@ mapping), TLAS refit (UPDATE mode when BLAS layout unchanged between frames), cl
 Cell interior XCLL lighting (ambient + directional), windowed inverse-square attenuation.
 BLAS per mesh, TLAS rebuilt/refitted per frame, dynamic depth bias for NIF-flagged decals.
 **Result:** Prospector Saloon: 25 point lights + directional + RT shadows at ~85 FPS
-on RTX 4070 Ti when this milestone landed. Current figure tracked
-via `--bench-frames` per #456 (subsequent M31+/M36/M37/M37.5 work
-has shifted the curve).
+on RTX 4070 Ti when this milestone landed. M31.5 RIS + M36 BLAS
+compaction + M37 SVGF + M37.5 TAA lifted this to **251.6 FPS (bench
+at bee6d48, RTX 4070 Ti, `--bench-frames 300`, 2026-04-20)**.
 
 ---
 
@@ -853,7 +858,7 @@ consumers were missing or wrong**, which directly drives the
 | M32 | Landscape Mesh | Parse LAND records (33×33 heightmap grid per cell), generate terrain mesh, LTEX/TXST texture layers with alpha-blended splatting, vertex colors. The missing ground plane for all exterior cells. | ESM parser |
 | M33 | Sky & Atmosphere | Parse WTHR (Weather) records. Sky gradient dome, sun disc with position from game-time, cloud layers (scrolling textures), horizon fog. Procedural fallback when no WTHR is set. Replace hardcoded clear color. | ESM parser |
 | M34 | Exterior Lighting | Proper directional sun derived from WTHR/climate sun position. Time-of-day ambient color interpolation. Exterior fog from WTHR fog data (distance + color). Interior/exterior light path split in the shader. | M33 |
-| **FO3 exterior bench** | Pin the #457 follow-up: run `--esm Fallout3.esm --grid 0,0 …`, confirm it renders, capture a `--bench-frames` snapshot, and promote the ROADMAP Tier-1 row from "wired" to "validated." | #444 (done) |
+| **FO3 exterior bench** | Run `--esm Fallout3.esm --grid 0,0 …`, confirm it renders, capture a `--bench-frames` snapshot, and promote the ROADMAP Tier-1 row from "wired" to "validated" (FNV Prospector baseline 251.6 FPS at bee6d48 for reference). | #444 (done) |
 | M32.5 | Per-game cell loader parity | Wire Skyrim + FO4 interior cells through the existing `cell_loader` (Skyrim has XCLL 92-byte + LGTM templates; FO4 has BGSM materials + SCOL/PKIN expansion already parsed). Oblivion needs BSA v103 decompression first. | M24 |
 
 ### Tier 2 — Actors Visible & Animated (blocks "cells are populated")
@@ -951,7 +956,7 @@ active for incremental wins; don't let them block Tier 1–4.
 - [ ] Scheduler is single-threaded (M27)
 - [ ] parry3d panics on nested compound collision shapes (catch_unwind guard in place)
 - [ ] `--esm` accepts only one plugin; `parse_esm_with_load_order` is wired but CLI isn't (M46.0)
-- [ ] Megaton FPS claim / Prospector Saloon FPS claim pre-M31; fresh `--bench-frames` pending (#456)
+- [ ] Megaton FPS bench pending (interior loads clean but no fresh `--bench-frames` run yet — FNV Prospector re-benched at commit bee6d48 = 251.6 FPS)
 
 ### Resolved
 - [x] Pipeline cache bypassed on some create sites (cold shader compile on every run) → VkPipelineCache threaded through every create site with disk persistence (#426)
@@ -996,7 +1001,7 @@ active for incremental wins; don't let them block Tier 1–4.
 | Tier | Games | NIF | Archive | ESM | Cell Loading |
 |------|-------|-----|---------|-----|-------------|
 | 1 — Working | Fallout: New Vegas | 89 parsed + 30 skip, RT shadows, XCLL | BSA v104 ✓ | 23 record types + XCLL | Interior + exterior ✓ |
-| 1 — Working | Fallout 3 | Validated: Megaton 929 REFRs, 0 parse failures | BSA v104 ✓ | Same as FNV ✓ | Interior ✓ · Exterior wired (needs fresh GPU bench — #457) |
+| 1 — Working | Fallout 3 | Validated: Megaton 929 REFRs, 0 parse failures | BSA v104 ✓ | Same as FNV ✓ | Interior ✓ · Exterior wired (fresh GPU bench pending — FNV Prospector is 251.6 FPS at bee6d48) |
 | 2 — Partial | Skyrim SE | BSTriShape + BSLightingShader (8 variants) | BSA v105 ✓ (LZ4) | Stub | Individual meshes ✓ |
 | 3 — Planned | Oblivion | All block types landed, needs BSA v103 decompression | BSA v103 (opens, decompression WIP) | Stub | — |
 | 4 — Partial | Fallout 4 | 8 block types landed, half-float vertex WIP | BA2 v1/v7/v8 ✓ (GNRL + DX10, zlib) | Stub | — |
