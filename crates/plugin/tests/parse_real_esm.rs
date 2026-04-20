@@ -42,14 +42,16 @@ fn data_dir(env_var: &str, fallback: &str) -> Option<PathBuf> {
     }
 }
 
-/// FNV: 13,684 structured records baseline per M24 Phase 1 (ROADMAP).
-/// Observed 2026-04 patch revision: exactly 13,684 across all
-/// `EsmIndex::total()` categories.
-const FNV_TOTAL_FLOOR: usize = 13_684;
+/// FNV: 60,000 records floor — covers the 13,684 M24 Phase 1 baseline
+/// plus the 7 categories added in #446/#447 (PACK 4163, QUST 436,
+/// DIAL 18215, MESG 1144, PERK 176, SPEL 270, MGEF 289 = +24,693).
+/// Observed 2026-04: 62,219. Floor sits a few percent below to absorb
+/// DLC patch drift without masking regressions.
+const FNV_TOTAL_FLOOR: usize = 60_000;
 
-/// FO3: 18,007 records baseline per the FO3 audit (AUDIT_FO3_2026-04-19).
-/// Margin kept below observed so DLC patches stay green.
-const FO3_TOTAL_FLOOR: usize = 18_000;
+/// FO3: 30,000 records floor — covers the original 18,007 baseline +
+/// the 7 categories added in #446/#447. Observed 2026-04: 31,101.
+const FO3_TOTAL_FLOOR: usize = 30_000;
 
 #[test]
 #[ignore]
@@ -67,7 +69,9 @@ fn parse_rate_fnv_esm() {
 
     eprintln!(
         "[FNV] total={} | items={} containers={} LVLI={} LVLN={} NPCs={} \
-         races={} classes={} factions={} globals={} game_settings={}",
+         races={} classes={} factions={} globals={} game_settings={} \
+         packages={} quests={} dialogues={} messages={} perks={} \
+         spells={} magic_effects={}",
         index.total(),
         index.items.len(),
         index.containers.len(),
@@ -79,6 +83,13 @@ fn parse_rate_fnv_esm() {
         index.factions.len(),
         index.globals.len(),
         index.game_settings.len(),
+        index.packages.len(),
+        index.quests.len(),
+        index.dialogues.len(),
+        index.messages.len(),
+        index.perks.len(),
+        index.spells.len(),
+        index.magic_effects.len(),
     );
 
     // Primary M24 baseline assertion — the "13,684 structured records"
@@ -118,6 +129,30 @@ fn parse_rate_fnv_esm() {
         index.game_settings.len() > 500,
         "game_settings={}",
         index.game_settings.len(),
+    );
+
+    // Floors for the 7 categories added in #446/#447. Observed FNV
+    // counts: packages=4163, quests=436, dialogues=18215, messages=1144,
+    // perks=176, spells=270, magic_effects=289. Each floor sits a few
+    // percent below.
+    assert!(index.packages.len() > 4000, "PACK={}", index.packages.len());
+    assert!(index.quests.len() > 400, "QUST={}", index.quests.len());
+    assert!(
+        index.dialogues.len() > 17_000,
+        "DIAL={}",
+        index.dialogues.len(),
+    );
+    assert!(
+        index.messages.len() > 1000,
+        "MESG={}",
+        index.messages.len(),
+    );
+    assert!(index.perks.len() > 150, "PERK={}", index.perks.len());
+    assert!(index.spells.len() > 250, "SPEL={}", index.spells.len());
+    assert!(
+        index.magic_effects.len() > 270,
+        "MGEF={}",
+        index.magic_effects.len(),
     );
 }
 

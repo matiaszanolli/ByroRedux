@@ -39,9 +39,10 @@ pub use items::{
     parse_weap, ItemKind, ItemRecord,
 };
 pub use misc::{
-    parse_eczn, parse_eyes, parse_hair, parse_hdpt, parse_lgtm, parse_navi, parse_navm, parse_regn,
-    parse_watr, EcznRecord, EyesRecord, HairRecord, HdptRecord, LgtmRecord, NaviRecord, NavmRecord,
-    RegnRecord, WatrRecord,
+    parse_dial, parse_eczn, parse_eyes, parse_hair, parse_hdpt, parse_lgtm, parse_mesg, parse_mgef,
+    parse_navi, parse_navm, parse_pack, parse_perk, parse_qust, parse_regn, parse_spel, parse_watr,
+    DialRecord, EcznRecord, EyesRecord, HairRecord, HdptRecord, LgtmRecord, MesgRecord, MgefRecord,
+    NaviRecord, NavmRecord, PackRecord, PerkRecord, QustRecord, RegnRecord, SpelRecord, WatrRecord,
 };
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
 pub use weather::{parse_wthr, SkyColor, WeatherRecord};
@@ -114,6 +115,23 @@ pub struct EsmIndex {
     pub eyes: HashMap<u32, EyesRecord>,
     /// `HAIR` hair definitions (FO3/FNV NPC_ face variation).
     pub hair: HashMap<u32, HairRecord>,
+    // ── AI / dialogue / effect stubs (#446, #447) ───────────────────
+    /// `PACK` AI packages — 30-procedure scheduling system referenced
+    /// by `NpcRecord.ai_packages`.
+    pub packages: HashMap<u32, PackRecord>,
+    /// `QUST` quests — Story Manager / Radiant Story entry points.
+    pub quests: HashMap<u32, QustRecord>,
+    /// `DIAL` dialogue topics — owned by quests via QSTI refs. INFO
+    /// children (nested under each DIAL's sub-GRUP) are a follow-up.
+    pub dialogues: HashMap<u32, DialRecord>,
+    /// `MESG` quest messages / tutorial popups.
+    pub messages: HashMap<u32, MesgRecord>,
+    /// `PERK` perks + traits — condition-gated entry-point producers.
+    pub perks: HashMap<u32, PerkRecord>,
+    /// `SPEL` spells / abilities / auto-cast effects.
+    pub spells: HashMap<u32, SpelRecord>,
+    /// `MGEF` magic effects — universal bridge for Actor Value mods.
+    pub magic_effects: HashMap<u32, MgefRecord>,
 }
 
 impl EsmIndex {
@@ -144,6 +162,13 @@ impl EsmIndex {
             + self.head_parts.len()
             + self.eyes.len()
             + self.hair.len()
+            + self.packages.len()
+            + self.quests.len()
+            + self.dialogues.len()
+            + self.messages.len()
+            + self.perks.len()
+            + self.spells.len()
+            + self.magic_effects.len()
             + self.cells.cells.len()
             + self.cells.statics.len()
     }
@@ -346,6 +371,35 @@ pub fn parse_esm_with_load_order(
             b"HAIR" => extract_records(&mut reader, end, b"HAIR", &mut |fid, subs| {
                 index.hair.insert(fid, parse_hair(fid, subs));
             })?,
+            // AI / dialogue / effect stubs (#446, #447). Follow the
+            // #458 supplementary-record pattern: minimal struct
+            // (EDID + FULL + a few scalars), no deep decoding.
+            b"PACK" => extract_records(&mut reader, end, b"PACK", &mut |fid, subs| {
+                index.packages.insert(fid, parse_pack(fid, subs));
+            })?,
+            b"QUST" => extract_records(&mut reader, end, b"QUST", &mut |fid, subs| {
+                index.quests.insert(fid, parse_qust(fid, subs));
+            })?,
+            // DIAL tops a nested GRUP tree containing INFO children —
+            // `extract_records` recurses but filters on a single
+            // `expected_type`, so INFO needs a multi-type walker (or a
+            // second DIAL-tree pass). Extract DIAL here; INFO is a
+            // follow-up. See #447.
+            b"DIAL" => extract_records(&mut reader, end, b"DIAL", &mut |fid, subs| {
+                index.dialogues.insert(fid, parse_dial(fid, subs));
+            })?,
+            b"MESG" => extract_records(&mut reader, end, b"MESG", &mut |fid, subs| {
+                index.messages.insert(fid, parse_mesg(fid, subs));
+            })?,
+            b"PERK" => extract_records(&mut reader, end, b"PERK", &mut |fid, subs| {
+                index.perks.insert(fid, parse_perk(fid, subs));
+            })?,
+            b"SPEL" => extract_records(&mut reader, end, b"SPEL", &mut |fid, subs| {
+                index.spells.insert(fid, parse_spel(fid, subs));
+            })?,
+            b"MGEF" => extract_records(&mut reader, end, b"MGEF", &mut |fid, subs| {
+                index.magic_effects.insert(fid, parse_mgef(fid, subs));
+            })?,
             _ => {
                 reader.skip_group(&group);
             }
@@ -355,7 +409,8 @@ pub fn parse_esm_with_load_order(
     log::info!(
         "ESM parsed: {} cells, {} statics, {} items, {} containers, {} LVLI, {} LVLN, {} LVLC, \
          {} NPCs, {} creatures, {} races, {} classes, {} factions, {} globals, {} game settings, \
-         {} weathers, {} climates, {} scripts",
+         {} weathers, {} climates, {} scripts, {} packages, {} quests, {} dialogues, \
+         {} messages, {} perks, {} spells, {} magic effects",
         index.cells.cells.len(),
         index.cells.statics.len(),
         index.items.len(),
@@ -373,6 +428,13 @@ pub fn parse_esm_with_load_order(
         index.weathers.len(),
         index.climates.len(),
         index.scripts.len(),
+        index.packages.len(),
+        index.quests.len(),
+        index.dialogues.len(),
+        index.messages.len(),
+        index.perks.len(),
+        index.spells.len(),
+        index.magic_effects.len(),
     );
 
     Ok(index)

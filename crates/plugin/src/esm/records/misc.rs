@@ -357,6 +357,267 @@ pub fn parse_hair(form_id: u32, subs: &[SubRecord]) -> HairRecord {
     out
 }
 
+// ── AI / dialogue / effect stubs (#446, #447) ────────────────────────
+//
+// Extended set of record types that pre-#446/#447 fell through to the
+// catch-all skip. Same philosophy as the WATR/NAVI/... stubs above:
+// capture EDID + FULL + a handful of flags / form refs so that dangling
+// cross-references resolve; full per-record decoding lands with the
+// consuming subsystem (AI runtime, dialogue system, perk pipeline).
+
+/// `PACK` AI package record. 30-procedure scheduling system
+/// (guard patrols, merchant behavior, dialogue triggers, ambient
+/// idles). `NpcRecord.ai_packages` carries PKID form refs; pre-#446
+/// those dangled.
+///
+/// Only the PKDT header (package flags + procedure type) is captured
+/// here — PSDT / PLDT / PKTG / PKCU / PKPA decoding lands with the
+/// AI runtime per the `ai_packages_procedures.md` memo.
+#[derive(Debug, Clone, Default)]
+pub struct PackRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    /// Flags bitfield from PKDT (schedule / location repeat / weapon
+    /// draw / etc.). Low 16 bits on FO3/FNV, u32 on Skyrim+.
+    pub package_flags: u32,
+    /// Procedure type — index into the 30-procedure catalog
+    /// (`Travel`, `Wander`, `Sandbox`, `Find`, `Escort`, `Follow`,
+    /// `Patrol`, `Use Item At`, ...). Read from PKDT offset 4.
+    pub procedure_type: u32,
+}
+
+pub fn parse_pack(form_id: u32, subs: &[SubRecord]) -> PackRecord {
+    let mut out = PackRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"PKDT" if sub.data.len() >= 8 => {
+                out.package_flags = read_u32_at(&sub.data, 0).unwrap_or(0);
+                out.procedure_type = read_u32_at(&sub.data, 4).unwrap_or(0);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `QUST` quest record. Lifecycle container for the Story Manager and
+/// Radiant Story systems. Stages (QSDT), objectives (QOBJ), aliases
+/// (ALST), conditions (CTDA), scripts (SCRI) are deferred; this stub
+/// surfaces the quest's identity + a handful of scalar fields so the
+/// `quest_alias_system.md` / `quest_story_manager.md` memos can start
+/// tracking real counts.
+#[derive(Debug, Clone, Default)]
+pub struct QustRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    pub full_name: String,
+    /// Optional FO3/FNV quest script reference (pre-Papyrus bytecode).
+    pub script_ref: u32,
+    /// Quest flags from DATA byte 0 (`Start Game Enabled`, `Allow
+    /// Repeated Stages`, `Event Based`, ...).
+    pub quest_flags: u8,
+    /// Priority from DATA byte 1. Higher = displayed first in pip-boy.
+    pub priority: u8,
+}
+
+pub fn parse_qust(form_id: u32, subs: &[SubRecord]) -> QustRecord {
+    let mut out = QustRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_zstring(&sub.data),
+            b"SCRI" if sub.data.len() >= 4 => {
+                out.script_ref = read_u32_at(&sub.data, 0).unwrap_or(0);
+            }
+            b"DATA" if sub.data.len() >= 2 => {
+                out.quest_flags = sub.data[0];
+                out.priority = sub.data[1];
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `DIAL` dialogue topic record. Parent of INFO dialogue lines (which
+/// live in a nested GRUP tree — tracked as a follow-up; the current
+/// `extract_records` walker takes a single record type and can't
+/// simultaneously emit DIAL + INFO). This stub captures the topic's
+/// quest owners (QSTI refs, 4 bytes each) so NPC / quest systems can
+/// enumerate topics without re-parsing.
+#[derive(Debug, Clone, Default)]
+pub struct DialRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    pub full_name: String,
+    /// Quest form IDs that own this dialogue topic (one per QSTI
+    /// sub-record). FO3/FNV topics often list multiple owners.
+    pub quest_refs: Vec<u32>,
+}
+
+pub fn parse_dial(form_id: u32, subs: &[SubRecord]) -> DialRecord {
+    let mut out = DialRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_zstring(&sub.data),
+            b"QSTI" if sub.data.len() >= 4 => {
+                if let Some(q) = read_u32_at(&sub.data, 0) {
+                    out.quest_refs.push(q);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `MESG` message / popup record. Quest-tutorial banners and
+/// interaction prompts. `DESC` carries the text; `QNAM` optionally
+/// ties the message to a quest for clean-up on quest completion.
+#[derive(Debug, Clone, Default)]
+pub struct MesgRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    pub full_name: String,
+    pub description: String,
+    /// Owning quest form ID (optional) — message clears when quest
+    /// completes.
+    pub owner_quest: u32,
+}
+
+pub fn parse_mesg(form_id: u32, subs: &[SubRecord]) -> MesgRecord {
+    let mut out = MesgRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_zstring(&sub.data),
+            b"DESC" => out.description = read_zstring(&sub.data),
+            b"QNAM" if sub.data.len() >= 4 => {
+                out.owner_quest = read_u32_at(&sub.data, 0).unwrap_or(0);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `PERK` perk / trait record. Holds the condition list + entry-point
+/// tree that drives the `perk_system.md` / `perk_entry_points.md`
+/// memos' ~120 catalog. Entry-point decoding (PRKE) is deferred —
+/// lands with the condition pipeline. Stub captures identity + flags
+/// so the perk catalog can be enumerated at load time.
+#[derive(Debug, Clone, Default)]
+pub struct PerkRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    pub full_name: String,
+    pub description: String,
+    /// Flags byte from DATA (playable / hidden / leveled / trait).
+    pub perk_flags: u8,
+}
+
+pub fn parse_perk(form_id: u32, subs: &[SubRecord]) -> PerkRecord {
+    let mut out = PerkRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_zstring(&sub.data),
+            b"DESC" => out.description = read_zstring(&sub.data),
+            b"DATA" if !sub.data.is_empty() => {
+                out.perk_flags = sub.data[0];
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `SPEL` spell / ability / power record. FO3/FNV also covers passive
+/// abilities and radiation-poisoning style auto-cast effects. SPIT
+/// carries cost + level requirement + flags; effect list (EFID/EFIT)
+/// is deferred — lands with MGEF application.
+#[derive(Debug, Clone, Default)]
+pub struct SpelRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    pub full_name: String,
+    /// Flags from SPIT offset 12 (or 8 on some pre-FNV variants).
+    /// Bit 0 = `Manual Cost`, bit 2 = `Touch Explodes`.
+    pub spell_flags: u32,
+    /// Magicka cost from SPIT offset 0.
+    pub cost: u32,
+}
+
+pub fn parse_spel(form_id: u32, subs: &[SubRecord]) -> SpelRecord {
+    let mut out = SpelRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_zstring(&sub.data),
+            b"SPIT" if sub.data.len() >= 16 => {
+                out.cost = read_u32_at(&sub.data, 0).unwrap_or(0);
+                out.spell_flags = read_u32_at(&sub.data, 12).unwrap_or(0);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `MGEF` magic effect record. Universal bridge for Actor Value
+/// modifications — every perk entry point, spell effect, and
+/// ingredient effect routes through here. Full effect decoding is
+/// deferred; the stub captures identity + flags so references from
+/// SPEL / ALCH / INGR resolve at load time.
+#[derive(Debug, Clone, Default)]
+pub struct MgefRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    pub full_name: String,
+    pub description: String,
+    /// Flags from DATA offset 0 (hostile / recover / detrimental / ...).
+    pub effect_flags: u32,
+}
+
+pub fn parse_mgef(form_id: u32, subs: &[SubRecord]) -> MgefRecord {
+    let mut out = MgefRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_zstring(&sub.data),
+            b"DESC" => out.description = read_zstring(&sub.data),
+            b"DATA" if sub.data.len() >= 4 => {
+                out.effect_flags = read_u32_at(&sub.data, 0).unwrap_or(0);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,5 +773,99 @@ mod tests {
         assert_eq!(h.model_path, "meshes\\characters\\hair\\brown.nif");
         assert_eq!(h.icon_path, "textures\\characters\\hair\\brown.dds");
         assert_eq!(h.flags, 0x00);
+    }
+
+    // ── AI / dialogue / effect stubs (#446, #447) ──────────────────
+
+    #[test]
+    fn parse_pack_picks_pkdt_flags_and_procedure() {
+        let mut pkdt = Vec::new();
+        pkdt.extend_from_slice(&0x0000_0421u32.to_le_bytes()); // flags
+        pkdt.extend_from_slice(&6u32.to_le_bytes()); // procedure 6 = Patrol
+        let subs = vec![sub(b"EDID", b"GuardPatrolDay\0"), sub(b"PKDT", &pkdt)];
+        let p = parse_pack(0xA1A1, &subs);
+        assert_eq!(p.editor_id, "GuardPatrolDay");
+        assert_eq!(p.package_flags, 0x0000_0421);
+        assert_eq!(p.procedure_type, 6);
+    }
+
+    #[test]
+    fn parse_qust_picks_scri_and_data_flags() {
+        let subs = vec![
+            sub(b"EDID", b"MQ01\0"),
+            sub(b"FULL", b"Main Quest\0"),
+            sub(b"SCRI", &0x0010_BEEFu32.to_le_bytes()),
+            sub(b"DATA", &[0x05, 20]), // flags + priority
+        ];
+        let q = parse_qust(0xB2B2, &subs);
+        assert_eq!(q.editor_id, "MQ01");
+        assert_eq!(q.full_name, "Main Quest");
+        assert_eq!(q.script_ref, 0x0010_BEEF);
+        assert_eq!(q.quest_flags, 0x05);
+        assert_eq!(q.priority, 20);
+    }
+
+    #[test]
+    fn parse_dial_accumulates_multiple_quest_refs() {
+        let subs = vec![
+            sub(b"EDID", b"GREETING\0"),
+            sub(b"FULL", b"Greeting\0"),
+            sub(b"QSTI", &0x0100_0001u32.to_le_bytes()),
+            sub(b"QSTI", &0x0100_0002u32.to_le_bytes()),
+            sub(b"QSTI", &0x0100_0003u32.to_le_bytes()),
+        ];
+        let d = parse_dial(0xC3C3, &subs);
+        assert_eq!(d.quest_refs.len(), 3);
+        assert_eq!(d.quest_refs[1], 0x0100_0002);
+    }
+
+    #[test]
+    fn parse_mesg_picks_desc_and_owner_quest() {
+        let subs = vec![
+            sub(b"EDID", b"FastTravelMessage\0"),
+            sub(b"FULL", b"Fast Travel\0"),
+            sub(b"DESC", b"You cannot fast travel right now.\0"),
+            sub(b"QNAM", &0x0002_1234u32.to_le_bytes()),
+        ];
+        let m = parse_mesg(0xD4D4, &subs);
+        assert_eq!(m.description, "You cannot fast travel right now.");
+        assert_eq!(m.owner_quest, 0x0002_1234);
+    }
+
+    #[test]
+    fn parse_perk_picks_data_flags() {
+        let subs = vec![
+            sub(b"EDID", b"IntenseTraining\0"),
+            sub(b"FULL", b"Intense Training\0"),
+            sub(b"DESC", b"Increase any one S.P.E.C.I.A.L. by 1.\0"),
+            sub(b"DATA", &[0x01]), // playable
+        ];
+        let p = parse_perk(0xE5E5, &subs);
+        assert_eq!(p.editor_id, "IntenseTraining");
+        assert_eq!(p.perk_flags, 0x01);
+    }
+
+    #[test]
+    fn parse_spel_picks_spit_cost_and_flags() {
+        let mut spit = Vec::new();
+        spit.extend_from_slice(&42u32.to_le_bytes()); // cost
+        spit.extend_from_slice(&[0u8; 8]); // padding to flags offset
+        spit.extend_from_slice(&0x0000_0004u32.to_le_bytes()); // flags
+        let subs = vec![sub(b"EDID", b"Fireball\0"), sub(b"SPIT", &spit)];
+        let s = parse_spel(0xF6F6, &subs);
+        assert_eq!(s.cost, 42);
+        assert_eq!(s.spell_flags, 0x0000_0004);
+    }
+
+    #[test]
+    fn parse_mgef_picks_data_effect_flags() {
+        let subs = vec![
+            sub(b"EDID", b"RadiationPoisoning\0"),
+            sub(b"FULL", b"Radiation Poisoning\0"),
+            sub(b"DESC", b"Contaminated by radiation.\0"),
+            sub(b"DATA", &0x0000_0009u32.to_le_bytes()),
+        ];
+        let e = parse_mgef(0xA7A7, &subs);
+        assert_eq!(e.effect_flags, 0x0000_0009);
     }
 }
