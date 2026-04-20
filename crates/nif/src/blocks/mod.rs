@@ -54,7 +54,7 @@ use properties::{
 };
 use shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
-    BSShaderPPLightingProperty, BSShaderTextureSet,
+    BSShaderPPLightingProperty, BSShaderTextureSet, TileShaderProperty,
 };
 use skin::{
     BsDismemberSkinInstance, BsSkinBoneData, BsSkinInstance, NiSkinData, NiSkinInstance,
@@ -261,13 +261,21 @@ pub fn parse_block(
         | "WaterShaderProperty"
         | "TallGrassShaderProperty"
         | "Lighting30ShaderProperty"
-        | "TileShaderProperty"
         | "HairShaderProperty"
         | "VolumetricFogShaderProperty"
         | "DistantLODShaderProperty"
         | "BSDistantTreeShaderProperty"
         | "BSSkyShaderProperty"
         | "BSWaterShaderProperty" => Ok(Box::new(BSShaderPPLightingProperty::parse(stream)?)),
+        // FO3-only `TileShaderProperty` — inherits `BSShaderLightingProperty`
+        // + File Name SizedString. Pre-#455 was aliased to
+        // BSShaderPPLightingProperty::parse, which over-read 20-28
+        // bytes (texture_set_ref + refraction + parallax) and dropped
+        // the actual filename on the floor. HUD overlays (stealth
+        // meter, airtimer, quest markers) rendered without their
+        // texture paths bound. block_sizes recovery kept the stream
+        // aligned so the defect was silent at parse time.
+        "TileShaderProperty" => Ok(Box::new(TileShaderProperty::parse(stream)?)),
         "BSShaderNoLightingProperty" => Ok(Box::new(BSShaderNoLightingProperty::parse(stream)?)),
         "BSShaderTextureSet" => Ok(Box::new(BSShaderTextureSet::parse(stream)?)),
         "BSLightingShaderProperty" => Ok(Box::new(BSLightingShaderProperty::parse(stream)?)),
@@ -735,14 +743,16 @@ mod dispatch_tests {
     fn oblivion_shader_variants_route_to_bsshader_pp_lighting() {
         // Every specialized variant named in issue #145 must dispatch
         // through BSShaderPPLightingProperty::parse and produce a
-        // downcastable block.
+        // downcastable block. #455 moved `TileShaderProperty` onto
+        // its own dedicated parser (covered by
+        // `tile_shader_property_routes_to_dedicated_parser` below), so
+        // it no longer appears here.
         let variants = [
             "BSShaderPPLightingProperty",
             "SkyShaderProperty",
             "WaterShaderProperty",
             "TallGrassShaderProperty",
             "Lighting30ShaderProperty",
-            "TileShaderProperty",
             "HairShaderProperty",
             "VolumetricFogShaderProperty",
             "DistantLODShaderProperty",
@@ -769,6 +779,45 @@ mod dispatch_tests {
                 "variant '{variant}' parsed the wrong texture_set_ref"
             );
         }
+    }
+
+    /// Regression: #455 — `TileShaderProperty` must dispatch through
+    /// its own `TileShaderProperty::parse`, not get aliased onto
+    /// `BSShaderPPLightingProperty`. The Oblivion payload here carries
+    /// the BSShaderLightingProperty base + a SizedString filename and
+    /// nothing more; routing through PPLighting over-reads by 4 bytes
+    /// (texture_set_ref) and silently zeros the filename.
+    #[test]
+    fn tile_shader_property_routes_to_dedicated_parser() {
+        let header = oblivion_header();
+        let mut bytes = Vec::new();
+        // NiObjectNET: name string index.
+        bytes.extend_from_slice(&0i32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count
+        bytes.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+        // BSShaderProperty fields.
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // shader_flags
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // shader_type
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_1
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_2
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // env_map_scale
+        bytes.extend_from_slice(&3u32.to_le_bytes()); // texture_clamp_mode
+        let name = b"textures\\interface\\stealthmeter.dds";
+        bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(name);
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block(
+            "TileShaderProperty",
+            &mut stream,
+            Some(bytes.len() as u32),
+        )
+        .expect("TileShaderProperty dispatch must reach TileShaderProperty::parse");
+        let prop = block
+            .as_any()
+            .downcast_ref::<crate::blocks::shader::TileShaderProperty>()
+            .expect("TileShaderProperty must downcast to its own type, not BSShaderPPLightingProperty");
+        assert_eq!(prop.texture_clamp_mode, 3);
+        assert_eq!(prop.file_name, "textures\\interface\\stealthmeter.dds");
     }
 
     /// Regression test for issue #144: Oblivion-era KF animation roots

@@ -151,6 +151,52 @@ impl BSShaderNoLightingProperty {
     }
 }
 
+/// `TileShaderProperty` — FO3-only HUD / UI tile shader. Per nif.xml
+/// line 6341 it inherits `BSShaderLightingProperty` (so adds
+/// `texture_clamp_mode` on top of the `BSShaderProperty` base) and
+/// then appends a single `File Name: SizedString`.
+///
+/// Pre-#455 `blocks/mod.rs` aliased this type to
+/// `BSShaderPPLightingProperty::parse`, which reads 20-28 extra bytes
+/// (texture_set_ref + refraction + parallax) that the on-disk
+/// TileShaderProperty does NOT carry. FO3's `block_sizes` table kept
+/// the outer stream aligned but the PPLighting struct landed with
+/// zero-initialized PP-specific fields; the actual `file_name` never
+/// reached the struct at all. HUD overlays (stealth meter, airtimer,
+/// quest markers) lost their texture path as a result.
+#[derive(Debug)]
+pub struct TileShaderProperty {
+    pub net: NiObjectNETData,
+    pub shader: BSShaderPropertyData,
+    pub texture_clamp_mode: u32,
+    /// HUD / UI tile texture file path. Usually
+    /// `textures\interface\<name>.dds`.
+    pub file_name: String,
+}
+
+impl NiObject for TileShaderProperty {
+    fn block_type_name(&self) -> &'static str {
+        "TileShaderProperty"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl TileShaderProperty {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let net = NiObjectNETData::parse(stream)?;
+        let (shader, texture_clamp_mode) = BSShaderPropertyData::parse_fo3(stream)?;
+        let file_name = stream.read_sized_string()?;
+        Ok(Self {
+            net,
+            shader,
+            texture_clamp_mode,
+            file_name,
+        })
+    }
+}
+
 /// BSShaderTextureSet — list of texture file paths for a BSShader.
 ///
 /// Typically 6 textures: diffuse, normal, glow, parallax, env, env mask.
@@ -1195,6 +1241,46 @@ mod tests {
         assert!((prop.parallax_scale - 1.5).abs() < 1e-6);
         // All data consumed: 38 base + 16 refraction/parallax = 54 bytes
         assert_eq!(stream.position(), 54);
+    }
+
+    /// Regression: #455 — `TileShaderProperty` parses the FO3
+    /// `BSShaderLightingProperty` base (NET + shader data + texture
+    /// clamp) + a trailing SizedString filename. Pre-fix the dispatch
+    /// aliased this type to `BSShaderPPLightingProperty::parse`, which
+    /// over-read 20-28 bytes of PP-specific fields and never populated
+    /// the filename. HUD overlays (stealth meter / airtimer / quest
+    /// markers) lost their texture path as a result.
+    #[test]
+    fn parse_tile_shader_property_fo3() {
+        let header = make_header(11, 34); // FO3/FNV
+        let mut data = Vec::new();
+        // NiObjectNET: inline name (v <= 20.1.0.0 path)
+        data.extend_from_slice(&0i32.to_le_bytes()); // name (string table index)
+        data.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+        // BSShaderPropertyData: 18 bytes
+        data.extend_from_slice(&0u16.to_le_bytes()); // shade_flags
+        data.extend_from_slice(&1u32.to_le_bytes()); // shader_type
+        data.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_1
+        data.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_2
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // env_map_scale
+        data.extend_from_slice(&3u32.to_le_bytes()); // texture_clamp_mode
+        // file_name SizedString (u32 length + bytes; NO trailing null)
+        let name = b"textures\\interface\\airtimer.dds";
+        data.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        data.extend_from_slice(name);
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let prop = TileShaderProperty::parse(&mut stream)
+            .expect("TileShaderProperty should parse with BSShaderLightingProperty base + filename");
+        assert_eq!(
+            stream.position() as usize,
+            expected_len,
+            "TileShaderProperty must consume exactly {expected_len} bytes",
+        );
+        assert_eq!(prop.texture_clamp_mode, 3);
+        assert_eq!(prop.file_name, "textures\\interface\\airtimer.dds");
+        assert_eq!(prop.shader.shader_type, 1);
     }
 
     #[test]

@@ -20,6 +20,23 @@ pub(super) const DECAL_SINGLE_PASS: u32 = 0x04000000;
 pub(super) const DYNAMIC_DECAL: u32 = 0x08000000;
 const ALPHA_DECAL_F2: u32 = 0x00200000;
 
+/// Shared decal detection across every FO3/FNV `BSShader*Property`
+/// subclass. The flag vocabulary is identical across the three
+/// (`BSShaderPPLightingProperty`, `BSShaderNoLightingProperty`, and
+/// `BSLightingShaderProperty` for the flags1 bits — flags2 bit 21 is
+/// an FO3/FNV-only `ALPHA_DECAL` extension that Skyrim+ never emits
+/// but also never spuriously triggers).
+///
+/// Pre-#454 each callsite had its own copy and they drifted — the
+/// `BSShaderNoLightingProperty` branch was missing the flags2 check,
+/// so blood-splat NoLighting meshes that marked themselves decal-only
+/// via flag2 bit 21 rendered as opaque coplanar surfaces. Keeping one
+/// helper guards against future drift.
+#[inline]
+pub(super) fn is_decal_from_shader_flags(flags1: u32, flags2: u32) -> bool {
+    flags1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 || flags2 & ALPHA_DECAL_F2 != 0
+}
+
 // NOTE: there is no `SF_DOUBLE_SIDED` on the FO3/FNV
 // `BSShaderPPLightingProperty` / `BSShaderNoLightingProperty` flag
 // pair. Pre-#441 we tested `flags_1 & 0x1000` on both blocks as if
@@ -509,7 +526,7 @@ pub(super) fn extract_material_info(
             if shader.shader_flags_2 & SF2_DOUBLE_SIDED != 0 {
                 info.two_sided = true;
             }
-            if shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 {
+            if is_decal_from_shader_flags(shader.shader_flags_1, shader.shader_flags_2) {
                 info.is_decal = true;
             }
             // Capture rich material data.
@@ -750,9 +767,10 @@ pub(super) fn extract_material_info(
             // `two_sided` unset here; the `NiStencilProperty` fallback
             // below handles it correctly for meshes that want
             // back-face-off.
-            if shader.shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0
-                || shader.shader.shader_flags_2 & ALPHA_DECAL_F2 != 0
-            {
+            if is_decal_from_shader_flags(
+                shader.shader.shader_flags_1,
+                shader.shader.shader_flags_2,
+            ) {
                 info.is_decal = true;
             }
         }
@@ -762,8 +780,15 @@ pub(super) fn extract_material_info(
                 info.texture_path = Some(shader.file_name.clone());
             }
             // Same rationale as the PPLighting branch above: no Double_Sided
-            // bit on the FO3/FNV flag enum. #441.
-            if shader.shader.shader_flags_1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 {
+            // bit on the FO3/FNV flag enum. #441. Pre-#454 this branch
+            // was missing the `ALPHA_DECAL_F2` (flag2 bit 21) check, so
+            // blood-splat NoLighting meshes that marked themselves decal
+            // via only the flag2 bit fell through to the opaque-coplanar
+            // path. Shared helper keeps PP + NoLighting in lockstep.
+            if is_decal_from_shader_flags(
+                shader.shader.shader_flags_1,
+                shader.shader.shader_flags_2,
+            ) {
                 info.is_decal = true;
             }
         }
@@ -1926,6 +1951,59 @@ mod double_sided_tests {
             info.two_sided,
             "Skyrim BSLightingShaderProperty flags2 bit 4 MUST mark two_sided (#441)"
         );
+    }
+
+    /// Regression: #454 — `BSShaderNoLightingProperty` decal detection
+    /// was missing the `ALPHA_DECAL_F2` (flags2 bit 21) check. A
+    /// blood-splat NoLighting mesh that marks itself decal-only via
+    /// flag2 bit 21 (no flag1 bits set) must still be classified as a
+    /// decal. The shared `is_decal_from_shader_flags` helper keeps the
+    /// PPLighting and NoLighting paths in lockstep.
+    #[test]
+    fn no_lighting_alpha_decal_flag2_marks_is_decal() {
+        use crate::blocks::shader::BSShaderNoLightingProperty;
+        let shader = BSShaderNoLightingProperty {
+            net: empty_net(),
+            shader: BSShaderPropertyData {
+                shade_flags: 0,
+                shader_type: 0,
+                shader_flags_1: 0, // no flag1 bits
+                shader_flags_2: 0x0020_0000, // ALPHA_DECAL_F2 only
+                env_map_scale: 0.0,
+            },
+            texture_clamp_mode: 0,
+            file_name: String::new(),
+            falloff_start_angle: 0.0,
+            falloff_stop_angle: 0.0,
+            falloff_start_opacity: 0.0,
+            falloff_stop_opacity: 0.0,
+        };
+        let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader)];
+        let scene = NifScene {
+            blocks,
+            ..NifScene::default()
+        };
+        let shape = shape_with_shader_ref(0);
+        let info = extract_material_info(&scene, &shape, &[]);
+        assert!(
+            info.is_decal,
+            "NoLighting flags2 bit 21 (ALPHA_DECAL_F2) MUST mark is_decal (#454)"
+        );
+    }
+
+    /// Shared helper sanity — both flag1 and flag2 paths classify.
+    #[test]
+    fn is_decal_helper_matches_both_flag_sources() {
+        use super::is_decal_from_shader_flags;
+        // DECAL_SINGLE_PASS (flag1 bit 26 = 0x0400_0000).
+        assert!(is_decal_from_shader_flags(0x0400_0000, 0));
+        // DYNAMIC_DECAL (flag1 bit 27 = 0x0800_0000).
+        assert!(is_decal_from_shader_flags(0x0800_0000, 0));
+        // ALPHA_DECAL_F2 (flag2 bit 21 = 0x0020_0000).
+        assert!(is_decal_from_shader_flags(0, 0x0020_0000));
+        // Unrelated bits — not a decal.
+        assert!(!is_decal_from_shader_flags(0x1000, 0x0010));
+        assert!(!is_decal_from_shader_flags(0, 0));
     }
 
     /// Skyrim+ shader with flags2 = 0 must NOT mark two-sided either —
