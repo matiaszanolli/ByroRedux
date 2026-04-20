@@ -317,7 +317,25 @@ pub struct EsmCellIndex {
 
 /// Parse an ESM file and extract cells, worldspaces, and base object definitions.
 pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
+    parse_esm_cells_with_load_order(data, None)
+}
+
+/// Parse an ESM file's cells with an explicit FormID load-order remap.
+///
+/// Pass `None` for single-plugin loads (the default). Pass
+/// `Some(FormIdRemap { ... })` when loading a DLC / mod in a
+/// multi-plugin stack so record FormIDs get rewritten to global
+/// load-order indices before they land in `EsmCellIndex` maps. Without
+/// this remap Anchorage's static 0x01002345 and BrokenSteel's
+/// 0x01002345 would collide in `statics`. See #445.
+pub fn parse_esm_cells_with_load_order(
+    data: &[u8],
+    remap: Option<super::reader::FormIdRemap>,
+) -> Result<EsmCellIndex> {
     let mut reader = EsmReader::new(data);
+    if let Some(r) = remap {
+        reader.set_form_id_remap(r);
+    }
     let file_header = reader
         .read_file_header()
         .context("Failed to read ESM file header")?;

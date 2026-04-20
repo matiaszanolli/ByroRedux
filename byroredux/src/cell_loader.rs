@@ -318,6 +318,7 @@ pub fn load_exterior_cells(
     world: &mut World,
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
+    wrld_override: Option<&str>,
 ) -> anyhow::Result<CellLoadResult> {
     // See `load_cell` — same pattern for unload tracking (#372).
     let first_entity = world.next_entity_id();
@@ -343,13 +344,55 @@ pub fn load_exterior_cells(
     });
     let index = &record_index.cells;
 
-    // Find the best worldspace. Try common FNV names, then fall back to largest.
+    // Find the best worldspace. Priority:
+    //   1. Caller-supplied `--wrld <name>` (case-insensitive EDID match).
+    //   2. Preferred game-default list: WastelandNV (FNV), Wasteland
+    //      (FO3 Capital Wasteland), Tamriel (Oblivion), Skyrim (Skyrim).
+    //   3. Worldspace that actually contains the requested grid coord.
+    //   4. Worldspace with the most cells (ultimate fallback).
+    // Pre-fix the Wasteland EDID was missing, so `--esm Fallout3.esm
+    // --grid 0,0` landed on the max-cells fallback and silently picked
+    // the wrong worldspace when any DLC master added its own. See #444.
     let wrld_key = {
-        let preferred = ["wastelandnv", "tamriel", "skyrim"];
-        preferred
-            .iter()
-            .find(|&&name| index.exterior_cells.contains_key(name))
-            .map(|s| s.to_string())
+        let override_match = wrld_override.and_then(|name| {
+            let lower = name.to_ascii_lowercase();
+            index
+                .exterior_cells
+                .keys()
+                .find(|k| k.eq_ignore_ascii_case(&lower))
+                .cloned()
+        });
+        if let Some(ref name) = override_match {
+            log::info!("Using worldspace '{name}' (from --wrld override)");
+        }
+        override_match
+            .or_else(|| {
+                let preferred = ["wastelandnv", "wasteland", "tamriel", "skyrim"];
+                preferred
+                    .iter()
+                    .find(|&&name| index.exterior_cells.contains_key(name))
+                    .map(|s| s.to_string())
+            })
+            .or_else(|| {
+                // Prefer a worldspace that actually contains the
+                // requested grid coord over raw cell count. Protects
+                // multi-plugin loads where a DLC worldspace with many
+                // cells but no grid 0,0 would otherwise outvote the
+                // base game's Wasteland. See #444.
+                let min_x = center_x.saturating_sub(radius);
+                let max_x = center_x.saturating_add(radius);
+                let min_y = center_y.saturating_sub(radius);
+                let max_y = center_y.saturating_add(radius);
+                index
+                    .exterior_cells
+                    .iter()
+                    .find(|(_, cells)| {
+                        cells.keys().any(|(gx, gy)| {
+                            *gx >= min_x && *gx <= max_x && *gy >= min_y && *gy <= max_y
+                        })
+                    })
+                    .map(|(name, _)| name.clone())
+            })
             .or_else(|| {
                 index
                     .exterior_cells

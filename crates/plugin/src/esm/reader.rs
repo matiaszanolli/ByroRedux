@@ -159,6 +159,69 @@ pub struct EsmReader<'a> {
     data: &'a [u8],
     pos: usize,
     variant: EsmVariant,
+    /// Per-plugin FormID mod-index remap. `None` = identity (single
+    /// plugin with no masters). `Some` = remap record FormID top bytes
+    /// according to this plugin's position in the global load order.
+    /// See [`FormIdRemap`] for the mapping rules.
+    form_id_remap: Option<FormIdRemap>,
+}
+
+/// FormID mod-index remap rule for a single plugin in a load order.
+///
+/// A plugin-local FormID has its top byte pointing into the plugin's
+/// MASTERS array (or to itself if the top byte equals the master
+/// count). At load time every FormID needs to be rewritten to point
+/// into the GLOBAL load order so references and map keys stay
+/// collision-free across plugins. See `FormIdPair` in
+/// `crates/plugin/src/legacy/mod.rs` for the dual-index form.
+///
+/// Single-plugin load (the default) uses `plugin_index = 0` and an
+/// empty `master_indices`, which makes the remap a no-op (a file's
+/// own records have top byte 0, and `0 == master_indices.len()` →
+/// self-reference → stays 0). Pre-#445 the reader had no remap at
+/// all; every record's raw u32 landed directly in `EsmIndex` maps
+/// and multi-plugin loads silently collided on the shared
+/// base-game-index 0x01 (Anchorage / BrokenSteel / PointLookout /
+/// Pitt / Zeta all use 0x01 for their own new forms).
+#[derive(Debug, Clone)]
+pub struct FormIdRemap {
+    /// This plugin's index in the global load order (0-based).
+    pub plugin_index: u8,
+    /// For each entry in this plugin's MASTERS list, the global
+    /// load-order index of that master. `master_indices[N]` is
+    /// where a FormID with mod-index `N` actually lives.
+    pub master_indices: Vec<u8>,
+}
+
+impl FormIdRemap {
+    /// Apply this remap to a raw plugin-local FormID.
+    ///
+    /// `raw & 0xFFFFFF` (the bottom 24 bits) is preserved unchanged —
+    /// it's the plugin's internal unique-id. The top byte is replaced
+    /// with the global load-order index of whichever plugin owns this
+    /// form.
+    pub fn remap(&self, raw: u32) -> u32 {
+        let mod_index = (raw >> 24) as u8;
+        let local = raw & 0x00FF_FFFF;
+        let global_index = if mod_index as usize == self.master_indices.len() {
+            // Self-reference — top byte equals master count per the
+            // Bethesda ESM spec.
+            self.plugin_index
+        } else if (mod_index as usize) < self.master_indices.len() {
+            self.master_indices[mod_index as usize]
+        } else {
+            // Out-of-range mod index — either a malformed file or an
+            // in-memory injected form. Log once per plugin and pass
+            // through unchanged so the caller can still see the raw
+            // value for diagnosis. Single-plugin loads never hit this.
+            log::warn!(
+                "FormID {raw:08x} has mod_index {mod_index} but plugin has {} masters",
+                self.master_indices.len()
+            );
+            mod_index
+        };
+        ((global_index as u32) << 24) | local
+    }
 }
 
 /// Parsed record header (CELL, REFR, STAT, TES4, etc.).
@@ -205,6 +268,7 @@ impl<'a> EsmReader<'a> {
             data,
             pos: 0,
             variant: EsmVariant::detect(data),
+            form_id_remap: None,
         }
     }
 
@@ -215,7 +279,26 @@ impl<'a> EsmReader<'a> {
             data,
             pos: 0,
             variant,
+            form_id_remap: None,
         }
+    }
+
+    /// Install a FormID mod-index remap — call once, before walking
+    /// records, when this reader is loading a plugin in a multi-plugin
+    /// load order. See [`FormIdRemap`] for the rules. See #445.
+    pub fn set_form_id_remap(&mut self, remap: FormIdRemap) {
+        self.form_id_remap = Some(remap);
+    }
+
+    /// Apply the installed FormID remap (if any) to a raw plugin-local
+    /// u32. Callsite-agnostic: use this anywhere a sub-record field
+    /// carries a cross-record FormID reference (REFR.NAME, XOWN, XLOC,
+    /// etc.) so cross-plugin references stay valid. Identity when no
+    /// remap is set. See #445.
+    pub fn remap_form_id(&self, raw: u32) -> u32 {
+        self.form_id_remap
+            .as_ref()
+            .map_or(raw, |remap| remap.remap(raw))
     }
 
     pub fn variant(&self) -> EsmVariant {
@@ -260,11 +343,15 @@ impl<'a> EsmReader<'a> {
         let record_type = self.read_bytes_4();
         let data_size = self.read_u32();
         let flags = self.read_u32();
-        let form_id = self.read_u32();
+        let form_id_raw = self.read_u32();
         // Trailing metadata: Oblivion = 4 bytes (vc_info); FO3+ = 8 bytes
         // (vc_info + unknown + version + unknown). We don't consume any
         // of it today, just skip past.
         self.skip(header_size - 16);
+        // #445 — remap the record's own FormID through the installed
+        // load-order so multi-plugin maps stay collision-free. No-op
+        // when no remap is set (single-plugin load).
+        let form_id = self.remap_form_id(form_id_raw);
         Ok(RecordHeader {
             record_type,
             data_size,
@@ -517,6 +604,115 @@ mod tests {
     /// 2026-04-19. Pre-fix FO3's 0.94 routed to Fallout4 and FO4's 1.0
     /// fell through to Fallout3NV, inverting the FO3↔FO4
     /// classification.
+    /// Regression: #445 — single-plugin loads (no masters, self-index 0)
+    /// must be an exact identity remap so the existing CLI behaviour
+    /// and every existing consumer keep seeing the same u32 FormIDs.
+    #[test]
+    fn form_id_remap_single_plugin_is_identity() {
+        let remap = FormIdRemap {
+            plugin_index: 0,
+            master_indices: Vec::new(),
+        };
+        // Self-references (top byte = 0 = master_count) pass through.
+        assert_eq!(remap.remap(0x0001_2345), 0x0001_2345);
+        assert_eq!(remap.remap(0x00CA_FEBA), 0x00CA_FEBA);
+    }
+
+    /// Two-plugin load: Anchorage.esm depends on Fallout3.esm.
+    /// Anchorage's own new forms land in the global slot for Anchorage
+    /// (plugin_index=1), and its references to Fallout3 statics pass
+    /// through unchanged (mod_index 0 → master_indices[0] = 0).
+    #[test]
+    fn form_id_remap_dlc_on_base_routes_self_and_master_correctly() {
+        // Anchorage.esm loaded at plugin_index=1 with Fallout3.esm as master 0.
+        let remap = FormIdRemap {
+            plugin_index: 1,
+            master_indices: vec![0],
+        };
+        // Reference to Fallout3 (mod_index=0, master_indices[0]=0) → unchanged.
+        assert_eq!(remap.remap(0x0001_2345), 0x0001_2345);
+        // Self-reference (mod_index=1 == master count) → plugin_index=1.
+        assert_eq!(remap.remap(0x0101_2345), 0x0101_2345);
+    }
+
+    /// Three-plugin collision scenario from the issue: Anchorage and
+    /// BrokenSteel both ship form 0x01_012345 in-file. Remapping by
+    /// load-order prevents the collision in shared HashMaps.
+    #[test]
+    fn form_id_remap_two_dlcs_resolve_collision() {
+        // Anchorage.esm loaded at plugin_index=1, masters=[0 (Fallout3)].
+        let anchorage = FormIdRemap {
+            plugin_index: 1,
+            master_indices: vec![0],
+        };
+        // BrokenSteel.esm loaded at plugin_index=2, masters=[0 (Fallout3)].
+        let broken_steel = FormIdRemap {
+            plugin_index: 2,
+            master_indices: vec![0],
+        };
+
+        // Both files ship their own 0x01_012345 — the audit's canonical
+        // example. Under remap they land in distinct global slots.
+        let anchorage_form = anchorage.remap(0x0101_2345);
+        let broken_steel_form = broken_steel.remap(0x0101_2345);
+        assert_eq!(anchorage_form, 0x0101_2345);
+        assert_eq!(broken_steel_form, 0x0201_2345);
+        assert_ne!(
+            anchorage_form, broken_steel_form,
+            "DLC self-refs must not collide after remap — this is the #445 regression"
+        );
+
+        // Both files' references to Fallout3 base forms remain unchanged.
+        assert_eq!(anchorage.remap(0x00CA_FEBA), 0x00CA_FEBA);
+        assert_eq!(broken_steel.remap(0x00CA_FEBA), 0x00CA_FEBA);
+    }
+
+    /// A plugin loaded at plugin_index=3 that only declares Fallout3
+    /// as master (master_indices=[0]) — self-refs use mod_index=1
+    /// in-file but must remap to the plugin's actual load-order slot 3.
+    /// Catches the case where the file's MAST count is smaller than
+    /// the load-order index.
+    #[test]
+    fn form_id_remap_rewrites_self_ref_to_load_order_index() {
+        let remap = FormIdRemap {
+            plugin_index: 3,
+            master_indices: vec![0],
+        };
+        // mod_index 1 == num_masters → self → plugin_index=3.
+        assert_eq!(remap.remap(0x0112_3456), 0x0312_3456);
+    }
+
+    /// Record header read returns the remapped FormID on any installed
+    /// remap — the integration point where the fix actually lands.
+    #[test]
+    fn read_record_header_applies_installed_remap() {
+        let data = build_record(b"STAT", 0x0112_3456, &[]);
+        let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
+        reader.set_form_id_remap(FormIdRemap {
+            plugin_index: 2,
+            master_indices: vec![0],
+        });
+        let header = reader.read_record_header().unwrap();
+        assert_eq!(
+            header.form_id, 0x0212_3456,
+            "read_record_header must route the top byte through set_form_id_remap (#445)"
+        );
+    }
+
+    /// Bottom 24 bits of every FormID must be preserved verbatim — only
+    /// the mod-index byte changes.
+    #[test]
+    fn form_id_remap_preserves_local_24_bits() {
+        let remap = FormIdRemap {
+            plugin_index: 5,
+            master_indices: vec![0, 1],
+        };
+        let local = 0x00AB_CDEF;
+        assert_eq!(remap.remap(local) & 0x00FF_FFFF, local);
+        assert_eq!(remap.remap(0x01CD_EF12) & 0x00FF_FFFF, 0x00CD_EF12);
+        assert_eq!(remap.remap(0x02CD_EF12) & 0x00FF_FFFF, 0x00CD_EF12);
+    }
+
     #[test]
     fn game_kind_from_header_maps_real_master_hedr_values() {
         // FO3 GOTY — bytes d7 a3 70 3f → f32 0.94.

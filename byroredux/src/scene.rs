@@ -49,6 +49,16 @@ pub(crate) fn setup_scene(
             .position(|a| a == "--grid")
             .and_then(|i| args.get(i + 1))
             .cloned();
+        // #444 — explicit worldspace EDID override. Used with --grid
+        // when the ESM defines multiple exterior worldspaces (e.g.
+        // FO3 + DLC masters ship Wasteland, PointLookout, Zeta, Pitt,
+        // Anchorage) and the automatic pick lands on the wrong one.
+        // Case-insensitive EDID match inside load_exterior_cells.
+        let wrld_name = args
+            .iter()
+            .position(|a| a == "--wrld")
+            .and_then(|i| args.get(i + 1))
+            .cloned();
 
         if let (Some(ref esm_path), Some(ref cell_id)) = (&esm_path, &cell_id) {
             // Interior cell mode
@@ -99,7 +109,16 @@ pub(crate) fn setup_scene(
             let (cx, cy) = parse_grid_coords(grid);
             let tex_provider = build_texture_provider(&args);
             // Radius 3 = 7×7 grid (49 cells), ~28K terrain units view distance.
-            match cell_loader::load_exterior_cells(esm_path, cx, cy, 3, world, ctx, &tex_provider) {
+            match cell_loader::load_exterior_cells(
+                esm_path,
+                cx,
+                cy,
+                3,
+                world,
+                ctx,
+                &tex_provider,
+                wrld_name.as_deref(),
+            ) {
                 Ok(result) => {
                     cam_center = result.center;
                     has_nif_content = true;

@@ -38,8 +38,8 @@ pub use items::{
 };
 pub use weather::{parse_wthr, SkyColor, WeatherRecord};
 
-use super::cell::{parse_esm_cells, EsmCellIndex};
-use super::reader::{EsmReader, GameKind, SubRecord};
+use super::cell::EsmCellIndex;
+use super::reader::{EsmReader, FormIdRemap, GameKind, SubRecord};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
@@ -110,13 +110,39 @@ impl EsmIndex {
 /// file run in well under a second on a real ESM, and keeping the cell
 /// pipeline untouched preserves the renderer behaviour we already trust.
 pub fn parse_esm(data: &[u8]) -> Result<EsmIndex> {
-    let cells = parse_esm_cells(data).context("Failed to parse ESM cells")?;
+    parse_esm_with_load_order(data, None)
+}
+
+/// Parse an ESM/ESP with an explicit load-order remap.
+///
+/// `remap` rewrites every record's FormID top byte into the global
+/// load order so maps in [`EsmIndex`] stay collision-free across
+/// plugins. Pass `None` for single-plugin loads (the default today);
+/// pass `Some(FormIdRemap { plugin_index, master_indices })` when
+/// loading a DLC or mod in a multi-plugin stack so Anchorage's new
+/// form 0x01012345 doesn't collide with BrokenSteel's 0x01012345 in
+/// the same map. See #445.
+///
+/// The current CLI entry point (`--esm <path>`) only wires a single
+/// plugin, so both paths produce the same output for vanilla content.
+/// The multi-plugin wiring is tracked as follow-up work — this
+/// function exists so downstream code can opt in without another
+/// parse-layer refactor when the CLI grows multi-plugin support.
+pub fn parse_esm_with_load_order(
+    data: &[u8],
+    remap: Option<FormIdRemap>,
+) -> Result<EsmIndex> {
+    let cells = super::cell::parse_esm_cells_with_load_order(data, remap.clone())
+        .context("Failed to parse ESM cells")?;
     let mut index = EsmIndex {
         cells,
         ..EsmIndex::default()
     };
 
     let mut reader = EsmReader::new(data);
+    if let Some(r) = remap {
+        reader.set_form_id_remap(r);
+    }
     // Peek the TES4 file header so we can derive a GameKind from HEDR's
     // `Version` f32. ARMO/WEAP/AMMO DATA/DNAM layouts diverge across
     // FO3/FNV → Skyrim → FO4; without the HEDR discriminator every
@@ -475,6 +501,52 @@ mod tests {
             .values()
             .any(|f| f.full_name.contains("NCR") || f.editor_id.starts_with("NCR"));
         assert!(has_ncr, "expected an NCR-related faction");
+    }
+
+    /// Regression: #445 — the load-order remap routes each record's
+    /// own FormID through its plugin's global load-order slot. A
+    /// synthetic "DLC" with plugin_index=2 writes a self-referencing
+    /// form 0x0100_BEEF (mod_index=1 == num_masters=1 → self), which
+    /// under remap lands as 0x0200_BEEF in the global map.
+    #[test]
+    fn parse_esm_with_load_order_remaps_self_form_ids() {
+        let mut subs: Vec<(&[u8; 4], Vec<u8>)> = Vec::new();
+        subs.push((b"EDID", b"TestWeap\0".to_vec()));
+        subs.push((b"DATA", {
+            let mut d = Vec::new();
+            d.extend_from_slice(&100u32.to_le_bytes()); // value
+            d.extend_from_slice(&0u32.to_le_bytes()); // health
+            d.extend_from_slice(&2.0f32.to_le_bytes()); // weight
+            d.extend_from_slice(&20u16.to_le_bytes()); // damage
+            d.push(8);
+            d.push(0);
+            d
+        }));
+        // In-file form_id 0x0100_BEEF — mod_index=1, which for a DLC
+        // with one master equals its self-index.
+        let record = build_record(b"WEAP", 0x0100_BEEF, &subs);
+        let group = wrap_group(b"WEAP", &record);
+        let mut tes4 = build_record(b"TES4", 0, &[]);
+        tes4.extend_from_slice(&group);
+
+        // Load this synthetic "DLC" at plugin_index=2 with Fallout3
+        // (plugin_index=0) as its single master.
+        let remap = super::super::reader::FormIdRemap {
+            plugin_index: 2,
+            master_indices: vec![0],
+        };
+        let index = parse_esm_with_load_order(&tes4, Some(remap)).unwrap();
+        assert_eq!(index.items.len(), 1);
+        let remapped_key = 0x0200_BEEFu32;
+        assert!(
+            index.items.contains_key(&remapped_key),
+            "DLC self-ref 0x0100_BEEF must remap to global 0x0200_BEEF at plugin_index=2 (#445)"
+        );
+        // The pre-remap key must NOT be present.
+        assert!(
+            !index.items.contains_key(&0x0100_BEEF),
+            "raw pre-remap FormID must not leak through once the remap is installed"
+        );
     }
 
     /// Regression: #442 — a top-level `CREA` GRUP must dispatch to
