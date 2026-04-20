@@ -1,6 +1,23 @@
 //! Z-up (Gamebryo) to Y-up (renderer) coordinate conversion.
 
-use crate::types::NiMatrix3;
+use crate::types::{NiMatrix3, NiPoint3};
+
+/// Convert a Z-up point / translation to Y-up: `(x, y, z) → (x, z, -y)`.
+///
+/// This is the fundamental axis-basis change applied at every import
+/// boundary (mesh vertices, mesh normals, node translations, bound
+/// centers, bone translations, light positions, …). Keeping the swap
+/// in one helper prevents copy-paste drift — pre-#232 the same
+/// `[.x, .z, -.y]` literal appeared in ~13 sites across `mesh.rs` and
+/// `walk.rs`; getting any one of them wrong produces silently-
+/// misaligned geometry that's hard to diagnose. Sibling animation
+/// keyframes in `crates/nif/src/anim.rs` use a local `[f32; 3]` form
+/// (`zup_to_yup_pos`) since they've already been extracted from the
+/// stream into plain arrays by the KF reader.
+#[inline]
+pub(super) fn zup_point_to_yup(p: &NiPoint3) -> [f32; 3] {
+    [p.x, p.z, -p.y]
+}
 
 /// Convert a Z-up NiMatrix3 rotation to a Y-up quaternion [x, y, z, w].
 ///

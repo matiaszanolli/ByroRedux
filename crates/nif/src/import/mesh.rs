@@ -14,7 +14,7 @@ use crate::blocks::tri_shape::{BsTriShape, NiTriShape, NiTriShapeData, NiTriStri
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
 
-use super::coord::zup_matrix_to_yup_quat;
+use super::coord::{zup_matrix_to_yup_quat, zup_point_to_yup};
 use super::material::{
     capture_shader_type_fields, extract_material_info, extract_vertex_colors, find_decal_bs,
     find_effect_shader_bs,
@@ -75,8 +75,8 @@ pub(super) fn extract_mesh(
         return None;
     }
 
-    // Convert positions: Gamebryo Z-up → renderer Y-up: (x,y,z) → (x,z,-y)
-    let positions: Vec<[f32; 3]> = geom.vertices.iter().map(|v| [v.x, v.z, -v.y]).collect();
+    // Convert positions: Gamebryo Z-up → renderer Y-up (see `coord.rs`).
+    let positions: Vec<[f32; 3]> = geom.vertices.iter().map(zup_point_to_yup).collect();
 
     // Convert indices (u16 → u32). Winding order preserved — the Z-up → Y-up
     // transform is a proper rotation (det=+1), not a reflection.
@@ -88,7 +88,7 @@ pub(super) fn extract_mesh(
 
     // Convert normals with same axis swap (fall back to +Y up if none)
     let normals: Vec<[f32; 3]> = if !geom.normals.is_empty() {
-        geom.normals.iter().map(|n| [n.x, n.z, -n.y]).collect()
+        geom.normals.iter().map(zup_point_to_yup).collect()
     } else {
         vec![[0.0, 1.0, 0.0]; positions.len()]
     };
@@ -133,7 +133,7 @@ pub(super) fn extract_mesh(
         normals,
         uvs,
         indices,
-        translation: [t.x, t.z, -t.y],
+        translation: zup_point_to_yup(t),
         rotation: quat,
         scale: world_transform.scale,
         name: shape.av.net.name.clone(),
@@ -198,7 +198,7 @@ fn extract_local_bound(
     positions_yup: &[[f32; 3]],
 ) -> ([f32; 3], f32) {
     if nif_radius > 0.0 {
-        return ([nif_center.x, nif_center.z, -nif_center.y], nif_radius);
+        return (zup_point_to_yup(&nif_center), nif_radius);
     }
     if positions_yup.is_empty() {
         return ([0.0; 3], 0.0);
@@ -243,7 +243,7 @@ pub(super) fn extract_bs_tri_shape(
         return None;
     }
 
-    let positions: Vec<[f32; 3]> = shape.vertices.iter().map(|v| [v.x, v.z, -v.y]).collect();
+    let positions: Vec<[f32; 3]> = shape.vertices.iter().map(zup_point_to_yup).collect();
 
     let indices: Vec<u32> = shape
         .triangles
@@ -252,7 +252,7 @@ pub(super) fn extract_bs_tri_shape(
         .collect();
 
     let normals: Vec<[f32; 3]> = if !shape.normals.is_empty() {
-        shape.normals.iter().map(|n| [n.x, n.z, -n.y]).collect()
+        shape.normals.iter().map(zup_point_to_yup).collect()
     } else {
         vec![[0.0, 1.0, 0.0]; positions.len()]
     };
@@ -403,7 +403,7 @@ pub(super) fn extract_bs_tri_shape(
         normals,
         uvs,
         indices,
-        translation: [t.x, t.z, -t.y],
+        translation: zup_point_to_yup(t),
         rotation: quat,
         scale: world_transform.scale,
         name: shape.av.net.name.clone(),

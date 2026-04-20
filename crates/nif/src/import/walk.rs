@@ -11,7 +11,7 @@ use crate::scene::NifScene;
 use crate::types::{BlockRef, NiTransform};
 
 use super::collision::extract_collision;
-use super::coord::zup_matrix_to_yup_quat;
+use super::coord::{zup_matrix_to_yup_quat, zup_point_to_yup};
 use super::mesh::{
     extract_bs_tri_shape, extract_bs_tri_shape_local, extract_mesh, extract_mesh_local,
 };
@@ -146,7 +146,7 @@ pub(super) fn walk_node_hierarchical(
         let this_node_idx = out.nodes.len();
         out.nodes.push(ImportedNode {
             name: node.av.net.name.clone(),
-            translation: [t.x, t.z, -t.y],
+            translation: zup_point_to_yup(t),
             rotation: quat,
             scale: node.av.transform.scale,
             parent_node: parent_node_idx,
@@ -193,7 +193,7 @@ pub(super) fn walk_node_hierarchical(
         let this_node_idx = out.nodes.len();
         out.nodes.push(ImportedNode {
             name: node.av.net.name.clone(),
-            translation: [t.x, t.z, -t.y],
+            translation: zup_point_to_yup(t),
             rotation: quat,
             scale: node.av.transform.scale,
             parent_node: parent_node_idx,
@@ -328,7 +328,7 @@ pub(super) fn walk_node_flat(
                 let t = &world_transform.translation;
                 let quat = zup_matrix_to_yup_quat(&world_transform.rotation);
                 coll_out.push(ImportedCollision {
-                    translation: [t.x, t.z, -t.y],
+                    translation: zup_point_to_yup(t),
                     rotation: quat,
                     scale: world_transform.scale,
                     shape,
@@ -367,7 +367,7 @@ pub(super) fn walk_node_flat(
                 let t = &world_transform.translation;
                 let quat = zup_matrix_to_yup_quat(&world_transform.rotation);
                 coll_out.push(ImportedCollision {
-                    translation: [t.x, t.z, -t.y],
+                    translation: zup_point_to_yup(t),
                     rotation: quat,
                     scale: world_transform.scale,
                     shape,
@@ -585,10 +585,9 @@ pub(super) fn walk_node_particle_emitters_flat(
             "NiParticleSystem" | "NiMeshParticleSystem" | "NiParticles"
             | "NiParticleSystemController" | "NiBSPArrayController"
             | "NiAutoNormalParticles" | "NiRotatingParticles" => {
-                // Z-up → Y-up: (x, y, z) → (x, z, -y).
                 let t = &parent_transform.translation;
                 out.push(crate::import::ImportedParticleEmitterFlat {
-                    local_position: [t.x, t.z, -t.y],
+                    local_position: zup_point_to_yup(t),
                     host_name: parent_node_name,
                     original_type: ps.original_type.clone(),
                 });
@@ -606,9 +605,7 @@ fn imported_light_from_base(
     radius: f32,
     outer_angle: f32,
 ) -> ImportedLight {
-    // Z-up → Y-up: (x, y, z) → (x, z, -y).
-    let t = &world.translation;
-    let translation = [t.x, t.z, -t.y];
+    let translation = zup_point_to_yup(&world.translation);
 
     // Gamebryo lights point down the local -Z axis in their own space.
     // Transform that via the world rotation, then convert to Y-up.
