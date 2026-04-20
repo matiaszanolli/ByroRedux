@@ -218,8 +218,17 @@ impl NiObject for BSShaderTextureSet {
 impl BSShaderTextureSet {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         // NiObject base reads nothing for modern versions.
-        let num_textures = stream.read_i32_le()?;
-        let mut textures = stream.allocate_vec(num_textures.max(0) as u32)?;
+        //
+        // `Num Textures` is a u32 per nif.xml. Previously we read it as
+        // `i32` and clamped `.max(0) as u32`, which silently turned any
+        // upstream stream drift that happened to land on a negative u32
+        // pattern into an empty texture set — the block then continued
+        // parsing from the wrong offset. Reading as u32 matches the spec
+        // and lets `allocate_vec`'s budget guard (#388) catch absurd
+        // lengths as a loud error, which in turn tells the outer
+        // block_sizes recovery path to skip cleanly. See #459.
+        let num_textures = stream.read_u32_le()?;
+        let mut textures = stream.allocate_vec(num_textures)?;
         for _ in 0..num_textures {
             // Texture paths are always sized strings (u32 len + bytes),
             // NOT string table indices.
@@ -1224,6 +1233,46 @@ mod tests {
             data.extend_from_slice(&1.5f32.to_le_bytes()); // parallax_scale
         }
         data
+    }
+
+    /// Regression: #459 — `BSShaderTextureSet::parse` previously read
+    /// `Num Textures` as `i32` and clamped `.max(0) as u32`, silently
+    /// dropping any negative-interpreted length to an empty set. When
+    /// upstream drift flipped the high bit, the block quietly
+    /// succeeded at the wrong offset instead of failing loud. Verify
+    /// the u32 read still produces an empty set for zero, the expected
+    /// set for a normal count, and a loud error for a length that
+    /// obviously exceeds the remaining stream (the `allocate_vec`
+    /// budget guard from #388 catches it).
+    #[test]
+    fn parse_bsshader_texture_set_num_textures_as_u32() {
+        let header = make_header(11, 34);
+
+        // Case 1: zero textures → empty set, stream fully consumed.
+        let zero = 0u32.to_le_bytes();
+        let mut stream = NifStream::new(&zero, &header);
+        let ts = BSShaderTextureSet::parse(&mut stream).unwrap();
+        assert!(ts.textures.is_empty());
+        assert_eq!(stream.position(), 4);
+
+        // Case 2: 2 textures — normal path still works.
+        let mut data = 2u32.to_le_bytes().to_vec();
+        for name in ["diffuse.dds", "normal.dds"] {
+            data.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            data.extend_from_slice(name.as_bytes());
+        }
+        let mut stream = NifStream::new(&data, &header);
+        let ts = BSShaderTextureSet::parse(&mut stream).unwrap();
+        assert_eq!(ts.textures, vec!["diffuse.dds".to_string(), "normal.dds".into()]);
+
+        // Case 3: length of 0xFFFFFFFF (previously silently clamped to 0).
+        // Under u32, this exceeds the remaining bytes in the stream and
+        // the allocate_vec budget guard short-circuits with InvalidData —
+        // loud enough for the outer block_sizes recovery to take over.
+        let drift = 0xFFFF_FFFFu32.to_le_bytes();
+        let mut stream = NifStream::new(&drift, &header);
+        let err = BSShaderTextureSet::parse(&mut stream).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 
     #[test]
