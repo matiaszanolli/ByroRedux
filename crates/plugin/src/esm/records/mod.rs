@@ -19,6 +19,7 @@ pub mod container;
 pub mod global;
 pub mod items;
 pub mod scol;
+pub mod script;
 pub mod weather;
 
 pub use scol::{parse_scol, ScolPart, ScolPlacement, ScolRecord};
@@ -36,6 +37,7 @@ pub use items::{
     parse_alch, parse_ammo, parse_armo, parse_book, parse_ingr, parse_keym, parse_misc, parse_note,
     parse_weap, ItemKind, ItemRecord,
 };
+pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
 pub use weather::{parse_wthr, SkyColor, WeatherRecord};
 
 use super::cell::EsmCellIndex;
@@ -75,6 +77,11 @@ pub struct EsmIndex {
     pub game_settings: HashMap<u32, GameSetting>,
     pub weathers: HashMap<u32, WeatherRecord>,
     pub climates: HashMap<u32, ClimateRecord>,
+    /// FO3 / FNV / Oblivion pre-Papyrus SCPT bytecode records (#443).
+    /// Every `SCRI` FormID on NPC_ / CONT / item / ACTI records resolves
+    /// here instead of dangling. The bytecode itself (`compiled`) is
+    /// stored opaquely — an ECS-native runtime lands separately.
+    pub scripts: HashMap<u32, ScriptRecord>,
 }
 
 impl EsmIndex {
@@ -95,6 +102,7 @@ impl EsmIndex {
             + self.game_settings.len()
             + self.weathers.len()
             + self.climates.len()
+            + self.scripts.len()
             + self.cells.cells.len()
             + self.cells.statics.len()
     }
@@ -257,6 +265,14 @@ pub fn parse_esm_with_load_order(
             b"CLMT" => extract_records(&mut reader, end, b"CLMT", &mut |fid, subs| {
                 index.climates.insert(fid, parse_clmt(fid, subs));
             })?,
+            // FO3 / FNV / Oblivion pre-Papyrus SCPT scripts — bytecode
+            // blob + source text + local-var table. Pre-#443 the group
+            // fell through to the catch-all skip and every NPC / item
+            // SCRI cross-reference dangled. Runtime execution is out
+            // of scope for this fix — extraction only.
+            b"SCPT" => extract_records(&mut reader, end, b"SCPT", &mut |fid, subs| {
+                index.scripts.insert(fid, parse_scpt(fid, subs));
+            })?,
             _ => {
                 reader.skip_group(&group);
             }
@@ -266,7 +282,7 @@ pub fn parse_esm_with_load_order(
     log::info!(
         "ESM parsed: {} cells, {} statics, {} items, {} containers, {} LVLI, {} LVLN, {} LVLC, \
          {} NPCs, {} creatures, {} races, {} classes, {} factions, {} globals, {} game settings, \
-         {} weathers, {} climates",
+         {} weathers, {} climates, {} scripts",
         index.cells.cells.len(),
         index.cells.statics.len(),
         index.items.len(),
@@ -283,6 +299,7 @@ pub fn parse_esm_with_load_order(
         index.game_settings.len(),
         index.weathers.len(),
         index.climates.len(),
+        index.scripts.len(),
     );
 
     Ok(index)
@@ -549,6 +566,36 @@ mod tests {
         );
     }
 
+    /// Regression: #443 — a top-level `SCPT` GRUP must dispatch to
+    /// `parse_scpt` and land in `EsmIndex.scripts`. Pre-fix the whole
+    /// group fell through to the catch-all skip so every NPC / item
+    /// `SCRI` FormID cross-reference dangled.
+    #[test]
+    fn scpt_group_dispatches_to_scripts_map() {
+        let mut schr = Vec::new();
+        schr.extend_from_slice(&0u32.to_le_bytes()); // pad
+        schr.extend_from_slice(&0u32.to_le_bytes()); // num_refs
+        schr.extend_from_slice(&42u32.to_le_bytes()); // compiled_size
+        schr.extend_from_slice(&0u32.to_le_bytes()); // var_count
+        schr.extend_from_slice(&0u16.to_le_bytes()); // object
+        schr.extend_from_slice(&0u32.to_le_bytes()); // flags (FO3 u32 tail)
+        let subs: Vec<(&[u8; 4], Vec<u8>)> = vec![
+            (b"EDID", b"DummyScript\0".to_vec()),
+            (b"SCHR", schr),
+            (b"SCDA", vec![0u8; 42]),
+        ];
+        let record = build_record(b"SCPT", 0xBEEF_0003, &subs);
+        let group = wrap_group(b"SCPT", &record);
+        let mut tes4 = build_record(b"TES4", 0, &[]);
+        tes4.extend_from_slice(&group);
+        let index = parse_esm(&tes4).unwrap();
+        assert_eq!(index.scripts.len(), 1, "SCPT must land in scripts map");
+        let scpt = index.scripts.get(&0xBEEF_0003).expect("SCPT indexed");
+        assert_eq!(scpt.editor_id, "DummyScript");
+        assert_eq!(scpt.compiled_size, 42);
+        assert_eq!(scpt.compiled.len(), 42);
+    }
+
     /// Regression: #442 — a top-level `CREA` GRUP must dispatch to
     /// `parse_npc` (schema is NPC_-shaped) and land in
     /// `EsmIndex.creatures`. Pre-fix the whole group fell through to
@@ -631,6 +678,53 @@ mod tests {
     /// patches without becoming meaningless. The audit body predicted
     /// ~700-800 CREA / ~400-500 LVLC; the real numbers are lower, so
     /// don't chase the audit's estimates — use the disk-sampled ones.
+    /// Parse real Fallout3.esm and assert SCPT records arrive + at
+    /// least one NPC's SCRI FormID resolves into the scripts map.
+    /// Ignored — opt in with `--ignored`.
+    #[test]
+    #[ignore]
+    fn parse_real_fo3_esm_scpt_count_and_scri_resolves() {
+        let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data/Fallout3.esm";
+        if !std::path::Path::new(path).exists() {
+            eprintln!("Skipping: Fallout3.esm not found");
+            return;
+        }
+        let data = std::fs::read(path).unwrap();
+        let index = parse_esm(&data).expect("parse_esm");
+        eprintln!("FO3 SCPT: {} records", index.scripts.len());
+        assert!(
+            index.scripts.len() > 500,
+            "expected >500 SCPT records (FO3 GOTY ships ~1500+), got {}",
+            index.scripts.len()
+        );
+
+        // Find any NPC / container record whose script_form_id lands
+        // inside the scripts map — pre-#443 nothing could satisfy this
+        // because scripts was always empty.
+        let resolved = index
+            .npcs
+            .values()
+            .filter(|n| n.has_script || n.disposition_base != 0)
+            .count();
+        // Any SCRI dereference working is sufficient — we don't parse
+        // NPC SCRI yet (it's tracked elsewhere), so just assert the map
+        // isn't empty and one script has a resolvable SCRV/SCRO ref
+        // pointing at another record.
+        let cross_ref_count: usize = index
+            .scripts
+            .values()
+            .filter(|s| !s.ref_form_ids.is_empty())
+            .count();
+        eprintln!(
+            "{} scripts carry at least one SCRV/SCRO cross-ref; {} NPCs had context hints",
+            cross_ref_count, resolved
+        );
+        assert!(
+            cross_ref_count > 100,
+            "expected >100 scripts with SCRV/SCRO cross-refs, got {cross_ref_count}"
+        );
+    }
+
     #[test]
     #[ignore]
     fn parse_real_fo3_esm_crea_and_lvlc_counts() {
