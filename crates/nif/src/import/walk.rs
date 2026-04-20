@@ -166,6 +166,25 @@ pub(super) fn walk_node_hierarchical(
         return;
     }
 
+    // `BsMultiBoundNode` culling-mode guard (#355, partial): Skyrim+
+    // large-interior cells (Dragonsreach, College of Winterhold) use
+    //   0 = normal (default)
+    //   1 = all children visible regardless of bounds
+    //   2 = always-hidden
+    //   3 = force-culled
+    // on BsMultiBoundNode to flag unreachable / invisible subtrees.
+    // Honor 2 and 3 by dropping the subtree at import time — the
+    // subtree wouldn't render anyway but skipping it avoids uploading
+    // its meshes and building their BLAS entries. Full AABB
+    // consumption for culling_mode == 1 (and feeding the renderer's
+    // culling structure) is the remaining half of the issue and is
+    // mid-scope plumbing.
+    if let Some(mbn) = block.as_any().downcast_ref::<BsMultiBoundNode>() {
+        if mbn.culling_mode == 2 || mbn.culling_mode == 3 {
+            return;
+        }
+    }
+
     if let Some(node) = as_ni_node(block) {
         if node.av.flags & 0x01 != 0 {
             return;
@@ -352,6 +371,14 @@ pub(super) fn walk_node_flat(
         }
         inherited_props.truncate(prev_len);
         return;
+    }
+
+    // BsMultiBoundNode culling-mode guard (#355, partial) — sibling of
+    // the hierarchical walker above.
+    if let Some(mbn) = block.as_any().downcast_ref::<BsMultiBoundNode>() {
+        if mbn.culling_mode == 2 || mbn.culling_mode == 3 {
+            return;
+        }
     }
 
     if let Some(node) = as_ni_node(block) {
