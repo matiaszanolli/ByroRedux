@@ -55,9 +55,20 @@ impl TextureProvider {
     }
 
     /// Extract a texture (DDS) from texture archives.
+    ///
+    /// Paths are normalized before lookup: anything that doesn't already
+    /// start with `textures\` gets the prefix prepended. Bethesda WTHR /
+    /// CLMT / LTEX records author paths relative to the `textures\`
+    /// root (e.g. `sky\cloudsnoon.dds`, `landscape\dirt02.dds`) but
+    /// the archive layer stores them with the full `textures\` prefix.
+    /// Pre-#468 every such lookup silently missed and clouds / sun
+    /// textures rendered as disabled. Callers that already supply a
+    /// fully-qualified path (the cell loader's `textures\landscape\…`
+    /// path-building sites) go through unchanged.
     pub(crate) fn extract(&self, path: &str) -> Option<Vec<u8>> {
+        let normalized = normalize_texture_path(path);
         for archive in &self.texture_archives {
-            if let Ok(data) = archive.extract(path) {
+            if let Ok(data) = archive.extract(normalized.as_ref()) {
                 return Some(data);
             }
         }
@@ -72,6 +83,31 @@ impl TextureProvider {
             }
         }
         None
+    }
+}
+
+/// Prepend `textures\` to a texture path if the path doesn't already
+/// begin with that segment (case-insensitive). Returns `Cow::Borrowed`
+/// when the input is already fully qualified so we don't allocate on
+/// the hot path (every REFR material resolves a texture).
+///
+/// See #468 — Bethesda WTHR cloud / CLMT sun / LTEX landscape records
+/// all author paths relative to the `textures\` root, but the BSA / BA2
+/// layer stores them with the full prefix.
+pub(crate) fn normalize_texture_path(path: &str) -> std::borrow::Cow<'_, str> {
+    // Fast ASCII-lowercase check on just the first 9 bytes (`textures\`).
+    // Avoids allocating a full lowercase copy of the whole path on every
+    // texture lookup. Matches on either `/` or `\` separators — archive
+    // paths are backslashed on Bethesda systems, but forward slashes can
+    // sneak in via mod authoring tools.
+    let bytes = path.as_bytes();
+    let has_prefix = bytes.len() >= 9
+        && bytes[..8].eq_ignore_ascii_case(b"textures")
+        && (bytes[8] == b'\\' || bytes[8] == b'/');
+    if has_prefix {
+        std::borrow::Cow::Borrowed(path)
+    } else {
+        std::borrow::Cow::Owned(format!("textures\\{}", path))
     }
 }
 
@@ -161,4 +197,65 @@ pub(crate) fn resolve_texture(
         log::debug!("Texture not found in archive: '{}'", tex_path);
     }
     ctx.texture_registry.fallback()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_adds_prefix_when_missing() {
+        // WTHR cloud path authored relative to `textures\` root.
+        let out = normalize_texture_path("sky\\cloudsnoon.dds");
+        assert_eq!(out.as_ref(), "textures\\sky\\cloudsnoon.dds");
+    }
+
+    #[test]
+    fn normalize_leaves_fully_qualified_paths_borrowed() {
+        // Cell loader's landscape path path-building already supplies
+        // the `textures\` prefix; the fn must pass through without
+        // allocating (Cow::Borrowed).
+        let input = "textures\\landscape\\dirt02.dds";
+        let out = normalize_texture_path(input);
+        assert_eq!(out.as_ref(), input);
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn normalize_is_case_insensitive_on_prefix() {
+        // A future tool or mod authoring flow might export
+        // `Textures\…` or `TEXTURES\…`; the prefix check is ASCII-
+        // case-insensitive and shouldn't double up.
+        let out = normalize_texture_path("Textures\\sky\\cloudsnoon.dds");
+        assert_eq!(out.as_ref(), "Textures\\sky\\cloudsnoon.dds");
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn normalize_accepts_forward_slash_separator() {
+        // Mod authoring tools occasionally emit forward slashes.
+        // The prefix check accepts either.
+        let out = normalize_texture_path("textures/sky/cloudsnoon.dds");
+        assert_eq!(out.as_ref(), "textures/sky/cloudsnoon.dds");
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn normalize_prefixes_non_textures_paths_as_owned() {
+        // Any path whose first segment isn't `textures\` — e.g. a
+        // relative CLMT `sun_01.dds` or a broken mod export — gets
+        // the prefix prepended. The fn allocates in this branch, so
+        // result is Cow::Owned.
+        let out = normalize_texture_path("sun_01.dds");
+        assert_eq!(out.as_ref(), "textures\\sun_01.dds");
+        assert!(matches!(out, std::borrow::Cow::Owned(_)));
+    }
+
+    #[test]
+    fn normalize_short_string_gets_prefixed() {
+        // Guard against the `bytes.len() >= 9` check: a 1-byte path
+        // should still prefix cleanly.
+        let out = normalize_texture_path("a");
+        assert_eq!(out.as_ref(), "textures\\a");
+    }
 }

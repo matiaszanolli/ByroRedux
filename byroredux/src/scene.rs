@@ -163,6 +163,12 @@ pub(crate) fn setup_scene(
                         // On failure (no path / archive miss / corrupt DDS) we keep
                         // cloud rendering disabled rather than falling back to the
                         // checkerboard — a magenta sky dome is worse than no clouds.
+                        //
+                        // Path normalization (textures\ prefix) happens inside
+                        // `TextureProvider::extract` — authored WTHR cloud paths
+                        // are `textures\`-root-relative (`sky\cloudsnoon.dds`)
+                        // but the BSA layer stores them with the full prefix.
+                        // See #468.
                         let (cloud_tex_index, cloud_tile_scale) = match wthr.cloud_textures[0]
                             .as_deref()
                         {
