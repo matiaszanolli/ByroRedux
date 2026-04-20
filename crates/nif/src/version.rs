@@ -101,6 +101,14 @@ impl NifVariant {
             // 101-129: unknown gap, treat as SkyrimSE (closest known)
             (12, uv2) if uv2 < 130 => Self::SkyrimSE,
             (12, uv2) if uv2 < 155 => Self::Fallout4,
+            // Fallout 76 retail ships BSVER 155–167. Starfield dev/retail
+            // ships 168+. The 155..170 window below is the currently-
+            // known FO76 range; 168/169 in the wild are reportedly early
+            // Starfield dev builds that we classify as FO76 anyway.
+            // Cosmetic distinction today — every shader / block
+            // conditional we care about is gated on `bsver >= 132`,
+            // which covers both identically. Re-tighten to `< 168` once
+            // a confirmed Starfield dev-build corpus lands (#173).
             (12, uv2) if uv2 < 170 => Self::Fallout76,
             (12, _) => Self::Starfield,
             _ => Self::Unknown,
