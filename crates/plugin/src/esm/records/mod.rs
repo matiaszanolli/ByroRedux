@@ -18,6 +18,7 @@ pub mod common;
 pub mod container;
 pub mod global;
 pub mod items;
+pub mod misc;
 pub mod scol;
 pub mod script;
 pub mod weather;
@@ -36,6 +37,11 @@ pub use global::{parse_glob, parse_gmst, GameSetting, GlobalRecord, SettingValue
 pub use items::{
     parse_alch, parse_ammo, parse_armo, parse_book, parse_ingr, parse_keym, parse_misc, parse_note,
     parse_weap, ItemKind, ItemRecord,
+};
+pub use misc::{
+    parse_eczn, parse_eyes, parse_hair, parse_hdpt, parse_lgtm, parse_navi, parse_navm, parse_regn,
+    parse_watr, EcznRecord, EyesRecord, HairRecord, HdptRecord, LgtmRecord, NaviRecord, NavmRecord,
+    RegnRecord, WatrRecord,
 };
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
 pub use weather::{parse_wthr, SkyColor, WeatherRecord};
@@ -82,6 +88,32 @@ pub struct EsmIndex {
     /// here instead of dangling. The bytecode itself (`compiled`) is
     /// stored opaquely — an ECS-native runtime lands separately.
     pub scripts: HashMap<u32, ScriptRecord>,
+    // ── Supplementary records (stubs, #458) ──────────────────────────
+    //
+    // Nine record types that pre-#458 fell through to the catch-all
+    // skip. Each map stores a minimal extraction (EDID + a handful of
+    // form refs + scalar fields) — enough for dangling references
+    // into these records to resolve at lookup time. Full per-record
+    // decoding lands with the consuming subsystem.
+    /// `WATR` water type records — referenced by `CELL.XCWT`.
+    pub waters: HashMap<u32, WatrRecord>,
+    /// `NAVI` navigation mesh master.
+    pub navi_info: HashMap<u32, NaviRecord>,
+    /// `NAVM` per-cell navigation meshes.
+    pub navmeshes: HashMap<u32, NavmRecord>,
+    /// `REGN` worldspace regions.
+    pub regions: HashMap<u32, RegnRecord>,
+    /// `ECZN` encounter-zone descriptors.
+    pub encounter_zones: HashMap<u32, EcznRecord>,
+    /// `LGTM` lighting templates — ties to #379 (per-field inheritance
+    /// fallback on cells without XCLL).
+    pub lighting_templates: HashMap<u32, LgtmRecord>,
+    /// `HDPT` head-part records (FaceGen).
+    pub head_parts: HashMap<u32, HdptRecord>,
+    /// `EYES` eye definitions (FO3/FNV NPC_ face variation).
+    pub eyes: HashMap<u32, EyesRecord>,
+    /// `HAIR` hair definitions (FO3/FNV NPC_ face variation).
+    pub hair: HashMap<u32, HairRecord>,
 }
 
 impl EsmIndex {
@@ -103,6 +135,15 @@ impl EsmIndex {
             + self.weathers.len()
             + self.climates.len()
             + self.scripts.len()
+            + self.waters.len()
+            + self.navi_info.len()
+            + self.navmeshes.len()
+            + self.regions.len()
+            + self.encounter_zones.len()
+            + self.lighting_templates.len()
+            + self.head_parts.len()
+            + self.eyes.len()
+            + self.hair.len()
             + self.cells.cells.len()
             + self.cells.statics.len()
     }
@@ -272,6 +313,38 @@ pub fn parse_esm_with_load_order(
             // of scope for this fix — extraction only.
             b"SCPT" => extract_records(&mut reader, end, b"SCPT", &mut |fid, subs| {
                 index.scripts.insert(fid, parse_scpt(fid, subs));
+            })?,
+            // Supplementary records previously catch-all-skipped (#458).
+            // Stubs capture EDID + form refs + scalar fields; full
+            // per-record decoding lands with the consuming subsystem.
+            b"WATR" => extract_records(&mut reader, end, b"WATR", &mut |fid, subs| {
+                index.waters.insert(fid, parse_watr(fid, subs));
+            })?,
+            b"NAVI" => extract_records(&mut reader, end, b"NAVI", &mut |fid, subs| {
+                index.navi_info.insert(fid, parse_navi(fid, subs));
+            })?,
+            b"NAVM" => extract_records(&mut reader, end, b"NAVM", &mut |fid, subs| {
+                index.navmeshes.insert(fid, parse_navm(fid, subs));
+            })?,
+            b"REGN" => extract_records(&mut reader, end, b"REGN", &mut |fid, subs| {
+                index.regions.insert(fid, parse_regn(fid, subs));
+            })?,
+            b"ECZN" => extract_records(&mut reader, end, b"ECZN", &mut |fid, subs| {
+                index.encounter_zones.insert(fid, parse_eczn(fid, subs));
+            })?,
+            // LGTM lighting templates — consumer lands alongside #379
+            // (per-field inheritance fallback on cells without XCLL).
+            b"LGTM" => extract_records(&mut reader, end, b"LGTM", &mut |fid, subs| {
+                index.lighting_templates.insert(fid, parse_lgtm(fid, subs));
+            })?,
+            b"HDPT" => extract_records(&mut reader, end, b"HDPT", &mut |fid, subs| {
+                index.head_parts.insert(fid, parse_hdpt(fid, subs));
+            })?,
+            b"EYES" => extract_records(&mut reader, end, b"EYES", &mut |fid, subs| {
+                index.eyes.insert(fid, parse_eyes(fid, subs));
+            })?,
+            b"HAIR" => extract_records(&mut reader, end, b"HAIR", &mut |fid, subs| {
+                index.hair.insert(fid, parse_hair(fid, subs));
             })?,
             _ => {
                 reader.skip_group(&group);
