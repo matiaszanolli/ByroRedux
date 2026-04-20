@@ -190,14 +190,27 @@ pub struct EnableParent {
 
 impl EnableParent {
     /// Returns `true` if the REFR should be skipped at cell-load time
-    /// because its parent isn't yet enabled. The minimal heuristic
-    /// pre-#349's renderer uses: any REFR with a non-zero parent and
-    /// no inversion stays hidden until a future quest / script system
-    /// can toggle visibility based on the parent's state. The sound
-    /// long-term fix is a state machine; for now we just filter the
-    /// initial-default-off case.
+    /// because its parent's assumed initial state would hide it.
+    ///
+    /// Interim predicate (#471): without a two-pass loader that can
+    /// consult the parent REFR's own "initial disabled" flag
+    /// (bit 0x0800), we assume the common case — parents are
+    /// persistent, always-enabled actors / statics. Under that
+    /// assumption:
+    ///   - non-inverted XESP: child visible iff parent enabled → render
+    ///   - inverted XESP:     child visible iff parent disabled → skip
+    ///
+    /// #349's original predicate had the sense flipped and hid every
+    /// non-inverted XESP child, wiping out most quest-enabled clutter,
+    /// shop inventory, and patrol markers on FNV / FO3 cells. False
+    /// negatives on the rarer "supposed to be hidden" XESP chains are
+    /// visually less bad than wholesale invisibility.
+    ///
+    /// The long-term fix is a two-pass loader that builds a REFR flag
+    /// table first, then applies XESP gating against each parent's real
+    /// 0x0800 bit.
     pub fn default_disabled(self) -> bool {
-        self.form_id != 0 && !self.inverted
+        self.form_id != 0 && self.inverted
     }
 }
 
@@ -2007,11 +2020,13 @@ mod tests {
         record
     }
 
-    /// Regression: #349 — XESP enable-parent gating must surface on
-    /// PlacedRef. Default-disabled (parent_form != 0, inverted bit
-    /// off) is the case the cell loader must skip.
+    /// Regression: #471 flipped #349's interim predicate. Without a
+    /// two-pass loader to inspect each parent's real 0x0800 flag, we
+    /// assume parents are enabled by default (the vanilla case). A
+    /// non-inverted XESP child is visible when the parent is enabled,
+    /// so the cell loader must NOT skip it.
     #[test]
-    fn parse_refr_extracts_default_disabled_xesp() {
+    fn parse_refr_extracts_non_inverted_xesp_renders_by_default() {
         let record = build_refr_with_xesp(0xABCD, 0xCAFE, 0); // not inverted
         let mut reader = EsmReader::new(&record);
         let end = record.len();
@@ -2026,16 +2041,16 @@ mod tests {
         assert_eq!(ep.form_id, 0xCAFE);
         assert!(!ep.inverted);
         assert!(
-            ep.default_disabled(),
-            "non-zero parent + not inverted = default-disabled"
+            !ep.default_disabled(),
+            "non-inverted XESP with assumed-enabled parent renders (#471)"
         );
     }
 
-    /// XESP with the inverted flag set means the REFR is visible when
-    /// the parent is *disabled* — so it should be considered enabled
-    /// at cell load (the parent has its default-disabled state).
+    /// #471: inverted XESP is visible when the parent is *disabled*.
+    /// With the parents-assumed-enabled default, the child must be
+    /// treated as hidden at cell load.
     #[test]
-    fn parse_refr_extracts_inverted_xesp() {
+    fn parse_refr_extracts_inverted_xesp_hidden_by_default() {
         let record = build_refr_with_xesp(0xABCD, 0xCAFE, 0x01); // inverted bit set
         let mut reader = EsmReader::new(&record);
         let end = record.len();
@@ -2050,8 +2065,8 @@ mod tests {
         assert_eq!(ep.form_id, 0xCAFE);
         assert!(ep.inverted);
         assert!(
-            !ep.default_disabled(),
-            "inverted XESP must not be default-disabled"
+            ep.default_disabled(),
+            "inverted XESP with assumed-enabled parent is hidden (#471)"
         );
     }
 

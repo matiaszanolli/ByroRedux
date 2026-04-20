@@ -787,12 +787,13 @@ fn load_references(
     let mut stat_hit = 0u32;
     let mut enable_skipped = 0u32;
     for placed_ref in refs {
-        // Skip default-disabled REFRs — those gated on a parent REFR's
-        // enable state (XESP without the inverted bit). Quest-spawn
-        // NPCs / placement-after-stage-trigger objects are placed with
-        // an enable parent and stay invisible until a future quest /
-        // script system can flip the parent's state. Pre-#349 every
-        // such REFR rendered immediately on cell load. See #349.
+        // Skip REFRs whose XESP gating would keep them hidden under
+        // the parents-assumed-enabled heuristic: inverted XESP children
+        // are visible only when the parent is *disabled*, so under the
+        // default they stay off. Non-inverted XESP children fall through
+        // and render. See #471 (flipped #349's over-hiding predicate)
+        // — long-term fix is a two-pass loader that reads the parent
+        // REFR's own 0x0800 "initial disabled" flag.
         if let Some(ep) = placed_ref.enable_parent {
             if ep.default_disabled() {
                 enable_skipped += 1;
