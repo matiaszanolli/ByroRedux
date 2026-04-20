@@ -14,7 +14,7 @@ Not a port — a ground-up rebuild that understands the legacy architecture and 
 
 ## Current State
 
-**30+ milestones complete**, including RT performance at scale (M31), streaming RIS direct lighting (M31.5), landscape terrain (M32), exterior sun lighting (M34), BLAS compaction (M36), temporal antialiasing (M37.5), and Papyrus language parser (M30). Loads and renders both **interior and exterior cells** directly from unmodified Bethesda game data — interior cells with placed objects, lighting, and RT shadows; exterior cells with 3x3 grids and heightmap terrain meshes with texture splatting. NIF parser hits **100% on every supported game** across 177,286 NIFs. RT renderer features streaming weighted reservoir shadow sampling (8 reservoirs / fragment), instanced draw batching, BLAS LRU eviction + compaction, SVGF temporal denoiser, TAA with Halton jitter + YCoCg neighborhood clamp, and distance-based ray fallback. Rapier3D physics, ESM record parsing (items, NPCs, factions, FO4 SCOL/MOVS/PKIN/TXST plus SCOL body + XCLW water + XESP gating), full 8-slot TXST texture extraction, skeletal skinning pipeline, KFM animation state machines, end-to-end CPU particle system for torches/FX, process-lifetime NIF import cache, persistent BSA/BA2 file handles, pipeline cache threaded through every create site with disk persistence, debug CLI with BGSM material diagnostics.
+**30+ milestones complete**, including RT performance at scale (M31), streaming RIS direct lighting (M31.5), landscape terrain (M32), exterior sun lighting (M34), BLAS compaction (M36), temporal antialiasing (M37.5), and Papyrus language parser (M30). Loads and renders both **interior and exterior cells** directly from unmodified Bethesda game data — interior cells with placed objects, lighting, and RT shadows; exterior cells with 3x3 grids and heightmap terrain meshes with texture splatting. NIF parser hits **100% on every supported game** across 177,286 NIFs. RT renderer features streaming weighted reservoir shadow sampling (8 reservoirs / fragment), instanced draw batching, BLAS LRU eviction + compaction, SVGF temporal denoiser, TAA with Halton jitter + YCoCg neighborhood clamp, and distance-based ray fallback. Rapier3D physics, ESM record parsing (items, NPCs, factions, FO4 SCOL/MOVS/PKIN/TXST plus SCOL body + XCLW water + XESP gating, CREA/LVLC/SCPT/ACRE, CLMT `TNAM` weather hours, Skyrim XCLL directional-ambient cube + specular + fresnel), full 8-slot TXST extraction + BSShaderTextureSet parallax/env routed to GpuInstance with POM, BGEM `material_path` captured on both NiTriShape and BsTriShape, skeletal skinning pipeline, KFM animation state machines with BSAnimNote IK hints, end-to-end CPU particle system for torches/FX, process-lifetime NIF import cache, persistent BSA/BA2 file handles, pipeline cache threaded through every create site with disk persistence, SPIR-V reflection cross-checks descriptor layouts against shader declarations at pipeline create time, debug CLI with BGSM material diagnostics.
 
 ```bash
 # Oblivion interior cell with XCLL lighting + per-mesh NiLight torches
@@ -52,7 +52,7 @@ Every supported Bethesda game parses its full mesh archive without errors. **Obl
 | Game              | Archive format | NIF parse rate     | Cells rendering | Notes                                                 |
 |-------------------|----------------|--------------------|-----------------|-------------------------------------------------------|
 | Oblivion          | BSA v103       | **100%** (8,032)   | ✓ Interior      | 20-byte TES4 headers, N26 block audit, Heinrich Halls |
-| Fallout 3         | BSA v104       | **100%** (10,989)  | ✓ Interior      | Megaton interior, full Wasteland                      |
+| Fallout 3         | BSA v104       | **100%** (10,989)  | ✓ Int + wired ext | Megaton interior (929 REFRs); exterior via `--grid 0,0` after #444 (fresh bench #457) |
 | Fallout New Vegas | BSA v104       | **100%** (14,881)  | ✓ Int + 3×3 ext | Prospector Saloon, exterior 3×3 grid                  |
 | Skyrim SE         | BSA v105 (LZ4) | **100%** (18,862)  | —               | Full mesh archive coverage                            |
 | Fallout 4         | BA2 v1/v7/v8   | **100%** (34,995)  | ✓ Architecture  | BA2 GNRL + DX10 textures, SCOL/MOVS/PKIN/TXST records |
@@ -83,9 +83,17 @@ See [Game Compatibility](docs/engine/game-compatibility.md) for the per-game arc
 | Rapier3D physics simulation — collision from NIF bhk chain, fixed 60 Hz substep | Working (static/dynamic bodies); kinematic character controller → M28.5 |
 | BSA reader (v103/v104/v105) — Oblivion through Skyrim SE | Working |
 | BA2 reader (v1/v2/v3/v7/v8) — FO4, FO76, Starfield, GNRL + DX10 with reconstructed DDS headers, zlib + LZ4 | Working |
-| ESM/ESP parser — cells, statics, items, NPCs, factions, leveled lists, globals (10+ record categories) | Working |
+| ESM/ESP parser — cells, statics, items, NPCs, factions, leveled lists, globals, CREA/LVLC, SCPT (pre-Papyrus bytecode), ACRE placements | Working |
 | FO4 architecture placements — SCOL body (ONAM/DATA child list), MOVS, PKIN, all 8 TXST slots | Working |
 | CELL XCLW water plane height + REFR XESP default-disabled gating | Working |
+| CLMT `TNAM` sunrise/sunset/volatility hours threaded through `weather_system` | Working |
+| Skyrim XCLL directional-ambient cube + specular + fresnel | Working |
+| Worldspace auto-pick + FormID mod-index remap when loading cells by editor ID | Working |
+| BSShaderTextureSet parallax + env slots routed to GpuInstance with POM gating | Working |
+| BSShaderPPLighting / BSLightingShader glow/detail/gloss (slots 3/4/5), NiZBufferProperty z_test/z_write/z_function via extended dynamic state | Working |
+| SPIR-V reflection cross-checks every descriptor-set layout against shader declarations at pipeline create time | Working |
+| Bindless texture array sized from device limit with hard-fail on overflow | Working |
+| BSAnimNote / BSAnimNotes parsed — IK hints surfaced on `AnimationClip` | Working |
 | Interior + exterior cell loading with placed objects, 3x3 exterior grid | Working |
 | End-to-end CPU particle system — torches, magic FX render from NIF particle data | Working |
 | Process-lifetime NIF import cache + long-lived BSA/BA2 file handles across cell extracts | Working |
@@ -292,10 +300,10 @@ See [Debug CLI](docs/engine/debug-cli.md) for the full protocol reference, archi
 
 | Metric                                | Value          |
 |---------------------------------------|----------------|
-| Rust source files                     | 182            |
-| Lines of Rust                         | ~75,000        |
-| Unit tests passing                    | 770+           |
-| Integration tests (`#[ignore]`'d)     | 29             |
+| Rust source files                     | 188            |
+| Lines of Rust                         | ~81,000        |
+| Unit tests passing                    | 867            |
+| Integration tests (`#[ignore]`'d)     | 32             |
 | NIFs in per-game integration sweeps   | 177,286        |
 | Per-game parse success rate           | 100% (7 games) |
 | Workspace members                     | 15 (13 engine crates + binary + debug CLI) |

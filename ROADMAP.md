@@ -3,7 +3,7 @@
 A clean Rust + C++ rebuild of the Gamebryo/Creation engine lineage with Vulkan rendering.
 This document tracks completed milestones, current capabilities, planned work, and known gaps.
 
-Last updated: 2026-04-18 (session 11 — audit closeout bundle #341–#438, 72 fixes across NIF parser + renderer + ESM, promoted NIF import cache, persistent archive handles, SCOL body parser)
+Last updated: 2026-04-19 (session 12 — audit closeout bundle #306–#463, 37 follow-up fixes across NIF shader plumbing, Oblivion CREA/ACRE indexing, FO4-era ESM dispatch (SCPT/CREA/LVLC), CLMT TNAM weather hours, Skyrim XCLL directional cube + fresnel, shader slot 3/4/5 on PPLighting + parallax/env on BSShaderTextureSet, SPIR-V reflection vs descriptor layout cross-check, TLAS instance custom_index unified with SSBO)
 
 ---
 
@@ -18,7 +18,7 @@ Last updated: 2026-04-18 (session 11 — audit closeout bundle #341–#438, 72 f
 | `cargo run -- --swf path/to/menu.swf` | Load and render a Skyrim SE SWF menu overlay |
 | `cargo run -- path/to/mesh.nif --kf path/to/anim.kf` | Play a .kf animation on a loaded NIF mesh |
 | `cargo run -- --bsa Meshes.bsa --mesh meshes\foo.nif --kf meshes\anim.kf` | Load KF from BSA (extracts automatically) |
-| `cargo test` | 610+ passing tests across all crates |
+| `cargo test` | 867 passing tests across all crates |
 
 **Fallout New Vegas:** Interior cells load from ESM with placed objects (REFR → STAT), real DDS textures
 from BSA v104 archives, correct coordinate transforms (Gamebryo CW rotation convention),
@@ -114,6 +114,53 @@ bundle `#341`–`#438`. Major themes:
   builds batched across the whole exterior grid (`#382`).
 
 Workspace test count: 623 → 770+. Net source growth: ~64K → ~75K lines of Rust.
+
+**Session 12 closeout (37 commits, zero milestone churn):** audit follow-through
+bundle `#306`–`#463`, focused on renderer validation hygiene, Oblivion/FO4-era
+ESM coverage, and NIF shader plumbing completeness. Major themes:
+
+- **NIF shader + texture plumbing** — BSShaderTextureSet parallax + env slots
+  routed to `GpuInstance` with POM gating (`#453`), BSShaderPPLightingProperty
+  and BSLightingShaderProperty now read slots 3/4/5 (`#452`), BGEM
+  `material_path` captured on both `NiTriShape` and `BsTriShape` via
+  BSEffectShaderProperty (`#434`), `ShaderTypeData` payload surfaced on
+  `ImportedMesh` for both trishape variants (`#430`), dedicated
+  `TileShaderProperty` parser + unified decal flags across properties
+  (`#454`/`#455`), `SF_DOUBLE_SIDED` no longer propagates through FO3/FNV
+  BSShader* paths (`#441`), `BSGeometryDataFlags` decoded on Bethesda
+  NiGeometryData (`#440`), `BSShader*Controller` preserves the controlled-
+  variable enum (`#350`), `NiExtraData` version gating (`#329` + `#330`),
+  `NiZBufferProperty` z_test/z_write/z_function plumbed through extended
+  dynamic state (`#398`), NiTexturingProperty glow/detail/gloss slots wired to
+  the fragment shader (`#399`), FO76 BSTriShape Bound Min Max AABB consumed
+  (`#342`), `NiBlend*Interpolator` indirection resolved in animation import
+  (`#334`), Shepperd quaternion fast-path renormalised (`#333`), `BSAnimNote` /
+  `BSAnimNotes` parsed and IK hints surfaced on `AnimationClip` (`#432`),
+  Oblivion KF import + decal slot off-by-one (`#400` + `#402`), stream-derived
+  `Vec::with_capacity` sweep through `allocate_vec` (`#408`).
+- **ESM parser** — `SCPT` pre-Papyrus bytecode records parsed (`#443`),
+  `CREA` + `LVLC` groups dispatched in `parse_esm` (`#442` + `#448`),
+  Oblivion CREA indexed and `ACRE` placements recognised (`#396`), FO4 NIF
+  `HEDR` → `GameKind` bands corrected for FO3 and FO4 (`#439`), worldspace
+  auto-pick + FormID mod-index remap when loading cells by editor ID
+  (`#444` + `#445`), `CLMT` `TNAM` sunrise/sunset/volatility hours threaded
+  through `weather_system` (`#463`), Skyrim `XCLL` directional-ambient cube +
+  specular + fresnel extracted (`#367`), FNV `LAND` parse failure demoted
+  warn → debug with error context forwarding (`#385`).
+- **Renderer — validation + correctness** — SPIR-V reflection cross-checks
+  every descriptor-set layout against shader declarations at pipeline create
+  time (`#427`), bindless texture array sized from device limit with an `Err`
+  return on overflow (`#425`), `R32_UINT` causticTex sampler switched to
+  NEAREST (VUID-vkCmdDraw-magFilter-04553), window portal ray now fires
+  along `-N` instead of `-V` (`#421`), TLAS `instance_custom_index` unified
+  with SSBO position via a shared map (`#419`), fog moved from
+  `triangle.frag` to `composite.frag` — kills SVGF ghosting on heavy fog
+  (`#428`), grow-only scratch pool applied to the TLAS full-rebuild path
+  (`#424` SIBLING), draw-command depth sort key switched to IEEE 754
+  total-ordering (`#306`).
+
+Workspace test count: 770+ → 867. Net source growth: ~75K → ~81K lines of
+Rust across 188 source files.
 
 ---
 
@@ -916,9 +963,9 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Metric | Value |
 |--------|-------|
-| Passing tests | 770+ (207 core, 286 nif, 105 plugin, 46 renderer, 45 papyrus, 21 binary, 19 bsa, 17 physics, 8 scripting, 4 debug-protocol, + integration) |
+| Passing tests | 867 (336 nif, 206 core, 123 plugin, 62 renderer, 45 papyrus, 32 binary, 19 bsa, 17 physics, 9 nif-fixtures, 8 scripting, 4 debug-protocol, + integration) |
 | Workspace members | 15 (13 engine crates + `byroredux` binary + `byro-dbg` CLI) |
-| Completed milestones | 30+ (M1–M22, M24 Phase 1, M26, M28 Phase 1, M30 Phase 1, M31, M31.5, M32 Phase 1+2, M34 Phase 1, M36, M37.5) + N23 + N26 + #178 + #316/#381/#401/#405/#426 session-11 closeout bundle |
+| Completed milestones | 30+ (M1–M22, M24 Phase 1, M26, M28 Phase 1, M30 Phase 1, M31, M31.5, M32 Phase 1+2, M34 Phase 1, M36, M37.5) + N23 + N26 + #178 + session-11 #316/#381/#401/#405/#426 + session-12 #306–#463 closeout bundle |
 | NIF block types | ~215 distinct type names, ~185 parsed + 30 Havok skip |
 | NifVariant games | 8 (Morrowind → Starfield) |
 | Per-game NIF parse rate | 100% across 177,286 NIFs (7 games) |
@@ -936,11 +983,11 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 
 | Crate | Milestones | Tests |
 |-------|------------|-------|
-| `byroredux-core` | M3 (ECS), M5 (Form IDs), M21 (Animation), #178A (SkinnedMesh), #137 (lock guards), #340 (interned channel names), #313 (lock-order graph) | 207 |
-| `byroredux-renderer` | M1, M2, M4, M7, M8, M13, M14, M22, M31, M31.5 (streaming RIS), M36 (BLAS compaction), M37.5 (TAA), #178B (bone palette), #136 (16× AF), #309/#316/#317/#392/#415/#416/#420/#422/#426 | 46 |
+| `byroredux-core` | M3 (ECS), M5 (Form IDs), M21 (Animation), #178A (SkinnedMesh), #137 (lock guards), #340 (interned channel names), #313 (lock-order graph), #333 (Shepperd renorm), #334 (NiBlend*Interpolator) | 206 |
+| `byroredux-renderer` | M1, M2, M4, M7, M8, M13, M14, M22, M31, M31.5 (streaming RIS), M36 (BLAS compaction), M37.5 (TAA), #178B (bone palette), #136 (16× AF), #309/#316/#317/#392/#415/#416/#420/#422/#426 (session 11), #306/#419/#421/#424/#425/#427/#428 + VUID-04553 (session 12) | 62 |
 | `byroredux-platform` | M1 (windowing) | — |
-| `byroredux-plugin` | M5, M6, M19, M24 Phase 1, FO4 SCOL/MOVS/PKIN/TXST, #349 XESP, #356 Skyrim CELL, #374 single-pass exterior, #389 BGRA LIGH, #391 variant group end, #397 XCLW, #405 SCOL body, #357 all 8 TXST slots | 105 |
-| `byroredux-nif` | M9, M10, M17, M18, M21, N23.1–N23.10, N26 audit, #79 KFM, #322/#323/#324/#325/#395 Oblivion robustness, #106/#128/#165/#166/#335/#341/#344/#346/#363/#364/#369/#381/#401/#403/#407/#429 closeout, BGSM material_path | 286 |
+| `byroredux-plugin` | M5, M6, M19, M24 Phase 1, FO4 SCOL/MOVS/PKIN/TXST, #349 XESP, #356 Skyrim CELL, #374 single-pass exterior, #389 BGRA LIGH, #391 variant group end, #397 XCLW, #405 SCOL body, #357 all 8 TXST slots, #367 Skyrim XCLL cube/fresnel, #385 LAND error context, #396 Oblivion CREA/ACRE, #442/#448 CREA/LVLC dispatch, #443 SCPT, #444/#445 worldspace auto-pick + FormID remap, #463 CLMT TNAM | 123 |
+| `byroredux-nif` | M9, M10, M17, M18, M21, N23.1–N23.10, N26 audit, #79 KFM, #322/#323/#324/#325/#395 Oblivion robustness, #106/#128/#165/#166/#335/#341/#344/#346/#363/#364/#369/#381/#401/#403/#407/#429 session 11, BGSM material_path, session 12: #306/#329/#330/#342/#350/#398/#399/#400/#402/#408/#430/#432/#434/#439/#440/#441/#452/#453/#454/#455 | 336 |
 | `byroredux-bsa` | M11, M18, M26 (BA2), session 7 (v3 LZ4), session 10 (archive auto-detect), #352/#360 extract robustness | 19 |
 | `byroredux-physics` | M28 Phase 1 (Rapier3D bridge) | 17 |
 | `byroredux-scripting` | M12 | 8 |
@@ -949,7 +996,7 @@ has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shad
 | `byroredux-debug-protocol` | Wire protocol + component registry | 4 |
 | `byroredux-debug-server` | TCP server + Papyrus evaluator (tex_missing, tex_loaded, mesh.info) | — |
 | `byroredux-cxx-bridge` | Cross-cutting | — |
-| `byroredux` (binary) | M4, M11, M14–M17, M19, M28, M32, M34, cell cache, terrain, FO4 architecture, #401 CPU particle system | 21 |
+| `byroredux` (binary) | M4, M11, M14–M17, M19, M28, M32, M34, cell cache, terrain, FO4 architecture, #401 CPU particle system, #463 weather_system TNAM hours | 32 |
 | `tools/byro-dbg` | Standalone debug CLI (TCP client, REPL) | — |
 
 ---
