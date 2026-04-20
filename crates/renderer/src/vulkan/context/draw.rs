@@ -960,6 +960,28 @@ impl VulkanContext {
                         vk::PipelineBindPoint::GRAPHICS,
                         self.pipeline_ui,
                     );
+                    // Defensive re-set of dynamic viewport/scissor after the
+                    // UI pipeline bind (#133). The opaque/blend pipelines
+                    // all declare both as VK_DYNAMIC_STATE, so the state set
+                    // at the start of the render pass is inherited —
+                    // today. A future UI variant that rendered at a
+                    // different extent (e.g. scaled Scaleform overlay on
+                    // a non-native resolution) would silently use the
+                    // inherited values. Cheap two-command insurance.
+                    let viewports = [vk::Viewport {
+                        x: 0.0,
+                        y: 0.0,
+                        width: self.swapchain_state.extent.width as f32,
+                        height: self.swapchain_state.extent.height as f32,
+                        min_depth: 0.0,
+                        max_depth: 1.0,
+                    }];
+                    self.device.cmd_set_viewport(cmd, 0, &viewports);
+                    let scissors = [vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: self.swapchain_state.extent,
+                    }];
+                    self.device.cmd_set_scissor(cmd, 0, &scissors);
                     self.device
                         .cmd_bind_vertex_buffers(cmd, 0, &[mesh.vertex_buffer.buffer], &[0]);
                     self.device.cmd_bind_index_buffer(
