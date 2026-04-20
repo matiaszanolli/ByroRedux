@@ -3,7 +3,7 @@
 A clean Rust + C++ rebuild of the Gamebryo/Creation engine lineage with Vulkan rendering.
 This document tracks completed milestones, current capabilities, planned work, and known gaps.
 
-Last updated: 2026-04-19 (session 12 — audit closeout bundle #306–#463, 37 follow-up fixes across NIF shader plumbing, Oblivion CREA/ACRE indexing, FO4-era ESM dispatch (SCPT/CREA/LVLC), CLMT TNAM weather hours, Skyrim XCLL directional cube + fresnel, shader slot 3/4/5 on PPLighting + parallax/env on BSShaderTextureSet, SPIR-V reflection vs descriptor layout cross-check, TLAS instance custom_index unified with SSBO)
+Last updated: 2026-04-20 (session 12 — audit closeout bundle #306–#463 + #464, 40+ follow-up fixes across NIF shader plumbing, ESM dispatch expansion (SCPT/CREA/LVLC/misc 18 categories total), CLMT TNAM weather hours, Skyrim XCLL directional cube + fresnel, BSShaderTextureSet slots 3/4/5 to GpuInstance with POM, SPIR-V reflection vs descriptor layout cross-check, FormIdRemap for multi-plugin loads, ROADMAP re-prioritised to "shortest path to playable" ordering)
 
 ---
 
@@ -830,65 +830,128 @@ Workspace test count: 472 → 623. Zero new warnings.
 
 ## Active Roadmap
 
-Priority: **robust renderer first** — make exterior scenes look correct before
-expanding gameplay systems. Each milestone produces a visible improvement.
+Priority: **shortest path to a playable cell**, not shortest path to a
+shinier frame. The renderer is mature (RT + RIS + SVGF + TAA + POM) and
+the content pipeline parses at 100% across every target; the next
+bottlenecks are *consumers* — things that make what we parse actually
+do something on screen or at the speakers. Each tier is ordered by
+"what unblocks the next user-visible capability," not by visual polish.
 
-### Tier 1 — Exterior Rendering (immediate priority)
+Reasoning and predecessors: see the Session 12 closeout notes above
+(test count 623 → 888, 40+ audit follow-through fixes) plus
+`docs/audits/AUDIT_FO3_2026-04-19.md` + `AUDIT_FNV_2026-04-20.md` +
+`AUDIT_ECS_2026-04-19.md`. The theme was **extraction was done, but
+consumers were missing or wrong**, which directly drives the
+"shortest path to playable" reorder below. Earlier milestone history
+(M1–M30) is preserved under
+[Previously Completed](#previously-completed-m22m30) and below.
+
+### Tier 1 — Playable Exterior (blocks "you can walk around")
 
 | # | Milestone | Scope | Depends on |
 |---|-----------|-------|------------|
 | M32 | Landscape Mesh | Parse LAND records (33×33 heightmap grid per cell), generate terrain mesh, LTEX/TXST texture layers with alpha-blended splatting, vertex colors. The missing ground plane for all exterior cells. | ESM parser |
 | M33 | Sky & Atmosphere | Parse WTHR (Weather) records. Sky gradient dome, sun disc with position from game-time, cloud layers (scrolling textures), horizon fog. Procedural fallback when no WTHR is set. Replace hardcoded clear color. | ESM parser |
 | M34 | Exterior Lighting | Proper directional sun derived from WTHR/climate sun position. Time-of-day ambient color interpolation. Exterior fog from WTHR fog data (distance + color). Interior/exterior light path split in the shader. | M33 |
-| M35 | Terrain LOD | Parse `.btr` terrain LOD meshes from BSA. Distance-based LOD selection (full LAND → LOD4 → LOD8 → LOD16). LOD terrain texture atlas. Object LOD (`.bto` files) for distant statics. | M32 |
+| **FO3 exterior bench** | Pin the #457 follow-up: run `--esm Fallout3.esm --grid 0,0 …`, confirm it renders, capture a `--bench-frames` snapshot, and promote the ROADMAP Tier-1 row from "wired" to "validated." | #444 (done) |
+| M32.5 | Per-game cell loader parity | Wire Skyrim + FO4 interior cells through the existing `cell_loader` (Skyrim has XCLL 92-byte + LGTM templates; FO4 has BGSM materials + SCOL/PKIN expansion already parsed). Oblivion needs BSA v103 decompression first. | M24 |
 
-### Tier 2 — Renderer Robustness
-
-| # | Milestone | Scope | Depends on |
-|---|-----------|-------|------------|
-| M37 | SVGF Spatial Filter | A-trous wavelet filter using existing moments data. 3 iterations, edge-stopping on normal/depth/variance. Major GI noise reduction (1-SPP → ~8-SPP visual quality). | — |
-| M37.3 | ReSTIR-DI | Full spatiotemporal reservoir reuse for direct lighting. New GBuffer reservoir attachment (light index, wSum, M, selected target pdf). Temporal pass: motion-vector reprojection + reservoir combine. Spatial pass: k-neighborhood resample with normal/depth rejection. Drops shadow rays to 1/pixel while sampling from hundreds of lights. Streaming-RIS already shipped as M31.5. | M31.5, M37 |
-| M29 | GPU Skinning | Compute shader bone palette evaluation. SkinnedMesh component → bone SSBO → unified vertex shader. Characters and creatures animate. | M25 |
-| M38 | Transparency & Water | Proper OIT or depth-peeled transparency. Water plane mesh with reflection/refraction (screen-space or planar). NIF alpha sort correctness. | — |
-| M39 | Texture Streaming | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Distance-based texture detail. Memory budget with LRU eviction. | — |
-| M37.6 | DLSS2 integration (optional) | NVIDIA DLSS2 as an upscale pass after TAA. 4070 Ti target, proprietary. Nice-to-have on top of the TAA baseline. | M37.5 |
-
-### Tier 3 — Engine Infrastructure
+### Tier 2 — Actors Visible & Animated (blocks "cells are populated")
 
 | # | Milestone | Scope | Depends on |
 |---|-----------|-------|------------|
-| M27 | Parallel System Dispatch | Rayon-based parallel ECS system execution. Type-sorted lock acquisition already in place. | — |
-| M28.5 | Character Controller | Kinematic capsule with step-up, slope limiting, ground snapping. Replaces the current dynamic body fly camera for on-foot movement. | M28, M32 |
-| M24.2 | ESM Phase 2 | QUST/DIAL/PERK/MGEF semantic parsing. Quest stages, dialogue trees, perk entry points. | M24 |
-| M30.2 | Papyrus Phase 2–4 | Statement parser, script declarations, FO4 extensions. Full `.psc` → AST for the entire Skyrim/FO4 corpus. | M30 |
-
-### Tier 4 — Gameplay Systems
-
-| # | Milestone | Scope | Depends on |
-|---|-----------|-------|------------|
+| M29 | GPU Skinning | Compute-shader bone-palette eval. `SkinnedMesh` component → bone SSBO → unified vertex shader. Every NPC / creature mesh is skinned today; without this they can't animate. | M25 |
+| M41.0 | FaceGen heads render | Spawn NPC entities with HDPT / EYES / HAIR meshes assembled into the NPC body. Parse already lands via #458 (misc stubs) + #440 (FaceGen NIF geometry fix); wiring the assembler is the next step. | M29, #458 |
+| M41 | NPC Spawning | Resolve NPC_ / CREA records → ECS entities with race/class/equipped armor + weapons. Spawn ACHR references from CELL REFRs. Movement is fly-by-waypoint until M42. | M24, M29, M41.0 |
 | M40 | World Streaming | Cell load/unload based on player position. Multi-cell exterior grid with async loading. BLAS streaming (evict/reload) ties into M31's LRU eviction. | M32, M35 |
-| M41 | NPC Spawning | Resolve NPC_ records → ECS entities with race/class/equipment. Spawn ACHR references. Visual appearance from head parts + body mesh + equipped items. | M24, M29 |
-| M42 | AI Packages | 30 composable procedures, package stack, Sandbox. Patrol paths from NAVM. Basic wander/follow/travel. | M28.5, M41 |
-| M43 | Quests & Dialogue | Quest stages, conditions (~300 functions), dialogue trees, Story Manager event triggers. | M24.2, M41 |
-| M44 | Audio | Sound descriptors, 3D spatial audio (OpenAL or miniaudio), music system, ambient sounds. | — |
-| M45 | Save/Load | Serialize world state, change forms, cosave format. | M40 |
-| M46 | Full Plugin Loading | Discover, sort, merge, resolve conflicts across full load order. | M24.2 |
-| M47 | Scripting Runtime | ECS-native scripting: 136 event types, condition evaluation, perk entry points. Papyrus transpiler (M30 AST → ECS components). | M30.2, M43 |
-| M48 | UI Integration | Scaleform GFx stubs (`_global.gfx`), Papyrus↔UI bridge, input routing, font loading, all 34 menus. | M20, M47 |
+
+### Tier 3 — Scripting Runtime (unblocks 1257 FO3 SCPT records)
+
+Hooks-first so terminals, doors, traps, lights, and activator callbacks
+work before we try to boot the full Papyrus surface.
+
+| # | Milestone | Scope | Depends on |
+|---|-----------|-------|------------|
+| M47.0 | Event hooks runtime | Bytecode-less ECS event handlers that respond to the canonical `OnActivate` / `OnHit` / `OnTriggerEnter` / `OnCellLoad` / `OnEquip` set. Reads the SCPT source text (M30 parser) when present and compiles to ECS systems at cell load; opaque SCDA bytecode is ignored. Terminals, doors, traps, lights in vanilla FO3 / FNV use this subset heavily. | M30, #443 |
+| M47.1 | Condition eval | The ~300 condition function vocabulary (GetIsID, GetCurrentTime, GetQuestStage, GetFactionRank, …) evaluated against ECS state. Shared evaluator used by AI packages, perks, dialogue triggers, terminal branches. | M47.0 |
+| M47.2 | Full scripting runtime | Papyrus transpiler (M30 AST → ECS components + systems), ESM-native 136-event dispatch, perk entry-point composition. Closes the loop for Skyrim+ Papyrus content. | M30.2, M47.1, M43 |
+
+### Tier 4 — Audio & Save/Load (unblocks "it feels like a game")
+
+| # | Milestone | Scope | Depends on |
+|---|-----------|-------|------------|
+| M44 | Audio | 3D spatial audio via `rodio` or `kira`. Footsteps from FOOT/IMPD records. Ambient soundscapes from REGN. Music from MUSC (Skyrim+) / hardcoded tracks (FO3/FNV). Basic crossfade + occlusion via a raycast. No 5.1, no reverb zones initially. | — |
+| M45 | Save/Load | Serialize world state (ECS components relevant to game-state + change forms). Simple serde-based snapshot format for v1 — full cosave compatibility is follow-up. Unblocks playtest iteration. | M40 (world streaming dictates what needs to serialize) |
+
+### Tier 5 — Renderer Polish (quality, not capability)
+
+Each of these buys 10–30% visual quality but no new feature. Keep
+active for incremental wins; don't let them block Tier 1–4.
+
+| # | Milestone | Scope | Depends on |
+|---|-----------|-------|------------|
+| M35 | Terrain LOD | Parse `.btr` terrain LOD meshes + `.bto` object LOD. Distance-based LOD selection. Gameplay-relevant half of this is world streaming (M40); pure LOD is quality. | M32 |
+| M37 | SVGF Spatial Filter | A-trous wavelet filter using existing moments data. 3 iterations, edge-stopping on normal/depth/variance. 1-SPP → ~8-SPP visual quality on GI. | — |
+| M37.3 | ReSTIR-DI | Full spatiotemporal reservoir reuse. Drops shadow rays to 1/pixel while sampling hundreds of lights. Streaming-RIS already shipped as M31.5. | M31.5, M37 |
+| M38 | Transparency & Water | OIT or depth-peeled transparency. Water plane mesh with reflection/refraction. NIF alpha sort correctness. | — |
+| M39 | Texture Streaming | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Memory budget with LRU eviction. | — |
+
+### Tier 6 — Engine Infrastructure (enablers for later tiers)
+
+| # | Milestone | Scope | Depends on |
+|---|-----------|-------|------------|
+| M27 | Parallel System Dispatch | Rayon-based parallel ECS system execution. Type-sorted lock acquisition already in place. Mostly a pure optimisation — bumps frame budget for Tier 2–4 work. | — |
+| M28.5 | Character Controller | Kinematic capsule with step-up, slope limiting, ground snapping. Replaces the dynamic-body fly camera for on-foot movement. | M28, M32 |
+| M24.2 | ESM Phase 2 | QUST / DIAL / INFO / PERK / MGEF / SPEL / ENCH / AVIF semantic parsing. Quest stages, dialogue trees, perk entry points, magic effects. | M24 |
+| M30.2 | Papyrus Phase 2–4 | Statement parser, script declarations, FO4 extensions. Full `.psc` → AST for the entire Skyrim / FO4 corpus. | M30 |
+| M46.0 | Multi-plugin CLI | Thread `parse_esm_with_load_order` (#445, landed) through `--esm` so the CLI can accept a load order. FormID remap is done; the CLI surface is the missing piece. | #445 (done) |
+
+### Tier 7 — Deep Gameplay Systems (deferred until Tier 1–4 proves out)
+
+| # | Milestone | Scope | Depends on |
+|---|-----------|-------|------------|
+| M42 | AI Packages | 30 composable procedures, package stack, Sandbox. Patrol paths from NAVM. Basic wander/follow/travel. PACK records need parsing first (#446 open). | M28.5, M41, #446 |
+| M43 | Quests & Dialogue | Quest stages, condition eval (~300 functions via M47.1), dialogue trees, Story Manager event triggers. Biggest single surface in the engine; ~50% of M24.2 Phase 2 feeds this. | M24.2, M41, M47.1 |
+| M46 | Full Plugin Loading | Discover, sort, merge, resolve conflicts across the full load order. Builds on M46.0 (CLI wiring) + the existing `plugin/resolver.rs` DAG. | M24.2, M46.0 |
+| M48 | UI Integration | Scaleform GFx stubs (`_global.gfx`), Papyrus ↔ UI bridge, input routing, font loading, all 34 menus. Needs the scripting runtime (M47.2) to plumb menu callbacks. | M20, M47.2 |
+
+### Parking lot (nice-to-have, no active work)
+
+| # | Notes |
+|---|---|
+| M37.6 | DLSS2 integration. Proprietary, 4070 Ti target. Post-M37 TAA is already solid; DLSS is a later polish pass if it ever becomes relevant. |
+| M25 | Vulkan Compute — partially realised (clustered lighting / SSAO / SVGF temporal already compute-backed). Remaining work folds into M29 (skinning) and M37 (spatial filter) as they need it. |
+| Full cosave save/load | M45 v1 ships a simple snapshot. Byte-compatible cosave format (to load an original-engine save into Redux, or vice versa) is speculative and not a priority. |
 
 ---
 
 ## Known Issues
 
-### Open
+### Open — Tier 1 / 2 blockers
+
 - [ ] No sky, sun, clouds, or atmosphere — exterior uses hardcoded clear color (M33)
+- [ ] No landscape terrain mesh on exterior cells (M32)
+- [ ] No skinned mesh rendering — every NPC / creature is stuck in bind pose (M29)
+- [ ] NPCs + creatures don't spawn as ECS entities even when parsed (M41 / M41.0)
+- [ ] No world streaming — entire cell re-imported from scratch on every load (M40)
+- [ ] BSA v103 (Oblivion) decompression not working — blocks Oblivion cell loader parity (M32.5)
+- [ ] Skyrim + FO4 cells not wired through `cell_loader` yet (M32.5)
+
+### Open — Tier 3 / 4 gaps
+
+- [ ] 1257 FO3 SCPT records parsed; no runtime executes them (M47.0 event hooks)
+- [ ] No audio subsystem of any kind (M44)
+- [ ] No save/load — playtest iterations require cold cell re-load (M45)
+- [ ] `PACK` (AI packages) records skip the catch-all — no PACK parser, no evaluator (#446, M42)
+
+### Open — polish / enablers
+
 - [ ] No terrain or object LOD — no distant rendering (M35)
-- [ ] BSA v103 (Oblivion) decompression not working
-- [ ] Legacy ESM/ESP parsers are stubs for Morrowind, Oblivion, Skyrim (FO4 has SCOL/MOVS/PKIN/TXST + architecture)
-- [ ] NIF material properties beyond diffuse/normal/alpha not fully wired (M38 wetness/subsurface)
-- [ ] No skinned mesh rendering (GPU skinning deferred to M29)
+- [ ] NIF material properties beyond diffuse/normal/alpha not fully wired (M38 wetness/subsurface/transparency)
 - [ ] Scheduler is single-threaded (M27)
 - [ ] parry3d panics on nested compound collision shapes (catch_unwind guard in place)
+- [ ] `--esm` accepts only one plugin; `parse_esm_with_load_order` is wired but CLI isn't (M46.0)
+- [ ] Megaton FPS claim / Prospector Saloon FPS claim pre-M31; fresh `--bench-frames` pending (#456)
 
 ### Resolved
 - [x] Pipeline cache bypassed on some create sites (cold shader compile on every run) → VkPipelineCache threaded through every create site with disk persistence (#426)
