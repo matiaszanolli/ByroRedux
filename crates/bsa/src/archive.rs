@@ -86,14 +86,24 @@ fn genhash_file(name: &str) -> u64 {
     let hash_low = (hash as u32) ^ ext_xor;
 
     // Rolling hash over the whole extension (including the leading dot)
-    // folds into the high word on top of the stem's contribution.
-    let mut hash_high = (hash >> 32) as u32;
+    // is computed INDEPENDENTLY from zero, then added into the stem's
+    // high word. Pre-#449 this path folded the ext bytes on top of the
+    // stem_high via sequential multiplication (`hash_high * 0x1003f + c`
+    // starting from `stem_high`), which produces the wrong high word for
+    // every file with stem length > 3. Low word matches either way so
+    // HashMap lookup (path-keyed) worked, but the #361 debug-assertion
+    // validation emitted 119k warnings per FO3 archive open.
+    //
+    // Verified against BSArchPro / libbsarch reference and a real FNV
+    // stored hash: `meshes\armor\raiderarmor01\f\glover.nif` stores
+    // `0xc86aec30_6706e572`; `rolling("lov") + rolling(".nif")` =
+    // `0x359da633 + 0x92cd45fd` = `0xc86aec30` matches.
+    let mut hash_ext = 0u32;
     for &c in ext_bytes {
-        hash_high = hash_high.wrapping_mul(0x1003f).wrapping_add(c as u32);
+        hash_ext = hash_ext.wrapping_mul(0x1003f).wrapping_add(c as u32);
     }
+    let hash_high = ((hash >> 32) as u32).wrapping_add(hash_ext);
 
-    // Preserve the low-word XOR by folding back in; this matches
-    // BSArch's final combine step for filenames.
     hash = ((hash_high as u64) << 32) | (hash_low as u64);
     hash
 }
@@ -541,6 +551,36 @@ mod tests {
     fn genhash_file_handles_no_extension() {
         // A name without `.` shouldn't panic. Falls back to empty ext.
         let _ = genhash_file("noextension");
+    }
+
+    /// Regression: #449 — `genhash_file` must produce the same hash the
+    /// authoring tools wrote into real archives. Pinned against a known
+    /// stored hash from vanilla FNV `Fallout - Meshes.bsa`:
+    ///
+    /// - path: `meshes\armor\raiderarmor01\f\glover.nif`
+    /// - stored hash: `0xc86aec30_6706e572` (verified via hex dump)
+    ///
+    /// Pre-#449 the high word was computed by folding the extension
+    /// rolling hash on top of `stem_high` sequentially (`stem_high *
+    /// 0x1003f + c`), giving `0xd91bd930` — incorrect. The spec-
+    /// compliant formula computes the extension hash from zero and
+    /// adds it to `stem_high`: `0x359da633 + 0x92cd45fd = 0xc86aec30`.
+    ///
+    /// The low word (`0x6706e572`) is unaffected by the bug — it was
+    /// correct before too, which is why HashMap path lookups worked
+    /// even while 119k validation warnings fired per FO3 archive open.
+    #[test]
+    fn genhash_file_matches_stored_fnv_meshes_bsa_entry() {
+        // `glover.nif` is the filename component; the folder is hashed
+        // separately by genhash_folder. genhash_file takes only the
+        // filename.
+        let computed = genhash_file("glover.nif");
+        assert_eq!(
+            computed, 0xc86aec30_6706e572,
+            "glover.nif must match FNV Meshes.bsa stored hash (low=0x{:08x} high=0x{:08x})",
+            computed as u32,
+            (computed >> 32) as u32,
+        );
     }
 
     #[test]
