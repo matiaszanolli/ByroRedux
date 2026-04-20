@@ -165,6 +165,64 @@ ESM coverage, and NIF shader plumbing completeness. Major themes:
 Workspace test count: 770+ → 867. Net source growth: ~75K → ~81K lines of
 Rust across 188 source files.
 
+**Session 13 closeout (audit follow-through, ~25 issues closed):** the
+2026-04 FO3 / FNV / ECS audit sweep landed at
+`docs/audits/AUDIT_FO3_2026-04-19.md`, `AUDIT_FNV_2026-04-20.md`, and
+`AUDIT_ECS_2026-04-19.md`. Publish-then-fix cycle drove this batch.
+
+- **NIF parser correctness** — dedicated parsers for `WaterShaderProperty`,
+  `TallGrassShaderProperty`, and `bhkSimpleShapePhantom` (`#474`,
+  ended their 24-byte over-read / 8-byte trailer drop), a positive XYZ
+  rotation regression test for `NiTransformData` (`#436`'s premise was
+  stale; safety net added), boundary tests pinning `num_decals` at
+  `texture_count == 8/9/6/7` (`#484` — locks the `#400`/`#429` fix
+  against future rewrites), `MaterialInfo.diffuse_color` cached so
+  `extract_vertex_colors` stops re-walking the property list (`#438` —
+  3× scan → 1× per `NiTriShape`).
+- **BSA correctness** — `genhash_file` high-word now matches BSArch
+  reference (`#449` — `rolling(ext)` from 0 then `wrapping_add` to
+  `stem_high`, was sequential fold). Verified against the real FNV
+  `glover.nif` stored hash; ~125k validation warnings per archive open
+  silenced.
+- **ESM coverage** — `PACK` / `QUST` / `DIAL` / `MESG` / `PERK` / `SPEL` /
+  `MGEF` stub records (`#446`, `#447`) following the `#458` pattern
+  (EDID + FULL + key scalars/refs, no deep decoding). Every dangling
+  PKID / SCRI / QSTI / spell-effect ref now resolves. Live FNV vanilla:
+  PACK=4163, QUST=436, DIAL=18215, MESG=1144, PERK=176, SPEL=270,
+  MGEF=289 (total 13684 → 62219). FO3: 20334 → 31101. `CLMT` `WLST`
+  `chance` retyped `i32`, consumer filters negatives (`#476`).
+- **ECS** — `try_resource_2_mut<A, B>` with TypeId-sorted acquisition
+  preserved (`#465` — sibling of `try_resource_mut`). Transform
+  propagation buffer flipped from `Vec` (LIFO/DFS) to `VecDeque`
+  (FIFO/BFS) so the variable name and "BFS" doc comments are now
+  accurate (`#464`).
+- **Test infrastructure** — `parse_real_nifs.rs` `MIN_SUCCESS_RATE`
+  raised 0.95 → 1.0 (`#487` — single-NIF vanilla regressions now fail
+  CI loud); `nif_stats` exit code matches with `NIF_STATS_MIN_SUCCESS_RATE`
+  env var override for modded content. New
+  `crates/plugin/tests/parse_real_esm.rs` integration test pins FNV
+  total ≥ 60,000 + per-category floors for the 7 new types (`#488`).
+- **Performance baselines** — Prospector Saloon re-benched headless via
+  the existing `--bench-frames` flag at commit `bee6d48`: **avg 251.6
+  FPS / 3.97 ms** on RTX 4070 Ti, 1200 entities, 777 meshes, 208 textures,
+  773 draws (vs the stale ROADMAP claims of 48 / 85 FPS + 809 entities
+  / 199 textures). M31.5 RIS + M36 BLAS compaction + M37 SVGF + M37.5
+  TAA collectively cut frametime ~5× while post-M18 record expansion
+  added ~48% more entity coverage (`#489`).
+- **Issues closed as stale** (no code change): `#411` (FO4 BGSM scope
+  too large — split into `#490`–`#494`), `#436` (XYZ premise wrong —
+  added test), `#437` (GameVariant enum already exists as `NifVariant`
+  — raw bsver checks are deliberate per `#160`/`#323`), `#473` (caustic
+  doesn't enter TAA AABB — separate-image audit misread), `#480`
+  (truncated comment was a hard wrap; auditor only read one line).
+- **Stale doc fix** — `composite::rebind_hdr_views` no longer claims
+  TAA "isn't wired up" (`#472`); TAA shipped in M37.5 and is invoked
+  from both init + resize.
+
+Workspace test count: 867 → **924**. niftools/nifxml cloned to
+`/mnt/data/src/reference/nifxml/nif.xml` for authoritative format
+verification (memorialised in the auto-memory).
+
 ---
 
 ## Completed Milestones
