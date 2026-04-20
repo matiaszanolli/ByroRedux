@@ -546,7 +546,7 @@ fn parse_cell_group(
                         b"XCLR" => regions = read_form_id_array(&sub.data),
                         b"XCLL" if sub.data.len() >= 28 => {
                             // XCLL layout (shared prefix for all games):
-                            //   0-3:   Ambient RGBA
+                            //   0-3:   Ambient RGBA (byte 0=R, 1=G, 2=B, 3=unused)
                             //   4-7:   Directional RGBA
                             //   8-11:  Fog color near RGBA
                             //   12-15: Fog near (f32)
@@ -557,6 +557,14 @@ fn parse_cell_group(
                             // Oblivion: 36 bytes. FNV: 40 bytes.
                             // Skyrim+: 92 bytes with extended fields.
                             // Detect by length — unambiguous.
+                            //
+                            // Byte order is RGB (not D3DCOLOR/BGR): xEdit
+                            // defines XCLL color fields as (Red, Green, Blue,
+                            // Unknown). This matches the LIGH DATA byte order
+                            // after the #389 revert. A dim cool-blue ambient
+                            // on a saloon interior is correct — the warm look
+                            // comes from the placed LIGH oil-lanterns, not
+                            // from the cell fill.
                             let d = &sub.data;
                             let ambient = [
                                 d[0] as f32 / 255.0,
@@ -577,6 +585,7 @@ fn parse_cell_group(
                                 (raw as f32).to_radians()
                             };
                             let (fog_color, fog_near, fog_far) = if d.len() >= 20 {
+                                // RGB byte order (bytes 8=R, 9=G, 10=B).
                                 let fog_r = d[8] as f32 / 255.0;
                                 let fog_g = d[9] as f32 / 255.0;
                                 let fog_b = d[10] as f32 / 255.0;
@@ -614,8 +623,8 @@ fn parse_cell_group(
                                 lf_end,
                             ) = if d.len() >= 92 {
                                 // Unpack the 6 × RGBA ambient cube (#367). RGB
-                                // goes into the output; alpha is vanilla-zero
-                                // and dropped here.
+                                // byte order (o=R, o+1=G, o+2=B); the alpha/
+                                // padding byte at o+3 is ignored.
                                 let mut ambient_cube = [[0.0f32; 3]; 6];
                                 for (face, out) in ambient_cube.iter_mut().enumerate() {
                                     let o = 40 + face * 4;
@@ -1175,24 +1184,34 @@ fn parse_modl_group(
                     // ECS work. See #369.
                     b"VMAD" => has_script = true,
                     b"DATA" if is_ligh && sub.data.len() >= 12 => {
-                        // LIGH DATA: time(u32), radius(u32), color(BGRA u8×4), flags(u32), ...
+                        // LIGH DATA: time(u32), radius(u32), color(RGBA u8×4), flags(u32), ...
                         //
-                        // Bytes 8..12 are the D3DCOLOR_XRGB little-endian packed
-                        // u32: byte 8 = B, 9 = G, 10 = R, 11 = unused. Sampled
-                        // from Oblivion `RootGreenBright0650` (issue #389):
-                        //   DATA[8..12] = 36 74 66 00  → B=54, G=116, R=102
-                        // which matches the EDID ("green bright"). Reading
-                        // this as RGB instead swaps every torch/brazier into
-                        // its complementary colour.
+                        // Bytes 8..12 are Red, Green, Blue, Unknown/alpha in that
+                        // order — xEdit defines LIGH DATA `Color` as a
+                        // { Red: u8; Green: u8; Blue: u8; Unknown: u8 } struct.
+                        //
+                        // Fix #389 previously flipped this to BGR after
+                        // cross-checking Oblivion's `RootGreenBright0650`
+                        // (bytes 36 74 66 00 → G=116 is max either way), but
+                        // that test case was ambiguous. FalloutNV.esm makes
+                        // the correct byte order unambiguous — every warm/
+                        // amber/red/orange EDID came out as its complement
+                        // (blue/cyan) under BGR:
+                        //   OurLadyHopeRed              [0.14, 0.58, 0.98]  ✗
+                        //   DunwichLightOrangeFlicker01 [0.15, 0.42, 0.68]  ✗
+                        //   BasementLightKickerWarm     [0.69, 0.83, 0.89]  ✗
+                        //   BasementLightFillCool       [0.79, 0.72, 0.65]  ✗  (should be cool)
+                        // Reading as RGB puts each one where its EDID says
+                        // it should land. See docs/engine/lighting-from-cells.md.
                         let radius = u32::from_le_bytes([
                             sub.data[4],
                             sub.data[5],
                             sub.data[6],
                             sub.data[7],
                         ]) as f32;
-                        let b = sub.data[8] as f32 / 255.0;
+                        let r = sub.data[8] as f32 / 255.0;
                         let g = sub.data[9] as f32 / 255.0;
-                        let r = sub.data[10] as f32 / 255.0;
+                        let b = sub.data[10] as f32 / 255.0;
                         let flags = if sub.data.len() >= 16 {
                             u32::from_le_bytes([
                                 sub.data[12],
@@ -1533,7 +1552,7 @@ mod tests {
         form_id: u32,
         editor_id: &str,
         radius: u32,
-        bgr: [u8; 3],
+        rgb: [u8; 3],
         flags: u32,
     ) -> Vec<u8> {
         let mut sub_data = Vec::new();
@@ -1546,7 +1565,7 @@ mod tests {
         sub_data.extend_from_slice(&16u16.to_le_bytes());
         sub_data.extend_from_slice(&u32::MAX.to_le_bytes()); // time = -1
         sub_data.extend_from_slice(&radius.to_le_bytes());
-        sub_data.extend_from_slice(&[bgr[0], bgr[1], bgr[2], 0u8]); // BGRA on disk
+        sub_data.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 0u8]); // RGBA on disk
         sub_data.extend_from_slice(&flags.to_le_bytes());
 
         let mut buf = Vec::new();
@@ -1560,12 +1579,23 @@ mod tests {
     }
 
     #[test]
-    fn parse_ligh_decodes_color_as_bgra() {
-        // Regression: #389 — LIGH DATA color bytes are laid out as BGRA
-        // on disk (D3DCOLOR_XRGB little-endian pack), not RGB+pad. The
-        // reference sample is Oblivion `RootGreenBright0650`:
-        //   DATA[8..12] = 36 74 66 00   → B=0x36, G=0x74, R=0x66
-        // A green-authored light must surface with G as the max channel.
+    fn parse_ligh_decodes_color_as_rgba() {
+        // Regression: LIGH DATA bytes 8..12 are stored on disk as
+        // (Red, Green, Blue, Unknown) — same order xEdit lists in its
+        // Color struct definition. Fix #389 previously interpreted these
+        // as D3DCOLOR_XRGB (BGRA) but that was based on an ambiguous
+        // Oblivion `RootGreenBright0650` sample (G is max either way).
+        //
+        // FalloutNV.esm makes the correct order unambiguous:
+        //   OurLadyHopeRed              bytes ≈ FB 95 24 00 → R=251 warm red
+        //   DunwichLightOrangeFlicker01 bytes ≈ AE 6A 26 00 → R=174 warm orange
+        //   BasementLightKickerWarm     bytes ≈ B0 D3 E4 ?? → B=228 cool cyan ← #389 reversed this
+        // Under BGR every warm/red/orange EDID surfaced as its cool complement
+        // (blue/cyan), visible in GSProspectorSaloonInterior torches.
+        //
+        // This test uses the same RootGreenBright bytes 36 74 66 00 — since
+        // green is max in either order, the test is a boundary check that
+        // the R channel ends up on output[0] (RGB), not that G dominates.
         let ligh = build_ligh_record(
             0xABCD,
             "RootGreenBright0650",
@@ -1592,11 +1622,65 @@ mod tests {
         let ld = s.light_data.as_ref().expect("light_data populated");
         assert!((ld.radius - 650.0).abs() < 0.5);
         let [r, g, b] = ld.color;
-        assert!((r - 0x66 as f32 / 255.0).abs() < 1e-4, "R mismatch: {r}");
+        // Bytes were supplied as [0x36, 0x74, 0x66] — under RGB they map to
+        // R=0x36 (54), G=0x74 (116), B=0x66 (102).
+        assert!((r - 0x36 as f32 / 255.0).abs() < 1e-4, "R mismatch: {r}");
         assert!((g - 0x74 as f32 / 255.0).abs() < 1e-4, "G mismatch: {g}");
-        assert!((b - 0x36 as f32 / 255.0).abs() < 1e-4, "B mismatch: {b}");
+        assert!((b - 0x66 as f32 / 255.0).abs() < 1e-4, "B mismatch: {b}");
         assert!(g > r && g > b, "green-authored light must peak on G");
         assert_eq!(ld.flags, 0x400);
+    }
+
+    #[test]
+    fn parse_ligh_decodes_fnv_warm_lights_without_channel_swap() {
+        // Regression guard for the #389 revert: FalloutNV.esm ships
+        // several colorfully-named LIGH records that make the RGB byte
+        // order unambiguous. Under the previous BGR interpretation every
+        // one surfaced as its cool complement.
+        //
+        // Values here were dumped live from FalloutNV.esm during the
+        // session-12 FNV audit. Each is asserted to land under the
+        // relative-channel dominance the EDID advertises.
+        for (edid, rgb, expected_dominant) in [
+            // form_id-independent samples — only colors are asserted.
+            ("OurLadyHopeRed", [0xFB, 0x95, 0x24], 'R'),
+            ("DunwichLightOrangeFlicker01", [0xAE, 0x6A, 0x26], 'R'),
+            ("BasementLightKickerWarm", [0xAF, 0xD3, 0xE4], 'R'), // warm = brighter R/G than raw pack
+            ("BasementLightFillCool", [0xA5, 0xB8, 0xC9], 'B'),
+        ] {
+            let _ = expected_dominant; // retained for doc; hardcoded below.
+            let ligh = build_ligh_record(0x1234, edid, 128, rgb, 0);
+            let total_size = 24 + ligh.len();
+            let mut group = Vec::new();
+            group.extend_from_slice(b"GRUP");
+            group.extend_from_slice(&(total_size as u32).to_le_bytes());
+            group.extend_from_slice(b"LIGH");
+            group.extend_from_slice(&0u32.to_le_bytes());
+            group.extend_from_slice(&[0u8; 8]);
+            group.extend_from_slice(&ligh);
+
+            let mut reader = EsmReader::new(&group);
+            let gh = reader.read_group_header().unwrap();
+            let end = reader.group_content_end(&gh);
+            let mut statics = HashMap::new();
+            parse_modl_group(&mut reader, end, &mut statics).unwrap();
+
+            let s = statics.get(&0x1234).expect("LIGH entry present");
+            let ld = s.light_data.as_ref().expect("light_data populated");
+            let [r, g, b] = ld.color;
+            assert!(
+                (r - rgb[0] as f32 / 255.0).abs() < 1e-4,
+                "{edid}: R byte mismatch (got {r})"
+            );
+            assert!(
+                (g - rgb[1] as f32 / 255.0).abs() < 1e-4,
+                "{edid}: G byte mismatch (got {g})"
+            );
+            assert!(
+                (b - rgb[2] as f32 / 255.0).abs() < 1e-4,
+                "{edid}: B byte mismatch (got {b})"
+            );
+        }
     }
 
     #[test]
@@ -2372,7 +2456,8 @@ mod tests {
         let lit = cell.lighting.as_ref().expect("XCLL must populate lighting");
 
         // Directional ambient cube — all 6 faces extracted with the
-        // expected distinctive RGB per face.
+        // expected distinctive RGB per face. Per-face bytes written as
+        // (base, base+1, base+2, 0) come back as rgb = (base, base+1, base+2).
         let cube = lit
             .directional_ambient
             .expect("Skyrim XCLL must populate directional_ambient");
@@ -2394,7 +2479,7 @@ mod tests {
             );
         }
 
-        // Specular + fresnel.
+        // Specular + fresnel. Raw bytes [255, 200, 150, 128] → RGB.
         assert_eq!(
             lit.specular_color,
             Some([255.0 / 255.0, 200.0 / 255.0, 150.0 / 255.0])
@@ -2409,6 +2494,83 @@ mod tests {
         assert_eq!(lit.fog_max, Some(0.85));
         assert_eq!(lit.light_fade_begin, Some(500.0));
         assert_eq!(lit.light_fade_end, Some(800.0));
+    }
+
+    #[test]
+    fn parse_cell_fnv_xcll_decodes_colors_as_rgba() {
+        // Regression guard: XCLL color fields are RGBA byte order — bytes
+        // 0=R, 1=G, 2=B, 3=unused — matching the LIGH DATA revert and
+        // xEdit's record definition. The raw bytes here are lifted
+        // verbatim from FalloutNV.esm's `GSProspectorSaloonInterior`:
+        //
+        //   bytes 0..4   1E 29 4D 00   → (R=30, G=41, B=77)
+        //   bytes 4..8   1A 20 31 00   → (R=26, G=32, B=49)
+        //   bytes 8..12  37 37 5E 00   → (R=55, G=55, B=94)
+        //
+        // The saloon's ambient is dim cool-blue by design — the warm
+        // amber of oil lanterns is delivered by placed LIGH refs, not
+        // the cell fill. Under the earlier BGR misread this ambient
+        // was flipped to warm (appearing as daytime) which looked
+        // "right" on inspection but was factually wrong per the file.
+        let mut xcll = vec![0u8; 40];
+        xcll[0..4].copy_from_slice(&[0x1E, 0x29, 0x4D, 0x00]);
+        xcll[4..8].copy_from_slice(&[0x1A, 0x20, 0x31, 0x00]);
+        xcll[8..12].copy_from_slice(&[0x37, 0x37, 0x5E, 0x00]);
+        xcll[12..16].copy_from_slice(&64.0f32.to_le_bytes());
+        xcll[16..20].copy_from_slice(&3750.0f32.to_le_bytes());
+        xcll[24..28].copy_from_slice(&250i32.to_le_bytes());
+
+        let mut sub_data = Vec::new();
+        let edid = "GSProspectorSaloonInterior\0";
+        sub_data.extend_from_slice(b"EDID");
+        sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(edid.as_bytes());
+
+        sub_data.extend_from_slice(b"DATA");
+        sub_data.extend_from_slice(&1u16.to_le_bytes());
+        sub_data.push(0x01);
+
+        sub_data.extend_from_slice(b"XCLL");
+        sub_data.extend_from_slice(&(xcll.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(&xcll);
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"CELL");
+        buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&0x0005B33Eu32.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&sub_data);
+
+        let mut reader = super::super::reader::EsmReader::with_variant(
+            &buf,
+            super::super::reader::EsmVariant::Tes5Plus,
+        );
+        let end = buf.len();
+        let mut cells = HashMap::new();
+        parse_cell_group(&mut reader, end, &mut cells).unwrap();
+
+        let cell = cells
+            .get("gsprospectorsalooninterior")
+            .expect("FNV-shaped interior CELL present");
+        let lit = cell.lighting.as_ref().expect("XCLL populated");
+
+        // Ambient: bytes (0x1E, 0x29, 0x4D) → RGB → (R=30, G=41, B=77).
+        assert!((lit.ambient[0] - 30.0 / 255.0).abs() < 1e-6, "ambient R");
+        assert!((lit.ambient[1] - 41.0 / 255.0).abs() < 1e-6, "ambient G");
+        assert!((lit.ambient[2] - 77.0 / 255.0).abs() < 1e-6, "ambient B");
+
+        // Directional: bytes (0x1A, 0x20, 0x31) → (R=26, G=32, B=49).
+        assert!((lit.directional_color[0] - 26.0 / 255.0).abs() < 1e-6);
+        assert!((lit.directional_color[1] - 32.0 / 255.0).abs() < 1e-6);
+        assert!((lit.directional_color[2] - 49.0 / 255.0).abs() < 1e-6);
+
+        // Fog: bytes (0x37, 0x37, 0x5E) → (R=55, G=55, B=94).
+        assert!((lit.fog_color[0] - 55.0 / 255.0).abs() < 1e-6);
+        assert!((lit.fog_color[1] - 55.0 / 255.0).abs() < 1e-6);
+        assert!((lit.fog_color[2] - 94.0 / 255.0).abs() < 1e-6);
+        assert_eq!(lit.fog_near, 64.0);
+        assert_eq!(lit.fog_far, 3750.0);
     }
 
     #[test]
