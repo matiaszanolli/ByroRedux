@@ -348,13 +348,22 @@ pub struct ImportedBone {
 /// Skinning data attached to an `ImportedMesh`. Up to 4 bone influences
 /// per vertex (the hardware-standard palette).
 ///
-/// For legacy NiTriShape meshes, per-vertex weights are computed from
-/// `NiSkinData`'s sparse per-bone weight lists by keeping the 4 highest
-/// weights per vertex and re-normalizing to sum to 1. For modern
-/// BSTriShape meshes the weights live inside the packed vertex buffer
-/// (VF_SKINNED) — currently not extracted, so those fields will be
-/// empty and the consumer should fall back to the BSTriShape vertex
-/// buffer directly. See follow-up issue.
+/// Two extraction paths keep `vertex_bone_indices` /
+/// `vertex_bone_weights` populated in parallel with
+/// `ImportedMesh::positions`:
+///
+///   - **Legacy NiTriShape** — sparse per-bone weights from
+///     `NiSkinData` are densified by keeping the 4 highest-weight
+///     bones per vertex and re-normalising to sum to 1. See
+///     `densify_sparse_weights` in `mesh.rs`.
+///   - **Modern BSTriShape** — the packed vertex buffer's VF_SKINNED
+///     bit-range decodes bone indices + weights at parse time (#177).
+///     The importer clones them directly into this struct.
+///
+/// When either path cannot populate weights (e.g. a legacy shape with
+/// no NiSkinData backing, or a BsTriShape whose `vertex_desc` lacks
+/// VF_SKINNED), the two vecs are empty and the consumer must fall
+/// back to rigid transform propagation.
 #[derive(Debug, Clone, Default)]
 pub struct ImportedSkin {
     /// Bones this mesh binds to, in the order the interpolator refers
