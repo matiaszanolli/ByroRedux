@@ -190,6 +190,14 @@ pub(super) struct MaterialInfo {
     pub emissive_mult: f32,
     pub specular_color: [f32; 3],
     pub specular_strength: f32,
+    /// Diffuse color from `NiMaterialProperty` (or `[1.0; 3]` default).
+    ///
+    /// Used as the per-vertex color fallback when
+    /// `vertex_color_mode == Ignore` or the mesh has no vertex_colors
+    /// array. Pre-#438 `extract_vertex_colors` walked the property list
+    /// a second time to re-read this value; caching here removes one
+    /// full scan per NiTriShape.
+    pub diffuse_color: [f32; 3],
     /// True when the mesh has no `NiSpecularProperty` or the property's
     /// enable flag (bit 0) is set. Many Oblivion/FNV matte surfaces
     /// (stone walls, plaster, unfinished wood) explicitly disable
@@ -366,6 +374,7 @@ impl Default for MaterialInfo {
             emissive_mult: 0.0,
             specular_color: [1.0, 1.0, 1.0],
             specular_strength: 1.0,
+            diffuse_color: [1.0, 1.0, 1.0],
             specular_enabled: true,
             glossiness: 80.0,
             uv_offset: [0.0, 0.0],
@@ -433,21 +442,23 @@ fn capture_effect_shader_data(shader: &BSEffectShaderProperty) -> BsEffectShader
 
 /// Extract vertex colors using a pre-computed `MaterialInfo`.
 ///
-/// Avoids the double `extract_material_info` that previously occurred when
-/// `extract_material` called `find_texture_path` (which internally called
-/// `extract_material_info`) followed by a second direct call. #279 D5-10.
+/// Reads `mat.vertex_color_mode` and `mat.diffuse_color` directly instead
+/// of re-walking the property list. Pre-#438 this function ignored its
+/// `_mat` parameter and re-scanned the shape + inherited properties twice
+/// (once for vertex-color mode, once for diffuse fallback), costing 3×
+/// the property-list work per NiTriShape on top of the initial
+/// `extract_material_info` scan at the caller.
 pub(super) fn extract_vertex_colors(
-    scene: &NifScene,
-    shape: &NiTriShape,
+    _scene: &NifScene,
+    _shape: &NiTriShape,
     data: &GeomData,
-    inherited_props: &[BlockRef],
-    _mat: &MaterialInfo,
+    _inherited_props: &[BlockRef],
+    mat: &MaterialInfo,
 ) -> Vec<[f32; 3]> {
     let num_verts = data.vertices.len();
 
-    let vertex_mode = vertex_color_mode_for(scene, shape, inherited_props);
     let use_vertex_colors =
-        !data.vertex_colors.is_empty() && vertex_mode == VertexColorMode::AmbientDiffuse;
+        !data.vertex_colors.is_empty() && mat.vertex_color_mode == VertexColorMode::AmbientDiffuse;
 
     if use_vertex_colors {
         return data
@@ -457,38 +468,7 @@ pub(super) fn extract_vertex_colors(
             .collect();
     }
 
-    // Fall back to NiMaterialProperty diffuse or white.
-    let mut diffuse = [1.0f32; 3];
-    for prop_ref in shape.av.properties.iter().chain(inherited_props.iter()) {
-        if let Some(idx) = prop_ref.index() {
-            if let Some(mat) = scene.get_as::<NiMaterialProperty>(idx) {
-                diffuse = [mat.diffuse.r, mat.diffuse.g, mat.diffuse.b];
-                break;
-            }
-        }
-    }
-    vec![diffuse; num_verts]
-}
-
-/// Look up `NiVertexColorProperty` on the shape and return the decoded
-/// vertex-color source mode. Absent property → `AmbientDiffuse` (the
-/// Gamebryo default). Helper for `extract_material` and the unit tests
-/// below.
-fn vertex_color_mode_for(
-    scene: &NifScene,
-    shape: &NiTriShape,
-    inherited_props: &[BlockRef],
-) -> VertexColorMode {
-    // Shape-level properties take priority over inherited.
-    for prop_ref in shape.av.properties.iter().chain(inherited_props.iter()) {
-        let Some(idx) = prop_ref.index() else {
-            continue;
-        };
-        if let Some(vcol) = scene.get_as::<NiVertexColorProperty>(idx) {
-            return VertexColorMode::from_source_mode(vcol.vertex_mode);
-        }
-    }
-    VertexColorMode::AmbientDiffuse
+    vec![mat.diffuse_color; num_verts]
 }
 
 /// Extract all material properties from a NiTriShape in a single pass.
@@ -672,6 +652,7 @@ pub(super) fn extract_material_info(
         // NiMaterialProperty — capture specular/emissive/shininess/alpha.
         if !info.has_material_data {
             if let Some(mat) = scene.get_as::<NiMaterialProperty>(idx) {
+                info.diffuse_color = [mat.diffuse.r, mat.diffuse.g, mat.diffuse.b];
                 info.specular_color = [mat.specular.r, mat.specular.g, mat.specular.b];
                 info.emissive_color = [mat.emissive.r, mat.emissive.g, mat.emissive.b];
                 info.glossiness = mat.shininess;
@@ -1609,6 +1590,16 @@ mod secondary_slot_tests {
         assert!(info.detail_map.is_none());
         assert!(info.gloss_map.is_none());
         assert_eq!(info.vertex_color_mode, VertexColorMode::AmbientDiffuse);
+    }
+
+    /// Regression: #438 — `MaterialInfo.diffuse_color` must default to
+    /// white so meshes without a `NiMaterialProperty` fall back to
+    /// `[1.0, 1.0, 1.0]` vertex tinting (the pre-#438 hardcoded
+    /// fallback inside `extract_vertex_colors`).
+    #[test]
+    fn default_material_info_diffuse_color_is_white() {
+        let info = MaterialInfo::default();
+        assert_eq!(info.diffuse_color, [1.0, 1.0, 1.0]);
     }
 }
 
