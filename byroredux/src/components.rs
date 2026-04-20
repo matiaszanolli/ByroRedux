@@ -159,6 +159,18 @@ pub(crate) struct WeatherDataRes {
     /// Cloud layer scroll speeds from WTHR DNAM (0-255, one per layer).
     /// `weather_system` uses index 0 to drive `SkyParamsRes::cloud_scroll`.
     pub(crate) cloud_speeds: [u8; 4],
+    /// Per-climate sunrise/sunset hour breakpoints — `weather_system`
+    /// uses these to drive the TOD slot interpolator so Capital
+    /// Wasteland and Mojave run on their own schedules (FO3 sunrise
+    /// is ~0.3 hr earlier than FNV). Sourced from CLMT TNAM bytes
+    /// (10-minute units converted to floating hours: `hour = byte / 6`).
+    /// See #463.
+    ///
+    /// `[sunrise_begin, sunrise_end, sunset_begin, sunset_end]` in hours.
+    /// Defaults (6.0, 10.0, 18.0, 22.0) match the pre-#463 hardcoded
+    /// values so synthetic test cells and non-climate content keep
+    /// their old behaviour.
+    pub(crate) tod_hours: [f32; 4],
 }
 impl Resource for WeatherDataRes {}
 

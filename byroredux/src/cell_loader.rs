@@ -120,6 +120,11 @@ pub struct CellLoadResult {
     pub lighting: Option<byroredux_plugin::esm::cell::CellLighting>,
     /// Weather data for exterior cells (from WRLD→CLMT→WTHR chain).
     pub weather: Option<byroredux_plugin::esm::records::WeatherRecord>,
+    /// Climate record for exterior cells (sunrise/sunset timing bytes +
+    /// weather probability table). Drives the time-of-day interpolator
+    /// in `weather_system` so Capital Wasteland and Mojave run on their
+    /// own schedules. See #463.
+    pub climate: Option<byroredux_plugin::esm::records::ClimateRecord>,
     /// Owner token for every entity this load produced. Pass to
     /// [`unload_cell`] to tear the cell down (despawn entities + free
     /// mesh/BLAS/texture resources). See #372.
@@ -305,6 +310,7 @@ pub fn load_cell(
         center: result.center,
         lighting: cell.lighting.clone(),
         weather: None,
+        climate: None,
         cell_root,
     })
 }
@@ -507,17 +513,28 @@ pub fn load_exterior_cells(
         result.center
     };
 
-    // Resolve weather: WRLD → CLMT → WTHR (first pleasant or highest-chance weather).
-    let weather = wrld_key.as_deref().and_then(|wrld_name_lc| {
+    // Resolve weather + climate: WRLD → CLMT → WTHR.
+    // The climate record carries per-worldspace TNAM sunrise/sunset
+    // hours so the time-of-day interpolator runs on the right clock.
+    // See #463.
+    let climate = wrld_key.as_deref().and_then(|wrld_name_lc| {
         let climate_fid = index.worldspace_climates.get(wrld_name_lc)?;
-        let climate = record_index.climates.get(climate_fid)?;
+        let climate = record_index.climates.get(climate_fid)?.clone();
         log::info!(
-            "Worldspace '{}' climate '{}' ({:08X}): {} weathers",
+            "Worldspace '{}' climate '{}' ({:08X}): {} weathers, \
+             sunrise {:.2}–{:.2}h, sunset {:.2}–{:.2}h",
             wrld_name_lc,
             climate.editor_id,
             climate_fid,
             climate.weathers.len(),
+            climate.sunrise_begin as f32 / 6.0,
+            climate.sunrise_end as f32 / 6.0,
+            climate.sunset_begin as f32 / 6.0,
+            climate.sunset_end as f32 / 6.0,
         );
+        Some(climate)
+    });
+    let weather = climate.as_ref().and_then(|climate| {
         // Pick the weather with the highest chance (most common / default).
         let best = climate.weathers.iter().max_by_key(|w| w.chance)?;
         let wthr = record_index.weathers.get(&best.weather_form_id)?;
@@ -541,6 +558,7 @@ pub fn load_exterior_cells(
         center: spawn_center,
         lighting: None,
         weather,
+        climate,
         cell_root,
     })
 }

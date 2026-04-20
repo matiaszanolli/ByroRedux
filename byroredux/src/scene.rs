@@ -221,6 +221,29 @@ pub(crate) fn setup_scene(
                                 sky_colors[g][s] = wthr.sky_colors[g][s].to_rgb_f32();
                             }
                         }
+                        // #463 — Per-climate sunrise/sunset breakpoints.
+                        // CLMT TNAM bytes are in 10-minute units →
+                        // divide by 6 for hours. Fall back to the pre-
+                        // #463 hardcoded values (6h/10h/18h/22h) when
+                        // the cell has no climate record (or all bytes
+                        // are zero, which happens on stubbed test data).
+                        let tod_hours = result
+                            .climate
+                            .as_ref()
+                            .filter(|c| {
+                                c.sunrise_begin | c.sunrise_end
+                                    | c.sunset_begin | c.sunset_end
+                                    != 0
+                            })
+                            .map(|c| {
+                                [
+                                    c.sunrise_begin as f32 / 6.0,
+                                    c.sunrise_end as f32 / 6.0,
+                                    c.sunset_begin as f32 / 6.0,
+                                    c.sunset_end as f32 / 6.0,
+                                ]
+                            })
+                            .unwrap_or([6.0, 10.0, 18.0, 22.0]);
                         world.insert_resource(WeatherDataRes {
                             sky_colors,
                             fog: [
@@ -230,6 +253,7 @@ pub(crate) fn setup_scene(
                                 wthr.fog_night_far,
                             ],
                             cloud_speeds: wthr.cloud_speeds,
+                            tod_hours,
                         });
                         world.insert_resource(GameTimeRes::default());
                     } else {

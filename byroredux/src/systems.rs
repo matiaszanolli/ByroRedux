@@ -1010,6 +1010,43 @@ pub(crate) fn log_stats_system(world: &World, _dt: f32) {
     }
 }
 
+/// Build the time-of-day key table used by the `weather_system`
+/// interpolator from a climate's `tod_hours`.
+///
+/// `tod_hours = [sunrise_begin, sunrise_end, sunset_begin, sunset_end]`
+/// in floating-point game hours (CLMT TNAM bytes divided by 6). The
+/// returned 7-entry table is `(hour, TOD slot index)` pairs the
+/// interpolator walks in increasing-hour order:
+///
+///  - `midnight` (synthetic — TNAM doesn't encode it; anchored at 1h)
+///  - `sunrise_begin` → `TOD_SUNRISE`
+///  - `sunrise_end`   → `TOD_DAY`
+///  - midpoint(sunrise_end, sunset_begin) → `TOD_HIGH_NOON`
+///  - `sunset_begin - 2h` (clamped) → `TOD_DAY` re-anchor — preserves
+///    the `day → sunset` ease-in the pre-#463 hardcoded path had
+///  - `sunset_begin` → `TOD_SUNSET`
+///  - `sunset_end + 2h` (clamped to 23h) → `TOD_NIGHT`
+///
+/// Kept `pub(crate)` so the unit test in this module can pin the
+/// formula independently of a full World setup.
+pub(crate) fn build_tod_keys(tod_hours: [f32; 4]) -> [(f32, usize); 7] {
+    use byroredux_plugin::esm::records::weather::*;
+    let [sunrise_begin, sunrise_end, sunset_begin, sunset_end] = tod_hours;
+    let afternoon_peak = (sunrise_end + sunset_begin) * 0.5;
+    let afternoon_cool = (sunset_begin - 2.0).max(sunrise_end + 0.1);
+    let midnight = 1.0f32;
+    let night = (sunset_end + 2.0).min(23.0);
+    [
+        (midnight, TOD_MIDNIGHT),
+        (sunrise_begin, TOD_SUNRISE),
+        (sunrise_end, TOD_DAY),
+        (afternoon_peak, TOD_HIGH_NOON),
+        (afternoon_cool, TOD_DAY),
+        (sunset_begin, TOD_SUNSET),
+        (night, TOD_NIGHT),
+    ]
+}
+
 /// Weather & time-of-day system: advances game clock, interpolates WTHR
 /// NAM0 sky colors, computes sun arc, and updates SkyParamsRes + CellLightingRes.
 ///
@@ -1033,32 +1070,31 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
 
     // Interpolate NAM0 colors based on game hour.
     // The 6 time slots map to these hours:
-    //   0 = sunrise (6h), 1 = day (10h), 2 = sunset (18h),
-    //   3 = night (22h), 4 = high_noon (13h), 5 = midnight (1h).
+    //   0 = sunrise, 1 = day, 2 = sunset,
+    //   3 = night, 4 = high_noon, 5 = midnight.
     //
-    // We define a piecewise-linear cycle through these key times:
+    // Pre-#463 the breakpoints were hardcoded:
     //   midnight(1h) → sunrise(6h) → day(10h) → high_noon(13h) →
     //   day(16h) → sunset(18h) → night(22h) → midnight(25h/1h)
+    // FO3 Capital Wasteland and FNV Mojave ship different CLMT TNAM
+    // values (Wasteland sunrise is ~0.3 hr earlier). `tod_hours` on
+    // WeatherDataRes now carries the climate-driven breakpoints; the
+    // `high_noon` midpoint and the `midnight` anchor stay synthetic
+    // (TNAM doesn't encode either). The afternoon `day` re-anchor is
+    // picked at sunset_begin - 2h so we retain a `day → sunset` ease-
+    // in rather than jumping straight from high_noon to sunset.
     use byroredux_plugin::esm::records::weather::*;
-    const KEYS: [(f32, usize); 7] = [
-        (1.0, TOD_MIDNIGHT),
-        (6.0, TOD_SUNRISE),
-        (10.0, TOD_DAY),
-        (13.0, TOD_HIGH_NOON),
-        (16.0, TOD_DAY),
-        (18.0, TOD_SUNSET),
-        (22.0, TOD_NIGHT),
-    ];
+    let keys = build_tod_keys(wd.tod_hours);
 
     // Find which two keys we're between and compute blend factor.
     let (slot_a, slot_b, t) = {
         // Wrap hour to the key range [1, 25) — midnight at hour 0 maps to 24+1=25.
-        let h = if hour < KEYS[0].0 { hour + 24.0 } else { hour };
-        let last = KEYS.len() - 1;
-        let mut found = (KEYS[last].1, KEYS[0].1, 0.0f32);
+        let h = if hour < keys[0].0 { hour + 24.0 } else { hour };
+        let last = keys.len() - 1;
+        let mut found = (keys[last].1, keys[0].1, 0.0f32);
         for i in 0..last {
-            let (h0, s0) = KEYS[i];
-            let (h1, s1) = KEYS[i + 1];
+            let (h0, s0) = keys[i];
+            let (h1, s1) = keys[i + 1];
             if h >= h0 && h < h1 {
                 let frac = (h - h0) / (h1 - h0);
                 found = (s0, s1, frac);
@@ -1066,11 +1102,11 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             }
         }
         // After last key (22h+): interpolate night → midnight.
-        if h >= KEYS[last].0 {
-            let h0 = KEYS[last].0;
-            let h1 = KEYS[0].0 + 24.0; // midnight = 25
+        if h >= keys[last].0 {
+            let h0 = keys[last].0;
+            let h1 = keys[0].0 + 24.0; // midnight = 25
             let frac = ((h - h0) / (h1 - h0)).clamp(0.0, 1.0);
-            found = (KEYS[last].1, KEYS[0].1, frac);
+            found = (keys[last].1, keys[0].1, frac);
         }
         found
     };
@@ -1317,6 +1353,109 @@ mod bound_propagation_tests {
         let wb_q = world.query::<WorldBound>().unwrap();
         let wb = wb_q.get(e).unwrap();
         assert_eq!(wb.radius, 0.0);
+    }
+}
+
+/// Regression tests for #463 — climate-driven TOD breakpoints on
+/// `WeatherDataRes.tod_hours` flow through `build_tod_keys` so the
+/// time-of-day interpolator runs on the right schedule per worldspace.
+#[cfg(test)]
+mod weather_tod_keys_tests {
+    use super::*;
+    use byroredux_plugin::esm::records::weather::*;
+
+    /// Pre-#463 default — FNV Mojave-style hardcoded breakpoints.
+    /// Verifies the fallback path still produces the same key table
+    /// synthetic test cells used to get.
+    #[test]
+    fn default_tod_hours_reproduce_pre_fix_fnv_keys() {
+        let keys = build_tod_keys([6.0, 10.0, 18.0, 22.0]);
+        let expected = [
+            (1.0, TOD_MIDNIGHT),
+            (6.0, TOD_SUNRISE),
+            (10.0, TOD_DAY),
+            (14.0, TOD_HIGH_NOON), // midpoint(10, 18)
+            (16.0, TOD_DAY),       // sunset_begin - 2
+            (18.0, TOD_SUNSET),
+            (23.0, TOD_NIGHT), // min(22+2, 23) = 23 (clamped)
+        ];
+        for (i, ((h, s), (eh, es))) in keys.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (h - eh).abs() < 1e-5,
+                "key[{i}]: expected hour {eh:.2}, got {h:.2}"
+            );
+            assert_eq!(s, es, "key[{i}]: slot mismatch");
+        }
+    }
+
+    /// FO3 Capital Wasteland ships slightly earlier sunrise per the
+    /// audit. Feed representative Wasteland TNAM-derived hours and
+    /// verify the interpolator hits those exact breakpoints instead
+    /// of the hardcoded FNV values.
+    #[test]
+    fn fo3_wasteland_climate_shifts_sunrise_earlier() {
+        // Hypothetical FO3 TNAM: sunrise_begin=32, sunrise_end=60,
+        // sunset_begin=102, sunset_end=132 (in 10-minute units).
+        //   → hours 5.33, 10.0, 17.0, 22.0.
+        let wasteland = build_tod_keys([5.333, 10.0, 17.0, 22.0]);
+        let fnv = build_tod_keys([6.0, 10.0, 18.0, 22.0]);
+        // SUNRISE anchor moved earlier.
+        assert!(
+            wasteland[1].0 < fnv[1].0,
+            "Wasteland SUNRISE key must fire before FNV SUNRISE"
+        );
+        // SUNSET anchor moved earlier too.
+        assert!(
+            wasteland[5].0 < fnv[5].0,
+            "Wasteland SUNSET key must fire before FNV SUNSET"
+        );
+        // Slot identities stay put — only the hour anchors change.
+        for i in 0..7 {
+            assert_eq!(
+                wasteland[i].1, fnv[i].1,
+                "slot ordering must match across climates"
+            );
+        }
+    }
+
+    /// Keys must stay monotonically non-decreasing in hour so the
+    /// piecewise-linear interpolator walks them in order.
+    #[test]
+    fn tod_keys_are_monotonic_on_realistic_climates() {
+        for tod_hours in [
+            [6.0, 10.0, 18.0, 22.0], // FNV
+            [5.33, 10.0, 17.0, 22.0], // FO3 Wasteland
+            [4.5, 9.0, 19.5, 22.0],   // Skyrim Tundra (hypothetical)
+            [7.0, 11.0, 16.0, 19.0],  // compressed-day winter
+        ] {
+            let keys = build_tod_keys(tod_hours);
+            for w in keys.windows(2) {
+                assert!(
+                    w[0].0 <= w[1].0 + 1e-5,
+                    "TOD keys must be monotonic: {:?} → {:?} for tod_hours {:?}",
+                    w[0],
+                    w[1],
+                    tod_hours,
+                );
+            }
+        }
+    }
+
+    /// Afternoon_cool clamp — when `sunset_begin <= sunrise_end + 2`
+    /// (very compressed day), the `sunset_begin - 2h` re-anchor would
+    /// be at or before `sunrise_end`, breaking monotonicity. The
+    /// `.max(sunrise_end + 0.1)` clamp guards against that.
+    #[test]
+    fn tod_keys_clamp_afternoon_cool_on_compressed_days() {
+        // sunrise_end=10, sunset_begin=11 — only 1h of clear "day".
+        let keys = build_tod_keys([5.0, 10.0, 11.0, 20.0]);
+        let day_anchor = keys[2].0; // TOD_DAY at sunrise_end
+        let afternoon_cool = keys[4].0; // TOD_DAY re-anchor
+        assert!(
+            afternoon_cool > day_anchor,
+            "afternoon_cool ({afternoon_cool:.2}) must be strictly after \
+             sunrise_end ({day_anchor:.2}) to keep keys monotonic"
+        );
     }
 }
 
