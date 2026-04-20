@@ -704,32 +704,18 @@ pub(crate) fn build_render_data(
         .as_ref()
         .map(|l| l.ambient)
         .unwrap_or([0.08, 0.08, 0.08]);
-    let mut fog_color = cell_lit.as_ref().map(|l| l.fog_color).unwrap_or([0.0; 3]);
-    let mut fog_near = cell_lit.as_ref().map(|l| l.fog_near).unwrap_or(0.0);
-    let mut fog_far = cell_lit.as_ref().map(|l| l.fog_far).unwrap_or(0.0);
-    let is_interior = cell_lit.as_ref().map(|l| l.is_interior).unwrap_or(true);
+    // Fog is passed through as authored. Cross-checking FalloutNV.esm:
+    // 89% of interior cells author both fog_near and fog_far (median
+    // 64/4000); only ~10% leave them zero — for those, the author's
+    // intent is "no distance fog, rely on XCLL ambient fill." The
+    // composite pass gates the fog mix on `fog_params.y > fog_params.x`,
+    // so leaving both at zero disables it cleanly. Exterior cells set
+    // fog via WTHR/CLMT in weather_system, which writes into
+    // CellLightingRes before render.
+    let fog_color = cell_lit.as_ref().map(|l| l.fog_color).unwrap_or([0.0; 3]);
+    let fog_near = cell_lit.as_ref().map(|l| l.fog_near).unwrap_or(0.0);
+    let fog_far = cell_lit.as_ref().map(|l| l.fog_far).unwrap_or(0.0);
     drop(cell_lit);
-
-    // Procedural fog: when an INTERIOR cell doesn't define fog (near == far == 0),
-    // generate atmospheric fog from the ambient color. Exterior cells always
-    // use their explicit fog settings (never procedural).
-    if is_interior && fog_far <= fog_near + 1.0 {
-        // Fog color: blend ambient toward a cool desaturated tone.
-        // Darker ambients → cooler, more blue-gray fog (dungeons).
-        // Brighter ambients → warmer, amber-tinted fog (homes).
-        let lum = ambient[0] * 0.299 + ambient[1] * 0.587 + ambient[2] * 0.114;
-        let warmth = lum.clamp(0.0, 0.3); // how warm the fog tint is
-        fog_color = [
-            ambient[0] * 0.4 + warmth * 0.3 + 0.02,
-            ambient[1] * 0.4 + warmth * 0.2 + 0.02,
-            ambient[2] * 0.4 + warmth * 0.1 + 0.03,
-        ];
-        // Fog distances: gentle fog starting at ~40% of typical room size,
-        // becoming dense at ~200% of room size. Interior cells are typically
-        // 500-2000 units across.
-        fog_near = 600.0;
-        fog_far = 2500.0;
-    }
 
     // Sky params from ECS resource (exterior cells) or default (interior/none).
     let sky = if let Some(sky_res) = world.try_resource::<SkyParamsRes>() {

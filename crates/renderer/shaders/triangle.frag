@@ -551,25 +551,24 @@ void main() {
 
     vec3 F0 = mix(vec3(0.04), albedo, metalness);
 
-    // Emissive bypass: self-lit surfaces skip the light loop entirely.
-    // Only bypass when emissive actually produces visible light — both
-    // the multiplier AND the color must be non-zero. Without this check,
-    // meshes with emissive_mult > 0 but black emissive_color would skip
-    // the entire PBR lighting loop and render as ambient-only.
+    // Precompute the emissive term. Per Gamebryo's D3D9 FFP material model
+    // (matching NiMaterialProperty / BSShaderPPLighting), the final color is
+    //   ambient + diffuse + specular + emissive
+    // — emissive is ADDITIVE on top of the normal lighting loop, not a
+    // replacement for it. Previously this shader bypassed the entire Lo
+    // loop for any emissiveMult > 0 mesh and wrote `ambient + emissive`
+    // directly, which:
+    //   (1) stopped oil lanterns from receiving direct light from sibling
+    //       lanterns (clusters rendered individually flat-lit), and
+    //   (2) zeroed outRawIndirect, which fed SVGF with zero indirect on
+    //       lantern pixels and bled darkness into neighbors via the
+    //       spatial filter.
+    // Modulate by albedo so textured glass globes tint/shape the glow,
+    // and clamp to tame HDR blowout on bright emissive texels before ACES.
     float emissiveLum = dot(emissiveColor, vec3(0.2126, 0.7152, 0.0722));
+    vec3 emissive = vec3(0.0);
     if (emissiveMult > 0.01 && emissiveLum > 0.01) {
-        // Modulate emissive by the surface texture — light fixtures have
-        // textured glass globes that should tint/shape the glow, not be
-        // replaced by a flat emissive color. Clamp to prevent HDR blowout
-        // that overwhelms ACES tone mapping (the globe surface should glow
-        // but not wash out to a featureless white disc).
-        vec3 emissive = emissiveColor * emissiveMult * albedo;
-        emissive = min(emissive, vec3(1.5));
-        vec3 ambient = sceneFlags.yzw * albedo * (1.0 - metalness);
-        outColor = vec4(ambient + emissive, texColor.a);
-        outRawIndirect = vec4(0.0);
-        outAlbedo = vec4(albedo, 1.0);
-        return;
+        emissive = min(emissiveColor * emissiveMult * albedo, vec3(1.5));
     }
 
     // ── Glass / transparent refraction ──────────────────────────────
@@ -1146,6 +1145,12 @@ void main() {
         // Glass tint adds to the direct-light output.
         directLight = directLight + albedo * 0.15;
     }
+
+    // Additive emissive on the direct path (Gamebryo FFP model). Composite
+    // does not multiply the direct attachment by albedo, so emissive here
+    // is already pre-shaped by albedo (see precompute above) and stays
+    // intact through tone mapping.
+    directLight = directLight + emissive;
 
     // Distance fog is applied in the composite pass (#428) after SVGF
     // denoise, so fog attenuation is NOT baked into indirect history —
