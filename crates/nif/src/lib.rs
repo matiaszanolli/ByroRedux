@@ -19,6 +19,7 @@ pub mod import;
 pub mod kfm;
 pub mod rotation;
 pub mod scene;
+pub mod shader_flags;
 pub mod stream;
 pub mod types;
 pub mod version;

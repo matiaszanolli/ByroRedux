@@ -16,9 +16,19 @@ use crate::types::BlockRef;
 
 use super::mesh::GeomData;
 
-pub(super) const DECAL_SINGLE_PASS: u32 = 0x04000000;
-pub(super) const DYNAMIC_DECAL: u32 = 0x08000000;
-const ALPHA_DECAL_F2: u32 = 0x00200000;
+// Import-side aliases for the named flag constants in
+// `crate::shader_flags`. Kept `pub(super)` so downstream files in the
+// `import` module (`mesh.rs`, `walk.rs`) can reach them without paging
+// through the shared module. The shared constants are documented with
+// per-game semantics so a future refactor can swap callsites onto
+// `GameVariant`-aware lookups (#461 / #437).
+pub(super) const DECAL_SINGLE_PASS: u32 = crate::shader_flags::fo3nv_f1::DECAL;
+pub(super) const DYNAMIC_DECAL: u32 = crate::shader_flags::fo3nv_f1::DYNAMIC_DECAL;
+// FO3/FNV-specific decal bit on flags2 — collides with Skyrim's
+// `Cloud_LOD` on the same bit. Only tested on FO3/FNV `BSShader*Property`
+// paths; Skyrim+ `BSLightingShaderProperty` goes through SLSF1 bits
+// 26/27 only (see #176 closure).
+const ALPHA_DECAL_F2: u32 = crate::shader_flags::fo3nv_f2::ALPHA_DECAL;
 
 /// Shared decal detection across every FO3/FNV `BSShader*Property`
 /// subclass. The flag vocabulary is identical across the three
@@ -55,8 +65,8 @@ pub(super) fn is_decal_from_shader_flags(flags1: u32, flags2: u32) -> bool {
 // Double_Sided bit on those games.
 //
 // Double_Sided bit on Skyrim+ `*ShaderPropertyFlags2`. Only tested on
-// blocks whose game actually carries this semantic.
-const SF2_DOUBLE_SIDED: u32 = 0x0010;
+// blocks whose game actually carries this semantic (see note above).
+const SF2_DOUBLE_SIDED: u32 = crate::shader_flags::skyrim_slsf2::DOUBLE_SIDED;
 
 /// How a `NiVertexColorProperty` wants per-vertex colors to participate
 /// in shading, mirroring Gamebryo's `NiVertexColorProperty::SourceMode`.
