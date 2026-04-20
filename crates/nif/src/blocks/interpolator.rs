@@ -757,6 +757,86 @@ mod tests {
         assert!(td.scales.keys.is_empty());
         assert_eq!(stream.position(), 12);
     }
+
+    /// Regression: #436 — XYZ_ROTATION_KEY mode stores euler angles
+    /// across three independent `KeyGroup<float>` blocks (one per axis).
+    /// Per nif.xml `NiKeyframeData`, `Num Rotation Keys` MUST be 1 when
+    /// rotation_type==4; the actual per-axis key counts live in the
+    /// three KeyGroups. The audit claimed the parser read only the X
+    /// channel and left Y/Z bytes in the stream — a stale observation;
+    /// `interpolator.rs:224-229` already reads all three. This test
+    /// pins that behavior so a future rewrite can't regress to the
+    /// imagined bug without failing loudly.
+    #[test]
+    fn parse_transform_data_xyz_rotation_reads_all_three_axes() {
+        let header = make_header_fnv();
+        let mut data = Vec::new();
+
+        // Num Rotation Keys = 1 (spec requires this for XYZ mode).
+        data.extend_from_slice(&1u32.to_le_bytes());
+        // Rotation Type = XyzRotation (4).
+        data.extend_from_slice(&4u32.to_le_bytes());
+
+        // KeyGroup X: 2 Linear keys (time, value).
+        //   num_keys, interpolation_type, then (time, value) pairs.
+        data.extend_from_slice(&2u32.to_le_bytes()); // num keys
+        data.extend_from_slice(&1u32.to_le_bytes()); // Linear
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // time
+        data.extend_from_slice(&0.1f32.to_le_bytes()); // value
+        data.extend_from_slice(&1.0f32.to_le_bytes()); // time
+        data.extend_from_slice(&0.2f32.to_le_bytes()); // value
+
+        // KeyGroup Y: 3 Linear keys — different count than X to verify
+        // the parser doesn't apply the X count to Y.
+        data.extend_from_slice(&3u32.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes()); // Linear
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data.extend_from_slice(&0.5f32.to_le_bytes());
+        data.extend_from_slice(&1.5f32.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data.extend_from_slice(&2.0f32.to_le_bytes());
+
+        // KeyGroup Z: 1 Linear key — smallest to prove Y's larger
+        // count didn't over-consume Z's header.
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes()); // Linear
+        data.extend_from_slice(&0.5f32.to_le_bytes());
+        data.extend_from_slice(&3.0f32.to_le_bytes());
+
+        // Translations: 0 keys.
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // Scales: 0 keys.
+        data.extend_from_slice(&0u32.to_le_bytes());
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let td = NiTransformData::parse(&mut stream).unwrap();
+        assert_eq!(
+            stream.position() as usize,
+            expected_len,
+            "parser must consume every byte of X + Y + Z KeyGroups (audit premise: bytes left in stream → downstream drift)"
+        );
+        assert_eq!(td.rotation_type, Some(KeyType::XyzRotation));
+        assert!(td.rotation_keys.is_empty());
+
+        let xyz = td
+            .xyz_rotations
+            .as_ref()
+            .expect("xyz_rotations must be populated in XyzRotation mode");
+
+        // Each axis has its own distinct key count — proves Y/Z weren't
+        // silently skipped or overwritten with X's data.
+        assert_eq!(xyz[0].keys.len(), 2, "X axis (2 keys)");
+        assert_eq!(xyz[1].keys.len(), 3, "Y axis (3 keys) — audit imagined this was missed");
+        assert_eq!(xyz[2].keys.len(), 1, "Z axis (1 key) — audit imagined this was missed");
+
+        // Spot-check authored values so a future parser that reads
+        // three KeyGroups but at the wrong offsets still fails.
+        assert_eq!(xyz[0].keys[1].value, 0.2);
+        assert_eq!(xyz[1].keys[2].value, 2.0);
+        assert_eq!(xyz[2].keys[0].value, 3.0);
+    }
 }
 
 // ── NiBlendInterpolator family ──────────────────────────────────────
