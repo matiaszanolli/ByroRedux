@@ -54,7 +54,8 @@ use properties::{
 };
 use shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
-    BSShaderPPLightingProperty, BSShaderTextureSet, TileShaderProperty,
+    BSShaderPPLightingProperty, BSShaderTextureSet, TallGrassShaderProperty, TileShaderProperty,
+    WaterShaderProperty,
 };
 use skin::{
     BsDismemberSkinInstance, BsSkinBoneData, BsSkinInstance, NiSkinData, NiSkinInstance,
@@ -256,10 +257,15 @@ pub fn parse_block(
         // Specializing the differences (e.g. sky scroll, water reflection) can
         // come later — for now this unblocks Oblivion exterior cells, which
         // hard-failed on any of these.
+        // Blocks that genuinely inherit BSShaderPPLightingProperty (or
+        // haven't been split out yet — SkyShaderProperty/HairShaderProperty/
+        // VolumetricFogShaderProperty/DistantLODShaderProperty/
+        // BSDistantTreeShaderProperty/BSSkyShaderProperty/BSWaterShaderProperty
+        // are still aliased pending follow-up per-game validation). Pre-#474
+        // `WaterShaderProperty` and `TallGrassShaderProperty` were here too
+        // but over-read 20+ bytes — split out below.
         "BSShaderPPLightingProperty"
         | "SkyShaderProperty"
-        | "WaterShaderProperty"
-        | "TallGrassShaderProperty"
         | "Lighting30ShaderProperty"
         | "HairShaderProperty"
         | "VolumetricFogShaderProperty"
@@ -267,6 +273,13 @@ pub fn parse_block(
         | "BSDistantTreeShaderProperty"
         | "BSSkyShaderProperty"
         | "BSWaterShaderProperty" => Ok(Box::new(BSShaderPPLightingProperty::parse(stream)?)),
+        // FO3/FNV WaterShaderProperty inherits BSShaderProperty directly
+        // (no texture_clamp_mode, no texture_set, no refraction/parallax)
+        // — see nif.xml line 6322 and issue #474.
+        "WaterShaderProperty" => Ok(Box::new(WaterShaderProperty::parse(stream)?)),
+        // FO3/FNV TallGrassShaderProperty inherits BSShaderProperty + adds
+        // a SizedString File Name — see nif.xml line 6354 and issue #474.
+        "TallGrassShaderProperty" => Ok(Box::new(TallGrassShaderProperty::parse(stream)?)),
         // FO3-only `TileShaderProperty` — inherits `BSShaderLightingProperty`
         // + File Name SizedString. Pre-#455 was aliased to
         // BSShaderPPLightingProperty::parse, which over-read 20-28
@@ -745,13 +758,14 @@ mod dispatch_tests {
         // through BSShaderPPLightingProperty::parse and produce a
         // downcastable block. #455 moved `TileShaderProperty` onto
         // its own dedicated parser (covered by
-        // `tile_shader_property_routes_to_dedicated_parser` below), so
-        // it no longer appears here.
+        // `tile_shader_property_routes_to_dedicated_parser` below). #474
+        // moved `WaterShaderProperty` and `TallGrassShaderProperty` onto
+        // their own parsers too (they inherit `BSShaderProperty` directly,
+        // not `BSShaderLightingProperty`, so the PPLighting trailer
+        // over-read was masked by `block_sizes` recovery).
         let variants = [
             "BSShaderPPLightingProperty",
             "SkyShaderProperty",
-            "WaterShaderProperty",
-            "TallGrassShaderProperty",
             "Lighting30ShaderProperty",
             "HairShaderProperty",
             "VolumetricFogShaderProperty",
@@ -818,6 +832,107 @@ mod dispatch_tests {
             .expect("TileShaderProperty must downcast to its own type, not BSShaderPPLightingProperty");
         assert_eq!(prop.texture_clamp_mode, 3);
         assert_eq!(prop.file_name, "textures\\interface\\stealthmeter.dds");
+    }
+
+    /// Regression: #474 — `WaterShaderProperty` inherits `BSShaderProperty`
+    /// directly per nif.xml line 6322 (no `texture_clamp_mode`, no
+    /// `texture_set_ref`, no refraction/parallax trailer). Routing through
+    /// `BSShaderPPLightingProperty::parse` over-read 20+ bytes, masked by
+    /// `block_sizes` recovery.
+    #[test]
+    fn water_shader_property_routes_to_dedicated_parser() {
+        let header = oblivion_header();
+        let mut bytes = Vec::new();
+        // NiObjectNET.
+        bytes.extend_from_slice(&0i32.to_le_bytes()); // name
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs
+        bytes.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+        // BSShaderProperty base only — no texture_clamp_mode.
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // shade_flags
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // shader_type
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_1
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_2
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // env_map_scale
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block("WaterShaderProperty", &mut stream, Some(bytes.len() as u32))
+            .expect("WaterShaderProperty dispatch must reach dedicated parser");
+        let prop = block
+            .as_any()
+            .downcast_ref::<crate::blocks::shader::WaterShaderProperty>()
+            .expect("WaterShaderProperty must downcast to its own type");
+        assert_eq!(prop.shader.shader_type, 1);
+        assert_eq!(prop.shader.env_map_scale, 1.0);
+    }
+
+    /// Regression: #474 — `TallGrassShaderProperty` inherits `BSShaderProperty`
+    /// + adds `File Name: SizedString` per nif.xml line 6354. Previously
+    /// aliased to `BSShaderPPLightingProperty::parse`, dropping the
+    /// filename on the floor.
+    #[test]
+    fn tall_grass_shader_property_routes_to_dedicated_parser() {
+        let header = oblivion_header();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0i32.to_le_bytes()); // name
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs
+        bytes.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // shade_flags
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // shader_type
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_1
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_2
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // env_map_scale
+        let name = b"textures\\landscape\\grass01.dds";
+        bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(name);
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block(
+            "TallGrassShaderProperty",
+            &mut stream,
+            Some(bytes.len() as u32),
+        )
+        .expect("TallGrassShaderProperty dispatch must reach dedicated parser");
+        let prop = block
+            .as_any()
+            .downcast_ref::<crate::blocks::shader::TallGrassShaderProperty>()
+            .expect("TallGrassShaderProperty must downcast to its own type");
+        assert_eq!(prop.file_name, "textures\\landscape\\grass01.dds");
+    }
+
+    /// Regression: #474 — `bhkSimpleShapePhantom` carries an 8-byte
+    /// `Unused 01` field between the bhkWorldObjectCInfo block and the
+    /// Matrix44 transform (nif.xml line 2793). Pre-#474 the parser
+    /// skipped straight from CInfo to the 4x4 transform, reading only
+    /// 92 of 100 declared bytes and leaving `block_sizes` recovery to
+    /// paper over the gap.
+    #[test]
+    fn bhk_simple_shape_phantom_consumes_full_100_bytes() {
+        let header = oblivion_header();
+        let mut bytes = Vec::new();
+        // bhkWorldObject: shape ref + havok filter + 20-byte CInfo.
+        bytes.extend_from_slice(&5i32.to_le_bytes()); // shape_ref
+        bytes.extend_from_slice(&0x12345678u32.to_le_bytes()); // havok_filter
+        bytes.extend_from_slice(&[0u8; 20]); // bhkWorldObjectCInfo
+        // bhkSimpleShapePhantom: 8-byte Unused 01 + 64-byte Matrix44.
+        bytes.extend_from_slice(&[0u8; 8]); // Unused 01
+        for i in 0..16 {
+            bytes.extend_from_slice(&(i as f32).to_le_bytes());
+        }
+        assert_eq!(bytes.len(), 100, "test fixture must be 100 bytes per nif.xml");
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block(
+            "bhkSimpleShapePhantom",
+            &mut stream,
+            Some(bytes.len() as u32),
+        )
+        .expect("bhkSimpleShapePhantom must parse without block_sizes recovery");
+        let prop = block
+            .as_any()
+            .downcast_ref::<crate::blocks::collision::BhkSimpleShapePhantom>()
+            .expect("bhkSimpleShapePhantom must downcast");
+        assert_eq!(prop.shape_ref.index(), Some(5));
+        assert_eq!(prop.havok_filter, 0x12345678);
+        // Transform column 0 should be [0.0, 1.0, 2.0, 3.0] per the fixture.
+        assert_eq!(prop.transform[0], [0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(prop.transform[3], [12.0, 13.0, 14.0, 15.0]);
     }
 
     /// Regression test for issue #144: Oblivion-era KF animation roots

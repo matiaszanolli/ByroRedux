@@ -866,7 +866,13 @@ impl BhkSimpleShapePhantom {
         let havok_filter = stream.read_u32_le()?;
         stream.skip(20)?; // bhkWorldObjectCInfo
 
-        // bhkPhantom / bhkShapePhantom / bhkSimpleShapePhantom: 4x4 transform
+        // bhkSimpleShapePhantom adds 8 unused bytes (nif.xml `Unused 01`,
+        // `byte length="8" binary="true"`) before the transform. Pre-#474
+        // this 8-byte slot was skipped along with the trailing transform
+        // via block_sizes recovery, costing 8 bytes per phantom block.
+        stream.skip(8)?;
+
+        // bhkSimpleShapePhantom: 4x4 transform (Matrix44).
         let mut transform = [[0.0f32; 4]; 4];
         for row in &mut transform {
             for val in row.iter_mut() {

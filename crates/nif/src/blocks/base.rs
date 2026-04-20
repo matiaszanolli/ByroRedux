@@ -181,25 +181,35 @@ impl BSShaderPropertyData {
     /// Parse FO3-era BSShaderProperty + BSShaderLightingProperty base fields.
     /// Returns (shader_data, texture_clamp_mode).
     pub fn parse_fo3(stream: &mut NifStream) -> io::Result<(Self, u32)> {
+        let shader = Self::parse_base(stream)?;
+        // BSShaderLightingProperty adds texture_clamp_mode.
+        let texture_clamp_mode = stream.read_u32_le()?;
+        Ok((shader, texture_clamp_mode))
+    }
+
+    /// Parse BSShaderProperty base only (no texture_clamp_mode).
+    ///
+    /// Used by blocks that inherit `BSShaderProperty` directly rather than
+    /// via `BSShaderLightingProperty` — e.g. `WaterShaderProperty`,
+    /// `TallGrassShaderProperty`, `DistantLODShaderProperty` (nif.xml
+    /// lines 6322/6354/6346). Previously these were aliased to
+    /// `BSShaderPPLightingProperty::parse` which over-read the Lighting
+    /// branch + refraction + parallax fields, masked by `block_sizes`
+    /// recovery. See issue #474.
+    pub fn parse_base(stream: &mut NifStream) -> io::Result<Self> {
         let shade_flags = stream.read_u16_le()?;
         let shader_type = stream.read_u32_le()?;
         let shader_flags_1 = stream.read_u32_le()?;
         let shader_flags_2 = stream.read_u32_le()?;
         let env_map_scale = stream.read_f32_le()?;
 
-        // BSShaderLightingProperty adds texture_clamp_mode.
-        let texture_clamp_mode = stream.read_u32_le()?;
-
-        Ok((
-            Self {
-                shade_flags,
-                shader_type,
-                shader_flags_1,
-                shader_flags_2,
-                env_map_scale,
-            },
-            texture_clamp_mode,
-        ))
+        Ok(Self {
+            shade_flags,
+            shader_type,
+            shader_flags_1,
+            shader_flags_2,
+            env_map_scale,
+        })
     }
 }
 

@@ -205,6 +205,74 @@ impl TileShaderProperty {
     }
 }
 
+/// `WaterShaderProperty` — FO3/FNV water shader (nif.xml line 6322).
+///
+/// Inherits `BSShaderProperty` **directly** (not `BSShaderLightingProperty`)
+/// so it carries no `texture_clamp_mode` and no additional fields of its
+/// own. Pre-#474 this block was aliased to `BSShaderPPLightingProperty::
+/// parse` which over-read the `texture_clamp_mode` + `texture_set_ref` +
+/// refraction + parallax trailer — 24 extra bytes masked by
+/// `block_sizes` recovery.
+#[derive(Debug)]
+pub struct WaterShaderProperty {
+    pub net: NiObjectNETData,
+    pub shader: BSShaderPropertyData,
+}
+
+impl NiObject for WaterShaderProperty {
+    fn block_type_name(&self) -> &'static str {
+        "WaterShaderProperty"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl WaterShaderProperty {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let net = NiObjectNETData::parse(stream)?;
+        let shader = BSShaderPropertyData::parse_base(stream)?;
+        Ok(Self { net, shader })
+    }
+}
+
+/// `TallGrassShaderProperty` — FO3/FNV grass shader (nif.xml line 6354).
+///
+/// Inherits `BSShaderProperty` directly and adds a single
+/// `File Name: SizedString` (grass texture path). Pre-#474 aliased to
+/// `BSShaderPPLightingProperty::parse`, losing both the filename and
+/// reading the wrong trailer — block_sizes recovery kept the stream
+/// aligned but the filename never reached the struct.
+#[derive(Debug)]
+pub struct TallGrassShaderProperty {
+    pub net: NiObjectNETData,
+    pub shader: BSShaderPropertyData,
+    /// Grass texture file path (typically `textures\landscape\*.dds`).
+    pub file_name: String,
+}
+
+impl NiObject for TallGrassShaderProperty {
+    fn block_type_name(&self) -> &'static str {
+        "TallGrassShaderProperty"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl TallGrassShaderProperty {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let net = NiObjectNETData::parse(stream)?;
+        let shader = BSShaderPropertyData::parse_base(stream)?;
+        let file_name = stream.read_sized_string()?;
+        Ok(Self {
+            net,
+            shader,
+            file_name,
+        })
+    }
+}
+
 /// BSShaderTextureSet — list of texture file paths for a BSShader.
 ///
 /// Typically 6 textures: diffuse, normal, glow, parallax, env, env mask.
