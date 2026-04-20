@@ -604,6 +604,44 @@ impl World {
         Some(ResourceWrite::new(guard, type_id))
     }
 
+    /// Try to mutably access two different resources with TypeId-sorted
+    /// lock ordering, returning `None` if either is missing.
+    ///
+    /// Sibling of [`resource_2_mut`](Self::resource_2_mut) for callers
+    /// that need graceful-miss semantics without losing the
+    /// TypeId-sorted acquisition guarantee. Sequential
+    /// `try_resource_mut` calls would drop the ordering and reintroduce
+    /// the ABBA deadlock risk guarded by #313.
+    ///
+    /// Both existence checks complete BEFORE any lock is acquired — a
+    /// missing resource returns `None` without touching either lock.
+    ///
+    /// # Panics
+    /// Always panics if `A` and `B` are the same type (would deadlock).
+    ///
+    /// In debug builds the `lock_tracker` additionally panics if a
+    /// conflicting lock on `A` or `B` is already held on the same
+    /// thread, or if the ordered lock graph detects a cross-thread
+    /// ABBA risk (#313).
+    pub fn try_resource_2_mut<A: Resource, B: Resource>(
+        &self,
+    ) -> Option<(ResourceWrite<'_, A>, ResourceWrite<'_, B>)> {
+        assert_ne!(
+            TypeId::of::<A>(),
+            TypeId::of::<B>(),
+            "try_resource_2_mut: A and B must be different resource types"
+        );
+
+        // Existence check before acquiring any lock — see #465.
+        if !self.resources.contains_key(&TypeId::of::<A>())
+            || !self.resources.contains_key(&TypeId::of::<B>())
+        {
+            return None;
+        }
+
+        Some(self.resource_2_mut::<A, B>())
+    }
+
     // ── Internal ────────────────────────────────────────────────────────
 
     /// Get or create the storage for a component type (requires &mut self).
@@ -1379,6 +1417,52 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(ResA(1.0));
         let _ = world.resource_2_mut::<ResA, ResA>();
+    }
+
+    #[test]
+    fn try_resource_2_mut_returns_some_when_both_present() {
+        let mut world = World::new();
+        world.insert_resource(ResA(1.0));
+        world.insert_resource(ResB(2.0));
+
+        {
+            let (mut a, mut b) = world
+                .try_resource_2_mut::<ResA, ResB>()
+                .expect("both resources present, expected Some");
+            a.0 = 7.0;
+            b.0 = 9.0;
+        }
+        assert!((world.resource::<ResA>().0 - 7.0).abs() < 1e-6);
+        assert!((world.resource::<ResB>().0 - 9.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn try_resource_2_mut_returns_none_when_a_missing() {
+        let mut world = World::new();
+        world.insert_resource(ResB(2.0));
+        assert!(world.try_resource_2_mut::<ResA, ResB>().is_none());
+    }
+
+    #[test]
+    fn try_resource_2_mut_returns_none_when_b_missing() {
+        let mut world = World::new();
+        world.insert_resource(ResA(1.0));
+        assert!(world.try_resource_2_mut::<ResA, ResB>().is_none());
+    }
+
+    #[test]
+    fn try_resource_2_mut_returns_none_when_both_missing() {
+        let world = World::new();
+        assert!(world.try_resource_2_mut::<ResA, ResB>().is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "must be different resource types")]
+    fn try_resource_2_mut_same_type_panics() {
+        let world = World::new();
+        // Panics regardless of whether the resource is present — same-type
+        // lock would deadlock.
+        let _ = world.try_resource_2_mut::<ResA, ResA>();
     }
 
     // ── Deadlock detection (debug-only) ────────────────────────────────
