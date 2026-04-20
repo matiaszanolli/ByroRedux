@@ -280,7 +280,7 @@ pub(super) fn extract_bs_tri_shape(
     // (cutout). See issue #152. Prefer alpha-test over alpha-blend when
     // both bits are set — same policy as the NiTriShape path in
     // `apply_alpha_flags`.
-    let (has_alpha, alpha_test, alpha_threshold, alpha_test_func, src_blend_mode, dst_blend_mode) =
+    let (mut has_alpha, alpha_test, alpha_threshold, alpha_test_func, src_blend_mode, dst_blend_mode) =
         if let Some(idx) = shape.alpha_property_ref.index() {
             if let Some(a) = scene.get_as::<NiAlphaProperty>(idx) {
                 let blend = a.flags & 0x001 != 0;
@@ -299,6 +299,22 @@ pub(super) fn extract_bs_tri_shape(
         } else {
             (false, false, 0.0, 6, 6, 7)
         };
+
+    // Implicit alpha-blend for BSEffectShaderProperty-backed shapes
+    // that ship without a sibling NiAlphaProperty (#354 / audit S4-03).
+    // Skyrim's `meshes/effects/*.nif` corpus routes transparency
+    // through the effect shader + optional BGEM material, not
+    // NiAlphaProperty — without this override glow rings, dust
+    // planes, smoke cards, and magic flares render as opaque
+    // rectangles with hard polygon edges. Only flip when we know
+    // there was no explicit alpha property to honor.
+    if !has_alpha && !alpha_test && shape.alpha_property_ref.index().is_none() {
+        if let Some(idx) = shape.shader_property_ref.index() {
+            if scene.get_as::<BSEffectShaderProperty>(idx).is_some() {
+                has_alpha = true;
+            }
+        }
+    }
 
     let two_sided = bs_tri_shape_two_sided(scene, shape);
 

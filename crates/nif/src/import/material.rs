@@ -614,6 +614,26 @@ pub(super) fn extract_material_info(
             // so downstream consumers can route them when the renderer-
             // side dispatch lands. See #345 / audit S4-01.
             info.effect_shader = Some(capture_effect_shader_data(shader));
+            // Implicit alpha blend: BSEffectShaderProperty is the
+            // Skyrim+ transparency source of truth. Bethesda effect
+            // NIFs frequently omit NiAlphaProperty entirely because
+            // BGEM/shader data owns the blend — without this flag,
+            // `meshes/effects/*.nif` (glow rings, magic flares, dust
+            // planes, smoke cards) render as opaque planes with hard
+            // edges. Only flip when the shape hasn't already bound a
+            // NiAlphaProperty (that path owns explicit src/dst blend
+            // factors and must not be overwritten). See #354 / audit
+            // S4-03.
+            if !info.alpha_blend && !info.alpha_test {
+                info.alpha_blend = true;
+                // The src/dst defaults live on `MaterialInfo::default`
+                // as SRC_ALPHA / INV_SRC_ALPHA — correct for the
+                // falloff-cone case which is the common one. Additive
+                // blend (ONE / ONE) for Own_Emit / EnvMap_Light_Fade
+                // flagged effect meshes is the remaining half of this
+                // issue and needs a per-flag check before the src/dst
+                // rewrite; defer to the follow-up.
+            }
         }
     }
 
