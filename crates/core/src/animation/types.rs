@@ -136,7 +136,16 @@ pub struct AnimationClip {
     pub duration: f32,
     pub cycle_type: CycleType,
     pub frequency: f32,
-    /// Default weight from NiControllerSequence (0.0–1.0).
+    /// Default weight from `NiControllerSequence.weight` (0.0–1.0).
+    /// Modulates the layer's `effective_weight()` inside
+    /// `sample_blended_transform`: the sequence author can pre-attenuate
+    /// a clip so that even at full layer weight it only contributes
+    /// `weight` of the blend. Distinct from `AnimationLayer::weight`,
+    /// which is the runtime crossfade factor. See #469.
+    ///
+    /// Single-clip playback (`AnimationPlayer` / `advance_time`) does
+    /// not apply `clip.weight` — it's a blend scaler, meaningful only
+    /// when more than one clip contributes at the same priority.
     pub weight: f32,
     /// Accumulation root node name — horizontal translation on this node
     /// is extracted as root motion delta rather than applied as animation.

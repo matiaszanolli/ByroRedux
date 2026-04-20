@@ -552,6 +552,72 @@ mod tests {
         assert!((t - 0.5).abs() < 1e-5);
     }
 
+    /// Regression for #469: two layers at equal layer-weight but one
+    /// clip authored with `weight = 0.5` must pre-attenuate that layer
+    /// inside `sample_blended_transform`. Without the fix, both layers
+    /// contributed equally (midpoint = 15.0); with the fix, the 0.5
+    /// clip contributes half as much (midpoint = 13.333...).
+    #[test]
+    fn sample_blended_transform_applies_clip_weight() {
+        use crate::string::StringPool;
+
+        let mut pool = StringPool::new();
+        let node = pool.intern("root");
+
+        let mk_clip = |weight: f32, tx: f32| {
+            let mut channels = HashMap::new();
+            channels.insert(
+                node,
+                TransformChannel {
+                    translation_keys: vec![TranslationKey {
+                        time: 0.0,
+                        value: Vec3::new(tx, 0.0, 0.0),
+                        forward: Vec3::ZERO,
+                        backward: Vec3::ZERO,
+                        tbc: None,
+                    }],
+                    translation_type: KeyType::Linear,
+                    rotation_keys: Vec::new(),
+                    rotation_type: KeyType::Linear,
+                    scale_keys: Vec::new(),
+                    scale_type: KeyType::Linear,
+                    priority: 0,
+                },
+            );
+            AnimationClip {
+                name: "c".to_string(),
+                duration: 1.0,
+                cycle_type: CycleType::Loop,
+                frequency: 1.0,
+                weight,
+                accum_root_name: None,
+                channels,
+                float_channels: Vec::new(),
+                color_channels: Vec::new(),
+                bool_channels: Vec::new(),
+                text_keys: Vec::new(),
+            }
+        };
+
+        let mut registry = AnimationClipRegistry::new();
+        let h_full = registry.add(mk_clip(1.0, 10.0));
+        let h_half = registry.add(mk_clip(0.5, 20.0));
+
+        let mut stack = AnimationStack::new();
+        stack.layers.push(AnimationLayer::new(h_full));
+        stack.layers.push(AnimationLayer::new(h_half));
+
+        let (pos, _, _) = sample_blended_transform(&stack, &registry, node).unwrap();
+        // (10 * 1.0 + 20 * 0.5) / (1.0 + 0.5) = 20 / 1.5
+        let expected = 20.0 / 1.5;
+        assert!(
+            (pos.x - expected).abs() < 1e-4,
+            "clip.weight not applied: got {}, expected {}",
+            pos.x,
+            expected
+        );
+    }
+
     #[test]
     fn linear_scale_interpolation() {
         let ch = TransformChannel {

@@ -264,13 +264,14 @@ pub fn sample_blended_transform(
     let mut max_priority: Option<u8> = None;
     let mut total_weight = 0.0f32;
     for layer in &stack.layers {
-        let ew = layer.effective_weight();
-        if ew < 0.001 {
-            continue;
-        }
         let Some(clip) = registry.get(layer.clip_handle) else {
             continue;
         };
+        // `clip.weight` pre-attenuates the layer per #469.
+        let ew = layer.effective_weight() * clip.weight;
+        if ew < 0.001 {
+            continue;
+        }
         let Some(channel) = clip.channels.get(&channel_name) else {
             continue;
         };
@@ -307,13 +308,14 @@ pub fn sample_blended_transform(
     let mut accumulated_weight = 0.0f32;
 
     for layer in &stack.layers {
-        let ew = layer.effective_weight();
-        if ew < 0.001 {
-            continue;
-        }
         let Some(clip) = registry.get(layer.clip_handle) else {
             continue;
         };
+        // `clip.weight` pre-attenuates the layer per #469.
+        let ew = layer.effective_weight() * clip.weight;
+        if ew < 0.001 {
+            continue;
+        }
         let Some(channel) = clip.channels.get(&channel_name) else {
             continue;
         };
