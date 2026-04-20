@@ -287,9 +287,19 @@ impl NiSkinPartition {
                 }
             }
 
-            // Bone indices (conditional).
+            // Bone indices (conditional). Same `ver1="10.1.0.0"` gate
+            // as `has_faces` per nif.xml — pre-#174 we read the byte
+            // unconditionally, which on the (purely hypothetical)
+            // pre-10.1.0.0 NiSkinPartition path would have misaligned
+            // the stream by 1 byte. No supported Bethesda game is pre
+            // 10.1.0.0, so the fix is defensive symmetry with
+            // `has_faces` above. See #174.
             let bone_indices = {
-                let has = stream.read_byte_bool()?;
+                let has = if has_conditionals {
+                    stream.read_byte_bool()?
+                } else {
+                    true
+                };
                 if has {
                     let count = num_vertices as usize * num_weights_per_vertex as usize;
                     stream.read_bytes(count)?
