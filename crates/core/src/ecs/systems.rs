@@ -11,6 +11,8 @@
 //! (bounds propagation, billboard, animation ticks) may follow as the
 //! binary crate consolidates.
 
+use std::collections::VecDeque;
+
 use crate::ecs::components::{Children, GlobalTransform, Parent, Transform};
 use crate::ecs::storage::EntityId;
 use crate::ecs::world::World;
@@ -38,7 +40,7 @@ use crate::ecs::world::World;
 /// reallocating.
 pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + Sync {
     let mut roots: Vec<EntityId> = Vec::new();
-    let mut queue: Vec<EntityId> = Vec::new();
+    let mut queue: VecDeque<EntityId> = VecDeque::new();
 
     move |world: &World, _dt: f32| {
         roots.clear();
@@ -102,11 +104,11 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
 
         for &root in &roots {
             if let Some(children) = cq.get(root) {
-                queue.extend_from_slice(&children.0);
+                queue.extend(children.0.iter().copied());
             }
         }
 
-        while let Some(entity) = queue.pop() {
+        while let Some(entity) = queue.pop_front() {
             let Some(parent) = pq.get(entity) else {
                 continue;
             };
@@ -135,7 +137,7 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
             }
 
             if let Some(children) = cq.get(entity) {
-                queue.extend_from_slice(&children.0);
+                queue.extend(children.0.iter().copied());
             }
         }
     }
