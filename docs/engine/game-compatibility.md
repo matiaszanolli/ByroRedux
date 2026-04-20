@@ -39,8 +39,10 @@ parsers at 100% on the full mesh archive.
 - **Archive**: BSA v104 ✓ (zlib compression)
 - **ESM parser**: ~23 record types via cell parser, plus the full M24
   records pass (items, NPCs, factions, leveled lists, globals)
-- **Cell loading**: interior cells (Prospector Saloon: 789 entities,
-  85 FPS RT) + exterior 3×3 grid (WastelandNV: 720 entities)
+- **Cell loading**: interior cells (Prospector Saloon: 789 entities;
+  historical M22 bench ~85 FPS RT on RTX 4070 Ti — re-bench pending
+  per #456 since M31+/M36/M37/M37.5 shifted the cost curve) +
+  exterior 3×3 grid (WastelandNV: 720 entities)
 - **Lighting**: XCLL ambient + directional, multi-light SSBO with point
   lights from LIGH records, RT shadow rays per light
 - **Coordinate system**: Z-up→Y-up with CW rotation handling
@@ -60,8 +62,16 @@ cargo run -- --esm FalloutNV.esm \
 - **NIF parser**: 10,989 / 10,989 (100%)
 - **Archive**: BSA v104 ✓ (same reader as FNV)
 - **ESM parser**: same record set as FNV (FO3 and FNV share the engine)
-- **Cell loading**: Megaton Player House, 1609 entities, 199 textures
-  at 42 FPS — validated end-to-end during N23.4
+- **Cell loading**: Megaton Player House interior carries 929 REFRs
+  on-disk (validated 2026-04-19 via
+  `parse_real_fo3_megaton_cell_baseline`). Post-NIF-expansion entity
+  count from the N23.4 demo was ~1609 / 199 textures / 42 FPS;
+  that figure predates M31 / M36 / M37 / M37.5 and needs a fresh
+  GPU bench — tracked as #456.
+- **Exterior**: `wasteland` worldspace now on the auto-pick list
+  (#444); `--esm Fallout3.esm --grid 0,0 --bsa 'Fallout - Meshes.bsa'
+  --textures-bsa 'Fallout - Textures.bsa'` is the supported entry
+  point. End-to-end GPU bench tracked as #457.
 - **Status**: identical pipeline to FNV
 
 ### Tier 2: Working for assets, no cell loading yet

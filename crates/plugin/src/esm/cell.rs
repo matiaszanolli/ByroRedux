@@ -2706,6 +2706,45 @@ mod tests {
         }
     }
 
+    /// Regression bench for #456: pin the Megaton Player House parse-
+    /// side reference count. ROADMAP originally quoted "1609 entities,
+    /// 199 textures at 42 FPS" for MegatonPlayerHouse; the 1609 figure
+    /// was measured AFTER cell-loader NIF expansion (each REFR spawns
+    /// N ECS entities depending on its NIF block tree), so it isn't
+    /// a parse-side assertion.
+    ///
+    /// Disk-sampled on 2026-04-19 against Fallout 3 GOTY: 929 REFRs
+    /// live directly in the CELL. That's the stable number the
+    /// parser must not drop. The 42 FPS figure predates TAA / SVGF /
+    /// BLAS batching / streaming RIS and needs a fresh GPU bench —
+    /// tracked in #456.
+    #[test]
+    #[ignore]
+    fn parse_real_fo3_megaton_cell_baseline() {
+        let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data/Fallout3.esm";
+        if !std::path::Path::new(path).exists() {
+            eprintln!("Skipping: Fallout3.esm not found");
+            return;
+        }
+        let data = std::fs::read(path).unwrap();
+        let index = parse_esm_cells(&data).expect("parse_esm_cells");
+        let megaton = index
+            .cells
+            .iter()
+            .find(|(k, _)| k.contains("megaton") && k.contains("player"))
+            .expect("expected a Megaton Player House interior cell in Fallout3.esm")
+            .1;
+        eprintln!(
+            "MegatonPlayerHouse: {} REFRs (observed 929 on 2026-04-19)",
+            megaton.references.len(),
+        );
+        assert!(
+            megaton.references.len() > 800,
+            "expected >800 REFRs for MegatonPlayerHouse (observed 929), got {}",
+            megaton.references.len()
+        );
+    }
+
     /// Validates that `parse_esm_cells` handles Skyrim SE's 92-byte XCLL
     /// sub-records and can find The Winking Skeever interior cell.
     #[test]
