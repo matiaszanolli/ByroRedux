@@ -610,21 +610,40 @@ void main() {
     bool isGlass = isAlphaBlend && metalness < 0.1 && texColor.a < 0.6 && texColor.a > 0.02;
 
     if (isWindow && rtEnabled) {
-        // Cast a ray through the window in the view direction.
-        vec3 throughDir = -V; // continue along the camera's line of sight
-        rayQueryEXT windowRQ;
-        rayQueryInitializeEXT(
-            windowRQ, topLevelAS,
-            gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
-            0xFF,
-            fragWorldPos - N * 0.15, // start slightly behind the window surface (#269 R2-08: reduced from 0.5 to shrink blind zone)
-            0.05,
-            throughDir,
-            2000.0 // if nothing hit within 2000 units, it's "outside"
-        );
-        rayQueryProceedEXT(windowRQ);
-
-        bool hitsInterior = (rayQueryGetIntersectionTypeEXT(windowRQ, true) != gl_RayQueryCommittedIntersectionNoneEXT);
+        // Fire the portal-escape ray along the surface OUTWARD normal,
+        // not along `-V` (camera look direction). Pre-#421 the ray
+        // used `-V`, which at oblique viewing angles continued along
+        // the camera's line of sight and hit the interior sidewall /
+        // ceiling / opposite wall — the `!hitsInterior` check failed
+        // and the fragment fell through to the opaque alpha-blend
+        // path. Only near-perpendicular window fragments lit up.
+        // `-N` fires straight through the glass plane to the outside
+        // regardless of viewing angle, which is what portal semantics
+        // require. See #421 / audit REN-RT-H3.
+        //
+        // Defensive grazing-angle gate: at very oblique incidence
+        // (dot < 0.1, ~84° from normal) portal escape is ambiguous
+        // anyway — the glass is effectively edge-on and the fragment
+        // barely covers a pixel. Fall back to the opaque alpha-blend
+        // path rather than fire a ray whose hit result is noisy.
+        float windowFacing = dot(-V, N);
+        bool hitsInterior = true; // pessimistic default → alpha-blend path.
+        if (windowFacing > 0.1) {
+            vec3 throughDir = -N;
+            rayQueryEXT windowRQ;
+            rayQueryInitializeEXT(
+                windowRQ, topLevelAS,
+                gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+                0xFF,
+                fragWorldPos - N * 0.15, // start slightly outside the pane (#269 R2-08: reduced from 0.5 to shrink blind zone)
+                0.05,
+                throughDir,
+                2000.0 // if nothing hit within 2000 units, it's "outside"
+            );
+            rayQueryProceedEXT(windowRQ);
+            hitsInterior = (rayQueryGetIntersectionTypeEXT(windowRQ, true)
+                != gl_RayQueryCommittedIntersectionNoneEXT);
+        }
 
         if (!hitsInterior) {
             // Ray escaped the cell — this window sees sky.
