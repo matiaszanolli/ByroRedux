@@ -125,7 +125,7 @@ pub(super) fn walk_node_hierarchical(
     // children. Must be checked BEFORE as_ni_node() since these types
     // are no longer unwrapped there. See #212.
     if let Some((node, active_children)) = switch_active_children(block) {
-        if node.av.flags & 0x21 != 0 {
+        if node.av.flags & 0x01 != 0 {
             return;
         }
         if is_editor_marker(node.av.net.name.as_deref()) {
@@ -166,7 +166,7 @@ pub(super) fn walk_node_hierarchical(
     }
 
     if let Some(node) = as_ni_node(block) {
-        if node.av.flags & 0x21 != 0 {
+        if node.av.flags & 0x01 != 0 {
             return;
         }
         if is_editor_marker(node.av.net.name.as_deref()) {
@@ -219,12 +219,19 @@ pub(super) fn walk_node_hierarchical(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<NiTriShape>() {
-        // bit 0 = Hidden, bit 5 = EditorMarker (0x21 mask). Matches
-        // the NiNode gate above so shape-level editor markers (common
-        // on Skyrim+ MapMarker geometry where the flag rides on the
-        // shape, not the containing node) don't render as untextured
-        // debug pyramids. See #165 / audit N26-4-06.
-        if shape.av.flags & 0x21 != 0 {
+        // bit 0 = APP_CULLED (hidden). Editor-marker filtering runs
+        // as a sibling check below so shape-level editor markers
+        // (common on Skyrim+ MapMarker geometry where the flag rides
+        // on the shape, not the containing node) don't render as
+        // untextured debug pyramids. See #165 / audit N26-4-06.
+        //
+        // Pre-#332 the mask was `0x21` (APP_CULLED + bit 5). Bit 5 is
+        // DISPLAY_OBJECT_MASK per Gamebryo `NiAVObject.h` — the
+        // occlusion-display helper that SHOULD still render. The
+        // conflation was harmless on vanilla Bethesda content (which
+        // doesn't set that bit) but dropped modded geometry and
+        // anything authored with a Gamebryo-native tool.
+        if shape.av.flags & 0x01 != 0 {
             return;
         }
         if is_editor_marker(shape.av.net.name.as_deref()) {
@@ -239,12 +246,19 @@ pub(super) fn walk_node_hierarchical(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<BsTriShape>() {
-        // bit 0 = Hidden, bit 5 = EditorMarker (0x21 mask). Matches
-        // the NiNode gate above so shape-level editor markers (common
-        // on Skyrim+ MapMarker geometry where the flag rides on the
-        // shape, not the containing node) don't render as untextured
-        // debug pyramids. See #165 / audit N26-4-06.
-        if shape.av.flags & 0x21 != 0 {
+        // bit 0 = APP_CULLED (hidden). Editor-marker filtering runs
+        // as a sibling check below so shape-level editor markers
+        // (common on Skyrim+ MapMarker geometry where the flag rides
+        // on the shape, not the containing node) don't render as
+        // untextured debug pyramids. See #165 / audit N26-4-06.
+        //
+        // Pre-#332 the mask was `0x21` (APP_CULLED + bit 5). Bit 5 is
+        // DISPLAY_OBJECT_MASK per Gamebryo `NiAVObject.h` — the
+        // occlusion-display helper that SHOULD still render. The
+        // conflation was harmless on vanilla Bethesda content (which
+        // doesn't set that bit) but dropped modded geometry and
+        // anything authored with a Gamebryo-native tool.
+        if shape.av.flags & 0x01 != 0 {
             return;
         }
         if is_editor_marker(shape.av.net.name.as_deref()) {
@@ -302,7 +316,7 @@ pub(super) fn walk_node_flat(
 
     // NiSwitchNode / NiLODNode: only walk the active child (#212).
     if let Some((node, active_children)) = switch_active_children(block) {
-        if node.av.flags & 0x21 != 0 {
+        if node.av.flags & 0x01 != 0 {
             return;
         }
         if is_editor_marker(node.av.net.name.as_deref()) {
@@ -339,7 +353,7 @@ pub(super) fn walk_node_flat(
     }
 
     if let Some(node) = as_ni_node(block) {
-        if node.av.flags & 0x21 != 0 {
+        if node.av.flags & 0x01 != 0 {
             return;
         }
         if is_editor_marker(node.av.net.name.as_deref()) {
@@ -381,12 +395,19 @@ pub(super) fn walk_node_flat(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<NiTriShape>() {
-        // bit 0 = Hidden, bit 5 = EditorMarker (0x21 mask). Matches
-        // the NiNode gate above so shape-level editor markers (common
-        // on Skyrim+ MapMarker geometry where the flag rides on the
-        // shape, not the containing node) don't render as untextured
-        // debug pyramids. See #165 / audit N26-4-06.
-        if shape.av.flags & 0x21 != 0 {
+        // bit 0 = APP_CULLED (hidden). Editor-marker filtering runs
+        // as a sibling check below so shape-level editor markers
+        // (common on Skyrim+ MapMarker geometry where the flag rides
+        // on the shape, not the containing node) don't render as
+        // untextured debug pyramids. See #165 / audit N26-4-06.
+        //
+        // Pre-#332 the mask was `0x21` (APP_CULLED + bit 5). Bit 5 is
+        // DISPLAY_OBJECT_MASK per Gamebryo `NiAVObject.h` — the
+        // occlusion-display helper that SHOULD still render. The
+        // conflation was harmless on vanilla Bethesda content (which
+        // doesn't set that bit) but dropped modded geometry and
+        // anything authored with a Gamebryo-native tool.
+        if shape.av.flags & 0x01 != 0 {
             return;
         }
         if is_editor_marker(shape.av.net.name.as_deref()) {
@@ -400,12 +421,19 @@ pub(super) fn walk_node_flat(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<BsTriShape>() {
-        // bit 0 = Hidden, bit 5 = EditorMarker (0x21 mask). Matches
-        // the NiNode gate above so shape-level editor markers (common
-        // on Skyrim+ MapMarker geometry where the flag rides on the
-        // shape, not the containing node) don't render as untextured
-        // debug pyramids. See #165 / audit N26-4-06.
-        if shape.av.flags & 0x21 != 0 {
+        // bit 0 = APP_CULLED (hidden). Editor-marker filtering runs
+        // as a sibling check below so shape-level editor markers
+        // (common on Skyrim+ MapMarker geometry where the flag rides
+        // on the shape, not the containing node) don't render as
+        // untextured debug pyramids. See #165 / audit N26-4-06.
+        //
+        // Pre-#332 the mask was `0x21` (APP_CULLED + bit 5). Bit 5 is
+        // DISPLAY_OBJECT_MASK per Gamebryo `NiAVObject.h` — the
+        // occlusion-display helper that SHOULD still render. The
+        // conflation was harmless on vanilla Bethesda content (which
+        // doesn't set that bit) but dropped modded geometry and
+        // anything authored with a Gamebryo-native tool.
+        if shape.av.flags & 0x01 != 0 {
             return;
         }
         if is_editor_marker(shape.av.net.name.as_deref()) {
@@ -432,7 +460,7 @@ pub(super) fn walk_node_lights(
     };
 
     if let Some(node) = as_ni_node(block) {
-        if node.av.flags & 0x21 != 0 {
+        if node.av.flags & 0x01 != 0 {
             return;
         }
         if is_editor_marker(node.av.net.name.as_deref()) {
@@ -527,7 +555,7 @@ pub(super) fn walk_node_particle_emitters_flat(
     };
 
     if let Some(node) = as_ni_node(block) {
-        if node.av.flags & 0x21 != 0 {
+        if node.av.flags & 0x01 != 0 {
             return;
         }
         let world_transform = compose_transforms(parent_transform, &node.av.transform);
