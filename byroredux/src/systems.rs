@@ -1,9 +1,9 @@
 //! ECS systems for the application: camera, animation, transform propagation, etc.
 
 use byroredux_core::animation::{
-    advance_stack, advance_time, collect_stack_text_events, collect_text_key_events,
-    sample_blended_transform, sample_bool_channel, sample_color_channel, sample_float_channel,
-    sample_rotation, sample_scale, sample_translation, split_root_motion, AnimationClipRegistry,
+    advance_stack, advance_time, sample_blended_transform, sample_bool_channel,
+    sample_color_channel, sample_float_channel, sample_rotation, sample_scale, sample_translation,
+    split_root_motion, visit_stack_text_events, visit_text_key_events, AnimationClipRegistry,
     AnimationPlayer, AnimationStack, FloatTarget, RootMotionDelta,
 };
 use byroredux_core::ecs::storage::EntityId;
@@ -212,29 +212,27 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         }
     } // AnimationPlayer lock released here
 
-    // Emit text key events for AnimationPlayer entities (#211).
+    // Emit text key events for AnimationPlayer entities (#211 / #339).
     {
         use byroredux_scripting::events::{AnimationTextKeyEvent, AnimationTextKeyEvents};
         let mut eq = world.query_mut::<AnimationTextKeyEvents>().unwrap();
+        let mut events: Vec<AnimationTextKeyEvent> = Vec::new();
         for ps in &playback_states {
             let Some(clip) = registry.get(ps.clip_handle) else {
                 continue;
             };
-            let labels = collect_text_key_events(clip, ps.prev_time, ps.current_time);
-            if !labels.is_empty() {
-                let events: Vec<_> = labels
-                    .into_iter()
-                    .map(|label| {
-                        let time = clip
-                            .text_keys
-                            .iter()
-                            .find(|(_, l)| *l == label)
-                            .map(|(t, _)| *t)
-                            .unwrap_or(ps.current_time);
-                        AnimationTextKeyEvent { label, time }
-                    })
-                    .collect();
-                eq.insert(ps.entity, AnimationTextKeyEvents(events));
+            events.clear();
+            visit_text_key_events(clip, ps.prev_time, ps.current_time, |time, label| {
+                events.push(AnimationTextKeyEvent {
+                    label: label.to_owned(),
+                    time,
+                });
+            });
+            if !events.is_empty() {
+                eq.insert(
+                    ps.entity,
+                    AnimationTextKeyEvents(std::mem::take(&mut events)),
+                );
             }
         }
     }
@@ -410,7 +408,11 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         // into owned / registry-borrowed data so the lock drops before any
         // writes. Dominant info is stored as (clip_handle, local_time) —
         // NO channel Vec clones (#265).
-        let events;
+        // Text-key events scratch + dedup seen-set (#339). Owned by
+        // this call; Vec capacity amortizes across layers.
+        use byroredux_scripting::events::AnimationTextKeyEvent;
+        let mut events: Vec<AnimationTextKeyEvent> = Vec::new();
+        let mut seen_labels: Vec<&str> = Vec::new();
         let accum_root: Option<FixedString>;
         let dominant_info: Option<(u32, f32)>;
         let stack_root: Option<EntityId>;
@@ -419,8 +421,14 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
             let stack = sq.get(entity).unwrap();
             stack_root = stack.root_entity;
 
-            // Text key events (#211).
-            events = collect_stack_text_events(stack, &registry);
+            // Text key events (#211 / #339) — visitor form allocates
+            // `AnimationTextKeyEvent` only when events actually fire.
+            visit_stack_text_events(stack, &registry, &mut seen_labels, |time, label| {
+                events.push(AnimationTextKeyEvent {
+                    label: label.to_owned(),
+                    time,
+                });
+            });
 
             // Scoped name resolver — reads subtree cache (outer lock).
             let stack_scoped_map = stack
@@ -495,13 +503,9 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
 
         // Phase 3a: emit text events (write lock on a different component).
         if !events.is_empty() {
-            use byroredux_scripting::events::{AnimationTextKeyEvent, AnimationTextKeyEvents};
+            use byroredux_scripting::events::AnimationTextKeyEvents;
             let mut eq = world.query_mut::<AnimationTextKeyEvents>().unwrap();
-            let events: Vec<_> = events
-                .into_iter()
-                .map(|(label, time)| AnimationTextKeyEvent { label, time })
-                .collect();
-            eq.insert(entity, AnimationTextKeyEvents(events));
+            eq.insert(entity, AnimationTextKeyEvents(std::mem::take(&mut events)));
         }
 
         // Phase 3b: apply blended transforms with root motion splitting (AR-02).

@@ -7,7 +7,7 @@ use crate::string::FixedString;
 
 use super::interpolation::{sample_rotation, sample_scale, sample_translation};
 use super::registry::AnimationClipRegistry;
-use super::text_events::collect_text_key_events;
+use super::text_events::visit_text_key_events;
 use super::types::CycleType;
 
 /// A single animation layer in an AnimationStack.
@@ -192,16 +192,21 @@ pub fn advance_stack(stack: &mut AnimationStack, registry: &AnimationClipRegistr
     stack.cleanup_finished();
 }
 
-/// Collect text key events from all active layers in a stack.
+/// Visit every text key event fired across all active layers of a stack
+/// between each layer's `prev_time` and `local_time`, deduplicating
+/// labels so overlapping layers don't fire the same event twice. The
+/// visitor is called once per unique label with `(time, label)`.
 ///
-/// Must be called after `advance_stack()` — each layer's `prev_time` and
-/// `local_time` bracket the time window to scan. Deduplicates labels so
-/// overlapping layers don't fire the same event twice.
-pub fn collect_stack_text_events(
+/// Zero allocations — the caller supplies a `&mut Vec<&str>` scratch
+/// buffer for the seen-set so the scratch can be reused frame-to-frame.
+/// Must be called after `advance_stack()`.
+pub fn visit_stack_text_events<'clip>(
     stack: &AnimationStack,
-    registry: &AnimationClipRegistry,
-) -> Vec<(String, f32)> {
-    let mut events = Vec::new();
+    registry: &'clip AnimationClipRegistry,
+    seen: &mut Vec<&'clip str>,
+    mut visit: impl FnMut(f32, &'clip str),
+) {
+    seen.clear();
     for layer in &stack.layers {
         if !layer.playing || layer.effective_weight() < 0.001 {
             continue;
@@ -209,19 +214,36 @@ pub fn collect_stack_text_events(
         let Some(clip) = registry.get(layer.clip_handle) else {
             continue;
         };
-        for label in collect_text_key_events(clip, layer.prev_time, layer.local_time) {
-            // Find the timestamp for this label in the clip's text_keys.
-            let time = clip
-                .text_keys
-                .iter()
-                .find(|(_, l)| *l == label)
-                .map(|(t, _)| *t)
-                .unwrap_or(layer.local_time);
-            if !events.iter().any(|(l, _): &(String, f32)| *l == label) {
-                events.push((label, time));
+        visit_text_key_events(clip, layer.prev_time, layer.local_time, |time, label| {
+            // Deduplicate labels across layers. Small seen-set (usually
+            // 0–3 entries per frame); linear scan is cheaper than a
+            // hash set at that size.
+            if seen.iter().any(|s| *s == label) {
+                return;
             }
-        }
+            // Re-borrow the label from the clip so the 'clip lifetime
+            // is preserved past the visitor closure. The clip's
+            // text_keys vector is not mutated while we hold it.
+            if let Some((_, clip_label)) = clip.text_keys.iter().find(|(_, l)| l == label) {
+                seen.push(clip_label.as_str());
+                visit(time, clip_label.as_str());
+            }
+        });
     }
+}
+
+/// Allocation-full wrapper around `visit_stack_text_events` — retained
+/// for test ergonomics. Hot paths in `byroredux::systems` should
+/// call the visitor form directly.
+pub fn collect_stack_text_events(
+    stack: &AnimationStack,
+    registry: &AnimationClipRegistry,
+) -> Vec<(String, f32)> {
+    let mut events = Vec::new();
+    let mut seen: Vec<&str> = Vec::new();
+    visit_stack_text_events(stack, registry, &mut seen, |time, label| {
+        events.push((label.to_owned(), time));
+    });
     events
 }
 

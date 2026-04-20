@@ -20,10 +20,10 @@ pub use player::{advance_time, AnimationPlayer};
 pub use registry::AnimationClipRegistry;
 pub use root_motion::{split_root_motion, RootMotionDelta};
 pub use stack::{
-    advance_stack, collect_stack_text_events, sample_blended_transform, AnimationLayer,
-    AnimationStack,
+    advance_stack, collect_stack_text_events, sample_blended_transform, visit_stack_text_events,
+    AnimationLayer, AnimationStack,
 };
-pub use text_events::collect_text_key_events;
+pub use text_events::{collect_text_key_events, visit_text_key_events};
 pub use types::{
     AnimBoolKey, AnimColorKey, AnimFloatKey, AnimationClip, BoolChannel, ColorChannel, ColorTarget,
     CycleType, FloatChannel, FloatTarget, KeyType, RotationKey, ScaleKey, TransformChannel,
