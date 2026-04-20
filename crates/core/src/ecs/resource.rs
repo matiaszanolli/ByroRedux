@@ -44,12 +44,6 @@ impl<R: Resource> Drop for ResourceRead<'_, R> {
     }
 }
 
-impl<R: Resource> Drop for ResourceWrite<'_, R> {
-    fn drop(&mut self) {
-        lock_tracker::untrack_write(self.type_id);
-    }
-}
-
 impl<R: Resource> Deref for ResourceRead<'_, R> {
     type Target = R;
     fn deref(&self) -> &R {
@@ -82,6 +76,12 @@ impl<'w, R: Resource> ResourceWrite<'w, R> {
             type_id,
             _marker: PhantomData,
         }
+    }
+}
+
+impl<R: Resource> Drop for ResourceWrite<'_, R> {
+    fn drop(&mut self) {
+        lock_tracker::untrack_write(self.type_id);
     }
 }
 
