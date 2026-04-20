@@ -12,14 +12,15 @@ Source: [`crates/nif/src/`](../../crates/nif/src/)
 
 | | |
 |---|---|
-| Block types parsed       | ~185 (+30 Havok types skipped via `block_size`) |
+| Block types parsed       | ~190 (+30 Havok types skipped via `block_size`) |
 | Distinct type names      | 215+ |
 | Game variants supported  | 8 (Morrowind → Starfield) |
-| Tests (unit)             | 286 (includes `dispatch_tests`, per-game regressions for #322–#325, and session-11 closeout tests) |
+| Tests (unit)             | 340+ (includes `dispatch_tests`, per-game regressions, Session 12 closeout — BSGeometryDataFlags, TileShaderProperty, FO3 double-sided, decal flag helper, allocate_vec sweep) |
 | Integration sweeps       | 7 games, 100% each |
 | Cumulative NIFs parsed   | 177,286 (full mesh archive sweeps) |
 | BGSM / BGEM references   | Surfaced as `ImportedMesh.material_path` when the NiNet name is a material file (BSVER ≥ 155) |
 | Import cache             | Process-lifetime resource (#381) — each unique NIF parses once per process, not once per cell |
+| OOM hardening            | Every stream-derived `Vec::with_capacity` routed through `stream.allocate_vec(count)?` which bounds `count` against remaining file bytes (#388 + #408) — a corrupt `u32::MAX` count errors cleanly instead of aborting the process |
 
 ## Module map
 
@@ -247,12 +248,28 @@ layouts pulled straight from `nif.xml`.
 ### Shaders
 - **FO3/FNV**: `BSShaderPPLightingProperty` (with refraction/parallax),
   `BSShaderNoLightingProperty`, `BSShaderTextureSet`
-- **Oblivion specializations** (all alias to `BSShaderPPLightingProperty`
+- **Oblivion specializations** (alias to `BSShaderPPLightingProperty`
   since they share the base texture-set + flags layout — see #145):
   `SkyShaderProperty`, `WaterShaderProperty`, `TallGrassShaderProperty`,
-  `Lighting30ShaderProperty`, `TileShaderProperty`, `HairShaderProperty`,
+  `Lighting30ShaderProperty`, `HairShaderProperty`,
   `VolumetricFogShaderProperty`, `DistantLODShaderProperty`,
   `BSDistantTreeShaderProperty`, `BSSkyShaderProperty`, `BSWaterShaderProperty`
+- **`TileShaderProperty`** (#455) — FO3 HUD / UI tile shader. Splits
+  out of the aliased group and gets its own parser matching nif.xml's
+  `BSShaderLightingProperty` + File Name SizedString layout. Pre-fix
+  the aliased PPLighting parser over-read 20-28 bytes and dropped the
+  filename; `stealthindicator.nif` / `airtimer.nif` probes now parse
+  with zero warnings. Other aliased subclasses have the same defect
+  (tracked as a future sweep).
+- **`BsShaderController`** family (#350) — the five Skyrim+ shader
+  property controllers (`BSEffectShaderPropertyFloatController` /
+  `...ColorController`, `BSLightingShaderPropertyFloatController` /
+  `...ColorController` / `...UShortController`) each trail
+  `NiSingleInterpController` with a `uint` enum naming the driven
+  slot. Preserved on the block as
+  `ShaderControllerKind::{EffectFloat, EffectColor, LightingFloat, LightingColor, LightingUShort}(u32)`
+  so the animation importer can route key streams to the correct
+  uniform when the animated-shader pipeline lands.
 - **Skyrim+/FO4**: `BSLightingShaderProperty` (8 shader-type variants —
   EnvironmentMap, SkinTint, HairTint, ParallaxOcc, MultiLayerParallax,
   SparkleSnow, EyeEnvmap, None), `BSEffectShaderProperty`
@@ -582,3 +599,95 @@ the `/audit-nif` and `/audit-renderer` sweeps.
 Dispatch table is unchanged; this session was all semantic corrections and
 import-layer follow-through. Per-game parse rates stayed at 100% across all
 177,286 NIFs.
+
+## Session 12 closeout — 2026-04 audit sweep
+
+Second bug-bash driven by `AUDIT_FO3_2026-04-19.md` and
+`AUDIT_FNV_2026-04-20.md`. Focus: latent correctness issues behind
+`block_sizes` recovery — cases where parse stayed at 100% but the
+structured data landed zero-initialised, wrong, or in the wrong field.
+
+**Parser correctness:**
+- `#408` — blanket sweep: every stream-derived `Vec::with_capacity(N)`
+  routed through `stream.allocate_vec(N)?`. 60+ sites across 12 files
+  plus inline byte-budget guards on the pre-stream header reader.
+  Subsumes #388. A malicious or drifted u32/u16 count now returns
+  `InvalidData` instead of abort.
+- `#440` / NIF-010 — `NiGeometryData.dataFlags` bit decode now splits
+  on `bsver > 0 && version == 20.2.0.7`. Bethesda `BSGeometryDataFlags`
+  uses **bit 0** as `Has UV` (0 or 1 UV set) and **bit 12** as
+  `Has Tangents`; non-Bethesda `NiGeometryDataFlags` is the Gamebryo
+  layout with **bits 0-5** as a 6-bit UV count and **bits 12-15** as
+  an NBT method enum. Pre-fix every Bethesda stream used the Gamebryo
+  decode, so a FO3 FaceGen head with `data_flags = 0x1003` asked for 3
+  UV sets when only 1 was serialised — the 20,912-byte over-read then
+  blew past EOF and demoted the `NiTriShapeData` to `NiUnknown`.
+  `headfemalefacegen.nif` now parses clean; `parallaxDisplaceUV` +
+  normal + albedo all sample at the correct UV.
+- `#402` — Oblivion KF files: `NiControllerSequence` for v ∈
+  `[10.1.0.113, 20.1.0.1)` trails a `Ref<NiStringPalette>` after
+  `accum_root_name` per Gamebryo 2.3 source. Without it, every
+  Oblivion KF drifted 4 bytes and `import_kf` returned zero clips
+  across all 1843 files. Also added palette-backed string resolution
+  to `import_sequence` for the offset-indexed ControlledBlocks.
+  Measured impact on full FO3 KF corpus: `NiTransformData` went from
+  3 → 40,623 parsed.
+- `#455` — `TileShaderProperty` broke out of the aliased PPLighting
+  dispatch and got its own parser.
+- `#333` — `matrix3_to_quat` fast path now normalises its quaternion
+  output. The determinant gate `|det - 1.0| < 0.1` admits matrices
+  scaled ~3.5%, so Shepperd's formula produced non-unit quats on
+  export-tool-drifted rotations; downstream `Quat::from_xyzw` doesn't
+  normalise. Fix is 1 sqrt + 4 muls at the end of the helper; SVD
+  fallback is unit by construction.
+
+**Import path correctness:**
+- `#441` — removed the bogus `SF_DOUBLE_SIDED = 0x1000` check on FO3/FNV
+  `BSShaderPPLightingProperty` + `BSShaderNoLightingProperty`. Verified
+  against nif.xml: the Fallout3ShaderFlags enum has no Double_Sided bit
+  — flags1 bit 12 is `Unknown_3` (crash bit), flags2 bit 4 is
+  `Refraction_Tint`. Skyrim+/FO4 `SkyrimShaderPropertyFlags2` is where
+  Double_Sided actually lives (bit 4 on flags2); that path is unchanged.
+  FO3/FNV meshes use `NiStencilProperty` for backface control
+  (Gamebryo-canonical mechanism).
+- `#454` — factored shared `is_decal_from_shader_flags(flags1, flags2)`
+  helper so PP / NoLighting / BSLighting decal detection stays in
+  lockstep. NoLighting branch was missing the `ALPHA_DECAL_F2` (flag2
+  bit 21) check; blood-splat meshes authored as flag2-only-decal
+  fell through to the opaque coplanar path.
+- `#452` — `BSShaderTextureSet` slots 3/4/5 (parallax height / env
+  cubemap / env mask) now reach `MaterialInfo` on both PPLighting
+  (FO3/FNV) and BSLighting (Skyrim+) paths. Also routes
+  `BSShaderPPLightingProperty.parallax_max_passes` / `parallax_scale`
+  scalars on FO3/FNV so the POM pipeline has consistent inputs
+  across eras.
+- `#400` — `NiTexturingProperty.decal_textures: Vec<TexDesc>` now
+  retained instead of read-and-discarded. Blood splatters, map
+  decals, faction symbols ride through as `MaterialInfo.decal_maps`.
+- `#350` — Skyrim+ shader controllers preserve the controlled-variable
+  enum (see Shaders section above).
+- `#329` — added `read_extra_data_name()` with the `since=10.0.1.0` gate;
+  replaced 9 direct `read_string()` calls across the NiExtraData
+  subclass parsers. Latent for Bethesda content (which is all
+  ≥ 10.0.1.0) but now hardened against fuzzed / non-Bethesda input.
+- `#330` — `NiExtraData::parse` 3-way branch: v ≤ 4.2.2.0
+  (legacy linked-list format), v ∈ (4.2.2.0, 10.0.1.0) (gap window —
+  just subclass body), v ≥ 10.0.1.0 (modern NiObjectNET). Tightened
+  the legacy gate from the overly-wide `< 10.0.1.0`.
+
+**Dispatch additions:**
+- `#443` — `SCPT` pre-Papyrus bytecode records parse. Full sub-record
+  coverage: SCHR / SCDA / SCTX / SLSD+SCVR / SCRV+SCRO. 1257 scripts
+  in Fallout3.esm now reach `EsmIndex.scripts`.
+- `#442` / `#448` — `CREA` + `LVLC` (creature base + leveled creature
+  lists); reused `parse_npc` and `parse_leveled_list` respectively.
+- `#458` — WATR / NAVI / NAVM / REGN / ECZN / LGTM / HDPT / EYES /
+  HAIR stub parsers so downstream refs stop dangling.
+
+**Deferred:**
+- `#331` — Havok constraint parsers under-read by ~141 bytes per block.
+  `block_sizes` recovery keeps the stream aligned; dropped pivot / axis /
+  limit data has no consumer until physics wiring lands. Closed as
+  deferred per the audit's own recommendation.
+
+Per-game parse rates stayed at 100% across all 177,286 NIFs throughout.

@@ -3,26 +3,27 @@
 ByroRedux uses two layers of tests:
 
 1. **Unit tests** (`#[cfg(test)] mod tests` inside source files) — fast,
-   no game data required, run on every `cargo test`. **867 passing**.
+   no game data required, run on every `cargo test`. **888 passing**
+   (Session 12 closeout, 2026-04-20).
 2. **Integration tests** (`#[ignore]`'d by default) — exercise real game
    archives, parse rates, and end-to-end byte-level round-trips. Need
    the relevant game installed and resolve paths via env vars or Steam
-   defaults. Run with `cargo test ... -- --ignored`. **32 in total.**
+   defaults. Run with `cargo test ... -- --ignored`. **35 in total.**
 
 The split keeps CI fast and game-data-free while letting developers run
 the heavy sweeps locally on demand.
 
 ## Per-crate test counts
 
-Numbers are accurate at the time of writing (session 12 closeout,
-2026-04-19). For a live count, run
-`cargo test 2>&1 | grep "test result" | awk '{sum += $4} END {print sum}'`.
+Numbers are accurate at the time of writing (Session 12 closeout,
+2026-04-20). For a live count, run
+`cargo test 2>&1 | awk '/test result/ {pass+=$4; fail+=$6} END {printf "pass=%d fail=%d\n", pass, fail}'`.
 
 | Crate | Unit tests | Ignored |
 |---|---|---|
-| `byroredux-core` | 206 | — |
-| `byroredux-nif` | 336 | 9 (parse_real_nifs) |
-| `byroredux-plugin` | 123 | 9 |
+| `byroredux-core` | 207 | — |
+| `byroredux-nif` | 340+ | 9 (parse_real_nifs) |
+| `byroredux-plugin` | 136 | 11 (FO3 CREA/LVLC/SCPT/Megaton + FNV/Skyrim/Oblivion) |
 | `byroredux-physics` | 17 | — |
 | `byroredux-renderer` | 62 | — |
 | `byroredux-papyrus` | 45 | — |
@@ -31,10 +32,10 @@ Numbers are accurate at the time of writing (session 12 closeout,
 | `byroredux-debug-protocol` | 4 | — |
 | `byroredux-debug-server` | — | — |
 | `byroredux-platform` | — | — |
-| `byroredux` (binary) | 32 | 2 |
+| `byroredux` (binary) | 37 | 2 |
 | Integration: `synthetic_fixtures.rs` | 9 | — |
 | Integration: `parse_real_nifs.rs` | 3 | (included above) |
-| **Total** | **867** | **27** |
+| **Total** | **888** | **~35** |
 
 ## Unit test coverage by area
 
@@ -101,6 +102,9 @@ paths on the reference development machine.
 | `parse_rate_smoke_all_games`                               | First 50 NIFs from each available game                                      |
 | `parse_real_fnv_esm` (cell side)                           | Loads `FalloutNV.esm`, asserts >100 cells, >1000 statics, Saloon refs       |
 | `parse_real_fnv_esm_record_counts` (M24)                   | Asserts FNV item / NPC / faction / global counts                            |
+| `parse_real_fo3_megaton_cell_baseline` (#456)              | Asserts Megaton Player House carries 929 REFRs on-disk (entity/FPS re-bench pending GPU run) |
+| `parse_real_fo3_esm_crea_and_lvlc_counts` (#442 / #448)    | Asserts FO3 CREA (>400 observed 533) and LVLC (>40 observed 60) counts       |
+| `parse_real_fo3_esm_scpt_count_and_scri_resolves` (#443)   | Asserts FO3 SCPT (>500 observed 1257) and SCRV/SCRO cross-ref (>100 observed 1184) |
 | `byroredux-bsa` archive tests                              | FNV BSA open/list/contains/extract/decompress round-trips                   |
 | `byroredux` binary doc tests / args parsing                | CLI help, env var override                                                  |
 
@@ -120,7 +124,7 @@ the `nif_stats` example binary in `crates/nif/examples/nif_stats.rs`.
 ## Running tests
 
 ```bash
-# Default — fast, no game data required (~372 tests)
+# Default — fast, no game data required (~888 tests)
 cargo test
 
 # A single crate

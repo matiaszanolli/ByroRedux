@@ -27,29 +27,35 @@ Source: [`crates/plugin/src/esm/`](../../crates/plugin/src/esm/)
 
 | | |
 |---|---|
-| Reader file size | 386 lines (`reader.rs`) |
-| Cell parser | 724 lines (`cell.rs`) |
-| Records parser | 6 files in `records/` (~1900 lines) |
-| Record categories supported | 10 (items, containers, leveled lists, NPCs, races, classes, factions, globals, game settings, cells) |
-| Specific record types | 35+ |
-| Tests (unit) | 105 |
+| Reader file size | `reader.rs` — record/group readers + `FormIdRemap` |
+| Cell parser | `cell.rs` — CELL / WRLD / STAT / LAND / XCLW / XESP |
+| Records parser | 10 files in `records/` (items, container, actor, global, climate, weather, scol, script, misc, common) |
+| Record categories indexed on `EsmIndex` | 18 (items, containers, LVLI/LVLN/LVLC, NPCs, creatures, races, classes, factions, globals, game settings, weathers, climates, scripts, WATR/NAVI/NAVM/REGN/ECZN/LGTM/HDPT/EYES/HAIR) |
+| Tests (unit + integration) | 133+ |
 | Real FNV.esm record count | 13,684 (release-mode parse: 0.19 s) |
+| Real FO3.esm CREA / LVLC / SCPT | 533 / 60 / 1257 (observed 2026-04-19) |
 | Exterior grid load | Single ESM walk (#374), was three |
+| Multi-plugin FormID remap | `parse_esm_with_load_order` (#445) — single-plugin is identity |
 
 ## Module map
 
 ```
 crates/plugin/src/esm/
 ├── mod.rs            Public re-exports
-├── reader.rs         Low-level binary reader (records, sub-records, groups)
+├── reader.rs         Low-level reader + `FormIdRemap` load-order rewrite
 ├── cell.rs           CELL/REFR/STAT/WRLD walker, lighting, exterior grids
 └── records/
-    ├── mod.rs        EsmIndex aggregator + parse_esm() entry point
+    ├── mod.rs        EsmIndex aggregator + parse_esm{,_with_load_order}
     ├── common.rs     Sub-record helpers (find_sub, read_zstring, ...)
     ├── items.rs      WEAP, ARMO, AMMO, MISC, KEYM, ALCH, INGR, BOOK, NOTE
-    ├── container.rs  CONT, LVLI, LVLN
-    ├── actor.rs      NPC_, RACE, CLAS, FACT
-    └── global.rs     GLOB, GMST
+    ├── container.rs  CONT, LVLI, LVLN, LVLC
+    ├── actor.rs      NPC_, CREA, RACE, CLAS, FACT
+    ├── global.rs     GLOB, GMST
+    ├── climate.rs    CLMT + TNAM sunrise/sunset hours
+    ├── weather.rs    WTHR sky color tables, cloud layers, fog
+    ├── scol.rs       SCOL static-collection body (ONAM + DATA[])
+    ├── script.rs     SCPT pre-Papyrus bytecode (SCHR / SCDA / SCTX / SLSD+SCVR / SCRV+SCRO)
+    └── misc.rs       WATR / NAVI / NAVM / REGN / ECZN / LGTM / HDPT / EYES / HAIR stubs
 ```
 
 ## File format primer
@@ -232,6 +238,10 @@ parser:
 
 ```rust
 pub fn parse_esm(data: &[u8]) -> Result<EsmIndex>;
+pub fn parse_esm_with_load_order(
+    data: &[u8],
+    remap: Option<FormIdRemap>,
+) -> Result<EsmIndex>;
 
 #[derive(Debug, Default)]
 pub struct EsmIndex {
@@ -240,14 +250,31 @@ pub struct EsmIndex {
     pub containers: HashMap<u32, ContainerRecord>,
     pub leveled_items: HashMap<u32, LeveledList>,
     pub leveled_npcs: HashMap<u32, LeveledList>,
+    pub leveled_creatures: HashMap<u32, LeveledList>, // LVLC — #448
     pub npcs: HashMap<u32, NpcRecord>,
+    pub creatures: HashMap<u32, NpcRecord>,           // CREA — #442
     pub races: HashMap<u32, RaceRecord>,
     pub classes: HashMap<u32, ClassRecord>,
     pub factions: HashMap<u32, FactionRecord>,
     pub globals: HashMap<u32, GlobalRecord>,
     pub game_settings: HashMap<u32, GameSetting>,
+    pub weathers: HashMap<u32, WeatherRecord>,
+    pub climates: HashMap<u32, ClimateRecord>,
+    pub scripts: HashMap<u32, ScriptRecord>,          // SCPT — #443
+    pub waters: HashMap<u32, WatrRecord>,             // WATR — #458
+    pub navi: HashMap<u32, NaviRecord>,               // NAVI
+    pub navm: HashMap<u32, NavmRecord>,               // NAVM
+    pub regions: HashMap<u32, RegnRecord>,            // REGN
+    pub encounter_zones: HashMap<u32, EcznRecord>,    // ECZN
+    pub light_templates: HashMap<u32, LgtmRecord>,    // LGTM
+    pub head_parts: HashMap<u32, HdptRecord>,         // HDPT
+    pub eyes: HashMap<u32, EyesRecord>,               // EYES
+    pub hairs: HashMap<u32, HairRecord>,              // HAIR
 }
 ```
+
+(Exact field names match `crates/plugin/src/esm/records/mod.rs`; the
+trailing 9 maps are the #458 stub parsers.)
 
 Existing `parse_esm_cells()` callers continue to work — they get just
 `.cells`. Two passes over a 100 MB ESM run in well under a second on a
@@ -507,6 +534,55 @@ architecture work:
   (`tes3.rs` / `tes4.rs` / etc.) were dead; deleted and the live
   `EsmIndex` aggregator is now the only entry point.
 
+## Session 12 (2026-04 audit sweep)
+
+Second expansion drove the parser from 10 to 18 indexed record
+categories, mostly FO3-shaped records that the FNV dev pass had
+quietly skipped because FNV routed the same game behaviour through
+different types. Filed from `docs/audits/AUDIT_FO3_2026-04-19.md`
+and `docs/audits/AUDIT_FNV_2026-04-20.md`:
+
+- **`CREA`** (#442) — creature base records. FO3 bestiary (super
+  mutants, deathclaws, radroaches, robots). FNV migrated most of the
+  roster to NPC_, masking the gap. `parse_npc` is reused — the
+  record schemas overlap on EDID / FULL / MODL / RNAM / CNAM / SNAM /
+  CNTO / PKID / ACBS. Live FO3 corpus: **533 CREA**.
+- **`LVLC`** (#448) — leveled creature lists (FO3 encounter zones).
+  Byte-identical to LVLI / LVLN → same `parse_leveled_list`. Live
+  FO3 corpus: **60 LVLC**.
+- **`SCPT`** (#443) — pre-Papyrus bytecode. Full structural parse:
+  SCHR header (num_refs / compiled_size / var_count /
+  `ScriptType::{Object,Quest,MagicEffect,Unknown(raw)}` / flags),
+  SCDA opaque bytecode, SCTX source (optional), SLSD+SCVR paired
+  local-var metadata, SCRV+SCRO FormID cross-refs. Runtime execution
+  is out of scope; the ECS-native scripting track consumes this
+  later. Live FO3 corpus: **1257 SCPT**, 1184 with cross-refs.
+- **`CLMT`** — already parsed for weather probability, now threaded
+  through `weather_system` for per-worldspace sunrise/sunset
+  breakpoints (#463). CLMT `TNAM` bytes are in 10-minute units →
+  `hour = byte / 6`. FO3 Capital Wasteland ships ~0.3 hr earlier
+  sunrise than FNV Mojave; before #463 both ran on a hardcoded
+  FNV clock. `WeatherDataRes.tod_hours: [f32; 4]` drives the
+  interpolator; `build_tod_keys(tod_hours)` derives a 7-entry key
+  table with synthesised midnight + afternoon re-anchor.
+- **Stub misc records** (#458) — WATR / NAVI / NAVM / REGN / ECZN /
+  LGTM / HDPT / EYES / HAIR all got minimal parsers so downstream
+  references stop dangling. Each captures the minimum (EDID + a
+  handful of FormID refs / scalar fields) each consumer needs;
+  deep per-type parsing lands when that consumer wires up.
+- **`HEDR` version bands** (#439) — FO3 GOTY ships HEDR=0.94, FO4
+  ships 1.0, Starfield 0.96. Sampled every installed master on
+  2026-04-19 to pin `GameKind::from_header` band edges. Prior bands
+  routed FO3's 0.94 to FO4 and FO4's 1.0 to Fallout3NV — the
+  FO3↔FO4 classification was inverted for every vanilla master.
+- **`FormIdRemap`** (#445) — mod-index top-byte rewrite for
+  multi-plugin load orders. `read_record_header` routes the record
+  FormID through the installed remap so Anchorage.esm's self-refs
+  (0x01_*) and BrokenSteel.esm's self-refs (also 0x01_* in-file)
+  land in distinct global slots. Single-plugin loads are identity
+  by default. CLI multi-plugin mode is follow-up work; the plumbing
+  is in place.
+
 ## Phase 2 — deferred
 
 The following record types stay deferred until the runtime systems that
@@ -522,6 +598,16 @@ consume them come online:
   the effect runtime.
 - **`AVIF`** — actor value definitions. Currently referenced by raw form
   ID; this is just metadata mapping, low value standalone.
+- **`PACK`** AI packages (#446) — 30 composable procedures per the
+  legacy catalogue; `NpcRecord.ai_packages` collects PKID refs, the
+  PACK records they point at still fall through the catch-all. Filed
+  for follow-up.
+- SCPT **bytecode runtime** — extraction only today. ECS-native
+  scripting track (M30) eventually consumes the retained bytecode
+  blob + cross-refs.
+- **Multi-plugin CLI** — `parse_esm_with_load_order` exists but
+  `--esm` still takes a single path. A DLC / mod load-order stack
+  lands when the scripting runtime needs it.
 - Dynamic weapon `DNAM` fields beyond the basic stats block — many
   version-dependent quirks; we extract enough for current needs.
 

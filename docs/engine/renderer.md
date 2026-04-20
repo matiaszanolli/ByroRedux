@@ -58,6 +58,20 @@ Source: `crates/renderer/src/vulkan/`
   empty-TLAS `VUID-VkBufferCopy-size-01988` / `-size-01188` suppression
   via size=0 guard, and an opt-in global lock-order graph for cross-thread
   ABBA detection
+- **Session 12 material plumbing + RT correctness** (2026-04 sweep):
+  BSShaderTextureSet slots 3/4/5 (parallax / env cube / env mask)
+  routed to `GpuInstance` with `parallaxHeightScale`/`parallaxMaxPasses`
+  (#452 + #453), parallax-occlusion fragment branch guarded on
+  `parallaxIdx != 0` using screen-space derivatives (same TBN recipe as
+  the existing `perturbNormal`), window portal ray fires along `-N`
+  not `-V` with a grazing-angle gate so oblique windows actually
+  transmit (#421). `GpuInstance` grew 176 → 192 bytes with the
+  Shader Struct Sync test asserting lockstep across four GLSL
+  copies (`triangle.vert`, `triangle.frag`, `ui.vert`,
+  `caustic_splat.comp`). SPIR-V reflection via `rspirv` cross-checks
+  every descriptor layout against the shader's declared bindings at
+  pipeline create time (#427); mismatch = hard fail instead of silent
+  undefined behaviour at dispatch.
 
 ## Module map
 

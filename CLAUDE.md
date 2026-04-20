@@ -250,12 +250,57 @@ budget (#270), subtree cache persistence (#278), Vulkan sync fixes (#280–
 #284), NIF string read optimization (#254), animation scratch buffers
 (#251–#252), performance bundle (#279). Roadmap reprioritized to renderer-
 first with M32–M48 tiered plan.
+Session 11: 72-commit bug-bash on the #341–#438 audit bundle.
+Parser correctness (Oblivion v20.0.0.5 stability — runtime size cache,
+stream drift detector, v20.2.0.5+ parallax gate). Import path correctness
+(normal-map routing, NiDynamicEffect affected_nodes, material_kind,
+BSDynamicTriShape vertex extraction, all-8 TXST slots, VMAD has_script).
+NIF import cache promoted to process-lifetime resource (#381).
+Sync/cache hardening: VkPipelineCache plumbed through every create site,
+per-(src, dst, two_sided) blend pipeline cache, TLAS build barrier
+widened, TRIANGLE_FACING_CULL_DISABLE gated on two_sided,
+gl_RayFlagsTerminateOnFirstHitEXT on reflection + glass rays.
+Session 12 (2026-04-19/20): AUDIT_FO3 + AUDIT_FNV + AUDIT_ECS sweep.
+Parser correctness:
+  — #408 blanket `allocate_vec` sweep (60+ sites across 12 NIF files);
+  — #440 `BSGeometryDataFlags` vs `NiGeometryDataFlags` split — FO3 FaceGen
+    heads render geometry correctly (was NiUnknown-demoted);
+  — #402 Oblivion KF deprecated `Ref<NiStringPalette>` trailer +
+    palette-backed string resolution — `NiTransformData` parsed: 3 → 40,623;
+  — #455 `TileShaderProperty` dedicated parser (was aliased to PPLighting);
+  — #333 `matrix3_to_quat` fast-path normalisation;
+  — #441 removed bogus SF_DOUBLE_SIDED on FO3/FNV (that bit is `Unknown_3`);
+  — #454 shared decal-flag helper so NoLighting/PPLighting stay in lockstep;
+  — #329 / #330 NiExtraData version gating (pre-10.0.1.0 `Name` absent);
+  — #350 BSShaderController tagged kind — animation importer routes.
+ESM dispatch expansion (10 → 18 record categories):
+  — #442 CREA (533 in FO3), #448 LVLC (60), #443 SCPT pre-Papyrus bytecode
+    (1257, 1184 with SCRV/SCRO cross-refs), #458 WATR/NAVI/NAVM/REGN/
+    ECZN/LGTM/HDPT/EYES/HAIR stubs.
+Renderer plumbing:
+  — #452 / #453 BSShaderTextureSet slots 3/4/5 → GpuInstance with POM
+    fragment branch (192-byte struct, Shader Struct Sync lockstep across
+    triangle.vert/frag, ui.vert, caustic_splat.comp);
+  — #421 window portal ray fires along -N with grazing-angle gate;
+  — #464 BFS transform propagation via VecDeque.
+Compat correctness:
+  — #439 HEDR→GameKind bands verified against disk-sampled masters;
+  — #445 `FormIdRemap` + `parse_esm_with_load_order` for multi-plugin
+    collision-free loads (CLI stays single-plugin today);
+  — #444 worldspace auto-pick adds FO3 `wasteland` EDID + `--wrld`
+    override + grid-containing preference;
+  — #463 CLMT TNAM hours → `weather_system` per-worldspace TOD clock.
+Docs hygiene:
+  — #456 date-stamped stale FPS claims across ROADMAP + game-compat;
+  — #457 FO3 Tier-1 row updated to "Interior ✓ · Exterior wired".
+  — Megaton validated parse-side at 929 REFRs (was 1609 post-NIF-expand).
+888 tests passing.
 Next: M33 sky/atmosphere, M35 terrain LOD, M37 SVGF spatial filter,
-M29 GPU skinning.
+M29 GPU skinning, FO3 exterior GPU re-bench (#457).
 
 ## Git Conventions
 
 - Conventional commit messages (what + why, not how)
-- `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>` on AI-assisted commits
+- `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` on AI-assisted commits
 - Branch: `main`
 - Remote: `origin` → `github.com:matiaszanolli/ByroRedux.git`

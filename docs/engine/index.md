@@ -72,15 +72,19 @@ built, where the code lives, and what guarantees it makes.
 | Rust source files                   | 188            |
 | Lines of Rust                       | ~81,000        |
 | Workspace members                   | 15 (13 engine crates + binary + debug CLI) |
-| Unit tests passing                  | 867            |
-| Integration tests (`#[ignore]`'d)   | 32             |
+| Unit tests passing                  | 888            |
+| Integration tests (`#[ignore]`'d)   | 35             |
 | NIFs in per-game integration sweeps | 177,286        |
 | Per-game NIF parse success rate     | 100% (7 games) |
 | External dependency crates          | ~30            |
+| ESM record categories indexed       | 18 (items, CONT, LVLI/LVLN/LVLC, NPC/CREA, RACE/CLAS/FACT, GLOB/GMST, WTHR/CLMT, SCPT, WATR/NAVI/NAVM/REGN/ECZN/LGTM/HDPT/EYES/HAIR) |
+| FO3 SCPT records parsed             | 1257 (on-disk) |
+| Megaton Player House REFRs          | 929 (on-disk) — FPS claim pending re-bench (#456) |
 
-Numbers above are accurate as of session 12 closeout (2026-04-19).
+Numbers above are accurate as of session 12 closeout (2026-04-20).
 For the live counts run `cargo test` and
-`cargo test --test parse_real_nifs -- --ignored`.
+`cargo test -- --ignored` (covers the real-master integration tests
+under `BYROREDUX_*_DATA` env vars).
 
 ## Reading order
 
