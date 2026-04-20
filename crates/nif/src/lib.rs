@@ -87,6 +87,31 @@ fn is_animation_block(type_name: &str) -> bool {
     )
 }
 
+/// Return true for the Havok constraint block types whose parsers
+/// intentionally consume only the 16-byte `bhkConstraintCInfo` base
+/// and delegate the rest of the payload to the outer block_sizes
+/// reconciliation path (#117).
+///
+/// The stubs are correct — every skeleton NIF contains 10–50 constraint
+/// blocks and all of them under-consume by design. Without this list
+/// the reconciliation path would fire a `warn!` for each, drowning
+/// real parser-drift signals in an actor-spawn log (#462). When a full
+/// CInfo parser lands for any of these types, remove it from here so
+/// the drift detector goes back to catching real mistakes.
+fn is_havok_constraint_stub(type_name: &str) -> bool {
+    matches!(
+        type_name,
+        "bhkBallAndSocketConstraint"
+            | "bhkHingeConstraint"
+            | "bhkLimitedHingeConstraint"
+            | "bhkPrismaticConstraint"
+            | "bhkRagdollConstraint"
+            | "bhkStiffSpringConstraint"
+            | "bhkMalleableConstraint"
+            | "bhkGenericConstraint"
+    )
+}
+
 /// Parse a NIF file from raw bytes.
 ///
 /// Performs all three phases: parse header → parse blocks → build scene.
@@ -202,13 +227,32 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                 if let Some(size) = block_size {
                     let consumed = stream.position() - start_pos;
                     if consumed != size as u64 {
-                        log::warn!(
-                            "Block {} '{}': expected {} bytes, consumed {}. Adjusting position.",
-                            i,
-                            type_name,
-                            size,
-                            consumed
-                        );
+                        // Havok constraint stubs (per #117) intentionally
+                        // read only the 16-byte `bhkConstraintCInfo` base
+                        // and let the block_sizes table reconcile the
+                        // payload. These under-consumes are by design and
+                        // fire on every skeleton NIF load (~45 warnings
+                        // per actor — see #462). Downgrade the known-stub
+                        // case to `trace!` so real parser drift stays
+                        // visible. The finished constraint parsers will
+                        // remove this exception entirely.
+                        if is_havok_constraint_stub(type_name) {
+                            log::trace!(
+                                "Block {} '{}': stub consumed {}/{} bytes (block_size reconciled).",
+                                i,
+                                type_name,
+                                consumed,
+                                size,
+                            );
+                        } else {
+                            log::warn!(
+                                "Block {} '{}': expected {} bytes, consumed {}. Adjusting position.",
+                                i,
+                                type_name,
+                                size,
+                                consumed,
+                            );
+                        }
                         stream.set_position(start_pos + size as u64);
                     }
                 }
