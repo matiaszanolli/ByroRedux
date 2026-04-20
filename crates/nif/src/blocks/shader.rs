@@ -109,6 +109,14 @@ impl BSShaderNoLightingProperty {
     pub fn shader_flags_1(&self) -> u32 {
         self.shader.shader_flags_1
     }
+    /// Second flag word — FO3/FNV `BSShaderFlags2` semantics (bit 21 =
+    /// `Alpha_Decal`, bit 4 = `Refraction_Tint`, etc.). Added for
+    /// parity with `BSShaderPPLightingProperty` so callers have a
+    /// uniform accessor surface instead of reaching through
+    /// `.shader.shader_flags_2`. See #460.
+    pub fn shader_flags_2(&self) -> u32 {
+        self.shader.shader_flags_2
+    }
 }
 
 impl NiObject for BSShaderNoLightingProperty {

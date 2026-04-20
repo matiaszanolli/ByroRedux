@@ -821,10 +821,7 @@ pub(super) fn extract_material_info(
             // `two_sided` unset here; the `NiStencilProperty` fallback
             // below handles it correctly for meshes that want
             // back-face-off.
-            if is_decal_from_shader_flags(
-                shader.shader.shader_flags_1,
-                shader.shader.shader_flags_2,
-            ) {
+            if is_decal_from_shader_flags(shader.shader_flags_1(), shader.shader_flags_2()) {
                 info.is_decal = true;
             }
         }
@@ -839,10 +836,7 @@ pub(super) fn extract_material_info(
             // blood-splat NoLighting meshes that marked themselves decal
             // via only the flag2 bit fell through to the opaque-coplanar
             // path. Shared helper keeps PP + NoLighting in lockstep.
-            if is_decal_from_shader_flags(
-                shader.shader.shader_flags_1,
-                shader.shader.shader_flags_2,
-            ) {
+            if is_decal_from_shader_flags(shader.shader_flags_1(), shader.shader_flags_2()) {
                 info.is_decal = true;
             }
             // Capture the soft-falloff cone so the HUD / VATS / scope
