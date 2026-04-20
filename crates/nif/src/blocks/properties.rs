@@ -142,6 +142,16 @@ pub struct NiTexturingProperty {
     pub glow_texture: Option<TexDesc>,
     pub bump_texture: Option<TexDesc>,
     pub normal_texture: Option<TexDesc>,
+    /// Parallax height-map slot (v20.2.0.5+ only, nif.xml `Parallax Texture`).
+    /// Rare on vanilla FO3/FNV but shows up on ported / mixed clutter
+    /// that retains the legacy `NiTexturingProperty` chain alongside a
+    /// `BSShaderPPLightingProperty`. Pre-#450 the parser consumed the
+    /// slot + offset to keep stream alignment then dropped the TexDesc.
+    pub parallax_texture: Option<TexDesc>,
+    /// Trailing f32 from the parallax slot — nif.xml `Parallax Offset`.
+    /// Authored sparingly; typical values are 0.0–1.0. Zero when no
+    /// parallax slot is present.
+    pub parallax_offset: f32,
     /// Decal texture slots (0-indexed from the first decal slot). Oblivion
     /// uses these for blood splatters, wall paintings / map decals, faction
     /// symbols, and other persistent per-triangle overlays. Up to 4 decals
@@ -283,14 +293,24 @@ impl NiTexturingProperty {
             None
         };
 
-        if is_v20_2_0_5_plus && texture_count > 7 {
-            // Parallax texture (slot 7) — v20.2.0.5+ only.
-            let parallax = Self::read_tex_desc(stream)?;
-            // nif.xml: Parallax Offset float after parallax TexDesc.
-            if parallax.is_some() {
-                let _parallax_offset = stream.read_f32_le()?;
-            }
-        }
+        // Parallax texture (slot 7) — v20.2.0.5+ only. nif.xml pairs
+        // the optional `Parallax Texture` TexDesc with a trailing
+        // `Parallax Offset` f32 that is only present when the slot is
+        // populated. Pre-#450 both were consumed but discarded; the
+        // slot now rides through so the importer can route it to the
+        // fragment shader alongside `normal_texture` / `parallax_map`.
+        let (parallax_texture, parallax_offset) =
+            if is_v20_2_0_5_plus && texture_count > 7 {
+                let parallax = Self::read_tex_desc(stream)?;
+                let offset = if parallax.is_some() {
+                    stream.read_f32_le()?
+                } else {
+                    0.0
+                };
+                (parallax, offset)
+            } else {
+                (None, 0.0)
+            };
         // Decal texture slots. nif.xml gates each decal at count > 8, > 9, > 10, > 11
         // (v20.2.0.5+) or count > 6, > 7, > 8, > 9 (pre-20.2.0.5). Slot count
         // depends on whether normal+parallax exist:
@@ -386,6 +406,8 @@ impl NiTexturingProperty {
             glow_texture,
             bump_texture,
             normal_texture,
+            parallax_texture,
+            parallax_offset,
             decal_textures,
         })
     }

@@ -700,6 +700,20 @@ pub(super) fn extract_material_info(
                     info.dark_map = Some(path);
                 }
             }
+            // Parallax height-map (slot 7, v20.2.0.5+). Pre-#450 the
+            // parser consumed + dropped this slot so FO3 meshes that
+            // kept the legacy `NiTexturingProperty` chain alongside a
+            // `BSShaderPPLightingProperty` lost their parallax bake.
+            // Feed the same downstream field as the BSShaderTextureSet
+            // slot 3 path at line 532 so the shader does not need to
+            // distinguish the two sources.
+            if info.parallax_map.is_none() {
+                if let Some(path) =
+                    tex_desc_source_path(scene, tex_prop.parallax_texture.as_ref())
+                {
+                    info.parallax_map = Some(path);
+                }
+            }
             // Decal slots (0..=3 per nif.xml). Append every slot whose
             // `source_ref` resolves to a real filename; inherited props
             // only contribute when the shape itself has no decals yet,

@@ -937,6 +937,8 @@ mod tests {
                 transform: None,
             }),
             normal_texture: None,
+            parallax_texture: None,
+            parallax_offset: 0.0,
             decal_textures: Vec::new(),
         };
         let bump_src = NiSourceTexture {
@@ -1046,6 +1048,8 @@ mod tests {
                 flags: 0,
                 transform: None,
             }),
+            parallax_texture: None,
+            parallax_offset: 0.0,
             decal_textures: Vec::new(),
         };
 
