@@ -332,6 +332,20 @@ See [Debug CLI](docs/engine/debug-cli.md) for the full protocol reference, archi
 
 See [Dependencies](docs/engine/dependencies.md) for the full per-crate breakdown.
 
+## Acknowledgements
+
+- [**nifxml**](https://github.com/niftools/nifxml) — the NifTools project's
+  machine-readable NIF format specification. ByroRedux's NIF parser is written
+  directly against nifxml's block definitions, version gates, and field
+  conditions. Without that decades-long community reverse-engineering effort,
+  supporting seven Gamebryo/Creation-era games end-to-end would not be
+  tractable. Thank you to every contributor who chipped away at that file.
+- [**Ruffle**](https://ruffle.rs) — the open-source Flash Player emulator.
+  ByroRedux's UI layer embeds `ruffle_core` + `ruffle_render_wgpu` to render
+  the Scaleform/SWF menus Bethesda shipped with every Creation Engine title.
+  Shoutout to the Ruffle team for keeping the Flash runtime alive and for
+  maintaining a Rust-native API clean enough to drop into an engine.
+
 ## License
 
 MIT
