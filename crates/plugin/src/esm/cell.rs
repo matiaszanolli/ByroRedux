@@ -596,23 +596,36 @@ fn parse_cell_group(
                                 ([0.0; 3], 0.0, 0.0)
                             };
 
-                            // Skyrim+ extended XCLL (92 bytes):
-                            //   28-31: Directional fade (f32)
-                            //   32-35: Fog clip distance (f32)
-                            //   36-39: Fog power (f32)
-                            //   40-63: Directional ambient 6×RGBA — per-face
-                            //          ambient cube in CK order (+X,-X,+Y,-Y,+Z,-Z)
-                            //   64-67: Specular color RGBA
-                            //   68-71: Fresnel power (f32)
-                            //   72-75: Fog far color RGBA
-                            //   76-79: Fog max (f32)
-                            //   80-83: Light fade begin (f32)
-                            //   84-87: Light fade end (f32)
+                            // XCLL extended layout — per UESP + Gamebryo 2.3
+                            // `NiDirectionalLight` source + nif.xml:
+                            //   28-31: Directional fade (f32)      — FNV + Skyrim
+                            //   32-35: Fog clip distance (f32)     — FNV + Skyrim
+                            //   36-39: Fog power (f32)             — FNV + Skyrim
+                            //   40-63: Directional ambient 6×RGBA  — Skyrim only
+                            //   64-67: Specular color RGBA         — Skyrim only
+                            //   68-71: Fresnel power (f32)         — Skyrim only
+                            //   72-75: Fog far color RGBA          — Skyrim only
+                            //   76-79: Fog max (f32)               — Skyrim only
+                            //   80-83: Light fade begin (f32)      — Skyrim only
+                            //   84-87: Light fade end (f32)        — Skyrim only
                             //   88-91: Inherits flags (u32, unused)
+                            //
+                            // FNV XCLL is 40 bytes — it carries `dir_fade`,
+                            // `fog_clip`, `fog_power` in the 28..40 tail. Pre-
+                            // #379 the whole block 28-87 was gated on `>= 92`
+                            // so FNV cells reported all three as `None` and
+                            // the renderer fell back to a flat 0.6× fill.
+                            // Two separate gates now mirror the on-disk shape.
+                            let (dir_fade, fog_clip, fog_power) = if d.len() >= 40 {
+                                (
+                                    Some(f32::from_le_bytes([d[28], d[29], d[30], d[31]])),
+                                    Some(f32::from_le_bytes([d[32], d[33], d[34], d[35]])),
+                                    Some(f32::from_le_bytes([d[36], d[37], d[38], d[39]])),
+                                )
+                            } else {
+                                (None, None, None)
+                            };
                             let (
-                                dir_fade,
-                                fog_clip,
-                                fog_power,
                                 directional_ambient,
                                 specular_color,
                                 specular_alpha,
@@ -635,9 +648,6 @@ fn parse_cell_group(
                                     ];
                                 }
                                 (
-                                    Some(f32::from_le_bytes([d[28], d[29], d[30], d[31]])),
-                                    Some(f32::from_le_bytes([d[32], d[33], d[34], d[35]])),
-                                    Some(f32::from_le_bytes([d[36], d[37], d[38], d[39]])),
                                     Some(ambient_cube),
                                     Some([
                                         d[64] as f32 / 255.0,
@@ -656,7 +666,7 @@ fn parse_cell_group(
                                     Some(f32::from_le_bytes([d[84], d[85], d[86], d[87]])),
                                 )
                             } else {
-                                (None, None, None, None, None, None, None, None, None, None, None)
+                                (None, None, None, None, None, None, None, None)
                             };
 
                             lighting = Some(CellLighting {
@@ -2574,20 +2584,27 @@ mod tests {
     }
 
     #[test]
-    fn parse_cell_fnv_xcll_leaves_skyrim_fields_none() {
-        // Sibling of the Skyrim test above — the 40-byte FNV XCLL
-        // (shared with Oblivion's 36-byte layout for the fields we
-        // consume) must NOT populate the Skyrim-only fields including
-        // the ambient cube. Guards against a `>= 40` typo in the
-        // 92-byte branch that would overwrite Skyrim-specific fields
-        // with garbage read past the end of a shorter record.
+    fn parse_cell_fnv_xcll_extracts_40byte_tail_and_skips_skyrim_fields() {
+        // The 40-byte FNV XCLL carries `directional_fade`, `fog_clip`,
+        // and `fog_power` in the 28..40 tail per nif.xml + UESP. Pre-#379
+        // those fields were only surfaced when the whole block was
+        // Skyrim-extended (`d.len() >= 92`), so FNV cells silently
+        // reported all three as `None` and fell back to hardcoded
+        // renderer defaults.
+        //
+        // Post-#379 the 28..40 tail has its own `>= 40` gate, separate
+        // from the Skyrim-only `>= 92` block that carries the ambient
+        // cube / specular / fresnel / fog-far-color. This test pins
+        // both halves.
         let mut xcll = vec![0u8; 40];
-        // Populate only the shared prefix (bytes 0-27).
         xcll[0..4].copy_from_slice(&[80, 82, 85, 0]); // ambient
         xcll[4..8].copy_from_slice(&[200, 195, 180, 0]); // directional
-        // Fog near / far — valid enough to parse.
         xcll[12..16].copy_from_slice(&100.0f32.to_le_bytes());
         xcll[16..20].copy_from_slice(&5000.0f32.to_le_bytes());
+        // FNV extended tail (bytes 28-39).
+        xcll[28..32].copy_from_slice(&0.75f32.to_le_bytes()); // directional_fade
+        xcll[32..36].copy_from_slice(&6500.0f32.to_le_bytes()); // fog_clip
+        xcll[36..40].copy_from_slice(&1.25f32.to_le_bytes()); // fog_power
 
         let mut sub_data = Vec::new();
         let edid = "FnvRoom\0";
@@ -2621,13 +2638,21 @@ mod tests {
 
         let cell = cells.get("fnvroom").expect("FNV-shaped interior CELL");
         let lit = cell.lighting.as_ref().unwrap();
+
+        // FNV-extended tail — now populated for 40-byte XCLL.
+        assert_eq!(lit.directional_fade, Some(0.75));
+        assert_eq!(lit.fog_clip, Some(6500.0));
+        assert_eq!(lit.fog_power, Some(1.25));
+
+        // Skyrim-only fields are still None at 40 bytes.
         assert!(lit.directional_ambient.is_none(), "FNV XCLL has no ambient cube");
         assert!(lit.specular_color.is_none());
         assert!(lit.specular_alpha.is_none());
         assert!(lit.fresnel_power.is_none());
-        // Pre-existing Skyrim-only fields also None.
-        assert!(lit.directional_fade.is_none());
-        assert!(lit.fog_clip.is_none());
+        assert!(lit.fog_far_color.is_none());
+        assert!(lit.fog_max.is_none());
+        assert!(lit.light_fade_begin.is_none());
+        assert!(lit.light_fade_end.is_none());
     }
 
     #[test]
