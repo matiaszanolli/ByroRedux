@@ -318,6 +318,12 @@ pub struct VulkanContext {
     /// every frame-in-flight observes the new slab before the flag
     /// stops triggering writes. A single per-frame upload is 32 KB.
     terrain_tiles_dirty_frames: u32,
+    /// Persistent scratch buffer reused across frames to stage the 1024
+    /// `GpuTerrainTile` slab before upload. Same amortization pattern as
+    /// `gpu_instances_scratch` — fresh `Vec::collect()` every dirty
+    /// frame was 32 KB × MAX_FRAMES_IN_FLIGHT of heap churn per cell
+    /// transition. See #496.
+    terrain_tile_scratch: Vec<scene_buffer::GpuTerrainTile>,
     render_pass: vk::RenderPass,
     swapchain_state: SwapchainState,
 
@@ -883,6 +889,7 @@ impl VulkanContext {
             // test behaviour).
             terrain_tile_free_list: (0..scene_buffer::MAX_TERRAIN_TILES as u32).rev().collect(),
             terrain_tiles_dirty_frames: 0,
+            terrain_tile_scratch: Vec::new(),
             mesh_registry,
             texture_registry,
             scene_buffers,

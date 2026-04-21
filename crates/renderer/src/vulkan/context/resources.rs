@@ -6,6 +6,26 @@ use anyhow::Result;
 use crate::vulkan::scene_buffer::GpuTerrainTile;
 use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
 
+/// Free-function core of `fill_terrain_tile_scratch_if_dirty` — lifted
+/// out of the `VulkanContext` method so unit tests can exercise it
+/// without standing up a full Vulkan device. When `*dirty_frames > 0`,
+/// clears `dest` (preserving capacity) and refills it from `tiles`,
+/// decrementing the counter. Returns `true` when the caller should
+/// perform the GPU upload. See #496.
+pub(super) fn fill_terrain_tiles(
+    tiles: &[Option<GpuTerrainTile>],
+    dirty_frames: &mut u32,
+    dest: &mut Vec<GpuTerrainTile>,
+) -> bool {
+    if *dirty_frames == 0 {
+        return false;
+    }
+    *dirty_frames -= 1;
+    dest.clear();
+    dest.extend(tiles.iter().map(|t| t.unwrap_or_default()));
+    true
+}
+
 impl VulkanContext {
     /// Allocate a terrain tile slot and store its 8 bindless texture
     /// indices. Returns the slot index (0..`MAX_TERRAIN_TILES`) that
@@ -40,24 +60,22 @@ impl VulkanContext {
         }
     }
 
-    /// Snapshot every allocated terrain tile into a contiguous `Vec`
-    /// ready for `SceneBuffers::upload_terrain_tiles`. Empty slots are
-    /// filled with a default zero tile so the fragment shader's
-    /// `if (layerIdx == 0u) continue;` guard skips them. Decrements
-    /// the dirty-frame counter so every frame-in-flight observes the
-    /// update before writes stop. Called once per frame before
-    /// instance upload.
-    pub(super) fn drain_terrain_tile_uploads(&mut self) -> Option<Vec<GpuTerrainTile>> {
-        if self.terrain_tiles_dirty_frames == 0 {
-            return None;
-        }
-        self.terrain_tiles_dirty_frames -= 1;
-        Some(
-            self.terrain_tiles
-                .iter()
-                .map(|t| t.unwrap_or_default())
-                .collect(),
-        )
+    /// Populate `dest` with the current terrain tile slab, filling
+    /// empty slots with the zero-tile default so the fragment shader's
+    /// `if (layerIdx == 0u) continue;` guard skips them. Returns `true`
+    /// when an upload is due + decrements the dirty-frame counter.
+    ///
+    /// Accepts `dest` by `&mut` rather than returning a slice from
+    /// `self` so `draw_frame` can hold `&self.device` + `&mut
+    /// self.scene_buffers` while consuming the staged data. The
+    /// caller owns a persistent `terrain_tile_scratch` Vec whose
+    /// capacity amortizes across frames — same pattern as
+    /// `gpu_instances_scratch`. See #496 / #470.
+    pub(super) fn fill_terrain_tile_scratch_if_dirty(
+        &mut self,
+        dest: &mut Vec<GpuTerrainTile>,
+    ) -> bool {
+        fill_terrain_tiles(&self.terrain_tiles, &mut self.terrain_tiles_dirty_frames, dest)
     }
     /// Build a BLAS for a mesh (RT only). Call after uploading a mesh.
     pub fn build_blas_for_mesh(&mut self, mesh_handle: u32, vertex_count: u32, index_count: u32) {
@@ -176,6 +194,77 @@ impl VulkanContext {
     pub fn log_memory_usage(&self) {
         if let Some(ref alloc) = self.allocator {
             super::super::allocator::log_memory_usage(alloc);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vulkan::scene_buffer::MAX_TERRAIN_TILES;
+
+    /// Regression for #496: the fill helper must reuse the caller's
+    /// scratch buffer capacity across dirty frames. Pre-fix,
+    /// `drain_terrain_tile_uploads` allocated a fresh 32 KB Vec per
+    /// call — `MAX_FRAMES_IN_FLIGHT × 32 KB` heap churn per cell load.
+    #[test]
+    fn fill_reuses_scratch_capacity_across_dirty_frames() {
+        let mut tiles: Vec<Option<GpuTerrainTile>> = vec![None; MAX_TERRAIN_TILES];
+        tiles[0] = Some(GpuTerrainTile {
+            layer_texture_index: [1, 2, 3, 4, 5, 6, 7, 8],
+        });
+        let mut dest: Vec<GpuTerrainTile> = Vec::new();
+        let mut dirty = 3u32;
+
+        // First call — allocates the Vec.
+        assert!(fill_terrain_tiles(&tiles, &mut dirty, &mut dest));
+        let cap_after_first = dest.capacity();
+        assert!(cap_after_first >= MAX_TERRAIN_TILES);
+        assert_eq!(dest.len(), MAX_TERRAIN_TILES);
+        assert_eq!(dest[0].layer_texture_index, [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(dirty, 2);
+
+        // Subsequent calls MUST NOT grow capacity — clear + extend
+        // reuses the buffer. This is the whole point of the refactor.
+        assert!(fill_terrain_tiles(&tiles, &mut dirty, &mut dest));
+        assert_eq!(dest.capacity(), cap_after_first);
+        assert_eq!(dirty, 1);
+
+        assert!(fill_terrain_tiles(&tiles, &mut dirty, &mut dest));
+        assert_eq!(dest.capacity(), cap_after_first);
+        assert_eq!(dirty, 0);
+    }
+
+    /// Zero counter short-circuits — no fill, no decrement underflow.
+    #[test]
+    fn fill_noop_when_counter_zero() {
+        let tiles: Vec<Option<GpuTerrainTile>> = vec![None; MAX_TERRAIN_TILES];
+        let mut dest: Vec<GpuTerrainTile> = Vec::with_capacity(16);
+        let cap_before = dest.capacity();
+        let mut dirty = 0u32;
+
+        assert!(!fill_terrain_tiles(&tiles, &mut dirty, &mut dest));
+        // Counter left untouched (never underflows below zero).
+        assert_eq!(dirty, 0);
+        // Scratch buffer untouched — capacity preserved, len unchanged.
+        assert!(dest.is_empty());
+        assert_eq!(dest.capacity(), cap_before);
+    }
+
+    /// Empty slots render as the zero tile so the fragment-shader guard
+    /// `if (layerIdx == 0u) continue;` skips them. Covers the default
+    /// fill contract that the original `drain_terrain_tile_uploads`
+    /// established.
+    #[test]
+    fn empty_slots_fill_with_zero_default() {
+        let tiles: Vec<Option<GpuTerrainTile>> = vec![None; 4];
+        let mut dest: Vec<GpuTerrainTile> = Vec::new();
+        let mut dirty = 1u32;
+
+        assert!(fill_terrain_tiles(&tiles, &mut dirty, &mut dest));
+        assert_eq!(dest.len(), 4);
+        for tile in &dest {
+            assert_eq!(tile.layer_texture_index, [0; 8]);
         }
     }
 }

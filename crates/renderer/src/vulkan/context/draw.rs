@@ -2,7 +2,7 @@
 
 use super::super::pipeline::{gamebryo_to_vk_compare_op, PipelineKey};
 use super::super::scene_buffer::{
-    self, GpuInstance, INSTANCE_FLAG_ALPHA_BLEND, INSTANCE_FLAG_CAUSTIC_SOURCE,
+    self, GpuInstance, GpuTerrainTile, INSTANCE_FLAG_ALPHA_BLEND, INSTANCE_FLAG_CAUSTIC_SOURCE,
     INSTANCE_FLAG_NON_UNIFORM_SCALE, INSTANCE_FLAG_TERRAIN_SPLAT, INSTANCE_TERRAIN_TILE_MASK,
     INSTANCE_TERRAIN_TILE_SHIFT,
 };
@@ -623,12 +623,17 @@ impl VulkanContext {
 
         // Reupload the terrain tile SSBO when cell load mutated it.
         // The slab is static until the next cell transition, so the
-        // dirty flag prevents per-frame copies. See #470.
-        if let Some(tiles) = self.drain_terrain_tile_uploads() {
+        // dirty flag prevents per-frame copies (#470). The scratch Vec
+        // lives on self so its 32 KB capacity amortizes across frames
+        // — `mem::take` moves it out so the fill can run while
+        // `&self.scene_buffers` consumes the slice. #496.
+        let mut tile_scratch: Vec<GpuTerrainTile> = std::mem::take(&mut self.terrain_tile_scratch);
+        if self.fill_terrain_tile_scratch_if_dirty(&mut tile_scratch) {
             self.scene_buffers
-                .upload_terrain_tiles(&self.device, frame, &tiles)
+                .upload_terrain_tiles(&self.device, frame, &tile_scratch)
                 .unwrap_or_else(|e| log::warn!("Failed to upload terrain tiles: {e}"));
         }
+        self.terrain_tile_scratch = tile_scratch;
 
         // Build + upload indirect-draw commands for this frame (#309).
         // One `VkDrawIndexedIndirectCommand` per DrawBatch, laid out in
