@@ -53,6 +53,20 @@ fn main() -> Result<()> {
         .position(|a| a == "--bench-frames")
         .and_then(|i| args.get(i + 1).and_then(|v| v.parse::<u32>().ok()));
 
+    // --screenshot PATH: when set, request a screenshot on the bench
+    // exit frame (requires --bench-frames) and write to PATH before
+    // quitting. No-op without --bench-frames. Used for offline
+    // rendering diagnostics / visual regression baselines.
+    let screenshot_path = parse_string_arg(&args, "--screenshot");
+
+    // --camera-pos x,y,z + --camera-forward x,y,z — override the
+    // auto-computed initial camera pose. Useful for capturing specific
+    // framing in bench mode without needing interactive WASD input.
+    // Both args are `,`-separated floats. Pass one or both; missing
+    // forward defaults to `-Z` toward the origin.
+    let camera_pos = parse_vec3_arg(&args, "--camera-pos");
+    let camera_forward = parse_vec3_arg(&args, "--camera-forward");
+
     // Set up logging. --debug forces debug level.
     if debug_mode {
         std::env::set_var(
@@ -91,9 +105,32 @@ fn main() -> Result<()> {
 
     let mut app = App::new(debug_mode);
     app.bench_frames_target = bench_frames;
+    app.screenshot_path = screenshot_path;
+    app.camera_pos_override = camera_pos;
+    app.camera_forward_override = camera_forward;
     event_loop.run_app(&mut app)?;
 
     Ok(())
+}
+
+fn parse_string_arg(args: &[String], flag: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1).cloned())
+}
+
+/// Parse `x,y,z` into a `(f32, f32, f32)` tuple — stored as a plain
+/// triple here to avoid leaking the renderer's `Vec3` into main.rs.
+fn parse_vec3_arg(args: &[String], flag: &str) -> Option<(f32, f32, f32)> {
+    let s = parse_string_arg(args, flag)?;
+    let parts: Vec<f32> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+    match parts.as_slice() {
+        [x, y, z] => Some((*x, *y, *z)),
+        _ => {
+            log::warn!("`{flag} {s}` could not be parsed as x,y,z floats; ignoring");
+            None
+        }
+    }
 }
 
 struct App {
@@ -124,6 +161,27 @@ struct App {
     /// Frames rendered since startup. Paired with `bench_frames_target`
     /// to drive the automated benchmark exit.
     bench_frames_count: u32,
+    /// When set, request a screenshot on the bench-exit frame and
+    /// write the PNG to this path before quitting. Requires
+    /// `bench_frames_target` to be set (otherwise there is no
+    /// deterministic capture frame). See `--screenshot`.
+    screenshot_path: Option<String>,
+    /// Optional override for the computed initial camera position —
+    /// `--camera-pos x,y,z`. Applied during scene setup before the
+    /// first frame. None = use the default auto-frame-scene placement.
+    camera_pos_override: Option<(f32, f32, f32)>,
+    /// Optional override for the initial camera forward vector —
+    /// `--camera-forward x,y,z`. Will be normalized at scene setup.
+    /// Requires `camera_pos_override` to have meaning.
+    camera_forward_override: Option<(f32, f32, f32)>,
+    /// Set once the bench-exit path fires the screenshot request.
+    /// Prevents re-requesting on every frame while we pump the
+    /// capture / encode pipeline.
+    screenshot_requested: bool,
+    /// Remaining frames to wait for the PNG result before giving up.
+    /// Decremented each AboutToWait pass while the result slot is
+    /// empty.
+    screenshot_deadline_frames: u32,
 }
 
 impl App {
@@ -213,6 +271,11 @@ impl App {
             skin_offsets: HashMap::new(),
             bench_frames_target: None,
             bench_frames_count: 0,
+            screenshot_path: None,
+            camera_pos_override: None,
+            camera_forward_override: None,
+            screenshot_requested: false,
+            screenshot_deadline_frames: 0,
         }
     }
 
@@ -224,6 +287,8 @@ impl App {
             ctx,
             &mut self.ui_manager,
             &mut self.ui_texture_handle,
+            self.camera_pos_override,
+            self.camera_forward_override,
         );
     }
 }
@@ -379,9 +444,23 @@ impl ApplicationHandler for App {
                         }
                     }
 
-                    let color = byroredux_core::types::Color::CORNFLOWER_BLUE;
+                    // Clear color — black for interior cells (any gap
+                    // in wall geometry reveals this pixel), cornflower
+                    // blue for no-cell/default mode so a raw engine
+                    // launch still has the test-pattern backdrop.
+                    // Exterior cells ignore this entirely: composite.frag
+                    // replaces depth=far pixels with the sky gradient.
+                    let is_interior = self
+                        .world
+                        .try_resource::<crate::components::CellLightingRes>()
+                        .map_or(false, |l| l.is_interior);
+                    let clear_color = if is_interior {
+                        [0.0, 0.0, 0.0, 1.0]
+                    } else {
+                        byroredux_core::types::Color::CORNFLOWER_BLUE.as_array()
+                    };
                     match ctx.draw_frame(
-                        color.as_array(),
+                        clear_color,
                         &view_proj,
                         &self.draw_commands,
                         &self.gpu_lights,
@@ -549,6 +628,59 @@ impl ApplicationHandler for App {
                         stats.texture_count,
                         stats.draw_call_count,
                     );
+                    drop(stats);
+
+                    // --screenshot: queue a capture request and defer
+                    // the event-loop exit until the PNG lands (or the
+                    // frame-budget elapses). The screenshot flow takes
+                    // 2+ frames: frame N kicks the staging copy, N+1
+                    // encodes the PNG. We re-enter this branch up to
+                    // SCREENSHOT_DEADLINE_FRAMES times before giving
+                    // up.
+                    if let Some(path) = self.screenshot_path.clone() {
+                        if !self.screenshot_requested {
+                            if let Some(bridge) = self
+                                .world
+                                .try_resource::<byroredux_core::ecs::ScreenshotBridge>()
+                            {
+                                bridge.requested.store(
+                                    true,
+                                    std::sync::atomic::Ordering::Release,
+                                );
+                                drop(bridge);
+                                self.screenshot_requested = true;
+                                self.screenshot_deadline_frames = 60;
+                                return; // keep running frames
+                            }
+                        }
+
+                        // Poll the result slot until the PNG arrives.
+                        let maybe_bytes = self
+                            .world
+                            .try_resource::<byroredux_core::ecs::ScreenshotBridge>()
+                            .and_then(|b| b.result.lock().unwrap().take());
+                        if let Some(bytes) = maybe_bytes {
+                            match std::fs::write(&path, &bytes) {
+                                Ok(()) => println!(
+                                    "screenshot: wrote {} bytes to {}",
+                                    bytes.len(),
+                                    path
+                                ),
+                                Err(e) => eprintln!(
+                                    "screenshot: failed to write {}: {e}",
+                                    path
+                                ),
+                            }
+                        } else if self.screenshot_deadline_frames > 0 {
+                            self.screenshot_deadline_frames -= 1;
+                            return; // keep pumping
+                        } else {
+                            eprintln!(
+                                "screenshot: timed out waiting for PNG result",
+                            );
+                        }
+                    }
+
                     event_loop.exit();
                 }
             }

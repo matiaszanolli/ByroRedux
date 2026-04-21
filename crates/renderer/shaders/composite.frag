@@ -183,7 +183,19 @@ void main() {
         // Reconstruct world-space fragment position from depth +
         // inv_view_proj, then fog-blend the combined signal by the
         // camera-to-fragment distance.
-        if (params.fog_color.w > 0.5 && params.fog_params.y > params.fog_params.x) {
+        //
+        // Skip fog on empty/far-plane pixels (depth >= 0.9999). Pre-fix
+        // those pixels had no world position and the reconstructed
+        // `worldDist` was effectively infinite, saturating the smoothstep
+        // to 1.0 and flooding every gap in interior geometry with
+        // fog_color — visible as a bright blue-tinted "doorway" through
+        // any wall seam on interior cells. The sky branch above
+        // already handles exterior depth-far pixels; interior empty
+        // pixels just pass through the clear color untouched.
+        if (depth < 0.9999
+            && params.fog_color.w > 0.5
+            && params.fog_params.y > params.fog_params.x)
+        {
             vec2 ndc_xy = fragUV * 2.0 - 1.0;
             vec4 clip = vec4(ndc_xy, depth, 1.0);
             vec4 world = params.inv_view_proj * clip;

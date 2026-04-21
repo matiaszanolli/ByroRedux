@@ -29,6 +29,8 @@ pub(crate) fn setup_scene(
     ctx: &mut VulkanContext,
     ui_manager: &mut Option<UiManager>,
     ui_texture_handle: &mut Option<u32>,
+    camera_pos_override: Option<(f32, f32, f32)>,
+    camera_forward_override: Option<(f32, f32, f32)>,
 ) {
     // Load content from CLI: cell, loose NIF, or BSA NIF.
     let args: Vec<String> = std::env::args().collect();
@@ -455,15 +457,29 @@ pub(crate) fn setup_scene(
         world.insert(blue_tri, Spinning);
     }
 
-    // Spawn camera entity looking at the scene center.
+    // Spawn camera entity looking at the scene center — unless CLI
+    // overrides are supplied (`--camera-pos` / `--camera-forward`),
+    // in which case the requested pose wins. Useful for offline
+    // diagnostic renders without needing interactive WASD.
     let cam = world.spawn();
-    let cam_pos = if has_nif_content {
-        cam_center + Vec3::new(0.0, 100.0, 200.0)
-    } else {
-        Vec3::new(0.0, 1.5, 4.0)
+    let cam_pos = match camera_pos_override {
+        Some((x, y, z)) => Vec3::new(x, y, z),
+        None if has_nif_content => cam_center + Vec3::new(0.0, 100.0, 200.0),
+        None => Vec3::new(0.0, 1.5, 4.0),
     };
     let cam_target = cam_center;
-    let forward = (cam_target - cam_pos).normalize();
+    let forward = match camera_forward_override {
+        Some((x, y, z)) => {
+            let v = Vec3::new(x, y, z);
+            if v.length_squared() > 1e-8 {
+                v.normalize()
+            } else {
+                log::warn!("--camera-forward 0,0,0 is invalid; using computed look-at");
+                (cam_target - cam_pos).normalize()
+            }
+        }
+        None => (cam_target - cam_pos).normalize(),
+    };
     let cam_rotation = Quat::from_rotation_arc(-Vec3::Z, forward);
     world.insert(cam, Transform::new(cam_pos, cam_rotation, 1.0));
     world.insert(cam, GlobalTransform::new(cam_pos, cam_rotation, 1.0));
