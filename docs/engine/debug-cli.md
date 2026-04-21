@@ -4,7 +4,7 @@ An external debugger for live ECS inspection. Connects to the running engine
 over TCP and lets you query, modify, and screenshot the scene using
 Papyrus-style expression syntax — without restarting the engine.
 
-**Crates:** `crates/debug-protocol/`, `crates/debug-server/`, `tools/byro-dbg/` | **Tests:** 4 (wire round-trip)
+**Crates:** `crates/debug-protocol/`, `crates/debug-server/`, `tools/byro-dbg/` | **Tests:** 4 wire round-trip + 3 `CommandRegistry` dispatch (#518)
 
 ## Why an External Debugger?
 
@@ -42,8 +42,16 @@ As scenes grow in complexity (exterior cells, 1500+ entities, RT lighting),
 2. Incoming requests are pushed into a `Mutex<Vec<PendingCommand>>` queue.
 3. The **drain system** (exclusive, `Stage::Late`) pops the queue once per
    frame after all gameplay systems have run.
-4. The **evaluator** parses the expression via `byroredux_papyrus::parse_expr()`,
-   walks the AST against `&World` + `ComponentRegistry`, and returns JSON.
+4. The **evaluator** dispatches by request kind:
+   - `Ping`, `Stats`, `ListComponents`, `ListSystems`, `FindEntity`,
+     `ListEntities`, `GetComponent`, `SetField`, `Screenshot` — direct
+     resource/query access.
+   - `Eval` — first checks if the leading token matches a name in the
+     engine's `CommandRegistry` resource (so dotted console commands
+     like `tex.missing` / `mesh.cache` dispatch through
+     `registry.execute(...)`, #518); otherwise falls through to the
+     Papyrus expression parser, walks the AST against `&World` +
+     `ComponentRegistry`, and returns JSON.
 5. The response travels back through `mpsc` channel → writer thread → TCP.
 
 ### Why not tokio?
@@ -96,7 +104,7 @@ using the generic `register_component::<T>()` helper. Components must derive
 `Serialize + Deserialize` (gated behind the `inspect` feature on
 `byroredux-core`).
 
-### Currently registered (15 components)
+### Currently registered (19 components)
 
 | Component | Fields |
 |-----------|--------|
@@ -114,7 +122,16 @@ using the generic `register_component::<T>()` helper. Components must derive
 | `BSBound` | center, half_extents |
 | `AnimatedVisibility` | (tuple: bool) |
 | `AnimatedAlpha` | (tuple: f32) |
-| `AnimatedColor` | (tuple: Vec3) |
+| `AnimatedDiffuseColor` | (tuple: Vec3) — `NiMaterialColorController` target 0 |
+| `AnimatedAmbientColor` | (tuple: Vec3) — `NiMaterialColorController` target 1 |
+| `AnimatedSpecularColor` | (tuple: Vec3) — `NiMaterialColorController` target 2 |
+| `AnimatedEmissiveColor` | (tuple: Vec3) — `NiMaterialColorController` target 3 (neon signs, plasma glow, muzzle flashes) |
+| `AnimatedShaderColor` | (tuple: Vec3) — `BSEffect/BSLightingShaderPropertyColorController` |
+
+Post-#517 the single `AnimatedColor` slot is split into one component
+per target. An entity with both a diffuse and an emissive controller
+now carries both components side-by-side instead of colliding
+last-write-wins on a shared RGB field.
 
 To add a new component: derive `Serialize`/`Deserialize` (behind `#[cfg_attr(feature = "inspect", ...)]`),
 then add a `register_component::<T>()` call in `registration.rs`.
@@ -158,16 +175,32 @@ tex_missing()               → textures referenced but never loaded
 tex_loaded()                → currently-resident textures + byte size
 ```
 
-Session-10 console commands (server-side, not evaluator):
+### CommandRegistry dispatch (dotted names)
+
+The engine's in-process `CommandRegistry` resource also dispatches
+through the evaluator: when the first whitespace-delimited token of an
+`Eval` request matches a registered command name, the request is
+handed to `registry.execute(...)` and the output lines are returned
+as a newline-joined `Value` string. Pre-#518 these commands were
+unreachable from `byro-dbg` because `tex.missing` parsed as
+`Ident("tex") . member("missing")` → `find_by_name("tex")` →
+`no entity named 'tex'`.
 
 ```
-tex.missing                 → same as tex_missing() but human formatted
-tex.loaded                  → same as tex_loaded(), sorted by size
-mesh.info <entity_id>       → material + texture paths + BGSM reference
+tex.missing                 → entities with fallback texture + expected paths
+tex.loaded                  → unique loaded textures + fallback count
+mesh.info <entity_id>       → MeshHandle / TextureHandle / Material paths
                              (shows material_path when texture_path is absent —
                               correct FO4 behaviour since the real material
                               lives in the external BGSM/BGEM file)
+mesh.cache                  → NIF import cache stats (size, hit rate, misses)
+help                        → list every registered command
 ```
+
+`help` also works in-engine through `/cmd help`; the two namespaces
+are the same `CommandRegistry`. New commands added via
+`CommandRegistry::register` on the engine side automatically become
+reachable from `byro-dbg` with no protocol change.
 
 ### Mutation
 
@@ -259,8 +292,8 @@ crates/debug-server/
     lib.rs                  start() entry point
     listener.rs             TcpListener, per-client threads, command queue
     system.rs               DebugDrainSystem (Late-stage exclusive)
-    evaluator.rs            Papyrus AST → ECS query evaluation
-    registration.rs         register_component::<T>() for 15 types
+    evaluator.rs            Papyrus AST → ECS query evaluation + CommandRegistry dispatch (#518)
+    registration.rs         register_component::<T>() for 19 types
 
 tools/byro-dbg/
   src/
@@ -284,6 +317,21 @@ cargo run --no-default-features             # disabled (release)
 cargo run -p byro-dbg                       # connect to localhost:9876
 BYRO_DEBUG_PORT=8080 cargo run -p byro-dbg  # custom port
 ```
+
+### Headless `--cmd` (no TCP, no window)
+
+```bash
+cargo run -- --cmd help                     # execute one command, exit
+cargo run -- --cmd stats                    # (fresh empty World — see limitation)
+```
+
+The `--cmd` path boots an empty `World`, registers the
+`CommandRegistry`, runs one command, and exits without creating a
+window. Useful for `help` and other world-agnostic commands. **Does
+NOT inspect a running engine** — every world-dependent command
+(`tex.missing`, `mesh.cache`, `entities`, `mesh.info`) reports zero
+because the World was never populated. For live-world inspection
+use `byro-dbg` against a running engine instance.
 
 ### Example session
 
@@ -326,7 +374,11 @@ byro> count(Transform)
 
 byro> components
   AnimatedAlpha
-  AnimatedColor
+  AnimatedAmbientColor
+  AnimatedDiffuseColor
+  AnimatedEmissiveColor
+  AnimatedShaderColor
+  AnimatedSpecularColor
   AnimatedVisibility
   BSBound
   BSXFlags
@@ -340,7 +392,20 @@ byro> components
   TextureHandle
   Transform
   WorldBound
-(15 components)
+(19 components)
+
+byro> tex.missing
+17 unique missing textures:
+   128x  textures/clutter/bottles/nukacola01_d.dds
+    94x  textures/armor/leatherarmor_d.dds
+   ...
+
+byro> mesh.cache
+NIF import cache:
+  entries:       342 (341 parsed, 1 failed)
+  lifetime hits: 9143
+  lifetime miss: 342
+  hit rate:      96.4%
 
 byro> systems
   [0] fly_camera_system
@@ -359,7 +424,7 @@ byro> systems
 byro> screenshot /tmp/debug_frame.png
 Screenshot saved: /tmp/debug_frame.png
 
-byro> .quit
+byro> quit
 ```
 
 ### Client-side commands (no network round-trip)
@@ -368,6 +433,7 @@ byro> .quit
 |---------|--------|
 | `.help` | Print help text |
 | `.quit` / `.exit` / `.q` | Exit the CLI |
+| `quit` / `exit` / `q` | Exit the CLI (bare forms, post-#518) |
 
 ## References
 
