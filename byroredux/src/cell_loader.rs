@@ -225,6 +225,22 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
         for &mh in &mesh_handles {
             accel.drop_blas(mh);
         }
+        // #495 — the shared BLAS build scratch buffer is grow-only
+        // across the process lifetime; a single peek at an 80–200 MB
+        // scratch mesh (FO4 LOD terrain, Skyrim draugr skeletons,
+        // Starfield `Saturn.nif`) permanently pins that much
+        // DEVICE_LOCAL VRAM. Cell unload is a safe boundary — no BLAS
+        // builds are in flight here — so shrink the scratch to the
+        // new post-drop peak. SAFETY: we're on the main thread and no
+        // BLAS build command buffer is currently referencing the
+        // shared scratch (builds run synchronously through fenced
+        // one-time command buffers). Skip when the allocator hasn't
+        // been initialised yet (headless / pre-init test paths).
+        if let Some(allocator) = ctx.allocator.as_ref() {
+            unsafe {
+                accel.shrink_blas_scratch_to_fit(&ctx.device, allocator);
+            }
+        }
     }
     for &mh in &mesh_handles {
         ctx.mesh_registry.drop_mesh(mh);

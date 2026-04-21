@@ -43,6 +43,11 @@ pub struct BlasEntry {
     pub last_used_frame: u64,
     /// Size of the acceleration structure buffer in bytes.
     pub size_bytes: vk::DeviceSize,
+    /// Scratch-buffer capacity that this BLAS required at build time.
+    /// `shrink_blas_scratch_to_fit` takes the max across surviving
+    /// entries to decide the minimum scratch needed post-eviction. See
+    /// issue #495.
+    pub build_scratch_size: vk::DeviceSize,
 }
 
 /// Top-level acceleration structure state.
@@ -209,6 +214,24 @@ fn scratch_needs_growth(current_capacity: Option<vk::DeviceSize>, required: vk::
         Some(cap) => cap < required,
         None => true,
     }
+}
+
+/// Decide whether a persisted scratch buffer is disproportionately
+/// large and should be shrunk to match the post-eviction peak.
+///
+/// Returns `true` only when BOTH conditions hold:
+/// - Current capacity is more than 2× the new peak requirement, AND
+/// - The absolute excess is larger than a 16 MB slack margin.
+///
+/// The 2× factor absorbs normal build-to-build variance (adjacent cell
+/// loads typically have similar high-water marks); the slack margin
+/// keeps us from churning through reallocation for small wins. See
+/// issue #495 for the failure mode — a single 80–200 MB BLAS build
+/// pinning VRAM for the rest of the process lifetime.
+fn scratch_should_shrink(current_capacity: vk::DeviceSize, peak_required: vk::DeviceSize) -> bool {
+    const SLACK: vk::DeviceSize = 16 * 1024 * 1024;
+    current_capacity > peak_required.saturating_mul(2)
+        && current_capacity.saturating_sub(peak_required) > SLACK
 }
 
 fn compute_blas_budget(
@@ -507,6 +530,7 @@ impl AccelerationManager {
             device_address,
             last_used_frame: self.frame_counter,
             size_bytes: blas_size,
+            build_scratch_size: sizes.build_scratch_size,
         });
         // BLAS map mutated — see #300.
         self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
@@ -548,6 +572,12 @@ impl AccelerationManager {
             buffer: GpuBuffer,
             geometry: vk::AccelerationStructureGeometryKHR<'static>,
             primitive_count: u32,
+            /// Per-mesh scratch size from Phase 1 sizing — stored so the
+            /// final `BlasEntry` can remember it for
+            /// `shrink_blas_scratch_to_fit` (#495). Max across meshes is
+            /// tracked separately in `max_scratch_size` for the single
+            /// shared build scratch allocation.
+            build_scratch_size: vk::DeviceSize,
         }
 
         let mut prepared: Vec<PreparedBlas> = Vec::with_capacity(meshes.len());
@@ -652,6 +682,7 @@ impl AccelerationManager {
                 buffer: result_buffer,
                 geometry,
                 primitive_count,
+                build_scratch_size: sizes.build_scratch_size,
             });
         }
 
@@ -799,7 +830,12 @@ impl AccelerationManager {
         // calls in phase 7. Mirrors the build/copy-phase cleanup pattern
         // at lines 733-745 / 815-832.
         let alloc_compact = || -> Result<(
-            Vec<(u32, vk::AccelerationStructureKHR, GpuBuffer)>,
+            Vec<(
+                u32,
+                vk::AccelerationStructureKHR,
+                GpuBuffer,
+                vk::DeviceSize,
+            )>,
             u64,
             u64,
         )> {
@@ -818,8 +854,16 @@ impl AccelerationManager {
             let total_before: u64 = prepared.iter().map(|p| p.buffer.size).sum();
             let total_after: u64 = compacted_sizes.iter().sum();
 
-            let mut compact_accels: Vec<(u32, vk::AccelerationStructureKHR, GpuBuffer)> =
-                Vec::with_capacity(prepared.len());
+            // Tuple: (mesh_handle, compacted accel, compacted buffer,
+            // build_scratch_size). Scratch size is propagated from
+            // `prepared` so the final `BlasEntry` can remember what
+            // scratch this mesh consumed at build time (#495).
+            let mut compact_accels: Vec<(
+                u32,
+                vk::AccelerationStructureKHR,
+                GpuBuffer,
+                vk::DeviceSize,
+            )> = Vec::with_capacity(prepared.len());
 
             for (i, p) in prepared.iter().enumerate() {
                 let compact_size = compacted_sizes[i];
@@ -855,7 +899,12 @@ impl AccelerationManager {
                     }
                 };
 
-                compact_accels.push((p.mesh_handle, compact_accel, compact_buffer));
+                compact_accels.push((
+                    p.mesh_handle,
+                    compact_accel,
+                    compact_buffer,
+                    p.build_scratch_size,
+                ));
             }
 
             Ok((compact_accels, total_before, total_after))
@@ -883,7 +932,7 @@ impl AccelerationManager {
 
         // Record compaction copies in a second command buffer.
         let copy_result = submit_one_time(device, queue, command_pool, transfer_fence, |cmd| {
-            for (i, (_, compact_accel, _)) in compact_accels.iter().enumerate() {
+            for (i, (_, compact_accel, _, _)) in compact_accels.iter().enumerate() {
                 let copy_info = vk::CopyAccelerationStructureInfoKHR::default()
                     .src(prepared[i].accel)
                     .dst(*compact_accel)
@@ -911,7 +960,7 @@ impl AccelerationManager {
                 }
                 p.buffer.destroy(device, allocator);
             }
-            for (_, accel, mut buf) in compact_accels {
+            for (_, accel, mut buf, _) in compact_accels {
                 unsafe {
                     self.accel_loader
                         .destroy_acceleration_structure(accel, None);
@@ -931,7 +980,7 @@ impl AccelerationManager {
         }
 
         let count = compact_accels.len();
-        for (mesh_handle, accel, buffer) in compact_accels {
+        for (mesh_handle, accel, buffer, build_scratch_size) in compact_accels {
             let device_address = unsafe {
                 self.accel_loader.get_acceleration_structure_device_address(
                     &vk::AccelerationStructureDeviceAddressInfoKHR::default()
@@ -951,6 +1000,7 @@ impl AccelerationManager {
                 device_address,
                 last_used_frame: self.frame_counter,
                 size_bytes: blas_size,
+                build_scratch_size,
             });
         }
         // BLAS map mutated (one bump for the whole batch — generation is
@@ -1527,9 +1577,109 @@ impl AccelerationManager {
         }
     }
 
+    /// Shrink `blas_scratch_buffer` down to the size required by the
+    /// current surviving BLAS set, if the high-water mark has grown
+    /// disproportionately vs the current peak (see
+    /// [`scratch_should_shrink`] for the threshold).
+    ///
+    /// Call at cell-unload boundaries — **not** from inside a BLAS
+    /// build path. The method assumes no BLAS build is in flight (the
+    /// shared scratch buffer is only referenced during one-time build
+    /// command buffers that the per-build fence already waits on, but
+    /// we also don't recreate it mid-build because that would invalidate
+    /// a live device address).
+    ///
+    /// Per-frame TLAS `scratch_buffers[i]` are NOT touched here: they
+    /// can be in flight on the GPU at this point and dropping them
+    /// without the pending-destroy pattern would be a use-after-free.
+    /// Shrinking TLAS scratch needs a follow-up that mirrors
+    /// [`pending_destroy_blas`]. Issue #495 tracks this gap.
+    ///
+    /// # Safety
+    ///
+    /// - Caller must guarantee no BLAS build command buffer is
+    ///   currently referencing `blas_scratch_buffer`. The two build
+    ///   paths use one-time command buffers with synchronous fence
+    ///   waits, so any call site that is NOT inside a BLAS build is
+    ///   safe by construction.
+    /// - The `device` and `allocator` must be the same ones that
+    ///   allocated the current scratch buffer.
+    pub unsafe fn shrink_blas_scratch_to_fit(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+    ) {
+        let current = match self.blas_scratch_buffer.as_ref().map(|b| b.size) {
+            Some(c) => c,
+            None => return, // nothing to shrink
+        };
+
+        let peak: vk::DeviceSize = self
+            .blas_entries
+            .iter()
+            .flatten()
+            .map(|e| e.build_scratch_size)
+            .max()
+            .unwrap_or(0);
+
+        if peak == 0 {
+            // No BLAS survives — drop the scratch entirely. Next build
+            // will allocate fresh (via `scratch_needs_growth`'s None
+            // arm) at whatever the new build's peak is.
+            if let Some(mut old) = self.blas_scratch_buffer.take() {
+                old.destroy(device, allocator);
+                log::debug!(
+                    "BLAS scratch dropped: {:.1} MB → 0 (no BLAS survives)",
+                    current as f64 / (1024.0 * 1024.0),
+                );
+            }
+            return;
+        }
+
+        if !scratch_should_shrink(current, peak) {
+            return;
+        }
+
+        // Reallocate to the current peak size. A future build that
+        // exceeds the new capacity will grow via `scratch_needs_growth`.
+        if let Some(mut old) = self.blas_scratch_buffer.take() {
+            old.destroy(device, allocator);
+        }
+        match GpuBuffer::create_device_local_uninit(
+            device,
+            allocator,
+            peak,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+        ) {
+            Ok(new_buf) => {
+                log::debug!(
+                    "BLAS scratch shrunk: {:.1} MB → {:.1} MB (peak survivor)",
+                    current as f64 / (1024.0 * 1024.0),
+                    peak as f64 / (1024.0 * 1024.0),
+                );
+                self.blas_scratch_buffer = Some(new_buf);
+            }
+            Err(e) => {
+                // Allocation failed — leave `blas_scratch_buffer` as
+                // `None` and let the next build allocate fresh. This is
+                // a degraded but correct state.
+                log::warn!(
+                    "BLAS scratch shrink realloc failed: {e}; next build will re-allocate"
+                );
+            }
+        }
+    }
+
     /// Current total BLAS memory in bytes.
     pub fn total_blas_bytes(&self) -> vk::DeviceSize {
         self.total_blas_bytes
+    }
+
+    /// Current BLAS scratch buffer capacity in bytes. `None` if the
+    /// scratch has never been allocated or was just shrunk to zero.
+    /// Exposed for observability (#495 / PERF-D2-M1).
+    pub fn blas_scratch_bytes(&self) -> Option<vk::DeviceSize> {
+        self.blas_scratch_buffer.as_ref().map(|b| b.size)
     }
 
     /// Destroy all acceleration structures and buffers.
@@ -1730,5 +1880,56 @@ mod tests {
 
         // Zero required (empty TLAS) — REUSE whatever's there.
         assert!(!scratch_needs_growth(Some(1), 0));
+    }
+
+    // ── scratch_should_shrink (#495) ─────────────────────────────────
+    //
+    // Shrink policy: current > 2× peak AND excess > 16 MB slack. Four
+    // boundary cases pinned here so a future rewrite can't relax the
+    // thresholds silently.
+    const MB: vk::DeviceSize = 1024 * 1024;
+
+    #[test]
+    fn scratch_shrink_triggers_when_excess_is_large() {
+        // Current = 100 MB, peak = 2 MB. Ratio = 50×, excess = 98 MB.
+        // Both thresholds exceeded → shrink.
+        assert!(scratch_should_shrink(100 * MB, 2 * MB));
+    }
+
+    #[test]
+    fn scratch_shrink_skipped_below_2x_ratio() {
+        // Current = 40 MB, peak = 30 MB. Ratio = 1.33×. Excess 10 MB.
+        // Ratio check fails → don't shrink.
+        assert!(!scratch_should_shrink(40 * MB, 30 * MB));
+    }
+
+    #[test]
+    fn scratch_shrink_skipped_when_excess_under_slack() {
+        // Current = 15 MB, peak = 2 MB. Ratio = 7.5×, but excess = 13 MB
+        // < 16 MB slack → don't shrink (not worth the realloc churn).
+        assert!(!scratch_should_shrink(15 * MB, 2 * MB));
+    }
+
+    #[test]
+    fn scratch_shrink_triggers_at_zero_peak_with_large_current() {
+        // No BLAS survives — peak = 0, current = 80 MB. Ratio check is
+        // `current > 0 * 2 = 0` → true; excess = 80 MB > 16 MB → true.
+        // Shrink (the caller's method drops the buffer entirely on zero
+        // peak).
+        assert!(scratch_should_shrink(80 * MB, 0));
+    }
+
+    #[test]
+    fn scratch_shrink_skipped_at_zero_peak_under_slack() {
+        // peak = 0 but current is tiny (8 MB) — excess 8 MB < 16 MB
+        // slack → don't churn.
+        assert!(!scratch_should_shrink(8 * MB, 0));
+    }
+
+    #[test]
+    fn scratch_shrink_skipped_on_exactly_2x_ratio() {
+        // current = 2× peak exactly — ratio check is strict `>`, so
+        // equality does NOT trigger.
+        assert!(!scratch_should_shrink(64 * MB, 32 * MB));
     }
 }
