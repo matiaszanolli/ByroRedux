@@ -252,7 +252,7 @@ pub(crate) fn build_render_data(
     //
     //   1. The ECS has no `query_n_mut!` macro for acquiring N optional
     //      components in one call, so we acquire each component
-    //      separately. That's 10 RwLock read acquisitions per frame; all
+    //      separately. That's ~13 RwLock read acquisitions per frame; all
     //      reads can coexist (no deadlock risk), so no TypeId-sorted
     //      bundling is needed.
     //
@@ -260,6 +260,18 @@ pub(crate) fn build_render_data(
     //      mq.iter()` loop. No system that writes these components
     //      runs concurrently (render runs outside the scheduler in
     //      `RedrawRequested`), so read contention is theoretical.
+    //
+    //   3. #501 / M40 — when the scheduler goes parallel (per CLAUDE.md
+    //      architecture invariants), any concurrent writer to one of
+    //      these ~13 storages will stall for the full build window
+    //      (~1.5–2 ms). Fix at that point by introducing a
+    //      `RenderExtract` stage that snapshots the per-entity data
+    //      into a `Vec<RenderInstance>` resource in one pass and
+    //      iterates it here with zero locks held (Bevy's extract-stage
+    //      pattern). Deferred deliberately — implementing before M40
+    //      lands would lock in a design without the constraints of the
+    //      actual parallel scheduler to inform it, and would add
+    //      ~0.5 ms/frame for zero benefit today.
     //
     // `GlobalTransform` and `MeshHandle` are required — if either is
     // absent there are no meshes to emit, so the whole collection path
