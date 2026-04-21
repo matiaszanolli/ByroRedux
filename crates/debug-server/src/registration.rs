@@ -159,5 +159,11 @@ pub fn register_all(registry: &mut ComponentRegistry) {
     register_component::<BSBound>(registry, "BSBound", vec!["center", "half_extents"]);
     register_component::<AnimatedVisibility>(registry, "AnimatedVisibility", vec!["0"]);
     register_component::<AnimatedAlpha>(registry, "AnimatedAlpha", vec!["0"]);
-    register_component::<AnimatedColor>(registry, "AnimatedColor", vec!["0"]);
+    // Post-#517 split: five target-specific color components replaced
+    // the single `AnimatedColor` slot.
+    register_component::<AnimatedDiffuseColor>(registry, "AnimatedDiffuseColor", vec!["0"]);
+    register_component::<AnimatedAmbientColor>(registry, "AnimatedAmbientColor", vec!["0"]);
+    register_component::<AnimatedSpecularColor>(registry, "AnimatedSpecularColor", vec!["0"]);
+    register_component::<AnimatedEmissiveColor>(registry, "AnimatedEmissiveColor", vec!["0"]);
+    register_component::<AnimatedShaderColor>(registry, "AnimatedShaderColor", vec!["0"]);
 }

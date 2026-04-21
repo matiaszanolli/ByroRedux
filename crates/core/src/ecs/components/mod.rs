@@ -21,7 +21,10 @@ pub mod texture;
 pub mod transform;
 pub mod world_bound;
 
-pub use animated::{AnimatedAlpha, AnimatedColor, AnimatedVisibility};
+pub use animated::{
+    AnimatedAlpha, AnimatedAmbientColor, AnimatedDiffuseColor, AnimatedEmissiveColor,
+    AnimatedShaderColor, AnimatedSpecularColor, AnimatedVisibility,
+};
 pub use billboard::{Billboard, BillboardMode};
 pub use bsx::{BSBound, BSXFlags};
 pub use camera::{ActiveCamera, Camera};

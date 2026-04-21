@@ -4,11 +4,12 @@ use byroredux_core::animation::{
     advance_stack, advance_time, sample_blended_transform, sample_bool_channel,
     sample_color_channel, sample_float_channel, sample_rotation, sample_scale, sample_translation,
     split_root_motion, visit_stack_text_events, visit_text_key_events, AnimationClipRegistry,
-    AnimationPlayer, AnimationStack, FloatTarget, RootMotionDelta,
+    AnimationPlayer, AnimationStack, ColorTarget, FloatTarget, RootMotionDelta,
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
-    ActiveCamera, AnimatedAlpha, AnimatedColor, AnimatedVisibility, Billboard, BillboardMode,
+    ActiveCamera, AnimatedAlpha, AnimatedAmbientColor, AnimatedDiffuseColor, AnimatedEmissiveColor,
+    AnimatedShaderColor, AnimatedSpecularColor, AnimatedVisibility, Billboard, BillboardMode,
     Children, DebugStats, DeltaTime, GlobalTransform, LocalBound, Name, Parent, ParticleEmitter,
     TotalTime, Transform, World, WorldBound,
 };
@@ -114,6 +115,90 @@ pub(crate) fn fly_camera_system(world: &World, dt: f32) {
             transform.rotation = rotation;
             if move_world != Vec3::ZERO {
                 transform.translation += move_world * speed;
+            }
+        }
+    }
+}
+
+/// Sample every color channel at `time` and route each sampled RGB
+/// value to the matching `AnimatedDiffuseColor` / `AnimatedAmbient…` /
+/// `AnimatedSpecular…` / `AnimatedEmissive…` / `AnimatedShader…`
+/// component on the resolved target entity.
+///
+/// Replaces the pre-#517 single-bucket write to `AnimatedColor`, which
+/// silently conflated diffuse, ambient, specular, emissive, and
+/// BSLighting/BSEffect shader colors into one slot. Each target has
+/// its own sparse component so an entity with both a diffuse
+/// controller and an emissive controller keeps the two animations
+/// independent (no last-write-wins).
+///
+/// The `resolve_entity` closure is whatever scope the caller wants —
+/// flat `AnimationPlayer` uses `name_index` (+ optional
+/// `SubtreeCache` for scoped subtree lookups), `AnimationStack`
+/// layers use the stack's own `stack_resolve`.
+fn apply_color_channels(
+    world: &World,
+    color_channels: &[(FixedString, byroredux_core::animation::ColorChannel)],
+    time: f32,
+    resolve_entity: &dyn Fn(&FixedString) -> Option<EntityId>,
+) {
+    // Lazy-acquire each target's write guard on first use. Most clips
+    // carry only one or two color targets (an emissive pulse, maybe a
+    // diffuse tint) so we avoid locking all five sparse storages
+    // unconditionally.
+    let mut diffuse_q = None;
+    let mut ambient_q = None;
+    let mut specular_q = None;
+    let mut emissive_q = None;
+    let mut shader_q = None;
+
+    for (channel_name, channel) in color_channels {
+        let Some(target_entity) = resolve_entity(channel_name) else {
+            continue;
+        };
+        let value = sample_color_channel(channel, time);
+        match channel.target {
+            ColorTarget::Diffuse => {
+                let q = diffuse_q.get_or_insert_with(|| world.query_mut::<AnimatedDiffuseColor>());
+                if let Some(q) = q.as_mut() {
+                    if let Some(c) = q.get_mut(target_entity) {
+                        c.0 = value;
+                    }
+                }
+            }
+            ColorTarget::Ambient => {
+                let q = ambient_q.get_or_insert_with(|| world.query_mut::<AnimatedAmbientColor>());
+                if let Some(q) = q.as_mut() {
+                    if let Some(c) = q.get_mut(target_entity) {
+                        c.0 = value;
+                    }
+                }
+            }
+            ColorTarget::Specular => {
+                let q =
+                    specular_q.get_or_insert_with(|| world.query_mut::<AnimatedSpecularColor>());
+                if let Some(q) = q.as_mut() {
+                    if let Some(c) = q.get_mut(target_entity) {
+                        c.0 = value;
+                    }
+                }
+            }
+            ColorTarget::Emissive => {
+                let q =
+                    emissive_q.get_or_insert_with(|| world.query_mut::<AnimatedEmissiveColor>());
+                if let Some(q) = q.as_mut() {
+                    if let Some(c) = q.get_mut(target_entity) {
+                        c.0 = value;
+                    }
+                }
+            }
+            ColorTarget::ShaderColor => {
+                let q = shader_q.get_or_insert_with(|| world.query_mut::<AnimatedShaderColor>());
+                if let Some(q) = q.as_mut() {
+                    if let Some(c) = q.get_mut(target_entity) {
+                        c.0 = value;
+                    }
+                }
             }
         }
     }
@@ -329,19 +414,15 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
             }
         }
 
-        // Apply color channels — single lock for entire batch.
+        // Apply color channels — route to the right target component
+        // by `channel.target`. Pre-#517 everything landed in a single
+        // `AnimatedColor` slot, so an emissive pulse clobbered a
+        // diffuse tint on the same entity and vice-versa. Each target
+        // component is a separate `SparseSetStorage` so an entity with
+        // both a diffuse and an emissive controller keeps both
+        // animations independent.
         if !clip.color_channels.is_empty() {
-            if let Some(mut cq) = world.query_mut::<AnimatedColor>() {
-                for (channel_name, channel) in &clip.color_channels {
-                    let Some(target_entity) = resolve_entity(channel_name) else {
-                        continue;
-                    };
-                    let value = sample_color_channel(channel, current_time);
-                    if let Some(c) = cq.get_mut(target_entity) {
-                        c.0 = value;
-                    }
-                }
-            }
+            apply_color_channels(world, &clip.color_channels, current_time, &resolve_entity);
         }
 
         // Apply bool (visibility) channels — single lock for entire batch.
@@ -566,17 +647,7 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
                     }
                 }
                 if !clip.color_channels.is_empty() {
-                    if let Some(mut cq) = world.query_mut::<AnimatedColor>() {
-                        for (channel_name, channel) in &clip.color_channels {
-                            let Some(target_entity) = stack_resolve(channel_name) else {
-                                continue;
-                            };
-                            let value = sample_color_channel(channel, time);
-                            if let Some(c) = cq.get_mut(target_entity) {
-                                c.0 = value;
-                            }
-                        }
-                    }
+                    apply_color_channels(world, &clip.color_channels, time, &stack_resolve);
                 }
                 if !clip.bool_channels.is_empty() {
                     if let Some(mut vq) = world.query_mut::<AnimatedVisibility>() {
@@ -1460,6 +1531,111 @@ mod weather_tod_keys_tests {
             "afternoon_cool ({afternoon_cool:.2}) must be strictly after \
              sunrise_end ({day_anchor:.2}) to keep keys monotonic"
         );
+    }
+}
+
+#[cfg(test)]
+mod color_routing_tests {
+    //! Regression tests for `apply_color_channels` — issue #517.
+    //! Pre-#517 every color channel wrote into a single `AnimatedColor`
+    //! slot regardless of `channel.target`. Emissive pulses and diffuse
+    //! tints on the same entity collided last-write-wins, and the
+    //! shader-color path landed in the wrong component entirely. These
+    //! tests pin the target-routing contract.
+
+    use super::*;
+    use byroredux_core::animation::{AnimColorKey, ColorChannel, ColorTarget};
+    use byroredux_core::ecs::World;
+    use byroredux_core::math::Vec3;
+    use byroredux_core::string::StringPool;
+
+    fn single_key_channel(target: ColorTarget, value: Vec3) -> ColorChannel {
+        ColorChannel {
+            target,
+            keys: vec![AnimColorKey { time: 0.0, value }],
+        }
+    }
+
+    #[test]
+    fn emissive_channel_writes_only_to_emissive_component() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, AnimatedDiffuseColor(Vec3::ZERO));
+        world.insert(e, AnimatedEmissiveColor(Vec3::ZERO));
+
+        let mut pool = StringPool::new();
+        let name = pool.intern("Glow");
+        let channels = vec![(
+            name,
+            single_key_channel(ColorTarget::Emissive, Vec3::new(1.0, 0.5, 0.0)),
+        )];
+        let resolve = |s: &FixedString| if s == &name { Some(e) } else { None };
+        apply_color_channels(&world, &channels, 0.0, &resolve);
+
+        let dq = world.query::<AnimatedDiffuseColor>().unwrap();
+        let eq = world.query::<AnimatedEmissiveColor>().unwrap();
+        assert_eq!(dq.get(e).unwrap().0, Vec3::ZERO, "diffuse untouched");
+        assert_eq!(
+            eq.get(e).unwrap().0,
+            Vec3::new(1.0, 0.5, 0.0),
+            "emissive received the value"
+        );
+    }
+
+    /// Both a diffuse AND an emissive controller target the same entity —
+    /// pre-#517 they'd collide into the single `AnimatedColor` slot. Post-fix
+    /// both land in their own component and both survive.
+    #[test]
+    fn diffuse_and_emissive_coexist_on_same_entity() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, AnimatedDiffuseColor(Vec3::ZERO));
+        world.insert(e, AnimatedEmissiveColor(Vec3::ZERO));
+
+        let mut pool = StringPool::new();
+        let name = pool.intern("NeonSign");
+        let channels = vec![
+            (
+                name,
+                single_key_channel(ColorTarget::Diffuse, Vec3::new(0.1, 0.2, 0.3)),
+            ),
+            (
+                name,
+                single_key_channel(ColorTarget::Emissive, Vec3::new(0.9, 0.8, 0.7)),
+            ),
+        ];
+        let resolve = |s: &FixedString| if s == &name { Some(e) } else { None };
+        apply_color_channels(&world, &channels, 0.0, &resolve);
+
+        let dq = world.query::<AnimatedDiffuseColor>().unwrap();
+        let eq = world.query::<AnimatedEmissiveColor>().unwrap();
+        assert_eq!(dq.get(e).unwrap().0, Vec3::new(0.1, 0.2, 0.3));
+        assert_eq!(eq.get(e).unwrap().0, Vec3::new(0.9, 0.8, 0.7));
+    }
+
+    /// Shader-color target writes to `AnimatedShaderColor`, not to any of
+    /// the NiMaterial slots. Covers the
+    /// `BSEffectShaderPropertyColorController` path enabled by #431.
+    #[test]
+    fn shader_color_routes_to_shader_component() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, AnimatedDiffuseColor(Vec3::ZERO));
+        world.insert(e, AnimatedShaderColor(Vec3::ZERO));
+
+        let mut pool = StringPool::new();
+        let name = pool.intern("PlasmaGlow");
+        let channels = vec![(
+            name,
+            single_key_channel(ColorTarget::ShaderColor, Vec3::new(0.4, 0.4, 0.9)),
+        )];
+        let resolve = |s: &FixedString| if s == &name { Some(e) } else { None };
+        apply_color_channels(&world, &channels, 0.0, &resolve);
+
+        let dq = world.query::<AnimatedDiffuseColor>().unwrap();
+        let sq = world.query::<AnimatedShaderColor>().unwrap();
+        assert_eq!(dq.get(e).unwrap().0, Vec3::ZERO);
+        assert_eq!(sq.get(e).unwrap().0, Vec3::new(0.4, 0.4, 0.9));
     }
 }
 
