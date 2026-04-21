@@ -265,7 +265,13 @@ pub fn create_logical_device(
         .shader_sampled_image_array_non_uniform_indexing(true)
         .runtime_descriptor_array(true)
         .descriptor_binding_partially_bound(true)
-        .descriptor_binding_sampled_image_update_after_bind(true);
+        .descriptor_binding_sampled_image_update_after_bind(true)
+        // Host-side `vkResetQueryPool` is required by the BLAS
+        // compaction path in `acceleration.rs` — reset happens on the
+        // CPU before the command buffer records `vkCmdWriteAccelerationStructuresPropertiesKHR`.
+        // Only the RT pipeline uses this; gating on `ray_query_supported`
+        // keeps the non-RT fallback from requesting an unused feature.
+        .host_query_reset(caps.ray_query_supported);
 
     let mut accel_features = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
         .acceleration_structure(caps.ray_query_supported);
