@@ -347,6 +347,13 @@ impl VulkanContext {
             c.rebind_hdr_views(&self.device, &taa_views, vk::ImageLayout::GENERAL);
         }
 
+        // Reset permanent-failure latches — every downstream pass has
+        // just been recreated so any previous lost-device state is no
+        // longer authoritative. See #479.
+        self.taa_failed = false;
+        self.svgf_failed = false;
+        self.caustic_failed = false;
+
         // Main framebuffers bind the new HDR + G-buffer views + depth.
         let gbuffer_ref = self
             .gbuffer

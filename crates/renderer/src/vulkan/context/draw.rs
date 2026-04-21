@@ -1143,9 +1143,23 @@ impl VulkanContext {
             // history from previous frame's SVGF output slot, writes this
             // frame's accumulated indirect + moments. Composite samples
             // the output below.
-            if let Some(ref mut svgf) = self.svgf {
-                if let Err(e) = svgf.dispatch(&self.device, cmd, frame) {
-                    log::warn!("SVGF dispatch failed: {e}");
+            // SVGF permanent-failure latch: after the first dispatch
+            // error, skip all further attempts and leave the warn-log
+            // behind (escalated to `error!` so the once-per-session
+            // signal stands out). Composite's `indirectTex` descriptor
+            // keeps pointing at the stale denoised image until the
+            // next `recreate_swapchain` resets the latch. Rebinding to
+            // the raw-indirect G-buffer view would give a live (noisy)
+            // picture but requires composite-side plumbing deferred
+            // until a real lost-device repro. See #479.
+            if !self.svgf_failed {
+                if let Some(ref mut svgf) = self.svgf {
+                    if let Err(e) = svgf.dispatch(&self.device, cmd, frame) {
+                        log::error!(
+                            "SVGF dispatch failed — pass disabled for the rest of the session: {e}"
+                        );
+                        self.svgf_failed = true;
+                    }
                 }
             }
 
@@ -1154,17 +1168,26 @@ impl VulkanContext {
             // are now in SHADER_READ_ONLY_OPTIMAL) and before composite
             // (which samples the caustic accumulator). Writes binding 5
             // of the composite descriptor set.
-            if let Some(ref mut caustic) = self.caustic {
-                // Bind this frame's TLAS before dispatch — the AccelerationManager
-                // rebuilds/refits per frame but the handle is stable across frames
-                // once created, so we write it once and then again defensively.
-                if let Some(ref accel) = self.accel_manager {
-                    if let Some(tlas) = accel.tlas_handle(frame) {
-                        caustic.write_tlas(&self.device, frame, tlas);
+            // Caustic permanent-failure latch — same shape as SVGF.
+            // Composite's `causticTex` sampler keeps reading the
+            // accumulator's last valid contents, so at worst one
+            // stale caustic frame hangs around until resize. See #479.
+            if !self.caustic_failed {
+                if let Some(ref mut caustic) = self.caustic {
+                    // Bind this frame's TLAS before dispatch — the AccelerationManager
+                    // rebuilds/refits per frame but the handle is stable across frames
+                    // once created, so we write it once and then again defensively.
+                    if let Some(ref accel) = self.accel_manager {
+                        if let Some(tlas) = accel.tlas_handle(frame) {
+                            caustic.write_tlas(&self.device, frame, tlas);
+                        }
                     }
-                }
-                if let Err(e) = caustic.dispatch(&self.device, cmd, frame) {
-                    log::warn!("Caustic dispatch failed: {e}");
+                    if let Err(e) = caustic.dispatch(&self.device, cmd, frame) {
+                        log::error!(
+                            "Caustic dispatch failed — pass disabled for the rest of the session: {e}"
+                        );
+                        self.caustic_failed = true;
+                    }
                 }
             }
 
@@ -1172,9 +1195,24 @@ impl VulkanContext {
             // vectors, neighborhood-clamps in YCoCg, and writes the anti-
             // aliased HDR result for composite to sample. Runs after SVGF
             // (which denoises the indirect term) and before SSAO/composite.
-            if let Some(ref mut taa) = self.taa {
-                if let Err(e) = taa.dispatch(&self.device, cmd, frame) {
-                    log::warn!("TAA dispatch failed: {e}");
+            // TAA permanent-failure recovery: on the first dispatch
+            // error the composite's binding 0 (which currently points
+            // at TAA's output) gets rebound to the raw HDR render-pass
+            // attachments so the screen keeps updating — without the
+            // fallback the last TAA-written HDR frame would freeze on
+            // screen for the rest of the session with only a `warn!`
+            // log hinting at the cause. See #479.
+            if !self.taa_failed {
+                if let Some(ref mut taa) = self.taa {
+                    if let Err(e) = taa.dispatch(&self.device, cmd, frame) {
+                        log::error!(
+                            "TAA dispatch failed — falling back to raw HDR for the rest of the session: {e}"
+                        );
+                        self.taa_failed = true;
+                        if let Some(ref mut composite) = self.composite {
+                            composite.fall_back_to_raw_hdr(&self.device);
+                        }
+                    }
                 }
             }
 

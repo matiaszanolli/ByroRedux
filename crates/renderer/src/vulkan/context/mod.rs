@@ -309,6 +309,27 @@ pub struct VulkanContext {
     /// sampled views. Non-optional: the R32_UINT atomic storage image the
     /// pass needs is universally supported on desktop GPUs.
     pub caustic: Option<CausticPipeline>,
+    /// Permanent-failure latch for the TAA compute pass. Set on the
+    /// first `taa.dispatch` error in a session. When set: the TAA
+    /// dispatch is skipped on every subsequent frame and composite's
+    /// binding 0 has been rebound to the raw HDR views (via
+    /// `CompositePipeline::fall_back_to_raw_hdr`), so the picture
+    /// keeps updating without temporal AA instead of freezing on
+    /// whatever TAA last wrote. Reset in `recreate_swapchain` since
+    /// all pass resources are rebuilt there. See #479.
+    pub taa_failed: bool,
+    /// Same latch for SVGF — silences warn spam after the first
+    /// permanent failure, escalates to `error!` once. Composite keeps
+    /// sampling the stale indirect on subsequent frames (rebinding
+    /// to raw-indirect is more invasive and deferred until a real
+    /// lost-device repro). See #479 SIBLING.
+    pub svgf_failed: bool,
+    /// Same latch for the caustic scatter pass. Composite keeps
+    /// sampling the stale accumulator; on the failure mode the
+    /// caustic contribution is at most one frame stale for the rest
+    /// of the session — a visible-but-non-destructive degradation.
+    /// See #479 SIBLING.
+    pub caustic_failed: bool,
     pipeline_cache: vk::PipelineCache,
     /// Opaque pipeline (depth write on, no blend, BACK culling).
     pipeline: vk::Pipeline,
@@ -935,6 +956,9 @@ impl VulkanContext {
             svgf,
             taa,
             caustic,
+            taa_failed: false,
+            svgf_failed: false,
+            caustic_failed: false,
             depth_allocation: Some(depth_allocation),
             depth_image,
             depth_image_view,

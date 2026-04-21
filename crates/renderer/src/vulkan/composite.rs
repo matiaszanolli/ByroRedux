@@ -977,6 +977,24 @@ impl CompositePipeline {
     /// Current usage: both callers pass the TAA output views at
     /// `GENERAL` layout — the raw-HDR path is dormant but kept available
     /// for diagnostic A/B testing or a future TAA-disable flag.
+    /// Permanent-failure escape hatch for the TAA pass. When TAA
+    /// dispatch fails (lost device, descriptor pool exhaustion, driver
+    /// crash) the composite's binding 0 still points at the TAA
+    /// output — which holds whatever TAA wrote on its last successful
+    /// dispatch, so the screen freezes on a stale HDR frame with no
+    /// user-facing signal. Pointing composite back at its own raw HDR
+    /// views restores a live image (no temporal AA) so the pipeline
+    /// stays visibly alive while the driver failure gets diagnosed.
+    /// See #479.
+    pub fn fall_back_to_raw_hdr(&mut self, device: &ash::Device) {
+        // `clone` the view handles (not the images) so the existing
+        // `rebind_hdr_views` contract (single source-of-views arg)
+        // doesn't need to grow a borrow-self variant. Views are `Copy`-
+        // like Vulkan handles — no actual allocation beyond the Vec.
+        let views = self.hdr_image_views.clone();
+        self.rebind_hdr_views(device, &views, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+    }
+
     pub fn rebind_hdr_views(
         &mut self,
         device: &ash::Device,
