@@ -3,6 +3,7 @@
 //! Translates debug expressions into ECS queries using the component
 //! registry for type-erased access.
 
+use byroredux_core::console::CommandRegistry;
 use byroredux_core::ecs::components::{Material, Name, TextureHandle};
 use byroredux_core::ecs::resources::DebugStats;
 use byroredux_core::ecs::world::World;
@@ -64,8 +65,37 @@ pub fn evaluate(
             DebugResponse::error("screenshot handled by system, not evaluator")
         }
 
-        DebugRequest::Eval { expr } => eval_expr(world, registry, expr),
+        DebugRequest::Eval { expr } => eval_request(world, registry, expr),
     }
+}
+
+/// Resolve a free-form evaluation request. Pre-#518 this fell straight
+/// through to the Papyrus expression parser, which meant every
+/// dot-separated command name registered in the engine's
+/// `CommandRegistry` (`tex.missing`, `tex.loaded`, `mesh.info`,
+/// `mesh.cache`, …) parsed as `Ident("tex") . member("missing")`,
+/// triggered `find_by_name("tex")`, and returned
+/// `"no entity named 'tex'"`. Now the first whitespace-delimited
+/// token is looked up in the registry first; a match dispatches
+/// through the in-engine command, a miss falls back to Papyrus
+/// evaluation (so `42.Transform.translation.x` still works).
+fn eval_request(
+    world: &World,
+    registry: &ComponentRegistry,
+    expr: &str,
+) -> DebugResponse {
+    let first_word = expr.trim().split_whitespace().next().unwrap_or("");
+    if !first_word.is_empty() {
+        if let Some(reg) = world.try_resource::<CommandRegistry>() {
+            if reg.list().iter().any(|(name, _)| *name == first_word) {
+                let output = reg.execute(world, expr);
+                return DebugResponse::value(serde_json::Value::String(
+                    output.lines.join("\n"),
+                ));
+            }
+        }
+    }
+    eval_expr(world, registry, expr)
 }
 
 // ── Stats ───────────────────────────────────────────────────────────────
@@ -503,4 +533,104 @@ fn resolve_entity_name(world: &World, entity: u32) -> Option<String> {
     let name_comp = world.get::<Name>(entity)?;
     let pool = world.try_resource::<StringPool>()?;
     pool.resolve(name_comp.0).map(|s| s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_core::console::{CommandOutput, ConsoleCommand};
+    use byroredux_debug_protocol::registry::ComponentRegistry;
+
+    /// A test ConsoleCommand whose name mirrors the `tex.missing` shape —
+    /// exercises the dot-in-name code path, since that's the form the
+    /// Papyrus parser chokes on.
+    struct DotNameCommand;
+    impl ConsoleCommand for DotNameCommand {
+        fn name(&self) -> &str {
+            "tex.missing"
+        }
+        fn description(&self) -> &str {
+            "test command"
+        }
+        fn execute(&self, _world: &World, args: &str) -> CommandOutput {
+            CommandOutput::lines(vec!["header".to_string(), format!("args={}", args)])
+        }
+    }
+
+    /// Regression for #518: dot-separated command names must dispatch
+    /// through the `CommandRegistry` resource and return their output
+    /// lines joined by newlines in a `Value` response. Pre-fix the
+    /// same input fell through to `eval_expr`, which parsed
+    /// `tex.missing` as `Ident("tex") . member("missing")` and
+    /// returned `"no entity named 'tex'"`.
+    #[test]
+    fn eval_request_dispatches_dotted_command_names() {
+        let mut world = World::new();
+        let mut registry = CommandRegistry::new();
+        registry.register(DotNameCommand);
+        world.insert_resource(registry);
+
+        let component_registry = ComponentRegistry::new();
+        let request = DebugRequest::Eval {
+            expr: "tex.missing".to_string(),
+        };
+        let response = evaluate(&world, &component_registry, &request);
+        match response {
+            DebugResponse::Value { data } => {
+                let s = data.as_str().expect("expected String value");
+                assert_eq!(s, "header\nargs=");
+            }
+            other => panic!("expected Value response, got {:?}", other),
+        }
+    }
+
+    /// Args after the command name survive intact through the pre-
+    /// dispatch path. Exercises the `mesh.info <entity_id>` shape.
+    #[test]
+    fn eval_request_forwards_args_to_registered_command() {
+        let mut world = World::new();
+        let mut registry = CommandRegistry::new();
+        registry.register(DotNameCommand);
+        world.insert_resource(registry);
+
+        let component_registry = ComponentRegistry::new();
+        let request = DebugRequest::Eval {
+            expr: "tex.missing 42 arg2".to_string(),
+        };
+        let response = evaluate(&world, &component_registry, &request);
+        match response {
+            DebugResponse::Value { data } => {
+                assert_eq!(data.as_str(), Some("header\nargs=42 arg2"));
+            }
+            other => panic!("expected Value response, got {:?}", other),
+        }
+    }
+
+    /// Expressions whose first token is NOT a registered command still
+    /// route to the Papyrus evaluator — `42.Transform.translation.x`
+    /// drilling must keep working.
+    #[test]
+    fn eval_request_falls_back_to_papyrus_for_unregistered_input() {
+        let mut world = World::new();
+        // Empty CommandRegistry — nothing to match, so the
+        // unregistered expression must fall through to eval_expr.
+        world.insert_resource(CommandRegistry::new());
+
+        let component_registry = ComponentRegistry::new();
+        let request = DebugRequest::Eval {
+            expr: "42".to_string(),
+        };
+        let response = evaluate(&world, &component_registry, &request);
+        // `42` parses as an IntLit and evaluates to an EntityList
+        // (an unnamed entity id). The exact content isn't the point —
+        // we only need to verify the response is NOT a CommandRegistry
+        // dispatch (no Value with newline-joined output).
+        match response {
+            DebugResponse::EntityList { entities } => {
+                assert_eq!(entities.len(), 1);
+                assert_eq!(entities[0].id, 42);
+            }
+            other => panic!("expected EntityList (Papyrus fallback), got {:?}", other),
+        }
+    }
 }

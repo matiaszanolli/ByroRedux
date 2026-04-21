@@ -48,9 +48,13 @@ fn main() {
             continue;
         }
 
-        // Client-side commands
+        // Client-side commands. Bare `quit` / `exit` / `q` close the
+        // REPL same as the dotted forms — more discoverable than
+        // requiring the user to know the `.` prefix. The dotted forms
+        // stay supported in case a future command with the same name
+        // ships on the engine side (#518 SIBLING).
         match line {
-            ".quit" | ".exit" | ".q" => break,
+            ".quit" | ".exit" | ".q" | "quit" | "exit" | "q" => break,
             ".help" => {
                 display::print_help();
                 continue;
