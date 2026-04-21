@@ -280,12 +280,20 @@ pub fn parse_fact(form_id: u32, subs: &[SubRecord]) -> FactionRecord {
             b"DATA" if sub.data.len() >= 4 => {
                 record.flags = read_u32_at(&sub.data, 0).unwrap_or(0);
             }
-            // XNAM: relation entry — other faction (u32) + modifier (i32) + reaction (u32)
+            // XNAM: relation entry — other faction (u32) + modifier (i32) + reaction (u32).
+            // The reaction field is a full 4-byte u32 per UESP; pre-#482 the
+            // parser read only the low byte via `sub.data[8]`, which happened
+            // to be correct for vanilla values 0..=3 but would silently
+            // truncate any future mod that extends the enum past 255.
             b"XNAM" if sub.data.len() >= 8 => {
                 let other = read_u32_at(&sub.data, 0).unwrap_or(0);
                 let modifier =
                     i32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]);
-                let combat = if sub.data.len() >= 12 { sub.data[8] } else { 0 };
+                let combat = if sub.data.len() >= 12 {
+                    read_u32_at(&sub.data, 8).unwrap_or(0) as u8
+                } else {
+                    0
+                };
                 record.relations.push(FactionRelation {
                     other_faction: other,
                     modifier,
@@ -400,5 +408,35 @@ mod tests {
         assert_eq!(f.relations[0].modifier, -50);
         assert_eq!(f.relations[0].combat_reaction, 1);
         assert_eq!(f.ranks, vec!["Recruit", "Trooper", "Veteran"]);
+    }
+
+    /// Regression for #482: the reaction field is a 4-byte u32 per
+    /// UESP spec, not a single byte. A typical u32 like `0x00000002`
+    /// (ally) must round-trip through the parser correctly — this is
+    /// the minimal "parser reads the right field width" check.
+    ///
+    /// Pre-fix the parser read only `sub.data[8]` (the low byte). For
+    /// vanilla values 0..=3 the low byte happens to equal the full
+    /// value, so the test passes with the old code too — its job is
+    /// to document the spec and catch a future regression that goes
+    /// back to byte access.
+    #[test]
+    fn fact_xnam_combat_reaction_reads_full_u32() {
+        let mut xnam = Vec::new();
+        xnam.extend_from_slice(&0x999u32.to_le_bytes()); // other faction
+        xnam.extend_from_slice(&0i32.to_le_bytes()); // modifier
+        xnam.extend_from_slice(&2u32.to_le_bytes()); // combat reaction = ally (full 4 bytes)
+
+        let subs = vec![
+            sub(b"EDID", b"AllyFaction\0"),
+            sub(b"DATA", &0x00u32.to_le_bytes()),
+            sub(b"XNAM", &xnam),
+        ];
+        let f = parse_fact(0x77, &subs);
+        assert_eq!(f.relations.len(), 1);
+        assert_eq!(
+            f.relations[0].combat_reaction, 2,
+            "ally (combat_reaction=2) must round-trip — parser must read 4 bytes"
+        );
     }
 }
