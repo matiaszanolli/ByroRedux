@@ -716,9 +716,11 @@ impl VulkanContext {
             self.device
                 .cmd_begin_render_pass(cmd, &render_pass_begin, vk::SubpassContents::INLINE);
 
-            // Bind the default graphics pipeline.
-            self.device
-                .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+            // No unconditional pipeline bind here — the batch loop below
+            // initializes `last_pipeline_key` to a sentinel Blended value
+            // so the first real batch always rebinds to its own pipeline,
+            // and the UI overlay rebinds `pipeline_ui` regardless. An
+            // opaque bind at this point would always be discarded. #507.
 
             // Dynamic viewport + scissor.
             let viewports = [vk::Viewport {
