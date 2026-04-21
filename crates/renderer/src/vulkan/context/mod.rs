@@ -472,11 +472,15 @@ impl VulkanContext {
         // hardcoded 1024 that large cells would silently overflow. See #425.
         let mut texture_registry = TextureRegistry::new(
             &device,
+            &gpu_allocator,
             swapchain_state.images.len() as u32,
             device_caps.max_bindless_sampled_images,
             device_caps.max_sampler_anisotropy,
         )?;
         let checkerboard = super::texture::generate_checkerboard(256, 256, 32);
+        // One-shot 256×256 fallback — `None` pool skips the overhead of
+        // the first pool entry that would otherwise linger for the rest
+        // of the session.
         let fallback_texture = Texture::from_rgba(
             &device,
             &gpu_allocator,
@@ -486,6 +490,7 @@ impl VulkanContext {
             256,
             &checkerboard,
             texture_registry.shared_sampler,
+            None,
         )?;
         texture_registry.set_fallback(&device, fallback_texture)?;
 

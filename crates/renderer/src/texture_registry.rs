@@ -10,6 +10,7 @@
 //! another frame's command buffer is still executing.
 
 use crate::vulkan::allocator::SharedAllocator;
+use crate::vulkan::buffer::StagingPool;
 use crate::vulkan::texture::Texture;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -51,6 +52,17 @@ pub struct TextureRegistry {
     max_textures: u32,
     /// Monotonic frame counter for deferred-destroy aging (issue #134).
     current_frame_id: u64,
+    /// Retained staging buffers for texture uploads (#239). Reuses
+    /// staging memory across `load_dds` / `register_rgba` calls
+    /// instead of hitting gpu-allocator per-texture. See
+    /// `vulkan::buffer::DEFAULT_STAGING_BUDGET_BYTES` for the
+    /// retention cap. `destroy()` tears this down alongside the
+    /// descriptor pool + sampler.
+    ///
+    /// `Option` so unit tests can build a registry without a real
+    /// Vulkan device/allocator (StagingPool requires both). Production
+    /// construction via [`TextureRegistry::new`] always sets this.
+    staging_pool: Option<StagingPool>,
 }
 
 impl TextureRegistry {
@@ -82,6 +94,7 @@ impl TextureRegistry {
     /// to be enabled on the device (Vulkan 1.2 core features).
     pub fn new(
         device: &ash::Device,
+        allocator: &SharedAllocator,
         _swapchain_image_count: u32, // unused with bindless — kept for API compat
         max_textures: u32,
         max_sampler_anisotropy: f32,
@@ -201,6 +214,11 @@ impl TextureRegistry {
             },
         );
 
+        // Staging pool owns cloned device + allocator handles so that
+        // texture uploads amortize the gpu-allocator bookkeeping across
+        // a burst. Default 128 MB retained cap — see #239 / #511.
+        let staging_pool = Some(StagingPool::new(device.clone(), allocator.clone()));
+
         Ok(Self {
             textures: Vec::new(),
             path_map: HashMap::new(),
@@ -211,6 +229,7 @@ impl TextureRegistry {
             shared_sampler,
             max_textures,
             current_frame_id: 0,
+            staging_pool,
         })
     }
 
@@ -252,6 +271,7 @@ impl TextureRegistry {
             command_pool,
             dds_bytes,
             self.shared_sampler,
+            self.staging_pool.as_mut(),
         )
         .with_context(|| format!("Failed to load DDS texture '{}'", path))?;
 
@@ -307,6 +327,7 @@ impl TextureRegistry {
             height,
             pixels,
             self.shared_sampler,
+            self.staging_pool.as_mut(),
         )
         .context("Failed to create dynamic RGBA texture")?;
 
@@ -442,6 +463,7 @@ impl TextureRegistry {
             height,
             pixels,
             self.shared_sampler,
+            self.staging_pool.as_mut(),
         )
         .context("Failed to create updated dynamic RGBA texture")?;
         if let Some(prev) = entry.texture.replace(new_texture) {
@@ -549,6 +571,13 @@ impl TextureRegistry {
         }
         self.textures.clear();
         self.path_map.clear();
+
+        // Tear down the texture staging pool before the descriptor
+        // set + sampler — the pool holds VkBuffers that must be
+        // destroyed while the device is still valid. See #239.
+        if let Some(pool) = self.staging_pool.as_mut() {
+            pool.destroy();
+        }
 
         unsafe {
             device.destroy_sampler(self.shared_sampler, None);
@@ -670,6 +699,9 @@ mod tests {
             shared_sampler: vk::Sampler::null(),
             max_textures,
             current_frame_id: 0,
+            // Unit-test path: `check_slot_available` doesn't touch the
+            // pool, so None is safe here.
+            staging_pool: None,
         }
     }
 

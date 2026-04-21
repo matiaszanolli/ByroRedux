@@ -1,7 +1,7 @@
 //! GPU texture: image upload via staging buffer, layout transitions, sampler.
 
 use super::allocator::SharedAllocator;
-use super::buffer::StagingGuard;
+use super::buffer::{StagingGuard, StagingPool};
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
@@ -35,6 +35,7 @@ impl Texture {
         height: u32,
         pixels: &[u8],
         sampler: vk::Sampler,
+        mut staging_pool: Option<&mut StagingPool>,
     ) -> Result<Self> {
         assert_eq!(
             pixels.len(),
@@ -44,41 +45,40 @@ impl Texture {
 
         let image_size = pixels.len() as vk::DeviceSize;
 
-        // 1. Staging buffer.
-        let staging_buffer_info = vk::BufferCreateInfo::default()
-            .size(image_size)
-            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        // 1. Staging buffer — from pool (reuse) or fresh allocate. See
+        //    #239 — pre-fix texture uploads bypassed the pool entirely.
+        let (staging_buffer, mut staging_alloc) = if let Some(pool) = staging_pool.as_deref_mut() {
+            pool.acquire(image_size)?
+        } else {
+            let staging_buffer_info = vk::BufferCreateInfo::default()
+                .size(image_size)
+                .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-        let staging_buffer = unsafe {
-            device
-                .create_buffer(&staging_buffer_info, None)
-                .context("Failed to create staging buffer")?
+            let buf = unsafe {
+                device
+                    .create_buffer(&staging_buffer_info, None)
+                    .context("Failed to create staging buffer")?
+            };
+            let reqs = unsafe { device.get_buffer_memory_requirements(buf) };
+            let alloc = allocator
+                .lock()
+                .expect("allocator lock poisoned")
+                .allocate(&vk_alloc::AllocationCreateDesc {
+                    name: "texture_staging",
+                    requirements: reqs,
+                    location: MemoryLocation::CpuToGpu,
+                    linear: true,
+                    allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
+                })
+                .context("Failed to allocate staging memory")?;
+            unsafe {
+                device
+                    .bind_buffer_memory(buf, alloc.memory(), alloc.offset())
+                    .context("Failed to bind staging buffer")?;
+            }
+            (buf, alloc)
         };
-
-        let staging_reqs = unsafe { device.get_buffer_memory_requirements(staging_buffer) };
-
-        let mut staging_alloc = allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .allocate(&vk_alloc::AllocationCreateDesc {
-                name: "texture_staging",
-                requirements: staging_reqs,
-                location: MemoryLocation::CpuToGpu,
-                linear: true,
-                allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-            })
-            .context("Failed to allocate staging memory")?;
-
-        unsafe {
-            device
-                .bind_buffer_memory(
-                    staging_buffer,
-                    staging_alloc.memory(),
-                    staging_alloc.offset(),
-                )
-                .context("Failed to bind staging buffer")?;
-        }
 
         // Copy pixels into staging.
         staging_alloc
@@ -228,8 +228,15 @@ impl Texture {
             Ok(())
         })?;
 
-        // 6. Destroy staging buffer (guard ensures cleanup even on error above).
-        staging.destroy();
+        // 6. Release staging buffer. When a pool was provided, hand
+        //    the buffer back for reuse; otherwise destroy outright.
+        //    Guard ensures cleanup on error above regardless.
+        if let Some(pool) = staging_pool {
+            let capacity = staging.allocation.as_ref().map(|a| a.size()).unwrap_or(image_size);
+            staging.release_to(pool, capacity);
+        } else {
+            staging.destroy();
+        }
 
         // 7. Image view.
         let view_info = vk::ImageViewCreateInfo::default()
@@ -272,6 +279,7 @@ impl Texture {
         meta: &super::dds::DdsMetadata,
         pixel_data: &[u8],
         sampler: vk::Sampler,
+        mut staging_pool: Option<&mut StagingPool>,
     ) -> Result<Self> {
         use super::dds;
 
@@ -287,41 +295,39 @@ impl Texture {
 
         let image_size = total_size as vk::DeviceSize;
 
-        // 1. Staging buffer.
-        let staging_buffer_info = vk::BufferCreateInfo::default()
-            .size(image_size)
-            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        // 1. Staging buffer — from pool (reuse) or fresh. See #239.
+        let (staging_buffer, mut staging_alloc) = if let Some(pool) = staging_pool.as_deref_mut() {
+            pool.acquire(image_size)?
+        } else {
+            let staging_buffer_info = vk::BufferCreateInfo::default()
+                .size(image_size)
+                .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-        let staging_buffer = unsafe {
-            device
-                .create_buffer(&staging_buffer_info, None)
-                .context("Failed to create BC staging buffer")?
+            let buf = unsafe {
+                device
+                    .create_buffer(&staging_buffer_info, None)
+                    .context("Failed to create BC staging buffer")?
+            };
+            let reqs = unsafe { device.get_buffer_memory_requirements(buf) };
+            let alloc = allocator
+                .lock()
+                .expect("allocator lock poisoned")
+                .allocate(&vk_alloc::AllocationCreateDesc {
+                    name: "bc_texture_staging",
+                    requirements: reqs,
+                    location: MemoryLocation::CpuToGpu,
+                    linear: true,
+                    allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
+                })
+                .context("Failed to allocate BC staging memory")?;
+            unsafe {
+                device
+                    .bind_buffer_memory(buf, alloc.memory(), alloc.offset())
+                    .context("Failed to bind BC staging buffer")?;
+            }
+            (buf, alloc)
         };
-
-        let staging_reqs = unsafe { device.get_buffer_memory_requirements(staging_buffer) };
-
-        let mut staging_alloc = allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .allocate(&vk_alloc::AllocationCreateDesc {
-                name: "bc_texture_staging",
-                requirements: staging_reqs,
-                location: MemoryLocation::CpuToGpu,
-                linear: true,
-                allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-            })
-            .context("Failed to allocate BC staging memory")?;
-
-        unsafe {
-            device
-                .bind_buffer_memory(
-                    staging_buffer,
-                    staging_alloc.memory(),
-                    staging_alloc.offset(),
-                )
-                .context("Failed to bind BC staging buffer")?;
-        }
 
         staging_alloc
             .mapped_slice_mut()
@@ -481,8 +487,14 @@ impl Texture {
             Ok(())
         })?;
 
-        // 6. Destroy staging (guard ensures cleanup even on error above).
-        staging.destroy();
+        // 6. Release staging — back to pool (reuse) or destroy. Guard
+        //    ensures cleanup on error above regardless.
+        if let Some(pool) = staging_pool {
+            let capacity = staging.allocation.as_ref().map(|a| a.size()).unwrap_or(image_size);
+            staging.release_to(pool, capacity);
+        } else {
+            staging.destroy();
+        }
 
         // 7. Image view.
         let view_info = vk::ImageViewCreateInfo::default()
@@ -529,6 +541,7 @@ impl Texture {
         command_pool: vk::CommandPool,
         dds_bytes: &[u8],
         sampler: vk::Sampler,
+        staging_pool: Option<&mut StagingPool>,
     ) -> Result<Self> {
         let meta = super::dds::parse_dds(dds_bytes)?;
         let pixel_data = &dds_bytes[meta.data_offset..];
@@ -542,6 +555,7 @@ impl Texture {
                 &meta,
                 pixel_data,
                 sampler,
+                staging_pool,
             )
         } else {
             Self::from_rgba(
@@ -553,6 +567,7 @@ impl Texture {
                 meta.height,
                 pixel_data,
                 sampler,
+                staging_pool,
             )
         }
     }

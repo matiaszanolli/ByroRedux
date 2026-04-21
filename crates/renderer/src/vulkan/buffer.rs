@@ -7,13 +7,24 @@ use ash::vk;
 use gpu_allocator::vulkan;
 use gpu_allocator::MemoryLocation;
 
-/// Default upper bound on total staging-pool capacity. Chosen to comfortably
-/// cover the largest single upload the engine performs today (a few MB) plus
-/// breathing room for a burst of concurrent uploads, without letting a cell
-/// load (500 meshes + 200 textures) accumulate hundreds of megabytes of
-/// forever-pinned host memory. Callers that stream huge assets can raise it
-/// via `StagingPool::with_budget`.
-pub const DEFAULT_STAGING_BUDGET_BYTES: vk::DeviceSize = 64 * 1024 * 1024;
+/// Default upper bound on total staging-pool capacity.
+///
+/// Sized for a typical interior → exterior transition burst: ~20 BC7
+/// textures at 4K with full mips (~22 MB each), plus a handful of 2K
+/// BC7 (~5 MB), plus mesh staging headroom. 128 MB absorbs that
+/// without forcing mid-burst eviction (which destroys buffers the
+/// next texture in the same burst could have reused — exactly the
+/// pool's purpose at its worst moment). Long sessions still cap
+/// retained capacity so RSS doesn't balloon — the budget only
+/// bounds *retained* size, not in-flight allocations.
+///
+/// Pre-#511 default was 64 MB, sized for mesh streaming only
+/// (average mesh ~50 KB). Bumped after texture uploads were wired
+/// into the pool (#239).
+///
+/// Callers with atypical working sets (large cell batches, modded
+/// content) can override via `StagingPool::with_budget`.
+pub const DEFAULT_STAGING_BUDGET_BYTES: vk::DeviceSize = 128 * 1024 * 1024;
 
 /// Pool of reusable staging buffers to avoid per-upload allocate/free cycles.
 ///
@@ -275,6 +286,23 @@ impl StagingGuard {
     /// Consume the guard, destroying staging resources.
     pub fn destroy(mut self) {
         self.cleanup();
+    }
+
+    /// Consume the guard and return the staging buffer + allocation to
+    /// a pool for reuse instead of destroying them. Pre-#239 the pool's
+    /// release arm was unreachable — every upload path called
+    /// [`destroy`] at the end, so acquired buffers went straight to
+    /// gpu-allocator's free list rather than the pool's. This method
+    /// disarms the guard (clears `allocation`) before handing the
+    /// resources off, so the subsequent `Drop` is a no-op.
+    ///
+    /// `capacity` should be `allocation.size()` from the acquire call —
+    /// the pool uses it as the entry size for best-fit searches.
+    pub fn release_to(mut self, pool: &mut StagingPool, capacity: vk::DeviceSize) {
+        if let Some(alloc) = self.allocation.take() {
+            pool.release(self.buffer, alloc, capacity);
+        }
+        // `self` drops here; `allocation` is `None` so `Drop` is a no-op.
     }
 
     fn cleanup(&mut self) {
@@ -675,10 +703,10 @@ impl GpuBuffer {
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
         data: &[T],
-        staging_pool: Option<&mut StagingPool>,
+        mut staging_pool: Option<&mut StagingPool>,
     ) -> Result<Self> {
         // 1. Acquire staging buffer — from pool (reuse) or create fresh.
-        let (staging_buffer, mut staging_alloc) = if let Some(pool) = staging_pool {
+        let (staging_buffer, mut staging_alloc) = if let Some(pool) = staging_pool.as_deref_mut() {
             pool.acquire(size)?
         } else {
             let staging_info = vk::BufferCreateInfo::default()
@@ -779,8 +807,18 @@ impl GpuBuffer {
             Ok(())
         })?;
 
-        // 4. Free staging resources (guard ensures cleanup even on error above).
-        staging.destroy();
+        // 4. Release staging resources. When a pool was provided, hand
+        //    the buffer back for reuse; otherwise destroy outright.
+        //    Pre-#239 this always called `destroy` — which meant even
+        //    callers that passed a pool never got any reuse, because
+        //    each "pooled" acquire was followed by a destroy. See the
+        //    #239 investigation for the full premise verification.
+        if let Some(pool) = staging_pool {
+            let capacity = staging.allocation.as_ref().map(|a| a.size()).unwrap_or(size);
+            staging.release_to(pool, capacity);
+        } else {
+            staging.destroy();
+        }
 
         Ok(Self {
             buffer,
@@ -903,7 +941,8 @@ mod tests {
     fn select_evictions_cell_load_scenario() {
         // Simulate the cell-load case from #99: 700 small staging buffers
         // averaging 256 KiB each = 175 MiB retained. Default budget is
-        // 64 MiB → must evict enough to fit under 64 MiB.
+        // 128 MiB (#511, was 64 MiB pre-#239) → must evict enough to
+        // fit under the budget.
         let caps: Vec<u64> = (0..700).map(|_| 256 * 1024).collect();
         let budget = DEFAULT_STAGING_BUDGET_BYTES;
         let evict = select_evictions(&caps, budget);
