@@ -213,6 +213,7 @@ Usage:
   `cargo run -- --bsa path.bsa --mesh meshes\\foo.nif` — extract from BSA and render
   `cargo run -- --bsa meshes.bsa --mesh meshes\\foo.nif --textures-bsa textures.bsa` — with textures
   `cargo run -- --esm FalloutNV.esm --cell CellID --bsa Meshes.bsa --textures-bsa Textures.bsa` — cell
+  `cargo run -- --esm FalloutNV.esm --grid 0,0 --radius 3 --bsa …` — exterior grid (radius 1..=7, default 3)
 Done: N23.1–N23.10 all complete. 186 type names (156 parsed + 30 Havok skip).
 Key: ~48 particle types, bhkCompressedMeshShape (Skyrim collision), FO4 half-float + shader
 wetness, all 6 skinning blocks, full NiSkinPartition, NiPixelData, NiMorphData legacy keys.

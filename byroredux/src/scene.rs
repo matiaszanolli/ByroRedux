@@ -24,6 +24,23 @@ use crate::components::{
 };
 use crate::helpers::add_child;
 
+/// Parse the `--radius` CLI argument into a clamped grid radius for
+/// [`cell_loader::load_exterior_cells`]. Falls back to `3` (7×7 = 49
+/// cells, ~28K terrain units view distance) on any parse failure so
+/// an unparseable value loads the default rather than silently
+/// bailing. Clamped to `1..=7` — below 1 the center cell alone isn't
+/// useful, above 7 the cell count (15×15 = 225) already exceeds the
+/// streaming budget today.
+///
+/// Pulled out as a free function so a unit test can pin the bounds
+/// contract without standing up a whole App / World. See #531.
+pub(crate) fn parse_exterior_radius(s: &str) -> i32 {
+    match s.trim().parse::<i32>() {
+        Ok(r) => r.clamp(1, 7),
+        Err(_) => 3,
+    }
+}
+
 /// Called once after the renderer is ready — uploads meshes and spawns entities.
 pub(crate) fn setup_scene(
     world: &mut World,
@@ -62,6 +79,17 @@ pub(crate) fn setup_scene(
             .position(|a| a == "--wrld")
             .and_then(|i| args.get(i + 1))
             .cloned();
+        // #531 — optional `--radius N` override for the exterior grid.
+        // Defaults to 3 (7×7 grid, ~28K terrain units view distance)
+        // to preserve pre-fix behaviour. Clamped to 1..=7 by
+        // [`parse_exterior_radius`] so an accidental 100 doesn't try
+        // to load 40 401 cells.
+        let radius = args
+            .iter()
+            .position(|a| a == "--radius")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| parse_exterior_radius(s))
+            .unwrap_or(3);
 
         if let (Some(ref esm_path), Some(ref cell_id)) = (&esm_path, &cell_id) {
             // Interior cell mode
@@ -120,12 +148,15 @@ pub(crate) fn setup_scene(
             let (cx, cy) = parse_grid_coords(grid);
             let tex_provider = build_texture_provider(&args);
             let mut mat_provider = build_material_provider(&args);
-            // Radius 3 = 7×7 grid (49 cells), ~28K terrain units view distance.
+            // Radius defaults to 3 (7×7 = 49 cells, ~28K terrain
+            // units view distance). Overridable via `--radius N`,
+            // clamped to 1..=7 so worst-case is a 15×15 = 225 cell
+            // stress load. See #531.
             match cell_loader::load_exterior_cells(
                 esm_path,
                 cx,
                 cy,
-                3,
+                radius,
                 world,
                 ctx,
                 &tex_provider,
@@ -1130,4 +1161,50 @@ pub(crate) fn load_nif_bytes(
         label
     );
     (count + imported.nodes.len(), root)
+}
+
+#[cfg(test)]
+mod radius_parse_tests {
+    //! Regression tests for [`parse_exterior_radius`] — issue #531.
+    //!
+    //! The CLI `--radius N` argument pre-fix was silently ignored
+    //! (hardcoded `3` in the `load_exterior_cells` call). These tests
+    //! pin the clamp bounds + the fallback behaviour so a future
+    //! refactor that tries to "simplify" the parse (e.g. remove the
+    //! clamp, loosen the Err-fallback to 0) gets caught.
+
+    use super::parse_exterior_radius;
+
+    #[test]
+    fn parses_valid_radius_verbatim() {
+        assert_eq!(parse_exterior_radius("1"), 1);
+        assert_eq!(parse_exterior_radius("3"), 3);
+        assert_eq!(parse_exterior_radius("5"), 5);
+        assert_eq!(parse_exterior_radius("7"), 7);
+    }
+
+    #[test]
+    fn clamps_below_one_to_one() {
+        assert_eq!(parse_exterior_radius("0"), 1);
+        assert_eq!(parse_exterior_radius("-5"), 1);
+    }
+
+    #[test]
+    fn clamps_above_seven_to_seven() {
+        assert_eq!(parse_exterior_radius("8"), 7);
+        assert_eq!(parse_exterior_radius("100"), 7, "accidental large input must not load 40k cells");
+    }
+
+    #[test]
+    fn falls_back_to_default_on_parse_failure() {
+        // Non-numeric input → fall back to 3 (default 7×7 grid).
+        assert_eq!(parse_exterior_radius("foo"), 3);
+        assert_eq!(parse_exterior_radius(""), 3);
+        assert_eq!(parse_exterior_radius("3.5"), 3);
+    }
+
+    #[test]
+    fn trims_whitespace_before_parse() {
+        assert_eq!(parse_exterior_radius("  5  "), 5);
+    }
 }
