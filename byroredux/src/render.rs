@@ -541,6 +541,13 @@ pub(crate) fn build_render_data(
                     in_tlas: true,
                     in_raster,
                     entity_id: entity,
+                    // #492 — UV transform + material alpha pulled from
+                    // the `Material` component (already populated by
+                    // the NIF importer and/or the FO4 BGSM resolver).
+                    // Identity defaults when the mesh has no Material.
+                    uv_offset: mat.map(|m| m.uv_offset).unwrap_or([0.0, 0.0]),
+                    uv_scale: mat.map(|m| m.uv_scale).unwrap_or([1.0, 1.0]),
+                    material_alpha: mat.map(|m| m.alpha).unwrap_or(1.0),
                     // Average albedo for fast GI bounce approximation.
                     // Falls back to mid-gray (0.5) when no texture color
                     // data is available. A proper implementation would
@@ -663,6 +670,13 @@ pub(crate) fn build_render_data(
                         // XOR keeps the emitter grouping intact while
                         // giving each particle its own ordering slot.
                         entity_id: entity ^ (i as u32),
+                        // Particles use identity UV + full alpha — the
+                        // billboard quad is a unit square and the
+                        // emitter's per-frame RGBA color already rides
+                        // on `emissive_color` / `emissive_mult` above.
+                        uv_offset: [0.0, 0.0],
+                        uv_scale: [1.0, 1.0],
+                        material_alpha: 1.0,
                         avg_albedo: [0.0, 0.0, 0.0],
                         material_kind: 0,
                         // Particles render with depth test on, depth
@@ -926,6 +940,9 @@ mod draw_sort_key_tests {
             in_tlas: false,
             in_raster: true,
             entity_id: 0,
+            uv_offset: [0.0, 0.0],
+            uv_scale: [1.0, 1.0],
+            material_alpha: 1.0,
             avg_albedo: [0.0; 3],
             material_kind: 0,
             z_test: true,

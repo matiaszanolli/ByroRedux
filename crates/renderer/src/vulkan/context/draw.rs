@@ -555,6 +555,18 @@ impl VulkanContext {
                 parallax_max_passes: draw_cmd.parallax_max_passes,
                 env_map_index: draw_cmd.env_map_index,
                 env_mask_index: draw_cmd.env_mask_index,
+                // #492 — plumb FO4 BGSM UV + material_alpha through
+                // to the SSBO. Fragment shader consumers follow in
+                // #494. Padding slots stay at Default (0.0) so the
+                // 224-byte stride matches the shader-side layout.
+                uv_offset_u: draw_cmd.uv_offset[0],
+                uv_offset_v: draw_cmd.uv_offset[1],
+                uv_scale_u: draw_cmd.uv_scale[0],
+                uv_scale_v: draw_cmd.uv_scale[1],
+                material_alpha: draw_cmd.material_alpha,
+                _uv_pad0: 0.0,
+                _uv_pad1: 0.0,
+                _uv_pad2: 0.0,
             });
 
             // Frustum-culled draws still need an SSBO entry so RT hit

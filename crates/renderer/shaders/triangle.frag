@@ -75,7 +75,19 @@ struct GpuInstance {
     float parallaxHeightScale; // offset 176 — POM depth multiplier
     float parallaxMaxPasses;   // offset 180 — POM ray-march budget
     uint envMapIndex;        // offset 184 — slot 4 env reflection (2D proxy)
-    uint envMaskIndex;       // offset 188 → total 192 — slot 5 env-reflection mask
+    uint envMaskIndex;       // offset 188 — slot 5 env-reflection mask
+    // #492 — FO4 BGSM UV transform + material alpha. Plumbing only
+    // in this pass; the fragment-shader consumer wiring lands in the
+    // #494 follow-up (texture sample uses `uv * scale + offset`,
+    // final alpha multiplies by `materialAlpha`).
+    float uvOffsetU;         // offset 192
+    float uvOffsetV;         // offset 196
+    float uvScaleU;          // offset 200
+    float uvScaleV;          // offset 204
+    float materialAlpha;     // offset 208
+    float _uvPad0;           // offset 212
+    float _uvPad1;           // offset 216
+    float _uvPad2;           // offset 220 → total 224
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

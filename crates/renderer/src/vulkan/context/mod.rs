@@ -163,6 +163,17 @@ pub struct DrawCommand {
     /// ECS entity id for mesh draws; `entity ^ particle_index` for
     /// particle billboards; `u32::MAX` for the UI singleton.
     pub entity_id: u32,
+    /// UV transform translation from `MaterialInfo.uv_offset`. FO4
+    /// BGSM authors this explicitly; older games default to `(0,0)`.
+    /// See #492.
+    pub uv_offset: [f32; 2],
+    /// UV transform scale from `MaterialInfo.uv_scale`. Defaults to
+    /// `(1,1)` when absent. See #492.
+    pub uv_scale: [f32; 2],
+    /// Material alpha multiplier from `MaterialInfo.alpha` (BGSM
+    /// `material_alpha`). Multiplied into the final blend-pass
+    /// alpha. Default `1.0`. See #492.
+    pub material_alpha: f32,
 }
 
 /// Sky rendering parameters passed per-frame to the composite shader.

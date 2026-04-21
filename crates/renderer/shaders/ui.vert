@@ -45,7 +45,18 @@ struct GpuInstance {
     float parallaxHeightScale; // offset 176
     float parallaxMaxPasses;   // offset 180
     uint envMapIndex;        // offset 184
-    uint envMaskIndex;       // offset 188 → total 192
+    uint envMaskIndex;       // offset 188
+    // #492 — FO4 BGSM UV transform + material alpha. UI pipeline
+    // doesn't sample either; layout mirror only to keep the 224 B
+    // std430 array stride in lockstep with triangle.{vert,frag}.
+    float uvOffsetU;         // offset 192
+    float uvOffsetV;         // offset 196
+    float uvScaleU;          // offset 200
+    float uvScaleV;          // offset 204
+    float materialAlpha;     // offset 208
+    float _uvPad0;           // offset 212
+    float _uvPad1;           // offset 216
+    float _uvPad2;           // offset 220 → total 224
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

@@ -204,8 +204,31 @@ pub struct GpuInstance {
     /// (`BSShaderTextureSet` slot 5). Per-texel attenuation of
     /// the env reflection. 0 = no mask → reflection is unmasked.
     /// See #453.
-    pub env_mask_index: u32, // 4 B, offset 188 → total 192
-                               // Struct is 192 bytes (12×16), 16-byte aligned for std430.
+    pub env_mask_index: u32, // 4 B, offset 188
+    /// UV transform translation X (from `MaterialInfo.uv_offset[0]`).
+    /// Applied to texture coordinates as `uv = uv * scale + offset`.
+    /// FO4 BGSM authors both offset and scale; FO3/FNV/Skyrim usually
+    /// default to identity (0, 0) / (1, 1). See #492 (FO4-BGSM-3).
+    pub uv_offset_u: f32, // 4 B, offset 192
+    pub uv_offset_v: f32, // 4 B, offset 196
+    /// UV transform scale X / Y.
+    pub uv_scale_u: f32, // 4 B, offset 200
+    pub uv_scale_v: f32, // 4 B, offset 204
+    /// Material alpha multiplier — the BGSM `material_alpha` field
+    /// (equivalent to `MaterialInfo.alpha` on the NIF side). Fragment
+    /// shader multiplies the sampled texture alpha by this for the
+    /// final blend-pass alpha. Default `1.0` = no attenuation.
+    pub material_alpha: f32, // 4 B, offset 208
+    /// 12 bytes of std430 tail padding so the struct's total size
+    /// lands at 224 B = 14 × 16 (std430 array stride requirement —
+    /// element alignment follows the largest member's alignment,
+    /// which is the 16-byte mat4). Reclaimable in future follow-ups
+    /// that need 3 more scalar slots (e.g. Skyrim+ fresnel power,
+    /// specular alpha, or environment map scale per-instance).
+    pub _uv_pad0: f32, // 4 B, offset 212
+    pub _uv_pad1: f32, // 4 B, offset 216
+    pub _uv_pad2: f32, // 4 B, offset 220 → total 224
+                       // Struct is 224 bytes (14×16), 16-byte aligned for std430.
 }
 
 impl Default for GpuInstance {
@@ -249,6 +272,14 @@ impl Default for GpuInstance {
             parallax_max_passes: 4.0,
             env_map_index: 0,
             env_mask_index: 0,
+            uv_offset_u: 0.0,
+            uv_offset_v: 0.0,
+            uv_scale_u: 1.0,
+            uv_scale_v: 1.0,
+            material_alpha: 1.0,
+            _uv_pad0: 0.0,
+            _uv_pad1: 0.0,
+            _uv_pad2: 0.0,
         }
     }
 }
@@ -1191,15 +1222,16 @@ mod gpu_instance_layout_tests {
     /// update protocol (grep for `struct GpuInstance` in the shaders tree
     /// before touching this struct).
     #[test]
-    fn gpu_instance_is_192_bytes_std430_compatible() {
-        // Grew 176 → 192 in #453 — reclaimed the 4-byte
-        // `_pad_extra_textures` slot and appended
-        // parallax/height/passes/env/env_mask (5 × u32/f32 = 20 bytes).
-        // 12 × 16 = 192, std430 stride for the `instances[]` SSBO.
+    fn gpu_instance_is_224_bytes_std430_compatible() {
+        // 176 → 192 in #453 (parallax/env slots).
+        // 192 → 224 in #492 (uv_offset + uv_scale + material_alpha
+        // for FO4 BGSM + 12 B of tail padding to keep the struct a
+        // multiple of 16 for std430 array stride).
+        // 14 × 16 = 224.
         assert_eq!(
             size_of::<GpuInstance>(),
-            192,
-            "GpuInstance must stay 192 B to match std430 shader layout"
+            224,
+            "GpuInstance must stay 224 B to match std430 shader layout"
         );
     }
 
@@ -1246,6 +1278,17 @@ mod gpu_instance_layout_tests {
         assert_eq!(offset_of!(GpuInstance, parallax_max_passes), 180);
         assert_eq!(offset_of!(GpuInstance, env_map_index), 184);
         assert_eq!(offset_of!(GpuInstance, env_mask_index), 188);
+        // #492 — FO4 BGSM UV transform + material alpha. Packed as
+        // one vec4 (offset/scale) + one half-used vec4 (alpha + 3
+        // padding f32) to land on a 16-byte boundary.
+        assert_eq!(offset_of!(GpuInstance, uv_offset_u), 192);
+        assert_eq!(offset_of!(GpuInstance, uv_offset_v), 196);
+        assert_eq!(offset_of!(GpuInstance, uv_scale_u), 200);
+        assert_eq!(offset_of!(GpuInstance, uv_scale_v), 204);
+        assert_eq!(offset_of!(GpuInstance, material_alpha), 208);
+        assert_eq!(offset_of!(GpuInstance, _uv_pad0), 212);
+        assert_eq!(offset_of!(GpuInstance, _uv_pad1), 216);
+        assert_eq!(offset_of!(GpuInstance, _uv_pad2), 220);
     }
 
     /// Regression: #309 — `VkDrawIndexedIndirectCommand` is a Vulkan-
@@ -1332,14 +1375,23 @@ mod gpu_instance_layout_tests {
                  shaders (Shader Struct Sync invariant #318 / #417)."
             );
             // #453 — the BSShaderTextureSet slots 3/4/5 + POM scalars
-            // must land in every copy so the 192-byte Rust struct and
-            // the GLSL structs stay byte-identical.
+            // must land in every copy so the Rust struct and the GLSL
+            // structs stay byte-identical.
+            // #492 — FO4 BGSM UV transform + material alpha extend the
+            // struct to 224 B. Every copy must declare the new fields
+            // even when the shader doesn't yet consume them (the
+            // fragment-shader wiring lands in #494).
             for needle in [
                 "parallaxMapIndex",
                 "parallaxHeightScale",
                 "parallaxMaxPasses",
                 "envMapIndex",
                 "envMaskIndex",
+                "uvOffsetU",
+                "uvOffsetV",
+                "uvScaleU",
+                "uvScaleV",
+                "materialAlpha",
             ] {
                 assert!(
                     src.contains(needle),
