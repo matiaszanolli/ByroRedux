@@ -597,17 +597,20 @@ fn parse_cell_group(
                                 let raw = i32::from_le_bytes([d[24], d[25], d[26], d[27]]);
                                 (raw as f32).to_radians()
                             };
-                            let (fog_color, fog_near, fog_far) = if d.len() >= 20 {
-                                // RGB byte order (bytes 8=R, 9=G, 10=B).
-                                let fog_r = d[8] as f32 / 255.0;
-                                let fog_g = d[9] as f32 / 255.0;
-                                let fog_b = d[10] as f32 / 255.0;
-                                let fog_near = f32::from_le_bytes([d[12], d[13], d[14], d[15]]);
-                                let fog_far = f32::from_le_bytes([d[16], d[17], d[18], d[19]]);
-                                ([fog_r, fog_g, fog_b], fog_near, fog_far)
-                            } else {
-                                ([0.0; 3], 0.0, 0.0)
-                            };
+                            // Fog fields land in bytes 8..20, always
+                            // present under the outer `>= 28` gate. Pre-#483
+                            // a redundant `if d.len() >= 20` nested here
+                            // with a dead-code `else` branch that couldn't
+                            // be reached (the outer gate already proves
+                            // `len >= 28 > 20`). See FNV-2-L3.
+                            // RGB byte order (bytes 8=R, 9=G, 10=B).
+                            let fog_color = [
+                                d[8] as f32 / 255.0,
+                                d[9] as f32 / 255.0,
+                                d[10] as f32 / 255.0,
+                            ];
+                            let fog_near = f32::from_le_bytes([d[12], d[13], d[14], d[15]]);
+                            let fog_far = f32::from_le_bytes([d[16], d[17], d[18], d[19]]);
 
                             // XCLL extended layout — per UESP + Gamebryo 2.3
                             // `NiDirectionalLight` source + nif.xml:
