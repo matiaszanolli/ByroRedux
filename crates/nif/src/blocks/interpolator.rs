@@ -70,6 +70,18 @@ pub struct QuatKey {
     pub tbc: Option<[f32; 3]>,
 }
 
+/// A single RGBA color keyframe. Used by NiColorData / NiColorInterpolator
+/// for animated emissive, plasma glow, muzzle-flash fades, etc. (nif.xml
+/// `KeyGroup<Color4>`).
+#[derive(Debug, Clone, Copy)]
+pub struct Color4Key {
+    pub time: f32,
+    pub value: [f32; 4], // r, g, b, a
+    pub tangent_forward: [f32; 4],
+    pub tangent_backward: [f32; 4],
+    pub tbc: Option<[f32; 3]>,
+}
+
 /// A typed group of keys with a shared interpolation type.
 #[derive(Debug, Clone)]
 pub struct KeyGroup<K> {
@@ -175,6 +187,61 @@ impl KeyGroup<Vec3Key> {
             keys.push(Vec3Key {
                 time,
                 value: [x, y, z],
+                tangent_forward,
+                tangent_backward,
+                tbc,
+            });
+        }
+        Ok(Self { key_type, keys })
+    }
+}
+
+impl KeyGroup<Color4Key> {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let num_keys = stream.read_u32_le()?;
+        if num_keys == 0 {
+            return Ok(Self {
+                key_type: KeyType::Linear,
+                keys: Vec::new(),
+            });
+        }
+        let key_type = KeyType::from_u32(stream.read_u32_le()?)?;
+        let mut keys: Vec<Color4Key> = stream.allocate_vec(num_keys)?;
+        for _ in 0..num_keys {
+            let time = stream.read_f32_le()?;
+            let r = stream.read_f32_le()?;
+            let g = stream.read_f32_le()?;
+            let b = stream.read_f32_le()?;
+            let a = stream.read_f32_le()?;
+            let mut tangent_forward = [0.0; 4];
+            let mut tangent_backward = [0.0; 4];
+            let mut tbc = None;
+            match key_type {
+                KeyType::Linear | KeyType::Constant => {}
+                KeyType::Quadratic => {
+                    for slot in tangent_forward.iter_mut() {
+                        *slot = stream.read_f32_le()?;
+                    }
+                    for slot in tangent_backward.iter_mut() {
+                        *slot = stream.read_f32_le()?;
+                    }
+                }
+                KeyType::Tbc => {
+                    let t = stream.read_f32_le()?;
+                    let b = stream.read_f32_le()?;
+                    let c = stream.read_f32_le()?;
+                    tbc = Some([t, b, c]);
+                }
+                KeyType::XyzRotation => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "XyzRotation key type in color key group",
+                    ));
+                }
+            }
+            keys.push(Color4Key {
+                time,
+                value: [r, g, b, a],
                 tangent_forward,
                 tangent_backward,
                 tbc,
@@ -399,6 +466,71 @@ impl NiObject for NiPosData {
 impl NiPosData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let keys = KeyGroup::<Vec3Key>::parse(stream)?;
+        Ok(Self { keys })
+    }
+}
+
+// ── NiColorInterpolator ───────────────────────────────────────────────
+
+/// Interpolates an RGBA color value. References NiColorData.
+///
+/// Paired with BSEffectShaderPropertyColorController /
+/// BSLightingShaderPropertyColorController (and historical
+/// NiMaterialColorController targets). Pre-#431 this block landed as
+/// NiUnknown because it wasn't in the dispatch table; downstream
+/// animation extraction silently ran with a default color on every
+/// animated emissive / plasma / muzzle-flash controller.
+#[derive(Debug)]
+pub struct NiColorInterpolator {
+    /// Pose value used when `data_ref` doesn't resolve.
+    pub value: [f32; 4],
+    pub data_ref: BlockRef,
+}
+
+impl NiObject for NiColorInterpolator {
+    fn block_type_name(&self) -> &'static str {
+        "NiColorInterpolator"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiColorInterpolator {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let r = stream.read_f32_le()?;
+        let g = stream.read_f32_le()?;
+        let b = stream.read_f32_le()?;
+        let a = stream.read_f32_le()?;
+        let data_ref = stream.read_block_ref()?;
+        Ok(Self {
+            value: [r, g, b, a],
+            data_ref,
+        })
+    }
+}
+
+// ── NiColorData ───────────────────────────────────────────────────────
+
+/// RGBA keyframe data. Wrapped `KeyGroup<Color4>` — same layout shape as
+/// `NiPosData` but four components instead of three.
+#[derive(Debug)]
+pub struct NiColorData {
+    pub keys: KeyGroup<Color4Key>,
+}
+
+impl NiObject for NiColorData {
+    fn block_type_name(&self) -> &'static str {
+        "NiColorData"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiColorData {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let keys = KeyGroup::<Color4Key>::parse(stream)?;
         Ok(Self { keys })
     }
 }
@@ -767,6 +899,68 @@ mod tests {
     /// `interpolator.rs:224-229` already reads all three. This test
     /// pins that behavior so a future rewrite can't regress to the
     /// imagined bug without failing loudly.
+    /// Regression for #431 — the canonical color-animation chain
+    /// (`NiColorInterpolator` → `NiColorData`) must parse end-to-end
+    /// instead of landing as `NiUnknown`. Covers the value default
+    /// field, the data_ref, and two linear RGBA keys with distinct
+    /// alpha so a future regression that drops the 4th component
+    /// fails loudly.
+    #[test]
+    fn parse_color_interpolator_and_color_data() {
+        let header = make_header_fnv();
+
+        // NiColorInterpolator: value (r, g, b, a) + data_ref.
+        let mut data = Vec::new();
+        data.extend_from_slice(&0.5f32.to_le_bytes());
+        data.extend_from_slice(&0.25f32.to_le_bytes());
+        data.extend_from_slice(&0.125f32.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data.extend_from_slice(&9i32.to_le_bytes()); // data_ref
+
+        let mut stream = NifStream::new(&data, &header);
+        let ci = NiColorInterpolator::parse(&mut stream).unwrap();
+        assert_eq!(ci.value, [0.5, 0.25, 0.125, 1.0]);
+        assert_eq!(ci.data_ref.index(), Some(9));
+        assert_eq!(stream.position(), 20);
+
+        // NiColorData with 2 Linear RGBA keys (fade from opaque red →
+        // half-alpha blue across one second).
+        let mut data = Vec::new();
+        data.extend_from_slice(&2u32.to_le_bytes()); // num keys
+        data.extend_from_slice(&1u32.to_le_bytes()); // Linear
+        // Key 0: t=0, (1, 0, 0, 1)
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        // Key 1: t=1, (0, 0, 1, 0.5)
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data.extend_from_slice(&0.5f32.to_le_bytes());
+
+        let mut stream = NifStream::new(&data, &header);
+        let cd = NiColorData::parse(&mut stream).unwrap();
+        assert_eq!(cd.keys.key_type, KeyType::Linear);
+        assert_eq!(cd.keys.keys.len(), 2);
+        assert_eq!(cd.keys.keys[0].value, [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(cd.keys.keys[1].value, [0.0, 0.0, 1.0, 0.5]);
+        assert_eq!(cd.keys.keys[1].time, 1.0);
+    }
+
+    #[test]
+    fn parse_color_data_empty_keygroup() {
+        let header = make_header_fnv();
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u32.to_le_bytes()); // zero keys → no key_type follows
+        let mut stream = NifStream::new(&data, &header);
+        let cd = NiColorData::parse(&mut stream).unwrap();
+        assert!(cd.keys.keys.is_empty());
+        assert_eq!(stream.position(), 4);
+    }
+
     #[test]
     fn parse_transform_data_xyz_rotation_reads_all_three_axes() {
         let header = make_header_fnv();

@@ -43,8 +43,9 @@ use extra_data::{
 use interpolator::{
     NiBSplineBasisData, NiBSplineCompTransformInterpolator, NiBSplineData, NiBlendBoolInterpolator,
     NiBlendFloatInterpolator, NiBlendPoint3Interpolator, NiBlendTransformInterpolator, NiBoolData,
-    NiBoolInterpolator, NiFloatData, NiFloatInterpolator, NiPoint3Interpolator, NiPosData,
-    NiTextKeyExtraData, NiTransformData, NiTransformInterpolator, NiUVData,
+    NiBoolInterpolator, NiColorData, NiColorInterpolator, NiFloatData, NiFloatInterpolator,
+    NiPoint3Interpolator, NiPosData, NiTextKeyExtraData, NiTransformData, NiTransformInterpolator,
+    NiUVData,
 };
 use multibound::{BsMultiBound, BsMultiBoundAABB, BsMultiBoundOBB};
 use node::{BsOrderedNode, BsValueNode, NiNode};
@@ -493,6 +494,14 @@ pub fn parse_block(
         "NiPathController" => Ok(Box::new(NiPathController::parse(stream)?)),
         "NiPoint3Interpolator" => Ok(Box::new(NiPoint3Interpolator::parse(stream)?)),
         "NiPosData" => Ok(Box::new(NiPosData::parse(stream)?)),
+        // NiColorInterpolator + NiColorData — RGBA key-based animation
+        // used by every BSEffectShaderPropertyColorController /
+        // BSLightingShaderPropertyColorController and historical
+        // NiMaterialColorController authored with a color interpolator.
+        // Pre-#431 both landed as NiUnknown and every animated emissive
+        // silently played with a default color. See #431.
+        "NiColorInterpolator" => Ok(Box::new(NiColorInterpolator::parse(stream)?)),
+        "NiColorData" => Ok(Box::new(NiColorData::parse(stream)?)),
         "NiBoolInterpolator" => Ok(Box::new(NiBoolInterpolator::parse(stream)?)),
         "NiBoolData" => Ok(Box::new(NiBoolData::parse(stream)?)),
         "NiTextKeyExtraData" => Ok(Box::new(NiTextKeyExtraData::parse(stream)?)),

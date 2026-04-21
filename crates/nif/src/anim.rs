@@ -14,9 +14,9 @@ use crate::blocks::properties::NiStringPalette;
 use crate::blocks::interpolator::{
     FloatKey, KeyGroup, KeyType, NiBSplineBasisData, NiBSplineCompTransformInterpolator,
     NiBSplineData, NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendInterpolator,
-    NiBlendPoint3Interpolator, NiBlendTransformInterpolator, NiBoolInterpolator, NiFloatData,
-    NiFloatInterpolator, NiPoint3Interpolator, NiPosData, NiTransformData,
-    NiTransformInterpolator, Vec3Key,
+    NiBlendPoint3Interpolator, NiBlendTransformInterpolator, NiBoolInterpolator, NiColorData,
+    NiColorInterpolator, NiFloatData, NiFloatInterpolator, NiPoint3Interpolator, NiPosData,
+    NiTransformData, NiTransformInterpolator, Vec3Key,
 };
 use crate::scene::NifScene;
 use std::collections::{BTreeSet, HashMap};
@@ -1017,34 +1017,81 @@ fn extract_float_channel(
     Some(FloatChannel { target, keys })
 }
 
-/// Extract a color channel from NiPoint3Interpolator → NiPosData.
-/// Used by NiMaterialColorController.
-fn extract_color_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<ColorChannel> {
-    let mut interp_idx = cb.interpolator_ref.index()?;
+/// Resolve the interpolator referenced by a controlled block into a flat
+/// list of RGB keys, trying both historical shapes:
+///   1. `NiColorInterpolator` → `NiColorData` (nif.xml canonical form for
+///      `BSEffect/BSLightingShaderPropertyColorController`, and the form
+///      used whenever the authoring tool emits a dedicated color
+///      interpolator — #431).
+///   2. `NiPoint3Interpolator` → `NiPosData` (legacy
+///      `NiMaterialColorController` authored with a Point3 interp
+///      because NiColorInterpolator wasn't in the dispatch table before
+///      #431; keys already read as RGB).
+///
+/// Returns an empty Vec when the interpolator lands on neither. Alpha
+/// is dropped here to match the downstream `AnimColorKey` shape
+/// (`value: [f32; 3]`) — color animations on alpha channels were not
+/// supported pre-#431 either and callers that need alpha should drive
+/// a separate `NiAlphaController` float channel.
+fn resolve_color_keys(scene: &NifScene, cb: &ControlledBlock) -> Vec<AnimColorKey> {
+    let Some(mut interp_idx) = cb.interpolator_ref.index() else {
+        return Vec::new();
+    };
     // #334 — follow NiBlendPoint3Interpolator. See resolver docs.
     if let Some(resolved) = resolve_blend_interpolator_target(scene, interp_idx) {
         interp_idx = resolved;
     }
-    let interp = scene.get_as::<NiPoint3Interpolator>(interp_idx)?;
-    let data_idx = interp.data_ref.index()?;
-    let data = scene.get_as::<NiPosData>(data_idx)?;
 
-    let keys: Vec<AnimColorKey> = data
-        .keys
-        .keys
-        .iter()
-        .map(|k| AnimColorKey {
-            time: k.time,
-            value: k.value,
-        })
-        .collect();
+    // Path 1: NiColorInterpolator → NiColorData (canonical).
+    if let Some(interp) = scene.get_as::<NiColorInterpolator>(interp_idx) {
+        if let Some(data_idx) = interp.data_ref.index() {
+            if let Some(data) = scene.get_as::<NiColorData>(data_idx) {
+                return data
+                    .keys
+                    .keys
+                    .iter()
+                    .map(|k| AnimColorKey {
+                        time: k.time,
+                        value: [k.value[0], k.value[1], k.value[2]],
+                    })
+                    .collect();
+            }
+        }
+        return Vec::new();
+    }
+
+    // Path 2: NiPoint3Interpolator → NiPosData (legacy fallback).
+    if let Some(interp) = scene.get_as::<NiPoint3Interpolator>(interp_idx) {
+        if let Some(data_idx) = interp.data_ref.index() {
+            if let Some(data) = scene.get_as::<NiPosData>(data_idx) {
+                return data
+                    .keys
+                    .keys
+                    .iter()
+                    .map(|k| AnimColorKey {
+                        time: k.time,
+                        value: k.value,
+                    })
+                    .collect();
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// Extract a color channel from a material-color controller interpolator
+/// chain. Used by `NiMaterialColorController`. Accepts both color-
+/// interpolator shapes via [`resolve_color_keys`].
+fn extract_color_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<ColorChannel> {
+    let keys = resolve_color_keys(scene, cb);
+    if keys.is_empty() {
+        return None;
+    }
 
     // Determine which material color slot from the controller.
-    // The controller block is referenced by cb.controller_ref but we access it
-    // via property_type field. NiMaterialColorController.target_color:
-    // 0=diffuse, 1=ambient, 2=specular, 3=emissive
-    // We'd need to look up the controller block to get target_color.
-    // For now, default to Diffuse (most common).
+    // NiMaterialColorController.target_color:
+    // 0=diffuse, 1=ambient, 2=specular, 3=emissive. Default to Diffuse
+    // when the controller isn't resolvable (most common target anyway).
     let target = cb
         .controller_ref
         .index()
@@ -1057,33 +1104,15 @@ fn extract_color_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<Color
         })
         .unwrap_or(ColorTarget::Diffuse);
 
-    if keys.is_empty() {
-        return None;
-    }
     Some(ColorChannel { target, keys })
 }
 
-/// Extract a shader color channel from NiPoint3Interpolator → NiPosData.
+/// Extract a shader color channel from a
+/// `BSEffect/BSLightingShaderPropertyColorController` interpolator
+/// chain. Same resolver as the material-color path — targets
+/// `ColorTarget::ShaderColor` unconditionally.
 fn extract_shader_color_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<ColorChannel> {
-    let mut interp_idx = cb.interpolator_ref.index()?;
-    // #334 — follow NiBlendPoint3Interpolator. See resolver docs.
-    if let Some(resolved) = resolve_blend_interpolator_target(scene, interp_idx) {
-        interp_idx = resolved;
-    }
-    let interp = scene.get_as::<NiPoint3Interpolator>(interp_idx)?;
-    let data_idx = interp.data_ref.index()?;
-    let data = scene.get_as::<NiPosData>(data_idx)?;
-
-    let keys: Vec<AnimColorKey> = data
-        .keys
-        .keys
-        .iter()
-        .map(|k| AnimColorKey {
-            time: k.time,
-            value: k.value,
-        })
-        .collect();
-
+    let keys = resolve_color_keys(scene, cb);
     if keys.is_empty() {
         return None;
     }
