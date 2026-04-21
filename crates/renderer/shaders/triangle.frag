@@ -548,8 +548,15 @@ void main() {
     outMotion = (currNDC - prevNDC) * 0.5;
 
     // Mesh ID: instance index + 1 so that "0" (clear value for background
-    // pixels) is distinct from "instance 0". Caps at uint16 max.
-    outMeshID = uint(fragInstanceIndex) + 1u;
+    // pixels) is distinct from "instance 0". Caps at uint15 max — bit 15
+    // (0x8000) is reserved for the ALPHA_BLEND_NO_HISTORY flag that
+    // forces TAA + SVGF to disable temporal reuse on transparent
+    // fragments. Phase 1 of Tier C glass — without this the TAA history
+    // reprojects the wrong source pixel across glass z-fight flips,
+    // amplifying sub-pixel jitter into cross-hatch moiré.
+    uint meshIdBase = (uint(fragInstanceIndex) + 1u) & 0x7FFFu;
+    bool alphaBlendFrag = (inst.flags & 2u) != 0u;
+    outMeshID = meshIdBase | (alphaBlendFrag ? 0x8000u : 0u);
 
     // View direction. NdotV is clamped to 0.05 (~87°) to prevent the
     // Cook-Torrance `D*G*F / (4*NdotV*NdotL)` specular term from blowing

@@ -268,6 +268,15 @@ fn create_triangle_pipeline_with_layout(
     // pre-#398 hardcoded defaults and `draw.rs` issues per-batch
     // `cmd_set_depth_test_enable` / `_write_enable` / `_compare_op`
     // before each draw.
+    //
+    // CULL_MODE must be dynamic on EVERY pipeline in the draw loop:
+    // per Vulkan spec, binding a pipeline that doesn't declare a
+    // particular dynamic state invalidates any prior `cmd_set_*` for
+    // it. If the opaque pipeline were static-cull, transitioning to
+    // the blend pipeline (which does declare it dynamic) would leave
+    // the next draw with undefined cull. Declaring it dynamic on both
+    // pipelines keeps the value persistent across binds; opaque batches
+    // just re-emit their baked BACK/NONE target. Phase 1 of Tier C glass.
     let dynamic_states = [
         vk::DynamicState::VIEWPORT,
         vk::DynamicState::SCISSOR,
@@ -275,6 +284,7 @@ fn create_triangle_pipeline_with_layout(
         vk::DynamicState::DEPTH_TEST_ENABLE,
         vk::DynamicState::DEPTH_WRITE_ENABLE,
         vk::DynamicState::DEPTH_COMPARE_OP,
+        vk::DynamicState::CULL_MODE,
     ];
     let dynamic_state =
         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
@@ -472,6 +482,16 @@ pub fn create_blend_pipeline(
     // Same #398 extended-dynamic-state additions as the opaque path —
     // blended draws can also author non-default z_test / z_write /
     // z_function (HUD overlays + ghost effects + fade halos).
+    //
+    // CULL_MODE is also dynamic on the blend pipeline so two-sided
+    // alpha-blend draws can be split into a FRONT-cull pass (back
+    // faces) followed by a BACK-cull pass (front faces) for correct
+    // within-mesh back-to-front ordering. Gamebryo submits two-sided
+    // glass as a single `D3DCULL_NONE` draw and relies on per-object
+    // BTF sort to hide the face-to-face z-fight — at our sub-pixel
+    // TAA jitter that interaction reads as cross-hatch moiré. The
+    // split gives each face a deterministic depth winner per pixel.
+    // Phase 1 of the Tier C glass plan.
     let dynamic_states = [
         vk::DynamicState::VIEWPORT,
         vk::DynamicState::SCISSOR,
@@ -479,6 +499,7 @@ pub fn create_blend_pipeline(
         vk::DynamicState::DEPTH_TEST_ENABLE,
         vk::DynamicState::DEPTH_WRITE_ENABLE,
         vk::DynamicState::DEPTH_COMPARE_OP,
+        vk::DynamicState::CULL_MODE,
     ];
     let dynamic_state =
         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);

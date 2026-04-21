@@ -101,7 +101,16 @@ void main() {
     uint prevMid = texelFetch(uPrevMeshId, prevPix, 0).r;
     bool disocclusion = (currMid != prevMid);
 
-    if (offscreen || disocclusion) {
+    // Alpha-blend opt-out: bit 15 of the mesh_id is set on transparent
+    // fragments by triangle.frag. History reprojection would sample
+    // the wrong source across glass z-fight flips and amplify TAA
+    // sub-pixel jitter into cross-hatch moiré. Forcing current-sample
+    // pass-through gives up ~1 frame of edge smoothing for transparent
+    // surfaces, which is the right tradeoff for their known-unstable
+    // depth winner.
+    bool alphaBlend = (currMid & 0x8000u) != 0u;
+
+    if (offscreen || disocclusion || alphaBlend) {
         imageStore(uOutput, pix, vec4(currRgb, 1.0));
         return;
     }

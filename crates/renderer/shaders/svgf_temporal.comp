@@ -55,7 +55,13 @@ void main() {
     uint currID = texelFetch(currMeshIdTex, p, 0).r;
 
     // Background pixels (mesh_id 0 = sky/clear): no accumulation needed.
-    if (currID == 0u) {
+    // Alpha-blend fragments (mesh_id bit 15 set by triangle.frag) take
+    // the same early-out: their indirect GI is effectively zero (the
+    // glass path returns before writing real GI), and reprojecting
+    // history across a glass-stable-depth flip produces visible
+    // ghosting ahead of the alpha-blend surface. Phase 1 of Tier C
+    // glass plan.
+    if (currID == 0u || (currID & 0x8000u) != 0u) {
         imageStore(outIndirect, p, vec4(currInd, 1.0));
         imageStore(outMoments, p, vec4(currLum, currLum2, 1.0, 0.0));
         return;

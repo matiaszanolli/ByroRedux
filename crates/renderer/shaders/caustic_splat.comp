@@ -132,7 +132,14 @@ void main() {
     if (any(greaterThanEqual(pixel, size))) return;
 
     // Reject background (meshId = 0 means "empty").
-    uint meshId = texelFetch(meshIdTex, pixel, 0).r;
+    // Mask off the ALPHA_BLEND_NO_HISTORY flag (bit 15) that
+    // triangle.frag sets on transparent fragments — caustic sources
+    // are by definition alpha-blend (the flag 4u check below filters
+    // to metal<0.3 blend surfaces), so every caustic-splat pixel
+    // carries this bit. Without the mask the derived instIdx would
+    // overflow the instance SSBO.
+    uint meshIdRaw = texelFetch(meshIdTex, pixel, 0).r;
+    uint meshId = meshIdRaw & 0x7FFFu;
     if (meshId == 0u) return;
 
     // Instance flag gate — only caustic-source pixels splat.

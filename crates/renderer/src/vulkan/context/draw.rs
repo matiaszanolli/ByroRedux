@@ -807,6 +807,12 @@ impl VulkanContext {
             let mut last_z_test = true;
             let mut last_z_write = true;
             let mut last_z_function: u8 = u8::MAX;
+            // Dynamic cull mode only affects blend pipelines (they declare
+            // VK_DYNAMIC_STATE_CULL_MODE in pipeline.rs). Opaque pipelines
+            // bake a static BACK / NONE cull; emitting cmd_set_cull_mode
+            // on them is harmless host-side state the static pipeline
+            // ignores. Track the last value to elide redundant commands.
+            let mut last_cull_mode = vk::CullModeFlags::BACK;
 
             // Set initial depth bias to zero before first draw — Vulkan
             // requires the dynamic state to be set before any draw call
@@ -817,6 +823,7 @@ impl VulkanContext {
             self.device.cmd_set_depth_write_enable(cmd, true);
             self.device
                 .cmd_set_depth_compare_op(cmd, vk::CompareOp::LESS_OR_EQUAL);
+            self.device.cmd_set_cull_mode(cmd, last_cull_mode);
 
             // Bind the global geometry buffer once for all scene draws.
             // Each batch uses global_index_offset / global_vertex_offset
@@ -910,15 +917,117 @@ impl VulkanContext {
                     last_z_function = batch.z_function;
                 }
 
-                if use_indirect {
+                // Classify the batch's cull-mode requirement.
+                //
+                // Every pipeline declares CULL_MODE as dynamic (so the
+                // state persists across pipeline transitions — per
+                // Vulkan spec a bind to a pipeline without the dynamic
+                // state would invalidate prior cmd_set_cull_mode), so
+                // we must emit the target cull per-batch even for
+                // opaque draws. The per-batch cost is a single u32
+                // host command.
+                //
+                // Two-sided alpha-blend batches are rendered in two
+                // passes — FRONT cull first (draws back faces, which
+                // write depth), then BACK cull (draws front faces,
+                // which blend on top). Without the split, a single
+                // CULL_NONE draw would put front and back triangles in
+                // arbitrary index order; TAA subpixel jitter then
+                // flips the depth winner per frame, producing
+                // cross-hatch moiré on glass. See Phase 1 of Tier C
+                // glass plan + `docs/issues/glass-investigation/`.
+                let (is_blend, two_sided) = match batch.pipeline_key {
+                    PipelineKey::Blended { two_sided, .. } => (true, two_sided),
+                    PipelineKey::Opaque { two_sided } => (false, two_sided),
+                };
+                let needs_split = is_blend && two_sided;
+                // Opaque & single-sided-blend cull target — used by
+                // every branch below except the split two-sided blend.
+                let default_cull = if two_sided {
+                    vk::CullModeFlags::NONE
+                } else {
+                    vk::CullModeFlags::BACK
+                };
+
+                let set_cull = |target: vk::CullModeFlags,
+                                 last: &mut vk::CullModeFlags| {
+                    if *last != target {
+                        self.device.cmd_set_cull_mode(cmd, target);
+                        *last = target;
+                    }
+                };
+
+                // Dispatch helper — one direct draw of `batch`. Factored
+                // so we can call it twice for the two-sided alpha-blend
+                // split without duplicating the global-bound / per-mesh
+                // fallback paths.
+                let dispatch_direct = |this: &Self| {
+                    if global_bound {
+                        this.device.cmd_draw_indexed(
+                            cmd,
+                            batch.index_count,
+                            batch.instance_count,
+                            batch.global_index_offset,
+                            batch.global_vertex_offset,
+                            batch.first_instance,
+                        );
+                    } else {
+                        if let Some(mesh) = this.mesh_registry.get(batch.mesh_handle) {
+                            this.device.cmd_bind_vertex_buffers(
+                                cmd,
+                                0,
+                                &[mesh.vertex_buffer.buffer],
+                                &[0],
+                            );
+                            this.device.cmd_bind_index_buffer(
+                                cmd,
+                                mesh.index_buffer.buffer,
+                                0,
+                                vk::IndexType::UINT32,
+                            );
+                        }
+                        this.device.cmd_draw_indexed(
+                            cmd,
+                            batch.index_count,
+                            batch.instance_count,
+                            0,
+                            0,
+                            batch.first_instance,
+                        );
+                    }
+                };
+
+                if needs_split {
+                    // Two-sided alpha-blend: back faces first, then
+                    // front faces. Fall out of indirect grouping —
+                    // two-sided blend batches must draw each mesh
+                    // back+front adjacently, which
+                    // `cmd_draw_indexed_indirect` over a group can't
+                    // express without interleaving meshes.
+                    set_cull(vk::CullModeFlags::FRONT, &mut last_cull_mode);
+                    dispatch_direct(self);
+                    set_cull(vk::CullModeFlags::BACK, &mut last_cull_mode);
+                    dispatch_direct(self);
+                    i += 1;
+                } else if use_indirect {
+                    set_cull(default_cull, &mut last_cull_mode);
                     // Gather consecutive batches that share the current
                     // `(pipeline_key, is_decal)` tuple — each one is
                     // already represented in the indirect buffer as one
                     // VkDrawIndexedIndirectCommand. A single
                     // `cmd_draw_indexed_indirect` call dispatches all N.
+                    //
+                    // Two-sided blend batches are excluded above and
+                    // can't reach this branch, so grouping is safe.
                     let key = batch_state(batch);
                     let mut end = i + 1;
-                    while end < batches.len() && batch_state(&batches[end]) == key {
+                    while end < batches.len()
+                        && batch_state(&batches[end]) == key
+                        && !matches!(
+                            batches[end].pipeline_key,
+                            PipelineKey::Blended { two_sided: true, .. }
+                        )
+                    {
                         end += 1;
                     }
                     let group_size = (end - i) as u32;
@@ -931,43 +1040,11 @@ impl VulkanContext {
                         indirect_stride,
                     );
                     i = end;
-                } else if global_bound {
-                    // Global buffer path without multiDrawIndirect —
-                    // one direct draw per batch (pre-#309 behavior).
-                    self.device.cmd_draw_indexed(
-                        cmd,
-                        batch.index_count,
-                        batch.instance_count,
-                        batch.global_index_offset,
-                        batch.global_vertex_offset,
-                        batch.first_instance,
-                    );
-                    i += 1;
                 } else {
-                    // Fallback: per-mesh buffers (before SSBO is built, or
-                    // for non-scene meshes like the spinning cube demo).
-                    if let Some(mesh) = self.mesh_registry.get(batch.mesh_handle) {
-                        self.device.cmd_bind_vertex_buffers(
-                            cmd,
-                            0,
-                            &[mesh.vertex_buffer.buffer],
-                            &[0],
-                        );
-                        self.device.cmd_bind_index_buffer(
-                            cmd,
-                            mesh.index_buffer.buffer,
-                            0,
-                            vk::IndexType::UINT32,
-                        );
-                    }
-                    self.device.cmd_draw_indexed(
-                        cmd,
-                        batch.index_count,
-                        batch.instance_count,
-                        0,
-                        0,
-                        batch.first_instance,
-                    );
+                    // Direct-draw fallback: global VB/IB bound or
+                    // per-mesh fallback inside `dispatch_direct`.
+                    set_cull(default_cull, &mut last_cull_mode);
+                    dispatch_direct(self);
                     i += 1;
                 }
             }
