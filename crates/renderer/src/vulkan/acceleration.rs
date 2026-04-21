@@ -234,6 +234,34 @@ fn scratch_should_shrink(current_capacity: vk::DeviceSize, peak_required: vk::De
         && current_capacity.saturating_sub(peak_required) > SLACK
 }
 
+/// Mid-batch BLAS eviction trigger (#510).
+///
+/// Returns `true` when the *projected* live BLAS footprint
+/// (`already_live + pending_this_batch`) is at or above 90% of the
+/// configured budget, so the batched-build Phase 1 should pause and
+/// evict previous-cell BLAS before creating more result buffers. The
+/// 90% threshold leaves headroom for the batch's final few allocations
+/// + the scratch buffer; the budget itself is VRAM/3 so a breach
+/// represents genuine residency pressure, not just a hot spike.
+///
+/// Pulled out as a pure function so the unit test can pin the
+/// threshold math without needing a live Vulkan device.
+fn should_evict_mid_batch(
+    total_live_bytes: vk::DeviceSize,
+    pending_bytes: vk::DeviceSize,
+    budget_bytes: vk::DeviceSize,
+) -> bool {
+    let projected = total_live_bytes.saturating_add(pending_bytes);
+    // projected >= budget * 0.9 without floats: multiply both sides by 10.
+    projected.saturating_mul(10) >= budget_bytes.saturating_mul(9)
+}
+
+/// How often to check the eviction threshold inside the batched BLAS
+/// build. Every N buffers created we test
+/// [`should_evict_mid_batch`]; eviction runs only when needed, so the
+/// idle cost is one add + one compare per N iterations.
+const BATCH_EVICTION_CHECK_INTERVAL: usize = 64;
+
 fn compute_blas_budget(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
@@ -604,8 +632,43 @@ impl AccelerationManager {
             triangles_data.push(triangles);
         }
 
+        // Pre-batch eviction — release any previous-cell BLAS that is
+        // safely past `MAX_FRAMES_IN_FLIGHT + 1` idle before we start
+        // creating result buffers. Cheap when nothing qualifies
+        // (`evict_unused_blas` early-returns under budget); helps cell
+        // transitions where the outgoing cell's BLAS still holds live
+        // memory that the incoming cell's batch is about to need. #510.
+        unsafe {
+            self.evict_unused_blas(device, allocator);
+        }
+
+        // Running sum of `acceleration_structure_size` across the Phase 1
+        // buffers we've created for *this batch*. Combined with
+        // `self.total_blas_bytes` it gives the projected footprint the
+        // mid-batch eviction predicate tests. See [`should_evict_mid_batch`].
+        let mut pending_bytes: vk::DeviceSize = 0;
         // Now build geometries referencing the stored triangles data.
         for (idx, &(mesh_handle, _mesh, _vertex_count, index_count)) in meshes.iter().enumerate() {
+            // Mid-batch eviction check. Trigger only every N iterations
+            // so the cost is amortized; the predicate itself is pure
+            // arithmetic. #510.
+            if idx > 0 && idx % BATCH_EVICTION_CHECK_INTERVAL == 0 {
+                if should_evict_mid_batch(
+                    self.total_blas_bytes,
+                    pending_bytes,
+                    self.blas_budget_bytes,
+                ) {
+                    // SAFETY: prepared buffers for this batch are local
+                    // to `prepared` and not yet in `self.blas_entries`,
+                    // so `evict_unused_blas` cannot touch them — it only
+                    // frees entries in `blas_entries` that are past the
+                    // idle threshold.
+                    unsafe {
+                        self.evict_unused_blas(device, allocator);
+                    }
+                }
+            }
+
             let primitive_count = index_count / 3;
 
             // SAFETY: We transmute the lifetime to 'static because the triangles_data
@@ -638,6 +701,7 @@ impl AccelerationManager {
             };
 
             max_scratch_size = max_scratch_size.max(sizes.build_scratch_size);
+            pending_bytes = pending_bytes.saturating_add(sizes.acceleration_structure_size);
 
             let mut result_buffer = GpuBuffer::create_device_local_uninit(
                 device,
@@ -1710,6 +1774,38 @@ impl AccelerationManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression for #510: the mid-batch eviction predicate must
+    /// fire at ≥ 90% of the configured budget and stay quiet below.
+    /// Uses integer-only arithmetic so the threshold is consistent
+    /// between 32- and 64-bit `DeviceSize` builds.
+    #[test]
+    fn should_evict_mid_batch_fires_at_ninety_percent() {
+        let budget: vk::DeviceSize = 1_000_000_000; // 1 GB
+
+        // Exactly 90%: projected == budget * 9 / 10 → fires.
+        assert!(should_evict_mid_batch(700_000_000, 200_000_000, budget));
+
+        // Exactly at the boundary: 900 MB projected, 900 MB trigger.
+        assert!(should_evict_mid_batch(600_000_000, 300_000_000, budget));
+
+        // One byte under 90%: must NOT fire.
+        assert!(!should_evict_mid_batch(500_000_000, 399_999_999, budget));
+
+        // Well under: empty live + small pending.
+        assert!(!should_evict_mid_batch(0, 10_000_000, budget));
+
+        // Saturating-add guards against overflow when a bogus caller
+        // passes near-u64::MAX for pending. Must not panic.
+        let _ = should_evict_mid_batch(u64::MAX / 2, u64::MAX / 2, budget);
+
+        // Zero budget — eviction always fires (degenerate
+        // configuration; `compute_blas_budget` floors at 256 MB so
+        // this path can't hit in practice, but the predicate must
+        // not panic or treat zero budget as "under").
+        assert!(should_evict_mid_batch(1, 0, 0));
+        assert!(should_evict_mid_batch(0, 0, 0));
+    }
 
     /// Regression: #300 — when `needs_full_rebuild` is set, the
     /// per-instance address zip-compare must be skipped (the call is
