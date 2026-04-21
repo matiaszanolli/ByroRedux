@@ -4,23 +4,22 @@ use super::VulkanContext;
 use anyhow::Result;
 
 use crate::vulkan::scene_buffer::GpuTerrainTile;
-use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
 
 /// Free-function core of `fill_terrain_tile_scratch_if_dirty` — lifted
 /// out of the `VulkanContext` method so unit tests can exercise it
-/// without standing up a full Vulkan device. When `*dirty_frames > 0`,
-/// clears `dest` (preserving capacity) and refills it from `tiles`,
-/// decrementing the counter. Returns `true` when the caller should
-/// perform the GPU upload. See #496.
+/// without standing up a full Vulkan device. When `*dirty` is set,
+/// clears `dest` (preserving capacity), refills it from `tiles`, and
+/// clears the flag. Returns `true` when the caller should perform the
+/// GPU upload. See #496 / #497.
 pub(super) fn fill_terrain_tiles(
     tiles: &[Option<GpuTerrainTile>],
-    dirty_frames: &mut u32,
+    dirty: &mut bool,
     dest: &mut Vec<GpuTerrainTile>,
 ) -> bool {
-    if *dirty_frames == 0 {
+    if !*dirty {
         return false;
     }
-    *dirty_frames -= 1;
+    *dirty = false;
     dest.clear();
     dest.extend(tiles.iter().map(|t| t.unwrap_or_default()));
     true
@@ -40,7 +39,7 @@ impl VulkanContext {
         self.terrain_tiles[idx] = Some(GpuTerrainTile {
             layer_texture_index,
         });
-        self.terrain_tiles_dirty_frames = MAX_FRAMES_IN_FLIGHT as u32;
+        self.terrain_tiles_dirty = true;
         Some(slot)
     }
 
@@ -56,7 +55,7 @@ impl VulkanContext {
         }
         if self.terrain_tiles[idx].take().is_some() {
             self.terrain_tile_free_list.push(slot);
-            self.terrain_tiles_dirty_frames = MAX_FRAMES_IN_FLIGHT as u32;
+            self.terrain_tiles_dirty = true;
         }
     }
 
@@ -75,7 +74,7 @@ impl VulkanContext {
         &mut self,
         dest: &mut Vec<GpuTerrainTile>,
     ) -> bool {
-        fill_terrain_tiles(&self.terrain_tiles, &mut self.terrain_tiles_dirty_frames, dest)
+        fill_terrain_tiles(&self.terrain_tiles, &mut self.terrain_tiles_dirty, dest)
     }
     /// Build a BLAS for a mesh (RT only). Call after uploading a mesh.
     pub fn build_blas_for_mesh(&mut self, mesh_handle: u32, vertex_count: u32, index_count: u32) {
@@ -203,18 +202,21 @@ mod tests {
     use super::*;
     use crate::vulkan::scene_buffer::MAX_TERRAIN_TILES;
 
-    /// Regression for #496: the fill helper must reuse the caller's
-    /// scratch buffer capacity across dirty frames. Pre-fix,
-    /// `drain_terrain_tile_uploads` allocated a fresh 32 KB Vec per
-    /// call — `MAX_FRAMES_IN_FLIGHT × 32 KB` heap churn per cell load.
+    /// Regression for #496 / #497: the fill helper must reuse the
+    /// caller's scratch buffer capacity across repeated dirty refills.
+    /// Pre-#496 `drain_terrain_tile_uploads` allocated a fresh 32 KB Vec
+    /// per call. Since #497 the dirty signal is a single bool (the
+    /// DEVICE_LOCAL SSBO needs exactly one upload per cell transition),
+    /// so the capacity reuse is verified by toggling the flag back on
+    /// manually after each consumption.
     #[test]
-    fn fill_reuses_scratch_capacity_across_dirty_frames() {
+    fn fill_reuses_scratch_capacity_across_dirty_refills() {
         let mut tiles: Vec<Option<GpuTerrainTile>> = vec![None; MAX_TERRAIN_TILES];
         tiles[0] = Some(GpuTerrainTile {
             layer_texture_index: [1, 2, 3, 4, 5, 6, 7, 8],
         });
         let mut dest: Vec<GpuTerrainTile> = Vec::new();
-        let mut dirty = 3u32;
+        let mut dirty = true;
 
         // First call — allocates the Vec.
         assert!(fill_terrain_tiles(&tiles, &mut dirty, &mut dest));
@@ -222,44 +224,43 @@ mod tests {
         assert!(cap_after_first >= MAX_TERRAIN_TILES);
         assert_eq!(dest.len(), MAX_TERRAIN_TILES);
         assert_eq!(dest[0].layer_texture_index, [1, 2, 3, 4, 5, 6, 7, 8]);
-        assert_eq!(dirty, 2);
+        assert!(!dirty);
 
-        // Subsequent calls MUST NOT grow capacity — clear + extend
+        // Subsequent refills MUST NOT grow capacity — clear + extend
         // reuses the buffer. This is the whole point of the refactor.
+        dirty = true;
         assert!(fill_terrain_tiles(&tiles, &mut dirty, &mut dest));
         assert_eq!(dest.capacity(), cap_after_first);
-        assert_eq!(dirty, 1);
+        assert!(!dirty);
 
+        dirty = true;
         assert!(fill_terrain_tiles(&tiles, &mut dirty, &mut dest));
         assert_eq!(dest.capacity(), cap_after_first);
-        assert_eq!(dirty, 0);
+        assert!(!dirty);
     }
 
-    /// Zero counter short-circuits — no fill, no decrement underflow.
+    /// Clean flag short-circuits — no fill, no work.
     #[test]
-    fn fill_noop_when_counter_zero() {
+    fn fill_noop_when_not_dirty() {
         let tiles: Vec<Option<GpuTerrainTile>> = vec![None; MAX_TERRAIN_TILES];
         let mut dest: Vec<GpuTerrainTile> = Vec::with_capacity(16);
         let cap_before = dest.capacity();
-        let mut dirty = 0u32;
+        let mut dirty = false;
 
         assert!(!fill_terrain_tiles(&tiles, &mut dirty, &mut dest));
-        // Counter left untouched (never underflows below zero).
-        assert_eq!(dirty, 0);
+        assert!(!dirty);
         // Scratch buffer untouched — capacity preserved, len unchanged.
         assert!(dest.is_empty());
         assert_eq!(dest.capacity(), cap_before);
     }
 
     /// Empty slots render as the zero tile so the fragment-shader guard
-    /// `if (layerIdx == 0u) continue;` skips them. Covers the default
-    /// fill contract that the original `drain_terrain_tile_uploads`
-    /// established.
+    /// `if (layerIdx == 0u) continue;` skips them.
     #[test]
     fn empty_slots_fill_with_zero_default() {
         let tiles: Vec<Option<GpuTerrainTile>> = vec![None; 4];
         let mut dest: Vec<GpuTerrainTile> = Vec::new();
-        let mut dirty = 1u32;
+        let mut dirty = true;
 
         assert!(fill_terrain_tiles(&tiles, &mut dirty, &mut dest));
         assert_eq!(dest.len(), 4);

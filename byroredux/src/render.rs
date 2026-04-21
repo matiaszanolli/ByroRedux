@@ -101,20 +101,28 @@ fn pack_depth_state(cmd: &DrawCommand) -> u8 {
 /// into single instanced draws. Owned here so the field order can't
 /// silently drift from an assert in a downstream crate.
 ///
-/// Both branches return the same 7-tuple shape `(u8, u8, u8, u32, u32,
-/// u32, u32)` so the compiler accepts a single key closure. Per-branch
-/// semantics are encoded by which slot carries the depth value:
-///   Opaque      — slot 3 = depth_state; slot 6 = sort_depth (front-to-back)
-///   Transparent — slot 3 = !sort_depth (back-to-front); slot 4 = depth_state
-pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u32, u32, u32, u32) {
+/// Both branches return the same 8-tuple shape so the compiler accepts a
+/// single key closure. Per-branch semantics:
+///   Opaque      — slot 3/4 = 0 (blend factors unused); slot 5 = depth_state;
+///                 slot 6 = mesh (cluster key); slot 7 = sort_depth (front-to-back).
+///   Transparent — slot 3/4 = (src_blend, dst_blend) so additive vs alpha vs
+///                 modulate draws cluster together and don't thrash the
+///                 blend-pipeline cache; slot 5 = !sort_depth (back-to-front
+///                 within a (blend, depth_state) cohort); slot 6 = depth_state;
+///                 slot 7 = mesh. Correctness: alpha compositing requires
+///                 back-to-front order *within one pipeline state*, not across
+///                 them. Draws sharing (src, dst) still sort back-to-front;
+///                 different-blend draws are already visually separable (#499).
+pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u32, u32, u32, u32, u32) {
     if cmd.alpha_blend {
         (
             1u8, // after opaque
             cmd.is_decal as u8,
             cmd.two_sided as u8,
+            cmd.src_blend as u32,
+            cmd.dst_blend as u32,
             !cmd.sort_depth, // invert → larger depth first
             pack_depth_state(cmd) as u32,
-            cmd.texture_handle,
             cmd.mesh_handle,
         )
     } else {
@@ -122,10 +130,11 @@ pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u32, u32, u32, u3
             0u8,
             cmd.is_decal as u8,
             cmd.two_sided as u8,
+            0,
+            0,
             pack_depth_state(cmd) as u32,
             cmd.mesh_handle, // group identical meshes
-            cmd.texture_handle,
-            cmd.sort_depth, // front-to-back within group
+            cmd.sort_depth,  // front-to-back within group
         )
     }
 }
@@ -949,6 +958,34 @@ mod draw_sort_key_tests {
         cmds.sort_by_key(draw_sort_key);
         assert_eq!(cmds[0].sort_depth, 900);
         assert_eq!(cmds[1].sort_depth, 100);
+    }
+
+    /// Regression for #499: interleaved additive and alpha-blend draws
+    /// sort into separate `(src_blend, dst_blend)` cohorts so the
+    /// blend-pipeline cache doesn't thrash on every depth alternation.
+    #[test]
+    fn transparent_clusters_by_blend_factors() {
+        let mut alpha_near = cmd(true, false, false);
+        alpha_near.src_blend = 6;
+        alpha_near.dst_blend = 7;
+        alpha_near.sort_depth = 100;
+        let mut additive_far = cmd(true, false, false);
+        additive_far.src_blend = 6;
+        additive_far.dst_blend = 1;
+        additive_far.sort_depth = 900;
+        let mut alpha_far = cmd(true, false, false);
+        alpha_far.src_blend = 6;
+        alpha_far.dst_blend = 7;
+        alpha_far.sort_depth = 500;
+        let mut cmds = vec![alpha_near, additive_far, alpha_far];
+        cmds.sort_by_key(draw_sort_key);
+        // Additive (dst=1) sorts before alpha (dst=7) by u32 order.
+        // Both alpha draws land together, sorted back-to-front within.
+        assert_eq!(cmds[0].dst_blend, 1);
+        assert_eq!(cmds[1].dst_blend, 7);
+        assert_eq!(cmds[1].sort_depth, 500);
+        assert_eq!(cmds[2].dst_blend, 7);
+        assert_eq!(cmds[2].sort_depth, 100);
     }
 }
 

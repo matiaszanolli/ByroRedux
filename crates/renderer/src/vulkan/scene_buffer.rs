@@ -344,12 +344,19 @@ pub struct SceneBuffers {
     /// `(pipeline_key, is_decal)` into one indirect draw call reading
     /// a contiguous range of this buffer. See #309.
     indirect_buffers: Vec<GpuBuffer>,
-    /// One SSBO per frame-in-flight holding `MAX_TERRAIN_TILES`
-    /// `GpuTerrainTile` entries. Populated on cell load via
-    /// [`SceneBuffers::upload_terrain_tiles`] — not rewritten per
-    /// frame. Fragment shader reads `terrainTiles[tile_idx]` when the
-    /// `INSTANCE_FLAG_TERRAIN_SPLAT` bit is set on the instance. See #470.
-    terrain_tile_buffers: Vec<GpuBuffer>,
+    /// Single DEVICE_LOCAL SSBO holding `MAX_TERRAIN_TILES`
+    /// `GpuTerrainTile` entries. Rewritten only at cell transitions
+    /// via [`SceneBuffers::upload_terrain_tiles`] — a staging copy
+    /// into GPU memory. Pre-#497 this was double-buffered HOST_VISIBLE,
+    /// which wasted 32 KB of scarce BAR heap for read-only data. All
+    /// frame-in-flight descriptor sets point at the same buffer since
+    /// there are no per-frame contents. Fragment shader reads
+    /// `terrainTiles[tile_idx]` when `INSTANCE_FLAG_TERRAIN_SPLAT` is
+    /// set on the instance. See #470 / #497.
+    terrain_tile_buffer: GpuBuffer,
+    /// Size of the terrain tile buffer in bytes — stashed so upload
+    /// paths don't have to recompute it from `MAX_TERRAIN_TILES`.
+    terrain_tile_buf_size: vk::DeviceSize,
     /// Descriptor pool for scene descriptor sets.
     descriptor_pool: vk::DescriptorPool,
     /// Layout for set 1: binding 0 = SSBO (lights), binding 1 = UBO (camera),
@@ -393,7 +400,6 @@ impl SceneBuffers {
         let mut bone_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut instance_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut indirect_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let mut terrain_tile_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             light_buffers.push(GpuBuffer::create_host_visible(
                 device,
@@ -425,13 +431,18 @@ impl SceneBuffers {
                 indirect_buf_size,
                 vk::BufferUsageFlags::INDIRECT_BUFFER,
             )?);
-            terrain_tile_buffers.push(GpuBuffer::create_host_visible(
-                device,
-                allocator,
-                terrain_tile_buf_size,
-                vk::BufferUsageFlags::STORAGE_BUFFER,
-            )?);
         }
+        // Terrain tile SSBO: single DEVICE_LOCAL buffer, uploaded via
+        // staging at cell load. TRANSFER_DST needed for the staging
+        // copy. Shared across all frame-in-flight descriptor sets
+        // since the contents are static until the next cell
+        // transition. See #497.
+        let terrain_tile_buffer = GpuBuffer::create_device_local_uninit(
+            device,
+            allocator,
+            terrain_tile_buf_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+        )?;
 
         // Descriptor set layout: set 1.
         let mut bindings = vec![
@@ -637,7 +648,7 @@ impl SceneBuffers {
                 range: instance_buf_size,
             }];
             let terrain_tile_buf_info = [vk::DescriptorBufferInfo {
-                buffer: terrain_tile_buffers[i].buffer,
+                buffer: terrain_tile_buffer.buffer,
                 offset: 0,
                 range: terrain_tile_buf_size,
             }];
@@ -700,7 +711,8 @@ impl SceneBuffers {
             bone_buffers,
             instance_buffers,
             indirect_buffers,
-            terrain_tile_buffers,
+            terrain_tile_buffer,
+            terrain_tile_buf_size,
             descriptor_pool,
             descriptor_set_layout,
             descriptor_sets,
@@ -882,15 +894,18 @@ impl SceneBuffers {
         self.indirect_buffers[frame_index].buffer
     }
 
-    /// Upload terrain tile data for the current frame-in-flight. Called
-    /// from the cell loader after `spawn_terrain_mesh` packs per-tile
-    /// layer texture indices. Writes are not required every frame —
-    /// once per cell load is enough because the data is static until
-    /// the next cell transition. See #470.
+    /// Upload terrain tile data into the single DEVICE_LOCAL SSBO via
+    /// a staging buffer + one-time `vkCmdCopyBuffer`. Called from the
+    /// cell loader path after `spawn_terrain_mesh` packs per-tile layer
+    /// texture indices. The data is static until the next cell
+    /// transition, so exactly one upload per dirty transition is
+    /// enough — no per-frame double-buffering. See #470 / #497.
     pub fn upload_terrain_tiles(
         &mut self,
         device: &ash::Device,
-        frame_index: usize,
+        allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        command_pool: vk::CommandPool,
         tiles: &[GpuTerrainTile],
     ) -> Result<()> {
         let count = tiles.len().min(MAX_TERRAIN_TILES);
@@ -904,20 +919,82 @@ impl SceneBuffers {
         if count == 0 {
             return Ok(());
         }
-        let buf = &mut self.terrain_tile_buffers[frame_index];
-        let mapped = buf.mapped_slice_mut()?;
-        let byte_size = std::mem::size_of::<GpuTerrainTile>() * count;
+
+        let byte_size = (std::mem::size_of::<GpuTerrainTile>() * count) as vk::DeviceSize;
+
+        // Create a transient staging buffer. Terrain tile uploads run
+        // at cell-transition frequency (a few times a minute at most),
+        // so skip the StagingPool reuse overhead — a one-shot 32 KB
+        // CpuToGpu allocation is cheap and the buffer vanishes cleanly
+        // via the guard below on any exit path.
+        let staging_info = vk::BufferCreateInfo::default()
+            .size(byte_size)
+            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let staging_buffer = unsafe {
+            device
+                .create_buffer(&staging_info, None)
+                .context("Failed to create terrain tile staging buffer")?
+        };
+        let reqs = unsafe { device.get_buffer_memory_requirements(staging_buffer) };
+        let mut staging_alloc = allocator
+            .lock()
+            .expect("allocator lock poisoned")
+            .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+                name: "terrain_tile_staging",
+                requirements: reqs,
+                location: gpu_allocator::MemoryLocation::CpuToGpu,
+                linear: true,
+                allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+            })
+            .context("Failed to allocate terrain tile staging memory")?;
+        unsafe {
+            device
+                .bind_buffer_memory(staging_buffer, staging_alloc.memory(), staging_alloc.offset())
+                .context("Failed to bind terrain tile staging buffer")?;
+        }
+
         // SAFETY: GpuTerrainTile is #[repr(C)] with u32-only fields
-        // matching std430. terrain_tile_buffers are sized for
-        // MAX_TERRAIN_TILES; count is clamped above.
+        // matching std430. Staging was sized to `byte_size` above.
+        let mapped = staging_alloc
+            .mapped_slice_mut()
+            .context("Terrain tile staging not mapped")?;
         unsafe {
             std::ptr::copy_nonoverlapping(
                 tiles.as_ptr() as *const u8,
                 mapped.as_mut_ptr(),
-                byte_size,
+                byte_size as usize,
             );
         }
-        buf.flush_if_needed(device)
+
+        let copy = vk::BufferCopy {
+            src_offset: 0,
+            dst_offset: 0,
+            size: byte_size,
+        };
+        let dst = self.terrain_tile_buffer.buffer;
+        let result = super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
+            unsafe {
+                device.cmd_copy_buffer(cmd, staging_buffer, dst, &[copy]);
+            }
+            Ok(())
+        });
+
+        // Tear down staging regardless of copy outcome.
+        unsafe {
+            device.destroy_buffer(staging_buffer, None);
+        }
+        allocator
+            .lock()
+            .expect("allocator lock poisoned")
+            .free(staging_alloc)
+            .ok();
+
+        // Suppress "field never read" on the cached size — kept for
+        // future layout changes / debugging introspection.
+        let _ = self.terrain_tile_buf_size;
+
+        result
     }
 
     /// Get the light buffers (for compute pipeline descriptor writes).
@@ -1092,9 +1169,7 @@ impl SceneBuffers {
         for buf in &mut self.indirect_buffers {
             buf.destroy(device, allocator);
         }
-        for buf in &mut self.terrain_tile_buffers {
-            buf.destroy(device, allocator);
-        }
+        self.terrain_tile_buffer.destroy(device, allocator);
         device.destroy_descriptor_pool(self.descriptor_pool, None);
         device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
     }

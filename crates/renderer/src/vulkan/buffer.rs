@@ -359,6 +359,10 @@ pub struct GpuBuffer {
     pub buffer: vk::Buffer,
     pub size: vk::DeviceSize,
     allocation: Option<vulkan::Allocation>,
+    // Cached `HOST_COHERENT` flag from the allocation's memory type.
+    // Fixed at bind time — querying it per flush cost ~5–15 µs/frame
+    // across the ~10 per-frame mapped writes (#498).
+    is_coherent: bool,
 }
 
 impl GpuBuffer {
@@ -473,10 +477,15 @@ impl GpuBuffer {
                 .context("Failed to bind host-visible buffer")?;
         }
 
+        let is_coherent = allocation
+            .memory_properties()
+            .contains(vk::MemoryPropertyFlags::HOST_COHERENT);
+
         Ok(Self {
             buffer,
             size,
             allocation: Some(allocation),
+            is_coherent,
         })
     }
 
@@ -526,6 +535,9 @@ impl GpuBuffer {
             buffer,
             size,
             allocation: Some(allocation),
+            // DEVICE_LOCAL without HOST_VISIBLE is never mapped; flush paths
+            // don't run on it. Value is inert.
+            is_coherent: false,
         })
     }
 
@@ -547,11 +559,7 @@ impl GpuBuffer {
             .as_ref()
             .context("Buffer has no allocation")?;
 
-        let is_coherent = alloc
-            .memory_properties()
-            .contains(vk::MemoryPropertyFlags::HOST_COHERENT);
-
-        if !is_coherent {
+        if !self.is_coherent {
             let (aligned_offset, aligned_size) = aligned_flush_range(alloc.offset(), alloc.size());
             // SAFETY: alloc.memory() is valid and mapped. The range is contained
             // within this allocation's slice of the parent VkDeviceMemory: offset
@@ -581,14 +589,11 @@ impl GpuBuffer {
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
         };
+        let is_coherent = self.is_coherent;
         let alloc = self
             .allocation
             .as_mut()
             .context("Buffer has no allocation")?;
-
-        let is_coherent = alloc
-            .memory_properties()
-            .contains(vk::MemoryPropertyFlags::HOST_COHERENT);
 
         let mapped = alloc.mapped_slice_mut().context("Buffer not mapped")?;
         if bytes.len() > mapped.len() {
@@ -652,11 +657,7 @@ impl GpuBuffer {
             .as_ref()
             .context("Buffer has no allocation")?;
 
-        let is_coherent = alloc
-            .memory_properties()
-            .contains(vk::MemoryPropertyFlags::HOST_COHERENT);
-
-        if is_coherent || size == 0 {
+        if self.is_coherent || size == 0 {
             return Ok(());
         }
 
@@ -824,6 +825,8 @@ impl GpuBuffer {
             buffer,
             size,
             allocation: Some(allocation),
+            // DEVICE_LOCAL staging target — never mapped by the owner.
+            is_coherent: false,
         })
     }
 }
