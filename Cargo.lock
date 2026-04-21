@@ -325,6 +325,7 @@ name = "byroredux"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "byroredux-bgsm",
  "byroredux-bsa",
  "byroredux-core",
  "byroredux-cxx-bridge",

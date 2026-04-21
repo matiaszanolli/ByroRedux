@@ -14,7 +14,8 @@ use byroredux_ui::UiManager;
 
 use crate::anim_convert::convert_nif_clip;
 use crate::asset_provider::{
-    build_texture_provider, parse_grid_coords, resolve_texture, TextureProvider,
+    build_material_provider, build_texture_provider, merge_bgsm_into_mesh, parse_grid_coords,
+    resolve_texture, MaterialProvider, TextureProvider,
 };
 use crate::cell_loader;
 use crate::components::{
@@ -65,7 +66,15 @@ pub(crate) fn setup_scene(
         if let (Some(ref esm_path), Some(ref cell_id)) = (&esm_path, &cell_id) {
             // Interior cell mode
             let tex_provider = build_texture_provider(&args);
-            match cell_loader::load_cell(esm_path, cell_id, world, ctx, &tex_provider) {
+            let mut mat_provider = build_material_provider(&args);
+            match cell_loader::load_cell(
+                esm_path,
+                cell_id,
+                world,
+                ctx,
+                &tex_provider,
+                Some(&mut mat_provider),
+            ) {
                 Ok(result) => {
                     cam_center = result.center;
                     has_nif_content = true;
@@ -110,6 +119,7 @@ pub(crate) fn setup_scene(
             // Exterior cell mode: --esm <path> --grid <x>,<y>
             let (cx, cy) = parse_grid_coords(grid);
             let tex_provider = build_texture_provider(&args);
+            let mut mat_provider = build_material_provider(&args);
             // Radius 3 = 7×7 grid (49 cells), ~28K terrain units view distance.
             match cell_loader::load_exterior_cells(
                 esm_path,
@@ -119,6 +129,7 @@ pub(crate) fn setup_scene(
                 world,
                 ctx,
                 &tex_provider,
+                Some(&mut mat_provider),
                 wrld_name.as_deref(),
             ) {
                 Ok(result) => {
@@ -597,6 +608,7 @@ fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> (usize, Opt
 
     // Collect BSA/BA2 archives (auto-detects format).
     let tex_provider = build_texture_provider(&args);
+    let mut mat_provider = build_material_provider(&args);
 
     if let Some(bsa_idx) = args.iter().position(|a| a == "--bsa") {
         // BSA mode: --bsa <archive> --mesh <path_in_archive>
@@ -634,7 +646,14 @@ fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> (usize, Opt
             }
         };
         log::info!("Extracted {} bytes from BSA '{}'", data.len(), mesh_path);
-        load_nif_bytes(world, ctx, &data, mesh_path, &tex_provider)
+        load_nif_bytes(
+            world,
+            ctx,
+            &data,
+            mesh_path,
+            &tex_provider,
+            Some(&mut mat_provider),
+        )
     } else if let Some(nif_path) = args.get(1) {
         if nif_path.starts_with("--") {
             return (0, None); // Skip flags that aren't NIF paths
@@ -647,7 +666,14 @@ fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> (usize, Opt
                 return (0, None);
             }
         };
-        load_nif_bytes(world, ctx, &data, nif_path, &tex_provider)
+        load_nif_bytes(
+            world,
+            ctx,
+            &data,
+            nif_path,
+            &tex_provider,
+            Some(&mut mat_provider),
+        )
     } else {
         (0, None)
     }
@@ -661,6 +687,7 @@ pub(crate) fn load_nif_bytes(
     data: &[u8],
     label: &str,
     tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
 ) -> (usize, Option<EntityId>) {
     let scene = match byroredux_nif::parse_nif(data) {
         Ok(s) => s,
@@ -670,7 +697,14 @@ pub(crate) fn load_nif_bytes(
         }
     };
 
-    let imported = byroredux_nif::import::import_nif_scene(&scene);
+    let mut imported = byroredux_nif::import::import_nif_scene(&scene);
+    // FO4+ external material resolution (#493). NIF fields take precedence;
+    // only empty slots fill in from the resolved BGSM/BGEM chain.
+    if let Some(provider) = mat_provider {
+        for mesh in &mut imported.meshes {
+            merge_bgsm_into_mesh(mesh, provider);
+        }
+    }
 
     // Phase 1: Spawn node entities (NiNode hierarchy).
     // node_index → EntityId mapping.

@@ -15,7 +15,7 @@ use byroredux_renderer::VulkanContext;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::asset_provider::{resolve_texture, TextureProvider};
+use crate::asset_provider::{merge_bgsm_into_mesh, resolve_texture, MaterialProvider, TextureProvider};
 use crate::components::{
     AlphaBlend, DarkMapHandle, Decal, ExtraTextureMaps, NormalMapHandle, TerrainTileSlot, TwoSided,
 };
@@ -273,6 +273,7 @@ pub fn load_cell(
     world: &mut World,
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
 ) -> anyhow::Result<CellLoadResult> {
     // Mark the high-water entity id before loading. Everything spawned
     // by this load (including the designated cell_root at the end) gets
@@ -322,6 +323,7 @@ pub fn load_cell(
         world,
         ctx,
         tex_provider,
+        mat_provider,
         &cell.editor_id,
     );
 
@@ -356,6 +358,7 @@ pub fn load_exterior_cells(
     world: &mut World,
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
     wrld_override: Option<&str>,
 ) -> anyhow::Result<CellLoadResult> {
     // See `load_cell` — same pattern for unload tracking (#372).
@@ -522,7 +525,15 @@ pub fn load_exterior_cells(
     );
 
     let label = format!("exterior({},{})", center_x, center_y);
-    let result = load_references(&all_refs, index, world, ctx, tex_provider, &label);
+    let result = load_references(
+        &all_refs,
+        index,
+        world,
+        ctx,
+        tex_provider,
+        mat_provider,
+        &label,
+    );
 
     // Camera spawn: use terrain height at the center cell's midpoint
     // so the camera starts at ground level instead of inside the terrain.
@@ -1015,6 +1026,7 @@ fn load_references(
     world: &mut World,
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
+    mut mat_provider: Option<&mut MaterialProvider>,
     label: &str,
 ) -> RefLoadResult {
     let mut entity_count = 0;
@@ -1176,7 +1188,11 @@ fn load_references(
                 // call doesn't touch the registry, so the brief borrow
                 // gap is safe.
                 let parsed = match tex_provider.extract_mesh(&model_path) {
-                    Some(d) => parse_and_import_nif(&d, &model_path),
+                    Some(d) => parse_and_import_nif(
+                        &d,
+                        &model_path,
+                        mat_provider.as_deref_mut(),
+                    ),
                     None => {
                         log::debug!("NIF not found in BSA: '{}'", model_path);
                         None
@@ -1270,7 +1286,11 @@ fn load_references(
 /// once per unique NIF at this step — subsequent placements read
 /// from the cache without re-parsing. See runtime-spam incident from
 /// the `AnvilHeinrichOakenHallsHouse` trace.
-fn parse_and_import_nif(nif_data: &[u8], label: &str) -> Option<Arc<CachedNifImport>> {
+fn parse_and_import_nif(
+    nif_data: &[u8],
+    label: &str,
+    mat_provider: Option<&mut MaterialProvider>,
+) -> Option<Arc<CachedNifImport>> {
     let scene = match byroredux_nif::parse_nif(nif_data) {
         Ok(s) => {
             log::debug!("Parsed NIF '{}': {} blocks", label, s.len());
@@ -1297,7 +1317,16 @@ fn parse_and_import_nif(nif_data: &[u8], label: &str) -> Option<Arc<CachedNifImp
         return None;
     }
 
-    let (meshes, collisions) = byroredux_nif::import::import_nif_with_collision(&scene);
+    let (mut meshes, collisions) = byroredux_nif::import::import_nif_with_collision(&scene);
+    // FO4+ external material resolution (#493). Walk once at cache-fill
+    // time so every REFR sharing this NIF sees the merged texture paths.
+    // NIF fields take precedence; only empty slots are filled from the
+    // resolved BGSM/BGEM chain.
+    if let Some(provider) = mat_provider {
+        for mesh in &mut meshes {
+            merge_bgsm_into_mesh(mesh, provider);
+        }
+    }
     let lights = byroredux_nif::import::import_nif_lights(&scene);
     let particle_emitters = byroredux_nif::import::import_nif_particle_emitters(&scene);
     Some(Arc::new(CachedNifImport {
