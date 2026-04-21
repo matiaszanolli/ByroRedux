@@ -239,18 +239,7 @@ fn compute_blas_budget(
     physical_device: vk::PhysicalDevice,
 ) -> vk::DeviceSize {
     const MIN_BUDGET: vk::DeviceSize = 256 * 1024 * 1024; // 256 MB floor
-
-    // SAFETY: get_physical_device_memory_properties is a simple query with
-    // no preconditions beyond a valid physical device handle, which the
-    // caller already holds through the VulkanContext construction chain.
-    let mem_props = unsafe { instance.get_physical_device_memory_properties(physical_device) };
-    let device_local_bytes: vk::DeviceSize = mem_props.memory_heaps
-        [..mem_props.memory_heap_count as usize]
-        .iter()
-        .filter(|heap| heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL))
-        .map(|heap| heap.size)
-        .sum();
-
+    let device_local_bytes = super::device::total_device_local_bytes(instance, physical_device);
     (device_local_bytes / 3).max(MIN_BUDGET)
 }
 

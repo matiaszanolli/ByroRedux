@@ -42,6 +42,49 @@ pub struct DeviceCapabilities {
     pub max_bindless_sampled_images: u32,
 }
 
+/// Sum of `VkMemoryHeap.size` across every `DEVICE_LOCAL` heap exposed
+/// by the physical device — approximates total VRAM. Used as the
+/// denominator in budget computations (BLAS residency cap, memory-
+/// usage warn threshold). See #505.
+///
+/// Note: `heap.size` is the heap's *capacity*, not the driver's
+/// *free* figure. `VK_EXT_memory_budget` gives a more accurate live
+/// budget but is still an extension (not core); heap size is a
+/// stable upper bound and works uniformly across all Vulkan 1.0+
+/// drivers.
+pub fn total_device_local_bytes(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+) -> vk::DeviceSize {
+    // SAFETY: `get_physical_device_memory_properties` has no preconditions
+    // beyond a valid physical device handle, which the caller holds through
+    // the `VulkanContext` construction chain.
+    let mem_props = unsafe { instance.get_physical_device_memory_properties(physical_device) };
+    mem_props.memory_heaps[..mem_props.memory_heap_count as usize]
+        .iter()
+        .filter(|heap| heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL))
+        .map(|heap| heap.size)
+        .sum()
+}
+
+/// Size of the *smallest* `DEVICE_LOCAL` heap. On systems with a
+/// discrete + integrated GPU exposed through the same Vulkan device
+/// (rare but possible in hybrid laptops), this is the tighter of the
+/// two — running an allocator to that heap's limit fails first.
+/// Returns 0 when no `DEVICE_LOCAL` heap exists.
+pub fn smallest_device_local_heap_bytes(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+) -> vk::DeviceSize {
+    let mem_props = unsafe { instance.get_physical_device_memory_properties(physical_device) };
+    mem_props.memory_heaps[..mem_props.memory_heap_count as usize]
+        .iter()
+        .filter(|heap| heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL))
+        .map(|heap| heap.size)
+        .min()
+        .unwrap_or(0)
+}
+
 /// Required device extensions (always needed).
 const REQUIRED_EXTENSIONS: &[&CStr] = &[ash::khr::swapchain::NAME];
 

@@ -189,10 +189,12 @@ impl VulkanContext {
         )
     }
 
-    /// Log current GPU memory allocation statistics.
+    /// Log current GPU memory allocation statistics. Threshold for the
+    /// "high usage" WARN scales with the physical device's smallest
+    /// DEVICE_LOCAL heap — see #505.
     pub fn log_memory_usage(&self) {
         if let Some(ref alloc) = self.allocator {
-            super::super::allocator::log_memory_usage(alloc);
+            super::super::allocator::log_memory_usage(alloc, &self.instance, self.physical_device);
         }
     }
 }
