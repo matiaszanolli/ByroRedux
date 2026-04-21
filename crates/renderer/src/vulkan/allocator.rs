@@ -106,8 +106,6 @@ pub fn log_memory_usage(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// Smoke check for the warn-threshold math. `smallest_device_local_heap_bytes`
     /// itself requires a live Vulkan instance (not feasible in unit tests),
     /// so exercise the fallback path explicitly to guarantee zero doesn't

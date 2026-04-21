@@ -622,9 +622,28 @@ impl TextureRegistry {
     }
 }
 
-/// Normalize a texture path: lowercase, forward slashes.
+/// Normalize a texture path for use as a `path_map` cache key.
+///
+/// Canonical form: lowercase, forward slashes, guaranteed `textures/`
+/// prefix. Matches the canonicalization
+/// `asset_provider::normalize_texture_path` applies for BSA/BA2
+/// lookups, so both sites — the archive extract and the
+/// `TextureRegistry` cache — agree on what the "same texture" means.
+///
+/// Pre-#522 this stopped at lowercase + slash-flip. The `textures\`
+/// prefix was added opportunistically by `asset_provider::extract` for
+/// the archive lookup but never propagated back into the registry's
+/// cache key, so two callers passing `landscape\dirt02.dds` and
+/// `textures\landscape\dirt02.dds` for the same texel produced
+/// separate cache entries + separate bindless slots + double the
+/// VRAM. Silent — no log, no error. See #522.
 fn normalize_path(path: &str) -> String {
-    path.to_ascii_lowercase().replace('\\', "/")
+    let lowered = path.to_ascii_lowercase().replace('\\', "/");
+    if lowered.starts_with("textures/") {
+        lowered
+    } else {
+        format!("textures/{}", lowered)
+    }
 }
 
 fn should_destroy_pending(current_frame: u64, queued_frame: u64) -> bool {
@@ -649,6 +668,38 @@ mod tests {
             normalize_path("textures/clutter/food/beerbottle.dds"),
             "textures/clutter/food/beerbottle.dds"
         );
+    }
+
+    /// Regression for #522: prefixed and unprefixed inputs MUST
+    /// canonicalize to the same cache key. Pre-fix, `landscape/dirt02.dds`
+    /// and `textures\landscape\dirt02.dds` mapped to different keys,
+    /// producing silent bindless slot duplication on terrain tiles
+    /// whose LTEX record omits the prefix (FO3/FNV vanilla) while
+    /// `spawn_terrain_mesh` at cell_loader.rs:945 re-calls with the
+    /// fully-qualified path. Matches the canonicalization that
+    /// `asset_provider::normalize_texture_path` applies for the
+    /// archive lookup.
+    #[test]
+    fn normalize_prefix_variants_collapse_to_one_key() {
+        let unprefixed = normalize_path(r"landscape\dirt02.dds");
+        let prefixed = normalize_path(r"textures\landscape\dirt02.dds");
+        let mixed_slashes = normalize_path("Textures/LANDSCAPE/dirt02.DDS");
+        let forward_only = normalize_path("landscape/dirt02.dds");
+
+        assert_eq!(unprefixed, "textures/landscape/dirt02.dds");
+        assert_eq!(prefixed, "textures/landscape/dirt02.dds");
+        assert_eq!(mixed_slashes, "textures/landscape/dirt02.dds");
+        assert_eq!(forward_only, "textures/landscape/dirt02.dds");
+    }
+
+    /// Edge case: a path that happens to start with something LIKE
+    /// "textures" but isn't the directory prefix must still get the
+    /// prefix added. `texturesets/foo.dds` is not a textures-rooted
+    /// path — it would be rooted at `textures/texturesets/…` on disk.
+    #[test]
+    fn normalize_similar_prefix_is_not_swallowed() {
+        let similar = normalize_path("texturesets/foo.dds");
+        assert_eq!(similar, "textures/texturesets/foo.dds");
     }
 
     #[test]
