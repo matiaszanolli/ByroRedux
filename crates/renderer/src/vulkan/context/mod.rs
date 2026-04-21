@@ -114,6 +114,16 @@ pub struct DrawCommand {
     pub sort_depth: u32,
     /// Include this instance in the TLAS for RT ray queries.
     pub in_tlas: bool,
+    /// Visible to the rasterizer this frame — `false` for entities whose
+    /// `WorldBound` is outside the view frustum. Gated separately from
+    /// `in_tlas` so off-screen occluders stay in the acceleration
+    /// structure (so shadow / reflection / GI rays from on-screen
+    /// fragments still hit them). Pre-#516 the frustum cull dropped
+    /// the DrawCommand entirely, which also removed the TLAS entry and
+    /// caused the BLAS LRU to age the occluder until it was evicted —
+    /// visible as shadow pop-in and "flashlight through a wall" when
+    /// the player rotated to face away from a backlit occluder.
+    pub in_raster: bool,
     /// Pre-computed average albedo (RGB) for fast GI bounce approximation.
     /// Replaces per-hit UV lookup + texture sample in the GI ray hit shader.
     pub avg_albedo: [f32; 3],

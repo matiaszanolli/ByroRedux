@@ -557,6 +557,17 @@ impl VulkanContext {
                 env_mask_index: draw_cmd.env_mask_index,
             });
 
+            // Frustum-culled draws still need an SSBO entry so RT hit
+            // shaders that land on their TLAS instance read the right
+            // material / transform (#516). Skip batch formation — they
+            // have no rasterized pixels this frame. Breaking the batch
+            // chain here also avoids accidentally extending a previous
+            // batch across a gap in the SSBO layout (`first_instance +
+            // instance_count` would point past an off-screen draw).
+            if !draw_cmd.in_raster {
+                continue;
+            }
+
             let pipeline_key = if draw_cmd.alpha_blend {
                 PipelineKey::Blended {
                     src: draw_cmd.src_blend,
@@ -569,7 +580,14 @@ impl VulkanContext {
                 }
             };
 
-            // Extend the current batch if this draw shares the same state.
+            // Extend the current batch if this draw shares the same
+            // state AND is contiguous in the SSBO (no culled draws in
+            // the gap). The contiguity check is new with #516 — before
+            // the in_raster split the SSBO idx always advanced 1:1
+            // with the batch-eligible iterations, so contiguity was
+            // implicit. Now an off-screen draw pushes an SSBO entry
+            // but skips batch formation, so the next rasterized draw
+            // might land at a non-contiguous `instance_idx`.
             if let Some(batch) = batches.last_mut() {
                 if batch.mesh_handle == draw_cmd.mesh_handle
                     && batch.pipeline_key == pipeline_key
@@ -577,6 +595,7 @@ impl VulkanContext {
                     && batch.z_test == draw_cmd.z_test
                     && batch.z_write == draw_cmd.z_write
                     && batch.z_function == draw_cmd.z_function
+                    && batch.first_instance + batch.instance_count == instance_idx
                 {
                     batch.instance_count += 1;
                     continue;

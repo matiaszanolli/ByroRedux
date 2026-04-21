@@ -1061,14 +1061,21 @@ impl AccelerationManager {
 
         // Build instance array. `instance_custom_index` comes from the shared
         // `instance_map` so it matches the SSBO position exactly — the TLAS
-        // is always sparse (frustum culling + missing BLAS drop instances),
-        // but the shader's `rayQueryGetIntersectionInstanceCustomIndexEXT`
-        // is guaranteed to land on the right SSBO entry. See #419.
+        // can still be sparse (missing BLAS drop instances, particle / UI
+        // draws with `in_tlas = false`), but the shader's
+        // `rayQueryGetIntersectionInstanceCustomIndexEXT` is guaranteed to
+        // land on the right SSBO entry. Pre-#516 `in_tlas` was also flipped
+        // off for out-of-frustum entities; now frustum culling only gates
+        // rasterization (`in_raster`) and off-screen occluders stay in
+        // the TLAS so on-screen fragments' shadow / reflection / GI rays
+        // hit them. See #419 + #516.
         let mut instances = std::mem::take(&mut self.tlas_instances_scratch);
         instances.clear();
         instances.reserve(draw_commands.len());
         for (i, draw_cmd) in draw_commands.iter().enumerate() {
-            // Skip instances not flagged for TLAS inclusion (frustum-culled).
+            // Skip instances not flagged for TLAS inclusion (particles,
+            // UI quad — small / transient / 2D). Frustum-culled geometry
+            // still reaches this loop with `in_tlas = true` post-#516.
             if !draw_cmd.in_tlas {
                 continue;
             }

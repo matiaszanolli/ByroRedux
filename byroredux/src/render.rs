@@ -293,17 +293,18 @@ pub(crate) fn build_render_data(
                 continue;
             }
 
-            // Frustum cull: skip entities whose WorldBound is entirely
-            // outside the view frustum. Entities without a WorldBound
-            // (or with radius 0, i.e. not yet computed) pass through
-            // uncull to avoid disappearing objects. See #237.
-            if let Some(ref wbq) = wb_q {
-                if let Some(wb) = wbq.get(entity) {
-                    if wb.radius > 0.0 && !frustum.contains_sphere(wb.center, wb.radius) {
-                        continue;
-                    }
-                }
-            }
+            // Frustum cull: flag entities whose WorldBound is entirely
+            // outside the view frustum with `in_raster = false`. The
+            // draw loop skips rasterization for them but they still
+            // reach the TLAS so on-screen fragments can hit their
+            // occluder/reflector geometry via ray queries. Entities
+            // without a WorldBound (or radius 0, i.e. not yet computed)
+            // pass through as visible. See #237 (original cull) +
+            // #516 (split raster / TLAS predicate).
+            let in_raster = match wb_q.as_ref().and_then(|q| q.get(entity)) {
+                Some(wb) if wb.radius > 0.0 => frustum.contains_sphere(wb.center, wb.radius),
+                _ => true,
+            };
 
             if let Some(transform) = tq.get(entity) {
                 let tex_handle = tex_q
@@ -515,6 +516,7 @@ pub(crate) fn build_render_data(
                     vertex_count: v_count,
                     sort_depth,
                     in_tlas: true,
+                    in_raster,
                     // Average albedo for fast GI bounce approximation.
                     // Falls back to mid-gray (0.5) when no texture color
                     // data is available. A proper implementation would
@@ -629,6 +631,9 @@ pub(crate) fn build_render_data(
                         vertex_count: 0,
                         sort_depth,
                         in_tlas: false,
+                        // Particles are drawn every frame they're alive;
+                        // no frustum cull here (small, transient).
+                        in_raster: true,
                         avg_albedo: [0.0, 0.0, 0.0],
                         material_kind: 0,
                         // Particles render with depth test on, depth
@@ -890,6 +895,7 @@ mod draw_sort_key_tests {
             vertex_count: 0,
             sort_depth: 0,
             in_tlas: false,
+            in_raster: true,
             avg_albedo: [0.0; 3],
             material_kind: 0,
             z_test: true,
