@@ -660,22 +660,25 @@ void main() {
     // (no hit within range), we treat it as seeing sky and transmit
     // exterior light through the window, tinted by its texture color.
     //
-    // Window/glass detection gated on NiAlphaProperty blend flag.
+    // Window/glass detection driven by the CPU-classified material_kind.
     //
-    // In Gamebryo/Bethesda NIFs, the diffuse texture alpha channel is a
-    // SPECULAR MASK when NiAlphaProperty is absent or has blend disabled.
-    // A stone wall with texColor.a = 0.3 is fully opaque — the 0.3 just
-    // means low specular reflectivity. Transparency is determined
-    // EXCLUSIVELY by NiAlphaProperty flags bit 0 (alpha blend enable),
-    // which the CPU side encodes as bit 1 of inst.flags.
+    // Pre-Phase-2 this gate was a per-fragment heuristic on
+    // `isAlphaBlend && metalness < 0.1 && texColor.a ∈ (0.02, 0.6)`.
+    // `texColor.a` is sampled per-texel, so patterned textures with
+    // semi-transparent regions (e.g. wire-mesh glass, etched panes)
+    // toggled pixels in and out of the glass path across their own
+    // surface — each flicker picked up / dropped RT reflection rays.
+    //
+    // Phase 2 moves classification to the CPU: render.rs tags every
+    // `(alpha_blend && !is_decal && metalness < 0.3)` draw with
+    // `MATERIAL_KIND_GLASS = 100u`, and that bit is stable across the
+    // whole mesh. `isWindow` refines to the lower-alpha subset for
+    // the portal-escape branch below — still texColor-gated but now
+    // nested under a stable parent classification. See Tier C Phase 2.
+    const uint MATERIAL_KIND_GLASS = 100u;
     bool isAlphaBlend = (inst.flags & 2u) != 0u;
-    bool isWindow = isAlphaBlend && texColor.a < 0.5 && texColor.a > 0.02;
-    // Glass: any alpha-blended non-metal with visible transmission. We used
-    // to also gate on `roughness <= 0.1` but most Gamebryo glass props are
-    // authored with the default glossiness, not artist-tuned to near-zero
-    // roughness, so the gate excluded bottles, cups, and pitchers. The
-    // isWindow branch takes priority above for the flat-pane portal case.
-    bool isGlass = isAlphaBlend && metalness < 0.1 && texColor.a < 0.6 && texColor.a > 0.02;
+    bool isGlass = inst.materialKind == MATERIAL_KIND_GLASS;
+    bool isWindow = isGlass && texColor.a < 0.5 && texColor.a > 0.02;
 
     if (isWindow && rtEnabled) {
         // Fire the portal-escape ray along the surface OUTWARD normal,

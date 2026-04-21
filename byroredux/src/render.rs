@@ -445,6 +445,25 @@ pub(crate) fn build_render_data(
                 let clip = vp_mat * pos;
                 let sort_depth = f32_sortable_u32(clip.w);
 
+                // Classify the effective material kind for shader
+                // dispatch. BSLightingShaderProperty.shader_type is
+                // forwarded verbatim for Skyrim+ variants (0..=19 —
+                // SkinTint / HairTint / EyeEnvmap / MultiLayerParallax /
+                // etc., see #344). Engine-synthesized kinds live in
+                // the high range (100+):
+                //   - `MATERIAL_KIND_GLASS` when the material is
+                //     alpha-blend + low-metal + not a decal. Replaces
+                //     the pre-Phase-2 shader-side `texColor.a < 0.6`
+                //     heuristic that flickered texel-by-texel on
+                //     textures with semi-transparent regions. Tier C
+                //     Phase 2.
+                let base_material_kind = mat.map(|m| m.material_kind as u32).unwrap_or(0);
+                let material_kind = if alpha_blend && !is_decal && metalness < 0.3 {
+                    byroredux_renderer::MATERIAL_KIND_GLASS
+                } else {
+                    base_material_kind
+                };
+
                 draw_commands.push(DrawCommand {
                     mesh_handle: mesh.0,
                     texture_handle: tex_handle,
@@ -487,11 +506,7 @@ pub(crate) fn build_render_data(
                     z_test,
                     z_write,
                     z_function,
-                    // BSLightingShaderProperty.shader_type → fragment
-                    // shader variant dispatch (#344). 0 = Default lit
-                    // when the entity has no Material component (e.g.
-                    // the spinning cube demo).
-                    material_kind: mat.map(|m| m.material_kind as u32).unwrap_or(0),
+                    material_kind,
                     terrain_tile_index,
                 });
             }

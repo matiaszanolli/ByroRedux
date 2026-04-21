@@ -61,6 +61,22 @@ pub const INSTANCE_FLAG_TERRAIN_SPLAT: u32 = 1 << 3;
 pub const INSTANCE_TERRAIN_TILE_SHIFT: u32 = 16;
 pub const INSTANCE_TERRAIN_TILE_MASK: u32 = 0xFFFF;
 
+/// Engine-synthesized material kinds for [`GpuInstance::material_kind`].
+///
+/// The low range (0..=19) is reserved for Skyrim+
+/// `BSLightingShaderProperty.shader_type` values the NIF importer
+/// forwards verbatim — `SkinTint`, `HairTint`, `EyeEnvmap`, etc.
+/// (see #344). The high range (100..) is reserved for kinds the
+/// engine classifies itself from heuristics against the NIF material.
+///
+/// `Glass` is the first such kind (#Tier C Phase 2): alpha-blend
+/// material, metalness < 0.3, not a decal. The fragment shader branches
+/// on this value to dispatch the RT reflection + refraction path —
+/// replaces the pre-Phase-2 per-pixel `texColor.a` heuristic that
+/// flickered across textures. Callers (`render.rs`) must compute the
+/// kind BEFORE populating `DrawCommand.material_kind`.
+pub const MATERIAL_KIND_GLASS: u32 = 100;
+
 /// Per-terrain-tile data uploaded to the terrain-tile SSBO each cell load.
 /// Indexed in the fragment shader via
 /// `(instance.flags >> 16) & 0xFFFF` when the splat bit is set.
