@@ -764,72 +764,152 @@ void main() {
     // Runs AFTER the isWindow branch so full-portal windows still
     // return the sky; isGlass here is the curved-bottle / cup case.
     if (isGlass && rtEnabled) {
-        vec3 dielectricF = fresnelSchlick(NdotV, vec3(0.04));
-        float fresnelScalar = dielectricF.r;
+        // ── RT glass (Phase 3) ────────────────────────────────────────
+        //
+        // Physically-motivated reflect + refract + Fresnel mix:
+        //
+        //   reflColor = traceReflection(R)         — surface-reflected scene
+        //   refrColor = traceRefraction(T)         — scene seen through glass
+        //   F         = fresnelSchlick(NdotV, 0.04) — dielectric Fresnel
+        //   surface   = mix(refrColor, reflColor, F)
+        //
+        // Glass has IOR ≈ 1.5 (soda-lime, window glass, drinking glass).
+        // At normal incidence F ≈ 0.04 (96% transmits), at grazing
+        // F → 1.0 (near-mirror). This is what separates the Phase 3
+        // path from Phase 1's "fire `-V` through" — Phase 1 pretended
+        // glass had no IOR and transmission was a straight line.
+        const float GLASS_IOR = 1.5;
+        const float ETA_AIR_TO_GLASS = 1.0 / GLASS_IOR;
+
+        // View-aligned normal. The Phase 1 two-sided alpha-blend split
+        // emits back-face then front-face passes; on the back-face pass
+        // N points away from the camera (dot(N,V) < 0). We need the
+        // camera-facing normal for refract() + the reflection hemisphere
+        // to make physical sense. Flip when back-facing.
+        vec3 N_view = dot(N, V) < 0.0 ? -N : N;
+        float NdotV_v = max(dot(N_view, V), 0.05);
+        float fresnelScalar = fresnelSchlick(NdotV_v, vec3(0.04)).r;
 
         // Reflection ray — picks up ceiling fixtures, sky through windows,
-        // walls on either side of the pane. Uses the same helper as the
-        // metal path; reflResult.rgb carries the hit surface's textured
-        // color (no further albedo modulation needed here, we're going
-        // through the direct path).
-        vec3 R = reflect(-V, N);
-        vec4 reflRay = traceReflection(fragWorldPos + N * 0.05, R, 3000.0);
+        // walls on either side of the pane.
+        vec3 R = reflect(-V, N_view);
+        vec4 reflRay = traceReflection(fragWorldPos + N_view * 0.05, R, 3000.0);
         vec3 reflColor = reflRay.rgb;
 
-        // Through-ray — the transmitted half of the glass. Use the
-        // view-direction continuation with a short bias away from the
-        // surface to skip self-intersection. When the ray hits geometry
-        // we sample the hit surface's texture; when it misses we treat
-        // it as escaped-to-sky (matches the isWindow contract).
-        // gl_RayFlagsTerminateOnFirstHitEXT: we only read the first
-        // committed opaque hit; the maxDist=2000 unit reach made the
-        // closest-hit search wasteful. Fix #420.
-        rayQueryEXT glassRQ;
-        rayQueryInitializeEXT(
-            glassRQ, topLevelAS,
-            gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFF,
-            fragWorldPos - N * 0.1, 0.05, -V, 2000.0
-        );
-        rayQueryProceedEXT(glassRQ);
+        // Refraction ray — the transmitted half. Snell's law:
+        //   sin(θ_t) = (n1/n2) · sin(θ_i)
+        // refract() returns vec3(0.0) on total internal reflection,
+        // which happens when (n1/n2) · sin(θ_i) > 1. Going air→glass
+        // (eta < 1) TIR never triggers, but we handle it defensively
+        // for back-face content where N_view might flip the effective
+        // eta. On TIR we reuse the reflection as the transmitted ray
+        // — physically it's "all light bounces back on the inside".
+        vec3 refractDir = refract(-V, N_view, ETA_AIR_TO_GLASS);
+        bool totalInternalReflection = dot(refractDir, refractDir) < 0.0001;
 
-        vec3 throughColor;
-        if (rayQueryGetIntersectionTypeEXT(glassRQ, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
-            throughColor = vec3(0.6, 0.75, 1.0); // sky
+        vec3 refrColor;
+        if (totalInternalReflection) {
+            refrColor = reflColor;
         } else {
-            int tIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(glassRQ, true);
-            int tPrim = rayQueryGetIntersectionPrimitiveIndexEXT(glassRQ, true);
-            vec2 tBary = rayQueryGetIntersectionBarycentricsEXT(glassRQ, true);
-            GpuInstance tInst = instances[tIdx];
-            vec2 tUV = getHitUV(uint(tIdx), uint(tPrim), tBary);
-            throughColor = texture(textures[nonuniformEXT(tInst.textureIndex)],
-                                   tUV).rgb;
-            // Soft distance attenuation so distant through-color doesn't
-            // glow through thick glass stacks.
-            float tDist = rayQueryGetIntersectionTEXT(glassRQ, true);
-            throughColor *= 1.0 / (1.0 + tDist * 0.01);
+            // Origin offset: step INTO the glass along -N_view so the
+            // refraction ray starts on the back side of the surface and
+            // the ray doesn't self-intersect the pane we're shading.
+            // 0.1 units is ~1mm in Bethesda scale — safely past the
+            // thinnest wall geometry + inside any drinking glass/bottle.
+            rayQueryEXT refrRQ;
+            rayQueryInitializeEXT(
+                refrRQ, topLevelAS,
+                gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFF,
+                fragWorldPos - N_view * 0.1, 0.05, refractDir, 2000.0
+            );
+            rayQueryProceedEXT(refrRQ);
+
+            if (rayQueryGetIntersectionTypeEXT(refrRQ, true)
+                == gl_RayQueryCommittedIntersectionNoneEXT) {
+                // Escaped scene — fall back to sky tint (matches window
+                // portal contract). Interior cells will still see this
+                // as a soft blue because no geometry lies behind the
+                // refraction ray; for lit interiors that's acceptable
+                // for the rare "looking out" angle.
+                refrColor = vec3(0.6, 0.75, 1.0);
+            } else {
+                int tIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(refrRQ, true);
+                int tPrim = rayQueryGetIntersectionPrimitiveIndexEXT(refrRQ, true);
+                vec2 tBary = rayQueryGetIntersectionBarycentricsEXT(refrRQ, true);
+                GpuInstance tInst = instances[tIdx];
+                vec2 tUV = getHitUV(uint(tIdx), uint(tPrim), tBary);
+                vec3 tAlbedo = texture(textures[nonuniformEXT(tInst.textureIndex)], tUV).rgb;
+
+                // Apply a lighting estimate to the hit albedo. The raw
+                // texture without lighting reads as "raw diffuse" which
+                // in dim interiors looks pitch-black through the glass
+                // (since a brown wood wall is texColor≈0.2 regardless
+                // of actual illumination). We multiply by the cell's
+                // ambient floor + a small base so the refracted scene
+                // matches the LIT look of the world, not its raw albedo.
+                // Same cheap pattern the 1-bounce GI ray uses at :1179
+                // — ambient × albedo instead of full shading.
+                vec3 ambientLitFloor = sceneFlags.yzw + vec3(0.25);
+                refrColor = tAlbedo * ambientLitFloor;
+
+                // Distance attenuation — faraway refracted content
+                // falls off gently so thick glass stacks don't become
+                // view-to-infinity spotlights. Gentler slope than the
+                // Phase 1 through-ray (0.002 vs 0.01) — we want to
+                // preserve more of the refracted detail.
+                float tDist = rayQueryGetIntersectionTEXT(refrRQ, true);
+                refrColor *= 1.0 / (1.0 + tDist * 0.002);
+            }
         }
 
-        // Apply the glass tint to the transmitted light. texColor.rgb
-        // is the authored glass color (green for a beer bottle, clear
-        // for water glass). Pre-fix this mixed from pure white weighted
-        // by alpha*1.2, so clear glass (α≈0.1 → 0.12 weight) produced
-        // ~88% white regardless of authored tint, blowing out curved
-        // bottle/glass meshes. Fresnel mix at :796 still guarantees the
-        // reflection contribution at edges, so no floor needed here.
-        vec3 glassTint = texColor.rgb;
-        throughColor *= glassTint;
+        // ── Transmission split: clear-glass vs decal-opaque ────────────
+        //
+        // Bethesda glass textures fall into two categories that need
+        // different shading even though both pass the MATERIAL_KIND_GLASS
+        // classification:
+        //
+        //   Case A — tinted clear glass (pitchers, bottles, drinking
+        //     glasses): texture alpha is relatively uniform (~0.2–0.4),
+        //     diffuse RGB carries a soft tint plus some surface-detail
+        //     noise. We want the uniform tint, not the noise — so
+        //     sample the texture at a blurred mip level for absorption
+        //     and multiply the refracted view by that.
+        //
+        //   Case B — clear pane with decals (broken windows, etched
+        //     glass, dirt patches): alpha is bimodal — ~0 in clear
+        //     regions, ~1 where the decal lives. Diffuse carries the
+        //     decal content (leaves, cracks, painted sign). Decal
+        //     pixels need to render AS-IS on the glass surface; the
+        //     clear pixels around them refract as usual.
+        //
+        // Per-texel `smoothstep(0.3, 0.7, α)` drives the mix:
+        // low α → pure clear-glass (refracted + mip-tinted), high α →
+        // pure decal (raw texel), intermediate → soft transition. The
+        // mip-6 sample erases the fine crosshatch pattern on
+        // drinkingglass01.dds that was overlaying every refracted pixel
+        // at ~29 FPS — visible as a wire-mesh shimmer on transparent
+        // cups.
+        float decalWeight = smoothstep(0.3, 0.7, texColor.a);
+        vec3 glassTint = textureLod(
+            textures[nonuniformEXT(inst.textureIndex)],
+            sampleUV,
+            6.0
+        ).rgb;
+        vec3 clearGlass = refrColor * glassTint;
+        vec3 transmission = mix(clearGlass, texColor.rgb, decalWeight);
 
-        // Fresnel mix: at normal incidence fresnelScalar ≈ 0.04
-        // (mostly transmitted), at 85° it approaches 1.0 (mostly
-        // reflected). Gives the classic "see-through straight on, shiny
-        // at the edges" look.
-        vec3 glassSurface = mix(throughColor, reflColor, fresnelScalar);
+        // Fresnel mix. At normal incidence F ≈ 0.04 — mostly transmitted.
+        // At grazing F → 1.0 — near-mirror. Classic "see-through
+        // straight on, shiny at the edges" glass look.
+        vec3 glassSurface = mix(transmission, reflColor, fresnelScalar);
 
-        // Write via the direct path; composite does not multiply by
-        // albedo, so the texture tint we already applied above stays
-        // intact.
-        outColor = vec4(glassSurface, mix(texColor.a, 1.0, fresnelScalar * 0.8));
-        outNormal = octEncode(N);
+        // Alpha: lift toward opaque at grazing angles so the glass
+        // silhouette always reads. At normal incidence, honor the
+        // authored texColor.a so the glass stays genuinely see-through.
+        float outAlpha = mix(texColor.a, 1.0, fresnelScalar * 0.8);
+
+        outColor = vec4(glassSurface, outAlpha);
+        outNormal = octEncode(N_view);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(albedo, 1.0);
         return;
