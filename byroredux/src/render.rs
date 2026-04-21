@@ -101,19 +101,28 @@ fn pack_depth_state(cmd: &DrawCommand) -> u8 {
 /// into single instanced draws. Owned here so the field order can't
 /// silently drift from an assert in a downstream crate.
 ///
-/// Both branches return the same 8-tuple shape so the compiler accepts a
+/// Both branches return the same 9-tuple shape so the compiler accepts a
 /// single key closure. Per-branch semantics:
 ///   Opaque      — slot 3/4 = 0 (blend factors unused); slot 5 = depth_state;
-///                 slot 6 = mesh (cluster key); slot 7 = sort_depth (front-to-back).
+///                 slot 6 = mesh (cluster key); slot 7 = sort_depth (front-to-back);
+///                 slot 8 = entity_id tiebreaker (#506).
 ///   Transparent — slot 3/4 = (src_blend, dst_blend) so additive vs alpha vs
 ///                 modulate draws cluster together and don't thrash the
 ///                 blend-pipeline cache; slot 5 = !sort_depth (back-to-front
 ///                 within a (blend, depth_state) cohort); slot 6 = depth_state;
-///                 slot 7 = mesh. Correctness: alpha compositing requires
-///                 back-to-front order *within one pipeline state*, not across
-///                 them. Draws sharing (src, dst) still sort back-to-front;
-///                 different-blend draws are already visually separable (#499).
-pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u32, u32, u32, u32, u32) {
+///                 slot 7 = mesh; slot 8 = entity_id tiebreaker (#506).
+///                 Correctness: alpha compositing requires back-to-front order
+///                 *within one pipeline state*, not across them. Draws sharing
+///                 (src, dst) still sort back-to-front; different-blend draws
+///                 are already visually separable (#499).
+///
+/// The entity_id final slot makes `par_sort_unstable_by_key` behave
+/// deterministically across runs: without it, rayon's work-stealing
+/// could reorder commands whose 8-tuple prefix tied, breaking
+/// capture/replay and screenshot-diff workflows on scenes with many
+/// identical-mesh / identical-depth entries (e.g. exterior rock
+/// fields at a fixed camera distance).
+pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u32, u32, u32, u32, u32, u32) {
     if cmd.alpha_blend {
         (
             1u8, // after opaque
@@ -124,6 +133,7 @@ pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u32, u32, u32, u3
             !cmd.sort_depth, // invert → larger depth first
             pack_depth_state(cmd) as u32,
             cmd.mesh_handle,
+            cmd.entity_id,
         )
     } else {
         (
@@ -135,6 +145,7 @@ pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u32, u32, u32, u3
             pack_depth_state(cmd) as u32,
             cmd.mesh_handle, // group identical meshes
             cmd.sort_depth,  // front-to-back within group
+            cmd.entity_id,
         )
     }
 }
@@ -529,6 +540,7 @@ pub(crate) fn build_render_data(
                     sort_depth,
                     in_tlas: true,
                     in_raster,
+                    entity_id: entity,
                     // Average albedo for fast GI bounce approximation.
                     // Falls back to mid-gray (0.5) when no texture color
                     // data is available. A proper implementation would
@@ -646,6 +658,11 @@ pub(crate) fn build_render_data(
                         // Particles are drawn every frame they're alive;
                         // no frustum cull here (small, transient).
                         in_raster: true,
+                        // Deterministic tiebreaker for same-emitter
+                        // particles sharing depth bucket and color.
+                        // XOR keeps the emitter grouping intact while
+                        // giving each particle its own ordering slot.
+                        entity_id: entity ^ (i as u32),
                         avg_albedo: [0.0, 0.0, 0.0],
                         material_kind: 0,
                         // Particles render with depth test on, depth
@@ -908,6 +925,7 @@ mod draw_sort_key_tests {
             sort_depth: 0,
             in_tlas: false,
             in_raster: true,
+            entity_id: 0,
             avg_albedo: [0.0; 3],
             material_kind: 0,
             z_test: true,
@@ -1013,6 +1031,51 @@ mod draw_sort_key_tests {
         assert_eq!(cmds[1].sort_depth, 500);
         assert_eq!(cmds[2].dst_blend, 7);
         assert_eq!(cmds[2].sort_depth, 100);
+    }
+
+    /// Regression for #506: with ties in the 8-tuple prefix (same
+    /// mesh, same pipeline state, same depth bucket) the `entity_id`
+    /// final slot must break them deterministically so two sorts of
+    /// the same input produce byte-identical output. Pre-#506 the
+    /// key ended on `mesh_handle` and rayon's work-stealing in
+    /// `par_sort_unstable_by_key` could reorder tied entries across
+    /// runs.
+    #[test]
+    fn sort_key_is_deterministic_for_full_tuple_ties() {
+        // Ten draws that collide on every slot except entity_id —
+        // identical mesh, texture, depth bucket, blend factors.
+        // `DrawCommand` isn't Clone, so build two independent Vecs
+        // from the same factory and feed them opposite starting orders.
+        fn make_tied_batch() -> Vec<DrawCommand> {
+            (0..10u32)
+                .map(|id| {
+                    let mut c = cmd(false, false, false);
+                    c.mesh_handle = 42;
+                    c.texture_handle = 7;
+                    c.sort_depth = 500;
+                    c.entity_id = id;
+                    c
+                })
+                .collect()
+        }
+
+        let mut a = make_tied_batch();
+        // Shuffle `a` so a stable sort starting from insertion order
+        // wouldn't accidentally produce ordered output.
+        a.swap(0, 7);
+        a.swap(3, 9);
+        a.swap(1, 5);
+
+        let mut b = make_tied_batch();
+        b.reverse(); // fully different starting order from `a`
+
+        a.sort_by_key(draw_sort_key);
+        b.sort_by_key(draw_sort_key);
+
+        let a_ids: Vec<u32> = a.iter().map(|c| c.entity_id).collect();
+        let b_ids: Vec<u32> = b.iter().map(|c| c.entity_id).collect();
+        assert_eq!(a_ids, b_ids, "same input → same output regardless of starting order");
+        assert_eq!(a_ids, (0..10u32).collect::<Vec<_>>(), "entity_id breaks ties ascending");
     }
 }
 

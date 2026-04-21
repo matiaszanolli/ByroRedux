@@ -152,6 +152,17 @@ pub struct DrawCommand {
     /// 16 bits of `GpuInstance.flags` so the fragment shader can
     /// sample the 8 layer textures per `GpuTerrainTile`. See #470.
     pub terrain_tile_index: Option<u32>,
+    /// Deterministic sort-key tiebreaker. Uniquely identifies this
+    /// command within the frame so `par_sort_unstable_by_key` produces
+    /// byte-identical output across runs for structurally-identical
+    /// scene state. Pre-#506 the key ended on `mesh_handle` /
+    /// `texture_handle`; full-tuple ties (same mesh, same material,
+    /// same depth bucket, same blend) allowed rayon's work-stealing
+    /// to reorder them differently frame-to-frame, breaking
+    /// capture/replay + screenshot diff workflows. Semantically the
+    /// ECS entity id for mesh draws; `entity ^ particle_index` for
+    /// particle billboards; `u32::MAX` for the UI singleton.
+    pub entity_id: u32,
 }
 
 /// Sky rendering parameters passed per-frame to the composite shader.
