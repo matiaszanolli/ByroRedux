@@ -505,6 +505,18 @@ void main() {
         // aFunc == 0 is ALWAYS → pass stays true
         if (!pass) discard;
     }
+
+    // D3D9 fixed-function parity: blend-enabled meshes with
+    // NiAlphaProperty threshold=0 still discard fully-transparent
+    // texels. FNV picture/table NIFs ship blend=1, test=0 and rely
+    // on this implicit discard — without it, noisy authored alpha
+    // channels bleed through as ghost-translucent surfaces. Gate
+    // only fires on the pure-blend path (inst.flags bit 1) so it
+    // can't regress existing alpha-test meshes.
+    if ((inst.flags & 2u) != 0u && aThresh == 0.0 && texColor.a < (1.0/255.0)) {
+        discard;
+    }
+
     float roughness = inst.roughness;
     float metalness = inst.metalness;
     float emissiveMult = inst.emissiveMult;
@@ -702,7 +714,13 @@ void main() {
             // glass (low alpha) shows mostly sky, tinted glass shows more
             // of the glass color.
             vec3 skyColor = vec3(0.6, 0.75, 1.0); // clear day sky
-            vec3 windowTint = mix(vec3(1.0), texColor.rgb, texColor.a * 0.5);
+            // Use the authored glass color directly instead of biasing
+            // toward white. Pre-fix this mix started from pure white
+            // and leaned heavily that way for low-alpha clear glass
+            // (α≈0.1 typical), producing blown-out panes. A vec3(0.15)
+            // floor keeps very-dark authored glass from killing the
+            // transmitted sky entirely.
+            vec3 windowTint = max(texColor.rgb, vec3(0.15));
             vec3 transmitted = skyColor * windowTint * 1.2;
             // Write with the glass texture alpha so the window frame
             // (opaque, already in the framebuffer) shows through the
@@ -783,9 +801,12 @@ void main() {
 
         // Apply the glass tint to the transmitted light. texColor.rgb
         // is the authored glass color (green for a beer bottle, clear
-        // for water glass). Stronger tint when the alpha is low
-        // (clearer glass → less tint), heavier when authored opaque-ish.
-        vec3 glassTint = mix(vec3(1.0), texColor.rgb, texColor.a * 1.2);
+        // for water glass). Pre-fix this mixed from pure white weighted
+        // by alpha*1.2, so clear glass (α≈0.1 → 0.12 weight) produced
+        // ~88% white regardless of authored tint, blowing out curved
+        // bottle/glass meshes. Fresnel mix at :796 still guarantees the
+        // reflection contribution at edges, so no floor needed here.
+        vec3 glassTint = texColor.rgb;
         throughColor *= glassTint;
 
         // Fresnel mix: at normal incidence fresnelScalar ≈ 0.04
