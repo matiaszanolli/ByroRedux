@@ -934,10 +934,8 @@ impl NiTriStripsData {
 
         // NiTriStripsData specific
         let num_strips = stream.read_u16_le()? as u32;
-        let mut strip_lengths: Vec<u16> = stream.allocate_vec(num_strips)?;
-        for _ in 0..num_strips {
-            strip_lengths.push(stream.read_u16_le()?);
-        }
+        stream.allocate_vec::<u16>(num_strips)?;
+        let strip_lengths = stream.read_u16_array(num_strips as usize)?;
 
         // has_strips: only from v >= 10.0.1.0. In Morrowind NIFs, strips always present.
         let has_strips = if stream.version() >= NifVersion(0x0A000100) {
@@ -950,11 +948,8 @@ impl NiTriStripsData {
             for &len in &strip_lengths {
                 // #388: `len` is a u16 read from the stream; the
                 // `allocate_vec` budget check bounds the total.
-                let mut strip: Vec<u16> = stream.allocate_vec(len as u32)?;
-                for _ in 0..len {
-                    strip.push(stream.read_u16_le()?);
-                }
-                strips.push(strip);
+                stream.allocate_vec::<u16>(len as u32)?;
+                strips.push(stream.read_u16_array(len as usize)?);
             }
         }
 

@@ -1102,14 +1102,9 @@ impl NiMorphData {
             // that would otherwise OOM the process on a corrupt block.
             // The hard cap stays as defensive belt; allocate_vec also
             // bounds against remaining stream bytes (#408).
-            let mut vectors: Vec<[f32; 3]> =
-                stream.allocate_vec((num_vertices as u32).min(1_000_000))?;
-            for _ in 0..num_vertices {
-                let x = stream.read_f32_le()?;
-                let y = stream.read_f32_le()?;
-                let z = stream.read_f32_le()?;
-                vectors.push([x, y, z]);
-            }
+            stream.allocate_vec::<[f32; 3]>((num_vertices as u32).min(1_000_000))?;
+            let points = stream.read_ni_point3_array(num_vertices as usize)?;
+            let vectors: Vec<[f32; 3]> = points.into_iter().map(|p| [p.x, p.y, p.z]).collect();
 
             morphs.push(MorphTarget { name, vectors });
         }

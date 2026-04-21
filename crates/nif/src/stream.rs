@@ -282,6 +282,12 @@ impl<'a> NifStream<'a> {
             .collect())
     }
 
+    /// Read `count` generic 2D vectors (2×f32 each) in one bulk read.
+    /// Alias for `read_uv_array`; use whichever name reads better at the call site.
+    pub fn read_vec2_array(&mut self, count: usize) -> io::Result<Vec<[f32; 2]>> {
+        self.read_uv_array(count)
+    }
+
     /// Read `count` UV pairs (2×f32 each) in one bulk read.
     pub fn read_uv_array(&mut self, count: usize) -> io::Result<Vec<[f32; 2]>> {
         let byte_count = count * 8;
@@ -801,6 +807,130 @@ mod tests {
         let err = stream.read_bytes(MAX_SINGLE_ALLOC_BYTES + 1).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert_eq!(stream.position(), 0);
+    }
+
+    /// Regression for #502: each bulk-read helper must produce the
+    /// exact same sequence as a per-element loop. The bulk path uses
+    /// `chunks_exact` + `from_le_bytes`, so this also implicitly checks
+    /// the little-endian decode and that no residual bytes leak in on
+    /// hosts where alignment would otherwise matter.
+    #[test]
+    fn bulk_reads_match_per_element_loops() {
+        let header = test_header(NifVersion::V20_2_0_7);
+
+        // u16 array
+        let u16_data: Vec<u8> = (0u16..64)
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let mut s_bulk = NifStream::new(&u16_data, &header);
+        let bulk_u16 = s_bulk.read_u16_array(64).unwrap();
+        let mut s_loop = NifStream::new(&u16_data, &header);
+        let mut loop_u16 = Vec::with_capacity(64);
+        for _ in 0..64 {
+            loop_u16.push(s_loop.read_u16_le().unwrap());
+        }
+        assert_eq!(bulk_u16, loop_u16);
+        assert_eq!(s_bulk.position(), s_loop.position());
+
+        // u32 array
+        let u32_data: Vec<u8> = (0u32..32)
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let mut s_bulk = NifStream::new(&u32_data, &header);
+        let bulk_u32 = s_bulk.read_u32_array(32).unwrap();
+        let mut s_loop = NifStream::new(&u32_data, &header);
+        let mut loop_u32 = Vec::with_capacity(32);
+        for _ in 0..32 {
+            loop_u32.push(s_loop.read_u32_le().unwrap());
+        }
+        assert_eq!(bulk_u32, loop_u32);
+
+        // f32 array (includes negative, subnormal, inf edge cases)
+        let floats = [
+            0.0f32, 1.0, -1.5, f32::MIN_POSITIVE, f32::INFINITY, -0.0, 3.1415927,
+        ];
+        let f32_data: Vec<u8> = floats.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let mut s_bulk = NifStream::new(&f32_data, &header);
+        let bulk_f32 = s_bulk.read_f32_array(floats.len()).unwrap();
+        assert_eq!(bulk_f32.len(), floats.len());
+        for (a, b) in bulk_f32.iter().zip(floats.iter()) {
+            assert_eq!(a.to_bits(), b.to_bits());
+        }
+
+        // vec2 / uv array equivalence
+        let uvs: [[f32; 2]; 3] = [[0.25, 0.75], [1.0, 0.0], [-0.5, 2.5]];
+        let uv_data: Vec<u8> = uvs
+            .iter()
+            .flat_map(|uv| {
+                uv[0]
+                    .to_le_bytes()
+                    .into_iter()
+                    .chain(uv[1].to_le_bytes())
+            })
+            .collect();
+        let mut s_uv = NifStream::new(&uv_data, &header);
+        let bulk_uv = s_uv.read_uv_array(uvs.len()).unwrap();
+        let mut s_vec2 = NifStream::new(&uv_data, &header);
+        let bulk_vec2 = s_vec2.read_vec2_array(uvs.len()).unwrap();
+        assert_eq!(bulk_uv, bulk_vec2);
+        assert_eq!(bulk_uv.len(), uvs.len());
+        for (a, b) in bulk_uv.iter().zip(uvs.iter()) {
+            assert_eq!(a[0].to_bits(), b[0].to_bits());
+            assert_eq!(a[1].to_bits(), b[1].to_bits());
+        }
+
+        // NiPoint3 array vs per-element read_ni_point3
+        let points: [(f32, f32, f32); 2] = [(1.0, 2.0, 3.0), (-4.0, 5.5, -6.25)];
+        let p_data: Vec<u8> = points
+            .iter()
+            .flat_map(|(x, y, z)| {
+                x.to_le_bytes()
+                    .into_iter()
+                    .chain(y.to_le_bytes())
+                    .chain(z.to_le_bytes())
+            })
+            .collect();
+        let mut s_bulk = NifStream::new(&p_data, &header);
+        let bulk_p = s_bulk.read_ni_point3_array(points.len()).unwrap();
+        let mut s_loop = NifStream::new(&p_data, &header);
+        let loop_p: Vec<_> = (0..points.len())
+            .map(|_| s_loop.read_ni_point3().unwrap())
+            .collect();
+        assert_eq!(bulk_p.len(), loop_p.len());
+        for (a, b) in bulk_p.iter().zip(loop_p.iter()) {
+            assert_eq!(a.x.to_bits(), b.x.to_bits());
+            assert_eq!(a.y.to_bits(), b.y.to_bits());
+            assert_eq!(a.z.to_bits(), b.z.to_bits());
+        }
+    }
+
+    /// Zero-count bulk reads must succeed without touching the stream.
+    #[test]
+    fn bulk_reads_handle_zero_count() {
+        let header = test_header(NifVersion::V20_2_0_7);
+        let data: Vec<u8> = Vec::new();
+        let mut s = NifStream::new(&data, &header);
+        assert!(s.read_u16_array(0).unwrap().is_empty());
+        assert!(s.read_u32_array(0).unwrap().is_empty());
+        assert!(s.read_f32_array(0).unwrap().is_empty());
+        assert!(s.read_uv_array(0).unwrap().is_empty());
+        assert!(s.read_vec2_array(0).unwrap().is_empty());
+        assert!(s.read_ni_point3_array(0).unwrap().is_empty());
+        assert!(s.read_ni_color4_array(0).unwrap().is_empty());
+        assert_eq!(s.position(), 0);
+    }
+
+    /// Bulk reads that exceed remaining stream bytes must fail via the
+    /// `check_alloc` gate before any allocation happens.
+    #[test]
+    fn bulk_reads_reject_oversized_count() {
+        let header = test_header(NifVersion::V20_2_0_7);
+        let data = [0u8; 8];
+        let mut s = NifStream::new(&data, &header);
+        // 100 u32 = 400 bytes, only 8 available.
+        let err = s.read_u32_array(100).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(s.position(), 0);
     }
 
     /// Legitimate use at the exact cap must succeed — the cap is

@@ -206,31 +206,22 @@ impl NiSkinPartition {
             let num_strips = stream.read_u16_le()?;
             let num_weights_per_vertex = stream.read_u16_le()?;
 
-            // Bones array.
             // #388: `num_bones` is a file-driven u16; bound through allocate_vec.
-            let mut bones: Vec<u16> = stream.allocate_vec(num_bones as u32)?;
-            for _ in 0..num_bones {
-                bones.push(stream.read_u16_le()?);
-            }
+            stream.allocate_vec::<u16>(num_bones as u32)?;
+            let bones = stream.read_u16_array(num_bones as usize)?;
 
             // Vertex map (conditional on has_vertex_map for v >= 10.1.0.0).
             let vertex_map = if has_conditionals {
                 let has = stream.read_byte_bool()?;
                 if has {
-                    let mut map: Vec<u16> = stream.allocate_vec(num_vertices as u32)?;
-                    for _ in 0..num_vertices {
-                        map.push(stream.read_u16_le()?);
-                    }
-                    map
+                    stream.allocate_vec::<u16>(num_vertices as u32)?;
+                    stream.read_u16_array(num_vertices as usize)?
                 } else {
                     Vec::new()
                 }
             } else {
-                let mut map: Vec<u16> = stream.allocate_vec(num_vertices as u32)?;
-                for _ in 0..num_vertices {
-                    map.push(stream.read_u16_le()?);
-                }
-                map
+                stream.allocate_vec::<u16>(num_vertices as u32)?;
+                stream.read_u16_array(num_vertices as usize)?
             };
 
             // Vertex weights (conditional).
@@ -238,28 +229,19 @@ impl NiSkinPartition {
                 let has = stream.read_byte_bool()?;
                 if has {
                     let count = num_vertices as u32 * num_weights_per_vertex as u32;
-                    let mut weights: Vec<f32> = stream.allocate_vec(count)?;
-                    for _ in 0..count {
-                        weights.push(stream.read_f32_le()?);
-                    }
-                    weights
+                    stream.allocate_vec::<f32>(count)?;
+                    stream.read_f32_array(count as usize)?
                 } else {
                     Vec::new()
                 }
             } else {
                 let count = num_vertices as usize * num_weights_per_vertex as usize;
-                let mut weights = Vec::with_capacity(count);
-                for _ in 0..count {
-                    weights.push(stream.read_f32_le()?);
-                }
-                weights
+                stream.read_f32_array(count)?
             };
 
             // Strip lengths.
-            let mut strip_lengths: Vec<u16> = stream.allocate_vec(num_strips as u32)?;
-            for _ in 0..num_strips {
-                strip_lengths.push(stream.read_u16_le()?);
-            }
+            stream.allocate_vec::<u16>(num_strips as u32)?;
+            let strip_lengths = stream.read_u16_array(num_strips as usize)?;
 
             // Has faces (conditional) — gates both strips and triangles.
             let has_faces = if has_conditionals {
@@ -277,13 +259,12 @@ impl NiSkinPartition {
                         stream.skip(len as u64 * 2)?;
                     }
                 } else {
-                    triangles = stream.allocate_vec(num_triangles as u32)?;
-                    for _ in 0..num_triangles {
-                        let a = stream.read_u16_le()?;
-                        let b = stream.read_u16_le()?;
-                        let c = stream.read_u16_le()?;
-                        triangles.push([a, b, c]);
-                    }
+                    stream.allocate_vec::<[u16; 3]>(num_triangles as u32)?;
+                    let flat = stream.read_u16_array(num_triangles as usize * 3)?;
+                    triangles = flat
+                        .chunks_exact(3)
+                        .map(|tri| [tri[0], tri[1], tri[2]])
+                        .collect();
                 }
             }
 
@@ -468,25 +449,17 @@ impl BsSkinBoneData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let num_bones = stream.read_u32_le()?;
         let mut bones = stream.allocate_vec(num_bones)?;
-        for _ in 0..num_bones {
-            let bounding_sphere = [
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
+        // Each bone is a fixed 17-float layout (4 bsphere + 9 rotation + 3 translation + 1 scale).
+        let flat = stream.read_f32_array(num_bones as usize * 17)?;
+        for chunk in flat.chunks_exact(17) {
+            let bounding_sphere = [chunk[0], chunk[1], chunk[2], chunk[3]];
+            let rotation = [
+                [chunk[4], chunk[5], chunk[6]],
+                [chunk[7], chunk[8], chunk[9]],
+                [chunk[10], chunk[11], chunk[12]],
             ];
-            let mut rotation = [[0.0f32; 3]; 3];
-            for row in &mut rotation {
-                for val in row.iter_mut() {
-                    *val = stream.read_f32_le()?;
-                }
-            }
-            let translation = [
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-            ];
-            let scale = stream.read_f32_le()?;
+            let translation = [chunk[13], chunk[14], chunk[15]];
+            let scale = chunk[16];
             bones.push(BsSkinBoneTrans {
                 bounding_sphere,
                 rotation,
