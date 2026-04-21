@@ -1332,9 +1332,26 @@ impl VulkanContext {
         self.frame_counter = self.frame_counter.wrapping_add(1);
 
         // Restore the scratch buffers to the context so their capacity
-        // amortizes across frames. See issue #243.
+        // amortizes across frames (#243), then shrink them back toward
+        // the working set after a past peak frame. Same policy as the
+        // `tlas_instances_scratch` in #504 — scratch Vecs behave as
+        // "grow fast, shrink on pressure": working-set × 2 keeps a
+        // slack band against frame-to-frame variance, and the 512
+        // floor avoids reallocations on common-case small scenes.
+        let working_instances = gpu_instances.len();
+        let working_batches = batches.len();
         self.gpu_instances_scratch = gpu_instances;
         self.batches_scratch = batches;
+        super::super::acceleration::shrink_scratch_if_oversized(
+            &mut self.gpu_instances_scratch,
+            working_instances,
+            512,
+        );
+        super::super::acceleration::shrink_scratch_if_oversized(
+            &mut self.batches_scratch,
+            working_batches,
+            512,
+        );
 
         Ok(suboptimal || present_suboptimal)
     }

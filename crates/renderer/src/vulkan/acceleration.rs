@@ -234,6 +234,26 @@ fn scratch_should_shrink(current_capacity: vk::DeviceSize, peak_required: vk::De
         && current_capacity.saturating_sub(peak_required) > SLACK
 }
 
+/// Shrink a per-frame scratch `Vec` back toward its working set when a
+/// past peak frame left it holding far more capacity than the steady
+/// state needs. Called at the end of the restore path so scratch
+/// vectors behave as "grow fast, shrink on pressure" buffers.
+///
+/// Shrinks only when current capacity exceeds `2 × max(working_set, floor)` —
+/// the 2× hysteresis band prevents thrashing on frame-to-frame variance
+/// around the peak, and the `floor` keeps the buffer large enough for
+/// the common-case small scenes without repeated reallocation.
+///
+/// Pulled out as a pure function so the unit test can pin the threshold
+/// math without needing a live allocator. See #504 (CPU-side mirror of
+/// #495's GPU-side scratch shrink).
+pub(super) fn shrink_scratch_if_oversized<T>(vec: &mut Vec<T>, working_set: usize, floor: usize) {
+    let target = 2 * working_set.max(floor);
+    if vec.capacity() > target {
+        vec.shrink_to(target);
+    }
+}
+
 /// Mid-batch BLAS eviction trigger (#510).
 ///
 /// Returns `true` when the *projected* live BLAS footprint
@@ -1557,8 +1577,20 @@ impl AccelerationManager {
             &[std::slice::from_ref(&range)],
         );
 
-        // Restore the scratch buffer so its capacity amortizes across frames.
+        // Restore the scratch buffer so its capacity amortizes across
+        // frames, then shrink it if a past peak (exterior open cell with
+        // 10 k+ draw commands) left us holding 640 KB+ of unused
+        // capacity long after the scene returned to a small interior.
+        // `instance_count` is the number of entries we actually used
+        // this frame; the 512 floor keeps the buffer usefully large
+        // for common-case small scenes without reallocating on every
+        // cell transition. See #504.
         self.tlas_instances_scratch = instances;
+        shrink_scratch_if_oversized(
+            &mut self.tlas_instances_scratch,
+            instance_count as usize,
+            512,
+        );
 
         Ok(())
     }
@@ -1774,6 +1806,62 @@ impl AccelerationManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression for #504: the scratch-shrink helper must reclaim
+    /// capacity after a past peak frame while leaving small working
+    /// sets alone. Exercised on a plain `Vec<u8>` — the algorithm is
+    /// size-agnostic, so `Vec<vk::AccelerationStructureInstanceKHR>`
+    /// (the real caller) follows the same math.
+    #[test]
+    fn shrink_scratch_reclaims_capacity_after_peak() {
+        // 10 000-entry peak, then a tiny steady-state restore.
+        let mut v: Vec<u8> = Vec::with_capacity(10_000);
+        shrink_scratch_if_oversized(&mut v, 50, 512);
+        // Target = 2 × max(50, 512) = 1024. Capacity was 10 000 → shrink.
+        assert!(
+            v.capacity() <= 1024,
+            "expected capacity <= 1024, got {}",
+            v.capacity()
+        );
+        // Floor honoured — NOT shrunk to `working_set` alone (50).
+        assert!(
+            v.capacity() >= 512,
+            "floor must keep capacity above working-set for small frames"
+        );
+    }
+
+    /// Near-steady state: capacity just over the 2× band must not
+    /// trigger a shrink (avoids thrashing when the working set
+    /// oscillates around the peak).
+    #[test]
+    fn shrink_scratch_preserves_hysteresis_band() {
+        // Working set 500, floor 512, target = 2 × max(500, 512) = 1024.
+        // Capacity 1500 > target → shrink.
+        let mut over: Vec<u8> = Vec::with_capacity(1500);
+        shrink_scratch_if_oversized(&mut over, 500, 512);
+        assert!(over.capacity() <= 1024);
+
+        // Capacity 1024 == target → NO shrink (equality falls into
+        // the "leave alone" branch).
+        let mut at: Vec<u8> = Vec::with_capacity(1024);
+        shrink_scratch_if_oversized(&mut at, 500, 512);
+        assert_eq!(at.capacity(), 1024, "at-target capacity must not be touched");
+
+        // Capacity below 2× — leave alone, we're already efficient.
+        let mut under: Vec<u8> = Vec::with_capacity(800);
+        shrink_scratch_if_oversized(&mut under, 500, 512);
+        assert_eq!(under.capacity(), 800);
+    }
+
+    /// Zero working set must still honour the floor — don't shrink
+    /// to zero just because the current frame emitted no draws.
+    #[test]
+    fn shrink_scratch_zero_working_set_keeps_floor() {
+        let mut v: Vec<u8> = Vec::with_capacity(5000);
+        shrink_scratch_if_oversized(&mut v, 0, 512);
+        assert!(v.capacity() >= 512, "floor must survive zero working set");
+        assert!(v.capacity() <= 1024, "shrink must still fire above 2 × floor");
+    }
 
     /// Regression for #510: the mid-batch eviction predicate must
     /// fire at ≥ 90% of the configured budget and stay quiet below.
