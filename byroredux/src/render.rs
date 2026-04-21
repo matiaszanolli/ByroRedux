@@ -461,17 +461,26 @@ pub(crate) fn build_render_data(
                 // etc., see #344). Engine-synthesized kinds live in
                 // the high range (100+):
                 //   - `MATERIAL_KIND_GLASS` when the material is
-                //     alpha-blend + low-metal + not a decal. Replaces
-                //     the pre-Phase-2 shader-side `texColor.a < 0.6`
-                //     heuristic that flickered texel-by-texel on
-                //     textures with semi-transparent regions. Tier C
-                //     Phase 2.
+                //     alpha-blend + low-metal + not a decal + low-
+                //     roughness. The roughness gate was added after
+                //     Tier C Phase 2 shipped with only the first three
+                //     criteria: FNV wood tables and picture frames
+                //     carry `NiAlphaProperty.flags=0x12ED` (blend=1) for
+                //     edge smoothing, not because the surface is glass.
+                //     Under the three-criterion rule they were tagged
+                //     as glass and rendered through the RT refract /
+                //     Fresnel path as near-white surfaces. Roughness
+                //     classified from the texture path (glass=0.1,
+                //     wood=0.7, fabric=0.95) cleanly separates actual
+                //     transparent-refractive materials from
+                //     alpha-blend-for-edges. See follow-up to #515.
                 let base_material_kind = mat.map(|m| m.material_kind as u32).unwrap_or(0);
-                let material_kind = if alpha_blend && !is_decal && metalness < 0.3 {
-                    byroredux_renderer::MATERIAL_KIND_GLASS
-                } else {
-                    base_material_kind
-                };
+                let material_kind =
+                    if alpha_blend && !is_decal && metalness < 0.3 && roughness < 0.4 {
+                        byroredux_renderer::MATERIAL_KIND_GLASS
+                    } else {
+                        base_material_kind
+                    };
 
                 draw_commands.push(DrawCommand {
                     mesh_handle: mesh.0,
