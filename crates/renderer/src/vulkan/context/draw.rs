@@ -467,17 +467,12 @@ impl VulkanContext {
         batches.clear();
         batches.reserve(draw_commands.len());
 
-        // Assert draw commands are sorted by pipeline key so the consecutive
-        // batch merge below produces optimal results. #279 P1-08.
-        debug_assert!(
-            draw_commands.windows(2).all(|w| {
-                let k0 = (w[0].alpha_blend, w[0].two_sided, w[0].is_decal);
-                let k1 = (w[1].alpha_blend, w[1].two_sided, w[1].is_decal);
-                k0 <= k1 || w[0].sort_depth <= w[1].sort_depth
-            }),
-            "draw_commands should be sorted before batch merge"
-        );
-
+        // Sort contract for draw_commands is owned by render.rs
+        // `build_render_data`. The per-field cluster order is covered
+        // by the unit test `render::sort_key_clusters_by_alpha_decal_twosided`
+        // (#500 D3-M2). A duplicate debug_assert here drifted out of
+        // sync with the real key and was removed rather than kept in
+        // lockstep across two crates.
         for draw_cmd in draw_commands {
             let Some(mesh) = self.mesh_registry.get(draw_cmd.mesh_handle) else {
                 continue;

@@ -89,6 +89,47 @@ impl FrustumPlanes {
     }
 }
 
+/// Pack per-draw depth state into a single u8 so consecutive same-state
+/// draws cluster: bit 0 = z_test, bit 1 = z_write, bits 4-7 = z_function.
+fn pack_depth_state(cmd: &DrawCommand) -> u8 {
+    (cmd.z_test as u8) | ((cmd.z_write as u8) << 1) | ((cmd.z_function & 0x0F) << 4)
+}
+
+/// Sort key for `DrawCommand`s — the batch-merge pass in
+/// `VulkanContext::draw_frame` relies on consecutive identical
+/// (alpha_blend, is_decal, two_sided, depth_state, mesh, …) runs to fold
+/// into single instanced draws. Owned here so the field order can't
+/// silently drift from an assert in a downstream crate.
+///
+/// Both branches return the same 7-tuple shape `(u8, u8, u8, u32, u32,
+/// u32, u32)` so the compiler accepts a single key closure. Per-branch
+/// semantics are encoded by which slot carries the depth value:
+///   Opaque      — slot 3 = depth_state; slot 6 = sort_depth (front-to-back)
+///   Transparent — slot 3 = !sort_depth (back-to-front); slot 4 = depth_state
+pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u32, u32, u32, u32) {
+    if cmd.alpha_blend {
+        (
+            1u8, // after opaque
+            cmd.is_decal as u8,
+            cmd.two_sided as u8,
+            !cmd.sort_depth, // invert → larger depth first
+            pack_depth_state(cmd) as u32,
+            cmd.texture_handle,
+            cmd.mesh_handle,
+        )
+    } else {
+        (
+            0u8,
+            cmd.is_decal as u8,
+            cmd.two_sided as u8,
+            pack_depth_state(cmd) as u32,
+            cmd.mesh_handle, // group identical meshes
+            cmd.texture_handle,
+            cmd.sort_depth, // front-to-back within group
+        )
+    }
+}
+
 /// Build the view-projection matrix and draw command list from ECS queries.
 ///
 /// All scratch buffers — `draw_commands`, `gpu_lights`, `bone_palette`,
@@ -583,40 +624,7 @@ pub(crate) fn build_render_data(
     //
     // Alpha-blend: must remain back-to-front (depth-primary) for correct
     // transparency ordering — instancing is irrelevant here.
-    fn pack_depth_state(cmd: &DrawCommand) -> u8 {
-        // Bit 0 = z_test, bit 1 = z_write, bits 4-7 = z_function (0-7).
-        // Packs the per-draw depth state into a single sort key
-        // component so consecutive same-state draws cluster.
-        (cmd.z_test as u8) | ((cmd.z_write as u8) << 1) | ((cmd.z_function & 0x0F) << 4)
-    }
-    // Both branches return the same 7-tuple shape (u8, u8, u8, u32, u32,
-    // u32, u32) so the compiler accepts a single closure. Per-branch
-    // semantics are encoded by which field gets the depth value:
-    //   Opaque   — slot 3 = depth_state; slot 6 = sort_depth (front-to-back)
-    //   Transparent — slot 3 = !sort_depth (back-to-front); slot 4 = depth_state
-    draw_commands.par_sort_unstable_by_key(|cmd| {
-        if cmd.alpha_blend {
-            (
-                1u8, // after opaque
-                cmd.is_decal as u8,
-                cmd.two_sided as u8,
-                !cmd.sort_depth,            // invert → larger depth first
-                pack_depth_state(cmd) as u32,
-                cmd.texture_handle,
-                cmd.mesh_handle,
-            )
-        } else {
-            (
-                0u8,
-                cmd.is_decal as u8,
-                cmd.two_sided as u8,
-                pack_depth_state(cmd) as u32,
-                cmd.mesh_handle, // group identical meshes
-                cmd.texture_handle,
-                cmd.sort_depth, // front-to-back within group
-            )
-        }
-    });
+    draw_commands.par_sort_unstable_by_key(draw_sort_key);
 
     // Collect lights from ECS.
 
@@ -809,6 +817,126 @@ mod frustum_tests {
 /// produced correct order on positive floats; negatives, denormals,
 /// and special values could silently reorder whenever frustum culling
 /// let them through.
+#[cfg(test)]
+mod draw_sort_key_tests {
+    use super::{draw_sort_key, DrawCommand};
+
+    /// Minimal DrawCommand builder — only the fields that affect the
+    /// sort key are interesting. Everything else is zeroed.
+    fn cmd(alpha_blend: bool, is_decal: bool, two_sided: bool) -> DrawCommand {
+        DrawCommand {
+            mesh_handle: 0,
+            texture_handle: 0,
+            model_matrix: [0.0; 16],
+            alpha_blend,
+            src_blend: 6,
+            dst_blend: 7,
+            two_sided,
+            is_decal,
+            bone_offset: 0,
+            normal_map_index: 0,
+            dark_map_index: 0,
+            glow_map_index: 0,
+            detail_map_index: 0,
+            gloss_map_index: 0,
+            parallax_map_index: 0,
+            parallax_height_scale: 0.0,
+            parallax_max_passes: 0.0,
+            env_map_index: 0,
+            env_mask_index: 0,
+            alpha_threshold: 0.0,
+            alpha_test_func: 0,
+            roughness: 0.5,
+            metalness: 0.0,
+            emissive_mult: 0.0,
+            emissive_color: [0.0; 3],
+            specular_strength: 0.0,
+            specular_color: [0.0; 3],
+            vertex_offset: 0,
+            index_offset: 0,
+            vertex_count: 0,
+            sort_depth: 0,
+            in_tlas: false,
+            avg_albedo: [0.0; 3],
+            material_kind: 0,
+            z_test: true,
+            z_write: true,
+            z_function: 3,
+            terrain_tile_index: None,
+        }
+    }
+
+    /// Regression for #500 (PERF D3-M2): a stale debug_assert! in
+    /// `draw_frame` had the sort-key tuple fields in the wrong order.
+    /// This test owns the sort contract in the same crate as the sort
+    /// itself, so drift can't happen silently.
+    ///
+    /// Cluster order must be:
+    ///   1. alpha_blend   (opaque before transparent)
+    ///   2. is_decal
+    ///   3. two_sided
+    #[test]
+    fn sort_key_clusters_by_alpha_decal_twosided() {
+        // Construct every 2³ combination in scrambled order.
+        let mut cmds = vec![
+            cmd(true, true, true),
+            cmd(false, false, false),
+            cmd(true, false, true),
+            cmd(false, true, false),
+            cmd(true, true, false),
+            cmd(false, false, true),
+            cmd(true, false, false),
+            cmd(false, true, true),
+        ];
+        cmds.sort_by_key(draw_sort_key);
+
+        let observed: Vec<(bool, bool, bool)> = cmds
+            .iter()
+            .map(|c| (c.alpha_blend, c.is_decal, c.two_sided))
+            .collect();
+        let expected = [
+            (false, false, false),
+            (false, false, true),
+            (false, true, false),
+            (false, true, true),
+            (true, false, false),
+            (true, false, true),
+            (true, true, false),
+            (true, true, true),
+        ];
+        assert_eq!(observed, expected.to_vec());
+    }
+
+    /// Opaque draws sort front-to-back within the same
+    /// (is_decal, two_sided, depth_state) cluster — the last key slot
+    /// carries `sort_depth` ascending so early-Z benefits most draws.
+    #[test]
+    fn opaque_within_cluster_sorts_front_to_back() {
+        let mut near = cmd(false, false, false);
+        near.sort_depth = 100;
+        let mut far = cmd(false, false, false);
+        far.sort_depth = 900;
+        let mut cmds = vec![far, near];
+        cmds.sort_by_key(draw_sort_key);
+        assert_eq!(cmds[0].sort_depth, 100);
+        assert_eq!(cmds[1].sort_depth, 900);
+    }
+
+    /// Transparent draws sort back-to-front for correct blending —
+    /// the key uses `!sort_depth` so larger depth sorts first.
+    #[test]
+    fn transparent_within_cluster_sorts_back_to_front() {
+        let mut near = cmd(true, false, false);
+        near.sort_depth = 100;
+        let mut far = cmd(true, false, false);
+        far.sort_depth = 900;
+        let mut cmds = vec![near, far];
+        cmds.sort_by_key(draw_sort_key);
+        assert_eq!(cmds[0].sort_depth, 900);
+        assert_eq!(cmds[1].sort_depth, 100);
+    }
+}
+
 #[cfg(test)]
 mod sort_key_tests {
     use super::f32_sortable_u32;
