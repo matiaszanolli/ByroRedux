@@ -164,19 +164,40 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
                 }
             }
 
-            // HNAM: fog distances — 4 × f32 (day near, day far, night near, night far).
-            b"HNAM" if sub.data.len() >= 16 => {
+            // FNAM: fog distances. Four f32 at offsets 0/4/8/12:
+            // `[day_near, day_far, night_near, night_far]`. Game-dependent
+            // total size: 16 B in Oblivion, 24 B in FNV/FO3 (trailing 8 B
+            // have not been cross-checked against a UESP-authoritative
+            // schema so they are ignored here).
+            //
+            // Pre-fix the FNAM arm had an empty body with a comment
+            // ("fallback when HNAM is absent"). But FNV and FO3 do not
+            // ship HNAM — they ship only FNAM. The result was that every
+            // FNV + FO3 weather defaulted to `fog_day_far = 10000.0`
+            // independent of weather type. See audit M33-04 / #536.
+            b"FNAM" if sub.data.len() >= 16 => {
                 record.fog_day_near = read_f32_at(&sub.data, 0).unwrap_or(0.0);
                 record.fog_day_far = read_f32_at(&sub.data, 4).unwrap_or(10000.0);
                 record.fog_night_near = read_f32_at(&sub.data, 8).unwrap_or(0.0);
                 record.fog_night_far = read_f32_at(&sub.data, 12).unwrap_or(10000.0);
             }
 
-            // FNAM: short fog far distances (older format, 4 bytes).
-            // Some records use FNAM instead of HNAM for a simpler fog definition.
-            b"FNAM" if sub.data.len() >= 4 && record.fog_day_far == 10000.0 => {
-                // FNAM packs day_far and night_far as u8 * 100 or similar.
-                // Only used as fallback when HNAM is absent.
+            // HNAM (only in Oblivion; never appears in FNV / FO3). In
+            // Oblivion it is 56 bytes of lighting-model parameters, NOT
+            // fog distances — the first 4 f32 are eye-adapt speed, blend
+            // in/out distances, lighting fade etc. Decoding that is
+            // tracked under #537 / audit M33-05.
+            //
+            // The 16-byte gate is kept so existing synthetic test
+            // fixtures that use a 16-byte HNAM to drive fog continue to
+            // work — but real 56-byte Oblivion HNAMs fall through to the
+            // unknown-subrecord skip. FNAM above already handles the fog
+            // story for all three vanilla games.
+            b"HNAM" if sub.data.len() == 16 => {
+                record.fog_day_near = read_f32_at(&sub.data, 0).unwrap_or(0.0);
+                record.fog_day_far = read_f32_at(&sub.data, 4).unwrap_or(10000.0);
+                record.fog_night_near = read_f32_at(&sub.data, 8).unwrap_or(0.0);
+                record.fog_night_far = read_f32_at(&sub.data, 12).unwrap_or(10000.0);
             }
 
             // DATA: general weather data (15 bytes for FNV).
@@ -322,6 +343,83 @@ mod tests {
         ];
         let w = parse_wthr(0xFADE, &subs);
         assert!(w.cloud_textures.iter().all(|c| c.is_none()));
+    }
+
+    /// Regression for #536 / audit M33-04: FNAM must carry fog.
+    /// Pre-fix the arm body was empty ("fallback when HNAM is absent"),
+    /// but FNV + FO3 ship only FNAM (no HNAM), so every FNV + FO3
+    /// weather defaulted to `fog_day_far = 10000.0`. This test uses
+    /// the 24-byte FNV stride (16 B of 4 fog f32 + 8 trailing unknown
+    /// bytes) to pin the fog fields.
+    #[test]
+    fn parse_wthr_fnam_fog_24byte_stride() {
+        let mut fnam_data = vec![0u8; 24];
+        fnam_data[0..4].copy_from_slice(&(-500.0_f32).to_le_bytes());
+        fnam_data[4..8].copy_from_slice(&85_000.0_f32.to_le_bytes());
+        fnam_data[8..12].copy_from_slice(&(-1000.0_f32).to_le_bytes());
+        fnam_data[12..16].copy_from_slice(&40_000.0_f32.to_le_bytes());
+        // Trailing 8 B are ignored by the parser — fill with sentinels.
+        fnam_data[16..24].copy_from_slice(&[0xFE; 8]);
+        let subs = vec![
+            make_sub(b"EDID", b"FNVFogCheck\0".to_vec()),
+            make_sub(b"FNAM", fnam_data),
+        ];
+        let w = parse_wthr(0xF09, &subs);
+        assert!((w.fog_day_near + 500.0).abs() < 0.01);
+        assert!((w.fog_day_far - 85_000.0).abs() < 0.01);
+        assert!((w.fog_night_near + 1000.0).abs() < 0.01);
+        assert!((w.fog_night_far - 40_000.0).abs() < 0.01);
+    }
+
+    /// Oblivion FNAM is 16 B — same 4-f32 fog layout, just without
+    /// the FNV/FO3 trailing 8 B.
+    #[test]
+    fn parse_wthr_fnam_fog_16byte_stride() {
+        let mut fnam_data = vec![0u8; 16];
+        fnam_data[0..4].copy_from_slice(&(-500.0_f32).to_le_bytes());
+        fnam_data[4..8].copy_from_slice(&16_000.0_f32.to_le_bytes());
+        fnam_data[8..12].copy_from_slice(&(-600.0_f32).to_le_bytes());
+        fnam_data[12..16].copy_from_slice(&6_000.0_f32.to_le_bytes());
+        let subs = vec![
+            make_sub(b"EDID", b"OBLFogCheck\0".to_vec()),
+            make_sub(b"FNAM", fnam_data),
+        ];
+        let w = parse_wthr(0x0B1, &subs);
+        assert!((w.fog_day_near + 500.0).abs() < 0.01);
+        assert!((w.fog_day_far - 16_000.0).abs() < 0.01);
+        assert!((w.fog_night_near + 600.0).abs() < 0.01);
+        assert!((w.fog_night_far - 6_000.0).abs() < 0.01);
+    }
+
+    /// Real 56-byte Oblivion HNAM must NOT be interpreted as fog.
+    /// Pre-fix the HNAM arm gated on `>= 16` and would overwrite FNAM's
+    /// correct fog values with the first 4 f32 of HNAM's lighting
+    /// parameters (`0.7, 4.0, 2.0, 1.0` — fog-far of 4.0 saturated every
+    /// Oblivion exterior to solid fog_color within a few units of the
+    /// camera). The `== 16` gate plus sub-record emission order
+    /// (`FNAM … HNAM …`) means FNAM sets fog and HNAM is skipped.
+    /// See audit M33-05 / #537 for the eventual 56-byte HNAM decode.
+    #[test]
+    fn parse_wthr_oblivion_hnam_56byte_does_not_clobber_fnam() {
+        let mut fnam_data = vec![0u8; 16];
+        fnam_data[0..4].copy_from_slice(&(-500.0_f32).to_le_bytes());
+        fnam_data[4..8].copy_from_slice(&16_000.0_f32.to_le_bytes());
+        fnam_data[8..12].copy_from_slice(&(-600.0_f32).to_le_bytes());
+        fnam_data[12..16].copy_from_slice(&6_000.0_f32.to_le_bytes());
+        let mut hnam_data = vec![0u8; 56];
+        // Lighting-model values that would be DISASTROUS if read as fog.
+        hnam_data[0..4].copy_from_slice(&0.7_f32.to_le_bytes());
+        hnam_data[4..8].copy_from_slice(&4.0_f32.to_le_bytes());
+        hnam_data[8..12].copy_from_slice(&2.0_f32.to_le_bytes());
+        hnam_data[12..16].copy_from_slice(&1.0_f32.to_le_bytes());
+        let subs = vec![
+            make_sub(b"EDID", b"OBLMixed\0".to_vec()),
+            make_sub(b"FNAM", fnam_data),
+            make_sub(b"HNAM", hnam_data),
+        ];
+        let w = parse_wthr(0xEED, &subs);
+        assert!((w.fog_day_far - 16_000.0).abs() < 0.01, "fog_day_far={}", w.fog_day_far);
+        assert!((w.fog_night_far - 6_000.0).abs() < 0.01, "fog_night_far={}", w.fog_night_far);
     }
 
     /// Regression for #535 / audit M33-03: DNAM must be treated as a

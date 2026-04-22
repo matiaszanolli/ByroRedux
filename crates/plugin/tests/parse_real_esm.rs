@@ -216,6 +216,29 @@ fn parse_rate_fnv_esm() {
         with_layer_0,
         index.weathers.len(),
     );
+
+    // #536 / audit M33-04 regression guard: FNV FNAM fog parsing.
+    // Pre-fix every FNV weather defaulted to `fog_day_far = 10000.0`
+    // because the FNAM arm body was empty (comment claimed "fallback
+    // when HNAM is absent" but FNV has no HNAM). Count weathers with
+    // any non-default fog field as proof the body now fires.
+    let with_nondefault_fog = index
+        .weathers
+        .values()
+        .filter(|w| {
+            (w.fog_day_far - 10000.0).abs() > 0.1
+                || w.fog_day_near != 0.0
+                || (w.fog_night_far - 10000.0).abs() > 0.1
+                || w.fog_night_near != 0.0
+        })
+        .count();
+    assert!(
+        with_nondefault_fog >= 50,
+        "FNV weathers with non-default fog = {}/{} — pre-fix 0/63; \
+         expected >= 50 after #536",
+        with_nondefault_fog,
+        index.weathers.len(),
+    );
 }
 
 #[test]
@@ -321,6 +344,24 @@ fn parse_rate_fo3_esm() {
         with_layer_0,
         index.weathers.len(),
     );
+
+    // #536 / audit M33-04: FO3 FNAM fog.
+    let with_nondefault_fog = index
+        .weathers
+        .values()
+        .filter(|w| {
+            (w.fog_day_far - 10000.0).abs() > 0.1
+                || w.fog_day_near != 0.0
+                || (w.fog_night_far - 10000.0).abs() > 0.1
+                || w.fog_night_near != 0.0
+        })
+        .count();
+    assert!(
+        with_nondefault_fog >= 15,
+        "FO3 weathers with non-default fog = {}/{} — expected >= 15 after #536",
+        with_nondefault_fog,
+        index.weathers.len(),
+    );
 }
 
 /// Oblivion: the 160-byte NAM0 stride target of #533. Minimal parse
@@ -383,5 +424,40 @@ fn parse_rate_oblivion_esm() {
         "OBL weathers with cloud layer 0 = {}/{} — expected >= 25 after #534",
         with_layer_0,
         index.weathers.len(),
+    );
+
+    // #536 / audit M33-04: Oblivion FNAM is 16 B and carries fog (HNAM
+    // is 56 B of *different* lighting-model fields — see #537). Pre-fix
+    // the HNAM arm gated on `>= 16` and silently overwrote FNAM's
+    // correct fog values with HNAM's first-4-f32 lighting parameters,
+    // saturating every Oblivion exterior to `fog_far ≈ 4.0`.
+    let with_nondefault_fog = index
+        .weathers
+        .values()
+        .filter(|w| {
+            (w.fog_day_far - 10000.0).abs() > 0.1
+                || w.fog_day_near != 0.0
+                || (w.fog_night_far - 10000.0).abs() > 0.1
+                || w.fog_night_near != 0.0
+        })
+        .count();
+    assert!(
+        with_nondefault_fog >= 25,
+        "OBL weathers with non-default fog = {}/{} — expected >= 25 after #536",
+        with_nondefault_fog,
+        index.weathers.len(),
+    );
+    // Sanity bound: no Oblivion weather should come back with
+    // `fog_far < 100` (that was the HNAM-clobber footprint).
+    let tiny_fog = index
+        .weathers
+        .values()
+        .filter(|w| w.fog_day_far > 0.0 && w.fog_day_far < 100.0)
+        .count();
+    assert_eq!(
+        tiny_fog, 0,
+        "OBL weathers with absurd fog_day_far < 100 = {} — \
+         pre-fix HNAM clobbered fog_far to ~4.0. Should be 0 after #536.",
+        tiny_fog,
     );
 }
