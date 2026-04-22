@@ -205,7 +205,12 @@ pub(crate) fn resolve_texture(
     let Some(tex_path) = tex_path else {
         return ctx.texture_registry.fallback();
     };
-    if let Some(cached) = ctx.texture_registry.get_by_path(tex_path) {
+    // `acquire_by_path` (not `get_by_path`) — bumps the refcount on a
+    // cache hit so each resolve pairs with one drop_texture on cell
+    // unload. `load_dds` on the miss path bumps from 0→1 on fresh
+    // uploads; both routes produce exactly one outstanding ref per
+    // caller. See #524.
+    if let Some(cached) = ctx.texture_registry.acquire_by_path(tex_path) {
         return cached;
     }
     if let Some(dds_bytes) = tex_provider.extract(tex_path) {

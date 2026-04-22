@@ -178,11 +178,13 @@ fn stamp_cell_root(world: &mut World, cell_root: EntityId, first: EntityId, last
 /// a new mesh or texture. Entity IDs likewise grow monotonically (see
 /// `World::despawn` docs). See #372.
 ///
-/// Textures are freed best-effort: if another still-live cell shares a
-/// texture through the path cache, its bindless slot falls back to the
-/// checkerboard until the next load re-creates a fresh entry. Callers
-/// that need concurrent multi-cell residency should ref-count texture
-/// usage themselves (out of scope for #372).
+/// Texture handles are refcounted (#524): each `resolve_texture` acquisition
+/// bumps the `TextureEntry.ref_count` inside the registry, and this
+/// function calls `drop_texture` once per entity-held handle. Shared
+/// textures across still-resident cells survive an unload because the
+/// remaining holders keep the refcount positive. M40 doorwalking needs
+/// this — without it, cell A's unload would flip cell B's shared
+/// clutter textures to the checkerboard.
 #[allow(dead_code)] // exposed for scripting / doorwalking wiring (M40)
 pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: EntityId) {
     // Collect victims that the query iterator can see. Hold the lock
@@ -198,13 +200,22 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
             .collect()
     };
 
-    // Gather every unique mesh and texture handle referenced by the
-    // victim set. Using `HashSet` deduplicates shared NIF clutter and
-    // path-cached textures so we don't call `drop_*` twice on the same
-    // handle.
+    // Gather mesh handles (HashSet — per-cell mesh buffers are unique,
+    // a HashSet is only guarding against double-drops within one cell).
+    //
+    // Texture handles use a Vec instead: each entity's `resolve_texture`
+    // bumped the registry's refcount by one; symmetric release means
+    // one `drop_texture` call per component holder, no dedup. See
+    // #524.
     let mut mesh_handles: HashSet<u32> = HashSet::new();
-    let mut texture_handles: HashSet<u32> = HashSet::new();
+    let mut texture_drops: Vec<u32> = Vec::new();
     let mut terrain_tile_slots: HashSet<u32> = HashSet::new();
+    let fallback_tex = ctx.texture_registry.fallback();
+    let push_tex_drop = |handle: u32, sink: &mut Vec<u32>| {
+        if handle != 0 && handle != fallback_tex {
+            sink.push(handle);
+        }
+    };
     if let Some(mq) = world.query::<MeshHandle>() {
         for &eid in &victims {
             if let Some(mh) = mq.get(eid) {
@@ -215,11 +226,33 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     if let Some(tq) = world.query::<TextureHandle>() {
         for &eid in &victims {
             if let Some(th) = tq.get(eid) {
-                // Fallback texture (handle 0) is process-wide; never drop it.
-                let fallback = ctx.texture_registry.fallback();
-                if th.0 != fallback {
-                    texture_handles.insert(th.0);
-                }
+                push_tex_drop(th.0, &mut texture_drops);
+            }
+        }
+    }
+    if let Some(nq) = world.query::<NormalMapHandle>() {
+        for &eid in &victims {
+            if let Some(nh) = nq.get(eid) {
+                push_tex_drop(nh.0, &mut texture_drops);
+            }
+        }
+    }
+    if let Some(dq) = world.query::<DarkMapHandle>() {
+        for &eid in &victims {
+            if let Some(dh) = dq.get(eid) {
+                push_tex_drop(dh.0, &mut texture_drops);
+            }
+        }
+    }
+    if let Some(eq) = world.query::<ExtraTextureMaps>() {
+        for &eid in &victims {
+            if let Some(extra) = eq.get(eid) {
+                push_tex_drop(extra.glow, &mut texture_drops);
+                push_tex_drop(extra.detail, &mut texture_drops);
+                push_tex_drop(extra.gloss, &mut texture_drops);
+                push_tex_drop(extra.parallax, &mut texture_drops);
+                push_tex_drop(extra.env, &mut texture_drops);
+                push_tex_drop(extra.env_mask, &mut texture_drops);
             }
         }
     }
@@ -268,7 +301,7 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     for &mh in &mesh_handles {
         ctx.mesh_registry.drop_mesh(mh);
     }
-    for &th in &texture_handles {
+    for &th in &texture_drops {
         ctx.texture_registry.drop_texture(&ctx.device, th);
     }
 
@@ -279,10 +312,10 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     }
 
     log::info!(
-        "Cell unload: {} entities, {} meshes, {} textures freed (cell_root {})",
+        "Cell unload: {} entities, {} meshes, {} texture refs released (cell_root {})",
         victim_count,
         mesh_handles.len(),
-        texture_handles.len(),
+        texture_drops.len(),
         cell_root,
     );
 }
@@ -1078,6 +1111,24 @@ fn load_references(
     let mut stat_miss = 0u32;
     let mut stat_hit = 0u32;
     let mut enable_skipped = 0u32;
+
+    // Per-call accumulators — committed to `NifImportRegistry` in a
+    // single `resource_mut` borrow after the loop instead of acquiring
+    // the write lock on every REFR. Previously every iteration took
+    // `world.resource_mut::<NifImportRegistry>()` (write lock + atomic
+    // CAS) even on the hot cache-hit path; for Prospector Saloon's 809
+    // REFRs that was 809 write-lock cycles serialising nothing. See
+    // #523.
+    let mut this_call_hits: u64 = 0;
+    let mut this_call_misses: u64 = 0;
+    let mut this_call_parsed: u64 = 0;
+    let mut this_call_failed: u64 = 0;
+    // Parses performed during this call. Merged into the registry at
+    // end-of-function. `pending_new.get` shadows the registry read so
+    // subsequent iterations of the loop see this call's own parses
+    // without re-entering the registry.
+    let mut pending_new: HashMap<String, Option<Arc<CachedNifImport>>> = HashMap::new();
+
     for placed_ref in refs {
         // Skip REFRs whose XESP gating would keep them hidden under
         // the parents-assumed-enabled heuristic: inverted XESP children
@@ -1197,44 +1248,53 @@ fn load_references(
             };
 
         // Fetch parsed+imported NIF from the process-lifetime registry,
-        // or load+parse once. Lookup, parse, and insert each happen in
-        // their own brief borrow of the resource so the borrow checker
-        // accepts the subsequent `&mut World` pass to
-        // `spawn_placed_instances`. See #381.
+        // or load+parse once. Three-tier lookup (#523):
+        //   1. `pending_new` — this call's own parses, zero lock cost.
+        //   2. Registry read-lock — a shared borrow that doesn't
+        //      serialise against concurrent readers.
+        //   3. Parse outside any lock, insert into `pending_new`; the
+        //      merge into the registry happens in a single write lock
+        //      after the loop.
+        //
+        // Previously this block took `resource_mut` (write lock) on
+        // every iteration even on the hit path; see #523 / #381 for
+        // the wider cache history.
         let cache_key = model_path.to_ascii_lowercase();
-        let cached = {
-            // Fast-path: already in the cache (hit or remembered failure).
-            let mut reg = world.resource_mut::<NifImportRegistry>();
-            let hit = reg.cache.get(&cache_key).cloned();
-            if let Some(entry) = hit {
-                reg.hits += 1;
-                entry
-            } else {
-                drop(reg);
-                // Slow-path: extract bytes, parse, then re-borrow the
-                // registry to insert. The intermediate `tex_provider`
-                // call doesn't touch the registry, so the brief borrow
-                // gap is safe.
-                let parsed = match tex_provider.extract_mesh(&model_path) {
-                    Some(d) => parse_and_import_nif(
-                        &d,
-                        &model_path,
-                        mat_provider.as_deref_mut(),
-                    ),
-                    None => {
-                        log::debug!("NIF not found in BSA: '{}'", model_path);
-                        None
-                    }
-                };
-                let mut reg = world.resource_mut::<NifImportRegistry>();
-                reg.misses += 1;
-                if parsed.is_some() {
-                    reg.parsed_count += 1;
-                } else {
-                    reg.failed_count += 1;
+        let cached = if let Some(entry) = pending_new.get(&cache_key).cloned() {
+            this_call_hits += 1;
+            entry
+        } else {
+            let reg_entry = {
+                let reg = world.resource::<NifImportRegistry>();
+                reg.cache.get(&cache_key).cloned()
+            };
+            match reg_entry {
+                Some(entry) => {
+                    this_call_hits += 1;
+                    entry
                 }
-                reg.cache.insert(cache_key, parsed.clone());
-                parsed
+                None => {
+                    // Slow-path: parse outside any registry borrow.
+                    let parsed = match tex_provider.extract_mesh(&model_path) {
+                        Some(d) => parse_and_import_nif(
+                            &d,
+                            &model_path,
+                            mat_provider.as_deref_mut(),
+                        ),
+                        None => {
+                            log::debug!("NIF not found in BSA: '{}'", model_path);
+                            None
+                        }
+                    };
+                    this_call_misses += 1;
+                    if parsed.is_some() {
+                        this_call_parsed += 1;
+                    } else {
+                        this_call_failed += 1;
+                    }
+                    pending_new.insert(cache_key, parsed.clone());
+                    parsed
+                }
             }
         };
         let Some(cached) = cached else { continue };
@@ -1255,8 +1315,18 @@ fn load_references(
 
     let center = (bounds_min + bounds_max) * 0.5;
     let dims = bounds_max - bounds_min;
+    // Commit the accumulated counters + pending entries in a single
+    // write lock. Stats snapshot happens in the same scope so the log
+    // line below reflects post-commit numbers. See #523.
     let (this_cell_hits, this_cell_misses, this_cell_unique, lifetime_hit_rate) = {
-        let reg = world.resource::<NifImportRegistry>();
+        let mut reg = world.resource_mut::<NifImportRegistry>();
+        reg.hits += this_call_hits;
+        reg.misses += this_call_misses;
+        reg.parsed_count += this_call_parsed;
+        reg.failed_count += this_call_failed;
+        for (key, entry) in pending_new {
+            reg.cache.insert(key, entry);
+        }
         let new_entries = reg.len().saturating_sub(cache_size_at_entry);
         (
             reg.hits.saturating_sub(cache_hits_at_entry),
@@ -1861,6 +1931,58 @@ mod nif_import_registry_tests {
         assert!(matches!(entry, Some(None)));
         assert_eq!(reg.failed_count, 1);
         assert_eq!(reg.parsed_count, 0);
+    }
+
+    #[test]
+    fn batched_commit_matches_per_iteration_semantics() {
+        // #523 regression — the batched commit path (`pending_new`
+        // staging HashMap + single write lock) must produce the same
+        // final counter state as the pre-fix per-iteration writes.
+        // Simulates 5 REFRs across 2 unique model paths: chair.nif ×3,
+        // lamp.nif ×2. Expected: 2 misses (unique parses) + 3 hits
+        // (the subsequent encounters), all committed in one lock.
+        let mut reg = NifImportRegistry::new();
+
+        let mut this_call_hits: u64 = 0;
+        let mut this_call_misses: u64 = 0;
+        let mut this_call_parsed: u64 = 0;
+        let mut pending_new: HashMap<String, Option<Arc<CachedNifImport>>> = HashMap::new();
+
+        let refs = ["chair.nif", "lamp.nif", "chair.nif", "chair.nif", "lamp.nif"];
+        for path in refs {
+            let key = path.to_string();
+            if pending_new.contains_key(&key) {
+                this_call_hits += 1;
+            } else if reg.cache.contains_key(&key) {
+                this_call_hits += 1;
+            } else {
+                // Simulate a successful parse.
+                pending_new.insert(key, Some(dummy_cached()));
+                this_call_misses += 1;
+                this_call_parsed += 1;
+            }
+        }
+
+        // Batched commit — mirrors the `resource_mut` write-lock scope
+        // at the end of `load_references`.
+        reg.hits += this_call_hits;
+        reg.misses += this_call_misses;
+        reg.parsed_count += this_call_parsed;
+        for (k, v) in pending_new {
+            reg.cache.insert(k, v);
+        }
+
+        assert_eq!(reg.hits, 3, "3 subsequent encounters (2 chairs + 1 lamp)");
+        assert_eq!(reg.misses, 2, "2 unique parses");
+        assert_eq!(reg.parsed_count, 2);
+        assert_eq!(reg.len(), 2);
+        assert!(reg.cache.contains_key("chair.nif"));
+        assert!(reg.cache.contains_key("lamp.nif"));
+        assert!(
+            (reg.hit_rate_pct() - 60.0).abs() < 1e-6,
+            "3 hits / 5 lookups = 60.0%, got {}",
+            reg.hit_rate_pct()
+        );
     }
 }
 

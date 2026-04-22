@@ -32,6 +32,15 @@ struct TextureEntry {
     /// Ring of replaced / dropped textures awaiting deferred destruction.
     /// See issues #134, #372.
     pending_destroy: VecDeque<(u64, Texture)>,
+    /// Live reference count. Incremented on every acquisition (initial
+    /// upload, `load_dds` cache hit, `acquire_by_path` cache hit) and
+    /// decremented by `drop_texture`. The GPU resource is freed only
+    /// when the count reaches zero. Without this, cell A's unload
+    /// would free textures still in use by a still-resident cell B
+    /// once M40 doorwalking lands. See #524.
+    ///
+    /// Invariant: `texture.is_some() iff ref_count > 0`.
+    ref_count: u32,
 }
 
 /// Bindless texture registry.
@@ -237,15 +246,24 @@ impl TextureRegistry {
     pub fn set_fallback(&mut self, device: &ash::Device, fallback_texture: Texture) -> Result<()> {
         let handle = self.textures.len() as TextureHandle;
         self.write_texture_to_all_sets(device, handle, &fallback_texture);
+        // Fallback is special: `drop_texture` is a no-op for it at the
+        // call site (cell_loader filters `th.0 != fallback`), so it
+        // never decrements. Start at `u32::MAX` so any stray decrement
+        // can't underflow into a freed state.
         self.textures.push(TextureEntry {
             texture: Some(fallback_texture),
             pending_destroy: VecDeque::new(),
+            ref_count: u32::MAX,
         });
         self.fallback_handle = handle;
         Ok(())
     }
 
     /// Load a DDS texture from raw bytes, or return a cached handle if already loaded.
+    ///
+    /// Both the initial upload and a cache hit bump the entry's
+    /// reference count. Pair each call with a matching `drop_texture`.
+    /// See #524.
     pub fn load_dds(
         &mut self,
         device: &ash::Device,
@@ -258,6 +276,9 @@ impl TextureRegistry {
         let normalized = normalize_path(path);
 
         if let Some(&handle) = self.path_map.get(&normalized) {
+            if let Some(entry) = self.textures.get_mut(handle as usize) {
+                entry.ref_count = entry.ref_count.saturating_add(1);
+            }
             return Ok(handle);
         }
 
@@ -280,6 +301,7 @@ impl TextureRegistry {
         self.textures.push(TextureEntry {
             texture: Some(texture),
             pending_destroy: VecDeque::new(),
+            ref_count: 1,
         });
         self.path_map.insert(normalized, handle);
 
@@ -287,8 +309,29 @@ impl TextureRegistry {
     }
 
     /// Look up a cached texture by path. Returns `None` if not loaded.
+    ///
+    /// Read-only probe — does **not** bump the entry's refcount. Use
+    /// [`acquire_by_path`](Self::acquire_by_path) when the caller
+    /// intends to hold the handle and must pair it with a
+    /// `drop_texture`. See #524.
     pub fn get_by_path(&self, path: &str) -> Option<TextureHandle> {
         self.path_map.get(&normalize_path(path)).copied()
+    }
+
+    /// Acquire a texture handle by path, bumping the refcount on hit.
+    ///
+    /// Mirror of [`get_by_path`](Self::get_by_path) but with the
+    /// refcount side-effect. The caller must pair this with a single
+    /// `drop_texture` when the handle is no longer in use. `resolve_texture`
+    /// uses this on its fast path (before falling through to
+    /// `load_dds` on miss) so every cell-loader resolve ends up with
+    /// exactly one acquire. See #524.
+    pub fn acquire_by_path(&mut self, path: &str) -> Option<TextureHandle> {
+        let normalized = normalize_path(path);
+        let &handle = self.path_map.get(&normalized)?;
+        let entry = self.textures.get_mut(handle as usize)?;
+        entry.ref_count = entry.ref_count.saturating_add(1);
+        Some(handle)
     }
 
     /// Handle for the fallback checkerboard texture (always 0).
@@ -336,6 +379,7 @@ impl TextureRegistry {
         self.textures.push(TextureEntry {
             texture: Some(texture),
             pending_destroy: VecDeque::new(),
+            ref_count: 1,
         });
 
         Ok(handle)
@@ -352,6 +396,12 @@ impl TextureRegistry {
     /// corruption on any dangling `GpuInstance.texture_index` reference.
     /// See #372. No-op on an unknown or already-dropped handle.
     pub fn drop_texture(&mut self, device: &ash::Device, handle: TextureHandle) {
+        if !self.release_ref(handle) {
+            return;
+        }
+        // Last ref released — perform the GPU-side drop. `release_ref`
+        // already purged `path_map` so subsequent `load_dds` for the
+        // same path creates a fresh entry.
         let Some(entry) = self.textures.get_mut(handle as usize) else {
             return;
         };
@@ -388,10 +438,35 @@ impl TextureRegistry {
             }
         }
 
-        // Purge path_map entries pointing at this handle so a subsequent
-        // load_dds of the same path creates a fresh texture. Linear scan
-        // is fine: drops happen on cell unload, not per-frame.
+    }
+
+    /// Decrement the refcount for `handle` and purge the `path_map`
+    /// entry when the last holder releases. Returns `true` iff the
+    /// caller should proceed with a GPU-side drop (handle was live and
+    /// this release took it to zero). The GPU-side work needs an
+    /// `ash::Device`, so it's split out into [`drop_texture`](Self::drop_texture);
+    /// the Vulkan-free half lives here so tests can exercise refcount
+    /// invariants without a real device. See #524.
+    fn release_ref(&mut self, handle: TextureHandle) -> bool {
+        let Some(entry) = self.textures.get_mut(handle as usize) else {
+            return false;
+        };
+        if entry.ref_count == 0 {
+            log::warn!(
+                "drop_texture({}) on already-released handle (ref_count was 0)",
+                handle,
+            );
+            return false;
+        }
+        entry.ref_count -= 1;
+        if entry.ref_count > 0 {
+            return false;
+        }
+        // Purge path_map so a subsequent `load_dds` of the same path
+        // creates a fresh texture. Linear scan is fine: drops happen
+        // on cell unload, not per-frame.
         self.path_map.retain(|_, &mut h| h != handle);
+        true
     }
 
     /// Drain deferred-destroy queues across all entries, destroying
@@ -740,6 +815,7 @@ mod tests {
                 .map(|_| TextureEntry {
                     texture: None,
                     pending_destroy: VecDeque::new(),
+                    ref_count: 0,
                 })
                 .collect(),
             path_map: HashMap::new(),
@@ -780,5 +856,110 @@ mod tests {
     fn slot_rejected_beyond_bound() {
         let reg = make_registry_for_overflow_test(16, 16);
         assert!(reg.check_slot_available().is_err());
+    }
+
+    /// Seed a registry with the fallback at handle 0 and one
+    /// path-mapped entry at handle 1 carrying `initial_ref_count`.
+    /// Both entries have `texture: None` so the pure-Rust bits of
+    /// `drop_texture` run without calling into Vulkan.
+    fn make_registry_with_entry(path: &str, initial_ref_count: u32) -> TextureRegistry {
+        let mut reg = make_registry_for_overflow_test(16, 0);
+        reg.textures.push(TextureEntry {
+            texture: None,
+            pending_destroy: VecDeque::new(),
+            ref_count: u32::MAX,
+        });
+        reg.fallback_handle = 0;
+        reg.textures.push(TextureEntry {
+            texture: None,
+            pending_destroy: VecDeque::new(),
+            ref_count: initial_ref_count,
+        });
+        reg.path_map.insert(normalize_path(path), 1);
+        reg
+    }
+
+    #[test]
+    fn acquire_by_path_bumps_refcount() {
+        // #524 — a second resolve of the same path must acquire a ref,
+        // otherwise cell A's unload would free the texture that cell B
+        // is still relying on.
+        let mut reg = make_registry_with_entry("chair.dds", 1);
+        let h1 = reg.acquire_by_path("chair.dds");
+        assert_eq!(h1, Some(1));
+        assert_eq!(reg.textures[1].ref_count, 2);
+        let h2 = reg.acquire_by_path("chair.dds");
+        assert_eq!(h2, Some(1));
+        assert_eq!(reg.textures[1].ref_count, 3);
+    }
+
+    #[test]
+    fn acquire_by_path_miss_returns_none() {
+        let mut reg = make_registry_with_entry("chair.dds", 1);
+        assert_eq!(reg.acquire_by_path("barrel.dds"), None);
+        assert_eq!(
+            reg.textures[1].ref_count, 1,
+            "missed lookups must not touch unrelated entries"
+        );
+    }
+
+    #[test]
+    fn get_by_path_does_not_bump() {
+        // Read-only probe — debug/inspect commands rely on this.
+        let reg = make_registry_with_entry("chair.dds", 1);
+        assert_eq!(reg.get_by_path("chair.dds"), Some(1));
+        assert_eq!(reg.textures[1].ref_count, 1);
+    }
+
+    #[test]
+    fn release_ref_decrements_without_freeing_until_zero() {
+        // Cell A + cell B both hold a ref. Cell A unloads: decrement to
+        // 1, texture entry stays live. Cell B unloads: decrement to 0,
+        // path_map purged so a subsequent load creates a fresh entry.
+        let mut reg = make_registry_with_entry("chair.dds", 2);
+        assert!(
+            !reg.release_ref(1),
+            "first release should not authorise a GPU drop"
+        );
+        assert_eq!(reg.textures[1].ref_count, 1);
+        assert!(
+            reg.path_map.contains_key("textures/chair.dds"),
+            "cell B still holds a ref — path_map must survive"
+        );
+        assert!(
+            reg.release_ref(1),
+            "last release must authorise the GPU drop"
+        );
+        assert_eq!(reg.textures[1].ref_count, 0);
+        assert!(
+            !reg.path_map.contains_key("textures/chair.dds"),
+            "last release purges path_map"
+        );
+    }
+
+    #[test]
+    fn release_ref_on_zero_refcount_warns_and_bails() {
+        // Double-free guard: returns false without underflowing.
+        let mut reg = make_registry_with_entry("chair.dds", 0);
+        assert!(!reg.release_ref(1));
+        assert_eq!(reg.textures[1].ref_count, 0);
+    }
+
+    #[test]
+    fn release_ref_on_unknown_handle_is_noop() {
+        let mut reg = make_registry_with_entry("chair.dds", 1);
+        assert!(!reg.release_ref(99));
+        assert_eq!(
+            reg.textures[1].ref_count, 1,
+            "unrelated handles must not be touched"
+        );
+    }
+
+    #[test]
+    fn fallback_refcount_sticky() {
+        // Fallback handle is process-wide and must never underflow
+        // from stray drops. `u32::MAX` gives plenty of headroom.
+        let reg = make_registry_with_entry("chair.dds", 1);
+        assert_eq!(reg.textures[0].ref_count, u32::MAX);
     }
 }
