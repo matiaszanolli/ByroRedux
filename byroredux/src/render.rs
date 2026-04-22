@@ -510,6 +510,47 @@ pub(crate) fn build_render_data(
                         base_material_kind
                     };
 
+                // #562 — Skyrim+ BSLightingShaderProperty variant payload.
+                // Zero for materials without a shader_type_fields box; that
+                // covers every non-Skyrim mesh and most Skyrim statics
+                // (only character skin/hair/eyes, snow, and multilayer
+                // parallax shelves populate this).
+                let stf = mat.and_then(|m| m.shader_type_fields.as_deref());
+                let skin_tint_rgba = stf
+                    .and_then(|f| {
+                        f.skin_tint_color.map(|c| {
+                            [c[0], c[1], c[2], f.skin_tint_alpha.unwrap_or(1.0)]
+                        })
+                    })
+                    .unwrap_or([0.0; 4]);
+                let hair_tint_rgb = stf
+                    .and_then(|f| f.hair_tint_color)
+                    .unwrap_or([0.0; 3]);
+                let multi_layer_envmap_strength = stf
+                    .and_then(|f| f.multi_layer_envmap_strength)
+                    .unwrap_or(0.0);
+                let eye_left_center = stf
+                    .and_then(|f| f.eye_left_reflection_center)
+                    .unwrap_or([0.0; 3]);
+                let eye_cubemap_scale = stf
+                    .and_then(|f| f.eye_cubemap_scale)
+                    .unwrap_or(0.0);
+                let eye_right_center = stf
+                    .and_then(|f| f.eye_right_reflection_center)
+                    .unwrap_or([0.0; 3]);
+                let multi_layer_inner_thickness = stf
+                    .and_then(|f| f.multi_layer_inner_thickness)
+                    .unwrap_or(0.0);
+                let multi_layer_refraction_scale = stf
+                    .and_then(|f| f.multi_layer_refraction_scale)
+                    .unwrap_or(0.0);
+                let multi_layer_inner_scale = stf
+                    .and_then(|f| f.multi_layer_inner_layer_scale)
+                    .unwrap_or([1.0, 1.0]);
+                let sparkle_rgba = stf
+                    .and_then(|f| f.sparkle_parameters)
+                    .unwrap_or([0.0; 4]);
+
                 draw_commands.push(DrawCommand {
                     mesh_handle: mesh.0,
                     texture_handle: tex_handle,
@@ -563,6 +604,16 @@ pub(crate) fn build_render_data(
                     z_function,
                     material_kind,
                     terrain_tile_index,
+                    skin_tint_rgba,
+                    hair_tint_rgb,
+                    multi_layer_envmap_strength,
+                    eye_left_center,
+                    eye_cubemap_scale,
+                    eye_right_center,
+                    multi_layer_inner_thickness,
+                    multi_layer_refraction_scale,
+                    multi_layer_inner_scale,
+                    sparkle_rgba,
                 });
             }
         }
@@ -690,6 +741,17 @@ pub(crate) fn build_render_data(
                         z_write: false,
                         z_function: 3,
                         terrain_tile_index: None,
+                        // Particles are never Skyrim+ variant shading.
+                        skin_tint_rgba: [0.0; 4],
+                        hair_tint_rgb: [0.0; 3],
+                        multi_layer_envmap_strength: 0.0,
+                        eye_left_center: [0.0; 3],
+                        eye_cubemap_scale: 0.0,
+                        eye_right_center: [0.0; 3],
+                        multi_layer_inner_thickness: 0.0,
+                        multi_layer_refraction_scale: 0.0,
+                        multi_layer_inner_scale: [1.0, 1.0],
+                        sparkle_rgba: [0.0; 4],
                     });
                 }
             }
@@ -954,6 +1016,16 @@ mod draw_sort_key_tests {
             z_write: true,
             z_function: 3,
             terrain_tile_index: None,
+            skin_tint_rgba: [0.0; 4],
+            hair_tint_rgb: [0.0; 3],
+            multi_layer_envmap_strength: 0.0,
+            eye_left_center: [0.0; 3],
+            eye_cubemap_scale: 0.0,
+            eye_right_center: [0.0; 3],
+            multi_layer_inner_thickness: 0.0,
+            multi_layer_refraction_scale: 0.0,
+            multi_layer_inner_scale: [1.0, 1.0],
+            sparkle_rgba: [0.0; 4],
         }
     }
 

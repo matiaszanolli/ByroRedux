@@ -1071,6 +1071,11 @@ pub(crate) fn load_nif_bytes(
                 z_test: mesh.z_test,
                 z_write: mesh.z_write,
                 z_function: mesh.z_function,
+                shader_type_fields: if mesh.shader_type_fields.is_empty() {
+                    None
+                } else {
+                    Some(Box::new(mesh.shader_type_fields.to_core()))
+                },
             },
         );
 

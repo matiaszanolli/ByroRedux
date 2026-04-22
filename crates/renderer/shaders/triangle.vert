@@ -62,7 +62,33 @@ struct GpuInstance {
     float materialAlpha;     // offset 208
     float _uvPad0;           // offset 212
     float _uvPad1;           // offset 216
-    float _uvPad2;           // offset 220 → total 224
+    float _uvPad2;           // offset 220
+    // Skyrim+ BSLightingShaderProperty variant payloads (#562).
+    // Vertex stage doesn't read these; layout mirror only.
+    float skinTintR;                   // offset 224
+    float skinTintG;                   // offset 228
+    float skinTintB;                   // offset 232
+    float skinTintA;                   // offset 236
+    float hairTintR;                   // offset 240
+    float hairTintG;                   // offset 244
+    float hairTintB;                   // offset 248
+    float multiLayerEnvmapStrength;    // offset 252
+    float eyeLeftCenterX;              // offset 256
+    float eyeLeftCenterY;              // offset 260
+    float eyeLeftCenterZ;              // offset 264
+    float eyeCubemapScale;             // offset 268
+    float eyeRightCenterX;             // offset 272
+    float eyeRightCenterY;             // offset 276
+    float eyeRightCenterZ;             // offset 280
+    float _eyePad;                     // offset 284
+    float multiLayerInnerThickness;    // offset 288
+    float multiLayerRefractionScale;   // offset 292
+    float multiLayerInnerScaleU;       // offset 296
+    float multiLayerInnerScaleV;       // offset 300
+    float sparkleR;                    // offset 304
+    float sparkleG;                    // offset 308
+    float sparkleB;                    // offset 312
+    float sparkleIntensity;            // offset 316 → total 320
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

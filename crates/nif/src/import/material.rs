@@ -1104,6 +1104,37 @@ pub(crate) fn capture_shader_type_fields(data: &ShaderTypeData) -> ShaderTypeFie
     f
 }
 
+impl ShaderTypeFields {
+    /// `true` when every slot is empty — equivalent to
+    /// `*self == ShaderTypeFields::default()`. Used to skip attaching
+    /// a heap-allocated `Box<ShaderTypeFields>` on the ECS `Material`
+    /// component for the 99% of meshes that use no Skyrim+ variant.
+    pub fn is_empty(&self) -> bool {
+        *self == ShaderTypeFields::default()
+    }
+
+    /// Convert into the ECS-side [`byroredux_core::ecs::components::material::ShaderTypeFields`]
+    /// mirror type. Field-by-field copy — both shapes are intentionally
+    /// identical. See #562.
+    pub fn to_core(&self) -> byroredux_core::ecs::components::material::ShaderTypeFields {
+        byroredux_core::ecs::components::material::ShaderTypeFields {
+            skin_tint_color: self.skin_tint_color,
+            skin_tint_alpha: self.skin_tint_alpha,
+            hair_tint_color: self.hair_tint_color,
+            eye_cubemap_scale: self.eye_cubemap_scale,
+            eye_left_reflection_center: self.eye_left_reflection_center,
+            eye_right_reflection_center: self.eye_right_reflection_center,
+            parallax_max_passes: self.parallax_max_passes,
+            parallax_height_scale: self.parallax_height_scale,
+            multi_layer_inner_thickness: self.multi_layer_inner_thickness,
+            multi_layer_refraction_scale: self.multi_layer_refraction_scale,
+            multi_layer_inner_layer_scale: self.multi_layer_inner_layer_scale,
+            multi_layer_envmap_strength: self.multi_layer_envmap_strength,
+            sparkle_parameters: self.sparkle_parameters,
+        }
+    }
+}
+
 impl MaterialInfo {
     /// Project this `MaterialInfo`'s shader-type fields into a
     /// `ShaderTypeFields` bundle for `ImportedMesh`. See #430.
@@ -1406,6 +1437,57 @@ mod shader_type_data_tests {
     /// #430 — `capture_shader_type_fields` is the shared helper the
     /// BsTriShape import path uses. Exhaustive per-variant check that the
     /// returned bundle matches what `apply_shader_type_data` writes into
+    /// #562 — `ShaderTypeFields::to_core()` must mirror every field
+    /// byte-for-byte so the ECS `Material` component carries the
+    /// same Skyrim+ variant payload as the NIF importer captured.
+    /// Silent drift would desync the fragment-shader variant ladder
+    /// from the NIF-authored data.
+    #[test]
+    fn to_core_round_trips_every_field() {
+        let f = ShaderTypeFields {
+            skin_tint_color: Some([0.9, 0.8, 0.7]),
+            skin_tint_alpha: Some(0.5),
+            hair_tint_color: Some([0.3, 0.15, 0.05]),
+            eye_cubemap_scale: Some(1.25),
+            eye_left_reflection_center: Some([0.1, 0.2, 0.3]),
+            eye_right_reflection_center: Some([0.4, 0.5, 0.6]),
+            parallax_max_passes: Some(8.0),
+            parallax_height_scale: Some(0.04),
+            multi_layer_inner_thickness: Some(0.1),
+            multi_layer_refraction_scale: Some(0.5),
+            multi_layer_inner_layer_scale: Some([2.0, 3.0]),
+            multi_layer_envmap_strength: Some(1.5),
+            sparkle_parameters: Some([1.0, 0.5, 0.25, 2.0]),
+        };
+        let c = f.to_core();
+        assert_eq!(c.skin_tint_color, f.skin_tint_color);
+        assert_eq!(c.skin_tint_alpha, f.skin_tint_alpha);
+        assert_eq!(c.hair_tint_color, f.hair_tint_color);
+        assert_eq!(c.eye_cubemap_scale, f.eye_cubemap_scale);
+        assert_eq!(c.eye_left_reflection_center, f.eye_left_reflection_center);
+        assert_eq!(c.eye_right_reflection_center, f.eye_right_reflection_center);
+        assert_eq!(c.parallax_max_passes, f.parallax_max_passes);
+        assert_eq!(c.parallax_height_scale, f.parallax_height_scale);
+        assert_eq!(c.multi_layer_inner_thickness, f.multi_layer_inner_thickness);
+        assert_eq!(c.multi_layer_refraction_scale, f.multi_layer_refraction_scale);
+        assert_eq!(c.multi_layer_inner_layer_scale, f.multi_layer_inner_layer_scale);
+        assert_eq!(c.multi_layer_envmap_strength, f.multi_layer_envmap_strength);
+        assert_eq!(c.sparkle_parameters, f.sparkle_parameters);
+    }
+
+    /// Empty ShaderTypeFields must report `is_empty() == true` so the
+    /// spawn path can skip the Box allocation for the 99% of meshes
+    /// that don't carry a Skyrim+ variant payload.
+    #[test]
+    fn is_empty_returns_true_for_default_fields() {
+        assert!(ShaderTypeFields::default().is_empty());
+        let skin = ShaderTypeFields {
+            skin_tint_color: Some([1.0, 1.0, 1.0]),
+            ..Default::default()
+        };
+        assert!(!skin.is_empty());
+    }
+
     /// MaterialInfo.
     #[test]
     fn capture_helper_parity_with_apply() {

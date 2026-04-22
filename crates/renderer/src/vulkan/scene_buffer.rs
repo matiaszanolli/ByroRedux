@@ -219,16 +219,73 @@ pub struct GpuInstance {
     /// shader multiplies the sampled texture alpha by this for the
     /// final blend-pass alpha. Default `1.0` = no attenuation.
     pub material_alpha: f32, // 4 B, offset 208
-    /// 12 bytes of std430 tail padding so the struct's total size
-    /// lands at 224 B = 14 × 16 (std430 array stride requirement —
-    /// element alignment follows the largest member's alignment,
-    /// which is the 16-byte mat4). Reclaimable in future follow-ups
-    /// that need 3 more scalar slots (e.g. Skyrim+ fresnel power,
-    /// specular alpha, or environment map scale per-instance).
+    /// 12 bytes of std430 tail padding for the BGSM UV/alpha block so
+    /// that block's vec4 is full (BGSM: `[uvOffsetU, uvOffsetV, uvScaleU,
+    /// uvScaleV]` + `[materialAlpha, _uv_pad0, _uv_pad1, _uv_pad2]`).
     pub _uv_pad0: f32, // 4 B, offset 212
     pub _uv_pad1: f32, // 4 B, offset 216
-    pub _uv_pad2: f32, // 4 B, offset 220 → total 224
-                       // Struct is 224 bytes (14×16), 16-byte aligned for std430.
+    pub _uv_pad2: f32, // 4 B, offset 220
+    // ── Skyrim+ BSLightingShaderProperty variant payloads (#562) ───
+    //
+    // All six vec4 slots below carry per-variant data from
+    // `MaterialInfo::ShaderTypeFields`; the fragment shader's
+    // `material_kind` ladder branches on `GpuInstance.material_kind`
+    // (offset 156) to decide which fields to read. Default-lit meshes
+    // (`material_kind == 0`) ignore every field.
+    /// SkinTint (material_kind == 5): RGB skin tint + alpha. Shader
+    /// multiplies sampled albedo by this RGB. Alpha carries the
+    /// authored tint strength (1.0 = full tint multiply).
+    pub skin_tint_r: f32, // 4 B, offset 224
+    pub skin_tint_g: f32, // 4 B, offset 228
+    pub skin_tint_b: f32, // 4 B, offset 232
+    pub skin_tint_a: f32, // 4 B, offset 236
+    /// HairTint (material_kind == 6): RGB hair tint. Same shader
+    /// contract as skin — multiplies albedo. The w slot carries
+    /// `multi_layer_envmap_strength` for MultiLayerParallax so the
+    /// vec4 doesn't waste alignment on a lone f32; the two variants
+    /// never overlap on a single mesh.
+    pub hair_tint_r: f32, // 4 B, offset 240
+    pub hair_tint_g: f32, // 4 B, offset 244
+    pub hair_tint_b: f32, // 4 B, offset 248
+    /// MultiLayerParallax (material_kind == 11) envmap strength
+    /// scalar, packed into the hair_tint vec4 to save a dedicated
+    /// slot. Skin- and hair-tinted meshes always have
+    /// `multi_layer_envmap_strength = 0.0` (they don't set this
+    /// variant), and MultiLayer meshes always have `hair_tint_* = 0`.
+    pub multi_layer_envmap_strength: f32, // 4 B, offset 252
+    /// EyeEnvmap (material_kind == 16) left-iris reflection center
+    /// (xyz, object-space) + `eye_cubemap_scale` in w. Skyrim author
+    /// ships both left/right centers so each eye's reflection tracks
+    /// independently on a moving head mesh.
+    pub eye_left_center_x: f32, // 4 B, offset 256
+    pub eye_left_center_y: f32, // 4 B, offset 260
+    pub eye_left_center_z: f32, // 4 B, offset 264
+    pub eye_cubemap_scale: f32, // 4 B, offset 268
+    /// EyeEnvmap right-iris reflection center (xyz) + reserved w.
+    pub eye_right_center_x: f32, // 4 B, offset 272
+    pub eye_right_center_y: f32, // 4 B, offset 276
+    pub eye_right_center_z: f32, // 4 B, offset 280
+    pub _eye_pad: f32, // 4 B, offset 284
+    /// MultiLayerParallax (material_kind == 11) inner-layer scalars —
+    /// `inner_thickness`, `refraction_scale`, `inner_layer_scale_u`,
+    /// `inner_layer_scale_v`. These drive a second UV sample of the
+    /// base texture offset along the view direction, blended with the
+    /// outer layer by Fresnel × `multi_layer_envmap_strength`. See
+    /// `ShaderTypeData::MultiLayerParallax` for the NIF-side payload.
+    pub multi_layer_inner_thickness: f32, // 4 B, offset 288
+    pub multi_layer_refraction_scale: f32, // 4 B, offset 292
+    pub multi_layer_inner_scale_u: f32,   // 4 B, offset 296
+    pub multi_layer_inner_scale_v: f32,   // 4 B, offset 300
+    /// SparkleSnow (material_kind == 14) sparkle-params vec4 from
+    /// `ShaderTypeData::SparkleSnow`. Bethesda's content packs RGB
+    /// sparkle color + alpha intensity; fragment shader overlays a
+    /// per-pixel hash-driven glint modulated by these. Default
+    /// (0, 0, 0, 0) produces no sparkle.
+    pub sparkle_r: f32,         // 4 B, offset 304
+    pub sparkle_g: f32,         // 4 B, offset 308
+    pub sparkle_b: f32,         // 4 B, offset 312
+    pub sparkle_intensity: f32, // 4 B, offset 316 → total 320
+                                // Struct is 320 bytes (20×16), 16-byte aligned for std430.
 }
 
 impl Default for GpuInstance {
@@ -280,6 +337,35 @@ impl Default for GpuInstance {
             _uv_pad0: 0.0,
             _uv_pad1: 0.0,
             _uv_pad2: 0.0,
+            // Skyrim+ variant payloads (#562) — zeroed by default.
+            // Default-lit meshes (material_kind == 0) never read them;
+            // variant branches gate on `material_kind` so these are
+            // live only when a real BSLightingShaderProperty shader
+            // type is set on the instance.
+            skin_tint_r: 0.0,
+            skin_tint_g: 0.0,
+            skin_tint_b: 0.0,
+            skin_tint_a: 0.0,
+            hair_tint_r: 0.0,
+            hair_tint_g: 0.0,
+            hair_tint_b: 0.0,
+            multi_layer_envmap_strength: 0.0,
+            eye_left_center_x: 0.0,
+            eye_left_center_y: 0.0,
+            eye_left_center_z: 0.0,
+            eye_cubemap_scale: 0.0,
+            eye_right_center_x: 0.0,
+            eye_right_center_y: 0.0,
+            eye_right_center_z: 0.0,
+            _eye_pad: 0.0,
+            multi_layer_inner_thickness: 0.0,
+            multi_layer_refraction_scale: 0.0,
+            multi_layer_inner_scale_u: 0.0,
+            multi_layer_inner_scale_v: 0.0,
+            sparkle_r: 0.0,
+            sparkle_g: 0.0,
+            sparkle_b: 0.0,
+            sparkle_intensity: 0.0,
         }
     }
 }
@@ -1222,16 +1308,17 @@ mod gpu_instance_layout_tests {
     /// update protocol (grep for `struct GpuInstance` in the shaders tree
     /// before touching this struct).
     #[test]
-    fn gpu_instance_is_224_bytes_std430_compatible() {
+    fn gpu_instance_is_320_bytes_std430_compatible() {
         // 176 → 192 in #453 (parallax/env slots).
-        // 192 → 224 in #492 (uv_offset + uv_scale + material_alpha
-        // for FO4 BGSM + 12 B of tail padding to keep the struct a
-        // multiple of 16 for std430 array stride).
-        // 14 × 16 = 224.
+        // 192 → 224 in #492 (uv_offset + uv_scale + material_alpha).
+        // 224 → 320 in #562 (Skyrim+ BSLightingShaderProperty variant
+        // payloads — SkinTint / HairTint / MultiLayerParallax /
+        // EyeEnvmap / SparkleSnow — packed as 6 vec4s).
+        // 20 × 16 = 320.
         assert_eq!(
             size_of::<GpuInstance>(),
-            224,
-            "GpuInstance must stay 224 B to match std430 shader layout"
+            320,
+            "GpuInstance must stay 320 B to match std430 shader layout"
         );
     }
 
@@ -1289,6 +1376,33 @@ mod gpu_instance_layout_tests {
         assert_eq!(offset_of!(GpuInstance, _uv_pad0), 212);
         assert_eq!(offset_of!(GpuInstance, _uv_pad1), 216);
         assert_eq!(offset_of!(GpuInstance, _uv_pad2), 220);
+        // #562 — Skyrim+ BSLightingShaderProperty variant payloads.
+        // Each `vec4`-sized slot is 16 B, packed to land on std430
+        // alignment boundaries.
+        assert_eq!(offset_of!(GpuInstance, skin_tint_r), 224);
+        assert_eq!(offset_of!(GpuInstance, skin_tint_g), 228);
+        assert_eq!(offset_of!(GpuInstance, skin_tint_b), 232);
+        assert_eq!(offset_of!(GpuInstance, skin_tint_a), 236);
+        assert_eq!(offset_of!(GpuInstance, hair_tint_r), 240);
+        assert_eq!(offset_of!(GpuInstance, hair_tint_g), 244);
+        assert_eq!(offset_of!(GpuInstance, hair_tint_b), 248);
+        assert_eq!(offset_of!(GpuInstance, multi_layer_envmap_strength), 252);
+        assert_eq!(offset_of!(GpuInstance, eye_left_center_x), 256);
+        assert_eq!(offset_of!(GpuInstance, eye_left_center_y), 260);
+        assert_eq!(offset_of!(GpuInstance, eye_left_center_z), 264);
+        assert_eq!(offset_of!(GpuInstance, eye_cubemap_scale), 268);
+        assert_eq!(offset_of!(GpuInstance, eye_right_center_x), 272);
+        assert_eq!(offset_of!(GpuInstance, eye_right_center_y), 276);
+        assert_eq!(offset_of!(GpuInstance, eye_right_center_z), 280);
+        assert_eq!(offset_of!(GpuInstance, _eye_pad), 284);
+        assert_eq!(offset_of!(GpuInstance, multi_layer_inner_thickness), 288);
+        assert_eq!(offset_of!(GpuInstance, multi_layer_refraction_scale), 292);
+        assert_eq!(offset_of!(GpuInstance, multi_layer_inner_scale_u), 296);
+        assert_eq!(offset_of!(GpuInstance, multi_layer_inner_scale_v), 300);
+        assert_eq!(offset_of!(GpuInstance, sparkle_r), 304);
+        assert_eq!(offset_of!(GpuInstance, sparkle_g), 308);
+        assert_eq!(offset_of!(GpuInstance, sparkle_b), 312);
+        assert_eq!(offset_of!(GpuInstance, sparkle_intensity), 316);
     }
 
     /// Regression: #309 — `VkDrawIndexedIndirectCommand` is a Vulkan-
@@ -1392,6 +1506,21 @@ mod gpu_instance_layout_tests {
                 "uvScaleU",
                 "uvScaleV",
                 "materialAlpha",
+                // #562 — Skyrim+ BSLightingShaderProperty variant
+                // payloads. All four shader copies must declare these
+                // even when the shader doesn't consume them, so the
+                // 320 B std430 stride stays byte-identical.
+                "skinTintR",
+                "hairTintR",
+                "multiLayerEnvmapStrength",
+                "eyeLeftCenterX",
+                "eyeCubemapScale",
+                "eyeRightCenterX",
+                "multiLayerInnerThickness",
+                "multiLayerRefractionScale",
+                "multiLayerInnerScaleU",
+                "sparkleR",
+                "sparkleIntensity",
             ] {
                 assert!(
                     src.contains(needle),

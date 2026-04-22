@@ -578,6 +578,34 @@ impl VulkanContext {
                 _uv_pad0: 0.0,
                 _uv_pad1: 0.0,
                 _uv_pad2: 0.0,
+                // #562 — Skyrim+ BSLightingShaderProperty variant
+                // payloads. Each field is zero on meshes whose
+                // `material_kind` doesn't use it; the fragment
+                // shader's variant ladder gates reads accordingly.
+                skin_tint_r: draw_cmd.skin_tint_rgba[0],
+                skin_tint_g: draw_cmd.skin_tint_rgba[1],
+                skin_tint_b: draw_cmd.skin_tint_rgba[2],
+                skin_tint_a: draw_cmd.skin_tint_rgba[3],
+                hair_tint_r: draw_cmd.hair_tint_rgb[0],
+                hair_tint_g: draw_cmd.hair_tint_rgb[1],
+                hair_tint_b: draw_cmd.hair_tint_rgb[2],
+                multi_layer_envmap_strength: draw_cmd.multi_layer_envmap_strength,
+                eye_left_center_x: draw_cmd.eye_left_center[0],
+                eye_left_center_y: draw_cmd.eye_left_center[1],
+                eye_left_center_z: draw_cmd.eye_left_center[2],
+                eye_cubemap_scale: draw_cmd.eye_cubemap_scale,
+                eye_right_center_x: draw_cmd.eye_right_center[0],
+                eye_right_center_y: draw_cmd.eye_right_center[1],
+                eye_right_center_z: draw_cmd.eye_right_center[2],
+                _eye_pad: 0.0,
+                multi_layer_inner_thickness: draw_cmd.multi_layer_inner_thickness,
+                multi_layer_refraction_scale: draw_cmd.multi_layer_refraction_scale,
+                multi_layer_inner_scale_u: draw_cmd.multi_layer_inner_scale[0],
+                multi_layer_inner_scale_v: draw_cmd.multi_layer_inner_scale[1],
+                sparkle_r: draw_cmd.sparkle_rgba[0],
+                sparkle_g: draw_cmd.sparkle_rgba[1],
+                sparkle_b: draw_cmd.sparkle_rgba[2],
+                sparkle_intensity: draw_cmd.sparkle_rgba[3],
             });
 
             // Frustum-culled draws still need an SSBO entry so RT hit

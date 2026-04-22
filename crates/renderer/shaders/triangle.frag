@@ -87,7 +87,37 @@ struct GpuInstance {
     float materialAlpha;     // offset 208
     float _uvPad0;           // offset 212
     float _uvPad1;           // offset 216
-    float _uvPad2;           // offset 220 → total 224
+    float _uvPad2;           // offset 220
+    // ── Skyrim+ BSLightingShaderProperty variant payloads (#562) ──
+    //
+    // Activated by `materialKind` branches below: SkinTint (5),
+    // HairTint (6), MultiLayerParallax (11), SparkleSnow (14),
+    // EyeEnvmap (16). Default-lit and non-Skyrim meshes keep every
+    // slot at zero and never read them.
+    float skinTintR;                   // offset 224 — SkinTint tint RGBA
+    float skinTintG;                   // offset 228
+    float skinTintB;                   // offset 232
+    float skinTintA;                   // offset 236
+    float hairTintR;                   // offset 240 — HairTint tint RGB
+    float hairTintG;                   // offset 244
+    float hairTintB;                   // offset 248
+    float multiLayerEnvmapStrength;    // offset 252 — MultiLayer envmap mix
+    float eyeLeftCenterX;              // offset 256 — EyeEnvmap left iris
+    float eyeLeftCenterY;              // offset 260
+    float eyeLeftCenterZ;              // offset 264
+    float eyeCubemapScale;             // offset 268 — EyeEnvmap cubemap scale
+    float eyeRightCenterX;             // offset 272 — EyeEnvmap right iris
+    float eyeRightCenterY;             // offset 276
+    float eyeRightCenterZ;             // offset 280
+    float _eyePad;                     // offset 284
+    float multiLayerInnerThickness;    // offset 288 — MultiLayer inner-layer
+    float multiLayerRefractionScale;   // offset 292
+    float multiLayerInnerScaleU;       // offset 296
+    float multiLayerInnerScaleV;       // offset 300
+    float sparkleR;                    // offset 304 — SparkleSnow glint
+    float sparkleG;                    // offset 308
+    float sparkleB;                    // offset 312
+    float sparkleIntensity;            // offset 316 → total 320
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
@@ -655,6 +685,70 @@ void main() {
         ).rgb;
         emissiveColor *= glowSample;
     }
+
+    // ── #562 Skyrim+ BSLightingShaderProperty variant ladder ────────
+    //
+    // Enums from `BSLightingShaderType` (nif.xml): 0 Default · 1 Envmap
+    // · 2 Glow · 3 Parallax · 4 FaceTint · 5 SkinTint · 6 HairTint
+    // · 7 ParallaxOcc · 8 MultiIndexSnow · 11 MultiLayerParallax
+    // · 14 SparkleSnow · 16 EyeEnvmap · 19 MultiTexture.
+    //
+    // Already dispatched elsewhere by data presence (no ladder entry):
+    //   · 1  Envmap       — `inst.envMapIndex != 0u` fed by POM/PBR path.
+    //   · 2  Glow         — `inst.glowMapIndex` above.
+    //   · 3  Parallax     — `inst.parallaxMapIndex` (POM ray-march).
+    //   · 7  ParallaxOcc  — same path as 3.
+    //   · 100 Glass       — engine-synthesized; handled below.
+    //
+    // The branches here cover the SKIN/HAIR/SPARKLE/MULTILAYER/EYE set
+    // whose trailing payload (`skinTint*`, `hairTint*`, `sparkle*`,
+    // `multiLayer*`, `eyeLeftCenter*`, …) can't be derived from
+    // textures and must ride on GpuInstance. See plan in issue #562.
+    if (inst.materialKind == 5u) {
+        // SkinTint — multiply albedo by the authored tint color,
+        // weighted by `skinTintA` so an alpha of 0 cleanly disables
+        // the tint (identity = texture). FO76's `Fo76SkinTint` ships
+        // a real alpha; pre-FO76 Skyrim `SkinTint` fills alpha=1.0.
+        vec3 skinTint = vec3(inst.skinTintR, inst.skinTintG, inst.skinTintB);
+        albedo = mix(albedo, albedo * skinTint, inst.skinTintA);
+    } else if (inst.materialKind == 6u) {
+        // HairTint — unconditional albedo multiply by the authored
+        // hair color. No alpha field; author-set zero means
+        // intentional black-out (never seen in vanilla).
+        vec3 hairTint = vec3(inst.hairTintR, inst.hairTintG, inst.hairTintB);
+        albedo *= hairTint;
+    } else if (inst.materialKind == 14u) {
+        // SparkleSnow — hash-driven glint overlay on top of the snow
+        // albedo. `sparkleRGB` is the glint color (author-authored;
+        // typical `(1, 1, 1)`), `sparkleIntensity` scales the overall
+        // contribution. A simple per-pixel noise hash produces a
+        // stable sparkle pattern that doesn't depend on view direction.
+        // Full physically-based snow rendering (Bethesda's
+        // multi-octave noise + view-dependent subsurface scattering)
+        // is follow-up work.
+        vec2 sparkleSeed = floor(sampleUV * 512.0);
+        float sparkleHash = fract(sin(dot(sparkleSeed, vec2(12.9898, 78.233))) * 43758.5453);
+        float glint = step(0.995, sparkleHash) * inst.sparkleIntensity;
+        vec3 sparkleColor = vec3(inst.sparkleR, inst.sparkleG, inst.sparkleB);
+        albedo += sparkleColor * glint;
+    }
+    // Variant stubs — data already lands in GpuInstance; the full
+    // shading branches ship in follow-up issues. Listed explicitly so
+    // a future reader searching by `materialKind == N` finds the
+    // intended consumers.
+    //   · materialKind == 11 (MultiLayerParallax): read
+    //       `multiLayerInnerThickness`, `multiLayerRefractionScale`,
+    //       `multiLayerInnerScaleU/V`, `multiLayerEnvmapStrength`.
+    //       Compute a second sample of `textures[inst.textureIndex]`
+    //       offset along `V` by `refractionScale * innerThickness`,
+    //       blended with the outer layer by a Fresnel × envmapStrength
+    //       mix. See `ShaderTypeData::MultiLayerParallax`.
+    //   · materialKind == 16 (EyeEnvmap): use
+    //       `eyeLeftCenter` / `eyeRightCenter` + `eyeCubemapScale` to
+    //       reflect a cubemap sample off the iris center (not the
+    //       sclera). Requires a per-instance cubemap descriptor binding
+    //       that doesn't exist yet; add alongside the FO4 env-reflect
+    //       cubemap path.
 
     vec3 F0 = mix(vec3(0.04), albedo, metalness);
 

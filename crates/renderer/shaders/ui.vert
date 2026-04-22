@@ -47,7 +47,7 @@ struct GpuInstance {
     uint envMapIndex;        // offset 184
     uint envMaskIndex;       // offset 188
     // #492 — FO4 BGSM UV transform + material alpha. UI pipeline
-    // doesn't sample either; layout mirror only to keep the 224 B
+    // doesn't sample either; layout mirror only to keep the 320 B
     // std430 array stride in lockstep with triangle.{vert,frag}.
     float uvOffsetU;         // offset 192
     float uvOffsetV;         // offset 196
@@ -56,7 +56,20 @@ struct GpuInstance {
     float materialAlpha;     // offset 208
     float _uvPad0;           // offset 212
     float _uvPad1;           // offset 216
-    float _uvPad2;           // offset 220 → total 224
+    float _uvPad2;           // offset 220
+    // #562 — Skyrim+ BSLightingShaderProperty variant payloads. UI
+    // pipeline doesn't sample; layout mirror only to keep the 320 B
+    // std430 stride in lockstep with triangle.{vert,frag}.
+    float skinTintR, skinTintG, skinTintB, skinTintA;             // offset 224
+    float hairTintR, hairTintG, hairTintB;                        // offset 240
+    float multiLayerEnvmapStrength;                                // offset 252
+    float eyeLeftCenterX, eyeLeftCenterY, eyeLeftCenterZ;          // offset 256
+    float eyeCubemapScale;                                         // offset 268
+    float eyeRightCenterX, eyeRightCenterY, eyeRightCenterZ;       // offset 272
+    float _eyePad;                                                 // offset 284
+    float multiLayerInnerThickness, multiLayerRefractionScale;     // offset 288
+    float multiLayerInnerScaleU, multiLayerInnerScaleV;            // offset 296
+    float sparkleR, sparkleG, sparkleB, sparkleIntensity;          // offset 304 → total 320
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

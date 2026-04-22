@@ -104,6 +104,38 @@ pub struct Material {
     /// (LESSEQUAL) is the Gamebryo default and the value used pre-#398
     /// for every mesh.
     pub z_function: u8,
+    /// Per-variant scalar/vector payload from `BSLightingShaderProperty`
+    /// Skyrim+ shader types (SkinTint, HairTint, EyeEnvmap, SparkleSnow,
+    /// MultiLayerParallax). `None` for the vast majority of materials
+    /// (Default lit, Envmap, Glow, Parallax, Decal). Boxed so the
+    /// hot-path common case pays 8 bytes for the null pointer instead
+    /// of inlining 56 bytes of zero. See #562.
+    pub shader_type_fields: Option<Box<ShaderTypeFields>>,
+}
+
+/// Per-variant payload for `BSLightingShaderProperty` shader types
+/// that carry extra parameters beyond the standard PBR set. Mirrors
+/// `nif::import::material::ShaderTypeFields` so the ECS layer can be
+/// populated without depending on the NIF crate.
+///
+/// Every field is `Option` — unset means "this variant doesn't use
+/// it". See #562 for the full ladder.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct ShaderTypeFields {
+    pub skin_tint_color: Option<[f32; 3]>,
+    pub skin_tint_alpha: Option<f32>,
+    pub hair_tint_color: Option<[f32; 3]>,
+    pub eye_cubemap_scale: Option<f32>,
+    pub eye_left_reflection_center: Option<[f32; 3]>,
+    pub eye_right_reflection_center: Option<[f32; 3]>,
+    pub parallax_max_passes: Option<f32>,
+    pub parallax_height_scale: Option<f32>,
+    pub multi_layer_inner_thickness: Option<f32>,
+    pub multi_layer_refraction_scale: Option<f32>,
+    pub multi_layer_inner_layer_scale: Option<[f32; 2]>,
+    pub multi_layer_envmap_strength: Option<f32>,
+    pub sparkle_parameters: Option<[f32; 4]>,
 }
 
 impl Default for Material {
@@ -135,6 +167,7 @@ impl Default for Material {
             z_test: true,
             z_write: true,
             z_function: 3, // LESSEQUAL — Gamebryo default
+            shader_type_fields: None,
         }
     }
 }

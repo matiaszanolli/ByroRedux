@@ -174,6 +174,34 @@ pub struct DrawCommand {
     /// `material_alpha`). Multiplied into the final blend-pass
     /// alpha. Default `1.0`. See #492.
     pub material_alpha: f32,
+    // ── Skyrim+ BSLightingShaderProperty variant payloads (#562) ──
+    //
+    // Mirrors `MaterialInfo::ShaderTypeFields`. The fragment shader's
+    // `material_kind` ladder consumes these when the instance's
+    // `material_kind` matches the variant; zero on default-lit meshes.
+    /// SkinTint (material_kind == 5): RGB skin tint + alpha.
+    pub skin_tint_rgba: [f32; 4],
+    /// HairTint (material_kind == 6): RGB hair tint. Default zero.
+    pub hair_tint_rgb: [f32; 3],
+    /// MultiLayerParallax (material_kind == 11) envmap strength.
+    /// Packed alongside hair_tint on the GPU-side vec4 to save a
+    /// dedicated slot; the two variants never co-occur on one mesh.
+    pub multi_layer_envmap_strength: f32,
+    /// EyeEnvmap (material_kind == 16) left-iris reflection center
+    /// (object-space xyz).
+    pub eye_left_center: [f32; 3],
+    /// EyeEnvmap eye cubemap sample scale.
+    pub eye_cubemap_scale: f32,
+    /// EyeEnvmap right-iris reflection center.
+    pub eye_right_center: [f32; 3],
+    /// MultiLayerParallax inner-layer thickness scalar.
+    pub multi_layer_inner_thickness: f32,
+    /// MultiLayerParallax refraction scale scalar.
+    pub multi_layer_refraction_scale: f32,
+    /// MultiLayerParallax inner-layer UV scale `(u, v)`.
+    pub multi_layer_inner_scale: [f32; 2],
+    /// SparkleSnow (material_kind == 14) sparkle RGBA: color + intensity.
+    pub sparkle_rgba: [f32; 4],
 }
 
 /// Sky rendering parameters passed per-frame to the composite shader.
