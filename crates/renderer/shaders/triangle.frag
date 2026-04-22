@@ -288,6 +288,11 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist) {
     GpuInstance hitInst = instances[hitInstanceIdx];
     uint hitTexIdx = hitInst.textureIndex;
     vec2 hitUV = getHitUV(uint(hitInstanceIdx), uint(hitPrimitiveIdx), hitBary);
+    // #494 — apply the hit instance's own BGSM UV transform before
+    // sampling. Each hit carries its own per-material offset/scale;
+    // the primary path's `baseUV` transform doesn't propagate.
+    hitUV = hitUV * vec2(hitInst.uvScaleU, hitInst.uvScaleV)
+          + vec2(hitInst.uvOffsetU, hitInst.uvOffsetV);
 
     // Sample the hit surface's texture.
     vec3 hitColor = texture(textures[nonuniformEXT(hitTexIdx)], hitUV).rgb;
@@ -450,19 +455,34 @@ void main() {
     // the POM parameters + parallax map index live on the instance.
     GpuInstance inst = instances[fragInstanceIndex];
 
+    // #494 — BGSM-authored UV transform. FO4 BGSM ships explicit
+    // offset + scale per material (pre-#494 every sample used the
+    // bare `fragUV`, so authored tiling / offsets were ignored).
+    // Transform once up-front; downstream `sampleUV` already feeds
+    // every texture fetch (base / normal / detail / glow / gloss /
+    // dark / env-mask / terrain splat / parallax POM input), so the
+    // transformation propagates without per-site edits. Identity
+    // defaults (offset=(0,0), scale=(1,1), alpha=1.0) come from
+    // `GpuInstance::default()` so pre-BGSM content is byte-identical
+    // to the #492 baseline.
+    vec2 baseUV = fragUV * vec2(inst.uvScaleU, inst.uvScaleV)
+                + vec2(inst.uvOffsetU, inst.uvOffsetV);
+
     // #453 — parallax-occlusion mapping. Displace UV inward along the
     // view direction projected into tangent space, using the height
     // map in `parallaxMapIndex`. No-op when the instance has no
     // parallax map bound (the dominant case — every non-POM material
-    // falls through to plain `fragUV`). The displaced UV is then
-    // used for every subsequent texture sample (base, normal, detail,
-    // glow, gloss, dark) so the material stays visually consistent.
-    vec2 sampleUV = fragUV;
+    // falls through to the BGSM-transformed UV). The displaced UV is
+    // then used for every subsequent texture sample (base, normal,
+    // detail, glow, gloss, dark) so the material stays visually
+    // consistent. Parallax operates on the post-transform UV so the
+    // displaced height lookup lines up with the other samplers.
+    vec2 sampleUV = baseUV;
     if (inst.parallaxMapIndex != 0u) {
         vec3 N0 = normalize(fragNormal);
         vec3 V0 = normalize(cameraPos.xyz - fragWorldPos);
         sampleUV = parallaxDisplaceUV(
-            fragUV,
+            baseUV,
             V0,
             N0,
             fragWorldPos,
@@ -473,6 +493,12 @@ void main() {
     }
 
     vec4 texColor = texture(textures[nonuniformEXT(fragTexIndex)], sampleUV);
+    // #494 — BGSM `materialAlpha` multiplier. Applied **before** the
+    // alpha-test discard so the authored `alphaThreshold` still
+    // operates on the final blended alpha (matching FO4's in-engine
+    // order of operations). Identity default is `1.0` so pre-BGSM
+    // content is unchanged.
+    texColor.a *= inst.materialAlpha;
 
     // Terrain splat blending (#470). When the instance has the
     // TERRAIN_SPLAT flag set, BTXT (read above via `fragTexIndex`)
@@ -850,6 +876,9 @@ void main() {
                 vec2 tBary = rayQueryGetIntersectionBarycentricsEXT(refrRQ, true);
                 GpuInstance tInst = instances[tIdx];
                 vec2 tUV = getHitUV(uint(tIdx), uint(tPrim), tBary);
+                // #494 — BGSM UV transform on the refraction hit too.
+                tUV = tUV * vec2(tInst.uvScaleU, tInst.uvScaleV)
+                    + vec2(tInst.uvOffsetU, tInst.uvOffsetV);
                 vec3 tAlbedo = texture(textures[nonuniformEXT(tInst.textureIndex)], tUV).rgb;
 
                 // Apply a lighting estimate to the hit albedo. The raw
