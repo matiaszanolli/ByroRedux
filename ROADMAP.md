@@ -1,990 +1,285 @@
-# ByroRedux — Development Roadmap
+# ByroRedux — Roadmap
 
-A clean Rust + C++ rebuild of the Gamebryo/Creation engine lineage with Vulkan rendering.
-This document tracks completed milestones, current capabilities, planned work, and known gaps.
+A Rust + Vulkan rebuild of the Gamebryo/Creation engine lineage, targeting
+the full Oblivion → Starfield range. This document is the live source of
+truth for **what works, what's next, and why**. Session narratives live in
+[HISTORY.md](HISTORY.md); per-commit archaeology lives in `git log`.
 
-Last updated: 2026-04-20 (session 12 — audit closeout bundle #306–#463 + #464, 40+ follow-up fixes across NIF shader plumbing, ESM dispatch expansion (SCPT/CREA/LVLC/misc 18 categories total), CLMT TNAM weather hours, Skyrim XCLL directional cube + fresnel, BSShaderTextureSet slots 3/4/5 to GpuInstance with POM, SPIR-V reflection vs descriptor layout cross-check, FormIdRemap for multi-plugin loads, ROADMAP re-prioritised to "shortest path to playable" ordering)
+**Keeping this document honest.** Run `/session-close` at the end of each
+working session. It diffs stated facts against ground truth (test count,
+LOC, open issues, bench freshness, completeness of repro commands) and
+proposes a single synchronised edit across ROADMAP / HISTORY / README.
+Ritual-driven, not hook-driven — one checkpoint per session, not N per
+commit.
 
----
-
-## What Works Today
-
-| Command | Description |
-|---------|-------------|
-| `cargo run -- --esm FalloutNV.esm --cell GSProspectorSaloonInterior --bsa Meshes.bsa --textures-bsa Textures.bsa --textures-bsa Textures2.bsa` | Load and render a full FNV interior cell with real DDS textures |
-| `cargo run -- --bsa "Skyrim - Meshes0.bsa" --mesh meshes\clutter\ingredients\sweetroll01.nif --textures-bsa "Skyrim - Textures3.bsa"` | Load and render a Skyrim SE mesh with textures from BSA v105 |
-| `cargo run -- path/to/mesh.nif` | Load and render a loose NIF file |
-| `cargo run -- --cmd help` | Run a console command at startup |
-| `cargo run -- --swf path/to/menu.swf` | Load and render a Skyrim SE SWF menu overlay |
-| `cargo run -- path/to/mesh.nif --kf path/to/anim.kf` | Play a .kf animation on a loaded NIF mesh |
-| `cargo run -- --bsa Meshes.bsa --mesh meshes\foo.nif --kf meshes\anim.kf` | Load KF from BSA (extracts automatically) |
-| `cargo test` | 867 passing tests across all crates |
-
-**Fallout New Vegas:** Interior cells load from ESM with placed objects (REFR → STAT), real DDS textures
-from BSA v104 archives, correct coordinate transforms (Gamebryo CW rotation convention),
-RT multi-light with ray query shadows, cell XCLL interior lighting (ambient + directional),
-alpha blending with NIF decal detection, fly camera (WASD + mouse),
-and per-frame debug stats. **Prospector Saloon — avg 251.6 FPS / 3.97 ms
-on RTX 4070 Ti (RT enabled), 1200 entities, 777 meshes, 208 textures,
-773 draws — bench at commit bee6d48 (`--bench-frames 300`, 2026-04-20).**
-M31.5 RIS + M36 BLAS compaction + M37 SVGF + M37.5 TAA collectively cut
-frametime ~5× vs the pre-M31 ~48 FPS baseline while entity coverage
-grew ~48% via post-M18 record expansion (MSTT / FURN / DOOR / ACTI).
-Exterior cells load 3×3 grids from WastelandNV worldspace (placed
-objects only — no landscape yet).
-
-**Fallout 3:** Interior cells load with zero NIF parse failures. Megaton Player House parses with
-929 REFRs (validated 2026-04-19 via
-`parse_real_fo3_megaton_cell_baseline`). The ~1609 ECS entities /
-199 textures figures from the N23.4 validation demo pre-date the
-M31+ renderer work that lifted FNV Prospector to 251.6 FPS; a fresh
-GPU bench for Megaton is still pending (run with
-`--esm Fallout3.esm --cell MegatonHouseInt --bench-frames 300`).
-Same BSA v104 + ESM pipeline as FNV.
-
-**Skyrim SE:** Individual meshes load from BSA v105 (LZ4 decompression), BSTriShape geometry
-with packed vertex data, BSLightingShaderProperty/BSEffectShaderProperty shaders,
-DDS textures. Sweetroll single-mesh bench historically renders at
->1000 FPS on RTX 4070 Ti; fresh bench pending via
-`cargo run -- --bsa 'Skyrim - Meshes0.bsa' --mesh meshes\clutter\ingredients\sweetroll01.nif --textures-bsa 'Skyrim - Textures3.bsa' --bench-frames 300`.
-
-**RT Performance (M31 → M36):** Batched BLAS builds (single GPU submission per cell load),
-ALLOW_COMPACTION + query-based compact copy (M36: 20–50% BLAS memory reduction),
-streaming weighted reservoir shadow sampling (M31.5: 8 independent reservoirs per fragment
-proportional to luminance; every light has non-zero shadow probability), distance-based
-shadow/GI ray fallback, TLAS frustum culling, BLAS LRU eviction with VRAM/3 budget,
-deferred geometry SSBO rebuild (no device_wait_idle). **Interior frametime
-251.6 FPS / 3.97 ms (Prospector Saloon, commit bee6d48 — 5.2× the pre-M31 48 FPS baseline).**
-Exterior: loads and renders placed objects; landscape/sky/LOD pending (M32–M35).
-
-**TAA (M37.5):** `taa.comp` compute pass — Halton(2,3) sub-pixel projection jitter in
-the vertex shader, motion-vector reprojection with Catmull-Rom 9-tap history resample,
-3×3 YCoCg neighborhood variance clamp (γ=1.25), mesh_id disocclusion detection,
-luma-weighted α=0.1 blend. Per-FIF RGBA16F history images, ping-pong descriptor sets,
-first-frame guard, resize hooks. Composite HDR binding rewired through TAA output.
-
-**FO4 architecture:** Auto-detect BSA vs BA2 archives from file magic. ESM parser extended
-with SCOL / MOVS / PKIN / TXST record types. `BSLightingShaderProperty.net.name` flows
-through `ImportedMesh` → `Material` as `material_path` for BGSM / BGEM diagnostics.
-
-**Debug CLI additions (session 10):** Console commands `tex.missing`, `tex.loaded`,
-`mesh.info <entity_id>`. Evaluator functions `tex_missing()` / `tex_loaded()` exposed
-over the TCP protocol. Output shows BGSM material reference when `texture_path` is
-absent (correct FO4 behavior — the real material lives in the BGSM file).
-
-**Session 11 closeout (72 commits, zero milestone churn):** audit follow-through
-bundle `#341`–`#438`. Major themes:
-
-- **NIF parser correctness** — Oblivion stream-drift detector (`#395`), runtime
-  size cache after a bad block (`#324`), NiTexturingProperty normal/parallax
-  slot version gates (`#429`), BSDynamicTriShape import (`#341`) restores every
-  Skyrim NPC head/face mesh, BSTriShape reads BSEffectShaderProperty (`#346`),
-  BSTreeNode bones + BSRangeNode discriminator surfaced on import (`#363`/`#364`),
-  VMAD `has_script` flag via script attachments (`#369`), BSBehaviorGraphExtraData
-  reads bool (`#106`), FO4 NiParticleSystem + BS*ShaderProperty controllers
-  (`#407`), BSLightingShaderProperty wetness.unknown_1 for BSVER ≥ 130 (`#403`),
-  FNV particle trailing fields (`#383`), file-driven `Vec::with_capacity` budget
-  guard (`#388`).
-- **NIF → import → render plumbing** — `material_kind` threaded end-to-end
-  through the import/render path (`#344`), all 8 TXST texture slots extracted
-  (`#357`, was TX00 only), `NiDynamicEffect.affected_nodes` surfaced on
-  `ImportedLight` (`#335`), BGRA color byte order on LIGH DATA (`#389`),
-  NIF import cache promoted to a process-lifetime resource (`#381`),
-  end-to-end CPU particle system so torches/FX are visible (`#401`),
-  BSEffectShaderProperty emissive → base_color field rename (`#166`),
-  MapMarker + Skyrim+ EditorMarker flag bit in editor culling (`#165`),
-  BsTriShape two_sided lookup checks BSEffectShaderProperty (`#128`).
-- **ESM parser** — SCOL body parses all ONAM/DATA child placements (`#405`),
-  CELL `XCLW` water plane height (`#397`), REFR `XESP` gating skips default-
-  disabled refs at cell load (`#349`), Skyrim CELL extended sub-records (`#356`),
-  variant-aware group end in the walker (`#391`), triple exterior ESM parse
-  collapsed to single pass (`#374`), dead legacy ESM parser stubs deleted
-  (`#390`).
-- **Archive reader** — long-lived file handle across extracts (`#360`, was
-  re-opening per call), BSA extract arithmetic underflow guard (`#352`).
-- **Renderer — sync + resource management** — `VkPipelineCache` threaded
-  through every pipeline create site (`#426`, 10–50 ms cold → <1 ms warm),
-  per-(src, dst, two_sided) blend pipeline cache (`#392`), TLAS build barrier
-  widened to cover COMPUTE_SHADER (`#415`), TRIANGLE_FACING_CULL_DISABLE on
-  TLAS instances gated on two_sided (`#416`), gl_RayFlagsTerminateOnFirstHitEXT
-  on reflection + glass rays (`#420`), SVGF history age as weighted average
-  per Schied 2017 §4.2 (`#422`), `caustic_splat.comp` _pad1 → materialKind
-  sync (`#417`), BLAS compaction phases 5-6 GPU memory leak on partial OOM
-  (`#316`), multi-draw indirect path collapses per-batch `cmd_draw_indexed`
-  (`#309`), empty-TLAS size=0 guard plus VUID-VkBufferCopy-size-01988 and
-  VUID-VkBufferMemoryBarrier-size-01188 suppression (`#317`), opt-in global
-  lock-order graph for cross-thread ABBA detection (`#313`), terrain BLAS
-  builds batched across the whole exterior grid (`#382`).
-
-Workspace test count: 623 → 770+. Net source growth: ~64K → ~75K lines of Rust.
-
-**Session 12 closeout (37 commits, zero milestone churn):** audit follow-through
-bundle `#306`–`#463`, focused on renderer validation hygiene, Oblivion/FO4-era
-ESM coverage, and NIF shader plumbing completeness. Major themes:
-
-- **NIF shader + texture plumbing** — BSShaderTextureSet parallax + env slots
-  routed to `GpuInstance` with POM gating (`#453`), BSShaderPPLightingProperty
-  and BSLightingShaderProperty now read slots 3/4/5 (`#452`), BGEM
-  `material_path` captured on both `NiTriShape` and `BsTriShape` via
-  BSEffectShaderProperty (`#434`), `ShaderTypeData` payload surfaced on
-  `ImportedMesh` for both trishape variants (`#430`), dedicated
-  `TileShaderProperty` parser + unified decal flags across properties
-  (`#454`/`#455`), `SF_DOUBLE_SIDED` no longer propagates through FO3/FNV
-  BSShader* paths (`#441`), `BSGeometryDataFlags` decoded on Bethesda
-  NiGeometryData (`#440`), `BSShader*Controller` preserves the controlled-
-  variable enum (`#350`), `NiExtraData` version gating (`#329` + `#330`),
-  `NiZBufferProperty` z_test/z_write/z_function plumbed through extended
-  dynamic state (`#398`), NiTexturingProperty glow/detail/gloss slots wired to
-  the fragment shader (`#399`), FO76 BSTriShape Bound Min Max AABB consumed
-  (`#342`), `NiBlend*Interpolator` indirection resolved in animation import
-  (`#334`), Shepperd quaternion fast-path renormalised (`#333`), `BSAnimNote` /
-  `BSAnimNotes` parsed and IK hints surfaced on `AnimationClip` (`#432`),
-  Oblivion KF import + decal slot off-by-one (`#400` + `#402`), stream-derived
-  `Vec::with_capacity` sweep through `allocate_vec` (`#408`).
-- **ESM parser** — `SCPT` pre-Papyrus bytecode records parsed (`#443`),
-  `CREA` + `LVLC` groups dispatched in `parse_esm` (`#442` + `#448`),
-  Oblivion CREA indexed and `ACRE` placements recognised (`#396`), FO4 NIF
-  `HEDR` → `GameKind` bands corrected for FO3 and FO4 (`#439`), worldspace
-  auto-pick + FormID mod-index remap when loading cells by editor ID
-  (`#444` + `#445`), `CLMT` `TNAM` sunrise/sunset/volatility hours threaded
-  through `weather_system` (`#463`), Skyrim `XCLL` directional-ambient cube +
-  specular + fresnel extracted (`#367`), FNV `LAND` parse failure demoted
-  warn → debug with error context forwarding (`#385`).
-- **Renderer — validation + correctness** — SPIR-V reflection cross-checks
-  every descriptor-set layout against shader declarations at pipeline create
-  time (`#427`), bindless texture array sized from device limit with an `Err`
-  return on overflow (`#425`), `R32_UINT` causticTex sampler switched to
-  NEAREST (VUID-vkCmdDraw-magFilter-04553), window portal ray now fires
-  along `-N` instead of `-V` (`#421`), TLAS `instance_custom_index` unified
-  with SSBO position via a shared map (`#419`), fog moved from
-  `triangle.frag` to `composite.frag` — kills SVGF ghosting on heavy fog
-  (`#428`), grow-only scratch pool applied to the TLAS full-rebuild path
-  (`#424` SIBLING), draw-command depth sort key switched to IEEE 754
-  total-ordering (`#306`).
-
-Workspace test count: 770+ → 867. Net source growth: ~75K → ~81K lines of
-Rust across 188 source files.
-
-**Session 13 closeout (audit follow-through, ~25 issues closed):** the
-2026-04 FO3 / FNV / ECS audit sweep landed at
-`docs/audits/AUDIT_FO3_2026-04-19.md`, `AUDIT_FNV_2026-04-20.md`, and
-`AUDIT_ECS_2026-04-19.md`. Publish-then-fix cycle drove this batch.
-
-- **NIF parser correctness** — dedicated parsers for `WaterShaderProperty`,
-  `TallGrassShaderProperty`, and `bhkSimpleShapePhantom` (`#474`,
-  ended their 24-byte over-read / 8-byte trailer drop), a positive XYZ
-  rotation regression test for `NiTransformData` (`#436`'s premise was
-  stale; safety net added), boundary tests pinning `num_decals` at
-  `texture_count == 8/9/6/7` (`#484` — locks the `#400`/`#429` fix
-  against future rewrites), `MaterialInfo.diffuse_color` cached so
-  `extract_vertex_colors` stops re-walking the property list (`#438` —
-  3× scan → 1× per `NiTriShape`).
-- **BSA correctness** — `genhash_file` high-word now matches BSArch
-  reference (`#449` — `rolling(ext)` from 0 then `wrapping_add` to
-  `stem_high`, was sequential fold). Verified against the real FNV
-  `glover.nif` stored hash; ~125k validation warnings per archive open
-  silenced.
-- **ESM coverage** — `PACK` / `QUST` / `DIAL` / `MESG` / `PERK` / `SPEL` /
-  `MGEF` stub records (`#446`, `#447`) following the `#458` pattern
-  (EDID + FULL + key scalars/refs, no deep decoding). Every dangling
-  PKID / SCRI / QSTI / spell-effect ref now resolves. Live FNV vanilla:
-  PACK=4163, QUST=436, DIAL=18215, MESG=1144, PERK=176, SPEL=270,
-  MGEF=289 (total 13684 → 62219). FO3: 20334 → 31101. `CLMT` `WLST`
-  `chance` retyped `i32`, consumer filters negatives (`#476`).
-- **ECS** — `try_resource_2_mut<A, B>` with TypeId-sorted acquisition
-  preserved (`#465` — sibling of `try_resource_mut`). Transform
-  propagation buffer flipped from `Vec` (LIFO/DFS) to `VecDeque`
-  (FIFO/BFS) so the variable name and "BFS" doc comments are now
-  accurate (`#464`).
-- **Test infrastructure** — `parse_real_nifs.rs` `MIN_SUCCESS_RATE`
-  raised 0.95 → 1.0 (`#487` — single-NIF vanilla regressions now fail
-  CI loud); `nif_stats` exit code matches with `NIF_STATS_MIN_SUCCESS_RATE`
-  env var override for modded content. New
-  `crates/plugin/tests/parse_real_esm.rs` integration test pins FNV
-  total ≥ 60,000 + per-category floors for the 7 new types (`#488`).
-- **Performance baselines** — Prospector Saloon re-benched headless via
-  the existing `--bench-frames` flag at commit `bee6d48`: **avg 251.6
-  FPS / 3.97 ms** on RTX 4070 Ti, 1200 entities, 777 meshes, 208 textures,
-  773 draws (vs the stale ROADMAP claims of 48 / 85 FPS + 809 entities
-  / 199 textures). M31.5 RIS + M36 BLAS compaction + M37 SVGF + M37.5
-  TAA collectively cut frametime ~5× while post-M18 record expansion
-  added ~48% more entity coverage (`#489`).
-- **Issues closed as stale** (no code change): `#411` (FO4 BGSM scope
-  too large — split into `#490`–`#494`), `#436` (XYZ premise wrong —
-  added test), `#437` (GameVariant enum already exists as `NifVariant`
-  — raw bsver checks are deliberate per `#160`/`#323`), `#473` (caustic
-  doesn't enter TAA AABB — separate-image audit misread), `#480`
-  (truncated comment was a hard wrap; auditor only read one line).
-- **Stale doc fix** — `composite::rebind_hdr_views` no longer claims
-  TAA "isn't wired up" (`#472`); TAA shipped in M37.5 and is invoked
-  from both init + resize.
-
-Workspace test count: 867 → **924**. niftools/nifxml cloned to
-`/mnt/data/src/reference/nifxml/nif.xml` for authoritative format
-verification (memorialised in the auto-memory).
+**Last verified**: 2026-04-22.
+**Bench-of-record**: Prospector Saloon 251.6 FPS / 3.97 ms — commit
+`bee6d48`, 72 commits stale (see R6a).
 
 ---
 
-## Completed Milestones
-
-### Phase 1 — Graphics Foundation (M1–M4)
-
-| # | Milestone | Scope | Tests |
-|---|-----------|-------|-------|
-| M1 | Graphics Pipeline | Full Vulkan init chain (13 steps), hardcoded triangle rendering | — |
-| M2 | GPU Geometry | Vertex/index buffers via gpu-allocator, geometry from Rust data | — |
-| M3 | ECS Foundation | World, Component (SparseSet + Packed storage), Query, Scheduler, Resources, string interning | 92 |
-| M4 | ECS-Driven Rendering | Spinning cube, perspective camera, push constants, Transform/Camera/MeshHandle components | — |
-
-### Phase 2 — Data Architecture (M5–M6)
-
-| # | Milestone | Scope | Tests |
-|---|-----------|-------|-------|
-| M5 | Plugin System | Stable Form IDs (content-addressed), FormIdPool, plugin manifests (TOML), DataStore, DAG-based conflict resolution | 50 |
-| M6 | Legacy Bridge | ESM/ESP/ESL/ESH Form ID conversion, LegacyLoadOrder, per-game parser stubs (Morrowind through Starfield) | — |
-
-### Phase 3 — Visual Pipeline (M7–M8, M13)
-
-| # | Milestone | Scope | Tests |
-|---|-----------|-------|-------|
-| M7 | Depth Buffer | D32_SFLOAT depth attachment, correct multi-object occlusion | — |
-| M8 | Texturing | Staging buffer upload, descriptor sets, UV-mapped geometry, checkerboard test texture | — |
-| M13 | Directional Lighting | Vertex normals (4-attribute vertex format), Blinn-Phong directional light in fragment shader | — |
-
-### Phase 4 — Asset Pipeline (M9–M11)
-
-| # | Milestone | Scope | Tests |
-|---|-----------|-------|-------|
-| M9 | NIF Parser | Header parsing, 25+ block types, NifVariant enum (8 games), nif.xml reference, version-aware parsing | 76 |
-| M10 | NIF-to-ECS Import | Scene graph flattening, Z-up→Y-up conversion, geometry/material/normal extraction, strip-to-triangle | — |
-| M11 | Real Asset Loading | BSA v104/v105 reader (list, extract, zlib + LZ4), CLI (loose files + BSA + textures-bsa) | 2 |
-
-**NIF block types supported (186 type names → 156 parsed + 30 Havok skip):**
-Nodes: NiNode, BSFadeNode, BSLeafAnimNode, BSTreeNode, BSMultiBoundNode, RootCollisionNode,
-BSOrderedNode, BSValueNode.
-Geometry: NiTriShape, NiTriStrips, BSSegmentedTriShape, BSTriShape, BSMeshLODTriShape, BSSubIndexTriShape.
-Geometry Data: NiTriShapeData, NiTriStripsData.
-Shaders: BSShaderPPLightingProperty (with refraction/parallax), BSShaderNoLightingProperty,
-BSLightingShaderProperty (8 shader-type variants), BSEffectShaderProperty, BSShaderTextureSet.
-Properties: NiMaterialProperty, NiAlphaProperty, NiTexturingProperty (with bump map/parallax fields),
-NiStencilProperty (version-aware), NiZBufferProperty, NiVertexColorProperty,
-NiSpecularProperty, NiWireframeProperty, NiDitherProperty, NiShadeProperty.
-Textures: NiSourceTexture, NiPixelData, NiPersistentSrcTextureRendererData.
-Extra Data: NiStringExtraData, NiBinaryExtraData, NiIntegerExtraData, BSXFlags, NiBooleanExtraData,
-BSBound, BSDecalPlacementVectorExtraData, BSBehaviorGraphExtraData, BSInvMarker,
-BSClothExtraData, BSConnectPoint::Parents, BSConnectPoint::Children.
-Controllers: NiTimeController, NiSingleInterpController, NiMaterialColorController,
-NiMultiTargetTransformController, NiControllerManager, NiControllerSequence,
-NiTextureTransformController, NiTransformController, NiVisController, NiAlphaController,
-BSEffectShaderProperty{Float,Color}Controller, BSLightingShaderProperty{Float,Color}Controller,
-NiGeomMorpherController, NiMorphData.
-Interpolators: NiTransformInterpolator, BSRotAccumTransfInterpolator, NiTransformData/NiKeyframeData,
-NiFloatInterpolator, NiFloatData, NiPoint3Interpolator, NiPosData,
-NiBoolInterpolator, NiBoolData, NiTextKeyExtraData,
-NiBlendTransformInterpolator, NiBlendFloatInterpolator, NiBlendPoint3Interpolator, NiBlendBoolInterpolator.
-Skinning: NiSkinInstance, NiSkinData, NiSkinPartition, BsDismemberSkinInstance, BSSkin::Instance, BSSkin::BoneData.
-Palette: NiDefaultAVObjectPalette, NiStringPalette.
-Spatial: BSMultiBound, BSMultiBoundAABB, BSMultiBoundOBB.
-Collision (skip via block_size): 30 Havok types (bhkCollisionObject, bhkRigidBody, bhkMoppBvTreeShape, etc.).
-
-### Phase 5 — Scripting Foundation (M12)
-
-| # | Milestone | Scope | Tests |
-|---|-----------|-------|-------|
-| M12 | Scripting Foundation | ECS-native events (ActivateEvent, HitEvent, TimerExpired), timer system, event cleanup | 8 |
-
-### Phase 6 — Texture & Cell Loading (M14–M16)
-
-| # | Milestone | Scope | Tests |
-|---|-----------|-------|-------|
-| M14 | DDS Texture Loading | DDS parser (BC1/BC3/BC5 + DX10), TextureRegistry with per-mesh descriptor sets, BSA texture extraction | 13 |
-| M15 | Debug Logging & Diagnostics | DebugStats resource, ConsoleCommand trait, built-in commands, `--debug`/`--cmd` CLI | 11 |
-| M16 | ESM Parser & Cell Loading | ESM binary parser (23 record types), CELL/REFR/STAT loading, Prospector Saloon demo, fly camera, alpha blending | — |
-
-### Phase 7 — Geometry & Multi-Game (M17–M18)
-
-| # | Milestone | Scope | Tests |
-|---|-----------|-------|-------|
-| M17 | Coordinate System Fix | Gamebryo CW rotation convention, SVD degenerate matrix repair, editor marker filtering, coordinate system docs | 8 |
-| M18 | Skyrim SE NIF Support | BSTriShape parser, BSLightingShaderProperty, BSEffectShaderProperty, BSA v105 (LZ4), NiAVObject conditionals | — |
-
----
-
-## NIF Parser Overhaul (N23 — Priority 0, Active)
-
-The NIF binary format is the foundation of all visual content. Correct parsing across all
-games (Oblivion through Starfield) must come before renderer features.
-
-### N23.1: Trait Hierarchy and Base Class Extraction — DONE
-**Status:** Complete
-**Scope:** Refactored flat block structs into composable base class hierarchy:
-NiObjectNETData, NiAVObjectData (with parse_no_properties() for BSTriShape),
-BSShaderPropertyData. Consumer traits: HasObjectNET, HasAVObject, HasShaderRefs.
-Also fixed via `/audit-nif --game fnv` (7 bugs): NiBoolInterpolator bool size,
-KeyType::Constant, NiBooleanExtraData, BSShaderPPLightingProperty refraction/parallax,
-NiTexturingProperty bump map fields (root cause of stream position warnings),
-parallax offset, BSMultiBoundNode dispatch, version thresholds.
-**Result:** 11 blocks migrated. Base class parsing deduplicated (11→1, 3→1, 4→1).
-Net -211 lines. 95 NIF tests, 290 workspace tests. 11 audit commands.
-Post-N23.1 additions: NiVertexColorProperty, NiStencilProperty, NiZBufferProperty,
-NiGeomMorpherController, NiMorphData, NiBlend*Interpolator family, NiSkinInstance/Data/Partition,
-BsDismemberSkinInstance, NiDefaultAVObjectPalette, 30 Havok collision types, Material ECS component.
-
-### N23.2: BSLightingShaderProperty Completeness — DONE
-**Status:** Complete
-**Scope:** ShaderTypeData enum with 8 variants (EnvironmentMap, SkinTint, HairTint,
-ParallaxOcc, MultiLayerParallax, SparkleSnow, EyeEnvmap, None). Skyrim LE/SE trailing
-fields fully parsed. BSEffectShaderProperty: soft_falloff_depth, greyscale_texture,
-lighting_influence, env_map_min_lod, FO4+ textures (env/normal/mask + scale).
-**Block count:** 0 new (fixes 2 existing types) | **Games:** Skyrim LE/SE, FO4
-
-### N23.3: Oblivion Support — DONE (block types)
-**Status:** Block types complete, Oblivion cell loading deferred to BSA v103 decompression fix
-**Scope:** NIF v20.0.0.5 (no block sizes, inline strings). +15 block types all landed:
-NiStencilProperty, NiVertexColorProperty, NiZBufferProperty, NiGeomMorpherController,
-NiMorphData, NiSkinInstance, NiSkinData, NiSkinPartition, NiSpecularProperty,
-NiWireframeProperty, NiDitherProperty, NiShadeProperty, NiPixelData, RootCollisionNode,
-NiStringPalette. NiFlagProperty shared struct for 4 flag-only properties.
-**Block count:** +15 (all done) | **Games:** Oblivion
-
-### N23.4: Fallout 3/NV Validation — DONE
-**Status:** Complete. FO3 Megaton Player House loads with zero parse failures (1609 entities).
-FNV Prospector Saloon loads with zero warnings. NiTexturingProperty decal slot off-by-one fixed.
-**Scope:** +7 block types: BSMultiBound, BSMultiBoundAABB, BSMultiBoundOBB,
-BSOrderedNode, BSValueNode, BSDecalPlacementVectorExtraData, BSBound.
-Real-file validation: FO3 Megaton, FNV Prospector Saloon — zero parse failures.
-**Block count:** +7 (total 119) | **Games:** FO3, FNV
-
-### N23.5: Skinning and Dismemberment — DONE (parsers)
-**Status:** All 6 skinning parsers landed. GPU skinning deferred to M29.
-**Scope:** NiSkinInstance, NiSkinData (per-bone transforms + vertex weights),
-NiSkinPartition, BsDismemberSkinInstance, BSSkin::Instance, BSSkin::BoneData.
-Remaining for M29: HasSkinning trait, bone_weights/indices in ImportedMesh, GPU skinning.
-**Block count:** 6 done | **Games:** All (characters)
-
-### N23.6: Collision (Havok) — SKIP DONE, FULL PARSE DEFERRED
-**Status:** 30 Havok types registered for clean block_size skip (no parse failures).
-Full parsing deferred to M28 (physics).
-**Scope:** 30 bhk/hk types skip cleanly via block_size on FO3+ (v20.2.0.7).
-Oblivion NIFs (no block_size) need dedicated parsers — deferred.
-HasCollision trait deferred to M28.
-**Block count:** 30 registered (skip) | **Games:** FO3+ (Oblivion deferred)
-
-### N23.7: Fallout 4 Support — DONE
-**Status:** Complete. All FO4 block types parsed.
-BSTriShape half-float vertices (VF_FULL_PRECISION bit), FO4 shader flags (u32 pair),
-BSLightingShaderProperty FO4 trailing fields (subsurface, rimlight, backlight, fresnel,
-wetness params), FO4 shader-type extras (SSR bools, skin tint alpha).
-BSSubIndexTriShape, BSClothExtraData, BSConnectPoint::Parents/Children,
-BSBehaviorGraphExtraData, BSInvMarker, BSSkin::Instance/BoneData.
-BA2 archive reader deferred (separate milestone).
-**Block count:** +8 (total ~119) | **Games:** Fallout 4
-
-### N23.8: Particle Systems — DONE
-**Status:** Complete. ~48 particle block types parsed.
-NiParticles, NiParticleSystem, NiMeshParticleSystem, BSStripParticleSystem,
-BSMasterParticleSystem. Data: NiParticlesData, NiPSysData, NiMeshPSysData,
-BSStripPSysData, NiPSysEmitterCtlrData. 18 modifiers, 5 emitters, 2 colliders,
-6 field modifiers, 21 controllers via shared base parsers.
-**Block count:** +48 (total ~167) | **Games:** All (effects)
-
-### N23.9: Fallout 76 and Starfield — DONE (shader blocks)
-**Status:** Shader blocks complete. BSGeometrySegmentData deferred — current
-block_size skip is correct; full parsing only needed when we surface segment
-metadata to rendering (not yet).
-**Scope:** BSLightingShaderProperty and BSEffectShaderProperty extended for
-BSVER >= 132 (CRC32-hashed shader flag arrays replacing the u32 flag pair) and
-BSVER >= 152 (SF2 array). BSVER == 155 (FO76) adds BSShaderType155 dispatch
-with distinct skin/hair tint layouts, BSSPLuminanceParams, BSSPTranslucencyParams,
-BSTextureArray lists, and refraction power (effect shader). WetnessParams
-extended with Unknown 1 (BSVER > 130) and Unknown 2 (BSVER == 155). Stopcond
-short-circuit: when BSVER >= 155 and Name is a non-empty BGSM/BGEM file path,
-return a material-reference stub — the real material lives in the BGSM file
-(out of scope for NIF parsing). BSEffectShaderProperty adds Reflectance,
-Lighting, Emittance, and Emit Gradient textures for FO76.
-**Result:** Both shader blocks now track correct stream positions through
-BSVER 132–170+, preserving block size integrity on Starfield NIFs (where
-material references via Name are the norm). 6 new unit tests exercise the
-FO76 flag-array, trailing, skin-tint, and stopcond paths.
-**Block count:** 0 new (extends 2 existing) | **Games:** FO76, Starfield
-
-### N23.10: Test Infrastructure — DONE
-**Status:** Complete
-**Scope:** Per-game integration tests with env-based game data paths
-(`BYROREDUX_{OBLIVION,FO3,FNV,SKYRIMSE}_DATA` with Steam-install fallbacks),
-an `nif_stats` example binary for manual archive sweeps with block histogram
-and error grouping, and graceful per-block parse recovery in the top-level
-parser: when a block parse errors out but `block_size` is known, the stream
-is advanced past the broken block, a `NiUnknown` placeholder is recorded,
-and parsing continues. This turns single-block parser bugs from NIF-killing
-errors into measurable telemetry.
-**Result:** All four supported games comfortably exceed the 95% acceptance
-threshold on full-archive sweeps:
-
-| Game | NIFs parsed | Rate |
-|------|-------------|------|
-| Fallout New Vegas | 14881 / 14881 | 100.00% |
-| Fallout 3         | 10989 / 10989 | 100.00% |
-| Skyrim SE         | 18862 / 18862 | 100.00% |
-| Oblivion          | 7963 / 8032   | 99.14%  |
-
-The Oblivion residual is a handful of no-block-size NIFs where an early
-parse error stops the walk (Oblivion NIFs can't use the per-block recovery
-path because they have no size table). Integration tests live in
-`crates/nif/tests/parse_real_nifs.rs` and are `#[ignore]`d so they don't
-require game data on CI; run with `cargo test -p byroredux-nif --test
-parse_real_nifs -- --ignored`.
-**Block count:** 0 new (infrastructure + robustness) | **Games:** all
-
-### N23 Summary
-
-| # | Milestone | Blocks | Total | Status |
-|---|-----------|--------|-------|--------|
-| N23.1 | Trait hierarchy + FNV audit | 0 | ~49 | **DONE** |
-| N23.2 | Shader completeness | 0 | ~49 | **DONE** |
-| N23.3 | Oblivion block types | +15 | ~64 | **DONE** |
-| N23.4 | FO3/FNV validation | +7 | ~71 | **DONE** |
-| N23.5 | Skinning | +6 | ~77 | **DONE** |
-| N23.6 | Collision (full parse) | +30 | ~107 | **DONE** (compressed mesh + shapes) |
-| N23.7 | Fallout 4 | +12 | ~119 | **DONE** |
-| N23.8 | Particles | +48 | ~167 | **DONE** |
-| N23.9 | FO76/Starfield | 0 | ~167 | **DONE** (shader blocks) |
-| N23.10 | Test infra | 0 | ~167 | **DONE** (95%+ all games) |
-
-**Current registered type names: 186** (156 parsed + 30 Havok skip)
-
----
-
-## Completed Milestones (M1–M22)
-
-### M19: Full Cell Loading — DONE
-**Status:** Complete
-**Scope:** All renderable record types (STAT, MSTT, FURN, DOOR, ACTI, CONT, LIGH, ACHR/NPC_),
-WRLD exterior cell parsing with grid loading, LightSource ECS component, refactored cell loader.
-**Result:** FNV Prospector Saloon: 1200 entities (bench at bee6d48; M18 shipped 809,
-post-M18 record expansion added the remainder). WastelandNV exterior 3x3 grid:
-720 entities. 14 worldspaces, 30096 exterior cells, 17129 base objects parsed
-from FalloutNV.esm.
-
-### M20: Scaleform/SWF UI System (Ruffle Integration) — DONE
-**Status:** Complete
-**Scope:** Ruffle (Rust Flash player) integrated as a library for Bethesda Scaleform GFx menu
-rendering. New `crates/ui/` crate wrapping Ruffle's Player with offscreen wgpu rendering and
-RGBA pixel readback. CPU-bridge architecture: Ruffle wgpu → pixel buffer → Vulkan texture upload
-→ fullscreen quad overlay with UI-specific pipeline (no depth, alpha blend, passthrough shaders).
-**Result:** Skyrim SE SWF menus (fadermenu, loadingmenu, messagebox) load and render via
-`--swf <path>` CLI. All are AS2/Flash v15, parsed and executed by Ruffle with zero GFx stubs needed.
-Dynamic texture update pipeline with device-wait-idle sync. Clean shutdown.
-**Future:** Scaleform GFx stubs (`_global.gfx`), Papyrus↔UI bridge, input routing, font loading.
-
-### M21: Animation Playback — DONE
-**Status:** Complete
-**Scope:** Full keyframe animation pipeline: NiTransformInterpolator/NiTransformData/NiFloatInterpolator/
-NiFloatData/NiPoint3Interpolator/NiPosData/NiBoolInterpolator/NiBoolData/NiTextKeyExtraData block
-parsers. KeyGroup parsing with Linear/Quadratic/TBC/XyzRotation key types. AnimationClip import
-from .kf files via `import_kf()`. Interpolation engine with linear lerp, SLERP (quaternion),
-cubic Hermite (quadratic tangents), and Kochanek-Bartels (TBC) splines. AnimationClipRegistry
-resource, AnimationPlayer ECS component, animation_system with per-frame time advance and
-name-based entity targeting. Cycle types: Clamp, Loop, Reverse (ping-pong). Z-up to Y-up
-coordinate conversion for keyframe data. StringPool-based Name components on imported meshes.
-**Result:** `--kf <path>` CLI loads .kf animation and plays it on named mesh entities.
-269 tests passing (25 new). 10 new NIF block types parsed.
-**Future:** XYZ euler rotation keys (#1), scene graph hierarchy (#2), non-transform channels (#3),
-animation blending (#4), BSA KF loading (#5), NiControllerManager (#6), text key events (#7),
-root motion (#8), name collision fix (#9), name lookup caching (#10). Skeletal animation in M29.
-
-### M22: RT-First Multi-Light System — DONE
-**Status:** All phases complete. Full RT pipeline operational.
-**Scope:** SSBO multi-light rendering (Phase A), RT shadow rays via VK_KHR_ray_query (Phase B),
-contact-hardening soft shadows, RT reflections with barycentric UV lookup via global vertex/index
-SSBOs, 1-bounce RT ambient GI with cosine-weighted hemisphere sampling, window light portals,
-G-buffer expansion (normal, motion vector, mesh ID, raw indirect, albedo — 6 render targets),
-SVGF temporal denoiser for indirect lighting with motion vector reprojection and mesh ID
-disocclusion detection, composite pipeline (direct + denoised indirect reassembly, ACES tone
-mapping), TLAS refit (UPDATE mode when BLAS layout unchanged between frames), clustered lighting.
-Cell interior XCLL lighting (ambient + directional), windowed inverse-square attenuation.
-BLAS per mesh, TLAS rebuilt/refitted per frame, dynamic depth bias for NIF-flagged decals.
-**Result:** Prospector Saloon: 25 point lights + directional + RT shadows at ~85 FPS
-on RTX 4070 Ti when this milestone landed. M31.5 RIS + M36 BLAS
-compaction + M37 SVGF + M37.5 TAA lifted this to **251.6 FPS (bench
-at bee6d48, RTX 4070 Ti, `--bench-frames 300`, 2026-04-20)**.
-
----
-
-## M26: BA2 Archive Support — DONE
-
-**Status:** Complete for FO4 / FO76 / Starfield meshes and FO4 textures.
-Starfield DX10 textures (BA2 v3) deferred — chunk layout differs.
-
-**Scope:**
-- New `Ba2Archive` reader covering BTDX versions 1, 2, 3, 7, and 8 with the
-  `GNRL` (general) and `DX10` (texture) variants. The version numbering is
-  non-monotonic across games — v1 is the original FO4/FO76 layout, v2/v3
-  are Starfield (with an 8-byte header extension), and v7/v8 are FO4 Next
-  Gen patches that revert to the v1 24-byte header.
-- DX10 texture extraction reconstructs a complete `.dds` byte stream
-  (148-byte DDS+DX10 header + assembled mip chunks) since BA2 does not
-  store the DDS header itself — pixel data is keyed only by `dxgi_format`,
-  width, height, and mip count on the record.
-- Side-fix: the NIF header parser's `BSStreamHeader` reading was wrong for
-  FO4 and FO76 — it always read three short strings (author, process,
-  export) regardless of `BS Version`. Per `nif.xml`, BSVER > 130 has an
-  extra `Unknown Int u32` after Author and **drops** the Process Script,
-  and BSVER ≥ 103 adds a `Max Filepath` short string. Without the fix the
-  string-table cursor desyncs and every FO4/FO76 NIF fails to parse.
-- `tests/common` grows a unified `MeshArchive` enum so integration tests
-  do not branch on BSA vs BA2, plus FO4 / FO76 / Starfield entries with
-  BA2 paths and the `BYROREDUX_FO4_DATA` / `BYROREDUX_FO76_DATA` /
-  `BYROREDUX_STARFIELD_DATA` env-var overrides.
-
-**Result:** Full-archive parse rates across **seven** Bethesda games:
-
-| Game              | NIFs parsed       | Rate    |
-|-------------------|-------------------|---------|
-| Fallout New Vegas | 14881 / 14881     | 100.00% |
-| Fallout 3         | 10989 / 10989     | 100.00% |
-| Skyrim SE         | 18862 / 18862     | 100.00% |
-| Oblivion          | 7963 / 8032       | 99.14%  |
-| **Fallout 4**     | **34995 / 34995** | **100.00%** |
-| **Fallout 76**    | **58469 / 58469** | **100.00%** |
-| **Starfield**     | **31058 / 31058** | **100.00%** |
-
-Combined: **177,217 NIFs** parse cleanly across the entire Bethesda lineage.
-
-### M26 follow-up (Oblivion → 100%)
-
-The post-M26 follow-up rooted out three more bugs in the NIF header parser
-that were holding Oblivion below 100%:
-
-- `user_version` was being read for any file ≥ 10.0.1.0, but per nif.xml
-  it only exists from 10.0.1.8 onward. Older NetImmerse files (a chunk
-  of Oblivion's content like `meshes/creatures/minotaur/horn*.nif`) had
-  their `num_blocks` field shifted by 4 bytes and blew up downstream.
-- `BSStreamHeader` was gated on `user_version >= 10`, but Oblivion's
-  10.0.1.2 content (the original Bethesda Gamebryo era) has the
-  metadata struct unconditionally and uses a completely different
-  `BSVER` value (3, not 11). The condition is now `version == 10.0.1.2
-  || user_version >= 3`, matching nif.xml's `#BSSTREAMHEADER#` macro.
-- The remaining six failures were `meshes/marker_*.nif` debug placeholders
-  in NIF v3.3.0.13 (pre-Gamebryo NetImmerse). These files inline each
-  block's type name as a sized string instead of using a global block-type
-  table, which we don't currently parse. They are filtered out by the
-  M17 marker name filter at render time anyway, so we now return an
-  empty `NifScene` with a debug log when the type table is empty —
-  matching N23.10's "soft fail and keep going" philosophy.
-
-| Game     | Before  | After      |
-|----------|---------|------------|
-| Oblivion | 99.13%  | **100.00%** |
-
-All seven supported games now sit at 100% on the full mesh archive sweep.
-
-**Resolved:** Starfield BA2 v3 DX10 textures now supported. The v3 header
-has a 12-byte extension (vs. 8 for v2) containing a `compression_method`
-field (0 = zlib, 3 = LZ4 block). The DX10 base record and chunk record
-layouts are unchanged from FO4 v1; the original "different per-chunk
-layout" diagnosis was incorrect — the real issue was the missing 4-byte
-compression method field shifting the reader past the header, plus zlib
-being used for LZ4-compressed chunks. Both GNRL and DX10 extraction now
-dispatch through a unified `decompress_chunk()` that selects zlib or
-LZ4 block based on the archive-level compression method.
-
----
-
-## M24 Phase 1: Full ESM/ESP Record Parser — DONE
-
-**Status:** Phase 1 complete. Item, container, leveled-list, actor, and small
-records (GLOB/GMST) parse cleanly across the full FNV.esm. Quest / dialogue /
-perk / magic-effect semantic structures stay deferred until the systems that
-consume them come online.
-
-**Scope:**
-- New `crates/plugin/src/esm/records/` module organised by category:
-  - `common.rs` — shared sub-record helpers (`read_zstring`, `find_sub`,
-    `read_u32_at`, `CommonItemFields`)
-  - `items.rs` — `ItemRecord` + `ItemKind` enum covering WEAP, ARMO, AMMO,
-    MISC, KEYM, ALCH, INGR, BOOK, NOTE. Type-specific stats are in the enum
-    variant; common name/model/value/weight live on the parent struct.
-  - `container.rs` — `ContainerRecord` (CONT) and shared `LeveledList` for
-    LVLI / LVLN with `InventoryEntry` / `LeveledEntry` rows.
-  - `actor.rs` — `NpcRecord` (NPC_) plus supporting `RaceRecord` (RACE),
-    `ClassRecord` (CLAS), `FactionRecord` (FACT) with `FactionRelation`
-    cross-links.
-  - `global.rs` — `GlobalRecord` (GLOB) and `GameSetting` (GMST) with a
-    typed `SettingValue` enum (Int / Float / Short / String).
-- New `EsmIndex` aggregator that combines the existing `EsmCellIndex` with
-  per-category HashMaps. Top-level `parse_esm()` walks the GRUP tree once
-  per category, dispatching by 4-char record type code, and reuses the
-  existing `parse_esm_cells()` walker for the cell side. Existing callers
-  that only need cells continue to use `parse_esm_cells` unchanged.
-- Side-fix: `EsmCellIndex` now `derives(Default)` so the aggregator can
-  start from `EsmIndex::default()`.
-
-**Result on the real FalloutNV.esm (release build, single ~190 MB pass):**
-
-| Category          | Count |
-|-------------------|------:|
-| Items (W/A/etc.)  | 2 643 |
-| Containers        | 2 478 |
-| Leveled items     | 2 738 |
-| Leveled NPCs      |   365 |
-| NPCs              | 3 816 |
-| Races             |    22 |
-| Classes           |    74 |
-| Factions          |   682 |
-| Globals           |   218 |
-| Game settings     |   648 |
-
-13,684 structured records on top of the existing cell + static extraction,
-parsed in 0.19s release. 14 new unit tests in the records module plus an
-`#[ignore]`d FNV.esm integration test that verifies record counts and
-spot-checks Varmint Rifle / NCR faction.
-
-**Deferred to Phase 2 (when the consuming systems land):**
-- QUST / DIAL / INFO semantic parsing (quest stages, conditions, dialog trees)
-- PERK entry points (~120 types from the Perk Entry Points memory)
-- MGEF / SPEL / ENCH magic effects
-- AVIF actor value definitions (currently referenced as raw form IDs)
-- Dynamic weapon DNAM fields beyond the basic stats block
-
----
-
-## M28 Phase 1: Physics Foundation — DONE
-
-Rapier3D integration on top of the `CollisionShape` / `RigidBodyData`
-components the NIF importer has been populating since N23.6. New
-`byroredux-physics` crate keeps `rapier3d` / `nalgebra` confined so
-`core` stays physics-agnostic and the loose-NIF viewer can opt out.
-
-- `PhysicsWorld` resource owns the Rapier sets + pipeline + fixed
-  60 Hz accumulator (max 5 substeps/frame)
-- `physics_sync_system` runs four phases per tick: register newcomers,
-  push kinematic transforms, step, pull dynamic transforms back
-- `PlayerBody::HUMAN` marker on the camera entity spawns a dynamic
-  capsule with rotations locked; `fly_camera_system` drives it via
-  `set_linear_velocity` instead of mutating `Transform`
-- Gravity is −686.7 BU/s² (−9.81 m/s² × 70 BU/m); the NIF importer
-  already strips Havok's 7.0 scale factor so Rapier sees Bethesda
-  units throughout
-- 14 unit tests: glam↔nalgebra round-trips, shape mapping for every
-  `CollisionShape` variant, dynamic ball falling under gravity, static
-  floor blocking a dropped ball to rest, accumulator substep cap
-
-Deferred to M28.5: kinematic character controller with step-up and
-slope limiting. Deferred to M29: constraints and joints (ragdolls).
-See [docs/engine/physics.md](docs/engine/physics.md) for full details.
-
-## N26: Oblivion Coverage Sweep — DONE
-
-Post-N23 audit (`nif.xml` vs. dispatch table) that closed 9
-CRITICAL / HIGH severity parser gaps. Oblivion's v20.0.0.5 header has
-no `block_sizes` fallback, so a single missing dispatch arm takes
-down the entire mesh. Every fix ships with a `dispatch_tests`
-regression test that asserts exact stream consumption on a minimal
-Oblivion-shaped payload.
-
-| # | Block types | Severity | Game impact |
-|---|-------------|----------|-------------|
-| #145 | 11 specialized `BSShader*Property` aliases | CRITICAL | Oblivion exteriors (sky / water / grass / distant LOD) |
-| #144 | `NiKeyframeController` + `NiSequenceStreamHelper` | CRITICAL | All Oblivion NPC animation |
-| #164 | `NiStringsExtraData` + `NiIntegersExtraData` | MEDIUM | Oblivion bone LOD / material overrides |
-| #142 | `NiBillboardNode` + 12 NiNode subtypes | CRITICAL | Foliage, magic FX, LOD architecture, furniture markers |
-| #156 | Full `NiLight` hierarchy + ECS wiring | HIGH | Torches / candles / magic light everywhere |
-| #154 | `NiUVController` + `NiUVData` | HIGH | Oblivion water, fire, banners |
-| #153 | Embedded `NiCamera` | HIGH | Cinematic / cutscene cameras |
-| #163 | `NiTextureEffect` | MEDIUM | Oblivion magic FX projectors |
-| #143 | Legacy particle stack (13 types) | CRITICAL | Every Oblivion magic FX / fire / dust / blood mesh |
-
-Total: ~50 new block types parsed, 10 dispatch regression tests
-landed, workspace test count rose from 372 → 396.
-
-## Session 6 — N26 closeout + skinning end-to-end + Oblivion parser fix
-
-A long bug-bash session that closed out 26 GitHub issues and tracked
-down a long-standing Oblivion parser regression. The 35 commits split
-into four buckets:
-
-**Skeletal skinning, end-to-end (#178)**
-- Part A (`923d11b`): new `SkinnedMesh` ECS component with
-  `compute_palette()` pure function. Scene assembly resolves
-  `ImportedSkin.bones[].name` → `EntityId` via a name map built
-  during NIF node spawn. 8 unit tests cover the palette math.
-- Part B (`4c97a36`): GPU side. Vertex format extended with
-  `bone_indices: [u32; 4]` + `bone_weights: [f32; 4]` (44 → 76 B,
-  6 attribute descriptions). New 4096-slot bone-palette SSBO on
-  scene set 1 binding 3. Push constants 128 → 132 B (`uint
-  bone_offset`). Single unified vertex shader — rigid vertices tag
-  themselves with `sum(weights) ≈ 0` and route through `pc.model`,
-  skinned vertices blend 4 palette entries via `bone_offset +
-  inBoneIndices[i]`. `build_render_data` walks `(GlobalTransform,
-  SkinnedMesh)` and stamps each draw with its bone offset.
-
-**N26 dispatch closeout — every "block silently dropped" issue closed**
-- `#157` BSDynamicTriShape + BSLODTriShape (Skyrim facegen + FO4 LOD)
-- `#147` BSMeshLODTriShape + BSSubIndexTriShape (Skyrim DLC + FO4 actors)
-- `#146` BSSegmentedTriShape (FO3/FNV/Skyrim LE biped body parts)
-- `#148` BSMultiBoundNode (interior cell culling volumes)
-- `#159` BSTreeNode (Skyrim SpeedTree wind-bone lists)
-- `#158` BSPackedCombined[Shared]GeomDataExtra (FO4 distant LOD batches)
-- `#150` `as_ni_node` walker helper that unwraps every NiNode subclass
-  (BsOrderedNode, BsValueNode, BsRangeNode, NiBillboardNode, NiSwitchNode,
-  NiSortAdjustNode, NiLODNode, BsMultiBoundNode, BsTreeNode) — every
-  subclass with a `base: NiNode` field now descends correctly during
-  scene-graph walks.
-- `#160` `NiAVObject` properties list + `NiNode` effects list now use
-  the raw `bsver()` instead of variant-based helpers, fixing
-  non-Bethesda Gamebryo (`Unknown` variant) misalignment.
-- `#175` `NifScene.truncated` field surfaces Oblivion's no-block-size
-  early-bailout state to consumers.
-
-**Critical Oblivion parser regression (`afab3e7`)**
-- Wrote a new `crates/nif/examples/trace_block.rs` debug tool that
-  dumps per-block start positions + 64-byte hex peeks. Used it to
-  bisect the runtime `NiSourceTexture: failed to fill whole buffer`
-  spam on Oblivion cell loads (consumed counts 8K–250K bytes per
-  block on real files like `Quarto03.NIF`).
-- Root cause: an earlier fix (#149) had added a `Has Shader Textures:
-  bool` gate on `NiTexturingProperty`'s shader-map trailer based on
-  `nif.xml`. The authoritative Gamebryo 2.3 source reads the count
-  as a `uint` directly — no leading bool. The bool gate consumed
-  the first byte of the u32 count, leaving the parser **3 bytes
-  short** on every NiTexturingProperty. On Oblivion (no per-block
-  size to recover) this misaligned the following NiSourceTexture's
-  filename length field, which then read garbage as a u32 ≈ 33 M
-  and bled through the rest of the file.
-- Reverted the bool gate. All ~80 unique Oblivion clutter / book /
-  furniture meshes that were previously truncating now parse to
-  completion. Visual confirmation: Anvil Heinrich Oaken Halls
-  interior renders fully populated (chandeliers, paintings,
-  bookshelves, table settings).
-
-**Quality + correctness fixes**
-- `#137` lock_tracker RAII scope guards (no stale state on poison panics)
-- `#136` 16× anisotropic filtering on the shared sampler
-- `#134` frame-counter-based deferred texture destruction (was call-count)
-- `#152` NiAlphaProperty alpha-test bit + threshold extracted (cutout
-  foliage / hair / fences no longer mis-routed through alpha-blend)
-- `#131` NiTexturingProperty `bump_texture` slot extracted as the
-  Oblivion normal map (the dedicated `normal_texture` slot only landed
-  in FO3, so Oblivion architecture was rendering completely
-  flat-shaded before this)
-- `#155` NiBSpline* compressed animation family (parse + De Boor
-  evaluator at 30 Hz)
-- `#151` + `#177` NIF skinning data extraction (NiSkinData sparse
-  weights + BSTriShape VF_SKINNED packed vertex bones)
-- `#79` binary KFM (KeyFrame Metadata) animation state-machine
-  parser, Gamebryo 1.2.0.0 → 2.2.0.0
-- `#108` BSConnectPoint::Children skinned flag is `byte`, not `uint`
-- `#127` bhkRigidBody body_flags threshold 76 → 83 per nif.xml
-- `#172` NIF string-table version threshold aligned to 20.1.0.1
-- `#149` (now superseded by `afab3e7` revert)
-- `#50` per-draw vertex/index buffer rebind dedup via mesh_handle
-  sort key + `last_mesh_handle` cache
-- `#36` `World::spawn` now panics on EntityId overflow instead of
-  silent wrap
-- Cell loader (`65d34dd`): each unique NIF parses + imports exactly
-  once per cell load via a new `CachedNifImport` Arc cache. Cuts
-  the parser warning volume from O(N placements) to O(M unique
-  meshes) — typically 10-40× reduction on dense interior cells.
-- `lock_tracker.rs`: silenced release-build dead-code warnings on
-  the no-op stubs (`69c4f7a`).
-
-Workspace test count: 396 → 472. Zero new warnings.
-
-## Session 10 — Shadow pipeline overhaul + TAA + BLAS compaction + FO4 architecture
-
-Renderer-quality push that retired the largest remaining visual regressions
-and shipped three renderer milestones (M31.5 streaming RIS, M36 BLAS
-compaction, M37.5 TAA). Audit bundle `#314`–`#340` produced alongside.
-
-**Streaming RIS (M31.5)**
-- Replaced the deterministic top-K shadow pipeline with 8 independent
-  weighted reservoirs per fragment, each sampled from the full light
-  cluster proportional to luminance. Every light now has non-zero
-  shadow probability — fixes the "large occluder never shadows large
-  receiver" pathology the top-K pipeline hit on big overhead lamps.
-- Unbiased weight `W = resWSum / (K · w_sel)`, clamped at 64× to tame
-  fireflies. Directional sun angular radius tightened 0.05 → 0.0047 rad
-  (physically correct).
-
-**TAA (M37.5) — `taa.comp` + `TaaPipeline`**
-- Halton(2,3) sub-pixel projection jitter applied in the vertex shader;
-  motion vectors stay un-jittered for correct reprojection.
-- Motion-vector reprojection with Catmull-Rom 9-tap history resample.
-- 3×3 YCoCg neighborhood variance clamp (γ = 1.25).
-- mesh_id disocclusion detection reuses the GBuffer mesh_id attachment.
-- Luma-weighted α = 0.1 history blend.
-- Per-FIF RGBA16F history images, ping-pong descriptor sets,
-  first-frame guard, resize hooks. Camera UBO extended with
-  `vec4 jitter` (all 4 shader UBO layouts updated in lockstep).
-- Composite's HDR binding rewired to the TAA output via
-  `rebind_hdr_views()`.
-
-**BLAS compaction (M36)**
-- `ALLOW_COMPACTION` flag on BLAS build, async occupancy query, compact
-  copy allocated at exact size, original BLAS destroyed via
-  `deferred_destroy`. 20–50% BLAS memory reduction on typical cells.
-
-**FO4 architecture**
-- `asset_provider` auto-detects BSA vs BA2 from file magic at open time
-  so the cell loader no longer hard-codes the archive type.
-- ESM parser extended with `SCOL`, `MOVS`, `PKIN`, `TXST` record types —
-  the building blocks of FO4's prefab architecture.
-- `BSLightingShaderProperty.net.name` now flows through `ImportedMesh`
-  → `Material.material_path` so BGSM / BGEM material references
-  surface in diagnostics even though the external material file itself
-  isn't parsed yet.
-
-**Debug CLI**
-- Console commands `tex.missing`, `tex.loaded`, `mesh.info <entity_id>`.
-- Evaluator functions `tex_missing()` / `tex_loaded()` over TCP.
-- `mesh.info` shows BGSM material reference when `texture_path` is
-  absent (correct FO4 behavior).
-
-**NIF parser fixes (`#322`–`#325`, `#340`)**
-- `#322`: NiPSysData over-reads — respect BS202 zero-array rule.
-- `#323`: NiMaterialProperty variant mapping was wrong for cross-game
-  files. Check file `BSVER` directly, not the `NifVariant`.
-- `#324`: Oblivion runtime size cache prevents cascading parse failure
-  after a single bad block (Oblivion has no per-block size table).
-- `#325`: NiGeometryData `Has UV` should only be read until 4.0.0.2.
-- `#340`: Pre-intern animation channel names as `FixedString` at clip
-  load time so the per-frame sampler hot path never touches the
-  `StringPool` lock.
-
-**Reflection + metal quality (`#315`, `#320`)**
-- `#315`: Route metal reflection into the direct path to avoid
-  albedo double-modulation (post-#268 demodulation invariant).
-- `#320`: Exponential distance falloff on reflection rays plus
-  roughness-driven angular jitter. Prevents the "infinite gold mirror"
-  look on distant glossy surfaces.
-
-**Quality fixes (`#301`, `#302`, `#314`)**
-- `#301` + `#302`: Narrow the HOST_VISIBLE flush range to the dirty
-  region and reuse a single one-time-submit fence across transfer
-  submissions.
-- `#314`: Refresh stale `lock_tracker` doc comments on
-  `Query`/`Resource` constructors.
-
-**Audit bundle (session 10)**
-- Renderer audit 2026-04-14 (3 parallel specialists, 10 dimensions,
-  5 findings — 1 MEDIUM, 4 LOW). NIF, legacy-compat, ECS audits dated
-  2026-04-14 / 2026-04-15. 31 issue reports (#314–#340 plus
-  consolidation dirs for #266–#292, #301–#302, #320–#321) staged for
-  GitHub sync.
-
-Workspace test count: 472 → 623. Zero new warnings.
-
-## Previously Completed (M22–M30)
-
-| # | Milestone | Status |
-|---|-----------|--------|
-| M24 | ESM/ESP Record Parser | **Phase 1 DONE** — 13,684 structured records (items, actors, factions, etc.) from FNV.esm |
-| M25 | Vulkan Compute | Partial — clustered lighting compute, SSAO compute, SVGF temporal compute |
-| M26 | BA2 Archive Support | **DONE** — BTDX v1/v2/v3/v7/v8, GNRL + DX10, zlib + LZ4. All 7 games 100% |
-| M28 | Physics Foundation | **Phase 1 DONE** — Rapier3D, dynamic capsule player body |
-| M30 | Papyrus Parser | **Phase 1 DONE** — logos lexer + Pratt expression parser + full AST. 45 tests |
-| M31 | RT Performance at Scale | **DONE** — batched BLAS builds, TLAS culling, importance-sorted shadow budget, distance-based ray fallback, GI hit simplification, BLAS LRU eviction, deferred SSBO rebuild |
-| M31.5 | Streaming RIS Direct Lighting | **DONE** — weighted reservoir shadow sampling (8 independent reservoirs / fragment, luminance-proportional), unbiased W = resWSum / (K·w_sel) clamped at 64× to tame fireflies. Replaces deterministic top-K. |
-| M36 | BLAS Compaction | **DONE** — ALLOW_COMPACTION flag, async occupancy query, compacted copy with original destroyed, 20–50% BLAS memory reduction |
-| M37.5 | TAA / Antialiasing | **DONE** — Halton(2,3) jitter, motion-vector reprojection, YCoCg variance clamp (γ=1.25), mesh-id disocclusion, luma-weighted blend. Kills stair/column/tapestry edge shimmer. |
+## Status
+
+**Rendering, today.** Interior cells load and render end-to-end from
+unmodified Bethesda game data (Oblivion Anvil Heinrich Oaken Halls,
+FNV Prospector Saloon, FO3 Megaton at 929 REFRs). Exterior renders
+3×3 grids from FNV WastelandNV with landscape terrain (LAND
+heightmap + LTEX/TXST splat). Skyrim SE loads individual meshes with
+BSTriShape geometry. Single-mesh sweetroll historically >1000 FPS.
+
+**RT lighting.** Full pipeline: SSBO multi-light, ray-query shadows
+with streaming weighted reservoir sampling (8 reservoirs/fragment,
+unbiased weight clamped at 64×), RT reflections + 1-bounce GI, SVGF
+temporal denoiser with motion-vector reprojection and mesh-id
+disocclusion, composite + ACES tone map, TAA with Halton(2,3) jitter
+and YCoCg variance clamp. BLAS per-mesh with compaction + LRU
+eviction, TLAS refit when layout unchanged. Pipeline cache threaded
+through every create site with disk persistence (10–50 ms cold → <1
+ms warm). SPIR-V reflection cross-checks descriptor layouts against
+shader declarations at pipeline-create time.
+
+**Parser coverage.** NIF parses cleanly across seven games
+(177 286 files, 100% rate per game). ESM parses structured records
+across ~25 types on FNV; 62 219 records on the latest sweep.
+Archive readers cover BSA v103/v104/v105 and BA2 v1/v2/v3/v7/v8
+(GNRL + DX10 with reconstructed DDS headers, zlib + LZ4).
+
+**Scripting, physics, UI.** Papyrus lexer + expression parser shipped
+(Phase 1). Rapier3D physics bridge with dynamic capsule player
+body. Ruffle/SWF UI overlay renders Skyrim SE menus. ECS-native
+scripting (events + timers) exists; the Papyrus runtime consuming
+1 257 parsed FO3 SCPT records is Tier 3 work.
+
+**What doesn't work yet.** No skinned rendering (every NPC is in
+bind pose, M29). No world streaming — cells load once and persist
+(M40). No sky or atmosphere (M33). Skyrim and FO4 interior cells
+aren't wired through `cell_loader` yet (M32.5). Oblivion needs BSA
+v103 decompression before its cells load.
+
+### Compatibility matrix
+
+| Game              | Archive       | NIF parse rate    | Cells                                                    |
+|-------------------|---------------|-------------------|----------------------------------------------------------|
+| Oblivion          | BSA v103      | 100% (8 032)      | Interior (Anvil Heinrich Oaken Halls). Exterior blocked on BSA v103 decompression. |
+| Fallout 3         | BSA v104      | 100% (10 989)     | Interior (Megaton, 929 REFRs). Exterior wired; fresh GPU bench pending (R6a). |
+| Fallout New Vegas | BSA v104      | 100% (14 881)     | Interior (Prospector 1200 entities @ 251.6 FPS on RTX 4070 Ti, bench bee6d48). Exterior 3×3. |
+| Skyrim SE         | BSA v105 LZ4  | 100% (18 862)     | Individual meshes. Cell loader wiring = M32.5.           |
+| Fallout 4         | BA2 v1/v7/v8  | 100% (34 995)     | Architecture records parsed. Cell loader wiring = M32.5. |
+| Fallout 76        | BA2 v1        | 100% (58 469)     | —                                                        |
+| Starfield         | BA2 v2/v3 LZ4 | 100% (31 058)     | —                                                        |
 
 ---
 
 ## Active Roadmap
 
 Priority: **shortest path to a playable cell**, not shortest path to a
-shinier frame. The renderer is mature (RT + RIS + SVGF + TAA + POM) and
-the content pipeline parses at 100% across every target; the next
+shinier frame. The renderer is mature (RT + RIS + SVGF + TAA + POM)
+and the content pipeline parses at 100% across every target; next
 bottlenecks are *consumers* — things that make what we parse actually
-do something on screen or at the speakers. Each tier is ordered by
-"what unblocks the next user-visible capability," not by visual polish.
+do something on screen or at the speakers.
 
-Reasoning and predecessors: see the Session 12 closeout notes above
-(test count 623 → 888, 40+ audit follow-through fixes) plus
-`docs/audits/AUDIT_FO3_2026-04-19.md` + `AUDIT_FNV_2026-04-20.md` +
-`AUDIT_ECS_2026-04-19.md`. The theme was **extraction was done, but
-consumers were missing or wrong**, which directly drives the
-"shortest path to playable" reorder below. Earlier milestone history
-(M1–M30) is preserved under
-[Previously Completed](#previously-completed-m22m30) and below.
+**Two axes.** Milestones (`M…`) ship user-visible capability.
+Risk-reducers (`R…`) are structural fixes flagged in the 2026-04-22
+architectural review — not new features, but prevention work to stop
+known growth patterns from calcifying. Each R has a "why now" and
+typically gates a specific milestone.
 
-### Tier 1 — Playable Exterior (blocks "you can walk around")
+### Tier 1 — Playable exterior (blocks "you can walk around")
 
-| # | Milestone | Scope | Depends on |
-|---|-----------|-------|------------|
-| M32 | Landscape Mesh | Parse LAND records (33×33 heightmap grid per cell), generate terrain mesh, LTEX/TXST texture layers with alpha-blended splatting, vertex colors. The missing ground plane for all exterior cells. | ESM parser |
-| M33 | Sky & Atmosphere | Parse WTHR (Weather) records. Sky gradient dome, sun disc with position from game-time, cloud layers (scrolling textures), horizon fog. Procedural fallback when no WTHR is set. Replace hardcoded clear color. | ESM parser |
-| M34 | Exterior Lighting | Proper directional sun derived from WTHR/climate sun position. Time-of-day ambient color interpolation. Exterior fog from WTHR fog data (distance + color). Interior/exterior light path split in the shader. | M33 |
-| **FO3 exterior bench** | Run `--esm Fallout3.esm --grid 0,0 …`, confirm it renders, capture a `--bench-frames` snapshot, and promote the ROADMAP Tier-1 row from "wired" to "validated" (FNV Prospector baseline 251.6 FPS at bee6d48 for reference). | #444 (done) |
-| M32.5 | Per-game cell loader parity | Wire Skyrim + FO4 interior cells through the existing `cell_loader` (Skyrim has XCLL 92-byte + LGTM templates; FO4 has BGSM materials + SCOL/PKIN expansion already parsed). Oblivion needs BSA v103 decompression first. | M24 |
+| #      | Milestone                      | Scope                                                                                                                                                                                                                                                                                                                        | Depends on         |
+|--------|--------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------|
+| M33    | Sky & atmosphere               | Parse WTHR (Weather) records. Sky gradient dome, sun disc with position from game-time, cloud layers (scrolling textures), horizon fog. Procedural fallback when no WTHR is set. Replace hardcoded clear color.                                                                                                              | ESM parser         |
+| M34    | Exterior lighting              | Proper directional sun derived from WTHR/climate sun position. Time-of-day ambient color interpolation. Exterior fog from WTHR fog data (distance + color). Interior/exterior light path split in the shader.                                                                                                                | M33                |
+| M32.5  | Per-game cell loader parity    | Wire Skyrim + FO4 interior cells through the existing `cell_loader` (Skyrim has XCLL 92-byte + LGTM templates; FO4 has BGSM materials + SCOL/PKIN expansion already parsed). Oblivion needs BSA v103 decompression first.                                                                                                    | M24                |
+| R6a    | Prospector re-bench            | Re-run `--bench-frames 300` on Prospector at HEAD. Update "Bench-of-record" + matrix. Tracks 72-commit drift from `bee6d48`.                                                                                                                                                                                                 | —                  |
 
-### Tier 2 — Actors Visible & Animated (blocks "cells are populated")
+### Tier 2 — Actors visible & animated (blocks "cells are populated")
 
-| # | Milestone | Scope | Depends on |
-|---|-----------|-------|------------|
-| M29 | GPU Skinning | Compute-shader bone-palette eval. `SkinnedMesh` component → bone SSBO → unified vertex shader. Every NPC / creature mesh is skinned today; without this they can't animate. | M25 |
-| M41.0 | FaceGen heads render | Spawn NPC entities with HDPT / EYES / HAIR meshes assembled into the NPC body. Parse already lands via #458 (misc stubs) + #440 (FaceGen NIF geometry fix); wiring the assembler is the next step. | M29, #458 |
-| M41 | NPC Spawning | Resolve NPC_ / CREA records → ECS entities with race/class/equipped armor + weapons. Spawn ACHR references from CELL REFRs. Movement is fly-by-waypoint until M42. | M24, M29, M41.0 |
-| M40 | World Streaming | Cell load/unload based on player position. Multi-cell exterior grid with async loading. BLAS streaming (evict/reload) ties into M31's LRU eviction. | M32, M35 |
+| #      | Milestone                      | Scope                                                                                                                                                                                                                                                                                                                        | Depends on         |
+|--------|--------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------|
+| M29    | GPU skinning                   | Compute-shader bone-palette eval. `SkinnedMesh` component → bone SSBO → unified vertex shader. Every NPC / creature mesh is skinned today; without this they can't animate.                                                                                                                                                  | M25                |
+| M41.0  | FaceGen heads render           | Spawn NPC entities with HDPT / EYES / HAIR meshes assembled into the NPC body. Parse already lands via #458 (misc stubs) + #440 (FaceGen NIF geometry fix).                                                                                                                                                                  | M29, #458          |
+| M41    | NPC spawning                   | Resolve NPC_ / CREA records → ECS entities with race/class/equipped armor + weapons. Spawn ACHR references from CELL REFRs. Movement is fly-by-waypoint until M42.                                                                                                                                                           | M24, M29, M41.0    |
+| M40    | World streaming                | Cell load/unload based on player position. Multi-cell exterior grid with async loading. BLAS streaming (evict/reload) ties into M31's LRU eviction.                                                                                                                                                                          | M32, M35           |
+| **R6** | Scratch-buffer instrumentation | `VulkanContext` holds ~5 persistent `Vec` scratches (`gpu_instances_scratch`, `batches_scratch`, `terrain_tile_scratch`, …). On M40 cell transitions, their capacity will grow unbounded with zero telemetry. Add `ctx.scratch` debug command printing per-Vec `capacity()`. **Why now:** before M40, not after. 1-hour task. | —                  |
 
-### Tier 3 — Scripting Runtime (unblocks 1257 FO3 SCPT records)
+### Tier 3 — Scripting runtime (unblocks 1 257 FO3 SCPT records)
 
-Hooks-first so terminals, doors, traps, lights, and activator callbacks
-work before we try to boot the full Papyrus surface.
+Hooks-first so terminals, doors, traps, lights, and activator
+callbacks work before we try to boot the full Papyrus surface.
 
-| # | Milestone | Scope | Depends on |
-|---|-----------|-------|------------|
-| M47.0 | Event hooks runtime | Bytecode-less ECS event handlers that respond to the canonical `OnActivate` / `OnHit` / `OnTriggerEnter` / `OnCellLoad` / `OnEquip` set. Reads the SCPT source text (M30 parser) when present and compiles to ECS systems at cell load; opaque SCDA bytecode is ignored. Terminals, doors, traps, lights in vanilla FO3 / FNV use this subset heavily. | M30, #443 |
-| M47.1 | Condition eval | The ~300 condition function vocabulary (GetIsID, GetCurrentTime, GetQuestStage, GetFactionRank, …) evaluated against ECS state. Shared evaluator used by AI packages, perks, dialogue triggers, terminal branches. | M47.0 |
-| M47.2 | Full scripting runtime | Papyrus transpiler (M30 AST → ECS components + systems), ESM-native 136-event dispatch, perk entry-point composition. Closes the loop for Skyrim+ Papyrus content. | M30.2, M47.1, M43 |
+| #      | Milestone                      | Scope                                                                                                                                                                                                                                                                                                                                                                                                      | Depends on      |
+|--------|--------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------|
+| M47.0  | Event hooks runtime            | Bytecode-less ECS event handlers that respond to the canonical `OnActivate` / `OnHit` / `OnTriggerEnter` / `OnCellLoad` / `OnEquip` set. Reads the SCPT source text (M30 parser) when present and compiles to ECS systems at cell load; opaque SCDA bytecode is ignored. Terminals, doors, traps, lights in vanilla FO3 / FNV use this subset heavily.                                                      | M30, #443       |
+| M47.1  | Condition eval                 | The ~300 condition function vocabulary (GetIsID, GetCurrentTime, GetQuestStage, GetFactionRank, …) evaluated against ECS state. Shared evaluator used by AI packages, perks, dialogue triggers, terminal branches.                                                                                                                                                                                         | M47.0           |
+| **R5** | Papyrus quest prototype        | Before committing to the full "ECS-native, no VM" bet in M47.2, pick *one* real Skyrim quest with latent `Utility.Wait()`, a state change, and a cross-script callback. Transpile by hand. If the ECS shape holds up, proceed. If it fights you, fall back to Papyrus stack-VM semantics run *as an ECS system* — still a huge improvement over the original engine. **Why now:** de-risks M47.2 scope.      | M30, M47.0      |
+| M47.2  | Full scripting runtime         | Papyrus transpiler (M30 AST → ECS components + systems), ESM-native 136-event dispatch, perk entry-point composition. Closes the loop for Skyrim+ Papyrus content. Shape determined by R5 outcome.                                                                                                                                                                                                         | R5, M30.2, M43  |
 
-### Tier 4 — Audio & Save/Load (unblocks "it feels like a game")
+### Tier 4 — Audio & save/load (unblocks "it feels like a game")
 
-| # | Milestone | Scope | Depends on |
-|---|-----------|-------|------------|
-| M44 | Audio | 3D spatial audio via `rodio` or `kira`. Footsteps from FOOT/IMPD records. Ambient soundscapes from REGN. Music from MUSC (Skyrim+) / hardcoded tracks (FO3/FNV). Basic crossfade + occlusion via a raycast. No 5.1, no reverb zones initially. | — |
-| M45 | Save/Load | Serialize world state (ECS components relevant to game-state + change forms). Simple serde-based snapshot format for v1 — full cosave compatibility is follow-up. Unblocks playtest iteration. | M40 (world streaming dictates what needs to serialize) |
+| #     | Milestone   | Scope                                                                                                                                                                                                                                  | Depends on                                      |
+|-------|-------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------|
+| M44   | Audio       | 3D spatial audio via `rodio` or `kira`. Footsteps from FOOT/IMPD. Ambient soundscapes from REGN. Music from MUSC / hardcoded. Basic crossfade + occlusion via raycast. No 5.1, no reverb zones initially.                              | —                                               |
+| M45   | Save/Load   | Serialize world state (ECS components relevant to game-state + change forms). Simple serde-based snapshot format for v1 — full cosave compatibility is follow-up. Unblocks playtest iteration.                                         | M40 (world streaming dictates what to serialize) |
 
-### Tier 5 — Renderer Polish (quality, not capability)
+### Tier 5 — Renderer polish (quality, not capability)
 
 Each of these buys 10–30% visual quality but no new feature. Keep
 active for incremental wins; don't let them block Tier 1–4.
 
-| # | Milestone | Scope | Depends on |
-|---|-----------|-------|------------|
-| M35 | Terrain LOD | Parse `.btr` terrain LOD meshes + `.bto` object LOD. Distance-based LOD selection. Gameplay-relevant half of this is world streaming (M40); pure LOD is quality. | M32 |
-| M37 | SVGF Spatial Filter | A-trous wavelet filter using existing moments data. 3 iterations, edge-stopping on normal/depth/variance. 1-SPP → ~8-SPP visual quality on GI. | — |
-| M37.3 | ReSTIR-DI | Full spatiotemporal reservoir reuse. Drops shadow rays to 1/pixel while sampling hundreds of lights. Streaming-RIS already shipped as M31.5. | M31.5, M37 |
-| M38 | Transparency & Water | OIT or depth-peeled transparency. Water plane mesh with reflection/refraction. NIF alpha sort correctness. | — |
-| M39 | Texture Streaming | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Memory budget with LRU eviction. | — |
+| #       | Milestone             | Scope                                                                                                                                                                                                                                                                                                                                                                                         | Depends on |
+|---------|-----------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------|
+| **R1**  | MaterialTable refactor | `DrawCommand` has ~40 fields and ~10 shader-variant payloads (skin_tint, hair_tint, multi_layer_*, eye_*, sparkle, terrain_tile_index, POM, glow/detail/gloss, UV transform, material_alpha, z_*). Most are **per-material, not per-draw**. Collapse material fields to a single `material_id: u32` indexing a per-frame material table. GpuInstance encodes from the table. **Why now:** every new material feature grows DrawCommand + GpuInstance + DrawBatch + sort key + 3 shaders in lockstep. **Blocks M38.** | —          |
+| M35     | Terrain LOD            | Parse `.btr` terrain LOD meshes + `.bto` object LOD. Distance-based LOD selection. Gameplay-relevant half is world streaming (M40); pure LOD is quality.                                                                                                                                                                                                                                        | M32        |
+| M37     | SVGF spatial filter    | A-trous wavelet filter using existing moments data. 3 iterations, edge-stopping on normal/depth/variance. 1-SPP → ~8-SPP visual quality on GI.                                                                                                                                                                                                                                                 | —          |
+| M37.3   | ReSTIR-DI              | Full spatiotemporal reservoir reuse. Drops shadow rays to 1/pixel while sampling hundreds of lights. Streaming-RIS already shipped as M31.5.                                                                                                                                                                                                                                                    | M31.5, M37 |
+| M38     | Transparency & water   | OIT or depth-peeled transparency. Water plane mesh with reflection/refraction. NIF alpha sort correctness.                                                                                                                                                                                                                                                                                      | R1         |
+| M39     | Texture streaming      | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Memory budget with LRU eviction.                                                                                                                                                                                                                                                                              | —          |
 
-### Tier 6 — Engine Infrastructure (enablers for later tiers)
+### Tier 6 — Engine infrastructure (enablers)
 
-| # | Milestone | Scope | Depends on |
-|---|-----------|-------|------------|
-| M27 | Parallel System Dispatch | Rayon-based parallel ECS system execution. Type-sorted lock acquisition already in place. Mostly a pure optimisation — bumps frame budget for Tier 2–4 work. | — |
-| M28.5 | Character Controller | Kinematic capsule with step-up, slope limiting, ground snapping. Replaces the dynamic-body fly camera for on-foot movement. | M28, M32 |
-| M24.2 | ESM Phase 2 | QUST / DIAL / INFO / PERK / MGEF / SPEL / ENCH / AVIF semantic parsing. Quest stages, dialogue trees, perk entry points, magic effects. | M24 |
-| M30.2 | Papyrus Phase 2–4 | Statement parser, script declarations, FO4 extensions. Full `.psc` → AST for the entire Skyrim / FO4 corpus. | M30 |
-| M46.0 | Multi-plugin CLI | Thread `parse_esm_with_load_order` (#445, landed) through `--esm` so the CLI can accept a load order. FormID remap is done; the CLI surface is the missing piece. | #445 (done) |
+| #       | Milestone                           | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Depends on     |
+|---------|-------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------|
+| **R7**  | Scheduler access declarations       | Current RwLock-only serialization is correct but invisible — systems serialize at component-storage granularity and the lock tracker catches deadlocks, not contention. Declaring accesses on the `System` trait (even runtime-checked) would make M27 parallel dispatch diagnosable. **Why now:** gate this in *before* flipping M27 on, so "I turned on rayon and performance got weird" isn't the debugging context.                                                                                                                                                                 | —              |
+| M27     | Parallel system dispatch            | Rayon-based parallel ECS system execution. TypeId-sorted lock acquisition already in place. Mostly pure optimisation — bumps frame budget for Tier 2–4 work.                                                                                                                                                                                                                                                                                                                                                                                                                           | R7             |
+| M28.5   | Character controller                | Kinematic capsule with step-up, slope limiting, ground snapping. Replaces the dynamic-body fly camera for on-foot movement.                                                                                                                                                                                                                                                                                                                                                                                                                                                            | M28, M32       |
+| **R2**  | ESM typed subrecord decoder         | `crates/plugin/src/esm/cell.rs` is 3217 lines — the biggest file in the repo — because sub-record dispatch is inlined in big walkers. Tier 3 adds QUST, DIAL, INFO, PERK, MGEF, SPEL, ENCH, AVIF, PACK, NAVM — a ~7× record-type surface growth. Extract a typed sub-record reader API (`read_sub::<Edid>(stream)?`, compile-time layouts). NIF's `NifStream` is already at that shape; ESM is not. **Why now:** doing the new records on the current shape is O(2K-line-file) edits; with a typed decoder it's O(new file). Prevention win, **not a rewrite**. **Blocks M24.2.**       | —              |
+| M24.2   | ESM Phase 2                         | QUST / DIAL / INFO / PERK / MGEF / SPEL / ENCH / AVIF semantic parsing. Quest stages, dialogue trees, perk entry points, magic effects.                                                                                                                                                                                                                                                                                                                                                                                                                                                | R2             |
+| M30.2   | Papyrus Phase 2–4                   | Statement parser, script declarations, FO4 extensions. Full `.psc` → AST for the entire Skyrim / FO4 corpus.                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | M30            |
+| M46.0   | Multi-plugin CLI                    | Thread `parse_esm_with_load_order` (#445, landed) through `--esm` so the CLI can accept a load order. FormID remap is done; CLI surface is the missing piece.                                                                                                                                                                                                                                                                                                                                                                                                                          | #445 (done)    |
+| **R3**  | NIF per-block-type parse histogram  | 100% file parse rate is real, but the `NiUnknown` soft-fail path means **a per-block parser regression shows up as missing geometry, not as a parse failure**. `MIN_SUCCESS_RATE = 1.0` catches file-level; per-block-type it doesn't. Have `nif_stats` emit a per-block-type `parsed vs NiUnknown` histogram and fail CI on regression. **Why now:** cheap (1-day), closes the biggest blind spot in the "100%" claim.                                                                                                                                                                 | —              |
 
-### Tier 7 — Deep Gameplay Systems (deferred until Tier 1–4 proves out)
+### Tier 7 — Deep gameplay systems (deferred until Tier 1–4 proves out)
 
-| # | Milestone | Scope | Depends on |
-|---|-----------|-------|------------|
-| M42 | AI Packages | 30 composable procedures, package stack, Sandbox. Patrol paths from NAVM. Basic wander/follow/travel. PACK records need parsing first (#446 open). | M28.5, M41, #446 |
-| M43 | Quests & Dialogue | Quest stages, condition eval (~300 functions via M47.1), dialogue trees, Story Manager event triggers. Biggest single surface in the engine; ~50% of M24.2 Phase 2 feeds this. | M24.2, M41, M47.1 |
-| M46 | Full Plugin Loading | Discover, sort, merge, resolve conflicts across the full load order. Builds on M46.0 (CLI wiring) + the existing `plugin/resolver.rs` DAG. | M24.2, M46.0 |
-| M48 | UI Integration | Scaleform GFx stubs (`_global.gfx`), Papyrus ↔ UI bridge, input routing, font loading, all 34 menus. Needs the scripting runtime (M47.2) to plumb menu callbacks. | M20, M47.2 |
+| #       | Milestone                    | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Depends on                                      |
+|---------|------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------|
+| M42     | AI packages                  | 30 composable procedures, package stack, Sandbox. Patrol paths from NAVM. Basic wander/follow/travel. PACK records need parsing first (#446).                                                                                                                                                                                                                                                                                                                                                         | M28.5, M41, #446                                |
+| M43     | Quests & dialogue            | Quest stages, condition eval (~300 functions via M47.1), dialogue trees, Story Manager event triggers. Biggest single surface in the engine; ~50% of M24.2 Phase 2 feeds this.                                                                                                                                                                                                                                                                                                                        | M24.2, M41, M47.1                               |
+| M46     | Full plugin loading          | Discover, sort, merge, resolve conflicts across the full load order. Builds on M46.0 (CLI wiring) + the existing `plugin/resolver.rs` DAG.                                                                                                                                                                                                                                                                                                                                                            | M24.2, M46.0                                    |
+| **R4**  | SWF/GFx strategic decision   | M20 works for static SWF menus. M48 needs Scaleform GFx extensions (`_global.gfx`, text replacement, Papyrus callbacks, fonts, 34 menus). Ruffle has no GFx extension support and isn't pinned — it drags wgpu into an otherwise ash-only tree. Honest exits: (a) in-house AS2+GFx-subset interpreter (Papyrus-parser-adjacent patience), or (b) rebuild menus in egui/iced, treat Scaleform compat as out of scope. **Why now (decision, not implementation):** don't sleepwalk into a 3–6 month rabbit hole in Tier 7. Pick a direction so M48 has a plan, then defer until Tier 4 ships. | M20                                             |
+| M48     | UI integration               | Papyrus ↔ UI bridge, input routing, menu callbacks. Shape determined by R4 decision.                                                                                                                                                                                                                                                                                                                                                                                                                  | R4, M20, M47.2                                  |
 
 ### Parking lot (nice-to-have, no active work)
 
-| # | Notes |
-|---|---|
-| M37.6 | DLSS2 integration. Proprietary, 4070 Ti target. Post-M37 TAA is already solid; DLSS is a later polish pass if it ever becomes relevant. |
-| M25 | Vulkan Compute — partially realised (clustered lighting / SSAO / SVGF temporal already compute-backed). Remaining work folds into M29 (skinning) and M37 (spatial filter) as they need it. |
-| Full cosave save/load | M45 v1 ships a simple snapshot. Byte-compatible cosave format (to load an original-engine save into Redux, or vice versa) is speculative and not a priority. |
+| #       | Notes                                                                                                                                                                            |
+|---------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| M37.6   | DLSS2. Proprietary, 4070 Ti target. Post-M37 TAA is already solid; DLSS is a later polish pass if it ever becomes relevant.                                                     |
+| M25     | Vulkan Compute — partially realised (clustered lighting / SSAO / SVGF temporal are compute-backed). Remaining work folds into M29 (skinning) and M37 (spatial filter).          |
+| Full cosave save/load | M45 v1 ships a simple snapshot. Byte-compatible cosave format (load original-engine save into Redux, or vice versa) is speculative and not a priority.                         |
+
+---
+
+## Architecture Decisions
+
+### The keep list — what *not* to change despite temptation
+
+These were re-examined in the 2026-04-22 architectural review and
+deliberately kept. Document them here so they survive hype-driven
+rewrite pressure.
+
+| Decision                                     | Choice                                                         | Why kept                                                                                                                                                                                                              |
+|----------------------------------------------|----------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| ECS storage model                            | Per-component `Component::Storage` (SparseSet or Packed)       | No archetype store. Cheap to maintain, easy to reason about, fine at Bethesda entity counts (~1 200 dense interior, a few thousand streamed exterior). Archetypes would be seductive and wrong at these query shapes. |
+| Lock model                                   | Per-storage `RwLock`, TypeId-sorted acquisition, lock_tracker   | Query methods take `&self`; multi-component queries acquire in `TypeId` order; `#313` cross-thread ABBA graph + debug tracker catches deadlock pre-parallel. Mature. Keep.                                          |
+| NIF block dispatch                           | `Box<dyn NiObject>` over 186 types                              | Enum dispatch would cost more in maintenance than it gains in perf at these branch counts. Keep.                                                                                                                       |
+| NIF versioning                               | Raw `bsver()` checks inline, not trait dispatch via `NifVariant` | Per `#437` / `#160` / `#323`: byte-level versioning is genuinely per-game-per-version. A trait would lie. The semantic `NifVariant` flags are used where useful; raw bsver is used where versioning is byte-level. Keep. |
+| Plugin identity                              | Content-addressed Form IDs                                      | Eliminates load-order dependency + slot limits. Best single architectural call in the project. Keep.                                                                                                                  |
+| Coordinate system                            | Z-up→Y-up with CW angle negation                                | Documented in `docs/engine/coordinate-system.md`. Keep.                                                                                                                                                                |
+| Rendering                                    | RT-first, rasterized fallback                                   | Scoped to RTX 4070 Ti target. Correct for this hardware. Keep.                                                                                                                                                         |
+| Legacy compat                                | Parse data, don't emulate engine                                | Better results, clean room, no copyright issues. Keep.                                                                                                                                                                 |
+| Scripting                                    | ECS-native (no VM)                                              | Eliminates Papyrus queue latency, stack serialization, orphaned stacks. Philosophically correct, but see R5 — prototype one representative quest before committing the full M47.2 shape.                             |
+
+### Risk-reducers (R1–R7, new 2026-04-22)
+
+Not new features — structural fixes to keep known growth patterns
+from calcifying. Each is folded into the tier where it blocks, above.
+Index:
+
+- **R1** — MaterialTable refactor (collapse DrawCommand). Tier 5, blocks M38.
+- **R2** — ESM typed subrecord decoder. Tier 6, blocks M24.2.
+- **R3** — NIF per-block-type parse histogram. Tier 6, no blocker, 1-day prevention.
+- **R4** — SWF/GFx strategic decision. Tier 7, gates M48.
+- **R5** — Papyrus quest prototype. Tier 3, gates M47.2.
+- **R6** — Scratch-buffer instrumentation. Tier 2, before M40. **R6a** — Prospector re-bench. Tier 1.
+- **R7** — Scheduler access declarations. Tier 6, gates M27.
+
+### Growth discipline
+
+The project's single biggest risk is **scope growth without
+compression** (64K → ~91K LOC across the last two sessions). Tier
+ordering gives top-level backpressure; apply it inside crates too. If
+a single file crosses 3 500 lines, a struct crosses 50 fields, or a
+context struct crosses 60 fields, treat it as a signal rather than a
+stat to report — investigate before adding.
+
+---
+
+## Completed Milestones
+
+One-liners grouped by area. Per-milestone scope is in `git log`;
+session-level context is in [HISTORY.md](HISTORY.md).
+
+**Graphics foundation**
+M1 Vulkan init chain · M2 GPU geometry · M4 ECS-driven rendering ·
+M7 depth buffer · M8 texturing · M13 directional lighting.
+
+**ECS, plugins, coordinates**
+M3 ECS foundation (World, Component, Storage, Query, Scheduler,
+Resources, string interning) · M5 plugin system (stable Form IDs,
+DAG resolver) · M6 legacy bridge (per-game parser stubs) ·
+M17 coordinate system fix (CW rotation, SVD degenerate repair).
+
+**NIF parser overhaul (N23 series)**
+N23.1 trait hierarchy · N23.2 shader completeness ·
+N23.3 Oblivion block types · N23.4 FO3/FNV validation ·
+N23.5 skinning · N23.6 Havok collision skip + compressed mesh ·
+N23.7 Fallout 4 · N23.8 particles · N23.9 FO76/Starfield ·
+N23.10 test infrastructure. **Current: 186 registered type names,
+156 parsed + 30 Havok skip.**
+
+**Asset pipeline**
+M9 NIF parser · M10 NIF→ECS import · M11 BSA reader ·
+M14 DDS texture loading · M16 ESM parser & cell loading ·
+M18 Skyrim SE NIF · M19 full cell loading · M26 BA2 archive
+support (v1/v2/v3/v7/v8, zlib + LZ4, 100% across 7 games).
+
+**ESM records (M24 Phase 1)**
+Items (WEAP/ARMO/AMMO/MISC/KEYM/ALCH/INGR/BOOK/NOTE), containers,
+leveled lists (LVLI/LVLN), NPC_, RACE, CLAS, FACT, GLOB, GMST.
+13 684 structured records on FNV.esm. SCPT pre-Papyrus bytecode
+records parsed (#443). CREA + LVLC dispatched (#442/#448). PACK /
+QUST / DIAL / MESG / PERK / SPEL / MGEF stubs (#446/#447).
+
+**Animation**
+M21 animation playback (.kf, linear/Hermite/TBC, 8 controller types,
+blending stack) · KFM binary parser (Gamebryo 1.2.0.0 → 2.2.0.0) ·
+BSAnimNote / BSAnimNotes with IK hints · skeletal skinning
+end-to-end (#178) — `SkinnedMesh` ECS component, 4 096-slot bone
+palette SSBO, unified vertex shader.
+
+**RT renderer**
+M22 RT-first multi-light (SSBO lights, ray query shadows, RT
+reflections, 1-bounce GI, SVGF temporal, composite + ACES) ·
+M31 RT performance at scale (batched BLAS, TLAS culling,
+importance-sorted shadow budget, distance-based ray fallback, BLAS
+LRU eviction, deferred SSBO rebuild) ·
+M31.5 streaming RIS direct lighting ·
+M32 landscape terrain (LAND + LTEX/TXST splatting) ·
+M34 Phase 1 default exterior sun ·
+M36 BLAS compaction (20–50% memory reduction) ·
+M37.5 TAA (Halton jitter, motion-vector reprojection, YCoCg clamp,
+mesh-id disocclusion).
+
+**Scripting, physics, UI**
+M12 ECS-native scripting foundation (events + timers) ·
+M28 Phase 1 physics (Rapier3D bridge) ·
+M30 Phase 1 Papyrus parser (logos lexer + Pratt expression parser,
+full AST) · M20 Scaleform/SWF UI via Ruffle.
+
+**Debug & diagnostics**
+M15 debug logging & diagnostics · debug CLI (`byro-dbg`) with
+TCP protocol and Papyrus-expression query language ·
+live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ---
 
@@ -993,7 +288,6 @@ active for incremental wins; don't let them block Tier 1–4.
 ### Open — Tier 1 / 2 blockers
 
 - [ ] No sky, sun, clouds, or atmosphere — exterior uses hardcoded clear color (M33)
-- [ ] No landscape terrain mesh on exterior cells (M32)
 - [ ] No skinned mesh rendering — every NPC / creature is stuck in bind pose (M29)
 - [ ] NPCs + creatures don't spawn as ECS entities even when parsed (M41 / M41.0)
 - [ ] No world streaming — entire cell re-imported from scratch on every load (M40)
@@ -1002,139 +296,88 @@ active for incremental wins; don't let them block Tier 1–4.
 
 ### Open — Tier 3 / 4 gaps
 
-- [ ] 1257 FO3 SCPT records parsed; no runtime executes them (M47.0 event hooks)
+- [ ] 1 257 FO3 SCPT records parsed; no runtime executes them (M47.0)
 - [ ] No audio subsystem of any kind (M44)
 - [ ] No save/load — playtest iterations require cold cell re-load (M45)
-- [ ] `PACK` (AI packages) records skip the catch-all — no PACK parser, no evaluator (#446, M42)
+- [ ] `PACK` (AI packages) records have stubs only — no evaluator (#446, M42)
 
-### Open — polish / enablers
+### Open — Risk-reducers (2026-04-22)
 
-- [ ] No terrain or object LOD — no distant rendering (M35)
-- [ ] NIF material properties beyond diffuse/normal/alpha not fully wired (M38 wetness/subsurface/transparency)
-- [ ] Scheduler is single-threaded (M27)
-- [ ] parry3d panics on nested compound collision shapes (catch_unwind guard in place)
+- [ ] **R1** DrawCommand has ~40 fields + 10 shader-variant payloads — collapse to `material_id` indirection (blocks M38)
+- [ ] **R2** ESM sub-record decoder is ad-hoc across 3 000+-line walkers — typed `read_sub::<T>` API (blocks M24.2)
+- [ ] **R3** NIF `NiUnknown` soft-fail masks per-block regressions — per-type histogram in `nif_stats` with CI regression gate
+- [ ] **R4** SWF/GFx strategic decision needed before M48 — Ruffle+GFx-stubs vs rewrite menus natively
+- [ ] **R5** Papyrus full-runtime prototype on one real quest before M47.2 scope commitment
+- [ ] **R6** `VulkanContext` scratch buffers have no capacity telemetry — add `ctx.scratch` before M40
+- [ ] **R6a** Prospector bench is 72 commits stale since `bee6d48` — re-run `--bench-frames 300`
+- [ ] **R7** Scheduler access declarations before flipping M27 parallel dispatch on
+
+### Open — Misc
+
+- [ ] `parry3d` panics on nested compound collision shapes (catch_unwind guard in place)
 - [ ] `--esm` accepts only one plugin; `parse_esm_with_load_order` is wired but CLI isn't (M46.0)
-- [ ] Megaton FPS bench pending (interior loads clean but no fresh `--bench-frames` run yet — FNV Prospector re-benched at commit bee6d48 = 251.6 FPS)
-
-### Resolved
-- [x] Pipeline cache bypassed on some create sites (cold shader compile on every run) → VkPipelineCache threaded through every create site with disk persistence (#426)
-- [x] BLAS compaction leaked GPU memory when the occupancy query failed partway through → fenced teardown across all five phases (#316)
-- [x] Multi-draw indirect path used per-batch `cmd_draw_indexed` → collapsed to a single `cmd_draw_indexed_indirect` (#309)
-- [x] Skyrim NPC heads/faces invisible (BSDynamicTriShape import path missing) → full BSDynamicTriShape mesh extraction (#341)
-- [x] Torches + magic FX invisible (CPU particle data present but unrendered) → end-to-end CPU particle system (#401)
-- [x] NIF import recomputed per cell load → promoted to process-lifetime resource (#381)
-- [x] BSA/BA2 file handle re-opened per extract on exterior cell loads → long-lived handle (#360)
-- [x] Exterior cell ESM parse ran three times per load → collapsed to a single pass (#374)
-- [x] TXST record surfaced only the diffuse slot (TX00) → extract all 8 texture slots (#357)
-- [x] SCOL placements on FO4 cells invisible → parse ONAM/DATA child placements (#405)
-- [x] CELL XCLW water plane height not parsed → surfaced on the cell descriptor (#397)
-- [x] REFR default-disabled references rendered anyway → XESP gating at cell load (#349)
-- [x] Oblivion parser cascade-failed after one bad block (no per-block size table) → runtime size cache + stream-drift detector (#324, #395)
-- [x] No antialiasing — stair/column/tapestry edge shimmer → TAA compute pass with Halton jitter, Catmull-Rom history, YCoCg neighborhood clamp (M37.5)
-- [x] Top-K shadow rays dropped lights outside the top cliff → streaming weighted reservoir sampling (M31.5)
-- [x] BLAS memory pressure → ALLOW_COMPACTION + query + compact copy, 20–50% reduction (M36)
-- [x] FO4 architecture invisible — no SCOL/MOVS/PKIN/TXST records → parser extended (session 10)
-- [x] BA2 vs BSA routing fragile → auto-detect from file magic in asset_provider (session 10)
-- [x] RT shadow budget was FIFO, not importance-sorted → top-K by contribution (M31), then streaming RIS (M31.5)
-- [x] Exterior lighting had no proper sun direction → default exterior directional sun (M34)
-- [x] No landscape mesh — exterior cells had no ground → LAND heightmap + LTEX/TXST splatting (M32)
-- [x] No distance fallback for shadow/GI rays → smooth fade at 600–800/1200–1500 units (M31)
-- [x] BLAS builds blocked per-mesh with fence stall → batched single-submission (M31)
-- [x] No BLAS eviction → LRU eviction with VRAM/3 memory budget (M31, refined #387)
-- [x] Geometry SSBO rebuild called device_wait_idle → deferred destroy (M31)
-- [x] TLAS instance Vec allocated fresh each frame → amortized scratch (M31)
-- [x] MAX_INSTANCES 4096 too small for exteriors → 8192 (M31)
-- [x] Full RT pipeline: shadows, reflections, GI, SVGF denoiser, composite (M22)
-- [x] SSBO multi-light + clustered lighting + cell XCLL (M22)
-- [x] Degenerate NIF rotation matrices → SVD decomposition (M17)
-- [x] Gamebryo CW rotation convention → Euler angle sign fix (M17)
-- [x] Animation controllers → full .kf playback pipeline (M21)
-- [x] BA2 support → v1/v2/v3/v7/v8, all 7 games 100% (M26)
-- [x] UI/menu system → Ruffle SWF integration (M20)
-
----
-
-## Game Compatibility
-
-| Tier | Games | NIF | Archive | ESM | Cell Loading |
-|------|-------|-----|---------|-----|-------------|
-| 1 — Working | Fallout: New Vegas | 89 parsed + 30 skip, RT shadows, XCLL | BSA v104 ✓ | 23 record types + XCLL | Interior + exterior ✓ |
-| 1 — Working | Fallout 3 | Validated: Megaton 929 REFRs, 0 parse failures | BSA v104 ✓ | Same as FNV ✓ | Interior ✓ · Exterior wired (fresh GPU bench pending — FNV Prospector is 251.6 FPS at bee6d48) |
-| 2 — Partial | Skyrim SE | BSTriShape + BSLightingShader (8 variants) | BSA v105 ✓ (LZ4) | Stub | Individual meshes ✓ |
-| 3 — Planned | Oblivion | All block types landed, needs BSA v103 decompression | BSA v103 (opens, decompression WIP) | Stub | — |
-| 4 — Partial | Fallout 4 | 8 block types landed, half-float vertex WIP | BA2 v1/v7/v8 ✓ (GNRL + DX10, zlib) | Stub | — |
-| 5 — Future | Fallout 76 | stopcond needed | BA2 v1 ✓ (GNRL + DX10, zlib) | — | — |
-| 6 — Future | Starfield | No spec | BA2 v2/v3 ✓ (GNRL + DX10, zlib + LZ4) | — | — |
-
-**NifVariant enum covers all 8 game variants** with semantic feature flags (has_properties_list,
-has_shader_alpha_refs, has_material_crc, has_effects_list, uses_bs_lighting_shader, uses_bs_tri_shape).
-
----
-
-## Architecture Decisions
-
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| GPU BLAS | Vulkan compute (target), nalgebra (bridge) | Portable, no proprietary deps, reuses existing Vulkan infra |
-| Rendering | RT-first with rasterized fallback | RTX 4070 Ti available, future-proof |
-| Format parsing | GameVariant trait abstraction | Per-game impls, not scattered version checks |
-| Scripting | ECS-native (no VM) | Eliminates Papyrus queue latency, stack serialization, orphaned stacks |
-| Plugin identity | Content-addressed Form IDs | Eliminates load order dependency, slot limits |
-| Legacy compat | Parse data, don't emulate engine | Better results, clean room, no copyright issues |
-| Coordinate system | Z-up→Y-up with CW angle negation | Documented in docs/engine/coordinate-system.md |
 
 ---
 
 ## Project Stats
 
-| Metric | Value |
-|--------|-------|
-| Passing tests | 867 (336 nif, 206 core, 123 plugin, 62 renderer, 45 papyrus, 32 binary, 19 bsa, 17 physics, 9 nif-fixtures, 8 scripting, 4 debug-protocol, + integration) |
-| Workspace members | 15 (13 engine crates + `byroredux` binary + `byro-dbg` CLI) |
-| Completed milestones | 30+ (M1–M22, M24 Phase 1, M26, M28 Phase 1, M30 Phase 1, M31, M31.5, M32 Phase 1+2, M34 Phase 1, M36, M37.5) + N23 + N26 + #178 + session-11 #316/#381/#401/#405/#426 + session-12 #306–#463 closeout bundle |
-| NIF block types | ~215 distinct type names, ~185 parsed + 30 Havok skip |
-| NifVariant games | 8 (Morrowind → Starfield) |
-| Per-game NIF parse rate | 100% across 177,286 NIFs (7 games) |
-| Supported archive formats | BSA v103 / v104 / v105, BA2 v1 / v2 / v3 / v7 / v8 |
-| Primary language | Rust (2021 edition) |
-| Renderer | Vulkan 1.3 via ash, RT extensions (VK_KHR_ray_query) |
-| Physics | Rapier3D 0.22 (simd-stable), fixed 60 Hz substep |
-| Target platform | Linux-first (Wayland + X11) |
-| Reference GPU | NVIDIA GeForce RTX 4070 Ti |
-| Reference CPU | AMD Ryzen 9 7950X (16-core) |
+Ground-truth as of 2026-04-22, verified by `/session-close`.
 
----
+| Metric                                  | Value                        |
+|-----------------------------------------|------------------------------|
+| Rust source lines (non-test)            | ~91 300                       |
+| Rust total lines                        | ~93 300                       |
+| Source files (non-test)                 | 197                          |
+| Workspace members                       | 16                           |
+| Tests (last reported by ROADMAP)        | 924 — re-verify via `/session-close` |
+| Open issue directories                  | 530 (`.claude/issues/`)       |
+| NIFs in per-game integration sweeps     | 177 286                       |
+| Per-game NIF parse success rate         | 100% (7 games)                |
+| Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
 
-## Crate Map
+### Repro commands for every bench claim
 
-| Crate | Milestones | Tests |
-|-------|------------|-------|
-| `byroredux-core` | M3 (ECS), M5 (Form IDs), M21 (Animation), #178A (SkinnedMesh), #137 (lock guards), #340 (interned channel names), #313 (lock-order graph), #333 (Shepperd renorm), #334 (NiBlend*Interpolator) | 206 |
-| `byroredux-renderer` | M1, M2, M4, M7, M8, M13, M14, M22, M31, M31.5 (streaming RIS), M36 (BLAS compaction), M37.5 (TAA), #178B (bone palette), #136 (16× AF), #309/#316/#317/#392/#415/#416/#420/#422/#426 (session 11), #306/#419/#421/#424/#425/#427/#428 + VUID-04553 (session 12) | 62 |
-| `byroredux-platform` | M1 (windowing) | — |
-| `byroredux-plugin` | M5, M6, M19, M24 Phase 1, FO4 SCOL/MOVS/PKIN/TXST, #349 XESP, #356 Skyrim CELL, #374 single-pass exterior, #389 BGRA LIGH, #391 variant group end, #397 XCLW, #405 SCOL body, #357 all 8 TXST slots, #367 Skyrim XCLL cube/fresnel, #385 LAND error context, #396 Oblivion CREA/ACRE, #442/#448 CREA/LVLC dispatch, #443 SCPT, #444/#445 worldspace auto-pick + FormID remap, #463 CLMT TNAM | 123 |
-| `byroredux-nif` | M9, M10, M17, M18, M21, N23.1–N23.10, N26 audit, #79 KFM, #322/#323/#324/#325/#395 Oblivion robustness, #106/#128/#165/#166/#335/#341/#344/#346/#363/#364/#369/#381/#401/#403/#407/#429 session 11, BGSM material_path, session 12: #306/#329/#330/#342/#350/#398/#399/#400/#402/#408/#430/#432/#434/#439/#440/#441/#452/#453/#454/#455 | 336 |
-| `byroredux-bsa` | M11, M18, M26 (BA2), session 7 (v3 LZ4), session 10 (archive auto-detect), #352/#360 extract robustness | 19 |
-| `byroredux-physics` | M28 Phase 1 (Rapier3D bridge) | 17 |
-| `byroredux-scripting` | M12 | 8 |
-| `byroredux-papyrus` | M30 Phase 1 (Papyrus parser) | 45 |
-| `byroredux-ui` | M20 (Ruffle/SWF) | — |
-| `byroredux-debug-protocol` | Wire protocol + component registry | 4 |
-| `byroredux-debug-server` | TCP server + Papyrus evaluator (tex_missing, tex_loaded, mesh.info) | — |
-| `byroredux-cxx-bridge` | Cross-cutting | — |
-| `byroredux` (binary) | M4, M11, M14–M17, M19, M28, M32, M34, cell cache, terrain, FO4 architecture, #401 CPU particle system, #463 weather_system TNAM hours | 32 |
-| `tools/byro-dbg` | Standalone debug CLI (TCP client, REPL) | — |
+| Claim                                                                     | Command                                                                                                                                                                                        |
+|---------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Prospector Saloon 251.6 FPS / 3.97 ms (commit `bee6d48`, 2026-04-20)      | `cargo run --release -- --esm FalloutNV.esm --cell GSProspectorSaloonInterior --bsa "Meshes.bsa" --textures-bsa "Textures.bsa" --textures-bsa "Textures2.bsa" --bench-frames 300`              |
+| Megaton interior parse-side 929 REFRs (2026-04-19)                        | `cargo test -p byroredux-plugin --release --test parse_real_esm parse_real_fo3_megaton_cell_baseline -- --ignored`                                                                             |
+| Per-game full mesh sweep, 100% per game                                   | `cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored`                                                                                                                     |
+| Full ESM record counts (FNV 62 219 / FO3 31 101)                          | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored`                                                                                                                   |
+
+**Rule**: every "FPS / ms / count" claim in this document must have a
+repro command in this table. `/session-close` refuses edits that add
+a new claim without one.
 
 ---
 
 ## Reference Materials
 
-| Resource | Location | Purpose |
-|----------|----------|---------|
-| nif.xml (niftools) | `docs/legacy/nif.xml` | Authoritative NIF format spec (8563 lines) |
-| Gamebryo 2.3 source | External drive | Byte-exact serialization reference |
-| FNV game data | Steam library | Primary test content |
-| Skyrim SE game data | Steam library | Secondary test content |
-| Creation Kit wiki | uesp.net | Record type documentation |
-| Coordinate system docs | `docs/engine/coordinate-system.md` | Transform pipeline, CW convention, winding chain |
-| Memory system | `.claude/projects/.../memory/` | 38 documented engine systems |
+| Resource                   | Location                                               | Purpose                                              |
+|----------------------------|--------------------------------------------------------|------------------------------------------------------|
+| nif.xml (niftools)         | `docs/legacy/nif.xml` (authoritative at `/mnt/data/src/reference/nifxml/nif.xml`) | NIF format spec (8 563 lines)                        |
+| Gamebryo 2.3 source        | External drive                                         | Byte-exact serialization reference                   |
+| FNV / FO3 / SkyrimSE data  | Steam library (env var overrides, see README.md)       | Primary test content                                 |
+| Creation Kit wiki          | uesp.net                                               | Record type documentation                            |
+| Coordinate system docs     | `docs/engine/coordinate-system.md`                     | Transform pipeline, CW convention, winding chain     |
+
+---
+
+## Crate Map
+
+| Crate                         | Focus                                                                                                           |
+|-------------------------------|-----------------------------------------------------------------------------------------------------------------|
+| `byroredux-core`              | ECS, math, animation engine, string interning, Form IDs                                                         |
+| `byroredux-renderer`          | Vulkan + RT (ash, gpu-allocator, acceleration manager, pipelines, SVGF, TAA, composite, caustic, SSAO)          |
+| `byroredux-platform`          | winit, raw handles                                                                                              |
+| `byroredux-plugin`            | Plugin manifests, DAG resolver, ESM/ESP/ESL parser, cell loader helpers                                         |
+| `byroredux-nif`               | NIF binary parser (~186 block types), import-to-ECS, animation import                                           |
+| `byroredux-bsa`               | BSA (v103/v104/v105) + BA2 (v1/v2/v3/v7/v8, GNRL + DX10) readers                                                 |
+| `byroredux-physics`           | Rapier3D bridge (M28 Phase 1)                                                                                    |
+| `byroredux-scripting`         | ECS-native events + timers                                                                                       |
+| `byroredux-papyrus`           | Papyrus `.psc` parser (lexer + Pratt expression parser + full AST)                                               |
+| `byroredux-ui`                | Scaleform/SWF via Ruffle                                                                                         |
+| `byroredux-debug-protocol`    | Wire types + component registry for debug CLI                                                                    |
+| `byroredux-debug-server`      | TCP debug server (Late-stage exclusive system)                                                                   |
+| `byroredux-cxx-bridge`        | C++ interop via cxx                                                                                              |
+| `byroredux` (binary)          | Game loop, cell loader, fly camera, animation system, render data collection                                     |
+| `tools/byro-dbg`              | Standalone debug CLI (TCP client, REPL)                                                                          |
