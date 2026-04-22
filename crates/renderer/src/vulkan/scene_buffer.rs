@@ -695,9 +695,7 @@ impl SceneBuffers {
         // but intentionally omitted from the layout — the fragment gates every
         // rayQuery behind a uniform flag.
         // Binding 2 (TLAS) is declared in the shader but omitted when rt_enabled=false.
-        // Binding 11 (ray budget) is optional until triangle.frag.spv is recompiled
-        // with the binding declared — validated together in Commit 2.
-        let optional_bindings: &[u32] = if rt_enabled { &[11] } else { &[2, 11] };
+        let optional_bindings: &[u32] = if rt_enabled { &[] } else { &[2] };
         super::reflect::validate_set_layout(
             1,
             &bindings,

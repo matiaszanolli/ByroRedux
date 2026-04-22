@@ -185,6 +185,14 @@ layout(std430, set = 1, binding = 9) readonly buffer GlobalIndices {
 struct GpuTerrainTile {
     uint layerTextureIndex[8];
 };
+// Binding 11: RT mipmap glass ray budget counter. The CPU zeroes this
+// before each render pass; Phase-3 IOR glass fragments atomically increment
+// it. Once the count exceeds GLASS_RAY_BUDGET the fragment falls back to
+// the cheaper Fresnel-highlight path for the rest of that frame.
+layout(std430, set = 1, binding = 11) coherent buffer RayBudgetBuffer {
+    uint rayBudgetCount;
+} rayBudget;
+
 layout(std430, set = 1, binding = 10) readonly buffer TerrainTileBuffer {
     GpuTerrainTile terrainTiles[];
 };
@@ -637,6 +645,25 @@ void main() {
 
     bool rtEnabled = sceneFlags.x > 0.5;
 
+    // ── RT mipmap LOD — analogous to textureGrad mip selection ──────────
+    //
+    // World-space size of one screen pixel at this fragment. Larger footprint
+    // = more distant or smaller object = cheaper ray tier acceptable.
+    //
+    //   rtLOD 0–1: arm's reach (~0–2 m) — full IOR glass, RT reflections, GI
+    //   rtLOD 1–2: room scale (~2–6 m)  — portal glass, RT reflections, GI
+    //   rtLOD 2–3: background (~6–20 m) — Fresnel highlight only, no RT rays
+    //   rtLOD ≥ 3: far field           — plain alpha-blend, no glass effects
+    //
+    // The LOD_SCALE constant controls the transition distances; raise to
+    // favour quality (more pixels at tier 0), lower to favour performance.
+    const float RT_LOD_SCALE   = 6.0;
+    const float RT_LOD_REFLECT = 2.0;  // metal reflection ray ceiling
+    const float RT_LOD_GI      = 2.0;  // GI ray ceiling
+    const float RT_LOD_IOR     = 1.0;  // Phase-3 glass IOR ceiling (budget-gated)
+    float rtFootprint = max(length(dFdx(fragWorldPos)), length(dFdy(fragWorldPos)));
+    float rtLOD = clamp(log2(rtFootprint * RT_LOD_SCALE), 0.0, 3.0);
+
     // Base reflectance: dielectrics use 0.04, metals use albedo color.
     vec3 albedo = texColor.rgb * fragColor;
 
@@ -812,6 +839,17 @@ void main() {
     bool isGlass = inst.materialKind == MATERIAL_KIND_GLASS && roughness < 0.35;
     bool isWindow = isGlass && texColor.a < 0.5 && texColor.a > 0.02;
 
+    // RT mipmap glass tier downgrade:
+    //   Tier 3 (rtLOD ≥ 3.0): plain alpha-blend — glass effects disabled entirely.
+    //   Tier 2 (rtLOD ≥ 2.0): Fresnel highlight only — window portal ray suppressed.
+    //   Tiers 0–1 keep isGlass/isWindow as-is.
+    if (rtLOD >= 3.0) {
+        isGlass  = false;
+        isWindow = false;
+    } else if (rtLOD >= 2.0) {
+        isWindow = false;
+    }
+
     if (isWindow && rtEnabled) {
         // Fire the portal-escape ray along the surface OUTWARD normal,
         // not along `-V` (camera look direction). Pre-#421 the ray
@@ -882,13 +920,19 @@ void main() {
         F0 = vec3(0.04);
     }
 
-    // RT glass (Phase 3 IOR refraction + reflection) — DEFERRED.
-    // Firing 2 extra rays per glass fragment caused a severe perf regression
-    // (Prospector Saloon: 251 FPS → 29 FPS with dense glass objects).
-    // Glass now falls through to the normal PBR + shadow path below.
-    // glassFresnel still lifts specular and finalAlpha so surfaces read
-    // as glass rather than plastic. Re-enable behind a ray budget gate.
-    if (false && isGlass && rtEnabled) {
+    // RT glass Phase 3: IOR refraction + reflection for tier-0 fragments
+    // (rtLOD < RT_LOD_IOR = 1.0, i.e. arm's-reach glass objects).
+    // Gated by the per-frame ray budget counter — atomicAdd claims 2 units
+    // (reflection + refraction) and falls back to the Fresnel-highlight path
+    // when the budget is exhausted (glassFresnel + specStrength still active).
+    // Window surfaces (isWindow) are excluded here — they already returned above.
+    const uint GLASS_RAY_BUDGET = 512u;
+    bool glassIORAllowed = isGlass && rtEnabled && !isWindow && rtLOD < RT_LOD_IOR;
+    if (glassIORAllowed) {
+        uint old = atomicAdd(rayBudget.rayBudgetCount, 2u);
+        glassIORAllowed = (old + 2u <= GLASS_RAY_BUDGET);
+    }
+    if (glassIORAllowed) {
         // ── RT glass (Phase 3) ────────────────────────────────────────
         //
         // Physically-motivated reflect + refract + Fresnel mix:
@@ -1063,7 +1107,7 @@ void main() {
     // would otherwise apply via `indirect * albedo`. The direct path is
     // not albedo-modulated by composite (Lo already bakes in albedo per
     // dielectric kD), so this addition stays at full intensity.
-    if (rtEnabled && metalness > 0.3 && roughness < 0.6) {
+    if (rtEnabled && metalness > 0.3 && roughness < 0.6 && rtLOD < RT_LOD_REFLECT) {
         // Roughness-driven ray jitter: GGX lobe widens with roughness^2.
         // Single sample per pixel, accumulated via temporal noise (IGN seeded
         // by frame counter). SVGF temporal filter smooths the result. #320.
@@ -1343,7 +1387,7 @@ void main() {
     // (which can't see the hall-scale geometry off-screen). 1.0 = fully
     // open, 0.0 = hard against adjacent geometry.
     float rtAO = 1.0;
-    if (rtEnabled && !isWindow && !isGlass && emissiveMult < 0.01) {
+    if (rtEnabled && !isWindow && !isGlass && emissiveMult < 0.01 && rtLOD < RT_LOD_GI) {
         float giDist = length(fragWorldPos - cameraPos.xyz);
         float giFade = 1.0 - smoothstep(4000.0, 6000.0, giDist);
         if (giFade > 0.01) {
