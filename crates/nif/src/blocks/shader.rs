@@ -536,10 +536,17 @@ impl BSLightingShaderProperty {
             }
         }
 
-        // Shader flags 1/2 — u32 pair for Skyrim (BSVER < 130) and FO4 stream 130
-        // strictly. BSVER 131+ drops the flag pair and uses Num SF1/SF2 + CRC32
-        // arrays instead.
-        let (shader_flags_1, shader_flags_2) = if bsver < 130 || bsver == 130 {
+        // Shader flags 1/2 — per nif.xml (`#NI_BS_LT_FO4#` =
+        // `BSVER < 130` for the "SK" suffix variant; `#BS_FO4#` =
+        // `BSVER == 130` strictly for the "FO4" suffix variant). Gate
+        // is `bsver <= 130`. At `bsver == 131` the pair is intentionally
+        // absent per the spec — dev-stream 131 ships no shader-flag
+        // fields at all (neither the Skyrim u32 pair nor the BSVER >=
+        // 132 CRC32 arrays). 34,995 FO4 vanilla NIFs parse 100% clean
+        // against this gate shape; FO4-D1-H1 (#409) confirmed the gap
+        // is correct against nif.xml after initial concern that BSVER
+        // 131 would misalign.
+        let (shader_flags_1, shader_flags_2) = if bsver <= 130 {
             (stream.read_u32_le()?, stream.read_u32_le()?)
         } else {
             (0, 0)
@@ -1109,9 +1116,11 @@ impl BSEffectShaderProperty {
             }
         }
 
-        // Shader flags 1/2 — u32 pair for Skyrim and FO4 stream 130. BSVER 131+
-        // uses Num SF1/SF2 + CRC32 arrays.
-        let (shader_flags_1, shader_flags_2) = if bsver < 130 || bsver == 130 {
+        // Shader flags 1/2 — see sibling gate in
+        // `BSLightingShaderProperty::parse` for the full nif.xml
+        // citation. `bsver == 131` is an intentional gap: neither the
+        // u32 pair nor the BSVER >= 132 CRC arrays are present. #409.
+        let (shader_flags_1, shader_flags_2) = if bsver <= 130 {
             (stream.read_u32_le()?, stream.read_u32_le()?)
         } else {
             (0, 0)
@@ -1730,6 +1739,180 @@ mod tests {
         data.push(1u8); // use_ssr (bool)
         data.push(0u8); // wetness_use_ssr (bool)
         data
+    }
+
+    // ── #409 BSVER-131 / 132 boundary regression tests ───────────────
+
+    /// Build a header with a custom BSVER — share the version number
+    /// path with the existing FO4 / FO76 helpers so only the boundary
+    /// tests need a fresh fixture. The body is the standard
+    /// `BSLightingShaderProperty` minus the flag-pair / CRC slots the
+    /// per-BSVER gate controls; callers assemble the rest.
+    fn make_fo4_header_with_bsver(bsver: u32) -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 12,
+            user_version_2: bsver,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: vec![Arc::from("BoundaryShader")],
+            max_string_length: 14,
+            num_groups: 0,
+        }
+    }
+
+    /// Regression for #409: at `BSVER == 131` the parser must read
+    /// neither the u32 flag pair (gated on `bsver <= 130`) nor the
+    /// CRC-array counts (gated on `bsver >= 132`). This is NOT a bug —
+    /// nif.xml's `#BS_FO4#` is strict `BSVER == 130` and `#BS_GTE_132#`
+    /// starts at 132, leaving 131 as an intentional dev-stream gap
+    /// where the flag fields are absent altogether.
+    ///
+    /// The test constructs a body 8 bytes shorter than BSVER 130 (no
+    /// flag pair) and assumes the pre-flag-pair part plus the
+    /// post-CRC part line up with `bsver == 131`'s expected layout.
+    /// Consumes exactly the authored bytes.
+    #[test]
+    fn bs_lighting_bsver_131_skips_flag_pair_and_crc_counts() {
+        let header = make_fo4_header_with_bsver(131);
+        let mut data = Vec::new();
+
+        // shader_type (read before NiObjectNET for BSVER 83-130... but
+        // also 131 since the gate at `shader.rs::parse` is `bsver <
+        // 155`). See the pre-flag-pair block in the source.
+        data.extend_from_slice(&1u32.to_le_bytes()); // EnvironmentMap
+        // NiObjectNET: name (string-table idx 0), empty extra_data_refs,
+        // no controller.
+        data.extend_from_slice(&0i32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // NO flag pair at bsver == 131 (gate is `bsver <= 130`).
+        // NO Num SF1/SF2 at bsver == 131 (gate is `bsver >= 132`).
+        // Next field: uv_offset + uv_scale.
+        for v in [0.0f32, 0.0, 1.0, 1.0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // texture_set_ref
+        data.extend_from_slice(&3i32.to_le_bytes());
+        // emissive_color + emissive_multiple
+        for v in [0.0f32, 0.5, 1.0, 2.0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // Root Material (FO4+ NiFixedString)
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // texture_clamp_mode, alpha, refraction_strength, glossiness
+        data.extend_from_slice(&3u32.to_le_bytes());
+        for v in [0.8f32, 0.0, 0.5] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // specular_color + specular_strength
+        for v in [1.0f32, 0.9, 0.8, 1.5] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // FO4 common fields (BSVER 130..139): subsurface/rimlight/backlight/
+        // grayscale/fresnel.
+        data.extend_from_slice(&0.3f32.to_le_bytes());
+        data.extend_from_slice(&2.5f32.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data.extend_from_slice(&0.7f32.to_le_bytes());
+        data.extend_from_slice(&5.0f32.to_le_bytes());
+        // Wetness (7 floats — same as BSVER 130; the wetness gate is
+        // `>= 130` not per-BSVER-specific). `env_map_scale` slot
+        // (offset 4 within the wetness block) only present at
+        // `bsver == 130` strictly — at 131 the parser reads 6 floats.
+        for v in [0.1f32, 0.2, 0.3, 0.5, 0.6, 0.95] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        // shader_type=1 (EnvironmentMap) trailing: env_map_scale + 2 bools.
+        data.extend_from_slice(&0.75f32.to_le_bytes());
+        data.push(1u8);
+        data.push(0u8);
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
+        assert_eq!(prop.shader_type, 1);
+        // Flag pair stays at the pre-fill-in default `0` because the
+        // 131 gate skips the u32 read — this is what the test pins.
+        assert_eq!(prop.shader_flags_1, 0, "bsver=131 skips flag pair");
+        assert_eq!(prop.shader_flags_2, 0, "bsver=131 skips flag pair");
+        // CRC arrays stay empty because Num SF1/SF2 are gated `>= 132`.
+        assert!(prop.sf1_crcs.is_empty());
+        assert!(prop.sf2_crcs.is_empty());
+        // Every authored byte consumed — no under-read into next block.
+        assert_eq!(
+            stream.position() as usize,
+            expected_len,
+            "bsver=131 body must consume exactly what was authored"
+        );
+    }
+
+    /// Regression for #409: at `BSVER == 132` the parser must skip the
+    /// flag pair AND read `Num SF1` + the SF1 CRC array (but NOT
+    /// `Num SF2` which is gated on `>= 152`). Exercises the other side
+    /// of the BSVER 131 gap.
+    #[test]
+    fn bs_lighting_bsver_132_reads_crc_counts_but_not_flag_pair() {
+        let header = make_fo4_header_with_bsver(132);
+        let mut data = Vec::new();
+
+        // shader_type + NiObjectNET as usual.
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&0i32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // NO flag pair at bsver == 132 (gate is `bsver <= 130`).
+        // Num SF1 = 2, Num SF2 NOT read (gated on `bsver >= 152`).
+        data.extend_from_slice(&2u32.to_le_bytes());
+        // Two SF1 CRC32 entries.
+        data.extend_from_slice(&0xDEADBEEFu32.to_le_bytes());
+        data.extend_from_slice(&0xCAFEBABEu32.to_le_bytes());
+        // Standard post-flag payload.
+        for v in [0.0f32, 0.0, 1.0, 1.0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        data.extend_from_slice(&3i32.to_le_bytes());
+        for v in [0.0f32, 0.5, 1.0, 2.0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&3u32.to_le_bytes());
+        for v in [0.8f32, 0.0, 0.5] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [1.0f32, 0.9, 0.8, 1.5] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        data.extend_from_slice(&0.3f32.to_le_bytes());
+        data.extend_from_slice(&2.5f32.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data.extend_from_slice(&0.7f32.to_le_bytes());
+        data.extend_from_slice(&5.0f32.to_le_bytes());
+        // Wetness: same 6 floats as bsver 131 (no env_map_scale slot
+        // since that's strict `bsver == 130`).
+        for v in [0.1f32, 0.2, 0.3, 0.5, 0.6, 0.95] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        data.extend_from_slice(&0.75f32.to_le_bytes());
+        data.push(1u8);
+        data.push(0u8);
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
+        assert_eq!(prop.shader_type, 1);
+        assert_eq!(prop.shader_flags_1, 0);
+        assert_eq!(prop.shader_flags_2, 0);
+        assert_eq!(prop.sf1_crcs, vec![0xDEADBEEF, 0xCAFEBABE]);
+        assert!(prop.sf2_crcs.is_empty(), "Num SF2 requires bsver >= 152");
+        assert_eq!(
+            stream.position() as usize,
+            expected_len,
+            "bsver=132 must read CRC array but skip flag pair"
+        );
     }
 
     // ── N23.9: FO76/Starfield tests ──────────────────────────────────
