@@ -3,10 +3,6 @@
 use std::sync::Arc;
 
 use crate::blocks::node::NiNode;
-use crate::blocks::properties::NiAlphaProperty;
-use crate::blocks::shader::{
-    BSEffectShaderProperty, BSLightingShaderProperty, BSShaderTextureSet, ShaderTypeData,
-};
 use crate::blocks::skin::{
     BsDismemberSkinInstance, BsSkinBoneData, BsSkinInstance, NiSkinData, NiSkinInstance,
 };
@@ -15,10 +11,7 @@ use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
 
 use super::coord::{zup_matrix_to_yup_quat, zup_point_to_yup};
-use super::material::{
-    capture_shader_type_fields, extract_material_info, extract_vertex_colors, find_decal_bs,
-    find_effect_shader_bs,
-};
+use super::material::{extract_material_info, extract_vertex_colors};
 use super::{ImportedBone, ImportedMesh, ImportedSkin};
 
 /// Intermediate geometry data extracted from either NiTriShapeData or NiTriStripsData.
@@ -238,6 +231,15 @@ pub(super) fn extract_mesh_local(
 }
 
 /// Extract an ImportedMesh from a BsTriShape (Skyrim SE+ self-contained geometry).
+///
+/// Material extraction delegates to [`extract_material_info_from_refs`]
+/// — the same implementation the NiTriShape path uses — so every
+/// shader-data capture (BSLightingShaderProperty fields, ShaderTypeData
+/// variants, BSEffectShaderProperty effect data, NiAlphaProperty
+/// flags, decal / two-sided / material_kind / BGSM path resolution)
+/// stays in parity between the two geometry types. Pre-#129 this
+/// function re-implemented ~130 lines of material extraction inline
+/// and drifted (see NIF-403 for a concrete instance).
 pub(super) fn extract_bs_tri_shape(
     scene: &NifScene,
     shape: &BsTriShape,
@@ -273,140 +275,24 @@ pub(super) fn extract_bs_tri_shape(
         vec![[1.0, 1.0, 1.0]; positions.len()]
     };
 
-    let texture_path = find_texture_path_bs_tri_shape(scene, shape);
-    let material_path = find_material_path_bs_tri_shape(scene, shape);
-
-    // NiAlphaProperty: bit 0 = alpha blend, bit 9 (0x200) = alpha test
-    // (cutout). See issue #152. Prefer alpha-test over alpha-blend when
-    // both bits are set — same policy as the NiTriShape path in
-    // `apply_alpha_flags`.
-    let (mut has_alpha, alpha_test, alpha_threshold, alpha_test_func, src_blend_mode, dst_blend_mode) =
-        if let Some(idx) = shape.alpha_property_ref.index() {
-            if let Some(a) = scene.get_as::<NiAlphaProperty>(idx) {
-                let blend = a.flags & 0x001 != 0;
-                let test = a.flags & 0x200 != 0;
-                let func = ((a.flags & 0x1C00) >> 10) as u8;
-                let src = ((a.flags >> 1) & 0xF) as u8;
-                let dst = ((a.flags >> 5) & 0xF) as u8;
-                if test {
-                    (false, true, a.threshold as f32 / 255.0, func, src, dst)
-                } else {
-                    (blend, false, 0.0, 6, src, dst)
-                }
-            } else {
-                (false, false, 0.0, 6, 6, 7)
-            }
-        } else {
-            (false, false, 0.0, 6, 6, 7)
-        };
-
-    // Implicit alpha-blend for BSEffectShaderProperty-backed shapes
-    // that ship without a sibling NiAlphaProperty (#354 / audit S4-03).
-    // Skyrim's `meshes/effects/*.nif` corpus routes transparency
-    // through the effect shader + optional BGEM material, not
-    // NiAlphaProperty — without this override glow rings, dust
-    // planes, smoke cards, and magic flares render as opaque
-    // rectangles with hard polygon edges. Only flip when we know
-    // there was no explicit alpha property to honor.
-    if !has_alpha && !alpha_test && shape.alpha_property_ref.index().is_none() {
-        if let Some(idx) = shape.shader_property_ref.index() {
-            if scene.get_as::<BSEffectShaderProperty>(idx).is_some() {
-                has_alpha = true;
-            }
-        }
-    }
-
-    let two_sided = bs_tri_shape_two_sided(scene, shape);
+    // Unified material extraction — shared with the NiTriShape path.
+    // BsTriShape has no legacy NiProperty chain, so direct / inherited
+    // slices are empty. The shared implementation handles
+    // BSLightingShaderProperty / BSEffectShaderProperty, the implicit
+    // effect-shader alpha blend override (#354), Double_Sided from
+    // shader_flags_2, decals from shader flags, BGSM/BGEM name
+    // resolution, and the ShaderTypeData → ShaderTypeFields capture
+    // (#430). See #129.
+    let mat = super::material::extract_material_info_from_refs(
+        scene,
+        shape.shader_property_ref,
+        shape.alpha_property_ref,
+        &[],
+        &[],
+    );
 
     let t = &world_transform.translation;
     let quat = zup_matrix_to_yup_quat(&world_transform.rotation);
-
-    // Material defaults — used when the shape has no shader property or
-    // when the linked block is neither BSLightingShaderProperty nor
-    // BSEffectShaderProperty. `ems = 1.0` matches pre-#346 behavior.
-    let mut emissive_color = [0.0_f32; 3];
-    let mut emissive_mult = 1.0_f32;
-    let mut specular_color = [1.0_f32; 3];
-    let mut specular_strength = 1.0_f32;
-    let mut glossiness = 80.0_f32;
-    let mut uv_offset = [0.0_f32; 2];
-    let mut uv_scale = [1.0_f32; 2];
-    let mut mat_alpha = 1.0_f32;
-    let mut normal_map: Option<String> = None;
-    let mut parallax_map: Option<String> = None;
-    let mut env_map: Option<String> = None;
-    let mut env_mask: Option<String> = None;
-    let mut env_map_scale = 1.0_f32;
-    let mut shader_type_fields = super::material::ShaderTypeFields::default();
-
-    if let Some(idx) = shape.shader_property_ref.index() {
-        if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
-            if let Some(ts) = shader
-                .texture_set_ref
-                .index()
-                .and_then(|ts_idx| scene.get_as::<BSShaderTextureSet>(ts_idx))
-            {
-                normal_map = ts.textures.get(1).cloned().filter(|s| !s.is_empty());
-                // #452 / #453 — slots 3/4/5 reach the BSTriShape path
-                // alongside the existing slot-1 (normal) pull. Without
-                // this, Skyrim+ parallax / env materials dropped every
-                // non-base texture regardless of what the NIF carried.
-                parallax_map = ts.textures.get(3).cloned().filter(|s| !s.is_empty());
-                env_map = ts.textures.get(4).cloned().filter(|s| !s.is_empty());
-                env_mask = ts.textures.get(5).cloned().filter(|s| !s.is_empty());
-            }
-            // `EnvironmentMap` feeds `env_map_scale`; every other variant
-            // (SkinTint, HairTint, ParallaxOcc, MultiLayerParallax,
-            // SparkleSnow, EyeEnvmap, Fo76SkinTint) carries per-variant
-            // data that rides through `ShaderTypeFields` onto the mesh so
-            // the renderer can branch on `material_kind`. Fixes #430 —
-            // before this change the BsTriShape path silently dropped
-            // every SkinTint/HairTint/etc. payload on Skyrim+/FO4/FO76/
-            // Starfield characters.
-            if let ShaderTypeData::EnvironmentMap {
-                env_map_scale: ems,
-            } = shader.shader_type_data
-            {
-                env_map_scale = ems;
-            }
-            shader_type_fields = capture_shader_type_fields(&shader.shader_type_data);
-            emissive_color = shader.emissive_color;
-            emissive_mult = shader.emissive_multiple;
-            specular_color = shader.specular_color;
-            specular_strength = shader.specular_strength;
-            glossiness = shader.glossiness;
-            uv_offset = shader.uv_offset;
-            uv_scale = shader.uv_scale;
-            mat_alpha = shader.alpha;
-        } else if let Some(shader) = scene.get_as::<BSEffectShaderProperty>(idx) {
-            // BSEffectShaderProperty path — VFX surfaces, magic FX,
-            // particle-on-mesh emissives. Pre-#346 the importer ignored
-            // this block entirely (apart from `texture_path`, picked up
-            // by `find_texture_path_bs_tri_shape`), so emissive multiplier,
-            // UV transform, alpha, env-map scale, and the FO4+ normal
-            // texture all dropped to their defaults. Mirror the same
-            // fields the legacy NiTriShape `extract_material_info` path
-            // already pulls from `BSEffectShaderProperty`. Fields
-            // renamed to base_color/base_color_scale per #166; still
-            // routed into emissive_* because the current fragment
-            // shader drives effect-shader glow off the emissive slot.
-            emissive_color = [
-                shader.base_color[0],
-                shader.base_color[1],
-                shader.base_color[2],
-            ];
-            emissive_mult = shader.base_color_scale;
-            uv_offset = shader.uv_offset;
-            uv_scale = shader.uv_scale;
-            mat_alpha = shader.base_color[3]; // BGEM uses alpha channel of base color
-            // FO4+ effect shaders carry their own normal/env textures
-            // (BSVER >= 130). Pre-FO4 those strings are empty.
-            if !shader.normal_texture.is_empty() {
-                normal_map = Some(shader.normal_texture.clone());
-            }
-            env_map_scale = shader.env_map_scale;
-        }
-    }
 
     // Skinning data. BSTriShape per-vertex weights live in the packed
     // vertex buffer (VF_SKINNED), decoded at parse time (#177).
@@ -416,6 +302,9 @@ pub(super) fn extract_bs_tri_shape(
     // block. See #217.
     let (local_bound_center, local_bound_radius) =
         extract_local_bound(shape.center, shape.radius, &positions);
+
+    // #430 — capture ShaderTypeFields before the `mat` move.
+    let shader_type_fields = mat.shader_type_fields();
 
     Some(ImportedMesh {
         positions,
@@ -427,86 +316,59 @@ pub(super) fn extract_bs_tri_shape(
         rotation: quat,
         scale: world_transform.scale,
         name: shape.av.net.name.clone(),
-        texture_path,
-        material_path,
-        has_alpha,
-        src_blend_mode,
-        dst_blend_mode,
-        alpha_test,
-        alpha_threshold,
-        alpha_test_func,
-        two_sided,
-        is_decal: find_decal_bs(scene, shape),
-        normal_map,
+        texture_path: mat.texture_path,
+        material_path: mat.material_path,
+        has_alpha: mat.alpha_blend,
+        src_blend_mode: mat.src_blend_mode,
+        dst_blend_mode: mat.dst_blend_mode,
+        alpha_test: mat.alpha_test,
+        alpha_threshold: mat.alpha_threshold,
+        alpha_test_func: mat.alpha_test_func,
+        two_sided: mat.two_sided,
+        is_decal: mat.is_decal,
+        normal_map: mat.normal_map,
         // BsTriShape (Skyrim+) routes all texture slots through
-        // BSShaderTextureSet, which this path reads above. The legacy
-        // NiTexturingProperty glow/detail/gloss slots don't apply here,
-        // so leave them as `None`. Skyrim+ glow maps live in
-        // BSShaderTextureSet slot 2; wiring those is a separate task
-        // once we teach the renderer to sample a third slot. See #214.
-        glow_map: None,
-        detail_map: None,
-        gloss_map: None,
-        dark_map: None, // BSTriShape doesn't use NiTexturingProperty slots
-        // BSShaderTextureSet slots 3/4/5 — pulled above from the
-        // BSLightingShaderProperty texture set. #453.
-        parallax_map,
-        env_map,
-        env_mask,
-        // ParallaxOcc / MultiLayerParallax scalars arrive via
-        // `shader_type_fields` (captured from ShaderTypeData). Mirror
-        // them into the dedicated Option<f32>s so the renderer side
-        // of #453 reads a single canonical field regardless of path.
-        parallax_max_passes: shader_type_fields.parallax_max_passes,
-        parallax_height_scale: shader_type_fields.parallax_height_scale,
-        // BsTriShape vertex colors are driven by the shader
-        // properties, not an NiVertexColorProperty — pass the default
-        // (AmbientDiffuse = 2) so downstream consumers behave the same
-        // as before.
-        vertex_color_mode: 2,
-        emissive_color,
-        emissive_mult,
-        specular_color,
-        specular_strength,
-        glossiness,
-        uv_offset,
-        uv_scale,
-        mat_alpha,
-        env_map_scale,
+        // BSShaderTextureSet — the legacy NiTexturingProperty
+        // glow/detail/gloss/dark slots don't apply. Skyrim+ glow is in
+        // BSShaderTextureSet slot 2 (`mat.glow_map`), which the shared
+        // extractor already reads.
+        glow_map: mat.glow_map,
+        detail_map: mat.detail_map,
+        gloss_map: mat.gloss_map,
+        dark_map: mat.dark_map,
+        parallax_map: mat.parallax_map,
+        env_map: mat.env_map,
+        env_mask: mat.env_mask,
+        parallax_max_passes: mat.parallax_max_passes,
+        parallax_height_scale: mat.parallax_height_scale,
+        vertex_color_mode: mat.vertex_color_mode as u8,
+        emissive_color: mat.emissive_color,
+        emissive_mult: mat.emissive_mult,
+        specular_color: mat.specular_color,
+        specular_strength: mat.specular_strength,
+        glossiness: mat.glossiness,
+        uv_offset: mat.uv_offset,
+        uv_scale: mat.uv_scale,
+        mat_alpha: mat.alpha,
+        env_map_scale: mat.env_map_scale,
         parent_node: None,
         skin,
-        // BSTriShape (Skyrim+) has no NiZBufferProperty; defaults to
-        // Gamebryo runtime defaults (z_test+write on, LESSEQUAL).
-        z_test: true,
-        z_write: true,
-        z_function: 3,
+        // BSTriShape (Skyrim+) has no NiZBufferProperty binding; the
+        // shared extractor preserves Gamebryo runtime defaults
+        // (z_test+write on, LESSEQUAL) when no NiZBufferProperty is
+        // found — which is always on this path.
+        z_test: mat.z_test,
+        z_write: mat.z_write,
+        z_function: mat.z_function,
         local_bound_center,
         local_bound_radius,
-        // BsTriShape with an effect-shader parent (VFX surfaces, magic
-        // overlays, BGEM materials) — capture the rich shader fields
-        // (falloff cone, greyscale palette, FO4+/FO76 companion
-        // textures, lighting influence, etc.) so downstream consumers
-        // can route them. `None` for BSLightingShaderProperty and for
-        // shapes with no shader. See #346 / audit S4-02.
-        effect_shader: find_effect_shader_bs(scene, shape),
-        // BsTriShape's BSLightingShaderProperty does carry a
-        // shader_type — capture it directly off the linked shader so
-        // Skyrim+ characters get the right `material_kind` (#344).
-        // Falls back to 0 (Default lit) when the shape has no shader
-        // or the shader isn't a BSLightingShaderProperty.
-        material_kind: shape
-            .shader_property_ref
-            .index()
-            .and_then(|i| scene.get_as::<BSLightingShaderProperty>(i))
-            .map(|s| s.shader_type as u8)
-            .unwrap_or(0),
-        // #430 — populated from `capture_shader_type_fields` above when
-        // the shape has a BSLightingShaderProperty backing, else default.
+        effect_shader: mat.effect_shader,
+        material_kind: mat.material_kind,
         shader_type_fields,
         // BSShaderNoLightingProperty is an FO3/FNV-era property and
-        // doesn't bind to BsTriShape (Skyrim+). Always None on this
-        // path. See #451.
-        no_lighting_falloff: None,
+        // doesn't bind to BsTriShape (Skyrim+); the shared extractor
+        // won't populate it here. See #451.
+        no_lighting_falloff: mat.no_lighting_falloff,
         flags: shape.av.flags,
     })
 }
@@ -530,73 +392,6 @@ pub(super) fn extract_bs_tri_shape_local(
 /// effect-shader-backed meshes silently dropped the flag and rendered
 /// backface-culled glow geometry that should have been visible from
 /// either side.
-fn bs_tri_shape_two_sided(scene: &NifScene, shape: &BsTriShape) -> bool {
-    let Some(idx) = shape.shader_property_ref.index() else {
-        return false;
-    };
-    if let Some(s) = scene.get_as::<BSLightingShaderProperty>(idx) {
-        return s.shader_flags_2 & 0x10 != 0;
-    }
-    if let Some(s) = scene.get_as::<BSEffectShaderProperty>(idx) {
-        return s.shader_flags_2 & 0x10 != 0;
-    }
-    false
-}
-
-/// Find texture path for BsTriShape via its shader_property_ref.
-pub(super) fn find_texture_path_bs_tri_shape(
-    scene: &NifScene,
-    shape: &BsTriShape,
-) -> Option<String> {
-    if let Some(idx) = shape.shader_property_ref.index() {
-        if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
-            if let Some(ts_idx) = shader.texture_set_ref.index() {
-                if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
-                    if let Some(path) = tex_set.textures.first() {
-                        if !path.is_empty() {
-                            return Some(path.clone());
-                        }
-                    }
-                }
-            }
-        }
-        if let Some(shader) = scene.get_as::<BSEffectShaderProperty>(idx) {
-            if !shader.source_texture.is_empty() {
-                return Some(shader.source_texture.clone());
-            }
-        }
-    }
-    None
-}
-
-/// Find BGSM/BGEM material path for BsTriShape via shader property name.
-///
-/// FO4+ / FO76 / Starfield bind real material data to external material
-/// files referenced by the shader block's `net.name`:
-/// - **BSLightingShaderProperty** → `.bgsm` (opaque surfaces)
-/// - **BSEffectShaderProperty** → `.bgem` (effect surfaces: weapon energy
-///   effects, magic spells, steam vents, electrical arcs, glow decals)
-///
-/// Before #434 this only inspected BSLightingShaderProperty, so every
-/// effect-shader surface silently lost its BGEM pointer even though
-/// `find_effect_shader_bs` already captured the rich effect fields.
-/// `.bgsm`/`.bgem` suffixes are both accepted on either shader variant
-/// since the game treats the extension as advisory rather than gating.
-fn find_material_path_bs_tri_shape(scene: &NifScene, shape: &BsTriShape) -> Option<String> {
-    let idx = shape.shader_property_ref.index()?;
-    if let Some(lit) = scene.get_as::<BSLightingShaderProperty>(idx) {
-        if let Some(path) = material_path_from_name(lit.net.name.as_deref()) {
-            return Some(path);
-        }
-    }
-    if let Some(eff) = scene.get_as::<BSEffectShaderProperty>(idx) {
-        if let Some(path) = material_path_from_name(eff.net.name.as_deref()) {
-            return Some(path);
-        }
-    }
-    None
-}
-
 /// Return `Some(name)` when `name` is a `.bgsm`/`.bgem` material file
 /// path, else `None`. Shared between the BsTriShape and NiTriShape
 /// material-path extractors so both report material pointers consistently.
@@ -1116,15 +911,14 @@ mod skin_tests {
 }
 
 #[cfg(test)]
-mod two_sided_lookup_tests {
-    //! Regression tests for issue #128 — `bs_tri_shape_two_sided` must
-    //! check `BSEffectShaderProperty` in addition to
-    //! `BSLightingShaderProperty`. Skyrim+ VFX surfaces (force fields,
-    //! glow shells, magic auras) bind the effect-shader variant and
-    //! use the same `shader_flags_2 & 0x10` semantics; pre-fix the
-    //! lookup only tried `BSLightingShaderProperty`, so every
-    //! effect-shader-backed mesh silently dropped the flag and
-    //! rendered backface-culled.
+mod bs_tri_shape_shader_flag_tests {
+    //! Regression tests for issues #128 (two_sided via
+    //! BSEffectShaderProperty), #346 (effect-shader material capture +
+    //! decal flag mirroring), and #129 (shared material extractor so
+    //! these can't drift from the NiTriShape path). All tests drive
+    //! [`extract_bs_tri_shape`] end-to-end so the coverage tracks the
+    //! observable `ImportedMesh` output rather than deleted helper
+    //! implementation details.
     use super::*;
     use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
     use crate::blocks::shader::BSEffectShaderProperty;
@@ -1139,9 +933,10 @@ mod two_sided_lookup_tests {
         }
     }
 
-    /// Build a minimal `BsTriShape` whose `shader_property_ref` points
-    /// at the given block index.
-    fn shape_with_shader(idx: u32) -> BsTriShape {
+    /// Build a renderable `BsTriShape` (one triangle, three vertices)
+    /// bound to a shader block at `shader_idx`. The geometry is
+    /// minimal but non-empty so `extract_bs_tri_shape` returns `Some`.
+    fn renderable_shape(shader_idx: u32) -> BsTriShape {
         BsTriShape {
             av: NiAVObjectData {
                 net: empty_net(),
@@ -1150,30 +945,29 @@ mod two_sided_lookup_tests {
                 properties: Vec::new(),
                 collision_ref: BlockRef::NULL,
             },
-            center: NiPoint3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
+            center: NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
             radius: 0.0,
             skin_ref: BlockRef::NULL,
-            shader_property_ref: BlockRef(idx),
+            shader_property_ref: BlockRef(shader_idx),
             alpha_property_ref: BlockRef::NULL,
             vertex_desc: 0,
-            num_triangles: 0,
-            num_vertices: 0,
-            vertices: Vec::new(),
-            uvs: Vec::new(),
+            num_triangles: 1,
+            num_vertices: 3,
+            vertices: vec![
+                NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+                NiPoint3 { x: 1.0, y: 0.0, z: 0.0 },
+                NiPoint3 { x: 0.0, y: 1.0, z: 0.0 },
+            ],
+            uvs: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
             normals: Vec::new(),
             vertex_colors: Vec::new(),
-            triangles: Vec::new(),
+            triangles: vec![[0, 1, 2]],
             bone_weights: Vec::new(),
             bone_indices: Vec::new(),
         }
     }
 
-    /// Minimal `BSEffectShaderProperty` with only the bit under test
-    /// set; everything else stays at safe defaults.
+    /// Minimal `BSEffectShaderProperty` with only the bit under test set.
     fn effect_shader(flags2: u32) -> BSEffectShaderProperty {
         BSEffectShaderProperty {
             net: empty_net(),
@@ -1209,44 +1003,41 @@ mod two_sided_lookup_tests {
         }
     }
 
-    /// Regression: #128 — pre-fix, this test failed because the
-    /// `BSLightingShaderProperty::get_as` lookup returned None and
-    /// the function fell through to `false`, silently dropping the
-    /// double-sided flag on every Skyrim+ VFX surface (force fields,
-    /// glow shells, magic auras, Dwemer steam).
+    fn import(scene: &NifScene, shape: &BsTriShape) -> ImportedMesh {
+        extract_bs_tri_shape(scene, shape, &crate::types::NiTransform::default())
+            .expect("renderable shape must produce ImportedMesh")
+    }
+
+    /// #128 — Double_Sided bit on BSEffectShaderProperty.shader_flags_2
+    /// routes through the shared extractor onto `ImportedMesh.two_sided`.
     #[test]
     fn two_sided_via_bs_effect_shader_property() {
         let mut scene = NifScene::default();
         scene.blocks.push(Box::new(effect_shader(0x10)));
-        let shape = shape_with_shader(0);
-        assert!(bs_tri_shape_two_sided(&scene, &shape));
+        assert!(import(&scene, &renderable_shape(0)).two_sided);
     }
 
     #[test]
     fn not_two_sided_via_bs_effect_shader_without_flag() {
         let mut scene = NifScene::default();
         scene.blocks.push(Box::new(effect_shader(0x00)));
-        let shape = shape_with_shader(0);
-        assert!(!bs_tri_shape_two_sided(&scene, &shape));
+        assert!(!import(&scene, &renderable_shape(0)).two_sided);
     }
 
     #[test]
     fn null_shader_ref_yields_single_sided() {
         let scene = NifScene::default();
-        let mut shape = shape_with_shader(0);
+        let mut shape = renderable_shape(0);
         shape.shader_property_ref = BlockRef::NULL;
-        assert!(!bs_tri_shape_two_sided(&scene, &shape));
+        assert!(!import(&scene, &shape).two_sided);
     }
 
     #[test]
     fn shader_ref_pointing_at_unrelated_block_yields_single_sided() {
-        // Sibling check — a `shader_property_ref` index that points
-        // at a block which is neither of the two shader-property
-        // variants must return `false` (no spurious flag from
-        // mistaking some other block as a shader).
+        // A `shader_property_ref` that points at a non-shader block
+        // (e.g. a NiNode — file corruption or a ref-resolution bug)
+        // must not spuriously flip two_sided.
         let mut scene = NifScene::default();
-        // Push a non-shader block. Use a NiNode to keep the test
-        // self-contained; NiNode is the universal scene-graph block.
         scene.blocks.push(Box::new(crate::blocks::node::NiNode {
             av: NiAVObjectData {
                 net: empty_net(),
@@ -1258,23 +1049,18 @@ mod two_sided_lookup_tests {
             children: Vec::new(),
             effects: Vec::new(),
         }));
-        let shape = shape_with_shader(0);
-        assert!(!bs_tri_shape_two_sided(&scene, &shape));
+        assert!(!import(&scene, &renderable_shape(0)).two_sided);
     }
 
-    /// Regression: #346 — BsTriShape import must read material fields
-    /// (emissive, UV transform, alpha, env-map scale, FO4+ normal map)
-    /// from `BSEffectShaderProperty`, mirror the `find_decal_bs` decal
-    /// check across both shader variants, and populate the
-    /// `effect_shader` capture struct. Pre-fix every Skyrim+ effect-
-    /// shader-backed mesh fell back to defaults — magic FX, particle-on-
-    /// mesh emissives, blood-decals all rendered untransformed, opaque,
-    /// and without the emissive multiplier.
+    /// #346 — BSEffectShaderProperty material fields reach the mesh
+    /// (emissive / UV / alpha / env-map / FO4+ normal / greyscale
+    /// palette). Pre-#129 this logic was inline in extract_bs_tri_shape;
+    /// post-refactor the shared extractor delivers the same fields.
     fn effect_shader_with_payload() -> BSEffectShaderProperty {
         let mut s = effect_shader(0);
         s.uv_offset = [0.25, 0.5];
         s.uv_scale = [2.0, 4.0];
-        s.base_color = [0.7, 0.8, 0.9, 0.5]; // alpha = 0.5
+        s.base_color = [0.7, 0.8, 0.9, 0.5];
         s.base_color_scale = 3.5;
         s.env_map_scale = 0.75;
         s.normal_texture = "fx/glow_n.dds".to_string();
@@ -1286,29 +1072,7 @@ mod two_sided_lookup_tests {
     fn extract_bs_tri_shape_pulls_effect_shader_emissive_uv_alpha_normal() {
         let mut scene = NifScene::default();
         scene.blocks.push(Box::new(effect_shader_with_payload()));
-        let mut shape = shape_with_shader(0);
-        // One degenerate triangle so `extract_bs_tri_shape` returns Some.
-        shape.vertices.push(NiPoint3 {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        });
-        shape.vertices.push(NiPoint3 {
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
-        });
-        shape.vertices.push(NiPoint3 {
-            x: 0.0,
-            y: 1.0,
-            z: 0.0,
-        });
-        shape.triangles.push([0, 1, 2]);
-        shape.num_vertices = 3;
-        shape.num_triangles = 1;
-
-        let mesh =
-            extract_bs_tri_shape(&scene, &shape, &crate::types::NiTransform::default()).unwrap();
+        let mesh = import(&scene, &renderable_shape(0));
         assert_eq!(mesh.emissive_color, [0.7, 0.8, 0.9]);
         assert!((mesh.emissive_mult - 3.5).abs() < 1e-6);
         assert_eq!(mesh.uv_offset, [0.25, 0.5]);
@@ -1321,31 +1085,24 @@ mod two_sided_lookup_tests {
         assert!((fx.env_map_scale - 0.75).abs() < 1e-6);
     }
 
+    /// #346 — ALPHA_DECAL_F2 on BSEffectShaderProperty.shader_flags_2
+    /// must set `ImportedMesh.is_decal` so blood splats get z-bias.
     #[test]
-    fn find_decal_bs_via_effect_shader_alpha_decal_flag() {
-        // ALPHA_DECAL_F2 = 0x00200000 in shader_flags_2 — used by Skyrim+
-        // blood splats and similar overlay effects bound to an
-        // BSEffectShaderProperty. Pre-#346 this fell through to false
-        // and the decal got no z-bias, z-fighting against its host.
+    fn decal_via_effect_shader_alpha_decal_flag() {
         let mut scene = NifScene::default();
-        scene
-            .blocks
-            .push(Box::new(effect_shader(0x0020_0000)));
-        let shape = shape_with_shader(0);
-        assert!(super::find_decal_bs(&scene, &shape));
+        scene.blocks.push(Box::new(effect_shader(0x0020_0000)));
+        assert!(import(&scene, &renderable_shape(0)).is_decal);
     }
 
+    /// #346 — DECAL_SINGLE_PASS on shader_flags_1 works on either
+    /// shader variant. Shared extractor mirrors the check.
     #[test]
-    fn find_decal_bs_via_effect_shader_decal_single_pass() {
-        // DECAL_SINGLE_PASS = 0x04000000 in shader_flags_1 — universal
-        // decal flag the engine honors regardless of which shader
-        // variant the artist bound. Mirror across BSLighting/BSEffect.
+    fn decal_via_effect_shader_decal_single_pass() {
         let mut scene = NifScene::default();
         let mut shader = effect_shader(0);
         shader.shader_flags_1 = 0x0400_0000;
         scene.blocks.push(Box::new(shader));
-        let shape = shape_with_shader(0);
-        assert!(super::find_decal_bs(&scene, &shape));
+        assert!(import(&scene, &renderable_shape(0)).is_decal);
     }
 }
 
@@ -1666,7 +1423,10 @@ mod material_path_capture_tests {
         }
     }
 
-    fn shape_with_shader(shader_idx: u32) -> BsTriShape {
+    /// Build a renderable `BsTriShape` (one triangle, three vertices)
+    /// bound to a shader block at `shader_idx`. Keeps the shape non-
+    /// empty so `extract_bs_tri_shape` returns `Some`.
+    fn renderable_shape(shader_idx: u32) -> BsTriShape {
         BsTriShape {
             av: NiAVObjectData {
                 net: NiObjectNETData {
@@ -1679,26 +1439,31 @@ mod material_path_capture_tests {
                 properties: Vec::new(),
                 collision_ref: BlockRef::NULL,
             },
-            center: NiPoint3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
+            center: NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
             radius: 0.0,
             skin_ref: BlockRef::NULL,
             shader_property_ref: BlockRef(shader_idx),
             alpha_property_ref: BlockRef::NULL,
             vertex_desc: 0,
-            num_triangles: 0,
-            num_vertices: 0,
-            vertices: Vec::new(),
-            uvs: Vec::new(),
+            num_triangles: 1,
+            num_vertices: 3,
+            vertices: vec![
+                NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+                NiPoint3 { x: 1.0, y: 0.0, z: 0.0 },
+                NiPoint3 { x: 0.0, y: 1.0, z: 0.0 },
+            ],
+            uvs: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
             normals: Vec::new(),
             vertex_colors: Vec::new(),
-            triangles: Vec::new(),
+            triangles: vec![[0, 1, 2]],
             bone_weights: Vec::new(),
             bone_indices: Vec::new(),
         }
+    }
+
+    fn import(scene: &NifScene, shape: &BsTriShape) -> ImportedMesh {
+        extract_bs_tri_shape(scene, shape, &NiTransform::default())
+            .expect("renderable shape must produce ImportedMesh")
     }
 
     #[test]
@@ -1709,71 +1474,64 @@ mod material_path_capture_tests {
             .push(Box::new(minimal_lighting_shader_named(
                 "Materials\\Architecture\\WhiterunStone.BGSM",
             )));
-        let shape = shape_with_shader(0);
         assert_eq!(
-            find_material_path_bs_tri_shape(&scene, &shape).as_deref(),
+            import(&scene, &renderable_shape(0)).material_path.as_deref(),
             Some("Materials\\Architecture\\WhiterunStone.BGSM")
         );
     }
 
     #[test]
     fn bgem_on_effect_shader_is_captured() {
-        // #434 — this was the failing case. FO4 laser rifle beam binds a
-        // `BSEffectShaderProperty` whose `net.name` ends in `.bgem`.
+        // #434 — pre-fix, only BSLightingShaderProperty was inspected.
+        // FO4 laser rifle beam binds a `BSEffectShaderProperty` whose
+        // `net.name` ends in `.bgem`.
         let mut scene = NifScene::default();
         scene.blocks.push(Box::new(minimal_effect_shader_named(
             "Materials\\Weapons\\LaserRifle\\LaserBeam.BGEM",
         )));
-        let shape = shape_with_shader(0);
         assert_eq!(
-            find_material_path_bs_tri_shape(&scene, &shape).as_deref(),
+            import(&scene, &renderable_shape(0)).material_path.as_deref(),
             Some("Materials\\Weapons\\LaserRifle\\LaserBeam.BGEM")
         );
     }
 
     #[test]
     fn bgsm_on_effect_shader_also_captured() {
-        // Occasionally artists bind a `.bgsm` (opaque) material to a
-        // `BSEffectShaderProperty` — the engine treats the suffix as
-        // advisory rather than gating, so the importer mirrors that.
+        // Occasionally artists bind a `.bgsm` to a BSEffect shader —
+        // the engine treats the suffix as advisory, not gating.
         let mut scene = NifScene::default();
         scene.blocks.push(Box::new(minimal_effect_shader_named(
             "Materials\\Statics\\Sign01.BGSM",
         )));
-        let shape = shape_with_shader(0);
         assert_eq!(
-            find_material_path_bs_tri_shape(&scene, &shape).as_deref(),
+            import(&scene, &renderable_shape(0)).material_path.as_deref(),
             Some("Materials\\Statics\\Sign01.BGSM")
         );
     }
 
     #[test]
     fn non_material_name_returns_none() {
-        // Plain NiObjectNET name without a material suffix — legitimate
-        // Skyrim+ content (asset node name, not a material pointer).
         let mut scene = NifScene::default();
         scene
             .blocks
             .push(Box::new(minimal_effect_shader_named("FxGlowEdge01")));
-        let shape = shape_with_shader(0);
-        assert!(find_material_path_bs_tri_shape(&scene, &shape).is_none());
+        assert!(import(&scene, &renderable_shape(0)).material_path.is_none());
     }
 
     #[test]
     fn lighting_shader_name_takes_priority() {
-        // If somehow both a BSLighting and a BSEffect shader share the
-        // same slot (can't happen in valid NIFs, but the dispatch order
-        // should still be deterministic), the BSLighting name wins — it's
-        // the "normal" material channel.
+        // If a BsTriShape's shader_property_ref points at a
+        // BSLightingShaderProperty (the canonical case), the shared
+        // extractor surfaces its BGSM name. The deterministic dispatch
+        // order is preserved by the shared implementation.
         let mut scene = NifScene::default();
         scene
             .blocks
             .push(Box::new(minimal_lighting_shader_named(
                 "Materials\\Primary.BGSM",
             )));
-        let shape = shape_with_shader(0);
         assert_eq!(
-            find_material_path_bs_tri_shape(&scene, &shape).as_deref(),
+            import(&scene, &renderable_shape(0)).material_path.as_deref(),
             Some("Materials\\Primary.BGSM")
         );
     }

@@ -1,14 +1,1 @@
-# NIF-404: BsTriShape duplicates ~130 lines of material extraction
-
-## Finding
-
-**Audit**: NIF 2026-04-05b | **Severity**: LOW (Structural) | **Dimension**: Import Pipeline
-
-**Location**: `crates/nif/src/import/mesh.rs:126-258`
-**Game Affected**: Skyrim+
-
-`extract_bs_tri_shape()` re-implements material property extraction inline instead of delegating to `extract_material_info()`. This creates parity drift — NIF-403 (missing BSEffectShaderProperty two_sided check) is a concrete example.
-
-Refactor to use shared MaterialInfo extraction parameterized by shader/alpha property refs.
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
+{"body":"## Finding\n\n**Audit**: NIF 2026-04-05b | **Severity**: LOW (Structural) | **Dimension**: Import Pipeline\n\n**Location**: `crates/nif/src/import/mesh.rs:126-258`\n**Game Affected**: Skyrim+\n\n`extract_bs_tri_shape()` re-implements material property extraction inline instead of delegating to `extract_material_info()`. This creates parity drift — NIF-403 (missing BSEffectShaderProperty two_sided check) is a concrete example.\n\nRefactor to use shared MaterialInfo extraction parameterized by shader/alpha property refs.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)","labels":[{"id":"LA_kwDORzgFWc8AAAACdLDhWQ","name":"bug","description":"Something isn't working","color":"d73a4a"}],"state":"OPEN","title":"NIF-404: BsTriShape duplicates ~130 lines of material extraction"}
