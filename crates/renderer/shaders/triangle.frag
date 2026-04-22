@@ -1210,7 +1210,16 @@ void main() {
                 const float sunAngularRadius = 0.0047;
                 vec3 jitteredDir = L + (T * diskSample.x + B * diskSample.y) * sunAngularRadius;
                 rayDir = normalize(jitteredDir);
-                rayDist = 10000.0;
+                // 100 000 units covers the diagonal of a 7×7 exterior
+                // grid (~58K units) with ~40K headroom so distant
+                // mountains + cell-edge architecture still occlude
+                // the sun. Pre-#102 the 10K cap clipped to one cell,
+                // losing shadows from anything ≥2 cells away —
+                // visible as "floating" lighting on distant terrain
+                // faces and missing cast shadows from opposite-cell
+                // architecture. BVH traversal is log-time so the
+                // larger tmax is not a meaningful cost.
+                rayDist = 100000.0;
             }
 
             rayQueryEXT rayQuery;
