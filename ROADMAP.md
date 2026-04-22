@@ -52,9 +52,10 @@ scripting (events + timers) exists; the Papyrus runtime consuming
 
 **What doesn't work yet.** No skinned rendering (every NPC is in
 bind pose, M29). No world streaming — cells load once and persist
-(M40). No sky or atmosphere (M33). Skyrim and FO4 interior cells
-aren't wired through `cell_loader` yet (M32.5). Oblivion needs BSA
-v103 decompression before its cells load.
+(M40). Skyrim and FO4 interior cells aren't wired through `cell_loader`
+yet (M32.5). Oblivion needs BSA v103 decompression before its cells
+load. Weather transitions (fade between WTHR states) and cloud layers
+2/3 are M33.1.
 
 ### Compatibility matrix
 
@@ -88,7 +89,7 @@ typically gates a specific milestone.
 
 | #      | Milestone                      | Scope                                                                                                                                                                                                                                                                                                                        | Depends on         |
 |--------|--------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------|
-| M33    | Sky & atmosphere               | Parse WTHR (Weather) records. Sky gradient dome, sun disc with position from game-time, cloud layers (scrolling textures), horizon fog. Procedural fallback when no WTHR is set. Replace hardcoded clear color.                                                                                                              | ESM parser         |
+| M33.1  | Sky & atmosphere (follow-up)   | Weather transitions (snap → fade) and cloud layers 2/3. Core M33 is complete — sky gradient, sun disc, TOD interpolation, fog, 2-layer clouds (DNAM + CNAM) all working. See Completed Milestones.                                                                                                                          | —                  |
 | M34    | Exterior lighting              | Proper directional sun derived from WTHR/climate sun position. Time-of-day ambient color interpolation. Exterior fog from WTHR fog data (distance + color). Interior/exterior light path split in the shader.                                                                                                                | M33                |
 | M32.5  | Per-game cell loader parity    | Wire Skyrim + FO4 interior cells through the existing `cell_loader` (Skyrim has XCLL 92-byte + LGTM templates; FO4 has BGSM materials + SCOL/PKIN expansion already parsed). Oblivion needs BSA v103 decompression first.                                                                                                    | M24                |
 | R6a    | Prospector re-bench            | Re-run `--bench-frames 300` on Prospector at HEAD. Update "Bench-of-record" + matrix. Tracks 72-commit drift from `bee6d48`.                                                                                                                                                                                                 | —                  |
@@ -265,6 +266,10 @@ importance-sorted shadow budget, distance-based ray fallback, BLAS
 LRU eviction, deferred SSBO rebuild) ·
 M31.5 streaming RIS direct lighting ·
 M32 landscape terrain (LAND + LTEX/TXST splatting) ·
+M33 sky & atmosphere (sky gradient, sun disc with game-time arc, TOD
+interpolation across 10 color groups × 6 TOD slots, dual cloud layers
+DNAM + CNAM with parallax, horizon fog, procedural fallback; all WTHR
+parser bugs M33-01–M33-06 fixed with regression tests) ·
 M34 Phase 1 default exterior sun ·
 M36 BLAS compaction (20–50% memory reduction) ·
 M37.5 TAA (Halton jitter, motion-vector reprojection, YCoCg clamp,
@@ -287,7 +292,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ### Open — Tier 1 / 2 blockers
 
-- [ ] No sky, sun, clouds, or atmosphere — exterior uses hardcoded clear color (M33)
+- [x] No sky, sun, clouds, or atmosphere — **closed**. Sky gradient, sun disc with game-time arc, TOD interpolation across 10 color groups, dual cloud layers (DNAM layer 0 + CNAM layer 1 with parallax), fog, procedural fallback all working. Weather transitions (fade) and layers 2/3 tracked as M33.1.
 - [ ] No skinned mesh rendering — every NPC / creature is stuck in bind pose (M29)
 - [ ] NPCs + creatures don't spawn as ECS entities even when parsed (M41 / M41.0)
 - [ ] No world streaming — entire cell re-imported from scratch on every load (M40)
