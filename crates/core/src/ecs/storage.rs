@@ -31,6 +31,21 @@ pub trait ComponentStorage<T: Component> {
         self.len() == 0
     }
 
+    /// Insert many `(entity, component)` pairs at once. Default
+    /// implementation loops `insert`; backends that can do better
+    /// (notably [`PackedStorage`](super::packed::PackedStorage), which
+    /// otherwise shifts the backing Vec by O(n) per insert) override
+    /// this with an append + single-sort path.
+    ///
+    /// Called by [`World::insert_batch`](super::world::World::insert_batch)
+    /// so cell-load bulk imports pick up the fast path automatically.
+    /// See #467.
+    fn insert_bulk<I: IntoIterator<Item = (EntityId, T)>>(&mut self, iter: I) {
+        for (entity, component) in iter {
+            self.insert(entity, component);
+        }
+    }
+
     /// Iterate over all (entity, component) pairs.
     fn iter(&self) -> Box<dyn Iterator<Item = (EntityId, &T)> + '_>;
 

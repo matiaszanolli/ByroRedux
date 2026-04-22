@@ -178,15 +178,20 @@ impl World {
         // loop.
         let next_entity = self.next_entity;
         let storage = self.storage_write::<T>();
-        for (entity, component) in items {
+        // #467 — dispatch to `insert_bulk` so `PackedStorage` picks up
+        // its append + single-sort fast path (was O(N × M) per-insert
+        // shift; now O(N + M log M)). The debug_assert still fires
+        // through an adapter iterator so bulk callers can't sneak in
+        // unspawned entity ids.
+        storage.insert_bulk(items.into_iter().map(move |(entity, component)| {
             debug_assert!(
                 entity < next_entity,
                 "insert_batch(): entity {} was never spawned (next_entity_id = {})",
                 entity,
                 next_entity,
             );
-            storage.insert(entity, component);
-        }
+            (entity, component)
+        }));
     }
 
     /// Remove a component from an entity.
