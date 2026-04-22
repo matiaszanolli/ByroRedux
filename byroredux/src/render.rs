@@ -153,15 +153,17 @@ pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u32, u32, u32, u3
 /// Build the view-projection matrix and draw command list from ECS queries.
 ///
 /// All scratch buffers — `draw_commands`, `gpu_lights`, `bone_palette`,
-/// `skin_offsets` — are owned by the caller and cleared on entry so their
-/// heap allocations persist across frames. See #253 for the `skin_offsets`
-/// case specifically (was a fresh HashMap every frame).
+/// `skin_offsets`, `palette_scratch` — are owned by the caller and
+/// cleared on entry so their heap allocations persist across frames.
+/// See #253 (`skin_offsets`), #243 (`draw_commands` / `gpu_lights` /
+/// `bone_palette` scratch pattern), #509 (`palette_scratch`).
 pub(crate) fn build_render_data(
     world: &World,
     draw_commands: &mut Vec<DrawCommand>,
     gpu_lights: &mut Vec<byroredux_renderer::GpuLight>,
     bone_palette: &mut Vec<[[f32; 4]; 4]>,
     skin_offsets: &mut HashMap<EntityId, u32>,
+    palette_scratch: &mut Vec<Mat4>,
     particle_quad_handle: Option<u32>,
 ) -> ([f32; 16], [f32; 3], [f32; 3], [f32; 3], f32, f32, SkyParams) {
     draw_commands.clear();
@@ -191,19 +193,21 @@ pub(crate) fn build_render_data(
     let gt_q = world.query::<GlobalTransform>();
     let skin_q = world.query::<SkinnedMesh>();
     if let (Some(gt_q), Some(skin_q)) = (gt_q, skin_q) {
-        let mut palette_scratch = Vec::new();
+        // `palette_scratch` is owned by the caller; `compute_palette_into`
+        // clears it internally before refilling, so any previous-frame
+        // capacity is reused without a fresh allocation. See #509.
         for (entity, skin) in skin_q.iter() {
             let offset = bone_palette.len() as u32;
             // World-lookup closure — reads GlobalTransform for each bone
             // entity through the same query guard. Missing bones fall
             // back to identity inside compute_palette_into.
-            skin.compute_palette_into(&mut palette_scratch, |bone_entity| {
+            skin.compute_palette_into(palette_scratch, |bone_entity| {
                 gt_q.get(bone_entity).map(|gt| gt.to_matrix())
             });
             // Pad every skinned mesh to MAX_BONES_PER_MESH so per-mesh
             // bone offsets are trivially `offset + local_index` and the
             // shader doesn't need a per-mesh bone count.
-            for mat in &palette_scratch {
+            for mat in palette_scratch.iter() {
                 bone_palette.push(mat.to_cols_array_2d());
             }
             for _ in palette_scratch.len()..MAX_BONES_PER_MESH {

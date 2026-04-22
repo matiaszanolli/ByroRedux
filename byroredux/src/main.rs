@@ -155,6 +155,15 @@ struct App {
     /// command emission. Retained across frames so the HashMap's bucket
     /// allocation persists — see #253.
     skin_offsets: HashMap<byroredux_core::ecs::EntityId, u32>,
+    /// Per-SkinnedMesh scratch buffer — `build_render_data` clears it
+    /// once per skinned entity and asks `SkinnedMesh::compute_palette_into`
+    /// to refill. Hoisted onto the App struct so the Vec's capacity
+    /// persists across frames rather than re-growing from zero each
+    /// call. Typical capacity ~MAX_BONES_PER_MESH × 64 B ≈ 8 KB
+    /// (small, but the fresh allocation at the top of every frame was
+    /// observable in profilers). See #509 (PERF-2026-04-20 D6-L1) and
+    /// #243 / #253 for the other scratch hoists this follows.
+    palette_scratch: Vec<byroredux_core::math::Mat4>,
     /// When `Some(N)`, run exactly N frames then print a `bench:` line
     /// to stdout and exit. See `--bench-frames` in main() and #366.
     bench_frames_target: Option<u32>,
@@ -269,6 +278,7 @@ impl App {
             gpu_lights: Vec::new(),
             bone_palette: Vec::new(),
             skin_offsets: HashMap::new(),
+            palette_scratch: Vec::new(),
             bench_frames_target: None,
             bench_frames_count: 0,
             screenshot_path: None,
@@ -386,6 +396,7 @@ impl ApplicationHandler for App {
                             &mut self.gpu_lights,
                             &mut self.bone_palette,
                             &mut self.skin_offsets,
+                            &mut self.palette_scratch,
                             ctx.particle_quad_handle,
                         );
 
