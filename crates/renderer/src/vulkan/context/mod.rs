@@ -235,6 +235,15 @@ pub struct SkyParams {
     /// (FNV `sun00.dds`, etc.) render instead of the flat `sun_color`.
     /// See #478.
     pub sun_texture_index: u32,
+    /// Cloud layer 1 scroll offset (WTHR CNAM). Drifts in the opposite
+    /// U direction to layer 0 to produce visible parallax between the
+    /// two cloud layers.
+    pub cloud_scroll_1: [f32; 2],
+    /// Cloud layer 1 UV tile scale. `0.0` disables the layer (shader
+    /// branch-skips the bindless sample). `0.0` when no CNAM is available.
+    pub cloud_tile_scale_1: f32,
+    /// Bindless texture handle for cloud_textures[1] (WTHR CNAM).
+    pub cloud_texture_index_1: u32,
 }
 
 impl Default for SkyParams {
@@ -251,6 +260,9 @@ impl Default for SkyParams {
             cloud_tile_scale: 0.0, // disabled until WTHR supplies a cloud texture
             cloud_texture_index: 0,
             sun_texture_index: 0, // 0 = procedural disc (pre-#478 fallback)
+            cloud_scroll_1: [0.0, 0.0],
+            cloud_tile_scale_1: 0.0,
+            cloud_texture_index_1: 0,
         }
     }
 }

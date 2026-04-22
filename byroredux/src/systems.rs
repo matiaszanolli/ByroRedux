@@ -1296,6 +1296,14 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         // makes the wrap invisible.
         sky.cloud_scroll[0] = (sky.cloud_scroll[0] + cloud_scroll_rate * dt).rem_euclid(1.0);
         sky.cloud_scroll[1] = (sky.cloud_scroll[1] + cloud_scroll_rate * 0.3 * dt).rem_euclid(1.0);
+        // Layer 1 drifts in the opposite U direction at 1.35× speed.
+        // Creates visible parallax against layer 0 with no per-weather
+        // source needed. See #541 (ONAM/INAM decode) for eventual
+        // authoritative values.
+        sky.cloud_scroll_1[0] =
+            (sky.cloud_scroll_1[0] - cloud_scroll_rate * 1.35 * dt).rem_euclid(1.0);
+        sky.cloud_scroll_1[1] =
+            (sky.cloud_scroll_1[1] + cloud_scroll_rate * 0.5 * dt).rem_euclid(1.0);
     }
 
     // Update CellLightingRes.

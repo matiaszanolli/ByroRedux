@@ -252,6 +252,52 @@ pub(crate) fn setup_scene(
                             },
                             None => (0u32, 0.0_f32),
                         };
+                        // Resolve WTHR cloud layer 1 (CNAM). Same pattern as layer 0.
+                        // Tile scale 0.20 (slightly higher than layer 0's 0.15) so
+                        // layer 1 visually reads as a higher-altitude, finer-grained
+                        // cloud deck — most obvious when both layers are visible
+                        // simultaneously. Disabled (0.0) when CNAM is absent.
+                        let (cloud_tex_index_1, cloud_tile_scale_1) =
+                            match wthr.cloud_textures[1].as_deref() {
+                                Some(path) => match tex_provider.extract(path) {
+                                    Some(dds_bytes) => {
+                                        let alloc = ctx.allocator.as_ref().unwrap();
+                                        match ctx.texture_registry.load_dds(
+                                            &ctx.device,
+                                            alloc,
+                                            &ctx.graphics_queue,
+                                            ctx.transfer_pool,
+                                            path,
+                                            &dds_bytes,
+                                        ) {
+                                            Ok(h) => {
+                                                log::info!(
+                                                    "Cloud layer 1 texture '{}' → handle {}",
+                                                    path,
+                                                    h
+                                                );
+                                                (h, 0.20_f32)
+                                            }
+                                            Err(e) => {
+                                                log::warn!(
+                                                    "Cloud layer 1 DDS load failed '{}': {} — disabling layer 1",
+                                                    path,
+                                                    e
+                                                );
+                                                (0u32, 0.0_f32)
+                                            }
+                                        }
+                                    }
+                                    None => {
+                                        log::debug!(
+                                            "Cloud layer 1 texture '{}' not in archives",
+                                            path
+                                        );
+                                        (0u32, 0.0_f32)
+                                    }
+                                },
+                                None => (0u32, 0.0_f32),
+                            };
                         // CLMT FNAM sun-sprite resolution — #478.
                         // Same extract-then-load-DDS pattern as the
                         // cloud texture above; path normalization
@@ -304,6 +350,9 @@ pub(crate) fn setup_scene(
                             cloud_tile_scale,
                             cloud_texture_index: cloud_tex_index,
                             sun_texture_index: sun_tex_index,
+                            cloud_scroll_1: [0.0, 0.0],
+                            cloud_tile_scale_1,
+                            cloud_texture_index_1: cloud_tex_index_1,
                         });
                         // Store full NAM0 color table for per-frame time-of-day interpolation.
                         let mut sky_colors = [[[0.0f32; 3]; 6]; 10];
@@ -369,6 +418,9 @@ pub(crate) fn setup_scene(
                             cloud_tile_scale: 0.0, // no WTHR → no clouds
                             cloud_texture_index: 0,
                             sun_texture_index: 0, // procedural disc (#478)
+                            cloud_scroll_1: [0.0, 0.0],
+                            cloud_tile_scale_1: 0.0,
+                            cloud_texture_index_1: 0,
                         });
                     }
                 }
