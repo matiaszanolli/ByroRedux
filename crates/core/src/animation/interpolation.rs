@@ -232,10 +232,25 @@ pub fn sample_rotation(channel: &TransformChannel, time: f32) -> Option<Quat> {
 
     match channel.rotation_type {
         KeyType::Linear | KeyType::Quadratic => {
-            // Quadratic rotations in nif.xml (QuaternionKey) carry
-            // forward/backward control quats; RotationKey doesn't store
-            // them today, so fall back to SLERP. Linear always uses
-            // SLERP — the standard Gamebryo behavior. See #230.
+            // Linear and Quadratic rotation both SLERP between the two
+            // bracketing keys. Per authoritative `nif.xml` (`<struct
+            // name="QuatKey">`): *"A special version of the key type
+            // used for quaternions. Never has tangents."* Gamebryo's
+            // QuatKey carries `time + value` only — there are no
+            // forward/backward control quats on disk, even for
+            // Quadratic interpolation (unlike Vec3Key / FloatKey,
+            // which DO carry explicit tangents for Quadratic).
+            //
+            // Gamebryo's Quadratic rotation path computes intermediate
+            // "tangent" quats from the previous/next neighbors at
+            // runtime (squad algorithm in log/exp space). FNV / FO3 /
+            // Oblivion ship ~0 vanilla clips with Quadratic rotation
+            // keys (rotation channels use Linear + TBC), so the
+            // SLERP fallback matches on-disk intent. If a future
+            // consumer needs true squad, compute the intermediate
+            // quats from `keys[i0-1..=i1+1]` following Gamebryo's
+            // `NiRotKey::Interpolate` — no disk-format change needed.
+            // See #485, #230.
             Some(q0.slerp(q1, t))
         }
         KeyType::Tbc => {
