@@ -365,7 +365,10 @@ pub struct WetnessParams {
     pub env_map_scale: f32,
     pub fresnel_power: f32,
     pub metalness: f32,
-    /// Present for BSVER > 130.
+    /// Present for BSVER >= 130 (FO4 + DLC + FO76 + Starfield). See
+    /// #403 / FO4-D1-C1 — nif.xml gates on `#BS_GT_130#` but the vanilla
+    /// FO4 ship stream (226k NIFs audited) carries the field from 130
+    /// onward; widening to `>= 130` aligns every game.
     pub unknown_1: f32,
     /// Present for BSVER == 155 (FO76).
     pub unknown_2: f32,
