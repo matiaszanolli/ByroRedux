@@ -173,6 +173,31 @@ fn parse_rate_fnv_esm() {
         "TERM={} (expected >= 300; vanilla ships 344)",
         index.terminals.len(),
     );
+
+    // #533 / audit M33-01 regression guard: at least one FNV weather must
+    // have a non-zero NAM0 sky colour. Pre-fix the `>= 240 B` gate dropped
+    // ~12/63 FNV weathers silently (those using the 160-B stride). Weather
+    // count floor: FNV ships ≥50 WTHRs and at least the common-case ones
+    // (e.g. NVWastelandClear*) must parse.
+    assert!(
+        index.weathers.len() >= 50,
+        "FNV weathers={} (expected >= 50)",
+        index.weathers.len(),
+    );
+    let nonzero_nam0 = index
+        .weathers
+        .values()
+        .filter(|w| {
+            let c = w.sky_colors[0][1]; // SKY_UPPER / TOD_DAY
+            c.r != 0 || c.g != 0 || c.b != 0
+        })
+        .count();
+    assert!(
+        nonzero_nam0 >= 40,
+        "FNV non-zero-NAM0 weathers={}/{}, expected >= 40",
+        nonzero_nam0,
+        index.weathers.len(),
+    );
 }
 
 #[test]
@@ -238,5 +263,80 @@ fn parse_rate_fo3_esm() {
         index.scripts.len() >= 500,
         "SCPT={} — pre-Papyrus bytecode records must parse per #443",
         index.scripts.len(),
+    );
+
+    // #533 / audit M33-01: FO3 NAM0 is 160 B (not 240). Pre-fix the parser
+    // silently dropped every FO3 weather → black sky dome on every
+    // exterior. Assert the fix by requiring most weathers (vanilla ships
+    // 27 WTHRs; some are stubs like DefaultWeather with zero bytes on
+    // disk) to parse to at least one non-zero RGB channel in SKY_UPPER.
+    assert!(
+        index.weathers.len() >= 20,
+        "FO3 weathers={} (expected >= 20)",
+        index.weathers.len(),
+    );
+    let nonzero_nam0 = index
+        .weathers
+        .values()
+        .filter(|w| {
+            let c = w.sky_colors[0][1]; // SKY_UPPER / TOD_DAY
+            c.r != 0 || c.g != 0 || c.b != 0
+        })
+        .count();
+    assert!(
+        nonzero_nam0 >= 15,
+        "FO3 non-zero-NAM0 weathers={}/{} — expected >= 15 after #533 fix; \
+         pre-fix every weather dropped NAM0 silently",
+        nonzero_nam0,
+        index.weathers.len(),
+    );
+}
+
+/// Oblivion: the 160-byte NAM0 stride target of #533. Minimal parse
+/// harness (no per-category floors — that lives in future Oblivion
+/// dispatch work) just verifies every NAM0 is read. Observed vanilla
+/// 2026-04: 19 CLMTs, 37 WTHRs.
+#[test]
+#[ignore]
+fn parse_rate_oblivion_esm() {
+    let Some(data) = data_dir(
+        "BYROREDUX_OBL_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+    ) else {
+        eprintln!("[OBL] skipping: BYROREDUX_OBL_DATA unset and fallback path missing");
+        return;
+    };
+    let esm_path = data.join("Oblivion.esm");
+    let bytes = std::fs::read(&esm_path).expect("read Oblivion.esm");
+    let index = parse_esm(&bytes).expect("parse Oblivion.esm");
+
+    eprintln!(
+        "[OBL] total={} | weathers={} climates={}",
+        index.total(),
+        index.weathers.len(),
+        index.climates.len(),
+    );
+
+    // #533 / audit M33-01: Oblivion NAM0 is 160 B. Same gate failure as
+    // FO3 pre-fix — every WTHR silently dropped. Assertion mirrors the
+    // FO3 one.
+    assert!(
+        index.weathers.len() >= 30,
+        "OBL weathers={} (expected >= 30)",
+        index.weathers.len(),
+    );
+    let nonzero_nam0 = index
+        .weathers
+        .values()
+        .filter(|w| {
+            let c = w.sky_colors[0][1]; // SKY_UPPER / TOD_DAY
+            c.r != 0 || c.g != 0 || c.b != 0
+        })
+        .count();
+    assert!(
+        nonzero_nam0 >= 25,
+        "OBL non-zero-NAM0 weathers={}/{} — expected >= 25 after #533 fix",
+        nonzero_nam0,
+        index.weathers.len(),
     );
 }

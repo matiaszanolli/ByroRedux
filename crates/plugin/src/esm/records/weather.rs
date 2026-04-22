@@ -129,11 +129,24 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
         match &sub.sub_type {
             b"EDID" => record.editor_id = read_zstring(&sub.data),
 
-            // NAM0: sky colors — 10 groups × 6 slots × 4 bytes = 240 bytes.
-            b"NAM0" if sub.data.len() >= SKY_COLOR_GROUPS * SKY_TIME_SLOTS * 4 => {
+            // NAM0: sky colors. Two on-disk strides exist:
+            //   - 240 B = 10 groups × 6 TOD slots × 4 B (FNV default + later games):
+            //     SUNRISE, DAY, SUNSET, NIGHT, HIGH_NOON, MIDNIGHT.
+            //   - 160 B = 10 groups × 4 TOD slots × 4 B (Oblivion, FO3, some older /
+            //     DLC FNV records): SUNRISE, DAY, SUNSET, NIGHT only. HIGH_NOON and
+            //     MIDNIGHT are synthesised from DAY and NIGHT respectively so the
+            //     `[[SkyColor; 6]; 10]` struct layout remains authoritative for
+            //     downstream consumers (`weather_system` 7-key interpolator,
+            //     `build_tod_keys`). See #533 / audit M33-01.
+            b"NAM0" if sub.data.len() >= SKY_COLOR_GROUPS * 4 * 4 => {
+                let on_disk_slots = if sub.data.len() >= SKY_COLOR_GROUPS * SKY_TIME_SLOTS * 4 {
+                    SKY_TIME_SLOTS
+                } else {
+                    4
+                };
                 let mut offset = 0;
                 for group in 0..SKY_COLOR_GROUPS {
-                    for slot in 0..SKY_TIME_SLOTS {
+                    for slot in 0..on_disk_slots {
                         record.sky_colors[group][slot] = SkyColor {
                             r: sub.data[offset],
                             g: sub.data[offset + 1],
@@ -141,6 +154,12 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
                             a: sub.data[offset + 3],
                         };
                         offset += 4;
+                    }
+                    if on_disk_slots < SKY_TIME_SLOTS {
+                        record.sky_colors[group][TOD_HIGH_NOON] =
+                            record.sky_colors[group][TOD_DAY];
+                        record.sky_colors[group][TOD_MIDNIGHT] =
+                            record.sky_colors[group][TOD_NIGHT];
                     }
                 }
             }
@@ -279,6 +298,79 @@ mod tests {
         assert_eq!(w.cloud_speeds, [10, 20, 30, 40]);
         assert_eq!(w.cloud_textures[0].as_deref(), Some("sky\\clouds_01.dds"));
         assert!(w.cloud_textures[1].is_none());
+    }
+
+    /// Regression for #533 / audit M33-01: the 160-byte Oblivion/FO3
+    /// NAM0 stride (10 groups × 4 TOD slots × 4 B) must parse. The
+    /// pre-fix gate demanded 240 B and silently dropped every Oblivion
+    /// and FO3 weather — sky colours stayed at `WeatherRecord::default()`
+    /// zero RGB. HIGH_NOON / MIDNIGHT are synthesised from DAY / NIGHT
+    /// so the six-slot downstream layout remains valid.
+    #[test]
+    fn parse_wthr_nam0_160_byte_stride() {
+        // 10 groups × 4 slots × 4 B = 160 B. Fill each group's 4 slots
+        // with distinct colours so we can assert ordering + synthesis.
+        let mut nam0_data = vec![0u8; 160];
+        for group in 0..SKY_COLOR_GROUPS {
+            for slot in 0..4 {
+                let off = (group * 4 + slot) * 4;
+                nam0_data[off] = (group * 10) as u8;
+                nam0_data[off + 1] = (slot * 50) as u8;
+                nam0_data[off + 2] = (group + slot * 2) as u8;
+                nam0_data[off + 3] = 255;
+            }
+        }
+
+        let subs = vec![
+            make_sub(b"EDID", b"OblivionClear\0".to_vec()),
+            make_sub(b"NAM0", nam0_data),
+        ];
+
+        let w = parse_wthr(0x2468, &subs);
+        // On-disk slots populate as authored.
+        let sun_sunrise = w.sky_colors[SKY_SUN][TOD_SUNRISE];
+        assert_eq!((sun_sunrise.r, sun_sunrise.g), (40, 0));
+        let horiz_sunset = w.sky_colors[SKY_HORIZON][TOD_SUNSET];
+        assert_eq!((horiz_sunset.r, horiz_sunset.g), (70, 100));
+
+        // Synthesised slots: HIGH_NOON = DAY, MIDNIGHT = NIGHT.
+        for group in 0..SKY_COLOR_GROUPS {
+            let day = w.sky_colors[group][TOD_DAY];
+            let high_noon = w.sky_colors[group][TOD_HIGH_NOON];
+            assert_eq!(
+                (day.r, day.g, day.b),
+                (high_noon.r, high_noon.g, high_noon.b),
+                "HIGH_NOON should mirror DAY for group {}",
+                group,
+            );
+            let night = w.sky_colors[group][TOD_NIGHT];
+            let midnight = w.sky_colors[group][TOD_MIDNIGHT];
+            assert_eq!(
+                (night.r, night.g, night.b),
+                (midnight.r, midnight.g, midnight.b),
+                "MIDNIGHT should mirror NIGHT for group {}",
+                group,
+            );
+        }
+    }
+
+    /// Sanity: a NAM0 shorter than 160 B is still silently dropped
+    /// (malformed — no downstream should have to guess what the stride
+    /// was). The gate stays `>= 160` to preserve that invariant.
+    #[test]
+    fn parse_wthr_nam0_below_160_drops() {
+        let subs = vec![
+            make_sub(b"EDID", b"Truncated\0".to_vec()),
+            make_sub(b"NAM0", vec![0xFF; 80]),
+        ];
+        let w = parse_wthr(0xBADD, &subs);
+        // All slots remain at SkyColor::default() (all zero).
+        for group in 0..SKY_COLOR_GROUPS {
+            for slot in 0..SKY_TIME_SLOTS {
+                let c = w.sky_colors[group][slot];
+                assert_eq!((c.r, c.g, c.b, c.a), (0, 0, 0, 0));
+            }
+        }
     }
 
     #[test]
