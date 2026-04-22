@@ -276,9 +276,20 @@ pub fn parse_fact(form_id: u32, subs: &[SubRecord]) -> FactionRecord {
         match &sub.sub_type {
             b"EDID" => record.editor_id = read_zstring(&sub.data),
             b"FULL" => record.full_name = read_zstring(&sub.data),
-            // DATA (FNV FACT): flags (u32) + a few extra bytes
-            b"DATA" if sub.data.len() >= 4 => {
-                record.flags = read_u32_at(&sub.data, 0).unwrap_or(0);
+            // DATA (FNV FACT): flags is a single byte per UESP
+            // `Mod_File_Format/FACT` (FO3 / FNV). The tail is a
+            // variable-width payload (FNV adds `u8 unknown + f32 crime
+            // gold multiplier`) that different vanilla records truncate
+            // differently — reading 4 bytes pulled padding / neighbor
+            // bytes into the high 24 bits, producing spurious bits 8+.
+            // Only bits 0 (hidden from PC), 1 (evil), 2 (special
+            // combat) are authoritative on FO3 / FNV.
+            //
+            // Skyrim and FO4 extend DATA to a full u32; if / when those
+            // parse paths get added here, split per `GameKind`. See
+            // #481 / FNV-2-L1.
+            b"DATA" if !sub.data.is_empty() => {
+                record.flags = sub.data[0] as u32;
             }
             // XNAM: relation entry — other faction (u32) + modifier (i32) + reaction (u32).
             // The reaction field is a full 4-byte u32 per UESP; pre-#482 the
@@ -437,6 +448,43 @@ mod tests {
         assert_eq!(
             f.relations[0].combat_reaction, 2,
             "ally (combat_reaction=2) must round-trip — parser must read 4 bytes"
+        );
+    }
+
+    /// Regression for #481 (FNV-2-L1): FACT DATA is a single-byte
+    /// flags field on FO3 / FNV per UESP. Pre-fix the parser read 4
+    /// bytes, so any garbage in bytes 1..=3 of the DATA payload
+    /// (variable tail, neighbour padding) leaked into the high 24
+    /// bits. Only bits 0–2 are authoritative; verify the fix rejects
+    /// the high bytes.
+    #[test]
+    fn fact_data_reads_only_low_byte() {
+        // Simulate a DATA sub-record whose first byte holds the real
+        // flags (bit 0 = hidden) and whose remaining bytes are the
+        // FNV tail (e.g. `unknown: u8 + crime_gold_multiplier: f32`)
+        // or just padding. Pre-fix the parser treated all 4 bytes as
+        // flags and reported `0x0EFF_FF01`; post-fix it reports `0x01`.
+        let data = [
+            0x01u8, // real flags — bit 0 = hidden
+            0xFFu8, 0xFFu8, 0xEFu8, // tail / padding bytes; must NOT become flags
+        ];
+        let subs = vec![sub(b"EDID", b"SpookyFaction\0"), sub(b"DATA", &data)];
+        let f = parse_fact(0x88, &subs);
+        assert_eq!(
+            f.flags, 0x01,
+            "only byte 0 of DATA carries flag bits on FO3 / FNV (#481)"
+        );
+    }
+
+    /// Edge case: a zero-length DATA sub-record must not crash and
+    /// must leave flags at the default (0).
+    #[test]
+    fn fact_data_empty_leaves_flags_default() {
+        let subs = vec![sub(b"EDID", b"PlaceholderFaction\0"), sub(b"DATA", &[])];
+        let f = parse_fact(0x89, &subs);
+        assert_eq!(
+            f.flags, 0,
+            "empty DATA must not override the FactionRecord default"
         );
     }
 }
