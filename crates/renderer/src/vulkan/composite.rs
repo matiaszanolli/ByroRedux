@@ -56,7 +56,10 @@ pub struct CompositeParams {
     pub sky_horizon: [f32; 4],
     /// xyz = sun direction (normalized, world-space Y-up), w = sun intensity.
     pub sun_dir: [f32; 4],
-    /// xyz = sun disc color in linear RGB, w = unused.
+    /// xyz = sun disc color in linear RGB, w = bindless texture index
+    /// for the CLMT FNAM sun sprite stored via `f32::from_bits(idx)`;
+    /// `0` = procedural disc (pre-#478 behaviour). Reinterpreted as
+    /// `uint` in the shader.
     pub sun_color: [f32; 4],
     /// Cloud layer 0 parameters.
     ///

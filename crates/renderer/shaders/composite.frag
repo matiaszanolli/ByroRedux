@@ -27,7 +27,7 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 sky_zenith;     // xyz = zenith color (linear RGB), w = sun_size (cos threshold)
     vec4 sky_horizon;    // xyz = horizon color (linear RGB), w = unused
     vec4 sun_dir;        // xyz = sun direction (world-space, normalized), w = sun_intensity
-    vec4 sun_color;      // xyz = sun disc color (linear RGB), w = unused
+    vec4 sun_color;      // xyz = sun disc color (linear RGB), w = CLMT FNAM sun sprite idx (floatBitsToUint; 0 = procedural disc)
     vec4 cloud_params;   // x=scroll_u, y=scroll_v, z=tile_scale (0=disabled), w=texture_idx(uintBits)
     vec4 camera_pos;     // xyz = world position, w = unused. Fog distance origin (#428).
     mat4 inv_view_proj;  // inverse view-projection for ray reconstruction
@@ -128,7 +128,34 @@ vec3 compute_sky(vec3 dir) {
         // Core is bright, edge fades smoothly.
         float core = smoothstep(sun_size, 1.0, cos_angle);
         float disc = mix(t * 0.5, 1.0, core);
-        sky += sun_col * sun_intensity * disc;
+
+        // #478 — when CLMT FNAM ships a sun sprite (non-zero index),
+        // sample it within the disc and multiply by sun_col; otherwise
+        // fall back to the flat sun_col (pre-fix behaviour). The UV
+        // comes from projecting `dir` onto a tangent plane
+        // perpendicular to `sun_direction` and scaling so the texture
+        // fills the disc radius.
+        uint sun_tex_idx = floatBitsToUint(params.sun_color.w);
+        vec3 disc_color = sun_col;
+        if (sun_tex_idx != 0u) {
+            // Local 2D basis on the plane perpendicular to sun_direction.
+            vec3 up_world = abs(sun_direction.y) < 0.99
+                ? vec3(0.0, 1.0, 0.0)
+                : vec3(0.0, 0.0, 1.0);
+            vec3 tangent = normalize(cross(up_world, sun_direction));
+            vec3 bitangent = cross(sun_direction, tangent);
+
+            // Disc radius in tangent-plane units: `sqrt(1 - sun_size^2)`
+            // matches the angular half-width on the unit sphere. We
+            // normalise by this so the sprite fills the disc exactly.
+            float disc_r = sqrt(max(0.0, 1.0 - sun_size * sun_size));
+            vec2 uv = vec2(dot(dir, tangent), dot(dir, bitangent)) / max(disc_r, 1e-4);
+            uv = uv * 0.5 + 0.5;
+            vec4 sprite = texture(textures[nonuniformEXT(sun_tex_idx)], uv);
+            disc_color = sun_col * sprite.rgb;
+        }
+
+        sky += disc_color * sun_intensity * disc;
     }
 
     // Sun glow: soft radial halo around the sun.

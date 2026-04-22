@@ -200,6 +200,13 @@ pub struct SkyParams {
     /// Bindless texture handle for cloud_textures[0]. Ignored when
     /// `cloud_tile_scale == 0.0`; otherwise must be a valid TextureRegistry index.
     pub cloud_texture_index: u32,
+    /// Bindless texture handle for the CLMT FNAM sun sprite. `0` =
+    /// use the procedural disc (matching pre-#478 behaviour);
+    /// otherwise the fragment shader samples `textures[idx]` within
+    /// the sun disc radius so per-climate-authored sun textures
+    /// (FNV `sun00.dds`, etc.) render instead of the flat `sun_color`.
+    /// See #478.
+    pub sun_texture_index: u32,
 }
 
 impl Default for SkyParams {
@@ -215,6 +222,7 @@ impl Default for SkyParams {
             cloud_scroll: [0.0, 0.0],
             cloud_tile_scale: 0.0, // disabled until WTHR supplies a cloud texture
             cloud_texture_index: 0,
+            sun_texture_index: 0, // 0 = procedural disc (pre-#478 fallback)
         }
     }
 }

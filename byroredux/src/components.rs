@@ -137,6 +137,11 @@ pub(crate) struct SkyParamsRes {
     /// Bindless texture handle for cloud_textures[0]. Only meaningful when
     /// `cloud_tile_scale > 0.0`.
     pub(crate) cloud_texture_index: u32,
+    /// Bindless texture handle for the CLMT FNAM sun sprite. `0` = use
+    /// the composite shader's procedural sun disc (pre-#478 behaviour).
+    /// Populated at cell load when the worldspace has a CLMT with a
+    /// resolvable FNAM path. See #478.
+    pub(crate) sun_texture_index: u32,
 }
 impl Resource for SkyParamsRes {}
 

@@ -1271,7 +1271,12 @@ impl VulkanContext {
                         sky_params.sun_color[0],
                         sky_params.sun_color[1],
                         sky_params.sun_color[2],
-                        0.0,
+                        // #478 — pack the CLMT FNAM sun sprite handle
+                        // into the previously-unused w slot via
+                        // `from_bits`. The shader reinterprets with
+                        // `floatBitsToUint`; `0` keeps the procedural
+                        // disc (pre-fix behaviour).
+                        f32::from_bits(sky_params.sun_texture_index),
                     ],
                     cloud_params: [
                         sky_params.cloud_scroll[0],

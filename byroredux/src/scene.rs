@@ -252,6 +252,46 @@ pub(crate) fn setup_scene(
                             },
                             None => (0u32, 0.0_f32),
                         };
+                        // CLMT FNAM sun-sprite resolution — #478.
+                        // Same extract-then-load-DDS pattern as the
+                        // cloud texture above; path normalization
+                        // (`textures\` prefix + slash flip) happens
+                        // inside `TextureProvider::extract` and
+                        // `TextureRegistry::load_dds` (see #522).
+                        // `0` = fall back to the procedural disc in
+                        // composite.frag (every code path that hit
+                        // the sun rendering pre-#478 continues to).
+                        let sun_tex_index: u32 = result
+                            .climate
+                            .as_ref()
+                            .and_then(|c| c.sun_texture.as_deref())
+                            .filter(|s| !s.is_empty())
+                            .and_then(|path| {
+                                let dds = tex_provider.extract(path)?;
+                                let alloc = ctx.allocator.as_ref().unwrap();
+                                match ctx.texture_registry.load_dds(
+                                    &ctx.device,
+                                    alloc,
+                                    &ctx.graphics_queue,
+                                    ctx.transfer_pool,
+                                    path,
+                                    &dds,
+                                ) {
+                                    Ok(h) => {
+                                        log::info!("Sun texture '{}' → handle {}", path, h);
+                                        Some(h)
+                                    }
+                                    Err(e) => {
+                                        log::warn!(
+                                            "Sun DDS load failed '{}': {} — using procedural disc",
+                                            path,
+                                            e
+                                        );
+                                        None
+                                    }
+                                }
+                            })
+                            .unwrap_or(0);
                         world.insert_resource(SkyParamsRes {
                             zenith_color: zenith,
                             horizon_color: horizon,
@@ -263,6 +303,7 @@ pub(crate) fn setup_scene(
                             cloud_scroll: [0.0, 0.0],
                             cloud_tile_scale,
                             cloud_texture_index: cloud_tex_index,
+                            sun_texture_index: sun_tex_index,
                         });
                         // Store full NAM0 color table for per-frame time-of-day interpolation.
                         let mut sky_colors = [[[0.0f32; 3]; 6]; 10];
@@ -328,6 +369,7 @@ pub(crate) fn setup_scene(
                             cloud_scroll: [0.0, 0.0],
                             cloud_tile_scale: 0.0, // no WTHR → no clouds
                             cloud_texture_index: 0,
+                            sun_texture_index: 0, // procedural disc (#478)
                         });
                     }
                 }
