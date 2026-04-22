@@ -285,7 +285,12 @@ pub fn create_logical_device(
         // GPUs since Vulkan 1.0 and the fallback path (the
         // pre-#309 per-batch loop) kicks in if the device doesn't
         // expose it.
-        .multi_draw_indirect(caps.multi_draw_indirect_supported);
+        .multi_draw_indirect(caps.multi_draw_indirect_supported)
+        // Required for atomicAdd on the ray budget SSBO (binding 11) in
+        // the fragment shader. Universally available on desktop Vulkan 1.0
+        // GPUs; the RT mipmap system won't compile pipelines without it.
+        // VUID-RuntimeSpirv-NonWritable-06340.
+        .fragment_stores_and_atomics(true);
 
     // Build extension list: required + optional RT.
     let mut extensions: Vec<*const i8> = REQUIRED_EXTENSIONS.iter().map(|e| e.as_ptr()).collect();
