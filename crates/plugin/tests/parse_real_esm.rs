@@ -71,7 +71,7 @@ fn parse_rate_fnv_esm() {
         "[FNV] total={} | items={} containers={} LVLI={} LVLN={} NPCs={} \
          races={} classes={} factions={} globals={} game_settings={} \
          packages={} quests={} dialogues={} messages={} perks={} \
-         spells={} magic_effects={}",
+         spells={} magic_effects={} activators={} terminals={}",
         index.total(),
         index.items.len(),
         index.containers.len(),
@@ -90,6 +90,8 @@ fn parse_rate_fnv_esm() {
         index.perks.len(),
         index.spells.len(),
         index.magic_effects.len(),
+        index.activators.len(),
+        index.terminals.len(),
     );
 
     // Primary M24 baseline assertion — the "13,684 structured records"
@@ -153,6 +155,23 @@ fn parse_rate_fnv_esm() {
         index.magic_effects.len() > 270,
         "MGEF={}",
         index.magic_effects.len(),
+    );
+
+    // ACTI / TERM floors (#521). Issue body estimated ≥1500/≥400;
+    // reference run on vanilla FNV (no DLC) observes 1143/344 —
+    // the audit's estimates included DLC content that isn't in a
+    // fresh Steam install. Floors sit a few percent below the
+    // observed vanilla numbers to absorb cell-group-skip edge cases
+    // without masking a dispatch regression.
+    assert!(
+        index.activators.len() >= 1000,
+        "ACTI={} (expected >= 1000; vanilla ships 1143)",
+        index.activators.len(),
+    );
+    assert!(
+        index.terminals.len() >= 300,
+        "TERM={} (expected >= 300; vanilla ships 344)",
+        index.terminals.len(),
     );
 }
 

@@ -39,10 +39,11 @@ pub use items::{
     parse_weap, ItemKind, ItemRecord,
 };
 pub use misc::{
-    parse_dial, parse_eczn, parse_eyes, parse_hair, parse_hdpt, parse_lgtm, parse_mesg, parse_mgef,
-    parse_navi, parse_navm, parse_pack, parse_perk, parse_qust, parse_regn, parse_spel, parse_watr,
-    DialRecord, EcznRecord, EyesRecord, HairRecord, HdptRecord, LgtmRecord, MesgRecord, MgefRecord,
-    NaviRecord, NavmRecord, PackRecord, PerkRecord, QustRecord, RegnRecord, SpelRecord, WatrRecord,
+    parse_acti, parse_dial, parse_eczn, parse_eyes, parse_hair, parse_hdpt, parse_lgtm, parse_mesg,
+    parse_mgef, parse_navi, parse_navm, parse_pack, parse_perk, parse_qust, parse_regn, parse_spel,
+    parse_term, parse_watr, ActiRecord, DialRecord, EcznRecord, EyesRecord, HairRecord, HdptRecord,
+    LgtmRecord, MesgRecord, MgefRecord, NaviRecord, NavmRecord, PackRecord, PerkRecord, QustRecord,
+    RegnRecord, SpelRecord, TermRecord, WatrRecord,
 };
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
 pub use weather::{parse_wthr, SkyColor, WeatherRecord};
@@ -132,6 +133,16 @@ pub struct EsmIndex {
     pub spells: HashMap<u32, SpelRecord>,
     /// `MGEF` magic effects — universal bridge for Actor Value mods.
     pub magic_effects: HashMap<u32, MgefRecord>,
+    // ── Activators / terminals (#521) ───────────────────────────────
+    /// `ACTI` activator records — wall switches, vending machines,
+    /// lever-activated doors, anything "use"-able that isn't a
+    /// container/door/NPC. SCRI cross-references resolve here instead
+    /// of dangling.
+    pub activators: HashMap<u32, ActiRecord>,
+    /// `TERM` terminal records — vault/military consoles. Menu items
+    /// + password + body text captured so a future terminal-interaction
+    /// system doesn't have to re-parse them.
+    pub terminals: HashMap<u32, TermRecord>,
 }
 
 impl EsmIndex {
@@ -169,6 +180,8 @@ impl EsmIndex {
             + self.perks.len()
             + self.spells.len()
             + self.magic_effects.len()
+            + self.activators.len()
+            + self.terminals.len()
             + self.cells.cells.len()
             + self.cells.statics.len()
     }
@@ -400,6 +413,16 @@ pub fn parse_esm_with_load_order(
             b"MGEF" => extract_records(&mut reader, end, b"MGEF", &mut |fid, subs| {
                 index.magic_effects.insert(fid, parse_mgef(fid, subs));
             })?,
+            // ACTI / TERM #521 — dispatch pulled out of the cell
+            // MODL catch-all so SCRI / menu-tree cross-refs survive.
+            // cells.statics still picks them up via the MODL pass so
+            // existing rendering / collision code paths are untouched.
+            b"ACTI" => extract_records(&mut reader, end, b"ACTI", &mut |fid, subs| {
+                index.activators.insert(fid, parse_acti(fid, subs));
+            })?,
+            b"TERM" => extract_records(&mut reader, end, b"TERM", &mut |fid, subs| {
+                index.terminals.insert(fid, parse_term(fid, subs));
+            })?,
             _ => {
                 reader.skip_group(&group);
             }
@@ -410,7 +433,7 @@ pub fn parse_esm_with_load_order(
         "ESM parsed: {} cells, {} statics, {} items, {} containers, {} LVLI, {} LVLN, {} LVLC, \
          {} NPCs, {} creatures, {} races, {} classes, {} factions, {} globals, {} game settings, \
          {} weathers, {} climates, {} scripts, {} packages, {} quests, {} dialogues, \
-         {} messages, {} perks, {} spells, {} magic effects",
+         {} messages, {} perks, {} spells, {} magic effects, {} activators, {} terminals",
         index.cells.cells.len(),
         index.cells.statics.len(),
         index.items.len(),
@@ -435,6 +458,8 @@ pub fn parse_esm_with_load_order(
         index.perks.len(),
         index.spells.len(),
         index.magic_effects.len(),
+        index.activators.len(),
+        index.terminals.len(),
     );
 
     Ok(index)

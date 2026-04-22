@@ -618,6 +618,113 @@ pub fn parse_mgef(form_id: u32, subs: &[SubRecord]) -> MgefRecord {
     out
 }
 
+/// `ACTI` activator record. FO3/FNV/Oblivion wall switches, buttons,
+/// vending machines, lever-activated doors — anything that the player
+/// "use"s but isn't a container, door, or NPC. SCRI on these records
+/// runs the trigger script; DEST controls destruction-state meshes.
+/// Full destruction-stage decoding is deferred — the stub captures
+/// identity + model + SCRI cross-ref so dangling references resolve
+/// at lookup time. See #521.
+#[derive(Debug, Clone, Default)]
+pub struct ActiRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    pub full_name: String,
+    /// NIF path from MODL — already populated in `cells.statics` via
+    /// the MODL catch-all, but duplicated here so a structured record
+    /// map is internally consistent.
+    pub model_path: String,
+    /// SCRI — script form ID attached to this activator. `0` = no
+    /// script. Referenced by trigger-system dispatch once it lands.
+    pub script_form_id: u32,
+    /// SNAM — sound form ID played on activation (optional).
+    pub sound_form_id: u32,
+    /// RADR / RNAM — radio station form ID, applicable to FNV radio
+    /// transmitters (activator variant). `0` when absent.
+    pub radio_form_id: u32,
+}
+
+pub fn parse_acti(form_id: u32, subs: &[SubRecord]) -> ActiRecord {
+    let mut out = ActiRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_zstring(&sub.data),
+            b"MODL" => out.model_path = read_zstring(&sub.data),
+            b"SCRI" => out.script_form_id = read_u32_at(&sub.data, 0).unwrap_or(0),
+            b"SNAM" => out.sound_form_id = read_u32_at(&sub.data, 0).unwrap_or(0),
+            b"RNAM" | b"RADR" => {
+                out.radio_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `TERM` terminal record — FO3/FNV computer consoles. Carries a
+/// menu tree (MNAM entries), password (ANAM), body text (DNAM), and
+/// the NIF model of the physical terminal. MNAM text is collected
+/// into `menu_items` so a future terminal-interaction system can
+/// walk the options without re-parsing. See #521.
+#[derive(Debug, Clone, Default)]
+pub struct TermRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    pub full_name: String,
+    pub model_path: String,
+    /// SCRI — script form ID (some terminals trigger quest advance
+    /// scripts on successful hack).
+    pub script_form_id: u32,
+    /// ANAM — password string (may be empty for unlocked terminals).
+    pub password: String,
+    /// DNAM — footer / body text displayed on the terminal screen.
+    pub footer_text: String,
+    /// BSIZ — body-size scalar (u8, 0 = small, 1 = large). Defaults 0.
+    pub body_size: u8,
+    /// MNAM — menu-item text, one per entry. Order preserved. Each
+    /// MNAM is flanked by its own sub-record group (NNAM target,
+    /// CTDA conditions) which is deferred; the stub just captures
+    /// the labels so the menu tree isn't lost.
+    pub menu_items: Vec<String>,
+}
+
+pub fn parse_term(form_id: u32, subs: &[SubRecord]) -> TermRecord {
+    let mut out = TermRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_zstring(&sub.data),
+            b"MODL" => out.model_path = read_zstring(&sub.data),
+            b"SCRI" => out.script_form_id = read_u32_at(&sub.data, 0).unwrap_or(0),
+            b"ANAM" => out.password = read_zstring(&sub.data),
+            b"DNAM" => out.footer_text = read_zstring(&sub.data),
+            b"BSIZ" if !sub.data.is_empty() => {
+                out.body_size = sub.data[0];
+            }
+            b"MNAM" => {
+                // FO3/FNV sometimes ships MNAM as the menu-item text
+                // directly and sometimes as a 4-byte form ref (when
+                // the label lives elsewhere). Treat as text whenever
+                // the bytes are printable; otherwise skip. Keeps the
+                // stub robust against the mixed wild encoding.
+                let text = read_zstring(&sub.data);
+                if !text.is_empty() {
+                    out.menu_items.push(text);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -867,5 +974,64 @@ mod tests {
         ];
         let e = parse_mgef(0xA7A7, &subs);
         assert_eq!(e.effect_flags, 0x0000_0009);
+    }
+
+    #[test]
+    fn parse_acti_extracts_scri_and_model() {
+        let subs = vec![
+            sub(b"EDID", b"NukaColaMachine01\0"),
+            sub(b"FULL", b"Nuka-Cola Machine\0"),
+            sub(b"MODL", b"activators\\nukacolamachine01.nif\0"),
+            sub(b"SCRI", &0x0010_ABCDu32.to_le_bytes()),
+            sub(b"SNAM", &0x0009_0000u32.to_le_bytes()),
+        ];
+        let a = parse_acti(0x0002_9E7A, &subs);
+        assert_eq!(a.editor_id, "NukaColaMachine01");
+        assert_eq!(a.full_name, "Nuka-Cola Machine");
+        assert_eq!(a.model_path, "activators\\nukacolamachine01.nif");
+        assert_eq!(a.script_form_id, 0x0010_ABCD);
+        assert_eq!(a.sound_form_id, 0x0009_0000);
+        // Radio form defaults to 0 when RNAM/RADR absent.
+        assert_eq!(a.radio_form_id, 0);
+    }
+
+    #[test]
+    fn parse_term_extracts_password_footer_menu() {
+        let subs = vec![
+            sub(b"EDID", b"Vault21OverseerTerminal\0"),
+            sub(b"FULL", b"Overseer's Terminal\0"),
+            sub(b"MODL", b"clutter\\junk\\terminal01.nif\0"),
+            sub(b"ANAM", b"tranquility\0"),
+            sub(b"DNAM", b"Welcome, Overseer. Vault 21 online.\0"),
+            sub(b"BSIZ", &[1u8]),
+            sub(b"MNAM", b"Open Vault Door\0"),
+            sub(b"MNAM", b"View Resident Log\0"),
+            sub(b"MNAM", b"Disable Security\0"),
+            sub(b"SCRI", &0x0004_2CD2u32.to_le_bytes()),
+        ];
+        let t = parse_term(0x0004_2424, &subs);
+        assert_eq!(t.editor_id, "Vault21OverseerTerminal");
+        assert_eq!(t.password, "tranquility");
+        assert!(t.footer_text.starts_with("Welcome, Overseer"));
+        assert_eq!(t.body_size, 1);
+        assert_eq!(t.menu_items.len(), 3);
+        assert_eq!(t.menu_items[0], "Open Vault Door");
+        assert_eq!(t.menu_items[2], "Disable Security");
+        assert_eq!(t.script_form_id, 0x0004_2CD2);
+    }
+
+    #[test]
+    fn parse_term_unlocked_terminal_has_empty_password() {
+        // Tutorial / ambient terminals often ship without ANAM; stub
+        // must tolerate that without panicking.
+        let subs = vec![
+            sub(b"EDID", b"GoodspringsSchoolTerminal\0"),
+            sub(b"FULL", b"School Terminal\0"),
+            sub(b"DNAM", b"Primer by Mr. Goodsprings.\0"),
+        ];
+        let t = parse_term(0x0008_1111, &subs);
+        assert!(t.password.is_empty());
+        assert_eq!(t.body_size, 0);
+        assert!(t.menu_items.is_empty());
     }
 }
