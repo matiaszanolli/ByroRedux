@@ -343,7 +343,6 @@ pub(crate) fn setup_scene(
                                 wthr.fog_night_near,
                                 wthr.fog_night_far,
                             ],
-                            cloud_speeds: wthr.cloud_speeds,
                             tod_hours,
                         });
                         world.insert_resource(GameTimeRes::default());

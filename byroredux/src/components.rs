@@ -173,9 +173,6 @@ pub(crate) struct WeatherDataRes {
     pub(crate) sky_colors: [[[f32; 3]; 6]; 10],
     /// Fog distances: [day_near, day_far, night_near, night_far].
     pub(crate) fog: [f32; 4],
-    /// Cloud layer scroll speeds from WTHR DNAM (0-255, one per layer).
-    /// `weather_system` uses index 0 to drive `SkyParamsRes::cloud_scroll`.
-    pub(crate) cloud_speeds: [u8; 4],
     /// Per-climate sunrise/sunset hour breakpoints — `weather_system`
     /// uses these to drive the TOD slot interpolator so Capital
     /// Wasteland and Mojave run on their own schedules (FO3 sunrise

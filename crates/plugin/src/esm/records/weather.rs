@@ -92,10 +92,11 @@ pub struct WeatherRecord {
     pub sun_damage: u8,
     /// Weather classification flags (WTHR_PLEASANT | WTHR_CLOUDY | ...).
     pub classification: u8,
-    /// Cloud texture paths (up to 4 layers for FNV).
+    /// Cloud texture paths. FNV/FO3 ship 4 layers (DNAM/CNAM/ANAM/BNAM
+    /// = layers 0–3 in schema-emission order); Oblivion ships 2
+    /// (DNAM = 0, CNAM = 1). Paths are `textures\`-root-relative
+    /// zstrings — see #468 for the normaliser in `TextureProvider`.
     pub cloud_textures: [Option<String>; 4],
-    /// Cloud layer speeds (0–255 per layer, from DNAM).
-    pub cloud_speeds: [u8; 4],
 }
 
 impl Default for WeatherRecord {
@@ -113,7 +114,6 @@ impl Default for WeatherRecord {
             sun_damage: 0,
             classification: 0,
             cloud_textures: [None, None, None, None],
-            cloud_speeds: [0; 4],
         }
     }
 }
@@ -192,27 +192,25 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
                 // bytes 13-14: lightning color (partial)
             }
 
-            // DNAM: cloud layer speeds (4 bytes — one per layer).
-            b"DNAM" if sub.data.len() >= 4 => {
-                record.cloud_speeds[0] = sub.data[0];
-                record.cloud_speeds[1] = sub.data[1];
-                record.cloud_speeds[2] = sub.data[2];
-                record.cloud_speeds[3] = sub.data[3];
-            }
-
-            // Cloud texture paths: 00TX through 03TX.
-            [b'0', b'0', b'T', b'X'] => {
-                record.cloud_textures[0] = Some(read_zstring(&sub.data));
-            }
-            [b'1', b'0', b'T', b'X'] => {
-                record.cloud_textures[1] = Some(read_zstring(&sub.data));
-            }
-            [b'2', b'0', b'T', b'X'] => {
-                record.cloud_textures[2] = Some(read_zstring(&sub.data));
-            }
-            [b'3', b'0', b'T', b'X'] => {
-                record.cloud_textures[3] = Some(read_zstring(&sub.data));
-            }
+            // Cloud texture paths. Per-game sub-record FourCCs — verified
+            // by byte-level scan of FalloutNV.esm, Fallout3.esm,
+            // Oblivion.esm (docs/audits/AUDIT_M33_2026-04-21.md §M33-02):
+            //   FNV / FO3 (4 layers, schema-emission order):
+            //     DNAM = layer 0 (base)  CNAM = layer 1
+            //     ANAM = layer 2         BNAM = layer 3 (top)
+            //   Oblivion (2 layers):
+            //     DNAM = layer 0         CNAM = layer 1
+            // The pre-fix parser matched `00TX/10TX/20TX/30TX` which
+            // doesn't appear in any shipped master (M33-02) and read
+            // DNAM as `[u8; 4]` cloud speeds (M33-03, #535) — DNAM was
+            // claimed both ways and ended up neither.
+            //
+            // Bodies are `textures\`-root-relative zstrings; #468's
+            // `TextureProvider` normaliser prepends the prefix.
+            b"DNAM" => record.cloud_textures[0] = Some(read_zstring(&sub.data)),
+            b"CNAM" => record.cloud_textures[1] = Some(read_zstring(&sub.data)),
+            b"ANAM" => record.cloud_textures[2] = Some(read_zstring(&sub.data)),
+            b"BNAM" => record.cloud_textures[3] = Some(read_zstring(&sub.data)),
 
             _ => {}
         }
@@ -267,8 +265,12 @@ mod tests {
             make_sub(b"NAM0", nam0_data),
             make_sub(b"HNAM", hnam_data),
             make_sub(b"DATA", data_bytes),
-            make_sub(b"DNAM", vec![10, 20, 30, 40]),
-            make_sub(b"00TX", b"sky\\clouds_01.dds\0".to_vec()),
+            // Cloud layers in schema-emission order (DNAM/CNAM/ANAM/BNAM).
+            // See #534 / audit M33-02 for the FourCC-to-layer mapping.
+            make_sub(b"DNAM", b"sky\\clouds_00_base.dds\0".to_vec()),
+            make_sub(b"CNAM", b"sky\\clouds_01.dds\0".to_vec()),
+            make_sub(b"ANAM", b"sky\\clouds_02.dds\0".to_vec()),
+            make_sub(b"BNAM", b"sky\\clouds_03_top.dds\0".to_vec()),
         ];
 
         let w = parse_wthr(0x1234, &subs);
@@ -294,10 +296,47 @@ mod tests {
         assert_eq!(w.sun_glare, 128);
         assert_eq!(w.classification, WTHR_PLEASANT);
 
-        // Clouds
-        assert_eq!(w.cloud_speeds, [10, 20, 30, 40]);
-        assert_eq!(w.cloud_textures[0].as_deref(), Some("sky\\clouds_01.dds"));
-        assert!(w.cloud_textures[1].is_none());
+        // Cloud layer paths — DNAM/CNAM/ANAM/BNAM = 0/1/2/3 (#534).
+        assert_eq!(
+            w.cloud_textures[0].as_deref(),
+            Some("sky\\clouds_00_base.dds"),
+        );
+        assert_eq!(w.cloud_textures[1].as_deref(), Some("sky\\clouds_01.dds"));
+        assert_eq!(w.cloud_textures[2].as_deref(), Some("sky\\clouds_02.dds"));
+        assert_eq!(
+            w.cloud_textures[3].as_deref(),
+            Some("sky\\clouds_03_top.dds"),
+        );
+    }
+
+    /// Regression for #534 / audit M33-02: the pre-fix parser matched
+    /// `00TX/10TX/20TX/30TX` which never appear in any shipped master.
+    /// Guard: those FourCCs should NOT be recognised — a WTHR that only
+    /// contains them produces zero cloud layers.
+    #[test]
+    fn parse_wthr_00tx_fourccs_are_inert() {
+        let subs = vec![
+            make_sub(b"EDID", b"StaleFourCCs\0".to_vec()),
+            make_sub(b"00TX", b"sky\\stale.dds\0".to_vec()),
+            make_sub(b"10TX", b"sky\\stale.dds\0".to_vec()),
+        ];
+        let w = parse_wthr(0xFADE, &subs);
+        assert!(w.cloud_textures.iter().all(|c| c.is_none()));
+    }
+
+    /// Regression for #535 / audit M33-03: DNAM must be treated as a
+    /// cloud-texture-path zstring, never as `[u8; 4]` cloud speeds.
+    /// Feeding a 4-byte payload that would previously have decoded to
+    /// `cloud_speeds = [1, 2, 3, 4]` now parses as the tiny zstring it
+    /// resembles — and `cloud_speeds` no longer exists on the struct.
+    #[test]
+    fn parse_wthr_dnam_is_texture_path_not_speeds() {
+        let subs = vec![
+            make_sub(b"EDID", b"DnamPathCheck\0".to_vec()),
+            make_sub(b"DNAM", b"sky\\a.dds\0".to_vec()),
+        ];
+        let w = parse_wthr(0x5ECD, &subs);
+        assert_eq!(w.cloud_textures[0].as_deref(), Some("sky\\a.dds"));
     }
 
     /// Regression for #533 / audit M33-01: the 160-byte Oblivion/FO3

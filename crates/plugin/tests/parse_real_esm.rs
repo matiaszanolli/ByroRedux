@@ -198,6 +198,24 @@ fn parse_rate_fnv_esm() {
         nonzero_nam0,
         index.weathers.len(),
     );
+
+    // #534 / audit M33-02 regression guard: cloud texture sub-records
+    // live in DNAM/CNAM/ANAM/BNAM (not 00TX-03TX). Pre-fix the parser
+    // populated zero cloud textures across every WTHR in every shipped
+    // master. FNV weathers near-universally ship DNAM (layer 0) per the
+    // FourCC histogram (63/63 in vanilla).
+    let with_layer_0 = index
+        .weathers
+        .values()
+        .filter(|w| w.cloud_textures[0].as_deref().filter(|s| !s.is_empty()).is_some())
+        .count();
+    assert!(
+        with_layer_0 >= 50,
+        "FNV weathers with cloud layer 0 = {}/{} — pre-fix 0/63; \
+         expected >= 50 after #534",
+        with_layer_0,
+        index.weathers.len(),
+    );
 }
 
 #[test]
@@ -290,6 +308,19 @@ fn parse_rate_fo3_esm() {
         nonzero_nam0,
         index.weathers.len(),
     );
+
+    // #534 / audit M33-02: FO3 ships 27 WTHRs, every one has DNAM.
+    let with_layer_0 = index
+        .weathers
+        .values()
+        .filter(|w| w.cloud_textures[0].as_deref().filter(|s| !s.is_empty()).is_some())
+        .count();
+    assert!(
+        with_layer_0 >= 20,
+        "FO3 weathers with cloud layer 0 = {}/{} — expected >= 20 after #534",
+        with_layer_0,
+        index.weathers.len(),
+    );
 }
 
 /// Oblivion: the 160-byte NAM0 stride target of #533. Minimal parse
@@ -337,6 +368,20 @@ fn parse_rate_oblivion_esm() {
         nonzero_nam0 >= 25,
         "OBL non-zero-NAM0 weathers={}/{} — expected >= 25 after #533 fix",
         nonzero_nam0,
+        index.weathers.len(),
+    );
+
+    // #534 / audit M33-02: Oblivion ships 2 cloud layers (DNAM + CNAM).
+    // Histogram: DNAM on 35/37 WTHRs.
+    let with_layer_0 = index
+        .weathers
+        .values()
+        .filter(|w| w.cloud_textures[0].as_deref().filter(|s| !s.is_empty()).is_some())
+        .count();
+    assert!(
+        with_layer_0 >= 25,
+        "OBL weathers with cloud layer 0 = {}/{} — expected >= 25 after #534",
+        with_layer_0,
         index.weathers.len(),
     );
 }

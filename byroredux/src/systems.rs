@@ -1270,12 +1270,18 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         0.0 // night
     };
 
-    // Cloud layer 0 scroll rate. DNAM speeds are u8 (0-255). At 128 we want
-    // a noticeable but not blurry drift — empirically ~0.02 UV/sec feels right
-    // at the 0.15 tile scale set in scene.rs. Scroll uses dt (real seconds),
-    // not game-time: clouds drift with wall-clock wind, not the day/night cycle.
-    let cloud_speed_01 = wd.cloud_speeds[0] as f32 / 128.0;
-    let cloud_scroll_rate = 0.02 * cloud_speed_01;
+    // Cloud layer 0 scroll rate. Pre-#535 the rate was "derived" from
+    // `wd.cloud_speeds[0] / 128.0 * 0.02`, but that byte was actually
+    // the first character of the DNAM cloud-path zstring (typically
+    // `'s'` = 0x73 = 115 → factor 0.898 → ≈0.018 UV/sec). The visible
+    // result looked fine because the authored constant was close, so
+    // keep it here as a named baseline while the real per-weather
+    // scroll source stays unknown. WTHR has ONAM (4 B, looks f32-ish)
+    // and INAM (304 B, per-image transition data) that plausibly carry
+    // the speed; sourcing that is deferred — cross-cuts #541's
+    // "unused WTHR fields" scope and needs UESP-authoritative byte
+    // sampling before committing to an offset.
+    let cloud_scroll_rate: f32 = 0.018;
 
     drop(wd);
 
