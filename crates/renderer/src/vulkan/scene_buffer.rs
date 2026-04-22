@@ -471,6 +471,11 @@ pub struct SceneBuffers {
     /// `terrainTiles[tile_idx]` when `INSTANCE_FLAG_TERRAIN_SPLAT` is
     /// set on the instance. See #470 / #497.
     terrain_tile_buffer: GpuBuffer,
+    /// One HOST_VISIBLE u32 SSBO per frame-in-flight for the RT mipmap
+    /// glass ray budget counter. The CPU zeroes it before each render pass;
+    /// the fragment shader atomically increments it per IOR ray pair fired
+    /// and skips Phase-3 glass once the budget is exhausted. Binding 11.
+    ray_budget_buffers: Vec<GpuBuffer>,
     /// Size of the terrain tile buffer in bytes — stashed so upload
     /// paths don't have to recompute it from `MAX_TERRAIN_TILES`.
     terrain_tile_buf_size: vk::DeviceSize,
@@ -517,6 +522,7 @@ impl SceneBuffers {
         let mut bone_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut instance_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut indirect_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut ray_budget_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             light_buffers.push(GpuBuffer::create_host_visible(
                 device,
@@ -547,6 +553,14 @@ impl SceneBuffers {
                 allocator,
                 indirect_buf_size,
                 vk::BufferUsageFlags::INDIRECT_BUFFER,
+            )?);
+            // Ray budget counter: 4 bytes, atomically incremented by the
+            // fragment shader, zeroed by the CPU before each render pass.
+            ray_budget_buffers.push(GpuBuffer::create_host_visible(
+                device,
+                allocator,
+                std::mem::size_of::<u32>() as vk::DeviceSize,
+                vk::BufferUsageFlags::STORAGE_BUFFER,
             )?);
         }
         // Terrain tile SSBO: single DEVICE_LOCAL buffer, uploaded via
@@ -649,6 +663,16 @@ impl SceneBuffers {
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         );
+        // Binding 11: RT mipmap ray budget counter (fragment shader — u32 atomic).
+        // The CPU zeroes this before each render pass; Phase-3 glass fragments
+        // atomicAdd to claim a budget slot and skip IOR refraction once exhausted.
+        bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(11)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        );
         // Mark bindings 5+6 (cluster data) as PARTIALLY_BOUND so they are
         // valid even when unwritten (cluster cull pipeline may fail to create).
         // The fragment shader guards access with a lightCount > 0 check.
@@ -670,7 +694,10 @@ impl SceneBuffers {
         // When rt_enabled=false the TLAS binding (2) is declared in the shader
         // but intentionally omitted from the layout — the fragment gates every
         // rayQuery behind a uniform flag.
-        let optional_bindings: &[u32] = if rt_enabled { &[] } else { &[2] };
+        // Binding 2 (TLAS) is declared in the shader but omitted when rt_enabled=false.
+        // Binding 11 (ray budget) is optional until triangle.frag.spv is recompiled
+        // with the binding declared — validated together in Commit 2.
+        let optional_bindings: &[u32] = if rt_enabled { &[11] } else { &[2, 11] };
         super::reflect::validate_set_layout(
             1,
             &bindings,
@@ -702,9 +729,10 @@ impl SceneBuffers {
         let mut pool_sizes = vec![
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
-                // 8 SSBOs per frame: lights(0), bones(3), instances(4), cluster grid(5),
-                // light indices(6), vertices(8), indices(9), terrain tiles(10).
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 8) as u32,
+                // 9 SSBOs per frame: lights(0), bones(3), instances(4), cluster grid(5),
+                // light indices(6), vertices(8), indices(9), terrain tiles(10),
+                // ray budget counter(11).
+                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 9) as u32,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
@@ -769,6 +797,11 @@ impl SceneBuffers {
                 offset: 0,
                 range: terrain_tile_buf_size,
             }];
+            let ray_budget_buf_info = [vk::DescriptorBufferInfo {
+                buffer: ray_budget_buffers[i].buffer,
+                offset: 0,
+                range: std::mem::size_of::<u32>() as vk::DeviceSize,
+            }];
             let writes = [
                 vk::WriteDescriptorSet::default()
                     .dst_set(descriptor_sets[i])
@@ -795,6 +828,11 @@ impl SceneBuffers {
                     .dst_binding(10)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .buffer_info(&terrain_tile_buf_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_sets[i])
+                    .dst_binding(11)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(&ray_budget_buf_info),
             ];
             unsafe {
                 device.update_descriptor_sets(&writes, &[]);
@@ -830,6 +868,7 @@ impl SceneBuffers {
             indirect_buffers,
             terrain_tile_buffer,
             terrain_tile_buf_size,
+            ray_budget_buffers,
             descriptor_pool,
             descriptor_set_layout,
             descriptor_sets,
@@ -1269,6 +1308,18 @@ impl SceneBuffers {
         }
     }
 
+    /// Zero the ray budget counter for the given frame before the render pass.
+    ///
+    /// Called from `draw_frame` after uploading instances and before
+    /// `cmd_begin_render_pass`. The fragment shader atomically increments this
+    /// counter for each Phase-3 IOR glass ray pair it fires; once the count
+    /// exceeds `GLASS_RAY_BUDGET` (declared in `triangle.frag`) all further
+    /// glass fragments degrade to the tier-1 cheaper path for that frame.
+    pub fn reset_ray_budget(&mut self, device: &ash::Device, frame: usize) -> Result<()> {
+        let zero: u32 = 0;
+        self.ray_budget_buffers[frame].write_mapped(device, std::slice::from_ref(&zero))
+    }
+
     /// Destroy all resources.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         for buf in &mut self.light_buffers {
@@ -1284,6 +1335,9 @@ impl SceneBuffers {
             buf.destroy(device, allocator);
         }
         for buf in &mut self.indirect_buffers {
+            buf.destroy(device, allocator);
+        }
+        for buf in &mut self.ray_budget_buffers {
             buf.destroy(device, allocator);
         }
         self.terrain_tile_buffer.destroy(device, allocator);

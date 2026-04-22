@@ -691,6 +691,12 @@ impl VulkanContext {
                 .unwrap_or_else(|e| log::warn!("Failed to upload instances: {e}"));
         }
 
+        // Zero the ray budget counter so the fragment shader starts each
+        // frame with a fresh allowance of Phase-3 IOR glass rays.
+        self.scene_buffers
+            .reset_ray_budget(&self.device, frame)
+            .unwrap_or_else(|e| log::warn!("Failed to reset ray budget: {e}"));
+
         // Reupload the terrain tile SSBO when cell load mutated it.
         // The slab is static until the next cell transition — #497
         // moved it to a single DEVICE_LOCAL buffer uploaded via a
