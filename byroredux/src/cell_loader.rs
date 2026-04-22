@@ -113,6 +113,14 @@ impl Resource for NifImportRegistry {}
 pub struct CellLoadResult {
     pub cell_name: String,
     pub entity_count: usize,
+    /// Number of **mesh-bearing entities** spawned by this cell load —
+    /// i.e. the count of `world.insert(entity, MeshHandle(...))` calls
+    /// in `spawn_placed_instances` for this cell's references. Stable
+    /// across repeat loads of the same cell (unlike the NIF-parse
+    /// cache, which reports 0 on a second load even though the cell
+    /// still spawns all its entities). Useful as a telemetry baseline:
+    /// FNV Prospector Saloon should produce 784 here on every load,
+    /// matching the draw-count. See #477 (FNV-3-L2).
     pub mesh_count: usize,
     /// Bounding box center of all placed objects (Y-up, for camera positioning).
     pub center: Vec3,
@@ -1030,6 +1038,11 @@ fn load_references(
     label: &str,
 ) -> RefLoadResult {
     let mut entity_count = 0;
+    // Number of mesh-bearing entities (those that receive a
+    // `MeshHandle` insert in `spawn_placed_instances`). Distinct from
+    // `entity_count` which also sums LIGH-only / effect-sprite-light
+    // entities that carry no renderable mesh. See #477.
+    let mut mesh_entity_count = 0usize;
     // Process-lifetime cache of parsed-and-imported NIF scene data
     // (`NifImportRegistry`, #381). Each unique mesh is parsed exactly
     // once across the entire process — subsequent placements of the
@@ -1222,6 +1235,7 @@ fn load_references(
             stat.light_data.as_ref(),
         );
         entity_count += count;
+        mesh_entity_count += count;
     }
 
     let center = (bounds_min + bounds_max) * 0.5;
@@ -1269,13 +1283,15 @@ fn load_references(
 
     RefLoadResult {
         entity_count,
-        // Count only entries newly parsed during this load (lifetime
-        // total minus entry snapshot). Failed-parse entries count too
-        // — they reflect work performed even though no mesh shipped.
-        mesh_count: {
-            let reg = world.resource::<NifImportRegistry>();
-            reg.len().saturating_sub(cache_size_at_entry)
-        },
+        // Mesh-bearing entities spawned this load. Pre-#477 this was
+        // `reg.len() - cache_size_at_entry` — "newly parsed NIFs" —
+        // which reported 0 on a repeat load of the same cell despite
+        // spawning hundreds of entities. The new count is stable
+        // across repeat loads and matches the rasterizer draw budget
+        // (modulo instancing). The parse-work telemetry moved to the
+        // `this_cell_unique` log line above; `NifImportRegistry.hits`
+        // / `.misses` remain the source of truth for cache analysis.
+        mesh_count: mesh_entity_count,
         center,
     }
 }
