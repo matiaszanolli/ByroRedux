@@ -1323,6 +1323,12 @@ impl VulkanContext {
                         sky_params.cloud_tile_scale,
                         f32::from_bits(sky_params.cloud_texture_index),
                     ],
+                    cloud_params_1: [
+                        sky_params.cloud_scroll_1[0],
+                        sky_params.cloud_scroll_1[1],
+                        sky_params.cloud_tile_scale_1,
+                        f32::from_bits(sky_params.cloud_texture_index_1),
+                    ],
                     // #428 — composite-pass fog needs the camera origin to
                     // compute per-pixel world-space distance from a depth
                     // sample. `w` is unused padding.

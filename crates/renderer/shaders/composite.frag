@@ -29,6 +29,7 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 sun_dir;        // xyz = sun direction (world-space, normalized), w = sun_intensity
     vec4 sun_color;      // xyz = sun disc color (linear RGB), w = CLMT FNAM sun sprite idx (floatBitsToUint; 0 = procedural disc)
     vec4 cloud_params;   // x=scroll_u, y=scroll_v, z=tile_scale (0=disabled), w=texture_idx(uintBits)
+    vec4 cloud_params_1; // cloud layer 1 (WTHR CNAM) — same packing as cloud_params
     vec4 camera_pos;     // xyz = world position, w = unused. Fog distance origin (#428).
     mat4 inv_view_proj;  // inverse view-projection for ray reconstruction
 } params;
@@ -114,6 +115,19 @@ vec3 compute_sky(vec3 dir) {
         // doesn't produce an ugly stretched band right at elevation=0.
         float horizon_fade = smoothstep(0.0, 0.12, elevation);
         sky = mix(sky, cloud.rgb, cloud.a * horizon_fade);
+    }
+
+    // Cloud layer 1 (WTHR CNAM — higher-altitude deck, opposite drift direction).
+    // tile_scale_1 == 0.0 when no CNAM texture was loaded; the branch is
+    // skipped entirely so the bindless array is never sampled with index 0.
+    float tile_scale_1 = params.cloud_params_1.z;
+    if (tile_scale_1 > 0.0 && elevation > 0.0) {
+        uint cloud_idx_1 = floatBitsToUint(params.cloud_params_1.w);
+        vec2 uv_1 = dir.xz / max(elevation, 0.05) * tile_scale_1
+                  + params.cloud_params_1.xy;
+        vec4 cloud_1 = texture(textures[nonuniformEXT(cloud_idx_1)], uv_1);
+        float horizon_fade_1 = smoothstep(0.0, 0.12, elevation);
+        sky = mix(sky, cloud_1.rgb, cloud_1.a * horizon_fade_1);
     }
 
     // Sun disc: bright circular spot with a soft edge.

@@ -69,6 +69,10 @@ pub struct CompositeParams {
     /// - `w` = bindless texture index for cloud_textures[0], stored via
     ///         `f32::from_bits(idx as u32)`; reinterpreted as uint in the shader.
     pub cloud_params: [f32; 4],
+    /// Cloud layer 1 parameters (WTHR CNAM). Same packing as cloud_params.
+    /// Drifts in the opposite U direction at 1.35× speed for parallax.
+    /// `z` = 0.0 disables the layer when no CNAM texture is available.
+    pub cloud_params_1: [f32; 4],
     /// `xyz` = camera world position; `w` unused. Needed for per-pixel
     /// world-space fog distance in composite (#428). Before this field
     /// landed, fog was computed in `triangle.frag` and baked into the
@@ -1111,15 +1115,16 @@ mod composite_params_layout_tests {
         assert_eq!(offset_of!(CompositeParams, sun_dir), 80);
         assert_eq!(offset_of!(CompositeParams, sun_color), 96);
         assert_eq!(offset_of!(CompositeParams, cloud_params), 112);
+        assert_eq!(offset_of!(CompositeParams, cloud_params_1), 128);
         // #428 — `camera_pos` was added after `cloud_params` and before
         // `inv_view_proj`. Fixing the offset here prevents a future
         // reorder from silently corrupting the fog-distance origin.
-        assert_eq!(offset_of!(CompositeParams, camera_pos), 128);
-        assert_eq!(offset_of!(CompositeParams, inv_view_proj), 144);
+        assert_eq!(offset_of!(CompositeParams, camera_pos), 144);
+        assert_eq!(offset_of!(CompositeParams, inv_view_proj), 160);
         assert_eq!(
             size_of::<CompositeParams>(),
-            144 + 64,
-            "CompositeParams must be 208 bytes (9 × vec4 + mat4)"
+            160 + 64,
+            "CompositeParams must be 224 bytes (10 × vec4 + mat4)"
         );
     }
 }
