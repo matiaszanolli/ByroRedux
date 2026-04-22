@@ -809,7 +809,7 @@ void main() {
     // nested under a stable parent classification. See Tier C Phase 2.
     const uint MATERIAL_KIND_GLASS = 100u;
     bool isAlphaBlend = (inst.flags & 2u) != 0u;
-    bool isGlass = inst.materialKind == MATERIAL_KIND_GLASS;
+    bool isGlass = inst.materialKind == MATERIAL_KIND_GLASS && roughness < 0.35;
     bool isWindow = isGlass && texColor.a < 0.5 && texColor.a > 0.02;
 
     if (isWindow && rtEnabled) {
@@ -863,7 +863,7 @@ void main() {
             // floor keeps very-dark authored glass from killing the
             // transmitted sky entirely.
             vec3 windowTint = max(texColor.rgb, vec3(0.15));
-            vec3 transmitted = skyColor * windowTint * 1.2;
+            vec3 transmitted = skyColor * windowTint * 0.3;
             // Write with the glass texture alpha so the window frame
             // (opaque, already in the framebuffer) shows through the
             // frame border areas. The alpha blend pipeline composites:
@@ -882,20 +882,13 @@ void main() {
         F0 = vec3(0.04);
     }
 
-    // ── RT glass: reflection + through-tint ────────────────────────────
-    //
-    // Glass surfaces transmit most of the scene but catch a strong
-    // Fresnel-weighted reflection at grazing angles. Under direct-view
-    // geometry (e.g. a pitcher on a bar) the shading was a flat albedo
-    // overlay with no reflection — glass read as "green plastic". Cast
-    // two rays: one along the reflection direction (for environment
-    // catch), one straight through (for transmitted color). Fresnel
-    // weights the mix; alpha is lifted toward opaque at glancing angles
-    // so the glass silhouette reads properly.
-    //
-    // Runs AFTER the isWindow branch so full-portal windows still
-    // return the sky; isGlass here is the curved-bottle / cup case.
-    if (isGlass && rtEnabled) {
+    // RT glass (Phase 3 IOR refraction + reflection) — DEFERRED.
+    // Firing 2 extra rays per glass fragment caused a severe perf regression
+    // (Prospector Saloon: 251 FPS → 29 FPS with dense glass objects).
+    // Glass now falls through to the normal PBR + shadow path below.
+    // glassFresnel still lifts specular and finalAlpha so surfaces read
+    // as glass rather than plastic. Re-enable behind a ray budget gate.
+    if (false && isGlass && rtEnabled) {
         // ── RT glass (Phase 3) ────────────────────────────────────────
         //
         // Physically-motivated reflect + refract + Fresnel mix:
