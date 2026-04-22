@@ -1204,6 +1204,51 @@ mod tests {
         assert_eq!(stream.position() as usize, data.len());
     }
 
+    /// Regression for #413 / FO4-D5-M1: the audit observed 736
+    /// over-read warnings on `Fallout4 - Meshes.ba2` ("expected 9
+    /// bytes, consumed 12"). The root-cause fix landed in #106 —
+    /// `read_bool` is version-aware and returns 1 byte for any
+    /// `version >= 4.1.0.1`, covering Skyrim (BSVER=83), FO4
+    /// (BSVER=130), FO76 (BSVER=155), and Starfield (BSVER=174).
+    /// The existing Skyrim test already pinned the 9-byte consumption
+    /// invariant; this test extends the guarantee to BSVER=130 so a
+    /// future refactor that accidentally gates the bool width on
+    /// `BSVER < 130` instead of `version < 4.1.0.1` fails here. Live
+    /// FO4 BA2 sweep confirms zero `BSBehaviorGraphExtraData` size
+    /// mismatches post-fix.
+    #[test]
+    fn behavior_graph_extra_data_reads_nine_bytes_on_fo4() {
+        let header = NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 12,
+            user_version_2: 130, // BSVER=130 for FO4
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // name absent
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // behaviour_graph_file absent
+        data.push(0x01u8); // controls_base_skeleton = true (1 byte!)
+        assert_eq!(data.len(), 9, "FO4 wire size must be 9 bytes");
+
+        let mut stream = NifStream::new(&data, &header);
+        let block = BsBehaviorGraphExtraData::parse(&mut stream).unwrap();
+        assert!(block.controls_base_skeleton);
+        assert_eq!(
+            stream.position() as usize,
+            data.len(),
+            "FO4 must consume 9 bytes — previous u32 bool misread 12 and \
+             triggered 736 warnings across Fallout4 - Meshes.ba2 pre-#106"
+        );
+    }
+
     // ── BSAnimNote / BSAnimNotes regression tests (#432) ──────────────
     //
     // Each test asserts the parser consumes exactly the right number of
