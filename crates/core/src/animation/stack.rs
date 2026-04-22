@@ -12,6 +12,7 @@ use super::types::CycleType;
 
 /// A single animation layer in an AnimationStack.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct AnimationLayer {
     pub clip_handle: u32,
     pub local_time: f32,
@@ -78,6 +79,7 @@ impl AnimationLayer {
 /// Layers are ordered: index 0 is the base layer, higher indices overlay.
 /// The system evaluates all layers and blends by weight. Within the same
 /// priority level, weighted average is computed. Higher priority overrides lower.
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct AnimationStack {
     pub layers: Vec<AnimationLayer>,
     /// Root entity of the subtree to animate (scoped name lookup).
@@ -229,6 +231,55 @@ pub fn visit_stack_text_events<'clip>(
                 visit(time, clip_label.as_str());
             }
         });
+    }
+}
+
+#[cfg(all(test, feature = "inspect"))]
+mod inspect_tests {
+    //! #486 sibling check — debug snapshots must preserve
+    //! `AnimationLayer.reverse_direction` plus the blend timers
+    //! (`blend_in_remaining`, `blend_out_remaining`). Round-trips a
+    //! populated `AnimationStack` through JSON and verifies every
+    //! per-layer field survives.
+    use super::*;
+
+    #[test]
+    fn stack_round_trips_reverse_and_blend_state() {
+        let mut stack = AnimationStack::new();
+        stack.root_entity = Some(17);
+        let mut mid_flight = AnimationLayer::new(5).with_blend_in(0.4);
+        mid_flight.reverse_direction = true;
+        mid_flight.local_time = 0.33;
+        mid_flight.prev_time = 0.28;
+        mid_flight.blend_in_remaining = 0.1; // mid fade-in
+        mid_flight.blend_out_remaining = 0.0;
+        stack.layers.push(mid_flight);
+
+        let mut fading_out = AnimationLayer::new(9);
+        fading_out.blend_out_remaining = 0.2;
+        fading_out.blend_out_total = 0.5;
+        fading_out.weight = 0.7;
+        stack.layers.push(fading_out);
+
+        let json = serde_json::to_value(&stack).expect("serialize");
+        let reloaded: AnimationStack = serde_json::from_value(json).expect("deserialize");
+
+        assert_eq!(reloaded.root_entity, Some(17));
+        assert_eq!(reloaded.layers.len(), 2);
+
+        let l0 = &reloaded.layers[0];
+        assert_eq!(l0.clip_handle, 5);
+        assert!(l0.reverse_direction, "ping-pong direction must survive");
+        assert_eq!(l0.local_time, 0.33);
+        assert_eq!(l0.prev_time, 0.28);
+        assert_eq!(l0.blend_in_remaining, 0.1);
+        assert_eq!(l0.blend_in_total, 0.4);
+
+        let l1 = &reloaded.layers[1];
+        assert_eq!(l1.clip_handle, 9);
+        assert_eq!(l1.blend_out_remaining, 0.2);
+        assert_eq!(l1.blend_out_total, 0.5);
+        assert_eq!(l1.weight, 0.7);
     }
 }
 

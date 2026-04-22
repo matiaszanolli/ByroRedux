@@ -111,6 +111,7 @@ fn register_component<T>(
 
 /// Register all inspectable components with the registry.
 pub fn register_all(registry: &mut ComponentRegistry) {
+    use byroredux_core::animation::{AnimationPlayer, AnimationStack};
     use byroredux_core::ecs::components::*;
 
     register_component::<Transform>(
@@ -166,4 +167,28 @@ pub fn register_all(registry: &mut ComponentRegistry) {
     register_component::<AnimatedSpecularColor>(registry, "AnimatedSpecularColor", vec!["0"]);
     register_component::<AnimatedEmissiveColor>(registry, "AnimatedEmissiveColor", vec!["0"]);
     register_component::<AnimatedShaderColor>(registry, "AnimatedShaderColor", vec!["0"]);
+
+    // Animation playback state (#486) — debug snapshots must capture
+    // `reverse_direction` (ping-pong flip latch for `CycleType::Reverse`)
+    // plus the blend-in/out timers on each layer, otherwise reloading
+    // a snapshot mid-pingpong resets the direction and the animation
+    // steps backward across the boundary.
+    register_component::<AnimationPlayer>(
+        registry,
+        "AnimationPlayer",
+        vec![
+            "clip_handle",
+            "local_time",
+            "playing",
+            "speed",
+            "reverse_direction",
+            "root_entity",
+            "prev_time",
+        ],
+    );
+    register_component::<AnimationStack>(
+        registry,
+        "AnimationStack",
+        vec!["layers", "root_entity"],
+    );
 }

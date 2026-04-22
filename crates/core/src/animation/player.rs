@@ -10,6 +10,7 @@ use super::types::{AnimationClip, CycleType};
 /// Attached to the root entity of an animated mesh. The animation system
 /// uses the clip's channel map to find child entities by `Name` and
 /// update their `Transform` each frame.
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct AnimationPlayer {
     pub clip_handle: u32,
     pub local_time: f32,
@@ -87,5 +88,54 @@ pub fn advance_time(player: &mut AnimationPlayer, clip: &AnimationClip, dt: f32)
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "inspect"))]
+mod inspect_tests {
+    //! #486 — debug snapshots must preserve ping-pong `reverse_direction`
+    //! (and every other field). Round-trips AnimationPlayer through
+    //! JSON and asserts byte-for-byte recovery of playback state.
+    use super::*;
+
+    #[test]
+    fn reverse_direction_round_trips_through_json() {
+        let mut player = AnimationPlayer::new(42);
+        // Simulate a ping-pong animation that has crossed the end
+        // boundary — `reverse_direction` has latched to true, the
+        // time has rebounded back from past-duration.
+        player.reverse_direction = true;
+        player.local_time = 0.75;
+        player.prev_time = 1.05;
+        player.speed = 1.25;
+        player.playing = true;
+
+        let json = serde_json::to_value(&player).expect("serialize");
+        assert_eq!(json.get("reverse_direction"), Some(&serde_json::Value::Bool(true)));
+
+        let reloaded: AnimationPlayer =
+            serde_json::from_value(json).expect("deserialize");
+        assert_eq!(reloaded.clip_handle, 42);
+        assert!(reloaded.reverse_direction, "ping-pong direction must survive snapshot reload");
+        assert_eq!(reloaded.local_time, 0.75);
+        assert_eq!(reloaded.prev_time, 1.05);
+        assert_eq!(reloaded.speed, 1.25);
+        assert!(reloaded.playing);
+    }
+
+    #[test]
+    fn default_player_round_trips_cleanly() {
+        // Guard against serde forgetting a field default — the `new`
+        // constructor is the canonical initial state; snapshotting it
+        // immediately should reload identical.
+        let original = AnimationPlayer::new(7);
+        let json = serde_json::to_value(&original).unwrap();
+        let reloaded: AnimationPlayer = serde_json::from_value(json).unwrap();
+        assert_eq!(reloaded.clip_handle, 7);
+        assert!(!reloaded.reverse_direction);
+        assert_eq!(reloaded.local_time, 0.0);
+        assert_eq!(reloaded.speed, 1.0);
+        assert!(reloaded.playing);
+        assert!(reloaded.root_entity.is_none());
     }
 }
