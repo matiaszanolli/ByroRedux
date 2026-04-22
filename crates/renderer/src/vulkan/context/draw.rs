@@ -80,23 +80,6 @@ impl VulkanContext {
     ) -> Result<bool> {
         let frame = self.current_frame;
 
-        // Advance the texture registry's deferred-destroy frame counter.
-        self.texture_registry.begin_frame();
-
-        // Tick the mesh registry's deferred SSBO destroy list, the
-        // acceleration manager's deferred-BLAS destroy list, and the
-        // texture registry's deferred-destroy queue — all use the same
-        // MAX_FRAMES_IN_FLIGHT-based countdown for cell unload. See #372.
-        if let Some(ref alloc) = self.allocator {
-            self.mesh_registry
-                .tick_deferred_destroy(&self.device, alloc);
-            self.texture_registry
-                .tick_deferred_destroy(&self.device, alloc);
-            if let Some(ref mut accel) = self.accel_manager {
-                accel.tick_deferred_destroy(&self.device, alloc);
-            }
-        }
-
         // Wait for this frame-in-flight slot AND the previous slot to be
         // available. SVGF's temporal pass reads the previous slot's G-buffer
         // images (mesh_id, motion, raw_indirect) — without waiting on the
@@ -153,6 +136,34 @@ impl VulkanContext {
             self.device
                 .reset_fences(&[self.frame_sync.in_flight[frame]])
                 .context("reset_fences")?;
+        }
+
+        // Deferred-destroy tick. Runs AFTER `wait_for_fences` so every
+        // resource whose countdown reaches zero this frame is
+        // guaranteed unreferenced by any in-flight command buffer.
+        // Pre-#418 this ran at the TOP of `draw_frame`, before the
+        // fence wait — `AccelerationManager::tick_deferred_destroy`
+        // (and the `mesh_registry` / `texture_registry` siblings, all
+        // three destroy GPU resources) could free a BLAS / buffer /
+        // image the previous frame's TLAS or blit was still reading.
+        // Latent because `MAX_FRAMES_IN_FLIGHT`-conservative countdowns
+        // kept the window from ever closing, but a policy change that
+        // shortened the countdown would have turned this into a
+        // sync2-validated use-after-free.
+        //
+        // `texture_registry.begin_frame` advances the internal frame
+        // counter that the tick compares against — must run BEFORE the
+        // tick so the counter reflects "this frame" during the
+        // deferred-destroy decision.
+        self.texture_registry.begin_frame();
+        if let Some(ref alloc) = self.allocator {
+            self.mesh_registry
+                .tick_deferred_destroy(&self.device, alloc);
+            self.texture_registry
+                .tick_deferred_destroy(&self.device, alloc);
+            if let Some(ref mut accel) = self.accel_manager {
+                accel.tick_deferred_destroy(&self.device, alloc);
+            }
         }
 
         // Record command buffer. Indexed by frame-in-flight (not swapchain
