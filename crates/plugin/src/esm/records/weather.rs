@@ -200,17 +200,30 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
                 record.fog_night_far = read_f32_at(&sub.data, 12).unwrap_or(10000.0);
             }
 
-            // DATA: general weather data (15 bytes for FNV).
+            // DATA: general weather data (15 bytes, shared by Oblivion,
+            // FO3, FNV). Byte-confirmed layout from #538 / audit M33-06:
+            //   [ 0]    wind_speed
+            //   [ 1- 2] cloud speed lower / upper (unparsed — no consumer)
+            //   [ 3]    trans_delta (unparsed)
+            //   [ 4]    sun_glare
+            //   [ 5]    sun_damage
+            //   [ 6- 9] precipitation / thunder fade params (unparsed)
+            //   [10]    reserved / unknown (0xFF on every PLEASANT sample;
+            //                                varies on RAINY)
+            //   [11]    classification flag byte (WTHR_PLEASANT=0x01,
+            //           CLOUDY=0x02, RAINY=0x04, SNOW=0x08)
+            //   [12-14] lightning color (RGB) — `ff ff ff` on RAINY, zero
+            //           or 0xFF on non-rainy
+            //
+            // Pre-fix the parser read classification from byte 13 — a
+            // zero / padding byte on nearly every record. Verified the
+            // new offset against 4 flag bits on Oblivion (Clear/Cloudy/
+            // Rain/Snow) and 3 on FNV (0x00/0x01/0x02).
             b"DATA" if sub.data.len() >= 15 => {
                 record.wind_speed = sub.data[0];
-                // bytes 1-2: cloud speed lower/upper
-                // byte 3: trans delta
                 record.sun_glare = sub.data[4];
                 record.sun_damage = sub.data[5];
-                // bytes 6-11: precipitation/thunder fade params
-                // byte 12: thunder frequency
-                record.classification = sub.data[13];
-                // bytes 13-14: lightning color (partial)
+                record.classification = sub.data[11];
             }
 
             // Cloud texture paths. Per-game sub-record FourCCs — verified
@@ -279,7 +292,9 @@ mod tests {
         data_bytes[0] = 30; // wind speed
         data_bytes[4] = 128; // sun glare
         data_bytes[5] = 10; // sun damage
-        data_bytes[13] = WTHR_PLEASANT;
+        // Classification sits at byte 11. See #538 / audit M33-06 —
+        // pre-fix the parser read byte 13 (padding).
+        data_bytes[11] = WTHR_PLEASANT;
 
         let subs = vec![
             make_sub(b"EDID", b"TestWeather\0".to_vec()),
@@ -343,6 +358,43 @@ mod tests {
         ];
         let w = parse_wthr(0xFADE, &subs);
         assert!(w.cloud_textures.iter().all(|c| c.is_none()));
+    }
+
+    /// Regression for #538 + #543 / audit M33-06: classification sits
+    /// at DATA byte 11, not byte 13. Byte-confirmed against 4 flag
+    /// values on Oblivion (Clear/Cloudy/Rain/Snow) and 3 on FNV
+    /// (0x00/0x01/0x02). Pre-fix the parser read byte 13 — a padding
+    /// byte that read back as 0x00 or 0xFF on nearly every weather,
+    /// making the `classification` field effectively unusable for any
+    /// future downstream consumer.
+    #[test]
+    fn parse_wthr_classification_is_byte_11() {
+        // Build DATA with unique sentinels at every byte so an offset
+        // slip shows up as a wrong value rather than a lucky zero.
+        let mut data_bytes = vec![0u8; 15];
+        for (i, slot) in data_bytes.iter_mut().enumerate() {
+            *slot = 0xA0 + i as u8;
+        }
+        // Override the fields the parser reads + place the RAINY flag
+        // at byte 11.
+        data_bytes[0] = 50; // wind
+        data_bytes[4] = 200; // glare
+        data_bytes[5] = 30; // damage
+        data_bytes[11] = WTHR_RAINY;
+        // Bytes 10 and 13 hold decoy values that would have misparsed
+        // pre-fix. 0xD3 at byte 13 is the slot the old code read.
+        let old_byte_13_noise = data_bytes[13];
+        assert_ne!(old_byte_13_noise, WTHR_RAINY);
+
+        let subs = vec![
+            make_sub(b"EDID", b"RainyOffsetCheck\0".to_vec()),
+            make_sub(b"DATA", data_bytes),
+        ];
+        let w = parse_wthr(0x600, &subs);
+        assert_eq!(w.wind_speed, 50);
+        assert_eq!(w.sun_glare, 200);
+        assert_eq!(w.sun_damage, 30);
+        assert_eq!(w.classification, WTHR_RAINY);
     }
 
     /// Regression for #536 / audit M33-04: FNAM must carry fog.

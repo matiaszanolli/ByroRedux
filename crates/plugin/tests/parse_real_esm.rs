@@ -239,6 +239,22 @@ fn parse_rate_fnv_esm() {
         with_nondefault_fog,
         index.weathers.len(),
     );
+
+    // #538 regression guard: classification at DATA byte 11. Find the
+    // canonical `NVWastelandClear` and confirm its classification flag
+    // is `WTHR_PLEASANT`. Pre-fix the parser read byte 13 (padding) and
+    // returned `0x00` for this record.
+    let clear = index
+        .weathers
+        .values()
+        .find(|w| w.editor_id == "NVWastelandClear")
+        .expect("NVWastelandClear should parse");
+    assert_eq!(
+        clear.classification,
+        byroredux_plugin::esm::records::weather::WTHR_PLEASANT,
+        "NVWastelandClear should classify as PLEASANT; got 0x{:02X}",
+        clear.classification,
+    );
 }
 
 #[test]
@@ -460,4 +476,27 @@ fn parse_rate_oblivion_esm() {
          pre-fix HNAM clobbered fog_far to ~4.0. Should be 0 after #536.",
         tiny_fog,
     );
+
+    // #538: Oblivion is the cleanest evidence — its vanilla WTHRs span
+    // all four flag values. Pin one of each against byte 11.
+    use byroredux_plugin::esm::records::weather::{
+        WTHR_CLOUDY, WTHR_PLEASANT, WTHR_RAINY, WTHR_SNOW,
+    };
+    for (edid, expected) in &[
+        ("Clear", WTHR_PLEASANT),
+        ("Cloudy", WTHR_CLOUDY),
+        ("Rain", WTHR_RAINY),
+        ("Snow", WTHR_SNOW),
+    ] {
+        let w = index
+            .weathers
+            .values()
+            .find(|w| w.editor_id == *edid)
+            .unwrap_or_else(|| panic!("OBL weather '{}' should parse", edid));
+        assert_eq!(
+            w.classification, *expected,
+            "OBL '{}' classification = 0x{:02X}; expected 0x{:02X}",
+            edid, w.classification, *expected,
+        );
+    }
 }
