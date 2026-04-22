@@ -1111,6 +1111,11 @@ fn load_references(
     let mut stat_miss = 0u32;
     let mut stat_hit = 0u32;
     let mut enable_skipped = 0u32;
+    // Bounded sample of distinct miss FormIDs so an operator can
+    // cross-reference in xEdit without flipping the whole log to
+    // debug. Cap at 20 unique IDs; duplicates (same FormID placed
+    // repeatedly across a worldspace) get deduped. See #386.
+    let mut stat_miss_sample: Vec<u32> = Vec::with_capacity(20);
 
     // Per-call accumulators — committed to `NifImportRegistry` in a
     // single `resource_mut` borrow after the loop instead of acquiring
@@ -1151,6 +1156,15 @@ fn load_references(
             }
             None => {
                 stat_miss += 1;
+                // Collect a bounded sample so the summary line can
+                // surface actual FormIDs without pulling down a full
+                // RUST_LOG=debug run. Linear dedup is fine for 20
+                // entries. See #386.
+                if stat_miss_sample.len() < 20
+                    && !stat_miss_sample.contains(&placed_ref.base_form_id)
+                {
+                    stat_miss_sample.push(placed_ref.base_form_id);
+                }
                 log::debug!(
                     "REFR base {:08X} not in statics table",
                     placed_ref.base_form_id
@@ -1354,9 +1368,27 @@ fn load_references(
         center.x, center.y, center.z,
     );
     if stat_miss > 0 {
+        // Log the bounded sample at info level so the miss types are
+        // diagnosable without flipping to debug. Common causes:
+        // leveled-list targets (LVLI/LVLN/LVLC — parsed elsewhere, not
+        // in `index.statics`), master-ESM-only forms, and mod-added
+        // records without a loaded master. See #386 for the roadmap
+        // toward leveled-list resolution.
+        let sample_str = stat_miss_sample
+            .iter()
+            .map(|id| format!("{:08X}", id))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let truncation_marker = if (stat_miss_sample.len() as u32) < stat_miss {
+            format!(", … +{} more", stat_miss - stat_miss_sample.len() as u32)
+        } else {
+            String::new()
+        };
         log::warn!(
-            "  {} base forms not found in statics table — run with RUST_LOG=debug for details",
+            "  {} base forms not found in statics table (sample: {}{})",
             stat_miss,
+            sample_str,
+            truncation_marker,
         );
     }
     if enable_skipped > 0 {
