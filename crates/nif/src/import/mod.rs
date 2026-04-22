@@ -402,6 +402,13 @@ pub struct ImportedScene {
     pub bsx_flags: Option<u32>,
     /// BSBound from the root node's extra data (object-level bounding box).
     pub bs_bound: Option<([f32; 3], [f32; 3])>, // (center, half_extents)
+    /// Ambient animation clip collecting every mesh-embedded controller
+    /// (alpha fade, UV scroll, visibility flicker, material color
+    /// pulse, shader float/color). Populated by
+    /// [`crate::anim::import_embedded_animations`] during scene import.
+    /// `None` when the NIF authored no such controllers — most
+    /// non-FX/non-water meshes. See #261.
+    pub embedded_clip: Option<crate::anim::AnimationClip>,
 }
 
 /// One particle emitter discovered while walking the NIF scene graph.
@@ -465,6 +472,7 @@ pub fn import_nif_scene(scene: &NifScene) -> ImportedScene {
         particle_emitters: Vec::new(),
         bsx_flags: None,
         bs_bound: None,
+        embedded_clip: crate::anim::import_embedded_animations(scene),
     };
 
     // A truncated scene means at least one block was lost to a mid-parse

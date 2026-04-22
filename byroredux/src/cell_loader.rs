@@ -37,6 +37,21 @@ struct CachedNifImport {
     /// name, which the spawn step composes with the REFR placement and
     /// translates to a heuristic [`ParticleEmitter`] preset. See #401.
     particle_emitters: Vec<byroredux_nif::import::ImportedParticleEmitterFlat>,
+    /// Ambient animation clip collecting every mesh-embedded controller
+    /// (alpha fade, UV scroll, visibility flicker, material colour pulse,
+    /// shader float/colour). Shared across REFR placements: the clip
+    /// handle is registered once per cache load; each placement spawns
+    /// its own `AnimationPlayer` scoped to the spawned root entity so
+    /// the subtree-local name lookup matches the authored node names.
+    /// `None` when the NIF authored no supported controllers. See #261.
+    ///
+    /// Currently write-only on this path — the cell-loader spawn
+    /// doesn't attach `Name` components or parent meshes under a
+    /// placement root, so there's no subtree the `AnimationStack`
+    /// can anchor the clip against yet. Field is retained so the
+    /// follow-up wiring pass doesn't have to re-thread the parser.
+    #[allow(dead_code)]
+    embedded_clip: Option<byroredux_nif::anim::AnimationClip>,
 }
 
 /// Process-lifetime cache of parsed-and-imported NIF scenes keyed by
@@ -1345,11 +1360,32 @@ fn parse_and_import_nif(
     }
     let lights = byroredux_nif::import::import_nif_lights(&scene);
     let particle_emitters = byroredux_nif::import::import_nif_particle_emitters(&scene);
+    let embedded_clip = byroredux_nif::anim::import_embedded_animations(&scene);
+    // Cell-load path doesn't yet attach `Name` components or a
+    // per-placement subtree root to spawned mesh entities, so the
+    // AnimationStack's name-keyed subtree lookup can't anchor onto the
+    // flat-spawn hierarchy. Clips extracted here are captured on the
+    // cache entry for a follow-up wiring pass (add placement-root
+    // entities + parent meshes under them, then attach a scoped
+    // AnimationPlayer per placement). See #261. The loose-NIF
+    // `load_nif_bytes` path already consumes embedded clips end-to-end.
+    if let Some(ref clip) = embedded_clip {
+        log::debug!(
+            "NIF '{}' has {} embedded controllers ({} float + {} color + {} bool) \
+             — captured on cache; cell-loader spawn wiring is a follow-up",
+            label,
+            clip.float_channels.len() + clip.color_channels.len() + clip.bool_channels.len(),
+            clip.float_channels.len(),
+            clip.color_channels.len(),
+            clip.bool_channels.len(),
+        );
+    }
     Some(Arc::new(CachedNifImport {
         meshes,
         collisions,
         lights,
         particle_emitters,
+        embedded_clip,
     }))
 }
 
@@ -1756,6 +1792,7 @@ mod nif_import_registry_tests {
             collisions: Vec::new(),
             lights: Vec::new(),
             particle_emitters: Vec::new(),
+            embedded_clip: None,
         })
     }
 

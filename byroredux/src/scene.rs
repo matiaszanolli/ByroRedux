@@ -1195,6 +1195,42 @@ pub(crate) fn load_nif_bytes(
     }
 
     let root = node_entities.first().copied();
+
+    // #261 — mesh-embedded controller chains (water UV scroll, torch
+    // flame visibility, lava emissive pulse). `import_nif_scene`
+    // collected every NiObjectNET.controller_ref chain into a single
+    // looping clip. Register it and spawn an AnimationPlayer scoped to
+    // the NIF root so the subtree-local name lookup works the same way
+    // it does for KF clips.
+    if let Some(nif_embedded_clip) = imported.embedded_clip.as_ref() {
+        let float_ct = nif_embedded_clip.float_channels.len();
+        let color_ct = nif_embedded_clip.color_channels.len();
+        let bool_ct = nif_embedded_clip.bool_channels.len();
+        let duration = nif_embedded_clip.duration;
+        let clip_handle = {
+            let mut pool = world.resource_mut::<StringPool>();
+            let clip = crate::anim_convert::convert_nif_clip(nif_embedded_clip, &mut pool);
+            drop(pool);
+            let mut registry = world.resource_mut::<AnimationClipRegistry>();
+            registry.add(clip)
+        };
+        let player_entity = world.spawn();
+        let mut player = AnimationPlayer::new(clip_handle);
+        if let Some(root) = root {
+            player.root_entity = Some(root);
+        }
+        world.insert(player_entity, player);
+        log::info!(
+            "Embedded animation clip registered from '{}' ({:.2}s, {} float + {} color + {} bool channels) → handle {}",
+            label,
+            duration,
+            float_ct,
+            color_ct,
+            bool_ct,
+            clip_handle,
+        );
+    }
+
     log::info!(
         "Imported {} nodes + {} meshes from '{}'",
         imported.nodes.len(),
