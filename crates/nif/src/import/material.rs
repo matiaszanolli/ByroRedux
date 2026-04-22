@@ -30,21 +30,38 @@ pub(super) const DYNAMIC_DECAL: u32 = crate::shader_flags::fo3nv_f1::DYNAMIC_DEC
 // 26/27 only (see #176 closure).
 const ALPHA_DECAL_F2: u32 = crate::shader_flags::fo3nv_f2::ALPHA_DECAL;
 
-/// Shared decal detection across every FO3/FNV `BSShader*Property`
-/// subclass. The flag vocabulary is identical across the three
-/// (`BSShaderPPLightingProperty`, `BSShaderNoLightingProperty`, and
-/// `BSLightingShaderProperty` for the flags1 bits — flags2 bit 21 is
-/// an FO3/FNV-only `ALPHA_DECAL` extension that Skyrim+ never emits
-/// but also never spuriously triggers).
+/// Shared decal detection across `BSShaderPPLightingProperty` +
+/// `BSShaderNoLightingProperty` (FO3/FNV).
 ///
-/// Pre-#454 each callsite had its own copy and they drifted — the
-/// `BSShaderNoLightingProperty` branch was missing the flags2 check,
-/// so blood-splat NoLighting meshes that marked themselves decal-only
-/// via flag2 bit 21 rendered as opaque coplanar surfaces. Keeping one
-/// helper guards against future drift.
+/// Tests SLSF1 bits 26/27 (`Decal` / `Dynamic_Decal` — these align
+/// numerically across every game-era) AND the FO3/FNV-only
+/// `Alpha_Decal` bit on flags2 (bit 21). The flags2 bit is crucial on
+/// blood-splat NoLighting meshes that don't set the SLSF1 decal bits
+/// (pre-#454 the NoLighting branch had no flags2 check and those
+/// rendered as opaque coplanar quads).
+///
+/// **Must not be called on Skyrim+ or FO4 properties.** Bit 21 of the
+/// second flag word on those games is `Cloud_LOD` (Skyrim) or
+/// `Anisotropic_Lighting` (FO4), NOT a decal bit — using this helper
+/// on `BSLightingShaderProperty` would spuriously classify those
+/// meshes as decals. Modern properties route through
+/// [`is_decal_from_modern_shader_flags`] instead. See #414 / FO4-D3-M1.
 #[inline]
-pub(super) fn is_decal_from_shader_flags(flags1: u32, flags2: u32) -> bool {
+pub(super) fn is_decal_from_legacy_shader_flags(flags1: u32, flags2: u32) -> bool {
     flags1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 || flags2 & ALPHA_DECAL_F2 != 0
+}
+
+/// Decal detection for Skyrim+ / FO4 `BSLightingShaderProperty` +
+/// `BSEffectShaderProperty`.
+///
+/// Tests SLSF1 / F4SF1 bits 26/27 (`Decal` / `Dynamic_Decal`) only.
+/// These bits have identical numeric value and semantic on Skyrim +
+/// FO4 — the split from [`is_decal_from_legacy_shader_flags`] exists
+/// to keep flags2 bit 21 (`Cloud_LOD` on Skyrim, `Anisotropic_Lighting`
+/// on FO4) out of the decal test. See #414 / FO4-D3-M1.
+#[inline]
+pub(super) fn is_decal_from_modern_shader_flags(flags1: u32, _flags2: u32) -> bool {
+    flags1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0
 }
 
 // NOTE: there is no `SF_DOUBLE_SIDED` on the FO3/FNV
@@ -571,7 +588,10 @@ pub(super) fn extract_material_info_from_refs(
             if shader.shader_flags_2 & SF2_DOUBLE_SIDED != 0 {
                 info.two_sided = true;
             }
-            if is_decal_from_shader_flags(shader.shader_flags_1, shader.shader_flags_2) {
+            // Skyrim+/FO4 decal path — flags2 bit 21 is `Cloud_LOD` on
+            // Skyrim / `Anisotropic_Lighting` on FO4, NOT a decal bit.
+            // See #414.
+            if is_decal_from_modern_shader_flags(shader.shader_flags_1, shader.shader_flags_2) {
                 info.is_decal = true;
             }
             // Capture rich material data.
@@ -637,7 +657,9 @@ pub(super) fn extract_material_info_from_refs(
             if shader.shader_flags_2 & SF2_DOUBLE_SIDED != 0 {
                 info.two_sided = true;
             }
-            if is_decal_from_shader_flags(shader.shader_flags_1, shader.shader_flags_2) {
+            // Skyrim+/FO4 effect-shader decal path — same rationale as
+            // the BSLightingShaderProperty branch above. See #414.
+            if is_decal_from_modern_shader_flags(shader.shader_flags_1, shader.shader_flags_2) {
                 info.is_decal = true;
             }
             // Capture the rich effect-shader fields (falloff cone,
@@ -874,7 +896,7 @@ pub(super) fn extract_material_info_from_refs(
             // `two_sided` unset here; the `NiStencilProperty` fallback
             // below handles it correctly for meshes that want
             // back-face-off.
-            if is_decal_from_shader_flags(shader.shader_flags_1(), shader.shader_flags_2()) {
+            if is_decal_from_legacy_shader_flags(shader.shader_flags_1(), shader.shader_flags_2()) {
                 info.is_decal = true;
             }
         }
@@ -889,7 +911,7 @@ pub(super) fn extract_material_info_from_refs(
             // blood-splat NoLighting meshes that marked themselves decal
             // via only the flag2 bit fell through to the opaque-coplanar
             // path. Shared helper keeps PP + NoLighting in lockstep.
-            if is_decal_from_shader_flags(shader.shader_flags_1(), shader.shader_flags_2()) {
+            if is_decal_from_legacy_shader_flags(shader.shader_flags_1(), shader.shader_flags_2()) {
                 info.is_decal = true;
             }
             // Capture the soft-falloff cone so the HUD / VATS / scope
@@ -1903,11 +1925,19 @@ mod double_sided_tests {
     }
 
     fn make_bs_lighting(flags2: u32) -> BSLightingShaderProperty {
+        make_bs_lighting_with_flags(0, flags2)
+    }
+
+    /// Variant of [`make_bs_lighting`] with both flag words overridable
+    /// — used by #414's FO4 decal regression test so
+    /// `shader_flags_2 = Anisotropic_Lighting` can be tested without
+    /// unrelated bits.
+    fn make_bs_lighting_with_flags(flags1: u32, flags2: u32) -> BSLightingShaderProperty {
         BSLightingShaderProperty {
             shader_type: 0,
             net: empty_net(),
             material_reference: false,
-            shader_flags_1: 0,
+            shader_flags_1: flags1,
             shader_flags_2: flags2,
             sf1_crcs: Vec::new(),
             sf2_crcs: Vec::new(),
@@ -2074,19 +2104,60 @@ mod double_sided_tests {
         );
     }
 
-    /// Shared helper sanity — both flag1 and flag2 paths classify.
+    /// Legacy (FO3/FNV) helper sanity — both flag1 decal bits and the
+    /// FO3/FNV-specific flag2 `Alpha_Decal` path classify as decal.
     #[test]
-    fn is_decal_helper_matches_both_flag_sources() {
-        use super::is_decal_from_shader_flags;
+    fn is_decal_legacy_helper_matches_both_flag_sources() {
+        use super::is_decal_from_legacy_shader_flags;
         // DECAL_SINGLE_PASS (flag1 bit 26 = 0x0400_0000).
-        assert!(is_decal_from_shader_flags(0x0400_0000, 0));
+        assert!(is_decal_from_legacy_shader_flags(0x0400_0000, 0));
         // DYNAMIC_DECAL (flag1 bit 27 = 0x0800_0000).
-        assert!(is_decal_from_shader_flags(0x0800_0000, 0));
-        // ALPHA_DECAL_F2 (flag2 bit 21 = 0x0020_0000).
-        assert!(is_decal_from_shader_flags(0, 0x0020_0000));
+        assert!(is_decal_from_legacy_shader_flags(0x0800_0000, 0));
+        // ALPHA_DECAL_F2 (flag2 bit 21 = 0x0020_0000) — FO3/FNV only.
+        assert!(is_decal_from_legacy_shader_flags(0, 0x0020_0000));
         // Unrelated bits — not a decal.
-        assert!(!is_decal_from_shader_flags(0x1000, 0x0010));
-        assert!(!is_decal_from_shader_flags(0, 0));
+        assert!(!is_decal_from_legacy_shader_flags(0x1000, 0x0010));
+        assert!(!is_decal_from_legacy_shader_flags(0, 0));
+    }
+
+    /// #414 / FO4-D3-M1 regression — the modern (Skyrim+/FO4) decal
+    /// helper MUST NOT test flag2 bit 21. On Skyrim that bit is
+    /// `Cloud_LOD`; on FO4 it's `Anisotropic_Lighting`. Neither is a
+    /// decal flag, and the pre-fix `is_decal_from_shader_flags` helper
+    /// misclassified those meshes as decals → unwanted depth-bias.
+    #[test]
+    fn is_decal_modern_helper_ignores_flag2_bit_21() {
+        use super::is_decal_from_modern_shader_flags;
+        // SLSF1 / F4SF1 bit 26 — shared with legacy, must classify.
+        assert!(is_decal_from_modern_shader_flags(0x0400_0000, 0));
+        assert!(is_decal_from_modern_shader_flags(0x0800_0000, 0));
+        // Flag2 bit 21 — Cloud_LOD on Skyrim / Anisotropic_Lighting on
+        // FO4. MUST NOT classify as decal.
+        assert!(!is_decal_from_modern_shader_flags(0, 0x0020_0000));
+        // Sanity: unrelated bits, all zeros.
+        assert!(!is_decal_from_modern_shader_flags(0, 0));
+        assert!(!is_decal_from_modern_shader_flags(0x1000, 0x0010));
+    }
+
+    /// #414 end-to-end: a FO4-shaped `BSLightingShaderProperty` with
+    /// `Anisotropic_Lighting` set (F4SF2 bit 21) must parse through
+    /// `extract_material_info` with `is_decal == false`. Pre-fix the
+    /// shared `is_decal_from_shader_flags` helper read that bit as
+    /// FO3/FNV `Alpha_Decal` and flipped `is_decal`.
+    #[test]
+    fn fo4_anisotropic_lighting_does_not_trigger_decal_classification() {
+        let shader = make_bs_lighting_with_flags(0, 0x0020_0000);
+        let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader)];
+        let scene = NifScene {
+            blocks,
+            ..NifScene::default()
+        };
+        let shape = shape_with_shader_ref(0);
+        let info = extract_material_info(&scene, &shape, &[]);
+        assert!(
+            !info.is_decal,
+            "FO4 Anisotropic_Lighting (F4SF2 bit 21) MUST NOT mark is_decal (#414)"
+        );
     }
 
     /// Skyrim+ shader with flags2 = 0 must NOT mark two-sided either —

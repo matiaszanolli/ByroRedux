@@ -77,6 +77,114 @@ pub mod skyrim_slsf2 {
     pub const CLOUD_LOD: u32 = 0x0020_0000;
 }
 
+/// FO4+ `Fallout4ShaderPropertyFlags1` — first flag word of
+/// `BSLightingShaderProperty` / `BSEffectShaderProperty` on BSVER >= 130
+/// per nif.xml `#BS_FO4#` gate.
+///
+/// Bits 26 (Decal), 27 (Dynamic_Decal), 31 (ZBuffer_Test) align with
+/// Skyrim SLSF1 — same numeric value, same semantic. Most other bits
+/// diverge from Skyrim; pin the FO4 positions here so decal /
+/// two-sided / alpha-test testing doesn't silently drift when a FO4
+/// mesh happens to be read through the Skyrim vocabulary (or vice
+/// versa). Sourced from nif.xml `Fallout4ShaderPropertyFlags1`
+/// (lines 6443-6477). See #414 / FO4-D3-M1.
+pub mod fo4_slsf1 {
+    pub const SPECULAR: u32 = 0x0000_0001;
+    pub const SKINNED: u32 = 0x0000_0002;
+    pub const TEMP_REFRACTION: u32 = 0x0000_0004;
+    pub const VERTEX_ALPHA: u32 = 0x0000_0008;
+    pub const GREYSCALE_TO_PALETTE_COLOR: u32 = 0x0000_0010;
+    pub const GREYSCALE_TO_PALETTE_ALPHA: u32 = 0x0000_0020;
+    pub const USE_FALLOFF: u32 = 0x0000_0040;
+    pub const ENVIRONMENT_MAPPING: u32 = 0x0000_0080;
+    pub const RGB_FALLOFF: u32 = 0x0000_0100;
+    pub const CAST_SHADOWS: u32 = 0x0000_0200;
+    pub const FACE: u32 = 0x0000_0400;
+    pub const UI_MASK_RECTS: u32 = 0x0000_0800;
+    /// Bit 12 — `Model_Space_Normals`. Matches the Skyrim bit layout;
+    /// the collision with FO3/FNV `Unknown_3` (also bit 12) is why
+    /// callers must know which property type they hold.
+    pub const MODEL_SPACE_NORMALS: u32 = 0x0000_1000;
+    pub const NON_PROJECTIVE_SHADOWS: u32 = 0x0000_2000;
+    pub const LANDSCAPE: u32 = 0x0000_4000;
+    pub const REFRACTION: u32 = 0x0000_8000;
+    pub const FIRE_REFRACTION: u32 = 0x0001_0000;
+    pub const EYE_ENVIRONMENT_MAPPING: u32 = 0x0002_0000;
+    pub const HAIR: u32 = 0x0004_0000;
+    pub const SCREENDOOR_ALPHA_FADE: u32 = 0x0008_0000;
+    pub const LOCALMAP_HIDE_SECRET: u32 = 0x0010_0000;
+    pub const SKIN_TINT: u32 = 0x0020_0000;
+    pub const OWN_EMIT: u32 = 0x0040_0000;
+    pub const PROJECTED_UV: u32 = 0x0080_0000;
+    pub const MULTIPLE_TEXTURES: u32 = 0x0100_0000;
+    pub const TESSELLATE: u32 = 0x0200_0000;
+    /// Bit 26 — shared with SLSF1 / FO3-FNV F1. Decal geometry.
+    pub const DECAL: u32 = 0x0400_0000;
+    /// Bit 27 — shared with SLSF1 / FO3-FNV F1. Runtime-spawned decal.
+    pub const DYNAMIC_DECAL: u32 = 0x0800_0000;
+    pub const CHARACTER_LIGHTING: u32 = 0x1000_0000;
+    pub const EXTERNAL_EMITTANCE: u32 = 0x2000_0000;
+    pub const SOFT_EFFECT: u32 = 0x4000_0000;
+    pub const ZBUFFER_TEST: u32 = 0x8000_0000;
+}
+
+/// FO4+ `Fallout4ShaderPropertyFlags2` — second flag word.
+///
+/// **The FO4 F2 layout diverges sharply from Skyrim SLSF2**:
+/// - Bit 6 is `Glow_Map` on FO4 (Skyrim doesn't have an SLSF2 glow bit)
+/// - Bit 15 is `Dismemberment` on FO4
+/// - Bit 21 is `Anisotropic_Lighting` on FO4 (Skyrim: `Cloud_LOD`,
+///   FO3/FNV F2: `Alpha_Decal` — **three different semantics on the
+///   same bit across games**)
+/// - Bit 24 is `Multi_Layer_Parallax` on FO4
+/// - Bit 25 is `Alpha_Test` on FO4 (Skyrim has Alpha_Test on SLSF1!)
+///
+/// Sourced from nif.xml `Fallout4ShaderPropertyFlags2`
+/// (lines 6479-6513). See #414 / FO4-D3-M1.
+pub mod fo4_slsf2 {
+    pub const ZBUFFER_WRITE: u32 = 0x0000_0001;
+    pub const LOD_LANDSCAPE: u32 = 0x0000_0002;
+    pub const LOD_OBJECTS: u32 = 0x0000_0004;
+    pub const NO_FADE: u32 = 0x0000_0008;
+    /// Bit 4 — `Double_Sided`. Same bit as Skyrim SLSF2.
+    pub const DOUBLE_SIDED: u32 = 0x0000_0010;
+    pub const VERTEX_COLORS: u32 = 0x0000_0020;
+    /// Bit 6 — `Glow_Map`. FO4-specific — Skyrim's glow signal is the
+    /// texture-set slot-2 presence, not a flag bit.
+    pub const GLOW_MAP: u32 = 0x0000_0040;
+    pub const TRANSFORM_CHANGED: u32 = 0x0000_0080;
+    pub const DISMEMBERMENT_MEATCUFF: u32 = 0x0000_0100;
+    pub const TINT: u32 = 0x0000_0200;
+    pub const GRASS_VERTEX_LIGHTING: u32 = 0x0000_0400;
+    pub const GRASS_UNIFORM_SCALE: u32 = 0x0000_0800;
+    pub const GRASS_FIT_SLOPE: u32 = 0x0000_1000;
+    pub const GRASS_BILLBOARD: u32 = 0x0000_2000;
+    pub const NO_LOD_LAND_BLEND: u32 = 0x0000_4000;
+    pub const DISMEMBERMENT: u32 = 0x0000_8000;
+    pub const WIREFRAME: u32 = 0x0001_0000;
+    pub const WEAPON_BLOOD: u32 = 0x0002_0000;
+    pub const HIDE_ON_LOCAL_MAP: u32 = 0x0004_0000;
+    pub const PREMULT_ALPHA: u32 = 0x0008_0000;
+    pub const VATS_TARGET: u32 = 0x0010_0000;
+    /// Bit 21 — `Anisotropic_Lighting` on FO4. Distinct from
+    /// `Cloud_LOD` (Skyrim) and `Alpha_Decal` (FO3/FNV) at the same
+    /// numeric value. The reason a legacy `is_decal_from_shader_flags`
+    /// that tests `flags2 & 0x0020_0000` MUST NOT run on FO4 properties.
+    pub const ANISOTROPIC_LIGHTING: u32 = 0x0020_0000;
+    pub const SKEW_SPECULAR_ALPHA: u32 = 0x0040_0000;
+    pub const MENU_SCREEN: u32 = 0x0080_0000;
+    pub const MULTI_LAYER_PARALLAX: u32 = 0x0100_0000;
+    /// Bit 25 — `Alpha_Test` on FO4. Skyrim routes alpha-test via
+    /// `NiAlphaProperty` on a sibling block, not a shader flag bit.
+    pub const ALPHA_TEST: u32 = 0x0200_0000;
+    pub const GRADIENT_REMAP: u32 = 0x0400_0000;
+    pub const VATS_TARGET_DRAW_ALL: u32 = 0x0800_0000;
+    pub const PIPBOY_SCREEN: u32 = 0x1000_0000;
+    pub const TREE_ANIM: u32 = 0x2000_0000;
+    pub const EFFECT_LIGHTING: u32 = 0x4000_0000;
+    pub const REFRACTION_WRITES_DEPTH: u32 = 0x8000_0000;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +212,34 @@ mod tests {
     fn slsf2_double_sided_matches_nif_xml() {
         // nif.xml SkyrimShaderPropertyFlags2 bit 4 = Double_Sided.
         assert_eq!(skyrim_slsf2::DOUBLE_SIDED, 1u32 << 4);
+    }
+
+    /// #414 — FO4 shares SLSF1 bits 26/27 with Skyrim + FO3/FNV for
+    /// Decal / Dynamic_Decal. Same numeric value, same semantic —
+    /// pin the cross-game agreement so the shared decal helper can
+    /// keep testing those bits on every game-era modern property.
+    #[test]
+    fn fo4_shares_slsf1_decal_bits_with_skyrim_and_legacy() {
+        assert_eq!(fo4_slsf1::DECAL, skyrim_slsf1::DECAL);
+        assert_eq!(fo4_slsf1::DECAL, fo3nv_f1::DECAL);
+        assert_eq!(fo4_slsf1::DYNAMIC_DECAL, skyrim_slsf1::DYNAMIC_DECAL);
+        assert_eq!(fo4_slsf1::DYNAMIC_DECAL, fo3nv_f1::DYNAMIC_DECAL);
+    }
+
+    /// #414 — THREE different semantics on bit 21 of the second flag
+    /// word across games. A legacy decal helper that tests this bit on
+    /// a Skyrim+ / FO4 property reads an unrelated render-path flag and
+    /// misclassifies the mesh as a decal.
+    #[test]
+    fn f2_bit_21_has_three_distinct_semantics_across_games() {
+        assert_eq!(fo3nv_f2::ALPHA_DECAL, 0x0020_0000);
+        assert_eq!(skyrim_slsf2::CLOUD_LOD, 0x0020_0000);
+        assert_eq!(fo4_slsf2::ANISOTROPIC_LIGHTING, 0x0020_0000);
+    }
+
+    /// #414 — Double_Sided lives at the same bit on Skyrim and FO4 F2.
+    #[test]
+    fn fo4_shares_double_sided_bit_with_skyrim() {
+        assert_eq!(fo4_slsf2::DOUBLE_SIDED, skyrim_slsf2::DOUBLE_SIDED);
     }
 }

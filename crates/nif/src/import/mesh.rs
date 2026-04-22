@@ -1085,13 +1085,25 @@ mod bs_tri_shape_shader_flag_tests {
         assert!((fx.env_map_scale - 0.75).abs() < 1e-6);
     }
 
-    /// #346 — ALPHA_DECAL_F2 on BSEffectShaderProperty.shader_flags_2
-    /// must set `ImportedMesh.is_decal` so blood splats get z-bias.
+    /// #414 / FO4-D3-M1 — `shader_flags_2 & 0x0020_0000` on a modern
+    /// `BSEffectShaderProperty` is **not** a decal flag. It's
+    /// `Cloud_LOD` on Skyrim and `Anisotropic_Lighting` on FO4.
+    ///
+    /// Pre-#414 the shared decal helper treated this bit as the
+    /// FO3/FNV `Alpha_Decal` regardless of property game-era — an
+    /// earlier #346 fix specifically asserted `is_decal = true` here
+    /// based on the same misreading. Post-#414 the modern decal helper
+    /// ignores flags2 bit 21; blood-splat decals on Skyrim+/FO4 must
+    /// set the SLSF1 `Decal` / `Dynamic_Decal` bits (26/27) instead,
+    /// which every vanilla decal mesh in Skyrim+ does.
     #[test]
-    fn decal_via_effect_shader_alpha_decal_flag() {
+    fn effect_shader_flag2_bit_21_is_not_decal_on_modern_properties() {
         let mut scene = NifScene::default();
         scene.blocks.push(Box::new(effect_shader(0x0020_0000)));
-        assert!(import(&scene, &renderable_shape(0)).is_decal);
+        assert!(
+            !import(&scene, &renderable_shape(0)).is_decal,
+            "flags2 bit 21 is Cloud_LOD (Skyrim) / Anisotropic_Lighting (FO4), not a decal bit"
+        );
     }
 
     /// #346 — DECAL_SINGLE_PASS on shader_flags_1 works on either
