@@ -155,6 +155,15 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
     // consumers so they can decide how to handle the incomplete graph.
     let mut truncated = false;
     let mut dropped_block_count: usize = 0;
+    // Count of blocks that fell into the NiUnknown recovery path. Bumped
+    // inside the block-size recovery, runtime size cache, and
+    // oblivion_skip_sizes recovery branches below, plus once per block
+    // the dispatch-level unknown-type fallback returns. Surfaces via
+    // `NifScene.recovered_blocks` so the parse-rate gate treats these
+    // NIFs as non-clean — pre-#568 the warn-and-continue path left the
+    // scene flagged as clean and hid under-consuming parser bugs like
+    // #546. See #568.
+    let mut recovered_blocks: usize = 0;
 
     // For Oblivion-era NIFs (no block_sizes table), track the consumed
     // byte count for each successfully parsed block type. When a block
@@ -288,6 +297,16 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                         .or_default()
                         .push(final_consumed);
                 }
+                // Dispatch-level unknown-type recovery: `parse_block`'s
+                // fallback at `blocks/mod.rs` returns `Ok(NiUnknown)`
+                // when the header advertised a type that isn't in the
+                // dispatch table. Bump the recovery counter so these
+                // NIFs don't count as clean on the parse-rate gate —
+                // same rationale as the three Err-branch recoveries
+                // below. See #568.
+                if type_name != "NiUnknown" && block.block_type_name() == "NiUnknown" {
+                    recovered_blocks += 1;
+                }
                 blocks.push(block);
             }
             Err(e) => {
@@ -314,6 +333,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                         type_name: Arc::from(type_name),
                         data: Vec::new(),
                     }));
+                    recovered_blocks += 1;
                     continue;
                 }
                 // Without block_size (Oblivion), there's no header-driven
@@ -350,6 +370,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                                 type_name: Arc::from(type_name),
                                 data: Vec::new(),
                             }));
+                            recovered_blocks += 1;
                             continue;
                         }
                     }
@@ -373,6 +394,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                             type_name: Arc::from(type_name),
                             data: Vec::new(),
                         }));
+                        recovered_blocks += 1;
                         continue;
                     }
                     // If the skip would go past EOF, fall through to the
@@ -428,6 +450,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         root_index,
         truncated,
         dropped_block_count,
+        recovered_blocks,
     })
 }
 
@@ -597,10 +620,80 @@ mod tests {
             root_index: None,
             truncated: true,
             dropped_block_count: 3,
+            recovered_blocks: 0,
         };
         assert!(scene.truncated);
         assert_eq!(scene.dropped_block_count, 3);
+        assert_eq!(scene.recovered_blocks, 0);
         assert!(scene.is_empty());
+    }
+
+    /// Regression: #568 (SK-D5-06). A NIF whose header advertises a
+    /// block type the dispatch table doesn't know lands on
+    /// `parse_block`'s unknown-type fallback, which returns
+    /// `Ok(NiUnknown)`. Pre-fix the outer loop silently counted that
+    /// as a clean parse; the `record_success` path on `nif_stats`
+    /// kept the headline rate at 100% and hid under-consuming parser
+    /// bugs like #546. Post-fix `NifScene.recovered_blocks` increments
+    /// for every such placeholder, and the integration gate routes
+    /// these scenes through `record_truncated`.
+    #[test]
+    fn recovered_blocks_flagged_for_unknown_dispatch_fallback() {
+        // Build a minimal NIF whose single block advertises a type
+        // name that's NOT in the dispatch table. The parser's
+        // dispatch-level unknown-type recovery seeks past via
+        // block_size and substitutes an `NiUnknown` placeholder.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"Gamebryo File Format, Version 20.2.0.7\n");
+        buf.extend_from_slice(&0x14020007u32.to_le_bytes());
+        buf.push(1); // little-endian
+        buf.extend_from_slice(&11u32.to_le_bytes()); // user_version (FNV-like)
+        buf.extend_from_slice(&1u32.to_le_bytes()); // num_blocks = 1
+        buf.extend_from_slice(&34u32.to_le_bytes()); // user_version_2
+
+        // Short strings (author / process / export, each 1 byte empty).
+        for _ in 0..3 {
+            buf.push(1);
+            buf.push(0);
+        }
+
+        // 1 block type — "NiImaginaryBlockFromSK-D5-06".
+        const UNKNOWN: &str = "NiImaginaryBlockFromSK-D5-06";
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&(UNKNOWN.len() as u32).to_le_bytes());
+        buf.extend_from_slice(UNKNOWN.as_bytes());
+        buf.extend_from_slice(&0u16.to_le_bytes()); // block 0 → type 0
+
+        // Block payload: 4 arbitrary bytes the parser will skip.
+        let block_payload = [0xAAu8, 0xBB, 0xCC, 0xDD];
+        buf.extend_from_slice(&(block_payload.len() as u32).to_le_bytes()); // block_size
+
+        // String table: empty.
+        buf.extend_from_slice(&0u32.to_le_bytes()); // num_strings
+        buf.extend_from_slice(&0u32.to_le_bytes()); // max_string_length
+        buf.extend_from_slice(&0u32.to_le_bytes()); // num_groups
+
+        buf.extend_from_slice(&block_payload);
+
+        let scene = parse_nif(&buf).expect("unknown-type fallback must produce Ok");
+        assert_eq!(
+            scene.len(),
+            1,
+            "placeholder block still lives at its original index"
+        );
+        assert_eq!(
+            scene.recovered_blocks, 1,
+            "unknown dispatch fallback must bump recovered_blocks"
+        );
+        assert!(
+            !scene.truncated,
+            "truncated is reserved for blocks dropped past the abort point"
+        );
+        assert_eq!(
+            scene.blocks[0].block_type_name(),
+            "NiUnknown",
+            "placeholder is an NiUnknown"
+        );
     }
 
     #[test]

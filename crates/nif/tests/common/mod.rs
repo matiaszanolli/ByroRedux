@@ -356,10 +356,17 @@ pub fn parse_all_nifs_in_archive(archive: &MeshArchive, limit: Option<usize>) ->
             },
             Ok(bytes) => match byroredux_nif::parse_nif(&bytes) {
                 Ok(scene) => {
-                    let status = if scene.truncated {
+                    // #568 — a non-zero `recovered_blocks` means at
+                    // least one block was replaced with NiUnknown via
+                    // the parse-loop recovery path (block_size seek,
+                    // runtime size cache, oblivion_skip_sizes hint, or
+                    // dispatch-level unknown-type fallback). Treat the
+                    // NIF as non-clean so regressions like #546 turn
+                    // the parse-rate gate red rather than hiding.
+                    let status = if scene.truncated || scene.recovered_blocks > 0 {
                         ParseStatus::Truncated {
                             block_count: scene.len(),
-                            dropped: scene.dropped_block_count,
+                            dropped: scene.dropped_block_count + scene.recovered_blocks,
                         }
                     } else {
                         ParseStatus::Clean {
@@ -420,10 +427,11 @@ pub fn parse_all_nifs_in_dir(root: &Path, limit: Option<usize>) -> ParseStats {
                 },
                 Ok(bytes) => match byroredux_nif::parse_nif(&bytes) {
                     Ok(scene) => {
-                        let status = if scene.truncated {
+                        // #568 — see sibling site for full rationale.
+                        let status = if scene.truncated || scene.recovered_blocks > 0 {
                             ParseStatus::Truncated {
                                 block_count: scene.len(),
-                                dropped: scene.dropped_block_count,
+                                dropped: scene.dropped_block_count + scene.recovered_blocks,
                             }
                         } else {
                             ParseStatus::Clean {

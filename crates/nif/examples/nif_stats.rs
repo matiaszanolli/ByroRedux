@@ -182,8 +182,17 @@ fn process_bytes(stats: &mut Stats, label: String, bytes: &[u8]) {
                 .iter()
                 .map(|b| b.block_type_name().to_string())
                 .collect();
-            if scene.truncated {
-                stats.record_truncated(label, scene.dropped_block_count, names.into_iter());
+            // #568 — a non-zero `recovered_blocks` means at least one
+            // block fell into the NiUnknown recovery path (parser
+            // misalignment like #546, or an unknown dispatch type).
+            // Route through `record_truncated` so the clean-parse gate
+            // doesn't hide these. `dropped_block_count` is authoritative
+            // for genuine truncations; we add `recovered_blocks` to it
+            // so the telemetry line reports every lost / placeholdered
+            // block in one figure.
+            let non_clean_blocks = scene.dropped_block_count + scene.recovered_blocks;
+            if scene.truncated || scene.recovered_blocks > 0 {
+                stats.record_truncated(label, non_clean_blocks, names.into_iter());
             } else {
                 stats.record_success(names.into_iter());
             }

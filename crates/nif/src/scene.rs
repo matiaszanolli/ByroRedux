@@ -27,6 +27,21 @@ pub struct NifScene {
     /// (telemetry, cell_loader diagnostics) quantify how much of
     /// the file was lost without re-reading the raw header. See #224.
     pub dropped_block_count: usize,
+    /// Number of blocks that fell into the `NiUnknown` recovery path
+    /// because their parser returned `Err` and the parse loop was
+    /// able to seek past them (block-size header, runtime size cache,
+    /// or `oblivion_skip_sizes` hint) OR because the block type wasn't
+    /// in the dispatch table. Distinct from `dropped_block_count` —
+    /// the scene still contains a placeholder block at the original
+    /// index, block refs downstream still resolve, but the block's
+    /// data is gone. See #568 (SK-D5-06).
+    ///
+    /// The parse-rate gate treats any NIF with `recovered_blocks > 0`
+    /// as non-clean so under-consuming parser bugs (e.g. #546) turn
+    /// the integration metric red rather than hiding behind a "100 %
+    /// clean" rate. Pre-#568 the recovery path warned but didn't
+    /// surface anywhere observable.
+    pub recovered_blocks: usize,
 }
 
 impl Default for NifScene {
@@ -36,6 +51,7 @@ impl Default for NifScene {
             root_index: None,
             truncated: false,
             dropped_block_count: 0,
+            recovered_blocks: 0,
         }
     }
 }
@@ -264,6 +280,7 @@ mod validate_refs_tests {
             root_index: Some(0),
             truncated: false,
             dropped_block_count: 0,
+            recovered_blocks: 0,
         };
         assert!(scene.validate_refs().is_empty());
     }
@@ -280,6 +297,7 @@ mod validate_refs_tests {
             root_index: Some(0),
             truncated: false,
             dropped_block_count: 0,
+            recovered_blocks: 0,
         };
         assert!(scene.validate_refs().is_empty());
     }
@@ -293,6 +311,7 @@ mod validate_refs_tests {
             root_index: Some(0),
             truncated: false,
             dropped_block_count: 0,
+            recovered_blocks: 0,
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 1);
@@ -314,6 +333,7 @@ mod validate_refs_tests {
             root_index: Some(0),
             truncated: false,
             dropped_block_count: 0,
+            recovered_blocks: 0,
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 2);
@@ -333,6 +353,7 @@ mod validate_refs_tests {
             root_index: Some(0),
             truncated: false,
             dropped_block_count: 0,
+            recovered_blocks: 0,
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 1);
@@ -348,6 +369,7 @@ mod validate_refs_tests {
             root_index: Some(4),
             truncated: false,
             dropped_block_count: 0,
+            recovered_blocks: 0,
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 1);

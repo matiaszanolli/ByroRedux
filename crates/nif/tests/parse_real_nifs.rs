@@ -16,16 +16,27 @@ mod common;
 
 use common::{open_mesh_archive, parse_all_nifs_in_archive, Game};
 
-/// Acceptance threshold per N23.10 + ROADMAP. All 7 supported games
-/// currently ship at 100% parse rate (177,286 NIFs total — see
-/// ROADMAP.md "Full-archive parse rates"). Any vanilla NIF that fails
-/// to parse is a regression.
+/// Acceptance threshold per N23.10 + ROADMAP. Gates on the
+/// **recoverable** rate (clean + NiUnknown-recovered + truncated) so a
+/// hard parse failure on any vanilla NIF is a regression. Every
+/// supported game currently hits 100% recoverable — the recovery paths
+/// (block_size seek, runtime size cache, `oblivion_skip_sizes` hint,
+/// dispatch-level unknown-type fallback) absorb under-consuming parser
+/// bugs by substituting `NiUnknown` placeholders and continuing.
 ///
-/// Intentionally tight (1.0) so a single regressed NIF fails the per-game
-/// test loud and clear. If a future mod-content test tolerates partial
-/// coverage, define a separate `MIN_SUCCESS_RATE_MOD` and use it there
-/// rather than loosening the vanilla gate. See issue #487.
-const MIN_SUCCESS_RATE: f64 = 1.0;
+/// The `clean` rate (fully parsed, no placeholders) is printed by
+/// `ParseStats::print_summary` as a secondary metric. Pre-#568 it
+/// masqueraded as the gate metric — the record_success path silently
+/// absorbed `NiUnknown` recoveries, so Skyrim's ~55% placeholder rate
+/// (from bhkRigidBody and friends) reported as "100% clean". Driving
+/// `clean` upward is open work tracked on the individual parser-bug
+/// issues (e.g. #546). This gate stays at recoverable so hard-failure
+/// regressions still fail loud and clear.
+///
+/// If a future mod-content test tolerates partial coverage, define a
+/// separate `MIN_SUCCESS_RATE_MOD` and use it there rather than
+/// loosening the vanilla gate. See issue #487.
+const MIN_RECOVERABLE_RATE: f64 = 1.0;
 
 fn run_game(game: Game, limit: Option<usize>) {
     let Some(archive) = open_mesh_archive(game) else {
@@ -48,11 +59,11 @@ fn run_game(game: Game, limit: Option<usize>) {
         game.label()
     );
     assert!(
-        stats.success_rate() >= MIN_SUCCESS_RATE,
-        "[{}] parse success rate {:.2}% is below the {:.0}% threshold ({} failures)",
+        stats.recoverable_rate() >= MIN_RECOVERABLE_RATE,
+        "[{}] parse recoverable rate {:.2}% is below the {:.0}% threshold ({} hard failures)",
         game.label(),
-        stats.success_rate() * 100.0,
-        MIN_SUCCESS_RATE * 100.0,
+        stats.recoverable_rate() * 100.0,
+        MIN_RECOVERABLE_RATE * 100.0,
         stats.failures.len()
     );
 }
@@ -127,10 +138,10 @@ fn parse_rate_smoke_all_games() {
         stats.print_summary(&format!("{} (smoke)", game.label()));
         if stats.total > 0 {
             assert!(
-                stats.success_rate() >= MIN_SUCCESS_RATE,
-                "[{} smoke] parse success rate {:.2}% below threshold",
+                stats.recoverable_rate() >= MIN_RECOVERABLE_RATE,
+                "[{} smoke] parse recoverable rate {:.2}% below threshold",
                 game.label(),
-                stats.success_rate() * 100.0,
+                stats.recoverable_rate() * 100.0,
             );
         }
     }
