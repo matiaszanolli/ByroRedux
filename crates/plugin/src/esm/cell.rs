@@ -276,6 +276,12 @@ pub struct StaticObject {
 /// - **TX06** — multi-layer parallax inner layer
 /// - **TX07** — specular / back-lighting
 ///
+/// FO4+ TXST records often use `MNAM` (a path to a BGSM material file)
+/// instead of populating the TXnn slots directly. 37 % of vanilla
+/// `Fallout4.esm` TXST records (140 / 382) are MNAM-only with no TX00.
+/// The BGSM parser is a separate issue; we just capture the path here.
+/// See audit FO4-D4-C3 / #406.
+///
 /// All slots are optional; an empty path is normalized to `None`.
 /// Pre-Skyrim TXST records (FO3 / FNV) author only TX00 in shipped
 /// content, so the other slots will simply read as `None` there.
@@ -289,6 +295,13 @@ pub struct TextureSet {
     pub env_mask: Option<String>,
     pub inner: Option<String>,
     pub specular: Option<String>,
+    /// FO4+ MNAM sub-record — path to a BGSM material file whose
+    /// embedded TX00..TX07 override the direct-slot path. When present
+    /// it typically replaces TX00 entirely (the 140 MNAM-only vanilla
+    /// TXSTs carry no TX00 at all). Resolution against the BGSM parser
+    /// is tracked separately; this field preserves the raw path so
+    /// texture resolution can route through BGSM when that lands. #406.
+    pub material_path: Option<String>,
 }
 
 /// Result of parsing an ESM file for cell loading.
@@ -1427,6 +1440,13 @@ fn parse_txst_group(
                     b"TX05" => set.env_mask = extract(&sub.data),
                     b"TX06" => set.inner = extract(&sub.data),
                     b"TX07" => set.specular = extract(&sub.data),
+                    // FO4+ BGSM material path. 37 % of vanilla
+                    // `Fallout4.esm` TXST records (140 / 382) are
+                    // MNAM-only with no TX00 at all; pre-#406 they were
+                    // silently dropped because the outer `if set !=
+                    // default()` guard would fail and `txst_textures`
+                    // never got a diffuse fallback either. See #406.
+                    b"MNAM" => set.material_path = extract(&sub.data),
                     _ => {}
                 }
             }
@@ -3188,6 +3208,77 @@ mod tests {
         assert!(set.glow.is_none());
         assert!(set.specular.is_none());
         assert!(set.env.is_none());
+    }
+
+    /// Regression for #406 — FO4 TXST records often use `MNAM`
+    /// (BGSM material path) instead of populating TX00..TX07 directly.
+    /// Parser must extract MNAM into `material_path`. Pre-fix 140 of
+    /// 382 (37 %) vanilla `Fallout4.esm` TXST records were silently
+    /// dropped — the `if set != default()` guard rejected MNAM-only
+    /// sets because no TX slot was set.
+    #[test]
+    fn parse_txst_extracts_mnam_material_path() {
+        let txst = build_txst_record(
+            0xF047,
+            &[(b"MNAM", "Materials/Decals/RustDecal01.BGSM")],
+        );
+        let group = wrap_in_txst_group(&[txst]);
+
+        let mut reader = EsmReader::new(&group);
+        let header = reader.read_group_header().expect("group header");
+        let end = reader.group_content_end(&header);
+        let mut diffuse_only: HashMap<u32, String> = HashMap::new();
+        let mut sets: HashMap<u32, TextureSet> = HashMap::new();
+        parse_txst_group(&mut reader, end, &mut diffuse_only, &mut sets).expect("parse");
+
+        let set = sets
+            .get(&0xF047)
+            .expect("TextureSet must be inserted for MNAM-only TXST (pre-fix: silently dropped)");
+        assert_eq!(
+            set.material_path.as_deref(),
+            Some("Materials/Decals/RustDecal01.BGSM"),
+            "MNAM must surface as material_path"
+        );
+        // The legacy `txst_textures` diffuse-only map is populated only
+        // when TX00 is present — MNAM-only records don't enter it, and
+        // downstream consumers should resolve the BGSM path instead.
+        assert!(
+            diffuse_only.get(&0xF047).is_none(),
+            "MNAM-only TXST must not populate the diffuse-only legacy map"
+        );
+        // No direct-slot paths populated.
+        assert!(set.diffuse.is_none());
+        assert!(set.normal.is_none());
+    }
+
+    /// Regression for #406 — an FO4 TXST carrying both MNAM and TXnn
+    /// slots (not 140/382 in vanilla but possible in mod content)
+    /// must preserve both paths. BGSM resolution takes precedence
+    /// downstream, but we don't lose the direct slots either.
+    #[test]
+    fn parse_txst_extracts_mnam_alongside_tx_slots() {
+        let txst = build_txst_record(
+            0xF048,
+            &[
+                (b"TX00", "textures/fallback_diffuse.dds"),
+                (b"MNAM", "Materials/Weapons/Plasma01.BGSM"),
+            ],
+        );
+        let group = wrap_in_txst_group(&[txst]);
+
+        let mut reader = EsmReader::new(&group);
+        let header = reader.read_group_header().expect("group header");
+        let end = reader.group_content_end(&header);
+        let mut diffuse_only: HashMap<u32, String> = HashMap::new();
+        let mut sets: HashMap<u32, TextureSet> = HashMap::new();
+        parse_txst_group(&mut reader, end, &mut diffuse_only, &mut sets).expect("parse");
+
+        let set = sets.get(&0xF048).expect("set missing");
+        assert_eq!(
+            set.material_path.as_deref(),
+            Some("Materials/Weapons/Plasma01.BGSM")
+        );
+        assert_eq!(set.diffuse.as_deref(), Some("textures/fallback_diffuse.dds"));
     }
 
     /// Regression: #357 — empty zstrings (`""`) on any slot collapse
