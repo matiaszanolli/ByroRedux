@@ -18,12 +18,17 @@ pub struct NiExtraData {
     pub name: Option<Arc<str>>,
     pub string_value: Option<Arc<str>>,
     pub integer_value: Option<u32>,
+    /// Populated for `NiFloatExtraData` — a single f32 payload. FOV
+    /// multipliers, scale overrides, wetness levels, etc. See #553.
+    pub float_value: Option<f32>,
     pub binary_data: Option<Vec<u8>>,
     /// Populated for `NiStringsExtraData` — array of string table entries
     /// carrying e.g. material override lists.
     pub strings_array: Option<Vec<Option<Arc<str>>>>,
     /// Populated for `NiIntegersExtraData` — array of 32-bit integers.
     pub integers_array: Option<Vec<u32>>,
+    /// Populated for `NiFloatsExtraData` — array of f32 values.
+    pub floats_array: Option<Vec<f32>>,
 }
 
 impl NiObject for NiExtraData {
@@ -60,9 +65,11 @@ impl NiExtraData {
 
         let mut string_value = None;
         let mut integer_value = None;
+        let mut float_value = None;
         let mut binary_data = None;
         let mut strings_array = None;
         let mut integers_array = None;
+        let mut floats_array = None;
 
         match type_name {
             "NiStringExtraData" => {
@@ -74,6 +81,14 @@ impl NiExtraData {
             "NiBooleanExtraData" => {
                 // nif.xml: Boolean Data is type "byte" (1 byte), NOT u32.
                 integer_value = Some(stream.read_u8()? as u32);
+            }
+            // nif.xml line 4264 — single `Float Data: float` field.
+            // #553: pre-fix this subclass was absent from the dispatch
+            // (no match arm) so 1,492 SE + 156 FO3/FNV blocks fell into
+            // NiUnknown, silently discarding every tool-authored FOV
+            // multiplier / scale override / wetness level metadata tag.
+            "NiFloatExtraData" => {
+                float_value = Some(stream.read_f32_le()?);
             }
             "NiBinaryExtraData" => {
                 let size = stream.read_u32_le()? as usize;
@@ -96,6 +111,18 @@ impl NiExtraData {
                 }
                 integers_array = Some(arr);
             }
+            // nif.xml line 4269 — parallel to NiIntegersExtraData but
+            // with f32 payload. Bundled with #553 because the authoring
+            // tools emit both Float and Floats variants in the same DLC
+            // content stream.
+            "NiFloatsExtraData" => {
+                let count = stream.read_u32_le()?;
+                let mut arr = stream.allocate_vec(count)?;
+                for _ in 0..count {
+                    arr.push(stream.read_f32_le()?);
+                }
+                floats_array = Some(arr);
+            }
             _ => {
                 // Unknown extra data subtype — can't skip without size
             }
@@ -106,9 +133,11 @@ impl NiExtraData {
             name,
             string_value,
             integer_value,
+            float_value,
             binary_data,
             strings_array,
             integers_array,
+            floats_array,
         })
     }
 
@@ -146,9 +175,11 @@ impl NiExtraData {
             name: None,
             string_value,
             integer_value,
+            float_value: None,
             binary_data: None,
             strings_array: None,
             integers_array: None,
+            floats_array: None,
         })
     }
 
@@ -184,9 +215,11 @@ impl NiExtraData {
             name: None,
             string_value,
             integer_value,
+            float_value: None,
             binary_data: None,
             strings_array: None,
             integers_array: None,
+            floats_array: None,
         })
     }
 }
@@ -1492,5 +1525,52 @@ mod tests {
         assert_eq!(arr.items[1], 0);
         assert_eq!(arr.items[2], 42);
         assert_eq!(stream.position() as usize, data.len());
+    }
+
+    /// Regression for #553 — `NiFloatExtraData` must parse the name
+    /// string index (FO3+) + the f32 float payload. Pre-fix there was
+    /// no match arm and 1,492 Skyrim SE vanilla blocks fell into
+    /// NiUnknown. The float_value on the parsed struct is how the
+    /// future importer will surface FOV multipliers / wetness knobs.
+    #[test]
+    fn ni_float_extra_data_skyrim() {
+        let header = skyrim_header();
+        let mut data = Vec::new();
+        // name: string index 0 (u32, string-table format at 20.2+).
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // float_data: 2.5
+        data.extend_from_slice(&2.5f32.to_le_bytes());
+
+        let mut stream = NifStream::new(&data, &header);
+        let extra = NiExtraData::parse(&mut stream, "NiFloatExtraData")
+            .expect("NiFloatExtraData must parse cleanly");
+        assert_eq!(stream.position() as usize, data.len());
+        assert_eq!(extra.type_name, "NiFloatExtraData");
+        assert_eq!(extra.float_value, Some(2.5));
+        // Guard against accidental cross-population of sibling fields.
+        assert!(extra.integer_value.is_none());
+        assert!(extra.floats_array.is_none());
+    }
+
+    /// Regression for #553 — `NiFloatsExtraData` (the array variant)
+    /// must consume the u32 count + N f32 payloads. Bundled with the
+    /// Float case because authoring tools emit both variants in the
+    /// same DLC content streams.
+    #[test]
+    fn ni_floats_extra_data_skyrim() {
+        let header = skyrim_header();
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u32.to_le_bytes()); // name: string idx 0
+        data.extend_from_slice(&3u32.to_le_bytes()); // num floats
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data.extend_from_slice(&2.0f32.to_le_bytes());
+        data.extend_from_slice(&3.0f32.to_le_bytes());
+
+        let mut stream = NifStream::new(&data, &header);
+        let extra = NiExtraData::parse(&mut stream, "NiFloatsExtraData")
+            .expect("NiFloatsExtraData must parse cleanly");
+        assert_eq!(stream.position() as usize, data.len());
+        let arr = extra.floats_array.expect("floats_array must populate");
+        assert_eq!(arr, vec![1.0, 2.0, 3.0]);
     }
 }

@@ -67,6 +67,7 @@ fn is_animation_block(type_name: &str) -> bool {
             | "bhkBlendController"
             | "NiAlphaController"
             | "BSNiAlphaPropertyTestRefController"
+            | "NiFloatExtraDataController"
             | "NiMaterialColorController"
             | "NiTextureTransformController"
             | "NiGeomMorpherController"

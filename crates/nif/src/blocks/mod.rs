@@ -32,9 +32,10 @@ use collision::{
 };
 use controller::{
     BhkBlendController, BsNiAlphaPropertyTestRefController, BsRefractionFirePeriodController,
-    NiControllerManager, NiControllerSequence, NiGeomMorpherController, NiLookAtController,
-    NiMaterialColorController, NiMorphData, NiMultiTargetTransformController, NiPathController,
-    NiSequenceStreamHelper, NiSingleInterpController, NiTimeController, NiUVController,
+    NiControllerManager, NiControllerSequence, NiFloatExtraDataController, NiGeomMorpherController,
+    NiLookAtController, NiMaterialColorController, NiMorphData, NiMultiTargetTransformController,
+    NiPathController, NiSequenceStreamHelper, NiSingleInterpController, NiTimeController,
+    NiUVController,
 };
 use extra_data::{
     BsAnimNote, BsAnimNotes, BsBehaviorGraphExtraData, BsBound, BsClothExtraData,
@@ -358,7 +359,13 @@ pub fn parse_block(
         | "BSXFlags"
         | "NiBooleanExtraData"
         | "NiStringsExtraData"
-        | "NiIntegersExtraData" => Ok(Box::new(NiExtraData::parse(stream, type_name)?)),
+        | "NiIntegersExtraData"
+        // NiFloatExtraData / NiFloatsExtraData: single-float + float-array
+        // metadata tags (nif.xml lines 4264, 4269). Pre-#553 absent from
+        // dispatch — 1,492 SE + 156 FO3/FNV blocks fell into NiUnknown
+        // and every tool-authored FOV/scale/wetness knob was lost.
+        | "NiFloatExtraData"
+        | "NiFloatsExtraData" => Ok(Box::new(NiExtraData::parse(stream, type_name)?)),
         "BSWArray" => Ok(Box::new(BsWArray::parse(stream)?)),
         "BSBound" => Ok(Box::new(BsBound::parse(stream)?)),
         "BSDecalPlacementVectorExtraData" => {
@@ -441,6 +448,14 @@ pub fn parse_block(
         "BSNiAlphaPropertyTestRefController" => Ok(Box::new(
             BsNiAlphaPropertyTestRefController::parse(stream)?,
         )),
+        // NiFloatExtraDataController: animates a NiFloatExtraData tag
+        // (FOV multipliers, scale overrides, wetness levels). nif.xml
+        // line 3797 — NiTimeController base + interpolator_ref +
+        // extra_data_name. 1,312 data + 180 controller blocks on SE
+        // plus smaller FO3/FNV counts pre-#553.
+        "NiFloatExtraDataController" => {
+            Ok(Box::new(NiFloatExtraDataController::parse(stream)?))
+        }
         // BSEffectShader / BSLightingShader property-controller family —
         // each adds a single trailing `controlled_variable: u32` enum to
         // NiSingleInterpController per nif.xml line 6253-6276. Before

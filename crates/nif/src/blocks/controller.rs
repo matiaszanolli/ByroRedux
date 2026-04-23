@@ -190,6 +190,65 @@ impl BsNiAlphaPropertyTestRefController {
     }
 }
 
+// ── NiFloatExtraDataController ─────────────────────────────────────────
+//
+// Animates a NiFloatExtraData tag attached to an NiAVObject (FOV
+// multipliers, scale overrides, wetness levels — any tool-authored
+// engine hook that exposes a float knob). nif.xml line 3797:
+//
+//   NiTimeController base                       (26 B)
+//   NiSingleInterpController.interpolator_ref   (4 B, since 10.1.0.104)
+//   NiExtraDataController.extra_data_name       (4 B string index,
+//                                                since 10.2.0.0)
+//   (pre-10.1.0.0 extras gated out on FO3+)
+//
+// 1,657 blocks across SE (180 controller + 1,312 data) + FO3/FNV fell
+// into NiUnknown pre-#553 because no dispatch existed. `NiFloatExtraData`
+// itself rides the shared `NiExtraData` dispatch; this is the controller
+// that ticks it over time.
+
+/// FO3+ animated NiFloatExtraData controller. See #553.
+#[derive(Debug)]
+pub struct NiFloatExtraDataController {
+    pub base: NiTimeControllerBase,
+    pub interpolator_ref: BlockRef,
+    /// Name of the NiFloatExtraData tag this controller animates.
+    /// Resolved against the header string table at 20.1+.
+    pub extra_data_name: Option<Arc<str>>,
+}
+
+impl NiObject for NiFloatExtraDataController {
+    fn block_type_name(&self) -> &'static str {
+        "NiFloatExtraDataController"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiFloatExtraDataController {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiTimeControllerBase::parse(stream)?;
+        // NiSingleInterpController.interpolator_ref (since 10.1.0.104).
+        let interpolator_ref = if stream.version() >= NifVersion(0x0A010068) {
+            stream.read_block_ref()?
+        } else {
+            BlockRef::NULL
+        };
+        // NiExtraDataController.extra_data_name (since 10.2.0.0).
+        let extra_data_name = if stream.version() >= NifVersion(0x0A020000) {
+            stream.read_string()?
+        } else {
+            None
+        };
+        Ok(Self {
+            base,
+            interpolator_ref,
+            extra_data_name,
+        })
+    }
+}
+
 // ── BSShaderController family ──────────────────────────────────────────
 //
 // The four (+1) Bethesda shader property controllers each wrap
@@ -865,6 +924,56 @@ mod tests {
             .downcast_ref::<BsNiAlphaPropertyTestRefController>()
             .expect("dispatch type must be BsNiAlphaPropertyTestRefController");
         assert_eq!(ctrl.base.interpolator_ref.index(), Some(7));
+    }
+
+    /// Regression for #553 — `NiFloatExtraDataController` must parse
+    /// as `NiTimeController` base (26 B) + `interpolator_ref` (4 B,
+    /// since 10.1.0.104) + `extra_data_name` string index (4 B, since
+    /// 10.2.0.0) = 34 B on FO3+/FNV/SE. Pre-fix no dispatch arm
+    /// existed.
+    #[test]
+    fn parse_ni_float_extra_data_controller_34_bytes() {
+        let header = make_header_fnv();
+        let mut data = Vec::new();
+        write_time_controller_base(&mut data);
+        data.extend_from_slice(&11i32.to_le_bytes()); // interpolator_ref = 11
+        data.extend_from_slice(&0u32.to_le_bytes()); // extra_data_name: string idx 0
+        assert_eq!(data.len(), 34);
+
+        let mut stream = NifStream::new(&data, &header);
+        let ctrl = NiFloatExtraDataController::parse(&mut stream)
+            .expect("NiFloatExtraDataController must parse at FNV bsver");
+        assert_eq!(stream.position(), 34);
+        assert_eq!(ctrl.interpolator_ref.index(), Some(11));
+        assert_eq!(ctrl.extra_data_name.as_deref(), Some("TestName"));
+    }
+
+    /// Regression for #553 — dispatcher must route
+    /// `NiFloatExtraDataController` through its own parser, not the
+    /// `NiTimeController` fallback stub (which would leave interpolator_ref
+    /// and extra_data_name unread and drift subsequent blocks).
+    #[test]
+    fn ni_float_extra_data_controller_dispatches_via_parse_block() {
+        let header = make_header_fnv();
+        let mut data = Vec::new();
+        write_time_controller_base(&mut data);
+        data.extend_from_slice(&5i32.to_le_bytes()); // interpolator_ref
+        data.extend_from_slice(&0u32.to_le_bytes()); // extra_data_name idx
+
+        let mut stream = NifStream::new(&data, &header);
+        let block = crate::blocks::parse_block(
+            "NiFloatExtraDataController",
+            &mut stream,
+            Some(data.len() as u32),
+        )
+        .expect("dispatch must route NiFloatExtraDataController");
+        assert_eq!(block.block_type_name(), "NiFloatExtraDataController");
+        assert_eq!(stream.position() as usize, data.len());
+        let ctrl = block
+            .as_any()
+            .downcast_ref::<NiFloatExtraDataController>()
+            .expect("dispatch type must be NiFloatExtraDataController");
+        assert_eq!(ctrl.interpolator_ref.index(), Some(5));
     }
 
     #[test]
