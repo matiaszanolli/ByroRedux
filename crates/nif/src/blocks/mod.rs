@@ -33,9 +33,9 @@ use collision::{
 use controller::{
     BhkBlendController, BsNiAlphaPropertyTestRefController, BsRefractionFirePeriodController,
     NiControllerManager, NiControllerSequence, NiFloatExtraDataController, NiGeomMorpherController,
-    NiLookAtController, NiMaterialColorController, NiMorphData, NiMultiTargetTransformController,
-    NiPathController, NiSequenceStreamHelper, NiSingleInterpController, NiTimeController,
-    NiUVController,
+    NiLightColorController, NiLightFloatController, NiLookAtController, NiMaterialColorController,
+    NiMorphData, NiMultiTargetTransformController, NiPathController, NiSequenceStreamHelper,
+    NiSingleInterpController, NiTimeController, NiUVController,
 };
 use extra_data::{
     BsAnimNote, BsAnimNotes, BsBehaviorGraphExtraData, BsBound, BsClothExtraData,
@@ -456,6 +456,27 @@ pub fn parse_block(
         "NiFloatExtraDataController" => {
             Ok(Box::new(NiFloatExtraDataController::parse(stream)?))
         }
+        // NiLightColorController (nif.xml line 3776): NiPoint3InterpController
+        // + `Target Color: LightColor (u16)`. Animates the ambient /
+        // diffuse color slot of an NiLight. See #433.
+        "NiLightColorController" => Ok(Box::new(NiLightColorController::parse(stream)?)),
+        // NiLightDimmerController / NiLightIntensityController /
+        // NiLightRadiusController: NiFloatInterpController with no
+        // additional fields (nif.xml lines 3750 / 5025 / 8444). All
+        // three drive NiLight float slots — lantern flicker, campfire
+        // pulse, torch flicker, plasma-weapon glow, etc. See #433.
+        "NiLightDimmerController" => Ok(Box::new(NiLightFloatController::parse(
+            stream,
+            "NiLightDimmerController",
+        )?)),
+        "NiLightIntensityController" => Ok(Box::new(NiLightFloatController::parse(
+            stream,
+            "NiLightIntensityController",
+        )?)),
+        "NiLightRadiusController" => Ok(Box::new(NiLightFloatController::parse(
+            stream,
+            "NiLightRadiusController",
+        )?)),
         // BSEffectShader / BSLightingShader property-controller family —
         // each adds a single trailing `controlled_variable: u32` enum to
         // NiSingleInterpController per nif.xml line 6253-6276. Before

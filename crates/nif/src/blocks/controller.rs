@@ -287,6 +287,104 @@ pub enum ShaderControllerKind {
     LightingUShort(u32),
 }
 
+// ── NiLight controller family ──────────────────────────────────────────
+//
+// Animated controllers on NiLight/NiPointLight/NiSpotLight:
+//   - NiLightColorController: ambient/diffuse color animation.
+//     Inherits NiPoint3InterpController + `target_color: LightColor (u16)`.
+//   - NiLightDimmerController: overall dimmer value.
+//     Inherits NiFloatInterpController, no extra fields.
+//   - NiLightIntensityController (FO3+): HDR intensity.
+//     Inherits NiFloatInterpController, no extra fields.
+//   - NiLightRadiusController (FO4+): light radius.
+//     Inherits NiFloatInterpController, no extra fields.
+//
+// Pre-#433 all four were missing from dispatch — every lantern flicker,
+// campfire pulse, torch flicker, magic-spell glow, terminal-screen bloom,
+// and plasma weapon effect in Bethesda content landed as NiUnknown and
+// silently stopped animating. Per nif.xml lines 3776 / 3750 / 5025 /
+// 8444.
+
+/// `NiLightColorController` — animates the ambient / diffuse color of an
+/// NiLight. Per nif.xml line 3776 it inherits `NiPoint3InterpController`
+/// (which is a NiSingleInterpController pass-through) and adds
+/// `Target Color: LightColor (u16, since 10.1.0.0)`. On FO3+ the
+/// legacy `Data: Ref<NiPosData>` field is gated off (`until 10.1.0.103`).
+///
+/// The `target_color` selects which slot (Diffuse = 0, Ambient = 1) the
+/// animated NiPoint3 drives — the future light-animation importer needs
+/// the value, so we preserve it (block-size elision would have silently
+/// dropped it).
+#[derive(Debug)]
+pub struct NiLightColorController {
+    pub base: NiTimeControllerBase,
+    pub interpolator_ref: BlockRef,
+    /// `LightColor` enum per nif.xml line 1241 — u16. 0 = Diffuse,
+    /// 1 = Ambient. Selects which NiLight color slot the controller
+    /// drives.
+    pub target_color: u16,
+}
+
+impl NiObject for NiLightColorController {
+    fn block_type_name(&self) -> &'static str {
+        "NiLightColorController"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiLightColorController {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiTimeControllerBase::parse(stream)?;
+        // NiSingleInterpController: interpolator_ref (since 10.1.0.104).
+        let interpolator_ref = if stream.version() >= NifVersion(0x0A010068) {
+            stream.read_block_ref()?
+        } else {
+            BlockRef::NULL
+        };
+        // NiPoint3InterpController contributes no fields; NiLightColorController
+        // adds `Target Color: LightColor` (u16, since 10.1.0.0). FO3+ all
+        // satisfy the version gate.
+        let target_color = stream.read_u16_le()?;
+        Ok(Self {
+            base,
+            interpolator_ref,
+            target_color,
+        })
+    }
+}
+
+/// Plain `NiLight*Controller` — NiLightDimmerController /
+/// NiLightIntensityController / NiLightRadiusController. All three
+/// inherit `NiFloatInterpController` with no additional fields beyond
+/// the `NiSingleInterpController` base (nif.xml lines 3750 / 5025 /
+/// 8444). The `type_name` field preserves RTTI so the future
+/// light-animation importer can match on the slot it drives.
+#[derive(Debug)]
+pub struct NiLightFloatController {
+    pub type_name: &'static str,
+    pub base: NiSingleInterpController,
+}
+
+impl NiObject for NiLightFloatController {
+    fn block_type_name(&self) -> &'static str {
+        self.type_name
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiLightFloatController {
+    pub fn parse(stream: &mut NifStream, type_name: &'static str) -> io::Result<Self> {
+        Ok(Self {
+            type_name,
+            base: NiSingleInterpController::parse(stream)?,
+        })
+    }
+}
+
 /// Skyrim+ shader-property controller — `NiSingleInterpController` plus
 /// a 4-byte controlled-variable enum.
 #[derive(Debug)]
@@ -974,6 +1072,77 @@ mod tests {
             .downcast_ref::<NiFloatExtraDataController>()
             .expect("dispatch type must be NiFloatExtraDataController");
         assert_eq!(ctrl.interpolator_ref.index(), Some(5));
+    }
+
+    /// Regression for #433 — `NiLightColorController` must parse as
+    /// `NiTimeController` base (26 B) + `interpolator_ref` (4 B, since
+    /// 10.1.0.104) + `target_color: u16` (since 10.1.0.0) = 32 B.
+    /// Pre-fix the block had no dispatch arm — every animated light
+    /// color (lantern ambient shift, magic-spell glow color cycling)
+    /// landed as NiUnknown and silently stopped animating.
+    #[test]
+    fn parse_ni_light_color_controller_32_bytes() {
+        let header = make_header_fnv();
+        let mut data = Vec::new();
+        write_time_controller_base(&mut data);
+        data.extend_from_slice(&9i32.to_le_bytes()); // interpolator_ref = 9
+        // target_color: 1 = Ambient (LightColor enum nif.xml line 1241).
+        data.extend_from_slice(&1u16.to_le_bytes());
+        assert_eq!(data.len(), 32);
+
+        let mut stream = NifStream::new(&data, &header);
+        let ctrl = NiLightColorController::parse(&mut stream)
+            .expect("NiLightColorController must parse at FNV bsver");
+        assert_eq!(stream.position(), 32);
+        assert_eq!(ctrl.interpolator_ref.index(), Some(9));
+        assert_eq!(
+            ctrl.target_color, 1,
+            "target_color = 1 (Ambient) — pre-fix this field was never \
+             read and block-size recovery silently elided it"
+        );
+    }
+
+    /// Regression for #433 — the three plain `NiFloatInterpController`
+    /// subclasses (NiLightDimmerController, NiLightIntensityController,
+    /// NiLightRadiusController) share the 30-byte `NiSingleInterpController`
+    /// layout with no additional fields (nif.xml lines 3750 / 5025 / 8444).
+    /// Dispatcher routes them through `NiLightFloatController::parse` so
+    /// `block_type_name()` reports the original subclass.
+    #[test]
+    fn ni_light_float_controller_dispatches_preserving_rtti() {
+        for type_name in [
+            "NiLightDimmerController",
+            "NiLightIntensityController",
+            "NiLightRadiusController",
+        ] {
+            let header = make_header_fnv();
+            let mut data = Vec::new();
+            write_time_controller_base(&mut data);
+            data.extend_from_slice(&7i32.to_le_bytes()); // interpolator_ref
+
+            let mut stream = NifStream::new(&data, &header);
+            let block = crate::blocks::parse_block(
+                type_name,
+                &mut stream,
+                Some(data.len() as u32),
+            )
+            .unwrap_or_else(|e| panic!("{type_name} dispatch failed: {e}"));
+            assert_eq!(
+                stream.position() as usize,
+                data.len(),
+                "{type_name} must consume the 30-byte NiSingleInterpController body"
+            );
+            assert_eq!(
+                block.block_type_name(),
+                type_name,
+                "NiLightFloatController must preserve RTTI via its type_name field"
+            );
+            let ctrl = block
+                .as_any()
+                .downcast_ref::<NiLightFloatController>()
+                .expect("dispatch type must be NiLightFloatController");
+            assert_eq!(ctrl.base.interpolator_ref.index(), Some(7));
+        }
     }
 
     #[test]
