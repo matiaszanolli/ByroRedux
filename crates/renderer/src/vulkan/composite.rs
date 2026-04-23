@@ -363,13 +363,33 @@ impl CompositePipeline {
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
             .color_attachments(&composite_color_refs);
 
-        // Incoming dependency: wait for the main render pass to finish
-        // writing the HDR color attachment (FRAGMENT_SHADER stage reads it).
+        // Incoming dependency: wait for upstream producers to finish
+        // writing the attachments / storage images that composite.frag
+        // samples.
+        //
+        // Two producer stages feed this subpass:
+        //   - the main render pass fragment-shader path writes the HDR
+        //     color attachment (COLOR_ATTACHMENT_OUTPUT / COLOR_ATTACHMENT_WRITE).
+        //   - several compute passes — SVGF temporal + spatial accumulation,
+        //     TAA history, caustic splat, SSAO — write storage images
+        //     sampled by composite.frag. In practice every one of these
+        //     passes emits an explicit manual `vkCmdPipelineBarrier` after
+        //     dispatch, so the execution dependency is already covered and
+        //     validation layers don't fire. But if a future compute pass
+        //     is added that relies on the render-pass-level dependency
+        //     instead of its own barrier, it would race composite without
+        //     the COMPUTE_SHADER bit here. See #572 / AUDIT_RENDERER
+        //     2026-04-22 Dim 1 SY-1.
         let composite_dep_in = vk::SubpassDependency::default()
             .src_subpass(vk::SUBPASS_EXTERNAL)
             .dst_subpass(0)
-            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+            .src_stage_mask(
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                    | vk::PipelineStageFlags::COMPUTE_SHADER,
+            )
+            .src_access_mask(
+                vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::SHADER_WRITE,
+            )
             .dst_stage_mask(vk::PipelineStageFlags::FRAGMENT_SHADER)
             .dst_access_mask(vk::AccessFlags::SHADER_READ);
 
