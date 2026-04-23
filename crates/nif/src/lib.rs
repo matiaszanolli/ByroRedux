@@ -64,6 +64,7 @@ fn is_animation_block(type_name: &str) -> bool {
             | "NiMultiTargetTransformController"
             | "NiTransformController"
             | "NiVisController"
+            | "bhkBlendController"
             | "NiAlphaController"
             | "NiMaterialColorController"
             | "NiTextureTransformController"

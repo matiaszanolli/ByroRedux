@@ -31,10 +31,10 @@ use collision::{
     NiCollisionObjectBase,
 };
 use controller::{
-    BsRefractionFirePeriodController, NiControllerManager, NiControllerSequence,
-    NiGeomMorpherController, NiLookAtController, NiMaterialColorController, NiMorphData,
-    NiMultiTargetTransformController, NiPathController, NiSequenceStreamHelper,
-    NiSingleInterpController, NiTimeController, NiUVController,
+    BhkBlendController, BsRefractionFirePeriodController, NiControllerManager,
+    NiControllerSequence, NiGeomMorpherController, NiLookAtController,
+    NiMaterialColorController, NiMorphData, NiMultiTargetTransformController, NiPathController,
+    NiSequenceStreamHelper, NiSingleInterpController, NiTimeController, NiUVController,
 };
 use extra_data::{
     BsAnimNote, BsAnimNotes, BsBehaviorGraphExtraData, BsBound, BsClothExtraData,
@@ -660,6 +660,10 @@ pub fn parse_block(
             Ok(Box::new(BhkCollisionObject::parse(stream, false)?))
         }
         "bhkBlendCollisionObject" => Ok(Box::new(BhkCollisionObject::parse(stream, true)?)),
+        // bhkBlendController: Havok ragdoll blend-weight controller on
+        // FO3 + FNV skeletons. nif.xml line 3927 — NiTimeController base
+        // + trailing `Keys: uint`. 1,427 vanilla blocks pre-#551. See #551.
+        "bhkBlendController" => Ok(Box::new(BhkBlendController::parse(stream)?)),
         "bhkRigidBody" | "bhkRigidBodyT" => Ok(Box::new(BhkRigidBody::parse(stream)?)),
         "bhkSimpleShapePhantom" => Ok(Box::new(BhkSimpleShapePhantom::parse(stream)?)),
         "bhkMoppBvTreeShape" => Ok(Box::new(BhkMoppBvTreeShape::parse(stream)?)),

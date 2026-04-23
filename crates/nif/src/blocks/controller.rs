@@ -112,6 +112,48 @@ impl NiSingleInterpController {
     }
 }
 
+// ── bhkBlendController ─────────────────────────────────────────────────
+//
+// Havok ragdoll blend controller — drives blend weights between multiple
+// Havok animations (typically skeleton.nif files per nif.xml line 3927).
+// 1,427 blocks across vanilla FNV (845) + FO3 (582) fell into NiUnknown
+// pre-#551 because no dispatch arm existed.
+//
+// Wire layout (nif.xml line 3927):
+//   NiTimeController base (26 B — nif.xml line 3600)
+//   Keys: uint (4 B — "Seems to be always zero.")
+//
+// Note: contrary to the audit's suggestion, this is NOT a
+// NiSingleInterpController — it inherits NiTimeController directly, with
+// NO interpolator ref. The trailing `keys` u32 is the only field.
+
+/// bhkBlendController — Havok blend-weight controller for ragdoll /
+/// animation layering on FO3 + FNV skeletons. See #551.
+#[derive(Debug)]
+pub struct BhkBlendController {
+    pub base: NiTimeControllerBase,
+    /// Per nif.xml always zero on disk, but preserved so a future
+    /// importer can branch if Bethesda ever shipped a non-zero value.
+    pub keys: u32,
+}
+
+impl NiObject for BhkBlendController {
+    fn block_type_name(&self) -> &'static str {
+        "bhkBlendController"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BhkBlendController {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiTimeControllerBase::parse(stream)?;
+        let keys = stream.read_u32_le()?;
+        Ok(Self { base, keys })
+    }
+}
+
 // ── BSShaderController family ──────────────────────────────────────────
 //
 // The four (+1) Bethesda shader property controllers each wrap
@@ -691,6 +733,64 @@ mod tests {
         let ctrl = NiSingleInterpController::parse(&mut stream).unwrap();
         assert_eq!(stream.position(), 30);
         assert_eq!(ctrl.interpolator_ref.index(), Some(5));
+    }
+
+    /// Regression for #551 — `bhkBlendController` must parse as
+    /// `NiTimeController` base (26 B) + `Keys: uint` (4 B) = 30 B
+    /// total per nif.xml line 3927. Pre-fix this block had no dispatch
+    /// arm and 1,427 FNV+FO3 vanilla blocks fell into NiUnknown.
+    ///
+    /// Contrary to the audit's suggestion, this is NOT a
+    /// NiSingleInterpController — it inherits NiTimeController directly.
+    #[test]
+    fn parse_bhk_blend_controller_30_bytes() {
+        let header = make_header_fnv();
+        let mut data = Vec::new();
+        write_time_controller_base(&mut data);
+        // keys: uint — "Seems to be always zero" per nif.xml, but write
+        // a non-zero value so the test would catch a u32 vs i32 mix-up.
+        data.extend_from_slice(&0x12345678u32.to_le_bytes());
+        assert_eq!(data.len(), 30);
+
+        let mut stream = NifStream::new(&data, &header);
+        let ctrl = BhkBlendController::parse(&mut stream).unwrap();
+        assert_eq!(
+            stream.position(),
+            30,
+            "bhkBlendController must consume exactly NiTimeController(26) + u32(4) = 30 B"
+        );
+        assert_eq!(ctrl.keys, 0x12345678);
+        assert!(ctrl.base.next_controller_ref.is_null());
+    }
+
+    /// Regression for #551 — dispatch must route `bhkBlendController`
+    /// through `BhkBlendController::parse`, not the `NiTimeController`
+    /// fallback. Verifies the block_type_name() round-trip.
+    #[test]
+    fn bhk_blend_controller_dispatches_via_parse_block() {
+        let header = make_header_fnv();
+        let mut data = Vec::new();
+        write_time_controller_base(&mut data);
+        data.extend_from_slice(&0u32.to_le_bytes()); // keys = 0
+
+        let mut stream = NifStream::new(&data, &header);
+        let block = crate::blocks::parse_block(
+            "bhkBlendController",
+            &mut stream,
+            Some(data.len() as u32),
+        )
+        .expect("dispatch must route bhkBlendController — pre-fix it was NiUnknown");
+        assert_eq!(block.block_type_name(), "bhkBlendController");
+        assert_eq!(
+            stream.position() as usize,
+            data.len(),
+            "dispatcher must consume the full 30-byte body"
+        );
+        let ctrl = block
+            .as_any()
+            .downcast_ref::<BhkBlendController>()
+            .expect("dispatch type must be BhkBlendController, not NiTimeController");
+        assert_eq!(ctrl.keys, 0);
     }
 
     #[test]
