@@ -27,7 +27,8 @@ unmodified Bethesda game data (Oblivion Anvil Heinrich Oaken Halls,
 FNV Prospector Saloon, FO3 Megaton at 929 REFRs). Exterior renders
 3×3 grids from FNV WastelandNV with landscape terrain (LAND
 heightmap + LTEX/TXST splat). Skyrim SE loads individual meshes with
-BSTriShape geometry. Single-mesh sweetroll historically >1000 FPS.
+BSTriShape geometry. Single-mesh sweetroll ~3000-5000 FPS
+(2026-04-22, RTX 4070 Ti @ 1280×720).
 
 **RT lighting.** Full pipeline: SSBO multi-light, ray-query shadows
 with streaming weighted reservoir sampling (8 reservoirs/fragment,

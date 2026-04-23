@@ -19,7 +19,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 | BSA format        | v105 ✓ (LZ4 compression)                                                           |
 | ESM parser        | Stub — Skyrim.esm not yet parsed                                                   |
 | Parse rate        | 100.00% (18862 / 18862)                                                            |
-| Rendering         | Individual meshes ✓ — Sweetroll demo at 1615 FPS                                   |
+| Rendering         | Individual meshes ✓ — Sweetroll demo ~3000-5000 FPS (2026-04-22, RTX 4070 Ti @ 1280×720) |
 | Cell loading      | Not wired (requires Skyrim ESM parser)                                             |
 | Reference data    | `/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/`             |
 
@@ -74,7 +74,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 ### Dimension 5: Real-Data Validation & Rendering
 **Subagent**: `general-purpose`
 **Entry points**: `crates/nif/examples/nif_stats.rs`, canonical CLI demos
-**Checklist**: Parse rate holds at 100% (18862 / 18862). `cargo run -- --bsa "Skyrim - Meshes0.bsa" --mesh meshes\clutter\ingredients\sweetroll01.nif --textures-bsa "Skyrim - Textures3.bsa"` still renders correctly at the expected FPS (1615 target). Pick: one creature (dragon skeleton, NPC head), one landscape (tree LOD), one magic effect (BSEffectShaderProperty). Trace each through `import_nif_scene` → verify mesh count, material extraction, and texture handle resolution. Pick a FaceGen head — parses but expected visual fidelity is limited (no FaceGen runtime).
+**Checklist**: Parse rate holds at 100% (18862 / 18862). `cargo run -- --bsa "Skyrim - Meshes0.bsa" --mesh meshes\clutter\ingredients\sweetroll01.nif --textures-bsa "Skyrim - Textures3.bsa"` still renders correctly at ≥3000 FPS (2026-04-22 baseline: ~3000-5000 FPS on RTX 4070 Ti @ 1280×720; regression if substantially below 3000). Pick: one creature (dragon skeleton, NPC head), one landscape (tree LOD), one magic effect (BSEffectShaderProperty). Trace each through `import_nif_scene` → verify mesh count, material extraction, and texture handle resolution. Pick a FaceGen head — parses but expected visual fidelity is limited (no FaceGen runtime).
 **Output**: `/tmp/audit/skyrim/dim_5.md`
 
 ### Dimension 6: ESM Readiness & Forward Blockers
