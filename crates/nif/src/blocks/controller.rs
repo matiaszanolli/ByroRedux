@@ -154,6 +154,42 @@ impl BhkBlendController {
     }
 }
 
+// ── BSNiAlphaPropertyTestRefController ─────────────────────────────────
+//
+// Skyrim SE controller that animates the alpha-test threshold on
+// `NiAlphaProperty` (dissolve effects, fade transitions, ghost-reveal
+// VFX). Wire layout inherits `NiFloatInterpController` → `NiSingleInterpController`
+// with no additional fields (nif.xml line 6279). Pre-#552, 751 SE
+// blocks fell into NiUnknown because no dispatch arm existed.
+//
+// Wrapped in a dedicated newtype so telemetry and downstream importers
+// see the original RTTI name via `block_type_name()` — the bulk of the
+// `NiSingleInterpController`-aliased family currently erases its RTTI
+// (separate tech debt, not in scope here).
+
+/// Skyrim SE animated alpha-test threshold controller. See #552.
+#[derive(Debug)]
+pub struct BsNiAlphaPropertyTestRefController {
+    pub base: NiSingleInterpController,
+}
+
+impl NiObject for BsNiAlphaPropertyTestRefController {
+    fn block_type_name(&self) -> &'static str {
+        "BSNiAlphaPropertyTestRefController"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsNiAlphaPropertyTestRefController {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        Ok(Self {
+            base: NiSingleInterpController::parse(stream)?,
+        })
+    }
+}
+
 // ── BSShaderController family ──────────────────────────────────────────
 //
 // The four (+1) Bethesda shader property controllers each wrap
@@ -791,6 +827,44 @@ mod tests {
             .downcast_ref::<BhkBlendController>()
             .expect("dispatch type must be BhkBlendController, not NiTimeController");
         assert_eq!(ctrl.keys, 0);
+    }
+
+    /// Regression for #552 — `BSNiAlphaPropertyTestRefController` must
+    /// dispatch and parse as `NiSingleInterpController` (nif.xml line
+    /// 6279: inherits NiFloatInterpController, no extra fields).
+    /// Pre-fix 751 Skyrim SE vanilla blocks fell into NiUnknown.
+    /// The newtype wrapper preserves the RTTI name so telemetry and
+    /// the future alpha-animation importer can match on it.
+    #[test]
+    fn bs_ni_alpha_property_test_ref_controller_dispatches() {
+        let header = make_header_fnv();
+        let mut data = Vec::new();
+        write_time_controller_base(&mut data);
+        data.extend_from_slice(&7i32.to_le_bytes()); // interpolator_ref = 7
+        assert_eq!(data.len(), 30);
+
+        let mut stream = NifStream::new(&data, &header);
+        let block = crate::blocks::parse_block(
+            "BSNiAlphaPropertyTestRefController",
+            &mut stream,
+            Some(data.len() as u32),
+        )
+        .expect("dispatch must route BSNiAlphaPropertyTestRefController");
+        assert_eq!(
+            stream.position() as usize,
+            data.len(),
+            "must consume 26 B TimeController base + 4 B interpolator_ref"
+        );
+        assert_eq!(
+            block.block_type_name(),
+            "BSNiAlphaPropertyTestRefController",
+            "newtype wrapper preserves RTTI for downstream dispatch"
+        );
+        let ctrl = block
+            .as_any()
+            .downcast_ref::<BsNiAlphaPropertyTestRefController>()
+            .expect("dispatch type must be BsNiAlphaPropertyTestRefController");
+        assert_eq!(ctrl.base.interpolator_ref.index(), Some(7));
     }
 
     #[test]

@@ -31,8 +31,8 @@ use collision::{
     NiCollisionObjectBase,
 };
 use controller::{
-    BhkBlendController, BsRefractionFirePeriodController, NiControllerManager,
-    NiControllerSequence, NiGeomMorpherController, NiLookAtController,
+    BhkBlendController, BsNiAlphaPropertyTestRefController, BsRefractionFirePeriodController,
+    NiControllerManager, NiControllerSequence, NiGeomMorpherController, NiLookAtController,
     NiMaterialColorController, NiMorphData, NiMultiTargetTransformController, NiPathController,
     NiSequenceStreamHelper, NiSingleInterpController, NiTimeController, NiUVController,
 };
@@ -424,6 +424,15 @@ pub fn parse_block(
         "BSRefractionFirePeriodController" => {
             Ok(Box::new(BsRefractionFirePeriodController::parse(stream)?))
         }
+        // BSNiAlphaPropertyTestRefController: animates NiAlphaProperty's
+        // alpha-test threshold for dissolve / fade / ghost-reveal VFX.
+        // Inherits NiFloatInterpController → NiSingleInterpController
+        // with no additional fields (nif.xml line 6279). Wrapped in a
+        // dedicated newtype so telemetry preserves the RTTI name.
+        // 751 Skyrim SE vanilla blocks pre-#552.
+        "BSNiAlphaPropertyTestRefController" => Ok(Box::new(
+            BsNiAlphaPropertyTestRefController::parse(stream)?,
+        )),
         // BSEffectShader / BSLightingShader property-controller family —
         // each adds a single trailing `controlled_variable: u32` enum to
         // NiSingleInterpController per nif.xml line 6253-6276. Before
