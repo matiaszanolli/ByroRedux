@@ -24,6 +24,56 @@ Commits hold that record.
 
 ---
 
+## Session 15 — Bench infrastructure, multi-game validation, sky completion  (2026-04-23, e6e8091..707b718)
+
+Driven by two findings that surfaced back-to-back: the bench framework
+had been measuring GPU submit time rather than wall-clock frame time, so
+every FPS number since `bee6d48` was meaningless; and a sweep of the
+active roadmap revealed that M32.5, M34, and parts of PERF-1 were already
+complete but never formally closed. The session fixed the bench, profiled
+the real bottleneck, validated Skyrim SE and FO4 cells end-to-end, and
+shipped the remaining M33.1 sky work.
+
+- **Bench methodology (PERF-1 phases 1–2)** — `--bench-frames` was
+  counting `about_to_wait` ticks (winit event-loop callbacks), not rendered
+  frames. On a composited desktop this inflated reported FPS ~5×
+  (`e6e8091`). Fixed by moving `bench_frames_count` into `RedrawRequested`
+  after `draw_frame` succeeds. Added `FrameTimings` struct with five
+  sub-phases: `fence_wait`, `tlas_build`, `ssbo_build`, `cmd_record`,
+  `submit_present` (`b7deb4c`). Prospector Saloon result:
+  `wall_fps=192.8  wall_ms=5.19  fence=4.28ms (76%)`. Finding: **GPU-bound**
+  on RT glass (bottles). CPU work is 0.87ms of 5.19ms total — optimising
+  the CPU path would yield < 15% headroom. Also fixed the untracked
+  per-frame `Vec::collect()` in `indirect_draws` → `indirect_draws_scratch`
+  on `VulkanContext`.
+
+- **Multi-game cell loader (M32.5)** — Validated Skyrim SE and FO4 interior
+  cells against the existing cell loader with zero code changes. Skyrim SE
+  WhiterunBanneredMare: 1258 entities @ 237 FPS. FO4 MedTekResearch01:
+  7434 entities @ 90 FPS. Session 14's infrastructure (XCLL 92-byte
+  parsing, BSTriShape geometry, SCOL expansion, BA2 reader) was complete;
+  M32.5 needed only a test run to confirm.
+
+- **Sky system completion (M33.1)** — Cloud layers 2 and 3 (WTHR ANAM/BNAM)
+  added to the full pipeline: `CompositeParams` UBO gains `cloud_params_2/3`,
+  `composite.frag` samples them with the same horizon-fade + UV-projection
+  pattern as layers 0/1 (tile scales 0.25/0.30). Weather fade transitions
+  via `WeatherTransitionRes`: `weather_system` blends post-TOD-sample colors
+  by `t = elapsed/duration` (8 s default). On completion the resource is
+  parked dormant (`duration = ∞`) rather than removed, avoiding the
+  `&mut World` requirement from a `&World` system.
+
+- **Roadmap housekeeping** — R6a closed (bench re-run with honest numbers);
+  PERF-1 updated (GPU-bound finding, CPU path not the bottleneck); M32.5
+  closed; M33.1 closed; M34 audited and closed (per-frame sun arc, TOD
+  ambient/fog/directional, and interior fill split at `render.rs:782` +
+  `triangle.frag:1321` were complete from prior sessions).
+
+Net: tests unchanged at 1038. LOC +470 total (M33.1 implementation).
+Bench-of-record: Prospector 192.8 FPS / 5.19 ms at `e6e8091` (wall-clock).
+
+---
+
 ## Session 14 — M33 cloud layer 1 + RT glass  (2026-04-22, 1622d61..f7f2819)
 
 M33 sky & atmosphere had one open piece: cloud layer 1 (CNAM) was parsed

@@ -273,6 +273,9 @@ interpolation across 10 color groups × 6 TOD slots, dual cloud layers
 DNAM + CNAM with parallax, horizon fog, procedural fallback; all WTHR
 parser bugs M33-01–M33-06 fixed with regression tests) ·
 M34 exterior lighting (full: per-frame sun arc, TOD ambient/fog/directional, interior fill split) ·
+M32.5 per-game cell loader parity (Skyrim SE WhiterunBanneredMare 237 FPS, FO4 MedTekResearch01 90 FPS — zero code changes) ·
+M33.1 cloud layers 2/3 ANAM/BNAM + weather fade transitions (8 s blend via WeatherTransitionRes) ·
+PERF-1 bench fix (wall-clock frame counting + FrameTimings sub-phases; GPU-bound finding: fence=4.28ms/76%) ·
 M36 BLAS compaction (20–50% memory reduction) ·
 M37.5 TAA (Halton jitter, motion-vector reprojection, YCoCg clamp,
 mesh-id disocclusion).
@@ -329,12 +332,12 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-04-22, verified by `/session-close`.
+Ground-truth as of 2026-04-23, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (non-test)            | ~91 450                       |
-| Rust total lines                        | ~93 430                       |
+| Rust source lines (non-test)            | ~91 900                       |
+| Rust total lines                        | ~93 900                       |
 | Source files (non-test)                 | 197                          |
 | Workspace members                       | 16                           |
 | Tests (last reported by ROADMAP)        | 1038                         |
