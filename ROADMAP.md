@@ -56,7 +56,7 @@ scripting (events + timers) exists; the Papyrus runtime consuming
 bind pose, M29). No world streaming — cells load once and persist
 (M40). Oblivion needs BSA v103 decompression before its cells
 load. Weather transitions (fade between WTHR states) and cloud layers
-2/3 are M33.1.
+2/3 closed in M33.1 (`2bfb622`).
 
 ### Compatibility matrix
 
@@ -91,7 +91,7 @@ typically gates a specific milestone.
 | #      | Milestone                      | Scope                                                                                                                                                                                                                                                                                                                        | Depends on         |
 |--------|--------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------|
 | PERF-1 | CPU frame-time audit           | ~~(1) Fix bench~~ done `e6e8091`. ~~(2) Profile CPU hotpath~~ done `b7deb4c` — **we are GPU-bound**: fence_wait=4.28 ms (76%) of 5.64 ms wall frame. brd=0.87 ms, ssbo=0.03 ms, tlas=0.02 ms. CPU work is not the bottleneck. (3) RT glass ray cost in `triangle.frag` is the real target — refraction+reflection on Prospector's bottle-heavy interior drives the GPU stall. See Tier 5 renderer polish. | —                  |
-| M33.1  | Sky & atmosphere (follow-up)   | Weather transitions (snap → fade) and cloud layers 2/3. Core M33 is complete — sky gradient, sun disc, TOD interpolation, fog, 2-layer clouds (DNAM + CNAM) all working. See Completed Milestones.                                                                                                                          | —                  |
+| ~~M33.1~~ | ~~Sky & atmosphere (follow-up)~~ | **Closed** `2bfb622`. Cloud layers 2/3 (ANAM/BNAM) sampled with parallax scroll. Weather fades over 8 s via `WeatherTransitionRes` + post-TOD-sample color blend. All 4 cloud layers active in exterior cells.                                                                                              | —                  |
 | M34    | Exterior lighting              | Proper directional sun derived from WTHR/climate sun position. Time-of-day ambient color interpolation. Exterior fog from WTHR fog data (distance + color). Interior/exterior light path split in the shader.                                                                                                                | M33                |
 | ~~M32.5~~ | ~~Per-game cell loader parity~~ | **Closed.** Skyrim SE WhiterunBanneredMare 1258 entities @ 237 FPS. FO4 MedTekResearch01 7434 entities @ 90 FPS. No code changes — session 14 infrastructure was complete. Oblivion exterior still blocked on BSA v103 decompression.                                                                     | —                  |
 | ~~R6a~~ | ~~Prospector re-bench~~       | **Closed.** 192.8 FPS / 5.19 ms at `e6e8091` with wall-clock bench. Scene is glass-heavy (RT refraction/reflection); representative tough-case FNV interior.                                                                                                                                                | —                  |
@@ -294,7 +294,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ### Open — Tier 1 / 2 blockers
 
-- [x] No sky, sun, clouds, or atmosphere — **closed**. Sky gradient, sun disc with game-time arc, TOD interpolation across 10 color groups, dual cloud layers (DNAM layer 0 + CNAM layer 1 with parallax), fog, procedural fallback all working. Weather transitions (fade) and layers 2/3 tracked as M33.1.
+- [x] No sky, sun, clouds, or atmosphere — **closed (M33 + M33.1)**. Sky gradient, sun disc with game-time arc, TOD interpolation, 4-layer clouds (DNAM/CNAM/ANAM/BNAM with parallax scroll), fog, weather fade transitions (8 s blend), procedural fallback all working.
 - [x] Bench measured GPU submit time only — **fixed** in `e6e8091`. Wall-clock bench now counts rendered frames; ticks_per_frame confirms ~1 on this compositor. 192.8 FPS / 5.19 ms at Prospector.
 - [ ] No skinned mesh rendering — every NPC / creature is stuck in bind pose (M29)
 - [ ] NPCs + creatures don't spawn as ECS entities even when parsed (M41 / M41.0)
