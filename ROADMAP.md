@@ -54,8 +54,7 @@ scripting (events + timers) exists; the Papyrus runtime consuming
 
 **What doesn't work yet.** No skinned rendering (every NPC is in
 bind pose, M29). No world streaming — cells load once and persist
-(M40). Skyrim and FO4 interior cells aren't wired through `cell_loader`
-yet (M32.5). Oblivion needs BSA v103 decompression before its cells
+(M40). Oblivion needs BSA v103 decompression before its cells
 load. Weather transitions (fade between WTHR states) and cloud layers
 2/3 are M33.1.
 
@@ -66,8 +65,8 @@ load. Weather transitions (fade between WTHR states) and cloud layers
 | Oblivion          | BSA v103      | 100% (8 032)      | Interior (Anvil Heinrich Oaken Halls). Exterior blocked on BSA v103 decompression. |
 | Fallout 3         | BSA v104      | 100% (10 989)     | Interior (Megaton, 929 REFRs). Exterior wired; fresh GPU bench pending (R6a). |
 | Fallout New Vegas | BSA v104      | 100% (14 881)     | Interior (Prospector 1200 entities @ 192.8 FPS / 5.19 ms on RTX 4070 Ti, bench e6e8091). Exterior 3×3. |
-| Skyrim SE         | BSA v105 LZ4  | 100% (18 862)     | Individual meshes. Cell loader wiring = M32.5.           |
-| Fallout 4         | BA2 v1/v7/v8  | 100% (34 995)     | Architecture records parsed. Cell loader wiring = M32.5. |
+| Skyrim SE         | BSA v105 LZ4  | 100% (18 862)     | Interior (WhiterunBanneredMare 1258 entities @ 237 FPS, 2026-04-23). |
+| Fallout 4         | BA2 v1/v7/v8  | 100% (34 995)     | Interior (MedTekResearch01 7434 entities @ 90 FPS, 2026-04-23).      |
 | Fallout 76        | BA2 v1        | 100% (58 469)     | —                                                        |
 | Starfield         | BA2 v2/v3 LZ4 | 100% (31 058)     | —                                                        |
 
@@ -94,7 +93,7 @@ typically gates a specific milestone.
 | PERF-1 | CPU frame-time audit           | ~~(1) Fix bench~~ done `e6e8091`. ~~(2) Profile CPU hotpath~~ done `b7deb4c` — **we are GPU-bound**: fence_wait=4.28 ms (76%) of 5.64 ms wall frame. brd=0.87 ms, ssbo=0.03 ms, tlas=0.02 ms. CPU work is not the bottleneck. (3) RT glass ray cost in `triangle.frag` is the real target — refraction+reflection on Prospector's bottle-heavy interior drives the GPU stall. See Tier 5 renderer polish. | —                  |
 | M33.1  | Sky & atmosphere (follow-up)   | Weather transitions (snap → fade) and cloud layers 2/3. Core M33 is complete — sky gradient, sun disc, TOD interpolation, fog, 2-layer clouds (DNAM + CNAM) all working. See Completed Milestones.                                                                                                                          | —                  |
 | M34    | Exterior lighting              | Proper directional sun derived from WTHR/climate sun position. Time-of-day ambient color interpolation. Exterior fog from WTHR fog data (distance + color). Interior/exterior light path split in the shader.                                                                                                                | M33                |
-| M32.5  | Per-game cell loader parity    | Wire Skyrim + FO4 interior cells through the existing `cell_loader` (Skyrim has XCLL 92-byte + LGTM templates; FO4 has BGSM materials + SCOL/PKIN expansion already parsed). Oblivion needs BSA v103 decompression first.                                                                                                    | M24                |
+| ~~M32.5~~ | ~~Per-game cell loader parity~~ | **Closed.** Skyrim SE WhiterunBanneredMare 1258 entities @ 237 FPS. FO4 MedTekResearch01 7434 entities @ 90 FPS. No code changes — session 14 infrastructure was complete. Oblivion exterior still blocked on BSA v103 decompression.                                                                     | —                  |
 | ~~R6a~~ | ~~Prospector re-bench~~       | **Closed.** 192.8 FPS / 5.19 ms at `e6e8091` with wall-clock bench. Scene is glass-heavy (RT refraction/reflection); representative tough-case FNV interior.                                                                                                                                                | —                  |
 
 ### Tier 2 — Actors visible & animated (blocks "cells are populated")
@@ -300,8 +299,8 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [ ] No skinned mesh rendering — every NPC / creature is stuck in bind pose (M29)
 - [ ] NPCs + creatures don't spawn as ECS entities even when parsed (M41 / M41.0)
 - [ ] No world streaming — entire cell re-imported from scratch on every load (M40)
-- [ ] BSA v103 (Oblivion) decompression not working — blocks Oblivion cell loader parity (M32.5)
-- [ ] Skyrim + FO4 cells not wired through `cell_loader` yet (M32.5)
+- [ ] BSA v103 (Oblivion) decompression not working — blocks Oblivion exterior cell loading
+- [x] Skyrim + FO4 cells not wired through `cell_loader` — **closed M32.5**, both render end-to-end
 
 ### Open — Tier 3 / 4 gaps
 
@@ -349,6 +348,8 @@ Ground-truth as of 2026-04-22, verified by `/session-close`.
 | Claim                                                                     | Command                                                                                                                                                                                        |
 |---------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Prospector Saloon 192.8 FPS / 5.19 ms (commit `e6e8091`, 2026-04-23, wall-clock bench) | `cargo run --release -- --esm "Fallout New Vegas/Data/FalloutNV.esm" --cell GSProspectorSaloonInterior --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa" --textures-bsa "Fallout - Textures2.bsa" --bench-frames 300` |
+| Skyrim SE WhiterunBanneredMare 1258 entities @ 237 FPS (2026-04-23)                   | `cargo run --release -- --esm "Skyrim Special Edition/Data/Skyrim.esm" --cell WhiterunBanneredMare --bsa "Skyrim - Meshes0.bsa" --bsa "Skyrim - Meshes1.bsa" --textures-bsa "Skyrim - Textures0.bsa" --textures-bsa "Skyrim - Textures1.bsa" --textures-bsa "Skyrim - Textures2.bsa" --bench-frames 300` |
+| FO4 MedTekResearch01 7434 entities @ 90 FPS (2026-04-23)                              | `cargo run --release -- --esm "Fallout 4/Data/Fallout4.esm" --cell MedTekResearch01 --bsa "Fallout4 - Meshes.ba2" --textures-bsa "Fallout4 - Textures1.ba2" --textures-bsa "Fallout4 - Textures2.ba2" --bench-frames 300` |
 | Megaton interior parse-side 929 REFRs (2026-04-19)                        | `cargo test -p byroredux-plugin --release --test parse_real_esm parse_real_fo3_megaton_cell_baseline -- --ignored`                                                                             |
 | Per-game full mesh sweep, 100% per game                                   | `cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored`                                                                                                                     |
 | Full ESM record counts (FNV 62 219 / FO3 31 101)                          | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored`                                                                                                                   |
