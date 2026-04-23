@@ -24,6 +24,118 @@ Commits hold that record.
 
 ---
 
+## Session 16 — NIF audit 2026-04-22 closeout: dispatch coverage + Oblivion bisect + ESM REFR/TXST expansion  (2026-04-23, 634929b..e0791b4)
+
+A 14-issue bug-bash against `AUDIT_NIF_2026-04-22`'s dispatch-coverage
+dimension plus two cross-cutting ESM fixes from the concurrent FO4
+audit. The audit premise for most NIF findings was simple: a block
+type name was in vanilla content but absent from `parse_block`'s match
+arms, so every occurrence degraded to `NiUnknown` and silently lost
+its data. The session wire-fixed all of them against nif.xml, with a
+consistent discriminator-on-struct pattern for the wire-aliased cases.
+
+- **Oblivion NiUnknown bisect (#554 → #581, #582)** — The audit framed
+  NIF-09 as "32 distinct types fall into NiUnknown, bisect per type".
+  Byte-level walk of 9 representative NIFs (`trace_block` + raw hex)
+  collapsed that to **two upstream drift sources**, not 32: (1) for
+  ~80 % of the pool, `NiPSysData` on pre-BS202 Bethesda streams omits
+  the `Particle Info` array per nif.xml line 4030 — proven by a
+  482-byte stream gap matching 15×28-byte NiParticleInfo + the
+  inherited Rotation Speeds array in `landscapewaterfall02.nif`;
+  (2) residual ~60-block animation-controller drift in non-particle
+  NIFs (`obliviongate_forming.nif`, `dustcloudhorizontal01.nif`).
+  Filed as child issues #581 (fix) and #582 (residual triage). Added
+  three reusable bisect tools: `locate_unknowns`, `recovery_trace`,
+  `dump_nif` (`a426ead`).
+
+- **NIF wire-type dispatch coverage** — Each variant below preserves
+  its RTTI via either a dedicated struct or a kind-enum discriminator
+  on the shared struct, so `block_type_name()` reports the original
+  subclass for downstream importers:
+  - **#560 `BsTriShapeKind`** — `{ Plain, LOD { lod0, lod1, lod2 },
+    MeshLOD, SubIndex, Dynamic }` on `BsTriShape`. `parse_lod` now
+    preserves the three u32 LOD cutoffs (previously discarded);
+    dispatcher splits `BSMeshLODTriShape` vs `BSLODTriShape` and
+    uses `with_kind()` to override for the types that share a parser.
+    Unblocks #404 segmentation parsing.
+  - **#547 `NiAdditionalGeometryData` + `BSPackedAdditionalGeometryData`**
+    — per-vertex tangent/bitangent/blend-weight channels. FNV 2 308 →
+    0, FO3 1 731 → 0; total NiUnknown reduction: FNV −52 %, FO3 −57 %.
+  - **#546 `bhkRigidBody` on Skyrim LE/SE** — three compounding
+    root causes on `bsver 83..130`: missing 20-byte `bhkRigidBodyCInfo2010`
+    prefix; `deactivator_type` hardcoded to 0 (contradicting nif.xml
+    line 2844); 12-byte `Unused 04` trailer left unread. Skyrim SE
+    Meshes0: bhkRigidBody 9 772 → 0, bhkRigidBodyT 3 094 → 0 (total
+    SE NiUnknown −58 %).
+  - **#548 `NiBoolTimelineInterpolator`** — `BoolInterpolatorKind {
+    Plain, Timeline }` on `NiBoolInterpolator`. Audit premise that
+    a `TimeBool100` field existed was contradicted by nif.xml line
+    3287 (no extra fields). SE 6 796 → 0, FNV 1 118 → 0, FO3 536 → 0.
+  - **#553 `NiFloatExtraData` / `NiFloatsExtraData` /
+    `NiFloatExtraDataController`** — float metadata tags (FOV
+    multipliers, wetness levels) + their animator. SE 1 312+180 → 0;
+    total SE NiUnknown 1 626 → 134 (−92 %).
+  - **#433 `Ni*LightController` family** — dedicated struct for
+    `NiLightColorController` (preserves `target_color: u16` that the
+    issue's matched-arm approach would have elided) + shared
+    `NiLightFloatController { type_name, base }` for Dimmer / Intensity
+    / Radius.
+  - **#551 `bhkBlendController`** — inherits `NiTimeController` + u32
+    `keys` (NOT `NiSingleInterpController` as the issue suggested).
+    FNV 845 → 0, FO3 582 → 0.
+  - **#552 `BSNiAlphaPropertyTestRefController`** — newtype around
+    `NiSingleInterpController` (avoids the existing matched-arm
+    RTTI-erasure pattern). SE 751 → 0.
+  - **#550 `SkyShaderProperty`** — dedicated parser (was aliased to
+    `BSShaderPPLighting`, over-reading 20+ bytes). nif.xml line 6335
+    had two fields (File Name + Sky Object Type); the audit's "4 scroll
+    vectors" claim was inaccurate. Recurring stderr warning bucket
+    cleared on FNV + FO3 corpora.
+
+- **ESM record expansion (FO4 audit overflow)** — Two long-standing
+  coverage gaps in REFR/TXST:
+  - **#406 `TXST.MNAM`** — BGSM material path. 139 of 379 vanilla
+    `Fallout4.esm` TXST records (37 %) are MNAM-only with no TX00
+    and were silently dropped by the `if set != default()` guard.
+    `TextureSet.material_path: Option<String>` field added; BGSM
+    parser resolution tracked as a separate issue.
+  - **#412 `REFR` sub-records** — added `teleport: Option<TeleportDest>`
+    (XTEL), `primitive: Option<PrimitiveBounds>` (XPRM),
+    `linked_refs: Vec<LinkedRef>` (XLKR), `rooms: Vec<u32>` (XRMR),
+    `portals: Vec<PortalLink>` (XPOD), `radius_override: Option<f32>`
+    (XRDS) to `PlacedRef`. Live FO4: 538 doors + 14 279 triggers +
+    9 257 linked refs + 36 559 light-radius overrides were previously
+    dropped on the floor. Companion to the closed #349 (XESP).
+    XRMR count clamped against payload bytes so corrupt counts can't
+    over-read.
+
+- **Renderer sync hardening (#572)** — Composite render pass `dep_in`
+  `src_stage_mask` extended from `COLOR_ATTACHMENT_OUTPUT` to also
+  cover `COMPUTE_SHADER` (SVGF / TAA / caustic / SSAO producers).
+  Defense-in-depth: every upstream compute pass already emits its own
+  explicit pipeline barrier, so validation never fired — closes the
+  gap for any future compute pass that would rely on the render-pass
+  dependency instead.
+
+- **Docs staleness (#567)** — Single-mesh sweetroll FPS figure of
+  1615 was pre-M31 (perf bundle #279 landed ~2× speedup). Updated
+  ROADMAP:30 and `.claude/commands/audit-skyrim.md` to date-stamped
+  `~3000-5000 FPS (2026-04-22, RTX 4070 Ti @ 1280×720)` per the
+  project's existing convention. Dim-5 checklist uses `≥3000 FPS`
+  as the defensible floor so future audits don't need to re-stamp
+  on every driver drift.
+
+- **Prior-session #558 pickup** — `3a8acde` landed four NIF-13 tail
+  block parsers (`BSRefractionFirePeriodController` + 3 others) at
+  the session boundary; folded into the same audit-bundle theme.
+
+Net: tests +33 (1038 → **1 071**), LOC +2 385 non-test (94 285
+total). Thirteen audit issues closed, two child issues opened
+(#581, #582). Bench-of-record unchanged (192.8 FPS / 5.19 ms at
+`e6e8091`, 23 commits stale — under the 30-commit threshold).
+
+---
+
 ## Session 15 — Bench infrastructure, multi-game validation, sky completion  (2026-04-23, e6e8091..707b718)
 
 Driven by two findings that surfaced back-to-back: the bench framework

@@ -206,7 +206,7 @@ M31.5, M32 Phase 1+2, M34 Phase 1, M36, M37.5) + N23 + N26 closeout + #178 skinn
 RT multi-light with streaming RIS (8 reservoirs/fragment), BLAS compaction + LRU eviction,
 instanced draw batching, landscape terrain with texture splatting, exterior directional sun,
 TAA (Halton jitter + YCoCg variance clamp), Papyrus language parser, FO4 SCOL/MOVS/PKIN/TXST.
-623 tests across 13 engine crates (15 workspace members). ~64K lines of Rust, 185 source files.
+1000+ tests across 14 engine crates (16 workspace members). ~94K lines of Rust, 200 source files. See [ROADMAP.md](ROADMAP.md#project-stats) for ground truth.
 Usage:
   `cargo run -- path/to/mesh.nif` — render a loose NIF file
   `cargo run -- mesh.nif --kf anim.kf` — play animation on a mesh

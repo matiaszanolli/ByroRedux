@@ -210,7 +210,7 @@ Index:
 ### Growth discipline
 
 The project's single biggest risk is **scope growth without
-compression** (64K → ~91K LOC across the last two sessions). Tier
+compression** (64K → ~94K LOC across the last three sessions). Tier
 ordering gives top-level backpressure; apply it inside crates too. If
 a single file crosses 3 500 lines, a struct crosses 50 fields, or a
 context struct crosses 60 fields, treat it as a signal rather than a
@@ -337,12 +337,12 @@ Ground-truth as of 2026-04-23, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (non-test)            | ~91 900                       |
-| Rust total lines                        | ~93 900                       |
-| Source files (non-test)                 | 197                          |
+| Rust source lines (non-test)            | ~94 300                       |
+| Rust total lines                        | ~96 300                       |
+| Source files (non-test)                 | 200                          |
 | Workspace members                       | 16                           |
-| Tests (last reported by ROADMAP)        | 1038                         |
-| Open issue directories                  | 530 (`.claude/issues/`)       |
+| Tests (last reported by ROADMAP)        | 1071                         |
+| Open issue directories                  | 539 (`.claude/issues/`)       |
 | NIFs in per-game integration sweeps     | 177 286                       |
 | Per-game NIF parse success rate         | 100% (7 games)                |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
@@ -354,6 +354,7 @@ Ground-truth as of 2026-04-23, verified by `/session-close`.
 | Prospector Saloon 192.8 FPS / 5.19 ms (commit `e6e8091`, 2026-04-23, wall-clock bench) | `cargo run --release -- --esm "Fallout New Vegas/Data/FalloutNV.esm" --cell GSProspectorSaloonInterior --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa" --textures-bsa "Fallout - Textures2.bsa" --bench-frames 300` |
 | Skyrim SE WhiterunBanneredMare 1258 entities @ 237 FPS (2026-04-23)                   | `cargo run --release -- --esm "Skyrim Special Edition/Data/Skyrim.esm" --cell WhiterunBanneredMare --bsa "Skyrim - Meshes0.bsa" --bsa "Skyrim - Meshes1.bsa" --textures-bsa "Skyrim - Textures0.bsa" --textures-bsa "Skyrim - Textures1.bsa" --textures-bsa "Skyrim - Textures2.bsa" --bench-frames 300` |
 | FO4 MedTekResearch01 7434 entities @ 90 FPS (2026-04-23)                              | `cargo run --release -- --esm "Fallout 4/Data/Fallout4.esm" --cell MedTekResearch01 --bsa "Fallout4 - Meshes.ba2" --textures-bsa "Fallout4 - Textures1.ba2" --textures-bsa "Fallout4 - Textures2.ba2" --bench-frames 300` |
+| Skyrim sweetroll single-mesh ~3000-5000 FPS (2026-04-22, RTX 4070 Ti @ 1280×720)        | `cargo run --release -- --bsa "Skyrim Special Edition/Data/Skyrim - Meshes0.bsa" --mesh meshes\\clutter\\ingredients\\sweetroll01.nif --textures-bsa "Skyrim Special Edition/Data/Skyrim - Textures3.bsa"` |
 | Megaton interior parse-side 929 REFRs (2026-04-19)                        | `cargo test -p byroredux-plugin --release --test parse_real_esm parse_real_fo3_megaton_cell_baseline -- --ignored`                                                                             |
 | Per-game full mesh sweep, 100% per game                                   | `cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored`                                                                                                                     |
 | Full ESM record counts (FNV 62 219 / FO3 31 101)                          | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored`                                                                                                                   |
