@@ -267,6 +267,27 @@ impl Default for SkyParams {
     }
 }
 
+/// Per-frame CPU timing breakdown returned by `draw_frame` when profiling.
+/// All fields are nanoseconds; divide by 1_000_000.0 for milliseconds.
+/// Only populated when `draw_frame` is called with `Some(timings)`.
+#[derive(Default, Clone, Copy)]
+pub struct FrameTimings {
+    /// `wait_for_fences` — CPU stall waiting for previous GPU frame(s).
+    /// If large, the bottleneck is GPU-side; CPU optimisation yields little.
+    pub fence_wait_ns: u64,
+    /// `build_instance_map` + `build_tlas` CPU work (instance list gather,
+    /// AS build command record, TLAS barrier). GPU AS build runs async.
+    pub tlas_build_ns: u64,
+    /// Instance SSBO fill loop (773 × GpuInstance) + `upload_instances`
+    /// memcpy + `upload_indirect_draws`. Dominant CPU-side work per frame.
+    pub ssbo_build_ns: u64,
+    /// `begin_render_pass` through `end_command_buffer` — Vulkan command
+    /// recording for geometry, UI, SVGF, TAA, SSAO, composite.
+    pub cmd_record_ns: u64,
+    /// `queue_submit` + `queue_present` — driver overhead + vsync stall.
+    pub submit_present_ns: u64,
+}
+
 /// Handle for requesting and retrieving screenshots from outside the render loop.
 pub struct ScreenshotHandle {
     /// Set to `true` to request a screenshot on the next frame.
@@ -311,6 +332,10 @@ pub struct VulkanContext {
     /// Per-frame scratch buffer for draw batch metadata. Same lifecycle
     /// as `gpu_instances_scratch`. See issue #243.
     batches_scratch: Vec<draw::DrawBatch>,
+    /// Per-frame scratch buffer for indirect draw commands. Replaces the
+    /// per-frame `Vec::collect()` allocation that was untracked by the
+    /// scratch-buffer pattern.
+    indirect_draws_scratch: Vec<ash::vk::DrawIndexedIndirectCommand>,
 
     // ── Screenshot capture ──────────────────────────────────────────
     screenshot_requested: Arc<AtomicBool>,
@@ -1025,6 +1050,7 @@ impl VulkanContext {
             ],
             gpu_instances_scratch: Vec::new(),
             batches_scratch: Vec::new(),
+            indirect_draws_scratch: Vec::new(),
             screenshot_requested: Arc::new(AtomicBool::new(false)),
             screenshot_result: Arc::new(Mutex::new(None)),
             screenshot_staging: None,

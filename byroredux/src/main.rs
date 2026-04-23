@@ -179,8 +179,14 @@ struct App {
     /// Number of about_to_wait ticks recorded during the bench window
     /// (distinct from bench_frames_count which counts render frames).
     bench_systems_ticks: u64,
-    /// Accumulated nanoseconds spent in build_render_data + draw_frame.
+    /// Accumulated nanoseconds in build_render_data() alone.
+    bench_build_render_ns: u64,
+    /// Accumulated nanoseconds in UI tick + render + texture upload.
+    bench_ui_ns: u64,
+    /// Accumulated nanoseconds spent in draw_frame() alone.
     bench_render_ns: u64,
+    /// Per-phase draw_frame breakdown accumulated over the bench window.
+    bench_frame_timings: byroredux_renderer::FrameTimings,
     /// When set, request a screenshot on the bench-exit frame and
     /// write the PNG to this path before quitting. Requires
     /// `bench_frames_target` to be set (otherwise there is no
@@ -295,7 +301,10 @@ impl App {
             bench_start: None,
             bench_systems_ns: 0,
             bench_systems_ticks: 0,
+            bench_build_render_ns: 0,
+            bench_ui_ns: 0,
             bench_render_ns: 0,
+            bench_frame_timings: byroredux_renderer::FrameTimings::default(),
             screenshot_path: None,
             camera_pos_override: None,
             camera_forward_override: None,
@@ -404,7 +413,9 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(ref mut ctx) = self.renderer {
-                    let render_t0 = Instant::now();
+                    let is_benching = self.bench_frames_target.is_some();
+
+                    let brd_t0 = Instant::now();
                     let (view_proj, camera_pos, ambient, fog_color, fog_near, fog_far, sky_params) =
                         build_render_data(
                             &self.world,
@@ -415,6 +426,9 @@ impl ApplicationHandler for App {
                             &mut self.palette_scratch,
                             ctx.particle_quad_handle,
                         );
+                    if is_benching {
+                        self.bench_build_render_ns += brd_t0.elapsed().as_nanos() as u64;
+                    }
 
                     // Rebuild the global geometry SSBO if new meshes were
                     // loaded since the last build (cell transitions, late
@@ -437,6 +451,7 @@ impl ApplicationHandler for App {
                     });
 
                     // Tick and render the UI overlay (Ruffle SWF player).
+                    let ui_t0 = Instant::now();
                     let mut ui_tex = None;
                     if let Some(ref mut ui) = self.ui_manager {
                         let dt = self
@@ -470,6 +485,9 @@ impl ApplicationHandler for App {
                             ui_tex = self.ui_texture_handle;
                         }
                     }
+                    if is_benching {
+                        self.bench_ui_ns += ui_t0.elapsed().as_nanos() as u64;
+                    }
 
                     // Clear color — black for interior cells (any gap
                     // in wall geometry reveals this pixel), cornflower
@@ -486,6 +504,12 @@ impl ApplicationHandler for App {
                     } else {
                         byroredux_core::types::Color::CORNFLOWER_BLUE.as_array()
                     };
+                    let render_t0 = Instant::now();
+                    let mut frame_timings = if is_benching {
+                        Some(byroredux_renderer::FrameTimings::default())
+                    } else {
+                        None
+                    };
                     match ctx.draw_frame(
                         clear_color,
                         &view_proj,
@@ -499,15 +523,19 @@ impl ApplicationHandler for App {
                         fog_far,
                         ui_tex,
                         &sky_params,
+                        frame_timings.as_mut(),
                     ) {
                         Ok(needs_recreate) => {
-                            if self.bench_frames_target.is_some() {
+                            if is_benching {
                                 self.bench_render_ns += render_t0.elapsed().as_nanos() as u64;
-                                // Count rendered frames here (not in about_to_wait)
-                                // so we measure actual presented frames, not event-loop
-                                // ticks. On composited desktops about_to_wait fires
-                                // multiple times per visual frame; only RedrawRequested
-                                // corresponds to a real GPU submit.
+                                if let Some(ft) = frame_timings {
+                                    let b = &mut self.bench_frame_timings;
+                                    b.fence_wait_ns += ft.fence_wait_ns;
+                                    b.tlas_build_ns += ft.tlas_build_ns;
+                                    b.ssbo_build_ns += ft.ssbo_build_ns;
+                                    b.cmd_record_ns += ft.cmd_record_ns;
+                                    b.submit_present_ns += ft.submit_present_ns;
+                                }
                                 if self.bench_start.is_none() {
                                     self.bench_start = Some(Instant::now());
                                 }
@@ -653,29 +681,35 @@ impl ApplicationHandler for App {
                         .unwrap_or(1.0);
                     let wall_fps = self.bench_frames_count as f64 / elapsed_secs;
                     let wall_ms = elapsed_secs * 1000.0 / self.bench_frames_count as f64;
-                    let ticks_per_frame = self.bench_systems_ticks as f64
-                        / self.bench_frames_count as f64;
-                    let systems_ms_per_tick = if self.bench_systems_ticks > 0 {
-                        self.bench_systems_ns as f64 / self.bench_systems_ticks as f64 / 1_000_000.0
+                    let n = self.bench_frames_count as f64;
+                    let ticks_per_frame = self.bench_systems_ticks as f64 / n;
+                    let systems_ms = if self.bench_systems_ticks > 0 {
+                        self.bench_systems_ns as f64 / self.bench_systems_ticks as f64 / 1e6
                     } else {
                         0.0
                     };
-                    let render_ms =
-                        self.bench_render_ns as f64 / self.bench_frames_count as f64 / 1_000_000.0;
-                    let unaccounted_ms =
-                        (wall_ms - systems_ms_per_tick * ticks_per_frame - render_ms).max(0.0);
+                    let brd_ms = self.bench_build_render_ns as f64 / n / 1e6;
+                    let ui_ms  = self.bench_ui_ns as f64 / n / 1e6;
+                    let draw_ms = self.bench_render_ns as f64 / n / 1e6;
+                    let ft = &self.bench_frame_timings;
+                    let fence_ms   = ft.fence_wait_ns    as f64 / n / 1e6;
+                    let tlas_ms    = ft.tlas_build_ns    as f64 / n / 1e6;
+                    let ssbo_ms    = ft.ssbo_build_ns    as f64 / n / 1e6;
+                    let cmd_ms     = ft.cmd_record_ns    as f64 / n / 1e6;
+                    let submit_ms  = ft.submit_present_ns as f64 / n / 1e6;
+                    let accounted = systems_ms * ticks_per_frame + brd_ms + ui_ms + draw_ms;
+                    let unaccounted_ms = (wall_ms - accounted).max(0.0);
                     println!(
                         "bench: frames={} wall_fps={:.1} wall_ms={:.2} \
-                         render_ms={:.2} systems_ms={:.2} ticks_per_frame={:.1} \
-                         unaccounted_ms={:.2} \
+                         brd_ms={:.2} ui_ms={:.2} draw_ms={:.2} \
+                         [fence={:.2} tlas={:.2} ssbo={:.2} cmd={:.2} submit={:.2}] \
+                         systems_ms={:.2} ticks_per_frame={:.1} unaccounted_ms={:.2} \
                          entities={} meshes={} textures={} draws={}",
                         self.bench_frames_count,
-                        wall_fps,
-                        wall_ms,
-                        render_ms,
-                        systems_ms_per_tick,
-                        ticks_per_frame,
-                        unaccounted_ms,
+                        wall_fps, wall_ms,
+                        brd_ms, ui_ms, draw_ms,
+                        fence_ms, tlas_ms, ssbo_ms, cmd_ms, submit_ms,
+                        systems_ms, ticks_per_frame, unaccounted_ms,
                         stats.entity_count,
                         stats.mesh_count,
                         stats.texture_count,

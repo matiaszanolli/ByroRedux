@@ -7,9 +7,10 @@ use super::super::scene_buffer::{
     INSTANCE_TERRAIN_TILE_SHIFT,
 };
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
-use super::{DrawCommand, SkyParams, VulkanContext};
+use super::{DrawCommand, FrameTimings, SkyParams, VulkanContext};
 use anyhow::{Context, Result};
 use ash::vk;
+use std::time::Instant;
 
 /// Halton low-discrepancy sequence value at `index` (1-indexed) for `base`.
 /// Returns a value in [0, 1).
@@ -77,8 +78,11 @@ impl VulkanContext {
         fog_far: f32,
         ui_texture_handle: Option<u32>,
         sky_params: &SkyParams,
+        timings: Option<&mut FrameTimings>,
     ) -> Result<bool> {
         let frame = self.current_frame;
+        // Use a local to avoid borrow complexity; copy out at end.
+        let mut t = FrameTimings::default();
 
         // Wait for this frame-in-flight slot AND the previous slot to be
         // available. SVGF's temporal pass reads the previous slot's G-buffer
@@ -88,6 +92,7 @@ impl VulkanContext {
         //
         // Cost: zero in practice — the GPU is rarely more than 1 frame
         // behind the CPU, so the other fence is almost always signaled.
+        let fence_t0 = Instant::now();
         unsafe {
             let prev = (frame + 1) % super::super::sync::MAX_FRAMES_IN_FLIGHT;
             self.device
@@ -101,6 +106,7 @@ impl VulkanContext {
                 )
                 .context("wait_for_fences")?;
         }
+        t.fence_wait_ns = fence_t0.elapsed().as_nanos() as u64;
 
         // If a screenshot was captured last frame, the GPU is done — read it back.
         self.screenshot_finish_readback();
@@ -241,6 +247,7 @@ impl VulkanContext {
         // caustics / primary-hit fallback in `triangle.frag`). See
         // `crates/renderer/src/vulkan/acceleration.rs::build_tlas` and
         // the SSBO builder below — both must honour this map.
+        let tlas_t0 = Instant::now();
         let instance_map: Vec<Option<u32>> =
             super::super::acceleration::build_instance_map(draw_commands.len(), |i| {
                 self.mesh_registry
@@ -301,6 +308,8 @@ impl VulkanContext {
                 }
             }
         }
+
+        t.tlas_build_ns = tlas_t0.elapsed().as_nanos() as u64;
 
         // Upload scene data (lights + camera) BEFORE the render pass begins.
         self.scene_buffers
@@ -471,6 +480,7 @@ impl VulkanContext {
         // capacity across frames. Error-path early returns lose the
         // amortization for one frame only — acceptable since the draw
         // has already failed. See issue #243.
+        let ssbo_t0 = Instant::now();
         let mut gpu_instances: Vec<GpuInstance> = std::mem::take(&mut self.gpu_instances_scratch);
         gpu_instances.clear();
         gpu_instances.reserve(draw_commands.len() + 1); // +1 for optional UI quad
@@ -728,20 +738,20 @@ impl VulkanContext {
         // — the upload is ~N × 20 B for small N, and this keeps the
         // indirect path always ready when it is enabled.
         if !batches.is_empty() && self.device_caps.multi_draw_indirect_supported {
-            let indirect_draws: Vec<vk::DrawIndexedIndirectCommand> = batches
-                .iter()
-                .map(|b| vk::DrawIndexedIndirectCommand {
-                    index_count: b.index_count,
-                    instance_count: b.instance_count,
-                    first_index: b.global_index_offset,
-                    vertex_offset: b.global_vertex_offset,
-                    first_instance: b.first_instance,
-                })
-                .collect();
+            let indirect_scratch = &mut self.indirect_draws_scratch;
+            indirect_scratch.clear();
+            indirect_scratch.extend(batches.iter().map(|b| vk::DrawIndexedIndirectCommand {
+                index_count: b.index_count,
+                instance_count: b.instance_count,
+                first_index: b.global_index_offset,
+                vertex_offset: b.global_vertex_offset,
+                first_instance: b.first_instance,
+            }));
             self.scene_buffers
-                .upload_indirect_draws(&self.device, frame, &indirect_draws)
+                .upload_indirect_draws(&self.device, frame, indirect_scratch)
                 .unwrap_or_else(|e| log::warn!("Failed to upload indirect draws: {e}"));
         }
+        t.ssbo_build_ns = ssbo_t0.elapsed().as_nanos() as u64;
 
         // Pre-populate the blend pipeline cache for any new (src, dst,
         // two_sided) combos this frame. Resolved up-front because the
@@ -802,6 +812,7 @@ impl VulkanContext {
             );
         }
 
+        let cmd_t0 = Instant::now();
         unsafe {
             self.device
                 .cmd_begin_render_pass(cmd, &render_pass_begin, vk::SubpassContents::INLINE);
@@ -1387,8 +1398,10 @@ impl VulkanContext {
                 .end_command_buffer(cmd)
                 .context("end_command_buffer")?;
         }
+        t.cmd_record_ns = cmd_t0.elapsed().as_nanos() as u64;
 
         // Submit.
+        let submit_t0 = Instant::now();
         let wait_semaphores = [self.frame_sync.image_available[frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let signal_semaphores = [self.frame_sync.render_finished[img]];
@@ -1433,6 +1446,11 @@ impl VulkanContext {
                 Err(e) => anyhow::bail!("queue_present: {:?}", e),
             }
         };
+
+        t.submit_present_ns = submit_t0.elapsed().as_nanos() as u64;
+        if let Some(out) = timings {
+            *out = t;
+        }
 
         self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
         self.frame_counter = self.frame_counter.wrapping_add(1);
