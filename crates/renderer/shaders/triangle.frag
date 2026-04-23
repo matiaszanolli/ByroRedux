@@ -950,46 +950,66 @@ void main() {
         const float GLASS_IOR = 1.5;
         const float ETA_AIR_TO_GLASS = 1.0 / GLASS_IOR;
 
-        // View-aligned normal. The Phase 1 two-sided alpha-blend split
-        // emits back-face then front-face passes; on the back-face pass
-        // N points away from the camera (dot(N,V) < 0). We need the
-        // camera-facing normal for refract() + the reflection hemisphere
-        // to make physical sense. Flip when back-facing.
+        // Two view-aligned normals — one bump-mapped, one smooth:
+        //
+        //   N_view:      bump-mapped micro-surface normal. Used for reflection
+        //                and Fresnel — specular highlights correctly respond to
+        //                micro-surface detail authored in the normal map.
+        //
+        //   N_geom_view: smooth interpolated vertex normal. Used for refraction.
+        //                Feeding the bump map into Snell's law at IOR 1.5
+        //                amplifies every micro-surface deviation into a visible
+        //                UV offset in the refracted image — a waffle-texture
+        //                bump map produces a crosshatch refraction that looks
+        //                like wire mesh rather than glass. The macro surface
+        //                shape should drive the transmitted ray; micro-detail
+        //                contributes via the roughness spread below.
         vec3 N_view = dot(N, V) < 0.0 ? -N : N;
+        vec3 _Ngeom = normalize(fragNormal);
+        vec3 N_geom_view = dot(_Ngeom, V) < 0.0 ? -_Ngeom : _Ngeom;
         float NdotV_v = max(dot(N_view, V), 0.05);
         float fresnelScalar = fresnelSchlick(NdotV_v, vec3(0.04)).r;
 
-        // Reflection ray — picks up ceiling fixtures, sky through windows,
-        // walls on either side of the pane.
+        // Reflection ray — micro-surface normal is correct here.
         vec3 R = reflect(-V, N_view);
         vec4 reflRay = traceReflection(fragWorldPos + N_view * 0.05, R, 3000.0);
         vec3 reflColor = reflRay.rgb;
 
-        // Refraction ray — the transmitted half. Snell's law:
-        //   sin(θ_t) = (n1/n2) · sin(θ_i)
-        // refract() returns vec3(0.0) on total internal reflection,
-        // which happens when (n1/n2) · sin(θ_i) > 1. Going air→glass
-        // (eta < 1) TIR never triggers, but we handle it defensively
-        // for back-face content where N_view might flip the effective
-        // eta. On TIR we reuse the reflection as the transmitted ray
-        // — physically it's "all light bounces back on the inside".
-        vec3 refractDir = refract(-V, N_view, ETA_AIR_TO_GLASS);
+        // Refraction ray using the smooth geometric normal.
+        // IGN-seeded roughness spread replaces per-texel bump deviation:
+        // 0.05 roughness → barely visible diffusion (clear glass),
+        // 0.3  roughness → gentle scatter (lightly etched / bottle glass).
+        // TAA temporal accumulation smooths the per-frame noise.
+        vec3 refractDir = refract(-V, N_geom_view, ETA_AIR_TO_GLASS);
+        {
+            float frameCount = cameraPos.w;
+            float rn1 = interleavedGradientNoise(gl_FragCoord.xy,
+                                                 frameCount + 37.0);
+            float rn2 = interleavedGradientNoise(
+                gl_FragCoord.xy + vec2(79.3, 193.7), frameCount + 53.0);
+            float spread = roughness * 0.15;
+            if (spread > 0.001 && dot(refractDir, refractDir) > 0.0001) {
+                vec3 rRight = normalize(cross(refractDir, N_geom_view));
+                vec3 rUp    = cross(refractDir, rRight);
+                refractDir  = normalize(refractDir
+                    + (rRight * (rn1 * 2.0 - 1.0)
+                    +  rUp    * (rn2 * 2.0 - 1.0)) * spread);
+            }
+        }
         bool totalInternalReflection = dot(refractDir, refractDir) < 0.0001;
 
         vec3 refrColor;
         if (totalInternalReflection) {
             refrColor = reflColor;
         } else {
-            // Origin offset: step INTO the glass along -N_view so the
-            // refraction ray starts on the back side of the surface and
-            // the ray doesn't self-intersect the pane we're shading.
-            // 0.1 units is ~1mm in Bethesda scale — safely past the
-            // thinnest wall geometry + inside any drinking glass/bottle.
+            // Step INTO the glass along the smooth geometric normal so the
+            // origin doesn't chase micro-surface bumps and self-intersect
+            // at bump-map features on thin geometry.
             rayQueryEXT refrRQ;
             rayQueryInitializeEXT(
                 refrRQ, topLevelAS,
                 gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFF,
-                fragWorldPos - N_view * 0.1, 0.05, refractDir, 2000.0
+                fragWorldPos - N_geom_view * 0.1, 0.05, refractDir, 2000.0
             );
             rayQueryProceedEXT(refrRQ);
 
