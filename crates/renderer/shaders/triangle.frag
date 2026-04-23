@@ -850,6 +850,22 @@ void main() {
         isWindow = false;
     }
 
+    // Glass bulk-colour: replace the per-texel surface detail with a
+    // heavily-blurred sample so only the tint survives. The ribbing/waffle
+    // pattern on Bethesda glass cups reads as crosshatch when multiple
+    // semi-transparent layers are composited. mip 4 erases mid-frequency
+    // ribbing (~8×8 px footprint on a 256² texture) while keeping hue.
+    // texColor.a is preserved — it drives decalWeight and finalAlpha.
+    // albedo is re-derived from the blurred colour so the Fresnel-path
+    // PBR sees a clean base. Dark-map modulation is intentionally skipped
+    // for glass (lightmaps are never baked onto transparent objects).
+    if (isGlass) {
+        vec3 glassBase = textureLod(
+            textures[nonuniformEXT(fragTexIndex)], sampleUV, 4.0).rgb;
+        texColor = vec4(glassBase, texColor.a);
+        albedo   = glassBase * fragColor;
+    }
+
     if (isWindow && rtEnabled) {
         // Fire the portal-escape ray along the surface OUTWARD normal,
         // not along `-V` (camera look direction). Pre-#421 the ray
