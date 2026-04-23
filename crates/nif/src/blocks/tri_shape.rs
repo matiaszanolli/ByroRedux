@@ -1049,6 +1049,200 @@ impl NiTriStripsData {
     }
 }
 
+// ── NiAdditionalGeometryData ──────────────────────────────────────────
+//
+// Per-vertex auxiliary channels (tangents / bitangents / blend weights /
+// optional skin bone IDs) referenced by NiGeometryData.additional_data_ref.
+// Replaced by BSTriShape's embedded vertex-attribute blob at 20.2.0.7+.
+// Oblivion predates it; FO3 + FNV ship 4,039 vanilla blocks. See #547.
+//
+// Wire layout (nif.xml lines 6996-7011):
+//
+//   NiAdditionalGeometryData (arg=0)                  BSPackedAdditionalGeometryData (arg=1)
+//     num_vertices: u16                                 (identical)
+//     num_block_infos: u32                              ...
+//     block_infos[num_block_infos]: NiAGDDataStream     ...
+//     num_blocks: u32                                   ...
+//     blocks[num_blocks]: NiAGDDataBlocks(arg)          blocks[num_blocks]: NiAGDDataBlocks(arg=1)
+//
+//   NiAGDDataStream (25 bytes):
+//     type, unit_size, total_size, stride, block_index,
+//     block_offset: u32 × 6
+//     flags: u8
+//
+//   NiAGDDataBlocks:
+//     has_data: bool
+//     if has_data: NiAGDDataBlock(arg)
+//
+//   NiAGDDataBlock:
+//     block_size: u32
+//     num_blocks: u32
+//     block_offsets[num_blocks]: u32
+//     num_data: u32
+//     data_sizes[num_data]: u32
+//     data[num_data][block_size]: u8           (flat num_data * block_size byte blob)
+//     if arg == 1: shader_index: u32            (BSPackedAdditionalGeometryData only)
+//     if arg == 1: total_size: u32              ...
+
+/// Per-channel descriptor: which vertex attribute this stream carries,
+/// its byte layout within the packed vertex, and mutability flags.
+/// nif.xml `NiAGDDataStream` (line 6969).
+#[derive(Debug, Clone)]
+pub struct NiAgdDataStream {
+    pub ty: u32,
+    pub unit_size: u32,
+    pub total_size: u32,
+    pub stride: u32,
+    pub block_index: u32,
+    pub block_offset: u32,
+    pub flags: u8,
+}
+
+impl NiAgdDataStream {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        Ok(Self {
+            ty: stream.read_u32_le()?,
+            unit_size: stream.read_u32_le()?,
+            total_size: stream.read_u32_le()?,
+            stride: stream.read_u32_le()?,
+            block_index: stream.read_u32_le()?,
+            block_offset: stream.read_u32_le()?,
+            flags: stream.read_u8()?,
+        })
+    }
+}
+
+/// One variable-length data block. The `data` field is a flat
+/// `num_data × block_size` byte blob — the 2D `[Num Data][Block Size]`
+/// layout from nif.xml is preserved row-major so consumers can slice
+/// it by `block_size * row_index`.
+#[derive(Debug)]
+pub struct NiAgdDataBlock {
+    pub block_size: u32,
+    pub block_offsets: Vec<u32>,
+    pub data_sizes: Vec<u32>,
+    pub data: Vec<u8>,
+    /// Only populated for `BSPackedAdditionalGeometryData` (nif.xml arg==1).
+    pub shader_index: Option<u32>,
+    /// Only populated for `BSPackedAdditionalGeometryData` (nif.xml arg==1).
+    pub total_size: Option<u32>,
+}
+
+impl NiAgdDataBlock {
+    fn parse(stream: &mut NifStream, packed: bool) -> io::Result<Self> {
+        let block_size = stream.read_u32_le()?;
+        let num_blocks = stream.read_u32_le()?;
+        let mut block_offsets = stream.allocate_vec::<u32>(num_blocks)?;
+        for _ in 0..num_blocks {
+            block_offsets.push(stream.read_u32_le()?);
+        }
+        let num_data = stream.read_u32_le()?;
+        let mut data_sizes = stream.allocate_vec::<u32>(num_data)?;
+        for _ in 0..num_data {
+            data_sizes.push(stream.read_u32_le()?);
+        }
+        // Flat data blob: nif.xml `length="Num Data" width="Block Size"` is
+        // a row-major 2D array. `read_bytes` already guards against a
+        // corrupt multiplier via `check_alloc`.
+        let total = (num_data as u64)
+            .checked_mul(block_size as u64)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "NiAGDDataBlock: num_data * block_size overflowed u64",
+                )
+            })?;
+        let data = stream.read_bytes(total as usize)?;
+        let (shader_index, total_size) = if packed {
+            (Some(stream.read_u32_le()?), Some(stream.read_u32_le()?))
+        } else {
+            (None, None)
+        };
+        Ok(Self {
+            block_size,
+            block_offsets,
+            data_sizes,
+            data,
+            shader_index,
+            total_size,
+        })
+    }
+}
+
+/// Discriminator for the two wire types that share the
+/// [`NiAdditionalGeometryData`] Rust struct. `BSPackedAdditionalGeometryData`
+/// appears in older FNV DLC (`nvdlc01vaultposter01.nif`) and carries the
+/// two extra `shader_index` + `total_size` fields per data block. Mirrors
+/// the [`BsTriShapeKind`] pattern — #560.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NiAgdKind {
+    /// Plain `NiAdditionalGeometryData` — FO3 + FNV architecture tangents.
+    Plain,
+    /// `BSPackedAdditionalGeometryData` — nif.xml arg=1 packed variant.
+    Packed,
+}
+
+/// `NiAdditionalGeometryData` / `BSPackedAdditionalGeometryData` — per-vertex
+/// auxiliary channels (tangents / bitangents / blend weights, etc.) attached
+/// to a NiGeometryData via its `Additional Data` ref. 4,039 FO3+FNV blocks
+/// in vanilla corpora were previously demoted to `NiUnknown`. See #547.
+#[derive(Debug)]
+pub struct NiAdditionalGeometryData {
+    pub num_vertices: u16,
+    pub block_infos: Vec<NiAgdDataStream>,
+    /// One entry per `num_blocks`; `None` when the `has_data` bool is false.
+    pub blocks: Vec<Option<NiAgdDataBlock>>,
+    pub kind: NiAgdKind,
+}
+
+impl NiObject for NiAdditionalGeometryData {
+    fn block_type_name(&self) -> &'static str {
+        match self.kind {
+            NiAgdKind::Plain => "NiAdditionalGeometryData",
+            NiAgdKind::Packed => "BSPackedAdditionalGeometryData",
+        }
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiAdditionalGeometryData {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        Self::parse_with_kind(stream, NiAgdKind::Plain)
+    }
+
+    pub fn parse_packed(stream: &mut NifStream) -> io::Result<Self> {
+        Self::parse_with_kind(stream, NiAgdKind::Packed)
+    }
+
+    fn parse_with_kind(stream: &mut NifStream, kind: NiAgdKind) -> io::Result<Self> {
+        let num_vertices = stream.read_u16_le()?;
+        let num_block_infos = stream.read_u32_le()?;
+        let mut block_infos = stream.allocate_vec::<NiAgdDataStream>(num_block_infos)?;
+        for _ in 0..num_block_infos {
+            block_infos.push(NiAgdDataStream::parse(stream)?);
+        }
+        let num_blocks = stream.read_u32_le()?;
+        let mut blocks = stream.allocate_vec::<Option<NiAgdDataBlock>>(num_blocks)?;
+        let packed = matches!(kind, NiAgdKind::Packed);
+        for _ in 0..num_blocks {
+            let has_data = stream.read_byte_bool()?;
+            if has_data {
+                blocks.push(Some(NiAgdDataBlock::parse(stream, packed)?));
+            } else {
+                blocks.push(None);
+            }
+        }
+        Ok(Self {
+            num_vertices,
+            block_infos,
+            blocks,
+            kind,
+        })
+    }
+}
+
 #[cfg(test)]
 mod skin_vertex_tests {
     use super::*;
@@ -1954,5 +2148,156 @@ mod nigeometry_data_version_tests {
             bytes.len(),
             "at 10.1.0.114 NiGeometryData MUST consume group_id"
         );
+    }
+}
+
+#[cfg(test)]
+mod ni_additional_geometry_data_tests {
+    use super::*;
+    use crate::blocks::parse_block;
+    use crate::header::NifHeader;
+
+    fn fnv_header() -> NifHeader {
+        // FNV: 20.2.0.7 with bsver = 34. Matches the corpus where the
+        // 4,039 pre-fix NiUnknown blocks came from. #547.
+        NifHeader {
+            version: NifVersion(0x14020007),
+            little_endian: true,
+            user_version: 11,
+            user_version_2: 34,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    /// Build a minimal `NiAdditionalGeometryData` body carrying one
+    /// tangent-channel descriptor and one 16-byte data block (four
+    /// vertices × 4-byte f32 tangents, synthetic). Used by both the
+    /// plain-variant and packed-variant round-trip tests below.
+    fn minimal_agd_bytes(packed: bool) -> Vec<u8> {
+        let mut d = Vec::new();
+        d.extend_from_slice(&4u16.to_le_bytes()); // num_vertices
+        d.extend_from_slice(&1u32.to_le_bytes()); // num_block_infos
+
+        // NiAGDDataStream (25 bytes): synthetic tangent channel.
+        d.extend_from_slice(&7u32.to_le_bytes()); // type (NiADT_TANGENTS)
+        d.extend_from_slice(&4u32.to_le_bytes()); // unit_size
+        d.extend_from_slice(&16u32.to_le_bytes()); // total_size
+        d.extend_from_slice(&4u32.to_le_bytes()); // stride
+        d.extend_from_slice(&0u32.to_le_bytes()); // block_index
+        d.extend_from_slice(&0u32.to_le_bytes()); // block_offset
+        d.push(0x02u8); // flags (AGD_MUTABLE default)
+
+        d.extend_from_slice(&1u32.to_le_bytes()); // num_blocks
+
+        // NiAGDDataBlocks: has_data = true.
+        d.push(1u8);
+
+        // NiAGDDataBlock:
+        d.extend_from_slice(&16u32.to_le_bytes()); // block_size
+        d.extend_from_slice(&1u32.to_le_bytes()); // num_blocks (inner)
+        d.extend_from_slice(&0u32.to_le_bytes()); // block_offsets[0]
+        d.extend_from_slice(&1u32.to_le_bytes()); // num_data
+        d.extend_from_slice(&16u32.to_le_bytes()); // data_sizes[0]
+        d.extend_from_slice(&[0xAAu8; 16]); // data: num_data * block_size = 1 * 16
+        if packed {
+            d.extend_from_slice(&42u32.to_le_bytes()); // shader_index
+            d.extend_from_slice(&16u32.to_le_bytes()); // total_size
+        }
+        d
+    }
+
+    /// Regression for #547 — plain `NiAdditionalGeometryData` (FO3+FNV)
+    /// must dispatch, parse to completion, and preserve the tangent-
+    /// channel descriptor along with the 16-byte data blob.
+    #[test]
+    fn ni_additional_geometry_data_plain_dispatches_and_preserves_channels() {
+        let header = fnv_header();
+        let bytes = minimal_agd_bytes(false);
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        let block = parse_block(
+            "NiAdditionalGeometryData",
+            &mut stream,
+            Some(bytes.len() as u32),
+        )
+        .expect("dispatch must produce NiAdditionalGeometryData, not NiUnknown");
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "entire block body must be consumed"
+        );
+        assert_eq!(block.block_type_name(), "NiAdditionalGeometryData");
+        let agd = block
+            .as_any()
+            .downcast_ref::<NiAdditionalGeometryData>()
+            .expect("dispatch type must be NiAdditionalGeometryData");
+        assert_eq!(agd.kind, NiAgdKind::Plain);
+        assert_eq!(agd.num_vertices, 4);
+        assert_eq!(agd.block_infos.len(), 1);
+        assert_eq!(agd.block_infos[0].ty, 7);
+        assert_eq!(agd.block_infos[0].unit_size, 4);
+        assert_eq!(agd.block_infos[0].total_size, 16);
+        assert_eq!(agd.blocks.len(), 1);
+        let inner = agd.blocks[0].as_ref().expect("has_data=true");
+        assert_eq!(inner.block_size, 16);
+        assert_eq!(inner.data.len(), 16);
+        assert!(
+            inner.shader_index.is_none(),
+            "plain variant must not populate shader_index"
+        );
+    }
+
+    /// Regression for #547 — packed variant (`BSPackedAdditionalGeometryData`)
+    /// populates `shader_index` + `total_size` on each data block (nif.xml
+    /// arg=1 branch). Only appears in older FNV DLC content.
+    #[test]
+    fn bs_packed_additional_geometry_data_dispatches_with_extra_fields() {
+        let header = fnv_header();
+        let bytes = minimal_agd_bytes(true);
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        let block = parse_block(
+            "BSPackedAdditionalGeometryData",
+            &mut stream,
+            Some(bytes.len() as u32),
+        )
+        .expect("dispatch must produce packed variant");
+        assert_eq!(stream.position() as usize, bytes.len());
+        assert_eq!(block.block_type_name(), "BSPackedAdditionalGeometryData");
+        let agd = block
+            .as_any()
+            .downcast_ref::<NiAdditionalGeometryData>()
+            .expect("packed and plain share the Rust struct");
+        assert_eq!(agd.kind, NiAgdKind::Packed);
+        let inner = agd.blocks[0].as_ref().unwrap();
+        assert_eq!(inner.shader_index, Some(42));
+        assert_eq!(inner.total_size, Some(16));
+    }
+
+    /// Regression for #547 — empty block list (`num_blocks = 0`) must
+    /// parse without allocating or reading any NiAGDDataBlock. Mirrors
+    /// the vanilla FO3 pattern where some static props ship a shell
+    /// block-info array with no attached data.
+    #[test]
+    fn ni_additional_geometry_data_with_empty_block_list_parses() {
+        let header = fnv_header();
+        let mut d = Vec::new();
+        d.extend_from_slice(&0u16.to_le_bytes()); // num_vertices
+        d.extend_from_slice(&0u32.to_le_bytes()); // num_block_infos
+        d.extend_from_slice(&0u32.to_le_bytes()); // num_blocks
+        let mut stream = crate::stream::NifStream::new(&d, &header);
+        let block = parse_block("NiAdditionalGeometryData", &mut stream, Some(d.len() as u32))
+            .expect("empty AGD must still dispatch");
+        assert_eq!(stream.position() as usize, d.len());
+        let agd = block
+            .as_any()
+            .downcast_ref::<NiAdditionalGeometryData>()
+            .unwrap();
+        assert!(agd.block_infos.is_empty());
+        assert!(agd.blocks.is_empty());
     }
 }

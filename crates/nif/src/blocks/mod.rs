@@ -261,6 +261,18 @@ pub fn parse_block(
         "BSDynamicTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse_dynamic(stream)?)),
         "NiTriShapeData" => Ok(Box::new(NiTriShapeData::parse(stream)?)),
         "NiTriStripsData" => Ok(Box::new(NiTriStripsData::parse(stream)?)),
+        // NiAdditionalGeometryData + BSPackedAdditionalGeometryData: per-vertex
+        // aux channels (tangents / bitangents / blend weights) referenced by
+        // NiGeometryData.additional_data_ref. 4,039 FO3+FNV vanilla blocks
+        // fell into NiUnknown pre-fix. The packed variant appears only in
+        // older FNV DLC (nvdlc01vaultposter01.nif) and serializes two extra
+        // u32s per data block. See issue #547.
+        "NiAdditionalGeometryData" => Ok(Box::new(tri_shape::NiAdditionalGeometryData::parse(
+            stream,
+        )?)),
+        "BSPackedAdditionalGeometryData" => Ok(Box::new(
+            tri_shape::NiAdditionalGeometryData::parse_packed(stream)?,
+        )),
         // All Oblivion-era BSShaderLightingProperty specializations share the
         // base texture-set + flags layout, so alias them to BSShaderPPLighting.
         // Specializing the differences (e.g. sky scroll, water reflection) can
