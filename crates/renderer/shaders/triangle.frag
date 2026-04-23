@@ -1030,7 +1030,15 @@ void main() {
                 // #494 — BGSM UV transform on the refraction hit too.
                 tUV = tUV * vec2(tInst.uvScaleU, tInst.uvScaleV)
                     + vec2(tInst.uvOffsetU, tInst.uvOffsetV);
-                vec3 tAlbedo = texture(textures[nonuniformEXT(tInst.textureIndex)], tUV).rgb;
+                // Sample the refracted surface at a blurred mip level so the
+                // world seen through glass is soft rather than razor-sharp.
+                // Real glass scatters transmitted light; the mip blur is a
+                // free approximation. Clear glass (low roughness) gets a
+                // subtle haze (mip ~1.5); rough/etched glass gets more
+                // blur (mip ~3.5). TAA accumulates the per-frame IGN spread.
+                float refrMip = 1.5 + roughness * 4.0;
+                vec3 tAlbedo = textureLod(
+                    textures[nonuniformEXT(tInst.textureIndex)], tUV, refrMip).rgb;
 
                 // Apply a lighting estimate to the hit albedo. The raw
                 // texture without lighting reads as "raw diffuse" which
@@ -1105,6 +1113,14 @@ void main() {
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(albedo, 1.0);
         return;
+    }
+
+    // Fresnel-path glass (LOD 1–2, or LOD-0 glass that exhausted the ray
+    // budget): override to the smooth geometric normal for PBR specular so
+    // the bump-map ribbing pattern doesn't produce crosshatch highlights at
+    // the boosted specStrength = 3.0. IOR glass already returned above.
+    if (isGlass) {
+        N = normalize(fragNormal);
     }
 
     // Ambient base from cell lighting — LIGHTING ONLY, no local albedo.
