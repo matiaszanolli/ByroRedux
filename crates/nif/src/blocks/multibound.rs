@@ -106,6 +106,34 @@ impl BsMultiBoundOBB {
     }
 }
 
+/// BSMultiBoundSphere — spherical bounding volume (FO3+).
+#[derive(Debug)]
+pub struct BsMultiBoundSphere {
+    pub center: [f32; 3],
+    pub radius: f32,
+}
+
+impl NiObject for BsMultiBoundSphere {
+    fn block_type_name(&self) -> &'static str {
+        "BSMultiBoundSphere"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsMultiBoundSphere {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let center = [
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+        ];
+        let radius = stream.read_f32_le()?;
+        Ok(Self { center, radius })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,5 +193,22 @@ mod tests {
         assert!((obb.size[0] - 3.0).abs() < 1e-6);
         assert!((obb.rotation[0][0] - 6.0).abs() < 1e-6);
         assert_eq!(stream.position(), 60); // 15 * 4 bytes
+    }
+
+    #[test]
+    fn parse_bs_multi_bound_sphere() {
+        let header = make_fnv_header();
+        let mut data = Vec::new();
+        // center (3) + radius (1) = 4 floats = 16 bytes
+        for v in [10.0f32, 20.0, 30.0, 5.0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        let mut stream = NifStream::new(&data, &header);
+        let sphere = BsMultiBoundSphere::parse(&mut stream).unwrap();
+        assert!((sphere.center[0] - 10.0).abs() < 1e-6);
+        assert!((sphere.center[1] - 20.0).abs() < 1e-6);
+        assert!((sphere.center[2] - 30.0).abs() < 1e-6);
+        assert!((sphere.radius - 5.0).abs() < 1e-6);
+        assert_eq!(stream.position(), 16);
     }
 }

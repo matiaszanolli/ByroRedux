@@ -379,6 +379,39 @@ impl BsInvMarker {
     }
 }
 
+// ── BSWArray ───────────────────────────────────────────────────────
+
+/// Wide signed-integer array extra data (FO3+).
+///
+/// nif.xml: `BSWArray inherit="NiExtraData" versions="#FO3_AND_LATER#"`.
+/// Fields: Num Items (u32) + Items ([i32; Num Items]).
+#[derive(Debug)]
+pub struct BsWArray {
+    pub name: Option<Arc<str>>,
+    pub items: Vec<i32>,
+}
+
+impl NiObject for BsWArray {
+    fn block_type_name(&self) -> &'static str {
+        "BSWArray"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsWArray {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let name = stream.read_string()?;
+        let count = stream.read_u32_le()?;
+        let mut items = stream.allocate_vec(count)?;
+        for _ in 0..count {
+            items.push(stream.read_i32_le()?);
+        }
+        Ok(Self { name, items })
+    }
+}
+
 // ── BSClothExtraData ───────────────────────────────────────────────
 
 /// Havok cloth simulation data (opaque binary blob). FO4+.
@@ -1437,5 +1470,27 @@ mod tests {
             msg.contains("bytes remain") || msg.contains("only"),
             "expected allocate_vec bounds error, got: {msg}"
         );
+    }
+
+    #[test]
+    fn parse_bs_w_array_three_items() {
+        let header = skyrim_header();
+        let mut data = Vec::new();
+        // name: string index 0 (u32 in v20.2.0.7 string-table format)
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // count: 3
+        data.extend_from_slice(&3u32.to_le_bytes());
+        // items: -1, 0, 42
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&0i32.to_le_bytes());
+        data.extend_from_slice(&42i32.to_le_bytes());
+
+        let mut stream = NifStream::new(&data, &header);
+        let arr = BsWArray::parse(&mut stream).unwrap();
+        assert_eq!(arr.items.len(), 3);
+        assert_eq!(arr.items[0], -1);
+        assert_eq!(arr.items[1], 0);
+        assert_eq!(arr.items[2], 42);
+        assert_eq!(stream.position() as usize, data.len());
     }
 }

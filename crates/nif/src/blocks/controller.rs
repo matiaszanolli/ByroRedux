@@ -594,6 +594,38 @@ impl NiControllerSequence {
     }
 }
 
+// ── BSRefractionFirePeriodController ──────────────────────────────────
+// Inherits NiTimeController (not NiSingleInterpController).
+// Adds one explicit Ref<NiInterpolator> field per nif.xml line 6832.
+// Versions: FO3 (v20.2.0.7 / bsver 21).
+
+/// Animates the fire-period of refraction shader effects (FO3).
+#[derive(Debug)]
+pub struct BsRefractionFirePeriodController {
+    pub base: NiTimeControllerBase,
+    pub interpolator_ref: BlockRef,
+}
+
+impl NiObject for BsRefractionFirePeriodController {
+    fn block_type_name(&self) -> &'static str {
+        "BSRefractionFirePeriodController"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsRefractionFirePeriodController {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiTimeControllerBase::parse(stream)?;
+        let interpolator_ref = stream.read_block_ref()?;
+        Ok(Self {
+            base,
+            interpolator_ref,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -659,6 +691,22 @@ mod tests {
         let ctrl = NiSingleInterpController::parse(&mut stream).unwrap();
         assert_eq!(stream.position(), 30);
         assert_eq!(ctrl.interpolator_ref.index(), Some(5));
+    }
+
+    #[test]
+    fn parse_bs_refraction_fire_period_controller_30_bytes() {
+        let header = make_header_fnv();
+        let mut data = Vec::new();
+        write_time_controller_base(&mut data);
+        // interpolator_ref: 3
+        data.extend_from_slice(&3i32.to_le_bytes());
+        assert_eq!(data.len(), 30);
+
+        let mut stream = NifStream::new(&data, &header);
+        let ctrl = BsRefractionFirePeriodController::parse(&mut stream).unwrap();
+        assert_eq!(stream.position(), 30);
+        assert_eq!(ctrl.interpolator_ref.index(), Some(3));
+        assert!(ctrl.base.next_controller_ref.is_null());
     }
 
     #[test]

@@ -31,14 +31,15 @@ use collision::{
     NiCollisionObjectBase,
 };
 use controller::{
-    NiControllerManager, NiControllerSequence, NiGeomMorpherController, NiLookAtController,
-    NiMaterialColorController, NiMorphData, NiMultiTargetTransformController, NiPathController,
-    NiSequenceStreamHelper, NiSingleInterpController, NiTimeController, NiUVController,
+    BsRefractionFirePeriodController, NiControllerManager, NiControllerSequence,
+    NiGeomMorpherController, NiLookAtController, NiMaterialColorController, NiMorphData,
+    NiMultiTargetTransformController, NiPathController, NiSequenceStreamHelper,
+    NiSingleInterpController, NiTimeController, NiUVController,
 };
 use extra_data::{
     BsAnimNote, BsAnimNotes, BsBehaviorGraphExtraData, BsBound, BsClothExtraData,
     BsConnectPointChildren, BsConnectPointParents, BsDecalPlacementVectorExtraData,
-    BsFurnitureMarker, BsInvMarker, NiExtraData,
+    BsFurnitureMarker, BsInvMarker, BsWArray, NiExtraData,
 };
 use interpolator::{
     NiBSplineBasisData, NiBSplineCompTransformInterpolator, NiBSplineData, NiBlendBoolInterpolator,
@@ -47,11 +48,11 @@ use interpolator::{
     NiPoint3Interpolator, NiPosData, NiTextKeyExtraData, NiTransformData, NiTransformInterpolator,
     NiUVData,
 };
-use multibound::{BsMultiBound, BsMultiBoundAABB, BsMultiBoundOBB};
+use multibound::{BsMultiBound, BsMultiBoundAABB, BsMultiBoundOBB, BsMultiBoundSphere};
 use node::{BsOrderedNode, BsValueNode, NiNode};
 use properties::{
-    NiAlphaProperty, NiFlagProperty, NiMaterialProperty, NiStencilProperty, NiStringPalette,
-    NiTexturingProperty, NiVertexColorProperty, NiZBufferProperty,
+    NiAlphaProperty, NiFlagProperty, NiFogProperty, NiMaterialProperty, NiStencilProperty,
+    NiStringPalette, NiTexturingProperty, NiVertexColorProperty, NiZBufferProperty,
 };
 use shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
@@ -214,6 +215,7 @@ pub fn parse_block(
         "BSMultiBound" => Ok(Box::new(BsMultiBound::parse(stream)?)),
         "BSMultiBoundAABB" => Ok(Box::new(BsMultiBoundAABB::parse(stream)?)),
         "BSMultiBoundOBB" => Ok(Box::new(BsMultiBoundOBB::parse(stream)?)),
+        "BSMultiBoundSphere" => Ok(Box::new(BsMultiBoundSphere::parse(stream)?)),
         "NiTriShape" | "NiTriStrips" => Ok(Box::new(NiTriShape::parse(stream)?)),
         // BSSegmentedTriShape: FO3/FNV/SkyrimLE biped body-part segmentation.
         // Inherits NiTriShape and adds a trailing (u32 num_segments) +
@@ -300,6 +302,7 @@ pub fn parse_block(
         "NiZBufferProperty" => Ok(Box::new(NiZBufferProperty::parse(stream)?)),
         "NiVertexColorProperty" => Ok(Box::new(NiVertexColorProperty::parse(stream)?)),
         "NiTexturingProperty" => Ok(Box::new(NiTexturingProperty::parse(stream)?)),
+        "NiFogProperty" => Ok(Box::new(NiFogProperty::parse(stream)?)),
         // Simple flag-only properties (Oblivion)
         "NiSpecularProperty" => Ok(Box::new(NiFlagProperty::parse(
             stream,
@@ -330,6 +333,7 @@ pub fn parse_block(
         | "NiBooleanExtraData"
         | "NiStringsExtraData"
         | "NiIntegersExtraData" => Ok(Box::new(NiExtraData::parse(stream, type_name)?)),
+        "BSWArray" => Ok(Box::new(BsWArray::parse(stream)?)),
         "BSBound" => Ok(Box::new(BsBound::parse(stream)?)),
         "BSDecalPlacementVectorExtraData" => {
             Ok(Box::new(BsDecalPlacementVectorExtraData::parse(stream)?))
@@ -396,6 +400,11 @@ pub fn parse_block(
         | "BSRefractionStrengthController"
         | "BSFrustumFOVController" => {
             Ok(Box::new(NiSingleInterpController::parse(stream)?))
+        }
+        // Inherits NiTimeController directly with one explicit interpolator ref.
+        // Not NiSingleInterpController (different base class per nif.xml line 6830).
+        "BSRefractionFirePeriodController" => {
+            Ok(Box::new(BsRefractionFirePeriodController::parse(stream)?))
         }
         // BSEffectShader / BSLightingShader property-controller family —
         // each adds a single trailing `controlled_variable: u32` enum to
