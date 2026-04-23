@@ -14,7 +14,7 @@ commit.
 
 **Last verified**: 2026-04-22.
 **Bench-of-record**: Prospector Saloon 251.6 FPS / 3.97 ms — commit
-`bee6d48`, 72 commits stale (see R6a).
+`bee6d48`, 83 commits stale (see R6a).
 
 ---
 
@@ -92,7 +92,7 @@ typically gates a specific milestone.
 | M33.1  | Sky & atmosphere (follow-up)   | Weather transitions (snap → fade) and cloud layers 2/3. Core M33 is complete — sky gradient, sun disc, TOD interpolation, fog, 2-layer clouds (DNAM + CNAM) all working. See Completed Milestones.                                                                                                                          | —                  |
 | M34    | Exterior lighting              | Proper directional sun derived from WTHR/climate sun position. Time-of-day ambient color interpolation. Exterior fog from WTHR fog data (distance + color). Interior/exterior light path split in the shader.                                                                                                                | M33                |
 | M32.5  | Per-game cell loader parity    | Wire Skyrim + FO4 interior cells through the existing `cell_loader` (Skyrim has XCLL 92-byte + LGTM templates; FO4 has BGSM materials + SCOL/PKIN expansion already parsed). Oblivion needs BSA v103 decompression first.                                                                                                    | M24                |
-| R6a    | Prospector re-bench            | Re-run `--bench-frames 300` on Prospector at HEAD. Update "Bench-of-record" + matrix. Tracks 72-commit drift from `bee6d48`.                                                                                                                                                                                                 | —                  |
+| R6a    | Prospector re-bench            | Re-run `--bench-frames 300` on Prospector at HEAD. Update "Bench-of-record" + matrix. Tracks 83-commit drift from `bee6d48`.                                                                                                                                                                                                 | —                  |
 
 ### Tier 2 — Actors visible & animated (blocks "cells are populated")
 
@@ -330,11 +330,11 @@ Ground-truth as of 2026-04-22, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (non-test)            | ~91 300                       |
-| Rust total lines                        | ~93 300                       |
+| Rust source lines (non-test)            | ~91 450                       |
+| Rust total lines                        | ~93 430                       |
 | Source files (non-test)                 | 197                          |
 | Workspace members                       | 16                           |
-| Tests (last reported by ROADMAP)        | 924 — re-verify via `/session-close` |
+| Tests (last reported by ROADMAP)        | 1038                         |
 | Open issue directories                  | 530 (`.claude/issues/`)       |
 | NIFs in per-game integration sweeps     | 177 286                       |
 | Per-game NIF parse success rate         | 100% (7 games)                |

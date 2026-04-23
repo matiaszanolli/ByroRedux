@@ -24,6 +24,38 @@ Commits hold that record.
 
 ---
 
+## Session 14 — M33 cloud layer 1 + RT glass  (2026-04-22, 1622d61..f7f2819)
+
+M33 sky & atmosphere had one open piece: cloud layer 1 (CNAM) was parsed
+but not yet wired into the render path. Closing that gap finished M33
+proper. With the milestone done, the session pivoted to RT glass — a
+self-contained feature chain covering refraction geometry, Fresnel-path
+specular with a blurred world sample, IGN roughness spread, and the ray
+budget SSBO that gates Phase-3 glass quality without blowing frame budget.
+
+- **M33 completion** — CNAM cloud layer 1 wired through ECS + renderer
+  structs + `CompositeParams` UBO + composite shader (`1622d61`,
+  `5d6e0e7`). M33 known-issue entry closed and moved to Completed
+  Milestones; M33.1 (weather transitions + layers 2/3) promoted as
+  follow-up (`d5db683`).
+- **RT glass — geometry & shading** — refraction ray fires along the
+  geometric normal (not shading normal) with IGN-sampled roughness spread
+  (`f5605af`); Fresnel path blurs the refracted world sample and adds
+  smooth specular (`849bccc`); mip-4 bulk-colour fill eliminates the
+  ribbing artefact on all glass tiers (`f7f2819`).
+- **Ray budget SSBO** — per-FIF atomic counter on binding 11 with CPU
+  reset (`6f70872`); footprint-LOD ray tiers drive Phase-3 glass
+  conditional quality (`c6da807`); `fragmentStoresAndAtomics` device
+  feature enabled to allow SSBO atomics in the fragment stage
+  (`bc9ebc7`).
+- **Perf regression fix** — Tier C glass Phase-3 path caused a 29 FPS
+  collapse; reverted while the ray-budget counter was plumbed, then
+  re-enabled once the SSBO gating was in place (`ad88244`, `c6da807`).
+
+Net: 924 → 1038 tests (+114). LOC ~91 300 → ~91 450 non-test.
+
+---
+
 ## Session 13 — FO3 / FNV / ECS audit closeout  (2026-04-21, ~25 issues)
 
 The 2026-04 audit sweep landed at `docs/audits/AUDIT_FO3_2026-04-19.md`,
