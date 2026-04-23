@@ -13,9 +13,10 @@ Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
 **Last verified**: 2026-04-23.
-**Bench-of-record**: INVALID — bench measures GPU submit time only, not
-wall-clock frame time. Observed FPS on Prospector at HEAD (`8b2fc5d`) is
-~35 FPS (~28 ms/frame); ~23 ms is unaccounted CPU overhead. See PERF-1.
+**Bench-of-record**: Prospector Saloon 192.8 FPS / 5.19 ms — commit
+`e6e8091`, wall-clock bench (PERF-1 fix). Scene is glass-heavy (bottles,
+pitcher, marquee sign); RT refraction/reflection cost is representative
+of a tough FNV interior.
 
 ---
 
@@ -64,7 +65,7 @@ load. Weather transitions (fade between WTHR states) and cloud layers
 |-------------------|---------------|-------------------|----------------------------------------------------------|
 | Oblivion          | BSA v103      | 100% (8 032)      | Interior (Anvil Heinrich Oaken Halls). Exterior blocked on BSA v103 decompression. |
 | Fallout 3         | BSA v104      | 100% (10 989)     | Interior (Megaton, 929 REFRs). Exterior wired; fresh GPU bench pending (R6a). |
-| Fallout New Vegas | BSA v104      | 100% (14 881)     | Interior (Prospector 1200 entities @ 251.6 FPS on RTX 4070 Ti, bench bee6d48). Exterior 3×3. |
+| Fallout New Vegas | BSA v104      | 100% (14 881)     | Interior (Prospector 1200 entities @ 192.8 FPS / 5.19 ms on RTX 4070 Ti, bench e6e8091). Exterior 3×3. |
 | Skyrim SE         | BSA v105 LZ4  | 100% (18 862)     | Individual meshes. Cell loader wiring = M32.5.           |
 | Fallout 4         | BA2 v1/v7/v8  | 100% (34 995)     | Architecture records parsed. Cell loader wiring = M32.5. |
 | Fallout 76        | BA2 v1        | 100% (58 469)     | —                                                        |
@@ -94,7 +95,7 @@ typically gates a specific milestone.
 | M33.1  | Sky & atmosphere (follow-up)   | Weather transitions (snap → fade) and cloud layers 2/3. Core M33 is complete — sky gradient, sun disc, TOD interpolation, fog, 2-layer clouds (DNAM + CNAM) all working. See Completed Milestones.                                                                                                                          | —                  |
 | M34    | Exterior lighting              | Proper directional sun derived from WTHR/climate sun position. Time-of-day ambient color interpolation. Exterior fog from WTHR fog data (distance + color). Interior/exterior light path split in the shader.                                                                                                                | M33                |
 | M32.5  | Per-game cell loader parity    | Wire Skyrim + FO4 interior cells through the existing `cell_loader` (Skyrim has XCLL 92-byte + LGTM templates; FO4 has BGSM materials + SCOL/PKIN expansion already parsed). Oblivion needs BSA v103 decompression first.                                                                                                    | M24                |
-| R6a    | Prospector re-bench            | Re-run `--bench-frames 300` on Prospector after PERF-1 ships honest wall-clock timing. Previous run (`8b2fc5d`) reported 180 FPS but measured GPU submit only; observed FPS was ~35.                                                                                                                                         | PERF-1             |
+| ~~R6a~~ | ~~Prospector re-bench~~       | **Closed.** 192.8 FPS / 5.19 ms at `e6e8091` with wall-clock bench. Scene is glass-heavy (RT refraction/reflection); representative tough-case FNV interior.                                                                                                                                                | —                  |
 
 ### Tier 2 — Actors visible & animated (blocks "cells are populated")
 
@@ -295,8 +296,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 ### Open — Tier 1 / 2 blockers
 
 - [x] No sky, sun, clouds, or atmosphere — **closed**. Sky gradient, sun disc with game-time arc, TOD interpolation across 10 color groups, dual cloud layers (DNAM layer 0 + CNAM layer 1 with parallax), fog, procedural fallback all working. Weather transitions (fade) and layers 2/3 tracked as M33.1.
-- [ ] **~23 ms CPU overhead per frame on 7950X** — bench revealed unaccounted main-thread work; observed ~35 FPS vs GPU-only reported ~180 FPS. Root cause unknown; suspects: `build_render_data`, ECS query iteration, BLAS/TLAS update path (PERF-1)
-- [ ] Bench measures GPU submit time only — wall-clock frame timing not implemented; all FPS claims since `bee6d48` are invalid (PERF-1)
+- [x] Bench measured GPU submit time only — **fixed** in `e6e8091`. Wall-clock bench now counts rendered frames; ticks_per_frame confirms ~1 on this compositor. 192.8 FPS / 5.19 ms at Prospector.
 - [ ] No skinned mesh rendering — every NPC / creature is stuck in bind pose (M29)
 - [ ] NPCs + creatures don't spawn as ECS entities even when parsed (M41 / M41.0)
 - [ ] No world streaming — entire cell re-imported from scratch on every load (M40)
@@ -318,7 +318,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [ ] **R4** SWF/GFx strategic decision needed before M48 — Ruffle+GFx-stubs vs rewrite menus natively
 - [ ] **R5** Papyrus full-runtime prototype on one real quest before M47.2 scope commitment
 - [ ] **R6** `VulkanContext` scratch buffers have no capacity telemetry — add `ctx.scratch` before M40
-- [ ] **R6a** Prospector re-bench blocked on PERF-1 — previous run reported 180 FPS (GPU-submit only); actual observed ~35 FPS at `8b2fc5d`
+- [x] **R6a** Prospector re-bench — **closed**. 192.8 FPS / 5.19 ms at `e6e8091`, wall-clock bench.
 - [ ] **R7** Scheduler access declarations before flipping M27 parallel dispatch on
 
 ### Open — Misc
@@ -348,7 +348,7 @@ Ground-truth as of 2026-04-22, verified by `/session-close`.
 
 | Claim                                                                     | Command                                                                                                                                                                                        |
 |---------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Prospector Saloon 251.6 FPS / 3.97 ms (commit `bee6d48`, 2026-04-20)      | `cargo run --release -- --esm FalloutNV.esm --cell GSProspectorSaloonInterior --bsa "Meshes.bsa" --textures-bsa "Textures.bsa" --textures-bsa "Textures2.bsa" --bench-frames 300`              |
+| Prospector Saloon 192.8 FPS / 5.19 ms (commit `e6e8091`, 2026-04-23, wall-clock bench) | `cargo run --release -- --esm "Fallout New Vegas/Data/FalloutNV.esm" --cell GSProspectorSaloonInterior --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa" --textures-bsa "Fallout - Textures2.bsa" --bench-frames 300` |
 | Megaton interior parse-side 929 REFRs (2026-04-19)                        | `cargo test -p byroredux-plugin --release --test parse_real_esm parse_real_fo3_megaton_cell_baseline -- --ignored`                                                                             |
 | Per-game full mesh sweep, 100% per game                                   | `cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored`                                                                                                                     |
 | Full ESM record counts (FNV 62 219 / FO3 31 101)                          | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored`                                                                                                                   |
