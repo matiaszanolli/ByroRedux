@@ -172,6 +172,91 @@ pub struct PlacedRef {
     /// disabled (XESP set + not inverted) — pre-#349 every "spawn after
     /// quest stage" REFR rendered immediately on cell load. See #349.
     pub enable_parent: Option<EnableParent>,
+    /// Teleport destination from the REFR's `XTEL` sub-record. When
+    /// present, this REFR is a door whose activation transports the
+    /// player to the destination REFR's position and rotation. Pre-#412
+    /// every interior door was dead on activation. See audit FO4-D6-B1.
+    pub teleport: Option<TeleportDest>,
+    /// Primitive bounds / shape from the REFR's `XPRM` sub-record.
+    /// Trigger volumes and invisible activators carry no MODL and are
+    /// defined entirely by this primitive (box / sphere / plane / line).
+    /// Pre-#412 triggers were invisible in the editor view and had no
+    /// activation volume at runtime.
+    pub primitive: Option<PrimitiveBounds>,
+    /// Linked refs from the REFR's `XLKR` sub-records. Multiple allowed
+    /// per REFR. Each pair is `(keyword_form_id, target_ref_form_id)`;
+    /// the keyword (`null` if untyped) tags the relationship kind (e.g.
+    /// NPC ↔ patrol marker, door ↔ teleport partner, switch ↔ light).
+    /// Pre-#412 NPCs didn't patrol and doors didn't pair.
+    pub linked_refs: Vec<LinkedRef>,
+    /// Room membership form IDs from the REFR's `XRMR` sub-record —
+    /// the room(s) this ref belongs to for FO4 cell-subdivided interior
+    /// culling. Empty when the REFR is not room-scoped. See #412.
+    pub rooms: Vec<u32>,
+    /// Portal connections from the REFR's `XPOD` sub-record. Each pair
+    /// is `(origin_room_ref, destination_room_ref)`. Portal REFRs gate
+    /// the interior room-to-room visibility graph. Pre-#412 this was
+    /// silently dropped so any vault using portals couldn't cull.
+    pub portals: Vec<PortalLink>,
+    /// LIGH radius override from the REFR's `XRDS` sub-record. When
+    /// `Some`, overrides the base LIGH record's radius for per-ref
+    /// light tuning (bulb placement, lantern fine-tune).
+    pub radius_override: Option<f32>,
+}
+
+/// Teleport destination payload for `XTEL` — a door ref's target.
+///
+/// Wire layout (32 bytes): destination_ref(u32) + position(3×f32) +
+/// rotation(3×f32) + flags(u32). Flags trail on Skyrim+ and may be
+/// absent on older games; parsed conservatively to the first 28 bytes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TeleportDest {
+    /// FormID of the destination REFR (another door, usually) in the
+    /// target cell. The cell loader resolves this to coordinates and
+    /// the player's teleport target.
+    pub destination: u32,
+    /// Destination position in Bethesda units (Z-up).
+    pub position: [f32; 3],
+    /// Destination Euler rotation in radians (X, Y, Z).
+    pub rotation: [f32; 3],
+}
+
+/// Primitive shape payload for `XPRM` — invisible trigger / activator
+/// geometry that doesn't ship a MODL. Conservative layout: first three
+/// f32s are box bounds, next three are the editor visualization color,
+/// then a trailing f32 + u32 (shape type enum). All in 32 bytes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PrimitiveBounds {
+    /// Box / shape extents in Bethesda units.
+    pub bounds: [f32; 3],
+    /// Editor visualization color (R, G, B) in 0..=1 range. Mostly
+    /// useful for debug rendering; preserved so a future editor view
+    /// can display the exact tint the original author chose.
+    pub color: [f32; 3],
+    /// Trailing f32 per UESP — semantic unclear (possibly an alpha or
+    /// a second-axis parameter). Preserved verbatim for future use.
+    pub unknown: f32,
+    /// Shape type enum per UESP: 1=Box, 2=Line, 3=Sphere, 4=Portal,
+    /// 5=Plane. Other values indicate a game-specific extension.
+    pub shape_type: u32,
+}
+
+/// Linked-ref pair from a single `XLKR` sub-record.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LinkedRef {
+    /// Keyword form ID categorizing the link (e.g. `LinkCarryable`,
+    /// `LinkPatrol`). `0` / `0xFFFFFFFF` means untyped.
+    pub keyword: u32,
+    /// Target REFR form ID the keyword links this REFR to.
+    pub target: u32,
+}
+
+/// Portal pair from a single `XPOD` sub-record. Portal REFRs connect
+/// two rooms for FO4 / Skyrim-SE interior cell-subdivision culling.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PortalLink {
+    pub origin: u32,
+    pub destination: u32,
 }
 
 /// REFR enable-parent gating from the `XESP` sub-record (Skyrim+).
@@ -786,45 +871,49 @@ fn parse_refr_group(
             let mut rotation = [0.0f32; 3];
             let mut scale = 1.0f32;
             let mut enable_parent: Option<EnableParent> = None;
+            let mut teleport: Option<TeleportDest> = None;
+            let mut primitive: Option<PrimitiveBounds> = None;
+            let mut linked_refs: Vec<LinkedRef> = Vec::new();
+            let mut rooms: Vec<u32> = Vec::new();
+            let mut portals: Vec<PortalLink> = Vec::new();
+            let mut radius_override: Option<f32> = None;
+
+            // Helpers to decode LE values from sub-record slices. Kept
+            // local so the REFR match arm doesn't sprout u32 / f32
+            // shuffling at each new sub-type.
+            let read_u32 = |bytes: &[u8], off: usize| -> u32 {
+                u32::from_le_bytes([
+                    bytes[off],
+                    bytes[off + 1],
+                    bytes[off + 2],
+                    bytes[off + 3],
+                ])
+            };
+            let read_f32 = |bytes: &[u8], off: usize| -> f32 {
+                f32::from_le_bytes([
+                    bytes[off],
+                    bytes[off + 1],
+                    bytes[off + 2],
+                    bytes[off + 3],
+                ])
+            };
 
             for sub in &subs {
                 match &sub.sub_type {
                     b"NAME" if sub.data.len() >= 4 => {
-                        base_form_id = u32::from_le_bytes([
-                            sub.data[0],
-                            sub.data[1],
-                            sub.data[2],
-                            sub.data[3],
-                        ]);
+                        base_form_id = read_u32(&sub.data, 0);
                     }
                     b"DATA" if sub.data.len() >= 24 => {
                         // 6 floats: posX, posY, posZ, rotX, rotY, rotZ
                         for i in 0..3 {
-                            let off = i * 4;
-                            position[i] = f32::from_le_bytes([
-                                sub.data[off],
-                                sub.data[off + 1],
-                                sub.data[off + 2],
-                                sub.data[off + 3],
-                            ]);
+                            position[i] = read_f32(&sub.data, i * 4);
                         }
                         for i in 0..3 {
-                            let off = 12 + i * 4;
-                            rotation[i] = f32::from_le_bytes([
-                                sub.data[off],
-                                sub.data[off + 1],
-                                sub.data[off + 2],
-                                sub.data[off + 3],
-                            ]);
+                            rotation[i] = read_f32(&sub.data, 12 + i * 4);
                         }
                     }
                     b"XSCL" if sub.data.len() >= 4 => {
-                        scale = f32::from_le_bytes([
-                            sub.data[0],
-                            sub.data[1],
-                            sub.data[2],
-                            sub.data[3],
-                        ]);
+                        scale = read_f32(&sub.data, 0);
                     }
                     // XESP — enable-parent gating (Skyrim+). 4-byte
                     // parent FormID + 1-byte flags; bit 0 = inverted.
@@ -833,14 +922,94 @@ fn parse_refr_group(
                     // load; the cell loader now skips these via
                     // `enable_parent.default_disabled()`.
                     b"XESP" if sub.data.len() >= 5 => {
-                        let form_id = u32::from_le_bytes([
-                            sub.data[0],
-                            sub.data[1],
-                            sub.data[2],
-                            sub.data[3],
-                        ]);
+                        let form_id = read_u32(&sub.data, 0);
                         let inverted = sub.data[4] & 1 != 0;
                         enable_parent = Some(EnableParent { form_id, inverted });
+                    }
+                    // XTEL — Teleport destination (doors). Layout per
+                    // UESP: DestRef(u32) + pos(3×f32) + rot(3×f32) +
+                    // optional flags(u32) = 28 or 32 bytes. We read the
+                    // first 28 bytes and ignore the trailing flags so
+                    // FO3/FNV (sometimes 28-byte variant) parses the
+                    // same as Skyrim/FO4. Pre-#412 every interior door
+                    // was dead on activation.
+                    b"XTEL" if sub.data.len() >= 28 => {
+                        let destination = read_u32(&sub.data, 0);
+                        let dest_pos = [
+                            read_f32(&sub.data, 4),
+                            read_f32(&sub.data, 8),
+                            read_f32(&sub.data, 12),
+                        ];
+                        let dest_rot = [
+                            read_f32(&sub.data, 16),
+                            read_f32(&sub.data, 20),
+                            read_f32(&sub.data, 24),
+                        ];
+                        teleport = Some(TeleportDest {
+                            destination,
+                            position: dest_pos,
+                            rotation: dest_rot,
+                        });
+                    }
+                    // XPRM — Primitive bounds for trigger / activator
+                    // volumes. Layout per UESP: bounds(3×f32) +
+                    // color(3×f32) + unknown(f32) + shape_type(u32) =
+                    // 32 bytes. Pre-#412 triggers were invisible.
+                    b"XPRM" if sub.data.len() >= 32 => {
+                        let bounds = [
+                            read_f32(&sub.data, 0),
+                            read_f32(&sub.data, 4),
+                            read_f32(&sub.data, 8),
+                        ];
+                        let color = [
+                            read_f32(&sub.data, 12),
+                            read_f32(&sub.data, 16),
+                            read_f32(&sub.data, 20),
+                        ];
+                        let unknown = read_f32(&sub.data, 24);
+                        let shape_type = read_u32(&sub.data, 28);
+                        primitive = Some(PrimitiveBounds {
+                            bounds,
+                            color,
+                            unknown,
+                            shape_type,
+                        });
+                    }
+                    // XLKR — Linked refs. Layout: keyword(u32) +
+                    // target(u32) = 8 bytes. Multiple XLKR allowed per
+                    // REFR (patrol markers, door pairs, activator
+                    // targets). Pre-#412 NPCs didn't patrol and doors
+                    // didn't pair.
+                    b"XLKR" if sub.data.len() >= 8 => {
+                        let keyword = read_u32(&sub.data, 0);
+                        let target = read_u32(&sub.data, 4);
+                        linked_refs.push(LinkedRef { keyword, target });
+                    }
+                    // XRMR — Room membership. Layout per UESP:
+                    // count(u32) + count × room_ref(u32). Pre-#412 FO4
+                    // cell-subdivided interior culling couldn't work.
+                    // Guard the count against the remaining bytes so a
+                    // corrupt record can't over-read.
+                    b"XRMR" if sub.data.len() >= 4 => {
+                        let count = read_u32(&sub.data, 0) as usize;
+                        let max = (sub.data.len() - 4) / 4;
+                        let n = count.min(max);
+                        rooms.reserve(n);
+                        for i in 0..n {
+                            rooms.push(read_u32(&sub.data, 4 + i * 4));
+                        }
+                    }
+                    // XPOD — Portal origin/destination pair. 8 bytes.
+                    // Multiple XPOD sub-records allowed (one per portal
+                    // connected to this REFR).
+                    b"XPOD" if sub.data.len() >= 8 => {
+                        let origin = read_u32(&sub.data, 0);
+                        let destination = read_u32(&sub.data, 4);
+                        portals.push(PortalLink { origin, destination });
+                    }
+                    // XRDS — Light radius override. Single f32.
+                    b"XRDS" if sub.data.len() >= 4 => {
+                        radius_override = Some(read_f32(&sub.data, 0));
                     }
                     _ => {}
                 }
@@ -853,6 +1022,12 @@ fn parse_refr_group(
                     rotation,
                     scale,
                     enable_parent,
+                    teleport,
+                    primitive,
+                    linked_refs,
+                    rooms,
+                    portals,
+                    radius_override,
                 });
             }
         } else if &header.record_type == b"LAND" {
@@ -2128,6 +2303,201 @@ mod tests {
 
         assert_eq!(refs.len(), 1);
         assert!(refs[0].enable_parent.is_none());
+    }
+
+    /// Helper for #412 tests — build a REFR record from an arbitrary
+    /// sequence of (sub_type, payload) tuples so each test can target
+    /// exactly one sub-record arm. The REFR's own form ID is fixed at
+    /// `0x412412` so test failures are easy to grep for.
+    fn build_refr_with_subs(base_form_id: u32, extras: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
+        let mut sub_data = Vec::new();
+        sub_data.extend_from_slice(b"NAME");
+        sub_data.extend_from_slice(&4u16.to_le_bytes());
+        sub_data.extend_from_slice(&base_form_id.to_le_bytes());
+        sub_data.extend_from_slice(b"DATA");
+        sub_data.extend_from_slice(&24u16.to_le_bytes());
+        sub_data.extend_from_slice(&[0u8; 24]);
+        for (sub_type, payload) in extras {
+            sub_data.extend_from_slice(*sub_type);
+            sub_data.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+            sub_data.extend_from_slice(payload);
+        }
+
+        let mut record = Vec::new();
+        record.extend_from_slice(b"REFR");
+        record.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        record.extend_from_slice(&0u32.to_le_bytes());
+        record.extend_from_slice(&0x412412u32.to_le_bytes());
+        record.extend_from_slice(&[0u8; 8]);
+        record.extend_from_slice(&sub_data);
+        record
+    }
+
+    fn parse_one_refr(record: &[u8]) -> PlacedRef {
+        let mut reader = EsmReader::new(record);
+        let end = record.len();
+        let mut refs = Vec::new();
+        let mut land = None;
+        parse_refr_group(&mut reader, end, &mut refs, &mut land).unwrap();
+        assert_eq!(refs.len(), 1, "exactly one REFR expected");
+        refs.remove(0)
+    }
+
+    /// Regression for #412 — XTEL must populate `teleport` with the
+    /// destination ref + position + rotation. Pre-fix every interior
+    /// door was silently dropped on parse and activation did nothing.
+    #[test]
+    fn parse_refr_extracts_xtel_teleport_destination() {
+        // XTEL = DestRef(u32) + pos(3×f32) + rot(3×f32) = 28 B.
+        let mut xtel = Vec::new();
+        xtel.extend_from_slice(&0xDEADu32.to_le_bytes()); // destination
+        xtel.extend_from_slice(&100.0f32.to_le_bytes()); // pos x
+        xtel.extend_from_slice(&200.0f32.to_le_bytes()); // pos y
+        xtel.extend_from_slice(&50.0f32.to_le_bytes()); // pos z
+        xtel.extend_from_slice(&0.0f32.to_le_bytes()); // rot x
+        xtel.extend_from_slice(&std::f32::consts::FRAC_PI_2.to_le_bytes()); // rot y
+        xtel.extend_from_slice(&0.0f32.to_le_bytes()); // rot z
+
+        let record = build_refr_with_subs(0xBEEF, &[(b"XTEL", &xtel)]);
+        let r = parse_one_refr(&record);
+        let t = r.teleport.expect("XTEL must populate teleport");
+        assert_eq!(t.destination, 0xDEAD);
+        assert_eq!(t.position, [100.0, 200.0, 50.0]);
+        assert_eq!(t.rotation[1], std::f32::consts::FRAC_PI_2);
+    }
+
+    /// Regression for #412 — XTEL with the optional 4-byte trailing
+    /// flags (Skyrim+) still parses the 28-byte core correctly. Pre-fix
+    /// neither 28- nor 32-byte variant was handled.
+    #[test]
+    fn parse_refr_xtel_with_trailing_flags() {
+        let mut xtel = Vec::new();
+        xtel.extend_from_slice(&0xDEADu32.to_le_bytes());
+        xtel.extend_from_slice(&[0u8; 24]); // pos + rot zeros
+        xtel.extend_from_slice(&0x01u32.to_le_bytes()); // trailing flags
+        assert_eq!(xtel.len(), 32);
+        let record = build_refr_with_subs(0xBEEF, &[(b"XTEL", &xtel)]);
+        let r = parse_one_refr(&record);
+        let t = r.teleport.expect("XTEL with flags must still parse");
+        assert_eq!(t.destination, 0xDEAD);
+    }
+
+    /// Regression for #412 — multiple XLKR sub-records collect into
+    /// `linked_refs`. Pre-fix NPCs didn't know which patrol marker to
+    /// walk to and doors didn't pair with their teleport partner.
+    #[test]
+    fn parse_refr_extracts_multiple_xlkr_linked_refs() {
+        let mut xlkr_a = Vec::new();
+        xlkr_a.extend_from_slice(&0x11111111u32.to_le_bytes()); // keyword
+        xlkr_a.extend_from_slice(&0x22222222u32.to_le_bytes()); // target
+        let mut xlkr_b = Vec::new();
+        xlkr_b.extend_from_slice(&0u32.to_le_bytes()); // untyped link
+        xlkr_b.extend_from_slice(&0x33333333u32.to_le_bytes());
+
+        let record = build_refr_with_subs(
+            0xBEEF,
+            &[(b"XLKR", &xlkr_a), (b"XLKR", &xlkr_b)],
+        );
+        let r = parse_one_refr(&record);
+        assert_eq!(r.linked_refs.len(), 2, "both XLKR sub-records collected");
+        assert_eq!(r.linked_refs[0].keyword, 0x11111111);
+        assert_eq!(r.linked_refs[0].target, 0x22222222);
+        assert_eq!(r.linked_refs[1].keyword, 0);
+        assert_eq!(r.linked_refs[1].target, 0x33333333);
+    }
+
+    /// Regression for #412 — XPRM populates `primitive` so invisible
+    /// activators / trigger boxes have a runtime-usable volume.
+    #[test]
+    fn parse_refr_extracts_xprm_primitive_bounds() {
+        let mut xprm = Vec::new();
+        // bounds
+        xprm.extend_from_slice(&128.0f32.to_le_bytes());
+        xprm.extend_from_slice(&64.0f32.to_le_bytes());
+        xprm.extend_from_slice(&32.0f32.to_le_bytes());
+        // color
+        xprm.extend_from_slice(&1.0f32.to_le_bytes());
+        xprm.extend_from_slice(&0.5f32.to_le_bytes());
+        xprm.extend_from_slice(&0.0f32.to_le_bytes());
+        // unknown + shape
+        xprm.extend_from_slice(&0.0f32.to_le_bytes());
+        xprm.extend_from_slice(&1u32.to_le_bytes()); // shape_type = Box
+        assert_eq!(xprm.len(), 32);
+        let record = build_refr_with_subs(0xBEEF, &[(b"XPRM", &xprm)]);
+        let r = parse_one_refr(&record);
+        let p = r.primitive.expect("XPRM must populate primitive");
+        assert_eq!(p.bounds, [128.0, 64.0, 32.0]);
+        assert_eq!(p.color, [1.0, 0.5, 0.0]);
+        assert_eq!(p.shape_type, 1);
+    }
+
+    /// Regression for #412 — XRDS overrides the base LIGH radius per
+    /// placed ref. Pre-fix every REFR used the base radius unchanged.
+    #[test]
+    fn parse_refr_extracts_xrds_radius_override() {
+        let xrds = 256.0f32.to_le_bytes();
+        let record = build_refr_with_subs(0xBEEF, &[(b"XRDS", &xrds)]);
+        let r = parse_one_refr(&record);
+        assert_eq!(r.radius_override, Some(256.0));
+    }
+
+    /// Regression for #412 — XRMR room membership count + refs. Pre-fix
+    /// FO4 interior cell-subdivided culling had no room assignment to
+    /// work from. The helper also asserts the allocation bound: a
+    /// claimed count larger than the payload is clamped to the real
+    /// number of 4-byte slots available.
+    #[test]
+    fn parse_refr_extracts_xrmr_rooms_with_count_bound() {
+        let mut xrmr = Vec::new();
+        xrmr.extend_from_slice(&2u32.to_le_bytes()); // count
+        xrmr.extend_from_slice(&0xAAAAu32.to_le_bytes());
+        xrmr.extend_from_slice(&0xBBBBu32.to_le_bytes());
+        let record = build_refr_with_subs(0xBEEF, &[(b"XRMR", &xrmr)]);
+        let r = parse_one_refr(&record);
+        assert_eq!(r.rooms, vec![0xAAAA, 0xBBBB]);
+
+        // Corrupt-count case: claim 100 rooms in a 1-ref payload. The
+        // bound protects against garbage counts over-reading.
+        let mut corrupt = Vec::new();
+        corrupt.extend_from_slice(&100u32.to_le_bytes()); // claimed count
+        corrupt.extend_from_slice(&0xCCCCu32.to_le_bytes()); // only one room slot
+        let record = build_refr_with_subs(0xBEEF, &[(b"XRMR", &corrupt)]);
+        let r = parse_one_refr(&record);
+        assert_eq!(r.rooms, vec![0xCCCC], "count must be clamped to available bytes");
+    }
+
+    /// Regression for #412 — multiple XPOD sub-records collect into
+    /// `portals`. Each XPOD pairs two room refs.
+    #[test]
+    fn parse_refr_extracts_xpod_portal_pairs() {
+        let mut a = Vec::new();
+        a.extend_from_slice(&0x0Au32.to_le_bytes());
+        a.extend_from_slice(&0x0Bu32.to_le_bytes());
+        let mut b = Vec::new();
+        b.extend_from_slice(&0x0Cu32.to_le_bytes());
+        b.extend_from_slice(&0x0Du32.to_le_bytes());
+        let record = build_refr_with_subs(0xBEEF, &[(b"XPOD", &a), (b"XPOD", &b)]);
+        let r = parse_one_refr(&record);
+        assert_eq!(r.portals.len(), 2);
+        assert_eq!(r.portals[0].origin, 0x0A);
+        assert_eq!(r.portals[0].destination, 0x0B);
+        assert_eq!(r.portals[1].origin, 0x0C);
+        assert_eq!(r.portals[1].destination, 0x0D);
+    }
+
+    /// A plain REFR with none of the new sub-records must still parse
+    /// cleanly and leave every new field in its empty state — preserves
+    /// the pre-#412 behaviour for the common case.
+    #[test]
+    fn parse_refr_without_extra_subrecords_leaves_new_fields_empty() {
+        let record = build_refr_with_subs(0xBEEF, &[]);
+        let r = parse_one_refr(&record);
+        assert!(r.teleport.is_none());
+        assert!(r.primitive.is_none());
+        assert!(r.linked_refs.is_empty());
+        assert!(r.rooms.is_empty());
+        assert!(r.portals.is_empty());
+        assert!(r.radius_override.is_none());
     }
 
     /// Regression: #396 (OBL-D3-H2) — Oblivion ACRE (placed-creature
