@@ -12,9 +12,10 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-04-22.
-**Bench-of-record**: Prospector Saloon 251.6 FPS / 3.97 ms — commit
-`bee6d48`, 83 commits stale (see R6a).
+**Last verified**: 2026-04-23.
+**Bench-of-record**: INVALID — bench measures GPU submit time only, not
+wall-clock frame time. Observed FPS on Prospector at HEAD (`8b2fc5d`) is
+~35 FPS (~28 ms/frame); ~23 ms is unaccounted CPU overhead. See PERF-1.
 
 ---
 
@@ -89,10 +90,11 @@ typically gates a specific milestone.
 
 | #      | Milestone                      | Scope                                                                                                                                                                                                                                                                                                                        | Depends on         |
 |--------|--------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------|
+| PERF-1 | CPU frame-time audit           | (1) Fix bench to measure wall-clock frame time (timestamp at loop entry, not GPU submit). (2) Profile main-thread hotpath per frame — `build_render_data`, ECS query iteration, BLAS/TLAS update, draw-command sort. (3) Bring CPU frame overhead under ~5 ms on the 7950X; observed ~23 ms unaccounted overhead at HEAD is a bug. (4) Re-run Prospector to establish an honest baseline. **Blocks R6a closure.** | —                  |
 | M33.1  | Sky & atmosphere (follow-up)   | Weather transitions (snap → fade) and cloud layers 2/3. Core M33 is complete — sky gradient, sun disc, TOD interpolation, fog, 2-layer clouds (DNAM + CNAM) all working. See Completed Milestones.                                                                                                                          | —                  |
 | M34    | Exterior lighting              | Proper directional sun derived from WTHR/climate sun position. Time-of-day ambient color interpolation. Exterior fog from WTHR fog data (distance + color). Interior/exterior light path split in the shader.                                                                                                                | M33                |
 | M32.5  | Per-game cell loader parity    | Wire Skyrim + FO4 interior cells through the existing `cell_loader` (Skyrim has XCLL 92-byte + LGTM templates; FO4 has BGSM materials + SCOL/PKIN expansion already parsed). Oblivion needs BSA v103 decompression first.                                                                                                    | M24                |
-| R6a    | Prospector re-bench            | Re-run `--bench-frames 300` on Prospector at HEAD. Update "Bench-of-record" + matrix. Tracks 83-commit drift from `bee6d48`.                                                                                                                                                                                                 | —                  |
+| R6a    | Prospector re-bench            | Re-run `--bench-frames 300` on Prospector after PERF-1 ships honest wall-clock timing. Previous run (`8b2fc5d`) reported 180 FPS but measured GPU submit only; observed FPS was ~35.                                                                                                                                         | PERF-1             |
 
 ### Tier 2 — Actors visible & animated (blocks "cells are populated")
 
@@ -293,6 +295,8 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 ### Open — Tier 1 / 2 blockers
 
 - [x] No sky, sun, clouds, or atmosphere — **closed**. Sky gradient, sun disc with game-time arc, TOD interpolation across 10 color groups, dual cloud layers (DNAM layer 0 + CNAM layer 1 with parallax), fog, procedural fallback all working. Weather transitions (fade) and layers 2/3 tracked as M33.1.
+- [ ] **~23 ms CPU overhead per frame on 7950X** — bench revealed unaccounted main-thread work; observed ~35 FPS vs GPU-only reported ~180 FPS. Root cause unknown; suspects: `build_render_data`, ECS query iteration, BLAS/TLAS update path (PERF-1)
+- [ ] Bench measures GPU submit time only — wall-clock frame timing not implemented; all FPS claims since `bee6d48` are invalid (PERF-1)
 - [ ] No skinned mesh rendering — every NPC / creature is stuck in bind pose (M29)
 - [ ] NPCs + creatures don't spawn as ECS entities even when parsed (M41 / M41.0)
 - [ ] No world streaming — entire cell re-imported from scratch on every load (M40)
@@ -314,7 +318,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [ ] **R4** SWF/GFx strategic decision needed before M48 — Ruffle+GFx-stubs vs rewrite menus natively
 - [ ] **R5** Papyrus full-runtime prototype on one real quest before M47.2 scope commitment
 - [ ] **R6** `VulkanContext` scratch buffers have no capacity telemetry — add `ctx.scratch` before M40
-- [ ] **R6a** Prospector bench is 72 commits stale since `bee6d48` — re-run `--bench-frames 300`
+- [ ] **R6a** Prospector re-bench blocked on PERF-1 — previous run reported 180 FPS (GPU-submit only); actual observed ~35 FPS at `8b2fc5d`
 - [ ] **R7** Scheduler access declarations before flipping M27 parallel dispatch on
 
 ### Open — Misc

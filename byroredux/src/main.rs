@@ -170,6 +170,17 @@ struct App {
     /// Frames rendered since startup. Paired with `bench_frames_target`
     /// to drive the automated benchmark exit.
     bench_frames_count: u32,
+    /// Wall-clock start of the bench window (set on first bench frame).
+    /// Used to compute real elapsed time independent of the rolling stats
+    /// window, which measures per-AboutToWait dt and can miss CPU phases.
+    bench_start: Option<Instant>,
+    /// Accumulated nanoseconds spent in scheduler.run() during the bench.
+    bench_systems_ns: u64,
+    /// Number of about_to_wait ticks recorded during the bench window
+    /// (distinct from bench_frames_count which counts render frames).
+    bench_systems_ticks: u64,
+    /// Accumulated nanoseconds spent in build_render_data + draw_frame.
+    bench_render_ns: u64,
     /// When set, request a screenshot on the bench-exit frame and
     /// write the PNG to this path before quitting. Requires
     /// `bench_frames_target` to be set (otherwise there is no
@@ -281,6 +292,10 @@ impl App {
             palette_scratch: Vec::new(),
             bench_frames_target: None,
             bench_frames_count: 0,
+            bench_start: None,
+            bench_systems_ns: 0,
+            bench_systems_ticks: 0,
+            bench_render_ns: 0,
             screenshot_path: None,
             camera_pos_override: None,
             camera_forward_override: None,
@@ -389,6 +404,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(ref mut ctx) = self.renderer {
+                    let render_t0 = Instant::now();
                     let (view_proj, camera_pos, ambient, fog_color, fog_near, fog_far, sky_params) =
                         build_render_data(
                             &self.world,
@@ -485,6 +501,18 @@ impl ApplicationHandler for App {
                         &sky_params,
                     ) {
                         Ok(needs_recreate) => {
+                            if self.bench_frames_target.is_some() {
+                                self.bench_render_ns += render_t0.elapsed().as_nanos() as u64;
+                                // Count rendered frames here (not in about_to_wait)
+                                // so we measure actual presented frames, not event-loop
+                                // ticks. On composited desktops about_to_wait fires
+                                // multiple times per visual frame; only RedrawRequested
+                                // corresponds to a real GPU submit.
+                                if self.bench_start.is_none() {
+                                    self.bench_start = Some(Instant::now());
+                                }
+                                self.bench_frames_count += 1;
+                            }
                             if needs_recreate {
                                 if let Some(ref win) = self.window {
                                     let size = win.inner_size();
@@ -584,7 +612,12 @@ impl ApplicationHandler for App {
         }
 
         // Run all systems.
+        let systems_t0 = Instant::now();
         self.scheduler.run(&self.world, dt);
+        if self.bench_frames_target.is_some() && self.renderer.is_some() {
+            self.bench_systems_ns += systems_t0.elapsed().as_nanos() as u64;
+            self.bench_systems_ticks += 1;
+        }
 
         // Update window title with stats (throttled: every 16 frames ≈ 4×/sec at 60fps).
         let config_debug = self.world.resource::<EngineConfig>().debug_logging;
@@ -612,28 +645,37 @@ impl ApplicationHandler for App {
         // creation fails, etc.) does nothing here.
         if let Some(target) = self.bench_frames_target {
             if self.renderer.is_some() {
-                self.bench_frames_count += 1;
                 if self.bench_frames_count >= target {
                     let stats = self.world.resource::<DebugStats>();
-                    let (min_dt, max_dt) = stats.min_max_frame_time();
-                    let avg_dt = if stats.fps > 0.0 {
-                        1.0 / stats.avg_fps()
+                    let elapsed_secs = self
+                        .bench_start
+                        .map(|t| t.elapsed().as_secs_f64())
+                        .unwrap_or(1.0);
+                    let wall_fps = self.bench_frames_count as f64 / elapsed_secs;
+                    let wall_ms = elapsed_secs * 1000.0 / self.bench_frames_count as f64;
+                    let ticks_per_frame = self.bench_systems_ticks as f64
+                        / self.bench_frames_count as f64;
+                    let systems_ms_per_tick = if self.bench_systems_ticks > 0 {
+                        self.bench_systems_ns as f64 / self.bench_systems_ticks as f64 / 1_000_000.0
                     } else {
                         0.0
                     };
-                    let min_fps = if max_dt > 0.0 { 1.0 / max_dt } else { 0.0 };
-                    let max_fps = if min_dt > 0.0 { 1.0 / min_dt } else { 0.0 };
+                    let render_ms =
+                        self.bench_render_ns as f64 / self.bench_frames_count as f64 / 1_000_000.0;
+                    let unaccounted_ms =
+                        (wall_ms - systems_ms_per_tick * ticks_per_frame - render_ms).max(0.0);
                     println!(
-                        "bench: frames={} avg_fps={:.1} min_fps={:.1} max_fps={:.1} \
-                         avg_ms={:.2} min_ms={:.2} max_ms={:.2} \
+                        "bench: frames={} wall_fps={:.1} wall_ms={:.2} \
+                         render_ms={:.2} systems_ms={:.2} ticks_per_frame={:.1} \
+                         unaccounted_ms={:.2} \
                          entities={} meshes={} textures={} draws={}",
                         self.bench_frames_count,
-                        stats.avg_fps(),
-                        min_fps,
-                        max_fps,
-                        avg_dt * 1000.0,
-                        min_dt * 1000.0,
-                        max_dt * 1000.0,
+                        wall_fps,
+                        wall_ms,
+                        render_ms,
+                        systems_ms_per_tick,
+                        ticks_per_frame,
+                        unaccounted_ms,
                         stats.entity_count,
                         stats.mesh_count,
                         stats.texture_count,
