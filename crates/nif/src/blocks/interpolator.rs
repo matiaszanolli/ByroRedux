@@ -580,16 +580,45 @@ impl NiTextKeyExtraData {
 
 // ── NiBoolInterpolator ────────────────────────────────────────────────
 
+/// Discriminator for the two wire types that share the
+/// [`NiBoolInterpolator`] Rust struct. `NiBoolTimelineInterpolator` has
+/// the identical serialized layout (nif.xml line 3287 — no additional
+/// fields beyond `NiBoolInterpolator`), but its gameplay semantics differ:
+/// timelines guarantee no key is missed between two updates, so the
+/// importer needs the wire-type tag to wire the right play-head policy.
+/// Mirrors the [`super::tri_shape::BsTriShapeKind`] pattern — #548, #560.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoolInterpolatorKind {
+    /// Plain `NiBoolInterpolator` — sample the last passed key.
+    Plain,
+    /// `NiBoolTimelineInterpolator` — second-most-common NiUnknown on
+    /// Skyrim SE (6,796 blocks in vanilla). Wire layout identical to
+    /// `NiBoolInterpolator`; the discriminator distinguishes the
+    /// "don't miss a key between updates" semantics. #548.
+    Timeline,
+}
+
 /// Interpolates a boolean value (visibility). References NiBoolData.
 #[derive(Debug)]
 pub struct NiBoolInterpolator {
     pub value: bool,
     pub data_ref: BlockRef,
+    /// Wire-type discriminator. `NiBoolTimelineInterpolator` (nif.xml
+    /// line 3287) shares this struct; the `kind` field is what lets
+    /// downstream importers distinguish the two. See #548.
+    pub kind: BoolInterpolatorKind,
 }
 
 impl NiObject for NiBoolInterpolator {
     fn block_type_name(&self) -> &'static str {
-        "NiBoolInterpolator"
+        // Static-string contract — dispatch on the wire discriminator
+        // so downstream `block_type_name()` callers see the original
+        // subclass. Consumers that need the timeline semantics should
+        // match on `self.kind` instead.
+        match self.kind {
+            BoolInterpolatorKind::Plain => "NiBoolInterpolator",
+            BoolInterpolatorKind::Timeline => "NiBoolTimelineInterpolator",
+        }
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -598,11 +627,31 @@ impl NiObject for NiBoolInterpolator {
 
 impl NiBoolInterpolator {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        Self::parse_with_kind(stream, BoolInterpolatorKind::Plain)
+    }
+
+    /// Parse `NiBoolTimelineInterpolator`. Per nif.xml line 3287 the
+    /// subclass adds no fields over `NiBoolInterpolator`; the dispatch
+    /// simply stamps the Timeline discriminator. 8,450 blocks across
+    /// FO3 + FNV + Skyrim SE fell into `NiUnknown` pre-#548 because
+    /// no dispatch arm existed.
+    pub fn parse_timeline(stream: &mut NifStream) -> io::Result<Self> {
+        Self::parse_with_kind(stream, BoolInterpolatorKind::Timeline)
+    }
+
+    fn parse_with_kind(
+        stream: &mut NifStream,
+        kind: BoolInterpolatorKind,
+    ) -> io::Result<Self> {
         // nif.xml: NiBoolInterpolator.bool_value is type "bool" (1 byte),
         // NOT "NiBool" (version-dependent u32/u8). Always a single byte.
         let value = stream.read_byte_bool()?;
         let data_ref = stream.read_block_ref()?;
-        Ok(Self { value, data_ref })
+        Ok(Self {
+            value,
+            data_ref,
+            kind,
+        })
     }
 }
 
@@ -1030,6 +1079,80 @@ mod tests {
         assert_eq!(xyz[0].keys[1].value, 0.2);
         assert_eq!(xyz[1].keys[2].value, 2.0);
         assert_eq!(xyz[2].keys[0].value, 3.0);
+    }
+
+    /// Regression for #548 — plain `NiBoolInterpolator` keeps the
+    /// `Plain` discriminator (the pre-fix default) and reports its
+    /// original wire type name. Guards against the Timeline variant
+    /// accidentally widening to include plain blocks.
+    #[test]
+    fn ni_bool_interpolator_plain_stamps_plain_kind() {
+        let header = make_header_fnv();
+        let mut data = Vec::new();
+        data.push(1u8); // value = true
+        data.extend_from_slice(&7i32.to_le_bytes()); // data_ref
+        let mut stream = NifStream::new(&data, &header);
+        let interp = NiBoolInterpolator::parse(&mut stream).unwrap();
+        assert!(interp.value);
+        assert_eq!(interp.data_ref.index(), Some(7));
+        assert_eq!(interp.kind, BoolInterpolatorKind::Plain);
+        assert_eq!(interp.block_type_name(), "NiBoolInterpolator");
+        assert_eq!(stream.position() as usize, data.len());
+    }
+
+    /// Regression for #548 — `NiBoolTimelineInterpolator` shares the
+    /// wire layout of `NiBoolInterpolator` per nif.xml line 3287 (no
+    /// additional fields), so `parse_timeline` consumes exactly the
+    /// same 5 bytes (1 byte bool + 4 byte BlockRef). The discriminator
+    /// is what lets downstream importers tell the two apart — pre-fix
+    /// 8,450 blocks across FO3 + FNV + Skyrim SE went to NiUnknown.
+    #[test]
+    fn ni_bool_timeline_interpolator_parses_identical_wire_layout() {
+        let header = make_header_fnv();
+        let mut data = Vec::new();
+        data.push(0u8); // value = false
+        data.extend_from_slice(&12i32.to_le_bytes()); // data_ref
+        let mut stream = NifStream::new(&data, &header);
+        let interp = NiBoolInterpolator::parse_timeline(&mut stream).unwrap();
+        assert!(!interp.value);
+        assert_eq!(interp.data_ref.index(), Some(12));
+        assert_eq!(interp.kind, BoolInterpolatorKind::Timeline);
+        assert_eq!(
+            interp.block_type_name(),
+            "NiBoolTimelineInterpolator",
+            "block_type_name must dispatch on the wire-type discriminator"
+        );
+        assert_eq!(
+            stream.position() as usize,
+            data.len(),
+            "timeline wire layout is identical to plain — no extra fields per nif.xml line 3287"
+        );
+    }
+
+    /// Regression for #548 — the dispatcher must route
+    /// `NiBoolTimelineInterpolator` through `parse_timeline` (not the
+    /// plain `parse`). Pre-fix the dispatch arm was absent and the
+    /// block fell into the `NiUnknown` fallback at `blocks/mod.rs:705`.
+    #[test]
+    fn ni_bool_timeline_interpolator_dispatches_via_parse_block() {
+        let header = make_header_fnv();
+        let mut data = Vec::new();
+        data.push(1u8); // value = true
+        data.extend_from_slice(&99i32.to_le_bytes()); // data_ref
+        let mut stream = NifStream::new(&data, &header);
+        let block = crate::blocks::parse_block(
+            "NiBoolTimelineInterpolator",
+            &mut stream,
+            Some(data.len() as u32),
+        )
+        .expect("dispatch must route Timeline variant — pre-fix it was NiUnknown");
+        assert_eq!(block.block_type_name(), "NiBoolTimelineInterpolator");
+        let interp = block
+            .as_any()
+            .downcast_ref::<NiBoolInterpolator>()
+            .expect("Timeline and plain share the Rust struct");
+        assert_eq!(interp.kind, BoolInterpolatorKind::Timeline);
+        assert_eq!(interp.data_ref.index(), Some(99));
     }
 }
 

@@ -79,6 +79,7 @@ fn is_animation_block(type_name: &str) -> bool {
             | "NiColorInterpolator"
             | "NiColorData"
             | "NiBoolInterpolator"
+            | "NiBoolTimelineInterpolator"
             | "NiBoolData"
             | "NiBlendTransformInterpolator"
             | "NiBlendFloatInterpolator"

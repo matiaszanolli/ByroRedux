@@ -530,6 +530,13 @@ pub fn parse_block(
         "NiColorInterpolator" => Ok(Box::new(NiColorInterpolator::parse(stream)?)),
         "NiColorData" => Ok(Box::new(NiColorData::parse(stream)?)),
         "NiBoolInterpolator" => Ok(Box::new(NiBoolInterpolator::parse(stream)?)),
+        // NiBoolTimelineInterpolator — same wire layout as NiBoolInterpolator
+        // (nif.xml line 3287 adds no fields); only the semantics differ
+        // (ensures no key is missed between updates). 8,450 blocks across
+        // FO3 + FNV + Skyrim SE fell into NiUnknown pre-fix. #548.
+        "NiBoolTimelineInterpolator" => {
+            Ok(Box::new(NiBoolInterpolator::parse_timeline(stream)?))
+        }
         "NiBoolData" => Ok(Box::new(NiBoolData::parse(stream)?)),
         "NiTextKeyExtraData" => Ok(Box::new(NiTextKeyExtraData::parse(stream)?)),
         // Blend interpolators (NiControllerManager animation blending)
