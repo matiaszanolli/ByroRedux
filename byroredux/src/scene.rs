@@ -20,7 +20,7 @@ use crate::asset_provider::{
 use crate::cell_loader;
 use crate::components::{
     AlphaBlend, CellLightingRes, DarkMapHandle, Decal, ExtraTextureMaps, GameTimeRes, InputState,
-    NormalMapHandle, SkyParamsRes, Spinning, TwoSided, WeatherDataRes,
+    NormalMapHandle, SkyParamsRes, Spinning, TwoSided, WeatherDataRes, WeatherTransitionRes,
 };
 use crate::helpers::add_child;
 
@@ -298,6 +298,52 @@ pub(crate) fn setup_scene(
                                 },
                                 None => (0u32, 0.0_f32),
                             };
+                        // Resolve WTHR cloud layer 2 (ANAM). Tile scale 0.25 —
+                        // higher altitude than layers 0/1, finer-grained. (M33.1)
+                        let (cloud_tex_index_2, cloud_tile_scale_2) =
+                            match wthr.cloud_textures[2].as_deref() {
+                                Some(path) => match tex_provider.extract(path) {
+                                    Some(dds_bytes) => {
+                                        let alloc = ctx.allocator.as_ref().unwrap();
+                                        match ctx.texture_registry.load_dds(
+                                            &ctx.device,
+                                            alloc,
+                                            &ctx.graphics_queue,
+                                            ctx.transfer_pool,
+                                            path,
+                                            &dds_bytes,
+                                        ) {
+                                            Ok(h) => (h, 0.25_f32),
+                                            Err(_) => (0u32, 0.0_f32),
+                                        }
+                                    }
+                                    None => (0u32, 0.0_f32),
+                                },
+                                None => (0u32, 0.0_f32),
+                            };
+                        // Resolve WTHR cloud layer 3 (BNAM). Tile scale 0.30 —
+                        // topmost, finest-grained cirrus-style layer. (M33.1)
+                        let (cloud_tex_index_3, cloud_tile_scale_3) =
+                            match wthr.cloud_textures[3].as_deref() {
+                                Some(path) => match tex_provider.extract(path) {
+                                    Some(dds_bytes) => {
+                                        let alloc = ctx.allocator.as_ref().unwrap();
+                                        match ctx.texture_registry.load_dds(
+                                            &ctx.device,
+                                            alloc,
+                                            &ctx.graphics_queue,
+                                            ctx.transfer_pool,
+                                            path,
+                                            &dds_bytes,
+                                        ) {
+                                            Ok(h) => (h, 0.30_f32),
+                                            Err(_) => (0u32, 0.0_f32),
+                                        }
+                                    }
+                                    None => (0u32, 0.0_f32),
+                                },
+                                None => (0u32, 0.0_f32),
+                            };
                         // CLMT FNAM sun-sprite resolution — #478.
                         // Same extract-then-load-DDS pattern as the
                         // cloud texture above; path normalization
@@ -353,6 +399,12 @@ pub(crate) fn setup_scene(
                             cloud_scroll_1: [0.0, 0.0],
                             cloud_tile_scale_1,
                             cloud_texture_index_1: cloud_tex_index_1,
+                            cloud_scroll_2: [0.0, 0.0],
+                            cloud_tile_scale_2,
+                            cloud_texture_index_2: cloud_tex_index_2,
+                            cloud_scroll_3: [0.0, 0.0],
+                            cloud_tile_scale_3,
+                            cloud_texture_index_3: cloud_tex_index_3,
                         });
                         // Store full NAM0 color table for per-frame time-of-day interpolation.
                         let mut sky_colors = [[[0.0f32; 3]; 6]; 10];
@@ -384,7 +436,7 @@ pub(crate) fn setup_scene(
                                 ]
                             })
                             .unwrap_or([6.0, 10.0, 18.0, 22.0]);
-                        world.insert_resource(WeatherDataRes {
+                        let new_weather = WeatherDataRes {
                             sky_colors,
                             fog: [
                                 wthr.fog_day_near,
@@ -393,8 +445,20 @@ pub(crate) fn setup_scene(
                                 wthr.fog_night_far,
                             ],
                             tod_hours,
-                        });
-                        world.insert_resource(GameTimeRes::default());
+                        };
+                        // If a previous weather is already live, fade into the
+                        // new one over 8 seconds rather than snapping. On first
+                        // load there is no previous weather so we insert directly.
+                        if world.try_resource::<WeatherDataRes>().is_some() {
+                            world.insert_resource(WeatherTransitionRes {
+                                target: new_weather,
+                                elapsed_secs: 0.0,
+                                duration_secs: 8.0,
+                            });
+                        } else {
+                            world.insert_resource(new_weather);
+                            world.insert_resource(GameTimeRes::default());
+                        }
                     } else {
                         // Procedural fallback — warm Mojave desert sky.
                         world.insert_resource(CellLightingRes {
@@ -421,6 +485,12 @@ pub(crate) fn setup_scene(
                             cloud_scroll_1: [0.0, 0.0],
                             cloud_tile_scale_1: 0.0,
                             cloud_texture_index_1: 0,
+                            cloud_scroll_2: [0.0, 0.0],
+                            cloud_tile_scale_2: 0.0,
+                            cloud_texture_index_2: 0,
+                            cloud_scroll_3: [0.0, 0.0],
+                            cloud_tile_scale_3: 0.0,
+                            cloud_texture_index_3: 0,
                         });
                     }
                 }

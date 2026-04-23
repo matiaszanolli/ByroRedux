@@ -897,6 +897,12 @@ pub(crate) fn build_render_data(
             cloud_scroll_1: sky_res.cloud_scroll_1,
             cloud_tile_scale_1: sky_res.cloud_tile_scale_1,
             cloud_texture_index_1: sky_res.cloud_texture_index_1,
+            cloud_scroll_2: sky_res.cloud_scroll_2,
+            cloud_tile_scale_2: sky_res.cloud_tile_scale_2,
+            cloud_texture_index_2: sky_res.cloud_texture_index_2,
+            cloud_scroll_3: sky_res.cloud_scroll_3,
+            cloud_tile_scale_3: sky_res.cloud_tile_scale_3,
+            cloud_texture_index_3: sky_res.cloud_texture_index_3,
         }
     } else {
         SkyParams::default()

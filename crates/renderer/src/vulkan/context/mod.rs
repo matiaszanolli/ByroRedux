@@ -244,6 +244,18 @@ pub struct SkyParams {
     pub cloud_tile_scale_1: f32,
     /// Bindless texture handle for cloud_textures[1] (WTHR CNAM).
     pub cloud_texture_index_1: u32,
+    /// Cloud layer 2 scroll offset (WTHR ANAM) — M33.1.
+    pub cloud_scroll_2: [f32; 2],
+    /// Cloud layer 2 UV tile scale. `0.0` disables the layer.
+    pub cloud_tile_scale_2: f32,
+    /// Bindless texture handle for cloud_textures[2] (WTHR ANAM).
+    pub cloud_texture_index_2: u32,
+    /// Cloud layer 3 scroll offset (WTHR BNAM) — M33.1.
+    pub cloud_scroll_3: [f32; 2],
+    /// Cloud layer 3 UV tile scale. `0.0` disables the layer.
+    pub cloud_tile_scale_3: f32,
+    /// Bindless texture handle for cloud_textures[3] (WTHR BNAM).
+    pub cloud_texture_index_3: u32,
 }
 
 impl Default for SkyParams {
@@ -263,6 +275,12 @@ impl Default for SkyParams {
             cloud_scroll_1: [0.0, 0.0],
             cloud_tile_scale_1: 0.0,
             cloud_texture_index_1: 0,
+            cloud_scroll_2: [0.0, 0.0],
+            cloud_tile_scale_2: 0.0,
+            cloud_texture_index_2: 0,
+            cloud_scroll_3: [0.0, 0.0],
+            cloud_tile_scale_3: 0.0,
+            cloud_texture_index_3: 0,
         }
     }
 }

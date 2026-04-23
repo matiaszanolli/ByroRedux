@@ -73,6 +73,14 @@ pub struct CompositeParams {
     /// Drifts in the opposite U direction at 1.35× speed for parallax.
     /// `z` = 0.0 disables the layer when no CNAM texture is available.
     pub cloud_params_1: [f32; 4],
+    /// Cloud layer 2 parameters (WTHR ANAM). Same packing as cloud_params (M33.1).
+    /// Drifts in the same direction as layer 0 for layered parallax.
+    /// `z` = 0.0 disables the layer when no ANAM texture is available.
+    pub cloud_params_2: [f32; 4],
+    /// Cloud layer 3 parameters (WTHR BNAM). Same packing as cloud_params (M33.1).
+    /// Drifts in the opposite U direction (mirrors layer 1).
+    /// `z` = 0.0 disables the layer when no BNAM texture is available.
+    pub cloud_params_3: [f32; 4],
     /// `xyz` = camera world position; `w` unused. Needed for per-pixel
     /// world-space fog distance in composite (#428). Before this field
     /// landed, fog was computed in `triangle.frag` and baked into the
@@ -1116,15 +1124,20 @@ mod composite_params_layout_tests {
         assert_eq!(offset_of!(CompositeParams, sun_color), 96);
         assert_eq!(offset_of!(CompositeParams, cloud_params), 112);
         assert_eq!(offset_of!(CompositeParams, cloud_params_1), 128);
+        // M33.1 — cloud layers 2/3 inserted between cloud_params_1 and
+        // camera_pos so the new vec4s slot in cleanly without disturbing
+        // the trailing camera_pos + inv_view_proj layout shape.
+        assert_eq!(offset_of!(CompositeParams, cloud_params_2), 144);
+        assert_eq!(offset_of!(CompositeParams, cloud_params_3), 160);
         // #428 — `camera_pos` was added after `cloud_params` and before
         // `inv_view_proj`. Fixing the offset here prevents a future
         // reorder from silently corrupting the fog-distance origin.
-        assert_eq!(offset_of!(CompositeParams, camera_pos), 144);
-        assert_eq!(offset_of!(CompositeParams, inv_view_proj), 160);
+        assert_eq!(offset_of!(CompositeParams, camera_pos), 176);
+        assert_eq!(offset_of!(CompositeParams, inv_view_proj), 192);
         assert_eq!(
             size_of::<CompositeParams>(),
-            160 + 64,
-            "CompositeParams must be 224 bytes (10 × vec4 + mat4)"
+            192 + 64,
+            "CompositeParams must be 256 bytes (12 × vec4 + mat4)"
         );
     }
 }

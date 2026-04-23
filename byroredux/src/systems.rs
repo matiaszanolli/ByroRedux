@@ -19,7 +19,7 @@ use byroredux_core::string::FixedString;
 use crate::anim_convert::build_subtree_name_map;
 use crate::components::{
     CellLightingRes, GameTimeRes, InputState, NameIndex, SkyParamsRes, Spinning, SubtreeCache,
-    WeatherDataRes,
+    WeatherDataRes, WeatherTransitionRes,
 };
 
 /// Fly camera system: WASD + mouse look. Updates the active camera's Transform.
@@ -1126,6 +1126,15 @@ pub(crate) fn build_tod_keys(tod_hours: [f32; 4]) -> [(f32, usize); 7] {
 /// NAM0 sky colors, computes sun arc, and updates SkyParamsRes + CellLightingRes.
 ///
 /// Only runs when WeatherDataRes + GameTimeRes exist (exterior cells with weather).
+///
+/// M33.1 — when `WeatherTransitionRes` is present, the system blends the
+/// per-TOD-sampled colours between the current `WeatherDataRes` and the
+/// transition's `target` snapshot by `t = elapsed_secs / duration_secs`.
+/// Each weather is independently TOD-sampled (so the transition stays
+/// correct across midnight wraps where each side might land on a
+/// different slot); only the final per-channel lerp uses `t`. When the
+/// transition completes (`t >= 1.0`) the resource is removed and the
+/// live `WeatherDataRes` is replaced with `target` for subsequent frames.
 pub(crate) fn weather_system(world: &World, dt: f32) {
     // Advance game clock.
     let hour = {
@@ -1138,6 +1147,20 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         }
         game_time.hour
     };
+
+    // M33.1 — advance the in-flight WTHR cross-fade timer (if any) and
+    // capture the blend weight + finished flag for use below. When the
+    // transition completes we swap WeatherDataRes to the target snapshot
+    // and drop the transition resource.
+    let (transition_t, transition_done) =
+        if let Some(mut tr) = world.try_resource_mut::<WeatherTransitionRes>() {
+            tr.elapsed_secs += dt;
+            let dur = tr.duration_secs.max(1e-3);
+            let t = (tr.elapsed_secs / dur).clamp(0.0, 1.0);
+            (t, t >= 1.0)
+        } else {
+            (0.0, false)
+        };
 
     let Some(wd) = world.try_resource::<WeatherDataRes>() else {
         return;
@@ -1239,6 +1262,94 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     let fog_near = wd.fog[0] + (wd.fog[2] - wd.fog[0]) * night_factor;
     let fog_far = wd.fog[1] + (wd.fog[3] - wd.fog[1]) * night_factor;
 
+    // M33.1 — if a WTHR cross-fade is in flight, run the same TOD-slot
+    // pick + per-group sampling on the target snapshot and blend each
+    // colour channel by `transition_t`. The TOD slots are independent
+    // per-side (target may use the same `keys` table since `tod_hours`
+    // is on WeatherDataRes; we re-derive it from the target's own
+    // breakpoints to stay correct if the target ships a different CLMT).
+    let (zenith, horizon, sun_col, ambient, sunlight, fog_col, fog_near, fog_far) = if transition_t
+        > 0.0
+    {
+        let tr = world
+            .try_resource::<WeatherTransitionRes>()
+            .expect("transition_t > 0 implies WeatherTransitionRes");
+        let target = &tr.target;
+
+        let keys_b = build_tod_keys(target.tod_hours);
+        let (b_a, b_b, b_t) = {
+            let h = if hour < keys_b[0].0 { hour + 24.0 } else { hour };
+            let last = keys_b.len() - 1;
+            let mut found = (keys_b[last].1, keys_b[0].1, 0.0f32);
+            for i in 0..last {
+                let (h0, s0) = keys_b[i];
+                let (h1, s1) = keys_b[i + 1];
+                if h >= h0 && h < h1 {
+                    found = (s0, s1, (h - h0) / (h1 - h0));
+                    break;
+                }
+            }
+            if h >= keys_b[last].0 {
+                let h0 = keys_b[last].0;
+                let h1 = keys_b[0].0 + 24.0;
+                let frac = ((h - h0) / (h1 - h0)).clamp(0.0, 1.0);
+                found = (keys_b[last].1, keys_b[0].1, frac);
+            }
+            found
+        };
+
+        let target_zenith = lerp3(
+            target.sky_colors[SKY_UPPER][b_a],
+            target.sky_colors[SKY_UPPER][b_b],
+            b_t,
+        );
+        let target_horizon = lerp3(
+            target.sky_colors[SKY_HORIZON][b_a],
+            target.sky_colors[SKY_HORIZON][b_b],
+            b_t,
+        );
+        let target_sun_col = lerp3(
+            target.sky_colors[SKY_SUN][b_a],
+            target.sky_colors[SKY_SUN][b_b],
+            b_t,
+        );
+        let target_ambient = lerp3(
+            target.sky_colors[SKY_AMBIENT][b_a],
+            target.sky_colors[SKY_AMBIENT][b_b],
+            b_t,
+        );
+        let target_sunlight = lerp3(
+            target.sky_colors[SKY_SUNLIGHT][b_a],
+            target.sky_colors[SKY_SUNLIGHT][b_b],
+            b_t,
+        );
+        let target_fog_col = lerp3(
+            target.sky_colors[SKY_FOG][b_a],
+            target.sky_colors[SKY_FOG][b_b],
+            b_t,
+        );
+        let target_fog_near =
+            target.fog[0] + (target.fog[2] - target.fog[0]) * night_factor;
+        let target_fog_far =
+            target.fog[1] + (target.fog[3] - target.fog[1]) * night_factor;
+
+        let lerp1 = |a: f32, b: f32, k: f32| a + (b - a) * k;
+        (
+            lerp3(zenith, target_zenith, transition_t),
+            lerp3(horizon, target_horizon, transition_t),
+            lerp3(sun_col, target_sun_col, transition_t),
+            lerp3(ambient, target_ambient, transition_t),
+            lerp3(sunlight, target_sunlight, transition_t),
+            lerp3(fog_col, target_fog_col, transition_t),
+            lerp1(fog_near, target_fog_near, transition_t),
+            lerp1(fog_far, target_fog_far, transition_t),
+        )
+    } else {
+        (
+            zenith, horizon, sun_col, ambient, sunlight, fog_col, fog_near, fog_far,
+        )
+    };
+
     // Sun direction: semicircular arc from east (6h) through zenith (12h) to west (18h).
     // Below horizon at night. Y-up coordinate system.
     let sun_dir = {
@@ -1304,6 +1415,15 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             (sky.cloud_scroll_1[0] - cloud_scroll_rate * 1.35 * dt).rem_euclid(1.0);
         sky.cloud_scroll_1[1] =
             (sky.cloud_scroll_1[1] + cloud_scroll_rate * 0.5 * dt).rem_euclid(1.0);
+        // Layer 2 (WTHR ANAM) — same direction as layer 0 (M33.1).
+        sky.cloud_scroll_2[0] = (sky.cloud_scroll_2[0] + cloud_scroll_rate * dt).rem_euclid(1.0);
+        sky.cloud_scroll_2[1] =
+            (sky.cloud_scroll_2[1] + cloud_scroll_rate * 0.3 * dt).rem_euclid(1.0);
+        // Layer 3 (WTHR BNAM) — same opposite-direction pattern as layer 1 (M33.1).
+        sky.cloud_scroll_3[0] =
+            (sky.cloud_scroll_3[0] - cloud_scroll_rate * 1.35 * dt).rem_euclid(1.0);
+        sky.cloud_scroll_3[1] =
+            (sky.cloud_scroll_3[1] + cloud_scroll_rate * 0.5 * dt).rem_euclid(1.0);
     }
 
     // Update CellLightingRes.
@@ -1314,6 +1434,32 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         cell_lit.fog_color = fog_col;
         cell_lit.fog_near = fog_near;
         cell_lit.fog_far = fog_far;
+    }
+
+    // M33.1 — promote the in-flight transition target into the live
+    // WeatherDataRes once the cross-fade completes. Uses in-place
+    // mutation via try_resource_mut (interior mutability, &World safe).
+    // elapsed_secs is saturated at duration_secs so subsequent frames
+    // skip the blend path without removing the resource (remove_resource
+    // needs &mut World which systems do not have).
+    if transition_done {
+        if let Some(tr) = world.try_resource::<WeatherTransitionRes>() {
+            let new_sky = tr.target.sky_colors;
+            let new_fog = tr.target.fog;
+            let new_tod = tr.target.tod_hours;
+            drop(tr);
+            if let Some(mut wd) = world.try_resource_mut::<WeatherDataRes>() {
+                wd.sky_colors = new_sky;
+                wd.fog = new_fog;
+                wd.tod_hours = new_tod;
+            }
+            // Set duration to infinity so t = elapsed/duration = 0.0 from
+            // now on — the transition is permanently dormant without removal.
+            if let Some(mut tr) = world.try_resource_mut::<WeatherTransitionRes>() {
+                tr.elapsed_secs = 0.0;
+                tr.duration_secs = f32::INFINITY;
+            }
+        }
     }
 }
 

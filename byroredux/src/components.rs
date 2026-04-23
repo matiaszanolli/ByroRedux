@@ -153,6 +153,22 @@ pub(crate) struct SkyParamsRes {
     /// Bindless texture handle for cloud_textures[1] (WTHR CNAM).
     /// Only meaningful when `cloud_tile_scale_1 > 0.0`.
     pub(crate) cloud_texture_index_1: u32,
+    /// Cloud layer 2 scroll offset (WTHR ANAM). Same direction/speed
+    /// pattern as layer 0 but offset for parallax (M33.1).
+    pub(crate) cloud_scroll_2: [f32; 2],
+    /// Cloud layer 2 UV tile scale. `0.0` disables the layer.
+    /// Set to `0.0` when no ANAM texture is available.
+    pub(crate) cloud_tile_scale_2: f32,
+    /// Bindless texture handle for cloud_textures[2] (WTHR ANAM).
+    pub(crate) cloud_texture_index_2: u32,
+    /// Cloud layer 3 scroll offset (WTHR BNAM). Same opposite-direction
+    /// drift pattern as layer 1 (M33.1).
+    pub(crate) cloud_scroll_3: [f32; 2],
+    /// Cloud layer 3 UV tile scale. `0.0` disables the layer.
+    /// Set to `0.0` when no BNAM texture is available.
+    pub(crate) cloud_tile_scale_3: f32,
+    /// Bindless texture handle for cloud_textures[3] (WTHR BNAM).
+    pub(crate) cloud_texture_index_3: u32,
 }
 impl Resource for SkyParamsRes {}
 
@@ -198,6 +214,26 @@ pub(crate) struct WeatherDataRes {
     pub(crate) tod_hours: [f32; 4],
 }
 impl Resource for WeatherDataRes {}
+
+/// In-flight cross-fade between two `WeatherDataRes` snapshots (M33.1).
+///
+/// When a cell load encounters a different weather while one is already
+/// active, `scene.rs` keeps the current `WeatherDataRes` in place and
+/// inserts this resource carrying the new target plus the WTHR TNAM
+/// transition duration. `weather_system` advances `elapsed_secs` each
+/// frame, blends the post-TOD-sample colours by `t = elapsed/duration`,
+/// and on completion swaps the live `WeatherDataRes` to `target` and
+/// removes the transition resource.
+///
+/// Interpolation happens after each side runs its own TOD-slot pick so
+/// the transition stays correct across the midnight wrap (each weather
+/// can be on a different slot).
+pub(crate) struct WeatherTransitionRes {
+    pub(crate) target: WeatherDataRes,
+    pub(crate) elapsed_secs: f32,
+    pub(crate) duration_secs: f32,
+}
+impl Resource for WeatherTransitionRes {}
 
 /// Cached name→entity mapping for the animation system.
 ///
