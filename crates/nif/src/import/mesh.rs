@@ -7,6 +7,8 @@ use crate::blocks::skin::{
     BsDismemberSkinInstance, BsSkinBoneData, BsSkinInstance, NiSkinData, NiSkinInstance,
 };
 use crate::blocks::tri_shape::{BsTriShape, NiTriShape, NiTriShapeData, NiTriStripsData};
+#[cfg(test)]
+use crate::blocks::tri_shape::BsTriShapeKind;
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
 
@@ -964,6 +966,7 @@ mod bs_tri_shape_shader_flag_tests {
             triangles: vec![[0, 1, 2]],
             bone_weights: Vec::new(),
             bone_indices: Vec::new(),
+            kind: BsTriShapeKind::Plain,
         }
     }
 
@@ -1222,6 +1225,7 @@ mod shader_type_fields_tests {
             triangles: vec![[0, 1, 2]],
             bone_weights: Vec::new(),
             bone_indices: Vec::new(),
+            kind: BsTriShapeKind::Plain,
         }
     }
 
@@ -1470,6 +1474,7 @@ mod material_path_capture_tests {
             triangles: vec![[0, 1, 2]],
             bone_weights: Vec::new(),
             bone_indices: Vec::new(),
+            kind: BsTriShapeKind::Plain,
         }
     }
 

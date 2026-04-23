@@ -177,6 +177,36 @@ impl NiTriShape {
 /// NiTriStrips — identical serialization to NiTriShape (both are NiGeometry).
 pub type NiTriStrips = NiTriShape;
 
+/// Discriminator for the five wire-distinct types that share the
+/// [`BsTriShape`] Rust struct. Pre-#560 every variant reported
+/// `"BSTriShape"` and downstream consumers (facegen head detection,
+/// distant-LOD import, dismember segmentation) couldn't tell them apart.
+///
+/// Mirrors the [`super::node::BsRangeKind`] pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BsTriShapeKind {
+    /// Plain `BSTriShape` — the baseline Skyrim SE+ geometry block.
+    Plain,
+    /// `BSLODTriShape` — FO4 distant-LOD variant. Trailing three u32
+    /// triangle-count cutoffs drive which LOD level is selected at
+    /// render time for distant terrain / buildings.
+    LOD { lod0: u32, lod1: u32, lod2: u32 },
+    /// `BSMeshLODTriShape` — Skyrim SE DLC LOD variant. Same wire
+    /// format as `BSLODTriShape` (three trailing u32s), but the engine
+    /// doesn't consult them — the LOD selection is driven elsewhere.
+    /// Preserved as a distinct `kind` so importers can differentiate.
+    MeshLOD,
+    /// `BSSubIndexTriShape` — ubiquitous in Skyrim SE DLC / FO4 actor
+    /// meshes for dismemberment segmentation. Trailing segmentation
+    /// table is currently skipped via `block_size`; the `kind` is what
+    /// tells the importer the body is segmented. See #404.
+    SubIndex,
+    /// `BSDynamicTriShape` — Skyrim facegen head meshes. The trailing
+    /// `Vector4` array carries the CPU-morph-updated vertex positions
+    /// that overwrite the base `vertices`. See #341.
+    Dynamic,
+}
+
 /// BSTriShape — Skyrim SE+ geometry with embedded vertex data.
 ///
 /// Unlike NiTriShape which references separate NiTriShapeData, BSTriShape
@@ -208,11 +238,25 @@ pub struct BsTriShape {
     /// Per-vertex bone indices (4 per vertex). Parallel to `bone_weights`.
     /// Empty when the vertex descriptor lacks VF_SKINNED.
     pub bone_indices: Vec<[u8; 4]>,
+    /// Wire-type discriminator. Set by each parser arm; the dispatcher
+    /// in [`super::mod`] uses [`Self::with_kind`] to override for types
+    /// that share a parser (BSMeshLODTriShape / BSSubIndexTriShape). #560.
+    pub kind: BsTriShapeKind,
 }
 
 impl NiObject for BsTriShape {
     fn block_type_name(&self) -> &'static str {
-        "BSTriShape"
+        // Static-string contract on the trait — dispatch on the wire
+        // discriminator so downstream `block_type_name()` callers see
+        // the original subclass. Consumers that need the LOD cutoffs
+        // should match on `self.kind` instead.
+        match self.kind {
+            BsTriShapeKind::Plain => "BSTriShape",
+            BsTriShapeKind::LOD { .. } => "BSLODTriShape",
+            BsTriShapeKind::MeshLOD => "BSMeshLODTriShape",
+            BsTriShapeKind::SubIndex => "BSSubIndexTriShape",
+            BsTriShapeKind::Dynamic => "BSDynamicTriShape",
+        }
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -518,7 +562,17 @@ impl BsTriShape {
             triangles,
             bone_weights,
             bone_indices,
+            kind: BsTriShapeKind::Plain,
         })
+    }
+
+    /// Builder used by the block dispatcher to stamp the wire type
+    /// discriminator for BSMeshLODTriShape and BSSubIndexTriShape, which
+    /// share [`Self::parse`] / [`Self::parse_lod`] with the Plain and LOD
+    /// variants. See #560.
+    pub fn with_kind(mut self, kind: BsTriShapeKind) -> Self {
+        self.kind = kind;
+        self
     }
 
     /// Parse `BSDynamicTriShape` — a BSTriShape subclass used for Skyrim
@@ -557,6 +611,7 @@ impl BsTriShape {
                 shape.vertices = dynamic_vertices;
             }
         }
+        shape.kind = BsTriShapeKind::Dynamic;
         Ok(shape)
     }
 
@@ -571,14 +626,17 @@ impl BsTriShape {
     /// uint lod_2_size
     /// ```
     ///
-    /// The LOD sizes are consumed but not retained — the importer only
-    /// needs the base geometry to make distant buildings render. See
-    /// issue #157.
+    /// The sizes are preserved via [`BsTriShapeKind::LOD`] so the FO4
+    /// distant-LOD batch importer can pick the correct triangle cutoff.
+    /// The `BSMeshLODTriShape` dispatch arm calls this and then overwrites
+    /// the kind via [`Self::with_kind`] — Skyrim SE DLC doesn't consult
+    /// the cutoffs but we still want the wire-type discriminator. See #157, #560.
     pub fn parse_lod(stream: &mut NifStream) -> io::Result<Self> {
-        let shape = Self::parse(stream)?;
-        let _lod0 = stream.read_u32_le()?;
-        let _lod1 = stream.read_u32_le()?;
-        let _lod2 = stream.read_u32_le()?;
+        let mut shape = Self::parse(stream)?;
+        let lod0 = stream.read_u32_le()?;
+        let lod1 = stream.read_u32_le()?;
+        let lod2 = stream.read_u32_le()?;
+        shape.kind = BsTriShapeKind::LOD { lod0, lod1, lod2 };
         Ok(shape)
     }
 }
@@ -1495,6 +1553,91 @@ mod skin_vertex_tests {
             bytes.len(),
             "BSLODTriShape trailing LOD sizes not fully consumed"
         );
+    }
+
+    /// Regression: #560 — each wire-distinct BsTriShape subtype must stamp
+    /// the matching `kind` discriminator and report its original type name
+    /// via `block_type_name()`. Pre-fix every variant returned
+    /// `"BSTriShape"` and downstream consumers (facegen head detection,
+    /// distant-LOD batch importer, dismember segmentation) could not tell
+    /// a head from a static prop from a segmented body from a LOD shell.
+    #[test]
+    fn bs_tri_shape_variants_stamp_their_kind() {
+        let header = test_header();
+
+        // 1. Plain BSTriShape → Plain.
+        {
+            let bytes = minimal_bs_tri_shape_bytes();
+            let mut stream = crate::stream::NifStream::new(&bytes, &header);
+            let block = parse_block("BSTriShape", &mut stream, Some(bytes.len() as u32)).unwrap();
+            let shape = block.as_any().downcast_ref::<BsTriShape>().unwrap();
+            assert_eq!(shape.kind, BsTriShapeKind::Plain);
+            assert_eq!(block.block_type_name(), "BSTriShape");
+        }
+
+        // 2. BSLODTriShape → LOD { lod0, lod1, lod2 } (values preserved).
+        {
+            let mut bytes = minimal_bs_tri_shape_bytes();
+            bytes.extend_from_slice(&10u32.to_le_bytes());
+            bytes.extend_from_slice(&5u32.to_le_bytes());
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            let mut stream = crate::stream::NifStream::new(&bytes, &header);
+            let block =
+                parse_block("BSLODTriShape", &mut stream, Some(bytes.len() as u32)).unwrap();
+            let shape = block.as_any().downcast_ref::<BsTriShape>().unwrap();
+            assert_eq!(
+                shape.kind,
+                BsTriShapeKind::LOD {
+                    lod0: 10,
+                    lod1: 5,
+                    lod2: 1,
+                }
+            );
+            assert_eq!(block.block_type_name(), "BSLODTriShape");
+        }
+
+        // 3. BSMeshLODTriShape → MeshLOD (same wire format as LOD but
+        //    different kind so importers can branch — Skyrim SE DLC
+        //    doesn't consult the cutoffs).
+        {
+            let mut bytes = minimal_bs_tri_shape_bytes();
+            bytes.extend_from_slice(&10u32.to_le_bytes());
+            bytes.extend_from_slice(&5u32.to_le_bytes());
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            let mut stream = crate::stream::NifStream::new(&bytes, &header);
+            let block =
+                parse_block("BSMeshLODTriShape", &mut stream, Some(bytes.len() as u32)).unwrap();
+            let shape = block.as_any().downcast_ref::<BsTriShape>().unwrap();
+            assert_eq!(shape.kind, BsTriShapeKind::MeshLOD);
+            assert_eq!(block.block_type_name(), "BSMeshLODTriShape");
+        }
+
+        // 4. BSSubIndexTriShape → SubIndex. Trailing segmentation bytes
+        //    are bounded by block_size; we append 16 zero-padding bytes
+        //    to simulate a minimal FO4 segmentation table.
+        {
+            let mut bytes = minimal_bs_tri_shape_bytes();
+            bytes.extend_from_slice(&[0u8; 16]);
+            let mut stream = crate::stream::NifStream::new(&bytes, &header);
+            let block =
+                parse_block("BSSubIndexTriShape", &mut stream, Some(bytes.len() as u32)).unwrap();
+            let shape = block.as_any().downcast_ref::<BsTriShape>().unwrap();
+            assert_eq!(shape.kind, BsTriShapeKind::SubIndex);
+            assert_eq!(block.block_type_name(), "BSSubIndexTriShape");
+        }
+
+        // 5. BSDynamicTriShape → Dynamic. Append dynamic_data_size=0 so
+        //    the facegen-vertex loop runs zero iterations.
+        {
+            let mut bytes = minimal_bs_tri_shape_bytes();
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            let mut stream = crate::stream::NifStream::new(&bytes, &header);
+            let block =
+                parse_block("BSDynamicTriShape", &mut stream, Some(bytes.len() as u32)).unwrap();
+            let shape = block.as_any().downcast_ref::<BsTriShape>().unwrap();
+            assert_eq!(shape.kind, BsTriShapeKind::Dynamic);
+            assert_eq!(block.block_type_name(), "BSDynamicTriShape");
+        }
     }
 
     /// IEEE-754 half-float for 1.0 is 0x3C00; for 0.5 is 0x3800; for 0.0 is 0x0000.

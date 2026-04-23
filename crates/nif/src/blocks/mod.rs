@@ -225,11 +225,15 @@ pub fn parse_block(
         "BSSegmentedTriShape" => Ok(Box::new(NiTriShape::parse_segmented(stream)?)),
         "BSTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse(stream)?)),
         // BSMeshLODTriShape / BSLODTriShape: same 3-u32 LOD-size trailing
-        // layout. BSMeshLODTriShape appears in Skyrim SE DLC and FO4 LOD;
-        // BSLODTriShape is the FO4 distant-LOD variant. See issue #147, #157.
-        "BSMeshLODTriShape" | "BSLODTriShape" => {
-            Ok(Box::new(tri_shape::BsTriShape::parse_lod(stream)?))
-        }
+        // layout. BSLODTriShape is the FO4 distant-LOD variant;
+        // BSMeshLODTriShape appears in Skyrim SE DLC. `parse_lod` stamps
+        // `LOD { lod0, lod1, lod2 }`; for BSMeshLODTriShape we overwrite
+        // via `with_kind(MeshLOD)` so downstream importers can tell the
+        // two wire subclasses apart. See issue #147, #157, #560.
+        "BSLODTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse_lod(stream)?)),
+        "BSMeshLODTriShape" => Ok(Box::new(
+            tri_shape::BsTriShape::parse_lod(stream)?.with_kind(tri_shape::BsTriShapeKind::MeshLOD),
+        )),
         // BSSubIndexTriShape: ubiquitous in Skyrim SE DLC and all FO4 actor
         // meshes (clothing segmentation for dismemberment). After the
         // BSTriShape body, FO4+ adds a variable-size segmentation block
@@ -237,10 +241,12 @@ pub fn parse_block(
         // with SSF filename). The segmentation structure is used only for
         // gameplay damage subdivision — the renderer doesn't need it — so
         // we trust block_size to bound the skip rather than reimplementing
-        // the full variable layout. See issue #147.
+        // the full variable layout. See issue #147. `with_kind(SubIndex)`
+        // preserves the wire type so #404 segmentation parsing can find it.
         "BSSubIndexTriShape" => {
             let start = stream.position();
-            let shape = tri_shape::BsTriShape::parse(stream)?;
+            let shape = tri_shape::BsTriShape::parse(stream)?
+                .with_kind(tri_shape::BsTriShapeKind::SubIndex);
             if let Some(size) = block_size {
                 let consumed = stream.position() - start;
                 if consumed < size as u64 {
