@@ -56,8 +56,8 @@ use properties::{
 };
 use shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
-    BSShaderPPLightingProperty, BSShaderTextureSet, TallGrassShaderProperty, TileShaderProperty,
-    WaterShaderProperty,
+    BSShaderPPLightingProperty, BSShaderTextureSet, SkyShaderProperty, TallGrassShaderProperty,
+    TileShaderProperty, WaterShaderProperty,
 };
 use skin::{
     BsDismemberSkinInstance, BsSkinBoneData, BsSkinInstance, NiSkinData, NiSkinInstance,
@@ -286,7 +286,6 @@ pub fn parse_block(
         // `WaterShaderProperty` and `TallGrassShaderProperty` were here too
         // but over-read 20+ bytes — split out below.
         "BSShaderPPLightingProperty"
-        | "SkyShaderProperty"
         | "Lighting30ShaderProperty"
         | "HairShaderProperty"
         | "VolumetricFogShaderProperty"
@@ -294,6 +293,15 @@ pub fn parse_block(
         | "BSDistantTreeShaderProperty"
         | "BSSkyShaderProperty"
         | "BSWaterShaderProperty" => Ok(Box::new(BSShaderPPLightingProperty::parse(stream)?)),
+        // FO3/FNV `SkyShaderProperty` — inherits `BSShaderLightingProperty`
+        // + `File Name: SizedString` + `Sky Object Type: u32` (nif.xml
+        // line 6335). Pre-#550 aliased to BSShaderPPLightingProperty::parse
+        // which over-read 20-28 bytes (texture_set_ref + refraction +
+        // parallax) and dropped the actual sky filename + object type on
+        // the floor — every sky NIF rendered with default cloud scroll
+        // and horizon fade. block_sizes masked the drift at parse time.
+        // Recurring warning bucket `consumed 54, expected 42-82`.
+        "SkyShaderProperty" => Ok(Box::new(SkyShaderProperty::parse(stream)?)),
         // FO3/FNV WaterShaderProperty inherits BSShaderProperty directly
         // (no texture_clamp_mode, no texture_set, no refraction/parallax)
         // — see nif.xml line 6322 and issue #474.
@@ -819,9 +827,11 @@ mod dispatch_tests {
         // their own parsers too (they inherit `BSShaderProperty` directly,
         // not `BSShaderLightingProperty`, so the PPLighting trailer
         // over-read was masked by `block_sizes` recovery).
+        // `SkyShaderProperty` moved to its own dedicated parser in #550
+        // (inherits `BSShaderLightingProperty` + SizedString + u32 that
+        // the PPLighting over-read dropped on the floor).
         let variants = [
             "BSShaderPPLightingProperty",
-            "SkyShaderProperty",
             "Lighting30ShaderProperty",
             "HairShaderProperty",
             "VolumetricFogShaderProperty",
@@ -888,6 +898,80 @@ mod dispatch_tests {
             .expect("TileShaderProperty must downcast to its own type, not BSShaderPPLightingProperty");
         assert_eq!(prop.texture_clamp_mode, 3);
         assert_eq!(prop.file_name, "textures\\interface\\stealthmeter.dds");
+    }
+
+    /// Regression for #550 — `SkyShaderProperty` must dispatch through
+    /// its own `SkyShaderProperty::parse`, not the
+    /// `BSShaderPPLightingProperty` alias. nif.xml line 6335: inherits
+    /// `BSShaderLightingProperty` + `File Name: SizedString` + `Sky
+    /// Object Type: u32`. Pre-fix the aliased parser over-read 20+ bytes
+    /// (texture_set_ref + refraction + parallax) and silently dropped
+    /// the sky filename + object type — every sky NIF rendered with
+    /// default cloud scroll and horizon fade. `block_sizes` kept the
+    /// outer stream aligned so the defect was silent at parse time but
+    /// surfaced as the recurring `consumed 54, expected 42-82` warning
+    /// bucket in the FO3 + FNV corpus stderr logs.
+    #[test]
+    fn sky_shader_property_routes_to_dedicated_parser() {
+        // FNV header (bsver = 34 — the audit corpus).
+        let header = NifHeader {
+            version: NifVersion(0x14020007),
+            little_endian: true,
+            user_version: 11,
+            user_version_2: 34,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: vec![Arc::from("SkyProp")],
+            max_string_length: 8,
+            num_groups: 0,
+        };
+        let mut bytes = Vec::new();
+        // NiObjectNET: name string index = 0
+        bytes.extend_from_slice(&0i32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count
+        bytes.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+        // BSShaderProperty fields.
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // shade_flags
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // shader_type
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_1
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_2
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // env_map_scale
+        // BSShaderLightingProperty: texture_clamp_mode
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        // SkyShaderProperty: File Name (SizedString) + Sky Object Type
+        let name = b"textures\\sky\\skyclouds01.dds";
+        bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(name);
+        // Sky Object Type = 3 (BSSM_SKY_CLOUDS)
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block(
+            "SkyShaderProperty",
+            &mut stream,
+            Some(bytes.len() as u32),
+        )
+        .expect("SkyShaderProperty dispatch must reach SkyShaderProperty::parse");
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "parser must consume the whole body — the warning bucket was \
+             exactly this assertion failing in production"
+        );
+        assert_eq!(block.block_type_name(), "SkyShaderProperty");
+        let prop = block
+            .as_any()
+            .downcast_ref::<crate::blocks::shader::SkyShaderProperty>()
+            .expect("SkyShaderProperty must downcast to its own type, not BSShaderPPLightingProperty");
+        assert_eq!(prop.texture_clamp_mode, 3);
+        assert_eq!(prop.file_name, "textures\\sky\\skyclouds01.dds");
+        assert_eq!(
+            prop.sky_object_type, 3,
+            "sky_object_type = 3 (BSSM_SKY_CLOUDS) — pre-fix this field \
+             was never read and every sky block landed with default 0"
+        );
     }
 
     /// Regression: #474 — `WaterShaderProperty` inherits `BSShaderProperty`

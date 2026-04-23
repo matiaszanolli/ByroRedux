@@ -205,6 +205,58 @@ impl TileShaderProperty {
     }
 }
 
+/// `SkyShaderProperty` — FO3 / FNV sky dome, clouds, stars, sun-glare.
+/// Per nif.xml line 6335 it inherits `BSShaderLightingProperty` (so
+/// adds `texture_clamp_mode` on top of the `BSShaderProperty` base)
+/// and then appends `File Name: SizedString` + `Sky Object Type: u32`.
+///
+/// Pre-#550 `blocks/mod.rs` aliased this type to
+/// `BSShaderPPLightingProperty::parse`, which reads 20-28 extra bytes
+/// (texture_set_ref + refraction + parallax) that the on-disk
+/// SkyShaderProperty does NOT carry — simultaneously losing the real
+/// `file_name` and `sky_object_type`. `block_sizes` recovery kept the
+/// outer stream aligned so every sky NIF silently rendered with the
+/// default cloud scroll and horizon fade. Recurring stderr warning
+/// bucket: `consumed 54, expected 42-82` on every SkyShaderProperty
+/// block in the FO3 + FNV corpora.
+#[derive(Debug)]
+pub struct SkyShaderProperty {
+    pub net: NiObjectNETData,
+    pub shader: BSShaderPropertyData,
+    pub texture_clamp_mode: u32,
+    /// Sky texture file path (clouds, stars, moon, etc.).
+    pub file_name: String,
+    /// Per nif.xml `SkyObjectType`: 0=Texture, 1=Sunglare, 2=Sky,
+    /// 3=Clouds, 5=Stars, 7=Moon/Stars Mask. Selects which sky
+    /// function this property fulfills at render time.
+    pub sky_object_type: u32,
+}
+
+impl NiObject for SkyShaderProperty {
+    fn block_type_name(&self) -> &'static str {
+        "SkyShaderProperty"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl SkyShaderProperty {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let net = NiObjectNETData::parse(stream)?;
+        let (shader, texture_clamp_mode) = BSShaderPropertyData::parse_fo3(stream)?;
+        let file_name = stream.read_sized_string()?;
+        let sky_object_type = stream.read_u32_le()?;
+        Ok(Self {
+            net,
+            shader,
+            texture_clamp_mode,
+            file_name,
+            sky_object_type,
+        })
+    }
+}
+
 /// `WaterShaderProperty` — FO3/FNV water shader (nif.xml line 6322).
 ///
 /// Inherits `BSShaderProperty` **directly** (not `BSShaderLightingProperty`)
