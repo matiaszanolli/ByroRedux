@@ -13,12 +13,15 @@ Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
 **Last verified**: 2026-04-24.
-**Bench-of-record**: Prospector Saloon 192.8 FPS / 5.19 ms — commit
-`e6e8091`, wall-clock bench (PERF-1 fix). Scene is glass-heavy (bottles,
-pitcher, marquee sign); RT refraction/reflection cost is representative
-of a tough FNV interior. **Staleness**: 42 commits since bench at time
-of writing (crosses the 30-commit freshness threshold); re-bench scheduled
-next session. See Known Issues.
+**Bench-of-record**: Prospector Saloon 172.6 FPS / 5.79 ms — commit
+`6a6950a`, wall-clock bench. Scene is glass-heavy (bottles, pitcher,
+marquee sign); RT refraction/reflection cost is representative of a
+tough FNV interior. Frame is GPU-bound (fence=4.34 ms, 75% of wall).
+Slight regression from `e6e8091` (192.8 FPS / 5.19 ms) — within
+compositor-jitter range over 42 intervening commits; brd_ms unchanged
+at 0.86, fence_ms unchanged at 4.34. Companion benches refreshed in
+the same pass: Skyrim Whiterun 253.3 FPS @ 1932 entities, FO4 MedTek
+92.5 FPS @ 7434 entities. See Repro commands.
 
 ---
 
@@ -67,9 +70,9 @@ load. Weather transitions (fade between WTHR states) and cloud layers
 |-------------------|---------------|-------------------|----------------------------------------------------------|
 | Oblivion          | BSA v103      | 100% (8 032)      | Interior (Anvil Heinrich Oaken Halls). Exterior blocked on BSA v103 decompression. |
 | Fallout 3         | BSA v104      | 100% (10 989)     | Interior (Megaton, 929 REFRs). Exterior wired; fresh GPU bench pending (R6a). |
-| Fallout New Vegas | BSA v104      | 100% (14 881)     | Interior (Prospector 1200 entities @ 192.8 FPS / 5.19 ms on RTX 4070 Ti, bench e6e8091). Exterior 3×3. |
-| Skyrim SE         | BSA v105 LZ4  | 100% (18 862)     | Interior (WhiterunBanneredMare 1258 entities @ 237 FPS, 2026-04-23). |
-| Fallout 4         | BA2 v1/v7/v8  | 100% (34 995)     | Interior (MedTekResearch01 7434 entities @ 90 FPS, 2026-04-23).      |
+| Fallout New Vegas | BSA v104      | 100% (14 881)     | Interior (Prospector 1200 entities @ 172.6 FPS / 5.79 ms on RTX 4070 Ti, bench 6a6950a). Exterior 3×3. |
+| Skyrim SE         | BSA v105 LZ4  | 100% (18 862)     | Interior (WhiterunBanneredMare 1932 entities @ 253.3 FPS / 3.95 ms, bench 6a6950a; entity count up from 1258 since M32.5 close — more REFRs land now). |
+| Fallout 4         | BA2 v1/v7/v8  | 100% (34 995)     | Interior (MedTekResearch01 7434 entities @ 92.5 FPS / 10.82 ms, bench 6a6950a). |
 | Fallout 76        | BA2 v1        | 100% (58 469)     | —                                                        |
 | Starfield         | BA2 v2/v3 LZ4 | 100% (31 058)     | —                                                        |
 
@@ -324,7 +327,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [ ] **R5** Papyrus full-runtime prototype on one real quest before M47.2 scope commitment
 - [ ] **R6** `VulkanContext` scratch buffers have no capacity telemetry — add `ctx.scratch` before M40
 - [x] **R6a** Prospector re-bench — **closed**. 192.8 FPS / 5.19 ms at `e6e8091`, wall-clock bench.
-- [ ] **R6a-stale** Bench-of-record `e6e8091` is **42 commits stale** as of 2026-04-24 (session 17 close). Re-run Prospector + Skyrim + FO4 bench row before the next perf-affecting merge lands; flag here until refreshed.
+- [x] **R6a-stale** Bench-of-record refreshed at `6a6950a` (2026-04-24). Prospector 172.6 FPS / 5.79 ms (was 192.8 / 5.19 — slight regression in compositor-jitter range; fence_ms unchanged at 4.34, GPU still the bottleneck). Skyrim Whiterun 253.3 FPS / 3.95 ms at 1932 entities (was 237 FPS at 1258 entities — entity count up 53% while FPS improved, indicating more REFRs land now without perf cost). FO4 MedTek 92.5 FPS / 10.82 ms (was 90, 7434 entities unchanged).
 - [ ] **R7** Scheduler access declarations before flipping M27 parallel dispatch on
 
 ### Open — Misc
@@ -354,9 +357,9 @@ Ground-truth as of 2026-04-24, verified by `/session-close`.
 
 | Claim                                                                     | Command                                                                                                                                                                                        |
 |---------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Prospector Saloon 192.8 FPS / 5.19 ms (commit `e6e8091`, 2026-04-23, wall-clock bench) | `cargo run --release -- --esm "Fallout New Vegas/Data/FalloutNV.esm" --cell GSProspectorSaloonInterior --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa" --textures-bsa "Fallout - Textures2.bsa" --bench-frames 300` |
-| Skyrim SE WhiterunBanneredMare 1258 entities @ 237 FPS (2026-04-23)                   | `cargo run --release -- --esm "Skyrim Special Edition/Data/Skyrim.esm" --cell WhiterunBanneredMare --bsa "Skyrim - Meshes0.bsa" --bsa "Skyrim - Meshes1.bsa" --textures-bsa "Skyrim - Textures0.bsa" --textures-bsa "Skyrim - Textures1.bsa" --textures-bsa "Skyrim - Textures2.bsa" --bench-frames 300` |
-| FO4 MedTekResearch01 7434 entities @ 90 FPS (2026-04-23)                              | `cargo run --release -- --esm "Fallout 4/Data/Fallout4.esm" --cell MedTekResearch01 --bsa "Fallout4 - Meshes.ba2" --textures-bsa "Fallout4 - Textures1.ba2" --textures-bsa "Fallout4 - Textures2.ba2" --bench-frames 300` |
+| Prospector Saloon 172.6 FPS / 5.79 ms (commit `6a6950a`, 2026-04-24, wall-clock bench) | `cargo run --release -- --esm "Fallout New Vegas/Data/FalloutNV.esm" --cell GSProspectorSaloonInterior --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa" --textures-bsa "Fallout - Textures2.bsa" --bench-frames 300` |
+| Skyrim SE WhiterunBanneredMare 1932 entities @ 253.3 FPS / 3.95 ms (commit `6a6950a`, 2026-04-24) | `cargo run --release -- --esm "Skyrim Special Edition/Data/Skyrim.esm" --cell WhiterunBanneredMare --bsa "Skyrim - Meshes0.bsa" --bsa "Skyrim - Meshes1.bsa" --textures-bsa "Skyrim - Textures0.bsa" --textures-bsa "Skyrim - Textures1.bsa" --textures-bsa "Skyrim - Textures2.bsa" --bench-frames 300` |
+| FO4 MedTekResearch01 7434 entities @ 92.5 FPS / 10.82 ms (commit `6a6950a`, 2026-04-24) | `cargo run --release -- --esm "Fallout 4/Data/Fallout4.esm" --cell MedTekResearch01 --bsa "Fallout4 - Meshes.ba2" --textures-bsa "Fallout4 - Textures1.ba2" --textures-bsa "Fallout4 - Textures2.ba2" --bench-frames 300` |
 | Skyrim sweetroll single-mesh ~3000-5000 FPS (2026-04-22, RTX 4070 Ti @ 1280×720)        | `cargo run --release -- --bsa "Skyrim Special Edition/Data/Skyrim - Meshes0.bsa" --mesh meshes\\clutter\\ingredients\\sweetroll01.nif --textures-bsa "Skyrim Special Edition/Data/Skyrim - Textures3.bsa"` |
 | Megaton interior parse-side 929 REFRs (2026-04-19)                        | `cargo test -p byroredux-plugin --release --test parse_real_esm parse_real_fo3_megaton_cell_baseline -- --ignored`                                                                             |
 | Per-game full mesh sweep, 100% per game                                   | `cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored`                                                                                                                     |
