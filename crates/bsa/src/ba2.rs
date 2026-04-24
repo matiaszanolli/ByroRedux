@@ -42,6 +42,13 @@ const MAGIC_GNRL: &[u8; 4] = b"GNRL";
 const MAGIC_DX10: &[u8; 4] = b"DX10";
 const PADDING_BAADFOOD: u32 = 0xBAAD_F00D;
 
+// DDS header `dwFlags` bits governing the `dwPitchOrLinearSize`
+// field's meaning. Shared at module scope so both `build_dds_header`
+// and the `pitch_or_linear_size_for` helper can reference them.
+// See audit FO4-DIM2-03 / #594.
+const DDSD_PITCH: u32 = 0x8;
+const DDSD_LINEARSIZE: u32 = 0x80000;
+
 /// Which file layout the archive uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ba2Variant {
@@ -539,7 +546,6 @@ fn build_dds_header(
     const DDSD_WIDTH: u32 = 0x4;
     const DDSD_PIXELFORMAT: u32 = 0x1000;
     const DDSD_MIPMAPCOUNT: u32 = 0x20000;
-    const DDSD_LINEARSIZE: u32 = 0x80000;
     const DDSCAPS_TEXTURE: u32 = 0x1000;
     const DDSCAPS_MIPMAP: u32 = 0x400000;
     const DDSCAPS_COMPLEX: u32 = 0x8;
@@ -555,7 +561,7 @@ fn build_dds_header(
     // Misc flag values.
     const D3D10_MISC_TEXTURECUBE: u32 = 0x4;
 
-    let mut flags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT | DDSD_LINEARSIZE;
+    let mut flags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT;
     if num_mips > 1 {
         flags |= DDSD_MIPMAPCOUNT;
     }
@@ -570,12 +576,24 @@ fn build_dds_header(
         caps2 |= DDSCAPS2_CUBEMAP | DDSCAPS2_CUBEMAP_ALLFACES;
     }
 
-    // Linear size = full size of top-mip in bytes. For block-compressed
-    // formats (BC1/3/5/7) this is max(1, ((w+3)/4)) * max(1, ((h+3)/4)) * block_size.
-    // For uncompressed formats it's width * height * bytes_per_pixel. We
-    // don't strictly need this to be accurate for loaders that ignore it,
-    // but we compute a reasonable value using a format → block-size table.
-    let linear_size = linear_size_for(dxgi_format, width as u32, height as u32, pixel_data.len());
+    // Per DDS spec, `dwPitchOrLinearSize` has two meanings gated by
+    // the DDSD_PITCH / DDSD_LINEARSIZE flag:
+    //
+    //   - Block-compressed formats (BC1-BC7) → DDSD_LINEARSIZE, value
+    //     is the full-size-of-top-mip in bytes.
+    //   - Uncompressed formats → DDSD_PITCH, value is the row pitch
+    //     (`width * bytes_per_pixel`) of the top mip.
+    //
+    // Pre-#594 the header unconditionally set DDSD_LINEARSIZE and
+    // wrote `total_bytes` for every format — technically invalid for
+    // R8G8B8A8 / R8 / R16 / B8G8R8A8. Vulkan / D3D11+ loaders ignore
+    // the legacy field (the DX10 extended header at offset 128
+    // disambiguates), but strict validators and legacy tools
+    // (texconv, DirectXTex, Paint.NET DDS plugin) reject it. See
+    // audit FO4-DIM2-03.
+    let (pitch_or_linear_size, pitch_flag) =
+        pitch_or_linear_size_for(dxgi_format, width as u32, height as u32, pixel_data.len());
+    flags |= pitch_flag;
 
     let mut hdr = Vec::with_capacity(148);
     hdr.extend_from_slice(&DDS_MAGIC.to_le_bytes());
@@ -583,7 +601,7 @@ fn build_dds_header(
     hdr.extend_from_slice(&flags.to_le_bytes());
     hdr.extend_from_slice(&(height as u32).to_le_bytes());
     hdr.extend_from_slice(&(width as u32).to_le_bytes());
-    hdr.extend_from_slice(&linear_size.to_le_bytes());
+    hdr.extend_from_slice(&pitch_or_linear_size.to_le_bytes());
     hdr.extend_from_slice(&0u32.to_le_bytes()); // depth
     // `num_mips.max(1)` is an intentional clamp: the DDS spec says
     // when `DDSD_MIPMAPCOUNT` is unset the loader MUST treat the image
@@ -628,11 +646,23 @@ fn build_dds_header(
     hdr
 }
 
-/// Compute a reasonable `dwPitchOrLinearSize` value for a DDS texture.
-/// Falls back to the total pixel-data length divided across mips if we
-/// don't recognize the DXGI format.
-fn linear_size_for(dxgi_format: u8, width: u32, height: u32, total_bytes: usize) -> u32 {
-    // DXGI formats we encounter in Bethesda BA2s. Block sizes per 4x4 block.
+/// Compute `dwPitchOrLinearSize` + the matching `DDSD_*` flag for a
+/// DDS texture header. Block-compressed formats yield
+/// `(LinearSize, DDSD_LINEARSIZE)`; uncompressed formats yield
+/// `(RowPitch, DDSD_PITCH)`; unknown formats fall back to the legacy
+/// `(total_bytes, DDSD_LINEARSIZE)` behaviour so malformed inputs
+/// don't make the DDS unreadable.
+///
+/// The caller is responsible for OR-ing the returned flag into
+/// `dwFlags`. See audit FO4-DIM2-03 / #594.
+fn pitch_or_linear_size_for(
+    dxgi_format: u8,
+    width: u32,
+    height: u32,
+    total_bytes: usize,
+) -> (u32, u32) {
+    // Block-compressed formats we encounter in Bethesda BA2s. Block
+    // sizes are per 4×4 texel block.
     let block_bytes: Option<u32> = match dxgi_format {
         71 | 72 => Some(8),  // BC1_UNORM / BC1_UNORM_SRGB
         74 | 75 => Some(16), // BC2_UNORM / BC2_UNORM_SRGB
@@ -647,12 +677,33 @@ fn linear_size_for(dxgi_format: u8, width: u32, height: u32, total_bytes: usize)
     if let Some(bb) = block_bytes {
         let bw = width.div_ceil(4).max(1);
         let bh = height.div_ceil(4).max(1);
-        bw * bh * bb
-    } else {
-        // Unknown format — report the entire pixel payload, which at least
-        // lets a loader size its buffer without truncation.
-        total_bytes as u32
+        return (bw * bh * bb, DDSD_LINEARSIZE);
     }
+
+    // Uncompressed DXGI formats observed in Bethesda BA2 DX10
+    // archives. Bytes-per-pixel per Microsoft's DXGI_FORMAT enum:
+    //   28 = R8G8B8A8_UNORM       (4 bpp)
+    //   29 = R8G8B8A8_UNORM_SRGB  (4 bpp)
+    //   87 = B8G8R8A8_UNORM       (4 bpp) — FO4 normal maps
+    //   91 = B8G8R8A8_UNORM_SRGB  (4 bpp)
+    //   56 = R16_UNORM            (2 bpp) — height / mask textures
+    //   61 = R8_UNORM             (1 bpp) — mono masks
+    // For uncompressed, the pitch is the byte length of one row of
+    // pixels (`width * bpp`) — NOT the total buffer size.
+    let bpp: Option<u32> = match dxgi_format {
+        28 | 29 | 87 | 91 => Some(4),
+        56 => Some(2),
+        61 => Some(1),
+        _ => None,
+    };
+    if let Some(b) = bpp {
+        return (width * b, DDSD_PITCH);
+    }
+
+    // Unknown format — report the entire pixel payload with
+    // LINEARSIZE so loaders at least size their buffer. Pre-#594
+    // behaviour for formats not on either list.
+    (total_bytes as u32, DDSD_LINEARSIZE)
 }
 
 /// Normalize a path for case-insensitive, slash-agnostic lookup.
@@ -681,19 +732,105 @@ mod tests {
 
     #[test]
     fn linear_size_bc1_256x256() {
-        // 256×256 BC1: 64×64 blocks × 8 bytes = 32768
-        assert_eq!(linear_size_for(71, 256, 256, 0), 32768);
+        // 256×256 BC1: 64×64 blocks × 8 bytes = 32768. Block-compressed
+        // → DDSD_LINEARSIZE.
+        let (size, flag) = pitch_or_linear_size_for(71, 256, 256, 0);
+        assert_eq!(size, 32768);
+        assert_eq!(flag, DDSD_LINEARSIZE);
     }
 
     #[test]
     fn linear_size_bc7_512x256() {
-        // 512×256 BC7: 128×64 blocks × 16 bytes = 131072
-        assert_eq!(linear_size_for(98, 512, 256, 0), 131072);
+        // 512×256 BC7: 128×64 blocks × 16 bytes = 131072.
+        let (size, flag) = pitch_or_linear_size_for(98, 512, 256, 0);
+        assert_eq!(size, 131072);
+        assert_eq!(flag, DDSD_LINEARSIZE);
     }
 
     #[test]
     fn linear_size_unknown_format_uses_total() {
-        assert_eq!(linear_size_for(0, 128, 128, 9999), 9999);
+        // Unknown format falls back to legacy LINEARSIZE + total byte
+        // payload so malformed inputs still produce a readable DDS.
+        let (size, flag) = pitch_or_linear_size_for(0, 128, 128, 9999);
+        assert_eq!(size, 9999);
+        assert_eq!(flag, DDSD_LINEARSIZE);
+    }
+
+    /// Regression for #594 (FO4-DIM2-03) — uncompressed DXGI formats
+    /// must report row pitch + DDSD_PITCH rather than LinearSize +
+    /// DDSD_LINEARSIZE. `pitchOrLinearSize` encodes `width * bpp` (one
+    /// row of pixels), not `width * height * bpp`. Pre-fix the helper
+    /// bucketed every non-BC format into the legacy fallback, emitting
+    /// an invalid DDS for vanilla FO4 UI / mask textures that
+    /// texconv / DirectXTex / Paint.NET DDS plugin rejected.
+    #[test]
+    fn pitch_rgba8_unorm_matches_row_size_with_pitch_flag() {
+        // 256×128 R8G8B8A8_UNORM (28): row pitch = 256 * 4 = 1024.
+        let (pitch, flag) = pitch_or_linear_size_for(28, 256, 128, 0);
+        assert_eq!(pitch, 1024);
+        assert_eq!(flag, DDSD_PITCH);
+    }
+
+    #[test]
+    fn pitch_bgra8_unorm_srgb_matches_row_size_with_pitch_flag() {
+        // 512×256 B8G8R8A8_UNORM_SRGB (91): row pitch = 512 * 4 = 2048.
+        let (pitch, flag) = pitch_or_linear_size_for(91, 512, 256, 0);
+        assert_eq!(pitch, 2048);
+        assert_eq!(flag, DDSD_PITCH);
+    }
+
+    #[test]
+    fn pitch_r16_unorm_matches_row_size_with_pitch_flag() {
+        // 128×128 R16_UNORM (56): row pitch = 128 * 2 = 256.
+        let (pitch, flag) = pitch_or_linear_size_for(56, 128, 128, 0);
+        assert_eq!(pitch, 256);
+        assert_eq!(flag, DDSD_PITCH);
+    }
+
+    #[test]
+    fn pitch_r8_unorm_matches_row_size_with_pitch_flag() {
+        // 64×64 R8_UNORM (61): row pitch = 64 * 1 = 64.
+        let (pitch, flag) = pitch_or_linear_size_for(61, 64, 64, 0);
+        assert_eq!(pitch, 64);
+        assert_eq!(flag, DDSD_PITCH);
+    }
+
+    /// Integration: the emitted DDS header for an uncompressed format
+    /// must set DDSD_PITCH (bit 0x8) in dwFlags and write the row
+    /// pitch into `dwPitchOrLinearSize`. Guards the seam between
+    /// `build_dds_header` and `pitch_or_linear_size_for` — pre-#594
+    /// the flag was hardcoded to LINEARSIZE regardless of format.
+    #[test]
+    fn build_dds_header_uses_pitch_flag_for_uncompressed_rgba() {
+        let hdr = build_dds_header(28, 256, 128, 1, false, &[]);
+        let flags = u32::from_le_bytes(hdr[8..12].try_into().unwrap());
+        assert_eq!(
+            flags & DDSD_PITCH,
+            DDSD_PITCH,
+            "DDSD_PITCH must be set for uncompressed DXGI format 28 (flags=0x{:08x})",
+            flags
+        );
+        assert_eq!(
+            flags & DDSD_LINEARSIZE,
+            0,
+            "DDSD_LINEARSIZE must NOT be set alongside DDSD_PITCH (flags=0x{:08x})",
+            flags
+        );
+        // dwPitchOrLinearSize at offset 20 should be the row pitch.
+        let pitch = u32::from_le_bytes(hdr[20..24].try_into().unwrap());
+        assert_eq!(pitch, 256 * 4, "uncompressed RGBA pitch = width * 4 bpp");
+    }
+
+    /// Sibling: block-compressed formats keep LINEARSIZE semantics
+    /// after the refactor. Without this guard a careless swap of the
+    /// pitch_or_linear_size_for branches would silently invert the
+    /// flag for BC1-BC7 textures.
+    #[test]
+    fn build_dds_header_keeps_linearsize_flag_for_bc_formats() {
+        let hdr = build_dds_header(71, 256, 256, 1, false, &[]);
+        let flags = u32::from_le_bytes(hdr[8..12].try_into().unwrap());
+        assert_eq!(flags & DDSD_LINEARSIZE, DDSD_LINEARSIZE);
+        assert_eq!(flags & DDSD_PITCH, 0);
     }
 
     /// Regression for #597 (FO4-DIM2-07) — when a BA2 DX10 record
