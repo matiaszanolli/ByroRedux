@@ -6,6 +6,32 @@
 //! model paths, primitive reads at known offsets.
 
 use crate::esm::reader::SubRecord;
+use std::cell::Cell;
+
+thread_local! {
+    /// Tracks whether the plugin currently being parsed set the
+    /// TES4 `Localized` flag (bit `0x80`). Set by
+    /// `records::parse_esm_with_load_order` at the start of a parse
+    /// pass and cleared at the end. Consulted by
+    /// [`read_lstring_or_zstring`] when decoding FULL / DESC /
+    /// similar lstring-bearing sub-records. See audit S6-03 / #348.
+    static CURRENT_PLUGIN_LOCALIZED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Set the thread-local "this plugin uses lstring indirection" flag.
+/// Call once at the start of a parse pass with the value of
+/// `FileHeader.localized`, then clear at the end so subsequent
+/// parses (or non-Skyrim plugins in the same process) don't inherit
+/// stale state. See audit S6-03 / #348.
+pub fn set_localized_plugin(flag: bool) {
+    CURRENT_PLUGIN_LOCALIZED.with(|f| f.set(flag));
+}
+
+/// Read the thread-local localization flag. Exposed for unit tests
+/// and defensive record parsers that want to branch on it.
+pub fn is_localized_plugin() -> bool {
+    CURRENT_PLUGIN_LOCALIZED.with(|f| f.get())
+}
 
 /// Read a null-terminated ASCII string from a sub-record's data buffer.
 /// Trailing bytes after the first NUL are ignored. Returns `String::new()`
@@ -13,6 +39,34 @@ use crate::esm::reader::SubRecord;
 pub fn read_zstring(data: &[u8]) -> String {
     let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
     String::from_utf8_lossy(&data[..end]).to_string()
+}
+
+/// Decode an lstring-bearing sub-record payload.
+///
+/// When the current plugin is localized (`FileHeader.localized == true`,
+/// stashed in the thread-local above) and the payload is exactly 4
+/// bytes, interpret those bytes as a little-endian u32 lstring-table
+/// index and return `"<lstring 0xNNNNNNNN>"` so downstream callers
+/// that naively `.as_str()` the field see a stable placeholder
+/// instead of 3-character UTF-8 garbage.
+///
+/// Otherwise delegates to [`read_zstring`] — every non-localized
+/// plugin and every non-4-byte payload reads as the usual inline
+/// z-string.
+///
+/// Used at FULL / DESC / RNAM / CNAM / NAM1 / ITXT / EPF2 / MICO /
+/// SHRT / DESC sites throughout `records/*` to close the gap where
+/// Skyrim.esm's `u32 0x00012345` was interpreted as the 3-character
+/// cstring `"E#\x01"` — corrupting every item / NPC / faction name.
+/// Phase 2 (the real `.STRINGS` loader that turns the placeholder
+/// into the authored English / language-pack string) is tracked as
+/// a follow-up. See audit S6-03 / #348.
+pub fn read_lstring_or_zstring(data: &[u8]) -> String {
+    if is_localized_plugin() && data.len() == 4 {
+        let id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        return format!("<lstring 0x{:08X}>", id);
+    }
+    read_zstring(data)
 }
 
 /// Find a sub-record by 4-char type code and return its data slice.
@@ -115,8 +169,10 @@ impl CommonItemFields {
         let mut out = Self::default();
         for sub in subs {
             match &sub.sub_type {
+                // EDID is always an inline cstring — not localized.
                 b"EDID" => out.editor_id = read_zstring(&sub.data),
-                b"FULL" => out.full_name = read_zstring(&sub.data),
+                // FULL is an lstring on Skyrim-localized plugins (#348).
+                b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
                 b"MODL" => out.model_path = read_zstring(&sub.data),
                 b"ICON" => out.icon_path = read_zstring(&sub.data),
                 b"SCRI" if sub.data.len() >= 4 => {
@@ -160,5 +216,96 @@ mod tests {
         let subs = vec![sub(b"EDID", b"PlainItem\0")];
         let c = CommonItemFields::from_subs(&subs);
         assert!(!c.has_script);
+    }
+
+    // ── #348 / audit S6-03 — lstring helper regression tests ────────
+    //
+    // The thread-local guard means these tests run one-at-a-time
+    // (single-threaded within the default `cargo test` harness is fine
+    // since the flag lives in `thread_local!`). Each test sets + clears
+    // the flag so ordering doesn't leak into unrelated cases in this
+    // module.
+
+    /// On a non-localized plugin (pre-Skyrim, or Skyrim without the
+    /// flag set), `read_lstring_or_zstring` must be a pass-through to
+    /// `read_zstring`. Guards against an incorrect placeholder firing
+    /// on legitimate inline names.
+    #[test]
+    fn read_lstring_or_zstring_non_localized_reads_inline_cstring() {
+        set_localized_plugin(false);
+        let data = b"IronSword\0";
+        assert_eq!(read_lstring_or_zstring(data), "IronSword");
+    }
+
+    /// On a localized plugin, a 4-byte FULL payload is an lstring
+    /// table reference — render as `<lstring 0xNNNNNNNN>`. Mirrors
+    /// the Skyrim.esm `0x00012345` example the audit calls out as
+    /// the `"E#\x01"` corruption source.
+    #[test]
+    fn read_lstring_or_zstring_localized_4_bytes_is_placeholder() {
+        set_localized_plugin(true);
+        let data = [0x45u8, 0x23, 0x01, 0x00]; // u32 LE = 0x00012345
+        assert_eq!(read_lstring_or_zstring(&data), "<lstring 0x00012345>");
+        set_localized_plugin(false);
+    }
+
+    /// Localized plugins sometimes ship legitimate inline strings on
+    /// sub-records that AREN'T lstring-indirected — the helper only
+    /// triggers the placeholder on exactly-4-byte payloads. Any other
+    /// length (including 3-byte "abc\0" counting as a trailing-null
+    /// cstring — payload 3 bytes of data + an implicit NUL isn't how
+    /// subrecords work; always explicit) falls through to the inline
+    /// path.
+    #[test]
+    fn read_lstring_or_zstring_localized_wrong_size_falls_through() {
+        set_localized_plugin(true);
+        // 5 bytes: not lstring-shaped, read as regular cstring.
+        let data = b"hi!\0\0";
+        assert_eq!(read_lstring_or_zstring(data), "hi!");
+        set_localized_plugin(false);
+    }
+
+    /// Empty payload must NOT hit the placeholder path — it's
+    /// well-defined as an empty string regardless of localization.
+    #[test]
+    fn read_lstring_or_zstring_empty_payload_returns_empty_string() {
+        set_localized_plugin(true);
+        assert_eq!(read_lstring_or_zstring(&[]), "");
+        set_localized_plugin(false);
+    }
+
+    /// Regression for the full integration path: CommonItemFields
+    /// routes FULL through the lstring helper. On a localized plugin
+    /// with 4-byte FULL payload, the item record's `full_name`
+    /// surfaces as `<lstring 0x…>` instead of three garbage UTF-8
+    /// characters. Pre-#348 this produced names like `"E#\x01"`.
+    #[test]
+    fn common_item_fields_localized_full_becomes_lstring_placeholder() {
+        set_localized_plugin(true);
+        let subs = vec![
+            sub(b"EDID", b"WeapIronSword\0"),
+            sub(b"FULL", &[0x45u8, 0x23, 0x01, 0x00]),
+        ];
+        let c = CommonItemFields::from_subs(&subs);
+        assert_eq!(c.editor_id, "WeapIronSword");
+        assert_eq!(c.full_name, "<lstring 0x00012345>");
+        set_localized_plugin(false);
+    }
+
+    /// Symmetric guard: clearing the localization flag after a
+    /// localized parse must route subsequent parses back through the
+    /// inline cstring path. Pins the "clear on exit" invariant
+    /// `parse_esm_with_load_order` relies on so stale state doesn't
+    /// leak across plugin boundaries.
+    #[test]
+    fn set_localized_plugin_toggle_clears_stale_state() {
+        set_localized_plugin(true);
+        assert!(is_localized_plugin());
+        set_localized_plugin(false);
+        assert!(!is_localized_plugin());
+        // Post-clear FULL reads as inline cstring.
+        let subs = vec![sub(b"FULL", b"PlainName\0")];
+        let c = CommonItemFields::from_subs(&subs);
+        assert_eq!(c.full_name, "PlainName");
     }
 }

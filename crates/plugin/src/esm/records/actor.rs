@@ -6,7 +6,7 @@
 //! as raw form IDs for now; full evaluation lands when the AI/combat
 //! systems come online.
 
-use super::common::{read_u32_at, read_zstring};
+use super::common::{read_lstring_or_zstring, read_u32_at, read_zstring};
 use crate::esm::reader::SubRecord;
 
 /// One faction the NPC belongs to, with their rank within it.
@@ -127,7 +127,7 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord]) -> NpcRecord {
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => record.editor_id = read_zstring(&sub.data),
-            b"FULL" => record.full_name = read_zstring(&sub.data),
+            b"FULL" => record.full_name = read_lstring_or_zstring(&sub.data),
             b"MODL" => record.model_path = read_zstring(&sub.data),
             b"RNAM" if sub.data.len() >= 4 => {
                 record.race_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
@@ -194,8 +194,8 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord]) -> RaceRecord {
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => record.editor_id = read_zstring(&sub.data),
-            b"FULL" => record.full_name = read_zstring(&sub.data),
-            b"DESC" => record.description = read_zstring(&sub.data),
+            b"FULL" => record.full_name = read_lstring_or_zstring(&sub.data),
+            b"DESC" => record.description = read_lstring_or_zstring(&sub.data),
             // DATA (FNV RACE): skill bonus pairs (u32 form + i8) ×7, then more.
             // We pull the first 7 pairs.
             b"DATA" => {
@@ -234,8 +234,8 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord]) -> ClassRecord {
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => record.editor_id = read_zstring(&sub.data),
-            b"FULL" => record.full_name = read_zstring(&sub.data),
-            b"DESC" => record.description = read_zstring(&sub.data),
+            b"FULL" => record.full_name = read_lstring_or_zstring(&sub.data),
+            b"DESC" => record.description = read_lstring_or_zstring(&sub.data),
             // DATA layout (FNV CLAS): tag1..tag4 (4 × u32 form), flags (u32),
             // services (u32), trainer skill (i8), trainer level (u8),
             // teaches level (u8), teaches max (u8), then 7 attribute weights (u8).
@@ -275,7 +275,7 @@ pub fn parse_fact(form_id: u32, subs: &[SubRecord]) -> FactionRecord {
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => record.editor_id = read_zstring(&sub.data),
-            b"FULL" => record.full_name = read_zstring(&sub.data),
+            b"FULL" => record.full_name = read_lstring_or_zstring(&sub.data),
             // DATA (FNV FACT): flags is a single byte per UESP
             // `Mod_File_Format/FACT` (FO3 / FNV). The tail is a
             // variable-width payload (FNV adds `u8 unknown + f32 crime

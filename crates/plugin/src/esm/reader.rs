@@ -257,6 +257,15 @@ pub struct FileHeader {
     /// HEDR `Version` f32 (sub-record offset 0). 0.0 when absent (synthetic
     /// test fixtures often omit HEDR). Feed into [`GameKind::from_header`].
     pub hedr_version: f32,
+    /// TES4 record flag bit `0x80` (Localized). When set, Skyrim+
+    /// plugins encode FULL / DESC / RNAM / etc. as a 4-byte u32
+    /// reference into companion `Strings/*.{STRINGS,DLSTRINGS,ILSTRINGS}`
+    /// files rather than inline z-strings. Downstream record parsers
+    /// consult the thread-local `CURRENT_PLUGIN_LOCALIZED` flag
+    /// (`records/common.rs`) when decoding those sub-records so a
+    /// 4-byte payload becomes a `"<lstring 0xNNNNNNNN>"` placeholder
+    /// instead of 3-character UTF-8 garbage. See audit S6-03 / #348.
+    pub localized: bool,
 }
 
 impl<'a> EsmReader<'a> {
@@ -486,6 +495,14 @@ impl<'a> EsmReader<'a> {
             std::str::from_utf8(&header.record_type),
         );
 
+        // Bit 0x80 in the TES4 record flags is the "Localized" flag
+        // Skyrim+ sets on plugins whose FULL/DESC/etc. sub-records
+        // carry 4-byte lstring-table u32 indices instead of inline
+        // z-strings. Capture once so downstream record parsers can
+        // route string decoding through the lstring helper. See
+        // audit S6-03 / #348.
+        let localized = header.flags & 0x80 != 0;
+
         let subs = self.read_sub_records(&header)?;
         let mut masters = Vec::new();
         let mut record_count = 0;
@@ -512,6 +529,7 @@ impl<'a> EsmReader<'a> {
             master_files: masters,
             record_count,
             hedr_version,
+            localized,
         })
     }
 

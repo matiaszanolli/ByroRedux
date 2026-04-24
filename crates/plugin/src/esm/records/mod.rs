@@ -243,6 +243,13 @@ pub fn parse_esm_with_load_order(
         file_header.as_ref().map(|h| h.hedr_version).unwrap_or(0.0),
     );
 
+    // #348 — push the TES4 `Localized` flag into a thread-local so
+    // every record parser's FULL/DESC decoder can route through the
+    // lstring helper. Cleared at the tail of this function so a
+    // subsequent parse of a non-localized plugin in the same process
+    // doesn't inherit stale state.
+    common::set_localized_plugin(file_header.as_ref().map_or(false, |h| h.localized));
+
     // Walk top-level groups and dispatch by record-type label.
     while reader.remaining() > 0 {
         if !reader.is_group() {
@@ -463,6 +470,11 @@ pub fn parse_esm_with_load_order(
         index.activators.len(),
         index.terminals.len(),
     );
+
+    // Clear the lstring thread-local so a subsequent parse of a
+    // non-localized plugin in the same process doesn't inherit
+    // Skyrim's flag. See #348.
+    common::set_localized_plugin(false);
 
     Ok(index)
 }

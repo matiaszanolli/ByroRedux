@@ -23,7 +23,7 @@
 //! gracefully return defaults on short buffers — Skyrim+ re-parsing
 //! lands alongside the consuming system.
 
-use super::common::{read_f32_at, read_u32_at, read_zstring};
+use super::common::{read_f32_at, read_lstring_or_zstring, read_u32_at, read_zstring};
 use crate::esm::reader::SubRecord;
 
 /// Water record — referenced by `CELL.XCWT` (water type form ID on a
@@ -46,7 +46,7 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord]) -> WatrRecord {
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"TNAM" => out.texture_path = read_zstring(&sub.data),
             _ => {}
         }
@@ -283,7 +283,7 @@ pub fn parse_hdpt(form_id: u32, subs: &[SubRecord]) -> HdptRecord {
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"MODL" => out.model_path = read_zstring(&sub.data),
             b"DATA" if !sub.data.is_empty() => {
                 out.flags = sub.data[0];
@@ -314,7 +314,7 @@ pub fn parse_eyes(form_id: u32, subs: &[SubRecord]) -> EyesRecord {
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"ICON" => out.icon_path = read_zstring(&sub.data),
             b"DATA" if !sub.data.is_empty() => {
                 out.flags = sub.data[0];
@@ -345,7 +345,7 @@ pub fn parse_hair(form_id: u32, subs: &[SubRecord]) -> HairRecord {
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"MODL" => out.model_path = read_zstring(&sub.data),
             b"ICON" => out.icon_path = read_zstring(&sub.data),
             b"DATA" if !sub.data.is_empty() => {
@@ -432,7 +432,7 @@ pub fn parse_qust(form_id: u32, subs: &[SubRecord]) -> QustRecord {
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"SCRI" if sub.data.len() >= 4 => {
                 out.script_ref = read_u32_at(&sub.data, 0).unwrap_or(0);
             }
@@ -470,7 +470,7 @@ pub fn parse_dial(form_id: u32, subs: &[SubRecord]) -> DialRecord {
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"QSTI" if sub.data.len() >= 4 => {
                 if let Some(q) = read_u32_at(&sub.data, 0) {
                     out.quest_refs.push(q);
@@ -504,8 +504,8 @@ pub fn parse_mesg(form_id: u32, subs: &[SubRecord]) -> MesgRecord {
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_zstring(&sub.data),
-            b"DESC" => out.description = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
+            b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
             b"QNAM" if sub.data.len() >= 4 => {
                 out.owner_quest = read_u32_at(&sub.data, 0).unwrap_or(0);
             }
@@ -538,8 +538,8 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord]) -> PerkRecord {
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_zstring(&sub.data),
-            b"DESC" => out.description = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
+            b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
             b"DATA" if !sub.data.is_empty() => {
                 out.perk_flags = sub.data[0];
             }
@@ -573,7 +573,7 @@ pub fn parse_spel(form_id: u32, subs: &[SubRecord]) -> SpelRecord {
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"SPIT" if sub.data.len() >= 16 => {
                 out.cost = read_u32_at(&sub.data, 0).unwrap_or(0);
                 out.spell_flags = read_u32_at(&sub.data, 12).unwrap_or(0);
@@ -607,8 +607,8 @@ pub fn parse_mgef(form_id: u32, subs: &[SubRecord]) -> MgefRecord {
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_zstring(&sub.data),
-            b"DESC" => out.description = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
+            b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
             b"DATA" if sub.data.len() >= 4 => {
                 out.effect_flags = read_u32_at(&sub.data, 0).unwrap_or(0);
             }
@@ -652,7 +652,7 @@ pub fn parse_acti(form_id: u32, subs: &[SubRecord]) -> ActiRecord {
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"MODL" => out.model_path = read_zstring(&sub.data),
             b"SCRI" => out.script_form_id = read_u32_at(&sub.data, 0).unwrap_or(0),
             b"SNAM" => out.sound_form_id = read_u32_at(&sub.data, 0).unwrap_or(0),
@@ -700,7 +700,7 @@ pub fn parse_term(form_id: u32, subs: &[SubRecord]) -> TermRecord {
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"MODL" => out.model_path = read_zstring(&sub.data),
             b"SCRI" => out.script_form_id = read_u32_at(&sub.data, 0).unwrap_or(0),
             b"ANAM" => out.password = read_zstring(&sub.data),

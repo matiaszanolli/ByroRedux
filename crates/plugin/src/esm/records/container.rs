@@ -4,7 +4,7 @@
 //! (`CNTO` for containers, `LVLO` for leveled lists). Each entry references
 //! a base item form by ID and gives a count or a level/chance.
 
-use super::common::{read_u32_at, read_zstring};
+use super::common::{read_lstring_or_zstring, read_u32_at, read_zstring};
 use crate::esm::reader::SubRecord;
 
 /// One entry in a container's inventory list.
@@ -67,7 +67,7 @@ pub fn parse_cont(form_id: u32, subs: &[SubRecord]) -> ContainerRecord {
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => record.editor_id = read_zstring(&sub.data),
-            b"FULL" => record.full_name = read_zstring(&sub.data),
+            b"FULL" => record.full_name = read_lstring_or_zstring(&sub.data),
             b"MODL" => record.model_path = read_zstring(&sub.data),
             b"SCRI" if sub.data.len() >= 4 => {
                 record.script_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
