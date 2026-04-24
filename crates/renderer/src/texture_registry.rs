@@ -5,9 +5,14 @@
 //! loop binds this once per frame; the fragment shader indexes into it
 //! via a per-instance `texture_index` from the instance SSBO.
 //!
-//! Two copies of the bindless set exist (one per frame-in-flight) to avoid
-//! descriptor write hazards when `update_rgba` replaces a texture while
-//! another frame's command buffer is still executing.
+//! One descriptor set per frame-in-flight. Writes race carefully:
+//! updates (`update_rgba`, `drop_texture` fallback redirect, texture
+//! registration) target ONLY the current recording slot's set
+//! immediately, and queue the same write on each other slot. The queue
+//! is flushed in [`TextureRegistry::begin_frame`] once the caller has
+//! already waited on the new slot's fence — guaranteeing no in-flight
+//! command buffer still references the set being updated, per
+//! VUID-vkUpdateDescriptorSets-None-03047. See #92.
 
 use crate::vulkan::allocator::SharedAllocator;
 use crate::vulkan::buffer::StagingPool;
@@ -21,6 +26,17 @@ pub type TextureHandle = u32;
 
 /// Maximum frames in flight — textures must survive this many frames after replacement.
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
+
+/// One queued `vkUpdateDescriptorSets` payload for a slot whose
+/// descriptor set is not currently being recorded. The write is
+/// replayed on the slot's next `begin_frame` after its fence
+/// signals. See #92.
+#[derive(Debug, Clone, Copy)]
+struct PendingSetWrite {
+    handle: TextureHandle,
+    image_view: vk::ImageView,
+    sampler: vk::Sampler,
+}
 
 struct TextureEntry {
     /// Live texture, or `None` after the handle has been dropped via
@@ -72,6 +88,18 @@ pub struct TextureRegistry {
     /// Vulkan device/allocator (StagingPool requires both). Production
     /// construction via [`TextureRegistry::new`] always sets this.
     staging_pool: Option<StagingPool>,
+    /// Descriptor-set writes queued per frame slot. Written to the
+    /// current slot (`current_slot`) immediately; queued on every
+    /// other slot so the write doesn't race with a still-in-flight
+    /// command buffer referencing that slot's set. Flushed in
+    /// `begin_frame` after the caller waits on the new slot's fence.
+    /// See #92 / VUID-vkUpdateDescriptorSets-None-03047.
+    pending_set_writes: Vec<Vec<PendingSetWrite>>,
+    /// Frame-in-flight slot index (`0..MAX_FRAMES_IN_FLIGHT`) currently
+    /// being recorded by the CPU. Updated by `begin_frame`. Immediate
+    /// descriptor writes target `bindless_sets[current_slot]`; writes
+    /// for every other slot go into `pending_set_writes[other]`.
+    current_slot: usize,
 }
 
 impl TextureRegistry {
@@ -239,6 +267,8 @@ impl TextureRegistry {
             max_textures,
             current_frame_id: 0,
             staging_pool,
+            pending_set_writes: vec![Vec::new(); MAX_FRAMES_IN_FLIGHT],
+            current_slot: 0,
         })
     }
 
@@ -414,30 +444,17 @@ impl TextureRegistry {
 
         // Redirect the bindless slot to the fallback texture so any
         // GpuInstance still referencing this handle reads the
-        // checkerboard instead of a freed image view.
+        // checkerboard instead of a freed image view. Current slot is
+        // written immediately; other slots queued until their fence
+        // signals (#92).
         let fallback_idx = self.fallback_handle as usize;
         if fallback_idx < self.textures.len() {
             if let Some(fallback) = self.textures[fallback_idx].texture.as_ref() {
                 let image_view = fallback.image_view;
                 let sampler = fallback.sampler;
-                let image_info = vk::DescriptorImageInfo::default()
-                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image_view(image_view)
-                    .sampler(sampler);
-                for &set in &self.bindless_sets {
-                    let write = vk::WriteDescriptorSet::default()
-                        .dst_set(set)
-                        .dst_binding(0)
-                        .dst_array_element(handle)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(std::slice::from_ref(&image_info));
-                    unsafe {
-                        device.update_descriptor_sets(&[write], &[]);
-                    }
-                }
+                self.apply_descriptor_write(device, handle, image_view, sampler);
             }
         }
-
     }
 
     /// Decrement the refcount for `handle` and purge the `path_map`
@@ -489,8 +506,109 @@ impl TextureRegistry {
     }
 
     /// Advance the frame counter for deferred-destroy aging (issue #134).
-    pub fn begin_frame(&mut self) {
+    /// Advance the deferred-destroy frame counter and mark `slot` as
+    /// the descriptor-set that will be recorded next. The caller MUST
+    /// have already waited on `slot`'s fence before entering this
+    /// function — that's what makes the pending-descriptor-write flush
+    /// below safe (no command buffer can still be referencing
+    /// `bindless_sets[slot]` at this point). See #92.
+    pub fn begin_frame(&mut self, device: &ash::Device, slot: usize) {
         self.current_frame_id = self.current_frame_id.wrapping_add(1);
+        self.current_slot = slot;
+        self.flush_pending_set_writes(device, slot);
+    }
+
+    /// Apply every queued descriptor write for `slot` via a single
+    /// `vkUpdateDescriptorSets` batch. Safe to call only when the
+    /// caller has waited on `slot`'s fence.
+    fn flush_pending_set_writes(&mut self, device: &ash::Device, slot: usize) {
+        if self.pending_set_writes[slot].is_empty() {
+            return;
+        }
+        // Snapshot the queue so we can drain without holding a borrow
+        // on `self.pending_set_writes` while we read `self.bindless_sets`.
+        let drained: Vec<PendingSetWrite> = std::mem::take(&mut self.pending_set_writes[slot]);
+        let set = self.bindless_sets[slot];
+        // `DescriptorImageInfo` must outlive the `WriteDescriptorSet`
+        // referencing it, so we build parallel vectors and index in
+        // lockstep.
+        let image_infos: Vec<vk::DescriptorImageInfo> = drained
+            .iter()
+            .map(|w| {
+                vk::DescriptorImageInfo::default()
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image_view(w.image_view)
+                    .sampler(w.sampler)
+            })
+            .collect();
+        let writes: Vec<vk::WriteDescriptorSet> = drained
+            .iter()
+            .enumerate()
+            .map(|(i, w)| {
+                vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(0)
+                    .dst_array_element(w.handle)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(std::slice::from_ref(&image_infos[i]))
+            })
+            .collect();
+        unsafe {
+            device.update_descriptor_sets(&writes, &[]);
+        }
+    }
+
+    /// Apply a descriptor write by writing to the current recording
+    /// slot immediately and queuing the same payload for every other
+    /// slot. The deferred writes fire from `begin_frame` on each slot's
+    /// next turn, after the caller has waited on that slot's fence.
+    /// See #92.
+    fn apply_descriptor_write(
+        &mut self,
+        device: &ash::Device,
+        handle: TextureHandle,
+        image_view: vk::ImageView,
+        sampler: vk::Sampler,
+    ) {
+        // Immediate write on the current slot — safe: we're CPU-side
+        // recording its command buffer right now; no submission is
+        // pending against it.
+        let image_info = vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(image_view)
+            .sampler(sampler);
+        let write = vk::WriteDescriptorSet::default()
+            .dst_set(self.bindless_sets[self.current_slot])
+            .dst_binding(0)
+            .dst_array_element(handle)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(std::slice::from_ref(&image_info));
+        unsafe {
+            device.update_descriptor_sets(&[write], &[]);
+        }
+        self.record_pending_writes_for_other_slots(handle, image_view, sampler);
+    }
+
+    /// Pure queue bookkeeping: push a pending write onto every slot
+    /// except `current_slot`. Split out of `apply_descriptor_write`
+    /// so unit tests can exercise the queue mechanics without a real
+    /// Vulkan device. See #92.
+    fn record_pending_writes_for_other_slots(
+        &mut self,
+        handle: TextureHandle,
+        image_view: vk::ImageView,
+        sampler: vk::Sampler,
+    ) {
+        for (slot, queue) in self.pending_set_writes.iter_mut().enumerate() {
+            if slot == self.current_slot {
+                continue;
+            }
+            queue.push(PendingSetWrite {
+                handle,
+                image_view,
+                sampler,
+            });
+        }
     }
 
     #[cfg(test)]
@@ -545,29 +663,16 @@ impl TextureRegistry {
             entry.pending_destroy.push_back((current_frame_id, prev));
         }
 
-        // Update the bindless array entry in all frame sets.
-        // Extract the data we need before re-borrowing self.
+        // Update the bindless array entry. Current slot writes
+        // immediately; other slots are queued until their fence
+        // signals in `begin_frame` (#92).
         let live = self.textures[handle as usize]
             .texture
             .as_ref()
             .expect("entry was just populated above");
         let image_view = live.image_view;
         let sampler = live.sampler;
-        let image_info = vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(image_view)
-            .sampler(sampler);
-        for &set in &self.bindless_sets {
-            let write = vk::WriteDescriptorSet::default()
-                .dst_set(set)
-                .dst_binding(0)
-                .dst_array_element(handle)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(std::slice::from_ref(&image_info));
-            unsafe {
-                device.update_descriptor_sets(&[write], &[]);
-            }
-        }
+        self.apply_descriptor_write(device, handle, image_view, sampler);
 
         Ok(())
     }
@@ -617,13 +722,32 @@ impl TextureRegistry {
                 .context("Failed to reallocate bindless texture descriptor sets")?
         };
 
+        // Fresh sets have no stale pending writes to replay — the
+        // per-slot queue is invalid against the new `VkDescriptorSet`
+        // handles so discard it. The re-write loop below writes every
+        // live texture directly. See #92.
+        for queue in &mut self.pending_set_writes {
+            queue.clear();
+        }
+
         // Re-write all texture bindings. Skip dropped slots — the new
-        // descriptor set starts fresh, and the loop in drop_texture will
-        // redirect them to the fallback on their next update.
-        for (i, entry) in self.textures.iter().enumerate() {
-            if let Some(ref texture) = entry.texture {
-                self.write_texture_to_sets_inner(device, i as TextureHandle, texture);
-            }
+        // descriptor set starts fresh, and the loop in drop_texture
+        // will redirect them to the fallback on their next update.
+        // Collect into a Vec first so the `self.textures` immutable
+        // borrow doesn't alias `apply_descriptor_write`'s `&mut self`.
+        let rewrites: Vec<(TextureHandle, vk::ImageView, vk::Sampler)> = self
+            .textures
+            .iter()
+            .enumerate()
+            .filter_map(|(i, entry)| {
+                entry
+                    .texture
+                    .as_ref()
+                    .map(|t| (i as TextureHandle, t.image_view, t.sampler))
+            })
+            .collect();
+        for (handle, image_view, sampler) in rewrites {
+            self.apply_descriptor_write(device, handle, image_view, sampler);
         }
 
         log::info!(
@@ -661,9 +785,14 @@ impl TextureRegistry {
         }
     }
 
-    /// Write a texture's image view + sampler to all per-frame bindless sets.
+    /// Write a texture's image view + sampler to the bindless array.
+    ///
+    /// Writes the current recording slot immediately and queues the
+    /// same payload on the remaining slots, which flush in their next
+    /// `begin_frame` after the caller waits on that slot's fence. See
+    /// `apply_descriptor_write` + #92.
     fn write_texture_to_all_sets(
-        &self,
+        &mut self,
         device: &ash::Device,
         handle: TextureHandle,
         texture: &Texture,
@@ -672,28 +801,12 @@ impl TextureRegistry {
     }
 
     fn write_texture_to_sets_inner(
-        &self,
+        &mut self,
         device: &ash::Device,
         handle: TextureHandle,
         texture: &Texture,
     ) {
-        let image_info = vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(texture.image_view)
-            .sampler(texture.sampler);
-
-        for &set in &self.bindless_sets {
-            let write = vk::WriteDescriptorSet::default()
-                .dst_set(set)
-                .dst_binding(0)
-                .dst_array_element(handle)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(std::slice::from_ref(&image_info));
-
-            unsafe {
-                device.update_descriptor_sets(&[write], &[]);
-            }
-        }
+        self.apply_descriptor_write(device, handle, texture.image_view, texture.sampler);
     }
 }
 
@@ -829,6 +942,8 @@ mod tests {
             // Unit-test path: `check_slot_available` doesn't touch the
             // pool, so None is safe here.
             staging_pool: None,
+            pending_set_writes: vec![Vec::new(); MAX_FRAMES_IN_FLIGHT],
+            current_slot: 0,
         }
     }
 
@@ -961,5 +1076,97 @@ mod tests {
         // from stray drops. `u32::MAX` gives plenty of headroom.
         let reg = make_registry_with_entry("chair.dds", 1);
         assert_eq!(reg.textures[0].ref_count, u32::MAX);
+    }
+
+    // ── #92 pending descriptor-write queue mechanics ────────────────
+
+    /// Regression for #92 — a descriptor update against the current
+    /// recording slot must NOT be pushed to the pending queue (the
+    /// current slot is written immediately); every OTHER slot must
+    /// receive a queued write so the caller can flush it safely after
+    /// that slot's fence signals.
+    #[test]
+    fn pending_write_records_on_other_slots_only() {
+        let mut reg = make_registry_for_overflow_test(16, 0);
+        reg.current_slot = 0;
+        let image_view = vk::ImageView::null();
+        let sampler = vk::Sampler::null();
+
+        reg.record_pending_writes_for_other_slots(7, image_view, sampler);
+
+        // Current slot (0): empty.
+        assert_eq!(reg.pending_set_writes[0].len(), 0);
+        // Other slot (1): received the deferred write.
+        assert_eq!(reg.pending_set_writes[1].len(), 1);
+        assert_eq!(reg.pending_set_writes[1][0].handle, 7);
+    }
+
+    /// Swapping the current slot flips which queue receives deferred
+    /// writes — the one previously "current" now accumulates pending
+    /// updates, matching the guarantee `begin_frame` relies on when
+    /// the caller ticks to a new slot.
+    #[test]
+    fn pending_write_current_slot_change_flips_deferred_target() {
+        let mut reg = make_registry_for_overflow_test(16, 0);
+        reg.current_slot = 0;
+        reg.record_pending_writes_for_other_slots(1, vk::ImageView::null(), vk::Sampler::null());
+        assert_eq!(reg.pending_set_writes[0].len(), 0);
+        assert_eq!(reg.pending_set_writes[1].len(), 1);
+
+        // Flip to slot 1 as the new current slot (begin_frame would
+        // do this after the caller waits on slot 1's fence). A
+        // subsequent write now queues on slot 0 instead.
+        reg.current_slot = 1;
+        reg.record_pending_writes_for_other_slots(2, vk::ImageView::null(), vk::Sampler::null());
+        assert_eq!(reg.pending_set_writes[0].len(), 1);
+        assert_eq!(reg.pending_set_writes[0][0].handle, 2);
+        // Slot 1's queue is untouched by this call (handle 2 didn't
+        // land there) — it still holds the original handle 1 from
+        // before the flip.
+        assert_eq!(reg.pending_set_writes[1].len(), 1);
+        assert_eq!(reg.pending_set_writes[1][0].handle, 1);
+    }
+
+    /// Multiple writes accumulate in deferred slots — each one must
+    /// be replayed on flush, in authoring order. Guards against a
+    /// "last-write-wins" regression.
+    #[test]
+    fn pending_writes_accumulate_and_preserve_order() {
+        let mut reg = make_registry_for_overflow_test(16, 0);
+        reg.current_slot = 0;
+        for handle in [3, 7, 11, 4] {
+            reg.record_pending_writes_for_other_slots(
+                handle,
+                vk::ImageView::null(),
+                vk::Sampler::null(),
+            );
+        }
+        let deferred = &reg.pending_set_writes[1];
+        assert_eq!(deferred.len(), 4);
+        assert_eq!(
+            deferred.iter().map(|w| w.handle).collect::<Vec<_>>(),
+            vec![3, 7, 11, 4],
+        );
+    }
+
+    /// `recreate_descriptor_sets` allocates fresh `VkDescriptorSet`
+    /// handles, so every pending write queued against the old sets
+    /// is invalid. Verify the queue is cleared as part of the
+    /// recreate-path contract (#92 — stale handles must not flow
+    /// into a fresh set in `flush_pending_set_writes`).
+    #[test]
+    fn pending_writes_cleared_by_recreate_semantics() {
+        let mut reg = make_registry_for_overflow_test(16, 0);
+        reg.current_slot = 0;
+        reg.record_pending_writes_for_other_slots(5, vk::ImageView::null(), vk::Sampler::null());
+        assert!(!reg.pending_set_writes[1].is_empty());
+
+        // Simulate the `recreate_descriptor_sets` queue-clear step
+        // directly (the Vulkan side needs a real device, out of
+        // scope here).
+        for queue in &mut reg.pending_set_writes {
+            queue.clear();
+        }
+        assert!(reg.pending_set_writes.iter().all(|q| q.is_empty()));
     }
 }

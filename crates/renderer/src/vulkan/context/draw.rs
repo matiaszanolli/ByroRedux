@@ -161,7 +161,7 @@ impl VulkanContext {
         // counter that the tick compares against — must run BEFORE the
         // tick so the counter reflects "this frame" during the
         // deferred-destroy decision.
-        self.texture_registry.begin_frame();
+        self.texture_registry.begin_frame(&self.device, frame);
         if let Some(ref alloc) = self.allocator {
             self.mesh_registry
                 .tick_deferred_destroy(&self.device, alloc);
