@@ -467,6 +467,17 @@ pub struct EsmCellIndex {
     /// synthetic placed refs when the cached NIF is unavailable.
     /// See audit FO4-D4-C2.
     pub scols: HashMap<u32, super::records::ScolRecord>,
+    /// FO4+ pack-in (PKIN) bundles keyed by form ID. PKIN records
+    /// group LVLI / CONT / STAT / MSTT children via `CNAM` sub-records
+    /// so level designers can drop a reusable "generic workbench loot"
+    /// bundle as a single REFR. The cell loader expands a PKIN REFR
+    /// into one synthetic placement per `contents` entry at the outer
+    /// REFR's transform (analogous to the SCOL expansion in
+    /// `expand_scol_placements`). Pre-#589 all 872 vanilla Fallout4.esm
+    /// PKIN records were silently dropped because they were routed
+    /// through the MODL-only parser (PKIN carries no MODL).
+    /// See audit FO4-DIM4-03 / #589.
+    pub packins: HashMap<u32, super::records::PkinRecord>,
 }
 
 /// Parse an ESM file and extract cells, worldspaces, and base object definitions.
@@ -510,6 +521,7 @@ pub fn parse_esm_cells_with_load_order(
     let mut texture_sets: HashMap<u32, TextureSet> = HashMap::new();
     let mut ltex_to_txst: HashMap<u32, u32> = HashMap::new();
     let mut scols: HashMap<u32, super::records::ScolRecord> = HashMap::new();
+    let mut packins: HashMap<u32, super::records::PkinRecord> = HashMap::new();
 
     // Walk top-level groups.
     while reader.remaining() > 0 {
@@ -561,7 +573,7 @@ pub fn parse_esm_cells_with_load_order(
             b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"ACTI" | b"CONT" | b"LIGH" | b"MISC"
             | b"FLOR" | b"TREE" | b"AMMO" | b"WEAP" | b"ARMO" | b"BOOK" | b"KEYM" | b"ALCH"
             | b"INGR" | b"NOTE" | b"TACT" | b"IDLM" | b"BNDS" | b"ADDN" | b"TERM" | b"NPC_"
-            | b"CREA" | b"MOVS" | b"PKIN" => {
+            | b"CREA" | b"MOVS" => {
                 let end = reader.group_content_end(&group);
                 parse_modl_group(&mut reader, end, &mut statics)?;
             }
@@ -575,6 +587,21 @@ pub fn parse_esm_cells_with_load_order(
             b"SCOL" => {
                 let end = reader.group_content_end(&group);
                 parse_scol_group(&mut reader, end, &mut statics, &mut scols)?;
+            }
+            // PKIN — FO4+ Pack-In bundle. CNAM-driven, no MODL; the
+            // MODL-only parser above would silently produce a
+            // `StaticObject { model_path: "" }` and discard every
+            // content reference. Route through a dedicated parser
+            // that captures the full CNAM list into `packins`; the
+            // cell loader expands PKIN REFRs into synthetic placements
+            // at spawn time (analogous to SCOL). Also register a
+            // nominal `StaticObject` entry so REFRs still resolve the
+            // base form at load time — the empty `model_path` plus
+            // PKIN presence in `packins` is the signal the cell
+            // loader keys on. See audit FO4-DIM4-03 / #589.
+            b"PKIN" => {
+                let end = reader.group_content_end(&group);
+                parse_pkin_group(&mut reader, end, &mut statics, &mut packins)?;
             }
             _ => {
                 reader.skip_group(&group);
@@ -613,6 +640,7 @@ pub fn parse_esm_cells_with_load_order(
         worldspace_climates,
         texture_sets,
         scols,
+        packins,
     })
 }
 
@@ -1780,6 +1808,64 @@ fn parse_scol_group(
                 );
             }
             scols.insert(header.form_id, record);
+        } else {
+            reader.skip_record(&header);
+        }
+    }
+    Ok(())
+}
+
+/// Parse PKIN (Pack-In) records. Each record is captured in the
+/// `packins` map with its CNAM-driven content-reference list, and
+/// also gets a nominal `StaticObject` entry with an empty
+/// `model_path` so REFR resolution still finds the base form at cell
+/// load time — the cell loader uses "statics[base].model_path empty
+/// AND base in packins" as the signal to expand into synthetic
+/// placements.
+///
+/// Pre-#589 PKIN records were routed through the MODL-only parser
+/// (which only pulls EDID when MODL is absent) and the CNAM content
+/// list was silently dropped. Vanilla Fallout4.esm ships 872 PKIN
+/// records — every FO4 workshop-content bundle REFR rendered as
+/// nothing. See audit FO4-DIM4-03.
+fn parse_pkin_group(
+    reader: &mut EsmReader,
+    end: usize,
+    statics: &mut HashMap<u32, StaticObject>,
+    packins: &mut HashMap<u32, super::records::PkinRecord>,
+) -> Result<()> {
+    while reader.position() < end && reader.remaining() > 0 {
+        if reader.is_group() {
+            let sub = reader.read_group_header()?;
+            let sub_end = reader.group_content_end(&sub);
+            parse_pkin_group(reader, sub_end, statics, packins)?;
+            continue;
+        }
+
+        let header = reader.read_record_header()?;
+        if &header.record_type == b"PKIN" {
+            let subs = reader.read_sub_records(&header)?;
+            let record = super::records::parse_pkin(header.form_id, &subs);
+            // Register a nominal StaticObject so REFR base-form lookup
+            // succeeds. Empty `model_path` + `contents.len() > 0` is
+            // the cell loader's expansion trigger (see
+            // `expand_pkin_placements`). Keeping the `editor_id`
+            // populated lets debug logging surface the PKIN name when
+            // a spawn fails to find the base.
+            if !record.editor_id.is_empty() {
+                statics.insert(
+                    header.form_id,
+                    StaticObject {
+                        form_id: header.form_id,
+                        editor_id: record.editor_id.clone(),
+                        model_path: String::new(),
+                        light_data: None,
+                        addon_data: None,
+                        has_script: false,
+                    },
+                );
+            }
+            packins.insert(header.form_id, record);
         } else {
             reader.skip_record(&header);
         }
@@ -3615,6 +3701,50 @@ mod tests {
             total_placements > 15000,
             "expected >15k per-child placements, got {}",
             total_placements
+        );
+    }
+
+    /// Regression: #589 — vanilla Fallout4.esm must surface every PKIN
+    /// record with a non-empty `contents` list. Pre-fix 872 PKIN
+    /// records silently produced zero world content because they were
+    /// routed through the MODL-only catch-all (PKIN carries no MODL).
+    /// Ignored by default — opt in with `cargo test -p byroredux-plugin
+    /// -- --ignored`.
+    #[test]
+    #[ignore]
+    fn parse_real_fo4_esm_surfaces_pkin_contents() {
+        let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data/Fallout4.esm";
+        if !std::path::Path::new(path).exists() {
+            eprintln!("Skipping: Fallout4.esm not found");
+            return;
+        }
+        let data = std::fs::read(path).unwrap();
+        let idx = parse_esm_cells(&data).expect("parse_esm_cells");
+
+        let pkin_count = idx.packins.len();
+        let non_empty_pkin = idx
+            .packins
+            .values()
+            .filter(|p| !p.contents.is_empty())
+            .count();
+        let total_contents: usize = idx.packins.values().map(|p| p.contents.len()).sum();
+        eprintln!(
+            "FO4 PKIN: {} records, {} with contents, {} total refs",
+            pkin_count, non_empty_pkin, total_contents,
+        );
+
+        // Audit floor per issue body: 872 vanilla PKIN records, all
+        // with non-empty `contents`. Set the floor ~5 % below observed
+        // so DLC patches don't break the test.
+        assert!(
+            pkin_count >= 820,
+            "expected ≥820 PKIN records, got {}",
+            pkin_count
+        );
+        assert!(
+            non_empty_pkin >= 820,
+            "expected ≥820 PKIN records with non-empty contents, got {}",
+            non_empty_pkin
         );
     }
 
