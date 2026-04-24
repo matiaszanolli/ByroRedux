@@ -37,6 +37,8 @@
 #![allow(dead_code)] // Not every helper is used by every test file.
 
 use byroredux_bsa::{Ba2Archive, BsaArchive};
+use byroredux_nif::blocks::{NiObject, NiUnknown};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Games we have real test content for.
@@ -455,6 +457,227 @@ pub fn parse_all_nifs_in_dir(root: &Path, limit: Option<usize>) -> ParseStats {
     stats
 }
 
+/// Per-block-type counts. `parsed` is dispatch-table success; `unknown`
+/// is the count of blocks that landed on the `NiUnknown` recovery path
+/// while still advertising this type in the header.
+///
+/// The R3 regression signal is `parsed > 0 && unknown > 0` for the same
+/// type, or any growth in `unknown` against a checked-in baseline.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BlockCounts {
+    pub parsed: usize,
+    pub unknown: usize,
+}
+
+/// Per-header-type histogram across a corpus of parsed scenes.
+///
+/// Attribution rule: every block in the scene is keyed by its
+/// **header-advertised type name** (i.e. the value the writer put in
+/// the block-type table). When that block downcasts to `NiUnknown` it
+/// contributes to `unknown[type_name]`; when it dispatched to a real
+/// parser it contributes to `parsed[block_type_name()]`. Both share a
+/// key, so a regressed parser that starts under-consuming a previously
+/// well-handled type shows up as `parsed: N->N-k, unknown: 0->k` for
+/// the same key — exactly the signal the per-block baseline test
+/// gates on.
+#[derive(Debug, Default, Clone)]
+pub struct PerBlockHistogram {
+    pub counts: BTreeMap<String, BlockCounts>,
+}
+
+impl PerBlockHistogram {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record_scene_blocks<'a>(
+        &mut self,
+        blocks: impl Iterator<Item = &'a Box<dyn NiObject>>,
+    ) {
+        for block in blocks {
+            if let Some(unknown) = block.as_any().downcast_ref::<NiUnknown>() {
+                self.counts
+                    .entry(unknown.type_name.as_ref().to_string())
+                    .or_default()
+                    .unknown += 1;
+            } else {
+                self.counts
+                    .entry(block.block_type_name().to_string())
+                    .or_default()
+                    .parsed += 1;
+            }
+        }
+    }
+
+    /// Total number of blocks that landed in the `NiUnknown` recovery
+    /// path across every type. Useful one-line health metric.
+    pub fn total_unknown(&self) -> usize {
+        self.counts.values().map(|c| c.unknown).sum()
+    }
+
+    /// Number of types where dispatch sometimes succeeded and sometimes
+    /// fell into the recovery path. Most direct R3 signal.
+    pub fn types_with_partial_unknown(&self) -> usize {
+        self.counts
+            .values()
+            .filter(|c| c.parsed > 0 && c.unknown > 0)
+            .count()
+    }
+
+    /// Serialise to the canonical TSV format consumed by the baseline
+    /// regression test. Stable across runs (BTreeMap is sorted by key).
+    /// First line is a `# header total=N` line so checked-in baselines
+    /// stay hand-readable.
+    pub fn to_tsv(&self, total_files: usize) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("# nif_stats per-block histogram\ttotal={}\n", total_files));
+        for (name, counts) in &self.counts {
+            out.push_str(&format!("{}\t{}\t{}\n", name, counts.parsed, counts.unknown));
+        }
+        out
+    }
+
+    /// Parse a TSV produced by [`Self::to_tsv`]. Lines beginning with
+    /// `#` are header/metadata and skipped. Malformed rows produce an
+    /// `Err` so a corrupt baseline file fails loud rather than silently
+    /// passing the regression gate.
+    pub fn from_tsv(text: &str) -> Result<Self, String> {
+        let mut hist = Self::new();
+        for (lineno, raw) in text.lines().enumerate() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut parts = line.split('\t');
+            let name = parts
+                .next()
+                .ok_or_else(|| format!("line {}: missing type name", lineno + 1))?;
+            let parsed: usize = parts
+                .next()
+                .ok_or_else(|| format!("line {}: missing parsed count", lineno + 1))?
+                .parse()
+                .map_err(|e| format!("line {}: parsed count: {}", lineno + 1, e))?;
+            let unknown: usize = parts
+                .next()
+                .ok_or_else(|| format!("line {}: missing unknown count", lineno + 1))?
+                .parse()
+                .map_err(|e| format!("line {}: unknown count: {}", lineno + 1, e))?;
+            hist.counts
+                .insert(name.to_string(), BlockCounts { parsed, unknown });
+        }
+        Ok(hist)
+    }
+}
+
+/// One regression-rule violation between current and baseline counts.
+#[derive(Debug)]
+pub enum BaselineRegression {
+    /// `unknown` count went up — a parser that used to handle this
+    /// type started under-consuming. The strongest R3 signal.
+    UnknownGrew {
+        type_name: String,
+        baseline: usize,
+        current: usize,
+    },
+    /// `parsed` count went down — fewer instances are dispatching to
+    /// the real parser. Could mean the type is being filtered out, the
+    /// archive content shifted, or a regression that drops blocks
+    /// before classification.
+    ParsedShrank {
+        type_name: String,
+        baseline: usize,
+        current: usize,
+    },
+}
+
+/// Compare a freshly-built histogram against a baseline. Improvements
+/// (current `unknown` < baseline, or current `parsed` > baseline) are
+/// silent — regenerate the baseline when fixing a parser. Returns one
+/// entry per regressed type. New types absent from the baseline are
+/// always accepted (they can only add coverage).
+pub fn compare_histograms(
+    current: &PerBlockHistogram,
+    baseline: &PerBlockHistogram,
+) -> Vec<BaselineRegression> {
+    let mut regressions = Vec::new();
+    for (name, base_counts) in &baseline.counts {
+        let cur_counts = current.counts.get(name).copied().unwrap_or_default();
+        if cur_counts.unknown > base_counts.unknown {
+            regressions.push(BaselineRegression::UnknownGrew {
+                type_name: name.clone(),
+                baseline: base_counts.unknown,
+                current: cur_counts.unknown,
+            });
+        }
+        if cur_counts.parsed < base_counts.parsed {
+            regressions.push(BaselineRegression::ParsedShrank {
+                type_name: name.clone(),
+                baseline: base_counts.parsed,
+                current: cur_counts.parsed,
+            });
+        }
+    }
+    regressions
+}
+
+/// Walk every NIF in a mesh archive, building both `ParseStats` and a
+/// `PerBlockHistogram` in one pass. Returns the pair so the
+/// per-block-baseline test can also surface file-level health
+/// (clean / truncated / failed) for context when a regression is
+/// reported.
+pub fn parse_archive_with_histogram(
+    archive: &MeshArchive,
+    limit: Option<usize>,
+) -> (ParseStats, PerBlockHistogram) {
+    let mut stats = ParseStats::default();
+    let mut hist = PerBlockHistogram::new();
+    let files: Vec<String> = archive
+        .list_files()
+        .into_iter()
+        .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
+        .collect();
+
+    let iter: Box<dyn Iterator<Item = &String>> = match limit {
+        Some(n) => Box::new(files.iter().take(n)),
+        None => Box::new(files.iter()),
+    };
+
+    for path in iter {
+        let outcome = match archive.extract(path) {
+            Err(e) => ParseOutcome {
+                path: path.clone(),
+                status: ParseStatus::Failed(format!("extract: {e}")),
+            },
+            Ok(bytes) => match byroredux_nif::parse_nif(&bytes) {
+                Ok(scene) => {
+                    hist.record_scene_blocks(scene.blocks.iter());
+                    let status = if scene.truncated || scene.recovered_blocks > 0 {
+                        ParseStatus::Truncated {
+                            block_count: scene.len(),
+                            dropped: scene.dropped_block_count + scene.recovered_blocks,
+                        }
+                    } else {
+                        ParseStatus::Clean {
+                            block_count: scene.len(),
+                        }
+                    };
+                    ParseOutcome {
+                        path: path.clone(),
+                        status,
+                    }
+                }
+                Err(e) => ParseOutcome {
+                    path: path.clone(),
+                    status: ParseStatus::Failed(format!("parse: {e}")),
+                },
+            },
+        };
+        stats.record(outcome);
+    }
+
+    (stats, hist)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,5 +732,102 @@ mod tests {
         }
         assert_eq!(stats.success_rate(), 0.0);
         assert_eq!(stats.recoverable_rate(), 1.0);
+    }
+
+    fn hist_of(pairs: &[(&str, usize, usize)]) -> PerBlockHistogram {
+        let mut h = PerBlockHistogram::new();
+        for (name, parsed, unknown) in pairs {
+            h.counts.insert(
+                (*name).to_string(),
+                BlockCounts {
+                    parsed: *parsed,
+                    unknown: *unknown,
+                },
+            );
+        }
+        h
+    }
+
+    #[test]
+    fn histogram_tsv_roundtrips() {
+        let h = hist_of(&[("NiNode", 100, 0), ("NiTransformData", 40, 2)]);
+        let tsv = h.to_tsv(7);
+        let parsed = PerBlockHistogram::from_tsv(&tsv).expect("roundtrip");
+        assert_eq!(parsed.counts, h.counts);
+    }
+
+    #[test]
+    fn histogram_tsv_skips_comments_and_blanks() {
+        let tsv = "# header total=3\n\nNiNode\t10\t0\n";
+        let parsed = PerBlockHistogram::from_tsv(tsv).expect("parse");
+        assert_eq!(parsed.counts.len(), 1);
+        assert_eq!(
+            parsed.counts.get("NiNode").copied().unwrap(),
+            BlockCounts {
+                parsed: 10,
+                unknown: 0
+            }
+        );
+    }
+
+    #[test]
+    fn histogram_tsv_rejects_malformed_rows() {
+        // Missing the unknown column must fail loud — a corrupt
+        // baseline must not silently pass the regression gate.
+        let tsv = "NiNode\t10\n";
+        assert!(PerBlockHistogram::from_tsv(tsv).is_err());
+    }
+
+    // R3 regression-detection rules. Improvements (current better than
+    // baseline) are silent — the baseline is regenerated when fixing a
+    // parser. Regressions are surfaced both ways: unknown growth and
+    // parsed shrinkage, since either points at a parser bug.
+
+    #[test]
+    fn unknown_growth_is_a_regression() {
+        let baseline = hist_of(&[("NiTransformData", 40623, 0)]);
+        let current = hist_of(&[("NiTransformData", 40615, 8)]);
+        let regs = compare_histograms(&current, &baseline);
+        assert_eq!(regs.len(), 2);
+        assert!(matches!(
+            regs[0],
+            BaselineRegression::UnknownGrew { ref type_name, baseline: 0, current: 8 }
+                if type_name == "NiTransformData"
+        ));
+        assert!(matches!(
+            regs[1],
+            BaselineRegression::ParsedShrank { ref type_name, baseline: 40623, current: 40615 }
+                if type_name == "NiTransformData"
+        ));
+    }
+
+    #[test]
+    fn improvement_is_silent() {
+        let baseline = hist_of(&[("bhkRigidBody", 0, 5000)]);
+        let current = hist_of(&[("bhkRigidBody", 5000, 0)]);
+        assert!(compare_histograms(&current, &baseline).is_empty());
+    }
+
+    #[test]
+    fn types_new_in_current_are_silent() {
+        let baseline = hist_of(&[("NiNode", 10, 0)]);
+        let current = hist_of(&[("NiNode", 10, 0), ("NiNewBlock", 3, 0)]);
+        assert!(compare_histograms(&current, &baseline).is_empty());
+    }
+
+    #[test]
+    fn type_disappearing_from_current_is_a_regression() {
+        // Baseline says NiTransformData parsed 100; current parses 0.
+        // current.counts has no entry for NiTransformData → defaults to
+        // (0, 0), which compares as ParsedShrank.
+        let baseline = hist_of(&[("NiTransformData", 100, 0)]);
+        let current = hist_of(&[]);
+        let regs = compare_histograms(&current, &baseline);
+        assert_eq!(regs.len(), 1);
+        assert!(matches!(
+            regs[0],
+            BaselineRegression::ParsedShrank { ref type_name, baseline: 100, current: 0 }
+                if type_name == "NiTransformData"
+        ));
     }
 }
