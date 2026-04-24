@@ -1468,6 +1468,86 @@ mod dispatch_tests {
         assert_eq!(stream.position() as usize, bytes.len());
     }
 
+    /// `NiBSBoneLODController` on Bethesda content (bsver != 0) must
+    /// stop after `node_groups` and skip the `#NISTREAM#`-gated
+    /// shape-group tail. Pre-fix the parser ate 4+ extra bytes past
+    /// the block, hit `0xFFFFFFFF` reading the next block's data as
+    /// `Num Shape Groups`, and bailed via `allocate_vec`. Surfaced by
+    /// the R3 per-block histogram on FNV creature skeletons (34
+    /// instances all advertising as `NiUnknown`). Sized to mirror the
+    /// failing block 6 from `meshes/characters/_male/skeleton.nif`:
+    /// 26 (base) + 4 (lod) + 4 (num_lods=1) + 4 (num_node_groups) +
+    /// 4 (num_nodes=5) + 5×4 (ptrs) = 62 bytes total.
+    #[test]
+    fn ni_bs_bone_lod_controller_skips_shape_groups_on_bethesda() {
+        // FNV header — bsver=34, the BSVER on every creature skeleton
+        // that R3 surfaced.
+        let header = NifHeader {
+            version: NifVersion(0x14020007),
+            little_endian: true,
+            user_version: 11,
+            user_version_2: 34,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: vec![Arc::from("SkyProp")],
+            max_string_length: 8,
+            num_groups: 0,
+        };
+        let mut bytes = Vec::new();
+        // NiTimeController base (26 B).
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        // LOD + counts.
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // lod
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // num_lods
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // num_node_groups (unused)
+        // Node Groups: NodeSet { num_nodes=5, nodes=[10,11,12,13,14] }.
+        bytes.extend_from_slice(&5u32.to_le_bytes()); // num_nodes
+        for ptr in 10i32..15 {
+            bytes.extend_from_slice(&ptr.to_le_bytes());
+        }
+        // No shape-group fields — Bethesda content stops here.
+        assert_eq!(bytes.len(), 62);
+        // Pre-fix tripwire: a sentinel u32 right after the body so a
+        // regressed parser that keeps reading past `bytes.len()` would
+        // hit `0xFFFFFFFF` and bail in `allocate_vec`. The
+        // `Some(bytes.len() as u32)` block-size cap below already
+        // bounds the parser; this is belt-and-braces.
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block(
+            "NiBSBoneLODController",
+            &mut stream,
+            // Block-size hint covers only the real body — pre-fix
+            // parser ignored block_size for end-of-block detection
+            // and read past it anyway.
+            Some(62),
+        )
+        .expect("NiBSBoneLODController must parse on Bethesda BSVER!=0");
+        let ctrl = block
+            .as_any()
+            .downcast_ref::<crate::blocks::controller::NiBsBoneLodController>()
+            .unwrap();
+        assert_eq!(ctrl.lod, 0);
+        assert_eq!(ctrl.node_groups.len(), 1);
+        assert_eq!(ctrl.node_groups[0].nodes.len(), 5);
+        assert_eq!(ctrl.node_groups[0].nodes[0].index(), Some(10));
+        assert_eq!(ctrl.node_groups[0].nodes[4].index(), Some(14));
+        // Shape-groups are absent on Bethesda content per #NISTREAM#.
+        assert!(ctrl.shape_groups_1.is_empty());
+        assert!(ctrl.shape_groups_2.is_empty());
+        // Stream must stop exactly at end of body — no overshoot into
+        // the sentinel u32 we stamped past byte 62.
+        assert_eq!(stream.position(), 62);
+    }
+
     /// Regression for #557 — `bhkOrientHingedBodyAction` must consume
     /// its full 68-byte body (12 B bhkUnaryAction + 8 + 16 + 16 + 4 +
     /// 4 + 8 = 56 B self).

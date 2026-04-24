@@ -183,20 +183,34 @@ impl NiFlipController {
 // before #394. Subclass of `NiBoneLODController` →
 // `NiTimeController`. nif.xml line 3836.
 //
-// Wire layout on Bethesda content (since 4.2.2.0; Oblivion 20.0.0.5
-// is well past that gate):
+// Wire layout — three phases, with the shape-group tail gated on
+// non-Bethesda content per nif.xml `vercond="#NISTREAM#"`
+// (`#NISTREAM#` resolves to `#BSVER# #EQ# 0`, line 10):
 //
 //   NiTimeController base                   (26 B)
 //   LOD             (u32)                   ( 4 B)
 //   Num LODs        (u32)                   ( 4 B)
-//   Num Node Groups (u32)                   ( 4 B)
+//   Num Node Groups (u32)                   ( 4 B, dropped — see below)
 //   Node Groups[Num LODs] — each is:
 //       Num Nodes (u32) + Nodes[Num Nodes] (Ptr, 4 B each)
+//   ── only when bsver == 0 (Morrowind / Oblivion / non-Bethesda):
 //   Num Shape Groups (u32)                  ( 4 B — since 4.2.2.0)
 //   Shape Groups 1[Num Shape Groups] — each is:
 //       Num Skin Info (u32) + SkinInfo[Num Skin Info] (8 B each)
 //   Num Shape Groups 2 (u32)                ( 4 B)
 //   Shape Groups 2[Num Shape Groups 2]      (Ref, 4 B each)
+//
+// Pre-fix the shape-group tail was always read, so on every Bethesda
+// game past Morrowind/Oblivion (FO3 bsver=21 onward) the parser ate
+// 4+ extra bytes past the block body, hit `0xFFFFFFFF` reading the
+// next block's data as `Num Shape Groups`, and bailed via `allocate_vec`
+// with "NIF claims 4294967295 elements". 34 instances regressed on
+// FNV (`meshes/characters/_male/skeleton.nif` and every creature
+// skeleton) — surfaced by the R3 per-block histogram landing in the
+// same session. `Num Node Groups` (the unused u32) is preserved on
+// the wire for **all** content per nif.xml line 3828: it has no
+// `vercond` and no `since` gate, so it's always present even though
+// our consumer drops it.
 //
 // Variable-size with two nested dynamic arrays. Parsed eagerly so
 // Oblivion loads don't truncate the rest of the NIF waiting on a
@@ -262,27 +276,40 @@ impl NiBsBoneLodController {
             }
             node_groups.push(NodeSet { nodes });
         }
-        // since 4.2.2.0 — every Bethesda target is past this gate.
-        let num_shape_groups = stream.read_u32_le()?;
-        let mut shape_groups_1 = stream.allocate_vec::<BoneLodSkinInfoSet>(num_shape_groups)?;
-        for _ in 0..num_shape_groups {
-            let count = stream.read_u32_le()?;
-            let mut skin_infos = stream.allocate_vec::<BoneLodSkinInfo>(count)?;
-            for _ in 0..count {
-                let shape_ptr = stream.read_block_ref()?;
-                let skin_instance_ref = stream.read_block_ref()?;
-                skin_infos.push(BoneLodSkinInfo {
-                    shape_ptr,
-                    skin_instance_ref,
-                });
+        // Shape-group tail is non-Bethesda only. nif.xml gates each of
+        // these four fields on `vercond="#NISTREAM#"` which expands to
+        // `#BSVER# #EQ# 0` — i.e. Morrowind, Oblivion, and pure-Niflib
+        // content only. Every Bethesda game past Oblivion (FO3 bsver=21
+        // → Starfield bsver=172) ends the block at the close of
+        // node_groups; reading further over-consumes by 4+ bytes and
+        // trips `allocate_vec` on whatever sentinel the next block
+        // happens to start with.
+        let (shape_groups_1, shape_groups_2) = if stream.bsver() == 0 {
+            let num_shape_groups = stream.read_u32_le()?;
+            let mut shape_groups_1 =
+                stream.allocate_vec::<BoneLodSkinInfoSet>(num_shape_groups)?;
+            for _ in 0..num_shape_groups {
+                let count = stream.read_u32_le()?;
+                let mut skin_infos = stream.allocate_vec::<BoneLodSkinInfo>(count)?;
+                for _ in 0..count {
+                    let shape_ptr = stream.read_block_ref()?;
+                    let skin_instance_ref = stream.read_block_ref()?;
+                    skin_infos.push(BoneLodSkinInfo {
+                        shape_ptr,
+                        skin_instance_ref,
+                    });
+                }
+                shape_groups_1.push(BoneLodSkinInfoSet { skin_infos });
             }
-            shape_groups_1.push(BoneLodSkinInfoSet { skin_infos });
-        }
-        let num_shape_groups_2 = stream.read_u32_le()?;
-        let mut shape_groups_2 = stream.allocate_vec::<BlockRef>(num_shape_groups_2)?;
-        for _ in 0..num_shape_groups_2 {
-            shape_groups_2.push(stream.read_block_ref()?);
-        }
+            let num_shape_groups_2 = stream.read_u32_le()?;
+            let mut shape_groups_2 = stream.allocate_vec::<BlockRef>(num_shape_groups_2)?;
+            for _ in 0..num_shape_groups_2 {
+                shape_groups_2.push(stream.read_block_ref()?);
+            }
+            (shape_groups_1, shape_groups_2)
+        } else {
+            (Vec::new(), Vec::new())
+        };
         Ok(Self {
             base,
             lod,
