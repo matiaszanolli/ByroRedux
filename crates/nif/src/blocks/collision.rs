@@ -1374,6 +1374,367 @@ impl BhkConstraint {
     }
 }
 
+// ── Havok tail types (#557 / NIF-12) ────────────────────────────────
+//
+// Six leaf types that appeared in `NiUnknown` buckets across all four
+// Bethesda games before they were registered. Each is a thin parser
+// with nif.xml-derived byte counts — the block_sizes recovery covers
+// FO3+ / Skyrim / FO4, but Oblivion (v20.0.0.5, no block_sizes) needs
+// every byte read exactly or the outer walker cascades off the rails.
+
+/// `bhkAabbPhantom` — non-physical broad-phase-only phantom (trigger
+/// volumes, region queries). nif.xml line 2778.
+///
+/// Inheritance chain: bhkAabbPhantom → bhkPhantom → bhkWorldObject.
+/// Layout on disk (Bethesda, 20.0.0.5 and later, no `Unknown Int`
+/// since the `until 10.0.1.2` gate excludes every Bethesda game):
+/// ```text
+///   bhkWorldObject     : shape_ref(4) + havok_filter(4) + CInfo(20) = 28 B
+///   (bhkPhantom adds nothing)
+///   bhkAabbPhantom     : Unused 01[8] + hkAabb (2 × Vec4 = 32) = 40 B
+///   --------------------------------------------------------
+///   Total                                                  = 68 B
+/// ```
+#[derive(Debug)]
+pub struct BhkAabbPhantom {
+    pub shape_ref: BlockRef,
+    pub havok_filter: u32,
+    /// World-space AABB min corner (x, y, z, w) — w unused per hkAabb.
+    pub aabb_min: [f32; 4],
+    /// World-space AABB max corner (x, y, z, w) — w unused per hkAabb.
+    pub aabb_max: [f32; 4],
+}
+
+impl NiObject for BhkAabbPhantom {
+    fn block_type_name(&self) -> &'static str {
+        "bhkAabbPhantom"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BhkAabbPhantom {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        // bhkWorldObject prefix (28 B): shape + filter + bhkWorldObjectCInfo.
+        let shape_ref = stream.read_block_ref()?;
+        let havok_filter = stream.read_u32_le()?;
+        stream.skip(20)?; // bhkWorldObjectCInfo
+        // bhkAabbPhantom: 8 unused + 2 × Vec4 hkAabb.
+        stream.skip(8)?;
+        let aabb_min = read_vec4(stream)?;
+        let aabb_max = read_vec4(stream)?;
+        Ok(Self {
+            shape_ref,
+            havok_filter,
+            aabb_min,
+            aabb_max,
+        })
+    }
+}
+
+/// `bhkLiquidAction` — FO3+ custom `bhkUnaryAction`-flavoured Havok
+/// action that applies surface-tension forces to a body of liquid.
+/// nif.xml line 6893.
+///
+/// The base class is `bhkAction` (abstract, no fields), so the on-disk
+/// body starts immediately. Layout:
+/// ```text
+///   Unused 01[12] + Initial Stick Force(f32) + Stick Strength(f32)
+///   + Neighbor Distance(f32) + Neighbor Strength(f32) = 28 B
+/// ```
+/// The `Unused 01` slot explicitly differs from a `bhkUnaryAction` —
+/// per nif.xml, `bhkLiquidAction` does NOT carry the Entity Ptr even
+/// though the class heritage looks like it should.
+#[derive(Debug)]
+pub struct BhkLiquidAction {
+    pub initial_stick_force: f32,
+    pub stick_strength: f32,
+    pub neighbor_distance: f32,
+    pub neighbor_strength: f32,
+}
+
+impl NiObject for BhkLiquidAction {
+    fn block_type_name(&self) -> &'static str {
+        "bhkLiquidAction"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BhkLiquidAction {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        stream.skip(12)?; // Unused 01
+        let initial_stick_force = stream.read_f32_le()?;
+        let stick_strength = stream.read_f32_le()?;
+        let neighbor_distance = stream.read_f32_le()?;
+        let neighbor_strength = stream.read_f32_le()?;
+        Ok(Self {
+            initial_stick_force,
+            stick_strength,
+            neighbor_distance,
+            neighbor_strength,
+        })
+    }
+}
+
+/// `bhkPCollisionObject` — Havok collision object wrapping a phantom
+/// (typically `bhkAabbPhantom`) rather than a rigid body. Concrete
+/// subclass of `bhkNiCollisionObject`. nif.xml line 3432.
+///
+/// Wire layout is byte-identical to the standard `bhkCollisionObject`
+/// (target_ref + flags u16 + body Ref, 10 B total); the only runtime
+/// difference is that `body` references a `bhkPhantom` subclass
+/// instead of a `bhkEntity`. We expose it as its own struct so
+/// consumers can pattern-match on "this is a phantom, not a body."
+#[derive(Debug)]
+pub struct BhkPCollisionObject {
+    pub target_ref: BlockRef,
+    pub flags: u16,
+    /// Reference to the `bhkPhantom` subclass (e.g. `bhkAabbPhantom`,
+    /// `bhkSimpleShapePhantom`) that supplies the collision volume.
+    pub body_ref: BlockRef,
+}
+
+impl NiObject for BhkPCollisionObject {
+    fn block_type_name(&self) -> &'static str {
+        "bhkPCollisionObject"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BhkPCollisionObject {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let target_ref = stream.read_block_ref()?;
+        let flags = stream.read_u16_le()?;
+        let body_ref = stream.read_block_ref()?;
+        Ok(Self {
+            target_ref,
+            flags,
+            body_ref,
+        })
+    }
+}
+
+/// `bhkConvexListShape` — FO3-only composite shape holding N convex
+/// sub-shapes with a shared padding radius. nif.xml line 6835.
+/// Constraints enforced by the Havok engine (not by this parser):
+/// sub-shapes must all be convex and share the same `Radius` value.
+///
+/// Layout:
+/// ```text
+///   num_sub_shapes(u32) + sub_shapes[Ref × N]
+///   + HavokMaterial(4, since FO3 strips the pre-10.0.1.2 Unknown Int)
+///   + radius(f32) + unknown_int_1(u32) + unknown_float_1(f32)
+///   + child_shape_property(12)  [bhkWorldObjCInfoProperty]
+///   + use_cached_aabb(u8) + closest_point_min_distance(f32)
+///   = 37 + 4×N bytes
+/// ```
+#[derive(Debug)]
+pub struct BhkConvexListShape {
+    pub sub_shapes: Vec<BlockRef>,
+    pub material: u32,
+    pub radius: f32,
+    pub use_cached_aabb: bool,
+    pub closest_point_min_distance: f32,
+}
+
+impl NiObject for BhkConvexListShape {
+    fn block_type_name(&self) -> &'static str {
+        "bhkConvexListShape"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BhkConvexListShape {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let num_sub_shapes = stream.read_u32_le()?;
+        let mut sub_shapes = stream.allocate_vec::<BlockRef>(num_sub_shapes)?;
+        for _ in 0..num_sub_shapes {
+            sub_shapes.push(stream.read_block_ref()?);
+        }
+        let material = stream.read_u32_le()?;
+        let radius = stream.read_f32_le()?;
+        let _unknown_int_1 = stream.read_u32_le()?;
+        let _unknown_float_1 = stream.read_f32_le()?;
+        stream.skip(12)?; // bhkWorldObjCInfoProperty (3 × u32)
+        let use_cached_aabb = stream.read_u8()? != 0;
+        let closest_point_min_distance = stream.read_f32_le()?;
+        Ok(Self {
+            sub_shapes,
+            material,
+            radius,
+            use_cached_aabb,
+            closest_point_min_distance,
+        })
+    }
+}
+
+/// `bhkBreakableConstraint` — wrapper around another constraint that
+/// can "break" (stop applying force) once a force threshold is
+/// exceeded. nif.xml line 7027.
+///
+/// Byte-accurate parse is critical on Oblivion (no block_sizes
+/// recovery). The wrapped payload size depends on the inner
+/// `hkConstraintType` enum, which maps identically to the sizes
+/// [`BhkConstraint::parse`] hard-codes; we reuse that same table here.
+/// On FO3+ the outer walker seeks via `block_size` if the inner type
+/// is one we haven't sized (e.g. `Malleable`, which carries nested
+/// CInfo dispatch).
+#[derive(Debug)]
+pub struct BhkBreakableConstraint {
+    /// Outer `bhkConstraintCInfo` — the two entities this wrapper
+    /// constrains.
+    pub entity_a: BlockRef,
+    pub entity_b: BlockRef,
+    pub priority: u32,
+    /// `hkConstraintType` enum value identifying the inner data
+    /// layout (0 = Ball and Socket, 1 = Hinge, …, 13 = Malleable).
+    pub wrapped_type: u32,
+    /// Force magnitude above which the constraint releases.
+    pub threshold: f32,
+    /// When `true`, the constraint is destroyed once the threshold
+    /// is hit; when `false`, it stops applying force but stays
+    /// present so the game can re-enable it.
+    pub remove_when_broken: bool,
+}
+
+impl NiObject for BhkBreakableConstraint {
+    fn block_type_name(&self) -> &'static str {
+        "bhkBreakableConstraint"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BhkBreakableConstraint {
+    /// Payload size (in bytes, past the 16-byte outer bhkConstraintCInfo
+    /// and 4-byte wrapped type discriminator) for the wrapped CInfo on
+    /// Oblivion. Mirrors the table in [`BhkConstraint::parse`]. `None`
+    /// means "use FO3+ block_size recovery for the trailer."
+    fn wrapped_payload_size(wrapped_type: u32) -> Option<u64> {
+        match wrapped_type {
+            0 => Some(32),  // Ball and Socket
+            1 => Some(80),  // Hinge
+            2 => Some(124), // Limited Hinge
+            6 => Some(140), // Prismatic
+            7 => Some(120), // Ragdoll
+            8 => Some(36),  // Stiff Spring
+            // 13 (Malleable) wraps another CInfo with its own type
+            // dispatch — same rationale as the BhkConstraint stub,
+            // handled by block_size recovery on FO3+ and unreachable
+            // on Oblivion vanilla content.
+            _ => None,
+        }
+    }
+
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        // Outer bhkConstraintCInfo (16 bytes).
+        let (entity_a, entity_b, priority) = BhkConstraint::parse_base(stream)?;
+        // Wrapped constraint: type(u32) + inner bhkConstraintCInfo(16)
+        // + variable inner data.
+        let wrapped_type = stream.read_u32_le()?;
+        // Inner bhkConstraintCInfo — always 16 bytes.
+        stream.skip(16)?;
+        let is_oblivion = stream.version() <= NifVersion::V20_0_0_5;
+        if is_oblivion {
+            if let Some(size) = Self::wrapped_payload_size(wrapped_type) {
+                stream.skip(size)?;
+                let threshold = stream.read_f32_le()?;
+                let remove_when_broken = stream.read_u8()? != 0;
+                return Ok(Self {
+                    entity_a,
+                    entity_b,
+                    priority,
+                    wrapped_type,
+                    threshold,
+                    remove_when_broken,
+                });
+            }
+            // Oblivion-reachable wrapped type we don't size yet — let
+            // the outer walker's error path fire so the corpus test
+            // catches the gap instead of silently drifting.
+        }
+        // FO3+ short stub: let block_size recovery skip the remainder.
+        // Threshold + Remove When Broken still sit at the tail of the
+        // block, but without knowing the inner payload size we can't
+        // reach them here. Capture them as defaults and rely on the
+        // recovery seek to restore the stream.
+        Ok(Self {
+            entity_a,
+            entity_b,
+            priority,
+            wrapped_type,
+            threshold: 0.0,
+            remove_when_broken: false,
+        })
+    }
+}
+
+/// `bhkOrientHingedBodyAction` — `bhkUnaryAction` that re-orients a
+/// rigid body to keep its `Forward LS` axis pointing at a target,
+/// pivoting around `Hinge Axis LS`. Used for articulation-driven
+/// pieces like pendulums, doors that want to settle open, and some
+/// of the Skyrim+ ragdoll "aim" bones. nif.xml line 7035.
+///
+/// Layout:
+/// ```text
+///   bhkUnaryAction: Entity(Ptr=4) + Unused 01[8] = 12 B
+///   bhkOrientHingedBodyAction:
+///     Unused 02[8] + Hinge Axis LS (Vec4) + Forward LS (Vec4)
+///     + Strength(f32) + Damping(f32) + Unused 03[8]
+///     = 8 + 16 + 16 + 4 + 4 + 8 = 56 B
+///   Total = 68 B
+/// ```
+#[derive(Debug)]
+pub struct BhkOrientHingedBodyAction {
+    /// Rigid body this action is attached to.
+    pub entity_ref: BlockRef,
+    /// Local-space axis the body pivots around.
+    pub hinge_axis_ls: [f32; 4],
+    /// Local-space axis the body tries to keep aimed at the target.
+    pub forward_ls: [f32; 4],
+    /// Torque multiplier. Larger values re-orient faster.
+    pub strength: f32,
+    /// Angular damping on the reorientation torque.
+    pub damping: f32,
+}
+
+impl NiObject for BhkOrientHingedBodyAction {
+    fn block_type_name(&self) -> &'static str {
+        "bhkOrientHingedBodyAction"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BhkOrientHingedBodyAction {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let entity_ref = stream.read_block_ref()?;
+        stream.skip(8)?; // Unused 01
+        stream.skip(8)?; // Unused 02
+        let hinge_axis_ls = read_vec4(stream)?;
+        let forward_ls = read_vec4(stream)?;
+        let strength = stream.read_f32_le()?;
+        let damping = stream.read_f32_le()?;
+        stream.skip(8)?; // Unused 03
+        Ok(Self {
+            entity_ref,
+            hinge_axis_ls,
+            forward_ls,
+            strength,
+            damping,
+        })
+    }
+}
+
 #[cfg(test)]
 mod bhk_rigid_body_tests {
     use super::*;

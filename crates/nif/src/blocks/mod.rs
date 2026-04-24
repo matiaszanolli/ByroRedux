@@ -24,11 +24,12 @@ pub mod tri_shape;
 
 use crate::stream::NifStream;
 use collision::{
-    BhkBoxShape, BhkCapsuleShape, BhkCollisionObject, BhkCompressedMeshShape,
-    BhkCompressedMeshShapeData, BhkConstraint, BhkConvexVerticesShape, BhkCylinderShape,
-    BhkListShape, BhkMoppBvTreeShape, BhkNiTriStripsShape, BhkPackedNiTriStripsShape, BhkRigidBody,
-    BhkSimpleShapePhantom, BhkSphereShape, BhkTransformShape, HkPackedNiTriStripsData,
-    NiCollisionObjectBase,
+    BhkAabbPhantom, BhkBoxShape, BhkBreakableConstraint, BhkCapsuleShape, BhkCollisionObject,
+    BhkCompressedMeshShape, BhkCompressedMeshShapeData, BhkConstraint, BhkConvexListShape,
+    BhkConvexVerticesShape, BhkCylinderShape, BhkLiquidAction, BhkListShape, BhkMoppBvTreeShape,
+    BhkNiTriStripsShape, BhkOrientHingedBodyAction, BhkPCollisionObject,
+    BhkPackedNiTriStripsShape, BhkRigidBody, BhkSimpleShapePhantom, BhkSphereShape,
+    BhkTransformShape, HkPackedNiTriStripsData, NiCollisionObjectBase,
 };
 use controller::{
     BhkBlendController, BsNiAlphaPropertyTestRefController, BsRefractionFirePeriodController,
@@ -759,6 +760,16 @@ pub fn parse_block(
         "bhkMalleableConstraint" => {
             Ok(Box::new(BhkConstraint::parse(stream, "bhkMalleableConstraint")?))
         }
+        // Havok tail types (#557 / NIF-12). Low-volume leaf types that
+        // landed in NiUnknown across all four games pre-fix. Each
+        // parser is byte-exact where the type is Oblivion-reachable
+        // (no block_sizes recovery there) and short-stub on FO3+.
+        "bhkAabbPhantom" => Ok(Box::new(BhkAabbPhantom::parse(stream)?)),
+        "bhkPCollisionObject" => Ok(Box::new(BhkPCollisionObject::parse(stream)?)),
+        "bhkLiquidAction" => Ok(Box::new(BhkLiquidAction::parse(stream)?)),
+        "bhkConvexListShape" => Ok(Box::new(BhkConvexListShape::parse(stream)?)),
+        "bhkBreakableConstraint" => Ok(Box::new(BhkBreakableConstraint::parse(stream)?)),
+        "bhkOrientHingedBodyAction" => Ok(Box::new(BhkOrientHingedBodyAction::parse(stream)?)),
         // FO4 / FO76 NP physics family (#124 / audit NIF-513). Parsing
         // the outer NIF shells so downstream systems can resolve the
         // references without the full Havok-serialised body inside
@@ -1109,6 +1120,210 @@ mod dispatch_tests {
         // Transform column 0 should be [0.0, 1.0, 2.0, 3.0] per the fixture.
         assert_eq!(prop.transform[0], [0.0, 1.0, 2.0, 3.0]);
         assert_eq!(prop.transform[3], [12.0, 13.0, 14.0, 15.0]);
+    }
+
+    // ── #557 / NIF-12 Havok tail type round-trips ───────────────────
+
+    /// Regression for #557 — `bhkAabbPhantom` must consume its full
+    /// 68-byte body (28 B bhkWorldObject prefix + 8 B unused + 32 B
+    /// hkAabb) and surface shape ref + filter + AABB corners.
+    #[test]
+    fn bhk_aabb_phantom_consumes_full_68_bytes() {
+        let header = oblivion_header();
+        let mut bytes = Vec::new();
+        // bhkWorldObject prefix (28 B).
+        bytes.extend_from_slice(&7i32.to_le_bytes()); // shape_ref
+        bytes.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes()); // havok_filter
+        bytes.extend_from_slice(&[0u8; 20]); // bhkWorldObjectCInfo
+        // Unused 01 (8 B).
+        bytes.extend_from_slice(&[0u8; 8]);
+        // hkAabb: min (x=1, y=2, z=3, w=0) + max (x=10, y=20, z=30, w=0).
+        for v in [1.0f32, 2.0, 3.0, 0.0, 10.0, 20.0, 30.0, 0.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        assert_eq!(bytes.len(), 68, "fixture must be 68 bytes per nif.xml");
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block("bhkAabbPhantom", &mut stream, Some(bytes.len() as u32))
+            .expect("bhkAabbPhantom must parse on Oblivion");
+        let phantom = block
+            .as_any()
+            .downcast_ref::<crate::blocks::collision::BhkAabbPhantom>()
+            .expect("dispatch must land on BhkAabbPhantom");
+        assert_eq!(phantom.shape_ref.index(), Some(7));
+        assert_eq!(phantom.havok_filter, 0xDEAD_BEEF);
+        assert_eq!(phantom.aabb_min, [1.0, 2.0, 3.0, 0.0]);
+        assert_eq!(phantom.aabb_max, [10.0, 20.0, 30.0, 0.0]);
+        assert_eq!(stream.position() as usize, bytes.len());
+    }
+
+    /// Regression for #557 — `bhkLiquidAction` must consume its
+    /// 28-byte body (12 B unused + 4 × f32 tuning).
+    #[test]
+    fn bhk_liquid_action_consumes_full_28_bytes() {
+        // FO3+ only, but oblivion_header works for the parse flow
+        // since the parser doesn't gate on version. Matches the
+        // corpus where FO3/FNV ship these blocks.
+        let header = oblivion_header();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[0u8; 12]); // Unused 01
+        bytes.extend_from_slice(&25.0f32.to_le_bytes()); // initial stick force
+        bytes.extend_from_slice(&100.0f32.to_le_bytes()); // stick strength
+        bytes.extend_from_slice(&128.0f32.to_le_bytes()); // neighbor distance
+        bytes.extend_from_slice(&500.0f32.to_le_bytes()); // neighbor strength
+        assert_eq!(bytes.len(), 28);
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block("bhkLiquidAction", &mut stream, Some(bytes.len() as u32))
+            .expect("bhkLiquidAction dispatch must parse");
+        let action = block
+            .as_any()
+            .downcast_ref::<crate::blocks::collision::BhkLiquidAction>()
+            .unwrap();
+        assert_eq!(action.initial_stick_force, 25.0);
+        assert_eq!(action.stick_strength, 100.0);
+        assert_eq!(action.neighbor_distance, 128.0);
+        assert_eq!(action.neighbor_strength, 500.0);
+        assert_eq!(stream.position() as usize, bytes.len());
+    }
+
+    /// Regression for #557 — `bhkPCollisionObject` wire layout is
+    /// byte-identical to `bhkCollisionObject` (target + u16 flags +
+    /// body ref = 10 B) but must surface as its own type so consumers
+    /// can tell it wraps a phantom, not a rigid body.
+    #[test]
+    fn bhk_p_collision_object_consumes_full_10_bytes() {
+        let header = oblivion_header();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&9i32.to_le_bytes()); // target_ref
+        bytes.extend_from_slice(&0x0081u16.to_le_bytes()); // flags (SYNC_ON_UPDATE + SET_LOCAL)
+        bytes.extend_from_slice(&3i32.to_le_bytes()); // body_ref (bhkAabbPhantom)
+        assert_eq!(bytes.len(), 10);
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block("bhkPCollisionObject", &mut stream, Some(bytes.len() as u32))
+            .expect("bhkPCollisionObject must parse");
+        let pco = block
+            .as_any()
+            .downcast_ref::<crate::blocks::collision::BhkPCollisionObject>()
+            .expect("dispatch must land on BhkPCollisionObject, not the sibling bhkCollisionObject");
+        assert_eq!(pco.target_ref.index(), Some(9));
+        assert_eq!(pco.flags, 0x0081);
+        assert_eq!(pco.body_ref.index(), Some(3));
+        assert_eq!(pco.block_type_name(), "bhkPCollisionObject");
+    }
+
+    /// Regression for #557 — `bhkConvexListShape` (FO3 only) with a
+    /// two-sub-shape body. Total size = 37 + 4*N = 45 bytes for N=2.
+    #[test]
+    fn bhk_convex_list_shape_consumes_variable_body() {
+        let header = oblivion_header();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // num_sub_shapes
+        bytes.extend_from_slice(&11i32.to_le_bytes()); // sub_shape[0]
+        bytes.extend_from_slice(&22i32.to_le_bytes()); // sub_shape[1]
+        bytes.extend_from_slice(&7u32.to_le_bytes()); // material (FO3 = no Unknown Int prefix)
+        bytes.extend_from_slice(&0.5f32.to_le_bytes()); // radius
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // Unknown Int 1
+        bytes.extend_from_slice(&0.0f32.to_le_bytes()); // Unknown Float 1
+        bytes.extend_from_slice(&[0u8; 12]); // bhkWorldObjCInfoProperty
+        bytes.push(1u8); // use_cached_aabb = true
+        bytes.extend_from_slice(&42.0f32.to_le_bytes()); // closest_point_min_distance
+        assert_eq!(bytes.len(), 37 + 4 * 2);
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block("bhkConvexListShape", &mut stream, Some(bytes.len() as u32))
+            .expect("bhkConvexListShape dispatch must parse");
+        let shape = block
+            .as_any()
+            .downcast_ref::<crate::blocks::collision::BhkConvexListShape>()
+            .unwrap();
+        assert_eq!(shape.sub_shapes.len(), 2);
+        assert_eq!(shape.sub_shapes[0].index(), Some(11));
+        assert_eq!(shape.sub_shapes[1].index(), Some(22));
+        assert_eq!(shape.material, 7);
+        assert_eq!(shape.radius, 0.5);
+        assert!(shape.use_cached_aabb);
+        assert_eq!(shape.closest_point_min_distance, 42.0);
+        assert_eq!(stream.position() as usize, bytes.len());
+    }
+
+    /// Regression for #557 — `bhkBreakableConstraint` with a Hinge
+    /// inner (type=1, 80 B payload). Oblivion-sized so no block_sizes
+    /// recovery is needed. Total = 16 (outer CInfo) + 4 (wrapped type)
+    /// + 16 (inner CInfo) + 80 (Hinge payload) + 4 (threshold) + 1
+    /// (remove_when_broken) = 121 bytes.
+    #[test]
+    fn bhk_breakable_constraint_hinge_inner_consumes_121_bytes() {
+        let header = oblivion_header();
+        let mut bytes = Vec::new();
+        // Outer bhkConstraintCInfo
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // num_entities
+        bytes.extend_from_slice(&5i32.to_le_bytes()); // entity_a
+        bytes.extend_from_slice(&6i32.to_le_bytes()); // entity_b
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // priority
+        // Wrapped type = Hinge.
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        // Inner bhkConstraintCInfo (16 B) — unused in this parse.
+        bytes.extend_from_slice(&[0u8; 16]);
+        // Hinge payload (80 B).
+        bytes.extend_from_slice(&[0u8; 80]);
+        // Threshold + Remove When Broken.
+        bytes.extend_from_slice(&256.0f32.to_le_bytes());
+        bytes.push(1u8);
+        assert_eq!(bytes.len(), 121);
+        let mut stream = NifStream::new(&bytes, &header);
+        let block =
+            parse_block("bhkBreakableConstraint", &mut stream, Some(bytes.len() as u32))
+                .expect("bhkBreakableConstraint must parse");
+        let bc = block
+            .as_any()
+            .downcast_ref::<crate::blocks::collision::BhkBreakableConstraint>()
+            .unwrap();
+        assert_eq!(bc.entity_a.index(), Some(5));
+        assert_eq!(bc.entity_b.index(), Some(6));
+        assert_eq!(bc.priority, 1);
+        assert_eq!(bc.wrapped_type, 1);
+        assert_eq!(bc.threshold, 256.0);
+        assert!(bc.remove_when_broken);
+        assert_eq!(stream.position() as usize, bytes.len());
+    }
+
+    /// Regression for #557 — `bhkOrientHingedBodyAction` must consume
+    /// its full 68-byte body (12 B bhkUnaryAction + 8 + 16 + 16 + 4 +
+    /// 4 + 8 = 56 B self).
+    #[test]
+    fn bhk_orient_hinged_body_action_consumes_full_68_bytes() {
+        let header = oblivion_header();
+        let mut bytes = Vec::new();
+        // bhkUnaryAction: Entity Ptr + Unused 01[8].
+        bytes.extend_from_slice(&4i32.to_le_bytes()); // entity_ref
+        bytes.extend_from_slice(&[0u8; 8]); // Unused 01
+        // Self body: Unused 02[8] + Hinge Axis LS + Forward LS + S + D + Unused 03[8].
+        bytes.extend_from_slice(&[0u8; 8]); // Unused 02
+        for v in [1.0f32, 0.0, 0.0, 0.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [0.0f32, 1.0, 0.0, 0.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // strength
+        bytes.extend_from_slice(&0.1f32.to_le_bytes()); // damping
+        bytes.extend_from_slice(&[0u8; 8]); // Unused 03
+        assert_eq!(bytes.len(), 68);
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block(
+            "bhkOrientHingedBodyAction",
+            &mut stream,
+            Some(bytes.len() as u32),
+        )
+        .expect("bhkOrientHingedBodyAction must parse");
+        let action = block
+            .as_any()
+            .downcast_ref::<crate::blocks::collision::BhkOrientHingedBodyAction>()
+            .unwrap();
+        assert_eq!(action.entity_ref.index(), Some(4));
+        assert_eq!(action.hinge_axis_ls, [1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(action.forward_ls, [0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(action.strength, 1.0);
+        assert_eq!(action.damping, 0.1);
+        assert_eq!(stream.position() as usize, bytes.len());
     }
 
     /// Regression test for issue #144: Oblivion-era KF animation roots
