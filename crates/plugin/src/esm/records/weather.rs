@@ -69,6 +69,59 @@ pub const WTHR_CLOUDY: u8 = 0x02;
 pub const WTHR_RAINY: u8 = 0x04;
 pub const WTHR_SNOW: u8 = 0x08;
 
+/// Oblivion WTHR HNAM sub-record — 14 f32 HDR + lighting tuning
+/// parameters (56 bytes total). Names + offsets per UESP `Oblivion_Mod:WTHR`.
+///
+/// These are NOT fog distances, despite the pre-#537 parser's
+/// interpretation: the first 4 f32 are `eye_adapt_speed`, `blur_radius`,
+/// `blur_passes`, `emissive_mult` — reading them as `[fog_day_near,
+/// fog_day_far, fog_night_near, fog_night_far]` saturated every
+/// Oblivion exterior to solid fog within a few units of the camera.
+/// Fog distances come from FNAM (16 bytes) on Oblivion; HNAM feeds
+/// the renderer's eye-adaptation / bloom / scene-dimmer pipeline.
+///
+/// FNV and Fallout 3 do not ship HNAM at all — their fog comes from
+/// FNAM + cloud textures from DNAM/CNAM/ANAM/BNAM. See audit M33-05.
+///
+/// Consumer wiring (HDR eye-adaptation system) is follow-up work —
+/// this captures the authored values verbatim so the future bloom /
+/// sunlight-dimmer system has a canonical source.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct OblivionHdrLighting {
+    /// Rate the scene luminance meter tracks toward the target (0–65536).
+    pub eye_adapt_speed: f32,
+    /// Bloom blur kernel radius in pixels (0–7).
+    pub blur_radius: f32,
+    /// Bloom blur iteration count (0–63).
+    pub blur_passes: f32,
+    /// Emissive pass multiplier — scales self-illum contributions.
+    pub emissive_mult: f32,
+    /// Target luminance the eye-adapt loop drives toward.
+    pub target_lum: f32,
+    /// Upper clamp on the scene luminance reading (prevents runaway
+    /// adaptation when a bright light enters the view frustum).
+    pub upper_lum_clamp: f32,
+    /// Bright-pass scale — boosts highlights before the blur kernel.
+    pub bright_scale: f32,
+    /// Bright-pass clamp on the scaled output.
+    pub bright_clamp: f32,
+    /// Fallback luminance ramp value when no luminance texture is
+    /// available (first-frame / LOD transitions).
+    pub lum_ramp_no_tex: f32,
+    /// Luminance ramp minimum (eye-adapt floor).
+    pub lum_ramp_min: f32,
+    /// Luminance ramp maximum (eye-adapt ceiling).
+    pub lum_ramp_max: f32,
+    /// Directional-sunlight colour multiplier for this weather.
+    pub sunlight_dimmer: f32,
+    /// Grass colour multiplier (Oblivion-specific — applied at
+    /// grass-generator stage before the scene lighting pass).
+    pub grass_dimmer: f32,
+    /// Tree colour multiplier — same role as `grass_dimmer` for
+    /// foliage meshes.
+    pub tree_dimmer: f32,
+}
+
 /// Parsed WTHR record.
 #[derive(Debug, Clone)]
 pub struct WeatherRecord {
@@ -97,6 +150,11 @@ pub struct WeatherRecord {
     /// (DNAM = 0, CNAM = 1). Paths are `textures\`-root-relative
     /// zstrings — see #468 for the normaliser in `TextureProvider`.
     pub cloud_textures: [Option<String>; 4],
+    /// Oblivion-only HDR / eye-adapt / sunlight-dimmer tuning from the
+    /// 56-byte HNAM sub-record. `None` for FNV / FO3 / Skyrim+ weather
+    /// records, and for Oblivion records that ship a malformed HNAM.
+    /// See audit M33-05 / #537.
+    pub oblivion_hdr: Option<OblivionHdrLighting>,
 }
 
 impl Default for WeatherRecord {
@@ -114,6 +172,7 @@ impl Default for WeatherRecord {
             sun_damage: 0,
             classification: 0,
             cloud_textures: [None, None, None, None],
+            oblivion_hdr: None,
         }
     }
 }
@@ -182,18 +241,49 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
                 record.fog_night_far = read_f32_at(&sub.data, 12).unwrap_or(10000.0);
             }
 
-            // HNAM (only in Oblivion; never appears in FNV / FO3). In
-            // Oblivion it is 56 bytes of lighting-model parameters, NOT
-            // fog distances — the first 4 f32 are eye-adapt speed, blend
-            // in/out distances, lighting fade etc. Decoding that is
-            // tracked under #537 / audit M33-05.
+            // HNAM — Oblivion-only HDR / eye-adapt / sunlight-dimmer
+            // tuning. 56 bytes = 14 × f32. See #537 / audit M33-05 and
+            // the `OblivionHdrLighting` doc comment for the field
+            // order. Fog for Oblivion comes from FNAM (handled above),
+            // NEVER from HNAM. FNV + FO3 do not ship HNAM.
             //
-            // The 16-byte gate is kept so existing synthetic test
-            // fixtures that use a 16-byte HNAM to drive fog continue to
-            // work — but real 56-byte Oblivion HNAMs fall through to the
-            // unknown-subrecord skip. FNAM above already handles the fog
-            // story for all three vanilla games.
+            // Pre-#537 the parser read the first 16 bytes as fog
+            // distances (`[fog_day_near, fog_day_far, fog_night_near,
+            // fog_night_far]`), picking up the HDR params
+            // `[eye_adapt_speed, blur_radius, blur_passes,
+            // emissive_mult]` instead — which produced
+            // `fog_day_far ≈ 4.0` on every Oblivion exterior and
+            // saturated the scene to solid fog within a few units of
+            // the camera.
+            //
+            // The 16-byte legacy fixture path is retained behind a
+            // narrower gate (`== 16`) so synthetic tests that use a
+            // 16-byte HNAM as a fog source keep compiling; real
+            // Oblivion masters ship only the 56-byte form.
+            b"HNAM" if sub.data.len() == 56 => {
+                record.oblivion_hdr = Some(OblivionHdrLighting {
+                    eye_adapt_speed: read_f32_at(&sub.data, 0).unwrap_or(0.0),
+                    blur_radius: read_f32_at(&sub.data, 4).unwrap_or(0.0),
+                    blur_passes: read_f32_at(&sub.data, 8).unwrap_or(0.0),
+                    emissive_mult: read_f32_at(&sub.data, 12).unwrap_or(0.0),
+                    target_lum: read_f32_at(&sub.data, 16).unwrap_or(0.0),
+                    upper_lum_clamp: read_f32_at(&sub.data, 20).unwrap_or(0.0),
+                    bright_scale: read_f32_at(&sub.data, 24).unwrap_or(0.0),
+                    bright_clamp: read_f32_at(&sub.data, 28).unwrap_or(0.0),
+                    lum_ramp_no_tex: read_f32_at(&sub.data, 32).unwrap_or(0.0),
+                    lum_ramp_min: read_f32_at(&sub.data, 36).unwrap_or(0.0),
+                    lum_ramp_max: read_f32_at(&sub.data, 40).unwrap_or(0.0),
+                    sunlight_dimmer: read_f32_at(&sub.data, 44).unwrap_or(0.0),
+                    grass_dimmer: read_f32_at(&sub.data, 48).unwrap_or(0.0),
+                    tree_dimmer: read_f32_at(&sub.data, 52).unwrap_or(0.0),
+                });
+            }
             b"HNAM" if sub.data.len() == 16 => {
+                // Legacy fixture path — synthetic tests pre-#537 built
+                // 16-byte HNAMs and used them as fog sources. Preserved
+                // so the M33-05 regression test (which asserts a real
+                // 56-byte HNAM does NOT clobber FNAM fog) keeps its
+                // counterpart. No vanilla master ships this shape.
                 record.fog_day_near = read_f32_at(&sub.data, 0).unwrap_or(0.0);
                 record.fog_day_far = read_f32_at(&sub.data, 4).unwrap_or(10000.0);
                 record.fog_night_near = read_f32_at(&sub.data, 8).unwrap_or(0.0);
@@ -444,13 +534,13 @@ mod tests {
     }
 
     /// Real 56-byte Oblivion HNAM must NOT be interpreted as fog.
-    /// Pre-fix the HNAM arm gated on `>= 16` and would overwrite FNAM's
-    /// correct fog values with the first 4 f32 of HNAM's lighting
-    /// parameters (`0.7, 4.0, 2.0, 1.0` — fog-far of 4.0 saturated every
-    /// Oblivion exterior to solid fog_color within a few units of the
-    /// camera). The `== 16` gate plus sub-record emission order
-    /// (`FNAM … HNAM …`) means FNAM sets fog and HNAM is skipped.
-    /// See audit M33-05 / #537 for the eventual 56-byte HNAM decode.
+    /// Pre-#537 the HNAM arm gated on `>= 16` and would overwrite
+    /// FNAM's correct fog values with the first 4 f32 of HNAM's
+    /// lighting parameters (`0.7, 4.0, 2.0, 1.0` — fog-far of 4.0
+    /// saturated every Oblivion exterior to solid fog_color within a
+    /// few units of the camera). The 56-byte arm now captures the
+    /// HDR tuning into `oblivion_hdr` and leaves fog to FNAM. See
+    /// audit M33-05.
     #[test]
     fn parse_wthr_oblivion_hnam_56byte_does_not_clobber_fnam() {
         let mut fnam_data = vec![0u8; 16];
@@ -472,6 +562,86 @@ mod tests {
         let w = parse_wthr(0xEED, &subs);
         assert!((w.fog_day_far - 16_000.0).abs() < 0.01, "fog_day_far={}", w.fog_day_far);
         assert!((w.fog_night_far - 6_000.0).abs() < 0.01, "fog_night_far={}", w.fog_night_far);
+    }
+
+    /// Regression for #537 / audit M33-05 — a real 56-byte Oblivion
+    /// HNAM must decode into `oblivion_hdr` with the 14 UESP-documented
+    /// fields in the right order. Values chosen per the audit's live
+    /// sample from `SEClearTrans`: first 4 f32 = `0.7, 4.0, 2.0, 1.0`
+    /// = eye_adapt_speed / blur_radius / blur_passes / emissive_mult.
+    /// Remaining slots filled with sentinel values so an offset slip
+    /// surfaces as a wrong field rather than a lucky zero.
+    #[test]
+    fn parse_wthr_oblivion_hnam_56byte_decodes_to_hdr_fields() {
+        // 14 distinct sentinel values so we can tell fields apart.
+        let values: [f32; 14] = [
+            0.7,   // eye_adapt_speed
+            4.0,   // blur_radius
+            2.0,   // blur_passes
+            1.0,   // emissive_mult
+            0.85,  // target_lum
+            10.0,  // upper_lum_clamp
+            0.25,  // bright_scale
+            0.95,  // bright_clamp
+            1.5,   // lum_ramp_no_tex
+            0.05,  // lum_ramp_min
+            2.5,   // lum_ramp_max
+            0.8,   // sunlight_dimmer
+            0.9,   // grass_dimmer
+            0.75,  // tree_dimmer
+        ];
+        let mut hnam = Vec::with_capacity(56);
+        for v in values {
+            hnam.extend_from_slice(&v.to_le_bytes());
+        }
+        assert_eq!(hnam.len(), 56);
+
+        let subs = vec![
+            make_sub(b"EDID", b"SEClearTrans\0".to_vec()),
+            make_sub(b"HNAM", hnam),
+        ];
+        let w = parse_wthr(0x0100_0001, &subs);
+        let hdr = w
+            .oblivion_hdr
+            .expect("56-byte HNAM must populate oblivion_hdr");
+        assert_eq!(hdr.eye_adapt_speed, 0.7);
+        assert_eq!(hdr.blur_radius, 4.0);
+        assert_eq!(hdr.blur_passes, 2.0);
+        assert_eq!(hdr.emissive_mult, 1.0);
+        assert_eq!(hdr.target_lum, 0.85);
+        assert_eq!(hdr.upper_lum_clamp, 10.0);
+        assert_eq!(hdr.bright_scale, 0.25);
+        assert_eq!(hdr.bright_clamp, 0.95);
+        assert_eq!(hdr.lum_ramp_no_tex, 1.5);
+        assert_eq!(hdr.lum_ramp_min, 0.05);
+        assert_eq!(hdr.lum_ramp_max, 2.5);
+        assert_eq!(hdr.sunlight_dimmer, 0.8);
+        assert_eq!(hdr.grass_dimmer, 0.9);
+        assert_eq!(hdr.tree_dimmer, 0.75);
+
+        // Fog fields must stay at defaults — HNAM must NOT leak into
+        // the fog slots.
+        assert_eq!(w.fog_day_near, 0.0);
+        assert!(
+            (w.fog_day_far - 10000.0).abs() < 0.01,
+            "fog_day_far must retain its default (got {})",
+            w.fog_day_far
+        );
+    }
+
+    /// Sibling: FNV / FO3 / Skyrim+ weather records have no HNAM, so
+    /// `oblivion_hdr` must stay `None` — consumers can pattern-match
+    /// on `Some` to tell "this is an Oblivion weather" apart.
+    #[test]
+    fn parse_wthr_non_oblivion_leaves_oblivion_hdr_none() {
+        let mut fnam_data = vec![0u8; 16];
+        fnam_data[4..8].copy_from_slice(&32_000.0_f32.to_le_bytes());
+        let subs = vec![
+            make_sub(b"EDID", b"FNVDay\0".to_vec()),
+            make_sub(b"FNAM", fnam_data),
+        ];
+        let w = parse_wthr(0x0200_0001, &subs);
+        assert!(w.oblivion_hdr.is_none());
     }
 
     /// Regression for #535 / audit M33-03: DNAM must be treated as a

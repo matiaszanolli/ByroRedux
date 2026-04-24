@@ -48,7 +48,7 @@ pub use misc::{
     RegnRecord, SpelRecord, TermRecord, WatrRecord,
 };
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
-pub use weather::{parse_wthr, SkyColor, WeatherRecord};
+pub use weather::{parse_wthr, OblivionHdrLighting, SkyColor, WeatherRecord};
 
 use super::cell::EsmCellIndex;
 use super::reader::{EsmReader, FormIdRemap, GameKind, SubRecord};
