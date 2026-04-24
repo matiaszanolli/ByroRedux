@@ -25,10 +25,15 @@ use std::io;
 pub const MAX_ENTRY_COUNT: usize = 10_000_000;
 
 /// Upper bound on a single archive chunk's raw / decompressed byte
-/// size. Vanilla vanilla GNRL records are under 8 MB after
-/// decompression; 256 MB matches `byroredux_nif::stream::MAX_SINGLE_ALLOC_BYTES`
-/// so the two sibling parsers share the same worst-case memory budget.
-pub const MAX_CHUNK_BYTES: usize = 256 * 1024 * 1024;
+/// size. Vanilla content tops out around 325 MB on Fallout 76's
+/// `SeventySix - Meshes.ba2` (single packed mesh entry); 1 GB gives
+/// ~3× headroom against future vanilla growth while still rejecting
+/// the u32::MAX attack from a single corrupted size field. Sibling
+/// `byroredux_nif::stream::MAX_SINGLE_ALLOC_BYTES` stays at 256 MB
+/// because a single block-internal allocation has tighter realistic
+/// bounds (the fattest in-block buffer across the 7 supported games
+/// is ~12 MB on an FO76 actor NIF).
+pub const MAX_CHUNK_BYTES: usize = 1024 * 1024 * 1024;
 
 /// Validate an archive-header entry count before allocating a container
 /// sized by it. Rejects any value exceeding [`MAX_ENTRY_COUNT`] with a
@@ -118,15 +123,15 @@ mod tests {
 
     #[test]
     fn chunk_size_accepts_vanilla_bounds() {
-        // Vanilla GNRL unpacked chunks max at ~8 MB; 256 MB cap must
-        // clear a realistic bound with plenty of margin.
+        // FO76 ships genuine 325 MB packed mesh entries; the cap must
+        // clear that with margin while still rejecting u32::MAX.
         assert_eq!(
-            checked_chunk_size(8 * 1024 * 1024, "unpacked_size").unwrap(),
-            8 * 1024 * 1024
+            checked_chunk_size(325 * 1024 * 1024, "packed_size").unwrap(),
+            325 * 1024 * 1024
         );
-        // 256 MB boundary must pass.
+        // 1 GB boundary must pass.
         assert_eq!(
-            checked_chunk_size(MAX_CHUNK_BYTES as u32, "unpacked_size").unwrap(),
+            checked_chunk_size(MAX_CHUNK_BYTES as u32, "packed_size").unwrap(),
             MAX_CHUNK_BYTES
         );
     }
