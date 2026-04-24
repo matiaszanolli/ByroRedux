@@ -142,6 +142,68 @@ impl DebugStats {
     }
 }
 
+/// One row of renderer-side scratch-buffer telemetry: name, current
+/// `len`, current `capacity`, and the size in bytes of one element so
+/// consumers can compute the heap footprint without knowing the
+/// renderer's element types.
+///
+/// Used by R6 (ROADMAP) to catch unbounded `Vec` growth in the
+/// renderer's per-frame scratch buffers, particularly across M40 cell
+/// streaming where the high-water mark would otherwise grow silently.
+#[derive(Debug, Clone, Copy)]
+pub struct ScratchRow {
+    pub name: &'static str,
+    pub len: usize,
+    pub capacity: usize,
+    pub elem_size_bytes: usize,
+}
+
+impl ScratchRow {
+    /// Heap footprint of the buffer at its current `capacity` (not `len`).
+    pub fn bytes_used(&self) -> usize {
+        self.capacity.saturating_mul(self.elem_size_bytes)
+    }
+
+    /// Bytes of headroom — `capacity - len` × element size. Sustained
+    /// non-zero values across many frames mean the high-water mark
+    /// drifted up at some point and never came back down.
+    pub fn wasted_bytes(&self) -> usize {
+        self.capacity
+            .saturating_sub(self.len)
+            .saturating_mul(self.elem_size_bytes)
+    }
+}
+
+/// Snapshot of every renderer-side persistent `Vec` scratch's capacity.
+///
+/// Refreshed each frame by the engine binary (after `Scheduler::run`,
+/// alongside `mesh_count` / `texture_count` on `DebugStats`). Read by
+/// the `ctx.scratch` console command.
+///
+/// `rows` is a reused `Vec` — stabilises at the count of registered
+/// scratches (5 today) after the first frame, and is the *only*
+/// per-frame heap allocation in the telemetry path. Bounded by the
+/// number of declared scratches at the call site
+/// (`VulkanContext::fill_scratch_telemetry`), so it cannot itself
+/// exhibit the unbounded-growth pattern this resource is designed
+/// to catch.
+#[derive(Debug, Default)]
+pub struct ScratchTelemetry {
+    pub rows: Vec<ScratchRow>,
+}
+
+impl Resource for ScratchTelemetry {}
+
+impl ScratchTelemetry {
+    pub fn total_bytes(&self) -> usize {
+        self.rows.iter().map(ScratchRow::bytes_used).sum()
+    }
+
+    pub fn total_wasted(&self) -> usize {
+        self.rows.iter().map(ScratchRow::wasted_bytes).sum()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,5 +257,47 @@ mod tests {
         }
         assert_eq!(stats.frame_index, 200 % FRAME_HISTORY_SIZE);
         assert!((stats.avg_fps() - 62.5).abs() < 1.0);
+    }
+
+    #[test]
+    fn scratch_row_bytes_used_is_capacity_times_elem_size() {
+        let row = ScratchRow {
+            name: "x",
+            len: 10,
+            capacity: 100,
+            elem_size_bytes: 32,
+        };
+        assert_eq!(row.bytes_used(), 100 * 32);
+        assert_eq!(row.wasted_bytes(), (100 - 10) * 32);
+    }
+
+    #[test]
+    fn scratch_row_wasted_is_zero_when_full() {
+        let row = ScratchRow {
+            name: "full",
+            len: 50,
+            capacity: 50,
+            elem_size_bytes: 8,
+        };
+        assert_eq!(row.wasted_bytes(), 0);
+    }
+
+    #[test]
+    fn scratch_telemetry_aggregates_rows() {
+        let mut tlm = ScratchTelemetry::default();
+        tlm.rows.push(ScratchRow {
+            name: "a",
+            len: 1,
+            capacity: 10,
+            elem_size_bytes: 4,
+        });
+        tlm.rows.push(ScratchRow {
+            name: "b",
+            len: 5,
+            capacity: 5,
+            elem_size_bytes: 16,
+        });
+        assert_eq!(tlm.total_bytes(), 10 * 4 + 5 * 16);
+        assert_eq!(tlm.total_wasted(), (10 - 1) * 4 + 0);
     }
 }

@@ -2,7 +2,7 @@
 
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::ecs::{
-    Camera, DebugStats, Material, MeshHandle, TextureHandle, Transform, World,
+    Camera, DebugStats, Material, MeshHandle, ScratchTelemetry, TextureHandle, Transform, World,
 };
 use std::collections::HashMap;
 
@@ -269,6 +269,59 @@ impl ConsoleCommand for MeshCacheCommand {
     }
 }
 
+/// `ctx.scratch` — print per-Vec capacity / len / heap-bytes for every
+/// persistent CPU-side scratch buffer in the renderer (R6).
+///
+/// Designed to surface unbounded growth across long sessions or
+/// multi-cell streaming (M40), where a `Vec::reserve` driven by an
+/// outlier frame would otherwise pin capacity at the high-water mark
+/// indefinitely with zero observability. Read this after suspect
+/// activity to see if any row's `capacity` × `elem_size` looks
+/// disproportionate to the working set.
+struct CtxScratchCommand;
+impl ConsoleCommand for CtxScratchCommand {
+    fn name(&self) -> &str {
+        "ctx.scratch"
+    }
+    fn description(&self) -> &str {
+        "Show renderer scratch-Vec capacities (R6 — catch unbounded growth)"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(tlm) = world.try_resource::<ScratchTelemetry>() else {
+            return CommandOutput::line("ScratchTelemetry resource not present");
+        };
+        if tlm.rows.is_empty() {
+            return CommandOutput::line(
+                "ScratchTelemetry has no rows — renderer not initialized yet",
+            );
+        }
+        let mut lines = vec![
+            "VulkanContext scratch buffers (R6):".to_string(),
+            format!(
+                "  {:<26} {:>10} {:>10} {:>12} {:>12}",
+                "name", "len", "capacity", "bytes_used", "wasted"
+            ),
+        ];
+        for row in &tlm.rows {
+            lines.push(format!(
+                "  {:<26} {:>10} {:>10} {:>10} B {:>10} B",
+                row.name,
+                row.len,
+                row.capacity,
+                row.bytes_used(),
+                row.wasted_bytes(),
+            ));
+        }
+        lines.push(format!(
+            "  total: {} bytes used, {} bytes wasted across {} scratches",
+            tlm.total_bytes(),
+            tlm.total_wasted(),
+            tlm.rows.len(),
+        ));
+        CommandOutput::lines(lines)
+    }
+}
+
 pub(crate) fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
     registry.register(HelpCommand);
@@ -279,5 +332,6 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(TexLoadedCommand);
     registry.register(MeshInfoCommand);
     registry.register(MeshCacheCommand);
+    registry.register(CtxScratchCommand);
     registry
 }

@@ -1774,6 +1774,16 @@ impl AccelerationManager {
         self.blas_scratch_buffer.as_ref().map(|b| b.size)
     }
 
+    /// CPU-side TLAS instance staging Vec — `(len, capacity)`. Element
+    /// size is `size_of::<vk::AccelerationStructureInstanceKHR>()` (64
+    /// bytes). Surfaced for the `ctx.scratch` console command (R6).
+    pub fn tlas_instances_scratch_telemetry(&self) -> (usize, usize) {
+        (
+            self.tlas_instances_scratch.len(),
+            self.tlas_instances_scratch.capacity(),
+        )
+    }
+
     /// Destroy all acceleration structures and buffers.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         for entry in self.blas_entries.drain(..) {

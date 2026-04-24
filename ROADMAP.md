@@ -110,7 +110,7 @@ typically gates a specific milestone.
 | M41.0  | FaceGen heads render           | Spawn NPC entities with HDPT / EYES / HAIR meshes assembled into the NPC body. Parse already lands via #458 (misc stubs) + #440 (FaceGen NIF geometry fix).                                                                                                                                                                  | M29, #458          |
 | M41    | NPC spawning                   | Resolve NPC_ / CREA records → ECS entities with race/class/equipped armor + weapons. Spawn ACHR references from CELL REFRs. Movement is fly-by-waypoint until M42.                                                                                                                                                           | M24, M29, M41.0    |
 | M40    | World streaming                | Cell load/unload based on player position. Multi-cell exterior grid with async loading. BLAS streaming (evict/reload) ties into M31's LRU eviction.                                                                                                                                                                          | M32, M35           |
-| **R6** | Scratch-buffer instrumentation | `VulkanContext` holds ~5 persistent `Vec` scratches (`gpu_instances_scratch`, `batches_scratch`, `terrain_tile_scratch`, …). On M40 cell transitions, their capacity will grow unbounded with zero telemetry. Add `ctx.scratch` debug command printing per-Vec `capacity()`. **Why now:** before M40, not after. 1-hour task. | —                  |
+| ~~R6~~ | ~~Scratch-buffer instrumentation~~ | **Closed.** `ScratchTelemetry` resource refreshed per frame from `VulkanContext::fill_scratch_telemetry`, surfaced via the `ctx.scratch` console command. Reports per-Vec `len` / `capacity` / `bytes_used` / `wasted` for all 5 scratches (gpu_instances, batches, indirect_draws, terrain_tile, tlas_instances). On Prospector (1200 ent / 773 draws): 337 KB total, 320 B wasted — well right-sized; M40 cell transitions can now be diffed against this baseline. | —                  |
 
 ### Tier 3 — Scripting runtime (unblocks 1 257 FO3 SCPT records)
 
@@ -209,7 +209,7 @@ Index:
 - **R3** — NIF per-block-type parse histogram. Tier 6, no blocker, 1-day prevention.
 - **R4** — SWF/GFx strategic decision. Tier 7, gates M48.
 - **R5** — Papyrus quest prototype. Tier 3, gates M47.2.
-- **R6** — Scratch-buffer instrumentation. Tier 2, before M40. **R6a** — Prospector re-bench. Tier 1.
+- **R6** — Scratch-buffer instrumentation (closed via `ctx.scratch` + `ScratchTelemetry`). Tier 2 prevention, landed before M40. **R6a** — Prospector re-bench. Tier 1.
 - **R7** — Scheduler access declarations. Tier 6, gates M27.
 
 ### Growth discipline
@@ -325,7 +325,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [ ] **R3** NIF `NiUnknown` soft-fail masks per-block regressions — per-type histogram in `nif_stats` with CI regression gate
 - [ ] **R4** SWF/GFx strategic decision needed before M48 — Ruffle+GFx-stubs vs rewrite menus natively
 - [ ] **R5** Papyrus full-runtime prototype on one real quest before M47.2 scope commitment
-- [ ] **R6** `VulkanContext` scratch buffers have no capacity telemetry — add `ctx.scratch` before M40
+- [x] **R6** `VulkanContext` scratch buffers have no capacity telemetry — **closed**. `ctx.scratch` console command + `ScratchTelemetry` resource cover all 5 persistent scratches; per-frame refresh via `VulkanContext::fill_scratch_telemetry`. Prospector baseline: 337 KB total, 320 B wasted.
 - [x] **R6a** Prospector re-bench — **closed**. 192.8 FPS / 5.19 ms at `e6e8091`, wall-clock bench.
 - [x] **R6a-stale** Bench-of-record refreshed at `6a6950a` (2026-04-24). Prospector 172.6 FPS / 5.79 ms (was 192.8 / 5.19 — slight regression in compositor-jitter range; fence_ms unchanged at 4.34, GPU still the bottleneck). Skyrim Whiterun 253.3 FPS / 3.95 ms at 1932 entities (was 237 FPS at 1258 entities — entity count up 53% while FPS improved, indicating more REFRs land now without perf cost). FO4 MedTek 92.5 FPS / 10.82 ms (was 90, 7434 entities unchanged).
 - [ ] **R7** Scheduler access declarations before flipping M27 parallel dispatch on

@@ -14,7 +14,8 @@ use anyhow::Result;
 use byroredux_core::animation::AnimationClipRegistry;
 use byroredux_core::console::CommandRegistry;
 use byroredux_core::ecs::{
-    ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, Scheduler, Stage, TotalTime, World,
+    ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, Scheduler, ScratchTelemetry, Stage,
+    TotalTime, World,
 };
 use byroredux_core::string::StringPool;
 use byroredux_platform::window::{self, WindowConfig};
@@ -222,6 +223,7 @@ impl App {
             ..Default::default()
         });
         world.insert_resource(DebugStats::default());
+        world.insert_resource(ScratchTelemetry::default());
         world.insert_resource(InputState::default());
         world.insert_resource(StringPool::new());
         world.insert_resource(AnimationClipRegistry::new());
@@ -637,6 +639,15 @@ impl ApplicationHandler for App {
                 stats.mesh_count = ctx.mesh_registry.len() as u32;
                 stats.texture_count = ctx.texture_registry.len() as u32;
             }
+        }
+
+        // Refresh renderer-side scratch-Vec telemetry (R6). Reuses the
+        // resource's `rows` Vec so this is amortized to ~zero allocs
+        // after the first frame; capacity stabilises at the count of
+        // declared scratches in `VulkanContext::fill_scratch_telemetry`.
+        if let Some(ref ctx) = self.renderer {
+            let mut tlm = self.world.resource_mut::<ScratchTelemetry>();
+            ctx.fill_scratch_telemetry(&mut tlm.rows);
         }
 
         // Run all systems.

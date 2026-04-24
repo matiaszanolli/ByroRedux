@@ -1137,6 +1137,70 @@ impl VulkanContext {
         }
     }
 
+    /// Snapshot every persistent CPU-side scratch `Vec` owned by the
+    /// renderer (R6). The rows land on the [`ScratchTelemetry`]
+    /// resource via [`crate::vulkan::context::VulkanContext`] each
+    /// frame and are surfaced by the `ctx.scratch` console command.
+    ///
+    /// **Maintenance**: every persistent `Vec` scratch declared in this
+    /// crate must show up here. Adding a new scratch field on
+    /// `VulkanContext` (or its sub-managers) without a row added below
+    /// reintroduces the pre-R6 blind spot where scratches grow with
+    /// zero observability.
+    ///
+    /// Reuses the caller's `Vec` to avoid a per-frame allocation in
+    /// the telemetry path itself. Capacity stabilises at the number of
+    /// declared scratches after the first frame.
+    pub fn fill_scratch_telemetry(
+        &self,
+        rows: &mut Vec<byroredux_core::ecs::ScratchRow>,
+    ) {
+        use byroredux_core::ecs::ScratchRow;
+        use std::mem::size_of;
+
+        rows.clear();
+        rows.push(ScratchRow {
+            name: "gpu_instances_scratch",
+            len: self.gpu_instances_scratch.len(),
+            capacity: self.gpu_instances_scratch.capacity(),
+            elem_size_bytes: size_of::<scene_buffer::GpuInstance>(),
+        });
+        rows.push(ScratchRow {
+            name: "batches_scratch",
+            len: self.batches_scratch.len(),
+            capacity: self.batches_scratch.capacity(),
+            elem_size_bytes: size_of::<draw::DrawBatch>(),
+        });
+        rows.push(ScratchRow {
+            name: "indirect_draws_scratch",
+            len: self.indirect_draws_scratch.len(),
+            capacity: self.indirect_draws_scratch.capacity(),
+            elem_size_bytes: size_of::<vk::DrawIndexedIndirectCommand>(),
+        });
+        rows.push(ScratchRow {
+            name: "terrain_tile_scratch",
+            len: self.terrain_tile_scratch.len(),
+            capacity: self.terrain_tile_scratch.capacity(),
+            elem_size_bytes: size_of::<scene_buffer::GpuTerrainTile>(),
+        });
+        if let Some(accel) = &self.accel_manager {
+            let (len, capacity) = accel.tlas_instances_scratch_telemetry();
+            rows.push(ScratchRow {
+                name: "tlas_instances_scratch",
+                len,
+                capacity,
+                elem_size_bytes: size_of::<vk::AccelerationStructureInstanceKHR>(),
+            });
+        } else {
+            rows.push(ScratchRow {
+                name: "tlas_instances_scratch",
+                len: 0,
+                capacity: 0,
+                elem_size_bytes: size_of::<vk::AccelerationStructureInstanceKHR>(),
+            });
+        }
+    }
+
     // draw_frame is in draw.rs
     // build_blas_for_mesh, register_ui_quad, swapchain_extent, log_memory_usage are in resources.rs
     // recreate_swapchain is in resize.rs
