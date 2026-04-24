@@ -26,7 +26,12 @@
 //! **Downstream use:** the cell loader expands an SCOL REFR into N
 //! synthetic placed refs when the cached `CM*.NIF` isn't present
 //! (common for mod-added SCOLs whose previsibine step was skipped).
-//! See the `scol_parts` field on [`crate::esm::cell::StaticObject`].
+//! The full [`ScolRecord`] — including `parts` — is stored on
+//! [`crate::esm::cell::EsmCellIndex::scols`] and looked up by form ID
+//! at spawn time; the outer REFR also retains its cached-mesh entry in
+//! [`crate::esm::cell::EsmCellIndex::statics`] so the common
+//! CM*.NIF-present path keeps working unchanged.
+//! See `byroredux::cell_loader::expand_scol_placements` (#585).
 
 use crate::esm::reader::SubRecord;
 use crate::esm::records::common::read_string_sub;

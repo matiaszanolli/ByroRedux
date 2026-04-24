@@ -1149,182 +1149,213 @@ fn load_references(
             }
         }
 
-        let stat = match index.statics.get(&placed_ref.base_form_id) {
-            Some(s) => {
-                stat_hit += 1;
-                s
-            }
-            None => {
-                stat_miss += 1;
-                // Collect a bounded sample so the summary line can
-                // surface actual FormIDs without pulling down a full
-                // RUST_LOG=debug run. Linear dedup is fine for 20
-                // entries. See #386.
-                if stat_miss_sample.len() < 20
-                    && !stat_miss_sample.contains(&placed_ref.base_form_id)
-                {
-                    stat_miss_sample.push(placed_ref.base_form_id);
-                }
-                log::debug!(
-                    "REFR base {:08X} not in statics table",
-                    placed_ref.base_form_id
-                );
-                continue;
-            }
-        };
-
-        // Convert REFR placement: Z-up → Y-up.
-        let ref_pos = Vec3::new(
+        // Convert the outer REFR's placement (Z-up Bethesda → Y-up
+        // renderer). For normal REFRs this is the spawn transform; for
+        // SCOL REFRs it's the parent transform the child placements
+        // compose against.
+        let outer_pos = Vec3::new(
             placed_ref.position[0],
             placed_ref.position[2],
             -placed_ref.position[1],
         );
-        let ref_rot = euler_zup_to_quat_yup(
+        let outer_rot = euler_zup_to_quat_yup(
             placed_ref.rotation[0],
             placed_ref.rotation[1],
             placed_ref.rotation[2],
         );
-        let ref_scale = placed_ref.scale;
+        let outer_scale = placed_ref.scale;
 
-        // Update bounds.
-        bounds_min = bounds_min.min(ref_pos);
-        bounds_max = bounds_max.max(ref_pos);
+        // Build per-REFR texture overlay once. Shared across every
+        // synthetic SCOL child — FO4 REFRs that overlay textures at the
+        // SCOL level apply the same swap to every child placement.
+        // #584.
+        let refr_overlay = build_refr_texture_overlay(
+            placed_ref,
+            index,
+            mat_provider.as_deref_mut(),
+        );
 
-        // Spawn light-only entities (LIGH with no mesh).
-        if stat.model_path.is_empty() {
-            if let Some(ref ld) = stat.light_data {
-                let entity = world.spawn();
-                world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
-                world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
-                world.insert(
-                    entity,
-                    LightSource {
-                        radius: ld.radius,
-                        color: ld.color,
-                        flags: ld.flags,
-                    },
-                );
-                entity_count += 1;
-            }
-            continue;
-        }
+        // Expand SCOL placements when the outer REFR's base is a SCOL
+        // with no cached `CM*.NIF`. Returns a single-entry vec for
+        // normal (non-SCOL) REFRs so the hot path is unchanged. See
+        // #585.
+        let synth_refs =
+            expand_scol_placements(placed_ref.base_form_id, outer_pos, outer_rot, outer_scale, index);
 
-        // Skip non-renderable meshes: editor markers, effect sprites, fog.
-        // Still spawn the ESM light entity if this LIGH record carries one —
-        // the effect mesh is visual-only but the point light is real.
-        let model_lower = stat.model_path.to_ascii_lowercase();
-
-        // Extract the filename (after the last \ or /) for prefix matching.
-        let filename = model_lower
-            .rsplit(['\\', '/'])
-            .next()
-            .unwrap_or(&model_lower);
-
-        if filename.starts_with("marker")
-            || filename.starts_with("xmarker")
-            || filename.starts_with("defaultsetmarker")
-            || filename.starts_with("doormarker")
-            || filename.starts_with("northmarker")
-            || filename.starts_with("prisonmarker")
-            || filename.starts_with("travelmarker")
-            || filename.starts_with("roommarker")
-            || filename.starts_with("vatsmarker")
-        {
-            continue;
-        }
-
-        if model_lower.contains("fxlightrays")
-            || model_lower.contains("fxlight")
-            || model_lower.contains("fxfog")
-        {
-            if let Some(ref ld) = stat.light_data {
-                let entity = world.spawn();
-                world.insert(entity, Transform::from_translation(ref_pos));
-                world.insert(entity, GlobalTransform::new(ref_pos, Quat::IDENTITY, 1.0));
-                world.insert(
-                    entity,
-                    LightSource {
-                        radius: ld.radius,
-                        color: ld.color,
-                        flags: ld.flags,
-                    },
-                );
-                entity_count += 1;
-            }
-            continue;
-        }
-
-        let model_path =
-            if model_lower.starts_with("meshes\\") || model_lower.starts_with("meshes/") {
-                stat.model_path.clone()
-            } else {
-                format!("meshes\\{}", stat.model_path)
-            };
-
-        // Fetch parsed+imported NIF from the process-lifetime registry,
-        // or load+parse once. Three-tier lookup (#523):
-        //   1. `pending_new` — this call's own parses, zero lock cost.
-        //   2. Registry read-lock — a shared borrow that doesn't
-        //      serialise against concurrent readers.
-        //   3. Parse outside any lock, insert into `pending_new`; the
-        //      merge into the registry happens in a single write lock
-        //      after the loop.
-        //
-        // Previously this block took `resource_mut` (write lock) on
-        // every iteration even on the hit path; see #523 / #381 for
-        // the wider cache history.
-        let cache_key = model_path.to_ascii_lowercase();
-        let cached = if let Some(entry) = pending_new.get(&cache_key).cloned() {
-            this_call_hits += 1;
-            entry
-        } else {
-            let reg_entry = {
-                let reg = world.resource::<NifImportRegistry>();
-                reg.cache.get(&cache_key).cloned()
-            };
-            match reg_entry {
-                Some(entry) => {
-                    this_call_hits += 1;
-                    entry
+        for (child_form_id, ref_pos, ref_rot, ref_scale) in synth_refs {
+            let stat = match index.statics.get(&child_form_id) {
+                Some(s) => {
+                    stat_hit += 1;
+                    s
                 }
                 None => {
-                    // Slow-path: parse outside any registry borrow.
-                    let parsed = match tex_provider.extract_mesh(&model_path) {
-                        Some(d) => parse_and_import_nif(
-                            &d,
-                            &model_path,
-                            mat_provider.as_deref_mut(),
-                        ),
-                        None => {
-                            log::debug!("NIF not found in BSA: '{}'", model_path);
-                            None
-                        }
-                    };
-                    this_call_misses += 1;
-                    if parsed.is_some() {
-                        this_call_parsed += 1;
-                    } else {
-                        this_call_failed += 1;
+                    stat_miss += 1;
+                    // Collect a bounded sample so the summary line can
+                    // surface actual FormIDs without pulling down a
+                    // full RUST_LOG=debug run. Linear dedup is fine
+                    // for 20 entries. See #386.
+                    if stat_miss_sample.len() < 20
+                        && !stat_miss_sample.contains(&child_form_id)
+                    {
+                        stat_miss_sample.push(child_form_id);
                     }
-                    pending_new.insert(cache_key, parsed.clone());
-                    parsed
+                    log::debug!(
+                        "REFR base {:08X} not in statics table",
+                        child_form_id
+                    );
+                    continue;
                 }
-            }
-        };
-        let Some(cached) = cached else { continue };
+            };
 
-        let count = spawn_placed_instances(
-            world,
-            ctx,
-            &cached,
-            tex_provider,
-            ref_pos,
-            ref_rot,
-            ref_scale,
-            stat.light_data.as_ref(),
-        );
-        entity_count += count;
-        mesh_entity_count += count;
+            // Update bounds from the (possibly SCOL-composed) placement.
+            bounds_min = bounds_min.min(ref_pos);
+            bounds_max = bounds_max.max(ref_pos);
+
+            // Spawn light-only entities (LIGH with no mesh).
+            if stat.model_path.is_empty() {
+                if let Some(ref ld) = stat.light_data {
+                    let entity = world.spawn();
+                    world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
+                    world.insert(
+                        entity,
+                        GlobalTransform::new(ref_pos, ref_rot, ref_scale),
+                    );
+                    world.insert(
+                        entity,
+                        LightSource {
+                            radius: ld.radius,
+                            color: ld.color,
+                            flags: ld.flags,
+                        },
+                    );
+                    entity_count += 1;
+                }
+                continue;
+            }
+
+            // Skip non-renderable meshes: editor markers, effect
+            // sprites, fog. Still spawn the ESM light entity if this
+            // LIGH record carries one — the effect mesh is visual-only
+            // but the point light is real.
+            let model_lower = stat.model_path.to_ascii_lowercase();
+
+            // Extract the filename (after the last \ or /) for prefix matching.
+            let filename = model_lower
+                .rsplit(['\\', '/'])
+                .next()
+                .unwrap_or(&model_lower);
+
+            if filename.starts_with("marker")
+                || filename.starts_with("xmarker")
+                || filename.starts_with("defaultsetmarker")
+                || filename.starts_with("doormarker")
+                || filename.starts_with("northmarker")
+                || filename.starts_with("prisonmarker")
+                || filename.starts_with("travelmarker")
+                || filename.starts_with("roommarker")
+                || filename.starts_with("vatsmarker")
+            {
+                continue;
+            }
+
+            if model_lower.contains("fxlightrays")
+                || model_lower.contains("fxlight")
+                || model_lower.contains("fxfog")
+            {
+                if let Some(ref ld) = stat.light_data {
+                    let entity = world.spawn();
+                    world.insert(entity, Transform::from_translation(ref_pos));
+                    world.insert(
+                        entity,
+                        GlobalTransform::new(ref_pos, Quat::IDENTITY, 1.0),
+                    );
+                    world.insert(
+                        entity,
+                        LightSource {
+                            radius: ld.radius,
+                            color: ld.color,
+                            flags: ld.flags,
+                        },
+                    );
+                    entity_count += 1;
+                }
+                continue;
+            }
+
+            let model_path =
+                if model_lower.starts_with("meshes\\") || model_lower.starts_with("meshes/") {
+                    stat.model_path.clone()
+                } else {
+                    format!("meshes\\{}", stat.model_path)
+                };
+
+            // Fetch parsed+imported NIF from the process-lifetime
+            // registry, or load+parse once. Three-tier lookup (#523):
+            //   1. `pending_new` — this call's own parses, zero lock
+            //      cost.
+            //   2. Registry read-lock — a shared borrow that doesn't
+            //      serialise against concurrent readers.
+            //   3. Parse outside any lock, insert into `pending_new`;
+            //      the merge into the registry happens in a single
+            //      write lock after the loop.
+            //
+            // Previously this block took `resource_mut` (write lock)
+            // on every iteration even on the hit path; see #523 / #381
+            // for the wider cache history.
+            let cache_key = model_path.to_ascii_lowercase();
+            let cached = if let Some(entry) = pending_new.get(&cache_key).cloned() {
+                this_call_hits += 1;
+                entry
+            } else {
+                let reg_entry = {
+                    let reg = world.resource::<NifImportRegistry>();
+                    reg.cache.get(&cache_key).cloned()
+                };
+                match reg_entry {
+                    Some(entry) => {
+                        this_call_hits += 1;
+                        entry
+                    }
+                    None => {
+                        // Slow-path: parse outside any registry borrow.
+                        let parsed = match tex_provider.extract_mesh(&model_path) {
+                            Some(d) => parse_and_import_nif(
+                                &d,
+                                &model_path,
+                                mat_provider.as_deref_mut(),
+                            ),
+                            None => {
+                                log::debug!("NIF not found in BSA: '{}'", model_path);
+                                None
+                            }
+                        };
+                        this_call_misses += 1;
+                        if parsed.is_some() {
+                            this_call_parsed += 1;
+                        } else {
+                            this_call_failed += 1;
+                        }
+                        pending_new.insert(cache_key, parsed.clone());
+                        parsed
+                    }
+                }
+            };
+            let Some(cached) = cached else { continue };
+
+            let count = spawn_placed_instances(
+                world,
+                ctx,
+                &cached,
+                tex_provider,
+                ref_pos,
+                ref_rot,
+                ref_scale,
+                stat.light_data.as_ref(),
+                refr_overlay.as_ref(),
+            );
+            entity_count += count;
+            mesh_entity_count += count;
+        }
     }
 
     let center = (bounds_min + bounds_max) * 0.5;
@@ -1497,6 +1528,262 @@ fn parse_and_import_nif(
 /// top of the REFR placement transform. The `cached` parameter is
 /// produced by `parse_and_import_nif` and shared across all
 /// placements of the same model via `Arc`.
+/// Per-REFR texture overlay computed from the REFR's XATO / XTNM / XTXR
+/// sub-records (#584 / FO4-DIM6-02).
+///
+/// A populated overlay means the REFR overrides one or more texture
+/// slots of its base mesh. Each `Option<String>` is `Some` when the
+/// REFR provides a replacement texture for that slot; `None` means the
+/// base NIF's slot stands. The precedence is:
+///   1. XATO full-TXST overlay (and XTNM for LAND-scoped refs) fills
+///      whatever the referenced `TextureSet` carries.
+///   2. XTXR per-slot swaps override specific slots afterwards (later
+///      XTXR entries win for the same slot).
+///   3. If the overlay picked up a `material_path` (MNAM-only TXSTs),
+///      the BGSM chain fills any still-empty slot.
+///
+/// The overlay's diffuse/normal/glow/height/env/env_mask/specular/
+/// material_path are applied at spawn time inside
+/// `spawn_placed_instances`, shadowing the cached `ImportedMesh` reads.
+/// The original `ImportedMesh` is never mutated — overlay is a per-REFR
+/// shadow that respects the process-lifetime NIF import cache.
+///
+/// Pre-#584 37 % of vanilla Fallout4.esm TXSTs (140 / 382, MNAM-only)
+/// parsed cleanly into `EsmCellIndex.texture_sets` with nowhere to go.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct RefrTextureOverlay {
+    pub(crate) diffuse: Option<String>,
+    pub(crate) normal: Option<String>,
+    pub(crate) glow: Option<String>,
+    pub(crate) height: Option<String>,
+    pub(crate) env: Option<String>,
+    pub(crate) env_mask: Option<String>,
+    /// BSShaderTextureSet slot 6 — MultiLayerParallax inner layer.
+    /// Not yet consumed by the spawn path; preserved for parity with
+    /// `TextureSet.inner` so the slot_index=6 XTXR swap round-trips.
+    #[allow(dead_code)]
+    pub(crate) inner: Option<String>,
+    pub(crate) specular: Option<String>,
+    pub(crate) material_path: Option<String>,
+}
+
+impl RefrTextureOverlay {
+    /// First-non-empty-wins fill for an overlay slot.
+    fn fill(slot: &mut Option<String>, value: Option<&str>) {
+        if slot.is_none() {
+            if let Some(v) = value {
+                if !v.is_empty() {
+                    *slot = Some(v.to_string());
+                }
+            }
+        }
+    }
+
+    fn merge_from_texture_set(&mut self, ts: &esm::cell::TextureSet) {
+        Self::fill(&mut self.diffuse, ts.diffuse.as_deref());
+        Self::fill(&mut self.normal, ts.normal.as_deref());
+        Self::fill(&mut self.glow, ts.glow.as_deref());
+        Self::fill(&mut self.height, ts.height.as_deref());
+        Self::fill(&mut self.env, ts.env.as_deref());
+        Self::fill(&mut self.env_mask, ts.env_mask.as_deref());
+        Self::fill(&mut self.inner, ts.inner.as_deref());
+        Self::fill(&mut self.specular, ts.specular.as_deref());
+        Self::fill(&mut self.material_path, ts.material_path.as_deref());
+    }
+
+    /// Apply a single XTXR slot swap. `slot_index` picks one of TX00..TX07
+    /// on the host mesh; the source path comes from the swap TXST's
+    /// same-index slot. Later XTXR for the same slot overwrites.
+    fn apply_slot_swap(&mut self, ts: &esm::cell::TextureSet, slot_index: u32) {
+        let src = match slot_index {
+            0 => ts.diffuse.as_deref(),
+            1 => ts.normal.as_deref(),
+            2 => ts.glow.as_deref(),
+            3 => ts.height.as_deref(),
+            4 => ts.env.as_deref(),
+            5 => ts.env_mask.as_deref(),
+            6 => ts.inner.as_deref(),
+            7 => ts.specular.as_deref(),
+            _ => return, // Out-of-range — drop silently.
+        };
+        let Some(path) = src else { return };
+        if path.is_empty() {
+            return;
+        }
+        let dest = match slot_index {
+            0 => &mut self.diffuse,
+            1 => &mut self.normal,
+            2 => &mut self.glow,
+            3 => &mut self.height,
+            4 => &mut self.env,
+            5 => &mut self.env_mask,
+            6 => &mut self.inner,
+            7 => &mut self.specular,
+            _ => return,
+        };
+        *dest = Some(path.to_string());
+    }
+
+    /// Walk the overlay's `material_path` BGSM/BGEM chain and fill any
+    /// still-empty texture slot. Matches `merge_bgsm_into_mesh`'s
+    /// first-wins policy so REFR overlays and per-mesh imports agree on
+    /// precedence for MNAM-only TXSTs. No-op when the path isn't a
+    /// `.bgsm` / `.bgem` or the provider can't resolve it.
+    fn fill_from_bgsm(&mut self, provider: &mut MaterialProvider) {
+        let Some(path) = self.material_path.clone() else {
+            return;
+        };
+        let lower = path.to_ascii_lowercase();
+        if lower.ends_with(".bgsm") {
+            let Some(resolved) = provider.resolve_bgsm(&path) else {
+                return;
+            };
+            for step in resolved.walk() {
+                let f = &step.file;
+                Self::fill(&mut self.diffuse, Some(f.diffuse_texture.as_str()));
+                Self::fill(&mut self.normal, Some(f.normal_texture.as_str()));
+                Self::fill(&mut self.glow, Some(f.glow_texture.as_str()));
+                Self::fill(&mut self.specular, Some(f.smooth_spec_texture.as_str()));
+                Self::fill(&mut self.env, Some(f.envmap_texture.as_str()));
+                Self::fill(&mut self.height, Some(f.displacement_texture.as_str()));
+            }
+        } else if lower.ends_with(".bgem") {
+            let Some(bgem) = provider.resolve_bgem(&path) else {
+                return;
+            };
+            Self::fill(&mut self.normal, Some(bgem.normal_texture.as_str()));
+            Self::fill(&mut self.glow, Some(bgem.glow_texture.as_str()));
+            Self::fill(&mut self.env, Some(bgem.envmap_texture.as_str()));
+        }
+    }
+}
+
+/// Produce the list of `(base_form_id, composed_pos, composed_rot,
+/// composed_scale)` placements to spawn for one REFR.
+///
+/// Normal (non-SCOL) REFR: returns a single-entry vec carrying the
+/// outer REFR's own base form ID and world-space transform. The hot
+/// path for interior cells (~99 % of REFRs).
+///
+/// SCOL REFR with no cached `CM*.NIF`: flattens `ScolRecord.parts` into
+/// synthetic children. Each `ScolPlacement` (Z-up Euler-radian local
+/// transform, per `records/scol.rs`) composes with the outer REFR's
+/// world-space transform:
+///
+/// ```text
+/// final_pos    = outer_rot * (outer_scale * local_pos) + outer_pos
+/// final_rot    = outer_rot * local_rot
+/// final_scale  = outer_scale * local_scale
+/// ```
+///
+/// Vanilla FO4 ships 2616 / 2617 SCOLs with a cached `CM*.NIF` in
+/// `statics[base].model_path`, so the normal path runs for those.
+/// Mod-added SCOLs (and vanilla SCOLs whose CM file is absent under a
+/// previsibine-bypass loadout) hit the expansion branch. Single-level
+/// expansion only: if a synthetic child is itself a SCOL we don't
+/// recurse — vanilla FO4 has no SCOL-of-SCOL nesting. See #585.
+pub(crate) fn expand_scol_placements(
+    base_form_id: u32,
+    outer_pos: Vec3,
+    outer_rot: Quat,
+    outer_scale: f32,
+    index: &esm::cell::EsmCellIndex,
+) -> Vec<(u32, Vec3, Quat, f32)> {
+    // Expand only when the outer REFR's base is a SCOL with no valid
+    // cached model. `statics.get(base).model_path` empty — or the base
+    // isn't in `statics` at all (mod-added SCOL without EDID/MODL) —
+    // plus the base form IS in `scols`.
+    let must_expand = index.scols.contains_key(&base_form_id)
+        && index
+            .statics
+            .get(&base_form_id)
+            .map_or(true, |s| s.model_path.is_empty());
+    if !must_expand {
+        return vec![(base_form_id, outer_pos, outer_rot, outer_scale)];
+    }
+
+    let Some(scol) = index.scols.get(&base_form_id) else {
+        // Defensive: if contains_key passed but get returned None
+        // (shouldn't happen outside of concurrent mutation), fall back
+        // to the non-expanded single-entry path so the REFR at least
+        // gets logged as a stats miss rather than silently dropped.
+        return vec![(base_form_id, outer_pos, outer_rot, outer_scale)];
+    };
+
+    let mut out = Vec::new();
+    for part in &scol.parts {
+        for p in &part.placements {
+            // Z-up Bethesda → Y-up renderer, matching the outer REFR
+            // conversion policy in `load_references`.
+            let local_pos = Vec3::new(p.pos[0], p.pos[2], -p.pos[1]);
+            let local_rot = euler_zup_to_quat_yup(p.rot[0], p.rot[1], p.rot[2]);
+            let final_pos = outer_rot * (outer_scale * local_pos) + outer_pos;
+            let final_rot = outer_rot * local_rot;
+            let final_scale = outer_scale * p.scale;
+            out.push((part.base_form_id, final_pos, final_rot, final_scale));
+        }
+    }
+    out
+}
+
+/// Build a texture overlay for a REFR when its parser-side override
+/// sub-records (XATO, XTNM, XTXR) carry actionable TXST FormIDs.
+/// Returns `None` when the REFR has no overrides — the hot path for
+/// interior cells where > 99 % of REFRs use their base mesh's textures
+/// verbatim.
+pub(crate) fn build_refr_texture_overlay(
+    placed: &esm::cell::PlacedRef,
+    index: &esm::cell::EsmCellIndex,
+    mat_provider: Option<&mut MaterialProvider>,
+) -> Option<RefrTextureOverlay> {
+    if placed.alt_texture_ref.is_none()
+        && placed.land_texture_ref.is_none()
+        && placed.texture_slot_swaps.is_empty()
+    {
+        return None;
+    }
+
+    let mut ov = RefrTextureOverlay::default();
+
+    // XATO — mesh-scoped TXST override. Resolves the whole TextureSet
+    // onto the overlay's 8 slots + material_path.
+    if let Some(txst_ref) = placed.alt_texture_ref {
+        if let Some(ts) = index.texture_sets.get(&txst_ref) {
+            ov.merge_from_texture_set(ts);
+        }
+    }
+    // XTNM — LAND-scoped TXST override. Same wire layout as XATO; fills
+    // whatever slots XATO didn't cover. Typical REFRs carry only one
+    // of the two, so the "first non-empty wins" policy just picks up
+    // whichever is present.
+    if let Some(txst_ref) = placed.land_texture_ref {
+        if let Some(ts) = index.texture_sets.get(&txst_ref) {
+            ov.merge_from_texture_set(ts);
+        }
+    }
+
+    // XTXR — per-slot swaps, applied after the full-TXST overlay so
+    // individual slot swaps can override what XATO/XTNM set. Later
+    // XTXR for the same slot wins (authoring-order semantics).
+    for swap in &placed.texture_slot_swaps {
+        if let Some(ts) = index.texture_sets.get(&swap.texture_set) {
+            ov.apply_slot_swap(ts, swap.slot_index);
+        }
+    }
+
+    // BGSM chain fill — MNAM-only TXSTs contribute nothing to the 8
+    // direct slots, but their `material_path` resolves through the
+    // BGSM template chain to real textures. Matches import-time
+    // `merge_bgsm_into_mesh` semantics.
+    if ov.material_path.is_some() {
+        if let Some(mp) = mat_provider {
+            ov.fill_from_bgsm(mp);
+        }
+    }
+
+    Some(ov)
+}
+
 fn spawn_placed_instances(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -1506,6 +1793,7 @@ fn spawn_placed_instances(
     ref_rot: Quat,
     ref_scale: f32,
     light_data: Option<&esm::cell::LightData>,
+    refr_overlay: Option<&RefrTextureOverlay>,
 ) -> usize {
     use byroredux_renderer::Vertex;
 
@@ -1689,8 +1977,38 @@ fn spawn_placed_instances(
         // Collect BLAS specs for batched build after the loop.
         blas_specs.push((mesh_handle, num_verts as u32, mesh.indices.len() as u32));
 
+        // Effective texture slot paths. REFR overlay (XATO/XTNM/XTXR)
+        // wins over the NIF-authored paths when present; for slots the
+        // overlay left empty the cached NIF's texture rides through.
+        // `None` on both sides means this slot has no texture. See #584.
+        let ov = refr_overlay;
+        let eff_texture_path = ov
+            .and_then(|o| o.diffuse.clone())
+            .or_else(|| mesh.texture_path.clone());
+        let eff_normal_map = ov
+            .and_then(|o| o.normal.clone())
+            .or_else(|| mesh.normal_map.clone());
+        let eff_glow_map = ov
+            .and_then(|o| o.glow.clone())
+            .or_else(|| mesh.glow_map.clone());
+        let eff_gloss_map = ov
+            .and_then(|o| o.specular.clone())
+            .or_else(|| mesh.gloss_map.clone());
+        let eff_parallax_map = ov
+            .and_then(|o| o.height.clone())
+            .or_else(|| mesh.parallax_map.clone());
+        let eff_env_map = ov
+            .and_then(|o| o.env.clone())
+            .or_else(|| mesh.env_map.clone());
+        let eff_env_mask = ov
+            .and_then(|o| o.env_mask.clone())
+            .or_else(|| mesh.env_mask.clone());
+        let eff_material_path = ov
+            .and_then(|o| o.material_path.clone())
+            .or_else(|| mesh.material_path.clone());
+
         // Load texture (shared resolve: cache → BSA → fallback).
-        let tex_handle = resolve_texture(ctx, tex_provider, mesh.texture_path.as_deref());
+        let tex_handle = resolve_texture(ctx, tex_provider, eff_texture_path.as_deref());
 
         // Compose: REFR parent transform * NIF local transform.
         // mesh.rotation is already a Y-up quaternion [x,y,z,w] extracted via SVD.
@@ -1749,12 +2067,12 @@ fn spawn_placed_instances(
                 uv_scale: mesh.uv_scale,
                 alpha: mesh.mat_alpha,
                 env_map_scale: mesh.env_map_scale,
-                normal_map: mesh.normal_map.clone(),
-                texture_path: mesh.texture_path.clone(),
-                material_path: mesh.material_path.clone(),
-                glow_map: mesh.glow_map.clone(),
+                normal_map: eff_normal_map.clone(),
+                texture_path: eff_texture_path.clone(),
+                material_path: eff_material_path.clone(),
+                glow_map: eff_glow_map.clone(),
                 detail_map: mesh.detail_map.clone(),
-                gloss_map: mesh.gloss_map.clone(),
+                gloss_map: eff_gloss_map.clone(),
                 dark_map: mesh.dark_map.clone(),
                 vertex_color_mode: mesh.vertex_color_mode,
                 alpha_test: mesh.alpha_test,
@@ -1772,7 +2090,7 @@ fn spawn_placed_instances(
             },
         );
         // Load and attach normal map if the material specifies one.
-        if let Some(ref nmap_path) = mesh.normal_map {
+        if let Some(ref nmap_path) = eff_normal_map {
             let h = resolve_texture(ctx, tex_provider, Some(nmap_path.as_str()));
             if h != ctx.texture_registry.fallback() {
                 world.insert(entity, NormalMapHandle(h));
@@ -1796,12 +2114,12 @@ fn spawn_placed_instances(
                 .filter(|&h| h != ctx.texture_registry.fallback())
                 .unwrap_or(0)
         };
-        let glow_h = resolve(&mesh.glow_map);
+        let glow_h = resolve(&eff_glow_map);
         let detail_h = resolve(&mesh.detail_map);
-        let gloss_h = resolve(&mesh.gloss_map);
-        let parallax_h = resolve(&mesh.parallax_map);
-        let env_h = resolve(&mesh.env_map);
-        let env_mask_h = resolve(&mesh.env_mask);
+        let gloss_h = resolve(&eff_gloss_map);
+        let parallax_h = resolve(&eff_parallax_map);
+        let env_h = resolve(&eff_env_map);
+        let env_mask_h = resolve(&eff_env_mask);
         if glow_h != 0
             || detail_h != 0
             || gloss_h != 0
@@ -2020,6 +2338,417 @@ mod nif_import_registry_tests {
             "3 hits / 5 lookups = 60.0%, got {}",
             reg.hit_rate_pct()
         );
+    }
+}
+
+#[cfg(test)]
+mod refr_texture_overlay_tests {
+    //! Regression tests for #584 — REFR override sub-records (XATO,
+    //! XTNM, XTXR) must resolve against `EsmCellIndex.texture_sets`
+    //! and build a `RefrTextureOverlay` the spawn path consumes.
+    //! The MNAM-only TXST path preserves the material_path so the
+    //! cell_loader can chain-resolve via `MaterialProvider` (the BGSM
+    //! resolution is covered separately — here we verify the overlay
+    //! builder passes the path through).
+    use super::*;
+    use byroredux_plugin::esm::cell::{
+        EsmCellIndex, PlacedRef, TextureSet, TextureSlotSwap,
+    };
+
+    fn empty_placed_ref(base_form_id: u32) -> PlacedRef {
+        PlacedRef {
+            base_form_id,
+            position: [0.0; 3],
+            rotation: [0.0; 3],
+            scale: 1.0,
+            enable_parent: None,
+            teleport: None,
+            primitive: None,
+            linked_refs: Vec::new(),
+            rooms: Vec::new(),
+            portals: Vec::new(),
+            radius_override: None,
+            alt_texture_ref: None,
+            land_texture_ref: None,
+            texture_slot_swaps: Vec::new(),
+            emissive_light_ref: None,
+        }
+    }
+
+    #[test]
+    fn build_overlay_returns_none_when_refr_has_no_overrides() {
+        let index = EsmCellIndex::default();
+        let placed = empty_placed_ref(0x0100_0001);
+        assert!(build_refr_texture_overlay(&placed, &index, None).is_none());
+    }
+
+    #[test]
+    fn build_overlay_carries_mnam_only_txst_material_path() {
+        let mut index = EsmCellIndex::default();
+        // MNAM-only TXST: no TX00..TX07, only material_path.
+        index.texture_sets.insert(
+            0x0020_0001,
+            TextureSet {
+                material_path: Some(r"materials\fo4\vault\sign.bgsm".to_string()),
+                ..TextureSet::default()
+            },
+        );
+        let mut placed = empty_placed_ref(0x0100_0001);
+        placed.alt_texture_ref = Some(0x0020_0001);
+
+        let ov = build_refr_texture_overlay(&placed, &index, None)
+            .expect("XATO with MNAM TXST must produce an overlay");
+        // Direct slots stay None — the MNAM-only TXST authored none.
+        assert!(ov.diffuse.is_none());
+        assert!(ov.normal.is_none());
+        // material_path propagates unchanged; BGSM chain resolve is a
+        // separate stage (mat_provider = None here).
+        assert_eq!(
+            ov.material_path.as_deref(),
+            Some(r"materials\fo4\vault\sign.bgsm")
+        );
+    }
+
+    #[test]
+    fn build_overlay_full_txst_fills_every_authored_slot() {
+        let mut index = EsmCellIndex::default();
+        index.texture_sets.insert(
+            0x0020_0001,
+            TextureSet {
+                diffuse: Some(r"textures\a\diff.dds".to_string()),
+                normal: Some(r"textures\a\nrm.dds".to_string()),
+                glow: Some(r"textures\a\glow.dds".to_string()),
+                specular: Some(r"textures\a\spec.dds".to_string()),
+                env: None,
+                env_mask: None,
+                height: None,
+                inner: None,
+                material_path: None,
+            },
+        );
+        let mut placed = empty_placed_ref(0x0100_0001);
+        placed.alt_texture_ref = Some(0x0020_0001);
+
+        let ov = build_refr_texture_overlay(&placed, &index, None)
+            .expect("XATO with populated TXST must produce an overlay");
+        assert_eq!(ov.diffuse.as_deref(), Some(r"textures\a\diff.dds"));
+        assert_eq!(ov.normal.as_deref(), Some(r"textures\a\nrm.dds"));
+        assert_eq!(ov.glow.as_deref(), Some(r"textures\a\glow.dds"));
+        assert_eq!(ov.specular.as_deref(), Some(r"textures\a\spec.dds"));
+        // Unauthored slots stay None so the base mesh's textures ride through.
+        assert!(ov.env.is_none());
+        assert!(ov.material_path.is_none());
+    }
+
+    #[test]
+    fn build_overlay_xtxr_swaps_only_the_named_slot() {
+        let mut index = EsmCellIndex::default();
+        // Source TXST for the XTXR — normal slot populated.
+        index.texture_sets.insert(
+            0x0020_0002,
+            TextureSet {
+                normal: Some(r"textures\swap\nrm.dds".to_string()),
+                ..TextureSet::default()
+            },
+        );
+        let mut placed = empty_placed_ref(0x0100_0001);
+        placed.texture_slot_swaps.push(TextureSlotSwap {
+            texture_set: 0x0020_0002,
+            slot_index: 1, // normal
+        });
+
+        let ov = build_refr_texture_overlay(&placed, &index, None)
+            .expect("XTXR alone must produce an overlay");
+        assert_eq!(ov.normal.as_deref(), Some(r"textures\swap\nrm.dds"));
+        // Every other slot stays None.
+        assert!(ov.diffuse.is_none());
+        assert!(ov.glow.is_none());
+        assert!(ov.specular.is_none());
+    }
+
+    #[test]
+    fn build_overlay_xtxr_later_swap_wins_for_same_slot() {
+        let mut index = EsmCellIndex::default();
+        index.texture_sets.insert(
+            0x0020_0003,
+            TextureSet {
+                normal: Some(r"textures\first\nrm.dds".to_string()),
+                ..TextureSet::default()
+            },
+        );
+        index.texture_sets.insert(
+            0x0020_0004,
+            TextureSet {
+                normal: Some(r"textures\second\nrm.dds".to_string()),
+                ..TextureSet::default()
+            },
+        );
+        let mut placed = empty_placed_ref(0x0100_0001);
+        placed.texture_slot_swaps.push(TextureSlotSwap {
+            texture_set: 0x0020_0003,
+            slot_index: 1,
+        });
+        placed.texture_slot_swaps.push(TextureSlotSwap {
+            texture_set: 0x0020_0004,
+            slot_index: 1,
+        });
+
+        let ov = build_refr_texture_overlay(&placed, &index, None)
+            .expect("XTXR swaps must produce an overlay");
+        // Authoring-order: later XTXR wins.
+        assert_eq!(ov.normal.as_deref(), Some(r"textures\second\nrm.dds"));
+    }
+
+    #[test]
+    fn build_overlay_out_of_range_slot_index_is_silently_dropped() {
+        let mut index = EsmCellIndex::default();
+        index.texture_sets.insert(
+            0x0020_0005,
+            TextureSet {
+                normal: Some(r"textures\x\nrm.dds".to_string()),
+                ..TextureSet::default()
+            },
+        );
+        let mut placed = empty_placed_ref(0x0100_0001);
+        placed.texture_slot_swaps.push(TextureSlotSwap {
+            texture_set: 0x0020_0005,
+            slot_index: 99, // garbage
+        });
+
+        let ov = build_refr_texture_overlay(&placed, &index, None)
+            .expect("XTXR with bad slot still returns an overlay (empty slots)");
+        assert!(ov.diffuse.is_none());
+        assert!(ov.normal.is_none());
+        assert!(ov.specular.is_none());
+    }
+}
+
+#[cfg(test)]
+mod scol_expansion_tests {
+    //! Regression tests for #585 — SCOL placement expansion.
+    //! `expand_scol_placements` is the consumer-side followup to
+    //! closed #405: when an SCOL REFR's base form has no cached
+    //! `CM*.NIF` (mod-added SCOL, or a previsibine-bypass loadout
+    //! drops the combined file), the cell loader synthesises one
+    //! REFR per child placement with the composed transform.
+    use super::*;
+    use byroredux_plugin::esm::cell::{EsmCellIndex, StaticObject};
+    use byroredux_plugin::esm::records::{ScolPart, ScolPlacement, ScolRecord};
+
+    fn mk_stat(form_id: u32, editor_id: &str, model_path: &str) -> StaticObject {
+        StaticObject {
+            form_id,
+            editor_id: editor_id.to_string(),
+            model_path: model_path.to_string(),
+            light_data: None,
+            addon_data: None,
+            has_script: false,
+        }
+    }
+
+    /// Baseline: a non-SCOL base form ID falls through to the single-
+    /// entry hot path unchanged. The outer transform rides through as
+    /// the synthetic ref's transform.
+    #[test]
+    fn expand_non_scol_returns_single_entry_with_outer_transform() {
+        let index = EsmCellIndex::default();
+        let outer_pos = Vec3::new(100.0, 50.0, -25.0);
+        let outer_rot = Quat::IDENTITY;
+        let outer_scale = 2.0;
+
+        let synths = expand_scol_placements(0x0010_ABCD, outer_pos, outer_rot, outer_scale, &index);
+        assert_eq!(synths.len(), 1);
+        assert_eq!(synths[0].0, 0x0010_ABCD);
+        assert_eq!(synths[0].1, outer_pos);
+        assert_eq!(synths[0].2, outer_rot);
+        assert_eq!(synths[0].3, outer_scale);
+    }
+
+    /// SCOL base form with a cached `CM*.NIF` (non-empty
+    /// `statics[base].model_path`) does NOT expand — the vanilla
+    /// 2616/2617 path. The single-entry vec preserves the outer
+    /// transform so the existing cell_loader branch handles it.
+    #[test]
+    fn expand_scol_with_cached_cm_does_not_expand() {
+        let mut index = EsmCellIndex::default();
+        let scol_id = 0x0024_9DF2;
+        index.statics.insert(
+            scol_id,
+            mk_stat(scol_id, "TestScol", r"SCOL\Fallout4.esm\CM00249DF2.NIF"),
+        );
+        index.scols.insert(
+            scol_id,
+            ScolRecord {
+                form_id: scol_id,
+                editor_id: "TestScol".to_string(),
+                model_path: r"SCOL\Fallout4.esm\CM00249DF2.NIF".to_string(),
+                parts: vec![ScolPart {
+                    base_form_id: 0x0010_0001,
+                    placements: vec![ScolPlacement {
+                        pos: [10.0, 0.0, 0.0],
+                        rot: [0.0, 0.0, 0.0],
+                        scale: 1.0,
+                    }],
+                }],
+                filter: Vec::new(),
+            },
+        );
+        let synths = expand_scol_placements(
+            scol_id,
+            Vec3::new(500.0, 100.0, 0.0),
+            Quat::IDENTITY,
+            1.0,
+            &index,
+        );
+        // CM*.NIF is present → hot path: single entry, outer form ID.
+        assert_eq!(synths.len(), 1);
+        assert_eq!(synths[0].0, scol_id);
+    }
+
+    /// Mod-added SCOL: `statics[base].model_path` is empty (no MODL
+    /// shipped) but `scols[base]` carries the ONAM/DATA children. The
+    /// expander fans the REFR out into one synthetic child per
+    /// placement with composed transforms.
+    #[test]
+    fn expand_scol_without_cached_cm_fans_out_every_placement() {
+        let mut index = EsmCellIndex::default();
+        let scol_id = 0x0030_0001;
+        // Statics entry exists (EDID-only, no MODL) — still counts as
+        // "has no valid cached model" for expansion purposes.
+        index
+            .statics
+            .insert(scol_id, mk_stat(scol_id, "ModScol", ""));
+        // Two ONAM children, two placements each.
+        index.scols.insert(
+            scol_id,
+            ScolRecord {
+                form_id: scol_id,
+                editor_id: "ModScol".to_string(),
+                model_path: String::new(),
+                parts: vec![
+                    ScolPart {
+                        base_form_id: 0x0010_0001,
+                        placements: vec![
+                            ScolPlacement {
+                                pos: [100.0, 0.0, 0.0],
+                                rot: [0.0, 0.0, 0.0],
+                                scale: 1.0,
+                            },
+                            ScolPlacement {
+                                pos: [0.0, 100.0, 0.0],
+                                rot: [0.0, 0.0, 0.0],
+                                scale: 2.0,
+                            },
+                        ],
+                    },
+                    ScolPart {
+                        base_form_id: 0x0010_0002,
+                        placements: vec![ScolPlacement {
+                            pos: [0.0, 0.0, 50.0],
+                            rot: [0.0, 0.0, 0.0],
+                            scale: 1.0,
+                        }],
+                    },
+                ],
+                filter: Vec::new(),
+            },
+        );
+
+        let outer_pos = Vec3::new(1000.0, 2000.0, 3000.0);
+        let outer_rot = Quat::IDENTITY;
+        let outer_scale = 1.0;
+        let synths = expand_scol_placements(scol_id, outer_pos, outer_rot, outer_scale, &index);
+
+        assert_eq!(synths.len(), 3, "2 + 1 placements fan out");
+        // First child, first placement: local Y-up pos from [100,0,0]
+        // Z-up is [100, 0, -0] = [100, 0, 0], composed with outer.
+        assert_eq!(synths[0].0, 0x0010_0001);
+        assert_eq!(synths[0].1, Vec3::new(1100.0, 2000.0, 3000.0));
+        assert_eq!(synths[0].3, 1.0);
+        // First child, second placement: Z-up [0,100,0] → Y-up [0,0,-100].
+        assert_eq!(synths[1].0, 0x0010_0001);
+        assert_eq!(synths[1].1, Vec3::new(1000.0, 2000.0, 2900.0));
+        assert_eq!(synths[1].3, 2.0);
+        // Second child: Z-up [0,0,50] → Y-up [0,50,0].
+        assert_eq!(synths[2].0, 0x0010_0002);
+        assert_eq!(synths[2].1, Vec3::new(1000.0, 2050.0, 3000.0));
+    }
+
+    /// Mod-added SCOL not present in `statics` at all (neither EDID
+    /// nor MODL survived parse). `scols` has the full record; expand
+    /// still fans out. Guards against the expander assuming a
+    /// `statics` entry exists.
+    #[test]
+    fn expand_scol_missing_from_statics_still_expands_via_scols_map() {
+        let mut index = EsmCellIndex::default();
+        let scol_id = 0x0040_0001;
+        index.scols.insert(
+            scol_id,
+            ScolRecord {
+                form_id: scol_id,
+                editor_id: String::new(),
+                model_path: String::new(),
+                parts: vec![ScolPart {
+                    base_form_id: 0x0010_0001,
+                    placements: vec![ScolPlacement {
+                        pos: [0.0, 0.0, 0.0],
+                        rot: [0.0, 0.0, 0.0],
+                        scale: 1.0,
+                    }],
+                }],
+                filter: Vec::new(),
+            },
+        );
+        let synths = expand_scol_placements(
+            scol_id,
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            1.0,
+            &index,
+        );
+        assert_eq!(synths.len(), 1);
+        assert_eq!(synths[0].0, 0x0010_0001);
+    }
+
+    /// Outer REFR's scale propagates into both the translation
+    /// composition and the synthetic scale (synth = outer × local).
+    #[test]
+    fn expand_scol_propagates_outer_scale_into_translation_and_scale() {
+        let mut index = EsmCellIndex::default();
+        let scol_id = 0x0050_0001;
+        index
+            .statics
+            .insert(scol_id, mk_stat(scol_id, "S", ""));
+        index.scols.insert(
+            scol_id,
+            ScolRecord {
+                form_id: scol_id,
+                editor_id: "S".to_string(),
+                model_path: String::new(),
+                parts: vec![ScolPart {
+                    base_form_id: 0x0010_0001,
+                    placements: vec![ScolPlacement {
+                        pos: [100.0, 0.0, 0.0],
+                        rot: [0.0, 0.0, 0.0],
+                        scale: 3.0,
+                    }],
+                }],
+                filter: Vec::new(),
+            },
+        );
+        let outer_scale = 2.0;
+        let synths = expand_scol_placements(
+            scol_id,
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            outer_scale,
+            &index,
+        );
+        assert_eq!(synths.len(), 1);
+        // local_pos.x = 100, composed x = outer_scale * 100 = 200.
+        assert_eq!(synths[0].1, Vec3::new(200.0, 0.0, 0.0));
+        // scale = outer_scale * local_scale = 2 × 3 = 6.
+        assert_eq!(synths[0].3, 6.0);
     }
 }
 

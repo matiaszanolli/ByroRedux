@@ -202,6 +202,49 @@ pub struct PlacedRef {
     /// `Some`, overrides the base LIGH record's radius for per-ref
     /// light tuning (bulb placement, lantern fine-tune).
     pub radius_override: Option<f32>,
+    /// Alternate texture set from the REFR's `XATO` sub-record — a
+    /// TXST FormID that overrides the base mesh's NIF-authored textures
+    /// at this placement. Common on FO4 weapons / armor / signage that
+    /// share one model but ship multiple TXST variants. The cell loader
+    /// resolves this against `EsmCellIndex.texture_sets` and overlays
+    /// the 8 TX00–TX07 slots (plus MNAM → BGSM chain) onto the spawned
+    /// mesh. Pre-#584 37 % of vanilla FO4 TXSTs (140 / 382) were parsed
+    /// but never consumed because the REFR parser dropped this field.
+    /// See audit FO4-DIM6-02.
+    pub alt_texture_ref: Option<u32>,
+    /// Land-scoped TXST override from the REFR's `XTNM` sub-record —
+    /// a TXST FormID that overrides an LTEX default on landscape
+    /// references. Wire layout is identical to XATO (single u32 FormID)
+    /// but targets LAND records, not models. Parsed for completeness;
+    /// the LAND-override consumer path is separate from the mesh path
+    /// wired for XATO in this issue. See audit FO4-DIM6-02.
+    pub land_texture_ref: Option<u32>,
+    /// Per-slot texture swaps from the REFR's `XTXR` sub-records. Each
+    /// pair is `(txst_form_id, slot_index)` where `slot_index` picks
+    /// one of TX00..TX07 — letting a REFR override a single slot of
+    /// the base mesh's texture set without replacing the whole TXST.
+    /// Multiple XTXR sub-records allowed per REFR; the cell loader
+    /// applies them in authoring order (later wins for the same slot).
+    pub texture_slot_swaps: Vec<TextureSlotSwap>,
+    /// LIGH FormID attached via the REFR's `XEMI` sub-record — a
+    /// per-placement emissive light that the renderer should spawn on
+    /// top of (or instead of) the base LIGH. Parsed for completeness;
+    /// the consumer wiring (per-REFR emissive light spawn) is follow-up
+    /// work. See audit FO4-DIM6-02.
+    pub emissive_light_ref: Option<u32>,
+}
+
+/// Per-slot texture swap from one `XTXR` sub-record — a TXST form ID
+/// paired with the index of the slot (0..=7) it replaces on the host
+/// mesh's texture set. Multiple XTXR sub-records allowed per REFR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextureSlotSwap {
+    /// TXST FormID supplying the replacement texture.
+    pub texture_set: u32,
+    /// Slot index to replace — 0 = TX00 (diffuse), 1 = TX01 (normal),
+    /// … 7 = TX07 (specular). Values outside 0..=7 are clamped away at
+    /// consumer side so a malformed XTXR can't crash the loader.
+    pub slot_index: u32,
 }
 
 /// Teleport destination payload for `XTEL` — a door ref's target.
@@ -877,6 +920,10 @@ fn parse_refr_group(
             let mut rooms: Vec<u32> = Vec::new();
             let mut portals: Vec<PortalLink> = Vec::new();
             let mut radius_override: Option<f32> = None;
+            let mut alt_texture_ref: Option<u32> = None;
+            let mut land_texture_ref: Option<u32> = None;
+            let mut texture_slot_swaps: Vec<TextureSlotSwap> = Vec::new();
+            let mut emissive_light_ref: Option<u32> = None;
 
             // Helpers to decode LE values from sub-record slices. Kept
             // local so the REFR match arm doesn't sprout u32 / f32
@@ -1011,6 +1058,46 @@ fn parse_refr_group(
                     b"XRDS" if sub.data.len() >= 4 => {
                         radius_override = Some(read_f32(&sub.data, 0));
                     }
+                    // XATO — alternate TXST form ID. 4 bytes. When this
+                    // REFR places a base mesh whose textures should be
+                    // swapped for another TXST (the 140 MNAM-only vanilla
+                    // FO4 TXSTs land here), the cell loader resolves
+                    // this against `EsmCellIndex.texture_sets` and
+                    // overlays the 8 slot paths + MNAM onto the spawned
+                    // mesh. See audit FO4-DIM6-02 / #584.
+                    b"XATO" if sub.data.len() >= 4 => {
+                        alt_texture_ref = Some(read_u32(&sub.data, 0));
+                    }
+                    // XTNM — landscape TXST override form ID. Same
+                    // 4-byte layout as XATO but scopes the override to
+                    // LAND references (LTEX default swap). Kept for
+                    // completeness; the LAND-side consumer path is
+                    // separate from the mesh path wired for XATO. #584.
+                    b"XTNM" if sub.data.len() >= 4 => {
+                        land_texture_ref = Some(read_u32(&sub.data, 0));
+                    }
+                    // XTXR — per-slot texture swap. 8 bytes: TXST
+                    // FormID(u32) + slot_index(u32). Lets a REFR
+                    // override a single slot of the host mesh's texture
+                    // set without replacing the whole TXST. Multiple
+                    // XTXR sub-records allowed per REFR; we collect
+                    // them in authoring order. #584.
+                    b"XTXR" if sub.data.len() >= 8 => {
+                        let texture_set = read_u32(&sub.data, 0);
+                        let slot_index = read_u32(&sub.data, 4);
+                        texture_slot_swaps.push(TextureSlotSwap {
+                            texture_set,
+                            slot_index,
+                        });
+                    }
+                    // XEMI — per-REFR emissive LIGH FormID. 4 bytes.
+                    // Used by FO4 signage / floodlights to attach a
+                    // placement-specific light to the base mesh. Parsed
+                    // for completeness; consumer wiring (per-REFR
+                    // emissive light spawn) is follow-up work. #584.
+                    b"XEMI" if sub.data.len() >= 4 => {
+                        emissive_light_ref = Some(read_u32(&sub.data, 0));
+                    }
                     _ => {}
                 }
             }
@@ -1028,6 +1115,10 @@ fn parse_refr_group(
                     rooms,
                     portals,
                     radius_override,
+                    alt_texture_ref,
+                    land_texture_ref,
+                    texture_slot_swaps,
+                    emissive_light_ref,
                 });
             }
         } else if &header.record_type == b"LAND" {
@@ -2498,6 +2589,59 @@ mod tests {
         assert!(r.rooms.is_empty());
         assert!(r.portals.is_empty());
         assert!(r.radius_override.is_none());
+        assert!(r.alt_texture_ref.is_none());
+        assert!(r.land_texture_ref.is_none());
+        assert!(r.texture_slot_swaps.is_empty());
+        assert!(r.emissive_light_ref.is_none());
+    }
+
+    /// Regression for #584 — FO4 REFR texture override sub-records
+    /// (XATO / XTNM / XTXR / XEMI) must populate `PlacedRef` so the
+    /// cell loader's Stage-2 overlay can resolve against
+    /// `EsmCellIndex.texture_sets`. Pre-fix 37 % of vanilla FO4 TXSTs
+    /// (MNAM-only) were parsed but silently dropped on REFR spawn
+    /// because these sub-records weren't parsed at all.
+    #[test]
+    fn parse_refr_extracts_fo4_texture_override_subrecords() {
+        let xato = 0x0010_1234u32.to_le_bytes();
+        let xtnm = 0x0020_5678u32.to_le_bytes();
+        let mut xtxr_a = Vec::new();
+        xtxr_a.extend_from_slice(&0x0030_0001u32.to_le_bytes()); // TXST
+        xtxr_a.extend_from_slice(&1u32.to_le_bytes()); // slot 1 (normal)
+        let mut xtxr_b = Vec::new();
+        xtxr_b.extend_from_slice(&0x0030_0002u32.to_le_bytes()); // TXST
+        xtxr_b.extend_from_slice(&2u32.to_le_bytes()); // slot 2 (glow)
+        let xemi = 0x0040_9999u32.to_le_bytes();
+
+        let record = build_refr_with_subs(
+            0xBEEF,
+            &[
+                (b"XATO", &xato),
+                (b"XTNM", &xtnm),
+                (b"XTXR", &xtxr_a),
+                (b"XTXR", &xtxr_b),
+                (b"XEMI", &xemi),
+            ],
+        );
+        let r = parse_one_refr(&record);
+        assert_eq!(r.alt_texture_ref, Some(0x0010_1234));
+        assert_eq!(r.land_texture_ref, Some(0x0020_5678));
+        assert_eq!(r.texture_slot_swaps.len(), 2);
+        assert_eq!(
+            r.texture_slot_swaps[0],
+            TextureSlotSwap {
+                texture_set: 0x0030_0001,
+                slot_index: 1,
+            }
+        );
+        assert_eq!(
+            r.texture_slot_swaps[1],
+            TextureSlotSwap {
+                texture_set: 0x0030_0002,
+                slot_index: 2,
+            }
+        );
+        assert_eq!(r.emissive_light_ref, Some(0x0040_9999));
     }
 
     /// Regression: #396 (OBL-D3-H2) — Oblivion ACRE (placed-creature
