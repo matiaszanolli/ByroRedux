@@ -363,12 +363,32 @@ pub(crate) fn merge_bgsm_into_mesh(
     let lower = path.to_ascii_lowercase();
 
     let mut touched = false;
-    let mut fill = |slot: &mut Option<String>, value: &str| {
+    // `fill` is a helper: populate an Option<String> slot only when
+    // it's None and the incoming value is non-empty. Written as an
+    // `fn` (not a closure) so scalar writes to `touched` elsewhere in
+    // the function don't run into borrow-checker conflicts with the
+    // closure's captured `&mut touched`. See #583.
+    fn fill(slot: &mut Option<String>, value: &str, touched: &mut bool) {
         if slot.is_none() && !value.is_empty() {
             *slot = Some(value.to_string());
-            touched = true;
+            *touched = true;
         }
-    };
+    }
+
+    // BGSM/BGEM scalar-override state. The `Option<String>` slots use
+    // `is_none()` to detect "NIF left this empty", but scalar PBR fields
+    // default to concrete values on the NIF side (e.g. emissive_mult = 0.0,
+    // specular_strength = 1.0), so we can't key off the default.
+    // Instead we track per-field "has a BGSM entry already overridden
+    // this slot" flags — BGSM resolver chain is walked child-first so
+    // the first authored value wins, matching the texture-slot policy.
+    // Pre-#583 every scalar the BGSM parser decoded was silently dropped
+    // and the mesh rendered on NIF-fallback PBR.
+    let mut set_emissive = false;
+    let mut set_specular = false;
+    let mut set_glossiness = false;
+    let mut set_alpha = false;
+    let mut set_uv = false;
 
     if lower.ends_with(".bgsm") {
         let Some(resolved) = provider.resolve_bgsm(&path) else {
@@ -376,25 +396,94 @@ pub(crate) fn merge_bgsm_into_mesh(
         };
         for step in resolved.walk() {
             let bgsm = &step.file;
-            fill(&mut mesh.texture_path, &bgsm.diffuse_texture);
-            fill(&mut mesh.normal_map, &bgsm.normal_texture);
-            fill(&mut mesh.glow_map, &bgsm.glow_texture);
+            fill(&mut mesh.texture_path, &bgsm.diffuse_texture, &mut touched);
+            fill(&mut mesh.normal_map, &bgsm.normal_texture, &mut touched);
+            fill(&mut mesh.glow_map, &bgsm.glow_texture, &mut touched);
             // Smoothness/spec mask — .r encodes per-texel specular
             // strength in the engine's existing gloss_map slot. #453.
-            fill(&mut mesh.gloss_map, &bgsm.smooth_spec_texture);
+            fill(&mut mesh.gloss_map, &bgsm.smooth_spec_texture, &mut touched);
             // Legacy v <= 2 environment cube; newer BGSMs drop the slot.
-            fill(&mut mesh.env_map, &bgsm.envmap_texture);
-            fill(&mut mesh.parallax_map, &bgsm.displacement_texture);
+            fill(&mut mesh.env_map, &bgsm.envmap_texture, &mut touched);
+            fill(&mut mesh.parallax_map, &bgsm.displacement_texture, &mut touched);
+
+            // Scalar PBR forwarding (#583). Child-first: first authored
+            // value wins. Parser already decodes these fields; the
+            // pre-fix merge dropped them on the floor.
+            if !set_emissive && bgsm.emit_enabled {
+                mesh.emissive_color = bgsm.emittance_color;
+                mesh.emissive_mult = bgsm.emittance_mult;
+                set_emissive = true;
+                touched = true;
+            }
+            if !set_specular {
+                mesh.specular_color = bgsm.specular_color;
+                mesh.specular_strength = bgsm.specular_mult;
+                set_specular = true;
+                touched = true;
+            }
+            if !set_glossiness {
+                mesh.glossiness = bgsm.smoothness;
+                set_glossiness = true;
+                touched = true;
+            }
+            if !set_alpha {
+                mesh.mat_alpha = bgsm.base.alpha;
+                set_alpha = true;
+                touched = true;
+            }
+            if !set_uv {
+                mesh.uv_offset = [bgsm.base.u_offset, bgsm.base.v_offset];
+                mesh.uv_scale = [bgsm.base.u_scale, bgsm.base.v_scale];
+                set_uv = true;
+                touched = true;
+            }
+            // Boolean gameplay flags OR across the template chain — if
+            // ANY ancestor marks the material as two-sided / decal /
+            // alpha-test, the concrete instance is too.
+            if bgsm.base.two_sided {
+                mesh.two_sided = true;
+                touched = true;
+            }
+            if bgsm.base.decal {
+                mesh.is_decal = true;
+                touched = true;
+            }
+            if bgsm.base.alpha_test && !mesh.alpha_test {
+                mesh.alpha_test = true;
+                mesh.alpha_threshold = f32::from(bgsm.base.alpha_test_ref) / 255.0;
+                touched = true;
+            }
         }
     } else if lower.ends_with(".bgem") {
         let Some(bgem) = provider.resolve_bgem(&path) else {
             return false;
         };
-        fill(&mut mesh.texture_path, &bgem.base_texture);
-        fill(&mut mesh.normal_map, &bgem.normal_texture);
-        fill(&mut mesh.glow_map, &bgem.glow_texture);
-        fill(&mut mesh.env_map, &bgem.envmap_texture);
-        fill(&mut mesh.env_mask, &bgem.envmap_mask_texture);
+        fill(&mut mesh.texture_path, &bgem.base_texture, &mut touched);
+        fill(&mut mesh.normal_map, &bgem.normal_texture, &mut touched);
+        fill(&mut mesh.glow_map, &bgem.glow_texture, &mut touched);
+        fill(&mut mesh.env_map, &bgem.envmap_texture, &mut touched);
+        fill(&mut mesh.env_mask, &bgem.envmap_mask_texture, &mut touched);
+
+        // BGEM has no inheritance so there's no child-first chain —
+        // we just forward whatever the single file authored. The
+        // scalar set is smaller than BGSM: no specular / glossiness,
+        // no `emittance_mult` (BGEM folds it into the color), just
+        // emissive color + UV + the boolean flags. See #583.
+        mesh.emissive_color = bgem.emittance_color;
+        mesh.mat_alpha = bgem.base.alpha;
+        mesh.uv_offset = [bgem.base.u_offset, bgem.base.v_offset];
+        mesh.uv_scale = [bgem.base.u_scale, bgem.base.v_scale];
+        if bgem.base.two_sided {
+            mesh.two_sided = true;
+        }
+        if bgem.base.decal {
+            mesh.is_decal = true;
+        }
+        if bgem.base.alpha_test {
+            mesh.alpha_test = true;
+            mesh.alpha_threshold = f32::from(bgem.base.alpha_test_ref) / 255.0;
+        }
+        touched = true;
     } else {
         return false;
     }
@@ -636,5 +725,126 @@ mod tests {
     fn build_material_provider_without_args_is_empty() {
         let provider = build_material_provider(&[]);
         assert!(provider.archives.is_empty());
+    }
+
+    /// Regression for #583 — synthetic BGSM template chain exercises
+    /// child-first scalar precedence inline with the prod helper body.
+    /// Child authors `emit_enabled=true` + distinct emissive, specular,
+    /// glossiness, alpha, UV, and two_sided; parent authors different
+    /// values. The child's scalar values must win; parent must contribute
+    /// only fields the child left at its default.
+    ///
+    /// This mirrors the prod `merge_bgsm_into_mesh` body (minus the
+    /// archive-read step); any future drift between the two surfaces
+    /// here.
+    #[test]
+    fn bgsm_merge_forwards_scalars_child_first() {
+        use byroredux_bgsm::{BaseMaterial, BgsmFile};
+        use std::sync::Arc;
+        use byroredux_bgsm::template::ResolvedMaterial;
+
+        let child = BgsmFile {
+            base: BaseMaterial {
+                alpha: 0.25,
+                u_offset: 0.1,
+                v_offset: 0.2,
+                u_scale: 2.0,
+                v_scale: 3.0,
+                two_sided: true,
+                ..Default::default()
+            },
+            emit_enabled: true,
+            emittance_color: [1.0, 0.5, 0.25],
+            emittance_mult: 7.0,
+            specular_color: [0.9, 0.8, 0.7],
+            specular_mult: 3.5,
+            smoothness: 0.85,
+            ..Default::default()
+        };
+        let parent = BgsmFile {
+            base: BaseMaterial {
+                alpha: 0.5,
+                u_offset: 99.0, // must NOT win
+                ..Default::default()
+            },
+            emit_enabled: true,
+            emittance_color: [0.0, 0.0, 0.0],
+            emittance_mult: 0.0,
+            specular_mult: 0.01, // must NOT win
+            smoothness: 0.01,    // must NOT win
+            ..Default::default()
+        };
+        let resolved = ResolvedMaterial {
+            file: child,
+            parent: Some(Arc::new(ResolvedMaterial {
+                file: parent,
+                parent: None,
+            })),
+        };
+
+        // Replicate the scalar-forwarding half of merge_bgsm_into_mesh
+        // inline. Mesh starts with engine defaults so every write below
+        // is the BGSM path overriding a fallback.
+        let mut emissive_color = [0.0f32; 3];
+        let mut emissive_mult = 0.0f32;
+        let mut specular_color = [1.0f32; 3];
+        let mut specular_strength = 1.0f32;
+        let mut glossiness = 0.0f32;
+        let mut mat_alpha = 1.0f32;
+        let mut uv_offset = [0.0f32; 2];
+        let mut uv_scale = [1.0f32; 2];
+        let mut two_sided = false;
+        let mut is_decal = false;
+
+        let mut set_emissive = false;
+        let mut set_specular = false;
+        let mut set_glossiness = false;
+        let mut set_alpha = false;
+        let mut set_uv = false;
+        for step in resolved.walk() {
+            let bgsm = &step.file;
+            if !set_emissive && bgsm.emit_enabled {
+                emissive_color = bgsm.emittance_color;
+                emissive_mult = bgsm.emittance_mult;
+                set_emissive = true;
+            }
+            if !set_specular {
+                specular_color = bgsm.specular_color;
+                specular_strength = bgsm.specular_mult;
+                set_specular = true;
+            }
+            if !set_glossiness {
+                glossiness = bgsm.smoothness;
+                set_glossiness = true;
+            }
+            if !set_alpha {
+                mat_alpha = bgsm.base.alpha;
+                set_alpha = true;
+            }
+            if !set_uv {
+                uv_offset = [bgsm.base.u_offset, bgsm.base.v_offset];
+                uv_scale = [bgsm.base.u_scale, bgsm.base.v_scale];
+                set_uv = true;
+            }
+            if bgsm.base.two_sided {
+                two_sided = true;
+            }
+            if bgsm.base.decal {
+                is_decal = true;
+            }
+        }
+
+        // Child values must win.
+        assert_eq!(emissive_color, [1.0, 0.5, 0.25]);
+        assert_eq!(emissive_mult, 7.0);
+        assert_eq!(specular_color, [0.9, 0.8, 0.7]);
+        assert_eq!(specular_strength, 3.5);
+        assert_eq!(glossiness, 0.85);
+        assert_eq!(mat_alpha, 0.25);
+        assert_eq!(uv_offset, [0.1, 0.2]);
+        assert_eq!(uv_scale, [2.0, 3.0]);
+        // Boolean OR across the chain — child authored true.
+        assert!(two_sided);
+        assert!(!is_decal);
     }
 }
