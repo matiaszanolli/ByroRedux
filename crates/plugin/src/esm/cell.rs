@@ -348,6 +348,21 @@ pub struct LightData {
     pub radius: f32,
     pub color: [f32; 3],
     pub flags: u32,
+    /// FO4 `XPWR` powered-state FormID — references the circuit node
+    /// this light connects to (Sanctuary fuse boxes, Vault 111
+    /// breaker-panel switch). `None` on every non-FO4 record and on
+    /// FO4 records that don't ship XPWR.
+    ///
+    /// Pre-work capture only (#602 / FO4-DIM6-07): the settlement-
+    /// circuit ECS system that consumes this doesn't exist yet, so
+    /// the field rides through until that lands. Without capture the
+    /// FormID would be silently dropped at cell-load time and every
+    /// wired light would render always-on. Conservative 4-byte read
+    /// treats the sub-record payload as a bare FormID — the UESP FO4
+    /// reference shows XPWR may carry an extra u32 trailer on some
+    /// records; that trailer isn't needed for circuit lookup and is
+    /// captured as `None` rather than over-reading.
+    pub xpwr_form_id: Option<u32>,
 }
 
 /// Addon-node record data extracted from ADDN sub-records.
@@ -1507,6 +1522,10 @@ fn parse_modl_group(
             let mut addon_index: Option<i32> = None;
             let mut addon_dnam: Option<(u16, u16)> = None;
             let mut has_script = false;
+            // FO4 LIGH power-circuit sub-record. Captured alongside
+            // LightData so the future settlement-circuit ECS system
+            // can resolve wired fixtures. See #602.
+            let mut xpwr_form_id: Option<u32> = None;
 
             for sub in &subs {
                 match &sub.sub_type {
@@ -1559,7 +1578,23 @@ fn parse_modl_group(
                             radius,
                             color: [r, g, b],
                             flags,
+                            // xpwr_form_id populated by the separate
+                            // XPWR sub-record arm below, if present.
+                            xpwr_form_id: None,
                         });
+                    }
+                    // FO4 power-circuit FormID. Pre-work capture for
+                    // #602 — no consumer today, but we preserve the
+                    // raw reference so the future settlement-circuit
+                    // system can resolve wired lights. See audit
+                    // FO4-DIM6-07.
+                    b"XPWR" if is_ligh && sub.data.len() >= 4 => {
+                        xpwr_form_id = Some(u32::from_le_bytes([
+                            sub.data[0],
+                            sub.data[1],
+                            sub.data[2],
+                            sub.data[3],
+                        ]));
                     }
                     b"DATA" if is_addn && sub.data.len() >= 4 => {
                         // ADDN DATA: signed 4-byte addon index. Negative
@@ -1580,6 +1615,14 @@ fn parse_modl_group(
                     }
                     _ => {}
                 }
+            }
+
+            // Merge XPWR into LightData post-loop — sub-record authoring
+            // order isn't fixed so DATA and XPWR can appear in either
+            // sequence. The inner arm stores into a local; we fold it
+            // onto the finalised `LightData` here. See #602.
+            if let (Some(ref mut ld), Some(form)) = (&mut light_data, xpwr_form_id) {
+                ld.xpwr_form_id = Some(form);
             }
 
             let addon_data = if is_addn && (addon_index.is_some() || addon_dnam.is_some()) {
@@ -2027,6 +2070,125 @@ mod tests {
         assert!((b - 0x66 as f32 / 255.0).abs() < 1e-4, "B mismatch: {b}");
         assert!(g > r && g > b, "green-authored light must peak on G");
         assert_eq!(ld.flags, 0x400);
+        // Pre-#602 XPWR wasn't captured — the baseline record here has
+        // no XPWR sub-record so the field stays `None`. See
+        // `parse_ligh_captures_fo4_xpwr_power_circuit_ref` below for
+        // the populated path.
+        assert!(ld.xpwr_form_id.is_none());
+    }
+
+    /// Regression for #602 (FO4-DIM6-07) — FO4 LIGH records that ship
+    /// `XPWR` (power-circuit FormID) must land on
+    /// `LightData.xpwr_form_id` so a future settlement-circuit ECS
+    /// system can resolve wired fixtures. Pre-fix the sub-record was
+    /// silently dropped and every wired light rendered always-on.
+    /// Consumer wiring is follow-up — this test asserts the capture
+    /// side only.
+    #[test]
+    fn parse_ligh_captures_fo4_xpwr_power_circuit_ref() {
+        // Build a LIGH record with EDID + DATA + XPWR. Sub-records may
+        // appear in any authoring order; we put XPWR after DATA here
+        // and rely on the post-loop merge step to fold it in.
+        let mut sub_data = Vec::new();
+        // EDID
+        let edid = b"Fo4WiredLight\0";
+        sub_data.extend_from_slice(b"EDID");
+        sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(edid);
+        // DATA (16 bytes: time + radius + color + flags)
+        sub_data.extend_from_slice(b"DATA");
+        sub_data.extend_from_slice(&16u16.to_le_bytes());
+        sub_data.extend_from_slice(&u32::MAX.to_le_bytes()); // time = -1
+        sub_data.extend_from_slice(&256u32.to_le_bytes()); // radius
+        sub_data.extend_from_slice(&[0xFF, 0xC0, 0x80, 0x00]); // warm RGB + pad
+        sub_data.extend_from_slice(&0u32.to_le_bytes()); // flags
+        // XPWR — 4-byte FormID.
+        sub_data.extend_from_slice(b"XPWR");
+        sub_data.extend_from_slice(&4u16.to_le_bytes());
+        sub_data.extend_from_slice(&0x0011_AABBu32.to_le_bytes());
+
+        let mut ligh = Vec::new();
+        ligh.extend_from_slice(b"LIGH");
+        ligh.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        ligh.extend_from_slice(&0u32.to_le_bytes()); // flags
+        ligh.extend_from_slice(&0xBEEFu32.to_le_bytes()); // form_id
+        ligh.extend_from_slice(&[0u8; 8]); // padding
+        ligh.extend_from_slice(&sub_data);
+
+        let total_size = 24 + ligh.len();
+        let mut group = Vec::new();
+        group.extend_from_slice(b"GRUP");
+        group.extend_from_slice(&(total_size as u32).to_le_bytes());
+        group.extend_from_slice(b"LIGH");
+        group.extend_from_slice(&0u32.to_le_bytes());
+        group.extend_from_slice(&[0u8; 8]);
+        group.extend_from_slice(&ligh);
+
+        let mut reader = EsmReader::new(&group);
+        let gh = reader.read_group_header().unwrap();
+        let end = reader.group_content_end(&gh);
+        let mut statics = HashMap::new();
+        parse_modl_group(&mut reader, end, &mut statics).unwrap();
+
+        let s = statics.get(&0xBEEF).expect("LIGH entry present");
+        let ld = s.light_data.as_ref().expect("light_data populated");
+        assert_eq!(
+            ld.xpwr_form_id,
+            Some(0x0011_AABB),
+            "XPWR power-circuit FormID must be captured for #602 pre-work"
+        );
+    }
+
+    /// Sibling: XPWR that appears BEFORE the DATA sub-record still
+    /// folds onto the final LightData. Guards the post-loop merge
+    /// against authoring-order assumptions.
+    #[test]
+    fn parse_ligh_xpwr_before_data_still_merges_into_light_data() {
+        let mut sub_data = Vec::new();
+        let edid = b"Fo4WiredLightInverse\0";
+        sub_data.extend_from_slice(b"EDID");
+        sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(edid);
+        // XPWR first.
+        sub_data.extend_from_slice(b"XPWR");
+        sub_data.extend_from_slice(&4u16.to_le_bytes());
+        sub_data.extend_from_slice(&0x0022_1234u32.to_le_bytes());
+        // DATA second.
+        sub_data.extend_from_slice(b"DATA");
+        sub_data.extend_from_slice(&16u16.to_le_bytes());
+        sub_data.extend_from_slice(&u32::MAX.to_le_bytes());
+        sub_data.extend_from_slice(&128u32.to_le_bytes());
+        sub_data.extend_from_slice(&[0x80, 0xC0, 0xFF, 0x00]);
+        sub_data.extend_from_slice(&0u32.to_le_bytes());
+
+        let mut ligh = Vec::new();
+        ligh.extend_from_slice(b"LIGH");
+        ligh.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        ligh.extend_from_slice(&0u32.to_le_bytes());
+        ligh.extend_from_slice(&0xCAFEu32.to_le_bytes());
+        ligh.extend_from_slice(&[0u8; 8]);
+        ligh.extend_from_slice(&sub_data);
+
+        let total_size = 24 + ligh.len();
+        let mut group = Vec::new();
+        group.extend_from_slice(b"GRUP");
+        group.extend_from_slice(&(total_size as u32).to_le_bytes());
+        group.extend_from_slice(b"LIGH");
+        group.extend_from_slice(&0u32.to_le_bytes());
+        group.extend_from_slice(&[0u8; 8]);
+        group.extend_from_slice(&ligh);
+
+        let mut reader = EsmReader::new(&group);
+        let gh = reader.read_group_header().unwrap();
+        let end = reader.group_content_end(&gh);
+        let mut statics = HashMap::new();
+        parse_modl_group(&mut reader, end, &mut statics).unwrap();
+
+        let ld = statics
+            .get(&0xCAFE)
+            .and_then(|s| s.light_data.as_ref())
+            .expect("light_data populated");
+        assert_eq!(ld.xpwr_form_id, Some(0x0022_1234));
     }
 
     #[test]
