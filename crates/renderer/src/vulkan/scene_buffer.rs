@@ -27,7 +27,7 @@ pub const MAX_TOTAL_BONES: usize = 4096;
 /// Slot 0 of the bone palette is always the identity matrix.
 pub const IDENTITY_BONE_SLOT: u32 = 0;
 
-/// Maximum instances per frame. 8192 × 160 B = 1.28 MB/frame — trivial.
+/// Maximum instances per frame. 8192 × 320 B = 2.56 MB/frame — trivial.
 /// Covers large exterior cells with multiple loaded cells (~5000+ references).
 pub const MAX_INSTANCES: usize = 8192;
 
@@ -108,7 +108,12 @@ pub struct GpuTerrainTile {
 /// u32 slot name — when you add a field here, update the expected suffix
 /// in the assertion and rename the sentinel to match the new last field.
 ///
-/// Layout: 192 bytes per instance, 16-byte aligned (12×16).
+/// Layout: 320 bytes per instance, 16-byte aligned (20×16). Grew from
+/// 192 → 224 (#492, UV + material_alpha) → 320 (#562, Skyrim+
+/// BSLightingShaderProperty variant payloads — skin tint, hair tint,
+/// eye envmap centers, parallax-occ / multi-layer parallax, sparkle).
+/// The `size_of::<GpuInstance>() == 320` test below asserts the
+/// invariant; shader-side `GpuInstance` must match.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuInstance {
@@ -1589,7 +1594,7 @@ mod gpu_instance_layout_tests {
                 "{name}: GpuInstance still declares the reclaimed \
                  `_pad_extra_textures` slot — rename to \
                  `parallaxMapIndex` so the byte layout matches the \
-                 192-byte Rust struct."
+                 320-byte Rust struct."
             );
         }
     }
