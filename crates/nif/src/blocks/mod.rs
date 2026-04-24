@@ -48,8 +48,8 @@ use interpolator::{
     NiBSplineBasisData, NiBSplineCompTransformInterpolator, NiBSplineData, NiBlendBoolInterpolator,
     NiBlendFloatInterpolator, NiBlendPoint3Interpolator, NiBlendTransformInterpolator, NiBoolData,
     NiBoolInterpolator, NiColorData, NiColorInterpolator, NiFloatData, NiFloatInterpolator,
-    NiPathInterpolator, NiPoint3Interpolator, NiPosData, NiTextKeyExtraData, NiTransformData,
-    NiTransformInterpolator, NiUVData,
+    NiLookAtInterpolator, NiPathInterpolator, NiPoint3Interpolator, NiPosData, NiTextKeyExtraData,
+    NiTransformData, NiTransformInterpolator, NiUVData,
 };
 use multibound::{BsMultiBound, BsMultiBoundAABB, BsMultiBoundOBB, BsMultiBoundSphere};
 use node::{BsOrderedNode, BsValueNode, NiNode};
@@ -589,6 +589,12 @@ pub fn parse_block(
         // block_sizes-less Oblivion loader doesn't truncate the
         // rest of the NIF. See #394 / audit OBL-D5-H2.
         "NiPathInterpolator" => Ok(Box::new(NiPathInterpolator::parse(stream)?)),
+        // NiLookAtInterpolator — replaces the deprecated NiLookAtController
+        // from 10.2 onwards; drives a plain NiTransformController to keep
+        // an axis tracking a target NiNode. 18 instances per FNV mesh
+        // sweep landed in NiUnknown pre-fix — surfaced by the R3 per-
+        // block histogram.
+        "NiLookAtInterpolator" => Ok(Box::new(NiLookAtInterpolator::parse(stream)?)),
         // NiFlipController — flipbook / texture-cycle animation
         // (water ripples, fire flicker, caustics). Oblivion-era
         // content via the #394 sweep. See audit OBL-D5-H2.
@@ -1368,6 +1374,80 @@ mod dispatch_tests {
         assert_eq!(interp.follow_axis, 1);
         assert_eq!(interp.path_data_ref.index(), Some(11));
         assert_eq!(interp.percent_data_ref.index(), Some(22));
+        assert_eq!(stream.position() as usize, bytes.len());
+    }
+
+    /// `NiLookAtInterpolator` — surfaced by the R3 histogram (18
+    /// instances per FNV mesh sweep). Layout for our targets (NIF
+    /// version <= 20.4.0.12 includes the `Transform` field):
+    /// 2 (flags) + 4 (look_at) + 4 (look_at_name string ref) +
+    /// 32 (NiQuatTransform) + 4×3 (TRS interp refs) = 54 B.
+    ///
+    /// Uses a v20.2.0.7 FNV-shaped header so the `look_at_name` field
+    /// goes through the string-table path (`>= 0x14010001`) — the
+    /// failing real-world content is FNV-era and uses table indices,
+    /// not the legacy inline length-prefixed strings.
+    #[test]
+    fn ni_look_at_interpolator_consumes_full_54_bytes() {
+        let header = NifHeader {
+            version: NifVersion(0x14020007),
+            little_endian: true,
+            user_version: 11,
+            user_version_2: 34,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: vec![Arc::from("SkyProp")],
+            max_string_length: 8,
+            num_groups: 0,
+        };
+        let mut bytes = Vec::new();
+        // Flags: LOOK_FLIP | LOOK_Y_AXIS = 0x0003.
+        bytes.extend_from_slice(&0x0003u16.to_le_bytes());
+        // Look At Ptr → NiNode index 7.
+        bytes.extend_from_slice(&7i32.to_le_bytes());
+        // Look At Name → string-table index 0 ("SkyProp" in
+        // oblivion_header).
+        bytes.extend_from_slice(&0i32.to_le_bytes());
+        // NiQuatTransform: translation (1,2,3), rotation (w,x,y,z) =
+        // (1,0,0,0), scale = 1.0. 32 bytes.
+        for v in [1.0f32, 2.0, 3.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [1.0f32, 0.0, 0.0, 0.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        // Three sub-interpolator refs.
+        bytes.extend_from_slice(&11i32.to_le_bytes());
+        bytes.extend_from_slice(&12i32.to_le_bytes());
+        bytes.extend_from_slice(&13i32.to_le_bytes());
+        assert_eq!(bytes.len(), 54);
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block(
+            "NiLookAtInterpolator",
+            &mut stream,
+            Some(bytes.len() as u32),
+        )
+        .expect("NiLookAtInterpolator must parse on Oblivion");
+        let interp = block
+            .as_any()
+            .downcast_ref::<crate::blocks::interpolator::NiLookAtInterpolator>()
+            .unwrap();
+        use crate::blocks::interpolator::look_at_flags;
+        assert_eq!(interp.flags, 0x0003);
+        assert_ne!(interp.flags & look_at_flags::LOOK_FLIP, 0);
+        assert_ne!(interp.flags & look_at_flags::LOOK_Y_AXIS, 0);
+        assert_eq!(interp.flags & look_at_flags::LOOK_Z_AXIS, 0);
+        assert_eq!(interp.look_at.index(), Some(7));
+        assert_eq!(interp.look_at_name.as_deref(), Some("SkyProp"));
+        assert_eq!(interp.transform.translation.x, 1.0);
+        assert_eq!(interp.transform.translation.z, 3.0);
+        assert_eq!(interp.transform.scale, 1.0);
+        assert_eq!(interp.interp_translation.index(), Some(11));
+        assert_eq!(interp.interp_roll.index(), Some(12));
+        assert_eq!(interp.interp_scale.index(), Some(13));
         assert_eq!(stream.position() as usize, bytes.len());
     }
 

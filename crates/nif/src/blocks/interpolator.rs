@@ -365,6 +365,89 @@ impl NiTransformInterpolator {
     }
 }
 
+// ── NiLookAtInterpolator ───────────────────────────────────────────────
+//
+// Rotates its parent so a chosen axis tracks a target NiNode. nif.xml
+// line 4352. Replaces the deprecated `NiLookAtController` from 10.2
+// onwards; Bethesda content from FO3+ uses this driving a plain
+// `NiTransformController`. Pre-#NEW the dispatch table had no entry
+// and 18 instances per FNV mesh sweep landed in NiUnknown — surfaced
+// by the R3 per-block histogram.
+//
+// Wire layout (since 10.x; `Transform` field present `until="20.4.0.12"`,
+// which covers every game we target — Oblivion 20.0.0.5, FO3/FNV/SkyrimLE
+// 20.2.0.7, Skyrim SE/FO4/+ 20.2.0.7 — they're all <= 20.4.0.12):
+//
+//   Flags                  (LookAtFlags = u16, 2 B)
+//   Look At                (Ptr → NiNode, 4 B)
+//   Look At Name           (string — table index since 20.1.0.1)
+//   Transform              (NiQuatTransform, 32 B until 20.4.0.12)
+//   Interpolator: Trans    (Ref → NiPoint3Interpolator, 4 B)
+//   Interpolator: Roll     (Ref → NiFloatInterpolator, 4 B)
+//   Interpolator: Scale    (Ref → NiFloatInterpolator, 4 B)
+//
+// The TRS sub-interpolators each animate one channel of the local
+// orientation that gets composed against the look-at solve at runtime;
+// we parse them as plain refs so they land in `NifScene.blocks` for a
+// later constraint-evaluation pass.
+
+/// `LookAtFlags` — nif.xml line 4339. Three-bit ushort. Stored as the
+/// raw u16 with named bit constants below so the parser does not pull
+/// in the `bitflags` crate (none of the rest of the nif crate uses it).
+pub mod look_at_flags {
+    /// Flip the chosen axis (180° around the look direction).
+    pub const LOOK_FLIP: u16 = 0x0001;
+    /// Track with Y as the up axis instead of the default X.
+    pub const LOOK_Y_AXIS: u16 = 0x0002;
+    /// Track with Z as the up axis instead of the default X.
+    pub const LOOK_Z_AXIS: u16 = 0x0004;
+}
+
+#[derive(Debug)]
+pub struct NiLookAtInterpolator {
+    /// Raw flag bits. Test against constants in [`look_at_flags`].
+    pub flags: u16,
+    pub look_at: BlockRef,
+    pub look_at_name: Option<Arc<str>>,
+    /// Pose transform — the static fall-back when the three sub-
+    /// interpolators are null. Present on every game we target
+    /// (`until="20.4.0.12"`).
+    pub transform: NiQuatTransform,
+    pub interp_translation: BlockRef,
+    pub interp_roll: BlockRef,
+    pub interp_scale: BlockRef,
+}
+
+impl NiObject for NiLookAtInterpolator {
+    fn block_type_name(&self) -> &'static str {
+        "NiLookAtInterpolator"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiLookAtInterpolator {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let flags = stream.read_u16_le()?;
+        let look_at = stream.read_block_ref()?;
+        let look_at_name = stream.read_string()?;
+        let transform = stream.read_ni_quat_transform()?;
+        let interp_translation = stream.read_block_ref()?;
+        let interp_roll = stream.read_block_ref()?;
+        let interp_scale = stream.read_block_ref()?;
+        Ok(Self {
+            flags,
+            look_at,
+            look_at_name,
+            transform,
+            interp_translation,
+            interp_roll,
+            interp_scale,
+        })
+    }
+}
+
 // ── NiFloatInterpolator ───────────────────────────────────────────────
 
 /// Interpolates a single float value. References NiFloatData.
