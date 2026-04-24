@@ -109,10 +109,23 @@ pub(crate) fn setup_scene(
                     // Store cell lighting for the renderer.
                     if let Some(ref lit) = result.lighting {
                         let (rx, ry) = (lit.directional_rotation[0], lit.directional_rotation[1]);
-                        // Convert Euler XY rotation to direction vector (Z-up → Y-up).
-                        let dir_z_up = [ry.cos() * rx.cos(), ry.cos() * rx.sin(), -ry.sin()];
-                        // Z-up to Y-up: (x, y, z) → (x, z, -y)
-                        let dir = [dir_z_up[0], dir_z_up[2], -dir_z_up[1]];
+                        // Route the authored XCLL Euler angles through
+                        // `euler_zup_to_quat_yup` — the same
+                        // CW-convention helper REFR placements use —
+                        // then apply the resulting Y-up quaternion to
+                        // Gamebryo's NiDirectionalLight model
+                        // direction `(1, 0, 0)` (per the 2.3
+                        // `NiDirectionalLight.h` comment: "The model
+                        // direction of the light is (1,0,0)"). The
+                        // Z-up → Y-up coord swap leaves +X invariant,
+                        // so the Y-up model vector is also `(1, 0, 0)`.
+                        // Pre-#380 an inline spherical formula treated
+                        // ry as elevation-from-horizon and drifted
+                        // from the authored intent as ry grew. See
+                        // audit F3-09.
+                        let quat = cell_loader::euler_zup_to_quat_yup(rx, ry, 0.0);
+                        let dir_v = quat * Vec3::new(1.0, 0.0, 0.0);
+                        let dir = [dir_v.x, dir_v.y, dir_v.z];
                         world.insert_resource(CellLightingRes {
                             ambient: lit.ambient,
                             directional_color: lit.directional_color,
