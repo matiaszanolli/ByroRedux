@@ -194,23 +194,15 @@ fn create_triangle_pipeline_with_layout(
         .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
         .primitive_restart_enable(false);
 
-    let viewports = [vk::Viewport {
-        x: 0.0,
-        y: 0.0,
-        width: extent.width as f32,
-        height: extent.height as f32,
-        min_depth: 0.0,
-        max_depth: 1.0,
-    }];
-
-    let scissors = [vk::Rect2D {
-        offset: vk::Offset2D { x: 0, y: 0 },
-        extent,
-    }];
-
+    // VIEWPORT + SCISSOR are declared dynamic below, so the arrays
+    // on `PipelineViewportStateCreateInfo` are ignored per the
+    // Vulkan spec — only the counts matter at pipeline-create time.
+    // Dynamic values come from `cmd_set_viewport` / `cmd_set_scissor`
+    // in `draw.rs`. See audit PIPE-1 / #578.
     let viewport_state = vk::PipelineViewportStateCreateInfo::default()
-        .viewports(&viewports)
-        .scissors(&scissors);
+        .viewport_count(1)
+        .scissor_count(1);
+    let _ = extent;
 
     // NIF/D3D uses CW winding. The projection Y-flip in camera.rs reverses
     // apparent winding in clip space, so CW triangles appear CCW after
@@ -414,21 +406,12 @@ pub fn create_blend_pipeline(
         .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
         .primitive_restart_enable(false);
 
-    let viewports = [vk::Viewport {
-        x: 0.0,
-        y: 0.0,
-        width: extent.width as f32,
-        height: extent.height as f32,
-        min_depth: 0.0,
-        max_depth: 1.0,
-    }];
-    let scissors = [vk::Rect2D {
-        offset: vk::Offset2D { x: 0, y: 0 },
-        extent,
-    }];
+    // VIEWPORT + SCISSOR are declared dynamic below — only the
+    // counts matter at pipeline-create time. See audit PIPE-1 / #578.
     let viewport_state = vk::PipelineViewportStateCreateInfo::default()
-        .viewports(&viewports)
-        .scissors(&scissors);
+        .viewport_count(1)
+        .scissor_count(1);
+    let _ = extent;
 
     let cull_mode = if two_sided {
         vk::CullModeFlags::NONE
@@ -580,21 +563,12 @@ pub fn create_ui_pipeline(
         .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
         .primitive_restart_enable(false);
 
-    let viewports = [vk::Viewport {
-        x: 0.0,
-        y: 0.0,
-        width: extent.width as f32,
-        height: extent.height as f32,
-        min_depth: 0.0,
-        max_depth: 1.0,
-    }];
-    let scissors = [vk::Rect2D {
-        offset: vk::Offset2D { x: 0, y: 0 },
-        extent,
-    }];
+    // VIEWPORT + SCISSOR are declared dynamic below — only the
+    // counts matter at pipeline-create time. See audit PIPE-1 / #578.
     let viewport_state = vk::PipelineViewportStateCreateInfo::default()
-        .viewports(&viewports)
-        .scissors(&scissors);
+        .viewport_count(1)
+        .scissor_count(1);
+    let _ = extent;
 
     let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
         .depth_clamp_enable(false)

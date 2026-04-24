@@ -654,21 +654,15 @@ impl CompositePipeline {
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
 
-        let viewports = [vk::Viewport {
-            x: 0.0,
-            y: 0.0,
-            width: width as f32,
-            height: height as f32,
-            min_depth: 0.0,
-            max_depth: 1.0,
-        }];
-        let scissors = [vk::Rect2D {
-            offset: vk::Offset2D { x: 0, y: 0 },
-            extent: vk::Extent2D { width, height },
-        }];
+        // Both VIEWPORT and SCISSOR are declared dynamic below (and
+        // the caller's `dispatch()` sets them every frame via
+        // `cmd_set_viewport` / `cmd_set_scissor`), so the `viewports`
+        // / `scissors` arrays in `PipelineViewportStateCreateInfo`
+        // are ignored at pipeline-create time per the Vulkan spec.
+        // Only the counts matter. See audit PIPE-1 / #578.
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
-            .viewports(&viewports)
-            .scissors(&scissors);
+            .viewport_count(1)
+            .scissor_count(1);
 
         let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
             .depth_clamp_enable(false)
