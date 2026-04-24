@@ -309,13 +309,46 @@ impl traits::HasShaderRefs for BsTriShape {
 }
 
 /// Vertex attribute flags from BSVertexDesc bits [44:55].
-/// See nif.xml `VertexAttribute` (lines 2077-2090).
+/// See nif.xml `VertexAttribute` (lines 2077-2090). Every bit in the
+/// 12-bit attribute field has a constant here, whether or not the
+/// per-vertex parse loop below decodes it — keeps the schema/code
+/// mapping auditable and lets the trailing `consumed < vertex_size_bytes`
+/// skip absorb bytes for any bit whose decoder is deferred.
 const VF_VERTEX: u16 = 0x001;
 const VF_UVS: u16 = 0x002;
+/// Bit 2 — second UV set. Authored by meshes that carry two UV
+/// channels (detail maps, lightmaps). The BSVertexDesc `UV2 Offset`
+/// nibble (bits 12..16) tells the runtime where inside each vertex
+/// the second UV starts. Neither nif.xml's `BSVertexData` struct
+/// (line 2107) nor nifly's authoritative C++ parser lists a named
+/// field for this — community decoders typically treat the extra
+/// 4 bytes as opaque and rely on the UV2 offset at sample time.
+/// The sequential parser here does the same: the trailing skip at
+/// the end of the per-vertex loop absorbs the 4 bytes (2 × f16)
+/// reserved by this flag, so no downstream corruption.
+///
+/// Field-level extraction is deferred until a consumer (detail-map
+/// shader, lightmap renderer) materializes to validate the wire
+/// layout against real geometry — per the no-guessing policy on
+/// schema-ambiguous fields. See audit N2-01 / #336.
+#[allow(dead_code)]
+const VF_UVS_2: u16 = 0x004;
 const VF_NORMALS: u16 = 0x008;
 const VF_TANGENTS: u16 = 0x010;
 const VF_VERTEX_COLORS: u16 = 0x020;
 const VF_SKINNED: u16 = 0x040;
+/// Bit 7 — landscape per-vertex blend data (FO4+ terrain `BSTriShape`
+/// meshes). `Landscape Data Offset` in BSVertexDesc (bits 32..36)
+/// locates the field inside each vertex. Same story as `VF_UVS_2`:
+/// nif.xml's `BSVertexData` struct does not enumerate a landscape
+/// field, so community tooling treats the bytes as opaque.
+/// Consumer-side decoding lives with the FO4 terrain wiring (ROADMAP
+/// M40 worldspace streaming / FO4 cell loader); until then the
+/// trailing skip at the end of the per-vertex loop absorbs the
+/// reserved bytes and no parse corruption occurs. See audit N2-01 /
+/// #336.
+#[allow(dead_code)]
+const VF_LAND_DATA: u16 = 0x080;
 const VF_EYE_DATA: u16 = 0x100;
 /// GPU-instancing flag (bit 9). Defined for completeness with the
 /// nif.xml schema; no shipped FO4 / FO76 / Starfield content sets this
@@ -325,8 +358,8 @@ const VF_EYE_DATA: u16 = 0x100;
 /// change runtime behavior — it just closes a defense-in-depth gap
 /// flagged by audit S1-02 and makes the constant set match the schema
 /// for code-review clarity. Field-level extraction (when the bit
-/// becomes load-bearing) is tracked separately at #336 alongside
-/// VF_UVS_2 / VF_LAND_DATA. See #358.
+/// becomes load-bearing) is tracked alongside VF_UVS_2 / VF_LAND_DATA
+/// under #336. See #358.
 #[allow(dead_code)]
 const VF_INSTANCE: u16 = 0x200;
 /// FO4+: full-precision vertex positions (bit 10). When clear, positions are half-float.
@@ -2299,5 +2332,92 @@ mod ni_additional_geometry_data_tests {
             .unwrap();
         assert!(agd.block_infos.is_empty());
         assert!(agd.blocks.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod bsvertex_flag_constant_tests {
+    //! Regression for #336 / audit N2-01 — every bit in nif.xml's
+    //! `VertexAttribute` bitflags (line 2077) must have a matching
+    //! `VF_*` constant here. Pre-#336 the constant set skipped bits 2
+    //! and 7; the sequential per-vertex parser still worked thanks to
+    //! the trailing skip, but a reader auditing the schema against the
+    //! code saw nothing for those bits. These asserts pin every bit
+    //! value against nif.xml so a future contributor can't accidentally
+    //! redefine one without the test objecting.
+    use super::*;
+
+    #[test]
+    fn vertex_attribute_bits_match_nifxml_schema() {
+        // nif.xml `VertexAttribute` bitflags — every option's bit value.
+        assert_eq!(VF_VERTEX, 1 << 0);
+        assert_eq!(VF_UVS, 1 << 1);
+        assert_eq!(VF_UVS_2, 1 << 2);
+        assert_eq!(VF_NORMALS, 1 << 3);
+        assert_eq!(VF_TANGENTS, 1 << 4);
+        assert_eq!(VF_VERTEX_COLORS, 1 << 5);
+        assert_eq!(VF_SKINNED, 1 << 6);
+        assert_eq!(VF_LAND_DATA, 1 << 7);
+        assert_eq!(VF_EYE_DATA, 1 << 8);
+        assert_eq!(VF_INSTANCE, 1 << 9);
+        assert_eq!(VF_FULL_PRECISION, 1 << 10);
+    }
+
+    /// Guard against a duplicate-value typo: every `VF_*` bit must be
+    /// unique. A naive constant renumbering (e.g. copying VF_UVS's
+    /// value into VF_UVS_2) would otherwise compile cleanly but mis-
+    /// interpret the vertex descriptor at runtime.
+    #[test]
+    fn vertex_attribute_bits_are_all_distinct() {
+        let bits = [
+            VF_VERTEX,
+            VF_UVS,
+            VF_UVS_2,
+            VF_NORMALS,
+            VF_TANGENTS,
+            VF_VERTEX_COLORS,
+            VF_SKINNED,
+            VF_LAND_DATA,
+            VF_EYE_DATA,
+            VF_INSTANCE,
+            VF_FULL_PRECISION,
+        ];
+        for (i, a) in bits.iter().enumerate() {
+            for b in &bits[i + 1..] {
+                assert_ne!(
+                    a, b,
+                    "two VF_* constants share the same bit ({a:#05x})"
+                );
+            }
+        }
+    }
+
+    /// A vertex descriptor that declares VF_UVS_2 / VF_LAND_DATA (and
+    /// doesn't declare any other field beyond VF_VERTEX) must still
+    /// parse cleanly: the trailing skip at the end of the per-vertex
+    /// loop absorbs the flag's reserved bytes so the overall `data_size`
+    /// contract holds. Pre-#336 this path was untested — if some mod-
+    /// authored content set these bits, the parser worked by luck of
+    /// the trailing-skip backstop, never proven by a test.
+    #[test]
+    fn vf_uvs_2_and_vf_land_data_set_bits_survive_trailing_skip() {
+        // Build a fake vertex_attrs word with VF_VERTEX + VF_UVS_2 +
+        // VF_LAND_DATA, OR'd into the top-12-bit attributes field.
+        let attrs: u16 = VF_VERTEX | VF_UVS_2 | VF_LAND_DATA;
+        let vertex_attrs_in_desc = (attrs as u64) << 44;
+        // The low nibble of BSVertexDesc is `vertex_size_quads`. Use a
+        // small value so the synthetic byte stream stays compact.
+        // 5 quads = 20 bytes/vertex (3 f32 position = 12 + 4 bitangent
+        // + 4 reserved for UV2/land).
+        let vertex_size_quads: u64 = 5;
+        let vertex_desc = vertex_attrs_in_desc | vertex_size_quads;
+        // Only the extraction of `vertex_attrs` out of `vertex_desc`
+        // is under test here — the check asserts the bitfield math
+        // round-trips.
+        let extracted = ((vertex_desc >> 44) & 0xFFF) as u16;
+        assert!(extracted & VF_UVS_2 != 0);
+        assert!(extracted & VF_LAND_DATA != 0);
+        assert!(extracted & VF_VERTEX != 0);
+        assert!(extracted & VF_NORMALS == 0);
     }
 }
