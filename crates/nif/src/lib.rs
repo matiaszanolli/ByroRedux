@@ -95,6 +95,12 @@ fn is_animation_block(type_name: &str) -> bool {
             | "NiTextKeyExtraData"
             | "NiDefaultAVObjectPalette"
             | "NiMorphData"
+            // #394 — newly dispatched Oblivion-era animation blocks.
+            // Listed so `ParseOptions::skip_animation_blocks` can
+            // fast-skip them in geometry-only mode.
+            | "NiPathInterpolator"
+            | "NiFlipController"
+            | "NiBSBoneLODController"
     )
 }
 

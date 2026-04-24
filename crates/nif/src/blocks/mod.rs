@@ -27,15 +27,16 @@ use collision::{
     BhkAabbPhantom, BhkBoxShape, BhkBreakableConstraint, BhkCapsuleShape, BhkCollisionObject,
     BhkCompressedMeshShape, BhkCompressedMeshShapeData, BhkConstraint, BhkConvexListShape,
     BhkConvexVerticesShape, BhkCylinderShape, BhkLiquidAction, BhkListShape, BhkMoppBvTreeShape,
-    BhkNiTriStripsShape, BhkOrientHingedBodyAction, BhkPCollisionObject,
+    BhkMultiSphereShape, BhkNiTriStripsShape, BhkOrientHingedBodyAction, BhkPCollisionObject,
     BhkPackedNiTriStripsShape, BhkRigidBody, BhkSimpleShapePhantom, BhkSphereShape,
     BhkTransformShape, HkPackedNiTriStripsData, NiCollisionObjectBase,
 };
 use controller::{
     BhkBlendController, BsNiAlphaPropertyTestRefController, BsRefractionFirePeriodController,
-    NiControllerManager, NiControllerSequence, NiFloatExtraDataController, NiGeomMorpherController,
-    NiLightColorController, NiLightFloatController, NiLookAtController, NiMaterialColorController,
-    NiMorphData, NiMultiTargetTransformController, NiPathController, NiSequenceStreamHelper,
+    NiBsBoneLodController, NiControllerManager, NiControllerSequence, NiFlipController,
+    NiFloatExtraDataController, NiGeomMorpherController, NiLightColorController,
+    NiLightFloatController, NiLookAtController, NiMaterialColorController, NiMorphData,
+    NiMultiTargetTransformController, NiPathController, NiSequenceStreamHelper,
     NiSingleInterpController, NiTimeController, NiUVController,
 };
 use extra_data::{
@@ -47,8 +48,8 @@ use interpolator::{
     NiBSplineBasisData, NiBSplineCompTransformInterpolator, NiBSplineData, NiBlendBoolInterpolator,
     NiBlendFloatInterpolator, NiBlendPoint3Interpolator, NiBlendTransformInterpolator, NiBoolData,
     NiBoolInterpolator, NiColorData, NiColorInterpolator, NiFloatData, NiFloatInterpolator,
-    NiPoint3Interpolator, NiPosData, NiTextKeyExtraData, NiTransformData, NiTransformInterpolator,
-    NiUVData,
+    NiPathInterpolator, NiPoint3Interpolator, NiPosData, NiTextKeyExtraData, NiTransformData,
+    NiTransformInterpolator, NiUVData,
 };
 use multibound::{BsMultiBound, BsMultiBoundAABB, BsMultiBoundOBB, BsMultiBoundSphere};
 use node::{BsOrderedNode, BsValueNode, NiNode};
@@ -583,6 +584,21 @@ pub fn parse_block(
         // silently played with a default color. See #431.
         "NiColorInterpolator" => Ok(Box::new(NiColorInterpolator::parse(stream)?)),
         "NiColorData" => Ok(Box::new(NiColorData::parse(stream)?)),
+        // NiPathInterpolator — spline-path motion driver (door hinges,
+        // pendulums, wind-turbine blades). Parsed so the
+        // block_sizes-less Oblivion loader doesn't truncate the
+        // rest of the NIF. See #394 / audit OBL-D5-H2.
+        "NiPathInterpolator" => Ok(Box::new(NiPathInterpolator::parse(stream)?)),
+        // NiFlipController — flipbook / texture-cycle animation
+        // (water ripples, fire flicker, caustics). Oblivion-era
+        // content via the #394 sweep. See audit OBL-D5-H2.
+        "NiFlipController" => Ok(Box::new(NiFlipController::parse(stream)?)),
+        // NiBSBoneLODController — Bethesda creature-skeleton LOD
+        // switcher. 34 vanilla Oblivion creature NIFs trip this
+        // block; pre-#394 every block after it was discarded
+        // because Oblivion has no block_sizes recovery. See audit
+        // OBL-D5-H2.
+        "NiBSBoneLODController" => Ok(Box::new(NiBsBoneLodController::parse(stream)?)),
         "NiBoolInterpolator" => Ok(Box::new(NiBoolInterpolator::parse(stream)?)),
         // NiBoolTimelineInterpolator — same wire layout as NiBoolInterpolator
         // (nif.xml line 3287 adds no fields); only the semantics differ
@@ -760,6 +776,12 @@ pub fn parse_block(
         "bhkMalleableConstraint" => {
             Ok(Box::new(BhkConstraint::parse(stream, "bhkMalleableConstraint")?))
         }
+        // Havok sphere-cluster collision (#394 / OBL-D5-H2). Oblivion
+        // creature ragdolls ship these as compact bounding-volume
+        // approximations. Without a parser the block_sizes-less
+        // Oblivion loader couldn't skip past this block and truncated
+        // the rest of the NIF.
+        "bhkMultiSphereShape" => Ok(Box::new(BhkMultiSphereShape::parse(stream)?)),
         // Havok tail types (#557 / NIF-12). Low-volume leaf types that
         // landed in NiUnknown across all four games pre-fix. Each
         // parser is byte-exact where the type is Oblivion-reachable
@@ -1282,6 +1304,167 @@ mod dispatch_tests {
         assert_eq!(bc.wrapped_type, 1);
         assert_eq!(bc.threshold, 256.0);
         assert!(bc.remove_when_broken);
+        assert_eq!(stream.position() as usize, bytes.len());
+    }
+
+    // ── #394 / OBL-D5-H2 Oblivion-skippable block parsers ──────────
+
+    /// Regression for #394 — `bhkMultiSphereShape` with 2 spheres
+    /// must consume its full 20 + 16*2 = 52-byte body on Oblivion
+    /// (no block_sizes table to fall back on). Validates material +
+    /// shape_property + per-sphere (center, radius).
+    #[test]
+    fn bhk_multi_sphere_shape_consumes_full_52_bytes_for_2_spheres() {
+        let header = oblivion_header();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&7u32.to_le_bytes()); // material
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // shape_property[0]
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // shape_property[1]
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // shape_property[2]
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // num_spheres
+        for v in [1.0f32, 2.0, 3.0, 0.5, 10.0, 20.0, 30.0, 2.5] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        assert_eq!(bytes.len(), 52);
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block("bhkMultiSphereShape", &mut stream, Some(bytes.len() as u32))
+            .expect("bhkMultiSphereShape must parse on Oblivion");
+        let sphere = block
+            .as_any()
+            .downcast_ref::<crate::blocks::collision::BhkMultiSphereShape>()
+            .unwrap();
+        assert_eq!(sphere.material, 7);
+        assert_eq!(sphere.spheres.len(), 2);
+        assert_eq!(sphere.spheres[0], [1.0, 2.0, 3.0, 0.5]);
+        assert_eq!(sphere.spheres[1], [10.0, 20.0, 30.0, 2.5]);
+        assert_eq!(stream.position() as usize, bytes.len());
+    }
+
+    /// Regression for #394 — `NiPathInterpolator` must consume its
+    /// full 24-byte body. Used by door hinges and environmental spline
+    /// motion; pre-#394 these tripped the block_sizes-less Oblivion
+    /// loader.
+    #[test]
+    fn ni_path_interpolator_consumes_full_24_bytes() {
+        let header = oblivion_header();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0x0003u16.to_le_bytes()); // flags
+        bytes.extend_from_slice(&(-1i32).to_le_bytes()); // bank_dir
+        bytes.extend_from_slice(&0.5f32.to_le_bytes()); // max_bank_angle
+        bytes.extend_from_slice(&0.2f32.to_le_bytes()); // smoothing
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // follow_axis = Y
+        bytes.extend_from_slice(&11i32.to_le_bytes()); // path_data_ref
+        bytes.extend_from_slice(&22i32.to_le_bytes()); // percent_data_ref
+        assert_eq!(bytes.len(), 24);
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block("NiPathInterpolator", &mut stream, Some(bytes.len() as u32))
+            .expect("NiPathInterpolator must parse on Oblivion");
+        let interp = block
+            .as_any()
+            .downcast_ref::<crate::blocks::interpolator::NiPathInterpolator>()
+            .unwrap();
+        assert_eq!(interp.flags, 0x0003);
+        assert_eq!(interp.bank_dir, -1);
+        assert_eq!(interp.follow_axis, 1);
+        assert_eq!(interp.path_data_ref.index(), Some(11));
+        assert_eq!(interp.percent_data_ref.index(), Some(22));
+        assert_eq!(stream.position() as usize, bytes.len());
+    }
+
+    /// Regression for #394 — `NiFlipController` on Oblivion (>= 10.1.0.104)
+    /// gates off `Accum Time` and `Delta` fields, so the disk layout
+    /// reduces to NiTimeController base (26) + NiSingleInterpController
+    /// interpolator_ref (4) + texture_slot (4) + num_sources (4) +
+    /// sources[N] (4 each). Test with N=3 sources → 42 bytes total.
+    #[test]
+    fn ni_flip_controller_consumes_full_body_oblivion_layout() {
+        let header = oblivion_header();
+        let mut bytes = Vec::new();
+        // NiTimeController base: next(i32) + flags(u16) + freq(f32) +
+        // phase(f32) + start(f32) + stop(f32) + target(i32) = 26 B
+        bytes.extend_from_slice(&(-1i32).to_le_bytes()); // next_controller
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // flags
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // frequency
+        bytes.extend_from_slice(&0.0f32.to_le_bytes()); // phase
+        bytes.extend_from_slice(&0.0f32.to_le_bytes()); // start
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // stop
+        bytes.extend_from_slice(&(-1i32).to_le_bytes()); // target
+        // NiSingleInterpController: interpolator_ref (4 B).
+        bytes.extend_from_slice(&5i32.to_le_bytes());
+        // NiFlipController: texture_slot(4) + num_sources(4) + sources.
+        bytes.extend_from_slice(&4u32.to_le_bytes()); // texture_slot = GLOW_MAP
+        bytes.extend_from_slice(&3u32.to_le_bytes()); // num_sources
+        bytes.extend_from_slice(&11i32.to_le_bytes());
+        bytes.extend_from_slice(&12i32.to_le_bytes());
+        bytes.extend_from_slice(&13i32.to_le_bytes());
+        assert_eq!(bytes.len(), 26 + 4 + 4 + 4 + 4 * 3);
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block("NiFlipController", &mut stream, Some(bytes.len() as u32))
+            .expect("NiFlipController must parse on Oblivion");
+        let ctrl = block
+            .as_any()
+            .downcast_ref::<crate::blocks::controller::NiFlipController>()
+            .unwrap();
+        assert_eq!(ctrl.texture_slot, 4);
+        assert_eq!(ctrl.sources.len(), 3);
+        assert_eq!(ctrl.sources[0].index(), Some(11));
+        assert_eq!(ctrl.sources[2].index(), Some(13));
+        assert_eq!(ctrl.base.interpolator_ref.index(), Some(5));
+        assert_eq!(stream.position() as usize, bytes.len());
+    }
+
+    /// Regression for #394 — `NiBSBoneLODController` with one LOD (1
+    /// bone) + one shape group (1 skin info) + one shape_groups_2
+    /// entry. Creature-skeleton LOD block on every vanilla Oblivion
+    /// creature NIF; without this parser, every block after it was
+    /// truncated.
+    #[test]
+    fn ni_bs_bone_lod_controller_consumes_full_body() {
+        let header = oblivion_header();
+        let mut bytes = Vec::new();
+        // NiTimeController base (26 B).
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        // LOD + counts.
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // lod
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // num_lods
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // num_node_groups (unused)
+        // Node Groups: NodeSet { num_nodes=1, nodes=[42] }.
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&42i32.to_le_bytes());
+        // Shape Groups 1: SkinInfoSet { num_skin_info=1, [shape_ptr=7, skin_instance=8] }.
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // num_shape_groups
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // num_skin_info
+        bytes.extend_from_slice(&7i32.to_le_bytes()); // shape_ptr
+        bytes.extend_from_slice(&8i32.to_le_bytes()); // skin_instance
+        // Shape Groups 2: [ref 99].
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // num_shape_groups_2
+        bytes.extend_from_slice(&99i32.to_le_bytes());
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block(
+            "NiBSBoneLODController",
+            &mut stream,
+            Some(bytes.len() as u32),
+        )
+        .expect("NiBSBoneLODController must parse on Oblivion");
+        let ctrl = block
+            .as_any()
+            .downcast_ref::<crate::blocks::controller::NiBsBoneLodController>()
+            .unwrap();
+        assert_eq!(ctrl.lod, 0);
+        assert_eq!(ctrl.node_groups.len(), 1);
+        assert_eq!(ctrl.node_groups[0].nodes.len(), 1);
+        assert_eq!(ctrl.node_groups[0].nodes[0].index(), Some(42));
+        assert_eq!(ctrl.shape_groups_1.len(), 1);
+        assert_eq!(ctrl.shape_groups_1[0].skin_infos.len(), 1);
+        assert_eq!(ctrl.shape_groups_1[0].skin_infos[0].shape_ptr.index(), Some(7));
+        assert_eq!(ctrl.shape_groups_2.len(), 1);
+        assert_eq!(ctrl.shape_groups_2[0].index(), Some(99));
         assert_eq!(stream.position() as usize, bytes.len());
     }
 

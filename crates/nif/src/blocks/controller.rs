@@ -112,6 +112,187 @@ impl NiSingleInterpController {
     }
 }
 
+// ── NiFlipController ───────────────────────────────────────────────────
+//
+// Texture-flip animation controller (flipbook / water-ripple / caustic
+// cycling). Subclass of `NiFloatInterpController` →
+// `NiSingleInterpController` → `NiTimeController`. nif.xml line 3720.
+// On Oblivion (20.0.0.5) the version-gated `Accum Time` and `Delta`
+// fields are out (they're `until 10.1.0.103`), so the on-disk layout
+// reduces to:
+//
+//   NiTimeController base              (26 B)
+//   NiSingleInterpController           (4 B — interpolator ref)
+//   Texture Slot    (TexType u32)      (4 B)
+//   Num Sources     (u32)              (4 B)
+//   Sources[Num Sources]               (4 B each)
+//   = 38 + 4 × N bytes
+//
+// Pre-#394 this was a terminal parse error on Oblivion creatures
+// that ship flipbook textures, since there's no `block_sizes` table
+// to fall back on. See audit OBL-D5-H2.
+
+/// `NiFlipController` — flipbook / texture-cycle animation driver.
+#[derive(Debug)]
+pub struct NiFlipController {
+    pub base: NiSingleInterpController,
+    /// `TexType` enum — 0=BASE_MAP, 4=GLOW_MAP, etc. Kept as u32 so
+    /// the consumer can route to the right texture slot.
+    pub texture_slot: u32,
+    /// References to the source textures to cycle through. Typically
+    /// 2–8 frames for water ripples or fire flicker.
+    pub sources: Vec<BlockRef>,
+}
+
+impl NiObject for NiFlipController {
+    fn block_type_name(&self) -> &'static str {
+        "NiFlipController"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiFlipController {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiSingleInterpController::parse(stream)?;
+        // `Accum Time` (f32 since 3.3.0.13 until 10.1.0.103) and
+        // `Delta` (f32 until 10.1.0.103) are version-gated off on
+        // every supported Bethesda NIF (Oblivion / FO3 / FNV /
+        // Skyrim / FO4 / FO76 / Starfield are all >= 10.1.0.104).
+        // Nothing to read here.
+        let texture_slot = stream.read_u32_le()?;
+        let num_sources = stream.read_u32_le()?;
+        let mut sources = stream.allocate_vec::<BlockRef>(num_sources)?;
+        for _ in 0..num_sources {
+            sources.push(stream.read_block_ref()?);
+        }
+        Ok(Self {
+            base,
+            texture_slot,
+            sources,
+        })
+    }
+}
+
+// ── NiBSBoneLODController ──────────────────────────────────────────────
+//
+// Bethesda extension of the deprecated `NiBoneLODController` — a
+// creature-skeleton LOD switcher keyed off camera distance. 34 files
+// in the Oblivion vanilla sweep tripped the unknown-block dispatch
+// before #394. Subclass of `NiBoneLODController` →
+// `NiTimeController`. nif.xml line 3836.
+//
+// Wire layout on Bethesda content (since 4.2.2.0; Oblivion 20.0.0.5
+// is well past that gate):
+//
+//   NiTimeController base                   (26 B)
+//   LOD             (u32)                   ( 4 B)
+//   Num LODs        (u32)                   ( 4 B)
+//   Num Node Groups (u32)                   ( 4 B)
+//   Node Groups[Num LODs] — each is:
+//       Num Nodes (u32) + Nodes[Num Nodes] (Ptr, 4 B each)
+//   Num Shape Groups (u32)                  ( 4 B — since 4.2.2.0)
+//   Shape Groups 1[Num Shape Groups] — each is:
+//       Num Skin Info (u32) + SkinInfo[Num Skin Info] (8 B each)
+//   Num Shape Groups 2 (u32)                ( 4 B)
+//   Shape Groups 2[Num Shape Groups 2]      (Ref, 4 B each)
+//
+// Variable-size with two nested dynamic arrays. Parsed eagerly so
+// Oblivion loads don't truncate the rest of the NIF waiting on a
+// `block_sizes` hint that never comes.
+
+/// One `NodeSet` entry inside the outer LOD table — a bone-index
+/// list that maps distance-LOD-level → which bones to activate.
+#[derive(Debug)]
+pub struct NodeSet {
+    pub nodes: Vec<BlockRef>,
+}
+
+/// One `SkinInfo` entry inside the outer `NiBoneLODController`
+/// shape-groups table: a (shape, skin_instance) pair.
+#[derive(Debug, Clone, Copy)]
+pub struct BoneLodSkinInfo {
+    pub shape_ptr: BlockRef,
+    pub skin_instance_ref: BlockRef,
+}
+
+/// One `SkinInfoSet` entry — a group of `BoneLodSkinInfo` pairs.
+#[derive(Debug)]
+pub struct BoneLodSkinInfoSet {
+    pub skin_infos: Vec<BoneLodSkinInfo>,
+}
+
+/// `NiBSBoneLODController` — Bethesda creature-skeleton LOD switcher.
+#[derive(Debug)]
+pub struct NiBsBoneLodController {
+    pub base: NiTimeControllerBase,
+    /// Current active LOD level (authored initial value).
+    pub lod: u32,
+    /// Per-LOD bone-index lists; outer length == `num_lods`.
+    pub node_groups: Vec<NodeSet>,
+    /// Shape groups (primary) — present since 4.2.2.0 on every
+    /// Bethesda target version.
+    pub shape_groups_1: Vec<BoneLodSkinInfoSet>,
+    /// Shape groups (secondary) — refs to `NiTriBasedGeom` parents.
+    pub shape_groups_2: Vec<BlockRef>,
+}
+
+impl NiObject for NiBsBoneLodController {
+    fn block_type_name(&self) -> &'static str {
+        "NiBSBoneLODController"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiBsBoneLodController {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiTimeControllerBase::parse(stream)?;
+        let lod = stream.read_u32_le()?;
+        let num_lods = stream.read_u32_le()?;
+        let _num_node_groups = stream.read_u32_le()?;
+        let mut node_groups = stream.allocate_vec::<NodeSet>(num_lods)?;
+        for _ in 0..num_lods {
+            let count = stream.read_u32_le()?;
+            let mut nodes = stream.allocate_vec::<BlockRef>(count)?;
+            for _ in 0..count {
+                nodes.push(stream.read_block_ref()?);
+            }
+            node_groups.push(NodeSet { nodes });
+        }
+        // since 4.2.2.0 — every Bethesda target is past this gate.
+        let num_shape_groups = stream.read_u32_le()?;
+        let mut shape_groups_1 = stream.allocate_vec::<BoneLodSkinInfoSet>(num_shape_groups)?;
+        for _ in 0..num_shape_groups {
+            let count = stream.read_u32_le()?;
+            let mut skin_infos = stream.allocate_vec::<BoneLodSkinInfo>(count)?;
+            for _ in 0..count {
+                let shape_ptr = stream.read_block_ref()?;
+                let skin_instance_ref = stream.read_block_ref()?;
+                skin_infos.push(BoneLodSkinInfo {
+                    shape_ptr,
+                    skin_instance_ref,
+                });
+            }
+            shape_groups_1.push(BoneLodSkinInfoSet { skin_infos });
+        }
+        let num_shape_groups_2 = stream.read_u32_le()?;
+        let mut shape_groups_2 = stream.allocate_vec::<BlockRef>(num_shape_groups_2)?;
+        for _ in 0..num_shape_groups_2 {
+            shape_groups_2.push(stream.read_block_ref()?);
+        }
+        Ok(Self {
+            base,
+            lod,
+            node_groups,
+            shape_groups_1,
+            shape_groups_2,
+        })
+    }
+}
+
 // ── bhkBlendController ─────────────────────────────────────────────────
 //
 // Havok ragdoll blend controller — drives blend weights between multiple

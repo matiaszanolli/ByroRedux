@@ -393,6 +393,63 @@ impl BhkSphereShape {
     }
 }
 
+/// `bhkMultiSphereShape` — compound Havok shape made of up to 8
+/// spheres. nif.xml line 3124. Inherits `bhkSphereRepShape` (which
+/// supplies `Material`) then adds a `bhkWorldObjCInfoProperty` block
+/// and a `NiBound`-per-sphere array. Appears in creature skeleton /
+/// ragdoll NIFs across all Bethesda games; was a MEDIUM-count block
+/// on Oblivion where no `block_sizes` table exists to skip it.
+/// See audit OBL-D5-H2 / #394.
+///
+/// Byte layout on Oblivion (20.0.0.5; HavokMaterial drops its pre-
+/// 10.0.1.2 `Unknown Int` prefix): material(4) +
+/// bhkWorldObjCInfoProperty(12) + num_spheres(4) + N × (Vector3 + f32)
+/// = 20 + 16 × N bytes.
+#[derive(Debug)]
+pub struct BhkMultiSphereShape {
+    pub material: u32,
+    /// Bethesda's `bhkWorldObjCInfoProperty` — 3 × u32 opaque CInfo
+    /// bookkeeping. Preserved verbatim for future physics bridges.
+    pub shape_property: [u32; 3],
+    /// Up to 8 spheres making up the collision approximation. Each is
+    /// (center_x, center_y, center_z, radius).
+    pub spheres: Vec<[f32; 4]>,
+}
+
+impl NiObject for BhkMultiSphereShape {
+    fn block_type_name(&self) -> &'static str {
+        "bhkMultiSphereShape"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BhkMultiSphereShape {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let material = stream.read_u32_le()?;
+        let shape_property = [
+            stream.read_u32_le()?,
+            stream.read_u32_le()?,
+            stream.read_u32_le()?,
+        ];
+        let num_spheres = stream.read_u32_le()?;
+        let mut spheres = stream.allocate_vec::<[f32; 4]>(num_spheres)?;
+        for _ in 0..num_spheres {
+            let cx = stream.read_f32_le()?;
+            let cy = stream.read_f32_le()?;
+            let cz = stream.read_f32_le()?;
+            let r = stream.read_f32_le()?;
+            spheres.push([cx, cy, cz, r]);
+        }
+        Ok(Self {
+            material,
+            shape_property,
+            spheres,
+        })
+    }
+}
+
 /// bhkBoxShape — axis-aligned box collision primitive.
 #[derive(Debug)]
 pub struct BhkBoxShape {

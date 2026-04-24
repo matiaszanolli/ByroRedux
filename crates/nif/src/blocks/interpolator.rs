@@ -470,6 +470,78 @@ impl NiPosData {
     }
 }
 
+// ── NiPathInterpolator ────────────────────────────────────────────────
+//
+// Spline-path interpolator for animated motion along a curve —
+// `NiKeyBasedInterpolator` → `NiInterpolator` → `NiObject`. Door
+// hinges, pendulum swings, wind-turbine blades, hot-air-balloon drift
+// paths and similar environmental motion. nif.xml line 3270. Oblivion
+// vanilla content ships a handful of these; without a parser the
+// `block_sizes`-less Oblivion loader can't skip past the block and the
+// rest of the NIF is truncated. See audit OBL-D5-H2 / #394.
+//
+// Wire layout (24 bytes, version-independent for Oblivion-target
+// parsing):
+//   flags(u16) + bank_dir(i32) + max_bank_angle(f32) + smoothing(f32)
+//   + follow_axis(i16) + path_data(Ref) + percent_data(Ref)
+// = 2 + 4 + 4 + 4 + 2 + 4 + 4 = 24 B
+
+/// `NiPathInterpolator` — spline-path motion driver. See module doc
+/// above.
+#[derive(Debug)]
+pub struct NiPathInterpolator {
+    /// `PathFlags` bits: `CVDataNeedsUpdate` (bit 0), `CurveTypeOpen`
+    /// (bit 1), and Bethesda extensions. Preserved verbatim.
+    pub flags: u16,
+    /// Direction of banking: `-1` = negative, `1` = positive.
+    pub bank_dir: i32,
+    /// Maximum bank angle in radians.
+    pub max_bank_angle: f32,
+    pub smoothing: f32,
+    /// Axis the object aims along when following the path: 0=X, 1=Y,
+    /// 2=Z. Out-of-range values are preserved untouched for the
+    /// consumer to filter.
+    pub follow_axis: i16,
+    /// Reference to an `NiPosData` block carrying the spline control
+    /// points.
+    pub path_data_ref: BlockRef,
+    /// Reference to an `NiFloatData` block carrying
+    /// parametric-position-along-the-path keys.
+    pub percent_data_ref: BlockRef,
+}
+
+impl NiObject for NiPathInterpolator {
+    fn block_type_name(&self) -> &'static str {
+        "NiPathInterpolator"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiPathInterpolator {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let flags = stream.read_u16_le()?;
+        let bank_dir = stream.read_i32_le()?;
+        let max_bank_angle = stream.read_f32_le()?;
+        let smoothing = stream.read_f32_le()?;
+        // No `read_i16_le` on NifStream today — follow_axis is 0/1/2
+        // for X/Y/Z so the sign never matters; cast the u16 over.
+        let follow_axis = stream.read_u16_le()? as i16;
+        let path_data_ref = stream.read_block_ref()?;
+        let percent_data_ref = stream.read_block_ref()?;
+        Ok(Self {
+            flags,
+            bank_dir,
+            max_bank_angle,
+            smoothing,
+            follow_axis,
+            path_data_ref,
+            percent_data_ref,
+        })
+    }
+}
+
 // ── NiColorInterpolator ───────────────────────────────────────────────
 
 /// Interpolates an RGBA color value. References NiColorData.
