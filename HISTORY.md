@@ -24,6 +24,113 @@ Commits hold that record.
 
 ---
 
+## Session 17 — Audit bundle #572–603 closeout: FO4 consumers + NIF coverage + renderer hygiene  (2026-04-24, cd959cf..e4cf68b)
+
+An 18-commit bug-bash against the post-session-15 audit sweep
+(`AUDIT_FO4_2026-04-23`, `AUDIT_RENDERER_2026-04-22`,
+`AUDIT_SAFETY_2026-04-23`) plus a handful of cross-cutting older
+issues that had stale premises retired. The session started by seeding
+32 issue dirs (#572–603) and the three audit reports as durable
+artifacts, then worked through the highest-signal consumer-side gaps —
+FO4 texture / SCOL / PKIN REFRs rendering empty, BGSM scalars silently
+dropped, Skyrim items landing in `EsmIndex` with three-byte garbage
+names — before draining the remaining NIF dispatch misses and one
+spec-violation descriptor-write race.
+
+- **FO4 ESM consumer wiring** — five FO4 records had parsers but no
+  cell-loader follow-through, so vanilla Fallout 4 interiors rendered
+  conspicuously wrong: #583 `merge_bgsm_into_mesh` forwards the BGSM /
+  BGEM scalar suite (emissive / specular / smoothness / material
+  alpha / UV / two_sided / decal / alpha_test) via per-field override
+  flags, not just the six `Option<String>` texture slots; #584 REFR
+  `XATO` / `XTNM` / `XTXR` / `XEMI` parse + `RefrTextureOverlay` that
+  shadows `ImportedMesh` texture reads at spawn time with per-slot
+  precedence (XATO/XTNM merge first-non-empty, XTXR later-wins);
+  #585 `expand_scol_placements` fans SCOL REFRs into synthetic
+  children when `statics[base].model_path` is empty (mod-added SCOL or
+  previsibine bypass); #589 `parse_pkin` + `expand_pkin_placements`
+  for pack-in bundles (872 vanilla records were silently dropping
+  their CNAM content lists); #602 LIGH `XPWR` power-circuit FormID
+  captured onto `LightData` as pre-work for the settlement-circuit
+  ECS system.
+
+- **NIF dispatch coverage** — #394 closed the last four
+  Oblivion-unskippable types (`NiPathInterpolator`,
+  `NiFlipController`, `NiBsBoneLodController`, `BhkMultiSphereShape`)
+  with byte-exact `stream.position() == bytes.len()` guards since
+  Oblivion has no `block_sizes` table for recovery; #557 parsed six
+  rare Havok tail types (`BhkAabbPhantom`, `BhkLiquidAction`,
+  `BhkPCollisionObject`, `BhkConvexListShape`, `BhkBreakableConstraint`,
+  `BhkOrientHingedBodyAction`) draining the NIF-12 unknown bucket
+  across all four pre-FO4 games; #336 declared `VF_UVS_2` /
+  `VF_LAND_DATA` constants to match nif.xml's 11-bit vertex-attribute
+  mask (decoding deferred per no-guessing policy — no consumer to
+  validate against); #338 added a crate-independent
+  `AnimationController` (`SparseSetStorage` component + catalog +
+  transition matrix + `apply_pending_transition`) closing the AR-09
+  glue gap between the KFM parser and `AnimationStack`.
+
+- **Renderer / Vulkan correctness** — #92 closed a spec violation
+  (`VUID-vkUpdateDescriptorSets-None-03047`): `update_rgba` /
+  `drop_texture` / `write_texture_to_all_sets` used to synchronously
+  rewrite every bindless descriptor set including any in-flight one.
+  New per-slot `pending_set_writes` queue drained from `begin_frame`
+  after fence-wait, so non-current slots get their writes deferred
+  until safe. #578 dropped the baked `viewports` / `scissors` arrays
+  on four `PipelineViewportStateCreateInfo` sites — every one of our
+  pipelines already declared the state dynamic and set it per-frame
+  via `cmd_set_viewport` / `cmd_set_scissor`, so the static arrays
+  were ignored-but-misleading dead code. #594 split DDS header
+  emission: uncompressed formats (DXGI 28/29/87/91/56/61) now emit
+  `DDSD_PITCH` with `width * bpp`, block-compressed keep
+  `DDSD_LINEARSIZE`; the old "always-LINEARSIZE" was rejected by
+  strict validators (texconv, DirectXTex). #577 corrected three stale
+  `GpuInstance` doc sites from 192 B to 320 B (the size grew via #492
+  +32 B UV/material_alpha and #562 +96 B Skyrim+ BSLightingShader
+  variant payloads).
+
+- **Safety hardening** — #586 mirrored the NIF #388 pattern onto BSA +
+  BA2: new `crates/bsa/src/safety.rs` with `MAX_ENTRY_COUNT = 10M` and
+  `MAX_CHUNK_BYTES = 256 MB` checked at every allocation-from-header
+  site (`file_count`, `folder_count`, per-folder `count`, GNRL
+  packed/unpacked, DX10 chunk packed/unpacked, compressed
+  `original_size`). Prevents `u32::MAX`-header DoS on malformed or
+  hostile archives. #597 added a `warn!` on BA2 DX10 `num_mips = 0`
+  and documented the intentional `.max(1)` clamp in `build_dds_header`
+  (operator signal, not a correctness fix — vanilla FO4 never trips
+  it but third-party repackers occasionally do).
+
+- **ESM correctness** — #348 detected the Skyrim TES4 `Localized`
+  flag (`0x80`) and routed FULL / DESC at ~25 sites through a new
+  `read_lstring_or_zstring` helper that returns
+  `"<lstring 0xNNNNNNNN>"` for 4-byte `.STRINGS` refs instead of
+  3-char UTF-8 garbage; thread-local `CURRENT_PLUGIN_LOCALIZED`
+  toggled per-plugin so a non-localized plugin can't inherit stale
+  state. Real `.STRINGS` loader deferred (multi-week scope).
+  #537 fixed Oblivion cells fogging to solid color a few units from
+  the camera: HNAM had been decoded as `[day_near, day_far,
+  night_near, night_far]`, but the real Oblivion HNAM is 14 × f32 of
+  HDR eye-adaptation / sunlight-dimmer tuning per UESP; FNAM remains
+  the authoritative fog source for every game (#536's FNV/FO3
+  finding now inherits). #380 routed the XCLL directional-light
+  rotation through the shared `euler_zup_to_quat_yup` helper that
+  REFR placement has used since day one — the inlined astronomical
+  azimuth/elevation formula on the XCLL branch didn't match Gamebryo's
+  CW-positive convention (memoized in `gamebryo_cw_rotation`).
+
+- **Audit seeding** — `66f9fae` landed 32 issue dirs (#572–603) plus
+  the three audit reports under `docs/audits/`: a 30-finding FO4
+  consumer sweep, a 20-finding renderer sweep, and a 12-finding
+  safety sweep.
+
+Net: tests +81 (1 071 → **1 152**), LOC +4 526 non-test (98 826
+total), 3 new source files. Eighteen audit issues closed, no new
+child issues opened. Bench-of-record unchanged (192.8 FPS / 5.19 ms
+at `e6e8091`, **42 commits stale — crosses the 30-commit threshold**,
+flagged in Known Issues pending a re-bench session.)
+
+---
+
 ## Session 16 — NIF audit 2026-04-22 closeout: dispatch coverage + Oblivion bisect + ESM REFR/TXST expansion  (2026-04-23, 634929b..e0791b4)
 
 A 14-issue bug-bash against `AUDIT_NIF_2026-04-22`'s dispatch-coverage

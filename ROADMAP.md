@@ -12,11 +12,13 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-04-23.
+**Last verified**: 2026-04-24.
 **Bench-of-record**: Prospector Saloon 192.8 FPS / 5.19 ms — commit
 `e6e8091`, wall-clock bench (PERF-1 fix). Scene is glass-heavy (bottles,
 pitcher, marquee sign); RT refraction/reflection cost is representative
-of a tough FNV interior.
+of a tough FNV interior. **Staleness**: 42 commits since bench at time
+of writing (crosses the 30-commit freshness threshold); re-bench scheduled
+next session. See Known Issues.
 
 ---
 
@@ -322,6 +324,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [ ] **R5** Papyrus full-runtime prototype on one real quest before M47.2 scope commitment
 - [ ] **R6** `VulkanContext` scratch buffers have no capacity telemetry — add `ctx.scratch` before M40
 - [x] **R6a** Prospector re-bench — **closed**. 192.8 FPS / 5.19 ms at `e6e8091`, wall-clock bench.
+- [ ] **R6a-stale** Bench-of-record `e6e8091` is **42 commits stale** as of 2026-04-24 (session 17 close). Re-run Prospector + Skyrim + FO4 bench row before the next perf-affecting merge lands; flag here until refreshed.
 - [ ] **R7** Scheduler access declarations before flipping M27 parallel dispatch on
 
 ### Open — Misc
@@ -333,16 +336,16 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-04-23, verified by `/session-close`.
+Ground-truth as of 2026-04-24, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (non-test)            | ~94 300                       |
-| Rust total lines                        | ~96 300                       |
-| Source files (non-test)                 | 200                          |
+| Rust source lines (non-test)            | ~98 800                       |
+| Rust total lines                        | ~100 800                      |
+| Source files (non-test)                 | 203                          |
 | Workspace members                       | 16                           |
-| Tests (last reported by ROADMAP)        | 1071                         |
-| Open issue directories                  | 539 (`.claude/issues/`)       |
+| Tests (last reported by ROADMAP)        | 1152                         |
+| Open issue directories                  | 561 (`.claude/issues/`)       |
 | NIFs in per-game integration sweeps     | 177 286                       |
 | Per-game NIF parse success rate         | 100% (7 games)                |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
