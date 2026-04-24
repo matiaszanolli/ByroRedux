@@ -370,6 +370,23 @@ fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<V
         // Bit 0 of the flags is the "is cubemap" indicator in FO4 DX10 archives.
         let is_cubemap = flags & 0x1 != 0;
 
+        // `num_mips == 0` is malformed — the DX10 record should always
+        // declare at least a base (level-0) mip for the top-level
+        // image. Vanilla FO4 archives never trip this; third-party
+        // tooling occasionally writes 0 and we've been silently
+        // clamping in `build_dds_header` (via `num_mips.max(1)`). Surface
+        // the anomaly as `warn!` so operators can spot bad archives in
+        // the logs while still producing a working 1-mip DDS. See
+        // audit FO4-DIM2-07 / #597.
+        if num_mips == 0 {
+            log::warn!(
+                "BA2 DX10 record at chunk 0x{:016x} declares num_mips = 0 \
+                 (malformed) — clamping to 1 mip in the synthesized DDS header; \
+                 archive is likely third-party-repackaged",
+                reader.stream_position().unwrap_or(0)
+            );
+        }
+
         // `num_chunks` is a u8 (max 255), so the `Vec::with_capacity`
         // here is inherently bounded and needs no extra check.
         let mut chunks = Vec::with_capacity(num_chunks);
@@ -568,6 +585,14 @@ fn build_dds_header(
     hdr.extend_from_slice(&(width as u32).to_le_bytes());
     hdr.extend_from_slice(&linear_size.to_le_bytes());
     hdr.extend_from_slice(&0u32.to_le_bytes()); // depth
+    // `num_mips.max(1)` is an intentional clamp: the DDS spec says
+    // when `DDSD_MIPMAPCOUNT` is unset the loader MUST treat the image
+    // as single-mip regardless of what `dwMipMapCount` says, so both
+    // values are always self-consistent:
+    //   - `num_mips == 0` or `1` → flag cleared, field = 1 (top mip only).
+    //   - `num_mips > 1`         → flag set, field = authored value.
+    // The malformed `num_mips = 0` path is warned at record-read time
+    // (`read_dx10_records`) so the clamp isn't silent. See #597.
     hdr.extend_from_slice(&(num_mips.max(1) as u32).to_le_bytes());
     // 11 reserved u32
     for _ in 0..11 {
@@ -669,6 +694,62 @@ mod tests {
     #[test]
     fn linear_size_unknown_format_uses_total() {
         assert_eq!(linear_size_for(0, 128, 128, 9999), 9999);
+    }
+
+    /// Regression for #597 (FO4-DIM2-07) — when a BA2 DX10 record
+    /// declares `num_mips = 0` (malformed but observed in third-party
+    /// repacked archives), the synthesized DDS header must:
+    ///   1. Clear `DDSD_MIPMAPCOUNT` (bit 0x20000) in `flags`.
+    ///   2. Clear `DDSCAPS_MIPMAP` (bit 0x400000) in `caps1`.
+    ///   3. Write `dwMipMapCount = 1` (DDS loaders must treat the
+    ///      texture as single-mip regardless of the field value when
+    ///      the flag is cleared — the `.max(1)` clamp keeps the field
+    ///      and the flag self-consistent).
+    /// The `warn!` at record-read time is orthogonal to this header
+    /// shape and is exercised indirectly via runtime log capture — not
+    /// tested here because setting up `log` in a unit test drags in a
+    /// global logger.
+    #[test]
+    fn build_dds_header_clamps_num_mips_zero_to_one_and_clears_mip_flags() {
+        let hdr = build_dds_header(71, 128, 128, 0, false, &[]);
+        assert_eq!(hdr.len(), 148);
+
+        // DDSD_MIPMAPCOUNT = 0x20000. `flags` lives at bytes 8..12.
+        let flags = u32::from_le_bytes(hdr[8..12].try_into().unwrap());
+        assert_eq!(
+            flags & 0x20000,
+            0,
+            "num_mips=0 must NOT set DDSD_MIPMAPCOUNT (flags=0x{:08x})",
+            flags
+        );
+
+        // DDSCAPS_MIPMAP = 0x400000. `caps1` lives at bytes 108..112.
+        let caps1 = u32::from_le_bytes(hdr[108..112].try_into().unwrap());
+        assert_eq!(
+            caps1 & 0x400000,
+            0,
+            "num_mips=0 must NOT set DDSCAPS_MIPMAP (caps1=0x{:08x})",
+            caps1
+        );
+
+        // `dwMipMapCount` lives at bytes 28..32 (see header layout).
+        let mip_count = u32::from_le_bytes(hdr[28..32].try_into().unwrap());
+        assert_eq!(
+            mip_count, 1,
+            "num_mips=0 must clamp dwMipMapCount to 1 (got {})",
+            mip_count
+        );
+    }
+
+    /// Sibling: `num_mips = 1` (the vanilla single-mip baseline) must
+    /// produce the same header shape as the `num_mips = 0` clamp —
+    /// the spec treats them identically when `DDSD_MIPMAPCOUNT` is
+    /// cleared. Guards against a future change that special-cases 0.
+    #[test]
+    fn build_dds_header_num_mips_one_matches_zero_clamp() {
+        let hdr_zero = build_dds_header(71, 128, 128, 0, false, &[]);
+        let hdr_one = build_dds_header(71, 128, 128, 1, false, &[]);
+        assert_eq!(hdr_zero, hdr_one);
     }
 
     #[test]
