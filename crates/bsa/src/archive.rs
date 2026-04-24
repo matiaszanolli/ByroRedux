@@ -1,5 +1,6 @@
 //! BSA archive reading and file extraction.
 
+use crate::safety::{checked_chunk_size, checked_chunk_size_usize, checked_entry_count};
 use flate2::read::ZlibDecoder;
 use std::collections::HashMap;
 use std::fs::File;
@@ -166,8 +167,16 @@ impl BsaArchive {
         }
 
         let archive_flags = u32::from_le_bytes(header[12..16].try_into().unwrap());
-        let folder_count = u32::from_le_bytes(header[16..20].try_into().unwrap()) as usize;
-        let file_count = u32::from_le_bytes(header[20..24].try_into().unwrap()) as usize;
+        // Cap folder / file counts before the downstream
+        // `Vec::with_capacity` / `HashMap::with_capacity` allocations.
+        // Vanilla archives top out at ~20 K folders / 1 M files (Skyrim
+        // SE Meshes0.bsa); 10 M is a paranoid cap that still catches the
+        // `u32::MAX` attack from a single corrupted header word. See
+        // #586 / FO4-DIM2-01.
+        let folder_count_raw = u32::from_le_bytes(header[16..20].try_into().unwrap());
+        let folder_count = checked_entry_count(folder_count_raw, "BSA folder_count")?;
+        let file_count_raw = u32::from_le_bytes(header[20..24].try_into().unwrap());
+        let file_count = checked_entry_count(file_count_raw, "BSA file_count")?;
         let _total_folder_name_length = u32::from_le_bytes(header[24..28].try_into().unwrap());
         let _total_file_name_length = u32::from_le_bytes(header[28..32].try_into().unwrap());
 
@@ -214,7 +223,13 @@ impl BsaArchive {
             let mut rec = [0u8; 24];
             reader.read_exact(&mut rec[..folder_record_size])?;
             let hash = u64::from_le_bytes(rec[0..8].try_into().unwrap());
-            let count = u32::from_le_bytes(rec[8..12].try_into().unwrap()) as usize;
+            // Per-folder file count: also attacker-controlled, and the
+            // inner loop below pushes one entry per iteration — a
+            // `u32::MAX` count would push past `file_count`'s pre-sized
+            // `raw_files` capacity (triggering unbounded grow) and
+            // sink the whole read. Cap it the same way. See #586.
+            let count_raw = u32::from_le_bytes(rec[8..12].try_into().unwrap());
+            let count = checked_entry_count(count_raw, "BSA folder.count")?;
             let offset = if version == 105 {
                 u64::from_le_bytes(rec[16..24].try_into().unwrap())
             } else {
@@ -448,7 +463,12 @@ impl BsaArchive {
             // First 4 bytes are the original uncompressed size
             let mut size_buf = [0u8; 4];
             file.read_exact(&mut size_buf)?;
-            let original_size = u32::from_le_bytes(size_buf) as usize;
+            // Cap the decompression target buffer. BSA compressed files
+            // top out at vanilla mesh LODs around ~30 MB uncompressed;
+            // 256 MB is a safe margin that still rejects `u32::MAX`.
+            // #586.
+            let original_size =
+                checked_chunk_size(u32::from_le_bytes(size_buf), "BSA original_size")?;
 
             // Read remaining compressed data. Same #352 underflow guard
             // as above: a malformed record can flag the file compressed
@@ -464,6 +484,10 @@ impl BsaArchive {
                     ),
                 )
             })?;
+            // `data_size` itself came from `entry.size & 0x3FFFFFFF`
+            // (30-bit mask → max 1 GB) — the explicit cap brings it
+            // into line with the 256 MB ceiling used elsewhere. #586.
+            let compressed_len = checked_chunk_size_usize(compressed_len, "BSA compressed_len")?;
             let mut compressed = vec![0u8; compressed_len];
             file.read_exact(&mut compressed)?;
             // Drop the lock before the decompression CPU work — the file
@@ -486,6 +510,10 @@ impl BsaArchive {
 
             Ok(decompressed)
         } else {
+            // Uncompressed path: cap `data_size` too. The 30-bit mask
+            // on `entry.size` already bounds this at 1 GB, but 256 MB
+            // aligns the uncompressed and compressed paths. #586.
+            let data_size = checked_chunk_size_usize(data_size, "BSA data_size")?;
             let mut data = vec![0u8; data_size];
             file.read_exact(&mut data)?;
             Ok(data)
@@ -839,5 +867,48 @@ mod tests {
             .extract("z.dds")
             .expect("zero-data-size entry must extract as empty Vec");
         assert!(data.is_empty());
+    }
+
+    /// Regression for #586 (FO4-DIM2-01, sibling) — a BSA with
+    /// `folder_count = u32::MAX` must return `InvalidData` from
+    /// `open()` before the reader allocates a `Vec::with_capacity`
+    /// backing 4 billion folder records. Pre-fix this would abort on
+    /// 64-bit targets.
+    #[test]
+    fn malicious_bsa_folder_count_u32_max_rejected() {
+        use std::io::Write;
+        // Build a minimal 36-byte BSA v104 header: magic + version +
+        // offset + flags + folder_count = u32::MAX + rest zero. We
+        // set `archive_flags` bits 1 + 2 so the early "missing names"
+        // guard is cleared; the reader then hits the folder-count cap.
+        let mut hdr = Vec::with_capacity(36);
+        hdr.extend_from_slice(b"BSA\0"); // magic
+        hdr.extend_from_slice(&104u32.to_le_bytes()); // version
+        hdr.extend_from_slice(&36u32.to_le_bytes()); // offset (header size)
+        hdr.extend_from_slice(&0b111u32.to_le_bytes()); // flags: dir + file names
+        hdr.extend_from_slice(&u32::MAX.to_le_bytes()); // malicious folder_count
+        hdr.extend_from_slice(&0u32.to_le_bytes()); // file_count
+        hdr.extend_from_slice(&0u32.to_le_bytes()); // total_folder_name_length
+        hdr.extend_from_slice(&0u32.to_le_bytes()); // total_file_name_length
+        hdr.extend_from_slice(&0u32.to_le_bytes()); // trailing file_flags (BSA header is 36 bytes)
+        assert_eq!(hdr.len(), 36);
+
+        let path = std::env::temp_dir().join(format!(
+            "byroredux_bsa_malicious_{}.bsa",
+            std::process::id()
+        ));
+        {
+            let mut f = File::create(&path).expect("create temp BSA");
+            f.write_all(&hdr).expect("write malicious header");
+        }
+        let result = BsaArchive::open(&path);
+        let _ = std::fs::remove_file(&path);
+        let err = match result {
+            Ok(_) => panic!("u32::MAX folder_count must not be accepted"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        let msg = format!("{err}");
+        assert!(msg.contains("folder_count"), "got: {msg}");
     }
 }

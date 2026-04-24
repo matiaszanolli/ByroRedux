@@ -29,6 +29,7 @@
 //! let bytes = archive.extract("meshes/interiors/desk01.nif")?;
 //! ```
 
+use crate::safety::{checked_chunk_size, checked_chunk_size_usize, checked_entry_count};
 use flate2::read::ZlibDecoder;
 use std::collections::HashMap;
 use std::fs::File;
@@ -120,7 +121,12 @@ impl Ba2Archive {
 
         let version = u32::from_le_bytes(hdr[4..8].try_into().unwrap());
         let type_tag: &[u8; 4] = hdr[8..12].try_into().unwrap();
-        let file_count = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
+        // Cap `file_count` before any downstream `Vec::with_capacity` /
+        // `HashMap::with_capacity`. Vanilla archives top out ~600 K
+        // entries; anything beyond 10 M is either corruption or a DoS
+        // attempt. See #586 / FO4-DIM2-01.
+        let file_count_raw = u32::from_le_bytes(hdr[12..16].try_into().unwrap());
+        let file_count = checked_entry_count(file_count_raw, "BA2 file_count")?;
         let name_table_offset = u64::from_le_bytes(hdr[16..24].try_into().unwrap());
 
         let variant = match type_tag {
@@ -297,6 +303,8 @@ impl Ba2Archive {
 
 /// Read `count` 36-byte GNRL file records.
 fn read_general_records(reader: &mut BufReader<File>, count: usize) -> io::Result<Vec<Ba2Entry>> {
+    // `count` was already capped by `checked_entry_count` at the header
+    // parse site; the `Vec::with_capacity` below is therefore safe.
     let mut out = Vec::with_capacity(count);
     let mut rec = [0u8; 36];
     for _ in 0..count {
@@ -308,6 +316,13 @@ fn read_general_records(reader: &mut BufReader<File>, count: usize) -> io::Resul
         let offset = u64::from_le_bytes(rec[16..24].try_into().unwrap());
         let packed_size = u32::from_le_bytes(rec[24..28].try_into().unwrap());
         let unpacked_size = u32::from_le_bytes(rec[28..32].try_into().unwrap());
+        // #586 — reject obviously-hostile sizes at record-read time so
+        // `extract` never has to trust them. Vanilla FO4 GNRL entries
+        // top out around 8 MB decompressed; 256 MB is a comfortable
+        // margin. Single check catches a `u32::MAX` entry that would
+        // otherwise flow into `vec![0u8; n]` at extract time.
+        checked_chunk_size(packed_size, "BA2 GNRL packed_size")?;
+        checked_chunk_size(unpacked_size, "BA2 GNRL unpacked_size")?;
         let padding = u32::from_le_bytes(rec[32..36].try_into().unwrap());
         if padding != PADDING_BAADFOOD {
             log::debug!(
@@ -328,6 +343,8 @@ fn read_general_records(reader: &mut BufReader<File>, count: usize) -> io::Resul
 /// Read `count` DX10 file records. Each record has a 24-byte base header
 /// followed by `num_chunks` chunk headers (24 bytes each).
 fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<Vec<Ba2Entry>> {
+    // `count` was capped at the header parse site by
+    // `checked_entry_count`; the `Vec::with_capacity` is safe.
     let mut out = Vec::with_capacity(count);
     for _ in 0..count {
         let mut base = [0u8; 24];
@@ -353,6 +370,8 @@ fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<V
         // Bit 0 of the flags is the "is cubemap" indicator in FO4 DX10 archives.
         let is_cubemap = flags & 0x1 != 0;
 
+        // `num_chunks` is a u8 (max 255), so the `Vec::with_capacity`
+        // here is inherently bounded and needs no extra check.
         let mut chunks = Vec::with_capacity(num_chunks);
         for _ in 0..num_chunks {
             let mut chunk = [0u8; 24];
@@ -360,6 +379,9 @@ fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<V
             let offset = u64::from_le_bytes(chunk[0..8].try_into().unwrap());
             let packed_size = u32::from_le_bytes(chunk[8..12].try_into().unwrap());
             let unpacked_size = u32::from_le_bytes(chunk[12..16].try_into().unwrap());
+            // #586 — cap DX10 chunk sizes at record-read time.
+            checked_chunk_size(packed_size, "BA2 DX10 chunk packed_size")?;
+            checked_chunk_size(unpacked_size, "BA2 DX10 chunk unpacked_size")?;
             let start_mip = u16::from_le_bytes(chunk[16..18].try_into().unwrap());
             let end_mip = u16::from_le_bytes(chunk[18..20].try_into().unwrap());
             let padding = u32::from_le_bytes(chunk[20..24].try_into().unwrap());
@@ -393,6 +415,11 @@ fn decompress_chunk(
     unpacked_size: usize,
     compression: Ba2Compression,
 ) -> io::Result<Vec<u8>> {
+    // Defense-in-depth: entries that reached this function already had
+    // `unpacked_size` capped at record-read time, but `decompress_chunk`
+    // is also reachable from the test harness with arbitrary inputs.
+    // Re-check so a direct caller can't bypass the safety net. #586.
+    let unpacked_size = checked_chunk_size_usize(unpacked_size, "BA2 decompress unpacked_size")?;
     match compression {
         Ba2Compression::Zlib => {
             let mut decoder = ZlibDecoder::new(packed);
@@ -695,5 +722,47 @@ mod tests {
         let garbage = [0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA];
         let result = decompress_chunk(&garbage, 1024, Ba2Compression::Lz4Block);
         assert!(result.is_err());
+    }
+
+    /// Regression for #586 (FO4-DIM2-01) — a corrupted / hostile BA2
+    /// header with `file_count = u32::MAX` must bail with an
+    /// `InvalidData` error BEFORE the reader allocates a
+    /// 4-billion-entry `Vec` / `HashMap`. Pre-fix this would abort the
+    /// process on 64-bit targets.
+    #[test]
+    fn malicious_file_count_u32_max_rejected_before_allocation() {
+        use std::io::Write;
+        // Build a minimal 24-byte BA2 header: BTDX + v1 + GNRL + u32::MAX
+        // file count + bogus name-table offset. The reader should hit
+        // `checked_entry_count` and return `InvalidData` immediately.
+        let mut hdr = Vec::with_capacity(24);
+        hdr.extend_from_slice(b"BTDX"); // magic
+        hdr.extend_from_slice(&1u32.to_le_bytes()); // version (FO4 original)
+        hdr.extend_from_slice(b"GNRL"); // type_tag
+        hdr.extend_from_slice(&u32::MAX.to_le_bytes()); // malicious file_count
+        hdr.extend_from_slice(&0u64.to_le_bytes()); // name_table_offset
+        assert_eq!(hdr.len(), 24);
+
+        // Write to a unique temp path so concurrent test runs don't
+        // collide. `env::temp_dir()` is sufficient — we clean up
+        // explicitly on both success and failure.
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "byroredux_ba2_malicious_{}.ba2",
+            std::process::id()
+        ));
+        {
+            let mut f = std::fs::File::create(&path).expect("create temp BA2");
+            f.write_all(&hdr).expect("write header");
+        }
+        let result = Ba2Archive::open(&path);
+        let _ = std::fs::remove_file(&path);
+        let err = match result {
+            Ok(_) => panic!("u32::MAX file_count must not be accepted"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        let msg = format!("{err}");
+        assert!(msg.contains("file_count"), "got: {msg}");
     }
 }
