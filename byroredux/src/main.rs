@@ -14,8 +14,8 @@ use anyhow::Result;
 use byroredux_core::animation::AnimationClipRegistry;
 use byroredux_core::console::CommandRegistry;
 use byroredux_core::ecs::{
-    ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, Scheduler, ScratchTelemetry, Stage,
-    TotalTime, World,
+    Access, ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, Scheduler,
+    ScratchTelemetry, Stage, Transform, TotalTime, World,
 };
 use byroredux_core::string::StringPool;
 use byroredux_platform::window::{self, WindowConfig};
@@ -31,7 +31,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::commands::build_command_registry;
-use crate::components::{InputState, NameIndex, SubtreeCache};
+use crate::components::{InputState, NameIndex, Spinning, SubtreeCache};
 use crate::helpers::world_resource_set;
 use crate::render::build_render_data;
 use crate::systems::{
@@ -243,13 +243,31 @@ impl App {
         byroredux_scripting::register(&mut world);
 
         // Build the system schedule — stages run sequentially, systems
-        // within each stage run in parallel via rayon.
+        // within each stage run in parallel via rayon. Three systems
+        // here demonstrate the R7 declared-access pattern via
+        // `add_to_with_access`; the rest stay undeclared (closures and
+        // function items can't impl `System::access`, so they appear
+        // as "Unknown" in the conflict report until migrated). Drive
+        // further migrations off the `sys.accesses` console output.
         let mut scheduler = Scheduler::new();
-        scheduler.add_to(Stage::Early, fly_camera_system);
+        scheduler.add_to_with_access(
+            Stage::Early,
+            fly_camera_system,
+            Access::new()
+                .reads_resource::<ActiveCamera>()
+                .reads_resource::<InputState>()
+                .reads::<byroredux_physics::RapierHandles>()
+                .writes::<Transform>()
+                .writes_resource::<byroredux_physics::PhysicsWorld>(),
+        );
         scheduler.add_to(Stage::Early, weather_system);
         scheduler.add_to(Stage::Early, byroredux_scripting::timer_tick_system);
         scheduler.add_to(Stage::Update, animation_system);
-        scheduler.add_to(Stage::Update, spin_system);
+        scheduler.add_to_with_access(
+            Stage::Update,
+            spin_system,
+            Access::new().reads::<Spinning>().writes::<Transform>(),
+        );
         scheduler.add_to(Stage::PostUpdate, make_transform_propagation_system());
         // Particle simulation runs after transform propagation so emitter
         // entities have their final world-space spawn origin (#401).
@@ -263,7 +281,14 @@ impl App {
         // world transforms (including billboard rotations). See #217.
         scheduler.add_exclusive(Stage::PostUpdate, make_world_bound_propagation_system());
         scheduler.add_to(Stage::Physics, byroredux_physics::physics_sync_system);
-        scheduler.add_to(Stage::Late, log_stats_system);
+        scheduler.add_to_with_access(
+            Stage::Late,
+            log_stats_system,
+            Access::new()
+                .reads_resource::<TotalTime>()
+                .reads_resource::<DeltaTime>()
+                .reads_resource::<DebugStats>(),
+        );
         scheduler.add_exclusive(Stage::Late, byroredux_scripting::event_cleanup_system);
 
         // Store system names + console commands as resources.
@@ -273,6 +298,12 @@ impl App {
             .map(|s| s.to_string())
             .collect();
         world.insert_resource(SystemList(system_names));
+        // R7: snapshot the per-stage access report once after the
+        // schedule is built. Read by `sys.accesses` to surface
+        // declared-access conflicts to the operator.
+        world.insert_resource(byroredux_core::ecs::SchedulerAccessReport(
+            scheduler.access_report(),
+        ));
         world.insert_resource(build_command_registry());
 
         // Start debug server (feature-gated, zero cost when disabled).

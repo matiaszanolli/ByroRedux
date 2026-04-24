@@ -5,6 +5,7 @@
 //! - [`SparseSetStorage`] — O(1) insert/remove, dense iteration (default)
 //! - [`PackedStorage`] — sorted by entity, cache-friendly iteration (opt-in)
 
+pub mod access;
 pub mod components;
 mod lock_tracker;
 pub mod packed;
@@ -26,14 +27,19 @@ pub use components::{
     ParticleEmitter, ParticleSoA, SceneFlags, SkinnedMesh, TextureHandle, Transform,
     WorldBound, MAX_BONES_PER_MESH,
 };
+pub use access::{
+    analyze_pair, Access, AccessConflict, AccessEntry, ConflictKind, ConflictPair,
+};
 pub use packed::PackedStorage;
 pub use query::{ComponentRef, QueryRead, QueryWrite};
 pub use resource::{Resource, ResourceRead, ResourceWrite};
 pub use resources::{
-    DebugStats, DeltaTime, EngineConfig, ScratchRow, ScratchTelemetry, ScreenshotBridge,
-    SystemList, TotalTime,
+    DebugStats, DeltaTime, EngineConfig, SchedulerAccessReport, ScratchRow, ScratchTelemetry,
+    ScreenshotBridge, SystemList, TotalTime,
 };
-pub use scheduler::{Scheduler, Stage};
+pub use scheduler::{
+    AccessReport, Scheduler, Stage, StageConflictRow, StageReport, SystemAccessRow,
+};
 pub use sparse_set::SparseSetStorage;
 pub use storage::DynStorage;
 pub use storage::{Component, ComponentStorage, EntityId};

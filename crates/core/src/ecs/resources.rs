@@ -6,6 +6,13 @@ use super::resource::Resource;
 pub struct SystemList(pub Vec<String>);
 impl Resource for SystemList {}
 
+/// Snapshot of [`crate::ecs::scheduler::AccessReport`] captured at
+/// scheduler-build time and stored as a resource so console commands
+/// (`sys.accesses`) can read the per-stage declared-access map without
+/// a live `Scheduler` reference. R7.
+pub struct SchedulerAccessReport(pub crate::ecs::scheduler::AccessReport);
+impl Resource for SchedulerAccessReport {}
+
 /// Bridge for requesting screenshots from the renderer.
 /// Set `requested` to true; the renderer will capture the next frame and
 /// place the PNG bytes in `result`.

@@ -9,6 +9,7 @@
 //! Systems added with `add_exclusive` run alone *after* the parallel batch
 //! in their stage completes. Use this for cleanup or barrier systems.
 
+use super::access::{analyze_pair, Access, AccessConflict};
 use super::system::System;
 use super::world::World;
 use std::collections::BTreeMap;
@@ -33,12 +34,35 @@ pub enum Stage {
     Late = 4,
 }
 
+/// One scheduled system plus its declared access (R7).
+///
+/// `declared_override` lets the scheduler attach an [`Access`]
+/// declaration at registration time — useful for closures, which
+/// can't override `System::access` themselves. When `None`, the
+/// scheduler falls back to `system.access()` (still optional).
+struct SystemEntry {
+    system: Box<dyn System>,
+    declared_override: Option<Access>,
+}
+
+impl SystemEntry {
+    /// Resolve the effective declaration, preferring the registration-
+    /// site override. `None` means "undeclared" and propagates as
+    /// `AccessConflict::Unknown` through analysis.
+    fn declared_access(&self) -> Option<Access> {
+        if let Some(over) = &self.declared_override {
+            return Some(over.clone());
+        }
+        self.system.access()
+    }
+}
+
 /// Per-stage system storage.
 struct StageData {
     /// Systems that run in parallel within this stage.
-    parallel: Vec<Box<dyn System>>,
+    parallel: Vec<SystemEntry>,
     /// Systems that run sequentially *after* the parallel batch completes.
-    exclusive: Vec<Box<dyn System>>,
+    exclusive: Vec<SystemEntry>,
 }
 
 impl StageData {
@@ -53,7 +77,7 @@ impl StageData {
         self.parallel
             .iter()
             .chain(self.exclusive.iter())
-            .map(|s| s.name())
+            .map(|e| e.system.name())
     }
 }
 
@@ -103,7 +127,45 @@ impl Scheduler {
             .entry(stage)
             .or_insert_with(StageData::new)
             .parallel
-            .push(Box::new(system));
+            .push(SystemEntry {
+                system: Box::new(system),
+                declared_override: None,
+            });
+        self
+    }
+
+    /// Add a parallel system to `stage` with an explicit access
+    /// declaration (R7).
+    ///
+    /// Overrides whatever `System::access` returns. Intended for
+    /// closure systems, which can't override the trait method
+    /// themselves; struct systems usually declare via `impl System`
+    /// directly. The override is otherwise identical to [`add_to`] —
+    /// no duplicate-name rejection (use [`try_add_to_with_access`] for
+    /// that).
+    pub fn add_to_with_access<S: System + 'static>(
+        &mut self,
+        stage: Stage,
+        system: S,
+        access: Access,
+    ) -> &mut Self {
+        let name = system.name().to_string();
+        if self.has_system(&name) {
+            log::warn!(
+                "Scheduler: duplicate system name '{}' in stage {:?} \
+                 (with declared access — see add_to)",
+                name,
+                stage,
+            );
+        }
+        self.stages
+            .entry(stage)
+            .or_insert_with(StageData::new)
+            .parallel
+            .push(SystemEntry {
+                system: Box::new(system),
+                declared_override: Some(access),
+            });
         self
     }
 
@@ -128,7 +190,32 @@ impl Scheduler {
             .entry(stage)
             .or_insert_with(StageData::new)
             .parallel
-            .push(Box::new(system));
+            .push(SystemEntry {
+                system: Box::new(system),
+                declared_override: None,
+            });
+        Ok(self)
+    }
+
+    /// Strict sibling of [`add_to_with_access`] — rejects duplicate names.
+    pub fn try_add_to_with_access<S: System + 'static>(
+        &mut self,
+        stage: Stage,
+        system: S,
+        access: Access,
+    ) -> Result<&mut Self, String> {
+        let name = system.name().to_string();
+        if self.has_system(&name) {
+            return Err(name);
+        }
+        self.stages
+            .entry(stage)
+            .or_insert_with(StageData::new)
+            .parallel
+            .push(SystemEntry {
+                system: Box::new(system),
+                declared_override: Some(access),
+            });
         Ok(self)
     }
 
@@ -152,7 +239,10 @@ impl Scheduler {
             .entry(stage)
             .or_insert_with(StageData::new)
             .exclusive
-            .push(Box::new(system));
+            .push(SystemEntry {
+                system: Box::new(system),
+                declared_override: None,
+            });
         self
     }
 
@@ -172,7 +262,10 @@ impl Scheduler {
             .entry(stage)
             .or_insert_with(StageData::new)
             .exclusive
-            .push(Box::new(system));
+            .push(SystemEntry {
+                system: Box::new(system),
+                declared_override: None,
+            });
         Ok(self)
     }
 
@@ -184,17 +277,17 @@ impl Scheduler {
             {
                 data.parallel
                     .par_iter_mut()
-                    .for_each(|sys| sys.run(world, dt));
+                    .for_each(|entry| entry.system.run(world, dt));
             }
             #[cfg(not(feature = "parallel-scheduler"))]
             {
-                for sys in &mut data.parallel {
-                    sys.run(world, dt);
+                for entry in &mut data.parallel {
+                    entry.system.run(world, dt);
                 }
             }
             // Phase 2: run exclusive systems sequentially.
-            for sys in &mut data.exclusive {
-                sys.run(world, dt);
+            for entry in &mut data.exclusive {
+                entry.system.run(world, dt);
             }
         }
     }
@@ -210,6 +303,134 @@ impl Scheduler {
         self.stages
             .values()
             .any(|d| d.all_names().any(|n| n == name))
+    }
+
+    /// Build a per-stage report of declared accesses + parallel-pair
+    /// conflicts (R7).
+    ///
+    /// Computed on demand — no caching, since the scheduler's lifetime
+    /// is the whole process and the report is only requested by debug
+    /// commands and one-shot diagnostics. Walks every parallel-stage
+    /// pair, classifying it as `None`, `Conflict { pairs }`, or
+    /// `Unknown` (when one or both sides are undeclared).
+    ///
+    /// Exclusive-phase systems are listed but not paired against each
+    /// other (they run serially after the parallel batch, so they can
+    /// never collide).
+    pub fn access_report(&self) -> AccessReport {
+        let mut stages = Vec::new();
+        for (stage, data) in &self.stages {
+            let mut systems = Vec::with_capacity(data.parallel.len() + data.exclusive.len());
+            for entry in &data.parallel {
+                systems.push(SystemAccessRow {
+                    name: entry.system.name().to_string(),
+                    declared: entry.declared_access(),
+                    is_exclusive: false,
+                });
+            }
+            for entry in &data.exclusive {
+                systems.push(SystemAccessRow {
+                    name: entry.system.name().to_string(),
+                    declared: entry.declared_access(),
+                    is_exclusive: true,
+                });
+            }
+
+            let mut conflicts = Vec::new();
+            for i in 0..data.parallel.len() {
+                for j in (i + 1)..data.parallel.len() {
+                    let left = data.parallel[i].declared_access();
+                    let right = data.parallel[j].declared_access();
+                    let conflict = analyze_pair(left.as_ref(), right.as_ref());
+                    if !matches!(conflict, AccessConflict::None) {
+                        conflicts.push(StageConflictRow {
+                            left: data.parallel[i].system.name().to_string(),
+                            right: data.parallel[j].system.name().to_string(),
+                            conflict,
+                        });
+                    }
+                }
+            }
+
+            stages.push(StageReport {
+                stage: *stage,
+                systems,
+                conflicts,
+            });
+        }
+        AccessReport { stages }
+    }
+}
+
+/// One system's row in an [`AccessReport`].
+#[derive(Debug, Clone)]
+pub struct SystemAccessRow {
+    pub name: String,
+    pub declared: Option<Access>,
+    pub is_exclusive: bool,
+}
+
+/// One conflicting pair within a stage.
+#[derive(Debug, Clone)]
+pub struct StageConflictRow {
+    pub left: String,
+    pub right: String,
+    pub conflict: AccessConflict,
+}
+
+/// One stage's slice of an [`AccessReport`].
+#[derive(Debug, Clone)]
+pub struct StageReport {
+    pub stage: Stage,
+    /// Every system in the stage, parallel first then exclusive,
+    /// in registration order. Each row's `declared` is the merged
+    /// declaration (registration-site override or `System::access()`).
+    pub systems: Vec<SystemAccessRow>,
+    /// Pairwise classification for the parallel batch. Pairs with
+    /// `AccessConflict::None` are omitted; only the "interesting"
+    /// rows (Conflict + Unknown) appear.
+    pub conflicts: Vec<StageConflictRow>,
+}
+
+/// Full scheduler-wide access summary returned by
+/// [`Scheduler::access_report`].
+#[derive(Debug, Clone, Default)]
+pub struct AccessReport {
+    pub stages: Vec<StageReport>,
+}
+
+impl AccessReport {
+    /// Total number of systems across all stages.
+    pub fn system_count(&self) -> usize {
+        self.stages.iter().map(|s| s.systems.len()).sum()
+    }
+
+    /// How many systems still have `declared = None`. Drives the "X
+    /// systems undeclared" line in the console command.
+    pub fn undeclared_count(&self) -> usize {
+        self.stages
+            .iter()
+            .flat_map(|s| s.systems.iter())
+            .filter(|row| row.declared.is_none())
+            .count()
+    }
+
+    /// Total Conflict rows across all stages (excludes Unknown).
+    pub fn known_conflict_count(&self) -> usize {
+        self.stages
+            .iter()
+            .flat_map(|s| s.conflicts.iter())
+            .filter(|c| matches!(c.conflict, AccessConflict::Conflict { .. }))
+            .count()
+    }
+
+    /// Total Unknown rows across all stages.
+    pub fn unknown_pair_count(&self) -> usize {
+        self.stages
+            .iter()
+            .flat_map(|s| s.conflicts.iter())
+            .filter(|c| matches!(c.conflict, AccessConflict::Unknown { .. }))
+            .count()
     }
 }
 
@@ -538,5 +759,143 @@ mod tests {
         scheduler.add_to(Stage::Update, DamageOverTime { dps: 10.0 });
         scheduler.add_to(Stage::Update, DamageOverTime { dps: 20.0 });
         assert_eq!(scheduler.system_names().len(), 2);
+    }
+
+    // ── R7 declared access + conflict report ────────────────────────────
+
+    use super::super::access::ConflictKind;
+
+    /// `DamagePosition` declares a write on Position; pairs with the
+    /// closure below that reads Position to exercise the
+    /// declared/undeclared and Conflict/Unknown classifications.
+    struct DamagePosition;
+    impl System for DamagePosition {
+        fn run(&mut self, _world: &World, _dt: f32) {}
+        fn name(&self) -> &str {
+            "DamagePosition"
+        }
+        fn access(&self) -> Option<Access> {
+            Some(Access::new().writes::<Position>())
+        }
+    }
+
+    /// `ReadPosition` declares a read of Position via
+    /// `add_to_with_access` rather than impling `access()` itself.
+    /// Mirrors the closure registration path used in the engine binary.
+    fn read_position_system(_world: &World, _dt: f32) {}
+
+    #[test]
+    fn declared_systems_produce_conflict_in_report() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add_to(Stage::Update, DamagePosition);
+        scheduler.add_to_with_access(
+            Stage::Update,
+            read_position_system,
+            Access::new().reads::<Position>(),
+        );
+
+        let report = scheduler.access_report();
+        assert_eq!(report.system_count(), 2);
+        assert_eq!(report.undeclared_count(), 0);
+        assert_eq!(report.known_conflict_count(), 1);
+        assert_eq!(report.unknown_pair_count(), 0);
+
+        // Drill into the single conflict — must be a write/read pair
+        // on Position.
+        let stage = report
+            .stages
+            .iter()
+            .find(|s| s.stage == Stage::Update)
+            .expect("Update stage in report");
+        assert_eq!(stage.conflicts.len(), 1);
+        match &stage.conflicts[0].conflict {
+            AccessConflict::Conflict { pairs } => {
+                assert_eq!(pairs.len(), 1);
+                assert!(matches!(
+                    pairs[0].kind,
+                    ConflictKind::ReadWrite | ConflictKind::WriteRead
+                ));
+                assert!(pairs[0].type_name.ends_with("Position"));
+            }
+            other => panic!("expected Conflict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn undeclared_closure_pairs_show_as_unknown() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add_to(Stage::Update, |_w: &World, _dt: f32| {});
+        scheduler.add_to(Stage::Update, |_w: &World, _dt: f32| {});
+
+        let report = scheduler.access_report();
+        assert_eq!(report.undeclared_count(), 2);
+        assert_eq!(report.known_conflict_count(), 0);
+        assert_eq!(report.unknown_pair_count(), 1);
+        assert!(matches!(
+            report.stages[0].conflicts[0].conflict,
+            AccessConflict::Unknown { .. }
+        ));
+    }
+
+    #[test]
+    fn declared_disjoint_components_have_no_conflict() {
+        struct WriteHealth;
+        impl System for WriteHealth {
+            fn run(&mut self, _w: &World, _dt: f32) {}
+            fn name(&self) -> &str {
+                "WriteHealth"
+            }
+            fn access(&self) -> Option<Access> {
+                Some(Access::new().writes::<Health>())
+            }
+        }
+        let mut scheduler = Scheduler::new();
+        scheduler.add_to(Stage::Update, WriteHealth);
+        scheduler.add_to(Stage::Update, DamagePosition);
+
+        let report = scheduler.access_report();
+        assert_eq!(report.known_conflict_count(), 0);
+        assert_eq!(report.unknown_pair_count(), 0);
+    }
+
+    #[test]
+    fn override_at_registration_beats_trait_method() {
+        // DamagePosition normally writes Position; override at the
+        // registration site lets the operator re-declare it as
+        // "actually only reads Velocity." Useful when a system
+        // hasn't been migrated and we want the operator to assert
+        // the access without touching the system source.
+        let mut scheduler = Scheduler::new();
+        scheduler.add_to_with_access(
+            Stage::Update,
+            DamagePosition,
+            Access::new().reads::<Velocity>(),
+        );
+        let row = &scheduler.access_report().stages[0].systems[0];
+        let declared = row.declared.as_ref().expect("declared");
+        assert_eq!(declared.components_read.len(), 1);
+        assert_eq!(declared.components_write.len(), 0);
+        assert!(declared.components_read[0].type_name.ends_with("Velocity"));
+    }
+
+    #[test]
+    fn exclusive_systems_are_listed_but_not_paired() {
+        // Exclusive systems run after the parallel batch, so they
+        // can never collide. They show up in the report's `systems`
+        // list but never in `conflicts`.
+        let mut scheduler = Scheduler::new();
+        scheduler.add_to(Stage::Late, DamagePosition);
+        scheduler.add_exclusive(Stage::Late, |_w: &World, _dt: f32| {});
+
+        let report = scheduler.access_report();
+        let stage = report
+            .stages
+            .iter()
+            .find(|s| s.stage == Stage::Late)
+            .unwrap();
+        assert_eq!(stage.systems.len(), 2);
+        assert!(stage.systems.iter().any(|r| r.is_exclusive));
+        // Only one parallel system → no pairs to analyze.
+        assert!(stage.conflicts.is_empty());
     }
 }

@@ -2,7 +2,8 @@
 
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::ecs::{
-    Camera, DebugStats, Material, MeshHandle, ScratchTelemetry, TextureHandle, Transform, World,
+    AccessConflict, Camera, ConflictKind, DebugStats, Material, MeshHandle, SchedulerAccessReport,
+    ScratchTelemetry, TextureHandle, Transform, World,
 };
 use std::collections::HashMap;
 
@@ -322,6 +323,128 @@ impl ConsoleCommand for CtxScratchCommand {
     }
 }
 
+/// `sys.accesses` — print the scheduler's declared-access report.
+///
+/// For each stage, lists every system + its declared (or undeclared)
+/// access pattern, then any inter-system conflict pairs (Conflict for
+/// known disagreements between two declared systems, Unknown when at
+/// least one side hasn't declared). Operator tool for R7 — the static
+/// view of "what will serialize when M27 turns on parallel dispatch."
+struct SysAccessesCommand;
+impl ConsoleCommand for SysAccessesCommand {
+    fn name(&self) -> &str {
+        "sys.accesses"
+    }
+    fn description(&self) -> &str {
+        "Show declared-access report for the scheduler (R7)"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(report_res) = world.try_resource::<SchedulerAccessReport>() else {
+            return CommandOutput::line(
+                "SchedulerAccessReport resource not present (engine not started?)",
+            );
+        };
+        let report = &report_res.0;
+
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "Scheduler access report — {} systems, {} undeclared, \
+             {} known conflicts, {} unknown pairs",
+            report.system_count(),
+            report.undeclared_count(),
+            report.known_conflict_count(),
+            report.unknown_pair_count(),
+        ));
+
+        for stage_report in &report.stages {
+            lines.push(String::new());
+            lines.push(format!("─── stage {:?} ────", stage_report.stage));
+            for row in &stage_report.systems {
+                let tag = if row.is_exclusive { "exclusive" } else { "parallel " };
+                let summary = match &row.declared {
+                    None => "(undeclared)".to_string(),
+                    Some(a) if a.is_empty() => "(declared, empty)".to_string(),
+                    Some(a) => {
+                        let parts: Vec<String> = a
+                            .components_read
+                            .iter()
+                            .map(|e| format!("read {}", short(e.type_name)))
+                            .chain(
+                                a.components_write
+                                    .iter()
+                                    .map(|e| format!("write {}", short(e.type_name))),
+                            )
+                            .chain(
+                                a.resources_read
+                                    .iter()
+                                    .map(|e| format!("read res {}", short(e.type_name))),
+                            )
+                            .chain(
+                                a.resources_write
+                                    .iter()
+                                    .map(|e| format!("write res {}", short(e.type_name))),
+                            )
+                            .collect();
+                        parts.join(", ")
+                    }
+                };
+                lines.push(format!("  [{}] {}: {}", tag, row.name, summary));
+            }
+            if !stage_report.conflicts.is_empty() {
+                lines.push(format!(
+                    "  conflicts ({}):",
+                    stage_report.conflicts.len()
+                ));
+                for c in &stage_report.conflicts {
+                    match &c.conflict {
+                        AccessConflict::Conflict { pairs } => {
+                            for p in pairs {
+                                let arrow = match p.kind {
+                                    ConflictKind::ReadWrite => "reads, other writes",
+                                    ConflictKind::WriteRead => "writes, other reads",
+                                    ConflictKind::WriteWrite => "both write",
+                                };
+                                let kind = if p.is_resource { "res " } else { "" };
+                                lines.push(format!(
+                                    "    CONFLICT  {} <-> {} on {}{} ({})",
+                                    c.left,
+                                    c.right,
+                                    kind,
+                                    short(p.type_name),
+                                    arrow,
+                                ));
+                            }
+                        }
+                        AccessConflict::Unknown {
+                            left_undeclared,
+                            right_undeclared,
+                        } => {
+                            let why = match (left_undeclared, right_undeclared) {
+                                (true, true) => "both undeclared",
+                                (true, false) => "left undeclared",
+                                (false, true) => "right undeclared",
+                                (false, false) => "?",
+                            };
+                            lines.push(format!(
+                                "    UNKNOWN   {} <-> {} ({})",
+                                c.left, c.right, why,
+                            ));
+                        }
+                        AccessConflict::None => {}
+                    }
+                }
+            }
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
+/// Strip the leading module path off a `std::any::type_name` so report
+/// lines stay readable on narrow terminals.
+fn short(name: &str) -> &str {
+    name.rsplit("::").next().unwrap_or(name)
+}
+
 pub(crate) fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
     registry.register(HelpCommand);
@@ -333,5 +456,6 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(MeshInfoCommand);
     registry.register(MeshCacheCommand);
     registry.register(CtxScratchCommand);
+    registry.register(SysAccessesCommand);
     registry
 }
