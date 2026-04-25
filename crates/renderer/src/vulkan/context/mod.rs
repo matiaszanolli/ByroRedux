@@ -101,6 +101,14 @@ pub struct DrawCommand {
     pub specular_strength: f32,
     /// Specular color (RGB).
     pub specular_color: [f32; 3],
+    /// Diffuse tint (RGB) — `NiMaterialProperty.diffuse` carried verbatim
+    /// from `Material.diffuse_color`. Default `[1.0; 3]` (no tint). The
+    /// fragment shader multiplies the sampled albedo by this. See #221.
+    pub diffuse_color: [f32; 3],
+    /// Ambient color (RGB) — `NiMaterialProperty.ambient`. Default
+    /// `[1.0; 3]`. The fragment shader multiplies the cell ambient term
+    /// by this. See #221.
+    pub ambient_color: [f32; 3],
     /// Offset into the global vertex SSBO (in vertices).
     pub vertex_offset: u32,
     /// Offset into the global index SSBO (in indices).

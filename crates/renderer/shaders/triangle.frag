@@ -117,7 +117,20 @@ struct GpuInstance {
     float sparkleR;                    // offset 304 — SparkleSnow glint
     float sparkleG;                    // offset 308
     float sparkleB;                    // offset 312
-    float sparkleIntensity;            // offset 316 → total 320
+    float sparkleIntensity;            // offset 316
+    // ── #221: NiMaterialProperty diffuse + ambient colors ──────────
+    // Per-material tint multiplier on sampled albedo + per-material
+    // ambient modulator on the cell ambient term. Default `[1.0; 3]`
+    // for every BSShader-only mesh — those have no NiMaterialProperty
+    // and arrive at the shader with identity tint / identity ambient.
+    float diffuseR;                    // offset 320
+    float diffuseG;                    // offset 324
+    float diffuseB;                    // offset 328
+    float _diffusePad;                 // offset 332
+    float ambientR;                    // offset 336
+    float ambientG;                    // offset 340
+    float ambientB;                    // offset 344
+    float _ambientPad;                 // offset 348 → total 352
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
@@ -667,6 +680,13 @@ void main() {
     // Base reflectance: dielectrics use 0.04, metals use albedo color.
     vec3 albedo = texColor.rgb * fragColor;
 
+    // #221 — `NiMaterialProperty.diffuse` per-material multiplicative
+    // tint. Default `[1.0; 3]` for every BSShader-only Skyrim+/FO4
+    // mesh (those have no NiMaterialProperty). Authored non-white
+    // diffuse on Oblivion/FO3/FNV statics colors the sampled albedo
+    // — banner cloth, painted wood, tinted glass.
+    albedo *= vec3(inst.diffuseR, inst.diffuseG, inst.diffuseB);
+
     // Dark / multiplicative lightmap (#264): baked shadow modulation.
     if (inst.darkMapIndex != 0u) {
         vec3 darkSample = texture(textures[nonuniformEXT(inst.darkMapIndex)], sampleUV).rgb;
@@ -1142,7 +1162,14 @@ void main() {
     // Ambient base from cell lighting — LIGHTING ONLY, no local albedo.
     // Albedo is re-applied in the composite pass so SVGF temporal/spatial
     // filtering operates on a texture-free lighting signal. See #268.
-    vec3 ambient = sceneFlags.yzw * (1.0 - metalness);
+    //
+    // #221 — `NiMaterialProperty.ambient` modulates the cell ambient
+    // term per-material. Default `[1.0; 3]` is a no-op; meshes with
+    // authored ambient response (lit-from-within glass, occluded
+    // alcoves) attenuate the cell ambient by their own factor.
+    vec3 ambient = sceneFlags.yzw
+                   * vec3(inst.ambientR, inst.ambientG, inst.ambientB)
+                   * (1.0 - metalness);
     vec3 Lo = vec3(0.0); // Accumulated outgoing radiance.
 
     // ── RT reflection for metallic/glossy surfaces ──────────────────

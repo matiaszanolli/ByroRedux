@@ -88,7 +88,19 @@ struct GpuInstance {
     float sparkleR;                    // offset 304
     float sparkleG;                    // offset 308
     float sparkleB;                    // offset 312
-    float sparkleIntensity;            // offset 316 → total 320
+    float sparkleIntensity;            // offset 316
+    // ── #221: NiMaterialProperty diffuse + ambient colors ──────────
+    // Two padded vec4 slots appended at the end. Vertex shader doesn't
+    // sample either; declared only to keep the std430 stride byte-
+    // identical with triangle.frag (Shader Struct Sync invariant).
+    float diffuseR;                    // offset 320
+    float diffuseG;                    // offset 324
+    float diffuseB;                    // offset 328
+    float _diffusePad;                 // offset 332
+    float ambientR;                    // offset 336
+    float ambientG;                    // offset 340
+    float ambientB;                    // offset 344
+    float _ambientPad;                 // offset 348 → total 352
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

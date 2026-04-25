@@ -27,7 +27,7 @@ pub const MAX_TOTAL_BONES: usize = 4096;
 /// Slot 0 of the bone palette is always the identity matrix.
 pub const IDENTITY_BONE_SLOT: u32 = 0;
 
-/// Maximum instances per frame. 8192 × 320 B = 2.56 MB/frame — trivial.
+/// Maximum instances per frame. 8192 × 352 B = 2.81 MB/frame — trivial.
 /// Covers large exterior cells with multiple loaded cells (~5000+ references).
 pub const MAX_INSTANCES: usize = 8192;
 
@@ -108,12 +108,15 @@ pub struct GpuTerrainTile {
 /// u32 slot name — when you add a field here, update the expected suffix
 /// in the assertion and rename the sentinel to match the new last field.
 ///
-/// Layout: 320 bytes per instance, 16-byte aligned (20×16). Grew from
+/// Layout: 352 bytes per instance, 16-byte aligned (22×16). Grew from
 /// 192 → 224 (#492, UV + material_alpha) → 320 (#562, Skyrim+
 /// BSLightingShaderProperty variant payloads — skin tint, hair tint,
-/// eye envmap centers, parallax-occ / multi-layer parallax, sparkle).
-/// The `size_of::<GpuInstance>() == 320` test below asserts the
-/// invariant; shader-side `GpuInstance` must match.
+/// eye envmap centers, parallax-occ / multi-layer parallax, sparkle)
+/// → 352 (#221, NiMaterialProperty diffuse + ambient colors). The
+/// growth pattern is strictly append-only — every existing offset is
+/// preserved so shader struct mirrors only need to add fields, not
+/// renumber. The `size_of::<GpuInstance>() == 352` test below asserts
+/// the invariant; shader-side `GpuInstance` must match.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuInstance {
@@ -289,8 +292,28 @@ pub struct GpuInstance {
     pub sparkle_r: f32,         // 4 B, offset 304
     pub sparkle_g: f32,         // 4 B, offset 308
     pub sparkle_b: f32,         // 4 B, offset 312
-    pub sparkle_intensity: f32, // 4 B, offset 316 → total 320
-                                // Struct is 320 bytes (20×16), 16-byte aligned for std430.
+    pub sparkle_intensity: f32, // 4 B, offset 316
+    // ── #221: NiMaterialProperty diffuse + ambient colors ───────────
+    //
+    // `NiMaterialProperty.diffuse` and `.ambient` were captured by
+    // the importer pre-#221 but stopped at MaterialInfo — never
+    // reached the GPU. The fragment shader now multiplies the sampled
+    // albedo by `diffuseRGB` (per-material tint, no-op at white) and
+    // the cell ambient term by `ambientRGB` (per-material ambient
+    // response). Two padded vec4 slots so we keep std430 alignment
+    // without renumbering the existing `_uv_pad*` / `_eye_pad`
+    // patches above; defaults are `[1.0, 1.0, 1.0, 0.0]` so meshes
+    // without an `NiMaterialProperty` (every BSShader-only Skyrim+
+    // / FO4 mesh) are unaffected.
+    pub diffuse_r: f32, // 4 B, offset 320
+    pub diffuse_g: f32,         // 4 B, offset 324
+    pub diffuse_b: f32,         // 4 B, offset 328
+    pub _diffuse_pad: f32,      // 4 B, offset 332
+    pub ambient_r: f32,         // 4 B, offset 336
+    pub ambient_g: f32,         // 4 B, offset 340
+    pub ambient_b: f32,         // 4 B, offset 344
+    pub _ambient_pad: f32,      // 4 B, offset 348 → total 352
+                                // Struct is 352 bytes (22×16), 16-byte aligned for std430.
 }
 
 impl Default for GpuInstance {
@@ -371,6 +394,18 @@ impl Default for GpuInstance {
             sparkle_g: 0.0,
             sparkle_b: 0.0,
             sparkle_intensity: 0.0,
+            // #221 — `[1.0; 3]` defaults so meshes without
+            // `NiMaterialProperty` (every BSShader-only mesh) keep
+            // identity tint + ambient response. Padding fields stay
+            // at 0.0 — they're never read by the shader.
+            diffuse_r: 1.0,
+            diffuse_g: 1.0,
+            diffuse_b: 1.0,
+            _diffuse_pad: 0.0,
+            ambient_r: 1.0,
+            ambient_g: 1.0,
+            ambient_b: 1.0,
+            _ambient_pad: 0.0,
         }
     }
 }
@@ -1365,17 +1400,19 @@ mod gpu_instance_layout_tests {
     /// update protocol (grep for `struct GpuInstance` in the shaders tree
     /// before touching this struct).
     #[test]
-    fn gpu_instance_is_320_bytes_std430_compatible() {
+    fn gpu_instance_is_352_bytes_std430_compatible() {
         // 176 → 192 in #453 (parallax/env slots).
         // 192 → 224 in #492 (uv_offset + uv_scale + material_alpha).
         // 224 → 320 in #562 (Skyrim+ BSLightingShaderProperty variant
         // payloads — SkinTint / HairTint / MultiLayerParallax /
         // EyeEnvmap / SparkleSnow — packed as 6 vec4s).
-        // 20 × 16 = 320.
+        // 320 → 352 in #221 (NiMaterialProperty diffuse + ambient
+        // colors — 2 padded vec4 slots).
+        // 22 × 16 = 352.
         assert_eq!(
             size_of::<GpuInstance>(),
-            320,
-            "GpuInstance must stay 320 B to match std430 shader layout"
+            352,
+            "GpuInstance must stay 352 B to match std430 shader layout"
         );
     }
 
@@ -1460,6 +1497,16 @@ mod gpu_instance_layout_tests {
         assert_eq!(offset_of!(GpuInstance, sparkle_g), 308);
         assert_eq!(offset_of!(GpuInstance, sparkle_b), 312);
         assert_eq!(offset_of!(GpuInstance, sparkle_intensity), 316);
+        // #221 — NiMaterialProperty diffuse + ambient. Two padded vec4
+        // slots appended at the end of the struct.
+        assert_eq!(offset_of!(GpuInstance, diffuse_r), 320);
+        assert_eq!(offset_of!(GpuInstance, diffuse_g), 324);
+        assert_eq!(offset_of!(GpuInstance, diffuse_b), 328);
+        assert_eq!(offset_of!(GpuInstance, _diffuse_pad), 332);
+        assert_eq!(offset_of!(GpuInstance, ambient_r), 336);
+        assert_eq!(offset_of!(GpuInstance, ambient_g), 340);
+        assert_eq!(offset_of!(GpuInstance, ambient_b), 344);
+        assert_eq!(offset_of!(GpuInstance, _ambient_pad), 348);
     }
 
     /// Regression: #309 — `VkDrawIndexedIndirectCommand` is a Vulkan-
@@ -1578,6 +1625,12 @@ mod gpu_instance_layout_tests {
                 "multiLayerInnerScaleU",
                 "sparkleR",
                 "sparkleIntensity",
+                // #221 — NiMaterialProperty diffuse + ambient. All
+                // four shader copies must declare these even if only
+                // triangle.frag consumes them today, so the 352 B
+                // std430 stride stays byte-identical across the four.
+                "diffuseR",
+                "ambientR",
             ] {
                 assert!(
                     src.contains(needle),

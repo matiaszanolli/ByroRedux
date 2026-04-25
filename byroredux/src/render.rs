@@ -434,6 +434,8 @@ pub(crate) fn build_render_data(
                     emissive_color,
                     specular_strength,
                     specular_color,
+                    diffuse_color,
+                    ambient_color,
                     alpha_threshold,
                     alpha_test_func,
                 ) = if let Some(m) = mat {
@@ -451,11 +453,25 @@ pub(crate) fn build_render_data(
                         m.emissive_color,
                         m.specular_strength,
                         m.specular_color,
+                        m.diffuse_color,
+                        m.ambient_color,
                         thresh,
                         func,
                     )
                 } else {
-                    (0.5, 0.0, 0.0, [0.0; 3], 1.0, [1.0; 3], 0.0, 0u32)
+                    // No Material → identity tint, identity ambient.
+                    (
+                        0.5,
+                        0.0,
+                        0.0,
+                        [0.0; 3],
+                        1.0,
+                        [1.0; 3],
+                        [1.0; 3],
+                        [1.0; 3],
+                        0.0,
+                        0u32,
+                    )
                 };
 
                 // #398 — depth state from NiZBufferProperty (Material).
@@ -579,6 +595,8 @@ pub(crate) fn build_render_data(
                     emissive_color,
                     specular_strength,
                     specular_color,
+                    diffuse_color,
+                    ambient_color,
                     vertex_offset: v_off,
                     index_offset: i_off,
                     vertex_count: v_count,
@@ -712,6 +730,11 @@ pub(crate) fn build_render_data(
                         emissive_color: [color[0], color[1], color[2]],
                         specular_strength: 0.0,
                         specular_color: [0.0, 0.0, 0.0],
+                        // Particles ride emissive; identity diffuse +
+                        // ambient so the tint/ambient multipliers don't
+                        // interact with the emissive add (#221).
+                        diffuse_color: [1.0, 1.0, 1.0],
+                        ambient_color: [1.0, 1.0, 1.0],
                         vertex_offset: 0,
                         index_offset: 0,
                         vertex_count: 0,
@@ -1009,6 +1032,8 @@ mod draw_sort_key_tests {
             emissive_color: [0.0; 3],
             specular_strength: 0.0,
             specular_color: [0.0; 3],
+            diffuse_color: [1.0; 3],
+            ambient_color: [1.0; 3],
             vertex_offset: 0,
             index_offset: 0,
             vertex_count: 0,

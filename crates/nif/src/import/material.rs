@@ -257,6 +257,11 @@ pub(super) struct MaterialInfo {
     pub glossiness: f32,
     pub uv_offset: [f32; 2],
     pub uv_scale: [f32; 2],
+    /// Ambient color (RGB) from `NiMaterialProperty.ambient`. Modulates
+    /// the cell's ambient lighting term per material — most authored
+    /// values are `[1.0; 3]` so the field acts as a no-op tint by
+    /// default. Audit `AUDIT_LEGACY_COMPAT_2026-04-10.md` D4-09 / #221.
+    pub ambient_color: [f32; 3],
     pub alpha: f32,
     pub env_map_scale: f32,
     pub has_material_data: bool,
@@ -440,6 +445,11 @@ impl Default for MaterialInfo {
             glossiness: 80.0,
             uv_offset: [0.0, 0.0],
             uv_scale: [1.0, 1.0],
+            // Default to white so the per-material ambient term acts as
+            // a no-op tint when the mesh has no `NiMaterialProperty`
+            // (every BSShader path on Skyrim+/FO4 — those inherit the
+            // cell ambient unmodulated).
+            ambient_color: [1.0, 1.0, 1.0],
             alpha: 1.0,
             env_map_scale: 0.0,
             has_material_data: false,
@@ -774,6 +784,10 @@ pub(super) fn extract_material_info_from_refs(
         if !info.has_material_data {
             if let Some(mat) = scene.get_as::<NiMaterialProperty>(idx) {
                 info.diffuse_color = [mat.diffuse.r, mat.diffuse.g, mat.diffuse.b];
+                // #221 — `NiMaterialProperty.ambient` was previously
+                // discarded; the renderer now consumes it as a
+                // per-material modulator on the cell ambient term.
+                info.ambient_color = [mat.ambient.r, mat.ambient.g, mat.ambient.b];
                 info.specular_color = [mat.specular.r, mat.specular.g, mat.specular.b];
                 info.emissive_color = [mat.emissive.r, mat.emissive.g, mat.emissive.b];
                 info.glossiness = mat.shininess;
@@ -1840,6 +1854,17 @@ mod secondary_slot_tests {
         let info = MaterialInfo::default();
         assert_eq!(info.diffuse_color, [1.0, 1.0, 1.0]);
     }
+
+    /// Regression: #221 — `MaterialInfo.ambient_color` must default to
+    /// `[1.0; 3]` so the per-material ambient modulator is identity
+    /// when no `NiMaterialProperty` is bound. Every BSShader-only
+    /// Skyrim+/FO4 mesh hits this default — a non-`[1.0; 3]` default
+    /// would attenuate every modern-game cell's ambient.
+    #[test]
+    fn default_material_info_ambient_color_is_white() {
+        let info = MaterialInfo::default();
+        assert_eq!(info.ambient_color, [1.0, 1.0, 1.0]);
+    }
 }
 
 /// Regression tests for #452 — `BSShaderTextureSet` slots 3/4/5 must
@@ -2142,6 +2167,42 @@ mod texture_slot_3_4_5_tests {
         // Sanity: the NiMaterialProperty values still flowed through.
         assert!(info.has_material_data);
         assert!((info.diffuse_color[0] - 0.5).abs() < 1e-6);
+    }
+
+    /// Regression: #221 — `NiMaterialProperty.ambient` must reach
+    /// `MaterialInfo.ambient_color`. Pre-fix the field was discarded
+    /// at the same site that captured `mat.diffuse` — visible as
+    /// authored-ambient meshes (lit-from-within glass, occluded
+    /// alcoves) reacting incorrectly to cell ambient lighting.
+    #[test]
+    fn ni_material_property_ambient_color_reaches_material_info() {
+        use crate::blocks::properties::NiMaterialProperty;
+        use crate::types::NiColor;
+
+        let mat = NiMaterialProperty {
+            net: empty_net(),
+            ambient: NiColor {
+                r: 0.25,
+                g: 0.5,
+                b: 0.75,
+            },
+            diffuse: NiColor::default(),
+            specular: NiColor::default(),
+            emissive: NiColor::default(),
+            shininess: 50.0,
+            alpha: 1.0,
+            emissive_mult: 1.0,
+        };
+        let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(mat)];
+        let scene = NifScene {
+            blocks,
+            ..NifScene::default()
+        };
+        let shape = make_tri_shape_with_props(vec![BlockRef(0)]);
+        let info = extract_material_info(&scene, &shape, &[]);
+        assert!((info.ambient_color[0] - 0.25).abs() < 1e-6);
+        assert!((info.ambient_color[1] - 0.5).abs() < 1e-6);
+        assert!((info.ambient_color[2] - 0.75).abs() < 1e-6);
     }
 
     /// Regression: #435 — a Skyrim+ `BSLightingShaderProperty`'s

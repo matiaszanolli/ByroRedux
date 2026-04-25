@@ -616,6 +616,18 @@ impl VulkanContext {
                 sparkle_g: draw_cmd.sparkle_rgba[1],
                 sparkle_b: draw_cmd.sparkle_rgba[2],
                 sparkle_intensity: draw_cmd.sparkle_rgba[3],
+                // #221 — `NiMaterialProperty.diffuse` + `.ambient`. Per
+                // material tint multiplier on sampled albedo + per
+                // material ambient modulator. Identity (`[1.0; 3]`)
+                // for every BSShader-only Skyrim+/FO4 mesh.
+                diffuse_r: draw_cmd.diffuse_color[0],
+                diffuse_g: draw_cmd.diffuse_color[1],
+                diffuse_b: draw_cmd.diffuse_color[2],
+                _diffuse_pad: 0.0,
+                ambient_r: draw_cmd.ambient_color[0],
+                ambient_g: draw_cmd.ambient_color[1],
+                ambient_b: draw_cmd.ambient_color[2],
+                _ambient_pad: 0.0,
             });
 
             // Frustum-culled draws still need an SSBO entry so RT hit

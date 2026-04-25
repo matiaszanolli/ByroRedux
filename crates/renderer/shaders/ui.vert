@@ -69,7 +69,12 @@ struct GpuInstance {
     float _eyePad;                                                 // offset 284
     float multiLayerInnerThickness, multiLayerRefractionScale;     // offset 288
     float multiLayerInnerScaleU, multiLayerInnerScaleV;            // offset 296
-    float sparkleR, sparkleG, sparkleB, sparkleIntensity;          // offset 304 → total 320
+    float sparkleR, sparkleG, sparkleB, sparkleIntensity;          // offset 304
+    // #221 — NiMaterialProperty diffuse + ambient. UI pipeline doesn't
+    // sample either; layout mirror only to keep the 352 B std430
+    // array stride in lockstep with triangle.{vert,frag}.
+    float diffuseR, diffuseG, diffuseB, _diffusePad;               // offset 320
+    float ambientR, ambientG, ambientB, _ambientPad;               // offset 336 → total 352
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

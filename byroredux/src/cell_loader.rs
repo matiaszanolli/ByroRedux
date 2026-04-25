@@ -2200,6 +2200,8 @@ fn spawn_placed_instances(
                 emissive_mult: mesh.emissive_mult,
                 specular_color: mesh.specular_color,
                 specular_strength: mesh.specular_strength,
+                diffuse_color: mesh.diffuse_color,
+                ambient_color: mesh.ambient_color,
                 glossiness: mesh.glossiness,
                 uv_offset: mesh.uv_offset,
                 uv_scale: mesh.uv_scale,

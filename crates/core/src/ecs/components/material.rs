@@ -22,6 +22,19 @@ pub struct Material {
     pub specular_color: [f32; 3],
     /// Specular intensity multiplier.
     pub specular_strength: f32,
+    /// Diffuse tint (RGB, linear) from `NiMaterialProperty.diffuse`.
+    /// Multiplied into the sampled albedo by the fragment shader.
+    /// Default `[1.0; 3]` (no tint) for meshes without an
+    /// `NiMaterialProperty` — every BSShader-only mesh on
+    /// Skyrim+/FO4 lands here. Audit
+    /// `AUDIT_LEGACY_COMPAT_2026-04-10.md` D4-09 / #221.
+    pub diffuse_color: [f32; 3],
+    /// Ambient color (RGB) from `NiMaterialProperty.ambient`. Modulates
+    /// the cell ambient lighting term per material so meshes with
+    /// authored ambient response (lit-from-within glass, occluded
+    /// alcoves) react correctly to cell ambient. Default `[1.0; 3]`.
+    /// See #221.
+    pub ambient_color: [f32; 3],
     /// Glossiness / smoothness (higher = tighter highlights).
     pub glossiness: f32,
     /// UV texture coordinate offset [u, v].
@@ -145,6 +158,8 @@ impl Default for Material {
             emissive_mult: 1.0,
             specular_color: [1.0, 1.0, 1.0],
             specular_strength: 1.0,
+            diffuse_color: [1.0, 1.0, 1.0],
+            ambient_color: [1.0, 1.0, 1.0],
             glossiness: 80.0,
             uv_offset: [0.0, 0.0],
             uv_scale: [1.0, 1.0],

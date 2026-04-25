@@ -252,6 +252,14 @@ pub struct ImportedMesh {
     pub emissive_mult: f32,
     /// Specular highlight color (RGB, linear).
     pub specular_color: [f32; 3],
+    /// Diffuse tint (RGB, linear) from `NiMaterialProperty.diffuse`.
+    /// Multiplied into sampled albedo by the fragment shader. Default
+    /// `[1.0; 3]` (no tint) when the mesh ships only a BSShader path.
+    /// Audit `AUDIT_LEGACY_COMPAT_2026-04-10.md` D4-09 / #221.
+    pub diffuse_color: [f32; 3],
+    /// Ambient color (RGB) from `NiMaterialProperty.ambient`. Modulates
+    /// the cell ambient lighting term per material. Default `[1.0; 3]`.
+    pub ambient_color: [f32; 3],
     /// Specular intensity multiplier.
     pub specular_strength: f32,
     /// Glossiness / smoothness.
