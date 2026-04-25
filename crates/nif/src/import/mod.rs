@@ -377,9 +377,19 @@ pub struct ImportedSkin {
     /// Skeleton root bone name, if identifiable. The animation system
     /// uses this to know where to start applying joint transforms.
     pub skeleton_root: Option<Arc<str>>,
-    /// Per-vertex bone indices (up to 4). Parallel to `ImportedMesh::positions`.
-    /// Empty if weights come from a separate source (BSTriShape).
-    pub vertex_bone_indices: Vec<[u8; 4]>,
+    /// Per-vertex bone indices (up to 4) — **already remapped to
+    /// global indices into [`ImportedSkin::bones`]**. Parallel to
+    /// `ImportedMesh::positions`. Pre-#613 BsTriShape stored these as
+    /// `[u8; 4]` carrying *partition-local* values (indices into the
+    /// per-`NiSkinPartition` `bones` palette, not the global skin
+    /// list); shapes with > 1 partition silently aliased every vertex
+    /// past partition 0 to the wrong bones. The importer now walks the
+    /// partition table during extraction and emits global indices, so
+    /// every value here resolves directly through `bones[idx]`.
+    /// Widened to `u16` because vanilla Skyrim character + worn-armor
+    /// skins routinely exceed 255 bones; mods can push higher.
+    /// Empty if weights come from a separate source.
+    pub vertex_bone_indices: Vec<[u16; 4]>,
     /// Per-vertex bone weights (up to 4). Must sum to 1.0 after
     /// normalization. Parallel to `vertex_bone_indices`.
     pub vertex_bone_weights: Vec<[f32; 4]>,

@@ -787,13 +787,17 @@ pub(super) fn extract_skin_bs_tri_shape(
 ) -> Option<ImportedSkin> {
     let skin_idx = shape.skin_ref.index()?;
 
-    // Per-vertex weights and indices come from the BSTriShape vertex
-    // buffer (VF_SKINNED) — already decoded at parse time (#177). We
-    // just clone them through to ImportedSkin. If the vertex buffer
-    // lacks the VF_SKINNED bit these will be empty, and downstream
-    // should treat the mesh as rigid.
-    let vertex_bone_indices = shape.bone_indices.clone();
+    // Per-vertex weights come from the BSTriShape vertex buffer
+    // (VF_SKINNED) — already decoded at parse time (#177). The
+    // bone-INDEX side needs a partition-aware remap before it's
+    // safe for downstream consumers — see #613 / SK-D1-01: the
+    // inline `[u8; 4]` indices are partition-LOCAL (indices into
+    // each `NiSkinPartition.partitions[i].bones` palette), not
+    // global indices into the skin's bone list. The legacy clone
+    // pre-#613 silently aliased every vertex past partition 0
+    // when shapes split into > 1 partition.
     let vertex_bone_weights = shape.bone_weights.clone();
+    let vertex_bone_indices = remap_bs_tri_shape_bone_indices(scene, shape);
 
     // Skyrim LE path: NiSkinInstance + NiSkinData (bone list + bind transforms).
     // Borrow bone_refs instead of cloning — they're only iterated. #279 D5-11.
@@ -813,6 +817,16 @@ pub(super) fn extract_skin_bs_tri_shape(
         } else {
             (&[] as &[_], BlockRef::NULL, BlockRef::NULL)
         };
+    // #613 defensive: if the global skin bone list exceeds u16 range,
+    // remap below truncates. Vanilla Bethesda content stays well under
+    // this; warn if seen so the gap surfaces in test runs.
+    if bone_refs_slice.len() > u16::MAX as usize {
+        log::warn!(
+            "BsTriShape skin has {} bones — exceeds u16 remap range; \
+             indices past 65535 will truncate (see #613)",
+            bone_refs_slice.len()
+        );
+    }
     if !bone_refs_slice.is_empty() {
         let data = scene.get_as::<NiSkinData>(data_ref.index()?)?;
         if data.bones.len() != bone_refs_slice.len() {
@@ -855,6 +869,121 @@ pub(super) fn extract_skin_bs_tri_shape(
     }
 
     None
+}
+
+/// Remap a `BsTriShape`'s inline `[u8; 4]` partition-local bone
+/// indices to global `[u16; 4]` indices into the linked skin's bone
+/// list. See #613 / SK-D1-01.
+///
+/// The wire format stores per-vertex bone indices as u8s indexing
+/// into whichever `NiSkinPartition.partitions[i].bones` palette the
+/// vertex belongs to — the partition splitter rebuilds a small bone
+/// palette per partition so each vertex's 4 bones can fit in 1 byte
+/// each. To recover the global bone list index we:
+///
+/// 1. Resolve `shape.skin_ref` → `NiSkinInstance` (or
+///    `BsDismemberSkinInstance`) → `skin_partition_ref` →
+///    `NiSkinPartition`.
+/// 2. Build an inverse `vertex_map` lookup (global vertex idx →
+///    partition idx) from each partition's `vertex_map`.
+/// 3. For each vertex, find its partition's `bones` palette and
+///    replace each u8 partition-local index with the global u16.
+///
+/// When the partition table is missing or the inverse map is
+/// incomplete (synthetic / mod content), fall back to widening the
+/// raw u8 to u16 — same behaviour as pre-#613 single-partition
+/// shapes, which were correct because partition-local and global
+/// indices coincide when there's only one partition with all bones.
+fn remap_bs_tri_shape_bone_indices(scene: &NifScene, shape: &BsTriShape) -> Vec<[u16; 4]> {
+    if shape.bone_indices.is_empty() {
+        return Vec::new();
+    }
+
+    // Identity widen — the safe fallback used when no partition
+    // table is available. Single-partition shapes work fine here:
+    // partition-local indices already match the global palette
+    // because the partition's `bones` palette is the full bone list.
+    let widen = |slot: u8| slot as u16;
+    let identity_remap = || -> Vec<[u16; 4]> {
+        shape
+            .bone_indices
+            .iter()
+            .map(|idx| [widen(idx[0]), widen(idx[1]), widen(idx[2]), widen(idx[3])])
+            .collect()
+    };
+
+    let Some(skin_idx) = shape.skin_ref.index() else {
+        return identity_remap();
+    };
+    let partition_ref = if let Some(inst) = scene.get_as::<NiSkinInstance>(skin_idx) {
+        inst.skin_partition_ref
+    } else if let Some(inst) = scene.get_as::<BsDismemberSkinInstance>(skin_idx) {
+        inst.base.skin_partition_ref
+    } else {
+        return identity_remap();
+    };
+    let Some(partition_idx) = partition_ref.index() else {
+        return identity_remap();
+    };
+    let Some(partition) = scene.get_as::<crate::blocks::skin::NiSkinPartition>(partition_idx)
+    else {
+        return identity_remap();
+    };
+    if partition.partitions.len() <= 1 {
+        // Single-partition shapes don't need remapping: the
+        // partition's bones palette covers the full skin list and
+        // partition-local indices == global indices. Skip the work.
+        return identity_remap();
+    }
+
+    // Build inverse map: global_vertex_idx → (partition_idx). Each
+    // partition's `vertex_map[local_i] = global_v` describes which
+    // BsTriShape vertex slot the partition-local position points at.
+    // Multi-partition shapes split vertices across partitions; the
+    // first vertex_map entry that mentions a global index wins (no
+    // vanilla content overlaps partitions on the same vertex).
+    let mut vertex_to_partition: Vec<Option<u32>> = vec![None; shape.bone_indices.len()];
+    for (p_idx, part) in partition.partitions.iter().enumerate() {
+        for &gv in &part.vertex_map {
+            let gv = gv as usize;
+            if gv < vertex_to_partition.len() && vertex_to_partition[gv].is_none() {
+                vertex_to_partition[gv] = Some(p_idx as u32);
+            }
+        }
+    }
+
+    shape
+        .bone_indices
+        .iter()
+        .enumerate()
+        .map(|(v, idx)| {
+            let part = vertex_to_partition[v]
+                .and_then(|p| partition.partitions.get(p as usize));
+            match part {
+                Some(p) => [
+                    remap_one(idx[0], &p.bones),
+                    remap_one(idx[1], &p.bones),
+                    remap_one(idx[2], &p.bones),
+                    remap_one(idx[3], &p.bones),
+                ],
+                // Vertex outside every partition's vertex_map — rare
+                // edge case (truncated NIF, mod malformation). Widen
+                // with zero so the renderer falls back to bind pose
+                // for that vertex rather than reading garbage.
+                None => [widen(idx[0]), widen(idx[1]), widen(idx[2]), widen(idx[3])],
+            }
+        })
+        .collect()
+}
+
+/// Resolve one partition-local u8 bone index against a partition's
+/// `bones` palette (a `Vec<u16>` of global skin bone list indices).
+/// Returns 0 (root bone) when the local index is out of range — the
+/// renderer's bind-pose fallback is the same behaviour the partition
+/// splitter would emit for an unused slot.
+#[inline]
+fn remap_one(local_idx: u8, palette: &[u16]) -> u16 {
+    palette.get(local_idx as usize).copied().unwrap_or(0)
 }
 
 /// Build `ImportedBone`s from a NiSkinInstance bone list and NiSkinData
@@ -958,17 +1087,22 @@ fn bs_bone_to_inverse_matrix(b: &crate::blocks::skin::BsSkinBoneTrans) -> [[f32;
 /// Vertices with no bone contribution get `([0, 0, 0, 0], [1, 0, 0, 0])`
 /// which binds them to bone 0 with full weight — safer than all-zeros
 /// which would collapse to the origin during matrix palette skinning.
-fn densify_sparse_weights(num_vertices: usize, data: &NiSkinData) -> (Vec<[u8; 4]>, Vec<[f32; 4]>) {
-    // Per-vertex sorted top-4 contributions. Initialized to (255, 0.0)
-    // so missing slots are obviously invalid until we replace them.
-    let mut per_vertex: Vec<[(u8, f32); 4]> = vec![[(255u8, 0.0f32); 4]; num_vertices];
+fn densify_sparse_weights(num_vertices: usize, data: &NiSkinData) -> (Vec<[u16; 4]>, Vec<[f32; 4]>) {
+    // Per-vertex sorted top-4 contributions. Initialized to
+    // (u16::MAX, 0.0) so missing slots are obviously invalid until
+    // we replace them. Pre-#613 the slot type was `u8` and any
+    // NiSkinData with > 256 bones silently dropped every weight
+    // past index 255 — same semantic gap as the BsTriShape side
+    // that #613 fixes; widening the type covers both paths.
+    const VACANT: u16 = u16::MAX;
+    let mut per_vertex: Vec<[(u16, f32); 4]> = vec![[(VACANT, 0.0f32); 4]; num_vertices];
 
     for (bone_idx, bone) in data.bones.iter().enumerate() {
-        // NiSkinData supports more than 256 bones in theory, but the
-        // hardware palette limits us to u8. Skip any bone index that
-        // can't be represented.
-        let bone_u8 = if bone_idx < 256 {
-            bone_idx as u8
+        // NiSkinData carries the global bone list directly — index
+        // is a u16 with no partition splitting. Cap at u16::MAX so
+        // the sentinel above stays distinguishable.
+        let bone_u16 = if bone_idx < VACANT as usize {
+            bone_idx as u16
         } else {
             continue;
         };
@@ -994,7 +1128,7 @@ fn densify_sparse_weights(num_vertices: usize, data: &NiSkinData) -> (Vec<[u8; 4
                 .unwrap_or((0, 0.0));
 
             if vw.weight > min_weight {
-                slots[min_slot] = (bone_u8, vw.weight);
+                slots[min_slot] = (bone_u16, vw.weight);
             }
         }
     }
@@ -1005,7 +1139,7 @@ fn densify_sparse_weights(num_vertices: usize, data: &NiSkinData) -> (Vec<[u8; 4
     for slots in &per_vertex {
         let total: f32 = slots
             .iter()
-            .filter(|(b, _)| *b != 255)
+            .filter(|(b, _)| *b != VACANT)
             .map(|(_, w)| *w)
             .sum();
 
@@ -1018,10 +1152,10 @@ fn densify_sparse_weights(num_vertices: usize, data: &NiSkinData) -> (Vec<[u8; 4
         }
 
         let inv = 1.0 / total;
-        let mut idx = [0u8; 4];
+        let mut idx = [0u16; 4];
         let mut w = [0.0f32; 4];
         for (i, (b, weight)) in slots.iter().enumerate() {
-            if *b != 255 {
+            if *b != VACANT {
                 idx[i] = *b;
                 w[i] = *weight * inv;
             }
@@ -1111,14 +1245,14 @@ mod skin_tests {
         assert!((total - 1.0).abs() < 1e-5);
         // Exactly two distinct bones present (0 and 1). Order inside
         // the 4-slot tuple isn't guaranteed by the algorithm.
-        let mut seen: Vec<u8> = indices[0]
+        let mut seen: Vec<u16> = indices[0]
             .iter()
             .zip(weights[0].iter())
             .filter(|(_, w)| **w > 0.0)
             .map(|(b, _)| *b)
             .collect();
         seen.sort();
-        assert_eq!(seen, vec![0, 1]);
+        assert_eq!(seen, vec![0u16, 1]);
     }
 
     #[test]
@@ -1142,7 +1276,7 @@ mod skin_tests {
         let total: f32 = weights[0].iter().sum();
         assert!((total - 1.0).abs() < 1e-5, "weights should sum to 1");
 
-        let mut present: Vec<(u8, f32)> = indices[0]
+        let mut present: Vec<(u16, f32)> = indices[0]
             .iter()
             .zip(weights[0].iter())
             .filter(|(_, w)| **w > 0.0)
@@ -1152,8 +1286,8 @@ mod skin_tests {
         present.sort_by_key(|(b, _)| *b);
 
         // Dropped bone 0 (weight 0.1); kept bones 1..=4.
-        let bones: Vec<u8> = present.iter().map(|(b, _)| *b).collect();
-        assert_eq!(bones, vec![1, 2, 3, 4]);
+        let bones: Vec<u16> = present.iter().map(|(b, _)| *b).collect();
+        assert_eq!(bones, vec![1u16, 2, 3, 4]);
 
         // Original sum = 0.2 + 0.3 + 0.4 + 0.5 = 1.4; after normalizing
         // each weight becomes w / 1.4.
@@ -2173,5 +2307,383 @@ mod sse_skin_geometry_reconstruction_tests {
                 .is_none(),
             "empty inline + no global buffer must remain a no-op (early return)"
         );
+    }
+}
+
+#[cfg(test)]
+mod bs_tri_shape_partition_remap_tests {
+    //! Regression coverage for #613 / SK-D1-01 — `BsTriShape` inline
+    //! `bone_indices` (`[u8; 4]` per vertex) are partition-LOCAL
+    //! indices into each `NiSkinPartition.partitions[i].bones` palette,
+    //! not global indices into the skin's bone list. The importer
+    //! must walk the partition table and remap before exposing the
+    //! values to downstream consumers, otherwise multi-partition
+    //! shapes (Skyrim Argonian/Khajiit body + worn armour, modded
+    //! 256+ bone skins) silently alias every vertex past partition 0
+    //! to the wrong bones.
+    use super::*;
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::node::NiNode;
+    use crate::blocks::skin::{
+        NiSkinData, NiSkinInstance, NiSkinPartition, SkinPartitionEntry,
+    };
+    use crate::blocks::tri_shape::BsTriShapeKind;
+    use crate::scene::NifScene;
+    use crate::types::{BlockRef, NiPoint3, NiTransform};
+
+    fn empty_net() -> NiObjectNETData {
+        NiObjectNETData {
+            name: None,
+            extra_data_refs: Vec::new(),
+            controller_ref: BlockRef::NULL,
+        }
+    }
+
+    /// Build a 2-vertex skinned BsTriShape whose inline bone_indices
+    /// are partition-local. The skin instance points at a SkinPartition
+    /// with two partitions whose `bones` palettes pick distinct global
+    /// bones — so a `[0, 0, 0, 0]` partition-local index resolves to
+    /// **different** global indices depending on which partition the
+    /// vertex belongs to. Pre-#613 the importer cloned the partition-
+    /// local indices verbatim and both vertices ended up "bound to
+    /// bone 0 globally" — wrong.
+    #[test]
+    fn multi_partition_remap_picks_correct_global_per_vertex() {
+        // Bone refs used by the skin (4 NiNode blocks at indices 5..9).
+        let bone_node = || -> Box<dyn crate::blocks::NiObject> {
+            Box::new(NiNode {
+                av: NiAVObjectData {
+                    net: empty_net(),
+                    flags: 0,
+                    transform: NiTransform::default(),
+                    properties: Vec::new(),
+                    collision_ref: BlockRef::NULL,
+                },
+                children: Vec::new(),
+                effects: Vec::new(),
+            })
+        };
+
+        let shape = BsTriShape {
+            av: NiAVObjectData {
+                net: empty_net(),
+                flags: 0,
+                transform: NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            center: NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+            radius: 0.0,
+            skin_ref: BlockRef(1),
+            shader_property_ref: BlockRef::NULL,
+            alpha_property_ref: BlockRef::NULL,
+            vertex_desc: 0,
+            num_triangles: 0,
+            num_vertices: 2,
+            vertices: vec![
+                NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+                NiPoint3 { x: 1.0, y: 0.0, z: 0.0 },
+            ],
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            vertex_colors: Vec::new(),
+            triangles: Vec::new(),
+            // Vertex 0 → partition 0; per-vertex partition-local
+            // bone slots are [0, 1, 0, 1] — exercises BOTH palette
+            // entries so the remap is observable.
+            // Vertex 1 → partition 1, same shape.
+            bone_weights: vec![
+                [0.4, 0.3, 0.2, 0.1],
+                [0.4, 0.3, 0.2, 0.1],
+            ],
+            bone_indices: vec![[0, 1, 0, 1], [0, 1, 0, 1]],
+            kind: BsTriShapeKind::Plain,
+        };
+
+        let skin_instance = NiSkinInstance {
+            data_ref: BlockRef(2),
+            skin_partition_ref: BlockRef(3),
+            skeleton_root_ref: BlockRef::NULL,
+            // 4 global bones — indices 0..=3.
+            bone_refs: vec![BlockRef(5), BlockRef(6), BlockRef(7), BlockRef(8)],
+        };
+
+        // NiSkinData with bind transforms for each bone — needed so
+        // `extract_skin_bs_tri_shape` succeeds beyond the bone-refs
+        // check. Per-bone vertex_weights stay empty: the BsTriShape
+        // vertex buffer carries the inline weights instead.
+        let skin_data = NiSkinData {
+            skin_transform: NiTransform::default(),
+            bones: vec![
+                crate::blocks::skin::BoneData {
+                    skin_transform: NiTransform::default(),
+                    bounding_sphere: [0.0; 4],
+                    vertex_weights: Vec::new(),
+                },
+                crate::blocks::skin::BoneData {
+                    skin_transform: NiTransform::default(),
+                    bounding_sphere: [0.0; 4],
+                    vertex_weights: Vec::new(),
+                },
+                crate::blocks::skin::BoneData {
+                    skin_transform: NiTransform::default(),
+                    bounding_sphere: [0.0; 4],
+                    vertex_weights: Vec::new(),
+                },
+                crate::blocks::skin::BoneData {
+                    skin_transform: NiTransform::default(),
+                    bounding_sphere: [0.0; 4],
+                    vertex_weights: Vec::new(),
+                },
+            ],
+        };
+
+        let skin_partition = NiSkinPartition {
+            partitions: vec![
+                // Partition 0: covers vertex 0; bones palette = [2, 3]
+                // (so partition-local index 0 → global bone 2).
+                SkinPartitionEntry {
+                    num_vertices: 1,
+                    num_triangles: 0,
+                    bones: vec![2, 3],
+                    num_weights_per_vertex: 4,
+                    vertex_map: vec![0],
+                    vertex_weights: Vec::new(),
+                    triangles: Vec::new(),
+                    bone_indices: Vec::new(),
+                },
+                // Partition 1: covers vertex 1; bones palette = [1, 3]
+                // (so partition-local index 0 → global bone 1).
+                SkinPartitionEntry {
+                    num_vertices: 1,
+                    num_triangles: 0,
+                    bones: vec![1, 3],
+                    num_weights_per_vertex: 4,
+                    vertex_map: vec![1],
+                    vertex_weights: Vec::new(),
+                    triangles: Vec::new(),
+                    bone_indices: Vec::new(),
+                },
+            ],
+            global_vertex_data: None,
+        };
+
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(shape));
+        scene.blocks.push(Box::new(skin_instance));
+        scene.blocks.push(Box::new(skin_data));
+        scene.blocks.push(Box::new(skin_partition));
+        scene.blocks.push(bone_node()); // 4
+        scene.blocks.push(bone_node()); // 5
+        scene.blocks.push(bone_node()); // 6
+        scene.blocks.push(bone_node()); // 7
+        scene.blocks.push(bone_node()); // 8
+
+        let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
+        let skin = extract_skin_bs_tri_shape(&scene, shape_ref)
+            .expect("multi-partition skin must build an ImportedSkin");
+
+        assert_eq!(
+            skin.vertex_bone_indices.len(),
+            2,
+            "both vertices must remap"
+        );
+        // Vertex 0: partition 0's palette is [2, 3]. Local slots
+        // [0, 1, 0, 1] remap to globals [2, 3, 2, 3].
+        assert_eq!(
+            skin.vertex_bone_indices[0], [2, 3, 2, 3],
+            "vertex 0 partition-local [0,1,0,1] must remap via [2,3]"
+        );
+        // Vertex 1: partition 1's palette is [1, 3]. Local slots
+        // [0, 1, 0, 1] remap to globals [1, 3, 1, 3]. Pre-#613 the
+        // partition-local indices were cloned verbatim and widened —
+        // vertex 1 would have come back as [0, 1, 0, 1] (aliasing to
+        // global bones 0 and 1) instead of the intended [1, 3, 1, 3].
+        assert_eq!(
+            skin.vertex_bone_indices[1], [1, 3, 1, 3],
+            "vertex 1 partition-local [0,1,0,1] must remap via [1,3] \
+             (pre-#613 aliased to bones 0 and 1 because it cloned the \
+             partition-local indices verbatim)"
+        );
+    }
+
+    /// Single-partition shapes still take the identity-widen fast
+    /// path: partition-local indices coincide with global indices
+    /// because the partition's `bones` palette is the full skin list.
+    /// Locks the no-regression case.
+    #[test]
+    fn single_partition_shape_widens_indices_directly() {
+        let bone_node = || -> Box<dyn crate::blocks::NiObject> {
+            Box::new(NiNode {
+                av: NiAVObjectData {
+                    net: empty_net(),
+                    flags: 0,
+                    transform: NiTransform::default(),
+                    properties: Vec::new(),
+                    collision_ref: BlockRef::NULL,
+                },
+                children: Vec::new(),
+                effects: Vec::new(),
+            })
+        };
+
+        let shape = BsTriShape {
+            av: NiAVObjectData {
+                net: empty_net(),
+                flags: 0,
+                transform: NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            center: NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+            radius: 0.0,
+            skin_ref: BlockRef(1),
+            shader_property_ref: BlockRef::NULL,
+            alpha_property_ref: BlockRef::NULL,
+            vertex_desc: 0,
+            num_triangles: 0,
+            num_vertices: 1,
+            vertices: vec![NiPoint3 { x: 0.0, y: 0.0, z: 0.0 }],
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            vertex_colors: Vec::new(),
+            triangles: Vec::new(),
+            bone_weights: vec![[1.0, 0.0, 0.0, 0.0]],
+            bone_indices: vec![[3, 0, 0, 0]],
+            kind: BsTriShapeKind::Plain,
+        };
+
+        let skin_instance = NiSkinInstance {
+            data_ref: BlockRef(2),
+            skin_partition_ref: BlockRef(3),
+            skeleton_root_ref: BlockRef::NULL,
+            bone_refs: vec![BlockRef(5), BlockRef(6), BlockRef(7), BlockRef(8)],
+        };
+
+        let skin_data = NiSkinData {
+            skin_transform: NiTransform::default(),
+            bones: (0..4)
+                .map(|_| crate::blocks::skin::BoneData {
+                    skin_transform: NiTransform::default(),
+                    bounding_sphere: [0.0; 4],
+                    vertex_weights: Vec::new(),
+                })
+                .collect(),
+        };
+
+        let skin_partition = NiSkinPartition {
+            partitions: vec![SkinPartitionEntry {
+                num_vertices: 1,
+                num_triangles: 0,
+                // Single partition → bones palette is identity over
+                // the global bone list. Indices already match.
+                bones: vec![0, 1, 2, 3],
+                num_weights_per_vertex: 4,
+                vertex_map: vec![0],
+                vertex_weights: Vec::new(),
+                triangles: Vec::new(),
+                bone_indices: Vec::new(),
+            }],
+            global_vertex_data: None,
+        };
+
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(shape));
+        scene.blocks.push(Box::new(skin_instance));
+        scene.blocks.push(Box::new(skin_data));
+        scene.blocks.push(Box::new(skin_partition));
+        scene.blocks.push(bone_node()); // 4
+        scene.blocks.push(bone_node()); // 5
+        scene.blocks.push(bone_node()); // 6
+        scene.blocks.push(bone_node()); // 7
+        scene.blocks.push(bone_node()); // 8
+
+        let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
+        let skin = extract_skin_bs_tri_shape(&scene, shape_ref).unwrap();
+        // [3, 0, 0, 0] u8 widens to [3, 0, 0, 0] u16 — single-partition
+        // identity. No remap surprise.
+        assert_eq!(skin.vertex_bone_indices[0], [3u16, 0, 0, 0]);
+    }
+
+    /// When the linked NiSkinPartition is missing entirely (synthetic
+    /// or mod malformation), the importer falls back to identity
+    /// widening rather than failing or aliasing. Locks the defensive
+    /// fallback path.
+    #[test]
+    fn missing_skin_partition_falls_back_to_identity_widen() {
+        let bone_node = || -> Box<dyn crate::blocks::NiObject> {
+            Box::new(NiNode {
+                av: NiAVObjectData {
+                    net: empty_net(),
+                    flags: 0,
+                    transform: NiTransform::default(),
+                    properties: Vec::new(),
+                    collision_ref: BlockRef::NULL,
+                },
+                children: Vec::new(),
+                effects: Vec::new(),
+            })
+        };
+
+        let shape = BsTriShape {
+            av: NiAVObjectData {
+                net: empty_net(),
+                flags: 0,
+                transform: NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            center: NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+            radius: 0.0,
+            skin_ref: BlockRef(1),
+            shader_property_ref: BlockRef::NULL,
+            alpha_property_ref: BlockRef::NULL,
+            vertex_desc: 0,
+            num_triangles: 0,
+            num_vertices: 1,
+            vertices: vec![NiPoint3 { x: 0.0, y: 0.0, z: 0.0 }],
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            vertex_colors: Vec::new(),
+            triangles: Vec::new(),
+            bone_weights: vec![[1.0, 0.0, 0.0, 0.0]],
+            bone_indices: vec![[7, 0, 0, 0]],
+            kind: BsTriShapeKind::Plain,
+        };
+
+        let skin_instance = NiSkinInstance {
+            data_ref: BlockRef(2),
+            // No partition — `skin_partition_ref` is null.
+            skin_partition_ref: BlockRef::NULL,
+            skeleton_root_ref: BlockRef::NULL,
+            bone_refs: vec![BlockRef(4), BlockRef(5), BlockRef(6), BlockRef(7)],
+        };
+
+        let skin_data = NiSkinData {
+            skin_transform: NiTransform::default(),
+            bones: (0..4)
+                .map(|_| crate::blocks::skin::BoneData {
+                    skin_transform: NiTransform::default(),
+                    bounding_sphere: [0.0; 4],
+                    vertex_weights: Vec::new(),
+                })
+                .collect(),
+        };
+
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(shape));
+        scene.blocks.push(Box::new(skin_instance));
+        scene.blocks.push(Box::new(skin_data));
+        // Pad to keep block-ref math sane.
+        scene.blocks.push(bone_node()); // 3
+        scene.blocks.push(bone_node()); // 4
+        scene.blocks.push(bone_node()); // 5
+        scene.blocks.push(bone_node()); // 6
+        scene.blocks.push(bone_node()); // 7
+
+        let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
+        let skin = extract_skin_bs_tri_shape(&scene, shape_ref).unwrap();
+        // No partition table to remap through — identity widen [7] → [7u16].
+        assert_eq!(skin.vertex_bone_indices[0], [7u16, 0, 0, 0]);
     }
 }
