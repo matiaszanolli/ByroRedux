@@ -24,6 +24,88 @@ Commits hold that record.
 
 ---
 
+## Session 20 — M29 GPU pre-skinning end-to-end + audit closeout  (2026-04-25, 6e70751..b8834cc)
+
+11-commit session anchored on M29: discovered the existing CPU
+skinning chain works end-to-end on real game content (`f60e27c`
+reframed M29 from "compute-shader bone-palette eval" to "skinning
+chain verified"), then shipped a separate compute-shader arc focused
+on RT correctness — animated NPCs were going to cast bind-pose
+shadows / reflections / GI because the BLAS is built once at upload
+time. The fix is per-skinned-entity BLAS keyed on `EntityId`, refit
+each frame against a `SkinComputePipeline` output buffer. M41 NPC
+spawning now has a working skin chain to consume; Phase 3 (raster
+reads pre-skinned vertices) deferred behind the M41 stability gate.
+
+- **M29 GPU pre-skinning + per-entity BLAS refit (3 commits)** —
+  `de1ea1f` Phase 1: pipeline + `SkinSlot` + descriptor set layout +
+  pool, no live dispatch. `1ae235b` Phase 1.5+2: per-frame compute
+  dispatch + sync first-sight BLAS BUILD + per-frame UPDATE refit +
+  TLAS build relocated after the skin chain for zero-lag RT. New
+  `skin_vertices.comp` mirrors `triangle.vert:147-204`'s weighted-
+  bone-matrix-sum into 21-float Vertex output. `AccelerationManager`
+  gains `skinned_blas: HashMap<EntityId, BlasEntry>` with
+  `ALLOW_UPDATE | PREFER_FAST_BUILD` so refit-in-place is legal each
+  frame; `build_tlas` learns the per-entity override on
+  `bone_offset != 0`. `b8834cc` Phase 3 deferred to **M29.3** in
+  Tier 5 — gated on M41 NPC rollout proving the compute + refit
+  chain stable on visible animated content; raster's well-tested
+  inline-skinning stays the source of truth for now.
+
+- **#638 SSE skin payload surfaced from `SseSkinGlobalBuffer`**
+  (`156290e`) — pre-fix `decode_sse_packed_buffer` skipped the
+  12-byte VF_SKINNED block because the comment claimed
+  `extract_skin_bs_tri_shape` recovered it elsewhere. That elsewhere
+  read `shape.bone_weights` which is empty when geometry lives in
+  the global buffer — the canonical state for Skyrim SE NPC bodies.
+  Every vertex imported with zero weights, hit the rigid fallback,
+  would render in bind pose once M41 lands. `decode_sse_packed_buffer`
+  now surfaces weights + partition-local indices into
+  `DecodedPackedBuffer`; `extract_skin_bs_tri_shape` falls back to
+  the global-buffer payload when inline arrays are empty.
+  `skinning_e2e.rs` flipped its soft-flag from `eprintln + return`
+  to `assert!(!is_empty)`. Without this fix M29's GPU pre-skinning
+  would produce zero-weight vertices on every Skyrim NPC.
+
+- **ESM coverage gaps closed (2 commits)** — `9e9aeef` #519 lifts
+  the AVIF top-level GRUP out of the catch-all skip in `parse_esm`;
+  64 actor-value definitions on FalloutNV.esm now resolve, unblocking
+  every NPC `skill_bonuses` / BOOK skill-book / ~300 AVIF-keyed
+  condition predicate that was dangling. `3d8ec7d` #631 adds the
+  dedicated `extract_dial_with_info` walker for the DIAL Topic
+  Children sub-GRUP (`group_type == 7`) that the generic walker
+  silently skipped — **23,247 INFO records surfaced** on FalloutNV.esm
+  (out of 18,215 DIAL records, 9,493 with non-empty INFOs); pre-fix
+  every `DialRecord.infos` was empty.
+
+- **Renderer correctness (3 commits)** — `7f28aea` #628 sources the
+  cluster grid's far plane from CLMT fog_far (`screen.w`) at runtime
+  with a 10000-floor / 50000-fallback rather than hardcoding 10000;
+  FNV exterior weather pushes fog to 30K-80K and every light past
+  10000 was silently culled from the per-cluster list. `19e7115`
+  #619 per-variant gates the `BSLightingShaderProperty` payload pack
+  in `build_render_data` so non-active material kinds skip the 9
+  Option chains entirely (~99% of a typical cell hits the new fast
+  path). `aba1246` #623 documents the FO76 type-12 EyeEnvmap
+  catch-all against nif.xml line ranges + adds a debug_assert
+  pinning the `multi_layer_envmap_strength` ↔ `hair_tint` vec4-share
+  mutual-exclusion invariant.
+
+- **BSA hygiene (1 bundled commit)** — `5cb5336` Fix #593 + #595:
+  synthesized DDS_HEADER_DXT10 `arraySize` is now 6 for cubemaps and
+  1 for non-cubemaps (was hardcoded to 1, rejected by DXGI loaders);
+  stale `0x0800 = cubemap?` comment in `read_dx10_records` rewritten
+  to name the verified bit (0).
+
+Net: tests +14 (1256 → **1270**), LOC +2 315 non-test (108 030
+total), +1 source file (`crates/renderer/src/vulkan/skin_compute.rs`).
+Bench-of-record `6a6950a` now 45 commits stale (was 33 at S19 close);
+no functional movement expected on Prospector — no NPCs spawn so
+M29's compute chain is dormant, and the cluster_cull FAR change is
+an interior-bench no-op.
+
+---
+
 ## Session 19 — Audit bundle closeout: parser correctness + RGBA pipeline + mem.frag visibility  (2026-04-25, a2a3fcd..79c81b9)
 
 A 25-commit bug-bash burning through audit findings #221 / #404 / #435 /
