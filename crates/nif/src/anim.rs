@@ -15,8 +15,8 @@ use crate::blocks::interpolator::{
     FloatKey, KeyGroup, KeyType, NiBSplineBasisData, NiBSplineCompTransformInterpolator,
     NiBSplineData, NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendInterpolator,
     NiBlendPoint3Interpolator, NiBlendTransformInterpolator, NiBoolInterpolator, NiColorData,
-    NiColorInterpolator, NiFloatData, NiFloatInterpolator, NiPoint3Interpolator, NiPosData,
-    NiTransformData, NiTransformInterpolator, Vec3Key,
+    NiColorInterpolator, NiFloatData, NiFloatInterpolator, NiLookAtInterpolator,
+    NiPoint3Interpolator, NiPosData, NiTransformData, NiTransformInterpolator, Vec3Key,
 };
 use crate::scene::NifScene;
 use std::collections::{BTreeSet, HashMap};
@@ -911,7 +911,54 @@ fn extract_transform_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<T
         return extract_transform_channel_bspline(scene, interp);
     }
 
+    // #604 — NiLookAtInterpolator carries a static `transform`
+    // (NiQuatTransform) that nif.xml documents as the pose used when
+    // the three TRS sub-interpolators are null. Without this branch
+    // every embedded look-at chain (FNV ~18 / SkyrimSE ~5 per R3 sweep)
+    // returned None and silently dropped the channel. Emitting a
+    // single-key constant TransformChannel from the static pose makes
+    // the fall-back explicit. The runtime look-at solve (rotate-to-
+    // face the target NiNode each frame) is a separate ECS-side
+    // feature; the parser-side dispatch hole is what this closes.
+    if let Some(interp) = scene.get_as::<NiLookAtInterpolator>(interp_idx) {
+        return Some(constant_transform_channel(&interp.transform));
+    }
+
     None
+}
+
+/// Build a single-key `TransformChannel` from a static `NiQuatTransform`.
+/// Used by `NiLookAtInterpolator` (and any future block that exposes a
+/// pose without keyframe data) to surface the documented fall-back pose
+/// instead of dropping the channel.
+fn constant_transform_channel(t: &crate::types::NiQuatTransform) -> TransformChannel {
+    let translation = zup_to_yup_pos([t.translation.x, t.translation.y, t.translation.z]);
+    let rotation = zup_to_yup_quat(t.rotation);
+    TransformChannel {
+        translation_keys: vec![TranslationKey {
+            time: 0.0,
+            value: translation,
+            forward: [0.0; 3],
+            backward: [0.0; 3],
+            tbc: None,
+        }],
+        translation_type: KeyType::Linear,
+        rotation_keys: vec![RotationKey {
+            time: 0.0,
+            value: rotation,
+            tbc: None,
+        }],
+        rotation_type: KeyType::Linear,
+        scale_keys: vec![ScaleKey {
+            time: 0.0,
+            value: t.scale,
+            forward: 0.0,
+            backward: 0.0,
+            tbc: None,
+        }],
+        scale_type: KeyType::Linear,
+        priority: 0,
+    }
 }
 
 // ── B-spline evaluation (issue #155) ──────────────────────────────────────
@@ -1909,6 +1956,71 @@ mod tests {
             .expect("blend transform interpolator must resolve to the dominant sub-interp");
         assert_eq!(channel.scale_keys.len(), 1, "must reach dominant data's scales");
         assert!((channel.scale_keys[0].value - 1.5).abs() < 1e-6);
+    }
+
+    /// #604 — NiLookAtInterpolator must produce a constant TransformChannel
+    /// from its static `transform` pose instead of returning None. Pre-fix
+    /// the dispatch had no third branch and embedded look-at chains in
+    /// FNV / SkyrimSE silently dropped every channel.
+    #[test]
+    fn extract_transform_channel_emits_constant_pose_for_lookat() {
+        use crate::types::{BlockRef, NiPoint3, NiQuatTransform};
+
+        // Static pose with a 90° rotation around Z-up Z (= around Y-up Y
+        // after coord conversion). Translation + scale are both
+        // non-default so the test catches a coord-handling regression on
+        // any field.
+        let half = std::f32::consts::FRAC_1_SQRT_2; // sin(45°) = cos(45°)
+        let zup_quat = [half, 0.0, 0.0, half]; // (w, x, y, z) = 90° around +Z
+        let pose = NiQuatTransform {
+            translation: NiPoint3 { x: 1.0, y: 2.0, z: 3.0 },
+            rotation: zup_quat,
+            scale: 0.75,
+        };
+        let lookat = NiLookAtInterpolator {
+            flags: 0,
+            look_at: BlockRef::NULL,
+            look_at_name: None,
+            transform: pose,
+            interp_translation: BlockRef::NULL,
+            interp_roll: BlockRef::NULL,
+            interp_scale: BlockRef::NULL,
+        };
+        let scene = NifScene {
+            blocks: vec![Box::new(lookat)],
+            ..NifScene::default()
+        };
+
+        let mut cb = dummy_controlled_block();
+        cb.interpolator_ref = BlockRef(0);
+
+        let channel = extract_transform_channel(&scene, &cb)
+            .expect("NiLookAtInterpolator must emit a constant transform channel");
+        assert_eq!(channel.translation_keys.len(), 1);
+        assert_eq!(channel.rotation_keys.len(), 1);
+        assert_eq!(channel.scale_keys.len(), 1);
+
+        // Translation Z-up → Y-up: (1, 2, 3) → (1, 3, -2).
+        let t = channel.translation_keys[0].value;
+        assert!((t[0] - 1.0).abs() < 1e-6);
+        assert!((t[1] - 3.0).abs() < 1e-6);
+        assert!((t[2] + 2.0).abs() < 1e-6);
+
+        // Rotation: Z-up (w,x,y,z) = (√2/2, 0, 0, √2/2) → glam (x,y,z,w)
+        // via zup_to_yup_quat = (0, √2/2, 0, √2/2).
+        let r = channel.rotation_keys[0].value;
+        assert!(r[0].abs() < 1e-6);
+        assert!((r[1] - half).abs() < 1e-6);
+        assert!(r[2].abs() < 1e-6);
+        assert!((r[3] - half).abs() < 1e-6);
+
+        // Scale passes through unchanged.
+        assert!((channel.scale_keys[0].value - 0.75).abs() < 1e-6);
+
+        // Time stamps default to 0 — single-key constant channel.
+        assert_eq!(channel.translation_keys[0].time, 0.0);
+        assert_eq!(channel.rotation_keys[0].time, 0.0);
+        assert_eq!(channel.scale_keys[0].time, 0.0);
     }
 
     /// The resolver picks the item with the HIGHEST normalized_weight.
