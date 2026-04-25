@@ -179,6 +179,29 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
     // #546. See #568.
     let mut recovered_blocks: usize = 0;
 
+    // Per-block-type recovery counters. Bumped every time the
+    // block_size-driven `Err` recovery fires, the runtime size cache
+    // skip hint fires, or the oblivion_skip_sizes fallback fires.
+    // Aggregated at end of parse into a single `log::warn!` summary
+    // line — pre-#565 every recovery emitted its own `warn!`, so a
+    // single `Skyrim - Meshes0.bsa` walk fired thousands of warnings
+    // (BSLagBoneController × 3,300, BSLODTriShape × 50,
+    // BSWaterShaderProperty × 50, etc.) drowning every other log line.
+    // The per-block detail still surfaces at `log::debug!` for
+    // targeted parser debugging. See #565 / SK-D5-04.
+    let mut recovered_by_type: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
+    // Companion counter for the success-branch drift detector — the
+    // parser returned `Ok` but consumed != block_size, so block_size
+    // realigns the stream while the (possibly-wrong) parsed struct
+    // stays in the scene. Pre-#565 each instance emitted its own
+    // `warn!` line ("Block N 'TypeX': expected A bytes, consumed B.
+    // Adjusting position."). Same aggregation pattern, separate
+    // summary line so consumers can distinguish "block lost to
+    // NiUnknown" from "block parsed with stream drift" at a glance.
+    let mut drifted_by_type: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
+
     // For Oblivion-era NIFs (no block_sizes table), track the consumed
     // byte count for each successfully parsed block type. When a block
     // fails to parse, the cache provides a skip hint for that type —
@@ -271,13 +294,22 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                                 size,
                             );
                         } else {
-                            log::warn!(
+                            // #565: downgraded from `warn!` — the
+                            // per-NIF summary at the end of this
+                            // function rolls these into a single
+                            // `warn!` line. Per-block detail stays
+                            // visible at `debug!` for parser-author
+                            // debugging.
+                            log::debug!(
                                 "Block {} '{}': expected {} bytes, consumed {}. Adjusting position.",
                                 i,
                                 type_name,
                                 size,
                                 consumed,
                             );
+                            *drifted_by_type
+                                .entry(type_name.to_string())
+                                .or_insert(0) += 1;
                         }
                         stream.set_position(start_pos + size as u64);
                     }
@@ -332,7 +364,14 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                     // layout quirk) takes down the entire NIF. The unit tests
                     // still exercise the happy path; this is the belt-and-braces
                     // path that keeps `parse_rate_*` integration tests meaningful.
-                    log::warn!(
+                    //
+                    // #565 / SK-D5-04: downgraded from `warn!` to `debug!`
+                    // because Skyrim Meshes0 has thousands of these per
+                    // archive walk; the per-NIF summary at the end of this
+                    // function rolls the counts up into a single `warn!`
+                    // line so the high-level signal stays visible without
+                    // drowning every other log.
+                    log::debug!(
                         "Block {} '{}' (size {}, offset {}, consumed {}): {} — \
                          seeking past block and inserting NiUnknown",
                         i,
@@ -348,6 +387,9 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                         data: Vec::new(),
                     }));
                     recovered_blocks += 1;
+                    *recovered_by_type
+                        .entry(type_name.to_string())
+                        .or_insert(0) += 1;
                     continue;
                 }
                 // Without block_size (Oblivion), there's no header-driven
@@ -385,6 +427,9 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                                 data: Vec::new(),
                             }));
                             recovered_blocks += 1;
+                            *recovered_by_type
+                                .entry(type_name.to_string())
+                                .or_insert(0) += 1;
                             continue;
                         }
                     }
@@ -409,6 +454,9 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                             data: Vec::new(),
                         }));
                         recovered_blocks += 1;
+                        *recovered_by_type
+                            .entry(type_name.to_string())
+                            .or_insert(0) += 1;
                         continue;
                     }
                     // If the skip would go past EOF, fall through to the
@@ -445,6 +493,45 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                 break;
             }
         }
+    }
+
+    // #565: emit aggregated `warn!` summaries for the per-block-type
+    // recovery + drift counts collected during the parse loop.
+    // Pre-#565 every recovery / drift emitted its own `warn!` line,
+    // drowning out everything else when an archive walk hit thousands
+    // of recoverable blocks. The per-block detail is preserved at
+    // `log::debug!` for targeted debugging; these summaries keep the
+    // high-level signal visible at the default log level. Empty maps
+    // → no log output.
+    fn format_type_count_map(map: &std::collections::HashMap<String, u32>) -> String {
+        // Sort by count descending then type-name for deterministic
+        // output (helps log diffs across runs and aggregator scripts).
+        let mut entries: Vec<(&String, &u32)> = map.iter().collect();
+        entries.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        entries
+            .iter()
+            .map(|(name, count)| format!("{name}={count}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+    if !recovered_by_type.is_empty() {
+        log::warn!(
+            "NIF parse recovered {} block(s) via block_size / runtime-cache / \
+             oblivion_skip_sizes paths: {} (per-block detail at debug level — \
+             see #565)",
+            recovered_blocks,
+            format_type_count_map(&recovered_by_type),
+        );
+    }
+    if !drifted_by_type.is_empty() {
+        let drift_total: u32 = drifted_by_type.values().sum();
+        log::warn!(
+            "NIF parse: {} block(s) parsed Ok but consumed != block_size; \
+             stream realigned by header size table: {} (per-block detail at \
+             debug level — under-/over-consume bugs tracked in #615)",
+            drift_total,
+            format_type_count_map(&drifted_by_type),
+        );
     }
 
     // Phase 3: Identify root. Root is typically the first NiNode (or
