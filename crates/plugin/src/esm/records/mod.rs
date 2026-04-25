@@ -19,11 +19,13 @@ pub mod container;
 pub mod global;
 pub mod items;
 pub mod misc;
+pub mod mswp;
 pub mod pkin;
 pub mod scol;
 pub mod script;
 pub mod weather;
 
+pub use mswp::{parse_mswp, MaterialSwapEntry, MaterialSwapRecord};
 pub use pkin::{parse_pkin, PkinRecord};
 pub use scol::{parse_scol, ScolPart, ScolPlacement, ScolRecord};
 

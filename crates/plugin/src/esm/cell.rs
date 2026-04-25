@@ -493,6 +493,18 @@ pub struct EsmCellIndex {
     /// through the MODL-only parser (PKIN carries no MODL).
     /// See audit FO4-DIM4-03 / #589.
     pub packins: HashMap<u32, super::records::PkinRecord>,
+    /// FO4+ MSWP (Material Swap) records keyed by form ID. Each
+    /// authors a list of `(source.bgsm/.bgem → target.bgsm/.bgem,
+    /// optional intensity)` substitutions plus an optional path-prefix
+    /// filter. REFR `XMSP` sub-records (FO4-DIM6-02 stage 2) point at
+    /// an MSWP form ID and the cell loader looks the table up here to
+    /// produce per-REFR `TextureSlotSwap` overrides. Without MSWP every
+    /// vanilla Raider armour, settlement clutter colour-variant, and
+    /// Vault decay overlay renders identically across REFRs.
+    ///
+    /// Vanilla `Fallout4.esm` ships ~2,500 MSWP records — see audit
+    /// FO4-DIM6-05 / #590.
+    pub material_swaps: HashMap<u32, super::records::MaterialSwapRecord>,
 }
 
 /// Parse an ESM file and extract cells, worldspaces, and base object definitions.
@@ -537,6 +549,7 @@ pub fn parse_esm_cells_with_load_order(
     let mut ltex_to_txst: HashMap<u32, u32> = HashMap::new();
     let mut scols: HashMap<u32, super::records::ScolRecord> = HashMap::new();
     let mut packins: HashMap<u32, super::records::PkinRecord> = HashMap::new();
+    let mut material_swaps: HashMap<u32, super::records::MaterialSwapRecord> = HashMap::new();
 
     // Walk top-level groups.
     while reader.remaining() > 0 {
@@ -618,6 +631,21 @@ pub fn parse_esm_cells_with_load_order(
                 let end = reader.group_content_end(&group);
                 parse_pkin_group(&mut reader, end, &mut statics, &mut packins)?;
             }
+            // MSWP — FO4+ Material Swap. Authors a list of source →
+            // target material substitutions plus an optional
+            // path-prefix filter. REFR `XMSP` sub-records (FO4-DIM6-02
+            // stage 2) point at MSWP form IDs; the cell loader
+            // resolves them here and produces per-REFR
+            // `TextureSlotSwap` overrides. Pre-#590 the type was in
+            // `RecordType::MSWP` but had no parser, so all 2,500
+            // vanilla Fallout4.esm entries fell into the catch-all
+            // `skip_group` below — every Raider armour / station-
+            // wagon / vault-decay variant rendered identically.
+            // See audit FO4-DIM6-05.
+            b"MSWP" => {
+                let end = reader.group_content_end(&group);
+                parse_mswp_group(&mut reader, end, &mut material_swaps)?;
+            }
             _ => {
                 reader.skip_group(&group);
             }
@@ -656,6 +684,7 @@ pub fn parse_esm_cells_with_load_order(
         texture_sets,
         scols,
         packins,
+        material_swaps,
     })
 }
 
@@ -1909,6 +1938,42 @@ fn parse_pkin_group(
                 );
             }
             packins.insert(header.form_id, record);
+        } else {
+            reader.skip_record(&header);
+        }
+    }
+    Ok(())
+}
+
+/// Walk an MSWP group and parse every `MSWP` record into the
+/// `material_swaps` map. Sub-groups (rare in vanilla but common in
+/// mods that nest under MSWP) recurse like every other group walker
+/// in this file. Pre-#590 the entire group was `skip_group`'d so all
+/// ~2,500 vanilla Fallout4.esm material-swap tables were silently
+/// discarded — every Raider armour, station-wagon rust variant, and
+/// vault-decay overlay rendered identically across REFRs.
+///
+/// Stores nothing on `statics` — MSWP isn't a placeable base form,
+/// only a substitution table consumed at REFR-spawn time when the
+/// REFR carries `XMSP`. See audit FO4-DIM6-05.
+fn parse_mswp_group(
+    reader: &mut EsmReader,
+    end: usize,
+    material_swaps: &mut HashMap<u32, super::records::MaterialSwapRecord>,
+) -> Result<()> {
+    while reader.position() < end && reader.remaining() > 0 {
+        if reader.is_group() {
+            let sub = reader.read_group_header()?;
+            let sub_end = reader.group_content_end(&sub);
+            parse_mswp_group(reader, sub_end, material_swaps)?;
+            continue;
+        }
+
+        let header = reader.read_record_header()?;
+        if &header.record_type == b"MSWP" {
+            let subs = reader.read_sub_records(&header)?;
+            let record = super::records::parse_mswp(header.form_id, &subs);
+            material_swaps.insert(header.form_id, record);
         } else {
             reader.skip_record(&header);
         }

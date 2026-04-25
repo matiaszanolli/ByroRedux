@@ -1,9 +1,6 @@
-# #590: FO4-DIM6-05: COBJ / OMOD / MSWP / CMPO / FLST records not parsed — FO4 weapons, armor variants, settlement crafting silently incomplete
+# FO4-DIM6-05: COBJ / OMOD / MSWP / CMPO / FLST records not parsed — FO4 weapons, armor variants, settlement crafting silently incomplete
 
-**URL**: https://github.com/matiaszanolli/ByroRedux/issues/590
-**Labels**: bug, medium, legacy-compat, 
-
----
+State: OPEN
 
 **From**: `docs/audits/AUDIT_FO4_2026-04-23.md` (Dim 6)
 **Severity**: MEDIUM
