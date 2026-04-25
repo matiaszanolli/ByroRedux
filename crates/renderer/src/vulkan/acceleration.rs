@@ -607,6 +607,20 @@ impl AccelerationManager {
             mesh_handle: u32,
             accel: vk::AccelerationStructureKHR,
             buffer: GpuBuffer,
+            /// `vk::AccelerationStructureGeometryKHR<'a>` carries a
+            /// PHANTOM lifetime from ash's typed builder API — the
+            /// compiler can't see that every union field used in the
+            /// `BLAS-from-device-buffer` path is value-typed (`u64`
+            /// device addresses + small enums), so without an
+            /// annotation the borrow checker would tie the struct's
+            /// lifetime to the local `triangles_data` Vec. We fill
+            /// only `device_address: u64` (no host pointers, no Rust
+            /// references) so the `'static` claim is sound.
+            ///
+            /// **Future-proof invariant**: every `.geometry()`-reachable
+            /// field must remain value-typed. Adding a host-pointer
+            /// variant or a `&[T]` body would make this UB with no
+            /// compiler warning. See #580 / SAFE-21.
             geometry: vk::AccelerationStructureGeometryKHR<'static>,
             primitive_count: u32,
             /// Per-mesh scratch size from Phase 1 sizing — stored so the
@@ -691,9 +705,27 @@ impl AccelerationManager {
 
             let primitive_count = index_count / 3;
 
-            // SAFETY: We transmute the lifetime to 'static because the triangles_data
-            // vec lives for the duration of this function. The geometry struct just
-            // holds a copy of the union data, not a reference.
+            // SAFETY: `vk::AccelerationStructureGeometryKHR<'a>` carries a
+            // phantom lifetime from ash's typed builder API. We never
+            // populate a Rust borrow into the geometry union — every
+            // field in `vk::AccelerationStructureGeometryDataKHR.triangles`
+            // we reach (vertex / index `device_address: u64`,
+            // `vertex_format`, `index_type`, primitive count, etc.) is
+            // value-typed; no host pointers, no `&[T]`. The `'static`
+            // annotation on `PreparedBlas::geometry` (line ~610) is
+            // therefore sound regardless of whether `triangles_data`
+            // is still in scope.
+            //
+            // The geometry value itself is consumed inline below to
+            // build the per-BLAS sizes query and stored on
+            // `PreparedBlas::geometry` for the Phase 2 batched build
+            // submission. No real cross-Vec borrow lives across that
+            // boundary.
+            //
+            // Pre-#580 this comment claimed both "triangles_data lives
+            // for the function" (which would imply a real borrow) and
+            // "geometry holds a copy of the union data" (correct);
+            // only the second half is the real invariant. See SAFE-21.
             let geometry = vk::AccelerationStructureGeometryKHR::default()
                 .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
                 .flags(vk::GeometryFlagsKHR::OPAQUE)
