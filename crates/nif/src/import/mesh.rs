@@ -1400,6 +1400,7 @@ mod bs_tri_shape_shader_flag_tests {
             bone_weights: Vec::new(),
             bone_indices: Vec::new(),
             kind: BsTriShapeKind::Plain,
+            data_size: 0,
         }
     }
 
@@ -1700,6 +1701,7 @@ mod shader_type_fields_tests {
             bone_weights: Vec::new(),
             bone_indices: Vec::new(),
             kind: BsTriShapeKind::Plain,
+            data_size: 0,
         }
     }
 
@@ -1949,6 +1951,7 @@ mod material_path_capture_tests {
             bone_weights: Vec::new(),
             bone_indices: Vec::new(),
             kind: BsTriShapeKind::Plain,
+            data_size: 0,
         }
     }
 
@@ -2125,6 +2128,7 @@ mod sse_skin_geometry_reconstruction_tests {
             bone_weights: Vec::new(),
             bone_indices: Vec::new(),
             kind: BsTriShapeKind::Plain,
+            data_size: 0,
         };
 
         // NiSkinInstance (block 1) → NiSkinPartition (block 2).
@@ -2211,6 +2215,7 @@ mod sse_skin_geometry_reconstruction_tests {
             bone_weights: Vec::new(),
             bone_indices: Vec::new(),
             kind: BsTriShapeKind::Plain,
+            data_size: 0,
         };
 
         let skin_instance = NiSkinInstance {
@@ -2284,6 +2289,7 @@ mod sse_skin_geometry_reconstruction_tests {
             bone_weights: Vec::new(),
             bone_indices: Vec::new(),
             kind: BsTriShapeKind::Plain,
+            data_size: 0,
         };
         let skin_instance = NiSkinInstance {
             data_ref: BlockRef::NULL,
@@ -2398,6 +2404,7 @@ mod bs_tri_shape_partition_remap_tests {
             ],
             bone_indices: vec![[0, 1, 0, 1], [0, 1, 0, 1]],
             kind: BsTriShapeKind::Plain,
+            data_size: 0,
         };
 
         let skin_instance = NiSkinInstance {
@@ -2551,6 +2558,7 @@ mod bs_tri_shape_partition_remap_tests {
             bone_weights: vec![[1.0, 0.0, 0.0, 0.0]],
             bone_indices: vec![[3, 0, 0, 0]],
             kind: BsTriShapeKind::Plain,
+            data_size: 0,
         };
 
         let skin_instance = NiSkinInstance {
@@ -2649,6 +2657,7 @@ mod bs_tri_shape_partition_remap_tests {
             bone_weights: vec![[1.0, 0.0, 0.0, 0.0]],
             bone_indices: vec![[7, 0, 0, 0]],
             kind: BsTriShapeKind::Plain,
+            data_size: 0,
         };
 
         let skin_instance = NiSkinInstance {

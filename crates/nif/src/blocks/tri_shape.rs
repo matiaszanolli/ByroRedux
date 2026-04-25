@@ -183,7 +183,13 @@ pub type NiTriStrips = NiTriShape;
 /// distant-LOD import, dismember segmentation) couldn't tell them apart.
 ///
 /// Mirrors the [`super::node::BsRangeKind`] pattern.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Was `#[derive(Copy, Eq)]` pre-#404. `SubIndex(Box<...>)` makes the
+/// enum heap-owning so `Copy` is gone, and the boxed payload contains
+/// `Vec<f32>` cut-offsets (no `Eq` for `f32`). Downstream consumers
+/// only ever clone or `PartialEq`-compare the discriminant, so the
+/// loss is non-load-bearing.
+#[derive(Debug, Clone, PartialEq)]
 pub enum BsTriShapeKind {
     /// Plain `BSTriShape` — the baseline Skyrim SE+ geometry block.
     Plain,
@@ -197,10 +203,11 @@ pub enum BsTriShapeKind {
     /// Preserved as a distinct `kind` so importers can differentiate.
     MeshLOD,
     /// `BSSubIndexTriShape` — ubiquitous in Skyrim SE DLC / FO4 actor
-    /// meshes for dismemberment segmentation. Trailing segmentation
-    /// table is currently skipped via `block_size`; the `kind` is what
-    /// tells the importer the body is segmented. See #404.
-    SubIndex,
+    /// meshes for dismemberment segmentation. Carries the parsed
+    /// segmentation payload (segment table + optional shared sub-segment
+    /// data with SSF filename). Boxed because `BsSubIndexTriShapeData`
+    /// is large and only one variant carries it. See #404.
+    SubIndex(Box<BsSubIndexTriShapeData>),
     /// `BSDynamicTriShape` — Skyrim facegen head meshes. The trailing
     /// `Vector4` array carries the CPU-morph-updated vertex positions
     /// that overwrite the base `vertices`. See #341.
@@ -242,6 +249,13 @@ pub struct BsTriShape {
     /// in [`super::mod`] uses [`Self::with_kind`] to override for types
     /// that share a parser (BSMeshLODTriShape / BSSubIndexTriShape). #560.
     pub kind: BsTriShapeKind,
+    /// `Data Size` from the BSTriShape body (vertex pool bytes + triangle
+    /// pool bytes). Stored verbatim for downstream consumers — primarily
+    /// `BSSubIndexTriShape` which gates its segmentation block on this
+    /// value being non-zero (see nif.xml `cond="Data Size #GT# 0"`).
+    /// #359 derives the expected value as a sanity check;
+    /// #404 needs the stored value to gate the segmentation parse path.
+    pub data_size: u32,
 }
 
 impl NiObject for BsTriShape {
@@ -254,7 +268,7 @@ impl NiObject for BsTriShape {
             BsTriShapeKind::Plain => "BSTriShape",
             BsTriShapeKind::LOD { .. } => "BSLODTriShape",
             BsTriShapeKind::MeshLOD => "BSMeshLODTriShape",
-            BsTriShapeKind::SubIndex => "BSSubIndexTriShape",
+            BsTriShapeKind::SubIndex(_) => "BSSubIndexTriShape",
             BsTriShapeKind::Dynamic => "BSDynamicTriShape",
         }
     }
@@ -596,6 +610,7 @@ impl BsTriShape {
             bone_weights,
             bone_indices,
             kind: BsTriShapeKind::Plain,
+            data_size,
         })
     }
 
@@ -671,6 +686,281 @@ impl BsTriShape {
         let lod2 = stream.read_u32_le()?;
         shape.kind = BsTriShapeKind::LOD { lod0, lod1, lod2 };
         Ok(shape)
+    }
+
+    /// Parse `BSSubIndexTriShape` — Skyrim SE DLC / FO4 / FO76 actor mesh
+    /// segmentation. Pre-#404 the dispatcher ran the base `BsTriShape::parse`
+    /// and then skipped the remaining bytes via `block_size`, so the
+    /// per-segment bone-slot flags (used for dismemberment / locational
+    /// damage) were never recovered. This implements the structured-decode
+    /// path per nif.xml `<niobject name="BSSubIndexTriShape">`.
+    ///
+    /// Wire layout differs by stream variant:
+    /// - **SSE (`bsver < 130`)** — always present (no `data_size > 0` gate):
+    ///   `uint num_segments` followed by `BSGeometrySegmentData[num_segments]`
+    ///   where each entry is `byte flags + uint start_index + uint num_primitives`
+    ///   (no parent_array_index / sub_segments).
+    /// - **FO4+ (`bsver >= 130`)** — gated on `BsTriShape::data_size > 0`:
+    ///   `uint num_primitives + uint num_segments + uint total_segments`
+    ///   then `BSGeometrySegmentData[num_segments]` (`start_index +
+    ///   num_primitives + parent_array_index + num_sub_segments +
+    ///   BSGeometrySubSegment[num_sub_segments]`). When
+    ///   `num_segments < total_segments`, a trailing
+    ///   `BSGeometrySegmentSharedData` follows: `num_segments + total_segments
+    ///   + segment_starts[num_segments] + per_segment_data[total_segments]
+    ///   + ssf_filename` (u16-prefixed string).
+    pub fn parse_sub_index(
+        stream: &mut NifStream,
+        block_size: Option<u32>,
+    ) -> io::Result<Self> {
+        let block_start = stream.position();
+        let mut shape = Self::parse(stream)?;
+        let segmentation_start = stream.position();
+        match BsSubIndexTriShapeData::parse(stream, &shape) {
+            Ok(sub_data) => {
+                shape.kind = BsTriShapeKind::SubIndex(Box::new(sub_data));
+            }
+            Err(e) => {
+                // Segmentation parse failed — typically a misaligned
+                // sub-segment / per-segment-data layout in some shipped
+                // FO4 content. Don't take the BsTriShape body down with
+                // it: degrade to the pre-#404 wholesale-skip behaviour
+                // so the renderer still sees the geometry. Skip past
+                // the segmentation block via `block_size` when known;
+                // otherwise rewind to the segmentation start so the
+                // outer block-loop's recovery can resync via the header
+                // size table. Empty `Default` data signals "segmentation
+                // payload not recovered" to downstream consumers.
+                log::debug!(
+                    "BSSubIndexTriShape segmentation decode failed at offset {}: \
+                     {} — falling back to block_size skip; geometry preserved",
+                    segmentation_start,
+                    e,
+                );
+                if let Some(size) = block_size {
+                    let target = block_start + size as u64;
+                    let cur = stream.position();
+                    if cur < target {
+                        stream.skip(target - cur)?;
+                    } else {
+                        // Already past target — rewind and re-skip.
+                        stream.set_position(segmentation_start);
+                        let consumed = segmentation_start - block_start;
+                        if (consumed as u32) < size {
+                            stream.skip((size as u64) - consumed)?;
+                        }
+                    }
+                } else {
+                    stream.set_position(segmentation_start);
+                }
+                shape.kind =
+                    BsTriShapeKind::SubIndex(Box::new(BsSubIndexTriShapeData::default()));
+            }
+        }
+        Ok(shape)
+    }
+}
+
+/// FO4+ sub-segment within a `BSGeometrySegmentData`. Each describes a
+/// contiguous triangle range within the parent segment, and (via its
+/// parent index in `BSGeometryPerSegmentSharedData`) carries the user
+/// slot / bone hash needed for body-part / dismemberment routing.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BsGeometrySubSegment {
+    pub start_index: u32,
+    pub num_primitives: u32,
+    pub parent_array_index: u32,
+    pub unused: u32,
+}
+
+/// One entry in the `BSSubIndexTriShape` segment table. SSE-era meshes
+/// use the `flags` byte with no sub-segments; FO4+ replaces the byte
+/// flags with `parent_array_index` + a (possibly empty) sub-segment list.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BsGeometrySegmentData {
+    /// Pre-FO4 (`NI_BS_LT_FO4`) byte flags. `None` on FO4+/FO76.
+    pub flags: Option<u8>,
+    pub start_index: u32,
+    pub num_primitives: u32,
+    /// FO4+ only. `None` on SSE.
+    pub parent_array_index: Option<u32>,
+    /// FO4+ only. Empty on SSE.
+    pub sub_segments: Vec<BsGeometrySubSegment>,
+}
+
+/// Per-segment shared data attached to a sub-segment via its
+/// `parent_array_index`. Carries the user slot (Biped Object) +
+/// hashed bone name + cut-offset list used by the Creation Engine
+/// dismemberment system. FO4 / FO76 only.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BsGeometryPerSegmentSharedData {
+    pub user_index: u32,
+    pub bone_id: u32,
+    pub cut_offsets: Vec<f32>,
+}
+
+/// Trailing shared-data block on FO4+ `BSSubIndexTriShape` when
+/// `num_segments < total_segments` (i.e., at least one segment has
+/// sub-segments). Pairs the segment-start offsets with the
+/// per-(sub)segment shared metadata and an SSF filename pointer.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BsGeometrySegmentSharedData {
+    pub num_segments: u32,
+    pub total_segments: u32,
+    pub segment_starts: Vec<u32>,
+    pub per_segment_data: Vec<BsGeometryPerSegmentSharedData>,
+    /// `.ssf` filename — the segment-shape file the CK uses to author
+    /// dismemberment metadata. u16-prefixed string per nif.xml
+    /// `SizedString16`.
+    pub ssf_filename: String,
+}
+
+/// Parsed segmentation payload for `BSSubIndexTriShape`. Lives inside
+/// [`BsTriShapeKind::SubIndex`] and exposes the bone-slot metadata
+/// downstream consumers need for dismemberment / locational damage
+/// (the renderer itself doesn't consult any of this — but the M-series
+/// combat / damage roadmap needs the parse path landed first). See #404.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BsSubIndexTriShapeData {
+    /// FO4+ total triangle count (calc'd from the BSTriShape body).
+    /// Always 0 on SSE-era meshes.
+    pub num_primitives: u32,
+    /// Number of explicit segments in the segment table.
+    pub num_segments: u32,
+    /// FO4+ inclusive count (segments + sub-segments). 0 on SSE.
+    pub total_segments: u32,
+    pub segments: Vec<BsGeometrySegmentData>,
+    /// FO4+ only, present when `num_segments < total_segments`.
+    pub shared: Option<BsGeometrySegmentSharedData>,
+}
+
+impl BsSubIndexTriShapeData {
+    /// Parse the trailing segmentation block following the BSTriShape body.
+    /// `shape` is needed for `data_size` (the FO4+ gate) — SSE always
+    /// reads the segment count regardless.
+    fn parse(stream: &mut NifStream, shape: &BsTriShape) -> io::Result<Self> {
+        let bsver = stream.bsver();
+        if bsver >= 130 {
+            // FO4+ / FO76. All fields gated on data_size > 0 — empty
+            // template / stub meshes ship with no segmentation payload.
+            if shape.data_size == 0 {
+                return Ok(Self::default());
+            }
+            let num_primitives = stream.read_u32_le()?;
+            let num_segments = stream.read_u32_le()?;
+            let total_segments = stream.read_u32_le()?;
+            // #388/#408 — bound the file-driven count before allocation.
+            let mut segments: Vec<BsGeometrySegmentData> =
+                stream.allocate_vec(num_segments)?;
+            for _ in 0..num_segments {
+                let start_index = stream.read_u32_le()?;
+                let seg_num_primitives = stream.read_u32_le()?;
+                let parent_array_index = stream.read_u32_le()?;
+                let num_sub_segments = stream.read_u32_le()?;
+                let mut sub_segments: Vec<BsGeometrySubSegment> =
+                    stream.allocate_vec(num_sub_segments)?;
+                for _ in 0..num_sub_segments {
+                    sub_segments.push(BsGeometrySubSegment {
+                        start_index: stream.read_u32_le()?,
+                        num_primitives: stream.read_u32_le()?,
+                        parent_array_index: stream.read_u32_le()?,
+                        unused: stream.read_u32_le()?,
+                    });
+                }
+                segments.push(BsGeometrySegmentData {
+                    flags: None,
+                    start_index,
+                    num_primitives: seg_num_primitives,
+                    parent_array_index: Some(parent_array_index),
+                    sub_segments,
+                });
+            }
+            // `BSGeometrySegmentSharedData` is only present when there's
+            // at least one sub-segment (i.e., `total_segments` strictly
+            // exceeds the explicit segment count).
+            let shared = if num_segments < total_segments {
+                let s_num_segments = stream.read_u32_le()?;
+                let s_total_segments = stream.read_u32_le()?;
+                let mut segment_starts: Vec<u32> =
+                    stream.allocate_vec(s_num_segments)?;
+                for _ in 0..s_num_segments {
+                    segment_starts.push(stream.read_u32_le()?);
+                }
+                let mut per_segment_data: Vec<BsGeometryPerSegmentSharedData> =
+                    stream.allocate_vec(s_total_segments)?;
+                for _ in 0..s_total_segments {
+                    let user_index = stream.read_u32_le()?;
+                    let bone_id = stream.read_u32_le()?;
+                    let num_cut_offsets = stream.read_u32_le()?;
+                    // nif.xml documents `range="0:8"` on Num Cut Offsets,
+                    // but nifly's `Geometry.cpp:1230` doesn't enforce the
+                    // cap and shipped FO4 content carries values above 8
+                    // (verified empirically against `Fallout4 - Meshes.ba2`
+                    // — a strict cap dropped parse rate from 100% to
+                    // 96.46%). Trust `allocate_vec`'s #388 hard cap to
+                    // bound malicious inputs and let real content through.
+                    let mut cut_offsets: Vec<f32> =
+                        stream.allocate_vec(num_cut_offsets)?;
+                    for _ in 0..num_cut_offsets {
+                        cut_offsets.push(stream.read_f32_le()?);
+                    }
+                    per_segment_data.push(BsGeometryPerSegmentSharedData {
+                        user_index,
+                        bone_id,
+                        cut_offsets,
+                    });
+                }
+                // SizedString16 — u16 length prefix.
+                let ssf_len = stream.read_u16_le()? as usize;
+                let ssf_bytes = stream.read_bytes(ssf_len)?;
+                let ssf_filename = match String::from_utf8(ssf_bytes) {
+                    Ok(s) => s,
+                    Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+                };
+                Some(BsGeometrySegmentSharedData {
+                    num_segments: s_num_segments,
+                    total_segments: s_total_segments,
+                    segment_starts,
+                    per_segment_data,
+                    ssf_filename,
+                })
+            } else {
+                None
+            };
+            Ok(Self {
+                num_primitives,
+                num_segments,
+                total_segments,
+                segments,
+                shared,
+            })
+        } else {
+            // SSE (`bsver == 100`). Always present; pre-FO4 segments use
+            // a single byte for flags and don't carry parent_array_index
+            // or sub-segments.
+            let num_segments = stream.read_u32_le()?;
+            let mut segments: Vec<BsGeometrySegmentData> =
+                stream.allocate_vec(num_segments)?;
+            for _ in 0..num_segments {
+                let flags = stream.read_u8()?;
+                let start_index = stream.read_u32_le()?;
+                let num_primitives = stream.read_u32_le()?;
+                segments.push(BsGeometrySegmentData {
+                    flags: Some(flags),
+                    start_index,
+                    num_primitives,
+                    parent_array_index: None,
+                    sub_segments: Vec::new(),
+                });
+            }
+            Ok(Self {
+                num_primitives: 0,
+                num_segments,
+                total_segments: 0,
+                segments,
+                shared: None,
+            })
+        }
     }
 }
 
@@ -1728,31 +2018,265 @@ mod skin_vertex_tests {
         );
     }
 
-    /// Regression: #147 — BSSubIndexTriShape carries a variable-size
-    /// FO4+ segmentation block (num primitives + segment table + optional
-    /// shared sub-segment data with SSF filename). The dispatch uses
-    /// `block_size` to bound the skip rather than reimplementing the
-    /// full variable layout, since segmentation is gameplay-only data.
+    /// Regression: #404 — BSSubIndexTriShape now decodes its segmentation
+    /// block into [`BsSubIndexTriShapeData`] instead of skipping past it
+    /// via `block_size`. The recovered segment table carries the
+    /// per-segment bone-slot flags (SSE) / parent-array indices + cut
+    /// offsets (FO4+) needed for dismemberment / locational damage.
+    ///
+    /// SSE-flavoured fixture (`bsver == 100` from `test_header()`): each
+    /// segment is `byte flags + uint start_index + uint num_primitives`
+    /// (9 bytes/segment, no parent_array_index, no sub-segments).
     #[test]
-    fn bs_sub_index_tri_shape_consumes_segmentation_via_block_size() {
+    fn bs_sub_index_tri_shape_sse_decodes_segment_table() {
         let header = test_header();
         let mut bytes = minimal_bs_tri_shape_bytes();
-        // Simulate a 24-byte segmentation payload — doesn't need to be
-        // semantically valid, only that block_size bounds the skip.
-        let segmentation_bytes = [0xAAu8; 24];
-        bytes.extend_from_slice(&segmentation_bytes);
+        // SSE segmentation: u32 num_segments = 2, then 2 × (u8 flags + u32 start + u32 num_prims).
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // num_segments
+        bytes.extend_from_slice(&0x42u8.to_le_bytes()); // flags
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // start_index
+        bytes.extend_from_slice(&12u32.to_le_bytes()); // num_primitives
+        bytes.extend_from_slice(&0x7Fu8.to_le_bytes()); // flags
+        bytes.extend_from_slice(&36u32.to_le_bytes()); // start_index
+        bytes.extend_from_slice(&8u32.to_le_bytes()); // num_primitives
 
         let mut stream = crate::stream::NifStream::new(&bytes, &header);
         let block = parse_block("BSSubIndexTriShape", &mut stream, Some(bytes.len() as u32))
-            .expect("BSSubIndexTriShape should parse with block_size skip");
-        assert!(
-            block.as_any().downcast_ref::<BsTriShape>().is_some(),
-            "BSSubIndexTriShape did not downcast to BsTriShape"
-        );
+            .expect("BSSubIndexTriShape SSE path should structured-decode");
+        let shape = block
+            .as_any()
+            .downcast_ref::<BsTriShape>()
+            .expect("BSSubIndexTriShape did not downcast to BsTriShape");
+
+        let sub = match &shape.kind {
+            BsTriShapeKind::SubIndex(data) => data,
+            other => panic!("expected SubIndex kind, got {:?}", other),
+        };
+        assert_eq!(sub.num_segments, 2);
+        // SSE doesn't carry total_segments / num_primitives.
+        assert_eq!(sub.total_segments, 0);
+        assert_eq!(sub.num_primitives, 0);
+        assert_eq!(sub.segments.len(), 2);
+        assert_eq!(sub.segments[0].flags, Some(0x42));
+        assert_eq!(sub.segments[0].start_index, 0);
+        assert_eq!(sub.segments[0].num_primitives, 12);
+        assert!(sub.segments[0].parent_array_index.is_none());
+        assert!(sub.segments[0].sub_segments.is_empty());
+        assert_eq!(sub.segments[1].flags, Some(0x7F));
+        assert_eq!(sub.segments[1].start_index, 36);
+        assert_eq!(sub.segments[1].num_primitives, 8);
+        assert!(sub.shared.is_none());
+        // All bytes consumed — no `block_size` realignment.
+        assert_eq!(stream.position() as usize, bytes.len());
+    }
+
+    /// Regression: #404 — BSSubIndexTriShape FO4+/FO76 path. `bsver >= 130`
+    /// adds `num_primitives + num_segments + total_segments` plus the
+    /// sub-segment list per segment, and a trailing
+    /// `BSGeometrySegmentSharedData` (segment_starts, per-segment shared
+    /// data with cut offsets, SSF filename via SizedString16) when
+    /// `num_segments < total_segments`.
+    ///
+    /// The FO4 BSStreamHeader user_version_2 is 130 — fixture builds the
+    /// minimal viable BSTriShape body for that bsver and appends a single
+    /// segment with one sub-segment so the shared trailer is exercised.
+    #[test]
+    fn bs_sub_index_tri_shape_fo4_decodes_segments_subsegments_and_ssf() {
+        // FO4 header: user_version_2 (BSVER) = 130.
+        let header = NifHeader {
+            user_version_2: 130,
+            ..test_header()
+        };
+        // Build a minimal FO4 BSTriShape body. `parse()` reads
+        // num_triangles as u32 on bsver>=130, num_vertices as u16,
+        // data_size as u32. Set data_size=1 to flip the FO4+
+        // `Data Size > 0` gate without having to ship real geometry
+        // (vertex/tri loops are gated separately on data_size > 0
+        // and num_vertices/num_triangles > 0; with both counts at 0
+        // the loops run zero iterations regardless of data_size).
+        let mut bytes = Vec::new();
+        // NiObjectNET: name + extra_data count + controller
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        // NiAVObject: flags u32, transform (3 + 9 + 1 floats), collision_ref
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..3 {
+            bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        for row in 0..3 {
+            for col in 0..3 {
+                let v: f32 = if row == col { 1.0 } else { 0.0 };
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        // BSTriShape: center + radius + 3 refs + vertex_desc u64
+        for _ in 0..3 {
+            bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        // FO4: num_triangles u32, num_vertices u16, data_size u32 (>0 to
+        // open the segmentation gate but with zero counts so vertex /
+        // triangle loops are skipped).
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // num_triangles
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // num_vertices
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // data_size > 0
+
+        // FO4+ segmentation: num_primitives, num_segments, total_segments
+        bytes.extend_from_slice(&20u32.to_le_bytes()); // num_primitives
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // num_segments
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // total_segments (1 seg + 1 subseg)
+        // Segment 0: start_index, num_prims, parent_array_index, num_sub_segments=1
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&20u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        // Sub-segment: start_index, num_prims, parent_array_index, unused
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&20u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0xDEADBEEFu32.to_le_bytes());
+        // BSGeometrySegmentSharedData (num_segments < total_segments → present)
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // num_segments
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // total_segments
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // segment_starts[0]
+        // per_segment_data[0]: user_index, bone_id, num_cut_offsets=2, [f32; 2]
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&0xCAFEBABEu32.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&0.25f32.to_le_bytes());
+        bytes.extend_from_slice(&0.75f32.to_le_bytes());
+        // per_segment_data[1]: user_index, bone_id, num_cut_offsets=0
+        bytes.extend_from_slice(&7u32.to_le_bytes());
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        // SSF filename — SizedString16
+        let ssf = b"actor.ssf";
+        bytes.extend_from_slice(&(ssf.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(ssf);
+
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        let block = parse_block("BSSubIndexTriShape", &mut stream, Some(bytes.len() as u32))
+            .expect("BSSubIndexTriShape FO4+ path should structured-decode");
+        let shape = block
+            .as_any()
+            .downcast_ref::<BsTriShape>()
+            .expect("BSSubIndexTriShape did not downcast to BsTriShape");
+
+        let sub = match &shape.kind {
+            BsTriShapeKind::SubIndex(data) => data,
+            other => panic!("expected SubIndex kind, got {:?}", other),
+        };
+        assert_eq!(sub.num_primitives, 20);
+        assert_eq!(sub.num_segments, 1);
+        assert_eq!(sub.total_segments, 2);
+        assert_eq!(sub.segments.len(), 1);
+        assert!(sub.segments[0].flags.is_none());
+        assert_eq!(sub.segments[0].parent_array_index, Some(0));
+        assert_eq!(sub.segments[0].sub_segments.len(), 1);
+        assert_eq!(sub.segments[0].sub_segments[0].unused, 0xDEADBEEF);
+        let shared = sub.shared.as_ref().expect("FO4+ shared trailer expected");
+        assert_eq!(shared.num_segments, 1);
+        assert_eq!(shared.total_segments, 2);
+        assert_eq!(shared.segment_starts, vec![0]);
+        assert_eq!(shared.per_segment_data.len(), 2);
+        assert_eq!(shared.per_segment_data[0].user_index, 3);
+        assert_eq!(shared.per_segment_data[0].bone_id, 0xCAFEBABE);
+        assert_eq!(shared.per_segment_data[0].cut_offsets, vec![0.25, 0.75]);
+        assert_eq!(shared.per_segment_data[1].cut_offsets, Vec::<f32>::new());
+        assert_eq!(shared.ssf_filename, "actor.ssf");
+        // Every byte consumed — no `block_size`-driven realignment.
+        assert_eq!(stream.position() as usize, bytes.len());
+    }
+
+    /// Regression: #404 — when the segmentation trailer parse fails
+    /// mid-stream, the BSTriShape body must still be preserved (the
+    /// renderer consumes geometry, not segmentation). Pre-fix behaviour
+    /// was a wholesale `block_size` skip that always succeeded; the
+    /// post-fix structured decode must never degrade below that level
+    /// of robustness.
+    ///
+    /// Fixture: a FO4 BSSubIndexTriShape whose segmentation block runs
+    /// off the end of the supplied bytes (truncated mid-segment). The
+    /// parser must catch the read error, skip to `block_size`, and hand
+    /// back a `BsTriShape` with `SubIndex(default)` so geometry survives.
+    #[test]
+    fn bs_sub_index_tri_shape_truncated_segmentation_preserves_body() {
+        let header = NifHeader {
+            user_version_2: 130,
+            ..test_header()
+        };
+        // Build the same FO4 BSTriShape body as the happy-path test...
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..3 {
+            bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        for row in 0..3 {
+            for col in 0..3 {
+                let v: f32 = if row == col { 1.0 } else { 0.0 };
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        for _ in 0..3 {
+            bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // data_size > 0
+        // ...then claim 1000 segments but supply only enough bytes for
+        // the first segment header — `allocate_vec` admits the count
+        // (under cap) but the stream runs dry mid-segment.
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // num_primitives
+        bytes.extend_from_slice(&1000u32.to_le_bytes()); // num_segments
+        bytes.extend_from_slice(&1000u32.to_le_bytes()); // total_segments
+        // Truncate here — first segment read will fail.
+
+        // Round up the block size to cover the body + the truncated
+        // segmentation header bytes only. Pad with garbage so the skip
+        // path has somewhere to land.
+        let body_end = bytes.len();
+        bytes.extend_from_slice(&[0xFFu8; 32]);
+        let block_size = bytes.len() as u32;
+
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        let block = parse_block("BSSubIndexTriShape", &mut stream, Some(block_size))
+            .expect("truncated segmentation must NOT take down the BsTriShape body");
+        let shape = block
+            .as_any()
+            .downcast_ref::<BsTriShape>()
+            .expect("BSSubIndexTriShape did not downcast to BsTriShape");
+        // Geometry preserved; segmentation defaulted (signal to consumers
+        // that the trailer wasn't recovered).
+        match &shape.kind {
+            BsTriShapeKind::SubIndex(data) => {
+                assert_eq!(data.num_segments, 0, "default segmentation expected on fallback");
+                assert!(data.segments.is_empty());
+            }
+            other => panic!("expected SubIndex kind even on fallback, got {:?}", other),
+        }
+        // Stream advanced to the end of the block — no realignment by the
+        // outer block-loop required.
         assert_eq!(
             stream.position() as usize,
             bytes.len(),
-            "BSSubIndexTriShape segmentation payload not fully consumed"
+            "block_size skip should land exactly at block end (body_end={body_end})"
         );
     }
 
@@ -1839,17 +2363,24 @@ mod skin_vertex_tests {
             assert_eq!(block.block_type_name(), "BSMeshLODTriShape");
         }
 
-        // 4. BSSubIndexTriShape → SubIndex. Trailing segmentation bytes
-        //    are bounded by block_size; we append 16 zero-padding bytes
-        //    to simulate a minimal FO4 segmentation table.
+        // 4. BSSubIndexTriShape → SubIndex(_) carrying a structured
+        //    segmentation payload. SSE wire format (test_header bsver=100):
+        //    `u32 num_segments` followed by per-segment 9-byte rows.
+        //    Empty segment table is the simplest valid fixture (consumes
+        //    exactly 4 bytes of trailer).
         {
             let mut bytes = minimal_bs_tri_shape_bytes();
-            bytes.extend_from_slice(&[0u8; 16]);
+            bytes.extend_from_slice(&0u32.to_le_bytes()); // num_segments = 0
             let mut stream = crate::stream::NifStream::new(&bytes, &header);
             let block =
                 parse_block("BSSubIndexTriShape", &mut stream, Some(bytes.len() as u32)).unwrap();
             let shape = block.as_any().downcast_ref::<BsTriShape>().unwrap();
-            assert_eq!(shape.kind, BsTriShapeKind::SubIndex);
+            assert!(matches!(shape.kind, BsTriShapeKind::SubIndex(_)));
+            if let BsTriShapeKind::SubIndex(data) = &shape.kind {
+                assert_eq!(data.num_segments, 0);
+                assert!(data.segments.is_empty());
+                assert!(data.shared.is_none());
+            }
             assert_eq!(block.block_type_name(), "BSSubIndexTriShape");
         }
 

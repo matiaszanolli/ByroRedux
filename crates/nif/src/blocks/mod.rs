@@ -238,25 +238,27 @@ pub fn parse_block(
             tri_shape::BsTriShape::parse_lod(stream)?.with_kind(tri_shape::BsTriShapeKind::MeshLOD),
         )),
         // BSSubIndexTriShape: ubiquitous in Skyrim SE DLC and all FO4 actor
-        // meshes (clothing segmentation for dismemberment). After the
-        // BSTriShape body, FO4+ adds a variable-size segmentation block
-        // (num primitives, segment table, optional shared sub-segment data
-        // with SSF filename). The segmentation structure is used only for
-        // gameplay damage subdivision — the renderer doesn't need it — so
-        // we trust block_size to bound the skip rather than reimplementing
-        // the full variable layout. See issue #147. `with_kind(SubIndex)`
-        // preserves the wire type so #404 segmentation parsing can find it.
+        // meshes (clothing segmentation for dismemberment). #404 replaced
+        // the previous `block_size`-driven skip with a structured decode
+        // — the per-segment bone-slot flags + SSF filename + cut offsets
+        // are now recovered into `BsTriShapeKind::SubIndex(_)` so the
+        // M-series combat / locational-damage roadmap has the data it
+        // needs. The full layout differs between SSE (`bsver == 100`,
+        // pre-FO4 single-byte flags) and FO4+/FO76 (`bsver >= 130`,
+        // sub-segment lists + optional shared-data trailer with .ssf
+        // filename). See `BsTriShape::parse_sub_index` doc-comment.
         "BSSubIndexTriShape" => {
-            let start = stream.position();
-            let shape = tri_shape::BsTriShape::parse(stream)?
-                .with_kind(tri_shape::BsTriShapeKind::SubIndex);
-            if let Some(size) = block_size {
-                let consumed = stream.position() - start;
-                if consumed < size as u64 {
-                    stream.skip(size as u64 - consumed)?;
-                }
-            }
-            Ok(Box::new(shape))
+            // Pass `block_size` through so parse_sub_index can locally
+            // swallow segmentation-decode errors and skip past the
+            // remaining block bytes — we never want a malformed
+            // segmentation trailer to take down the BSTriShape body
+            // (which is what the renderer actually consumes). Pre-#404
+            // this whole block was a wholesale skip, so any
+            // post-#404 segmentation parse failure must degrade to at
+            // least that level of robustness, never worse.
+            Ok(Box::new(tri_shape::BsTriShape::parse_sub_index(
+                stream, block_size,
+            )?))
         }
         // BSDynamicTriShape: Skyrim facegen head meshes — BSTriShape body
         // + CPU-mutable trailing Vector4 vertex array. Routing this to
