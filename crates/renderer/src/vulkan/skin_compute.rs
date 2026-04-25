@@ -90,36 +90,27 @@ impl SkinSlot {
 /// returns an opaque `SkinSlot` the caller hands back to `dispatch`.
 /// Lifecycle: pipeline lives for the renderer's lifetime; slots live
 /// for the skinned mesh's lifetime.
+///
+/// Buffer bindings (input vertex SSBO + per-frame bone palette) are
+/// rewritten on every `dispatch` call rather than captured at slot
+/// creation. The global vertex buffer rebuilds on every cell
+/// transition (`MeshRegistry::rebuild_geometry_ssbo`), and so does
+/// the per-frame bone palette buffer slot rotation. Per-dispatch
+/// rewrite costs 3 `vkUpdateDescriptorSets` per slot per frame —
+/// negligible compared to the BLAS refit cost.
 pub struct SkinComputePipeline {
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
-    /// Cached input vertex SSBO handle — same buffer for every slot.
-    /// Captured at pipeline creation; rebuilds (e.g. cell transition
-    /// growing the global vertex buffer) require notifying the
-    /// pipeline so existing slots' descriptor sets get rewritten.
-    /// Phase 1 doesn't address this (no per-frame dispatch yet).
-    input_buffer: vk::Buffer,
-    input_buffer_size: vk::DeviceSize,
-    /// Per-frame bone palette buffer handles. Slot descriptor sets
-    /// reference these on creation.
-    bone_buffers: [vk::Buffer; MAX_FRAMES_IN_FLIGHT],
-    bone_buffer_size: vk::DeviceSize,
 }
 
 impl SkinComputePipeline {
-    /// Create the pipeline. `input_buffer` is the global vertex SSBO
-    /// (same buffer the rasterized vertex shader reads via location
-    /// 0..7 attributes); `bone_buffers` are the per-frame palette
-    /// SSBOs (same buffers `triangle.vert` binds at set=1, binding=3).
+    /// Create the pipeline. Buffer bindings are deferred to per-dispatch
+    /// (see struct doc-comment for rationale).
     pub fn new(
         device: &ash::Device,
         pipeline_cache: vk::PipelineCache,
-        input_buffer: vk::Buffer,
-        input_buffer_size: vk::DeviceSize,
-        bone_buffers: [vk::Buffer; MAX_FRAMES_IN_FLIGHT],
-        bone_buffer_size: vk::DeviceSize,
         max_slots: u32,
     ) -> Result<Self> {
         // Descriptor set layout — 3 storage buffers (input, palette,
@@ -253,16 +244,15 @@ impl SkinComputePipeline {
             pipeline_layout,
             descriptor_set_layout,
             descriptor_pool,
-            input_buffer,
-            input_buffer_size,
-            bone_buffers,
-            bone_buffer_size,
         })
     }
 
     /// Allocate a per-mesh slot. The caller owns the returned
     /// `SkinSlot` and must hand it back to [`Self::destroy_slot`]
-    /// before this pipeline is destroyed.
+    /// before this pipeline is destroyed. Descriptor sets are
+    /// allocated empty here — `dispatch` writes the bindings each
+    /// frame (input + palette + output) so a global-vertex-buffer
+    /// rebuild on cell transition doesn't invalidate the slot.
     pub fn create_slot(
         &self,
         device: &ash::Device,
@@ -270,14 +260,25 @@ impl SkinComputePipeline {
         vertex_count: u32,
     ) -> Result<SkinSlot> {
         let output_size = (vertex_count as u64) * VERTEX_STRIDE_BYTES;
-        // Phase 2 will set this with VERTEX_BUFFER + ACCELERATION_STRUCTURE_BUILD_INPUT
-        // so the BLAS refit can read from it directly. STORAGE_BUFFER
-        // is sufficient for Phase 1 (compute write only).
+        // Phase 2 wires the output buffer as a BLAS-build input (vertex
+        // source for the per-frame refit). The BLAS build path requires:
+        //   - STORAGE_BUFFER     — compute shader writes
+        //   - SHADER_DEVICE_ADDRESS — `vkGetBufferDeviceAddress` on the
+        //                            buffer; AS build uses the device
+        //                            address directly
+        //   - ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR — the AS
+        //                            build reads the buffer as a vertex
+        //                            source
+        //   - VERTEX_BUFFER       — Phase 3 (optional) lets raster
+        //                            bind this buffer directly
         let output_buffer = GpuBuffer::create_device_local_uninit(
             device,
             allocator,
             output_size,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                | vk::BufferUsageFlags::VERTEX_BUFFER,
         )
         .context("allocate skin slot output buffer")?;
 
@@ -295,44 +296,6 @@ impl SkinComputePipeline {
         let mut descriptor_sets = [vk::DescriptorSet::null(); MAX_FRAMES_IN_FLIGHT];
         for (i, set) in allocated.iter().enumerate() {
             descriptor_sets[i] = *set;
-        }
-
-        // Wire each frame-in-flight set: shared input, per-frame
-        // bone palette, this slot's dedicated output.
-        for frame in 0..MAX_FRAMES_IN_FLIGHT {
-            let input_info = [vk::DescriptorBufferInfo {
-                buffer: self.input_buffer,
-                offset: 0,
-                range: self.input_buffer_size,
-            }];
-            let bone_info = [vk::DescriptorBufferInfo {
-                buffer: self.bone_buffers[frame],
-                offset: 0,
-                range: self.bone_buffer_size,
-            }];
-            let output_info = [vk::DescriptorBufferInfo {
-                buffer: output_buffer.buffer,
-                offset: 0,
-                range: output_size,
-            }];
-            let writes = [
-                vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[frame])
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&input_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[frame])
-                    .dst_binding(1)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&bone_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[frame])
-                    .dst_binding(2)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&output_info),
-            ];
-            unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
 
         Ok(SkinSlot {
@@ -365,24 +328,73 @@ impl SkinComputePipeline {
 
     /// Record a dispatch into `cmd` that pre-skins this slot's
     /// vertices. Must be called between the bone-palette upload for
-    /// `frame_index` and any consumer of the output buffer. Phase 1
-    /// has no consumers; Phase 2 inserts a COMPUTE→ACCELERATION_STRUCTURE_BUILD
-    /// barrier on the output buffer before BLAS refit.
+    /// `frame_index` and any consumer of the output buffer (Phase 2:
+    /// the BLAS refit reads it as `ACCELERATION_STRUCTURE_BUILD_INPUT`).
+    ///
+    /// Descriptor bindings are written inline each frame so a
+    /// global-vertex-buffer rebuild on cell transition doesn't
+    /// invalidate the slot. The per-frame fence at draw_frame's top
+    /// guarantees previous-frame use of `slot.descriptor_sets[frame_index]`
+    /// is complete before we rewrite, so no external sync needed.
+    ///
+    /// # Safety
+    /// `cmd` must be a recording command buffer. `input_buffer` must
+    /// stay alive for the lifetime of this dispatch (typically the
+    /// global vertex SSBO held by `MeshRegistry`).
     pub unsafe fn dispatch(
         &self,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         slot: &SkinSlot,
         frame_index: usize,
+        input_buffer: vk::Buffer,
+        input_buffer_size: vk::DeviceSize,
+        bone_buffer: vk::Buffer,
+        bone_buffer_size: vk::DeviceSize,
         push: SkinPushConstants,
     ) {
+        let input_info = [vk::DescriptorBufferInfo {
+            buffer: input_buffer,
+            offset: 0,
+            range: input_buffer_size,
+        }];
+        let bone_info = [vk::DescriptorBufferInfo {
+            buffer: bone_buffer,
+            offset: 0,
+            range: bone_buffer_size,
+        }];
+        let output_info = [vk::DescriptorBufferInfo {
+            buffer: slot.output_buffer.buffer,
+            offset: 0,
+            range: slot.output_size,
+        }];
+        let descriptor_set = slot.descriptor_sets[frame_index];
+        let writes = [
+            vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_set)
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&input_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_set)
+                .dst_binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&bone_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_set)
+                .dst_binding(2)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&output_info),
+        ];
+        device.update_descriptor_sets(&writes, &[]);
+
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
         device.cmd_bind_descriptor_sets(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
             self.pipeline_layout,
             0,
-            &[slot.descriptor_sets[frame_index]],
+            &[descriptor_set],
             &[],
         );
         // SAFETY: `SkinPushConstants` is `repr(C)` with all u32 fields,

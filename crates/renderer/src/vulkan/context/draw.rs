@@ -10,6 +10,7 @@ use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::{DrawCommand, FrameTimings, SkyParams, VulkanContext};
 use anyhow::{Context, Result};
 use ash::vk;
+use byroredux_core::ecs::storage::EntityId;
 use std::time::Instant;
 
 /// Halton low-discrepancy sequence value at `index` (1-indexed) for `base`.
@@ -254,62 +255,11 @@ impl VulkanContext {
                     .get(draw_commands[i].mesh_handle)
                     .is_some()
             });
-
-        // Build TLAS if RT is available (before render pass).
-        unsafe {
-            if let Some(ref mut accel) = self.accel_manager {
-                if let Some(alloc) = self.allocator.as_ref() {
-                    if let Err(e) = accel.build_tlas(
-                        &self.device,
-                        alloc,
-                        cmd,
-                        draw_commands,
-                        &instance_map,
-                        frame,
-                    ) {
-                        log::warn!("TLAS build failed: {e}");
-                    } else {
-                        // Memory barrier: TLAS build → ray-query consumers.
-                        // Two distinct stages consume the TLAS:
-                        //   - FRAGMENT_SHADER: main render pass
-                        //     (triangle.frag uses rayQueryEXT for shadows,
-                        //     reflections, GI; see triangle.frag:212 /
-                        //     :457 / :530).
-                        //   - COMPUTE_SHADER: caustic_splat.comp
-                        //     (caustic.rs:276 / caustic_splat.comp:173).
-                        // Pre-#415 the mask only covered FRAGMENT_SHADER,
-                        // so the caustic dispatch could race the build on
-                        // strict drivers — validation-layer flagged it
-                        // under synchronization2 and real hardware masked
-                        // it via tight TLAS-build/dispatch sequencing.
-                        // Widening the dst stage to include COMPUTE_SHADER
-                        // closes the gap. If SVGF/TAA ever take a ray
-                        // query dependency, revisit.
-                        let barrier = vk::MemoryBarrier::default()
-                            .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
-                            .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR);
-                        self.device.cmd_pipeline_barrier(
-                            cmd,
-                            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                            vk::PipelineStageFlags::FRAGMENT_SHADER
-                                | vk::PipelineStageFlags::COMPUTE_SHADER,
-                            vk::DependencyFlags::empty(),
-                            &[barrier],
-                            &[],
-                            &[],
-                        );
-                        if let Some(tlas_handle) = accel.tlas_handle(frame) {
-                            self.scene_buffers
-                                .write_tlas(&self.device, frame, tlas_handle);
-                        }
-                        // Evict unused BLAS entries if over budget.
-                        accel.evict_unused_blas(&self.device, alloc);
-                    }
-                }
-            }
-        }
-
-        t.tlas_build_ns = tlas_t0.elapsed().as_nanos() as u64;
+        // M29 Phase 2: TLAS build moved to AFTER bone upload + skin
+        // chain (compute dispatch + BLAS refit) so the TLAS sees this
+        // frame's skinned poses with zero lag. instance_map computed
+        // here stays valid through the move — it's a pure function of
+        // draw_commands + mesh_registry state.
 
         // Upload scene data (lights + camera) BEFORE the render pass begins.
         self.scene_buffers
@@ -424,6 +374,289 @@ impl VulkanContext {
                 .upload_bones(&self.device, frame, bone_palette)
                 .unwrap_or_else(|e| log::warn!("Failed to upload bone palette: {e}"));
         }
+
+        // ── M29 Phase 2: GPU pre-skin + per-skinned-entity BLAS refit ─
+        //
+        // Runs AFTER bone palette upload (compute reads it) and BEFORE
+        // TLAS build (TLAS picks up the freshly-refit BLAS, zero-lag
+        // RT). For each draw with `bone_offset != 0`:
+        //   - First sight: synchronous compute prime + synchronous BLAS
+        //     BUILD (with `ALLOW_UPDATE`) via two one-time command
+        //     buffers. Brief stall on the very first frame an NPC
+        //     appears; M40 cell streaming will eventually preload.
+        //   - Steady state: dispatch compute into the frame cmd buffer,
+        //     barrier (COMPUTE_WRITE → AS_BUILD_INPUT_READ), then
+        //     refit the per-entity BLAS (UPDATE mode, src == dst).
+        //     Final AS_BUILD_WRITE → AS_BUILD_INPUT_READ barrier hands
+        //     fresh BLAS to TLAS below.
+        //
+        // Skips entirely when `skin_compute` / `accel_manager` are None
+        // (no RT) or no draws are skinned.
+        let skin_t0 = Instant::now();
+        if let (Some(ref skin_pipeline), Some(ref mut accel)) =
+            (self.skin_compute.as_ref(), self.accel_manager.as_mut())
+        {
+            if let Some(ref alloc) = self.allocator {
+                // Sub-block: limit borrow scope on `mesh_registry` /
+                // `scene_buffers`. Skin-chain reads are immutable
+                // through this block.
+                let global_vert_buf = self
+                    .mesh_registry
+                    .global_vertex_buffer
+                    .as_ref()
+                    .map(|b| (b.buffer, b.size));
+                let bone_buffer = self
+                    .scene_buffers
+                    .bone_buffers()
+                    .get(frame)
+                    .map(|b| b.buffer);
+                let bone_buffer_size = self.scene_buffers.bone_buffer_size();
+
+                if let (Some((input_buffer, input_size)), Some(bone_buf)) =
+                    (global_vert_buf, bone_buffer)
+                {
+                    // Walk draw_commands once — collect unique skinned
+                    // entities + their per-mesh metadata. Multiple
+                    // draws of the same entity (rare; instanced rendering
+                    // would hit this) coalesce on entity_id.
+                    use std::collections::HashSet;
+                    let mut seen: HashSet<EntityId> = HashSet::new();
+                    let mut dispatches: Vec<(
+                        EntityId,
+                        super::super::skin_compute::SkinPushConstants,
+                        vk::Buffer,
+                        u32,
+                        u32,
+                    )> = Vec::new();
+                    for dc in draw_commands.iter() {
+                        if dc.bone_offset == 0 {
+                            continue;
+                        }
+                        if !seen.insert(dc.entity_id) {
+                            continue;
+                        }
+                        let Some(mesh) = self.mesh_registry.get(dc.mesh_handle) else {
+                            continue;
+                        };
+                        let push = super::super::skin_compute::SkinPushConstants {
+                            vertex_offset: mesh.global_vertex_offset,
+                            vertex_count: mesh.vertex_count,
+                            bone_offset: dc.bone_offset,
+                            _pad: 0,
+                        };
+                        dispatches.push((
+                            dc.entity_id,
+                            push,
+                            mesh.index_buffer.buffer,
+                            mesh.index_count,
+                            mesh.vertex_count,
+                        ));
+                    }
+
+                    // First-sight setup: for each entity that doesn't
+                    // yet have a SkinSlot OR a skinned BLAS, perform
+                    // sync compute prime + sync BLAS BUILD.
+                    for &(entity_id, push, idx_buffer, idx_count, vertex_count) in &dispatches {
+                        let needs_slot = !self.skin_slots.contains_key(&entity_id);
+                        let needs_blas = accel.skinned_blas_entry(entity_id).is_none();
+                        if !needs_slot && !needs_blas {
+                            continue;
+                        }
+                        // Create slot if missing.
+                        if needs_slot {
+                            match skin_pipeline.create_slot(&self.device, alloc, vertex_count) {
+                                Ok(slot) => {
+                                    self.skin_slots.insert(entity_id, slot);
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "skin_compute create_slot failed for entity {entity_id}: {e} \
+                                         — skinned RT shadow disabled for this entity (raster unaffected)"
+                                    );
+                                    continue;
+                                }
+                            }
+                        }
+                        let Some(slot) = self.skin_slots.get(&entity_id) else {
+                            continue;
+                        };
+                        // Sync compute prime — write current pose into
+                        // the slot's output buffer via a one-time
+                        // command buffer + fence wait. This is the only
+                        // path before the slot's first BLAS build, so
+                        // BUILD has valid vertex data to read.
+                        let prime_result =
+                            super::super::texture::with_one_time_commands_reuse_fence(
+                            &self.device,
+                            &self.graphics_queue,
+                            self.transfer_pool,
+                            &self.transfer_fence,
+                            |prime_cmd| unsafe {
+                                skin_pipeline.dispatch(
+                                    &self.device,
+                                    prime_cmd,
+                                    slot,
+                                    frame,
+                                    input_buffer,
+                                    input_size,
+                                    bone_buf,
+                                    bone_buffer_size,
+                                    push,
+                                );
+                                Ok(())
+                            },
+                        );
+                        if let Err(e) = prime_result {
+                            log::warn!(
+                                "skin_compute first-sight prime failed for entity {entity_id}: {e}"
+                            );
+                            continue;
+                        }
+                        // Sync BLAS BUILD against the just-primed
+                        // output buffer.
+                        if let Err(e) = accel.build_skinned_blas(
+                            &self.device,
+                            alloc,
+                            &self.graphics_queue,
+                            self.transfer_pool,
+                            Some(&self.transfer_fence),
+                            entity_id,
+                            slot.output_buffer.buffer,
+                            vertex_count,
+                            idx_buffer,
+                            idx_count,
+                        ) {
+                            log::warn!(
+                                "skin_compute first-sight BLAS build failed for entity {entity_id}: {e}"
+                            );
+                        }
+                    }
+
+                    // Per-frame steady-state: dispatch compute for
+                    // every registered skinned slot (refresh output
+                    // buffer with current pose), then barrier, then
+                    // refit BLAS.
+                    if !dispatches.is_empty() {
+                        unsafe {
+                            for &(entity_id, push, _, _, _) in &dispatches {
+                                let Some(slot) = self.skin_slots.get(&entity_id) else {
+                                    continue;
+                                };
+                                skin_pipeline.dispatch(
+                                    &self.device,
+                                    cmd,
+                                    slot,
+                                    frame,
+                                    input_buffer,
+                                    input_size,
+                                    bone_buf,
+                                    bone_buffer_size,
+                                    push,
+                                );
+                            }
+                            // Compute writes (skinned vertex output
+                            // buffers) → AS build input reads.
+                            let compute_to_blas = vk::MemoryBarrier::default()
+                                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                                .dst_access_mask(
+                                    vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+                                );
+                            self.device.cmd_pipeline_barrier(
+                                cmd,
+                                vk::PipelineStageFlags::COMPUTE_SHADER,
+                                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                                vk::DependencyFlags::empty(),
+                                &[compute_to_blas],
+                                &[],
+                                &[],
+                            );
+                            for &(entity_id, _, idx_buffer, idx_count, vertex_count) in &dispatches
+                            {
+                                let Some(slot) = self.skin_slots.get(&entity_id) else {
+                                    continue;
+                                };
+                                if let Err(e) = accel.refit_skinned_blas(
+                                    &self.device,
+                                    cmd,
+                                    entity_id,
+                                    slot.output_buffer.buffer,
+                                    vertex_count,
+                                    idx_buffer,
+                                    idx_count,
+                                ) {
+                                    log::warn!(
+                                        "skin_compute BLAS refit failed for entity {entity_id}: {e}"
+                                    );
+                                }
+                            }
+                            // BLAS refit writes → TLAS build reads.
+                            let blas_to_tlas = vk::MemoryBarrier::default()
+                                .src_access_mask(
+                                    vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
+                                )
+                                .dst_access_mask(
+                                    vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+                                );
+                            self.device.cmd_pipeline_barrier(
+                                cmd,
+                                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                                vk::DependencyFlags::empty(),
+                                &[blas_to_tlas],
+                                &[],
+                                &[],
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        let _skin_chain_ns = skin_t0.elapsed().as_nanos() as u64;
+
+        // ── TLAS build (relocated from top of frame) ─────────────────
+        // Picks up just-refit per-skinned-entity BLAS via the
+        // `bone_offset != 0` override in `build_tlas`. Static draws
+        // continue using the per-mesh `blas_entries` table.
+        unsafe {
+            if let Some(ref mut accel) = self.accel_manager {
+                if let Some(alloc) = self.allocator.as_ref() {
+                    if let Err(e) = accel.build_tlas(
+                        &self.device,
+                        alloc,
+                        cmd,
+                        draw_commands,
+                        &instance_map,
+                        frame,
+                    ) {
+                        log::warn!("TLAS build failed: {e}");
+                    } else {
+                        // Memory barrier: TLAS build → ray-query consumers
+                        // (FRAGMENT_SHADER for main render pass +
+                        // COMPUTE_SHADER for caustic_splat.comp). See
+                        // #415 for the COMPUTE_SHADER widening.
+                        let barrier = vk::MemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
+                            .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR);
+                        self.device.cmd_pipeline_barrier(
+                            cmd,
+                            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                            vk::PipelineStageFlags::FRAGMENT_SHADER
+                                | vk::PipelineStageFlags::COMPUTE_SHADER,
+                            vk::DependencyFlags::empty(),
+                            &[barrier],
+                            &[],
+                            &[],
+                        );
+                        if let Some(tlas_handle) = accel.tlas_handle(frame) {
+                            self.scene_buffers
+                                .write_tlas(&self.device, frame, tlas_handle);
+                        }
+                        accel.evict_unused_blas(&self.device, alloc);
+                    }
+                }
+            }
+        }
+        t.tlas_build_ns = tlas_t0.elapsed().as_nanos() as u64;
 
         // ── Cluster light culling (compute dispatch) ─────────────────
         //

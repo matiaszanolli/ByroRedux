@@ -394,6 +394,20 @@ pub struct VulkanContext {
     pub scene_buffers: scene_buffer::SceneBuffers,
     pub accel_manager: Option<AccelerationManager>,
     pub cluster_cull: Option<ClusterCullPipeline>,
+    /// M29 GPU pre-skinning compute pipeline. `None` when RT is
+    /// unsupported (no skinned-BLAS path to feed). Per-skinned-entity
+    /// SkinSlots live in `skin_slots`; first-sight registration +
+    /// per-frame dispatch + BLAS refit happen inside `draw_frame`.
+    pub skin_compute: Option<super::skin_compute::SkinComputePipeline>,
+    /// Per-skinned-entity SkinSlot — owns the skinned-vertex output
+    /// buffer + per-frame descriptor sets. Populated lazily on first
+    /// sight in draw_frame; entries are torn down on Drop. M40 cell
+    /// streaming will eventually reclaim slots whose entities are
+    /// despawned mid-session.
+    pub skin_slots: std::collections::HashMap<
+        byroredux_core::ecs::storage::EntityId,
+        super::skin_compute::SkinSlot,
+    >,
     pub ssao: Option<SsaoPipeline>,
     pub composite: Option<CompositePipeline>,
     pub gbuffer: Option<GBuffer>,
@@ -730,6 +744,33 @@ impl VulkanContext {
             }
         };
 
+        // 12d. Skin compute pipeline (M29 Phase 2). RT-required: when
+        // ray queries aren't supported there's no BLAS refit path to
+        // feed, so the pipeline is dead weight. Created with the max
+        // slot ceiling matching `MAX_TOTAL_BONES / MAX_BONES_PER_MESH
+        // = 32` skinned meshes — same ceiling the bone-palette upload
+        // path enforces in `build_render_data`. Buffer bindings are
+        // deferred to per-dispatch (cell-transition robustness).
+        let skin_compute = if device_caps.ray_query_supported {
+            const SKIN_MAX_SLOTS: u32 = 32;
+            match super::skin_compute::SkinComputePipeline::new(
+                &device,
+                pipeline_cache,
+                SKIN_MAX_SLOTS,
+            ) {
+                Ok(sc) => Some(sc),
+                Err(e) => {
+                    log::warn!(
+                        "Skin compute pipeline creation failed: {e} — \
+                         skinned RT shadows disabled (raster inline-skinning unaffected)"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // 14. Graphics pipeline (with depth test + descriptor set layouts for set 0 + set 1)
         let pipelines = pipeline::create_triangle_pipeline(
             &device,
@@ -1049,6 +1090,8 @@ impl VulkanContext {
             scene_buffers,
             accel_manager,
             cluster_cull,
+            skin_compute,
+            skin_slots: std::collections::HashMap::new(),
             ssao,
             composite,
             gbuffer,
@@ -1252,11 +1295,36 @@ impl Drop for VulkanContext {
             if let Some(ref alloc) = self.allocator {
                 self.texture_registry.destroy(&self.device, alloc);
                 self.scene_buffers.destroy(&self.device, alloc);
+                // M29 — destroy SkinSlots BEFORE the SkinComputePipeline
+                // because slots own descriptor sets allocated from the
+                // pipeline's descriptor pool. Pool destruction implicitly
+                // frees the sets but the FREE_DESCRIPTOR_SET flag means
+                // we should explicitly free them through the pipeline
+                // first to keep the validation layer quiet. The ordering
+                // also matches the static `accel_manager` teardown
+                // pattern (skinned_blas before pipeline scratch buffers).
+                if let Some(ref skin) = self.skin_compute {
+                    let slots = std::mem::take(&mut self.skin_slots);
+                    for (_eid, slot) in slots {
+                        skin.destroy_slot(&self.device, alloc, slot);
+                    }
+                }
                 if let Some(ref mut accel) = self.accel_manager {
+                    // Drop per-skinned-entity BLAS before the manager's
+                    // own destroy() runs — the BlasEntry buffer + accel
+                    // structure are owned by the manager but not in
+                    // `blas_entries`, so manager.destroy() wouldn't see
+                    // them. Walk + drop here.
+                    for eid in accel.skinned_blas_entities() {
+                        accel.drop_skinned_blas(&self.device, alloc, eid);
+                    }
                     accel.destroy(&self.device, alloc);
                 }
                 if let Some(ref mut cc) = self.cluster_cull {
                     cc.destroy(&self.device, alloc);
+                }
+                if let Some(ref mut sc) = self.skin_compute {
+                    sc.destroy(&self.device);
                 }
                 if let Some(ref mut ssao) = self.ssao {
                     ssao.destroy(&self.device, alloc);

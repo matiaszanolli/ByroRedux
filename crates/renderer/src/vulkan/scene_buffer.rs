@@ -1206,6 +1206,17 @@ impl SceneBuffers {
         &self.instance_buffers
     }
 
+    /// Get the per-frame bone palette buffers (M29 — skin compute
+    /// reads them as the bone-matrix source per-dispatch).
+    pub fn bone_buffers(&self) -> &[GpuBuffer] {
+        &self.bone_buffers
+    }
+
+    /// Bone palette buffer size in bytes (`MAX_TOTAL_BONES × mat4`).
+    pub fn bone_buffer_size(&self) -> vk::DeviceSize {
+        (std::mem::size_of::<[[f32; 4]; 4]>() * MAX_TOTAL_BONES) as vk::DeviceSize
+    }
+
     /// Light buffer size in bytes.
     pub fn light_buffer_size(&self) -> vk::DeviceSize {
         (std::mem::size_of::<LightHeader>() + std::mem::size_of::<GpuLight>() * MAX_LIGHTS)

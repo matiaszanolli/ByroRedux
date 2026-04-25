@@ -12,6 +12,7 @@ use crate::vertex::Vertex;
 use crate::vulkan::context::DrawCommand;
 use anyhow::{Context, Result};
 use ash::vk;
+use byroredux_core::ecs::storage::EntityId;
 
 /// Dispatch helper: reuse the shared transfer fence when available,
 /// otherwise fall back to per-call create/destroy (#302).
@@ -139,6 +140,16 @@ pub struct AccelerationManager {
     /// composition changes), but cell load / unload / eviction frames
     /// — where the comparison is guaranteed to mismatch — skip it. See #300.
     blas_map_generation: u64,
+    /// M29 Phase 2 — per-skinned-entity BLAS. One per animated
+    /// instance, refit each frame against the SkinComputePipeline
+    /// output buffer for that entity. 32 NPCs sharing a malebody mesh
+    /// need 32 independent BLAS so each instance's pose feeds its own
+    /// shadow / reflection / GI rays. Build flag `ALLOW_UPDATE` is
+    /// always set so `cmd_build_acceleration_structures` with
+    /// `mode = UPDATE` is legal each frame. Insert / remove bumps
+    /// `blas_map_generation` so the TLAS-side cache invalidation
+    /// tracks skinned BLAS alongside the static `blas_entries`.
+    skinned_blas: std::collections::HashMap<EntityId, BlasEntry>,
 }
 
 /// Decide whether the next TLAS build can `UPDATE` (refit) or must
@@ -315,6 +326,7 @@ impl AccelerationManager {
             blas_budget_bytes,
             pending_destroy_blas: Vec::new(),
             blas_map_generation: 0,
+            skinned_blas: std::collections::HashMap::new(),
         }
     }
 
@@ -573,6 +585,339 @@ impl AccelerationManager {
         self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
 
         Ok(())
+    }
+
+    /// M29 Phase 2: build a per-skinned-entity BLAS from the entity's
+    /// SkinComputePipeline output buffer + the mesh's existing index
+    /// buffer. Sets `ALLOW_UPDATE` on the build flags so subsequent
+    /// per-frame `cmd_build_acceleration_structures(mode = UPDATE)`
+    /// is legal (refit-in-place against the same vertex source —
+    /// topology never changes for a skinned mesh).
+    ///
+    /// `vertex_buffer` is the SkinSlot's output_buffer and must have
+    /// been created with `SHADER_DEVICE_ADDRESS +
+    /// ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR + STORAGE_BUFFER`
+    /// (skin_compute.rs already does this). `index_buffer` is reused
+    /// from the bind-pose `GpuMesh.index_buffer` — topology stays
+    /// identical across frames so we don't need a per-entity index
+    /// buffer. Caller is responsible for inserting a
+    /// COMPUTE_SHADER_WRITE → ACCELERATION_STRUCTURE_BUILD_INPUT_READ
+    /// barrier on `vertex_buffer` before this build runs.
+    ///
+    /// Initial build copies bind-pose vertices through the SkinSlot's
+    /// output (the caller dispatches the compute pass first), so the
+    /// BLAS is correct from frame 0. Subsequent frames must call
+    /// [`Self::refit_skinned_blas`] in `mode = UPDATE`.
+    pub fn build_skinned_blas(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        command_pool: vk::CommandPool,
+        transfer_fence: Option<&std::sync::Mutex<vk::Fence>>,
+        entity_id: EntityId,
+        vertex_buffer: vk::Buffer,
+        vertex_count: u32,
+        index_buffer: vk::Buffer,
+        index_count: u32,
+    ) -> Result<()> {
+        let vertex_stride = std::mem::size_of::<Vertex>() as vk::DeviceSize;
+        let vertex_address = unsafe {
+            device.get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::default().buffer(vertex_buffer),
+            )
+        };
+        let index_address = unsafe {
+            device.get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::default().buffer(index_buffer),
+            )
+        };
+        let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
+            .vertex_format(vk::Format::R32G32B32_SFLOAT)
+            .vertex_data(vk::DeviceOrHostAddressConstKHR {
+                device_address: vertex_address,
+            })
+            .vertex_stride(vertex_stride)
+            .max_vertex(vertex_count.saturating_sub(1))
+            .index_type(vk::IndexType::UINT32)
+            .index_data(vk::DeviceOrHostAddressConstKHR {
+                device_address: index_address,
+            });
+        let geometry = vk::AccelerationStructureGeometryKHR::default()
+            .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+            // Skinned meshes are typically opaque; if any actor mesh
+            // ever ships alpha-tested triangles, the per-instance
+            // `two_sided` flag in the TLAS instance still toggles
+            // backface-cull for that draw. Leaving OPAQUE here matches
+            // the static `build_blas` path.
+            .flags(vk::GeometryFlagsKHR::OPAQUE)
+            .geometry(vk::AccelerationStructureGeometryDataKHR { triangles });
+        let primitive_count = index_count / 3;
+
+        // Build flags: ALLOW_UPDATE makes `mode = UPDATE` legal each
+        // frame; PREFER_FAST_BUILD trades a small ray-tracing perf hit
+        // for cheaper per-frame refits (skinned BLAS rebuild every
+        // frame, whereas static BLAS builds once and stays).
+        let build_flags = vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
+            | vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD;
+
+        let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+            .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+            .flags(build_flags)
+            .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+            .geometries(std::slice::from_ref(&geometry));
+
+        let mut sizes = vk::AccelerationStructureBuildSizesInfoKHR::default();
+        unsafe {
+            self.accel_loader.get_acceleration_structure_build_sizes(
+                vk::AccelerationStructureBuildTypeKHR::DEVICE,
+                &build_info,
+                &[primitive_count],
+                &mut sizes,
+            );
+        };
+
+        let mut result_buffer = GpuBuffer::create_device_local_uninit(
+            device,
+            allocator,
+            sizes.acceleration_structure_size,
+            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+        )?;
+
+        let accel_info = vk::AccelerationStructureCreateInfoKHR::default()
+            .buffer(result_buffer.buffer)
+            .size(sizes.acceleration_structure_size)
+            .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
+        let accel = unsafe {
+            self.accel_loader
+                .create_acceleration_structure(&accel_info, None)
+                .context("create skinned BLAS")?
+        };
+
+        let build_result = (|| -> Result<()> {
+            // Skinned BLAS uses the SAME shared scratch buffer as
+            // static builds — the build still runs in a one-time
+            // command buffer with a fence wait so there's no overlap.
+            // `update_scratch_size` for refits is at most
+            // `build_scratch_size` per Vulkan spec, so the existing
+            // grow-only policy stays correct.
+            let need_new_scratch = scratch_needs_growth(
+                self.blas_scratch_buffer.as_ref().map(|b| b.size),
+                sizes.build_scratch_size,
+            );
+            if need_new_scratch {
+                if let Some(mut old) = self.blas_scratch_buffer.take() {
+                    old.destroy(device, allocator);
+                }
+                self.blas_scratch_buffer = Some(GpuBuffer::create_device_local_uninit(
+                    device,
+                    allocator,
+                    sizes.build_scratch_size,
+                    vk::BufferUsageFlags::STORAGE_BUFFER
+                        | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                )?);
+            }
+            let scratch_address = unsafe {
+                device.get_buffer_device_address(
+                    &vk::BufferDeviceAddressInfo::default()
+                        .buffer(self.blas_scratch_buffer.as_ref().unwrap().buffer),
+                )
+            };
+            let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+                .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+                .flags(build_flags)
+                .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+                .dst_acceleration_structure(accel)
+                .geometries(std::slice::from_ref(&geometry))
+                .scratch_data(vk::DeviceOrHostAddressKHR {
+                    device_address: scratch_address,
+                });
+            let range_info = vk::AccelerationStructureBuildRangeInfoKHR::default()
+                .primitive_count(primitive_count)
+                .primitive_offset(0)
+                .first_vertex(0);
+            submit_one_time(device, queue, command_pool, transfer_fence, |cmd| {
+                unsafe {
+                    self.accel_loader.cmd_build_acceleration_structures(
+                        cmd,
+                        &[build_info],
+                        &[std::slice::from_ref(&range_info)],
+                    );
+                }
+                Ok(())
+            })
+        })();
+
+        if let Err(e) = build_result {
+            unsafe {
+                self.accel_loader
+                    .destroy_acceleration_structure(accel, None);
+            }
+            result_buffer.destroy(device, allocator);
+            return Err(e);
+        }
+
+        let device_address = unsafe {
+            self.accel_loader.get_acceleration_structure_device_address(
+                &vk::AccelerationStructureDeviceAddressInfoKHR::default()
+                    .acceleration_structure(accel),
+            )
+        };
+
+        let blas_size = result_buffer.size;
+        self.total_blas_bytes += blas_size;
+        self.skinned_blas.insert(
+            entity_id,
+            BlasEntry {
+                accel,
+                buffer: result_buffer,
+                device_address,
+                last_used_frame: self.frame_counter,
+                size_bytes: blas_size,
+                build_scratch_size: sizes.build_scratch_size,
+            },
+        );
+        self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
+
+        Ok(())
+    }
+
+    /// Refit an existing skinned BLAS in-place against an updated
+    /// vertex buffer. Topology is unchanged; only the vertex positions
+    /// shift. `cmd` must already have a
+    /// COMPUTE_SHADER_WRITE → ACCELERATION_STRUCTURE_BUILD_INPUT_READ
+    /// barrier on `vertex_buffer` recorded before this call.
+    ///
+    /// Refit cost is much lower than full rebuild but produces a BLAS
+    /// with somewhat reduced ray-trace efficiency over time. Bethesda
+    /// per-frame skin deltas are small so quality holds; if a session
+    /// reveals visible degradation, the caller can periodically
+    /// destroy the entry + call [`Self::build_skinned_blas`] again
+    /// to start fresh (deferred to a follow-up).
+    ///
+    /// # Safety
+    /// `cmd` must be a recording command buffer; `vertex_buffer` must
+    /// already have the COMPUTE_SHADER_WRITE → AS_BUILD_INPUT_READ
+    /// barrier in place.
+    pub unsafe fn refit_skinned_blas(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        entity_id: EntityId,
+        vertex_buffer: vk::Buffer,
+        vertex_count: u32,
+        index_buffer: vk::Buffer,
+        index_count: u32,
+    ) -> Result<()> {
+        let entry = self
+            .skinned_blas
+            .get_mut(&entity_id)
+            .with_context(|| format!("no skinned BLAS for entity {entity_id}"))?;
+        let scratch_buffer = self
+            .blas_scratch_buffer
+            .as_ref()
+            .context("blas_scratch_buffer absent — must be allocated by build_skinned_blas first")?;
+
+        let vertex_stride = std::mem::size_of::<Vertex>() as vk::DeviceSize;
+        let vertex_address = unsafe {
+            device.get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::default().buffer(vertex_buffer),
+            )
+        };
+        let index_address = unsafe {
+            device.get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::default().buffer(index_buffer),
+            )
+        };
+        let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
+            .vertex_format(vk::Format::R32G32B32_SFLOAT)
+            .vertex_data(vk::DeviceOrHostAddressConstKHR {
+                device_address: vertex_address,
+            })
+            .vertex_stride(vertex_stride)
+            .max_vertex(vertex_count.saturating_sub(1))
+            .index_type(vk::IndexType::UINT32)
+            .index_data(vk::DeviceOrHostAddressConstKHR {
+                device_address: index_address,
+            });
+        let geometry = vk::AccelerationStructureGeometryKHR::default()
+            .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+            .flags(vk::GeometryFlagsKHR::OPAQUE)
+            .geometry(vk::AccelerationStructureGeometryDataKHR { triangles });
+        let primitive_count = index_count / 3;
+        let scratch_address = unsafe {
+            device.get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::default().buffer(scratch_buffer.buffer),
+            )
+        };
+
+        // mode = UPDATE: src == dst == this entity's BLAS. Vulkan
+        // refits in-place against the new vertex data; topology must
+        // stay identical to the original BUILD's geometry. The
+        // ALLOW_UPDATE flag set on initial build is what makes this
+        // legal.
+        let build_flags = vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
+            | vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD;
+        let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+            .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+            .flags(build_flags)
+            .mode(vk::BuildAccelerationStructureModeKHR::UPDATE)
+            .src_acceleration_structure(entry.accel)
+            .dst_acceleration_structure(entry.accel)
+            .geometries(std::slice::from_ref(&geometry))
+            .scratch_data(vk::DeviceOrHostAddressKHR {
+                device_address: scratch_address,
+            });
+        let range_info = vk::AccelerationStructureBuildRangeInfoKHR::default()
+            .primitive_count(primitive_count)
+            .primitive_offset(0)
+            .first_vertex(0);
+        unsafe {
+            self.accel_loader.cmd_build_acceleration_structures(
+                cmd,
+                &[build_info],
+                &[std::slice::from_ref(&range_info)],
+            );
+        }
+        entry.last_used_frame = self.frame_counter;
+        Ok(())
+    }
+
+    /// Look up a per-skinned-entity BLAS entry. Used by the TLAS
+    /// build path to override the per-mesh BLAS lookup when a
+    /// `DrawCommand` carries a `skin_slot_id`.
+    pub fn skinned_blas_entry(&self, entity_id: EntityId) -> Option<&BlasEntry> {
+        self.skinned_blas.get(&entity_id)
+    }
+
+    /// Drop a per-skinned-entity BLAS. Caller must defer the destroy
+    /// until any in-flight frame referencing it has completed (the
+    /// renderer pairs this with `device_wait_idle` in the Drop chain
+    /// + a per-frame deferred-destroy queue for cell unloads).
+    pub fn drop_skinned_blas(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        entity_id: EntityId,
+    ) {
+        if let Some(mut entry) = self.skinned_blas.remove(&entity_id) {
+            self.total_blas_bytes = self.total_blas_bytes.saturating_sub(entry.size_bytes);
+            unsafe {
+                self.accel_loader
+                    .destroy_acceleration_structure(entry.accel, None);
+            }
+            entry.buffer.destroy(device, allocator);
+            self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
+        }
+    }
+
+    /// Iterator over all skinned-entity IDs the manager currently
+    /// holds a BLAS for. Used by the renderer's Drop chain to
+    /// collect IDs for bulk teardown without holding a reference
+    /// across mutation.
+    pub fn skinned_blas_entities(&self) -> Vec<EntityId> {
+        self.skinned_blas.keys().copied().collect()
     }
 
     /// Build BLAS for multiple meshes in a single command buffer submission.
@@ -1184,9 +1529,33 @@ impl AccelerationManager {
             if !draw_cmd.in_tlas {
                 continue;
             }
-            let mesh_handle = draw_cmd.mesh_handle as usize;
-            let Some(Some(blas)) = self.blas_entries.get(mesh_handle) else {
-                continue;
+            // M29 Phase 2 — skinned draws (`bone_offset != 0`) reference
+            // a per-entity BLAS that's refit each frame against the
+            // SkinComputePipeline output buffer. Look up by entity_id
+            // first; rigid draws fall through to the per-mesh
+            // `blas_entries` table. The skinned-BLAS path keeps the
+            // same `last_used_frame` LRU bump as the static path so a
+            // skinned NPC dropped from the draw list ages out
+            // alongside its mesh.
+            let blas_address: vk::DeviceAddress = if draw_cmd.bone_offset != 0 {
+                let Some(entry) = self.skinned_blas.get_mut(&draw_cmd.entity_id) else {
+                    // Skinned entity hasn't had its BLAS built yet
+                    // (first sight is processed earlier in the same
+                    // draw_frame; this gate is defensive — if we get
+                    // here the entity will be invisible to RT this
+                    // frame, but raster's inline-skinning path still
+                    // renders it correctly).
+                    continue;
+                };
+                entry.last_used_frame = self.frame_counter;
+                entry.device_address
+            } else {
+                let mesh_handle = draw_cmd.mesh_handle as usize;
+                let Some(Some(blas)) = self.blas_entries.get_mut(mesh_handle) else {
+                    continue;
+                };
+                blas.last_used_frame = self.frame_counter;
+                blas.device_address
             };
             // Skip commands that the SSBO builder also skipped. This
             // keeps the two filters in lockstep even when `blas_entries`
@@ -1234,7 +1603,7 @@ impl AccelerationManager {
                     instance_flags as u8,
                 ),
                 acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-                    device_handle: blas.device_address,
+                    device_handle: blas_address,
                 },
             });
         }
@@ -1474,13 +1843,22 @@ impl AccelerationManager {
         tlas.last_blas_map_gen = map_gen;
 
         // Mark referenced BLAS entries as used for LRU eviction.
+        // Skinned draws ride the per-entity skinned_blas table; rigid
+        // draws ride the per-mesh blas_entries table. The override
+        // mirror in the build loop above kept the same discriminator.
         for draw_cmd in draw_commands {
             if !draw_cmd.in_tlas {
                 continue;
             }
-            let h = draw_cmd.mesh_handle as usize;
-            if let Some(Some(ref mut blas)) = self.blas_entries.get_mut(h) {
-                blas.last_used_frame = self.frame_counter;
+            if draw_cmd.bone_offset != 0 {
+                if let Some(entry) = self.skinned_blas.get_mut(&draw_cmd.entity_id) {
+                    entry.last_used_frame = self.frame_counter;
+                }
+            } else {
+                let h = draw_cmd.mesh_handle as usize;
+                if let Some(Some(ref mut blas)) = self.blas_entries.get_mut(h) {
+                    blas.last_used_frame = self.frame_counter;
+                }
             }
         }
 
