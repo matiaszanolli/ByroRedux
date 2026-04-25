@@ -12,14 +12,13 @@
 //!
 //! - **SSE `meshes\actors\character\character assets\malebody_0.nif`** —
 //!   `BSTriShape` + `BSSkinInstance` + `BSSkinBoneData` +
-//!   `SseSkinGlobalBuffer` (the FO4+ / Skyrim SE skin layout). This path
-//!   surfaced gap #638: per-vertex skin bytes inside the global buffer
-//!   are SKIPPED at decode time and the BSTriShape's own `bone_weights`
-//!   stays empty, so every SSE NPC mesh would render in bind pose. The
-//!   four assertions here are intentionally split into "what works"
-//!   (bones, names, palette logic) vs. "what's known broken" (per-vertex
-//!   data, flagged via `eprintln!` rather than `panic!`) so the test
-//!   stays useful while #638 is open.
+//!   `SseSkinGlobalBuffer` (the FO4+ / Skyrim SE skin layout). #638
+//!   closed the global-buffer skin-payload gap: `decode_sse_packed_buffer`
+//!   now decodes the 12-byte VF_SKINNED block instead of skipping it,
+//!   and `extract_skin_bs_tri_shape` falls back to those decoded values
+//!   when the inline arrays are empty. The four assertions here pin
+//!   bones, names, palette logic, and per-vertex bounds — all live
+//!   regressions, no soft flags.
 //!
 //! All tests are `#[ignore]` — fixtures live in proprietary BSAs that
 //! can't ship in the repo. Opt in with
@@ -314,10 +313,12 @@ fn fnv_kf_playback_drives_palette() {
 
 // ── SSE path: BSTriShape + BSSkinInstance + SseSkinGlobalBuffer ─────
 //
-// Bones / names / palette logic work; the per-vertex skin extraction
-// has gap #638 (SseSkinGlobalBuffer skips the per-vertex skin bytes).
-// Tests below assert what works and surface what's broken via
-// `eprintln!` — they SHOULD turn into hard-fails when #638 lands.
+// Bones / names / palette logic work, and as of #638 (closeout in
+// 2026-04-25) per-vertex skin extraction also recovers from the global
+// buffer — `decode_sse_packed_buffer` now decodes the 12-byte VF_SKINNED
+// payload instead of skipping it, and `extract_skin_bs_tri_shape` falls
+// back to the decoded values when the inline arrays are empty. The
+// assertion below is the live regression gate.
 
 #[test]
 #[ignore = "requires SSE BSA — opt in with --ignored"]
@@ -354,7 +355,7 @@ fn sse_imports_skinned_mesh_with_resolved_bones() {
 
 #[test]
 #[ignore = "requires SSE BSA — opt in with --ignored"]
-fn sse_vertex_indices_within_palette_bounds_or_flagged_gap_638() {
+fn sse_vertex_indices_within_palette_bounds() {
     let Some(fixture) = load_fixture(
         "BYROREDUX_SKYRIMSE_DATA",
         SSE_DEFAULT_DATA,
@@ -364,20 +365,27 @@ fn sse_vertex_indices_within_palette_bounds_or_flagged_gap_638() {
         return;
     };
     let skin = &fixture.skin;
-    if skin.vertex_bone_indices.is_empty() {
-        // Known gap — see issue #638. The SSE BSTriShape +
-        // SseSkinGlobalBuffer combination drops per-vertex skin
-        // bytes in `decode_sse_packed_buffer` (mesh.rs:598-605).
-        // Until #638 lands, this is the diagnostic flag — promote
-        // to a hard `panic!` once the fix is in.
-        eprintln!(
-            "[M29 SSE] KNOWN GAP #638: vertex_bone_indices empty for SSE BSTriShape \
-             with SseSkinGlobalBuffer — every vertex will hit the rigid fallback \
-             at triangle.vert:151 and render in bind pose."
-        );
-        return;
-    }
-    // When #638 lands, this branch becomes the live assertion path.
+    // #638 — this used to be the soft-flag gap test that returned
+    // early when `vertex_bone_indices` was empty. The fix surfaces
+    // the global-buffer skin payload, so emptiness is now a hard
+    // failure: any SSE BSTriShape + SseSkinGlobalBuffer mesh that
+    // lands here MUST carry per-vertex skin data.
+    assert!(
+        !skin.vertex_bone_indices.is_empty(),
+        "[M29 SSE] vertex_bone_indices empty — #638 fallback regressed; \
+         every vertex would hit the rigid fallback at triangle.vert:151 \
+         and render in bind pose"
+    );
+    assert!(
+        !skin.vertex_bone_weights.is_empty(),
+        "[M29 SSE] vertex_bone_weights empty — #638 fallback regressed"
+    );
+    assert_eq!(
+        skin.vertex_bone_indices.len(),
+        skin.vertex_bone_weights.len(),
+        "[M29 SSE] per-vertex indices / weights count mismatch"
+    );
+
     let bone_count = skin.bones.len() as u16;
     for (vi, indices) in skin.vertex_bone_indices.iter().enumerate() {
         for (slot, &idx) in indices.iter().enumerate() {
@@ -396,9 +404,9 @@ fn sse_vertex_indices_within_palette_bounds_or_flagged_gap_638() {
 #[test]
 #[ignore = "requires SSE BSA — opt in with --ignored"]
 fn sse_palette_responds_to_bone_transform() {
-    // Even with #638 dropping per-vertex data, the palette compute
-    // path itself still runs over the bones list — verify it's
-    // operational on the SSE side.
+    // Independent of #638's per-vertex recovery, the palette compute
+    // path runs over the bones list — verify it's operational on the
+    // SSE side.
     let Some(fixture) = load_fixture(
         "BYROREDUX_SKYRIMSE_DATA",
         SSE_DEFAULT_DATA,

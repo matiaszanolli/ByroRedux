@@ -520,6 +520,15 @@ struct DecodedPackedBuffer {
     normals: Vec<[f32; 3]>,
     uvs: Vec<[f32; 2]>,
     colors: Vec<[f32; 4]>,
+    /// Per-vertex bone weights when the buffer carries `VF_SKINNED`.
+    /// Empty when the flag is clear. 4 weights per vertex, decoded
+    /// from packed half-floats. See #638.
+    bone_weights: Vec<[f32; 4]>,
+    /// Per-vertex bone indices when the buffer carries `VF_SKINNED`.
+    /// Partition-local — the caller must remap through
+    /// `NiSkinPartition.partitions[i].bones` to get global skin
+    /// list indices. See #638 / #613.
+    bone_indices: Vec<[u8; 4]>,
 }
 
 /// Decode a `SseSkinGlobalBuffer` into Y-up vertex arrays.
@@ -546,6 +555,17 @@ fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedPacke
     let mut normals = Vec::with_capacity(num_vertices);
     let mut uvs = Vec::with_capacity(num_vertices);
     let mut colors = Vec::with_capacity(num_vertices);
+    let is_skinned = vertex_attrs & VF_SKINNED != 0;
+    let mut bone_weights: Vec<[f32; 4]> = if is_skinned {
+        Vec::with_capacity(num_vertices)
+    } else {
+        Vec::new()
+    };
+    let mut bone_indices: Vec<[u8; 4]> = if is_skinned {
+        Vec::with_capacity(num_vertices)
+    } else {
+        Vec::new()
+    };
 
     for i in 0..num_vertices {
         let base = i * vertex_size;
@@ -596,11 +616,27 @@ fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedPacke
         }
 
         // Skin payload: 4 × half-float weights + 4 × u8 indices.
-        // Captured but not surfaced through this reconstructor —
-        // skinning attaches via the existing `extract_skin_bs_tri_shape`
-        // path which reads the partitions' own bone_indices /
-        // vertex_weights arrays. Skip the bytes here.
-        if vertex_attrs & VF_SKINNED != 0 {
+        // #638 — pre-fix this whole 12-byte run was skipped, and
+        // `extract_skin_bs_tri_shape` then read `shape.bone_weights`
+        // off the BSTriShape itself. That field is empty when geometry
+        // lives in the global buffer (Skyrim SE NPC bodies have
+        // `data_size == 0` on the BSTriShape and ship skin data only
+        // in the partition's `SseSkinGlobalBuffer.raw_bytes`). The
+        // fallback path now reads decoded values from
+        // `bone_weights` / `bone_indices` here so every NPC body
+        // animates correctly once M41 spawns them.
+        if is_skinned {
+            let w0 = half_to_f32(read_u16_le(bytes, off)?);
+            let w1 = half_to_f32(read_u16_le(bytes, off + 2)?);
+            let w2 = half_to_f32(read_u16_le(bytes, off + 4)?);
+            let w3 = half_to_f32(read_u16_le(bytes, off + 6)?);
+            bone_weights.push([w0, w1, w2, w3]);
+            bone_indices.push([
+                bytes[off + 8],
+                bytes[off + 9],
+                bytes[off + 10],
+                bytes[off + 11],
+            ]);
             off += 12;
         }
 
@@ -634,6 +670,8 @@ fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedPacke
         normals,
         uvs,
         colors,
+        bone_weights,
+        bone_indices,
     })
 }
 
@@ -800,8 +838,31 @@ pub(super) fn extract_skin_bs_tri_shape(
     // global indices into the skin's bone list. The legacy clone
     // pre-#613 silently aliased every vertex past partition 0
     // when shapes split into > 1 partition.
-    let vertex_bone_weights = shape.bone_weights.clone();
-    let vertex_bone_indices = remap_bs_tri_shape_bone_indices(scene, shape);
+    // #638 — Skyrim SE NPC bodies (and any BSTriShape whose `data_size
+    // == 0`) ship per-vertex skin data only in the partition's
+    // `SseSkinGlobalBuffer`, not on the inline arrays. Pre-fix
+    // `shape.bone_weights.clone()` returned an empty Vec on those
+    // meshes and every vertex hit the renderer's rigid fallback
+    // (`wsum < 0.001` in `triangle.vert:151`), rendering NPCs in
+    // bind pose. Fall back to the decoded global-buffer payload
+    // when the inline arrays are empty.
+    let (vertex_bone_weights, vertex_bone_indices) = if shape.bone_weights.is_empty() {
+        match decode_sse_skin_payload(scene, shape) {
+            Some((weights, raw_indices)) => {
+                let remapped = remap_bs_tri_shape_bone_indices(scene, shape, &raw_indices);
+                (weights, remapped)
+            }
+            None => (
+                Vec::new(),
+                remap_bs_tri_shape_bone_indices(scene, shape, &shape.bone_indices),
+            ),
+        }
+    } else {
+        (
+            shape.bone_weights.clone(),
+            remap_bs_tri_shape_bone_indices(scene, shape, &shape.bone_indices),
+        )
+    };
 
     // Skyrim LE path: NiSkinInstance + NiSkinData (bone list + bind transforms).
     // Borrow bone_refs instead of cloning — they're only iterated. #279 D5-11.
@@ -898,8 +959,12 @@ pub(super) fn extract_skin_bs_tri_shape(
 /// raw u8 to u16 — same behaviour as pre-#613 single-partition
 /// shapes, which were correct because partition-local and global
 /// indices coincide when there's only one partition with all bones.
-fn remap_bs_tri_shape_bone_indices(scene: &NifScene, shape: &BsTriShape) -> Vec<[u16; 4]> {
-    if shape.bone_indices.is_empty() {
+fn remap_bs_tri_shape_bone_indices(
+    scene: &NifScene,
+    shape: &BsTriShape,
+    bone_indices: &[[u8; 4]],
+) -> Vec<[u16; 4]> {
+    if bone_indices.is_empty() {
         return Vec::new();
     }
 
@@ -909,8 +974,7 @@ fn remap_bs_tri_shape_bone_indices(scene: &NifScene, shape: &BsTriShape) -> Vec<
     // because the partition's `bones` palette is the full bone list.
     let widen = |slot: u8| slot as u16;
     let identity_remap = || -> Vec<[u16; 4]> {
-        shape
-            .bone_indices
+        bone_indices
             .iter()
             .map(|idx| [widen(idx[0]), widen(idx[1]), widen(idx[2]), widen(idx[3])])
             .collect()
@@ -946,7 +1010,7 @@ fn remap_bs_tri_shape_bone_indices(scene: &NifScene, shape: &BsTriShape) -> Vec<
     // Multi-partition shapes split vertices across partitions; the
     // first vertex_map entry that mentions a global index wins (no
     // vanilla content overlaps partitions on the same vertex).
-    let mut vertex_to_partition: Vec<Option<u32>> = vec![None; shape.bone_indices.len()];
+    let mut vertex_to_partition: Vec<Option<u32>> = vec![None; bone_indices.len()];
     for (p_idx, part) in partition.partitions.iter().enumerate() {
         for &gv in &part.vertex_map {
             let gv = gv as usize;
@@ -956,8 +1020,7 @@ fn remap_bs_tri_shape_bone_indices(scene: &NifScene, shape: &BsTriShape) -> Vec<
         }
     }
 
-    shape
-        .bone_indices
+    bone_indices
         .iter()
         .enumerate()
         .map(|(v, idx)| {
@@ -978,6 +1041,41 @@ fn remap_bs_tri_shape_bone_indices(scene: &NifScene, shape: &BsTriShape) -> Vec<
             }
         })
         .collect()
+}
+
+/// Resolve `shape.skin_ref` → `NiSkinPartition` → `SseSkinGlobalBuffer`
+/// and decode the per-vertex skin payload (4 × half-float weights +
+/// 4 × u8 partition-local bone indices). Returns `None` when the
+/// shape doesn't go through the global-buffer path or the buffer is
+/// missing / malformed.
+///
+/// Caller (`extract_skin_bs_tri_shape`) feeds the indices through
+/// `remap_bs_tri_shape_bone_indices` for the partition-local → global
+/// remap. The weights are pass-through — they're already partition-
+/// agnostic. See #638.
+fn decode_sse_skin_payload(
+    scene: &NifScene,
+    shape: &BsTriShape,
+) -> Option<(Vec<[f32; 4]>, Vec<[u8; 4]>)> {
+    let skin_idx = shape.skin_ref.index()?;
+    let partition_ref = if let Some(inst) = scene.get_as::<NiSkinInstance>(skin_idx) {
+        inst.skin_partition_ref
+    } else if let Some(inst) = scene.get_as::<BsDismemberSkinInstance>(skin_idx) {
+        inst.base.skin_partition_ref
+    } else {
+        return None;
+    };
+    let partition_idx = partition_ref.index()?;
+    let partition = scene.get_as::<crate::blocks::skin::NiSkinPartition>(partition_idx)?;
+    let buffer = partition.global_vertex_data.as_ref()?;
+    let decoded = decode_sse_packed_buffer(buffer)?;
+    if decoded.bone_weights.is_empty() {
+        // Buffer was decoded but VF_SKINNED was clear — nothing to
+        // hand back. The caller treats this the same as "no payload"
+        // and falls through to the empty-arrays branch.
+        return None;
+    }
+    Some((decoded.bone_weights, decoded.bone_indices))
 }
 
 /// Resolve one partition-local u8 bone index against a partition's
@@ -2317,6 +2415,163 @@ mod sse_skin_geometry_reconstruction_tests {
                 .is_none(),
             "empty inline + no global buffer must remain a no-op (early return)"
         );
+    }
+
+    /// Regression: #638 — when the SSE global buffer carries
+    /// `VF_SKINNED`, `decode_sse_packed_buffer` must surface the
+    /// per-vertex bone weights + indices into `DecodedPackedBuffer`,
+    /// and `extract_skin_bs_tri_shape` must fall back to those values
+    /// when the inline `shape.bone_weights` / `shape.bone_indices` are
+    /// empty (the canonical state for Skyrim SE NPC bodies, whose
+    /// `data_size == 0` BSTriShape ships geometry only via the global
+    /// buffer). Pre-fix every vertex hit the renderer's rigid fallback
+    /// at `triangle.vert:151` and rendered in bind pose.
+    ///
+    /// Fixture builds a 28-byte/vertex packed buffer with `VF_VERTEX |
+    /// VF_SKINNED`: 16 bytes position + 12 bytes skin (4 × half-float
+    /// weights + 4 × u8 indices). Two vertices, distinct skin payloads
+    /// per vertex so the parser can't accidentally pass with a static
+    /// pattern.
+    #[test]
+    fn sse_global_buffer_skin_payload_reaches_imported_skin() {
+        // 28 bytes per vertex = 7 quads. vertex_attrs = VF_VERTEX (0x001)
+        // | VF_SKINNED (0x040) = 0x041.
+        let vertex_size: u32 = 28;
+        let vertex_desc: u64 = (0x041u64 << 44) | 0x7;
+
+        // Half-float bit patterns: 0x3C00 = 1.0, 0x3800 = 0.5,
+        // 0x0000 = 0.0, 0x3400 = 0.25.
+        // Vertex 0: weights [1.0, 0.0, 0.0, 0.0], indices [3, 0, 0, 0]
+        // Vertex 1: weights [0.5, 0.5, 0.0, 0.0], indices [1, 7, 0, 0]
+        let mut raw = Vec::with_capacity(vertex_size as usize * 2);
+        // Vertex 0
+        raw.extend_from_slice(&1.0f32.to_le_bytes()); // x
+        raw.extend_from_slice(&2.0f32.to_le_bytes()); // y
+        raw.extend_from_slice(&3.0f32.to_le_bytes()); // z
+        raw.extend_from_slice(&0.0f32.to_le_bytes()); // bitangent_x pad
+        raw.extend_from_slice(&0x3C00u16.to_le_bytes()); // weight 1.0
+        raw.extend_from_slice(&0x0000u16.to_le_bytes()); // weight 0
+        raw.extend_from_slice(&0x0000u16.to_le_bytes()); // weight 0
+        raw.extend_from_slice(&0x0000u16.to_le_bytes()); // weight 0
+        raw.extend_from_slice(&[3u8, 0, 0, 0]); // indices
+        // Vertex 1
+        raw.extend_from_slice(&4.0f32.to_le_bytes());
+        raw.extend_from_slice(&5.0f32.to_le_bytes());
+        raw.extend_from_slice(&6.0f32.to_le_bytes());
+        raw.extend_from_slice(&0.0f32.to_le_bytes());
+        raw.extend_from_slice(&0x3800u16.to_le_bytes()); // weight 0.5
+        raw.extend_from_slice(&0x3800u16.to_le_bytes()); // weight 0.5
+        raw.extend_from_slice(&0x0000u16.to_le_bytes());
+        raw.extend_from_slice(&0x0000u16.to_le_bytes());
+        raw.extend_from_slice(&[1u8, 7, 0, 0]);
+
+        let shape = BsTriShape {
+            av: NiAVObjectData {
+                net: empty_net(),
+                flags: 0,
+                transform: crate::types::NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            center: NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+            radius: 0.0,
+            // skin_ref → block 1 (NiSkinInstance), data_ref → block 3
+            // (NiSkinData) so the legacy bone-resolution path lands
+            // and `extract_skin_bs_tri_shape` reaches the per-vertex
+            // assertions below.
+            skin_ref: BlockRef(1),
+            shader_property_ref: BlockRef::NULL,
+            alpha_property_ref: BlockRef::NULL,
+            vertex_desc,
+            num_triangles: 0,
+            num_vertices: 0,
+            vertices: Vec::new(),
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            vertex_colors: Vec::new(),
+            triangles: Vec::new(),
+            // CRITICAL: empty inline arrays — the whole point of #638.
+            bone_weights: Vec::new(),
+            bone_indices: Vec::new(),
+            kind: BsTriShapeKind::Plain,
+            data_size: 0,
+        };
+
+        let skin_instance = NiSkinInstance {
+            data_ref: BlockRef(3),
+            skin_partition_ref: BlockRef(2),
+            skeleton_root_ref: BlockRef::NULL,
+            // 8 bones in the global skin list — enough that the highest
+            // partition-local index (7) is in range and the test can
+            // distinguish slots.
+            bone_refs: vec![
+                BlockRef::NULL,
+                BlockRef::NULL,
+                BlockRef::NULL,
+                BlockRef::NULL,
+                BlockRef::NULL,
+                BlockRef::NULL,
+                BlockRef::NULL,
+                BlockRef::NULL,
+            ],
+        };
+        let partition = SkinPartitionEntry {
+            num_vertices: 2,
+            num_triangles: 0,
+            // Single-partition shape with all 8 bones in palette →
+            // remap is identity (palette[i] = i).
+            bones: (0u16..8).collect(),
+            num_weights_per_vertex: 4,
+            vertex_map: vec![0, 1],
+            vertex_weights: Vec::new(),
+            triangles: Vec::new(),
+            bone_indices: Vec::new(),
+        };
+        let skin_partition = NiSkinPartition {
+            partitions: vec![partition],
+            global_vertex_data: Some(SseSkinGlobalBuffer {
+                vertex_desc,
+                vertex_size,
+                raw_bytes: raw,
+            }),
+        };
+        // Build a NiSkinData with one bone entry per ref; the function
+        // checks lengths agree before reading bone transforms.
+        use crate::blocks::skin::BoneData;
+        let bone_data = NiSkinData {
+            skin_transform: crate::types::NiTransform::default(),
+            bones: (0..8)
+                .map(|_| BoneData {
+                    skin_transform: crate::types::NiTransform::default(),
+                    bounding_sphere: [0.0, 0.0, 0.0, 0.0],
+                    vertex_weights: Vec::new(),
+                })
+                .collect(),
+        };
+
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(shape));
+        scene.blocks.push(Box::new(skin_instance));
+        scene.blocks.push(Box::new(skin_partition));
+        scene.blocks.push(Box::new(bone_data));
+
+        let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
+        let skin = extract_skin_bs_tri_shape(&scene, shape_ref)
+            .expect("global-buffer skin payload must reach ImportedSkin (#638)");
+
+        assert_eq!(skin.vertex_bone_weights.len(), 2);
+        assert_eq!(skin.vertex_bone_indices.len(), 2);
+
+        // Vertex 0: full weight on bone 3.
+        assert!((skin.vertex_bone_weights[0][0] - 1.0).abs() < 1e-3);
+        assert_eq!(skin.vertex_bone_weights[0][1], 0.0);
+        assert_eq!(skin.vertex_bone_indices[0], [3, 0, 0, 0]);
+
+        // Vertex 1: 50/50 between bones 1 and 7.
+        assert!((skin.vertex_bone_weights[1][0] - 0.5).abs() < 1e-3);
+        assert!((skin.vertex_bone_weights[1][1] - 0.5).abs() < 1e-3);
+        assert_eq!(skin.vertex_bone_weights[1][2], 0.0);
+        assert_eq!(skin.vertex_bone_indices[1], [1, 7, 0, 0]);
     }
 }
 
