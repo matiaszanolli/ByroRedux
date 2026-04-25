@@ -16,7 +16,8 @@ use crate::blocks::interpolator::{
     NiBSplineData, NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendInterpolator,
     NiBlendPoint3Interpolator, NiBlendTransformInterpolator, NiBoolInterpolator, NiColorData,
     NiColorInterpolator, NiFloatData, NiFloatInterpolator, NiLookAtInterpolator,
-    NiPoint3Interpolator, NiPosData, NiTransformData, NiTransformInterpolator, Vec3Key,
+    NiPathInterpolator, NiPoint3Interpolator, NiPosData, NiTransformData,
+    NiTransformInterpolator, Vec3Key,
 };
 use crate::scene::NifScene;
 use std::collections::{BTreeSet, HashMap};
@@ -924,6 +925,23 @@ fn extract_transform_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<T
         return Some(constant_transform_channel(&interp.transform));
     }
 
+    // #605 — NiPathInterpolator references an NiPosData whose
+    // `KeyGroup<Vec3Key>` IS the position-vs-time animation. nif.xml
+    // documents a separate `percent_data_ref` (NiFloatData) for
+    // non-uniform path traversal, but vanilla content (Oblivion door
+    // hinges, FO3/FNV moving platforms, Skyrim minecart rails) uses
+    // the simple time-keyed form where path keys map directly to
+    // animation time. Emit the path keys as translation keys via the
+    // shared `convert_vec3_keys` (Z-up → Y-up + interpolation type
+    // preserved); rotation/scale stay identity to match the legacy
+    // Gamebryo path-interpolator semantics. Frenet-frame rotation
+    // (banking via `bank_dir` / `max_bank_angle`, follow-axis tangent
+    // alignment) is a future improvement once a real consumer needs
+    // it. Pre-#605 every embedded path animation static-posed.
+    if let Some(interp) = scene.get_as::<NiPathInterpolator>(interp_idx) {
+        return extract_transform_channel_path(scene, interp);
+    }
+
     None
 }
 
@@ -959,6 +977,42 @@ fn constant_transform_channel(t: &crate::types::NiQuatTransform) -> TransformCha
         scale_type: KeyType::Linear,
         priority: 0,
     }
+}
+
+/// Extract a `TransformChannel` from an `NiPathInterpolator`. The path's
+/// `NiPosData` keys become translation keys; rotation and scale stay
+/// identity. Returns `None` if `path_data_ref` is null, the referenced
+/// block isn't an `NiPosData`, or the data carries zero keys (no useful
+/// animation to emit).
+fn extract_transform_channel_path(
+    scene: &NifScene,
+    interp: &NiPathInterpolator,
+) -> Option<TransformChannel> {
+    let data_idx = interp.path_data_ref.index()?;
+    let data = scene.get_as::<NiPosData>(data_idx)?;
+    if data.keys.keys.is_empty() {
+        return None;
+    }
+    let (translation_keys, translation_type) = convert_vec3_keys(&data.keys);
+    Some(TransformChannel {
+        translation_keys,
+        translation_type,
+        rotation_keys: vec![RotationKey {
+            time: 0.0,
+            value: [0.0, 0.0, 0.0, 1.0], // identity quat (x, y, z, w)
+            tbc: None,
+        }],
+        rotation_type: KeyType::Linear,
+        scale_keys: vec![ScaleKey {
+            time: 0.0,
+            value: 1.0,
+            forward: 0.0,
+            backward: 0.0,
+            tbc: None,
+        }],
+        scale_type: KeyType::Linear,
+        priority: 0,
+    })
 }
 
 // ── B-spline evaluation (issue #155) ──────────────────────────────────────
@@ -2021,6 +2075,139 @@ mod tests {
         assert_eq!(channel.translation_keys[0].time, 0.0);
         assert_eq!(channel.rotation_keys[0].time, 0.0);
         assert_eq!(channel.scale_keys[0].time, 0.0);
+    }
+
+    /// #605 — NiPathInterpolator must emit translation keys sampled
+    /// from its referenced NiPosData (Z-up → Y-up converted, interpolation
+    /// type preserved). Rotation/scale stay identity matching legacy
+    /// Gamebryo path-interpolator behavior. Pre-fix the dispatch had no
+    /// fourth branch and embedded path animations (door swings, moving
+    /// platforms, dragon flight curves) silently static-posed.
+    #[test]
+    fn extract_transform_channel_emits_path_keys_for_path_interpolator() {
+        use crate::blocks::interpolator::Vec3Key;
+        use crate::types::BlockRef;
+
+        // Three-point path in Z-up: start (0,0,0), midpoint (10,0,5),
+        // end (20,0,0) — a simple arch. Times 0, 1, 2 seconds.
+        let pos_data = NiPosData {
+            keys: KeyGroup::<Vec3Key> {
+                key_type: KeyType::Linear,
+                keys: vec![
+                    Vec3Key {
+                        time: 0.0,
+                        value: [0.0, 0.0, 0.0],
+                        tangent_forward: [0.0; 3],
+                        tangent_backward: [0.0; 3],
+                        tbc: None,
+                    },
+                    Vec3Key {
+                        time: 1.0,
+                        value: [10.0, 0.0, 5.0],
+                        tangent_forward: [0.0; 3],
+                        tangent_backward: [0.0; 3],
+                        tbc: None,
+                    },
+                    Vec3Key {
+                        time: 2.0,
+                        value: [20.0, 0.0, 0.0],
+                        tangent_forward: [0.0; 3],
+                        tangent_backward: [0.0; 3],
+                        tbc: None,
+                    },
+                ],
+            },
+        };
+        let path_interp = NiPathInterpolator {
+            flags: 0,
+            bank_dir: 0,
+            max_bank_angle: 0.0,
+            smoothing: 0.0,
+            follow_axis: 0,
+            path_data_ref: BlockRef(0),
+            percent_data_ref: BlockRef::NULL,
+        };
+        let scene = NifScene {
+            blocks: vec![Box::new(pos_data), Box::new(path_interp)],
+            ..NifScene::default()
+        };
+
+        let mut cb = dummy_controlled_block();
+        cb.interpolator_ref = BlockRef(1);
+
+        let channel = extract_transform_channel(&scene, &cb)
+            .expect("NiPathInterpolator must emit a translation channel from its NiPosData");
+
+        // Three keys round-tripped from path data, Z-up → Y-up:
+        // (x, y, z) → (x, z, -y).  (10, 0, 5) → (10, 5, 0).
+        assert_eq!(channel.translation_keys.len(), 3);
+        assert_eq!(channel.translation_keys[0].value, [0.0, 0.0, 0.0]);
+        assert_eq!(channel.translation_keys[1].value, [10.0, 5.0, 0.0]);
+        assert_eq!(channel.translation_keys[2].value, [20.0, 0.0, 0.0]);
+        assert_eq!(channel.translation_keys[0].time, 0.0);
+        assert_eq!(channel.translation_keys[1].time, 1.0);
+        assert_eq!(channel.translation_keys[2].time, 2.0);
+        assert_eq!(channel.translation_type, KeyType::Linear);
+
+        // Rotation is identity, single key — Gamebryo's documented
+        // path-interp default.
+        assert_eq!(channel.rotation_keys.len(), 1);
+        assert_eq!(channel.rotation_keys[0].value, [0.0, 0.0, 0.0, 1.0]);
+
+        // Scale identity, single key.
+        assert_eq!(channel.scale_keys.len(), 1);
+        assert_eq!(channel.scale_keys[0].value, 1.0);
+    }
+
+    /// Edge case: NiPathInterpolator with a null path_data_ref or with
+    /// referenced NiPosData carrying zero keys returns None — there's no
+    /// useful animation to emit, and downstream handles None as "skip
+    /// this channel" via the existing fall-through.
+    #[test]
+    fn extract_transform_channel_returns_none_for_empty_path() {
+        use crate::types::BlockRef;
+
+        // Case 1 — null path_data_ref.
+        let path_interp = NiPathInterpolator {
+            flags: 0,
+            bank_dir: 0,
+            max_bank_angle: 0.0,
+            smoothing: 0.0,
+            follow_axis: 0,
+            path_data_ref: BlockRef::NULL,
+            percent_data_ref: BlockRef::NULL,
+        };
+        let scene = NifScene {
+            blocks: vec![Box::new(path_interp)],
+            ..NifScene::default()
+        };
+        let mut cb = dummy_controlled_block();
+        cb.interpolator_ref = BlockRef(0);
+        assert!(extract_transform_channel(&scene, &cb).is_none());
+
+        // Case 2 — empty NiPosData.
+        let empty_pos = NiPosData {
+            keys: KeyGroup::<Vec3Key> {
+                key_type: KeyType::Linear,
+                keys: Vec::new(),
+            },
+        };
+        let path_interp = NiPathInterpolator {
+            flags: 0,
+            bank_dir: 0,
+            max_bank_angle: 0.0,
+            smoothing: 0.0,
+            follow_axis: 0,
+            path_data_ref: BlockRef(0),
+            percent_data_ref: BlockRef::NULL,
+        };
+        let scene = NifScene {
+            blocks: vec![Box::new(empty_pos), Box::new(path_interp)],
+            ..NifScene::default()
+        };
+        let mut cb = dummy_controlled_block();
+        cb.interpolator_ref = BlockRef(1);
+        assert!(extract_transform_channel(&scene, &cb).is_none());
     }
 
     /// The resolver picks the item with the HIGHEST normalized_weight.
