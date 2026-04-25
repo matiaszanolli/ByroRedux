@@ -1071,4 +1071,318 @@ mod tests {
             &data[..16.min(data.len())]
         );
     }
+
+    // ── #617 SK-D2-06: Synthetic v105 (LZ4) coverage ──────────────────────
+    //
+    // Tests below build a complete v105 BSA byte stream in memory, write
+    // it to a temp file, and exercise `BsaArchive::open` + `extract`
+    // end-to-end. They cover the v105-specific code paths that the
+    // FNV (v104 / zlib) on-disk fixtures don't reach:
+    //   - 24-byte folder records (v104 = 16 bytes)
+    //   - u64 file offsets (v104 = u32)
+    //   - LZ4 frame compression (v104 = zlib)
+    //   - Embed-name prefix in compressed bodies
+    //   - Per-file compression toggle XOR'd against archive flag
+    //
+    // Unlike the `#[ignore]`'d Steam-disk tests added in #569 (SK-D2-01),
+    // these run unconditionally — no external data required.
+
+    /// Build a v105 BSA in memory containing a single folder + single
+    /// file. Returns the byte stream the caller writes to a temp file.
+    ///
+    /// `compress` selects whether the file body is LZ4-frame-encoded
+    /// (with the 4-byte original-size prefix the parser expects); the
+    /// archive-level `compressed_by_default` flag is set to match.
+    /// `embed_name` toggles the `0x100` archive flag and the per-file
+    /// `<u8 length><name>` prefix.
+    fn build_v105_archive(
+        folder: &str,
+        file_name: &str,
+        contents: &[u8],
+        compress: bool,
+        embed_name: bool,
+    ) -> Vec<u8> {
+        // Layout:
+        //   header (36)
+        //   folder record (24 — hash u64 + count u32 + pad u32 + offset u64)
+        //   folder name block (1 + len(folder) + 1 NUL) + file record (16)
+        //   file name table (len(file_name) + 1 NUL)
+        //   file data
+        let folder_lc = folder.to_ascii_lowercase();
+        let file_lc = file_name.to_ascii_lowercase();
+        // Folder name block: u8 length-prefix + name + NUL terminator.
+        // The length byte counts the NUL.
+        let folder_name_block_len = 1 + folder_lc.len() + 1;
+        // File name table: each name is NUL-terminated (no length prefix).
+        let file_name_table_len = file_lc.len() + 1;
+        let total_file_name_length = file_name_table_len as u32;
+
+        let mut data: Vec<u8> = Vec::new();
+
+        // ── Header (36 bytes) ────────────────────────────────────────
+        data.extend_from_slice(b"BSA\0");
+        data.extend_from_slice(&105u32.to_le_bytes()); // version
+        data.extend_from_slice(&36u32.to_le_bytes()); // offset (header size)
+        let mut archive_flags: u32 = 0b011; // dir names + file names
+        if compress {
+            archive_flags |= 0x004; // compressed_by_default
+        }
+        if embed_name {
+            archive_flags |= 0x100; // embed_file_names
+        }
+        data.extend_from_slice(&archive_flags.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes()); // folder_count
+        data.extend_from_slice(&1u32.to_le_bytes()); // file_count
+        data.extend_from_slice(&((folder_lc.len() + 1) as u32).to_le_bytes()); // total_folder_name_length (incl NUL)
+        data.extend_from_slice(&total_file_name_length.to_le_bytes());
+        data.extend_from_slice(&3u32.to_le_bytes()); // file_flags (placeholder)
+
+        // ── Folder records (24 bytes × 1) ────────────────────────────
+        let header_size = 36u64;
+        let folder_records_size = 24u64; // 1 folder × 24 B
+        let folder_block_offset = header_size + folder_records_size; // = 60
+        // The on-disk folder offset is biased by `total_file_name_length`
+        // per the parser's `expected_offset` validation comment.
+        let stored_folder_offset = folder_block_offset + total_file_name_length as u64;
+
+        let folder_hash = genhash_folder(&folder_lc);
+        data.extend_from_slice(&folder_hash.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes()); // count
+        data.extend_from_slice(&0u32.to_le_bytes()); // padding
+        data.extend_from_slice(&stored_folder_offset.to_le_bytes()); // u64 offset (v105)
+
+        // ── Folder name block (length-prefixed NUL-terminated) ──────
+        data.push((folder_lc.len() + 1) as u8);
+        data.extend_from_slice(folder_lc.as_bytes());
+        data.push(0);
+
+        // ── File record (16 bytes) ──────────────────────────────────
+        // We stage the file_data offset and size below, then patch the
+        // record once we know them.
+        let file_record_pos = data.len();
+        data.extend_from_slice(&[0u8; 16]); // placeholder
+
+        // ── File name table ─────────────────────────────────────────
+        data.extend_from_slice(file_lc.as_bytes());
+        data.push(0);
+
+        // ── File data ───────────────────────────────────────────────
+        let file_data_offset = data.len() as u64;
+        let mut file_body: Vec<u8> = Vec::new();
+        if embed_name {
+            // Embed-name prefix: u8 length + lowercase backslash-joined
+            // path. The length byte does NOT count itself but DOES
+            // include all path bytes (no NUL — matches the parser's
+            // `1 + name_len` skip math).
+            let full_path = format!("{}\\{}", folder_lc, file_lc);
+            file_body.push(full_path.len() as u8);
+            file_body.extend_from_slice(full_path.as_bytes());
+        }
+        if compress {
+            // 4-byte original-size header + LZ4 frame stream.
+            file_body.extend_from_slice(&(contents.len() as u32).to_le_bytes());
+            let mut encoder = lz4_flex::frame::FrameEncoder::new(Vec::new());
+            std::io::Write::write_all(&mut encoder, contents).expect("LZ4 frame write");
+            let frame_bytes = encoder.finish().expect("LZ4 frame finish");
+            file_body.extend_from_slice(&frame_bytes);
+        } else {
+            file_body.extend_from_slice(contents);
+        }
+        let file_size = file_body.len() as u32;
+        data.extend_from_slice(&file_body);
+
+        // ── Patch the file record ───────────────────────────────────
+        let file_hash = genhash_file(&file_lc);
+        let mut frec = [0u8; 16];
+        frec[0..8].copy_from_slice(&file_hash.to_le_bytes());
+        frec[8..12].copy_from_slice(&file_size.to_le_bytes());
+        frec[12..16].copy_from_slice(&(file_data_offset as u32).to_le_bytes());
+        data[file_record_pos..file_record_pos + 16].copy_from_slice(&frec);
+
+        data
+    }
+
+    /// Write a synthetic v105 BSA to a unique temp file and return
+    /// its path. PID + tag in the filename so the harness can run
+    /// tests in parallel without collisions.
+    fn write_temp_v105(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "byroredux-bsa-v105-#617-{}-{}.bsa",
+            std::process::id(),
+            tag
+        ));
+        std::fs::write(&path, bytes).expect("write temp v105 BSA");
+        path
+    }
+
+    /// Round-trip an LZ4-compressed file with embed-name on. Covers
+    /// the headline v105 path the audit calls out: 24-byte folder
+    /// records, u64 offsets, LZ4 frame decode, embed-name prefix
+    /// strip, and the parser's `total_file_name_length` offset bias.
+    #[test]
+    fn synthetic_v105_lz4_compressed_round_trips_with_embed_name() {
+        let payload = b"Gamebryo File Format\nThis is a test mesh body \
+                        with enough bytes (76 total) to exercise the LZ4 \
+                        frame decoder paths.";
+        let bytes = build_v105_archive(
+            "meshes\\synthetic",
+            "tinytestmesh.nif",
+            payload,
+            true,  // compress
+            true,  // embed_name
+        );
+        let path = write_temp_v105("compressed_embed", &bytes);
+        let archive = BsaArchive::open(&path).expect("v105 archive must open");
+        assert_eq!(archive.file_count(), 1);
+        assert_eq!(archive.version, 105);
+        assert!(archive.compressed_by_default);
+        assert!(archive.embed_file_names);
+
+        let extracted = archive
+            .extract("meshes\\synthetic\\tinytestmesh.nif")
+            .expect("extract must succeed");
+        assert_eq!(
+            extracted, payload,
+            "LZ4 frame round-trip must reproduce the original byte-exact"
+        );
+
+        // Path normalisation parity with FNV — case + slash folding.
+        let extracted_alt = archive
+            .extract("MESHES/SYNTHETIC/TinyTestMesh.NIF")
+            .expect("case + slash folding must hit");
+        assert_eq!(extracted_alt, payload);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Uncompressed file with embed-name OFF — exercises the no-LZ4
+    /// extract path on a v105 archive (less common but valid;
+    /// archive-level `compressed_by_default = 0` and per-file
+    /// `compression_toggle = 0` produce this shape).
+    #[test]
+    fn synthetic_v105_uncompressed_no_embed_name_round_trips() {
+        let payload = b"raw bytes - no LZ4 here";
+        let bytes = build_v105_archive(
+            "textures\\test",
+            "raw01.dds",
+            payload,
+            false, // not compressed
+            false, // no embed name
+        );
+        let path = write_temp_v105("uncompressed", &bytes);
+        let archive = BsaArchive::open(&path).unwrap();
+        assert_eq!(archive.version, 105);
+        assert!(!archive.compressed_by_default);
+        assert!(!archive.embed_file_names);
+
+        let extracted = archive
+            .extract("textures\\test\\raw01.dds")
+            .expect("extract must succeed");
+        assert_eq!(extracted, payload);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Per-file `compression_toggle` flag XOR'd against the archive
+    /// `compressed_by_default` bit. Set archive-level "compressed by
+    /// default" but mark this file as NOT compressed via the toggle —
+    /// the extract path must read the body raw (no LZ4 / no
+    /// original-size header). Pre-#569 there was no test surface
+    /// covering the toggle's XOR semantics.
+    #[test]
+    fn synthetic_v105_per_file_compression_toggle_xors_archive_flag() {
+        // Build the archive's bytes, then patch the file record's
+        // `size` field to set the 0x40000000 toggle bit.
+        let payload = b"opt-out file - should extract raw";
+        let mut bytes = build_v105_archive(
+            "data\\toggle",
+            "opt_out.bin",
+            payload,
+            true,  // archive-level compressed-by-default ON
+            false, // no embed name
+        );
+        // Walk the bytes to find the file record. Header (36) +
+        // folder record (24) + folder name block (1 length byte + 11
+        // chars + 1 NUL = 13). The folder name block layout is
+        // mirrored from `build_v105_archive` so a single source of
+        // truth dictates the offset math.
+        let file_record_pos = 36 + 24 + 1 + "data\\toggle".len() + 1;
+
+        // Re-build the file body uncompressed and update size + body.
+        // Simpler than patching in place — we know the record + body
+        // positions and there's only one file.
+        let payload_raw = payload.to_vec();
+        let new_body_len = payload_raw.len() as u32;
+        // Old `size` field (LE u32) sits at file_record_pos + 8.
+        let mut size_field = [0u8; 4];
+        size_field.copy_from_slice(&bytes[file_record_pos + 8..file_record_pos + 12]);
+        let _old_size = u32::from_le_bytes(size_field);
+        // Patch the record: new size = raw body length, with toggle
+        // bit (0x40000000) set so the parser reads it as "opt out of
+        // archive compression".
+        let toggled_size = new_body_len | 0x40000000;
+        bytes[file_record_pos + 8..file_record_pos + 12]
+            .copy_from_slice(&toggled_size.to_le_bytes());
+
+        // Truncate everything from the file_data_offset onward and
+        // append the raw payload (no LZ4 framing).
+        let file_data_offset = u32::from_le_bytes(
+            bytes[file_record_pos + 12..file_record_pos + 16]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        bytes.truncate(file_data_offset);
+        bytes.extend_from_slice(&payload_raw);
+
+        let path = write_temp_v105("toggle_xor", &bytes);
+        let archive = BsaArchive::open(&path).unwrap();
+        assert!(
+            archive.compressed_by_default,
+            "archive-level compressed-by-default flag must be set"
+        );
+
+        let extracted = archive
+            .extract("data\\toggle\\opt_out.bin")
+            .expect("toggle-XOR extract must succeed");
+        assert_eq!(
+            extracted, payload_raw,
+            "per-file toggle must opt out of archive-level compression"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Verify the v105 24-byte folder record reaches the right
+    /// stream position. The parser computes `expected = stored_offset
+    /// - total_file_name_length` and warns in debug builds when the
+    /// reader's actual position differs. A round-trip extraction
+    /// proves the offset math is correct (a wrong offset would make
+    /// the folder name block read as garbage, the file record hash
+    /// would mismatch, and the file would still appear in the
+    /// HashMap but extract garbage). The compressed round-trip in
+    /// the headline test already covers this implicitly; this test
+    /// pins the file_count contract specifically — the v104 path
+    /// uses 16-byte records and a wrong size cascade would either
+    /// over-read or under-read the records table.
+    #[test]
+    fn synthetic_v105_folder_record_layout_yields_one_file() {
+        let payload = b"x";
+        let bytes = build_v105_archive(
+            "shorty",
+            "x.bin",
+            payload,
+            false, // uncompressed for simplest path
+            false, // no embed name
+        );
+        let path = write_temp_v105("folder_layout", &bytes);
+        let archive = BsaArchive::open(&path).unwrap();
+        assert_eq!(
+            archive.file_count(),
+            1,
+            "wrong folder-record stride would over- or under-read the table"
+        );
+        let listed: Vec<&str> = archive.list_files();
+        assert_eq!(listed, vec!["shorty\\x.bin"]);
+        let _ = std::fs::remove_file(&path);
+    }
 }
