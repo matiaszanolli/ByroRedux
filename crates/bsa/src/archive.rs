@@ -533,8 +533,27 @@ mod tests {
     const FNV_MESHES_BSA: &str =
         "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data/Fallout - Meshes.bsa";
 
+    // Skyrim SE BSA v105 (LZ4) — the only Bethesda format that uses the
+    // LZ4 frame compression path. Pre-#569 the test surface had no
+    // gated regression against real v105 archives; any change to the
+    // frame-decoder dispatch, 24-byte folder record sizing, or u64
+    // file-record offset read would slip through. See SK-D2-01.
+    const SKYRIM_MESHES0_BSA: &str =
+        "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/Skyrim - Meshes0.bsa";
+    const SKYRIM_MESHES1_BSA: &str =
+        "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/Skyrim - Meshes1.bsa";
+    const SKYRIM_TEXTURES0_BSA: &str =
+        "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/Skyrim - Textures0.bsa";
+
     fn skip_if_missing() -> bool {
         !Path::new(FNV_MESHES_BSA).exists()
+    }
+
+    /// Per-archive availability gate so a test that needs Skyrim data
+    /// stays green when only FNV is installed (and vice versa). Mirrors
+    /// the FNV `skip_if_missing` pattern.
+    fn skip_if_skyrim_missing(path: &str) -> bool {
+        !Path::new(path).exists()
     }
 
     // ── Hash function unit tests (#361) ────────────────────────────────
@@ -910,5 +929,146 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         let msg = format!("{err}");
         assert!(msg.contains("folder_count"), "got: {msg}");
+    }
+
+    // ── #569 SK-D2-01: Skyrim SE BSA v105 (LZ4) on-disk regression tests ──
+    //
+    // These tests exercise the v105 + LZ4 frame format end-to-end against
+    // real Skyrim SE archives. They mirror the FNV pattern above —
+    // `#[ignore]`'d so CI without Steam stays green; the user runs them
+    // explicitly with `cargo test -- --ignored` against a real install.
+    //
+    // Pre-#569 the v104 + zlib path had on-disk coverage but the v105 +
+    // LZ4 path did not, so a regression in the frame-decoder dispatch,
+    // 24-byte folder record sizing, u64 file-record offset, or the
+    // archive-level vs per-file compression toggle would slip through.
+
+    /// Skyrim - Meshes0.bsa: largest vanilla SSE mesh archive (19,443
+    /// files; ~18,862 NIFs, the rest are BGSM/BGEM/HKX/etc.). Pinned
+    /// against the audit's Dim 2 corpus survey (`AUDIT_SKYRIM_2026-04-22`
+    /// / `2026-04-24`). A drift in either count is the signal that a
+    /// regression has landed in the v105 directory parse.
+    #[test]
+    #[ignore]
+    fn skyrim_meshes0_opens_and_counts_match_baseline() {
+        if skip_if_skyrim_missing(SKYRIM_MESHES0_BSA) {
+            return;
+        }
+        let archive = BsaArchive::open(SKYRIM_MESHES0_BSA).unwrap();
+        assert_eq!(
+            archive.file_count(),
+            19_443,
+            "Skyrim - Meshes0.bsa file count drifted from the 2026-04 baseline"
+        );
+        let files = archive.list_files();
+        let nif_count = files.iter().filter(|f| f.ends_with(".nif")).count();
+        assert!(
+            nif_count > 18_000,
+            "expected >18k NIFs in Meshes0, got {nif_count}"
+        );
+    }
+
+    /// Sweetroll round-trip: extract a known-size NIF and assert the
+    /// LZ4 frame decoder produces exactly the expected byte count + a
+    /// valid Gamebryo header. The 10,245-byte size is pinned by the
+    /// audit's Dim 5 capture (`/tmp/audit/skyrim/sweetroll01.nif`).
+    /// A drift here is the dominant signal for v105 frame-decoder
+    /// regressions — Sweetroll is small enough to be a single LZ4
+    /// frame yet large enough to exercise the full decode path.
+    #[test]
+    #[ignore]
+    fn skyrim_meshes0_extracts_sweetroll_with_exact_size() {
+        if skip_if_skyrim_missing(SKYRIM_MESHES0_BSA) {
+            return;
+        }
+        let archive = BsaArchive::open(SKYRIM_MESHES0_BSA).unwrap();
+        let path = "meshes\\clutter\\ingredients\\sweetroll01.nif";
+        assert!(
+            archive.contains(path),
+            "Sweetroll path missing from Meshes0 archive — directory parse may be broken"
+        );
+        let data = archive.extract(path).unwrap();
+        assert_eq!(
+            data.len(),
+            10_245,
+            "Sweetroll decompressed size drifted — LZ4 frame decoder regression?"
+        );
+        assert!(
+            data.starts_with(b"Gamebryo File Format"),
+            "extracted Sweetroll missing NIF header magic: {:?}",
+            &data[..20.min(data.len())]
+        );
+    }
+
+    /// Path normalization: BSA paths are stored lowercased with
+    /// backslashes. Verify that mixed-case / forward-slash inputs to
+    /// `contains()` still hit on a known path. Mirrors the FNV
+    /// equivalent at `contains_beer_bottle` so the SSE path doesn't
+    /// silently regress on case-folding.
+    #[test]
+    #[ignore]
+    fn skyrim_meshes0_path_normalization_matches_sweetroll() {
+        if skip_if_skyrim_missing(SKYRIM_MESHES0_BSA) {
+            return;
+        }
+        let archive = BsaArchive::open(SKYRIM_MESHES0_BSA).unwrap();
+        let path = "meshes\\clutter\\ingredients\\sweetroll01.nif";
+        assert!(archive.contains(path));
+        assert!(archive.contains("MESHES\\CLUTTER\\INGREDIENTS\\SWEETROLL01.NIF"));
+        assert!(archive.contains("meshes/clutter/ingredients/sweetroll01.nif"));
+        assert!(!archive.contains("meshes\\clutter\\ingredients\\nonexistent01.nif"));
+    }
+
+    /// Skyrim - Meshes1.bsa is the DLC overflow archive (Dawnguard,
+    /// Dragonborn, HearthFires content + post-launch additions). Pinned
+    /// at 14,242 files — drift indicates the v105 multi-file-table
+    /// indexing has changed.
+    #[test]
+    #[ignore]
+    fn skyrim_meshes1_dlc_overflow_opens_and_counts_match_baseline() {
+        if skip_if_skyrim_missing(SKYRIM_MESHES1_BSA) {
+            return;
+        }
+        let archive = BsaArchive::open(SKYRIM_MESHES1_BSA).unwrap();
+        assert_eq!(
+            archive.file_count(),
+            14_242,
+            "Skyrim - Meshes1.bsa file count drifted from the 2026-04 baseline"
+        );
+    }
+
+    /// Skyrim - Textures0.bsa: vanilla diffuse textures. Pinned at
+    /// 5,891 files. Verifies the v105 path also handles texture-only
+    /// archives (different file-extension distribution + no embedded
+    /// names on this layout per the audit's Dim 2 sample).
+    #[test]
+    #[ignore]
+    fn skyrim_textures0_opens_and_first_dds_decodes() {
+        if skip_if_skyrim_missing(SKYRIM_TEXTURES0_BSA) {
+            return;
+        }
+        let archive = BsaArchive::open(SKYRIM_TEXTURES0_BSA).unwrap();
+        assert_eq!(
+            archive.file_count(),
+            5_891,
+            "Skyrim - Textures0.bsa file count drifted from the 2026-04 baseline"
+        );
+        // Pick the first DDS in the listing and assert its header magic
+        // round-trips. We don't pin a specific file path here — the
+        // archive is large and any DDS exercises the same v105 + LZ4
+        // path. The first-listed DDS keeps the test fast.
+        let files = archive.list_files();
+        let first_dds = files
+            .iter()
+            .find(|f| f.ends_with(".dds"))
+            .expect("Textures0 must contain at least one .dds file");
+        let path = first_dds.to_string();
+        let data = archive.extract(&path).unwrap();
+        // DDS magic: "DDS " (0x20534444 little-endian) at offset 0.
+        assert!(
+            data.len() >= 4 && &data[..4] == b"DDS ",
+            "first DDS missing magic — decompression regression? path={path}, head={:?}",
+            &data[..16.min(data.len())]
+        );
     }
 }
