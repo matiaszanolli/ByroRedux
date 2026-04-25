@@ -556,46 +556,79 @@ pub(crate) fn build_render_data(
                         base_material_kind
                     };
 
-                // #562 — Skyrim+ BSLightingShaderProperty variant payload.
-                // Zero for materials without a shader_type_fields box; that
-                // covers every non-Skyrim mesh and most Skyrim statics
-                // (only character skin/hair/eyes, snow, and multilayer
-                // parallax shelves populate this).
+                // #562 / #619 — Skyrim+ BSLightingShaderProperty variant
+                // payload. Each field group is gated on the matching
+                // `material_kind` so the pack runs only for materials
+                // whose shader branch reads it. Pre-#619 every chain
+                // ran on every draw — wasted work on the vast majority
+                // of materials (every non-Skyrim mesh + every Skyrim
+                // static, ~99% of a typical cell). `GpuInstance::default`
+                // already zeroes the slots so non-active kinds emit
+                // neutral output identical to pre-fix.
+                //
+                // Variant ↔ field mapping (must mirror the
+                // `materialKind == N` ladder in triangle.frag:769-796):
+                //   5  SkinTint            → `skin_tint_*`        (live)
+                //   6  HairTint            → `hair_tint_*`        (live)
+                //   11 MultiLayerParallax  → `multi_layer_*`      (stub)
+                //   14 SparkleSnow         → `sparkle_*`          (live)
+                //   16 EyeEnvmap           → `eye_*`              (stub)
+                //
+                // Variants 11 + 16 are shader stubs today (#619); the
+                // pack still runs on those kinds so the data is already
+                // plumbed when the shader branches land.
                 let stf = mat.and_then(|m| m.shader_type_fields.as_deref());
-                let skin_tint_rgba = stf
-                    .and_then(|f| {
+                let skin_tint_rgba = if base_material_kind == 5 {
+                    stf.and_then(|f| {
                         f.skin_tint_color.map(|c| {
                             [c[0], c[1], c[2], f.skin_tint_alpha.unwrap_or(1.0)]
                         })
                     })
-                    .unwrap_or([0.0; 4]);
-                let hair_tint_rgb = stf
-                    .and_then(|f| f.hair_tint_color)
-                    .unwrap_or([0.0; 3]);
-                let multi_layer_envmap_strength = stf
-                    .and_then(|f| f.multi_layer_envmap_strength)
-                    .unwrap_or(0.0);
-                let eye_left_center = stf
-                    .and_then(|f| f.eye_left_reflection_center)
-                    .unwrap_or([0.0; 3]);
-                let eye_cubemap_scale = stf
-                    .and_then(|f| f.eye_cubemap_scale)
-                    .unwrap_or(0.0);
-                let eye_right_center = stf
-                    .and_then(|f| f.eye_right_reflection_center)
-                    .unwrap_or([0.0; 3]);
-                let multi_layer_inner_thickness = stf
-                    .and_then(|f| f.multi_layer_inner_thickness)
-                    .unwrap_or(0.0);
-                let multi_layer_refraction_scale = stf
-                    .and_then(|f| f.multi_layer_refraction_scale)
-                    .unwrap_or(0.0);
-                let multi_layer_inner_scale = stf
-                    .and_then(|f| f.multi_layer_inner_layer_scale)
-                    .unwrap_or([1.0, 1.0]);
-                let sparkle_rgba = stf
-                    .and_then(|f| f.sparkle_parameters)
-                    .unwrap_or([0.0; 4]);
+                    .unwrap_or([0.0; 4])
+                } else {
+                    [0.0; 4]
+                };
+                let hair_tint_rgb = if base_material_kind == 6 {
+                    stf.and_then(|f| f.hair_tint_color).unwrap_or([0.0; 3])
+                } else {
+                    [0.0; 3]
+                };
+                let sparkle_rgba = if base_material_kind == 14 {
+                    stf.and_then(|f| f.sparkle_parameters).unwrap_or([0.0; 4])
+                } else {
+                    [0.0; 4]
+                };
+                let (
+                    multi_layer_envmap_strength,
+                    multi_layer_inner_thickness,
+                    multi_layer_refraction_scale,
+                    multi_layer_inner_scale,
+                ) = if base_material_kind == 11 {
+                    (
+                        stf.and_then(|f| f.multi_layer_envmap_strength)
+                            .unwrap_or(0.0),
+                        stf.and_then(|f| f.multi_layer_inner_thickness)
+                            .unwrap_or(0.0),
+                        stf.and_then(|f| f.multi_layer_refraction_scale)
+                            .unwrap_or(0.0),
+                        stf.and_then(|f| f.multi_layer_inner_layer_scale)
+                            .unwrap_or([1.0, 1.0]),
+                    )
+                } else {
+                    (0.0, 0.0, 0.0, [1.0, 1.0])
+                };
+                let (eye_left_center, eye_cubemap_scale, eye_right_center) =
+                    if base_material_kind == 16 {
+                        (
+                            stf.and_then(|f| f.eye_left_reflection_center)
+                                .unwrap_or([0.0; 3]),
+                            stf.and_then(|f| f.eye_cubemap_scale).unwrap_or(0.0),
+                            stf.and_then(|f| f.eye_right_reflection_center)
+                                .unwrap_or([0.0; 3]),
+                        )
+                    } else {
+                        ([0.0; 3], 0.0, [0.0; 3])
+                    };
 
                 draw_commands.push(DrawCommand {
                     mesh_handle: mesh.0,
@@ -1466,5 +1499,151 @@ mod bone_palette_overflow_tests {
             MAX_TOTAL_BONES,
             palette.len()
         );
+    }
+}
+
+/// Regression: #619 / SK-D3-05 — `BSLightingShaderProperty` variant
+/// payload pack must run only for materials whose shader branch reads
+/// it. A material with `material_kind == 0` (default lit, ~99% of a
+/// typical cell) but a populated `shader_type_fields` box must emit a
+/// DrawCommand with zero/identity variant slots — the fragment shader
+/// won't read them and packing the values is dead CPU work.
+#[cfg(test)]
+mod variant_pack_gating_tests {
+    use super::*;
+    use byroredux_core::ecs::components::material::ShaderTypeFields;
+    use byroredux_core::ecs::{ActiveCamera, Camera, GlobalTransform, World};
+
+    fn run_build(world: &World) -> Vec<DrawCommand> {
+        let mut draw_commands = Vec::new();
+        let mut gpu_lights = Vec::new();
+        let mut bone_palette = Vec::new();
+        let mut skin_offsets = HashMap::new();
+        let mut palette_scratch = Vec::new();
+        let _ = build_render_data(
+            world,
+            &mut draw_commands,
+            &mut gpu_lights,
+            &mut bone_palette,
+            &mut skin_offsets,
+            &mut palette_scratch,
+            None,
+        );
+        draw_commands
+    }
+
+    /// Build a world with a single renderable mesh whose Material
+    /// supplies `shader_type_fields` for every variant slot. The
+    /// `material_kind` argument controls which variant the renderer
+    /// dispatches; the test caller picks 0 (default) to prove the
+    /// gate skips the pack, or 5/6/14 to prove the gate lets the
+    /// matching variant through.
+    fn world_with_variant_material(material_kind: u8) -> World {
+        let mut world = World::new();
+
+        // Camera entity — ActiveCamera is required by build_render_data.
+        let cam = world.spawn();
+        world.insert(cam, Transform::IDENTITY);
+        world.insert(cam, GlobalTransform::IDENTITY);
+        world.insert(cam, Camera::default());
+        world.insert_resource(ActiveCamera(cam));
+
+        // Renderable mesh — Material populates every variant field
+        // with a non-default value so a passing pack would surface
+        // those values on the DrawCommand.
+        let mesh_e = world.spawn();
+        world.insert(mesh_e, Transform::IDENTITY);
+        world.insert(mesh_e, GlobalTransform::IDENTITY);
+        world.insert(mesh_e, MeshHandle(1));
+        world.insert(mesh_e, TextureHandle(1));
+        world.insert(
+            mesh_e,
+            Material {
+                material_kind,
+                shader_type_fields: Some(Box::new(ShaderTypeFields {
+                    skin_tint_color: Some([0.9, 0.8, 0.7]),
+                    skin_tint_alpha: Some(0.5),
+                    hair_tint_color: Some([0.1, 0.2, 0.3]),
+                    eye_cubemap_scale: Some(0.42),
+                    eye_left_reflection_center: Some([1.0, 2.0, 3.0]),
+                    eye_right_reflection_center: Some([4.0, 5.0, 6.0]),
+                    parallax_max_passes: None,
+                    parallax_height_scale: None,
+                    multi_layer_inner_thickness: Some(0.7),
+                    multi_layer_refraction_scale: Some(0.3),
+                    multi_layer_inner_layer_scale: Some([2.0, 3.0]),
+                    multi_layer_envmap_strength: Some(0.55),
+                    sparkle_parameters: Some([0.1, 0.2, 0.3, 0.4]),
+                }),),
+                ..Material::default()
+            },
+        );
+
+        world
+    }
+
+    #[test]
+    fn default_kind_zero_skips_all_variant_packs() {
+        let world = world_with_variant_material(0);
+        let cmds = run_build(&world);
+        assert_eq!(cmds.len(), 1, "exactly one DrawCommand expected");
+        let c = &cmds[0];
+        assert_eq!(c.skin_tint_rgba, [0.0; 4], "kind=0 must skip skin tint pack");
+        assert_eq!(c.hair_tint_rgb, [0.0; 3], "kind=0 must skip hair tint pack");
+        assert_eq!(c.sparkle_rgba, [0.0; 4], "kind=0 must skip sparkle pack");
+        assert_eq!(c.multi_layer_envmap_strength, 0.0);
+        assert_eq!(c.multi_layer_inner_thickness, 0.0);
+        assert_eq!(c.multi_layer_refraction_scale, 0.0);
+        assert_eq!(c.multi_layer_inner_scale, [1.0, 1.0]);
+        assert_eq!(c.eye_left_center, [0.0; 3]);
+        assert_eq!(c.eye_right_center, [0.0; 3]);
+        assert_eq!(c.eye_cubemap_scale, 0.0);
+    }
+
+    #[test]
+    fn kind_5_skin_tint_packs_only_skin_fields() {
+        let world = world_with_variant_material(5);
+        let cmds = run_build(&world);
+        let c = &cmds[0];
+        // SkinTint group lands.
+        assert_eq!(c.skin_tint_rgba, [0.9, 0.8, 0.7, 0.5]);
+        // Other groups stay default-zero — gate worked.
+        assert_eq!(c.hair_tint_rgb, [0.0; 3]);
+        assert_eq!(c.sparkle_rgba, [0.0; 4]);
+        assert_eq!(c.multi_layer_envmap_strength, 0.0);
+        assert_eq!(c.eye_left_center, [0.0; 3]);
+    }
+
+    #[test]
+    fn kind_11_multilayer_parallax_packs_only_multilayer_fields() {
+        // Stub variant — shader doesn't consume yet, but the pack
+        // still runs so when the shader branch lands the data is
+        // already there. See triangle.frag:797-813.
+        let world = world_with_variant_material(11);
+        let cmds = run_build(&world);
+        let c = &cmds[0];
+        assert_eq!(c.multi_layer_inner_thickness, 0.7);
+        assert_eq!(c.multi_layer_refraction_scale, 0.3);
+        assert_eq!(c.multi_layer_inner_scale, [2.0, 3.0]);
+        assert_eq!(c.multi_layer_envmap_strength, 0.55);
+        // Other groups stay default-zero.
+        assert_eq!(c.skin_tint_rgba, [0.0; 4]);
+        assert_eq!(c.hair_tint_rgb, [0.0; 3]);
+        assert_eq!(c.sparkle_rgba, [0.0; 4]);
+        assert_eq!(c.eye_left_center, [0.0; 3]);
+    }
+
+    #[test]
+    fn kind_16_eye_envmap_packs_only_eye_fields() {
+        let world = world_with_variant_material(16);
+        let cmds = run_build(&world);
+        let c = &cmds[0];
+        assert_eq!(c.eye_left_center, [1.0, 2.0, 3.0]);
+        assert_eq!(c.eye_right_center, [4.0, 5.0, 6.0]);
+        assert_eq!(c.eye_cubemap_scale, 0.42);
+        // Other groups stay default-zero.
+        assert_eq!(c.skin_tint_rgba, [0.0; 4]);
+        assert_eq!(c.hair_tint_rgb, [0.0; 3]);
+        assert_eq!(c.multi_layer_envmap_strength, 0.0);
     }
 }
