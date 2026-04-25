@@ -12,7 +12,7 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-04-24.
+**Last verified**: 2026-04-25.
 **Bench-of-record**: Prospector Saloon 172.6 FPS / 5.79 ms — commit
 `6a6950a`, wall-clock bench. Scene is glass-heavy (bottles, pitcher,
 marquee sign); RT refraction/reflection cost is representative of a
@@ -328,6 +328,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] **R6** `VulkanContext` scratch buffers have no capacity telemetry — **closed**. `ctx.scratch` console command + `ScratchTelemetry` resource cover all 5 persistent scratches; per-frame refresh via `VulkanContext::fill_scratch_telemetry`. Prospector baseline: 337 KB total, 320 B wasted.
 - [x] **R6a** Prospector re-bench — **closed**. 192.8 FPS / 5.19 ms at `e6e8091`, wall-clock bench.
 - [x] **R6a-stale** Bench-of-record refreshed at `6a6950a` (2026-04-24). Prospector 172.6 FPS / 5.79 ms (was 192.8 / 5.19 — slight regression in compositor-jitter range; fence_ms unchanged at 4.34, GPU still the bottleneck). Skyrim Whiterun 253.3 FPS / 3.95 ms at 1932 entities (was 237 FPS at 1258 entities — entity count up 53% while FPS improved, indicating more REFRs land now without perf cost). FO4 MedTek 92.5 FPS / 10.82 ms (was 90, 7434 entities unchanged).
+- [ ] **R6a-stale-2** Bench-of-record `6a6950a` is now 33 commits stale (past the 30-commit freshness threshold). Session 19 didn't touch any hot rendering path that should move the numbers — the only `GpuInstance` change was the 320→352 B append (#221) which `triangle.frag` consumes only on Oblivion/FO3/FNV NiMaterialProperty meshes. Refresh deferred to next session; not blocking.
 - [x] **R7** Scheduler access declarations — **closed**. `Access` builder + `System::access()` opt-in + `Scheduler::add_to_with_access` for closures + `sys.accesses` console command surface a per-stage Conflict / Unknown report. 3 of 12 systems declared so far (fly_camera, spin, log_stats); 4 Unknown pairs remaining. M27 flip is diagnosable now; eliminating the Unknown rows is incremental migration work.
 
 ### Open — Misc
@@ -342,16 +343,16 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-04-24, verified by `/session-close`.
+Ground-truth as of 2026-04-25, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (non-test)            | ~100 500                      |
-| Rust total lines                        | ~103 000                      |
-| Source files (non-test)                 | 204                          |
+| Rust source lines (non-test)            | ~105 715                     |
+| Rust total lines                        | ~108 236                     |
+| Source files (non-test)                 | 207                          |
 | Workspace members                       | 16                           |
-| Tests (last reported by ROADMAP)        | 1189                         |
-| Open issue directories                  | 561 (`.claude/issues/`)       |
+| Tests (last reported by ROADMAP)        | 1256                         |
+| Open issue directories                  | 596 (`.claude/issues/`)       |
 | NIFs in per-game integration sweeps     | 177 286                       |
 | Per-game NIF parse success rate         | 100% (7 games)                |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |

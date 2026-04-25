@@ -24,6 +24,83 @@ Commits hold that record.
 
 ---
 
+## Session 19 — Audit bundle closeout: parser correctness + RGBA pipeline + mem.frag visibility  (2026-04-25, a2a3fcd..79c81b9)
+
+A 25-commit bug-bash burning through audit findings #221 / #404 / #435 /
+#503 / #559 / #565 / #569 / #576 / #580 / #581 / #590 / #592 / #604 /
+#605 / #611 / #612 / #613 / #614 / #615 / #617 / #618 / #626 / #627 /
+#632 / #633 — most LOW/MEDIUM, one HIGH (#559) and one whole-pipeline
+change (#221). Two issues self-deferred (#351 tangents, #520 PERK
+entry points), one was already fixed under another number (#46 → #238).
+The session closes Skyrim SE skinning end-to-end, lands a real per-block
+GPU memory fragmentation reporter, and pushes `NiMaterialProperty`
+diffuse + ambient through to the fragment shader as a 320→352 B
+`GpuInstance` growth touching all four shaders in the Shader Struct Sync
+chain.
+
+- **NIF parser correctness (12)** — `NiLookAtInterpolator` static pose
+  surfaced as a translation channel (#604, `ac30826`); `NiPathInterpolator`'s
+  `NiPosData` keys reach the same channel (#605, `44ab041`); `NiPSysData`
+  particle-info array gated on pre-BS202 (#581, `4bdccca`);
+  per-vertex alpha preserved end-to-end as RGBA, not RGB (#618, `9ebb7ea`);
+  `NiStringsExtraData` switched to `SizedString` (#615, `7b7dadc`);
+  `parse_nif` root selector now recognises every `NiNode` subclass —
+  BSTreeNode, NiSwitchNode, BSMultiBoundNode, NiBillboardNode,
+  BSBlastNode, BSDamageStage, BSFadeNode, NiBSPNode, BSOrderedNode,
+  BSValueNode, BSDebrisNode (#611, `8d09b97`); new `BSBoneLODExtraData`
+  parser restores Skyrim Meshes0 to 100% clean parse (#614, `782b723`);
+  `bhkBreakableConstraint` reads its trailer on FNV/FO3 too (#633,
+  `d17f8d9`); SSE skinned `BsTriShape` reconstructs from `NiSkinPartition`
+  global buffer — Skyrim NPCs / dragons now render geometry (#559,
+  `b6e0779`); partition-aware bone-index remap so multi-partition skins
+  pick the correct global bone per vertex (#613, `8f9584e`);
+  `BSSubIndexTriShape` structured-decode replaces the wholesale
+  `block_size` skip — segment table + sub-segments + .ssf filename now
+  recovered (#404, `92e5e93`); recovery-path warnings aggregated into
+  per-NIF summary lines so Skyrim Meshes0 sweep drops from thousands of
+  warnings to ~133 (#565, `a2bc079`).
+
+- **End-to-end material pipeline (3)** — `NiTexturingProperty` UV
+  transform survives a preceding `NiMaterialProperty` via a new
+  orthogonal `has_uv_transform` flag (#435, `006fdde`); FO4 Material Swap
+  (`MSWP`) records parse with substitution table + texture overrides
+  (#590 first slice, `98f497e`); `NiMaterialProperty.diffuse` + `.ambient`
+  plumbed end-to-end — `MaterialInfo` → `ImportedMesh` → `Material` ECS
+  component → `DrawCommand` → `GpuInstance` (320→352 B, 2 appended vec4
+  slots) → `triangle.frag` (`albedo *= diffuseRGB` + `ambient *= ambientRGB`),
+  with the Shader Struct Sync mirror across `triangle.vert` /
+  `ui.vert` / `caustic_splat.comp` and SPIR-V regen (#221, `79c81b9`).
+
+- **ESM / cell streaming leaks (3)** — `SkyParamsRes` textures dropped
+  + cell-state Resources cleared on unload (#626, `cd55e4f`); terrain
+  splat-layer texture refcounts released on cell unload (#627, `a3eb4c4`);
+  ESM-fallback `LightSource` now fires for zero-color NIF placeholders
+  so Megaton lanterns aren't dark (#632, `971c694`).
+
+- **Renderer / shader hygiene (5)** — FO76 `SkinTint` material_kind
+  remapped so `triangle.frag`'s ladder branches dispatch correctly
+  (#612, `1a09347`); `fo4_slsf1` / `fo4_slsf2` arrays consumed in
+  production with compile-time bit-equivalence guards proving FO4 +
+  Skyrim flag bit semantics match where they should (#592, `d2dbecf`);
+  rasterization pipelines retained on format-stable swapchain resize —
+  no needless `vkDestroyPipeline` on every window-size event (#576,
+  `2bbc0a0`); SAFE-21 unsafe-block comment rewritten to name the real
+  invariant (#580, `3c05ec8`); `mem.frag` console command + per-block
+  fragmentation reporter (`largest_free / total_free` ratio with < 0.5
+  WARN threshold) — gpu-allocator's first-fit-within-block strategy now
+  has visibility (#503, `2a655e1`).
+
+- **Test infrastructure (2)** — Synthetic v105 BSA fixtures land for CI-
+  side coverage of the LZ4 frame path (#617, `1bbbcb2`); gated regression
+  sweep for Skyrim SE BSA v105 (#569, `606137d`).
+
+Net: tests +67 (1189 → **1256**), LOC +5 215 non-test (105 715 total),
++3 source files. `GpuInstance` stride 320 → 352 B (#221). Bench-of-record
+`6a6950a` now 33 commits stale (just past the 30-commit threshold) — flagged
+under Known Issues `R6a-stale-2`; refresh deferred to next session.
+
+---
+
 ## Session 18 — Risk-reducer triple: R3 + R6 + R7 plus the parser fixes they surfaced  (2026-04-24, 4293c51..a9c7bc9)
 
 An eight-commit session organised around the prevention-tooling track:
