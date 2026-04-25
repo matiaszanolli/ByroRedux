@@ -1,0 +1,163 @@
+#version 450
+
+// M29 Phase 1 — pre-skin vertices for RT-correct skinned geometry.
+//
+// Reads bind-pose vertices from the shared global vertex SSBO,
+// multiplies each by its weighted bone-palette transform, and writes
+// the world-space skinned vertices to a per-mesh dedicated output
+// buffer. Phase 2 will refit a per-mesh BLAS against this output so
+// shadow / reflection / GI ray queries see the animated geometry; the
+// rasterized pipeline keeps its existing inline-skinning path
+// (triangle.vert:147-204) until Phase 3 (optional) migrates it.
+//
+// Vertex layout matches `byroredux_renderer::vertex::Vertex` (84 bytes,
+// 21 floats per vertex). The same flat `float[]` indexing convention
+// is used here as in `triangle.frag` GlobalVertices @ binding 8 — see
+// the comment block at triangle.frag:182-189 for the field map.
+//
+// Per-vertex layout (offset / float index):
+//   0..2   position
+//   3..5   color
+//   6..8   normal
+//   9..10  uv
+//   11..14 bone indices (uvec4, bit-cast through floatBitsToUint)
+//   15..18 bone weights
+//   19     splat_weights_0 (4×u8 packed)
+//   20     splat_weights_1 (4×u8 packed)
+//
+// Skinning math mirrors `triangle.vert:151-162`. Pass-through fields
+// (color, UV, splats, bone weights/indices) copy verbatim so the
+// output buffer is a complete drop-in replacement when Phase 3 wires
+// raster to read from it.
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+const uint VERTEX_STRIDE_FLOATS = 21u;
+
+// Bind-pose vertex SSBO (the shared geometry buffer; one mesh's
+// vertices live at `vertex_offset .. vertex_offset + vertex_count`).
+layout(std430, set = 0, binding = 0) readonly buffer InputVertices {
+    float inputVertexData[];
+};
+
+// Per-frame bone palette SSBO (matches `triangle.vert:111-113`,
+// `set = 1, binding = 3` there). Each skinned mesh occupies
+// `MAX_BONES_PER_MESH` consecutive slots starting at `bone_offset`.
+layout(std430, set = 0, binding = 1) readonly buffer BoneBuffer {
+    mat4 bones[];
+};
+
+// Per-mesh skinned-vertex output buffer (size = vertex_count × 21 ×
+// 4 B). Phase 2 refits a BLAS against this buffer; Phase 3 may bind
+// it as the raster vertex source.
+layout(std430, set = 0, binding = 2) writeonly buffer OutputVertices {
+    float outputVertexData[];
+};
+
+layout(push_constant) uniform PushConstants {
+    // Where this mesh's bind-pose vertices start in the input SSBO
+    // (in vertices, not floats — multiply by VERTEX_STRIDE_FLOATS to
+    // get the float index).
+    uint vertex_offset;
+    uint vertex_count;
+    // Where this mesh's bone palette starts in the BoneBuffer (in
+    // mat4 entries).
+    uint bone_offset;
+    uint _pad;
+};
+
+void main() {
+    uint vid = gl_GlobalInvocationID.x;
+    if (vid >= vertex_count) {
+        return;
+    }
+
+    uint src_base = (vertex_offset + vid) * VERTEX_STRIDE_FLOATS;
+    uint dst_base = vid * VERTEX_STRIDE_FLOATS;
+
+    vec3 pos = vec3(
+        inputVertexData[src_base + 0u],
+        inputVertexData[src_base + 1u],
+        inputVertexData[src_base + 2u]
+    );
+    vec3 normal = vec3(
+        inputVertexData[src_base + 6u],
+        inputVertexData[src_base + 7u],
+        inputVertexData[src_base + 8u]
+    );
+
+    // Bone indices were uploaded as `[u32; 4]` in the Rust Vertex
+    // struct; the SSBO sees 4 floats with the same bit pattern. Use
+    // floatBitsToUint to recover the indices without a bitcast layout.
+    uvec4 boneIdx = uvec4(
+        floatBitsToUint(inputVertexData[src_base + 11u]),
+        floatBitsToUint(inputVertexData[src_base + 12u]),
+        floatBitsToUint(inputVertexData[src_base + 13u]),
+        floatBitsToUint(inputVertexData[src_base + 14u])
+    );
+    vec4 boneW = vec4(
+        inputVertexData[src_base + 15u],
+        inputVertexData[src_base + 16u],
+        inputVertexData[src_base + 17u],
+        inputVertexData[src_base + 18u]
+    );
+
+    // Rigid vs skinned vertex selection — mirrors triangle.vert:153.
+    // Identity falls back to bind-pose for the (rare) zero-weight
+    // vertex inside a skinned mesh (every Bethesda actor body has all
+    // vertices weighted, but defensive). The rigid `inst.model` path
+    // doesn't apply here: skinned meshes encode the world transform
+    // through the bone palette, so identity at zero weight outputs
+    // the un-transformed bind-pose vertex (same as the vertex shader's
+    // pre-#178 fallback). See feedback in the M29 plan.
+    float wsum = boneW.x + boneW.y + boneW.z + boneW.w;
+    mat4 xform;
+    if (wsum < 0.001) {
+        xform = mat4(1.0);
+    } else {
+        xform = boneW.x * bones[bone_offset + boneIdx.x]
+              + boneW.y * bones[bone_offset + boneIdx.y]
+              + boneW.z * bones[bone_offset + boneIdx.z]
+              + boneW.w * bones[bone_offset + boneIdx.w];
+    }
+
+    vec3 skinnedPos = (xform * vec4(pos, 1.0)).xyz;
+    // Normal goes through the upper-3x3. Skinning bones are usually
+    // rigid (rotation + translation) so determinant ~ 1 and an
+    // inverse-transpose isn't required; the renderer's GpuInstance
+    // bit 0 already flags non-uniform scale for the rigid path and
+    // the bone palette never carries that — see triangle.vert:177.
+    vec3 skinnedNormal = mat3(xform) * normal;
+
+    // Write skinned position + normal; pass through every other
+    // field verbatim so the output buffer is layout-identical to the
+    // input. Phase 3 (vertex shader reads pre-skinned) needs every
+    // field present.
+    outputVertexData[dst_base + 0u] = skinnedPos.x;
+    outputVertexData[dst_base + 1u] = skinnedPos.y;
+    outputVertexData[dst_base + 2u] = skinnedPos.z;
+
+    outputVertexData[dst_base + 3u] = inputVertexData[src_base + 3u]; // color r
+    outputVertexData[dst_base + 4u] = inputVertexData[src_base + 4u]; // color g
+    outputVertexData[dst_base + 5u] = inputVertexData[src_base + 5u]; // color b
+
+    outputVertexData[dst_base + 6u] = skinnedNormal.x;
+    outputVertexData[dst_base + 7u] = skinnedNormal.y;
+    outputVertexData[dst_base + 8u] = skinnedNormal.z;
+
+    outputVertexData[dst_base + 9u]  = inputVertexData[src_base + 9u];  // uv u
+    outputVertexData[dst_base + 10u] = inputVertexData[src_base + 10u]; // uv v
+
+    outputVertexData[dst_base + 11u] = inputVertexData[src_base + 11u]; // bone idx
+    outputVertexData[dst_base + 12u] = inputVertexData[src_base + 12u];
+    outputVertexData[dst_base + 13u] = inputVertexData[src_base + 13u];
+    outputVertexData[dst_base + 14u] = inputVertexData[src_base + 14u];
+
+    outputVertexData[dst_base + 15u] = inputVertexData[src_base + 15u]; // bone w
+    outputVertexData[dst_base + 16u] = inputVertexData[src_base + 16u];
+    outputVertexData[dst_base + 17u] = inputVertexData[src_base + 17u];
+    outputVertexData[dst_base + 18u] = inputVertexData[src_base + 18u];
+
+    outputVertexData[dst_base + 19u] = inputVertexData[src_base + 19u]; // splat 0
+    outputVertexData[dst_base + 20u] = inputVertexData[src_base + 20u]; // splat 1
+}

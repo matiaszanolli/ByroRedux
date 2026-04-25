@@ -14,6 +14,7 @@ pub mod instance;
 pub mod pipeline;
 pub mod reflect;
 pub mod scene_buffer;
+pub mod skin_compute;
 pub mod ssao;
 pub mod surface;
 pub mod svgf;
