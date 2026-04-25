@@ -334,6 +334,9 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 - [ ] `parry3d` panics on nested compound collision shapes (catch_unwind guard in place)
 - [ ] `--esm` accepts only one plugin; `parse_esm_with_load_order` is wired but CLI isn't (M46.0)
+- [ ] `BSBoneLODExtraData` has no parser — surfaced by R3 baselines: 0/34 on FO4, 0/52 on Skyrim SE, 0/56 on FO76 (no instances on the other four games). Single-fix candidate matching the Session 18 R3-driven pattern.
+- [ ] `BSClothExtraData` 0/298 on Starfield — biggest single-game unparsed type in the R3 baselines. Cloth simulation extra data; out of scope for current rendering but blocks any future cloth animation work.
+- [ ] One Starfield NIF (`meshes\marker_radius.nif`) requests a 318 MB single-buffer allocation at parse time, exceeding `byroredux_nif::stream::MAX_SINGLE_ALLOC_BYTES = 256 MB`. Per-allocation cap is a different trade-off from the BA2 chunk cap bumped in Session 18 — bumping this one weakens defence against attacker-controlled `u32` sizes inside individual NIF blocks. Tracked separately; one file out of 320 483 in the Starfield mesh archive.
 
 ---
 
@@ -343,11 +346,11 @@ Ground-truth as of 2026-04-24, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (non-test)            | ~98 800                       |
-| Rust total lines                        | ~100 800                      |
-| Source files (non-test)                 | 203                          |
+| Rust source lines (non-test)            | ~100 500                      |
+| Rust total lines                        | ~103 000                      |
+| Source files (non-test)                 | 204                          |
 | Workspace members                       | 16                           |
-| Tests (last reported by ROADMAP)        | 1152                         |
+| Tests (last reported by ROADMAP)        | 1189                         |
 | Open issue directories                  | 561 (`.claude/issues/`)       |
 | NIFs in per-game integration sweeps     | 177 286                       |
 | Per-game NIF parse success rate         | 100% (7 games)                |

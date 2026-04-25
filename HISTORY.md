@@ -24,6 +24,107 @@ Commits hold that record.
 
 ---
 
+## Session 18 — Risk-reducer triple: R3 + R6 + R7 plus the parser fixes they surfaced  (2026-04-24, 4293c51..a9c7bc9)
+
+An eight-commit session organised around the prevention-tooling track:
+each of the three closed risk-reducers added a piece of telemetry
+that turned a previously-invisible problem class into something with
+a name and a count, and the two NIF parser fixes that landed mid-
+session were directly off the histogram R3 produced. Closes the loop
+end-to-end — ship the gate, ship the data it needs, regenerate the
+baselines so future regressions auto-trip without operator vigilance.
+
+- **R3 — per-block parsed/unknown histogram + CI baseline gate**
+  (`6a6950a`, `a9c7bc9`). 100% file-level parse rate hides per-parser
+  regressions: the recovery path inserts `NiUnknown` keyed on the
+  original advertised type and the file rate stays green while
+  geometry silently disappears. New per-block `parsed`/`unknown`
+  attribution (downcasts each `NiUnknown` to read the preserved
+  `type_name`), `--tsv` and `--unknown-only` flags on `nif_stats`,
+  `PerBlockHistogram` + `compare_histograms` test infrastructure,
+  and a new opt-in `per_block_baselines.rs` integration test with
+  `BYROREDUX_REGEN_BASELINES=1` capture mode. End-of-session: TSVs
+  for all 7 games checked in (`crates/nif/tests/data/per_block_baselines/*.tsv`)
+  — Oblivion 98 types / FO3 91 / FNV 91 / Skyrim SE 83 / FO4 67 /
+  FO76 65 / Starfield 24. Validate path now asserts every game's
+  `unknown` count never grows and `parsed` count never shrinks
+  against the checked-in TSVs.
+
+- **R3-driven parser fixes — 114 instances recovered across 4 games**
+  (`88f58b5`, `7548e64`). `NiBSBoneLODController` was reading the
+  shape-group tail unconditionally and over-consuming 4+ bytes past
+  the body on every Bethesda game past Oblivion; nif.xml gates those
+  fields on `vercond="#NISTREAM#"` (`#BSVER# #EQ# 0`) — present only
+  on Morrowind / Oblivion / pure-Niflib content. Wrapping the tail
+  in `if stream.bsver() == 0` recovered 91 instances (FNV 34 + FO3 19
+  + Skyrim SE 3 + Oblivion 35 unchanged via the bsver=0 path).
+  `NiLookAtInterpolator` had no dispatch entry at all; new parser in
+  `interpolator.rs` with `look_at_flags::{LOOK_FLIP, LOOK_Y_AXIS,
+  LOOK_Z_AXIS}` u16 constants (no bitflags dep, mirrors
+  `shader_flags.rs` style). Recovered 23 instances (FNV 18 +
+  Skyrim SE 5). FNV reaches **100% clean parse for the first time**
+  (14 881/14 881, truncated 0 → was 6 after just the BoneLOD fix
+  because the remaining 6 were NiLookAt chain failures).
+
+- **R6 — `ctx.scratch` console command + ScratchTelemetry resource**
+  (`61fe6e1`). `VulkanContext` holds five persistent `Vec` scratches
+  whose capacity grows with `Vec::reserve` driven by outlier frames;
+  pre-fix M40 cell streaming would have grown them unbounded with
+  zero observability. `ScratchRow` (name, len, capacity, elem_size)
+  + `ScratchTelemetry` resource refreshed each frame from
+  `VulkanContext::fill_scratch_telemetry`; `ctx.scratch` console
+  command surfaces per-Vec `bytes_used` / `wasted`. Prospector
+  baseline: 337 KB total across 5 scratches, 320 B wasted (essentially
+  right-sized; `gpu_instances_scratch` 773/774 is the only non-zero
+  waste row).
+
+- **R6a-stale — bench-of-record refreshed at `6a6950a`** (`7313823`).
+  42 commits since `e6e8091`. New three-bench run on RTX 4070 Ti:
+  Prospector 172.6 FPS / 5.79 ms (was 192.8 / 5.19 — slide is
+  compositor jitter, fence_ms unchanged at 4.34, brd_ms unchanged at
+  0.86); Skyrim Whiterun 253.3 FPS / 3.95 ms at **1 932 entities (up
+  53% from 1 258)** while FPS still improved — more REFRs land per
+  cell now without perf cost; FO4 MedTek 92.5 FPS / 10.82 ms at
+  unchanged 7 434 entities. Worth a future bisect to identify which
+  commit expanded Skyrim REFR coverage; not a regression either way.
+
+- **R7 — scheduler access declarations + `sys.accesses` console
+  command** (`b362e88`). Per-storage RwLock + lock_tracker handle
+  correctness already; what they don't give is a static answer to
+  "which systems serialise on storage X?" before M27 turns parallel
+  dispatch on. New `Access` builder
+  (`Access::new().reads::<T>().writes::<U>().reads_resource::<R>()`),
+  optional `System::access() -> Option<Access>` (default `None` so
+  closures stay undeclared), `Scheduler::add_to_with_access` for
+  registration-side overrides, `access_report()` per-stage
+  `None` / `Conflict { pairs }` / `Unknown` analysis snapshotted as
+  `SchedulerAccessReport` resource. `sys.accesses` console command
+  surfaces it. Three exemplar systems migrated (`fly_camera_system`,
+  `spin_system`, `log_stats_system`); 9 of 12 still undeclared,
+  showing as Unknown pairs. M27 can flip on with diagnosable
+  contention — every Unknown pair becomes a concrete to-do.
+
+- **BA2 cap bump for FO76 vanilla** (`4a2b820`). Surfaced by the R3
+  baseline regen pass: `MAX_CHUNK_BYTES = 256 MB` rejected
+  `SeventySix - Meshes.ba2` because it ships a genuine 325 MB packed
+  mesh entry. The cap's docstring claim "vanilla GNRL records are
+  under 8 MB" was wrong for FO76. Bumped to 1 GB (still rejects
+  u32::MAX cleanly, ~3× headroom over the FO76 ceiling). Side
+  finding: the `Fallout 76 100% (58 469)` claim in ROADMAP was stale
+  — `open_mesh_archive` returns `None` on archive-open failure and
+  the per-game integration test silently passed without doing any
+  work. Cap bump unblocks both the baseline regen and any future
+  parse-rate sweep on the same data.
+
+Net: tests +37 (1 152 → **1 189**), LOC +1 665 non-test (100 465
+total), +1 source file (`crates/core/src/ecs/access.rs`). Three
+risk-reducers closed (R3, R6, R7); FNV reaches 100% clean parse;
+R3 baselines locked across 7 games. Bench-of-record refreshed
+(7 commits stale at session close — well inside the 30-commit
+freshness threshold).
+
+---
+
 ## Session 17 — Audit bundle #572–603 closeout: FO4 consumers + NIF coverage + renderer hygiene  (2026-04-24, cd959cf..e4cf68b)
 
 An 18-commit bug-bash against the post-session-15 audit sweep

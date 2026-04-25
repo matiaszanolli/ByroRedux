@@ -9,7 +9,7 @@ that understands the legacy architecture and builds modern equivalents.
 
 ![Prospector Saloon (Fallout: New Vegas)](docs/screenshots/prospector-saloon.png)
 *Prospector Saloon (Goodsprings) from `FalloutNV.esm` — 1 200 entities,
-streaming RIS shadows, 192.8 FPS / 5.19 ms on RTX 4070 Ti (commit e6e8091,
+streaming RIS shadows, 172.6 FPS / 5.79 ms on RTX 4070 Ti (commit 6a6950a,
 wall-clock `--bench-frames 300`; see [ROADMAP Project Stats](ROADMAP.md#project-stats)).*
 
 ## At a glance
@@ -21,8 +21,8 @@ wall-clock `--bench-frames 300`; see [ROADMAP Project Stats](ROADMAP.md#project-
 | **Archive formats** | BSA v103 / v104 / v105 · BA2 v1 / v2 / v3 / v7 / v8 (GNRL + DX10, zlib + LZ4) |
 | **NIF block types** | ~186 registered — 156 parsed + 30 Havok skip |
 | **ESM records (FNV)** | 62 219 structured records — items, NPCs, factions, cells, CREA, LVLC, SCPT, PACK, QUST, DIAL, MESG, PERK, SPEL, MGEF, … |
-| **Tests passing** | 1 150+ across 16 workspace crates |
-| **Source code** | ~98 K lines of Rust across 200+ source files |
+| **Tests passing** | 1 180+ across 16 workspace crates |
+| **Source code** | ~100 K lines of Rust across 200+ source files |
 | **Renderer** | Vulkan 1.3 + `VK_KHR_ray_query` — multi-light RT shadows, reflections, 1-bounce GI, SVGF temporal denoiser, TAA, streaming RIS (8 reservoirs/fragment), BLAS compaction + LRU eviction |
 | **Physics** | Rapier3D — collision import from NIF `bhk` chain, dynamic bodies, fixed 60 Hz substep |
 | **Scripting** | Papyrus `.psc` lexer + Pratt expression parser + full AST; ECS-native event + timer runtime |
