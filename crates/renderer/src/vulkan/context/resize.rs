@@ -19,6 +19,17 @@ impl VulkanContext {
             self.device.device_wait_idle().context("device_wait_idle")?;
         }
 
+        // Capture the old swapchain format BEFORE recreation so the
+        // post-recreate comparison can decide whether to keep the
+        // render pass + rasterization pipelines. They depend on
+        // attachment formats (HDR_FORMAT / G-buffer / depth — all
+        // stable across resize) but bind to the render pass, so the
+        // rebuild is only required when the swapchain surface format
+        // changes (HDR toggle, monitor swap, etc.). Pre-#576 every
+        // resize destroyed and rebuilt them unconditionally — drag-
+        // resize stalled on pipeline recompilation. See PIPE-2.
+        let old_swapchain_format = self.swapchain_state.format;
+
         // Destroy old framebuffers, depth resources, swapchain views.
         // Handles are nulled after destruction so that if a later creation
         // step fails and Drop runs, the destroy calls are no-ops (Vulkan
@@ -46,26 +57,16 @@ impl VulkanContext {
                     .expect("Failed to free depth allocation");
             }
 
-            // Destroy old pipelines before the render pass they reference.
-            self.device.destroy_pipeline(self.pipeline, None);
-            self.pipeline = vk::Pipeline::null();
-            self.device.destroy_pipeline(self.pipeline_two_sided, None);
-            self.pipeline_two_sided = vk::Pipeline::null();
-            // Drain the blend cache — every pipeline in it is bound to
-            // the old render pass and must be rebuilt against the new one.
-            // Subsequent frames lazy-create on demand. See #392.
-            for (_, pipe) in self.blend_pipeline_cache.drain() {
-                self.device.destroy_pipeline(pipe, None);
-            }
-            self.device.destroy_pipeline(self.pipeline_ui, None);
-            self.pipeline_ui = vk::Pipeline::null();
-
-            self.device.destroy_render_pass(self.render_pass, None);
-            self.render_pass = vk::RenderPass::null();
             // Destroy old image views (but keep the old swapchain handle for handoff).
             for &view in &self.swapchain_state.image_views {
                 self.device.destroy_image_view(view, None);
             }
+
+            // NOTE: pipeline + render pass destruction is deferred
+            // until after we know the new swapchain format. The
+            // existing comment block below the recreate_swapchain call
+            // explains the format-stable fast path that #576
+            // introduced.
         }
 
         let old_swapchain = self.swapchain_state.swapchain;
@@ -80,6 +81,42 @@ impl VulkanContext {
             window_size,
             old_swapchain, // atomic handoff — avoids flicker during resize
         )?;
+
+        // Decide whether to rebuild the render pass + rasterization
+        // pipelines. Both reference attachment formats only — extent
+        // is dynamic state on the pipelines, and the framebuffers
+        // (which bind the extent) are rebuilt unconditionally below.
+        // The main render pass attachments are HDR_FORMAT,
+        // NORMAL_FORMAT, MOTION_FORMAT, MESH_ID_FORMAT,
+        // RAW_INDIRECT_FORMAT, ALBEDO_FORMAT (compile-time consts) +
+        // self.depth_format (stable across the device's lifetime).
+        // None of those depend on the swapchain surface format, so a
+        // format-stable resize can keep every pipeline handle. See
+        // PIPE-2 / #576.
+        let format_changed = self.swapchain_state.format != old_swapchain_format;
+        if format_changed {
+            unsafe {
+                // Destroy old pipelines before the render pass they
+                // reference (Vulkan spec: pipelines must outlive their
+                // render pass for a clean teardown).
+                self.device.destroy_pipeline(self.pipeline, None);
+                self.pipeline = vk::Pipeline::null();
+                self.device.destroy_pipeline(self.pipeline_two_sided, None);
+                self.pipeline_two_sided = vk::Pipeline::null();
+                // Drain the blend cache — every pipeline in it is bound
+                // to the old render pass and must be rebuilt against the
+                // new one. Subsequent frames lazy-create on demand. See
+                // #392.
+                for (_, pipe) in self.blend_pipeline_cache.drain() {
+                    self.device.destroy_pipeline(pipe, None);
+                }
+                self.device.destroy_pipeline(self.pipeline_ui, None);
+                self.pipeline_ui = vk::Pipeline::null();
+
+                self.device.destroy_render_pass(self.render_pass, None);
+                self.render_pass = vk::RenderPass::null();
+            }
+        }
 
         // Destroy the retired old swapchain now that the new one is active.
         if old_swapchain != vk::SwapchainKHR::null() {
@@ -100,36 +137,47 @@ impl VulkanContext {
         self.depth_image_view = depth_image_view;
         self.depth_allocation = Some(depth_allocation);
 
-        // Main render pass: 6 color (HDR + G-buffer + raw_indirect + albedo) + depth.
-        self.render_pass = create_render_pass(
-            &self.device,
-            HDR_FORMAT,
-            NORMAL_FORMAT,
-            MOTION_FORMAT,
-            MESH_ID_FORMAT,
-            RAW_INDIRECT_FORMAT,
-            ALBEDO_FORMAT,
-            self.depth_format,
-        )?;
+        // Pair the destroy-side gate above: only rebuild render pass +
+        // rasterization pipelines when the swapchain surface format
+        // changed. Format-stable resizes keep their handles — the
+        // rasterization pipelines have dynamic viewport + scissor
+        // state, so an extent change doesn't invalidate them, and
+        // every attachment format the render pass binds is constant
+        // across resizes. See PIPE-2 / #576.
+        if format_changed {
+            // Main render pass: 6 color (HDR + G-buffer + raw_indirect
+            // + albedo) + depth.
+            self.render_pass = create_render_pass(
+                &self.device,
+                HDR_FORMAT,
+                NORMAL_FORMAT,
+                MOTION_FORMAT,
+                MESH_ID_FORMAT,
+                RAW_INDIRECT_FORMAT,
+                ALBEDO_FORMAT,
+                self.depth_format,
+            )?;
 
-        // Recreate pipelines against the new render pass, reusing existing layout.
-        let pipelines = pipeline::recreate_triangle_pipelines(
-            &self.device,
-            self.render_pass,
-            self.swapchain_state.extent,
-            self.pipeline_cache,
-            self.pipeline_layout,
-        )?;
-        self.pipeline = pipelines.opaque;
-        self.pipeline_two_sided = pipelines.opaque_two_sided;
+            // Recreate pipelines against the new render pass, reusing
+            // existing layout.
+            let pipelines = pipeline::recreate_triangle_pipelines(
+                &self.device,
+                self.render_pass,
+                self.swapchain_state.extent,
+                self.pipeline_cache,
+                self.pipeline_layout,
+            )?;
+            self.pipeline = pipelines.opaque;
+            self.pipeline_two_sided = pipelines.opaque_two_sided;
 
-        self.pipeline_ui = pipeline::create_ui_pipeline(
-            &self.device,
-            self.render_pass,
-            self.swapchain_state.extent,
-            self.pipeline_layout,
-            self.pipeline_cache,
-        )?;
+            self.pipeline_ui = pipeline::create_ui_pipeline(
+                &self.device,
+                self.render_pass,
+                self.swapchain_state.extent,
+                self.pipeline_layout,
+                self.pipeline_cache,
+            )?;
+        }
 
         // Recreate descriptor sets for existing textures (new swapchain image count).
         self.texture_registry
