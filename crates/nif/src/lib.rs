@@ -447,13 +447,25 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         }
     }
 
-    // Phase 3: Identify root. Root is typically the first NiNode block.
-    // When the scene is truncated that "first NiNode" may be a subtree
-    // rather than the real root — the warning above documents the risk.
+    // Phase 3: Identify root. Root is typically the first NiNode (or
+    // any of its specialised Bethesda subclasses: BSTreeNode, NiSwitchNode,
+    // BSMultiBoundNode, etc. — see `is_ni_node_subclass`). When the
+    // scene is truncated that "first NiNode" may be a subtree rather
+    // than the real root — the warning above documents the risk.
+    //
+    // Pre-#611 this matched only the literal `"NiNode"`. Scenes rooted
+    // at a subclass with its own Rust struct (BSTreeNode for SpeedTree,
+    // BsValueNode for FO3/FNV metadata roots, NiSwitchNode for furniture
+    // states, etc.) skipped past their real root and picked the first
+    // plain-NiNode child — typically a leaf bone container — yielding
+    // 0 imported meshes for tree LODs, weapon-state switches, and
+    // similar content. `BSFadeNode` / `BSLeafAnimNode` happened to
+    // survive only because `parse_block` aliases them to `NiNode`
+    // (their `block_type_name` already returns `"NiNode"`).
     let root_index = if !blocks.is_empty() {
         blocks
             .iter()
-            .position(|b| matches!(b.block_type_name(), "NiNode"))
+            .position(|b| is_ni_node_subclass(b.block_type_name()))
             .or(Some(0))
     } else {
         None
@@ -466,6 +478,36 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         dropped_block_count,
         recovered_blocks,
     })
+}
+
+/// Return `true` when `block_type_name` is `NiNode` or any specialised
+/// Bethesda NiNode subclass with its own dispatch arm in `parse_block`.
+///
+/// Drives the scene-root selection in `parse_nif_with_options`. The
+/// list mirrors the dispatch arms in [`crate::blocks::parse_block`]
+/// (around line 134 — `"NiNode" | "BSFadeNode" | …` and the dedicated
+/// subclass branches that follow). Aliased subclasses (BSFadeNode,
+/// BSLeafAnimNode, RootCollisionNode, AvoidNode, NiBSAnimationNode,
+/// NiBSParticleNode) parse as `NiNode` and report their type as
+/// `"NiNode"`, so they're caught by the first arm; only the dedicated
+/// subclass parsers need explicit entries below.
+///
+/// Update both this list and the dispatch table when adding a new
+/// NiNode-derived block type. See #611 / SK-D5-02.
+fn is_ni_node_subclass(block_type_name: &str) -> bool {
+    matches!(
+        block_type_name,
+        "NiNode"
+            | "BSOrderedNode"
+            | "BSValueNode"
+            | "BSMultiBoundNode"
+            | "BSTreeNode"
+            | "NiBillboardNode"
+            | "NiSwitchNode"
+            | "NiLODNode"
+            | "NiSortAdjustNode"
+            | "BSRangeNode"
+    )
 }
 
 /// Heuristic stream-drift detector for Oblivion-style NIFs (no
@@ -708,6 +750,65 @@ mod tests {
             "NiUnknown",
             "placeholder is an NiUnknown"
         );
+    }
+
+    /// Regression for #611 / SK-D5-02 — `parse_nif` must pick a
+    /// NiNode-subclass-rooted scene as root, not skip past it to a
+    /// plain-NiNode child. Pre-fix the predicate was the literal
+    /// `matches!(block_type_name(), "NiNode")`; this guarantees every
+    /// dedicated subclass with its own dispatch arm in `parse_block`
+    /// is also recognised.
+    ///
+    /// The list mirrors the dedicated subclass dispatch arms in
+    /// `crate::blocks::parse_block` (around line 144-216). Update both
+    /// sites when adding a new NiNode-derived block type.
+    #[test]
+    fn is_ni_node_subclass_recognises_every_dedicated_subclass() {
+        // Plain NiNode + the aliased ones (BSFadeNode, BSLeafAnimNode,
+        // RootCollisionNode, AvoidNode, NiBSAnimationNode,
+        // NiBSParticleNode) all parse as `NiNode` and report their
+        // type as `"NiNode"`, so the single arm covers them all.
+        assert!(is_ni_node_subclass("NiNode"));
+
+        // Dedicated subclass parsers — each has its own dispatch arm
+        // and reports its own block_type_name. These were the
+        // regression surface in #611.
+        for name in [
+            "BSOrderedNode",
+            "BSValueNode",
+            "BSMultiBoundNode",
+            "BSTreeNode",
+            "NiBillboardNode",
+            "NiSwitchNode",
+            "NiLODNode",
+            "NiSortAdjustNode",
+            "BSRangeNode",
+        ] {
+            assert!(
+                is_ni_node_subclass(name),
+                "{name} must be recognised as a NiNode-subclass for root \
+                 selection — see #611"
+            );
+        }
+
+        // Negative controls — block types that are NOT NiNode subclasses.
+        // A scene rooted at one of these (extremely unusual) would fall
+        // back to `Some(0)` (block at index 0) regardless. None of these
+        // should match the helper.
+        for name in [
+            "NiCamera",
+            "NiTriShape",
+            "BsTriShape",
+            "NiSkinPartition",
+            "BSLightingShaderProperty",
+            "NiAlphaProperty",
+            "NiUnknown",
+        ] {
+            assert!(
+                !is_ni_node_subclass(name),
+                "{name} must not be recognised as a NiNode-subclass"
+            );
+        }
     }
 
     #[test]
