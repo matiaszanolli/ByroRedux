@@ -25,6 +25,29 @@ pub(super) fn fill_terrain_tiles(
     true
 }
 
+/// Free-function core of `VulkanContext::free_terrain_tile` — Vulkan-free
+/// so unit tests can exercise the state transition. Releases `slot` back
+/// to `free_list`, clears the corresponding `tiles` entry, sets `*dirty`,
+/// and returns the previous layer-texture indices so the caller can
+/// release the per-layer texture refcounts they bumped through
+/// `acquire_by_path` at allocation time. Returns `None` when the slot
+/// index is out of range or already vacant. See #627.
+pub(super) fn release_terrain_tile_slot(
+    tiles: &mut [Option<GpuTerrainTile>],
+    free_list: &mut Vec<u32>,
+    dirty: &mut bool,
+    slot: u32,
+) -> Option<[u32; 8]> {
+    let idx = slot as usize;
+    if idx >= tiles.len() {
+        return None;
+    }
+    let tile = tiles[idx].take()?;
+    free_list.push(slot);
+    *dirty = true;
+    Some(tile.layer_texture_index)
+}
+
 impl VulkanContext {
     /// Allocate a terrain tile slot and store its 8 bindless texture
     /// indices. Returns the slot index (0..`MAX_TERRAIN_TILES`) that
@@ -48,15 +71,18 @@ impl VulkanContext {
     /// called from `unload_cell` before the mesh / BLAS drop so a late
     /// frame-in-flight reads stale-but-valid data rather than
     /// undefined.
-    pub fn free_terrain_tile(&mut self, slot: u32) {
-        let idx = slot as usize;
-        if idx >= self.terrain_tiles.len() {
-            return;
-        }
-        if self.terrain_tiles[idx].take().is_some() {
-            self.terrain_tile_free_list.push(slot);
-            self.terrain_tiles_dirty = true;
-        }
+    ///
+    /// Returns the previous slot's 8 layer texture indices so the
+    /// caller can issue symmetric `drop_texture` calls on the refcounts
+    /// that `resolve_texture` bumped at allocation time. Returns `None`
+    /// when the slot is out of range or already vacant. See #627.
+    pub fn free_terrain_tile(&mut self, slot: u32) -> Option<[u32; 8]> {
+        release_terrain_tile_slot(
+            &mut self.terrain_tiles,
+            &mut self.terrain_tile_free_list,
+            &mut self.terrain_tiles_dirty,
+            slot,
+        )
     }
 
     /// Populate `dest` with the current terrain tile slab, filling
@@ -269,5 +295,59 @@ mod tests {
         for tile in &dest {
             assert_eq!(tile.layer_texture_index, [0; 8]);
         }
+    }
+
+    /// Regression for #627 — releasing a populated slot must surface
+    /// the previous layer indices so `unload_cell` can drop the
+    /// per-layer texture refcounts that `resolve_texture` bumped at
+    /// allocation time. Pre-fix the function returned `()` and the
+    /// indices were silently lost, leaking ~150 refcounts per 7×7
+    /// WastelandNV reload.
+    #[test]
+    fn release_returns_previous_layer_indices_and_clears_slot() {
+        let mut tiles: Vec<Option<GpuTerrainTile>> = vec![None; 4];
+        tiles[2] = Some(GpuTerrainTile {
+            layer_texture_index: [11, 22, 33, 44, 55, 66, 77, 88],
+        });
+        let mut free_list: Vec<u32> = vec![0, 1, 3];
+        let mut dirty = false;
+
+        let released = release_terrain_tile_slot(&mut tiles, &mut free_list, &mut dirty, 2);
+
+        assert_eq!(released, Some([11, 22, 33, 44, 55, 66, 77, 88]));
+        assert!(tiles[2].is_none(), "slot must be vacated after release");
+        assert_eq!(free_list, vec![0, 1, 3, 2], "slot returned to free list");
+        assert!(dirty, "release schedules SSBO refresh");
+    }
+
+    /// Releasing an already-vacant slot must be a no-op — no double
+    /// `drop_texture` calls (which would underflow refcount), no
+    /// duplicate free-list entry, no spurious dirty-flag.
+    #[test]
+    fn release_vacant_slot_is_noop() {
+        let mut tiles: Vec<Option<GpuTerrainTile>> = vec![None; 4];
+        let mut free_list: Vec<u32> = vec![0, 1, 2, 3];
+        let mut dirty = false;
+
+        let released = release_terrain_tile_slot(&mut tiles, &mut free_list, &mut dirty, 1);
+
+        assert_eq!(released, None);
+        assert_eq!(free_list, vec![0, 1, 2, 3], "no double-free");
+        assert!(!dirty, "no SSBO refresh for vacant release");
+    }
+
+    /// Releasing an out-of-range slot must be a no-op — guards against
+    /// a corrupt `TerrainTileSlot` ECS component or stale slot ID.
+    #[test]
+    fn release_out_of_range_slot_is_noop() {
+        let mut tiles: Vec<Option<GpuTerrainTile>> = vec![None; 4];
+        let mut free_list: Vec<u32> = Vec::new();
+        let mut dirty = false;
+
+        let released = release_terrain_tile_slot(&mut tiles, &mut free_list, &mut dirty, 99);
+
+        assert_eq!(released, None);
+        assert!(free_list.is_empty(), "out-of-range slot must not pollute free list");
+        assert!(!dirty);
     }
 }

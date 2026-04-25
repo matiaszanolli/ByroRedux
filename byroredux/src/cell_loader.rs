@@ -290,8 +290,20 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     // SSBO then see either stale-but-valid data (if the slot was
     // reallocated) or the same data (no reuse this frame), rather than
     // undefined. See #470.
+    //
+    // Each slot owns 8 layer texture refcounts that `resolve_texture`
+    // bumped via `acquire_by_path` at allocation time. The slot itself
+    // isn't an ECS component, so the per-victim `TextureHandle` sweep
+    // above can't reach those refs; capture them from the freed slot
+    // and add them to `texture_drops` so the GPU release loop below
+    // hands them off to `texture_registry.drop_texture`. Without this,
+    // a 7×7 WastelandNV reload leaks ~150 texture refcounts (#627).
     for &slot in &terrain_tile_slots {
-        ctx.free_terrain_tile(slot);
+        if let Some(layer_indices) = ctx.free_terrain_tile(slot) {
+            for idx in layer_indices {
+                push_tex_drop(idx, &mut texture_drops);
+            }
+        }
     }
 
     // Free GPU resources. BLAS entries are keyed by mesh handle, so
