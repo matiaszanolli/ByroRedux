@@ -1782,6 +1782,73 @@ mod dispatch_tests {
         assert_eq!(arr, &vec![42u32, 0xDEADBEEF]);
     }
 
+    /// Regression test for #615 / SK-D5-04 — `NiStringsExtraData`
+    /// strings are `SizedString` (always u32-length-prefixed inline)
+    /// per nif.xml, not the version-aware `string` type. Pre-fix the
+    /// parser called `read_string`, which on Skyrim+ (v >= 20.1.0.1)
+    /// reads a 4-byte string-table index. Result: every Skyrim
+    /// NiStringsExtraData with non-empty contents under-consumed its
+    /// payload, dropping the entire strings array body.
+    ///
+    /// Construct a Skyrim-shaped block: name as string-table index
+    /// (4 bytes) + count + N × SizedString. Pre-fix the parser would
+    /// read the first 4 bytes of the first SizedString as a string-
+    /// table index, mis-resolve it, and stop the loop with garbage.
+    /// Post-fix it must round-trip the strings cleanly.
+    #[test]
+    fn skyrim_strings_extra_data_uses_sized_string_not_string_table_index() {
+        use crate::blocks::extra_data::NiExtraData;
+
+        let header = NifHeader {
+            version: NifVersion(0x14020007),
+            little_endian: true,
+            user_version: 12,
+            user_version_2: 83, // Skyrim LE
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            // Empty string table — proves the strings array does NOT
+            // resolve through it. If the parser still used `read_string`
+            // here, the first 4 bytes of "alpha" would be misread as
+            // an out-of-bounds string-table index and yield None.
+            strings: vec![],
+            max_string_length: 0,
+            num_groups: 0,
+        };
+
+        let mut bytes = Vec::new();
+        // Name: string-table index = -1 (None) — exercises the modern
+        // header path. 4 bytes.
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        // Count: 3.
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        // Three SizedStrings.
+        bytes.extend_from_slice(&inline_string("alpha"));
+        bytes.extend_from_slice(&inline_string("beta"));
+        bytes.extend_from_slice(&inline_string("gamma"));
+
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block(
+            "NiStringsExtraData",
+            &mut stream,
+            Some(bytes.len() as u32),
+        )
+        .expect("NiStringsExtraData should dispatch on Skyrim");
+        let ed = block
+            .as_any()
+            .downcast_ref::<NiExtraData>()
+            .expect("downcast to NiExtraData");
+        let arr = ed
+            .strings_array
+            .as_ref()
+            .expect("strings_array populated on Skyrim path");
+        assert_eq!(arr.len(), 3, "all 3 SizedStrings must round-trip");
+        assert_eq!(arr[0].as_deref(), Some("alpha"));
+        assert_eq!(arr[1].as_deref(), Some("beta"));
+        assert_eq!(arr[2].as_deref(), Some("gamma"));
+    }
+
     /// Oblivion-era empty NiNode body (no children, no effects, no
     /// properties, identity transform). Used as the base bytes for
     /// every NiNode subtype test in this module.

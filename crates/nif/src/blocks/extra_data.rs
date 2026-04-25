@@ -95,11 +95,29 @@ impl NiExtraData {
                 binary_data = Some(stream.read_bytes(size)?);
             }
             // Array variants — count (u32) followed by N items. See #164.
+            //
+            // Per nif.xml line 5177 the entries are `SizedString`
+            // (always u32-length-prefixed inline), NOT the version-aware
+            // `string` type. Pre-#615 this used `read_string`, which on
+            // Skyrim+ (v >= 20.1.0.1) reads a 4-byte string-table index
+            // instead of an inline string. Result: every Skyrim
+            // NiStringsExtraData with a non-empty array under-consumed
+            // its payload — strings array body was misread (or skipped),
+            // dropping SpeedTree LOD bone names, anim-event trigger
+            // lists, and material-override slots. block_size recovery
+            // hid the drift from the parse-rate gate. The Oblivion-era
+            // path happened to work because pre-20.1.0.1 `read_string`
+            // also reads length-prefixed inline (the formats coincide).
             "NiStringsExtraData" => {
                 let count = stream.read_u32_le()?;
                 let mut arr = stream.allocate_vec(count)?;
                 for _ in 0..count {
-                    arr.push(stream.read_string()?);
+                    let s = stream.read_sized_string()?;
+                    if s.is_empty() {
+                        arr.push(None);
+                    } else {
+                        arr.push(Some(Arc::from(s)));
+                    }
                 }
                 strings_array = Some(arr);
             }
