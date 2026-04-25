@@ -29,6 +29,12 @@ pub struct NiExtraData {
     pub integers_array: Option<Vec<u32>>,
     /// Populated for `NiFloatsExtraData` — array of f32 values.
     pub floats_array: Option<Vec<f32>>,
+    /// Populated for `BSBoneLODExtraData` (Skyrim+) — array of
+    /// `(distance, bone_name)` pairs telling the engine when to swap
+    /// the skeleton's bone-LOD level. The string is the bone's
+    /// `NiFixedString` name; resolves to `None` for empty / null
+    /// string-table indices. See nif.xml `BoneLOD` (line 2597) and #614.
+    pub bone_lods: Option<Vec<(u32, Option<Arc<str>>)>>,
 }
 
 impl NiObject for NiExtraData {
@@ -70,6 +76,7 @@ impl NiExtraData {
         let mut strings_array = None;
         let mut integers_array = None;
         let mut floats_array = None;
+        let mut bone_lods = None;
 
         match type_name {
             "NiStringExtraData" => {
@@ -141,6 +148,24 @@ impl NiExtraData {
                 }
                 floats_array = Some(arr);
             }
+            // BSBoneLODExtraData (Skyrim+) — bone-LOD distance thresholds
+            // for skeleton mesh swapping. nif.xml lines 8183-8187:
+            //   uint BoneLOD Count
+            //   BoneLOD[BoneLOD Count] BoneLOD Info
+            //   struct BoneLOD { uint Distance; NiFixedString Bone Name; }
+            // Carried by every Skyrim SE skeleton.nif; pre-#614 the
+            // dispatch was absent so 52 files in Meshes0.bsa fell into
+            // NiUnknown and the parse-rate gate dropped from 100%.
+            "BSBoneLODExtraData" => {
+                let count = stream.read_u32_le()?;
+                let mut arr = stream.allocate_vec(count)?;
+                for _ in 0..count {
+                    let distance = stream.read_u32_le()?;
+                    let bone_name = stream.read_string()?;
+                    arr.push((distance, bone_name));
+                }
+                bone_lods = Some(arr);
+            }
             _ => {
                 // Unknown extra data subtype — can't skip without size
             }
@@ -156,6 +181,7 @@ impl NiExtraData {
             strings_array,
             integers_array,
             floats_array,
+            bone_lods,
         })
     }
 
@@ -198,6 +224,7 @@ impl NiExtraData {
             strings_array: None,
             integers_array: None,
             floats_array: None,
+            bone_lods: None,
         })
     }
 
@@ -238,6 +265,7 @@ impl NiExtraData {
             strings_array: None,
             integers_array: None,
             floats_array: None,
+            bone_lods: None,
         })
     }
 }

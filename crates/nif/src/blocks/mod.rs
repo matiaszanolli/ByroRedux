@@ -367,7 +367,14 @@ pub fn parse_block(
         // dispatch — 1,492 SE + 156 FO3/FNV blocks fell into NiUnknown
         // and every tool-authored FOV/scale/wetness knob was lost.
         | "NiFloatExtraData"
-        | "NiFloatsExtraData" => Ok(Box::new(NiExtraData::parse(stream, type_name)?)),
+        | "NiFloatsExtraData"
+        // BSBoneLODExtraData (Skyrim+): bone-LOD distance thresholds for
+        // skeleton mesh swapping. Pre-#614 every Skyrim SE skeleton.nif
+        // (52 files in vanilla Meshes0.bsa) fell into NiUnknown because
+        // the type name had no dispatch arm; the fallback consumed the
+        // bytes via block_size recovery but recorded the file as
+        // truncated, dropping the parse rate from 100% to ~99.7%.
+        | "BSBoneLODExtraData" => Ok(Box::new(NiExtraData::parse(stream, type_name)?)),
         "BSWArray" => Ok(Box::new(BsWArray::parse(stream)?)),
         "BSBound" => Ok(Box::new(BsBound::parse(stream)?)),
         "BSDecalPlacementVectorExtraData" => {
@@ -1847,6 +1854,77 @@ mod dispatch_tests {
         assert_eq!(arr[0].as_deref(), Some("alpha"));
         assert_eq!(arr[1].as_deref(), Some("beta"));
         assert_eq!(arr[2].as_deref(), Some("gamma"));
+    }
+
+    /// Regression test for #614 / SK-D5-03 — `BSBoneLODExtraData`
+    /// must dispatch through `NiExtraData::parse` and populate the
+    /// `bone_lods` field with the array of `(distance, bone_name)`
+    /// pairs. Pre-fix the type name had no dispatch arm so every
+    /// Skyrim SE skeleton.nif (52 files in vanilla Meshes0.bsa) fell
+    /// into `NiUnknown` and dropped the parse rate from 100% to
+    /// ~99.7%.
+    ///
+    /// The block carries the inherited `Name` field (string-table
+    /// index = -1 for `None`), then `BoneLOD Count: u32`, then N ×
+    /// `BoneLOD { Distance: u32, Bone Name: NiFixedString }`. The
+    /// string table here resolves indices 0/1/2 to `bone_a`, `bone_b`,
+    /// `bone_c` so the parsed names round-trip.
+    #[test]
+    fn skyrim_bs_bone_lod_extra_data_dispatches_and_parses() {
+        use crate::blocks::extra_data::NiExtraData;
+
+        let header = NifHeader {
+            version: NifVersion(0x14020007),
+            little_endian: true,
+            user_version: 12,
+            user_version_2: 83, // Skyrim LE — SKY_AND_LATER gate
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: vec![Arc::from("bone_a"), Arc::from("bone_b"), Arc::from("bone_c")],
+            max_string_length: 6,
+            num_groups: 0,
+        };
+
+        let mut bytes = Vec::new();
+        // Inherited Name: -1 (None) — 4 bytes.
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        // BoneLOD Count: 3.
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        // 3 × (u32 distance + i32 string_table_index).
+        bytes.extend_from_slice(&100u32.to_le_bytes());
+        bytes.extend_from_slice(&0i32.to_le_bytes()); // bone_a
+        bytes.extend_from_slice(&500u32.to_le_bytes());
+        bytes.extend_from_slice(&1i32.to_le_bytes()); // bone_b
+        bytes.extend_from_slice(&2000u32.to_le_bytes());
+        bytes.extend_from_slice(&2i32.to_le_bytes()); // bone_c
+
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block(
+            "BSBoneLODExtraData",
+            &mut stream,
+            Some(bytes.len() as u32),
+        )
+        .expect("BSBoneLODExtraData should dispatch (#614)");
+        let ed = block
+            .as_any()
+            .downcast_ref::<NiExtraData>()
+            .expect("downcast to NiExtraData");
+        let arr = ed
+            .bone_lods
+            .as_ref()
+            .expect("bone_lods populated for BSBoneLODExtraData");
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[0].0, 100);
+        assert_eq!(arr[0].1.as_deref(), Some("bone_a"));
+        assert_eq!(arr[1].0, 500);
+        assert_eq!(arr[1].1.as_deref(), Some("bone_b"));
+        assert_eq!(arr[2].0, 2000);
+        assert_eq!(arr[2].1.as_deref(), Some("bone_c"));
+        // Stream must be fully consumed — `block_size` recovery would
+        // otherwise mask any drift introduced by a future field add.
+        assert_eq!(stream.position() as usize, bytes.len());
     }
 
     /// Oblivion-era empty NiNode body (no children, no effects, no
