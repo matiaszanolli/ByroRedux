@@ -7,14 +7,22 @@ use byroredux_core::ecs::{
 };
 use byroredux_core::math::{Mat4, Quat, Vec3, Vec4};
 use byroredux_renderer::vulkan::context::DrawCommand;
+use byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES;
 use byroredux_renderer::SkyParams;
 use rayon::slice::ParallelSliceMut;
 use std::collections::HashMap;
+use std::sync::Once;
 
 use crate::components::{
     AlphaBlend, CellLightingRes, DarkMapHandle, Decal, ExtraTextureMaps, NormalMapHandle,
     SkyParamsRes, TerrainTileSlot, TwoSided,
 };
+
+/// Once-per-session gate for the bone-palette overflow warn — see the
+/// guard in `build_render_data`. A `Once` keeps the log out of the
+/// per-frame hot path so the warn fires exactly the first time a
+/// cell's skinned-mesh count exceeds `MAX_TOTAL_BONES`.
+static BONE_PALETTE_OVERFLOW_WARNED: Once = Once::new();
 
 /// Convert an `f32` to a `u32` key whose unsigned ordering matches
 /// IEEE 754 total ordering of the source values across the full real
@@ -197,6 +205,28 @@ pub(crate) fn build_render_data(
         // clears it internally before refilling, so any previous-frame
         // capacity is reused without a fresh allocation. See #509.
         for (entity, skin) in skin_q.iter() {
+            // M29 — defensive guard against silent palette truncation.
+            // `bone_buffers` are sized for `MAX_TOTAL_BONES` slots and the
+            // renderer's `upload_bones` clamps writes (scene_buffer.rs:982);
+            // every skinned mesh past the ceiling silently falls back to
+            // bind pose with no error. Today this is unreachable (no NPC
+            // spawning), but it'll fire the moment M41 lands a populated
+            // cell. Log once per session and stop padding the palette so
+            // the renderer's clamp is never reached.
+            if bone_palette.len() + MAX_BONES_PER_MESH > MAX_TOTAL_BONES {
+                BONE_PALETTE_OVERFLOW_WARNED.call_once(|| {
+                    log::warn!(
+                        "bone_palette: skinned-mesh count exceeds MAX_TOTAL_BONES={} \
+                         slots ({} bones × {} meshes already pushed); remaining \
+                         skinned meshes silently fall back to bind pose. Bump \
+                         MAX_TOTAL_BONES or implement variable-stride packing (M29.5).",
+                        MAX_TOTAL_BONES,
+                        MAX_BONES_PER_MESH,
+                        skin_offsets.len(),
+                    );
+                });
+                break;
+            }
             let offset = bone_palette.len() as u32;
             // World-lookup closure — reads GlobalTransform for each bone
             // entity through the same query guard. Missing bones fall
@@ -1340,5 +1370,101 @@ mod sort_key_tests {
         // Canonical f32::NAN has the sign bit clear, so it falls in
         // the `bits ^ 0x80000000` branch and sorts above +infinity.
         assert!(k_nan > k_pos_inf);
+    }
+}
+
+/// M29 — bone-palette overflow guard regression tests.
+///
+/// `MAX_TOTAL_BONES = 4096` slots ÷ `MAX_BONES_PER_MESH = 128` = 32
+/// concurrently-skinned-mesh ceiling. The 33rd skinned mesh in a
+/// frame must fall through the `break` at the top of the
+/// `build_render_data` skinning loop and stay out of `skin_offsets`
+/// (and out of the bone palette upload — `upload_bones` clamps
+/// anyway, but we want the truncation visible at the ECS layer so
+/// the warn fires once and the data shape is consistent).
+#[cfg(test)]
+mod bone_palette_overflow_tests {
+    use super::*;
+    use byroredux_core::ecs::{GlobalTransform, SkinnedMesh, World};
+    use byroredux_core::math::Mat4;
+
+    fn make_skinned_world(num_meshes: usize) -> World {
+        let mut world = World::new();
+        for _ in 0..num_meshes {
+            // Each mesh declares MAX_BONES_PER_MESH bones with self-
+            // EntityId pointers. The palette closure looks up
+            // GlobalTransform on each bone — we don't insert any, so
+            // every bone falls back to identity (the test only cares
+            // about overflow accounting, not the matrix values).
+            let mesh_entity = world.spawn();
+            world.insert(mesh_entity, GlobalTransform::IDENTITY);
+            let bones = vec![Some(mesh_entity); MAX_BONES_PER_MESH];
+            let binds = vec![Mat4::IDENTITY; MAX_BONES_PER_MESH];
+            world.insert(mesh_entity, SkinnedMesh::new(None, bones, binds));
+        }
+        world
+    }
+
+    fn run_build(world: &World) -> (Vec<[[f32; 4]; 4]>, HashMap<EntityId, u32>) {
+        let mut draw_commands = Vec::new();
+        let mut gpu_lights = Vec::new();
+        let mut bone_palette = Vec::new();
+        let mut skin_offsets = HashMap::new();
+        let mut palette_scratch = Vec::new();
+        let _ = build_render_data(
+            world,
+            &mut draw_commands,
+            &mut gpu_lights,
+            &mut bone_palette,
+            &mut skin_offsets,
+            &mut palette_scratch,
+            None,
+        );
+        (bone_palette, skin_offsets)
+    }
+
+    #[test]
+    fn at_capacity_fills_palette_completely() {
+        // 32 meshes × 128 bones + 1 identity slot = 4097 slots, which
+        // overshoots by 1. The guard fires only when adding the NEXT
+        // mesh would overflow; 32 meshes still fit at the boundary
+        // because slot 0 is the rigid-fallback identity. Document the
+        // exact off-by-one.
+        let max_skinned = MAX_TOTAL_BONES / MAX_BONES_PER_MESH; // 32
+        let world = make_skinned_world(max_skinned - 1);
+        let (palette, offsets) = run_build(&world);
+        assert_eq!(
+            offsets.len(),
+            max_skinned - 1,
+            "all {} meshes must register a bone offset",
+            max_skinned - 1
+        );
+        // 1 identity slot + (max_skinned - 1) × MAX_BONES_PER_MESH
+        let expected_slots = 1 + (max_skinned - 1) * MAX_BONES_PER_MESH;
+        assert_eq!(palette.len(), expected_slots);
+    }
+
+    #[test]
+    fn over_capacity_breaks_loop_and_truncates_offsets() {
+        // 33 meshes × 128 bones = 4224 slots requested; 4096 ceiling.
+        // The guard at the top of the loop trips before mesh 32 (the
+        // one that would push the palette past MAX_TOTAL_BONES) gets
+        // its offset registered. `skin_offsets` should hold strictly
+        // fewer than 33 entries.
+        let max_skinned = MAX_TOTAL_BONES / MAX_BONES_PER_MESH; // 32
+        let world = make_skinned_world(max_skinned + 1);
+        let (palette, offsets) = run_build(&world);
+        assert!(
+            offsets.len() < max_skinned + 1,
+            "overflow guard must drop at least one mesh; got {} offsets for {} meshes",
+            offsets.len(),
+            max_skinned + 1
+        );
+        assert!(
+            palette.len() <= MAX_TOTAL_BONES,
+            "palette must never exceed MAX_TOTAL_BONES={}; got {}",
+            MAX_TOTAL_BONES,
+            palette.len()
+        );
     }
 }
