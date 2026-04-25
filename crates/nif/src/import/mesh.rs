@@ -267,14 +267,13 @@ pub(super) fn extract_bs_tri_shape(
 
     let uvs = shape.uvs.clone();
 
-    let colors: Vec<[f32; 3]> = if !shape.vertex_colors.is_empty() {
-        shape
-            .vertex_colors
-            .iter()
-            .map(|c| [c[0], c[1], c[2]])
-            .collect()
+    // Keep all 4 components — alpha lane carries authored per-vertex
+    // modulation (hair tips, eyelash strips, BSEffectShader meshes).
+    // See #618.
+    let colors: Vec<[f32; 4]> = if !shape.vertex_colors.is_empty() {
+        shape.vertex_colors.clone()
     } else {
-        vec![[1.0, 1.0, 1.0]; positions.len()]
+        vec![[1.0, 1.0, 1.0, 1.0]; positions.len()]
     };
 
     // Unified material extraction — shared with the NiTriShape path.
@@ -1053,6 +1052,47 @@ mod bs_tri_shape_shader_flag_tests {
             effects: Vec::new(),
         }));
         assert!(!import(&scene, &renderable_shape(0)).two_sided);
+    }
+
+    /// #618 — BsTriShape vertex_colors carry RGBA per nif.xml
+    /// `ByteColor4`; the importer must not collapse them to RGB. The
+    /// alpha lane is the per-vertex modulation that hair tip cards,
+    /// eyelash strips, and BSEffectShader meshes rely on.
+    #[test]
+    fn vertex_alpha_preserved_through_bs_tri_shape_path() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(effect_shader(0x00)));
+
+        let mut shape = renderable_shape(0);
+        shape.vertex_colors = vec![
+            [1.0, 1.0, 1.0, 0.25],
+            [1.0, 1.0, 1.0, 0.50],
+            [1.0, 1.0, 1.0, 1.00],
+        ];
+
+        let mesh = import(&scene, &shape);
+        let alphas: Vec<f32> = mesh.colors.iter().map(|c| c[3]).collect();
+        assert_eq!(
+            alphas,
+            vec![0.25, 0.50, 1.00],
+            "alpha lane must survive BsTriShape extraction (#618)"
+        );
+    }
+
+    /// Default fallback when the BsTriShape carries no vertex_colors
+    /// must be opaque white (1.0 alpha) — guards against a regression
+    /// that would mark every fallback vertex transparent.
+    #[test]
+    fn vertex_color_fallback_is_opaque_white() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(effect_shader(0x00)));
+
+        let shape = renderable_shape(0); // vertex_colors stays empty
+        let mesh = import(&scene, &shape);
+
+        for c in &mesh.colors {
+            assert_eq!(*c, [1.0, 1.0, 1.0, 1.0]);
+        }
     }
 
     /// #346 — BSEffectShaderProperty material fields reach the mesh

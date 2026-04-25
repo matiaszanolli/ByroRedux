@@ -471,21 +471,21 @@ pub(super) fn extract_vertex_colors(
     data: &GeomData,
     _inherited_props: &[BlockRef],
     mat: &MaterialInfo,
-) -> Vec<[f32; 3]> {
+) -> Vec<[f32; 4]> {
     let num_verts = data.vertices.len();
 
     let use_vertex_colors =
         !data.vertex_colors.is_empty() && mat.vertex_color_mode == VertexColorMode::AmbientDiffuse;
 
+    // Keep the alpha lane — authored per-vertex modulation on hair tip
+    // cards, eyelash strips, and BSEffectShader meshes is the source of
+    // truth for those surfaces. See #618.
     if use_vertex_colors {
-        return data
-            .vertex_colors
-            .iter()
-            .map(|c| [c[0], c[1], c[2]])
-            .collect();
+        return data.vertex_colors.to_vec();
     }
 
-    vec![mat.diffuse_color; num_verts]
+    let d = mat.diffuse_color;
+    vec![[d[0], d[1], d[2], 1.0]; num_verts]
 }
 
 /// Extract all material properties from a NiTriShape in a single pass.

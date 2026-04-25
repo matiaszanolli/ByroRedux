@@ -1056,8 +1056,14 @@ pub(crate) fn load_nif_bytes(
         let vertices: Vec<Vertex> = (0..num_verts)
             .map(|i| {
                 let position = mesh.positions[i];
+                // Drop alpha — current `Vertex` color is 3-channel.
+                // Imported colors carry RGBA so alpha is preserved on
+                // the import side for a future 4-channel vertex format
+                // (#618). Hair-tip / eyelash modulation will become
+                // visible once the renderer's Vertex extends.
                 let color = if i < mesh.colors.len() {
-                    mesh.colors[i]
+                    let c = mesh.colors[i];
+                    [c[0], c[1], c[2]]
                 } else {
                     [1.0, 1.0, 1.0]
                 };

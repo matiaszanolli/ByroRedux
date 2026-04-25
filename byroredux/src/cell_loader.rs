@@ -2016,13 +2016,18 @@ fn spawn_placed_instances(
         let num_verts = mesh.positions.len();
         let vertices: Vec<Vertex> = (0..num_verts)
             .map(|i| {
+                // Drop alpha — current `Vertex` color is 3-channel; the
+                // alpha lane lives on `ImportedMesh::colors[i][3]` for
+                // when the renderer extends to a 4-channel vertex (#618).
+                let color3 = if i < mesh.colors.len() {
+                    let c = mesh.colors[i];
+                    [c[0], c[1], c[2]]
+                } else {
+                    [1.0, 1.0, 1.0]
+                };
                 Vertex::new(
                     mesh.positions[i],
-                    if i < mesh.colors.len() {
-                        mesh.colors[i]
-                    } else {
-                        [1.0, 1.0, 1.0]
-                    },
+                    color3,
                     if i < mesh.normals.len() {
                         mesh.normals[i]
                     } else {

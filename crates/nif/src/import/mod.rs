@@ -157,8 +157,13 @@ pub use crate::blocks::node::BsRangeKind;
 pub struct ImportedMesh {
     /// Vertices in renderer format: position + color + normal + UV.
     pub positions: Vec<[f32; 3]>,
-    /// Vertex colors (RGB). Falls back to material diffuse or white.
-    pub colors: Vec<[f32; 3]>,
+    /// Vertex colors (RGBA). Falls back to material diffuse + 1.0 alpha
+    /// or white. The alpha lane preserves authored per-vertex modulation
+    /// for hair-tip cards, eyelash strips, and BSEffectShader meshes
+    /// (#618). The renderer's current `Vertex` struct keeps a 3-channel
+    /// color attribute, so consumers drop the alpha at upload — but the
+    /// data is preserved here for the future 4-channel vertex format.
+    pub colors: Vec<[f32; 4]>,
     /// Vertex normals. Falls back to +Y up if the mesh has no normals.
     pub normals: Vec<[f32; 3]>,
     /// UV coordinates. Empty if the mesh has no UVs.
@@ -907,9 +912,46 @@ mod tests {
         let scene = scene_from_blocks(blocks);
         let meshes = import_nif(&scene);
 
-        assert_eq!(meshes[0].colors[0], [1.0, 0.0, 0.0]);
-        assert_eq!(meshes[0].colors[1], [0.0, 1.0, 0.0]);
-        assert_eq!(meshes[0].colors[2], [0.0, 0.0, 1.0]);
+        assert_eq!(meshes[0].colors[0], [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(meshes[0].colors[1], [0.0, 1.0, 0.0, 1.0]);
+        assert_eq!(meshes[0].colors[2], [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    /// Regression test for #618 — the alpha lane on per-vertex colours
+    /// must survive `extract_vertex_colors`. Pre-fix the importer ran
+    /// `[c[0], c[1], c[2]]` on the way in, dropping the value silently.
+    /// Hair-tip cards, eyelash strips, and BSEffectShader meshes use
+    /// non-1.0 alpha as a per-vertex modulation; without this lane the
+    /// renderer can't reach the data even when the shader wants it.
+    #[test]
+    fn import_preserves_per_vertex_alpha_through_nitrishape_path() {
+        let mut data = make_tri_shape_data();
+        data.vertex_colors = vec![
+            [1.0, 1.0, 1.0, 0.25], // hair tip: low alpha
+            [1.0, 1.0, 1.0, 0.50], // mid-strand
+            [1.0, 1.0, 1.0, 1.00], // root: opaque
+        ];
+
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+            Box::new(make_ni_node(identity_transform(), vec![BlockRef(1)])),
+            Box::new(make_ni_tri_shape(
+                "HairCard",
+                identity_transform(),
+                2,
+                Vec::new(),
+            )),
+            Box::new(data),
+        ];
+        let scene = scene_from_blocks(blocks);
+        let meshes = import_nif(&scene);
+
+        assert_eq!(meshes.len(), 1, "expected exactly one mesh");
+        let alphas: Vec<f32> = meshes[0].colors.iter().map(|c| c[3]).collect();
+        assert_eq!(
+            alphas,
+            vec![0.25, 0.50, 1.00],
+            "alpha lane must survive extract_vertex_colors (#618)"
+        );
     }
 
     /// Regression test for issue #131: Oblivion meshes store their
@@ -1161,7 +1203,7 @@ mod tests {
         let meshes = import_nif(&scene);
 
         for color in &meshes[0].colors {
-            assert_eq!(*color, [1.0, 1.0, 1.0]);
+            assert_eq!(*color, [1.0, 1.0, 1.0, 1.0]);
         }
     }
 
