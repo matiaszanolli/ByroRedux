@@ -17,7 +17,8 @@ use std::sync::Arc;
 
 use crate::asset_provider::{merge_bgsm_into_mesh, resolve_texture, MaterialProvider, TextureProvider};
 use crate::components::{
-    AlphaBlend, DarkMapHandle, Decal, ExtraTextureMaps, NormalMapHandle, TerrainTileSlot, TwoSided,
+    AlphaBlend, CellLightingRes, DarkMapHandle, Decal, ExtraTextureMaps, NormalMapHandle,
+    SkyParamsRes, TerrainTileSlot, TwoSided, WeatherDataRes, WeatherTransitionRes,
 };
 
 /// Parsed + imported NIF scene data cached per unique model path.
@@ -263,6 +264,27 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
             }
         }
     }
+
+    // Sky textures live on `SkyParamsRes` (a Resource), not an ECS
+    // component, so the per-victim sweep above can't reach them. The
+    // bindless indices were acquired via `texture_registry.load_dds`
+    // (sun) and `acquire_by_path` (cloud layers) at scene load time —
+    // each bumped the registry refcount once. Without symmetric drops
+    // every cell-cell transition leaks 4 cloud + 1 sun texture (#626).
+    // The slot list is owned by `SkyParamsRes::texture_indices` so adding
+    // a new slot updates both sites in lockstep.
+    if let Some(sky) = world.try_resource::<SkyParamsRes>() {
+        for idx in sky.texture_indices() {
+            push_tex_drop(idx, &mut texture_drops);
+        }
+    }
+    // Cell-scoped state resources hold no texture refs but get replaced
+    // on the next `world.insert_resource` at cell load — clear them on
+    // unload so a between-load query doesn't see stale state.
+    world.remove_resource::<SkyParamsRes>();
+    world.remove_resource::<CellLightingRes>();
+    world.remove_resource::<WeatherDataRes>();
+    world.remove_resource::<WeatherTransitionRes>();
 
     // Free terrain tile slots FIRST — late frames-in-flight reading the
     // SSBO then see either stale-but-valid data (if the slot was
@@ -3121,5 +3143,79 @@ mod terrain_splat_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod sky_params_cleanup_tests {
+    //! Regression coverage for #626 — `SkyParamsRes` texture handles
+    //! must reach `unload_cell`'s drop list. The Vulkan-dependent half
+    //! of `unload_cell` can't be unit-tested in isolation, so we cover
+    //! the upstream contract: `SkyParamsRes::texture_indices` enumerates
+    //! every bindless slot the struct owns. A future contributor who
+    //! adds a 6th slot but forgets to extend `texture_indices` will see
+    //! the count assertion fail; the comment on `texture_indices` then
+    //! redirects them to update both sites.
+    use super::*;
+
+    fn mk_sky(indices: [u32; 5]) -> SkyParamsRes {
+        SkyParamsRes {
+            zenith_color: [0.0; 3],
+            horizon_color: [0.0; 3],
+            sun_direction: [0.0, 1.0, 0.0],
+            sun_color: [1.0; 3],
+            sun_size: 1.0,
+            sun_intensity: 1.0,
+            is_exterior: true,
+            cloud_scroll: [0.0; 2],
+            cloud_tile_scale: 1.0,
+            cloud_texture_index: indices[0],
+            sun_texture_index: indices[4],
+            cloud_scroll_1: [0.0; 2],
+            cloud_tile_scale_1: 1.0,
+            cloud_texture_index_1: indices[1],
+            cloud_scroll_2: [0.0; 2],
+            cloud_tile_scale_2: 1.0,
+            cloud_texture_index_2: indices[2],
+            cloud_scroll_3: [0.0; 2],
+            cloud_tile_scale_3: 1.0,
+            cloud_texture_index_3: indices[3],
+        }
+    }
+
+    /// Every distinct texture-index field on `SkyParamsRes` must be
+    /// surfaced by `texture_indices`. Adding a new bindless slot
+    /// without extending the helper would regress #626 (texture
+    /// refcounts leaked across cell unloads).
+    #[test]
+    fn texture_indices_enumerates_all_five_slots() {
+        let sky = mk_sky([10, 20, 30, 40, 50]);
+        let mut indices: Vec<u32> = sky.texture_indices().into_iter().collect();
+        indices.sort();
+        assert_eq!(indices, vec![10, 20, 30, 40, 50]);
+    }
+
+    /// The `SkyParamsRes` insert path must round-trip through the
+    /// resource API so `unload_cell`'s `try_resource` + `remove_resource`
+    /// sequence sees the values written by `scene.rs`. Guards against a
+    /// future World API change that would break the resource type
+    /// dispatch for this resource specifically.
+    #[test]
+    fn sky_params_resource_round_trip() {
+        let mut world = World::new();
+        world.insert_resource(mk_sky([1, 2, 3, 4, 5]));
+        {
+            let sky = world.try_resource::<SkyParamsRes>().expect("present");
+            let mut got: Vec<u32> = sky.texture_indices().into_iter().collect();
+            got.sort();
+            assert_eq!(got, vec![1, 2, 3, 4, 5]);
+        }
+        let removed = world
+            .remove_resource::<SkyParamsRes>()
+            .expect("remove returns Some");
+        let mut got: Vec<u32> = removed.texture_indices().into_iter().collect();
+        got.sort();
+        assert_eq!(got, vec![1, 2, 3, 4, 5]);
+        assert!(world.try_resource::<SkyParamsRes>().is_none());
     }
 }

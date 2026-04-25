@@ -172,6 +172,26 @@ pub(crate) struct SkyParamsRes {
 }
 impl Resource for SkyParamsRes {}
 
+impl SkyParamsRes {
+    /// Bindless texture handles owned by this resource.
+    ///
+    /// Acquired in `scene.rs` via `texture_registry.load_dds` (sun) and
+    /// `acquire_by_path` (cloud layers); each call bumps the registry
+    /// refcount once. `cell_loader::unload_cell` consumes this iterator
+    /// to issue symmetric `drop_texture` calls so cell-cell transitions
+    /// don't leak VRAM (#626). Update this list whenever a new bindless
+    /// slot is added to the struct.
+    pub(crate) fn texture_indices(&self) -> [u32; 5] {
+        [
+            self.cloud_texture_index,
+            self.cloud_texture_index_1,
+            self.cloud_texture_index_2,
+            self.cloud_texture_index_3,
+            self.sun_texture_index,
+        ]
+    }
+}
+
 /// Game time resource — tracks current hour of day (0.0–24.0).
 /// Advances each frame based on real elapsed time × time scale.
 pub(crate) struct GameTimeRes {
