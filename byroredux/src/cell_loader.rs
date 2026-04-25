@@ -1879,6 +1879,30 @@ pub(crate) fn build_refr_texture_overlay(
     Some(ov)
 }
 
+/// `true` when an `ImportedLight` has a non-trivial diffuse colour
+/// contribution and therefore would actually spawn a `LightSource`
+/// entity. Authored-off placeholder lights (FNV light-bulb meshes
+/// park a zero-colour `NiPointLight` to mark intent without baking
+/// the colour; the ESM LIGH base record carries the real value)
+/// fail this predicate so the ESM-fallback gate in
+/// `spawn_placed_instances` can attach the authoritative LightSource
+/// instead.
+///
+/// Threshold of `1e-4` matches the in-loop check exactly — kept as
+/// a free function so #632's regression tests can pin the predicate
+/// without standing up a full Vulkan context.
+fn is_spawnable_nif_light(light: &byroredux_nif::import::ImportedLight) -> bool {
+    light.color[0] + light.color[1] + light.color[2] >= 1e-4
+}
+
+/// Count NIF lights that would survive `is_spawnable_nif_light`. The
+/// ESM-fallback gate uses this instead of `nif_lights.is_empty()` so
+/// a NIF carrying only zero-colour placeholders still receives the
+/// ESM LIGH-authored `LightSource` (#632).
+fn count_spawnable_nif_lights(nif_lights: &[byroredux_nif::import::ImportedLight]) -> usize {
+    nif_lights.iter().filter(|l| is_spawnable_nif_light(l)).count()
+}
+
 fn spawn_placed_instances(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -1896,6 +1920,16 @@ fn spawn_placed_instances(
     let collisions = &cached.collisions;
     let nif_lights = &cached.lights;
     let mut count = 0;
+    // Pre-compute how many NIF lights will actually spawn. The
+    // ESM-fallback gate at the bottom of this function uses this
+    // count instead of `nif_lights.is_empty()` so a NIF that
+    // authored only zero-colour placeholders (FNV light-bulb
+    // meshes are the audit's example) still receives the ESM
+    // LIGH-authored LightSource. Pre-#632 the gate checked the
+    // raw array length, so placeholders prevented the fallback
+    // and the cell rendered dark even when both NIF intent and
+    // ESM authority agreed it should be lit.
+    let spawned_nif_lights = count_spawnable_nif_lights(nif_lights);
 
     // Spawn per-mesh NiLight blocks as LightSource entities. Parented
     // through the reference transform so torches/candles inside cell
@@ -1907,8 +1941,12 @@ fn spawn_placed_instances(
 
     for light in nif_lights {
         // Skip lights whose diffuse contribution is effectively zero —
-        // these are usually authored-off placeholders.
-        if light.color[0] + light.color[1] + light.color[2] < 1e-4 {
+        // these are usually authored-off placeholders. The audit's
+        // FNV Prospector Saloon evidence: light-bulb meshes ship a
+        // disabled NiPointLight to mark intent without baking colour;
+        // the ESM LIGH base record carries the real authored colour.
+        // Predicate kept in lockstep with `is_spawnable_nif_light`.
+        if !is_spawnable_nif_light(light) {
             continue;
         }
         let nif_pos = Vec3::new(
@@ -2256,11 +2294,18 @@ fn spawn_placed_instances(
         if mesh.is_decal {
             world.insert(entity, Decal);
         }
-        // Attach ESM light_data ONLY if the NIF has no embedded lights
-        // (avoids duplicates) and only on the first mesh (avoids N copies
-        // when a lamp NIF has multiple sub-meshes).
+        // Attach ESM light_data ONLY if the NIF didn't actually spawn
+        // any lights (avoids duplicates) and only on the first mesh
+        // (avoids N copies when a lamp NIF has multiple sub-meshes).
+        //
+        // Pre-#632 this gated on `nif_lights.is_empty()` — wrong
+        // because zero-colour placeholders take a slot in the array
+        // but get filtered out at the spawn loop above. Cells with
+        // light-bulb meshes (Prospector Saloon) rendered dark even
+        // though both the NIF placeholder and the ESM LIGH record
+        // agreed there should be a light. Track real spawns instead.
         if let Some(ld) = light_data {
-            if nif_lights.is_empty() && count == 0 {
+            if spawned_nif_lights == 0 && count == 0 {
                 world.insert(
                     entity,
                     LightSource {
@@ -3234,5 +3279,98 @@ mod sky_params_cleanup_tests {
         got.sort();
         assert_eq!(got, vec![1, 2, 3, 4, 5]);
         assert!(world.try_resource::<SkyParamsRes>().is_none());
+    }
+}
+
+#[cfg(test)]
+mod nif_light_spawn_gate_tests {
+    //! Regression coverage for #632 / FNV-D3-03 — the ESM-fallback
+    //! `LightSource` must attach when a NIF authored only zero-colour
+    //! placeholder lights. Pre-fix `spawn_placed_instances` gated on
+    //! `nif_lights.is_empty()`; placeholders survived the array but
+    //! got filtered out at spawn time, leaving the cell dark even
+    //! when both NIF intent and ESM authority agreed it should be
+    //! lit. Vulkan-free helpers `is_spawnable_nif_light` /
+    //! `count_spawnable_nif_lights` carry the predicate the gate
+    //! consults; testing them here pins the contract without a full
+    //! cell-load harness.
+    use super::*;
+    use byroredux_nif::import::{ImportedLight, LightKind};
+
+    fn light_with_color(rgb: [f32; 3]) -> ImportedLight {
+        ImportedLight {
+            translation: [0.0, 0.0, 0.0],
+            direction: [0.0, 0.0, 0.0],
+            color: rgb,
+            radius: 100.0,
+            kind: LightKind::Point,
+            outer_angle: 0.0,
+            affected_node_names: Vec::new(),
+        }
+    }
+
+    /// Pure-zero RGB → not spawnable. The audit's exact case: an
+    /// authored-off `NiPointLight` placeholder.
+    #[test]
+    fn zero_color_light_is_not_spawnable() {
+        let placeholder = light_with_color([0.0, 0.0, 0.0]);
+        assert!(!is_spawnable_nif_light(&placeholder));
+    }
+
+    /// Just under the `1e-4` threshold — also not spawnable. Locks
+    /// the boundary so the threshold doesn't drift silently.
+    #[test]
+    fn near_zero_color_light_below_threshold_is_not_spawnable() {
+        // Sum = 9e-5, below the 1e-4 cutoff.
+        let almost = light_with_color([3e-5, 3e-5, 3e-5]);
+        assert!(!is_spawnable_nif_light(&almost));
+    }
+
+    /// Any single non-trivial channel → spawnable.
+    #[test]
+    fn nonzero_color_light_is_spawnable() {
+        let red = light_with_color([0.6, 0.0, 0.0]);
+        let green = light_with_color([0.0, 0.4, 0.0]);
+        let dim_blue = light_with_color([0.0, 0.0, 0.001]); // sum = 1e-3 > 1e-4
+        assert!(is_spawnable_nif_light(&red));
+        assert!(is_spawnable_nif_light(&green));
+        assert!(is_spawnable_nif_light(&dim_blue));
+    }
+
+    /// The audit's headline scenario: a NIF carrying ONE
+    /// zero-colour placeholder. `nif_lights.is_empty()` returns
+    /// `false` (there's an entry in the array), but
+    /// `count_spawnable_nif_lights` returns 0 — so the ESM-fallback
+    /// gate fires and the LIGH-authored colour reaches the cell.
+    #[test]
+    fn placeholder_only_array_counts_zero_so_esm_fallback_fires() {
+        let nif_lights = vec![light_with_color([0.0, 0.0, 0.0])];
+        // Pre-#632 logic would have looked at `nif_lights.is_empty()`
+        // here and seen `false`, blocking the fallback.
+        assert!(!nif_lights.is_empty());
+        // Post-#632 the gate consults the predicate-based count and
+        // sees zero spawnable lights, allowing the ESM fallback.
+        assert_eq!(count_spawnable_nif_lights(&nif_lights), 0);
+    }
+
+    /// Mixed array: a real light + a placeholder → count = 1
+    /// (only the real light spawns). ESM fallback DOESN'T fire
+    /// because `count > 0` — the NIF already supplied a real light.
+    #[test]
+    fn mixed_real_and_placeholder_counts_only_the_real_one() {
+        let nif_lights = vec![
+            light_with_color([0.5, 0.5, 0.5]), // real
+            light_with_color([0.0, 0.0, 0.0]), // placeholder
+        ];
+        assert_eq!(count_spawnable_nif_lights(&nif_lights), 1);
+    }
+
+    /// Empty array (truly no NIF lights) → count = 0, ESM
+    /// fallback fires. Locks the no-regression case for cells that
+    /// rely on the legacy gate.
+    #[test]
+    fn empty_array_counts_zero() {
+        let nif_lights: Vec<ImportedLight> = Vec::new();
+        assert_eq!(count_spawnable_nif_lights(&nif_lights), 0);
     }
 }
