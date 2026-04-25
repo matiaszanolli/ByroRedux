@@ -1039,6 +1039,14 @@ fn parse_shader_type_data_fo76(
             Ok(ShaderTypeData::HairTint { hair_tint_color })
         }
         // 0 Default, 2 Glow, 3 Face Tint, 12 Eye Envmap, 17 Terrain — no trailing.
+        //
+        // Verified against nif.xml `BSShaderType155` (the FO76 enum) at
+        // /mnt/data/src/reference/nifxml/nif.xml:1425-1434: it admits only
+        // values {0, 2, 3, 4, 5, 12, 17}. The Skyrim/FO4 Eye-Envmap payload
+        // (Eye Cubemap Scale + Left/Right reflection centers) is gated in
+        // BSLightingShaderProperty on `Shader Type == 16` (nif.xml:6634-6636),
+        // which `BSShaderType155` cannot produce — so FO76 eye meshes carry
+        // no trailing bytes here. See #623 / SK-D3-06.
         _ => Ok(ShaderTypeData::None),
     }
 }

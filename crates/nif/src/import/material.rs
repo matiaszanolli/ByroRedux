@@ -1083,6 +1083,19 @@ pub(super) fn apply_shader_type_data(info: &mut MaterialInfo, data: &ShaderTypeD
         info.material_kind = 5;
     }
     let fields = capture_shader_type_fields(data);
+    // #623 / SK-D3-07: GpuInstance packs `multi_layer_envmap_strength`
+    // into the `w` slot of the `hair_tint_{r,g,b,_}` vec4 to save
+    // alignment padding (scene_buffer.rs:240-263). The packing is
+    // safe only because `ShaderTypeData` is a single-tag enum, so
+    // `capture_shader_type_fields` populates one or the other but
+    // never both. If a future variant or refactor breaks that, the
+    // assert fires before we silently render hair-tinted meshes
+    // with a stray multi-layer envmap strength (or vice versa).
+    debug_assert!(
+        fields.hair_tint_color.is_none() || fields.multi_layer_envmap_strength.is_none(),
+        "GpuInstance vec4 share is broken: hair_tint and multi_layer_envmap_strength \
+         must never appear together in a single ShaderTypeData capture"
+    );
     info.skin_tint_color = fields.skin_tint_color.or(info.skin_tint_color);
     info.skin_tint_alpha = fields.skin_tint_alpha.or(info.skin_tint_alpha);
     info.hair_tint_color = fields.hair_tint_color.or(info.hair_tint_color);
