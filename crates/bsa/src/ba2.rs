@@ -366,7 +366,12 @@ fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<V
         // base[18..20] width
         // base[20]    num_mips
         // base[21]    dxgi format
-        // base[22..24] flags (0x0800 = cubemap?)
+        // base[22..24] flags — bit 0 = cubemap (verified against
+        //                     vanilla Textures1.ba2 cubemap entries).
+        //                     The 0x0800 bit is something else
+        //                     (community-reverse-engineered as "tile
+        //                     mode") and is NOT the cubemap flag — see
+        //                     #595 for the prior stale-comment trap.
         let num_chunks = base[13] as usize;
         let _chunk_hdr_len = u16::from_le_bytes(base[14..16].try_into().unwrap());
         let height = u16::from_le_bytes(base[16..18].try_into().unwrap());
@@ -639,7 +644,16 @@ fn build_dds_header(
         0
     };
     hdr.extend_from_slice(&misc_flag.to_le_bytes());
-    hdr.extend_from_slice(&1u32.to_le_bytes()); // arraySize
+    // arraySize — DDS_HEADER_DXT10 spec requires `6 × N` (default N=1)
+    // for cubemaps; non-cubemaps use 1. Pre-#593 this was hardcoded to
+    // `1`, which DXGI loaders (`CreateTexture2D` with
+    // `D3D10_RESOURCE_MISC_TEXTURECUBE`) reject as "arraySize must be
+    // a multiple of 6". The in-engine renderer's `dds.rs` is lenient
+    // (reads miscFlag, ignores arraySize) so this is observable only
+    // in DirectXTex / texconv / third-party DDS viewers — but the
+    // synthesized headers are now spec-compliant either way.
+    let array_size: u32 = if is_cubemap { 6 } else { 1 };
+    hdr.extend_from_slice(&array_size.to_le_bytes());
     hdr.extend_from_slice(&0u32.to_le_bytes()); // miscFlags2
 
     debug_assert_eq!(hdr.len(), 148, "DDS + DX10 header must be 148 bytes");
@@ -907,6 +921,53 @@ mod tests {
         assert_eq!(&hdr[84..88], b"DX10");
         // DX10 extended: dxgi_format at offset 128
         assert_eq!(u32::from_le_bytes(hdr[128..132].try_into().unwrap()), 71);
+    }
+
+    /// Regression: #593 / FO4-DIM2-02 — synthesized DDS headers for
+    /// cubemap entries must declare `arraySize = 6` per the
+    /// DDS_HEADER_DXT10 spec (cubemaps store the 6 face slices as a
+    /// 6-element array, optionally a multiple thereof for cube
+    /// arrays). Pre-fix the field was hardcoded to `1` regardless of
+    /// `is_cubemap` — DXGI loaders reject "arraySize must be a
+    /// multiple of 6" on cubemap miscFlag inputs. The in-engine
+    /// renderer's `dds.rs` is lenient so this only burns external
+    /// tooling (DirectXTex, texconv) but the spec contract is now
+    /// correct either way.
+    ///
+    /// `arraySize` lives at offset 140 in the synthesized header
+    /// (84 byte DDS_HEADER + 4 byte FourCC + 16 + 4 + 4 = 144 ... err
+    /// the layout: DDS_HEADER through dwReserved2 = 128 bytes, then
+    /// DX10 extended starts: dxgi_format (128–131), resource_dim
+    /// (132–135), miscFlag (136–139), arraySize (140–143),
+    /// miscFlags2 (144–147)).
+    #[test]
+    fn build_dds_header_cubemap_array_size_is_six() {
+        let cubemap = build_dds_header(71, 128, 128, 1, true, &[]);
+        let plain = build_dds_header(71, 128, 128, 1, false, &[]);
+        assert_eq!(cubemap.len(), 148);
+        assert_eq!(plain.len(), 148);
+
+        // arraySize at offset 140.
+        let cube_array_size = u32::from_le_bytes(cubemap[140..144].try_into().unwrap());
+        let plain_array_size = u32::from_le_bytes(plain[140..144].try_into().unwrap());
+        assert_eq!(
+            cube_array_size, 6,
+            "DDS_HEADER_DXT10.arraySize must be 6 for cubemaps (#593)",
+        );
+        assert_eq!(
+            plain_array_size, 1,
+            "DDS_HEADER_DXT10.arraySize must be 1 for non-cubemaps",
+        );
+
+        // Sanity: miscFlag at offset 136 must declare TEXTURECUBE
+        // (0x4) on the cubemap path and 0 on the plain path. Locks
+        // the cubemap-bit-source contract alongside arraySize so a
+        // refactor can't accidentally route one path through both
+        // branches.
+        let cube_misc = u32::from_le_bytes(cubemap[136..140].try_into().unwrap());
+        let plain_misc = u32::from_le_bytes(plain[136..140].try_into().unwrap());
+        assert_eq!(cube_misc, 0x4, "miscFlag must set D3D10_MISC_TEXTURECUBE");
+        assert_eq!(plain_misc, 0, "miscFlag must be 0 on non-cubemaps");
     }
 
     #[test]
