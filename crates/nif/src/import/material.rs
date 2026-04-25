@@ -1003,6 +1003,18 @@ pub(super) fn apply_shader_type_data(info: &mut MaterialInfo, data: &ShaderTypeD
     if let ShaderTypeData::EnvironmentMap { env_map_scale } = *data {
         info.env_map_scale = env_map_scale;
     }
+    // FO76 BSShaderType155 numbers SkinTint as 4 (Color4), but the
+    // legacy BSLightingShaderType + the renderer's `materialKind == 5u`
+    // branch use 5. The Color4 alpha and Color3 RGB are both written
+    // into the same `skin_tint_color` + `skin_tint_alpha` slots
+    // upstream (Skyrim's Color3 path leaves alpha defaulted to 1.0,
+    // FO76's Color4 path supplies a real value), and the shader's
+    // `mix(albedo, albedo*tint, alpha)` formula handles both. Remap
+    // here so every NPC/creature reaches the same shader branch.
+    // See #612 / SK-D3-04.
+    if matches!(data, ShaderTypeData::Fo76SkinTint { .. }) {
+        info.material_kind = 5;
+    }
     let fields = capture_shader_type_fields(data);
     info.skin_tint_color = fields.skin_tint_color.or(info.skin_tint_color);
     info.skin_tint_alpha = fields.skin_tint_alpha.or(info.skin_tint_alpha);
@@ -1557,6 +1569,66 @@ mod shader_type_data_tests {
         );
         assert_eq!(info.skin_tint_color, Some([0.9, 0.7, 0.55]));
         assert_eq!(info.skin_tint_alpha, Some(0.25));
+    }
+
+    /// Regression for #612 / SK-D3-04 — FO76 BSShaderType155 numbers
+    /// SkinTint as 4, but the renderer's `materialKind == 5u` branch
+    /// dispatches on the legacy BSLightingShaderType numbering.
+    /// `apply_shader_type_data` must remap so every FO76 NPC reaches
+    /// the SkinTint shader path. Pre-fix the simulated upstream
+    /// `info.material_kind = 4` survived and the shader gate skipped
+    /// the multiply silently.
+    #[test]
+    fn fo76_skin_tint_remaps_material_kind_to_skyrim_constant() {
+        let mut info = MaterialInfo::default();
+        // Simulate the upstream write at material.rs:606:
+        // `info.material_kind = shader.shader_type as u8` — for FO76
+        // bsver==155 this is the BSShaderType155 value `4`.
+        info.material_kind = 4;
+        apply_shader_type_data(
+            &mut info,
+            &ShaderTypeData::Fo76SkinTint {
+                skin_tint_color: [0.9, 0.7, 0.55, 0.25],
+            },
+        );
+        assert_eq!(
+            info.material_kind, 5,
+            "FO76 SkinTint must remap to the legacy SkinTint constant \
+             so `materialKind == 5u` in triangle.frag fires"
+        );
+    }
+
+    /// Skyrim/FO4 `SkinTint` (legacy enum value 5) must not be touched
+    /// by the FO76 remap — it already arrives as 5 and the shader
+    /// branch fires correctly. Guards against an over-eager remap that
+    /// would clobber other paths.
+    #[test]
+    fn skyrim_skin_tint_preserves_material_kind() {
+        let mut info = MaterialInfo::default();
+        info.material_kind = 5;
+        apply_shader_type_data(
+            &mut info,
+            &ShaderTypeData::SkinTint {
+                skin_tint_color: [0.8, 0.6, 0.5],
+            },
+        );
+        assert_eq!(info.material_kind, 5);
+    }
+
+    /// Other variants must not be affected by the FO76 SkinTint remap.
+    /// Spot-checks `HairTint` (legacy enum value 6) — its material_kind
+    /// must reach the shader unchanged so `materialKind == 6u` fires.
+    #[test]
+    fn hair_tint_does_not_remap_material_kind() {
+        let mut info = MaterialInfo::default();
+        info.material_kind = 6;
+        apply_shader_type_data(
+            &mut info,
+            &ShaderTypeData::HairTint {
+                hair_tint_color: [0.3, 0.15, 0.05],
+            },
+        );
+        assert_eq!(info.material_kind, 6);
     }
 
     #[test]
