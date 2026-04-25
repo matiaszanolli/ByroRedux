@@ -22,8 +22,33 @@ use super::mesh::GeomData;
 // through the shared module. The shared constants are documented with
 // per-game semantics so a future refactor can swap callsites onto
 // `GameVariant`-aware lookups (#461 / #437).
-pub(super) const DECAL_SINGLE_PASS: u32 = crate::shader_flags::fo3nv_f1::DECAL;
-pub(super) const DYNAMIC_DECAL: u32 = crate::shader_flags::fo3nv_f1::DYNAMIC_DECAL;
+// SLSF1 bits 26 / 27 — `Decal` and `Dynamic_Decal`. The bit positions
+// align byte-exact across FO3/FNV `BSShaderFlags` (`fo3nv_f1`),
+// Skyrim `SkyrimShaderPropertyFlags1` (`skyrim_slsf1`), and FO4
+// `Fallout4ShaderPropertyFlags1` (`fo4_slsf1`) — every era touched in
+// production. We source from `fo4_slsf1` (the most-recent registry)
+// so the FO4 module is not dead-code-only and a future bit drift is
+// caught at compile time below. The cross-era equivalence is proven
+// by the runtime tests at `shader_flags::tests::*`. See #592.
+pub(super) const DECAL_SINGLE_PASS: u32 = crate::shader_flags::fo4_slsf1::DECAL;
+pub(super) const DYNAMIC_DECAL: u32 = crate::shader_flags::fo4_slsf1::DYNAMIC_DECAL;
+
+// Compile-time proof: any future shader-flags reshuffle that breaks
+// cross-era equivalence on the bits this module consumes will fail
+// the build, surfacing the drift before it reaches a renderer
+// regression. Pre-#592 the production path read FO4 properties
+// through Skyrim/FNV-labelled aliases by accident — the bit positions
+// happened to coincide. These const-eval assertions promote the
+// coincidence to a load-bearing invariant.
+const _: () =
+    assert!(crate::shader_flags::fo4_slsf1::DECAL == crate::shader_flags::skyrim_slsf1::DECAL);
+const _: () = assert!(crate::shader_flags::fo4_slsf1::DECAL == crate::shader_flags::fo3nv_f1::DECAL);
+const _: () = assert!(
+    crate::shader_flags::fo4_slsf1::DYNAMIC_DECAL == crate::shader_flags::skyrim_slsf1::DYNAMIC_DECAL
+);
+const _: () = assert!(
+    crate::shader_flags::fo4_slsf1::DYNAMIC_DECAL == crate::shader_flags::fo3nv_f1::DYNAMIC_DECAL
+);
 // FO3/FNV-specific decal bit on flags2 — collides with Skyrim's
 // `Cloud_LOD` on the same bit. Only tested on FO3/FNV `BSShader*Property`
 // paths; Skyrim+ `BSLightingShaderProperty` goes through SLSF1 bits
@@ -81,9 +106,16 @@ pub(super) fn is_decal_from_modern_shader_flags(flags1: u32, _flags2: u32) -> bo
 // still uses `flags2 & 0x10` because that is the documented
 // Double_Sided bit on those games.
 //
-// Double_Sided bit on Skyrim+ `*ShaderPropertyFlags2`. Only tested on
-// blocks whose game actually carries this semantic (see note above).
-const SF2_DOUBLE_SIDED: u32 = crate::shader_flags::skyrim_slsf2::DOUBLE_SIDED;
+// Double_Sided bit on Skyrim+ / FO4 `*ShaderPropertyFlags2`. Only
+// tested on blocks whose game actually carries this semantic (see
+// note above). Sourced from `fo4_slsf2` so the FO4 module is not
+// dead-code-only — bit position aligns with Skyrim and the
+// compile-time assertion below pins the equivalence. See #592.
+const SF2_DOUBLE_SIDED: u32 = crate::shader_flags::fo4_slsf2::DOUBLE_SIDED;
+const _: () = assert!(
+    crate::shader_flags::fo4_slsf2::DOUBLE_SIDED
+        == crate::shader_flags::skyrim_slsf2::DOUBLE_SIDED
+);
 
 /// How a `NiVertexColorProperty` wants per-vertex colors to participate
 /// in shading, mirroring Gamebryo's `NiVertexColorProperty::SourceMode`.

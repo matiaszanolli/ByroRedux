@@ -1,9 +1,6 @@
-# #592: FO4-DIM3-01: fo4_slsf1 / fo4_slsf2 constants dead in production code
+# FO4-DIM3-01: fo4_slsf1 / fo4_slsf2 constants dead in production code
 
-**URL**: https://github.com/matiaszanolli/ByroRedux/issues/592
-**Labels**: nif-parser, low, 
-
----
+State: OPEN
 
 **From**: `docs/audits/AUDIT_FO4_2026-04-23.md` (Dim 3)
 **Severity**: LOW
