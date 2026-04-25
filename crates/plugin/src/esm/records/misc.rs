@@ -460,6 +460,41 @@ pub struct DialRecord {
     /// Quest form IDs that own this dialogue topic (one per QSTI
     /// sub-record). FO3/FNV topics often list multiple owners.
     pub quest_refs: Vec<u32>,
+    /// INFO topic responses parsed from the DIAL's `Topic Children`
+    /// sub-GRUP (group_type == 7). Pre-#631 the children were silently
+    /// skipped because `extract_records` filters on a single record
+    /// type; this field is now populated by the dedicated
+    /// `extract_dial_with_info` walker. Each entry is one branch of the
+    /// dialogue (a single NPC response + its conditions / triggers).
+    pub infos: Vec<InfoRecord>,
+}
+
+/// `INFO` dialogue topic response. One per branch of an `NPC says X
+/// when Y` choice tree, owned by the parent `DIAL` topic via the
+/// nested Topic Children GRUP. Stub captures the response text +
+/// type byte + sibling links so quest / dialogue systems can
+/// enumerate branches without re-parsing. Conditions (CTDA),
+/// scripts (SCHR/SCDA), and edits (NAM3) are deferred until the
+/// condition runtime lands. See #631.
+#[derive(Debug, Clone, Default)]
+pub struct InfoRecord {
+    pub form_id: u32,
+    /// Response text shown / spoken to the player (NAM1).
+    pub response_text: String,
+    /// Designer notes — usually direction for the voice actor (NAM2).
+    pub designer_notes: String,
+    /// `TRDT` response-data byte 0 — `Response_Type` enum (Custom /
+    /// Force Greet / etc. on FO3/FNV; Combat / Death / Hello etc. on
+    /// Skyrim). Captured raw; mapping to the per-game enum is
+    /// downstream consumer work. 0 when TRDT is absent.
+    pub response_type: u8,
+    /// `TCLT` topic-link ref — IDs of other DIAL topics that this
+    /// branch routes the conversation to. Multiple TCLTs are
+    /// concatenated.
+    pub topic_links: Vec<u32>,
+    /// `PNAM` previous-info ref — the prior INFO in this branch. 0
+    /// means "this is the first response in the chain".
+    pub previous_info: u32,
 }
 
 pub fn parse_dial(form_id: u32, subs: &[SubRecord]) -> DialRecord {
@@ -475,6 +510,32 @@ pub fn parse_dial(form_id: u32, subs: &[SubRecord]) -> DialRecord {
                 if let Some(q) = read_u32_at(&sub.data, 0) {
                     out.quest_refs.push(q);
                 }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+pub fn parse_info(form_id: u32, subs: &[SubRecord]) -> InfoRecord {
+    let mut out = InfoRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"NAM1" => out.response_text = read_lstring_or_zstring(&sub.data),
+            b"NAM2" => out.designer_notes = read_zstring(&sub.data),
+            b"TRDT" if !sub.data.is_empty() => {
+                out.response_type = sub.data[0];
+            }
+            b"TCLT" if sub.data.len() >= 4 => {
+                if let Some(t) = read_u32_at(&sub.data, 0) {
+                    out.topic_links.push(t);
+                }
+            }
+            b"PNAM" if sub.data.len() >= 4 => {
+                out.previous_info = read_u32_at(&sub.data, 0).unwrap_or(0);
             }
             _ => {}
         }

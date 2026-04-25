@@ -43,11 +43,11 @@ pub use items::{
     parse_weap, ItemKind, ItemRecord,
 };
 pub use misc::{
-    parse_acti, parse_avif, parse_dial, parse_eczn, parse_eyes, parse_hair, parse_hdpt,
+    parse_acti, parse_avif, parse_dial, parse_eczn, parse_eyes, parse_hair, parse_hdpt, parse_info,
     parse_lgtm, parse_mesg, parse_mgef, parse_navi, parse_navm, parse_pack, parse_perk, parse_qust,
     parse_regn, parse_spel, parse_term, parse_watr, ActiRecord, AvifRecord, DialRecord, EcznRecord,
-    EyesRecord, HairRecord, HdptRecord, LgtmRecord, MesgRecord, MgefRecord, NaviRecord, NavmRecord,
-    PackRecord, PerkRecord, QustRecord, RegnRecord, SpelRecord, TermRecord, WatrRecord,
+    EyesRecord, HairRecord, HdptRecord, InfoRecord, LgtmRecord, MesgRecord, MgefRecord, NaviRecord,
+    NavmRecord, PackRecord, PerkRecord, QustRecord, RegnRecord, SpelRecord, TermRecord, WatrRecord,
 };
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
 pub use weather::{parse_wthr, OblivionHdrLighting, SkyColor, WeatherRecord};
@@ -127,7 +127,9 @@ pub struct EsmIndex {
     /// `QUST` quests — Story Manager / Radiant Story entry points.
     pub quests: HashMap<u32, QustRecord>,
     /// `DIAL` dialogue topics — owned by quests via QSTI refs. INFO
-    /// children (nested under each DIAL's sub-GRUP) are a follow-up.
+    /// children land on `DialRecord.infos` via the dedicated
+    /// `extract_dial_with_info` walker (group_type == 7 Topic
+    /// Children sub-GRUPs). See #631.
     pub dialogues: HashMap<u32, DialRecord>,
     /// `MESG` quest messages / tutorial popups.
     pub messages: HashMap<u32, MesgRecord>,
@@ -412,14 +414,15 @@ pub fn parse_esm_with_load_order(
             b"QUST" => extract_records(&mut reader, end, b"QUST", &mut |fid, subs| {
                 index.quests.insert(fid, parse_qust(fid, subs));
             })?,
-            // DIAL tops a nested GRUP tree containing INFO children —
-            // `extract_records` recurses but filters on a single
-            // `expected_type`, so INFO needs a multi-type walker (or a
-            // second DIAL-tree pass). Extract DIAL here; INFO is a
-            // follow-up. See #447.
-            b"DIAL" => extract_records(&mut reader, end, b"DIAL", &mut |fid, subs| {
-                index.dialogues.insert(fid, parse_dial(fid, subs));
-            })?,
+            // DIAL tops a nested GRUP tree: a top-level GRUP labelled
+            // "DIAL" containing DIAL records, each (often) followed by
+            // a Topic Children sub-GRUP (group_type == 7) whose label
+            // is the parent DIAL's form_id u32 and whose contents are
+            // INFO records. The generic `extract_records` walker
+            // filters on a single `expected_type` and silently drops
+            // every INFO. The dedicated walker below threads both
+            // record types through. See #631 / #447.
+            b"DIAL" => extract_dial_with_info(&mut reader, end, &mut index.dialogues)?,
             b"MESG" => extract_records(&mut reader, end, b"MESG", &mut |fid, subs| {
                 index.messages.insert(fid, parse_mesg(fid, subs));
             })?,
@@ -529,6 +532,126 @@ fn extract_records(
     Ok(())
 }
 
+/// Walk a top-level DIAL group, parsing each DIAL record and its
+/// child INFO sub-group (group_type == 7 Topic Children). Each
+/// sub-GRUP's `label` field carries the parent DIAL's form_id u32 —
+/// the walker matches it against the most recent DIAL it parsed and
+/// pushes decoded INFOs onto `DialRecord.infos`.
+///
+/// Layout:
+/// ```text
+/// GRUP type=0 label="DIAL"  (top-level — caller already entered)
+///   DIAL record (form_id=A)
+///   GRUP type=7 label=A     (Topic Children for DIAL A)
+///     INFO record
+///     INFO record
+///     ...
+///   DIAL record (form_id=B)
+///   GRUP type=7 label=B
+///     INFO record
+///   ...
+/// ```
+///
+/// Pre-#631 the generic `extract_records` walker ignored INFO bytes
+/// because it filtered on `expected_type == "DIAL"`. Dedicated walker
+/// stays SSE-correct and avoids parameterising the generic walker
+/// with a multi-type closure map (the only record with this shape
+/// today). See audit `AUDIT_FNV_2026-04-24.md` D2-03.
+fn extract_dial_with_info(
+    reader: &mut EsmReader,
+    end: usize,
+    dialogues: &mut HashMap<u32, DialRecord>,
+) -> Result<()> {
+    /// Topic Children group_type from the ESM format (TES4 / FO3 /
+    /// FNV / Skyrim / FO4 all share the value).
+    const GROUP_TYPE_TOPIC_CHILDREN: u32 = 7;
+
+    let mut last_dial_form_id: Option<u32> = None;
+
+    while reader.position() < end && reader.remaining() > 0 {
+        if reader.is_group() {
+            let sub_group = reader.read_group_header()?;
+            let sub_end = reader.group_content_end(&sub_group);
+
+            if sub_group.group_type == GROUP_TYPE_TOPIC_CHILDREN {
+                // Sub-group label is the parent DIAL's form_id u32.
+                let parent_form_id = u32::from_le_bytes(sub_group.label);
+                // Tolerate sub-group / last-DIAL label drift —
+                // shipped content has been observed with off-by-one
+                // dispositions across patches. We accept the most-
+                // recent DIAL as parent when the labels disagree, and
+                // log at debug; mismatch is rare enough to warrant
+                // visibility but never bytes-throwing.
+                let target = last_dial_form_id.unwrap_or(parent_form_id);
+                if Some(parent_form_id) != last_dial_form_id {
+                    log::debug!(
+                        "DIAL Topic Children sub-group label {:#x} doesn't match \
+                         most-recent DIAL form_id {:?}; routing INFOs to \
+                         most-recent DIAL — see #631",
+                        parent_form_id,
+                        last_dial_form_id,
+                    );
+                }
+                walk_info_records(reader, sub_end, target, dialogues)?;
+                continue;
+            }
+
+            // Any other nested group inside the DIAL tree (rare —
+            // shouldn't happen in vanilla content): recurse with the
+            // same handler so a stray DIAL or another Topic Children
+            // tier still gets walked. Bytes accounting stays sound.
+            extract_dial_with_info(reader, sub_end, dialogues)?;
+            continue;
+        }
+
+        let header = reader.read_record_header()?;
+        if &header.record_type == b"DIAL" {
+            let subs = reader.read_sub_records(&header)?;
+            let dial = parse_dial(header.form_id, &subs);
+            dialogues.insert(header.form_id, dial);
+            last_dial_form_id = Some(header.form_id);
+        } else {
+            // Non-DIAL record at this tier — skip and keep walking.
+            reader.skip_record(&header);
+        }
+    }
+    Ok(())
+}
+
+/// Inner helper for `extract_dial_with_info` — walks a Topic Children
+/// sub-GRUP, decoding each INFO record onto the parent DIAL's
+/// `infos` vec. Skips non-INFO records (defensive — shipped content
+/// may include nested QSTR / NAVI tiers in some patches).
+fn walk_info_records(
+    reader: &mut EsmReader,
+    end: usize,
+    parent_dial_form_id: u32,
+    dialogues: &mut HashMap<u32, DialRecord>,
+) -> Result<()> {
+    while reader.position() < end && reader.remaining() > 0 {
+        if reader.is_group() {
+            // Nested group inside a Topic Children sub-GRUP —
+            // unusual but tolerated. Skip wholesale rather than
+            // recursing further; the runtime consumer doesn't need
+            // the deeper tiers today.
+            let inner = reader.read_group_header()?;
+            reader.skip_group(&inner);
+            continue;
+        }
+        let header = reader.read_record_header()?;
+        if &header.record_type == b"INFO" {
+            let subs = reader.read_sub_records(&header)?;
+            let info = parse_info(header.form_id, &subs);
+            if let Some(dial) = dialogues.get_mut(&parent_dial_form_id) {
+                dial.infos.push(info);
+            }
+        } else {
+            reader.skip_record(&header);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -600,6 +723,145 @@ mod tests {
             }
             _ => panic!("expected weapon"),
         }
+    }
+
+    /// Regression: #631 / FNV-D2-03 — `DIAL` records with a nested
+    /// Topic Children sub-GRUP (`group_type == 7`, label = parent
+    /// DIAL form_id) must populate `DialRecord.infos` with each
+    /// child INFO record. Pre-fix the generic `extract_records`
+    /// walker filtered on `expected_type == "DIAL"` and silently
+    /// skipped every INFO; every DIAL arrived as an empty shell.
+    ///
+    /// Fixture builds:
+    ///   GRUP type=0 label="DIAL"
+    ///     DIAL record (form_id 0xCAFE, EDID="MQGreeting", FULL="Hello")
+    ///     GRUP type=7 label=0xCAFE
+    ///       INFO (0x1001, NAM1="Welcome", TRDT[0]=3, PNAM=0)
+    ///       INFO (0x1002, NAM1="Wait outside.", PNAM=0x1001)
+    ///
+    /// Asserts both INFOs land on the parent DIAL with their
+    /// authored fields.
+    #[test]
+    fn dial_topic_children_walked_into_dialogue_infos() {
+        // Two INFO records inside the Topic Children sub-GRUP.
+        let info_1 = build_record(
+            b"INFO",
+            0x1001,
+            &[
+                (b"NAM1", b"Welcome\0".to_vec()),
+                (b"TRDT", vec![3, 0, 0, 0]),
+                (b"PNAM", 0u32.to_le_bytes().to_vec()),
+            ],
+        );
+        let info_2 = build_record(
+            b"INFO",
+            0x1002,
+            &[
+                (b"NAM1", b"Wait outside.\0".to_vec()),
+                (b"PNAM", 0x1001u32.to_le_bytes().to_vec()),
+            ],
+        );
+
+        // Topic Children sub-GRUP: group_type = 7, label = parent
+        // DIAL form_id (0xCAFE) packed as little-endian bytes.
+        let topic_children = {
+            let mut content = Vec::new();
+            content.extend_from_slice(&info_1);
+            content.extend_from_slice(&info_2);
+            let total = 24 + content.len();
+            let mut buf = Vec::new();
+            buf.extend_from_slice(b"GRUP");
+            buf.extend_from_slice(&(total as u32).to_le_bytes());
+            buf.extend_from_slice(&0xCAFEu32.to_le_bytes()); // label
+            buf.extend_from_slice(&7u32.to_le_bytes()); // Topic Children
+            buf.extend_from_slice(&[0u8; 8]); // stamp
+            buf.extend_from_slice(&content);
+            buf
+        };
+
+        // DIAL record + its Topic Children sub-GRUP, wrapped in the
+        // top-level "DIAL" GRUP.
+        let dial = build_record(
+            b"DIAL",
+            0xCAFE,
+            &[
+                (b"EDID", b"MQGreeting\0".to_vec()),
+                (b"FULL", b"Hello\0".to_vec()),
+            ],
+        );
+        let mut top_content = Vec::new();
+        top_content.extend_from_slice(&dial);
+        top_content.extend_from_slice(&topic_children);
+
+        let top_total = 24 + top_content.len();
+        let mut top_grup = Vec::new();
+        top_grup.extend_from_slice(b"GRUP");
+        top_grup.extend_from_slice(&(top_total as u32).to_le_bytes());
+        top_grup.extend_from_slice(b"DIAL");
+        top_grup.extend_from_slice(&0u32.to_le_bytes()); // top group
+        top_grup.extend_from_slice(&[0u8; 8]);
+        top_grup.extend_from_slice(&top_content);
+
+        // TES4 dummy header so parse_esm reaches the DIAL group.
+        let mut buf = build_record(b"TES4", 0, &[]);
+        buf.extend_from_slice(&top_grup);
+        let index = parse_esm(&buf).expect("parse_esm");
+
+        let dial = index.dialogues.get(&0xCAFE).expect("DIAL indexed");
+        assert_eq!(dial.editor_id, "MQGreeting");
+        assert_eq!(dial.full_name, "Hello");
+        assert_eq!(
+            dial.infos.len(),
+            2,
+            "Topic Children INFOs must land on DialRecord.infos (#631)"
+        );
+        assert_eq!(dial.infos[0].form_id, 0x1001);
+        assert_eq!(dial.infos[0].response_text, "Welcome");
+        assert_eq!(dial.infos[0].response_type, 3);
+        assert_eq!(dial.infos[0].previous_info, 0);
+        assert_eq!(dial.infos[1].form_id, 0x1002);
+        assert_eq!(dial.infos[1].response_text, "Wait outside.");
+        assert_eq!(
+            dial.infos[1].previous_info, 0x1001,
+            "INFO chain links must survive the walker (#631)"
+        );
+    }
+
+    /// Real-data sanity for #631: opt-in load of FalloutNV.esm
+    /// asserts at least one DIAL has non-empty `infos`. Pre-fix the
+    /// whole `dialogues` map's `infos` was empty across every DIAL.
+    /// Stays `#[ignore]` like the rest of the real-data tests.
+    #[test]
+    #[ignore]
+    fn parse_real_fnv_dial_infos_populated() {
+        let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data/FalloutNV.esm";
+        if !std::path::Path::new(path).exists() {
+            eprintln!("Skipping: FalloutNV.esm not found");
+            return;
+        }
+        let data = std::fs::read(path).unwrap();
+        let index = parse_esm(&data).expect("parse_esm");
+
+        let total_infos: usize = index.dialogues.values().map(|d| d.infos.len()).sum();
+        let dialogues_with_infos = index
+            .dialogues
+            .values()
+            .filter(|d| !d.infos.is_empty())
+            .count();
+        eprintln!(
+            "FNV dialogues: {} total, {} with INFOs ({} INFOs total)",
+            index.dialogues.len(),
+            dialogues_with_infos,
+            total_infos,
+        );
+        assert!(
+            !index.dialogues.is_empty(),
+            "FNV must ship at least one DIAL"
+        );
+        assert!(
+            total_infos > 0,
+            "FNV must surface at least one INFO across all DIALs (#631)"
+        );
     }
 
     /// Parse the real FalloutNV.esm and verify record counts. Skipped on
