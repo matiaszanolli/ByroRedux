@@ -445,6 +445,44 @@ fn short(name: &str) -> &str {
     name.rsplit("::").next().unwrap_or(name)
 }
 
+/// `mem.frag` — compute and emit a per-block GPU memory fragmentation
+/// report. Pulls the live `gpu_allocator` report through the
+/// `AllocatorResource` newtype the binary inserts at engine init, so
+/// the calculation only runs when the user explicitly asks for it (the
+/// audit `AUDIT_PERFORMANCE_2026-04-20.md` D2-L1 explicitly forbids
+/// per-frame fragmentation calc). Reports the worst block's
+/// `largest_free / total_free` ratio and warns when any block falls
+/// below 0.5 — the signal that a long-running session has fragmented
+/// enough that future allocations may fail despite headline "free
+/// bytes" being adequate. See #503.
+struct MemFragCommand;
+impl ConsoleCommand for MemFragCommand {
+    fn name(&self) -> &str {
+        "mem.frag"
+    }
+    fn description(&self) -> &str {
+        "Show per-block GPU memory fragmentation (#503 D2-L1)"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(alloc) =
+            world.try_resource::<byroredux_renderer::vulkan::allocator::AllocatorResource>()
+        else {
+            return CommandOutput::line(
+                "AllocatorResource not present — renderer not initialized yet",
+            );
+        };
+        let report = alloc
+            .0
+            .lock()
+            .expect("allocator lock poisoned")
+            .generate_report();
+        let frags = byroredux_renderer::vulkan::allocator::compute_block_fragmentation(&report);
+        CommandOutput::lines(
+            byroredux_renderer::vulkan::allocator::fragmentation_report_lines(&frags),
+        )
+    }
+}
+
 pub(crate) fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
     registry.register(HelpCommand);
@@ -457,5 +495,6 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(MeshCacheCommand);
     registry.register(CtxScratchCommand);
     registry.register(SysAccessesCommand);
+    registry.register(MemFragCommand);
     registry
 }

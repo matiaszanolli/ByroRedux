@@ -223,6 +223,25 @@ impl VulkanContext {
             super::super::allocator::log_memory_usage(alloc, &self.instance, self.physical_device);
         }
     }
+
+    /// Compute a per-block fragmentation report off the live allocator.
+    /// Explicit-call only — never wire into a per-frame path. Returns
+    /// formatted lines so the same data can flow to the log
+    /// (engine-init / debug shortcut) and to the `mem.frag` console
+    /// command output. Empty when the allocator hasn't been
+    /// initialised. See #503 / `AUDIT_PERFORMANCE_2026-04-20.md`
+    /// finding D2-L1.
+    pub fn fragmentation_report_lines(&self) -> Vec<String> {
+        let Some(ref alloc) = self.allocator else {
+            return Vec::new();
+        };
+        let report = alloc
+            .lock()
+            .expect("allocator lock poisoned")
+            .generate_report();
+        let frags = super::super::allocator::compute_block_fragmentation(&report);
+        super::super::allocator::fragmentation_report_lines(&frags)
+    }
 }
 
 #[cfg(test)]

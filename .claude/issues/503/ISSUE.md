@@ -1,1 +1,17 @@
-{"body":"## Severity: LOW\n\n**Location**: `crates/renderer/src/vulkan/allocator.rs:16-48, 54-80`\n\n## Problem\n\nA single `Arc<Mutex<gpu_allocator::vulkan::Allocator>>` handles every\nallocation in the engine — linear DEVICE_LOCAL (vertex/index buffers,\nindirect, AS storage), non-linear DEVICE_LOCAL (images: G-buffer, SVGF\nhistory, textures, depth), and HOST_VISIBLE (staging, per-frame SSBOs/UBOs,\nTLAS instance staging). gpu-allocator internally segregates by memory type\nindex, but **not** by lifetime/usage pattern. Long-lived allocations\n(G-buffer, BLAS result buffers, vertex/index buffers) share memory blocks\nwith short-lived ones (per-frame TLAS instance staging, transient texture\nstaging).\n\nAfter many cell transitions, fragmentation at block boundaries can leave a\n64 MB DEVICE_LOCAL block holding a single long-lived 1 KB BLAS allocation\nbecause two adjacent short-lived slots got freed at different times.\n`gpu-allocator`'s allocation strategy is first-fit within a block — no\ndefragment pass.\n\nThe `log_memory_usage` reporter (`allocator.rs:54-80`) only surfaces\nallocated-vs-reserved sums; it doesn't expose fragmentation at all.\n\n## Impact\n\nEmpirically has not caused a visible OOM yet. Risk grows over long sessions\nwith many interior↔exterior transitions.\n\n## Suggested Fix\n\n**Short-term (this issue)**: Add a fragmentation metric to `log_memory_usage`:\n\n```rust\n// Iterate report.blocks, compute per-block:\n//   largest_free_range / total_free\n// Warn if worst block falls below 0.5.\n```\n\nSignals when a restart-to-defrag is due.\n\n**Long-term (deferred, not this issue)**: gpu-allocator v0.28 (unreleased)\nadds per-scope allocation budgets that let the caller separate\n\"session-persistent\" and \"cell-local\" pools. Track upstream.\n\n## Completeness Checks\n\n- [ ] **TESTS**: Unit test that allocates + frees a fragmentation-inducing\n      pattern, asserts the metric reports <0.5\n- [ ] **PERF**: Fragmentation report should only run on explicit call\n      (e.g. `mem.frag` debug command) — not every frame\n\n## Source\n\nAudit: `docs/audits/AUDIT_PERFORMANCE_2026-04-20.md` (D2-L1)","labels":[{"id":"LA_kwDORzgFWc8AAAACeFy0Mw","name":"low","description":"Low severity","color":"0E8A16"},{"id":"LA_kwDORzgFWc8AAAACeFy0QA","name":"vulkan","description":"Vulkan API","color":"B60205"},{"id":"LA_kwDORzgFWc8AAAACeFy0YQ","name":"memory","description":"GPU/CPU memory","color":"C2E0C6"},{"id":"LA_kwDORzgFWc8AAAACeGdDkw","name":"performance","description":"Performance optimization","color":"fbca04"}],"state":"OPEN","title":"PERF-2026-04-20 D2-L1: gpu-allocator single global pool — no per-usage separation, no fragmentation metrics"}
+# PERF-2026-04-20 D2-L1: gpu-allocator single global pool — no per-usage separation, no fragmentation metrics
+
+**Severity:** LOW | vulkan, memory, performance
+**Source:** `docs/audits/AUDIT_PERFORMANCE_2026-04-20.md` (D2-L1)
+
+## Problem
+Single `Arc<Mutex<gpu_allocator::vulkan::Allocator>>` mixes long-lived (G-buffer, BLAS, vertex/index) with short-lived (per-frame staging) allocations. `log_memory_usage` only reports allocated-vs-reserved sums, no fragmentation visibility.
+
+## Short-term fix (this issue)
+Add fragmentation metric: per-block `largest_free_range / total_free`. Warn if worst block <0.5. Signals when a restart-to-defrag is due.
+
+## Long-term (deferred)
+gpu-allocator v0.28 per-scope budgets — track upstream.
+
+## Completeness
+- TEST: fragmentation-inducing alloc pattern asserts the metric reports <0.5
+- PERF: report only on explicit call (`mem.frag` debug command), not every frame

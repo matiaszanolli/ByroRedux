@@ -397,6 +397,18 @@ impl ApplicationHandler for App {
                         result: ss_handle.result,
                     });
 
+                // Expose the GPU allocator to the ECS so the
+                // `mem.frag` console command can compute a live
+                // fragmentation report on demand. Newtype wrapper
+                // dodges the orphan rule on `Resource`. See #503.
+                if let Some(ref alloc) = ctx.allocator {
+                    self.world.insert_resource(
+                        byroredux_renderer::vulkan::allocator::AllocatorResource(
+                            alloc.clone(),
+                        ),
+                    );
+                }
+
                 self.renderer = Some(ctx);
                 self.window = Some(win);
                 self.last_frame = Instant::now();
