@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::blocks::node::NiNode;
 use crate::blocks::skin::{
     BsDismemberSkinInstance, BsSkinBoneData, BsSkinInstance, NiSkinData, NiSkinInstance,
+    NiSkinPartition, SseSkinGlobalBuffer,
 };
 use crate::blocks::tri_shape::{BsTriShape, NiTriShape, NiTriShapeData, NiTriStripsData};
 #[cfg(test)]
@@ -247,30 +248,62 @@ pub(super) fn extract_bs_tri_shape(
     shape: &BsTriShape,
     world_transform: &NiTransform,
 ) -> Option<ImportedMesh> {
-    if shape.vertices.is_empty() || shape.triangles.is_empty() {
+    // Skyrim SE / FO4 skinned meshes ship `data_size == 0` on the
+    // `BsTriShape` itself — the real geometry lives on the linked
+    // `NiSkinPartition` as a global packed-vertex buffer plus
+    // per-partition `vertex_map` arrays. Reconstruct here before the
+    // early-return so every NPC body and creature renders. See #559.
+    let reconstructed = if shape.vertices.is_empty() && shape.triangles.is_empty() {
+        try_reconstruct_sse_geometry(scene, shape)
+    } else {
+        None
+    };
+
+    if shape.vertices.is_empty() && reconstructed.is_none() {
+        return None;
+    }
+    if shape.triangles.is_empty() && reconstructed.is_none() {
         return None;
     }
 
-    let positions: Vec<[f32; 3]> = shape.vertices.iter().map(zup_point_to_yup).collect();
+    let (positions, indices, sse_normals, sse_uvs, sse_colors) = if let Some(geom) = reconstructed {
+        (
+            geom.positions,
+            geom.indices,
+            Some(geom.normals),
+            Some(geom.uvs),
+            Some(geom.colors),
+        )
+    } else {
+        let positions: Vec<[f32; 3]> = shape.vertices.iter().map(zup_point_to_yup).collect();
+        let indices: Vec<u32> = shape
+            .triangles
+            .iter()
+            .flat_map(|tri| [tri[0] as u32, tri[1] as u32, tri[2] as u32])
+            .collect();
+        (positions, indices, None, None, None)
+    };
 
-    let indices: Vec<u32> = shape
-        .triangles
-        .iter()
-        .flat_map(|tri| [tri[0] as u32, tri[1] as u32, tri[2] as u32])
-        .collect();
-
-    let normals: Vec<[f32; 3]> = if !shape.normals.is_empty() {
+    let normals: Vec<[f32; 3]> = if let Some(n) = sse_normals {
+        n
+    } else if !shape.normals.is_empty() {
         shape.normals.iter().map(zup_point_to_yup).collect()
     } else {
         vec![[0.0, 1.0, 0.0]; positions.len()]
     };
 
-    let uvs = shape.uvs.clone();
+    let uvs = if let Some(u) = sse_uvs {
+        u
+    } else {
+        shape.uvs.clone()
+    };
 
     // Keep all 4 components — alpha lane carries authored per-vertex
     // modulation (hair tips, eyelash strips, BSEffectShader meshes).
     // See #618.
-    let colors: Vec<[f32; 4]> = if !shape.vertex_colors.is_empty() {
+    let colors: Vec<[f32; 4]> = if let Some(c) = sse_colors {
+        c
+    } else if !shape.vertex_colors.is_empty() {
         shape.vertex_colors.clone()
     } else {
         vec![[1.0, 1.0, 1.0, 1.0]; positions.len()]
@@ -380,6 +413,273 @@ pub(super) fn extract_bs_tri_shape_local(
     shape: &BsTriShape,
 ) -> Option<ImportedMesh> {
     extract_bs_tri_shape(scene, shape, &shape.av.transform)
+}
+
+// ── #559: SSE skinned-geometry reconstruction ─────────────────────
+
+/// Reassembled geometry sourced from a `NiSkinPartition` global vertex
+/// buffer when the linked `BsTriShape` has empty inline arrays.
+/// Positions and normals are already Z-up→Y-up converted; triangles
+/// are flat u32 indices into the buffer's vertex space.
+struct ReconstructedSseGeometry {
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
+    uvs: Vec<[f32; 2]>,
+    colors: Vec<[f32; 4]>,
+    indices: Vec<u32>,
+}
+
+/// `BSVertexDesc` flag bits — mirror the constants in
+/// [`crate::blocks::tri_shape`]. Re-declared private here to keep the
+/// SSE-skin reconstructor self-contained without bumping the visibility
+/// of every parser-side flag. The values are part of the nif.xml
+/// `BSVertexDesc.VertexAttribute` bitfield (line 8231) and stable
+/// across the engine's lifetime.
+const VF_VERTEX: u16 = 0x001;
+const VF_UVS: u16 = 0x002;
+const VF_NORMALS: u16 = 0x008;
+const VF_TANGENTS: u16 = 0x010;
+const VF_VERTEX_COLORS: u16 = 0x020;
+const VF_SKINNED: u16 = 0x040;
+const VF_EYE_DATA: u16 = 0x100;
+
+/// Resolve `shape.skin_ref` → `NiSkinInstance` (or
+/// `BsDismemberSkinInstance`) → `NiSkinPartition` and reconstruct
+/// vertices + triangles when the partition's SSE global buffer is
+/// populated. Returns `None` for non-SSE NIFs and for shapes whose
+/// inline arrays already carry the geometry.
+///
+/// The global buffer holds every mesh vertex in the same packed format
+/// `BsTriShape::parse` decodes inline (positions + uvs + normals +
+/// colors + skin data + eye data, gated by `vertex_attrs`). Each
+/// partition's `vertex_map` translates partition-local 0..N-1 indices
+/// into global-buffer indices; partition triangles concatenate (after
+/// remap) into the final index list.
+fn try_reconstruct_sse_geometry(
+    scene: &NifScene,
+    shape: &BsTriShape,
+) -> Option<ReconstructedSseGeometry> {
+    let skin_idx = shape.skin_ref.index()?;
+
+    // Resolve through either the legacy NiSkinInstance or the FO4+
+    // BSDismemberSkinInstance — both expose `skin_partition_ref`.
+    let partition_ref = if let Some(inst) = scene.get_as::<NiSkinInstance>(skin_idx) {
+        inst.skin_partition_ref
+    } else if let Some(inst) = scene.get_as::<BsDismemberSkinInstance>(skin_idx) {
+        inst.base.skin_partition_ref
+    } else {
+        return None;
+    };
+
+    let partition_idx = partition_ref.index()?;
+    let partition = scene.get_as::<NiSkinPartition>(partition_idx)?;
+    let buffer = partition.global_vertex_data.as_ref()?;
+
+    // Decode the global buffer into Y-up positions / normals / UVs /
+    // colors. Per-vertex skin payload is also captured by the inline
+    // parser at `tri_shape.rs`, but reconstructing the skin palette
+    // from the partition's own bone_indices/vertex_weights is a
+    // follow-up — see commit message.
+    let decoded = decode_sse_packed_buffer(buffer)?;
+
+    // Concatenate partition triangles, remapping each partition-local
+    // index through the partition's vertex_map.
+    let mut indices = Vec::new();
+    for part in &partition.partitions {
+        for tri in &part.triangles {
+            for &local in tri {
+                let local = local as usize;
+                let global = part
+                    .vertex_map
+                    .get(local)
+                    .copied()
+                    .unwrap_or(local as u16);
+                indices.push(global as u32);
+            }
+        }
+    }
+    if indices.is_empty() {
+        return None;
+    }
+
+    Some(ReconstructedSseGeometry {
+        positions: decoded.positions,
+        normals: decoded.normals,
+        uvs: decoded.uvs,
+        colors: decoded.colors,
+        indices,
+    })
+}
+
+struct DecodedPackedBuffer {
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
+    uvs: Vec<[f32; 2]>,
+    colors: Vec<[f32; 4]>,
+}
+
+/// Decode a `SseSkinGlobalBuffer` into Y-up vertex arrays.
+///
+/// On Skyrim SE (bsver in `[100, 130)` — the only band where this
+/// buffer is captured) positions are always full-precision per the
+/// inline parser's `bsver < 130 || VF_FULL_PRECISION`. UVs are 2 ×
+/// half-float, normals are 3 × normbyte + 1 byte bitangent_y, colors
+/// are 4 × u8. Tangent / skin / eye data slots are skipped per the
+/// `vertex_attrs` mask. Returns `None` when the buffer is malformed
+/// (size mismatch, vertex_size == 0, or VF_VERTEX clear).
+fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedPackedBuffer> {
+    let vertex_size = buffer.vertex_size as usize;
+    if vertex_size == 0 || buffer.raw_bytes.len() % vertex_size != 0 {
+        return None;
+    }
+    let num_vertices = buffer.raw_bytes.len() / vertex_size;
+    let vertex_attrs = ((buffer.vertex_desc >> 44) & 0xFFF) as u16;
+    if vertex_attrs & VF_VERTEX == 0 {
+        return None;
+    }
+
+    let mut positions = Vec::with_capacity(num_vertices);
+    let mut normals = Vec::with_capacity(num_vertices);
+    let mut uvs = Vec::with_capacity(num_vertices);
+    let mut colors = Vec::with_capacity(num_vertices);
+
+    for i in 0..num_vertices {
+        let base = i * vertex_size;
+        let bytes = &buffer.raw_bytes[base..base + vertex_size];
+        let mut off = 0usize;
+
+        // Position: 3 × f32 + bitangent_x (f32) — 16 bytes total.
+        // SSE always uses full-precision per inline-decoder's
+        // `bsver < 130 || VF_FULL_PRECISION` rule.
+        let x = read_f32_le(bytes, off)?;
+        let y = read_f32_le(bytes, off + 4)?;
+        let z = read_f32_le(bytes, off + 8)?;
+        // Z-up → Y-up: (x, z, -y).
+        positions.push([x, z, -y]);
+        off += 16;
+
+        // UV: 2 × f16.
+        if vertex_attrs & VF_UVS != 0 {
+            let u = half_to_f32(read_u16_le(bytes, off)?);
+            let v = half_to_f32(read_u16_le(bytes, off + 2)?);
+            uvs.push([u, v]);
+            off += 4;
+        }
+
+        // Normal: 3 × normbyte + 1 byte bitangent_y.
+        if vertex_attrs & VF_NORMALS != 0 {
+            let nx = byte_to_normal(bytes[off]);
+            let ny = byte_to_normal(bytes[off + 1]);
+            let nz = byte_to_normal(bytes[off + 2]);
+            // Z-up → Y-up: (x, z, -y).
+            normals.push([nx, nz, -ny]);
+            off += 4;
+        }
+
+        // Tangent: 3 × normbyte + bitangent_z. Discarded per #351.
+        if vertex_attrs & VF_TANGENTS != 0 && vertex_attrs & VF_NORMALS != 0 {
+            off += 4;
+        }
+
+        // Vertex colors: 4 × u8 → RGBA float. #618 keeps alpha.
+        if vertex_attrs & VF_VERTEX_COLORS != 0 {
+            let r = bytes[off] as f32 / 255.0;
+            let g = bytes[off + 1] as f32 / 255.0;
+            let b = bytes[off + 2] as f32 / 255.0;
+            let a = bytes[off + 3] as f32 / 255.0;
+            colors.push([r, g, b, a]);
+            off += 4;
+        }
+
+        // Skin payload: 4 × half-float weights + 4 × u8 indices.
+        // Captured but not surfaced through this reconstructor —
+        // skinning attaches via the existing `extract_skin_bs_tri_shape`
+        // path which reads the partitions' own bone_indices /
+        // vertex_weights arrays. Skip the bytes here.
+        if vertex_attrs & VF_SKINNED != 0 {
+            off += 12;
+        }
+
+        // Eye data: 1 × f32. Discarded — no consumer today.
+        if vertex_attrs & VF_EYE_DATA != 0 {
+            off += 4;
+        }
+
+        // Trailing padding (vertex_size - off) bytes — silently absorbed.
+        // Defensive guard: bail if we read past the declared stride.
+        if off > vertex_size {
+            return None;
+        }
+    }
+
+    // Fall-back fills when a flag is clear so the parallel arrays stay
+    // length-aligned with `positions`. The renderer's per-vertex
+    // composition tolerates [0, 1, 0] / [0, 0] / opaque-white defaults.
+    if normals.is_empty() {
+        normals = vec![[0.0, 1.0, 0.0]; num_vertices];
+    }
+    if uvs.is_empty() {
+        uvs = vec![[0.0, 0.0]; num_vertices];
+    }
+    if colors.is_empty() {
+        colors = vec![[1.0, 1.0, 1.0, 1.0]; num_vertices];
+    }
+
+    Some(DecodedPackedBuffer {
+        positions,
+        normals,
+        uvs,
+        colors,
+    })
+}
+
+#[inline]
+fn read_f32_le(bytes: &[u8], offset: usize) -> Option<f32> {
+    let slice = bytes.get(offset..offset + 4)?;
+    Some(f32::from_le_bytes(slice.try_into().ok()?))
+}
+
+#[inline]
+fn read_u16_le(bytes: &[u8], offset: usize) -> Option<u16> {
+    let slice = bytes.get(offset..offset + 2)?;
+    Some(u16::from_le_bytes(slice.try_into().ok()?))
+}
+
+#[inline]
+fn half_to_f32(h: u16) -> f32 {
+    // Same IEEE 754 binary16 decode as `tri_shape::half_to_f32`.
+    // Re-declared so `import/mesh.rs` doesn't depend on a
+    // `pub(crate)` export in tri_shape that might churn.
+    let sign = ((h >> 15) & 1) as u32;
+    let exp = ((h >> 10) & 0x1F) as i32;
+    let mant = (h & 0x3FF) as u32;
+    let bits = if exp == 0 {
+        if mant == 0 {
+            sign << 31
+        } else {
+            // Subnormal — normalise.
+            let mut m = mant;
+            let mut e = -14_i32;
+            while m & 0x400 == 0 {
+                m <<= 1;
+                e -= 1;
+            }
+            m &= 0x3FF;
+            (sign << 31) | (((e + 127) as u32) << 23) | (m << 13)
+        }
+    } else if exp == 31 {
+        // Inf / NaN — preserve mantissa for NaN payloads.
+        (sign << 31) | (0xFFu32 << 23) | (mant << 13)
+    } else {
+        (sign << 31) | (((exp - 15 + 127) as u32) << 23) | (mant << 13)
+    };
+    f32::from_bits(bits)
+}
+
+#[inline]
+fn byte_to_normal(b: u8) -> f32 {
+    // Same `(b / 127.5) - 1.0` as `tri_shape::byte_to_normal`.
+    (b as f32 / 127.5) - 1.0
 }
 
 /// Resolve the double-sided flag for a BsTriShape from either of the
@@ -1605,5 +1905,273 @@ mod material_path_capture_tests {
         );
         assert_eq!(material_path_from_name(Some("plain_name")), None);
         assert_eq!(material_path_from_name(None), None);
+    }
+}
+
+#[cfg(test)]
+mod sse_skin_geometry_reconstruction_tests {
+    //! Regression coverage for #559 — when a Skyrim SE skinned
+    //! `BsTriShape` ships with empty inline `vertices` / `triangles`,
+    //! the importer must reconstruct geometry from the linked
+    //! `NiSkinPartition.global_vertex_data` (the SSE global packed-vertex
+    //! buffer) plus per-partition `vertex_map` arrays. Pre-fix every
+    //! Skyrim SE NPC body and creature imported as zero meshes because
+    //! the parser silently `stream.skip`'d the global buffer and the
+    //! importer's early-return guard fired on the empty inline arrays.
+    use super::*;
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::skin::{
+        NiSkinInstance, NiSkinPartition, SkinPartitionEntry, SseSkinGlobalBuffer,
+    };
+    use crate::blocks::tri_shape::BsTriShapeKind;
+    use crate::scene::NifScene;
+    use crate::types::{BlockRef, NiPoint3};
+
+    fn empty_net() -> NiObjectNETData {
+        NiObjectNETData {
+            name: None,
+            extra_data_refs: Vec::new(),
+            controller_ref: BlockRef::NULL,
+        }
+    }
+
+    /// Build a 16-byte/vertex SSE packed-position payload — VF_VERTEX
+    /// only, no UVs / normals / colours / skinning. Each vertex is
+    /// 12 bytes of f32 position + 4 bytes of `bitangent_x` padding.
+    fn pack_position_only(positions_zup: &[[f32; 3]]) -> (u64, u32, Vec<u8>) {
+        let vertex_size: u32 = 16;
+        // vertex_desc: low nibble = vertex_size / 4 = 4. Vertex
+        // attribute bitfield (bits 44-55) sets VF_VERTEX (0x001) only.
+        let vertex_desc: u64 = (0x001u64 << 44) | 0x4;
+        let mut raw = Vec::with_capacity(positions_zup.len() * vertex_size as usize);
+        for [x, y, z] in positions_zup {
+            raw.extend_from_slice(&x.to_le_bytes());
+            raw.extend_from_slice(&y.to_le_bytes());
+            raw.extend_from_slice(&z.to_le_bytes());
+            raw.extend_from_slice(&0.0f32.to_le_bytes()); // bitangent_x padding
+        }
+        (vertex_desc, vertex_size, raw)
+    }
+
+    /// Pre-fix this scene imports zero meshes because `extract_bs_tri_shape`
+    /// returns `None` on empty inline arrays. Post-fix the importer
+    /// resolves `BsTriShape.skin_ref` → `NiSkinInstance.skin_partition_ref`
+    /// → `NiSkinPartition.global_vertex_data`, decodes the packed buffer,
+    /// and concatenates partition triangles (remapped via `vertex_map`)
+    /// into the final index list.
+    #[test]
+    fn empty_inline_bs_tri_shape_with_populated_skin_partition_reconstructs() {
+        // 3 vertices in Z-up space; the importer flips them to Y-up
+        // (x, z, -y) when emitting `ImportedMesh.positions`.
+        let zup_positions = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        let (vertex_desc, vertex_size, raw_bytes) = pack_position_only(&zup_positions);
+
+        // BsTriShape (block 0) — empty inline arrays. skin_ref → block 1.
+        let shape = BsTriShape {
+            av: NiAVObjectData {
+                net: empty_net(),
+                flags: 0,
+                transform: crate::types::NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            center: NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+            radius: 0.0,
+            skin_ref: BlockRef(1),
+            shader_property_ref: BlockRef::NULL,
+            alpha_property_ref: BlockRef::NULL,
+            vertex_desc,
+            num_triangles: 0,
+            num_vertices: 0,
+            vertices: Vec::new(),
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            vertex_colors: Vec::new(),
+            triangles: Vec::new(),
+            bone_weights: Vec::new(),
+            bone_indices: Vec::new(),
+            kind: BsTriShapeKind::Plain,
+        };
+
+        // NiSkinInstance (block 1) → NiSkinPartition (block 2).
+        let skin_instance = NiSkinInstance {
+            data_ref: BlockRef::NULL,
+            skin_partition_ref: BlockRef(2),
+            skeleton_root_ref: BlockRef::NULL,
+            bone_refs: Vec::new(),
+        };
+
+        // Single partition with vertex_map = identity and one
+        // triangle. The importer remaps partition-local indices
+        // (0, 1, 2) through vertex_map to global indices (0, 1, 2).
+        let partition = SkinPartitionEntry {
+            num_vertices: 3,
+            num_triangles: 1,
+            bones: Vec::new(),
+            num_weights_per_vertex: 0,
+            vertex_map: vec![0, 1, 2],
+            vertex_weights: Vec::new(),
+            triangles: vec![[0, 1, 2]],
+            bone_indices: Vec::new(),
+        };
+
+        let skin_partition = NiSkinPartition {
+            partitions: vec![partition],
+            global_vertex_data: Some(SseSkinGlobalBuffer {
+                vertex_desc,
+                vertex_size,
+                raw_bytes,
+            }),
+        };
+
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(shape));
+        scene.blocks.push(Box::new(skin_instance));
+        scene.blocks.push(Box::new(skin_partition));
+
+        // Re-borrow the shape (NifScene now owns it).
+        let shape_ref = scene
+            .get_as::<BsTriShape>(0)
+            .expect("block 0 round-trips as BsTriShape");
+        let mesh = extract_bs_tri_shape(&scene, shape_ref, &crate::types::NiTransform::default())
+            .expect("SSE skin partition reconstruction must produce a mesh (#559)");
+
+        assert_eq!(mesh.positions.len(), 3, "all 3 vertices reconstructed");
+        // Z-up (1,2,3) → Y-up (1, 3, -2).
+        assert_eq!(mesh.positions[0], [1.0, 3.0, -2.0]);
+        assert_eq!(mesh.positions[1], [4.0, 6.0, -5.0]);
+        assert_eq!(mesh.positions[2], [7.0, 9.0, -8.0]);
+        assert_eq!(mesh.indices, vec![0, 1, 2]);
+    }
+
+    /// vertex_map remap is the partition-local → global translation
+    /// the SSE skin format depends on. Build a partition whose
+    /// `vertex_map = [2, 0, 1]` and triangle `[0, 1, 2]` — the
+    /// emitted indices must be the remapped `[2, 0, 1]`.
+    #[test]
+    fn partition_vertex_map_remaps_local_indices_to_global() {
+        let zup_positions = [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]];
+        let (vertex_desc, vertex_size, raw_bytes) = pack_position_only(&zup_positions);
+
+        let shape = BsTriShape {
+            av: NiAVObjectData {
+                net: empty_net(),
+                flags: 0,
+                transform: crate::types::NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            center: NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+            radius: 0.0,
+            skin_ref: BlockRef(1),
+            shader_property_ref: BlockRef::NULL,
+            alpha_property_ref: BlockRef::NULL,
+            vertex_desc,
+            num_triangles: 0,
+            num_vertices: 0,
+            vertices: Vec::new(),
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            vertex_colors: Vec::new(),
+            triangles: Vec::new(),
+            bone_weights: Vec::new(),
+            bone_indices: Vec::new(),
+            kind: BsTriShapeKind::Plain,
+        };
+
+        let skin_instance = NiSkinInstance {
+            data_ref: BlockRef::NULL,
+            skin_partition_ref: BlockRef(2),
+            skeleton_root_ref: BlockRef::NULL,
+            bone_refs: Vec::new(),
+        };
+
+        let partition = SkinPartitionEntry {
+            num_vertices: 3,
+            num_triangles: 1,
+            bones: Vec::new(),
+            num_weights_per_vertex: 0,
+            // Non-identity vertex_map exercises the remap path.
+            vertex_map: vec![2, 0, 1],
+            vertex_weights: Vec::new(),
+            triangles: vec![[0, 1, 2]],
+            bone_indices: Vec::new(),
+        };
+
+        let skin_partition = NiSkinPartition {
+            partitions: vec![partition],
+            global_vertex_data: Some(SseSkinGlobalBuffer {
+                vertex_desc,
+                vertex_size,
+                raw_bytes,
+            }),
+        };
+
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(shape));
+        scene.blocks.push(Box::new(skin_instance));
+        scene.blocks.push(Box::new(skin_partition));
+
+        let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
+        let mesh = extract_bs_tri_shape(&scene, shape_ref, &crate::types::NiTransform::default())
+            .expect("reconstruction with non-identity vertex_map must succeed");
+
+        // partition triangle [0, 1, 2] remapped via [2, 0, 1] → [2, 0, 1].
+        assert_eq!(mesh.indices, vec![2, 0, 1]);
+    }
+
+    /// When the linked `NiSkinPartition` has no global vertex data
+    /// (e.g. legacy Oblivion / FNV / FO3 path), the importer must
+    /// still apply the original early-return so the existing inline
+    /// path is unaffected. Locks the negative branch.
+    #[test]
+    fn empty_inline_with_no_global_buffer_returns_none() {
+        let shape = BsTriShape {
+            av: NiAVObjectData {
+                net: empty_net(),
+                flags: 0,
+                transform: crate::types::NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            center: NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+            radius: 0.0,
+            skin_ref: BlockRef(1),
+            shader_property_ref: BlockRef::NULL,
+            alpha_property_ref: BlockRef::NULL,
+            vertex_desc: 0,
+            num_triangles: 0,
+            num_vertices: 0,
+            vertices: Vec::new(),
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            vertex_colors: Vec::new(),
+            triangles: Vec::new(),
+            bone_weights: Vec::new(),
+            bone_indices: Vec::new(),
+            kind: BsTriShapeKind::Plain,
+        };
+        let skin_instance = NiSkinInstance {
+            data_ref: BlockRef::NULL,
+            skin_partition_ref: BlockRef(2),
+            skeleton_root_ref: BlockRef::NULL,
+            bone_refs: Vec::new(),
+        };
+        let skin_partition = NiSkinPartition {
+            partitions: Vec::new(),
+            global_vertex_data: None, // legacy / non-SSE — reconstructor must bail
+        };
+
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(shape));
+        scene.blocks.push(Box::new(skin_instance));
+        scene.blocks.push(Box::new(skin_partition));
+
+        let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
+        assert!(
+            extract_bs_tri_shape(&scene, shape_ref, &crate::types::NiTransform::default())
+                .is_none(),
+            "empty inline + no global buffer must remain a no-op (early return)"
+        );
     }
 }

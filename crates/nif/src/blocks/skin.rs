@@ -158,6 +158,29 @@ pub struct SkinPartitionEntry {
     pub bone_indices: Vec<u8>,
 }
 
+/// Skyrim SE+ packed-vertex global buffer that fronts the partition
+/// list when `bsver in [100, 130)`. The buffer holds **all** mesh
+/// vertices in the same packed format `BsTriShape` uses inline; each
+/// `SkinPartitionEntry::vertex_map` translates partition-local indices
+/// into this global array. Pre-#559 the SSE branch in [`NiSkinPartition::parse`]
+/// `stream.skip`'d the bytes — every Skyrim SE NPC body and creature
+/// thus rendered as nothing because the skinned `BsTriShape` ships
+/// with `data_size == 0` and the real geometry lives here. The
+/// importer in `extract_bs_tri_shape` reconstructs vertices and
+/// triangles from this buffer when the inline ones are empty.
+#[derive(Debug, Clone)]
+pub struct SseSkinGlobalBuffer {
+    /// `BSVertexDesc` u64 — same field layout as `BsTriShape.vertex_desc`.
+    /// The low nibble is the per-vertex byte stride / 4; bits 44-55 hold
+    /// the `vertex_attrs` flags (VF_VERTEX, VF_UVS, VF_NORMALS, …).
+    pub vertex_desc: u64,
+    /// Stride per vertex in bytes (redundant with `vertex_desc & 0xF` * 4
+    /// but the parser captures it for cross-checks).
+    pub vertex_size: u32,
+    /// `data_size` raw bytes — `data_size / vertex_size` packed vertices.
+    pub raw_bytes: Vec<u8>,
+}
+
 /// Hardware-optimized skin partitioning data.
 ///
 /// Each partition is a subset of the mesh vertices that can be processed
@@ -165,6 +188,11 @@ pub struct SkinPartitionEntry {
 #[derive(Debug)]
 pub struct NiSkinPartition {
     pub partitions: Vec<SkinPartitionEntry>,
+    /// Skyrim SE+ global packed-vertex buffer. `Some` when the parsed
+    /// NIF was Skyrim SE / SSE (bsver in [100, 130)); `None` for legacy
+    /// FNV/FO3/Oblivion partitions where geometry stays inline on the
+    /// shape. See [`SseSkinGlobalBuffer`] and #559.
+    pub global_vertex_data: Option<SseSkinGlobalBuffer>,
 }
 
 impl NiObject for NiSkinPartition {
@@ -187,12 +215,22 @@ impl NiSkinPartition {
         // partition reads. See #126 / audit NIF-206.
         let bsver = stream.bsver();
         let is_sse = (100..130).contains(&bsver);
+        // SSE skin partitions store every mesh vertex in this global
+        // packed buffer; per-partition `vertex_map` arrays index into
+        // it. Capture (don't skip) so the importer can reconstruct the
+        // shape's geometry. See #559.
+        let mut global_vertex_data: Option<SseSkinGlobalBuffer> = None;
         if is_sse {
             let data_size = stream.read_u32_le()?;
-            let _vertex_size = stream.read_u32_le()?;
-            let _vertex_desc = stream.read_u64_le()?;
+            let vertex_size = stream.read_u32_le()?;
+            let vertex_desc = stream.read_u64_le()?;
             if data_size > 0 {
-                stream.skip(data_size as u64)?;
+                let raw_bytes = stream.read_bytes(data_size as usize)?;
+                global_vertex_data = Some(SseSkinGlobalBuffer {
+                    vertex_desc,
+                    vertex_size,
+                    raw_bytes,
+                });
             }
         }
 
@@ -315,7 +353,10 @@ impl NiSkinPartition {
             });
         }
 
-        Ok(Self { partitions })
+        Ok(Self {
+            partitions,
+            global_vertex_data,
+        })
     }
 }
 
@@ -634,5 +675,63 @@ mod tests {
         let part = NiSkinPartition::parse(&mut stream).unwrap();
         assert_eq!(part.partitions.len(), 1);
         assert_eq!(stream.position() as usize, bytes.len());
+    }
+
+    /// Regression for #559 — non-zero SSE global vertex data must
+    /// populate `NiSkinPartition.global_vertex_data` (was silently
+    /// `stream.skip`'d). Build a minimal SSE partition whose global
+    /// buffer carries 3 vertices × 16-byte stride.
+    #[test]
+    fn skin_partition_sse_captures_global_vertex_buffer() {
+        let header = make_sse_header(100);
+        let mut d = Vec::new();
+        // num_partitions = 1
+        d.extend_from_slice(&1u32.to_le_bytes());
+        // SSE global header: data_size=48 (3 verts × 16 bytes), vertex_size=16,
+        // vertex_desc=0xDEAD_BEEF_0000_0010 (low nibble = 4 quads = 16 bytes;
+        // upper bits arbitrary — round-trip what we wrote).
+        let vertex_desc: u64 = 0xDEAD_BEEF_0000_0010;
+        d.extend_from_slice(&48u32.to_le_bytes());
+        d.extend_from_slice(&16u32.to_le_bytes());
+        d.extend_from_slice(&vertex_desc.to_le_bytes());
+        // 48 bytes of placeholder vertex data.
+        for i in 0..48u8 {
+            d.push(i);
+        }
+        // Empty partition body (same shape as `sse_skin_partition_bytes`).
+        for _ in 0..5 {
+            d.extend_from_slice(&0u16.to_le_bytes());
+        }
+        d.extend(&[0u8, 0, 0, 0]); // has_vertex_map / weights / faces / bone_indices
+        d.push(0u8); // lod_level
+        d.push(0u8); // global_vb
+        d.extend_from_slice(&0u64.to_le_bytes()); // per-partition vertex_desc
+
+        let mut stream = NifStream::new(&d, &header);
+        let part = NiSkinPartition::parse(&mut stream).unwrap();
+
+        let buf = part
+            .global_vertex_data
+            .as_ref()
+            .expect("non-zero data_size must populate global_vertex_data");
+        assert_eq!(buf.vertex_desc, vertex_desc);
+        assert_eq!(buf.vertex_size, 16);
+        assert_eq!(buf.raw_bytes.len(), 48);
+        // Confirm round-trip — first byte 0, last byte 47.
+        assert_eq!(buf.raw_bytes[0], 0);
+        assert_eq!(buf.raw_bytes[47], 47);
+        assert_eq!(stream.position() as usize, d.len());
+    }
+
+    /// Companion to the above: a SSE partition with `data_size == 0`
+    /// keeps `global_vertex_data == None` so the importer can short-
+    /// circuit reconstruction. Locks the negative branch.
+    #[test]
+    fn skin_partition_sse_zero_data_size_leaves_global_buffer_none() {
+        let header = make_sse_header(100);
+        let bytes = sse_skin_partition_bytes();
+        let mut stream = NifStream::new(&bytes, &header);
+        let part = NiSkinPartition::parse(&mut stream).unwrap();
+        assert!(part.global_vertex_data.is_none());
     }
 }
