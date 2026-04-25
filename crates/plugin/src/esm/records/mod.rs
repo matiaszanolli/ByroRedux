@@ -43,11 +43,11 @@ pub use items::{
     parse_weap, ItemKind, ItemRecord,
 };
 pub use misc::{
-    parse_acti, parse_dial, parse_eczn, parse_eyes, parse_hair, parse_hdpt, parse_lgtm, parse_mesg,
-    parse_mgef, parse_navi, parse_navm, parse_pack, parse_perk, parse_qust, parse_regn, parse_spel,
-    parse_term, parse_watr, ActiRecord, DialRecord, EcznRecord, EyesRecord, HairRecord, HdptRecord,
-    LgtmRecord, MesgRecord, MgefRecord, NaviRecord, NavmRecord, PackRecord, PerkRecord, QustRecord,
-    RegnRecord, SpelRecord, TermRecord, WatrRecord,
+    parse_acti, parse_avif, parse_dial, parse_eczn, parse_eyes, parse_hair, parse_hdpt,
+    parse_lgtm, parse_mesg, parse_mgef, parse_navi, parse_navm, parse_pack, parse_perk, parse_qust,
+    parse_regn, parse_spel, parse_term, parse_watr, ActiRecord, AvifRecord, DialRecord, EcznRecord,
+    EyesRecord, HairRecord, HdptRecord, LgtmRecord, MesgRecord, MgefRecord, NaviRecord, NavmRecord,
+    PackRecord, PerkRecord, QustRecord, RegnRecord, SpelRecord, TermRecord, WatrRecord,
 };
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
 pub use weather::{parse_wthr, OblivionHdrLighting, SkyColor, WeatherRecord};
@@ -137,6 +137,13 @@ pub struct EsmIndex {
     pub spells: HashMap<u32, SpelRecord>,
     /// `MGEF` magic effects — universal bridge for Actor Value mods.
     pub magic_effects: HashMap<u32, MgefRecord>,
+    /// `AVIF` actor-value definitions — SPECIAL attributes, governed
+    /// skills, resistances, resources. Cross-referenced by NPC
+    /// `skill_bonuses`, BOOK skill-book teach forms, perk entry-point
+    /// math, VATS attack costs, and ~300 condition predicates. Pre-fix
+    /// the whole top-level group fell through to the catch-all skip.
+    /// See #519.
+    pub actor_values: HashMap<u32, AvifRecord>,
     // ── Activators / terminals (#521) ───────────────────────────────
     /// `ACTI` activator records — wall switches, vending machines,
     /// lever-activated doors, anything "use"-able that isn't a
@@ -184,6 +191,7 @@ impl EsmIndex {
             + self.perks.len()
             + self.spells.len()
             + self.magic_effects.len()
+            + self.actor_values.len()
             + self.activators.len()
             + self.terminals.len()
             + self.cells.cells.len()
@@ -424,6 +432,13 @@ pub fn parse_esm_with_load_order(
             b"MGEF" => extract_records(&mut reader, end, b"MGEF", &mut |fid, subs| {
                 index.magic_effects.insert(fid, parse_mgef(fid, subs));
             })?,
+            // AVIF actor-value records (#519). Pre-fix every NPC
+            // skill-bonus, BOOK skill-book teach ref, and AVIF-keyed
+            // condition predicate dangled because the top-level group
+            // hit the catch-all skip.
+            b"AVIF" => extract_records(&mut reader, end, b"AVIF", &mut |fid, subs| {
+                index.actor_values.insert(fid, parse_avif(fid, subs));
+            })?,
             // ACTI / TERM #521 — dispatch pulled out of the cell
             // MODL catch-all so SCRI / menu-tree cross-refs survive.
             // cells.statics still picks them up via the MODL pass so
@@ -444,7 +459,8 @@ pub fn parse_esm_with_load_order(
         "ESM parsed: {} cells, {} statics, {} items, {} containers, {} LVLI, {} LVLN, {} LVLC, \
          {} NPCs, {} creatures, {} races, {} classes, {} factions, {} globals, {} game settings, \
          {} weathers, {} climates, {} scripts, {} packages, {} quests, {} dialogues, \
-         {} messages, {} perks, {} spells, {} magic effects, {} activators, {} terminals",
+         {} messages, {} perks, {} spells, {} magic effects, {} actor values, \
+         {} activators, {} terminals",
         index.cells.cells.len(),
         index.cells.statics.len(),
         index.items.len(),
@@ -469,6 +485,7 @@ pub fn parse_esm_with_load_order(
         index.perks.len(),
         index.spells.len(),
         index.magic_effects.len(),
+        index.actor_values.len(),
         index.activators.len(),
         index.terminals.len(),
     );
@@ -740,6 +757,45 @@ mod tests {
             index.hair.len()
         );
 
+        // #519 — AVIF actor-value records. FNV ships ~70 vanilla
+        // AVIFs (7 SPECIAL + 13 governed skills + ~50 derived
+        // resources/resistances/VATS targets); audit floor of 30
+        // is the conservative threshold from the issue body.
+        eprintln!("FNV AVIF: {} actor values", index.actor_values.len());
+        assert!(
+            index.actor_values.len() >= 30,
+            "expected ≥30 AVIF actor values, got {}",
+            index.actor_values.len()
+        );
+        // Sanity: FNV ships AVIFs under the "AV<Name>" convention
+        // (AVStrength, AVAgility, AVBigGuns, …). Verify both that
+        // the EDIDs round-trip non-empty *and* that the SPECIAL
+        // attribute set is present.
+        let nonempty = index
+            .actor_values
+            .values()
+            .filter(|av| !av.editor_id.is_empty())
+            .count();
+        assert!(
+            nonempty >= 30,
+            "expected ≥30 AVIFs with non-empty editor_id, got {nonempty}"
+        );
+        for special in [
+            "AVStrength",
+            "AVPerception",
+            "AVEndurance",
+            "AVCharisma",
+            "AVIntelligence",
+            "AVAgility",
+            "AVLuck",
+        ] {
+            let found = index
+                .actor_values
+                .values()
+                .any(|av| av.editor_id == special);
+            assert!(found, "expected SPECIAL AVIF '{special}' to be indexed");
+        }
+
         // Spot-check a known FNV item: Varmint Rifle (form 0x000086A8) should
         // be a Weapon kind with damage and a clip size.
         if let Some(varmint) = index.items.get(&0x000086A8) {
@@ -834,6 +890,45 @@ mod tests {
         assert_eq!(scpt.editor_id, "DummyScript");
         assert_eq!(scpt.compiled_size, 42);
         assert_eq!(scpt.compiled.len(), 42);
+    }
+
+    /// Regression: #519 — a top-level `AVIF` GRUP must dispatch to
+    /// `parse_avif` and land in `EsmIndex.actor_values`. Pre-fix the
+    /// whole group fell through to the catch-all skip, so every NPC
+    /// `skill_bonuses` cross-ref, BOOK skill-book teach ref, and
+    /// AVIF-keyed condition predicate dangled.
+    #[test]
+    fn avif_group_dispatches_to_actor_values_map() {
+        let mut avsk = Vec::new();
+        avsk.extend_from_slice(&1.0f32.to_le_bytes());
+        avsk.extend_from_slice(&0.0f32.to_le_bytes());
+        avsk.extend_from_slice(&1.5f32.to_le_bytes());
+        avsk.extend_from_slice(&2.0f32.to_le_bytes());
+        let subs: Vec<(&[u8; 4], Vec<u8>)> = vec![
+            (b"EDID", b"SmallGuns\0".to_vec()),
+            (b"FULL", b"Small Guns\0".to_vec()),
+            (b"CNAM", 1u32.to_le_bytes().to_vec()),
+            (b"AVSK", avsk),
+        ];
+        let record = build_record(b"AVIF", 0xBEEF_002B, &subs);
+        let group = wrap_group(b"AVIF", &record);
+        let mut tes4 = build_record(b"TES4", 0, &[]);
+        tes4.extend_from_slice(&group);
+        let index = parse_esm(&tes4).unwrap();
+
+        assert_eq!(
+            index.actor_values.len(),
+            1,
+            "AVIF must populate the actor_values map"
+        );
+        let avif = index
+            .actor_values
+            .get(&0xBEEF_002B)
+            .expect("AVIF indexed");
+        assert_eq!(avif.editor_id, "SmallGuns");
+        assert_eq!(avif.full_name, "Small Guns");
+        assert_eq!(avif.category, 1);
+        assert!(avif.skill_scaling.is_some());
     }
 
     /// Regression: #442 — a top-level `CREA` GRUP must dispatch to

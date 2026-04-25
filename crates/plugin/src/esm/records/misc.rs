@@ -725,6 +725,66 @@ pub fn parse_term(form_id: u32, subs: &[SubRecord]) -> TermRecord {
     out
 }
 
+/// Actor Value Information record (`AVIF`). Defines the ~30 actor
+/// values FO3/FNV expose to the perk / VATS / SPECIAL pipelines —
+/// Strength, Endurance, CombatSkill, every governed skill, plus
+/// resistances + resources. Skyrim+ adds a per-skill perk-tree
+/// graph (PNAM/INAM/CNAM section list); only the FO3/FNV-shape
+/// fields are captured here. The Skyrim perk-tree decoder lands
+/// alongside the perk-graph consumer.
+///
+/// Pre-fix the whole top-level group fell through the catch-all
+/// skip in `parse_esm`, so every NPC `skill_bonuses` cross-ref,
+/// every BOOK skill-book ref, and every AVIF-keyed condition
+/// predicate (~300 condition functions) dangled. See #519.
+#[derive(Debug, Clone, Default)]
+pub struct AvifRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    pub full_name: String,
+    /// `DESC` — long description shown in the Pip-Boy / skills UI.
+    pub description: String,
+    /// `ANAM` — short-form abbreviation. Only present on a handful
+    /// of values (1Hand, 2Hand, etc.); empty otherwise.
+    pub abbreviation: String,
+    /// `CNAM` — skill category for skill-typed AVIFs:
+    /// 0 = None, 1 = Combat, 2 = Magic, 3 = Stealth.
+    /// Non-skill AVIFs reuse the four bytes for opaque flag data
+    /// (kept verbatim — semantics differ per game, decoded by the
+    /// consuming subsystem).
+    pub category: u32,
+    /// `AVSK` — skill-scaling tuple (only present for skill AVIFs):
+    /// `[skill_use_mult, skill_use_offset, skill_improve_mult, skill_improve_offset]`.
+    /// `None` for non-skill records (resistances, resources, attributes).
+    pub skill_scaling: Option<[f32; 4]>,
+}
+
+pub fn parse_avif(form_id: u32, subs: &[SubRecord]) -> AvifRecord {
+    let mut out = AvifRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
+            b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
+            b"ANAM" => out.abbreviation = read_zstring(&sub.data),
+            b"CNAM" => out.category = read_u32_at(&sub.data, 0).unwrap_or(0),
+            b"AVSK" if sub.data.len() >= 16 => {
+                out.skill_scaling = Some([
+                    read_f32_at(&sub.data, 0).unwrap_or(0.0),
+                    read_f32_at(&sub.data, 4).unwrap_or(0.0),
+                    read_f32_at(&sub.data, 8).unwrap_or(0.0),
+                    read_f32_at(&sub.data, 12).unwrap_or(0.0),
+                ]);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1018,6 +1078,45 @@ mod tests {
         assert_eq!(t.menu_items[0], "Open Vault Door");
         assert_eq!(t.menu_items[2], "Disable Security");
         assert_eq!(t.script_form_id, 0x0004_2CD2);
+    }
+
+    #[test]
+    fn parse_avif_skill_record_decodes_avsk_and_category() {
+        // Small Guns: skill, Combat category, full AVSK tuple.
+        let mut avsk = Vec::new();
+        avsk.extend_from_slice(&1.0f32.to_le_bytes()); // skill_use_mult
+        avsk.extend_from_slice(&0.0f32.to_le_bytes()); // skill_use_offset
+        avsk.extend_from_slice(&1.5f32.to_le_bytes()); // skill_improve_mult
+        avsk.extend_from_slice(&2.0f32.to_le_bytes()); // skill_improve_offset
+        let subs = vec![
+            sub(b"EDID", b"SmallGuns\0"),
+            sub(b"FULL", b"Small Guns\0"),
+            sub(b"DESC", b"Affects accuracy with pistols and rifles.\0"),
+            sub(b"ANAM", b"SG\0"),
+            sub(b"CNAM", &1u32.to_le_bytes()), // Combat
+            sub(b"AVSK", &avsk),
+        ];
+        let a = parse_avif(0x0000_002B, &subs);
+        assert_eq!(a.editor_id, "SmallGuns");
+        assert_eq!(a.full_name, "Small Guns");
+        assert_eq!(a.abbreviation, "SG");
+        assert_eq!(a.category, 1);
+        let scaling = a.skill_scaling.expect("AVSK populated for skill records");
+        assert_eq!(scaling, [1.0, 0.0, 1.5, 2.0]);
+    }
+
+    #[test]
+    fn parse_avif_non_skill_record_has_no_avsk() {
+        // Strength: SPECIAL attribute — no AVSK, no category set.
+        let subs = vec![
+            sub(b"EDID", b"Strength\0"),
+            sub(b"FULL", b"Strength\0"),
+            sub(b"DESC", b"Raw physical power.\0"),
+        ];
+        let a = parse_avif(0x0000_0000, &subs);
+        assert_eq!(a.editor_id, "Strength");
+        assert_eq!(a.category, 0);
+        assert!(a.skill_scaling.is_none());
     }
 
     #[test]
