@@ -15,7 +15,17 @@ const uint TILES_Y = 9;
 const uint SLICES_Z = 24;
 const uint MAX_LIGHTS_PER_CLUSTER = 32;
 const float NEAR = 0.1;
-const float FAR = 10000.0;
+// FAR floor — never compress the cluster grid below this even when a
+// cell ships fog_far below 10000. Pre-#628 the value was hardcoded
+// here; FNV exterior CLMT routinely pushes fog_far to 30K-80K and
+// every light past 10000 fell outside every slice's AABB. The
+// `clusterFar()` helper below reads the same `screen.w` (fog_far)
+// the geometry pass uses and clamps to this floor.
+const float FAR_FLOOR = 10000.0;
+// Fallback when the camera UBO's `screen.w` is unset (fog disabled or
+// ESM authored fog_far == 0). Matches `Camera::default::far` so
+// distant scene-graph lights still land in some cluster slice.
+const float FAR_FALLBACK = 50000.0;
 
 struct GpuLight {
     vec4 position_radius;
@@ -55,9 +65,19 @@ layout(std430, set = 0, binding = 3) writeonly buffer ClusterLightIndices {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
+// Source the cluster-grid far plane from the same `screen.w` the
+// geometry pass uses (CLMT fog_far). Clamp to FAR_FLOOR so cells with
+// short fog don't shrink the grid below pre-#628 behaviour, and fall
+// back to FAR_FALLBACK when fog is disabled. See #628 / FNV-D4-01.
+float clusterFar() {
+    return screen.w > 1.0 ? max(screen.w, FAR_FLOOR) : FAR_FALLBACK;
+}
+
 // Exponential depth slicing in world-space distance from camera.
-float sliceDepth(uint slice) {
-    return NEAR * pow(FAR / NEAR, float(slice) / float(SLICES_Z));
+// `clusterFar` is the per-frame cluster-grid extent; pass the value
+// from `clusterFar()` rather than re-reading the UBO inside the loop.
+float sliceDepth(uint slice, float clusterFarVal) {
+    return NEAR * pow(clusterFarVal / NEAR, float(slice) / float(SLICES_Z));
 }
 
 // Unproject an NDC point to world space via inverse(viewProj).
@@ -92,8 +112,12 @@ void main() {
     float ndcMaxY = float(tileY + 1) / float(TILES_Y) * 2.0 - 1.0;
 
     // Depth boundaries for this slice (world-space distance from camera).
-    float zNear = sliceDepth(sliceZ);
-    float zFar = sliceDepth(sliceZ + 1);
+    // #628 — `clusterFar` sources from CLMT fog_far rather than the old
+    // hardcoded 10000.0 so exterior weather (FNV Wasteland 30K, Skyrim
+    // Tamriel up to 80K) actually fits inside the cluster grid.
+    float clusterFarVal = clusterFar();
+    float zNear = sliceDepth(sliceZ, clusterFarVal);
+    float zFar = sliceDepth(sliceZ + 1, clusterFarVal);
 
     // Unproject the 4 tile corners to world space at the near plane, then
     // build actual view rays from the camera through each corner. Walking

@@ -215,7 +215,12 @@ const uint CLUSTER_TILES_X = 16;
 const uint CLUSTER_TILES_Y = 9;
 const uint CLUSTER_SLICES_Z = 24;
 const float CLUSTER_NEAR = 0.1;
-const float CLUSTER_FAR = 10000.0;
+// #628 — cluster-grid far plane sourced from CLMT fog_far (`screen.w`)
+// at runtime. Floor + fallback mirror cluster_cull.comp's
+// FAR_FLOOR (10000) and FAR_FALLBACK (50000); the per-frame value
+// is computed once in `getClusterIndex` below.
+const float CLUSTER_FAR_FLOOR = 10000.0;
+const float CLUSTER_FAR_FALLBACK = 50000.0;
 
 const float PI = 3.14159265359;
 
@@ -360,6 +365,14 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist) {
 // ── Cluster lookup ──────────────────────────────────────────────────
 
 // Compute which cluster this fragment belongs to from screen position + depth.
+//
+// #628 — `clusterFar` sources from CLMT fog_far (`screen.w`) at runtime
+// rather than the pre-fix hardcoded 10000.0. Mirror of
+// `cluster_cull.comp::clusterFar()`. The `LOG_RATIO` (was a precomputed
+// const for the 0.1→10000 case) is now computed once per fragment;
+// adds one `log()` per fragment but keeps the math byte-identical
+// with the cluster builder. Both shaders MUST agree on the value or
+// fragments will read out of the wrong cluster slice.
 uint getClusterIndex(vec2 fragCoord, float viewDepth, vec2 screenSize) {
     uint tileX = uint(fragCoord.x / screenSize.x * float(CLUSTER_TILES_X));
     uint tileY = uint(fragCoord.y / screenSize.y * float(CLUSTER_TILES_Y));
@@ -367,9 +380,11 @@ uint getClusterIndex(vec2 fragCoord, float viewDepth, vec2 screenSize) {
     tileY = min(tileY, CLUSTER_TILES_Y - 1);
 
     // Exponential depth slicing (must match cluster_cull.comp).
-    // log(CLUSTER_FAR / CLUSTER_NEAR) = log(100000) ≈ 11.5129.
-    const float LOG_RATIO = 11.512925;
-    uint sliceZ = uint(log(max(viewDepth, CLUSTER_NEAR) / CLUSTER_NEAR) / LOG_RATIO * float(CLUSTER_SLICES_Z));
+    float clusterFar = screen.w > 1.0
+        ? max(screen.w, CLUSTER_FAR_FLOOR)
+        : CLUSTER_FAR_FALLBACK;
+    float logRatio = log(clusterFar / CLUSTER_NEAR);
+    uint sliceZ = uint(log(max(viewDepth, CLUSTER_NEAR) / CLUSTER_NEAR) / logRatio * float(CLUSTER_SLICES_Z));
     sliceZ = min(sliceZ, CLUSTER_SLICES_Z - 1);
 
     return tileX + tileY * CLUSTER_TILES_X + sliceZ * CLUSTER_TILES_X * CLUSTER_TILES_Y;
