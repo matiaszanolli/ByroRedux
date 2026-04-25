@@ -804,11 +804,28 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
     // the Num Added / Added Particles Base fields (also `!#BS202#`) are all
     // absent on Bethesda streams.
     if type_name != "NiParticlesData" {
-        // Particle Info: NiParticleInfo × num_vertices. Non-Bethesda only.
-        // Size per entry: Vector3 velocity + Vector3 rotation_axis + f32 age +
-        // f32 life_span + f32 last_update + i16 generation + u16 code = 40 bytes.
-        // (Derived from NiParticleInfo struct; skip if we ever hit one.)
+        // Particle Info: NiParticleInfo × num_vertices. Per nif.xml line 4030
+        // (`vercond="!#BS202#"`) the array is present on every non-BS202
+        // stream — Oblivion (20.0.0.4) is the primary consumer in our corpus.
+        // Pre-#581 the bytes were skipped entirely, so a 482-byte gap
+        // (15 particles × 28 + 4-byte spawn-trailer) cascaded ~80% of the
+        // Oblivion `NiUnknown` pool via runtime-size-cache recovery.
         //
+        // Per-entry size depends on the stream version (NiParticleInfo
+        // struct in nif.xml line 2263, `Rotation Axis until="10.4.0.1"`):
+        //   ≤ 10.4.0.1: Velocity(12) + Rotation Axis(12) + Age/Life/Update(12)
+        //                + Spawn Generation(2) + Code(2)                  = 40 B
+        //   > 10.4.0.1: Velocity(12) + Age/Life/Update(12)
+        //                + Spawn Generation(2) + Code(2)                  = 28 B
+        // Oblivion is 20.0.0.4 → 28-byte path.
+        if !is_bs_202 {
+            let info_size: u64 = if stream.version() <= NifVersion(0x0A040001) {
+                40
+            } else {
+                28
+            };
+            stream.skip(count * info_size)?;
+        }
         // Has Rotation Speeds (since 20.0.0.2) — bool always read; array !BS202.
         if stream.version() >= NifVersion(0x14000002) {
             let has_rotation_speeds = stream.read_byte_bool()?;
@@ -1130,6 +1147,200 @@ mod tests {
             .expect("FNV NiPSysGrowFadeModifier should parse cleanly");
         assert_eq!(stream.position() as usize, d.len());
         assert_eq!(block.original_type, "NiPSysGrowFadeModifier");
+    }
+
+    /// Oblivion-style header (V20_0_0_4, BSVER 11). The `strings` table
+    /// is empty — NiPSysData carries no name-indexed fields on this path.
+    fn make_header_oblivion() -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_0_0_4,
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 11,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    /// Build the NiGeometryData base header bytes that
+    /// `parse_geometry_data_base` consumes for the supplied (version,
+    /// num_vertices, has_vertices, has_additional_data) shape, with
+    /// data_flags/normals/colors/UVs all empty. Mirrors the reader at
+    /// `crates/nif/src/blocks/tri_shape.rs:787` exactly so test fixtures
+    /// stay in lockstep with the schema gates.
+    fn nigeo_base_bytes(num_vertices: u16, version: NifVersion) -> Vec<u8> {
+        let mut d = Vec::new();
+        // group_id since 10.1.0.114
+        if version >= NifVersion(0x0A010072) {
+            d.extend_from_slice(&0i32.to_le_bytes());
+        }
+        d.extend_from_slice(&num_vertices.to_le_bytes());
+        // keep/compress flags since 10.1.0.0
+        if version >= NifVersion(0x0A010000) {
+            d.push(0u8);
+            d.push(0u8);
+        }
+        d.push((num_vertices > 0) as u8); // has_vertices
+        for _ in 0..num_vertices {
+            d.extend_from_slice(&0.0f32.to_le_bytes());
+            d.extend_from_slice(&0.0f32.to_le_bytes());
+            d.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        // data_flags since 10.0.1.0
+        if version >= NifVersion(0x0A000100) {
+            d.extend_from_slice(&0u16.to_le_bytes());
+        }
+        d.push(0u8); // has_normals = false
+                     // bounding sphere (12 + 4)
+        for _ in 0..4 {
+            d.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        d.push(0u8); // has_vertex_colors = false
+                     // (no UV sets — data_flags = 0)
+                     // consistency_flags since 10.0.1.0
+        if version >= NifVersion(0x0A000100) {
+            d.extend_from_slice(&0u16.to_le_bytes());
+        }
+        // additional_data_ref since 20.0.0.4
+        if version >= NifVersion(0x14000004) {
+            d.extend_from_slice(&(-1i32).to_le_bytes());
+        }
+        d
+    }
+
+    /// Regression: #581 — `parse_particles_data` skipped the `Particle Info`
+    /// array entirely on pre-BS202 streams. Oblivion 20.0.0.4 has bsver=11
+    /// but version < 20.2.0.7 so `is_bs_202 = false`, meaning every
+    /// NiPSysData blob's particle metadata (28 bytes per particle on
+    /// post-10.4.0.1 streams) used to vanish from the cursor and cascade
+    /// drift into every following block. Test asserts the parser now
+    /// consumes exactly the byte range the Particle Info array occupies.
+    #[test]
+    fn parse_particles_data_skips_particle_info_on_oblivion() {
+        let header = make_header_oblivion();
+        let mut d = nigeo_base_bytes(2, header.version);
+        // NiParticlesData tail (Bethesda-particle subset on !BS202 / Oblivion).
+        d.push(0u8); // has_radii (since 10.1.0.0)
+        d.extend_from_slice(&0u16.to_le_bytes()); // num_active_particles
+        d.push(0u8); // has_sizes
+        d.push(0u8); // has_rotations (since 10.0.1.0)
+        d.push(0u8); // has_rotation_angles (since 20.0.0.4)
+        d.push(0u8); // has_rotation_axes
+                     // BS202 trailers — Oblivion is !is_bs_202 → not present.
+
+        // NiPSysData own: Particle Info × num_vertices. Oblivion is
+        // post-10.4.0.1 → 28 B per particle × 2 = 56 B. Pre-#581 these
+        // 56 bytes were not consumed and cascaded into block drift.
+        d.extend_from_slice(&[0u8; 2 * 28]);
+
+        d.push(0u8); // has_rotation_speeds (since 20.0.0.2)
+        d.extend_from_slice(&0u16.to_le_bytes()); // num_added (!BS202)
+        d.extend_from_slice(&0u16.to_le_bytes()); // added_particles_base
+
+        let mut stream = NifStream::new(&d, &header);
+        let block = parse_particles_data(&mut stream, "NiPSysData")
+            .expect("Oblivion NiPSysData with 2 particles should parse cleanly");
+        assert_eq!(
+            stream.position() as usize,
+            d.len(),
+            "stream must land exactly at end-of-block — Particle Info skip is what closes the gap"
+        );
+        assert_eq!(block.original_type, "NiPSysData");
+    }
+
+    /// Sibling guard: pre-10.4.0.1 streams (Morrowind 4.x, early Gamebryo)
+    /// carry the 40-byte NiParticleInfo layout (Rotation Axis is
+    /// `until="10.4.0.1"` per nif.xml line 2267). Test parses NiPSysData
+    /// at the boundary version 10.4.0.1 with `num_vertices = 1` to
+    /// confirm the version branch picks 40 B.
+    ///
+    /// NOTE: NiPSysData isn't widespread in real pre-10.4 content; the
+    /// test is a pure version-branch guard that the 40-byte path is
+    /// reachable and exact.
+    #[test]
+    fn parse_particles_data_uses_40_byte_particle_info_on_pre_10_4_0_1() {
+        let version = NifVersion(0x0A040001); // 10.4.0.1 — the boundary itself
+        let header = NifHeader {
+            version,
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        let mut d = nigeo_base_bytes(1, version);
+        // NiParticlesData tail at 10.4.0.1: has_radii since 10.1.0.0 ✓,
+        // has_rotations since 10.0.1.0 ✓; has_rotation_angles/axes
+        // since 20.0.0.4 → NOT present.
+        d.push(0u8); // has_radii
+        d.extend_from_slice(&0u16.to_le_bytes()); // num_active_particles
+        d.push(0u8); // has_sizes
+        d.push(0u8); // has_rotations
+
+        // Particle Info: 1 × 40 = 40 B (pre-10.4.0.1 layout — Rotation
+        // Axis present).
+        d.extend_from_slice(&[0u8; 40]);
+
+        // has_rotation_speeds gated on >= 20.0.0.2; 10.4.0.1 < that → not
+        // read. Same for num_added / added_particles_base.
+
+        let mut stream = NifStream::new(&d, &header);
+        let block = parse_particles_data(&mut stream, "NiPSysData")
+            .expect("10.4.0.1 NiPSysData should parse with 40-byte Particle Info");
+        assert_eq!(
+            stream.position() as usize,
+            d.len(),
+            "10.4.0.1 layout must consume the full 40 B per particle (Rotation Axis present)"
+        );
+        assert_eq!(block.original_type, "NiPSysData");
+    }
+
+    /// Sibling guard: BS202 streams (FO3+ at 20.2.0.7+) MUST NOT skip
+    /// the Particle Info bytes — the array is `vercond="!#BS202#"`, so
+    /// the field is absent on Bethesda streams entirely. Pre-fix
+    /// behavior on this path was already correct; the test guards
+    /// against a future refactor accidentally dropping the `!is_bs_202`
+    /// gate.
+    #[test]
+    fn parse_particles_data_does_not_skip_particle_info_on_bs202() {
+        let header = make_header_fnv(); // 20.2.0.7, bsver=34 → is_bs_202 = true
+                                        // BS202+non-NiParticlesData uses parse_psys_geometry_data_base
+                                        // → array_count = 0 regardless of has_vertices, but the bool
+                                        // headers are still serialized.
+        let mut d = nigeo_base_bytes(0, header.version);
+        d.push(0u8); // has_radii
+        d.extend_from_slice(&0u16.to_le_bytes()); // num_active_particles
+        d.push(0u8); // has_sizes
+        d.push(0u8); // has_rotations
+        d.push(0u8); // has_rotation_angles
+        d.push(0u8); // has_rotation_axes
+                     // BS202 trailers (FNV bsver=34 → byte-sized num_subtex, no
+                     // bsver>34 aspect block).
+        d.push(0u8); // has_texture_indices
+        d.push(0u8); // num_subtex_offsets (byte)
+                     // NO Particle Info — gated on !is_bs_202 (false here).
+        d.push(0u8); // has_rotation_speeds (since 20.0.0.2)
+                     // NO num_added / added_particles_base — !is_bs_202 (false here).
+
+        let mut stream = NifStream::new(&d, &header);
+        let block = parse_particles_data(&mut stream, "NiPSysData")
+            .expect("FNV NiPSysData should parse cleanly with no Particle Info skip");
+        assert_eq!(
+            stream.position() as usize,
+            d.len(),
+            "BS202 path must NOT skip Particle Info bytes (the field is absent)"
+        );
+        assert_eq!(block.original_type, "NiPSysData");
     }
 
     /// Regression: #383 — `parse_rotation_modifier` was missing the
