@@ -260,6 +260,18 @@ pub(super) struct MaterialInfo {
     pub alpha: f32,
     pub env_map_scale: f32,
     pub has_material_data: bool,
+    /// Set by any property that contributes a UV transform — the
+    /// Skyrim+ shader paths copy `uv_offset` / `uv_scale` directly off
+    /// `BSLightingShaderProperty` / `BSEffectShaderProperty`, while the
+    /// pre-Skyrim path picks the base-slot `TexTransform` on
+    /// `NiTexturingProperty`. Pre-#435 the NiTexturingProperty branch
+    /// gated on `has_material_data`, so a `NiMaterialProperty` listed
+    /// before `NiTexturingProperty` (the common Oblivion / FO3 / FNV
+    /// property order) silently dropped the texture-slot UV transform —
+    /// even though `NiMaterialProperty` carries no UV transform of its
+    /// own, the two flags are orthogonal. See audit
+    /// `AUDIT_NIF_2026-04-18.md` finding N06.
+    pub has_uv_transform: bool,
     /// Depth test enabled (from NiZBufferProperty). Default: true.
     pub z_test: bool,
     /// Depth write enabled (from NiZBufferProperty). Default: true.
@@ -431,6 +443,7 @@ impl Default for MaterialInfo {
             alpha: 1.0,
             env_map_scale: 0.0,
             has_material_data: false,
+            has_uv_transform: false,
             z_test: true,
             z_write: true,
             z_function: 3, // LESSEQUAL — Gamebryo default
@@ -634,6 +647,7 @@ pub(super) fn extract_material_info_from_refs(
             info.glossiness = shader.glossiness;
             info.uv_offset = shader.uv_offset;
             info.uv_scale = shader.uv_scale;
+            info.has_uv_transform = true;
             info.alpha = shader.alpha;
             info.material_kind = shader.shader_type as u8;
             apply_shader_type_data(&mut info, &shader.shader_type_data);
@@ -664,6 +678,7 @@ pub(super) fn extract_material_info_from_refs(
                 info.emissive_mult = shader.base_color_scale;
                 info.uv_offset = shader.uv_offset;
                 info.uv_scale = shader.uv_scale;
+                info.has_uv_transform = true;
                 // `base_color[3]` is BGEM's alpha — the existing
                 // `NiAlphaProperty` / `info.alpha_blend` path owns
                 // binary transparency, but `mat_alpha` rides through
@@ -848,13 +863,19 @@ pub(super) fn extract_material_info_from_refs(
             // them per-vertex to every sampled texture — fine for the
             // common case where base, detail, glow and parallax share a
             // UV set, which holds for Oblivion/FO3/FNV static meshes. See
-            // issue #219. Only overwrite the defaults — a BSShader path
-            // earlier in the pass may have already set these.
-            if !info.has_material_data {
+            // issues #219 and #435. Only overwrite when no shader path
+            // earlier in the pass has already supplied a UV transform —
+            // gated on `has_uv_transform` rather than `has_material_data`
+            // (the latter is set by `NiMaterialProperty`, which carries
+            // no UV transform of its own and so was wrongly suppressing
+            // this branch when it preceded `NiTexturingProperty` in
+            // Oblivion / FO3 / FNV property arrays).
+            if !info.has_uv_transform {
                 if let Some(base) = tex_prop.base_texture.as_ref() {
                     if let Some(tx) = base.transform {
                         info.uv_offset = tx.translation;
                         info.uv_scale = tx.scale;
+                        info.has_uv_transform = true;
                     }
                 }
             }
@@ -2035,6 +2056,178 @@ mod texture_slot_3_4_5_tests {
         assert!(info.parallax_map.is_none());
         assert!(info.env_map.is_none());
         assert!(info.env_mask.is_none());
+    }
+
+    /// Regression: #435 / NIF-D4-N06 — when a NiTriShape's property
+    /// list is `[NiMaterialProperty, NiTexturingProperty]` (the common
+    /// Oblivion / FO3 / FNV order), the base-slot UV transform on the
+    /// `NiTexturingProperty` must still reach `MaterialInfo`. Pre-fix
+    /// the gate at the texture-slot UV-transform copy site was
+    /// `!info.has_material_data`, which `NiMaterialProperty` had
+    /// already set to `true` — silently dropping authored UV scrolls
+    /// on tapestries / signs / banner cloth.
+    #[test]
+    fn ni_texturing_uv_transform_survives_preceding_ni_material_property() {
+        use crate::blocks::properties::{
+            NiMaterialProperty, NiTexturingProperty, TexDesc, TexTransform,
+        };
+        use crate::types::NiColor;
+
+        let mat = NiMaterialProperty {
+            net: empty_net(),
+            ambient: NiColor::default(),
+            diffuse: NiColor {
+                r: 0.5,
+                g: 0.6,
+                b: 0.7,
+            },
+            specular: NiColor::default(),
+            emissive: NiColor {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+            },
+            shininess: 50.0,
+            alpha: 1.0,
+            emissive_mult: 1.0,
+        };
+        let tex = NiTexturingProperty {
+            net: empty_net(),
+            flags: 0,
+            texture_count: 1,
+            base_texture: Some(TexDesc {
+                source_ref: BlockRef::NULL,
+                flags: 0,
+                transform: Some(TexTransform {
+                    translation: [0.5, 0.0],
+                    scale: [2.0, 1.0],
+                    rotation: 0.0,
+                    transform_method: 0,
+                    center: [0.0, 0.0],
+                }),
+            }),
+            dark_texture: None,
+            detail_texture: None,
+            gloss_texture: None,
+            glow_texture: None,
+            bump_texture: None,
+            normal_texture: None,
+            parallax_texture: None,
+            parallax_offset: 0.0,
+            decal_textures: Vec::new(),
+        };
+        // Property order intentionally mirrors how Oblivion / FO3 / FNV
+        // ship NiTriShape properties: NiMaterialProperty FIRST.
+        let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(mat), Box::new(tex)];
+        let scene = NifScene {
+            blocks,
+            ..NifScene::default()
+        };
+        let shape = make_tri_shape_with_props(vec![BlockRef(0), BlockRef(1)]);
+        let info = extract_material_info(&scene, &shape, &[]);
+        assert_eq!(
+            info.uv_offset,
+            [0.5, 0.0],
+            "NiTexturingProperty base-slot uv_offset must survive a preceding NiMaterialProperty"
+        );
+        assert_eq!(
+            info.uv_scale,
+            [2.0, 1.0],
+            "NiTexturingProperty base-slot uv_scale must survive a preceding NiMaterialProperty"
+        );
+        assert!(
+            info.has_uv_transform,
+            "has_uv_transform must be set after a UV transform copy"
+        );
+        // Sanity: the NiMaterialProperty values still flowed through.
+        assert!(info.has_material_data);
+        assert!((info.diffuse_color[0] - 0.5).abs() < 1e-6);
+    }
+
+    /// Regression: #435 — a Skyrim+ `BSLightingShaderProperty`'s
+    /// uv_offset / uv_scale must also stamp `has_uv_transform`, so a
+    /// later `NiTexturingProperty` (rare but possible on mixed-property
+    /// meshes) cannot silently overwrite the shader-supplied transform.
+    #[test]
+    fn bs_lighting_shader_uv_transform_blocks_later_ni_texturing_property() {
+        use crate::blocks::properties::{
+            NiTexturingProperty, TexDesc, TexTransform,
+        };
+
+        let shader = BSLightingShaderProperty {
+            shader_type: 0,
+            net: empty_net(),
+            material_reference: false,
+            shader_flags_1: 0,
+            shader_flags_2: 0,
+            sf1_crcs: Vec::new(),
+            sf2_crcs: Vec::new(),
+            uv_offset: [0.25, 0.75],
+            uv_scale: [4.0, 4.0],
+            texture_set_ref: BlockRef::NULL,
+            emissive_color: [0.0; 3],
+            emissive_multiple: 1.0,
+            texture_clamp_mode: 0,
+            alpha: 1.0,
+            refraction_strength: 0.0,
+            glossiness: 80.0,
+            specular_color: [1.0; 3],
+            specular_strength: 1.0,
+            lighting_effect_1: 0.0,
+            lighting_effect_2: 0.0,
+            subsurface_rolloff: 0.0,
+            rimlight_power: 0.0,
+            backlight_power: 0.0,
+            grayscale_to_palette_scale: 1.0,
+            fresnel_power: 5.0,
+            wetness: None,
+            luminance: None,
+            do_translucency: false,
+            translucency: None,
+            texture_arrays: Vec::new(),
+            shader_type_data: ShaderTypeData::None,
+        };
+        let tex = NiTexturingProperty {
+            net: empty_net(),
+            flags: 0,
+            texture_count: 1,
+            base_texture: Some(TexDesc {
+                source_ref: BlockRef::NULL,
+                flags: 0,
+                transform: Some(TexTransform {
+                    translation: [0.99, 0.99],
+                    scale: [9.0, 9.0],
+                    rotation: 0.0,
+                    transform_method: 0,
+                    center: [0.0, 0.0],
+                }),
+            }),
+            dark_texture: None,
+            detail_texture: None,
+            gloss_texture: None,
+            glow_texture: None,
+            bump_texture: None,
+            normal_texture: None,
+            parallax_texture: None,
+            parallax_offset: 0.0,
+            decal_textures: Vec::new(),
+        };
+        let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader), Box::new(tex)];
+        let scene = NifScene {
+            blocks,
+            ..NifScene::default()
+        };
+        // Skyrim+ binds BSLightingShaderProperty via `shader_property_ref`,
+        // not through the legacy properties array — replicating the same
+        // wiring extract_material_info uses.
+        let mut shape = make_tri_shape_with_props(vec![BlockRef(1)]);
+        shape.shader_property_ref = BlockRef(0);
+        let info = extract_material_info(&scene, &shape, &[]);
+        // Shader transform wins — the later NiTexturingProperty must
+        // not stomp it.
+        assert_eq!(info.uv_offset, [0.25, 0.75]);
+        assert_eq!(info.uv_scale, [4.0, 4.0]);
+        assert!(info.has_uv_transform);
     }
 
     // Keep `NiTexturingProperty` imports working — referenced by the
