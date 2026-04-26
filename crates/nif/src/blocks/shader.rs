@@ -325,6 +325,194 @@ impl TallGrassShaderProperty {
     }
 }
 
+/// Skyrim-era shader-flags base shared between [`BSSkyShaderProperty`] and
+/// [`BSWaterShaderProperty`].
+///
+/// Per nif.xml lines 6695-6720, both blocks inherit `BSShaderProperty`
+/// directly (no `texture_clamp_mode`, no `texture_set_ref`, no PP
+/// trailer) and share an identical 4-field prefix on top of
+/// `NiObjectNET`:
+///
+/// * `Shader Flags 1: SkyrimShaderPropertyFlags1`  (u32, BSVER < 132)
+/// * `Shader Flags 2: SkyrimShaderPropertyFlags2`  (u32, BSVER < 132)
+/// * `Num SF1: uint`  + `SF1: BSShaderCRC32 × Num SF1`  (BSVER >= 132)
+/// * `Num SF2: uint`  + `SF2: BSShaderCRC32 × Num SF2`  (BSVER >= 152)
+/// * `UV Offset: TexCoord` (2 × f32)
+/// * `UV Scale: TexCoord`  (2 × f32)
+///
+/// Returned in the order `(flags1, flags2, sf1_crcs, sf2_crcs,
+/// uv_offset, uv_scale)`. Pre-#713 both block types were aliased to
+/// `BSShaderPPLightingProperty::parse`, which over-consumed 12-28 extra
+/// bytes (`texture_clamp_mode + texture_set_ref + refraction +
+/// parallax`) — the per-block tail (sky filename / sky type / water
+/// flags) never reached the importer.
+fn parse_skyrim_shader_base(
+    stream: &mut NifStream,
+) -> io::Result<(u32, u32, Vec<u32>, Vec<u32>, [f32; 2], [f32; 2])> {
+    let bsver = stream.bsver();
+
+    let (shader_flags_1, shader_flags_2) = if bsver < 132 {
+        (stream.read_u32_le()?, stream.read_u32_le()?)
+    } else {
+        (0, 0)
+    };
+
+    let mut sf1_crcs = Vec::new();
+    let mut sf2_crcs = Vec::new();
+    if bsver >= 132 {
+        let num_sf1 = stream.read_u32_le()? as usize;
+        let num_sf2 = if bsver >= 152 {
+            stream.read_u32_le()? as usize
+        } else {
+            0
+        };
+        sf1_crcs.reserve(num_sf1);
+        for _ in 0..num_sf1 {
+            sf1_crcs.push(stream.read_u32_le()?);
+        }
+        sf2_crcs.reserve(num_sf2);
+        for _ in 0..num_sf2 {
+            sf2_crcs.push(stream.read_u32_le()?);
+        }
+    }
+
+    let uv_offset = [stream.read_f32_le()?, stream.read_f32_le()?];
+    let uv_scale = [stream.read_f32_le()?, stream.read_f32_le()?];
+
+    Ok((
+        shader_flags_1,
+        shader_flags_2,
+        sf1_crcs,
+        sf2_crcs,
+        uv_offset,
+        uv_scale,
+    ))
+}
+
+/// `BSSkyShaderProperty` — Skyrim-era sky shader (nif.xml line 6708).
+///
+/// `versions="#SKY_AND_LATER#"`, `inherit="BSShaderProperty"` directly.
+/// Carries the Skyrim shader-flags prefix (or BSVER >= 132 CRC arrays),
+/// then `UV Offset / UV Scale`, then a per-block tail of
+/// `Source Texture: SizedString` + `Sky Object Type: u32`.
+///
+/// Pre-#713 aliased to `BSShaderPPLightingProperty::parse` which read
+/// the FO3 PP trailer — so the sky filename + object type never
+/// reached the importer. Drift was masked by `block_sizes` recovery
+/// (recurring "consumed N, expected M" warnings).
+///
+/// Distinct from FO3/FNV [`SkyShaderProperty`] which has its own
+/// 6335-line entry — the FO3 variant inherits `BSShaderLightingProperty`
+/// (carries `texture_clamp_mode`); the Skyrim variant does not.
+#[derive(Debug)]
+pub struct BSSkyShaderProperty {
+    pub net: NiObjectNETData,
+    pub shader_flags_1: u32,
+    pub shader_flags_2: u32,
+    /// CRC32-hashed shader flag list (BSVER >= 132). Replaces the u32
+    /// pair from BSVER 132 onward — same `BSShaderCRC32` enum as on
+    /// `BSLightingShaderProperty`.
+    pub sf1_crcs: Vec<u32>,
+    /// Second CRC32-hashed shader flag list (BSVER >= 152).
+    pub sf2_crcs: Vec<u32>,
+    pub uv_offset: [f32; 2],
+    pub uv_scale: [f32; 2],
+    /// Sky texture file path (clouds, stars, sun glare, moon, etc.).
+    pub source_texture: String,
+    /// Per nif.xml `SkyObjectType`: 0=Texture, 1=Sunglare, 2=Sky,
+    /// 3=Clouds, 5=Stars, 7=Moon/Stars Mask. Selects which sky function
+    /// this property fulfills at render time.
+    pub sky_object_type: u32,
+}
+
+impl NiObject for BSSkyShaderProperty {
+    fn block_type_name(&self) -> &'static str {
+        "BSSkyShaderProperty"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BSSkyShaderProperty {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let net = NiObjectNETData::parse(stream)?;
+        let (shader_flags_1, shader_flags_2, sf1_crcs, sf2_crcs, uv_offset, uv_scale) =
+            parse_skyrim_shader_base(stream)?;
+        let source_texture = stream.read_sized_string()?;
+        let sky_object_type = stream.read_u32_le()?;
+        Ok(Self {
+            net,
+            shader_flags_1,
+            shader_flags_2,
+            sf1_crcs,
+            sf2_crcs,
+            uv_offset,
+            uv_scale,
+            source_texture,
+            sky_object_type,
+        })
+    }
+}
+
+/// `BSWaterShaderProperty` — Skyrim-era water shader (nif.xml line 6695).
+///
+/// `versions="#SKY_AND_LATER#"`, `inherit="BSShaderProperty"` directly.
+/// Carries the Skyrim shader-flags prefix (or BSVER >= 132 CRC arrays),
+/// then `UV Offset / UV Scale`, then a single u32
+/// `Water Shader Flags: WaterShaderPropertyFlags`.
+///
+/// Distinct from FO3/FNV [`WaterShaderProperty`] (nif.xml line 6322) —
+/// the FO3 variant carries no UV transform, no per-block tail, and a
+/// shorter base. Pre-#713 the Skyrim variant was aliased to the FO3 PP
+/// parser and over-consumed 24+ bytes; sky-side parser fix uses the
+/// same shared base.
+#[derive(Debug)]
+pub struct BSWaterShaderProperty {
+    pub net: NiObjectNETData,
+    pub shader_flags_1: u32,
+    pub shader_flags_2: u32,
+    pub sf1_crcs: Vec<u32>,
+    pub sf2_crcs: Vec<u32>,
+    pub uv_offset: [f32; 2],
+    pub uv_scale: [f32; 2],
+    /// Water-specific flags per nif.xml `WaterShaderPropertyFlags`
+    /// (line 6680). Bit-for-bit: 0=Specular, 1=Reflections, 2=Refractions,
+    /// 3=Vertex_UV, 6=Reflections, 7=Refractions, 8=Vertex_UV,
+    /// 9=Vertex_Alpha_Depth, 10=Procedural, 11=Fog, 12=Update_Constants,
+    /// 13=Cubemap. Default `0xC4` per the spec — Reflections + Refractions
+    /// + Cubemap.
+    pub water_shader_flags: u32,
+}
+
+impl NiObject for BSWaterShaderProperty {
+    fn block_type_name(&self) -> &'static str {
+        "BSWaterShaderProperty"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BSWaterShaderProperty {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let net = NiObjectNETData::parse(stream)?;
+        let (shader_flags_1, shader_flags_2, sf1_crcs, sf2_crcs, uv_offset, uv_scale) =
+            parse_skyrim_shader_base(stream)?;
+        let water_shader_flags = stream.read_u32_le()?;
+        Ok(Self {
+            net,
+            shader_flags_1,
+            shader_flags_2,
+            sf1_crcs,
+            sf2_crcs,
+            uv_offset,
+            uv_scale,
+            water_shader_flags,
+        })
+    }
+}
+
 /// BSShaderTextureSet — list of texture file paths for a BSShader.
 ///
 /// Typically 6 textures: diffuse, normal, glow, parallax, env, env mask.

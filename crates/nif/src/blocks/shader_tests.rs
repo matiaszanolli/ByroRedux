@@ -1035,3 +1035,193 @@ fn parse_bs_lighting_fo4_env_map_with_wetness() {
     }
     assert_eq!(stream.position(), data.len() as u64);
 }
+
+// ── #713 / NIF-D3-01 — Skyrim BSSkyShaderProperty / BSWaterShaderProperty ──
+
+/// Build a synthetic Skyrim LE (BSVER=83) `BSSkyShaderProperty`. Layout:
+/// NiObjectNET (12 B) + flags1+flags2 (8 B) + UV offset+scale (16 B) +
+/// source-texture sized string + sky_object_type u32. Total = 36 B + string.
+fn build_bs_sky_shader_property(source_texture: &str, sky_object_type: u32) -> Vec<u8> {
+    let mut data = Vec::new();
+    // NiObjectNET: name (string-table 0), 0 extra-data refs, controller -1.
+    data.extend_from_slice(&0i32.to_le_bytes());
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&(-1i32).to_le_bytes());
+    // Skyrim shader flags: u32 pair on BSVER < 132.
+    data.extend_from_slice(&0x80000000u32.to_le_bytes()); // SF1 default
+    data.extend_from_slice(&0x00000021u32.to_le_bytes()); // SF2 default
+                                                            // UV Offset (2x f32) + UV Scale (2x f32).
+    data.extend_from_slice(&0.0f32.to_le_bytes());
+    data.extend_from_slice(&0.0f32.to_le_bytes());
+    data.extend_from_slice(&1.0f32.to_le_bytes());
+    data.extend_from_slice(&1.0f32.to_le_bytes());
+    // Source Texture (sized string).
+    data.extend_from_slice(&(source_texture.len() as u32).to_le_bytes());
+    data.extend_from_slice(source_texture.as_bytes());
+    // Sky Object Type (u32).
+    data.extend_from_slice(&sky_object_type.to_le_bytes());
+    data
+}
+
+/// Build a synthetic Skyrim LE `BSWaterShaderProperty`. Same prefix as
+/// the sky variant but the per-block tail is just `Water Shader Flags`
+/// (single u32).
+fn build_bs_water_shader_property(water_shader_flags: u32) -> Vec<u8> {
+    let mut data = Vec::new();
+    data.extend_from_slice(&0i32.to_le_bytes());
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&(-1i32).to_le_bytes());
+    data.extend_from_slice(&0x80000008u32.to_le_bytes()); // SF1 default
+    data.extend_from_slice(&0x00000021u32.to_le_bytes()); // SF2 default
+    data.extend_from_slice(&0.0f32.to_le_bytes());
+    data.extend_from_slice(&0.0f32.to_le_bytes());
+    data.extend_from_slice(&1.0f32.to_le_bytes());
+    data.extend_from_slice(&1.0f32.to_le_bytes());
+    data.extend_from_slice(&water_shader_flags.to_le_bytes());
+    data
+}
+
+/// Pre-#713 `BSSkyShaderProperty` was aliased to
+/// `BSShaderPPLightingProperty::parse`, which read the FO3 PP trailer
+/// (`texture_clamp_mode + texture_set_ref + refraction + parallax`)
+/// and over-consumed 12-28 bytes — the sky filename + sky type never
+/// reached the importer. The dedicated parser now consumes exactly
+/// the fields nif.xml line 6708 specifies.
+#[test]
+fn bs_sky_shader_property_parses_skyrim_layout_exactly() {
+    let header = make_skyrim_header();
+    let data = build_bs_sky_shader_property("textures\\sky\\skyrimclouds01.dds", 3); // 3 = Clouds.
+    let mut stream = NifStream::new(&data, &header);
+
+    let prop = BSSkyShaderProperty::parse(&mut stream).unwrap();
+    assert_eq!(prop.shader_flags_1, 0x80000000);
+    assert_eq!(prop.shader_flags_2, 0x21);
+    assert!(prop.sf1_crcs.is_empty(), "BSVER=83 → no CRC arrays");
+    assert!(prop.sf2_crcs.is_empty());
+    assert_eq!(prop.uv_offset, [0.0, 0.0]);
+    assert_eq!(prop.uv_scale, [1.0, 1.0]);
+    assert_eq!(prop.source_texture, "textures\\sky\\skyrimclouds01.dds");
+    assert_eq!(prop.sky_object_type, 3);
+    assert_eq!(
+        stream.position(),
+        data.len() as u64,
+        "parser must consume the block exactly"
+    );
+}
+
+/// `BSWaterShaderProperty` regression — same root cause as the sky
+/// variant. Per-block tail is the single `Water Shader Flags` u32 per
+/// nif.xml line 6705 (`WaterShaderPropertyFlags`, default 0xC4 =
+/// Reflections + Refractions + Cubemap).
+#[test]
+fn bs_water_shader_property_parses_skyrim_layout_exactly() {
+    let header = make_skyrim_header();
+    let data = build_bs_water_shader_property(0xC4);
+    let mut stream = NifStream::new(&data, &header);
+
+    let prop = BSWaterShaderProperty::parse(&mut stream).unwrap();
+    assert_eq!(prop.shader_flags_1, 0x80000008);
+    assert_eq!(prop.shader_flags_2, 0x21);
+    assert!(prop.sf1_crcs.is_empty());
+    assert!(prop.sf2_crcs.is_empty());
+    assert_eq!(prop.uv_offset, [0.0, 0.0]);
+    assert_eq!(prop.uv_scale, [1.0, 1.0]);
+    assert_eq!(prop.water_shader_flags, 0xC4);
+    assert_eq!(stream.position(), data.len() as u64);
+}
+
+/// FO76 (BSVER=155) routes `BSSkyShaderProperty` through the CRC32
+/// flag-array branch — the legacy u32 pair is absent on disk and the
+/// per-array counts (Num SF1, Num SF2) appear instead. nif.xml lines
+/// 6712-6715. Pre-#713 the fall-through alias would have read the FO3
+/// PP texture_clamp_mode (4 bytes after NiObjectNET) as the
+/// CRC-array's first u32 — guaranteed wrong.
+#[test]
+fn bs_sky_shader_property_fo76_reads_crc_arrays_not_legacy_flags() {
+    let mut header = make_skyrim_header();
+    header.user_version_2 = 155; // FO76 BSVER triggers CRC branch.
+
+    let mut data = Vec::new();
+    // NiObjectNET prefix.
+    data.extend_from_slice(&0i32.to_le_bytes());
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&(-1i32).to_le_bytes());
+    // BSVER=155 → Num SF1 (u32) + Num SF2 (u32, since BSVER >= 152) +
+    // SF1 array + SF2 array. Author 2 SF1 entries and 1 SF2 entry.
+    data.extend_from_slice(&2u32.to_le_bytes()); // Num SF1
+    data.extend_from_slice(&1u32.to_le_bytes()); // Num SF2
+    data.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes()); // SF1[0]
+    data.extend_from_slice(&0x1234_5678u32.to_le_bytes()); // SF1[1]
+    data.extend_from_slice(&0xCAFE_BABEu32.to_le_bytes()); // SF2[0]
+                                                            // UV Offset + UV Scale.
+    data.extend_from_slice(&0.0f32.to_le_bytes());
+    data.extend_from_slice(&0.0f32.to_le_bytes());
+    data.extend_from_slice(&1.0f32.to_le_bytes());
+    data.extend_from_slice(&1.0f32.to_le_bytes());
+    // Source Texture + Sky Object Type.
+    let tex = "textures\\sky\\fo76skybox.dds";
+    data.extend_from_slice(&(tex.len() as u32).to_le_bytes());
+    data.extend_from_slice(tex.as_bytes());
+    data.extend_from_slice(&5u32.to_le_bytes()); // 5 = Stars.
+
+    let mut stream = NifStream::new(&data, &header);
+    let prop = BSSkyShaderProperty::parse(&mut stream).unwrap();
+    assert_eq!(prop.shader_flags_1, 0, "BSVER>=132 → legacy pair absent");
+    assert_eq!(prop.shader_flags_2, 0);
+    assert_eq!(prop.sf1_crcs, vec![0xDEAD_BEEF, 0x1234_5678]);
+    assert_eq!(prop.sf2_crcs, vec![0xCAFE_BABE]);
+    assert_eq!(prop.source_texture, "textures\\sky\\fo76skybox.dds");
+    assert_eq!(prop.sky_object_type, 5);
+    assert_eq!(stream.position(), data.len() as u64);
+}
+
+/// Dispatch routes both names through the dedicated parsers. Pre-#713
+/// the dispatch arm in `blocks/mod.rs:305-312` listed both alongside
+/// `BSShaderPPLightingProperty` — verify the new arms produce the
+/// right downcast types.
+#[test]
+fn dispatch_routes_bs_sky_and_water_to_dedicated_parsers() {
+    let header = make_skyrim_header();
+
+    // BSSkyShaderProperty — must downcast to BSSkyShaderProperty,
+    // never to BSShaderPPLightingProperty.
+    {
+        let data = build_bs_sky_shader_property("textures\\sky\\moon.dds", 7);
+        let mut stream = NifStream::new(&data, &header);
+        let block = crate::blocks::parse_block("BSSkyShaderProperty", &mut stream, Some(data.len() as u32))
+            .expect("BSSkyShaderProperty must dispatch");
+        let sky = block
+            .as_any()
+            .downcast_ref::<BSSkyShaderProperty>()
+            .expect("downcast to BSSkyShaderProperty");
+        assert_eq!(sky.sky_object_type, 7);
+        assert_eq!(sky.source_texture, "textures\\sky\\moon.dds");
+        assert!(
+            block
+                .as_any()
+                .downcast_ref::<BSShaderPPLightingProperty>()
+                .is_none(),
+            "BSSkyShaderProperty MUST NOT route through PPLighting parser"
+        );
+    }
+
+    // BSWaterShaderProperty — same regression for the water sibling.
+    {
+        let data = build_bs_water_shader_property(0xC4);
+        let mut stream = NifStream::new(&data, &header);
+        let block = crate::blocks::parse_block("BSWaterShaderProperty", &mut stream, Some(data.len() as u32))
+            .expect("BSWaterShaderProperty must dispatch");
+        let water = block
+            .as_any()
+            .downcast_ref::<BSWaterShaderProperty>()
+            .expect("downcast to BSWaterShaderProperty");
+        assert_eq!(water.water_shader_flags, 0xC4);
+        assert!(
+            block
+                .as_any()
+                .downcast_ref::<BSShaderPPLightingProperty>()
+                .is_none(),
+            "BSWaterShaderProperty MUST NOT route through PPLighting parser"
+        );
+    }
+}

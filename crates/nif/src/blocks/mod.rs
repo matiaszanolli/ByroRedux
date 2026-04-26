@@ -60,8 +60,8 @@ use properties::{
 };
 use shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
-    BSShaderPPLightingProperty, BSShaderTextureSet, SkyShaderProperty, TallGrassShaderProperty,
-    TileShaderProperty, WaterShaderProperty,
+    BSShaderPPLightingProperty, BSShaderTextureSet, BSSkyShaderProperty, BSWaterShaderProperty,
+    SkyShaderProperty, TallGrassShaderProperty, TileShaderProperty, WaterShaderProperty,
 };
 use skin::{
     BsDismemberSkinInstance, BsSkinBoneData, BsSkinInstance, NiSkinData, NiSkinInstance,
@@ -296,20 +296,39 @@ pub fn parse_block(
         // come later — for now this unblocks Oblivion exterior cells, which
         // hard-failed on any of these.
         // Blocks that genuinely inherit BSShaderPPLightingProperty (or
-        // haven't been split out yet — SkyShaderProperty/HairShaderProperty/
+        // haven't been split out yet — HairShaderProperty/
         // VolumetricFogShaderProperty/DistantLODShaderProperty/
-        // BSDistantTreeShaderProperty/BSSkyShaderProperty/BSWaterShaderProperty
-        // are still aliased pending follow-up per-game validation). Pre-#474
-        // `WaterShaderProperty` and `TallGrassShaderProperty` were here too
-        // but over-read 20+ bytes — split out below.
+        // BSDistantTreeShaderProperty are still aliased pending NIF-D3-02
+        // per-game validation). Pre-#474 `WaterShaderProperty` and
+        // `TallGrassShaderProperty` were here too but over-read 20+ bytes
+        // — split out below. Pre-#713 `BSSkyShaderProperty` /
+        // `BSWaterShaderProperty` (Skyrim-era variants, distinct from
+        // their FO3/FNV cousins on the FO3 lines just above) shared the
+        // same problem and now have dedicated parsers.
         "BSShaderPPLightingProperty"
         | "Lighting30ShaderProperty"
         | "HairShaderProperty"
         | "VolumetricFogShaderProperty"
         | "DistantLODShaderProperty"
-        | "BSDistantTreeShaderProperty"
-        | "BSSkyShaderProperty"
-        | "BSWaterShaderProperty" => Ok(Box::new(BSShaderPPLightingProperty::parse(stream)?)),
+        | "BSDistantTreeShaderProperty" => Ok(Box::new(BSShaderPPLightingProperty::parse(stream)?)),
+        // Skyrim-era BSSkyShaderProperty / BSWaterShaderProperty
+        // (versions="#SKY_AND_LATER#", inherit="BSShaderProperty"
+        // directly per nif.xml lines 6695 / 6708). They carry the
+        // Skyrim shader-flags base (Shader Flags 1/2 u32 pair on
+        // BSVER < 132, CRC32 arrays on BSVER >= 132), then UV
+        // Offset/Scale, then a per-block tail (sky filename + sky
+        // object type, or a single Water Shader Flags u32). Pre-#713
+        // both fell into the FO3 `BSShaderPPLightingProperty::parse`
+        // arm above and over-consumed 12-28 bytes (`texture_clamp_mode
+        // + texture_set_ref + refraction + parallax`). The per-block
+        // tail never reached the importer.
+        //
+        // Distinct from the FO3/FNV `SkyShaderProperty` /
+        // `WaterShaderProperty` arms below — those inherit
+        // `BSShaderLightingProperty` (FO3 PP base) and carry different
+        // fields entirely.
+        "BSSkyShaderProperty" => Ok(Box::new(BSSkyShaderProperty::parse(stream)?)),
+        "BSWaterShaderProperty" => Ok(Box::new(BSWaterShaderProperty::parse(stream)?)),
         // FO3/FNV `SkyShaderProperty` — inherits `BSShaderLightingProperty`
         // + `File Name: SizedString` + `Sky Object Type: u32` (nif.xml
         // line 6335). Pre-#550 aliased to BSShaderPPLightingProperty::parse

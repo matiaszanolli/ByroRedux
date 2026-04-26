@@ -1,6 +1,5 @@
 # nif_stats per-block histogram	total=18862
 BSBehaviorGraphExtraData	922	0
-BSBoneLODExtraData	0	52
 BSBound	57	0
 BSDecalPlacementVectorExtraData	60	0
 BSDismemberSkinInstance	15726	0
@@ -21,11 +20,11 @@ BSMultiBoundOBB	176	0
 BSNiAlphaPropertyTestRefController	751	0
 BSOrderedNode	228	0
 BSRangeNode	41	0
-BSShaderPPLightingProperty	18	0
 BSShaderTextureSet	57414	0
 BSTreeNode	20	0
 BSTriShape	52196	0
 BSValueNode	421	0
+BSWaterShaderProperty	18	0
 NiAlphaProperty	31826	0
 NiBSBoneLODController	3	0
 NiBillboardNode	1527	0
@@ -39,7 +38,7 @@ NiCamera	132	0
 NiControllerManager	1051	0
 NiControllerSequence	3989	0
 NiDefaultAVObjectPalette	1051	0
-NiExtraData	15546	0
+NiExtraData	15598	0
 NiFloatData	26511	0
 NiFloatExtraDataController	180	0
 NiFloatInterpolator	28788	0

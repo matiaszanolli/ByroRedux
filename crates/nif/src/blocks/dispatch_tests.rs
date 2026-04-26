@@ -66,6 +66,12 @@ fn oblivion_shader_variants_route_to_bsshader_pp_lighting() {
     // `SkyShaderProperty` moved to its own dedicated parser in #550
     // (inherits `BSShaderLightingProperty` + SizedString + u32 that
     // the PPLighting over-read dropped on the floor).
+    // `BSSkyShaderProperty` / `BSWaterShaderProperty` moved to their
+    // own parsers in #713 / NIF-D3-01 (Skyrim-era variants that
+    // inherit `BSShaderProperty` directly with a Skyrim shader-flags
+    // base + UV transform + per-block tail). Both have dedicated
+    // dispatch tests — `bs_sky_shader_property_parses_skyrim_layout_exactly`
+    // and friends in `shader_tests.rs`.
     let variants = [
         "BSShaderPPLightingProperty",
         "Lighting30ShaderProperty",
@@ -73,8 +79,6 @@ fn oblivion_shader_variants_route_to_bsshader_pp_lighting() {
         "VolumetricFogShaderProperty",
         "DistantLODShaderProperty",
         "BSDistantTreeShaderProperty",
-        "BSSkyShaderProperty",
-        "BSWaterShaderProperty",
     ];
     let header = oblivion_header();
     let bytes = oblivion_bsshader_bytes();
