@@ -1205,7 +1205,15 @@ void main() {
         // Roughness-driven ray jitter: GGX lobe widens with roughness^2.
         // Single sample per pixel, accumulated via temporal noise (IGN seeded
         // by frame counter). SVGF temporal filter smooths the result. #320.
-        vec3 R = reflect(-V, N);
+        //
+        // V-aligned normal flip (#668). The bump map at line 638 can perturb
+        // `N` such that dot(N, V) < 0 on grazing views or noisy normal maps;
+        // raw `N * 0.1` would then bias the ray origin BEHIND the macro
+        // surface and the reflection ray either self-hits or punches through.
+        // Glass / refraction at line 1018 already does this; bring metal /
+        // glossy reflection into lockstep so both paths share one bias rule.
+        vec3 N_view = dot(N, V) < 0.0 ? -N : N;
+        vec3 R = reflect(-V, N_view);
         float frameCount = cameraPos.w;
         float n1 = interleavedGradientNoise(gl_FragCoord.xy, frameCount + 89.0);
         float n2 = interleavedGradientNoise(gl_FragCoord.xy + vec2(53.7, 191.3), frameCount + 113.0);
@@ -1213,7 +1221,7 @@ void main() {
         buildOrthoBasis(R, T2, B2);
         vec2 cone = concentricDiskSample(n1, n2) * (roughness * roughness);
         vec3 jitteredR = normalize(R + T2 * cone.x + B2 * cone.y);
-        vec4 reflResult = traceReflection(fragWorldPos + N * 0.1, jitteredR, 5000.0);
+        vec4 reflResult = traceReflection(fragWorldPos + N_view * 0.1, jitteredR, 5000.0);
 
         // Fresnel-weighted reflection: stronger at grazing angles.
         vec3 F = fresnelSchlick(NdotV, F0);
