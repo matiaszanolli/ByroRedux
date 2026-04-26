@@ -60,10 +60,12 @@ pub struct DrawCommand {
     /// slot 2). Sampled at 2× UV scale and modulated into the base
     /// albedo. 0 = no detail map. See #399.
     pub detail_map_index: u32,
-    /// Bindless texture index for the gloss / specular mask
-    /// (NiTexturingProperty slot 3). Per-texel specular strength
-    /// multiplier; the .r channel scales the inline
-    /// `specular_strength`. 0 = no gloss map. See #399.
+    /// Bindless texture index for the gloss map
+    /// (NiTexturingProperty slot 3). Per Gamebryo 2.3
+    /// `HandleGlossMap(... pkGlossiness)` the .r channel feeds the
+    /// **glossiness / shininess** (Phong exponent) channel, which the
+    /// fragment shader uses to modulate per-texel `roughness`. 0 = no
+    /// gloss map. See #399 / #704.
     pub gloss_map_index: u32,
     /// Bindless texture index for the parallax / height map
     /// (`BSShaderTextureSet` slot 3). 0 = no POM; fragment shader

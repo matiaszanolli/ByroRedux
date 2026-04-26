@@ -777,16 +777,30 @@ void main() {
         albedo *= detailSample * 2.0;
     }
 
-    // #399 — NiTexturingProperty slot 3 gloss / specular mask. The
-    // .r channel is per-texel specular strength (polished metal trim
-    // vs. dull leather straps on the same armor mesh). Multiply the
-    // inline `specularStrength` constant.
+    // #704 / O4-06 — NiTexturingProperty slot 3 gloss map. Per the
+    // Gamebryo 2.3 source (Include/NiStandardMaterial.h):
+    //
+    //   virtual bool HandleGlossMap(Context&, NiMaterialResource* pkUVSet,
+    //                               NiMaterialResource*& pkGlossiness);
+    //
+    // the slot-3 sample feeds the **glossiness / shininess** (Phong
+    // exponent) channel — NOT the specular strength as #399 originally
+    // wired. White (1.0) → keep authored shininess (smooth, sharp
+    // highlight). Black (0.0) → fully dull (broad / diffuse specular).
+    //
+    // In our PBR pipeline glossiness is already converted to roughness
+    // upstream (inst.roughness), so the modulation lerps from the
+    // authored roughness toward 1.0 (fully rough) as gloss → 0. Pre-fix
+    // gloss-masked surfaces (polished metal trim on dull leather straps)
+    // got the right ON/OFF mask but a constant roughness profile, so
+    // both regions shared the same specular lobe shape — only the
+    // intensity differed.
     if (inst.glossMapIndex != 0u) {
         float glossSample = texture(
             textures[nonuniformEXT(inst.glossMapIndex)],
             sampleUV
         ).r;
-        specStrength *= glossSample;
+        roughness = mix(1.0, roughness, glossSample);
     }
 
     // #399 — NiTexturingProperty slot 4 glow / self-illumination map.

@@ -62,9 +62,14 @@ pub struct Material {
     /// high-frequency variation layer used by Oblivion terrain and
     /// some clothing. See #214.
     pub detail_map: Option<String>,
-    /// Specular-mask / gloss texture — `NiTexturingProperty` slot 3.
-    /// Per-texel specular strength mask; enables "leather with metal
-    /// trim" effects on armor. See #214.
+    /// Gloss texture — `NiTexturingProperty` slot 3. Per Gamebryo 2.3
+    /// `HandleGlossMap(... pkGlossiness)` this feeds the
+    /// **glossiness / shininess** (Phong exponent) channel — the
+    /// fragment shader modulates per-texel `roughness` from it
+    /// (gloss = 1 → authored roughness, gloss = 0 → fully rough).
+    /// Enables "polished metal trim on dull leather strap" surfaces
+    /// where the lobe shape varies across the mesh, not just the
+    /// intensity. See #214 / #704.
     pub gloss_map: Option<String>,
     /// Dark / multiplicative lightmap — `NiTexturingProperty` slot 1.
     /// Baked shadow/grime modulation on Oblivion interior architecture.
