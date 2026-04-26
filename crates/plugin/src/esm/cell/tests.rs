@@ -7,6 +7,9 @@
 //! token budget. See refactor stage A.
 
     use super::super::reader::EsmReader;
+    use super::helpers::read_zstring;
+    use super::support::{parse_ltex_group, parse_modl_group, parse_pkin_group, parse_txst_group};
+    use super::walkers::{parse_cell_group, parse_refr_group};
     use super::*;
 
     // Helper: build minimal STAT record bytes.
