@@ -34,8 +34,12 @@ fn main() {
         if i > 0 && i % 1000 == 0 {
             eprintln!("  {}/{}", i, nif_files.len());
         }
-        let Ok(bytes) = archive.extract(nif) else { continue };
-        let Ok(scene) = parse_nif(&bytes) else { continue };
+        let Ok(bytes) = archive.extract(nif) else {
+            continue;
+        };
+        let Ok(scene) = parse_nif(&bytes) else {
+            continue;
+        };
         for (idx, b) in scene.blocks.iter().enumerate() {
             if let Some(u) = b.as_any().downcast_ref::<NiUnknown>() {
                 let key = u.type_name.to_string();
@@ -50,7 +54,10 @@ fn main() {
 
     let mut ordered: Vec<_> = counts.iter().collect();
     ordered.sort_by(|a, b| b.1.cmp(a.1));
-    println!("─── NiUnknown samples (first {} per type) ───", samples_per_type);
+    println!(
+        "─── NiUnknown samples (first {} per type) ───",
+        samples_per_type
+    );
     for (name, cnt) in ordered {
         println!("\n{} × {}", cnt, name);
         if let Some(list) = samples.get(name) {

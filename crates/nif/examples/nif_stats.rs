@@ -218,8 +218,7 @@ impl Stats {
             // types group together. The TSV mode keeps the BTreeMap's
             // alphabetical order — that's stable across runs and
             // diff-friendly for the baseline regression test.
-            let mut sorted: Vec<(&String, &BlockCounts)> =
-                self.block_histogram.iter().collect();
+            let mut sorted: Vec<(&String, &BlockCounts)> = self.block_histogram.iter().collect();
             sorted.sort_by(|a, b| {
                 b.1.total()
                     .cmp(&a.1.total())
@@ -235,15 +234,10 @@ impl Stats {
                 .collect();
             if !partial.is_empty() {
                 println!();
-                println!(
-                    "─── Types with partial unknown (regression signals) ───────────"
-                );
+                println!("─── Types with partial unknown (regression signals) ───────────");
                 println!("  {:>8} {:>8}  {}", "parsed", "unknown", "type");
                 for (name, counts) in &partial {
-                    println!(
-                        "  {:>8} {:>8}  {}",
-                        counts.parsed, counts.unknown, name
-                    );
+                    println!("  {:>8} {:>8}  {}", counts.parsed, counts.unknown, name);
                 }
             }
 
@@ -262,22 +256,19 @@ impl Stats {
                     println!("  {:>8}  {}", counts.unknown, name);
                 }
                 if pure_unknown.len() > 20 {
-                    println!("  ... and {} more pure-unknown types", pure_unknown.len() - 20);
+                    println!(
+                        "  ... and {} more pure-unknown types",
+                        pure_unknown.len() - 20
+                    );
                 }
             }
 
             if !unknown_only {
                 println!();
                 println!("─── Block type histogram (top 20 by total) ────────────────────");
-                println!(
-                    "  {:>8} {:>8}  {}",
-                    "parsed", "unknown", "type"
-                );
+                println!("  {:>8} {:>8}  {}", "parsed", "unknown", "type");
                 for (name, counts) in sorted.iter().take(20) {
-                    println!(
-                        "  {:>8} {:>8}  {}",
-                        counts.parsed, counts.unknown, name
-                    );
+                    println!("  {:>8} {:>8}  {}", counts.parsed, counts.unknown, name);
                 }
                 println!("  ({} distinct block types)", sorted.len());
             }

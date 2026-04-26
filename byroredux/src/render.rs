@@ -426,8 +426,10 @@ pub(crate) fn build_render_data(
 
                 // Terrain splat tile index (#470). Only LAND terrain
                 // entities carry the component; statics pass `None`.
-                let terrain_tile_index =
-                    terrain_tile_q.as_ref().and_then(|q| q.get(entity)).map(|s| s.0);
+                let terrain_tile_index = terrain_tile_q
+                    .as_ref()
+                    .and_then(|q| q.get(entity))
+                    .map(|s| s.0);
 
                 // Material data + PBR classification.
                 let mat = mat_q.as_ref().and_then(|q| q.get(entity));
@@ -491,16 +493,7 @@ pub(crate) fn build_render_data(
                 } else {
                     // No Material → identity tint, identity ambient.
                     (
-                        0.5,
-                        0.0,
-                        0.0,
-                        [0.0; 3],
-                        1.0,
-                        [1.0; 3],
-                        [1.0; 3],
-                        [1.0; 3],
-                        0.0,
-                        0u32,
+                        0.5, 0.0, 0.0, [0.0; 3], 1.0, [1.0; 3], [1.0; 3], [1.0; 3], 0.0, 0u32,
                     )
                 };
 
@@ -588,9 +581,8 @@ pub(crate) fn build_render_data(
                 let stf = mat.and_then(|m| m.shader_type_fields.as_deref());
                 let skin_tint_rgba = if base_material_kind == 5 {
                     stf.and_then(|f| {
-                        f.skin_tint_color.map(|c| {
-                            [c[0], c[1], c[2], f.skin_tint_alpha.unwrap_or(1.0)]
-                        })
+                        f.skin_tint_color
+                            .map(|c| [c[0], c[1], c[2], f.skin_tint_alpha.unwrap_or(1.0)])
                     })
                     .unwrap_or([0.0; 4])
                 } else {
@@ -760,11 +752,8 @@ pub(crate) fn build_render_data(
                     ];
                     let size = em.start_size + (em.end_size - em.start_size) * t;
 
-                    let model = Mat4::from_scale_rotation_translation(
-                        Vec3::splat(size),
-                        rot,
-                        world_pos,
-                    );
+                    let model =
+                        Mat4::from_scale_rotation_translation(Vec3::splat(size), rot, world_pos);
                     let pos_clip = vp_mat * Vec4::new(world_pos.x, world_pos.y, world_pos.z, 1.0);
                     let sort_depth = f32_sortable_u32(pos_clip.w);
 
@@ -1284,8 +1273,15 @@ mod draw_sort_key_tests {
 
         let a_ids: Vec<u32> = a.iter().map(|c| c.entity_id).collect();
         let b_ids: Vec<u32> = b.iter().map(|c| c.entity_id).collect();
-        assert_eq!(a_ids, b_ids, "same input → same output regardless of starting order");
-        assert_eq!(a_ids, (0..10u32).collect::<Vec<_>>(), "entity_id breaks ties ascending");
+        assert_eq!(
+            a_ids, b_ids,
+            "same input → same output regardless of starting order"
+        );
+        assert_eq!(
+            a_ids,
+            (0..10u32).collect::<Vec<_>>(),
+            "entity_id breaks ties ascending"
+        );
     }
 }
 
@@ -1387,7 +1383,7 @@ mod sort_key_tests {
     fn sortable_u32_invertible_for_back_to_front() {
         let near = f32_sortable_u32(1.0); // close to camera
         let far = f32_sortable_u32(100.0); // far
-        // Forward: near < far (front-to-back opaque path)
+                                           // Forward: near < far (front-to-back opaque path)
         assert!(near < far);
         // Back-to-front (transparent path): !near > !far so `far`
         // draws first, `near` last — exactly what alpha-compositing
@@ -1593,7 +1589,7 @@ mod variant_pack_gating_tests {
                     multi_layer_inner_layer_scale: Some([2.0, 3.0]),
                     multi_layer_envmap_strength: Some(0.55),
                     sparkle_parameters: Some([0.1, 0.2, 0.3, 0.4]),
-                }),),
+                })),
                 ..Material::default()
             },
         );
@@ -1607,7 +1603,10 @@ mod variant_pack_gating_tests {
         let cmds = run_build(&world);
         assert_eq!(cmds.len(), 1, "exactly one DrawCommand expected");
         let c = &cmds[0];
-        assert_eq!(c.skin_tint_rgba, [0.0; 4], "kind=0 must skip skin tint pack");
+        assert_eq!(
+            c.skin_tint_rgba, [0.0; 4],
+            "kind=0 must skip skin tint pack"
+        );
         assert_eq!(c.hair_tint_rgb, [0.0; 3], "kind=0 must skip hair tint pack");
         assert_eq!(c.sparkle_rgba, [0.0; 4], "kind=0 must skip sparkle pack");
         assert_eq!(c.multi_layer_envmap_strength, 0.0);

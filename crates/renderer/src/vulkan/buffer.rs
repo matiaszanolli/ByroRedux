@@ -826,7 +826,11 @@ impl GpuBuffer {
         //    each "pooled" acquire was followed by a destroy. See the
         //    #239 investigation for the full premise verification.
         if let Some(pool) = staging_pool {
-            let capacity = staging.allocation.as_ref().map(|a| a.size()).unwrap_or(size);
+            let capacity = staging
+                .allocation
+                .as_ref()
+                .map(|a| a.size())
+                .unwrap_or(size);
             staging.release_to(pool, capacity);
         } else {
             staging.destroy();

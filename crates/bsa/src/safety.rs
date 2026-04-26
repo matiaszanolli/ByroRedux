@@ -144,10 +144,7 @@ mod tests {
 
     #[test]
     fn chunk_size_usize_matches_u32_semantics() {
-        assert_eq!(
-            checked_chunk_size_usize(1024, "packed_size").unwrap(),
-            1024
-        );
+        assert_eq!(checked_chunk_size_usize(1024, "packed_size").unwrap(), 1024);
         assert!(checked_chunk_size_usize(MAX_CHUNK_BYTES + 1, "packed_size").is_err());
     }
 }

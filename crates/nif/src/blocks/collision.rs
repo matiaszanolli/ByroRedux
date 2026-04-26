@@ -1477,7 +1477,7 @@ impl BhkAabbPhantom {
         let shape_ref = stream.read_block_ref()?;
         let havok_filter = stream.read_u32_le()?;
         stream.skip(20)?; // bhkWorldObjectCInfo
-        // bhkAabbPhantom: 8 unused + 2 × Vec4 hkAabb.
+                          // bhkAabbPhantom: 8 unused + 2 × Vec4 hkAabb.
         stream.skip(8)?;
         let aabb_min = read_vec4(stream)?;
         let aabb_max = read_vec4(stream)?;
@@ -1996,8 +1996,8 @@ mod bhk_rigid_body_tests {
         d.push(3u8); // deactivator — non-zero so we can assert the read
         d.push(0u8); // solver_deactivation
         d.push(1u8); // quality
-        // Trailer: auto_remove(1) + response_mod(1) + num_shape_keys(1)
-        //        + force_collided(1) + Unused 04[12] = 16 bytes
+                     // Trailer: auto_remove(1) + response_mod(1) + num_shape_keys(1)
+                     //        + force_collided(1) + Unused 04[12] = 16 bytes
         d.extend_from_slice(&[0u8; 16]);
         // Num Constraints + Body Flags (u16 on Skyrim+)
         d.extend_from_slice(&0u32.to_le_bytes());

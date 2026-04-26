@@ -67,7 +67,11 @@ mod tests {
     fn jump_vertical_routes_to_transform() {
         let jump_in_renderer_space = Vec3::new(0.0, 1.0, 0.0);
         let (anim, delta) = split_root_motion(jump_in_renderer_space);
-        assert_eq!(anim, Vec3::new(0.0, 1.0, 0.0), "vertical stays on transform");
+        assert_eq!(
+            anim,
+            Vec3::new(0.0, 1.0, 0.0),
+            "vertical stays on transform"
+        );
         assert_eq!(delta, Vec3::ZERO, "no horizontal translation");
     }
 

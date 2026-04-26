@@ -216,13 +216,12 @@ fn is_device_suitable(
     // G-buffer (#275/#318) — no point sizing the bindless array larger than
     // the maximum instance count can reference.
     const BINDLESS_CEILING: u32 = 65535;
-    let reported_limit = if indexing_props.max_per_stage_descriptor_update_after_bind_sampled_images
-        > 0
-    {
-        indexing_props.max_per_stage_descriptor_update_after_bind_sampled_images
-    } else {
-        properties.limits.max_per_stage_descriptor_sampled_images
-    };
+    let reported_limit =
+        if indexing_props.max_per_stage_descriptor_update_after_bind_sampled_images > 0 {
+            indexing_props.max_per_stage_descriptor_update_after_bind_sampled_images
+        } else {
+            properties.limits.max_per_stage_descriptor_sampled_images
+        };
     let max_bindless_sampled_images = reported_limit.min(BINDLESS_CEILING);
 
     // AS scratch alignment. Default to 1 (trivial — every address is a

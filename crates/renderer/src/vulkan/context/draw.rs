@@ -486,25 +486,25 @@ impl VulkanContext {
                         // BUILD has valid vertex data to read.
                         let prime_result =
                             super::super::texture::with_one_time_commands_reuse_fence(
-                            &self.device,
-                            &self.graphics_queue,
-                            self.transfer_pool,
-                            &self.transfer_fence,
-                            |prime_cmd| unsafe {
-                                skin_pipeline.dispatch(
-                                    &self.device,
-                                    prime_cmd,
-                                    slot,
-                                    frame,
-                                    input_buffer,
-                                    input_size,
-                                    bone_buf,
-                                    bone_buffer_size,
-                                    push,
-                                );
-                                Ok(())
-                            },
-                        );
+                                &self.device,
+                                &self.graphics_queue,
+                                self.transfer_pool,
+                                &self.transfer_fence,
+                                |prime_cmd| unsafe {
+                                    skin_pipeline.dispatch(
+                                        &self.device,
+                                        prime_cmd,
+                                        slot,
+                                        frame,
+                                        input_buffer,
+                                        input_size,
+                                        bone_buf,
+                                        bone_buffer_size,
+                                        push,
+                                    );
+                                    Ok(())
+                                },
+                            );
                         if let Err(e) = prime_result {
                             log::warn!(
                                 "skin_compute first-sight prime failed for entity {entity_id}: {e}"
@@ -557,9 +557,7 @@ impl VulkanContext {
                             // buffers) → AS build input reads.
                             let compute_to_blas = vk::MemoryBarrier::default()
                                 .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                                .dst_access_mask(
-                                    vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
-                                );
+                                .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR);
                             self.device.cmd_pipeline_barrier(
                                 cmd,
                                 vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -602,12 +600,8 @@ impl VulkanContext {
                             }
                             // BLAS refit writes → TLAS build reads.
                             let blas_to_tlas = vk::MemoryBarrier::default()
-                                .src_access_mask(
-                                    vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
-                                )
-                                .dst_access_mask(
-                                    vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
-                                );
+                                .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
+                                .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR);
                             self.device.cmd_pipeline_barrier(
                                 cmd,
                                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
@@ -1301,8 +1295,7 @@ impl VulkanContext {
                     vk::CullModeFlags::BACK
                 };
 
-                let set_cull = |target: vk::CullModeFlags,
-                                 last: &mut vk::CullModeFlags| {
+                let set_cull = |target: vk::CullModeFlags, last: &mut vk::CullModeFlags| {
                     if *last != target {
                         self.device.cmd_set_cull_mode(cmd, target);
                         *last = target;
@@ -1377,7 +1370,10 @@ impl VulkanContext {
                         && batch_state(&batches[end]) == key
                         && !matches!(
                             batches[end].pipeline_key,
-                            PipelineKey::Blended { two_sided: true, .. }
+                            PipelineKey::Blended {
+                                two_sided: true,
+                                ..
+                            }
                         )
                     {
                         end += 1;
@@ -1493,9 +1489,7 @@ impl VulkanContext {
                     // `signal_temporal_discontinuity`; consumes one
                     // frame from the window each draw_frame.
                     let (alpha_color, alpha_moments, next_frames) =
-                        crate::vulkan::svgf::next_svgf_temporal_alpha(
-                            self.svgf_recovery_frames,
-                        );
+                        crate::vulkan::svgf::next_svgf_temporal_alpha(self.svgf_recovery_frames);
                     self.svgf_recovery_frames = next_frames;
                     if let Err(e) =
                         svgf.dispatch(&self.device, cmd, frame, alpha_color, alpha_moments)

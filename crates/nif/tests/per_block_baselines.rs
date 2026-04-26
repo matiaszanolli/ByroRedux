@@ -128,8 +128,14 @@ fn run_baseline(game: Game) {
             e
         ),
     };
-    let baseline = PerBlockHistogram::from_tsv(&text)
-        .unwrap_or_else(|e| panic!("[{}] corrupt baseline {}: {}", game.label(), path.display(), e));
+    let baseline = PerBlockHistogram::from_tsv(&text).unwrap_or_else(|e| {
+        panic!(
+            "[{}] corrupt baseline {}: {}",
+            game.label(),
+            path.display(),
+            e
+        )
+    });
 
     let regressions = compare_histograms(&hist, &baseline);
     if regressions.is_empty() {

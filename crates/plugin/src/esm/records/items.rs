@@ -879,7 +879,10 @@ mod tests {
             sub(b"DATA", &data),
         ];
         let item = parse_armo(0x000972BB, &subs, GameKind::Oblivion);
-        assert_eq!(item.common.value, 400, "value at offset 2 (after armor u16)");
+        assert_eq!(
+            item.common.value, 400,
+            "value at offset 2 (after armor u16)"
+        );
         assert!(
             (item.common.weight - 9.8).abs() < 1e-4,
             "weight at offset 10, not 8"
@@ -931,7 +934,10 @@ mod tests {
             0x09, 0x00, // damage = 9
         ];
         assert_eq!(data.len(), 18);
-        let subs = vec![sub(b"EDID", b"SE30MadnessMagicArrowA\0"), sub(b"DATA", &data)];
+        let subs = vec![
+            sub(b"EDID", b"SE30MadnessMagicArrowA\0"),
+            sub(b"DATA", &data),
+        ];
         let item = parse_ammo(0x0009277E, &subs, GameKind::Oblivion);
         assert_eq!(item.common.value, 2);
         assert!((item.common.weight - 0.1).abs() < 1e-4);

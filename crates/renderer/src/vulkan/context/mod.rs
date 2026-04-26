@@ -1230,10 +1230,7 @@ impl VulkanContext {
     /// Reuses the caller's `Vec` to avoid a per-frame allocation in
     /// the telemetry path itself. Capacity stabilises at the number of
     /// declared scratches after the first frame.
-    pub fn fill_scratch_telemetry(
-        &self,
-        rows: &mut Vec<byroredux_core::ecs::ScratchRow>,
-    ) {
+    pub fn fill_scratch_telemetry(&self, rows: &mut Vec<byroredux_core::ecs::ScratchRow>) {
         use byroredux_core::ecs::ScratchRow;
         use std::mem::size_of;
 

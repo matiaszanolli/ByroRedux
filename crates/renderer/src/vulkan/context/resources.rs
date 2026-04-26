@@ -366,7 +366,10 @@ mod tests {
         let released = release_terrain_tile_slot(&mut tiles, &mut free_list, &mut dirty, 99);
 
         assert_eq!(released, None);
-        assert!(free_list.is_empty(), "out-of-range slot must not pollute free list");
+        assert!(
+            free_list.is_empty(),
+            "out-of-range slot must not pollute free list"
+        );
         assert!(!dirty);
     }
 }

@@ -216,16 +216,19 @@ mod tests {
             sub(b"EDID", b"MegatonDoorScript\0".to_vec()),
             sub(b"SCHR", schr),
             sub(b"SCDA", vec![0xDEu8, 0xAD, 0xBE, 0xEF, 0x12, 0x34]),
-            sub(b"SCTX", b"scn MegatonDoorScript\n\nBegin OnActivate\nEnd\0".to_vec()),
+            sub(
+                b"SCTX",
+                b"scn MegatonDoorScript\n\nBegin OnActivate\nEnd\0".to_vec(),
+            ),
             // Local var 0 (type = 2, long).
             {
                 let mut d = Vec::new();
                 d.extend_from_slice(&0u32.to_le_bytes()); // index
                 d.extend_from_slice(&0u32.to_le_bytes()); // unknown pad
                 d.push(2u8); // var_type = long
-                // Trailing 4 bytes of SLSD padding tolerated — some files
-                // write 13 bytes total, some 9. Our parser reads only the
-                // 9-byte prefix, so leave the tail short.
+                             // Trailing 4 bytes of SLSD padding tolerated — some files
+                             // write 13 bytes total, some 9. Our parser reads only the
+                             // 9-byte prefix, so leave the tail short.
                 sub(b"SLSD", d)
             },
             sub(b"SCVR", b"iDoorOpen\0".to_vec()),
@@ -275,10 +278,7 @@ mod tests {
         schr.extend_from_slice(&0u32.to_le_bytes()); // var_count = 0
         schr.extend_from_slice(&0u16.to_le_bytes()); // object
         schr.extend_from_slice(&0u32.to_le_bytes()); // flags = 0
-        let subs = vec![
-            sub(b"EDID", b"TinyScript\0".to_vec()),
-            sub(b"SCHR", schr),
-        ];
+        let subs = vec![sub(b"EDID", b"TinyScript\0".to_vec()), sub(b"SCHR", schr)];
         let rec = parse_scpt(0x0CAFEu32, &subs);
         assert_eq!(rec.editor_id, "TinyScript");
         assert_eq!(rec.script_type, ScriptType::Object);

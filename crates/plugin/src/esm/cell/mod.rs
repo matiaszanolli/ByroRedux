@@ -779,17 +779,5 @@ pub fn parse_esm_cells_with_load_order(
     })
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
 #[cfg(test)]
 mod tests;

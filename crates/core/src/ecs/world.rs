@@ -1546,7 +1546,10 @@ mod tests {
 
         // World B: one batch insert.
         world_b.insert_batch(
-            entities_b.iter().enumerate().map(|(i, &e)| (e, Health(i as f32))),
+            entities_b
+                .iter()
+                .enumerate()
+                .map(|(i, &e)| (e, Health(i as f32))),
         );
 
         // Same entity count, same stored values.
@@ -1571,14 +1574,23 @@ mod tests {
         let entities_b: Vec<_> = (0..N).map(|_| world_b.spawn()).collect();
 
         for (i, &e) in entities_a.iter().enumerate() {
-            world_a.insert(e, Position { x: i as f32, y: -(i as f32) });
-        }
-        world_b.insert_batch(
-            entities_b.iter().enumerate().map(|(i, &e)| (
+            world_a.insert(
                 e,
-                Position { x: i as f32, y: -(i as f32) },
-            )),
-        );
+                Position {
+                    x: i as f32,
+                    y: -(i as f32),
+                },
+            );
+        }
+        world_b.insert_batch(entities_b.iter().enumerate().map(|(i, &e)| {
+            (
+                e,
+                Position {
+                    x: i as f32,
+                    y: -(i as f32),
+                },
+            )
+        }));
 
         let qa = world_a.query::<Position>().unwrap();
         let qb = world_b.query::<Position>().unwrap();

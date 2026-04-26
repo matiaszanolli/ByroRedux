@@ -82,7 +82,11 @@ fn main() {
     let mut sorted: Vec<(&String, &usize)> = hist.iter().collect();
     sorted.sort_by(|a, b| b.1.cmp(a.1));
     let total: usize = hist.values().sum();
-    println!("# full_histogram: {} blocks across {} distinct types", total, sorted.len());
+    println!(
+        "# full_histogram: {} blocks across {} distinct types",
+        total,
+        sorted.len()
+    );
     for (name, count) in sorted {
         println!("{}\t{}", count, name);
     }

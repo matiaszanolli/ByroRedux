@@ -57,9 +57,11 @@ pub(super) const DYNAMIC_DECAL: u32 = crate::shader_flags::fo4_slsf1::DYNAMIC_DE
 // coincidence to a load-bearing invariant.
 const _: () =
     assert!(crate::shader_flags::fo4_slsf1::DECAL == crate::shader_flags::skyrim_slsf1::DECAL);
-const _: () = assert!(crate::shader_flags::fo4_slsf1::DECAL == crate::shader_flags::fo3nv_f1::DECAL);
+const _: () =
+    assert!(crate::shader_flags::fo4_slsf1::DECAL == crate::shader_flags::fo3nv_f1::DECAL);
 const _: () = assert!(
-    crate::shader_flags::fo4_slsf1::DYNAMIC_DECAL == crate::shader_flags::skyrim_slsf1::DYNAMIC_DECAL
+    crate::shader_flags::fo4_slsf1::DYNAMIC_DECAL
+        == crate::shader_flags::skyrim_slsf1::DYNAMIC_DECAL
 );
 const _: () = assert!(
     crate::shader_flags::fo4_slsf1::DYNAMIC_DECAL == crate::shader_flags::fo3nv_f1::DYNAMIC_DECAL
@@ -128,8 +130,7 @@ pub(super) fn is_decal_from_modern_shader_flags(flags1: u32, _flags2: u32) -> bo
 // compile-time assertion below pins the equivalence. See #592.
 const SF2_DOUBLE_SIDED: u32 = crate::shader_flags::fo4_slsf2::DOUBLE_SIDED;
 const _: () = assert!(
-    crate::shader_flags::fo4_slsf2::DOUBLE_SIDED
-        == crate::shader_flags::skyrim_slsf2::DOUBLE_SIDED
+    crate::shader_flags::fo4_slsf2::DOUBLE_SIDED == crate::shader_flags::skyrim_slsf2::DOUBLE_SIDED
 );
 
 /// How a `NiVertexColorProperty` wants per-vertex colors to participate
@@ -525,14 +526,6 @@ impl Default for MaterialInfo {
     }
 }
 
-
-
-
-
-
-
-
-
 impl MaterialInfo {
     /// Project this `MaterialInfo`'s shader-type fields into a
     /// `ShaderTypeFields` bundle for `ImportedMesh`. See #430.
@@ -589,7 +582,6 @@ fn tex_desc_source_path(scene: &NifScene, desc: Option<&TexDesc>) -> Option<Stri
 }
 
 #[cfg(test)]
-
 mod alpha_flag_tests;
 
 /// Regression tests for issue #345 — `BSEffectShaderProperty` rich
@@ -600,7 +592,6 @@ mod alpha_flag_tests;
 /// mutators to wire one up cheaply). The capture helper is the entire
 /// transform under test — `extract_material_info` just calls it.
 #[cfg(test)]
-
 mod effect_shader_capture_tests;
 
 /// Regression tests for issue #343 — exhaustive ShaderTypeData dispatch.
@@ -609,13 +600,11 @@ mod effect_shader_capture_tests;
 /// MultiLayerParallax, SparkleSnow, EyeEnvmap, None) were dropped. Each
 /// test exercises one arm of `apply_shader_type_data`.
 #[cfg(test)]
-
 mod shader_type_data_tests;
 
 /// Regression tests for issue #214 — NiTexturingProperty secondary slots
 /// and NiVertexColorProperty mode extraction.
 #[cfg(test)]
-
 mod secondary_slot_tests;
 
 /// Regression tests for #452 — `BSShaderTextureSet` slots 3/4/5 must
@@ -624,7 +613,6 @@ mod secondary_slot_tests;
 /// the importer stopped at slot 2 so parallax walls rendered flat and
 /// glass/power-armor env reflections never bound.
 #[cfg(test)]
-
 mod texture_slot_3_4_5_tests;
 
 /// Regression tests for #441 — `SF_DOUBLE_SIDED = 0x1000` is NOT
@@ -635,5 +623,4 @@ mod texture_slot_3_4_5_tests;
 /// Skyrim+ `BSLightingShaderProperty` path (flags2 bit 4) is
 /// unaffected.
 #[cfg(test)]
-
 mod double_sided_tests;

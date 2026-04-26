@@ -181,15 +181,24 @@ mod tests {
     fn parse_minimal_record_with_single_pair() {
         let subs = vec![
             sub(b"EDID", &z("StationWagon_Postwar_Cheap04_Swap")),
-            sub(b"BNAM", &z("Vehicles\\Automotive\\StationWagon01a_Rust.BGSM")),
-            sub(b"SNAM", &z("Vehicles\\Automotive\\StationWagon_Postwar_Cheap04.bgsm")),
+            sub(
+                b"BNAM",
+                &z("Vehicles\\Automotive\\StationWagon01a_Rust.BGSM"),
+            ),
+            sub(
+                b"SNAM",
+                &z("Vehicles\\Automotive\\StationWagon_Postwar_Cheap04.bgsm"),
+            ),
         ];
         let rec = parse_mswp(0x0024_9A4E, &subs);
         assert_eq!(rec.form_id, 0x0024_9A4E);
         assert_eq!(rec.editor_id, "StationWagon_Postwar_Cheap04_Swap");
         assert!(rec.path_filter.is_none());
         assert_eq!(rec.swaps.len(), 1);
-        assert_eq!(rec.swaps[0].source, "Vehicles\\Automotive\\StationWagon01a_Rust.BGSM");
+        assert_eq!(
+            rec.swaps[0].source,
+            "Vehicles\\Automotive\\StationWagon01a_Rust.BGSM"
+        );
         assert_eq!(
             rec.swaps[0].target,
             "Vehicles\\Automotive\\StationWagon_Postwar_Cheap04.bgsm"
@@ -204,14 +213,20 @@ mod tests {
             sub(b"EDID", &z("VaultDamageTheme18")),
             sub(b"FNAM", &z("Interiors\\Vault")),
             sub(b"BNAM", &z("interiors\\Vault\\VltUtilColumns01.BGSM")),
-            sub(b"SNAM", &z("interiors\\Vault\\VltUtilColumns01_Damage.BGSM")),
+            sub(
+                b"SNAM",
+                &z("interiors\\Vault\\VltUtilColumns01_Damage.BGSM"),
+            ),
             sub(b"BNAM", &z("interiors\\Vault\\VltAtrium01.BGSM")),
             sub(b"SNAM", &z("interiors\\Vault\\VltAtrium01_Damage.BGSM")),
         ];
         let rec = parse_mswp(0x0024_70A8, &subs);
         assert_eq!(rec.path_filter.as_deref(), Some("Interiors\\Vault"));
         assert_eq!(rec.swaps.len(), 2);
-        assert_eq!(rec.swaps[0].source, "interiors\\Vault\\VltUtilColumns01.BGSM");
+        assert_eq!(
+            rec.swaps[0].source,
+            "interiors\\Vault\\VltUtilColumns01.BGSM"
+        );
         assert_eq!(
             rec.swaps[0].target,
             "interiors\\Vault\\VltUtilColumns01_Damage.BGSM"
@@ -234,8 +249,14 @@ mod tests {
             sub(b"BNAM", &z("setdressing\\machinekit\\machinekit01.bgsm")),
             sub(b"SNAM", &z("setdressing\\machinekit\\machinekit01.bgsm")),
             sub(b"CNAM", &intensity_bytes),
-            sub(b"BNAM", &z("setdressing\\machinekit\\machinekitquad02.bgsm")),
-            sub(b"SNAM", &z("setdressing\\machinekit\\machinekitquad02.bgsm")),
+            sub(
+                b"BNAM",
+                &z("setdressing\\machinekit\\machinekitquad02.bgsm"),
+            ),
+            sub(
+                b"SNAM",
+                &z("setdressing\\machinekit\\machinekitquad02.bgsm"),
+            ),
             sub(b"CNAM", &intensity_bytes),
         ];
         let rec = parse_mswp(0x0023_CD5F, &subs);

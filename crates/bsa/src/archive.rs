@@ -623,7 +623,8 @@ mod tests {
         // filename.
         let computed = genhash_file("glover.nif");
         assert_eq!(
-            computed, 0xc86aec30_6706e572,
+            computed,
+            0xc86aec30_6706e572,
             "glover.nif must match FNV Meshes.bsa stored hash (low=0x{:08x} high=0x{:08x})",
             computed as u32,
             (computed >> 32) as u32,
@@ -1141,8 +1142,8 @@ mod tests {
         let header_size = 36u64;
         let folder_records_size = 24u64; // 1 folder × 24 B
         let folder_block_offset = header_size + folder_records_size; // = 60
-        // The on-disk folder offset is biased by `total_file_name_length`
-        // per the parser's `expected_offset` validation comment.
+                                                                     // The on-disk folder offset is biased by `total_file_name_length`
+                                                                     // per the parser's `expected_offset` validation comment.
         let stored_folder_offset = folder_block_offset + total_file_name_length as u64;
 
         let folder_hash = genhash_folder(&folder_lc);
@@ -1228,8 +1229,8 @@ mod tests {
             "meshes\\synthetic",
             "tinytestmesh.nif",
             payload,
-            true,  // compress
-            true,  // embed_name
+            true, // compress
+            true, // embed_name
         );
         let path = write_temp_v105("compressed_embed", &bytes);
         let archive = BsaArchive::open(&path).expect("v105 archive must open");
@@ -1368,10 +1369,7 @@ mod tests {
     fn synthetic_v105_folder_record_layout_yields_one_file() {
         let payload = b"x";
         let bytes = build_v105_archive(
-            "shorty",
-            "x.bin",
-            payload,
-            false, // uncompressed for simplest path
+            "shorty", "x.bin", payload, false, // uncompressed for simplest path
             false, // no embed name
         );
         let path = write_temp_v105("folder_layout", &bytes);

@@ -157,10 +157,10 @@ mod tests {
     fn parse_clmt_wlst_decodes_negative_chance() {
         let mut wlst_data = Vec::new();
         wlst_data.extend_from_slice(&0x1000u32.to_le_bytes()); // weather 1
-        wlst_data.extend_from_slice(&(-1i32).to_le_bytes());    // negative sentinel
-        wlst_data.extend_from_slice(&0u32.to_le_bytes());       // global unused
+        wlst_data.extend_from_slice(&(-1i32).to_le_bytes()); // negative sentinel
+        wlst_data.extend_from_slice(&0u32.to_le_bytes()); // global unused
         wlst_data.extend_from_slice(&0x2000u32.to_le_bytes()); // weather 2
-        wlst_data.extend_from_slice(&75i32.to_le_bytes());      // 75% chance
+        wlst_data.extend_from_slice(&75i32.to_le_bytes()); // 75% chance
         wlst_data.extend_from_slice(&0u32.to_le_bytes());
 
         let subs = vec![make_sub(b"WLST", wlst_data)];

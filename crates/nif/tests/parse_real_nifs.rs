@@ -188,8 +188,7 @@ fn real_archive_torch_meshes_surface_particle_emitters() {
             .iter()
             .filter(|f| {
                 let lower = f.to_ascii_lowercase();
-                lower.ends_with(".nif")
-                    && candidate_folders.iter().any(|c| lower.contains(c))
+                lower.ends_with(".nif") && candidate_folders.iter().any(|c| lower.contains(c))
             })
             .take(200)
             .collect();
@@ -294,9 +293,7 @@ fn vanilla_archives_have_zero_nisequencestreamhelper() {
     }
 
     if !tried_any_archive {
-        eprintln!(
-            "no reference game data available — skipping (set BYROREDUX_*_DATA env vars)"
-        );
+        eprintln!("no reference game data available — skipping (set BYROREDUX_*_DATA env vars)");
         return;
     }
 
@@ -307,7 +304,8 @@ fn vanilla_archives_have_zero_nisequencestreamhelper() {
     eprintln!("NiSequenceStreamHelper occurrences: {}", total_ssh);
 
     assert_eq!(
-        total_ssh, 0,
+        total_ssh,
+        0,
         "expected zero NiSequenceStreamHelper blocks in vanilla content; found {} \
          (first {} examples: {:?}). The importer's Path 3 arm is now needed — \
          see .claude/issues/689/INVESTIGATION.md for the fix sketch.",

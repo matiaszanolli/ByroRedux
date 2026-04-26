@@ -360,7 +360,11 @@ impl ConsoleCommand for SysAccessesCommand {
             lines.push(String::new());
             lines.push(format!("─── stage {:?} ────", stage_report.stage));
             for row in &stage_report.systems {
-                let tag = if row.is_exclusive { "exclusive" } else { "parallel " };
+                let tag = if row.is_exclusive {
+                    "exclusive"
+                } else {
+                    "parallel "
+                };
                 let summary = match &row.declared {
                     None => "(undeclared)".to_string(),
                     Some(a) if a.is_empty() => "(declared, empty)".to_string(),
@@ -391,10 +395,7 @@ impl ConsoleCommand for SysAccessesCommand {
                 lines.push(format!("  [{}] {}: {}", tag, row.name, summary));
             }
             if !stage_report.conflicts.is_empty() {
-                lines.push(format!(
-                    "  conflicts ({}):",
-                    stage_report.conflicts.len()
-                ));
+                lines.push(format!("  conflicts ({}):", stage_report.conflicts.len()));
                 for c in &stage_report.conflicts {
                     match &c.conflict {
                         AccessConflict::Conflict { pairs } => {

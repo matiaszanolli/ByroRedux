@@ -116,7 +116,9 @@ pub fn reflect_bindings(spirv_bytes: &[u8]) -> Result<Vec<ReflectedBinding>> {
         if inst.class.opcode != Op::Variable {
             continue;
         }
-        let Some(var_id) = inst.result_id else { continue };
+        let Some(var_id) = inst.result_id else {
+            continue;
+        };
         let Some(deco) = decos.get(&var_id) else {
             continue;
         };
@@ -212,13 +214,9 @@ fn resolve_descriptor_type(
                 ),
             }
         }
-        Op::TypeAccelerationStructureKHR => {
-            Ok((vk::DescriptorType::ACCELERATION_STRUCTURE_KHR, 1))
-        }
+        Op::TypeAccelerationStructureKHR => Ok((vk::DescriptorType::ACCELERATION_STRUCTURE_KHR, 1)),
         Op::TypeSampler => Ok((vk::DescriptorType::SAMPLER, 1)),
-        other => bail!(
-            "unsupported descriptor type opcode {other:?} at type id={type_id}"
-        ),
+        other => bail!("unsupported descriptor type opcode {other:?} at type id={type_id}"),
     }
 }
 
@@ -447,6 +445,9 @@ mod tests {
         )
         .expect_err("dropped binding must fail");
         let msg = format!("{err}");
-        assert!(msg.contains("binding=2"), "message names missing binding: {msg}");
+        assert!(
+            msg.contains("binding=2"),
+            "message names missing binding: {msg}"
+        );
     }
 }

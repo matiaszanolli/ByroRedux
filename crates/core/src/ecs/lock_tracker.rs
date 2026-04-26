@@ -203,9 +203,8 @@ mod global_order {
     /// Whether the env var was set at process start. Cached in an
     /// atomic so the per-acquire fast-path is one relaxed load.
     /// Tests can flip this directly via [`set_enabled_for_tests`].
-    static ENABLED: LazyLock<AtomicBool> = LazyLock::new(|| {
-        AtomicBool::new(std::env::var_os("BYRO_LOCK_ORDER_CHECK").is_some())
-    });
+    static ENABLED: LazyLock<AtomicBool> =
+        LazyLock::new(|| AtomicBool::new(std::env::var_os("BYRO_LOCK_ORDER_CHECK").is_some()));
 
     /// Record each `held → new` edge in the graph and panic if the
     /// insert would close a cycle (`new → held` already observed).

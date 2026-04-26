@@ -61,12 +61,7 @@ impl ScolPlacement {
             return None;
         }
         let read_f32 = |off: usize| {
-            f32::from_le_bytes([
-                data[off],
-                data[off + 1],
-                data[off + 2],
-                data[off + 3],
-            ])
+            f32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
         };
         Some(Self {
             pos: [read_f32(0), read_f32(4), read_f32(8)],
@@ -306,10 +301,7 @@ mod tests {
     /// downstream accounting matches the `ONAM` count exactly.
     #[test]
     fn parse_scol_onam_without_following_data_keeps_empty_part() {
-        let subs = vec![
-            edid("OnamOnly"),
-            onam(0x0000_ABCD),
-        ];
+        let subs = vec![edid("OnamOnly"), onam(0x0000_ABCD)];
         let rec = parse_scol(0xDEAD_BEEF, &subs);
         assert_eq!(rec.parts.len(), 1);
         assert_eq!(rec.parts[0].base_form_id, 0x0000_ABCD);
@@ -349,7 +341,11 @@ mod tests {
         data_bytes.extend_from_slice(&p.scale.to_le_bytes());
         data_bytes.extend_from_slice(&[0u8; 10]); // truncated partial
 
-        let subs = vec![edid("Trunc"), onam(0x0000_0001), mk_sub(b"DATA", data_bytes)];
+        let subs = vec![
+            edid("Trunc"),
+            onam(0x0000_0001),
+            mk_sub(b"DATA", data_bytes),
+        ];
         let rec = parse_scol(0x1111_2222, &subs);
         assert_eq!(rec.parts.len(), 1);
         assert_eq!(rec.parts[0].placements, vec![p]);

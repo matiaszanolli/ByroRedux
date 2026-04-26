@@ -305,9 +305,13 @@ pub(super) fn walk_node_hierarchical(
         .downcast_ref::<crate::blocks::particle::NiPSysBlock>()
     {
         match ps.original_type.as_str() {
-            "NiParticleSystem" | "NiMeshParticleSystem" | "NiParticles"
-            | "NiParticleSystemController" | "NiBSPArrayController"
-            | "NiAutoNormalParticles" | "NiRotatingParticles" => {
+            "NiParticleSystem"
+            | "NiMeshParticleSystem"
+            | "NiParticles"
+            | "NiParticleSystemController"
+            | "NiBSPArrayController"
+            | "NiAutoNormalParticles"
+            | "NiRotatingParticles" => {
                 out.particle_emitters
                     .push(crate::import::ImportedParticleEmitter {
                         parent_node: parent_node_idx,
@@ -611,9 +615,13 @@ pub(super) fn walk_node_particle_emitters_flat(
         .downcast_ref::<crate::blocks::particle::NiPSysBlock>()
     {
         match ps.original_type.as_str() {
-            "NiParticleSystem" | "NiMeshParticleSystem" | "NiParticles"
-            | "NiParticleSystemController" | "NiBSPArrayController"
-            | "NiAutoNormalParticles" | "NiRotatingParticles" => {
+            "NiParticleSystem"
+            | "NiMeshParticleSystem"
+            | "NiParticles"
+            | "NiParticleSystemController"
+            | "NiBSPArrayController"
+            | "NiAutoNormalParticles"
+            | "NiRotatingParticles" => {
                 let t = &parent_transform.translation;
                 out.push(crate::import::ImportedParticleEmitterFlat {
                     local_position: zup_point_to_yup(t),
@@ -704,7 +712,9 @@ fn resolve_block_ref_names(scene: &NifScene, refs: &[BlockRef]) -> Vec<std::sync
     let mut out: Vec<std::sync::Arc<str>> = Vec::with_capacity(refs.len());
     for r in refs {
         let Some(idx) = r.index() else { continue };
-        let Some(block) = scene.get(idx) else { continue };
+        let Some(block) = scene.get(idx) else {
+            continue;
+        };
         let Some(net) = block.as_object_net() else {
             continue;
         };

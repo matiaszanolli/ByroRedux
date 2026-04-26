@@ -250,7 +250,10 @@ pub fn build_instance_map(len: usize, mut keep: impl FnMut(usize) -> bool) -> Ve
 /// function so the BLAS single-build, BLAS batched-build, and TLAS
 /// rebuild call sites can share one decision rule and a unit test can
 /// guard against drift. See #60 (BLAS pool) + #424 SIBLING (TLAS pool).
-fn scratch_needs_growth(current_capacity: Option<vk::DeviceSize>, required: vk::DeviceSize) -> bool {
+fn scratch_needs_growth(
+    current_capacity: Option<vk::DeviceSize>,
+    required: vk::DeviceSize,
+) -> bool {
     match current_capacity {
         Some(cap) => cap < required,
         None => true,
@@ -914,10 +917,9 @@ impl AccelerationManager {
             .skinned_blas
             .get_mut(&entity_id)
             .with_context(|| format!("no skinned BLAS for entity {entity_id}"))?;
-        let scratch_buffer = self
-            .blas_scratch_buffer
-            .as_ref()
-            .context("blas_scratch_buffer absent — must be allocated by build_skinned_blas first")?;
+        let scratch_buffer = self.blas_scratch_buffer.as_ref().context(
+            "blas_scratch_buffer absent — must be allocated by build_skinned_blas first",
+        )?;
 
         let vertex_stride = std::mem::size_of::<Vertex>() as vk::DeviceSize;
         let vertex_address = unsafe {
@@ -1002,11 +1004,7 @@ impl AccelerationManager {
     /// Stateless (the `&self` is for discoverability — the helper does
     /// not touch any field). Caller emits this between iterations of a
     /// build loop, **not** before the first iteration. See #642.
-    pub fn record_scratch_serialize_barrier(
-        &self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-    ) {
+    pub fn record_scratch_serialize_barrier(&self, device: &ash::Device, cmd: vk::CommandBuffer) {
         let barrier = vk::MemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
             .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR);
@@ -1955,8 +1953,7 @@ impl AccelerationManager {
         // SAFETY: AccelerationStructureReferenceKHR is a union; our
         // BLAS entries are always device-built so `device_handle` is
         // the live variant on every push site in this manager.
-        let mut current_addresses_scratch =
-            std::mem::take(&mut self.tlas_addresses_scratch);
+        let mut current_addresses_scratch = std::mem::take(&mut self.tlas_addresses_scratch);
         current_addresses_scratch.clear();
         current_addresses_scratch.reserve(instances.len());
         for inst in &instances {
@@ -1978,7 +1975,10 @@ impl AccelerationManager {
         // 8k-instance ceiling, 3.84 MB/s at 60 FPS, all to feed a 4-byte
         // bool. Swap is allocation-free: each TLAS slot's Vec ping-pongs
         // with the manager scratch.
-        std::mem::swap(&mut tlas.last_blas_addresses, &mut current_addresses_scratch);
+        std::mem::swap(
+            &mut tlas.last_blas_addresses,
+            &mut current_addresses_scratch,
+        );
         self.tlas_addresses_scratch = current_addresses_scratch;
         shrink_scratch_if_oversized(&mut self.tlas_addresses_scratch, instances.len(), 512);
         // After this BUILD/UPDATE completes, the next frame can refit
@@ -2314,9 +2314,7 @@ impl AccelerationManager {
                 // Allocation failed — leave `blas_scratch_buffer` as
                 // `None` and let the next build allocate fresh. This is
                 // a degraded but correct state.
-                log::warn!(
-                    "BLAS scratch shrink realloc failed: {e}; next build will re-allocate"
-                );
+                log::warn!("BLAS scratch shrink realloc failed: {e}; next build will re-allocate");
             }
         }
     }
@@ -2425,7 +2423,11 @@ mod tests {
         // the "leave alone" branch).
         let mut at: Vec<u8> = Vec::with_capacity(1024);
         shrink_scratch_if_oversized(&mut at, 500, 512);
-        assert_eq!(at.capacity(), 1024, "at-target capacity must not be touched");
+        assert_eq!(
+            at.capacity(),
+            1024,
+            "at-target capacity must not be touched"
+        );
 
         // Capacity below 2× — leave alone, we're already efficient.
         let mut under: Vec<u8> = Vec::with_capacity(800);
@@ -2440,7 +2442,10 @@ mod tests {
         let mut v: Vec<u8> = Vec::with_capacity(5000);
         shrink_scratch_if_oversized(&mut v, 0, 512);
         assert!(v.capacity() >= 512, "floor must survive zero working set");
-        assert!(v.capacity() <= 1024, "shrink must still fire above 2 × floor");
+        assert!(
+            v.capacity() <= 1024,
+            "shrink must still fire above 2 × floor"
+        );
     }
 
     /// Regression for #510: the mid-batch eviction predicate must
@@ -2569,8 +2574,7 @@ mod tests {
         // And with a non-empty cached prior frame too — the previous
         // frame had instances, this one does not.
         let cached_nonempty = vec![1u64, 2, 3];
-        let (use_update, did_zip) =
-            decide_use_update(false, 7, 7, &cached_nonempty, &current);
+        let (use_update, did_zip) = decide_use_update(false, 7, 7, &cached_nonempty, &current);
         assert!(!use_update);
         assert!(!did_zip);
     }

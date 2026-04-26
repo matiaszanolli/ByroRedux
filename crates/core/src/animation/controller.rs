@@ -402,13 +402,22 @@ mod tests {
 
     #[test]
     fn transition_kind_from_kfm_discriminant_maps_known_values() {
-        assert_eq!(TransitionKind::from_kfm_discriminant(0), TransitionKind::Blend);
-        assert_eq!(TransitionKind::from_kfm_discriminant(1), TransitionKind::Morph);
+        assert_eq!(
+            TransitionKind::from_kfm_discriminant(0),
+            TransitionKind::Blend
+        );
+        assert_eq!(
+            TransitionKind::from_kfm_discriminant(1),
+            TransitionKind::Morph
+        );
         assert_eq!(
             TransitionKind::from_kfm_discriminant(2),
             TransitionKind::Crossfade
         );
-        assert_eq!(TransitionKind::from_kfm_discriminant(3), TransitionKind::Chain);
+        assert_eq!(
+            TransitionKind::from_kfm_discriminant(3),
+            TransitionKind::Chain
+        );
         assert_eq!(
             TransitionKind::from_kfm_discriminant(4),
             TransitionKind::DefaultSync
@@ -418,8 +427,14 @@ mod tests {
             TransitionKind::DefaultNonSync
         );
         // Unknown falls back to safe Blend.
-        assert_eq!(TransitionKind::from_kfm_discriminant(99), TransitionKind::Blend);
-        assert_eq!(TransitionKind::from_kfm_discriminant(-1), TransitionKind::Blend);
+        assert_eq!(
+            TransitionKind::from_kfm_discriminant(99),
+            TransitionKind::Blend
+        );
+        assert_eq!(
+            TransitionKind::from_kfm_discriminant(-1),
+            TransitionKind::Blend
+        );
     }
 
     #[test]

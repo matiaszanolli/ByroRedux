@@ -479,7 +479,13 @@ pub fn import_nif_particle_emitters(scene: &NifScene) -> Vec<ImportedParticleEmi
     let Some(root_idx) = scene.root_index else {
         return out;
     };
-    walk::walk_node_particle_emitters_flat(scene, root_idx, &NiTransform::default(), None, &mut out);
+    walk::walk_node_particle_emitters_flat(
+        scene,
+        root_idx,
+        &NiTransform::default(),
+        None,
+        &mut out,
+    );
     out
 }
 
@@ -1478,11 +1484,7 @@ mod tests {
         // |q| == 1.0 to f32 precision.
         let drift = 1.03f32;
         let scaled_identity = NiMatrix3 {
-            rows: [
-                [drift, 0.0, 0.0],
-                [0.0, drift, 0.0],
-                [0.0, 0.0, drift],
-            ],
+            rows: [[drift, 0.0, 0.0], [0.0, drift, 0.0], [0.0, 0.0, drift]],
         };
         let q = coord::zup_matrix_to_yup_quat(&scaled_identity);
         let len = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
@@ -1594,10 +1596,8 @@ mod tests {
     fn hierarchical_import_surfaces_particle_emitter_under_named_host() {
         // Root NiNode named "TorchNode" with a NiParticleSystem child at index 1.
         let root = make_ni_node(identity_transform(), vec![BlockRef(1)]);
-        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
-            Box::new(root),
-            Box::new(ni_psys_block("NiParticleSystem")),
-        ];
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
+            vec![Box::new(root), Box::new(ni_psys_block("NiParticleSystem"))];
         let scene = scene_from_blocks(blocks);
         let imported = import_nif_scene(&scene);
         assert_eq!(imported.particle_emitters.len(), 1);
@@ -1611,10 +1611,8 @@ mod tests {
     fn flat_import_surfaces_particle_emitter_with_nearest_named_host() {
         // Root NiNode at translation (5, 10, 20), with NiParticleSystem child.
         let root = make_ni_node(translated(5.0, 10.0, 20.0), vec![BlockRef(1)]);
-        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
-            Box::new(root),
-            Box::new(ni_psys_block("NiParticleSystem")),
-        ];
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
+            vec![Box::new(root), Box::new(ni_psys_block("NiParticleSystem"))];
         let scene = scene_from_blocks(blocks);
         let emitters = import_nif_particle_emitters(&scene);
         assert_eq!(emitters.len(), 1);
@@ -1641,10 +1639,8 @@ mod tests {
             "NiRotatingParticles",
         ] {
             let root = make_ni_node(identity_transform(), vec![BlockRef(1)]);
-            let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
-                Box::new(root),
-                Box::new(ni_psys_block(variant)),
-            ];
+            let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
+                vec![Box::new(root), Box::new(ni_psys_block(variant))];
             let scene = scene_from_blocks(blocks);
             let emitters = import_nif_particle_emitters(&scene);
             assert_eq!(
@@ -1727,9 +1723,8 @@ mod tests {
             crate::blocks::node::BsRangeKind::Blast,
             crate::blocks::node::BsRangeKind::Debris,
         ] {
-            let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![Box::new(ni_range_node(
-                kind, 0, 5, 2,
-            ))];
+            let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
+                vec![Box::new(ni_range_node(kind, 0, 5, 2))];
             let scene = scene_from_blocks(blocks);
             let imported = import_nif_scene(&scene);
             assert_eq!(imported.nodes.len(), 1, "{:?}", kind);

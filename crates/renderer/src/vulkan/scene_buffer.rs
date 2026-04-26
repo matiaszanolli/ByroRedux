@@ -236,10 +236,10 @@ pub struct GpuInstance {
     /// FO4 BGSM authors both offset and scale; FO3/FNV/Skyrim usually
     /// default to identity (0, 0) / (1, 1). See #492 (FO4-BGSM-3).
     pub uv_offset_u: f32, // 4 B, offset 192
-    pub uv_offset_v: f32, // 4 B, offset 196
+    pub uv_offset_v: f32,      // 4 B, offset 196
     /// UV transform scale X / Y.
     pub uv_scale_u: f32, // 4 B, offset 200
-    pub uv_scale_v: f32, // 4 B, offset 204
+    pub uv_scale_v: f32,       // 4 B, offset 204
     /// Material alpha multiplier — the BGSM `material_alpha` field
     /// (equivalent to `MaterialInfo.alpha` on the NIF side). Fragment
     /// shader multiplies the sampled texture alpha by this for the
@@ -249,8 +249,8 @@ pub struct GpuInstance {
     /// that block's vec4 is full (BGSM: `[uvOffsetU, uvOffsetV, uvScaleU,
     /// uvScaleV]` + `[materialAlpha, _uv_pad0, _uv_pad1, _uv_pad2]`).
     pub _uv_pad0: f32, // 4 B, offset 212
-    pub _uv_pad1: f32, // 4 B, offset 216
-    pub _uv_pad2: f32, // 4 B, offset 220
+    pub _uv_pad1: f32,         // 4 B, offset 216
+    pub _uv_pad2: f32,         // 4 B, offset 220
     // ── Skyrim+ BSLightingShaderProperty variant payloads (#562) ───
     //
     // All six vec4 slots below carry per-variant data from
@@ -291,7 +291,7 @@ pub struct GpuInstance {
     pub eye_right_center_x: f32, // 4 B, offset 272
     pub eye_right_center_y: f32, // 4 B, offset 276
     pub eye_right_center_z: f32, // 4 B, offset 280
-    pub _eye_pad: f32, // 4 B, offset 284
+    pub _eye_pad: f32,    // 4 B, offset 284
     /// MultiLayerParallax (material_kind == 11) inner-layer scalars —
     /// `inner_thickness`, `refraction_scale`, `inner_layer_scale_u`,
     /// `inner_layer_scale_v`. These drive a second UV sample of the
@@ -300,16 +300,16 @@ pub struct GpuInstance {
     /// `ShaderTypeData::MultiLayerParallax` for the NIF-side payload.
     pub multi_layer_inner_thickness: f32, // 4 B, offset 288
     pub multi_layer_refraction_scale: f32, // 4 B, offset 292
-    pub multi_layer_inner_scale_u: f32,   // 4 B, offset 296
-    pub multi_layer_inner_scale_v: f32,   // 4 B, offset 300
+    pub multi_layer_inner_scale_u: f32, // 4 B, offset 296
+    pub multi_layer_inner_scale_v: f32, // 4 B, offset 300
     /// SparkleSnow (material_kind == 14) sparkle-params vec4 from
     /// `ShaderTypeData::SparkleSnow`. Bethesda's content packs RGB
     /// sparkle color + alpha intensity; fragment shader overlays a
     /// per-pixel hash-driven glint modulated by these. Default
     /// (0, 0, 0, 0) produces no sparkle.
-    pub sparkle_r: f32,         // 4 B, offset 304
-    pub sparkle_g: f32,         // 4 B, offset 308
-    pub sparkle_b: f32,         // 4 B, offset 312
+    pub sparkle_r: f32, // 4 B, offset 304
+    pub sparkle_g: f32,   // 4 B, offset 308
+    pub sparkle_b: f32,   // 4 B, offset 312
     pub sparkle_intensity: f32, // 4 B, offset 316
     // ── #221: NiMaterialProperty diffuse + ambient colors ───────────
     //
@@ -323,15 +323,15 @@ pub struct GpuInstance {
     // patches above; defaults are `[1.0, 1.0, 1.0, 0.0]` so meshes
     // without an `NiMaterialProperty` (every BSShader-only Skyrim+
     // / FO4 mesh) are unaffected.
-    pub diffuse_r: f32, // 4 B, offset 320
-    pub diffuse_g: f32,         // 4 B, offset 324
-    pub diffuse_b: f32,         // 4 B, offset 328
-    pub _diffuse_pad: f32,      // 4 B, offset 332
-    pub ambient_r: f32,         // 4 B, offset 336
-    pub ambient_g: f32,         // 4 B, offset 340
-    pub ambient_b: f32,         // 4 B, offset 344
-    pub _ambient_pad: f32,      // 4 B, offset 348 → total 352
-                                // Struct is 352 bytes (22×16), 16-byte aligned for std430.
+    pub diffuse_r: f32,    // 4 B, offset 320
+    pub diffuse_g: f32,    // 4 B, offset 324
+    pub diffuse_b: f32,    // 4 B, offset 328
+    pub _diffuse_pad: f32, // 4 B, offset 332
+    pub ambient_r: f32,    // 4 B, offset 336
+    pub ambient_g: f32,    // 4 B, offset 340
+    pub ambient_b: f32,    // 4 B, offset 344
+    pub _ambient_pad: f32, // 4 B, offset 348 → total 352
+                           // Struct is 352 bytes (22×16), 16-byte aligned for std430.
 }
 
 impl Default for GpuInstance {
@@ -1162,7 +1162,11 @@ impl SceneBuffers {
             .context("Failed to allocate terrain tile staging memory")?;
         unsafe {
             device
-                .bind_buffer_memory(staging_buffer, staging_alloc.memory(), staging_alloc.offset())
+                .bind_buffer_memory(
+                    staging_buffer,
+                    staging_alloc.memory(),
+                    staging_alloc.offset(),
+                )
                 .context("Failed to bind terrain tile staging buffer")?;
         }
 
@@ -1587,14 +1591,8 @@ mod gpu_instance_layout_tests {
     #[test]
     fn every_shader_struct_gpu_instance_names_material_kind_slot() {
         const SOURCES: &[(&str, &str)] = &[
-            (
-                "triangle.vert",
-                include_str!("../../shaders/triangle.vert"),
-            ),
-            (
-                "triangle.frag",
-                include_str!("../../shaders/triangle.frag"),
-            ),
+            ("triangle.vert", include_str!("../../shaders/triangle.vert")),
+            ("triangle.frag", include_str!("../../shaders/triangle.frag")),
             ("ui.vert", include_str!("../../shaders/ui.vert")),
             (
                 "caustic_splat.comp",

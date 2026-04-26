@@ -794,10 +794,7 @@ impl NiBoolInterpolator {
         Self::parse_with_kind(stream, BoolInterpolatorKind::Timeline)
     }
 
-    fn parse_with_kind(
-        stream: &mut NifStream,
-        kind: BoolInterpolatorKind,
-    ) -> io::Result<Self> {
+    fn parse_with_kind(stream: &mut NifStream, kind: BoolInterpolatorKind) -> io::Result<Self> {
         // nif.xml: NiBoolInterpolator.bool_value is type "bool" (1 byte),
         // NOT "NiBool" (version-dependent u32/u8). Always a single byte.
         let value = stream.read_byte_bool()?;
@@ -1132,7 +1129,7 @@ mod tests {
         let mut data = Vec::new();
         data.extend_from_slice(&2u32.to_le_bytes()); // num keys
         data.extend_from_slice(&1u32.to_le_bytes()); // Linear
-        // Key 0: t=0, (1, 0, 0, 1)
+                                                     // Key 0: t=0, (1, 0, 0, 1)
         data.extend_from_slice(&0.0f32.to_le_bytes());
         data.extend_from_slice(&1.0f32.to_le_bytes());
         data.extend_from_slice(&0.0f32.to_le_bytes());
@@ -1226,8 +1223,16 @@ mod tests {
         // Each axis has its own distinct key count — proves Y/Z weren't
         // silently skipped or overwritten with X's data.
         assert_eq!(xyz[0].keys.len(), 2, "X axis (2 keys)");
-        assert_eq!(xyz[1].keys.len(), 3, "Y axis (3 keys) — audit imagined this was missed");
-        assert_eq!(xyz[2].keys.len(), 1, "Z axis (1 key) — audit imagined this was missed");
+        assert_eq!(
+            xyz[1].keys.len(),
+            3,
+            "Y axis (3 keys) — audit imagined this was missed"
+        );
+        assert_eq!(
+            xyz[2].keys.len(),
+            1,
+            "Z axis (1 key) — audit imagined this was missed"
+        );
 
         // Spot-check authored values so a future parser that reads
         // three KeyGroups but at the wrong offsets still fails.

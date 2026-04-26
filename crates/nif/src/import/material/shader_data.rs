@@ -102,9 +102,7 @@ pub(crate) fn apply_shader_type_data(info: &mut MaterialInfo, data: &ShaderTypeD
         .eye_right_reflection_center
         .or(info.eye_right_reflection_center);
     info.parallax_max_passes = fields.parallax_max_passes.or(info.parallax_max_passes);
-    info.parallax_height_scale = fields
-        .parallax_height_scale
-        .or(info.parallax_height_scale);
+    info.parallax_height_scale = fields.parallax_height_scale.or(info.parallax_height_scale);
     info.multi_layer_inner_thickness = fields
         .multi_layer_inner_thickness
         .or(info.multi_layer_inner_thickness);
@@ -221,4 +219,3 @@ impl ShaderTypeFields {
         }
     }
 }
-

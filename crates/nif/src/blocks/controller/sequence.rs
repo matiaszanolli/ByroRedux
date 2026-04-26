@@ -288,9 +288,7 @@ impl NiControllerSequence {
         // with BSVER >= 24) use the modern string-table layout and
         // skip this field. See #402 (audit premise was wrong — Oblivion
         // uses NiControllerSequence, not NiSequenceStreamHelper).
-        if stream.version() >= NifVersion(0x0A010071)
-            && stream.version() < NifVersion(0x14010001)
-        {
+        if stream.version() >= NifVersion(0x0A010071) && stream.version() < NifVersion(0x14010001) {
             let _deprecated_string_palette_ref = stream.read_block_ref()?;
         }
 
@@ -356,4 +354,3 @@ impl BsRefractionFirePeriodController {
         })
     }
 }
-

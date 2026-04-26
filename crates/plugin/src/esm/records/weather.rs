@@ -215,8 +215,7 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
                         offset += 4;
                     }
                     if on_disk_slots < SKY_TIME_SLOTS {
-                        record.sky_colors[group][TOD_HIGH_NOON] =
-                            record.sky_colors[group][TOD_DAY];
+                        record.sky_colors[group][TOD_HIGH_NOON] = record.sky_colors[group][TOD_DAY];
                         record.sky_colors[group][TOD_MIDNIGHT] =
                             record.sky_colors[group][TOD_NIGHT];
                     }
@@ -382,8 +381,8 @@ mod tests {
         data_bytes[0] = 30; // wind speed
         data_bytes[4] = 128; // sun glare
         data_bytes[5] = 10; // sun damage
-        // Classification sits at byte 11. See #538 / audit M33-06 —
-        // pre-fix the parser read byte 13 (padding).
+                            // Classification sits at byte 11. See #538 / audit M33-06 —
+                            // pre-fix the parser read byte 13 (padding).
         data_bytes[11] = WTHR_PLEASANT;
 
         let subs = vec![
@@ -560,8 +559,16 @@ mod tests {
             make_sub(b"HNAM", hnam_data),
         ];
         let w = parse_wthr(0xEED, &subs);
-        assert!((w.fog_day_far - 16_000.0).abs() < 0.01, "fog_day_far={}", w.fog_day_far);
-        assert!((w.fog_night_far - 6_000.0).abs() < 0.01, "fog_night_far={}", w.fog_night_far);
+        assert!(
+            (w.fog_day_far - 16_000.0).abs() < 0.01,
+            "fog_day_far={}",
+            w.fog_day_far
+        );
+        assert!(
+            (w.fog_night_far - 6_000.0).abs() < 0.01,
+            "fog_night_far={}",
+            w.fog_night_far
+        );
     }
 
     /// Regression for #537 / audit M33-05 — a real 56-byte Oblivion
@@ -575,20 +582,20 @@ mod tests {
     fn parse_wthr_oblivion_hnam_56byte_decodes_to_hdr_fields() {
         // 14 distinct sentinel values so we can tell fields apart.
         let values: [f32; 14] = [
-            0.7,   // eye_adapt_speed
-            4.0,   // blur_radius
-            2.0,   // blur_passes
-            1.0,   // emissive_mult
-            0.85,  // target_lum
-            10.0,  // upper_lum_clamp
-            0.25,  // bright_scale
-            0.95,  // bright_clamp
-            1.5,   // lum_ramp_no_tex
-            0.05,  // lum_ramp_min
-            2.5,   // lum_ramp_max
-            0.8,   // sunlight_dimmer
-            0.9,   // grass_dimmer
-            0.75,  // tree_dimmer
+            0.7,  // eye_adapt_speed
+            4.0,  // blur_radius
+            2.0,  // blur_passes
+            1.0,  // emissive_mult
+            0.85, // target_lum
+            10.0, // upper_lum_clamp
+            0.25, // bright_scale
+            0.95, // bright_clamp
+            1.5,  // lum_ramp_no_tex
+            0.05, // lum_ramp_min
+            2.5,  // lum_ramp_max
+            0.8,  // sunlight_dimmer
+            0.9,  // grass_dimmer
+            0.75, // tree_dimmer
         ];
         let mut hnam = Vec::with_capacity(56);
         for v in values {

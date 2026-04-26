@@ -245,7 +245,11 @@ impl Texture {
         //    the buffer back for reuse; otherwise destroy outright.
         //    Guard ensures cleanup on error above regardless.
         if let Some(pool) = staging_pool {
-            let capacity = staging.allocation.as_ref().map(|a| a.size()).unwrap_or(image_size);
+            let capacity = staging
+                .allocation
+                .as_ref()
+                .map(|a| a.size())
+                .unwrap_or(image_size);
             staging.release_to(pool, capacity);
         } else {
             staging.destroy();
@@ -505,7 +509,11 @@ impl Texture {
         // 6. Release staging — back to pool (reuse) or destroy. Guard
         //    ensures cleanup on error above regardless.
         if let Some(pool) = staging_pool {
-            let capacity = staging.allocation.as_ref().map(|a| a.size()).unwrap_or(image_size);
+            let capacity = staging
+                .allocation
+                .as_ref()
+                .map(|a| a.size())
+                .unwrap_or(image_size);
             staging.release_to(pool, capacity);
         } else {
             staging.destroy();

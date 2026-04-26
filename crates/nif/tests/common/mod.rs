@@ -490,10 +490,7 @@ impl PerBlockHistogram {
         Self::default()
     }
 
-    pub fn record_scene_blocks<'a>(
-        &mut self,
-        blocks: impl Iterator<Item = &'a Box<dyn NiObject>>,
-    ) {
+    pub fn record_scene_blocks<'a>(&mut self, blocks: impl Iterator<Item = &'a Box<dyn NiObject>>) {
         for block in blocks {
             if let Some(unknown) = block.as_any().downcast_ref::<NiUnknown>() {
                 self.counts
@@ -530,9 +527,15 @@ impl PerBlockHistogram {
     /// stay hand-readable.
     pub fn to_tsv(&self, total_files: usize) -> String {
         let mut out = String::new();
-        out.push_str(&format!("# nif_stats per-block histogram\ttotal={}\n", total_files));
+        out.push_str(&format!(
+            "# nif_stats per-block histogram\ttotal={}\n",
+            total_files
+        ));
         for (name, counts) in &self.counts {
-            out.push_str(&format!("{}\t{}\t{}\n", name, counts.parsed, counts.unknown));
+            out.push_str(&format!(
+                "{}\t{}\t{}\n",
+                name, counts.parsed, counts.unknown
+            ));
         }
         out
     }

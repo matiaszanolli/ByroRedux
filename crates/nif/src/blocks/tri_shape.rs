@@ -646,8 +646,7 @@ impl BsTriShape {
         let dynamic_count = (dynamic_data_size / 16) as usize;
         if dynamic_count > 0 {
             // #388: bound the file-driven count through allocate_vec.
-            let mut dynamic_vertices: Vec<NiPoint3> =
-                stream.allocate_vec(dynamic_count as u32)?;
+            let mut dynamic_vertices: Vec<NiPoint3> = stream.allocate_vec(dynamic_count as u32)?;
             for _ in 0..dynamic_count {
                 let x = stream.read_f32_le()?;
                 let y = stream.read_f32_le()?;
@@ -709,10 +708,7 @@ impl BsTriShape {
     ///   `BSGeometrySegmentSharedData` follows: `num_segments + total_segments
     ///   + segment_starts[num_segments] + per_segment_data[total_segments]
     ///   + ssf_filename` (u16-prefixed string).
-    pub fn parse_sub_index(
-        stream: &mut NifStream,
-        block_size: Option<u32>,
-    ) -> io::Result<Self> {
+    pub fn parse_sub_index(stream: &mut NifStream, block_size: Option<u32>) -> io::Result<Self> {
         let block_start = stream.position();
         let mut shape = Self::parse(stream)?;
         let segmentation_start = stream.position();
@@ -753,8 +749,7 @@ impl BsTriShape {
                 } else {
                     stream.set_position(segmentation_start);
                 }
-                shape.kind =
-                    BsTriShapeKind::SubIndex(Box::new(BsSubIndexTriShapeData::default()));
+                shape.kind = BsTriShapeKind::SubIndex(Box::new(BsSubIndexTriShapeData::default()));
             }
         }
         Ok(shape)
@@ -850,8 +845,7 @@ impl BsSubIndexTriShapeData {
             let num_segments = stream.read_u32_le()?;
             let total_segments = stream.read_u32_le()?;
             // #388/#408 — bound the file-driven count before allocation.
-            let mut segments: Vec<BsGeometrySegmentData> =
-                stream.allocate_vec(num_segments)?;
+            let mut segments: Vec<BsGeometrySegmentData> = stream.allocate_vec(num_segments)?;
             for _ in 0..num_segments {
                 let start_index = stream.read_u32_le()?;
                 let seg_num_primitives = stream.read_u32_le()?;
@@ -881,8 +875,7 @@ impl BsSubIndexTriShapeData {
             let shared = if num_segments < total_segments {
                 let s_num_segments = stream.read_u32_le()?;
                 let s_total_segments = stream.read_u32_le()?;
-                let mut segment_starts: Vec<u32> =
-                    stream.allocate_vec(s_num_segments)?;
+                let mut segment_starts: Vec<u32> = stream.allocate_vec(s_num_segments)?;
                 for _ in 0..s_num_segments {
                     segment_starts.push(stream.read_u32_le()?);
                 }
@@ -899,8 +892,7 @@ impl BsSubIndexTriShapeData {
                     // — a strict cap dropped parse rate from 100% to
                     // 96.46%). Trust `allocate_vec`'s #388 hard cap to
                     // bound malicious inputs and let real content through.
-                    let mut cut_offsets: Vec<f32> =
-                        stream.allocate_vec(num_cut_offsets)?;
+                    let mut cut_offsets: Vec<f32> = stream.allocate_vec(num_cut_offsets)?;
                     for _ in 0..num_cut_offsets {
                         cut_offsets.push(stream.read_f32_le()?);
                     }
@@ -939,8 +931,7 @@ impl BsSubIndexTriShapeData {
             // a single byte for flags and don't carry parent_array_index
             // or sub-segments.
             let num_segments = stream.read_u32_le()?;
-            let mut segments: Vec<BsGeometrySegmentData> =
-                stream.allocate_vec(num_segments)?;
+            let mut segments: Vec<BsGeometrySegmentData> = stream.allocate_vec(num_segments)?;
             for _ in 0..num_segments {
                 let flags = stream.read_u8()?;
                 let start_index = stream.read_u32_le()?;

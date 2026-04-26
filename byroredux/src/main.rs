@@ -14,8 +14,8 @@ use anyhow::Result;
 use byroredux_core::animation::AnimationClipRegistry;
 use byroredux_core::console::CommandRegistry;
 use byroredux_core::ecs::{
-    Access, ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, Scheduler,
-    ScratchTelemetry, Stage, Transform, TotalTime, World,
+    Access, ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, Scheduler, ScratchTelemetry,
+    Stage, TotalTime, Transform, World,
 };
 use byroredux_core::string::StringPool;
 use byroredux_platform::window::{self, WindowConfig};
@@ -403,9 +403,7 @@ impl ApplicationHandler for App {
                 // dodges the orphan rule on `Resource`. See #503.
                 if let Some(ref alloc) = ctx.allocator {
                     self.world.insert_resource(
-                        byroredux_renderer::vulkan::allocator::AllocatorResource(
-                            alloc.clone(),
-                        ),
+                        byroredux_renderer::vulkan::allocator::AllocatorResource(alloc.clone()),
                     );
                 }
 
@@ -743,14 +741,14 @@ impl ApplicationHandler for App {
                         0.0
                     };
                     let brd_ms = self.bench_build_render_ns as f64 / n / 1e6;
-                    let ui_ms  = self.bench_ui_ns as f64 / n / 1e6;
+                    let ui_ms = self.bench_ui_ns as f64 / n / 1e6;
                     let draw_ms = self.bench_render_ns as f64 / n / 1e6;
                     let ft = &self.bench_frame_timings;
-                    let fence_ms   = ft.fence_wait_ns    as f64 / n / 1e6;
-                    let tlas_ms    = ft.tlas_build_ns    as f64 / n / 1e6;
-                    let ssbo_ms    = ft.ssbo_build_ns    as f64 / n / 1e6;
-                    let cmd_ms     = ft.cmd_record_ns    as f64 / n / 1e6;
-                    let submit_ms  = ft.submit_present_ns as f64 / n / 1e6;
+                    let fence_ms = ft.fence_wait_ns as f64 / n / 1e6;
+                    let tlas_ms = ft.tlas_build_ns as f64 / n / 1e6;
+                    let ssbo_ms = ft.ssbo_build_ns as f64 / n / 1e6;
+                    let cmd_ms = ft.cmd_record_ns as f64 / n / 1e6;
+                    let submit_ms = ft.submit_present_ns as f64 / n / 1e6;
                     let accounted = systems_ms * ticks_per_frame + brd_ms + ui_ms + draw_ms;
                     let unaccounted_ms = (wall_ms - accounted).max(0.0);
                     println!(
@@ -760,10 +758,19 @@ impl ApplicationHandler for App {
                          systems_ms={:.2} ticks_per_frame={:.1} unaccounted_ms={:.2} \
                          entities={} meshes={} textures={} draws={}",
                         self.bench_frames_count,
-                        wall_fps, wall_ms,
-                        brd_ms, ui_ms, draw_ms,
-                        fence_ms, tlas_ms, ssbo_ms, cmd_ms, submit_ms,
-                        systems_ms, ticks_per_frame, unaccounted_ms,
+                        wall_fps,
+                        wall_ms,
+                        brd_ms,
+                        ui_ms,
+                        draw_ms,
+                        fence_ms,
+                        tlas_ms,
+                        ssbo_ms,
+                        cmd_ms,
+                        submit_ms,
+                        systems_ms,
+                        ticks_per_frame,
+                        unaccounted_ms,
                         stats.entity_count,
                         stats.mesh_count,
                         stats.texture_count,
@@ -784,10 +791,9 @@ impl ApplicationHandler for App {
                                 .world
                                 .try_resource::<byroredux_core::ecs::ScreenshotBridge>()
                             {
-                                bridge.requested.store(
-                                    true,
-                                    std::sync::atomic::Ordering::Release,
-                                );
+                                bridge
+                                    .requested
+                                    .store(true, std::sync::atomic::Ordering::Release);
                                 drop(bridge);
                                 self.screenshot_requested = true;
                                 self.screenshot_deadline_frames = 60;
@@ -802,23 +808,16 @@ impl ApplicationHandler for App {
                             .and_then(|b| b.result.lock().unwrap().take());
                         if let Some(bytes) = maybe_bytes {
                             match std::fs::write(&path, &bytes) {
-                                Ok(()) => println!(
-                                    "screenshot: wrote {} bytes to {}",
-                                    bytes.len(),
-                                    path
-                                ),
-                                Err(e) => eprintln!(
-                                    "screenshot: failed to write {}: {e}",
-                                    path
-                                ),
+                                Ok(()) => {
+                                    println!("screenshot: wrote {} bytes to {}", bytes.len(), path)
+                                }
+                                Err(e) => eprintln!("screenshot: failed to write {}: {e}", path),
                             }
                         } else if self.screenshot_deadline_frames > 0 {
                             self.screenshot_deadline_frames -= 1;
                             return; // keep pumping
                         } else {
-                            eprintln!(
-                                "screenshot: timed out waiting for PNG result",
-                            );
+                            eprintln!("screenshot: timed out waiting for PNG result",);
                         }
                     }
 

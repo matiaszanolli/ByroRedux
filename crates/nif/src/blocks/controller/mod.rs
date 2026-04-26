@@ -302,8 +302,7 @@ impl NiBsBoneLodController {
         // happens to start with.
         let (shape_groups_1, shape_groups_2) = if stream.bsver() == 0 {
             let num_shape_groups = stream.read_u32_le()?;
-            let mut shape_groups_1 =
-                stream.allocate_vec::<BoneLodSkinInfoSet>(num_shape_groups)?;
+            let mut shape_groups_1 = stream.allocate_vec::<BoneLodSkinInfoSet>(num_shape_groups)?;
             for _ in 0..num_shape_groups {
                 let count = stream.read_u32_le()?;
                 let mut skin_infos = stream.allocate_vec::<BoneLodSkinInfo>(count)?;
@@ -484,7 +483,6 @@ impl NiFloatExtraDataController {
 // can route key streams to the correct shader uniform once the
 // animated-shader pipeline lands. See #350 / audit S5-02.
 
-
 // ── NiLight controller family ──────────────────────────────────────────
 //
 // Animated controllers on NiLight/NiPointLight/NiSpotLight:
@@ -503,71 +501,34 @@ impl NiFloatExtraDataController {
 // silently stopped animating. Per nif.xml lines 3776 / 3750 / 5025 /
 // 8444.
 
-
-
-
-
-
-
-
-
-
 // ── NiMaterialColorController ──────────────────────────────────────────
 // Inherits NiSingleInterpController, adds: target_color (MaterialColor enum, u16).
-
-
-
 
 // ── NiTextureTransformController ───────────────────────────────────────
 // Inherits NiFloatInterpController → NiSingleInterpController, adds:
 // shader_map (bool), texture_slot (u32 TexType), operation (u32 TransformMember).
 
-
-
-
 // ── NiMultiTargetTransformController ───────────────────────────────────
 // Inherits NiInterpController (which adds nothing for FNV), adds:
 // num_extra_targets (u16) + extra_targets (Ptr[]).
 
-
-
-
 // ── NiControllerManager ────────────────────────────────────────────────
 // Inherits NiTimeController, adds: cumulative (bool, 1 byte), sequences, palette.
 
-
-
-
 // ── NiControllerSequence ───────────────────────────────────────────────
 // Does NOT inherit NiTimeController. Inherits NiSequence → NiObject.
-
-
-
-
 
 // ── BSRefractionFirePeriodController ──────────────────────────────────
 // Inherits NiTimeController (not NiSingleInterpController).
 // Adds one explicit Ref<NiInterpolator> field per nif.xml line 6832.
 // Versions: FO3 (v20.2.0.7 / bsver 21).
 
-
-
-
 #[cfg(test)]
-
 mod tests;
 
 // ── NiGeomMorpherController ──────────────────────────────────────────
 
-
-
-
-
 // ── NiMorphData ──────────────────────────────────────────────────────
-
-
-
-
 
 // ── NiSequenceStreamHelper ─────────────────────────────────────────────
 //
@@ -591,9 +552,6 @@ mod tests;
 // consumer for it. An importer path will be needed when Morrowind ESM
 // support lands; estimate is 1-2 days against real Morrowind .kf files.
 
-
-
-
 // ── NiUVController ────────────────────────────────────────────────────
 //
 // DEPRECATED (pre-10.1), REMOVED (20.3). The last Bethesda game that
@@ -606,26 +564,16 @@ mod tests;
 // keyframe data lives in the referenced NiUVData block. The UV channel
 // extractor in anim.rs can pick it up later — parsing is the blocker.
 
-
-
-
 // ── NiLookAtController ────────────────────────────────────────────────
 // Inherits NiTimeController. DEPRECATED (10.2), REMOVED (20.5) — appears
 // in Oblivion/FO3/FNV/Skyrim-LE but never in Skyrim-SE+. Orients a target
 // NiNode at a follow target; the engine later replaced this with
 // NiLookAtInterpolator on a plain NiTransformController. See #228.
 
-
-
-
 // ── NiPathController ──────────────────────────────────────────────────
 // Inherits NiTimeController. DEPRECATED (10.2), REMOVED (20.5) — cutscene
 // and environmental animation spline follower. The engine later replaced
 // this with NiPathInterpolator on a plain NiTransformController. See #228.
 
-
-
-
 #[cfg(test)]
-
 mod path_lookat_tests;

@@ -79,19 +79,13 @@ pub fn evaluate(
 /// token is looked up in the registry first; a match dispatches
 /// through the in-engine command, a miss falls back to Papyrus
 /// evaluation (so `42.Transform.translation.x` still works).
-fn eval_request(
-    world: &World,
-    registry: &ComponentRegistry,
-    expr: &str,
-) -> DebugResponse {
+fn eval_request(world: &World, registry: &ComponentRegistry, expr: &str) -> DebugResponse {
     let first_word = expr.trim().split_whitespace().next().unwrap_or("");
     if !first_word.is_empty() {
         if let Some(reg) = world.try_resource::<CommandRegistry>() {
             if reg.list().iter().any(|(name, _)| *name == first_word) {
                 let output = reg.execute(world, expr);
-                return DebugResponse::value(serde_json::Value::String(
-                    output.lines.join("\n"),
-                ));
+                return DebugResponse::value(serde_json::Value::String(output.lines.join("\n")));
             }
         }
     }

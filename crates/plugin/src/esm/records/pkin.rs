@@ -159,10 +159,7 @@ mod tests {
             cnam(0x0010_0003),
         ];
         let rec = parse_pkin(0x0055_0002, &subs);
-        assert_eq!(
-            rec.contents,
-            vec![0x0010_0001, 0x0010_0002, 0x0010_0003]
-        );
+        assert_eq!(rec.contents, vec![0x0010_0001, 0x0010_0002, 0x0010_0003]);
     }
 
     /// A PKIN that ships only EDID + FULL — no CNAM at all — is a
@@ -171,7 +168,10 @@ mod tests {
     /// through to the default single-entry path.
     #[test]
     fn parse_pkin_without_cnam_yields_empty_contents() {
-        let subs = vec![edid("PackIn_EmptyDecl"), mk_sub(b"FULL", b"Shell\0".to_vec())];
+        let subs = vec![
+            edid("PackIn_EmptyDecl"),
+            mk_sub(b"FULL", b"Shell\0".to_vec()),
+        ];
         let rec = parse_pkin(0x0055_0003, &subs);
         assert_eq!(rec.editor_id, "PackIn_EmptyDecl");
         assert_eq!(rec.full_name, "Shell");

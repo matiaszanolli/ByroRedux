@@ -186,9 +186,5 @@ pub fn register_all(registry: &mut ComponentRegistry) {
             "prev_time",
         ],
     );
-    register_component::<AnimationStack>(
-        registry,
-        "AnimationStack",
-        vec!["layers", "root_entity"],
-    );
+    register_component::<AnimationStack>(registry, "AnimationStack", vec!["layers", "root_entity"]);
 }

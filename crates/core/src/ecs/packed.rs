@@ -124,8 +124,10 @@ impl<T: Component<Storage = Self>> ComponentStorage<T> for PackedStorage<T> {
         // Drain into an `Option`-wrapped Vec so we can `take()` each
         // element out by its post-sort position without double-moving.
         let old_entities = std::mem::take(&mut self.entities);
-        let mut old_data: Vec<Option<T>> =
-            std::mem::take(&mut self.data).into_iter().map(Some).collect();
+        let mut old_data: Vec<Option<T>> = std::mem::take(&mut self.data)
+            .into_iter()
+            .map(Some)
+            .collect();
         for &idx in &indices {
             new_entities.push(old_entities[idx]);
             new_data.push(
@@ -145,9 +147,7 @@ impl<T: Component<Storage = Self>> ComponentStorage<T> for PackedStorage<T> {
             // Find the end of the current run of this entity id.
             let entity = new_entities[read];
             let mut last_in_run = read;
-            while last_in_run + 1 < new_entities.len()
-                && new_entities[last_in_run + 1] == entity
-            {
+            while last_in_run + 1 < new_entities.len() && new_entities[last_in_run + 1] == entity {
                 last_in_run += 1;
             }
             // Move entry at `last_in_run` into slot `write`.
@@ -328,16 +328,55 @@ mod tests {
         // Serial reference.
         let mut serial = PackedStorage::<Transform>::default();
         let input: Vec<(EntityId, Transform)> = vec![
-            (20, Transform { x: 20.0, y: 0.0, z: 0.0 }),
-            (5,  Transform { x: 5.0,  y: 0.0, z: 0.0 }),
-            (15, Transform { x: 15.0, y: 0.0, z: 0.0 }),
-            (1,  Transform { x: 1.0,  y: 0.0, z: 0.0 }),
-            (10, Transform { x: 10.0, y: 0.0, z: 0.0 }),
+            (
+                20,
+                Transform {
+                    x: 20.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                5,
+                Transform {
+                    x: 5.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                15,
+                Transform {
+                    x: 15.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                1,
+                Transform {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                10,
+                Transform {
+                    x: 10.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
         ];
         for (e, t) in &input {
             serial.insert(
                 *e,
-                Transform { x: t.x, y: t.y, z: t.z },
+                Transform {
+                    x: t.x,
+                    y: t.y,
+                    z: t.z,
+                },
             );
         }
 
@@ -350,10 +389,12 @@ mod tests {
         // varying field).
         let serial_pairs: Vec<(EntityId, u32)> =
             serial.iter().map(|(e, t)| (e, t.x as u32)).collect();
-        let bulk_pairs: Vec<(EntityId, u32)> =
-            bulk.iter().map(|(e, t)| (e, t.x as u32)).collect();
+        let bulk_pairs: Vec<(EntityId, u32)> = bulk.iter().map(|(e, t)| (e, t.x as u32)).collect();
         assert_eq!(serial_pairs, bulk_pairs);
-        assert_eq!(serial_pairs, vec![(1, 1), (5, 5), (10, 10), (15, 15), (20, 20)]);
+        assert_eq!(
+            serial_pairs,
+            vec![(1, 1), (5, 5), (10, 10), (15, 15), (20, 20)]
+        );
     }
 
     /// Same-entity inputs: bulk path's last-writer-wins dedup must
@@ -362,10 +403,38 @@ mod tests {
     fn insert_bulk_duplicate_ids_last_writer_wins() {
         let mut bulk = PackedStorage::<Transform>::default();
         bulk.insert_bulk(vec![
-            (5, Transform { x: 1.0, y: 0.0, z: 0.0 }),
-            (3, Transform { x: 2.0, y: 0.0, z: 0.0 }),
-            (5, Transform { x: 99.0, y: 0.0, z: 0.0 }), // wins for entity 5
-            (3, Transform { x: 42.0, y: 0.0, z: 0.0 }), // wins for entity 3
+            (
+                5,
+                Transform {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                3,
+                Transform {
+                    x: 2.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                5,
+                Transform {
+                    x: 99.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ), // wins for entity 5
+            (
+                3,
+                Transform {
+                    x: 42.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ), // wins for entity 3
         ]);
 
         assert_eq!(bulk.len(), 2);
@@ -378,18 +447,52 @@ mod tests {
     #[test]
     fn insert_bulk_extends_non_empty_storage() {
         let mut s = PackedStorage::<Transform>::default();
-        s.insert(10, Transform { x: 10.0, y: 0.0, z: 0.0 });
-        s.insert(30, Transform { x: 30.0, y: 0.0, z: 0.0 });
+        s.insert(
+            10,
+            Transform {
+                x: 10.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        );
+        s.insert(
+            30,
+            Transform {
+                x: 30.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        );
 
         s.insert_bulk(vec![
-            (5,  Transform { x: 5.0,  y: 0.0, z: 0.0 }),
-            (20, Transform { x: 20.0, y: 0.0, z: 0.0 }),
-            (10, Transform { x: 100.0, y: 0.0, z: 0.0 }), // overrides pre-existing
+            (
+                5,
+                Transform {
+                    x: 5.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                20,
+                Transform {
+                    x: 20.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                10,
+                Transform {
+                    x: 100.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ), // overrides pre-existing
         ]);
 
         assert_eq!(s.len(), 4);
-        let pairs: Vec<(EntityId, u32)> =
-            s.iter().map(|(e, t)| (e, t.x as u32)).collect();
+        let pairs: Vec<(EntityId, u32)> = s.iter().map(|(e, t)| (e, t.x as u32)).collect();
         assert_eq!(pairs, vec![(5, 5), (10, 100), (20, 20), (30, 30)]);
     }
 
@@ -397,7 +500,14 @@ mod tests {
     #[test]
     fn insert_bulk_empty_is_noop() {
         let mut s = PackedStorage::<Transform>::default();
-        s.insert(1, Transform { x: 1.0, y: 0.0, z: 0.0 });
+        s.insert(
+            1,
+            Transform {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        );
         s.insert_bulk(Vec::<(EntityId, Transform)>::new());
         assert_eq!(s.len(), 1);
         assert_eq!(s.get(1).unwrap().x, 1.0);

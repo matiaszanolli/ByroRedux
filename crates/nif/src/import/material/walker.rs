@@ -370,8 +370,7 @@ pub(crate) fn extract_material_info_from_refs(
             // slot 3 path at line 532 so the shader does not need to
             // distinguish the two sources.
             if info.parallax_map.is_none() {
-                if let Some(path) =
-                    tex_desc_source_path(scene, tex_prop.parallax_texture.as_ref())
+                if let Some(path) = tex_desc_source_path(scene, tex_prop.parallax_texture.as_ref())
                 {
                     info.parallax_map = Some(path);
                 }
@@ -579,4 +578,3 @@ pub(crate) fn extract_material_info_from_refs(
 
     info
 }
-

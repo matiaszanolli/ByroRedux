@@ -608,14 +608,14 @@ fn build_dds_header(
     hdr.extend_from_slice(&(width as u32).to_le_bytes());
     hdr.extend_from_slice(&pitch_or_linear_size.to_le_bytes());
     hdr.extend_from_slice(&0u32.to_le_bytes()); // depth
-    // `num_mips.max(1)` is an intentional clamp: the DDS spec says
-    // when `DDSD_MIPMAPCOUNT` is unset the loader MUST treat the image
-    // as single-mip regardless of what `dwMipMapCount` says, so both
-    // values are always self-consistent:
-    //   - `num_mips == 0` or `1` → flag cleared, field = 1 (top mip only).
-    //   - `num_mips > 1`         → flag set, field = authored value.
-    // The malformed `num_mips = 0` path is warned at record-read time
-    // (`read_dx10_records`) so the clamp isn't silent. See #597.
+                                                // `num_mips.max(1)` is an intentional clamp: the DDS spec says
+                                                // when `DDSD_MIPMAPCOUNT` is unset the loader MUST treat the image
+                                                // as single-mip regardless of what `dwMipMapCount` says, so both
+                                                // values are always self-consistent:
+                                                //   - `num_mips == 0` or `1` → flag cleared, field = 1 (top mip only).
+                                                //   - `num_mips > 1`         → flag set, field = authored value.
+                                                // The malformed `num_mips = 0` path is warned at record-read time
+                                                // (`read_dx10_records`) so the clamp isn't silent. See #597.
     hdr.extend_from_slice(&(num_mips.max(1) as u32).to_le_bytes());
     // 11 reserved u32
     for _ in 0..11 {

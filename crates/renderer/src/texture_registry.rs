@@ -963,7 +963,10 @@ mod tests {
             .check_slot_available()
             .expect_err("full registry must refuse new textures");
         let msg = format!("{err}");
-        assert!(msg.contains("1024 of 1024"), "message reports counts: {msg}");
+        assert!(
+            msg.contains("1024 of 1024"),
+            "message reports counts: {msg}"
+        );
         assert!(msg.contains("#425"), "message references the issue: {msg}");
     }
 

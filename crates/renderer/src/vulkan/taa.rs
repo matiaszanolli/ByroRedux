@@ -271,10 +271,8 @@ impl TaaPipeline {
                 .context("TAA pipeline layout")
         });
 
-        partial.shader_module = try_or_cleanup!(super::pipeline::load_shader_module(
-            device,
-            TAA_COMP_SPV
-        ));
+        partial.shader_module =
+            try_or_cleanup!(super::pipeline::load_shader_module(device, TAA_COMP_SPV));
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(partial.shader_module)

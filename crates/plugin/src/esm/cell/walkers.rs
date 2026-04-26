@@ -375,7 +375,10 @@ pub(super) fn parse_refr_group(
                     b"XPOD" if sub.data.len() >= 8 => {
                         let origin = r.u32_or_default();
                         let destination = r.u32_or_default();
-                        portals.push(PortalLink { origin, destination });
+                        portals.push(PortalLink {
+                            origin,
+                            destination,
+                        });
                     }
                     // XRDS — Light radius override. Single f32.
                     b"XRDS" => {
@@ -591,4 +594,3 @@ pub(super) fn parse_land_record(
         quadrants,
     })
 }
-

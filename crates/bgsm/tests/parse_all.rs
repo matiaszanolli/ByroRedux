@@ -81,7 +81,10 @@ impl VariantStats {
     fn record_err(&mut self, path: &str, err: &str) {
         self.total += 1;
         let bucket_key = err.lines().next().unwrap_or(err).to_string();
-        let entry = self.buckets.entry(bucket_key).or_insert_with(|| (0, Vec::new()));
+        let entry = self
+            .buckets
+            .entry(bucket_key)
+            .or_insert_with(|| (0, Vec::new()));
         entry.0 += 1;
         if entry.1.len() < 5 {
             entry.1.push(path.to_string());
@@ -116,7 +119,10 @@ impl VariantStats {
             }
         }
         if buckets.len() > 10 {
-            eprintln!("  ... and {} more distinct error buckets", buckets.len() - 10);
+            eprintln!(
+                "  ... and {} more distinct error buckets",
+                buckets.len() - 10
+            );
         }
     }
 }

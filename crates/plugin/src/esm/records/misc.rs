@@ -950,10 +950,7 @@ mod tests {
     #[test]
     fn parse_lgtm_short_data_returns_defaults() {
         // DATA under 20 bytes → all field captures short-circuit.
-        let subs = vec![
-            sub(b"EDID", b"ShortLgtm\0"),
-            sub(b"DATA", &[1, 2, 3, 4]),
-        ];
+        let subs = vec![sub(b"EDID", b"ShortLgtm\0"), sub(b"DATA", &[1, 2, 3, 4])];
         let l = parse_lgtm(0xBEEF, &subs);
         assert_eq!(l.editor_id, "ShortLgtm");
         assert_eq!(l.ambient, [0.0; 3]);

@@ -11,9 +11,9 @@ pub mod sub_reader;
 
 pub use cell::{CellData, EsmCellIndex, PlacedRef, StaticObject};
 pub use reader::{EsmReader, GroupHeader, RecordHeader, SubRecord};
-pub use sub_reader::SubReader;
 pub use records::{
     parse_esm, ClassRecord, ContainerRecord, EsmIndex, FactionRecord, GameSetting, GlobalRecord,
     InventoryEntry, ItemKind, ItemRecord, LeveledEntry, LeveledList, NpcRecord, RaceRecord,
     SettingValue,
 };
+pub use sub_reader::SubReader;

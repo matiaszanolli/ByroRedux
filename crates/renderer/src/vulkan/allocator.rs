@@ -71,9 +71,7 @@ pub struct BlockFragInfo {
 /// `gpu-allocator` 0.27 is first-fit within a block, so a low ratio
 /// directly maps to "this block can't honour an allocation that would
 /// fit in `total_free`".
-pub fn compute_block_fragmentation(
-    report: &gpu_allocator::AllocatorReport,
-) -> Vec<BlockFragInfo> {
+pub fn compute_block_fragmentation(report: &gpu_allocator::AllocatorReport) -> Vec<BlockFragInfo> {
     let mut out = Vec::with_capacity(report.blocks.len());
     for (block_index, block) in report.blocks.iter().enumerate() {
         // Slice + sort by offset. The report's flat allocations Vec is
@@ -231,10 +229,7 @@ pub fn create_allocator(
 /// gives a sensible "approaching OOM" signal on any config. Falls
 /// back to 2 GB on devices that don't expose a DEVICE_LOCAL heap
 /// (pure-SoC / Vulkan-on-software-rasterizer).
-fn warn_threshold_bytes(
-    instance: &ash::Instance,
-    physical_device: vk::PhysicalDevice,
-) -> u64 {
+fn warn_threshold_bytes(instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> u64 {
     let heap = super::device::smallest_device_local_heap_bytes(instance, physical_device);
     if heap == 0 {
         2 * 1024 * 1024 * 1024
@@ -317,7 +312,11 @@ mod tests {
         // We can't easily fabricate a VkPhysicalDevice in a unit test, but
         // we can verify the math: 80% of a known heap size.
         fn threshold_for(heap: u64) -> u64 {
-            if heap == 0 { 2 * 1024 * 1024 * 1024 } else { (heap / 5) * 4 }
+            if heap == 0 {
+                2 * 1024 * 1024 * 1024
+            } else {
+                (heap / 5) * 4
+            }
         }
         assert_eq!(threshold_for(0), 2 * 1024 * 1024 * 1024);
         // 6 GB floor → ~4.8 GB threshold (int truncation of /5).
@@ -367,10 +366,7 @@ mod tests {
     #[test]
     fn compute_fragmentation_split_block_reports_below_half() {
         let mb = 1024 * 1024;
-        let report = one_block_report(
-            64 * mb,
-            &[(20 * mb, 4 * mb), (42 * mb, 4 * mb)],
-        );
+        let report = one_block_report(64 * mb, &[(20 * mb, 4 * mb), (42 * mb, 4 * mb)]);
         let frags = compute_block_fragmentation(&report);
         assert_eq!(frags.len(), 1);
         let f = &frags[0];
@@ -393,17 +389,16 @@ mod tests {
         let mb = 1024 * 1024;
 
         let split = one_block_report(64 * mb, &[(20 * mb, 4 * mb), (42 * mb, 4 * mb)]);
-        let split_lines =
-            fragmentation_report_lines(&compute_block_fragmentation(&split));
+        let split_lines = fragmentation_report_lines(&compute_block_fragmentation(&split));
         assert!(
-            split_lines.iter().any(|l| l.contains("WARN")
-                && l.contains("restart-to-defrag")),
+            split_lines
+                .iter()
+                .any(|l| l.contains("WARN") && l.contains("restart-to-defrag")),
             "fragmented pattern must emit WARN line, got: {split_lines:#?}",
         );
 
         let clean = one_block_report(64 * mb, &[(0, 1024)]);
-        let clean_lines =
-            fragmentation_report_lines(&compute_block_fragmentation(&clean));
+        let clean_lines = fragmentation_report_lines(&compute_block_fragmentation(&clean));
         assert!(
             !clean_lines.iter().any(|l| l.contains("WARN")),
             "contiguous-free block must not emit WARN line",

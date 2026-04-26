@@ -91,8 +91,11 @@ impl<'a> Reader<'a> {
 
         // Drop the trailing NUL if present.
         let end = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
-        let s = String::from_utf8(slice[..end].to_vec())
-            .map_err(|source| Error::InvalidString { offset: start, source })?;
+        let s =
+            String::from_utf8(slice[..end].to_vec()).map_err(|source| Error::InvalidString {
+                offset: start,
+                source,
+            })?;
         Ok(s)
     }
 }

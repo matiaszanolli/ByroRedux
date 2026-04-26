@@ -30,9 +30,7 @@ fn data_dir(env_var: &str, fallback: &str) -> Option<PathBuf> {
         if p.is_dir() {
             return Some(p);
         }
-        eprintln!(
-            "{env_var} points to {v:?} which is not a directory; falling back to default"
-        );
+        eprintln!("{env_var} points to {v:?} which is not a directory; falling back to default");
     }
     let p = PathBuf::from(fallback);
     if p.is_dir() {
@@ -126,7 +124,11 @@ fn parse_rate_fnv_esm() {
         index.leveled_npcs.len(),
     );
     assert!(index.npcs.len() > 3000, "NPCs={}", index.npcs.len());
-    assert!(index.factions.len() > 500, "factions={}", index.factions.len());
+    assert!(
+        index.factions.len() > 500,
+        "factions={}",
+        index.factions.len()
+    );
     assert!(
         index.game_settings.len() > 500,
         "game_settings={}",
@@ -144,11 +146,7 @@ fn parse_rate_fnv_esm() {
         "DIAL={}",
         index.dialogues.len(),
     );
-    assert!(
-        index.messages.len() > 1000,
-        "MESG={}",
-        index.messages.len(),
-    );
+    assert!(index.messages.len() > 1000, "MESG={}", index.messages.len(),);
     assert!(index.perks.len() > 150, "PERK={}", index.perks.len());
     assert!(index.spells.len() > 250, "SPEL={}", index.spells.len());
     assert!(
@@ -207,7 +205,12 @@ fn parse_rate_fnv_esm() {
     let with_layer_0 = index
         .weathers
         .values()
-        .filter(|w| w.cloud_textures[0].as_deref().filter(|s| !s.is_empty()).is_some())
+        .filter(|w| {
+            w.cloud_textures[0]
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .is_some()
+        })
         .count();
     assert!(
         with_layer_0 >= 50,
@@ -352,7 +355,12 @@ fn parse_rate_fo3_esm() {
     let with_layer_0 = index
         .weathers
         .values()
-        .filter(|w| w.cloud_textures[0].as_deref().filter(|s| !s.is_empty()).is_some())
+        .filter(|w| {
+            w.cloud_textures[0]
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .is_some()
+        })
         .count();
     assert!(
         with_layer_0 >= 20,
@@ -433,7 +441,12 @@ fn parse_rate_oblivion_esm() {
     let with_layer_0 = index
         .weathers
         .values()
-        .filter(|w| w.cloud_textures[0].as_deref().filter(|s| !s.is_empty()).is_some())
+        .filter(|w| {
+            w.cloud_textures[0]
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .is_some()
+        })
         .count();
     assert!(
         with_layer_0 >= 25,

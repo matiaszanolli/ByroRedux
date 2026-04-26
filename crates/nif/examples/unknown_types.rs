@@ -26,8 +26,12 @@ fn main() {
         if i > 0 && i % 1000 == 0 {
             eprintln!("  {}/{}", i, nif_files.len());
         }
-        let Ok(bytes) = archive.extract(nif) else { continue };
-        let Ok(scene) = parse_nif(&bytes) else { continue };
+        let Ok(bytes) = archive.extract(nif) else {
+            continue;
+        };
+        let Ok(scene) = parse_nif(&bytes) else {
+            continue;
+        };
         for b in &scene.blocks {
             if let Some(u) = b.as_any().downcast_ref::<NiUnknown>() {
                 *unk.entry(u.type_name.to_string()).or_insert(0) += 1;

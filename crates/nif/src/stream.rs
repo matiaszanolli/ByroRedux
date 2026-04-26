@@ -819,9 +819,7 @@ mod tests {
         let header = test_header(NifVersion::V20_2_0_7);
 
         // u16 array
-        let u16_data: Vec<u8> = (0u16..64)
-            .flat_map(|v| v.to_le_bytes())
-            .collect();
+        let u16_data: Vec<u8> = (0u16..64).flat_map(|v| v.to_le_bytes()).collect();
         let mut s_bulk = NifStream::new(&u16_data, &header);
         let bulk_u16 = s_bulk.read_u16_array(64).unwrap();
         let mut s_loop = NifStream::new(&u16_data, &header);
@@ -833,9 +831,7 @@ mod tests {
         assert_eq!(s_bulk.position(), s_loop.position());
 
         // u32 array
-        let u32_data: Vec<u8> = (0u32..32)
-            .flat_map(|v| v.to_le_bytes())
-            .collect();
+        let u32_data: Vec<u8> = (0u32..32).flat_map(|v| v.to_le_bytes()).collect();
         let mut s_bulk = NifStream::new(&u32_data, &header);
         let bulk_u32 = s_bulk.read_u32_array(32).unwrap();
         let mut s_loop = NifStream::new(&u32_data, &header);
@@ -847,7 +843,13 @@ mod tests {
 
         // f32 array (includes negative, subnormal, inf edge cases)
         let floats = [
-            0.0f32, 1.0, -1.5, f32::MIN_POSITIVE, f32::INFINITY, -0.0, 3.1415927,
+            0.0f32,
+            1.0,
+            -1.5,
+            f32::MIN_POSITIVE,
+            f32::INFINITY,
+            -0.0,
+            3.1415927,
         ];
         let f32_data: Vec<u8> = floats.iter().flat_map(|v| v.to_le_bytes()).collect();
         let mut s_bulk = NifStream::new(&f32_data, &header);
@@ -861,12 +863,7 @@ mod tests {
         let uvs: [[f32; 2]; 3] = [[0.25, 0.75], [1.0, 0.0], [-0.5, 2.5]];
         let uv_data: Vec<u8> = uvs
             .iter()
-            .flat_map(|uv| {
-                uv[0]
-                    .to_le_bytes()
-                    .into_iter()
-                    .chain(uv[1].to_le_bytes())
-            })
+            .flat_map(|uv| uv[0].to_le_bytes().into_iter().chain(uv[1].to_le_bytes()))
             .collect();
         let mut s_uv = NifStream::new(&uv_data, &header);
         let bulk_uv = s_uv.read_uv_array(uvs.len()).unwrap();

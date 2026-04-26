@@ -286,10 +286,7 @@ pub fn parse_esm(data: &[u8]) -> Result<EsmIndex> {
 /// The multi-plugin wiring is tracked as follow-up work — this
 /// function exists so downstream code can opt in without another
 /// parse-layer refactor when the CLI grows multi-plugin support.
-pub fn parse_esm_with_load_order(
-    data: &[u8],
-    remap: Option<FormIdRemap>,
-) -> Result<EsmIndex> {
+pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Result<EsmIndex> {
     let cells = super::cell::parse_esm_cells_with_load_order(data, remap.clone())
         .context("Failed to parse ESM cells")?;
     let mut index = EsmIndex {
@@ -1240,10 +1237,7 @@ mod tests {
             1,
             "AVIF must populate the actor_values map"
         );
-        let avif = index
-            .actor_values
-            .get(&0xBEEF_002B)
-            .expect("AVIF indexed");
+        let avif = index.actor_values.get(&0xBEEF_002B).expect("AVIF indexed");
         assert_eq!(avif.editor_id, "SmallGuns");
         assert_eq!(avif.full_name, "Small Guns");
         assert_eq!(avif.category, 1);
@@ -1267,7 +1261,11 @@ mod tests {
         tes4.extend_from_slice(&group);
         let index = parse_esm(&tes4).unwrap();
 
-        assert_eq!(index.creatures.len(), 1, "CREA must populate the creatures map");
+        assert_eq!(
+            index.creatures.len(),
+            1,
+            "CREA must populate the creatures map"
+        );
         let crea = index.creatures.get(&0xBEEF_0001).expect("CREA indexed");
         assert_eq!(crea.editor_id, "Radroach");
         assert_eq!(crea.full_name, "Radroach");

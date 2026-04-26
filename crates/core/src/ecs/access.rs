@@ -271,7 +271,10 @@ mod tests {
     fn empty_accesses_report_no_conflict() {
         let l = Access::new();
         let r = Access::new();
-        assert!(matches!(analyze_pair(Some(&l), Some(&r)), AccessConflict::None));
+        assert!(matches!(
+            analyze_pair(Some(&l), Some(&r)),
+            AccessConflict::None
+        ));
     }
 
     #[test]
@@ -293,7 +296,10 @@ mod tests {
     fn read_vs_read_same_component_is_no_conflict() {
         let l = Access::new().reads::<Health>();
         let r = Access::new().reads::<Health>();
-        assert!(matches!(analyze_pair(Some(&l), Some(&r)), AccessConflict::None));
+        assert!(matches!(
+            analyze_pair(Some(&l), Some(&r)),
+            AccessConflict::None
+        ));
     }
 
     #[test]
@@ -313,7 +319,10 @@ mod tests {
     fn unrelated_components_no_conflict() {
         let l = Access::new().writes::<Health>();
         let r = Access::new().writes::<Position>();
-        assert!(matches!(analyze_pair(Some(&l), Some(&r)), AccessConflict::None));
+        assert!(matches!(
+            analyze_pair(Some(&l), Some(&r)),
+            AccessConflict::None
+        ));
     }
 
     #[test]

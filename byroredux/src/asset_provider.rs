@@ -404,7 +404,11 @@ pub(crate) fn merge_bgsm_into_mesh(
             fill(&mut mesh.gloss_map, &bgsm.smooth_spec_texture, &mut touched);
             // Legacy v <= 2 environment cube; newer BGSMs drop the slot.
             fill(&mut mesh.env_map, &bgsm.envmap_texture, &mut touched);
-            fill(&mut mesh.parallax_map, &bgsm.displacement_texture, &mut touched);
+            fill(
+                &mut mesh.parallax_map,
+                &bgsm.displacement_texture,
+                &mut touched,
+            );
 
             // Scalar PBR forwarding (#583). Child-first: first authored
             // value wins. Parser already decodes these fields; the
@@ -739,9 +743,9 @@ mod tests {
     /// here.
     #[test]
     fn bgsm_merge_forwards_scalars_child_first() {
+        use byroredux_bgsm::template::ResolvedMaterial;
         use byroredux_bgsm::{BaseMaterial, BgsmFile};
         use std::sync::Arc;
-        use byroredux_bgsm::template::ResolvedMaterial;
 
         let child = BgsmFile {
             base: BaseMaterial {

@@ -307,9 +307,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                                 size,
                                 consumed,
                             );
-                            *drifted_by_type
-                                .entry(type_name.to_string())
-                                .or_insert(0) += 1;
+                            *drifted_by_type.entry(type_name.to_string()).or_insert(0) += 1;
                         }
                         stream.set_position(start_pos + size as u64);
                     }
@@ -387,9 +385,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                         data: Vec::new(),
                     }));
                     recovered_blocks += 1;
-                    *recovered_by_type
-                        .entry(type_name.to_string())
-                        .or_insert(0) += 1;
+                    *recovered_by_type.entry(type_name.to_string()).or_insert(0) += 1;
                     continue;
                 }
                 // Without block_size (Oblivion), there's no header-driven
@@ -427,9 +423,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                                 data: Vec::new(),
                             }));
                             recovered_blocks += 1;
-                            *recovered_by_type
-                                .entry(type_name.to_string())
-                                .or_insert(0) += 1;
+                            *recovered_by_type.entry(type_name.to_string()).or_insert(0) += 1;
                             continue;
                         }
                     }
@@ -454,9 +448,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                             data: Vec::new(),
                         }));
                         recovered_blocks += 1;
-                        *recovered_by_type
-                            .entry(type_name.to_string())
-                            .or_insert(0) += 1;
+                        *recovered_by_type.entry(type_name.to_string()).or_insert(0) += 1;
                         continue;
                     }
                     // If the skip would go past EOF, fall through to the

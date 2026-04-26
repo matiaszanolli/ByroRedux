@@ -10,15 +10,15 @@ use crate::blocks::controller::{
 };
 use crate::blocks::extra_data::{AnimNoteType, BsAnimNote, BsAnimNotes};
 use crate::blocks::interpolator::NiTextKeyExtraData;
-use crate::blocks::properties::NiStringPalette;
 use crate::blocks::interpolator::{
     FloatKey, KeyGroup, KeyType, NiBSplineBasisData, NiBSplineCompTransformInterpolator,
     NiBSplineData, NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendInterpolator,
     NiBlendPoint3Interpolator, NiBlendTransformInterpolator, NiBoolInterpolator, NiColorData,
     NiColorInterpolator, NiFloatData, NiFloatInterpolator, NiLookAtInterpolator,
-    NiPathInterpolator, NiPoint3Interpolator, NiPosData, NiTransformData,
-    NiTransformInterpolator, Vec3Key,
+    NiPathInterpolator, NiPoint3Interpolator, NiPosData, NiTransformData, NiTransformInterpolator,
+    Vec3Key,
 };
+use crate::blocks::properties::NiStringPalette;
 use crate::scene::NifScene;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -416,8 +416,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                 c.base.base.next_controller_ref
             } else if let Some(c) = any.downcast_ref::<NiMaterialColorController>() {
                 c.base.next_controller_ref
-            } else if let Some(c) =
-                any.downcast_ref::<crate::blocks::controller::NiUVController>()
+            } else if let Some(c) = any.downcast_ref::<crate::blocks::controller::NiUVController>()
             {
                 c.base.next_controller_ref
             } else if let Some(c) = any.downcast_ref::<NiGeomMorpherController>() {
@@ -487,8 +486,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                         .downcast_ref::<NiSingleInterpController>()
                         .and_then(|c| c.interpolator_ref.index());
                     if let Some(idx) = interp_idx {
-                        if let Some(ch) = extract_float_channel_at(scene, idx, FloatTarget::Alpha)
-                        {
+                        if let Some(ch) = extract_float_channel_at(scene, idx, FloatTarget::Alpha) {
                             clip.float_channels.push((Arc::clone(&node_name), ch));
                         }
                     }
@@ -586,11 +584,9 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                             .base
                             .interpolator_ref
                             .index()
-                            .and_then(|idx| extract_float_channel_at(
-                                scene,
-                                idx,
-                                FloatTarget::ShaderFloat,
-                            ))
+                            .and_then(|idx| {
+                                extract_float_channel_at(scene, idx, FloatTarget::ShaderFloat)
+                            })
                             .map(|ch| ch.keys)
                             .unwrap_or_default();
                         clip.texture_flip_channels.push((
@@ -609,12 +605,11 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                     // independent float-key groups (offsetU, offsetV,
                     // scaleU, scaleV). Emit up to four channels per host
                     // node, each with its own target. See #154.
-                    if let Some(c) =
-                        any.downcast_ref::<crate::blocks::controller::NiUVController>()
+                    if let Some(c) = any.downcast_ref::<crate::blocks::controller::NiUVController>()
                     {
                         if let Some(data_idx) = c.data_ref.index() {
-                            if let Some(data) = scene
-                                .get_as::<crate::blocks::interpolator::NiUVData>(data_idx)
+                            if let Some(data) =
+                                scene.get_as::<crate::blocks::interpolator::NiUVData>(data_idx)
                             {
                                 // NiUVData.groups = [offset_u, offset_v, tiling_u, tiling_v].
                                 for (group, target) in [
@@ -777,20 +772,16 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
                 // float keys come from `cb.interpolator_ref`. Skip
                 // silently if either ref fails to resolve.
                 if let Some(ctrl_idx) = cb.controller_ref.index() {
-                    if let Some(ctrl) = scene
-                        .get_as::<crate::blocks::controller::NiFlipController>(ctrl_idx)
+                    if let Some(ctrl) =
+                        scene.get_as::<crate::blocks::controller::NiFlipController>(ctrl_idx)
                     {
                         let source_paths = resolve_flip_source_paths(scene, &ctrl.sources);
                         if source_paths.is_empty() {
                             continue;
                         }
-                        let keys = extract_float_channel(
-                            scene,
-                            cb,
-                            FloatTarget::ShaderFloat,
-                        )
-                        .map(|ch| ch.keys)
-                        .unwrap_or_default();
+                        let keys = extract_float_channel(scene, cb, FloatTarget::ShaderFloat)
+                            .map(|ch| ch.keys)
+                            .unwrap_or_default();
                         texture_flip_channels.push((
                             Arc::clone(&node_name),
                             TextureFlipChannel {
@@ -890,11 +881,7 @@ enum CbString {
 /// files. Falling through to the palette lookup fixes the whole range
 /// of pre-Skyrim animations (Oblivion / Morrowind BBBB-era content)
 /// without changing modern-path semantics.
-fn resolve_cb_string(
-    scene: &NifScene,
-    cb: &ControlledBlock,
-    which: CbString,
-) -> Option<Arc<str>> {
+fn resolve_cb_string(scene: &NifScene, cb: &ControlledBlock, which: CbString) -> Option<Arc<str>> {
     let (inline, offset) = match which {
         CbString::NodeName => (cb.node_name.as_ref(), cb.node_name_offset),
         CbString::ControllerType => (cb.controller_type.as_ref(), cb.controller_type_offset),
@@ -967,7 +954,11 @@ fn resolve_blend_interpolator_target(scene: &NifScene, interp_idx: usize) -> Opt
     // interpolator_refs.
     base.items
         .iter()
-        .filter_map(|it| it.interpolator_ref.index().map(|i| (i, it.normalized_weight)))
+        .filter_map(|it| {
+            it.interpolator_ref
+                .index()
+                .map(|i| (i, it.normalized_weight))
+        })
         .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(idx, _)| idx)
 }
@@ -1573,8 +1564,7 @@ fn resolve_flip_source_paths(
         let Some(src_idx) = src_ref.index() else {
             continue;
         };
-        let Some(tex) = scene.get_as::<crate::blocks::texture::NiSourceTexture>(src_idx)
-        else {
+        let Some(tex) = scene.get_as::<crate::blocks::texture::NiSourceTexture>(src_idx) else {
             continue;
         };
         if let Some(name) = &tex.filename {

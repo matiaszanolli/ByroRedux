@@ -11,8 +11,12 @@ use std::collections::HashMap;
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    let esm_path = args.next().ok_or_else(|| anyhow::anyhow!("usage: ESM CELL_EDID"))?;
-    let cell_edid = args.next().ok_or_else(|| anyhow::anyhow!("usage: ESM CELL_EDID"))?;
+    let esm_path = args
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("usage: ESM CELL_EDID"))?;
+    let cell_edid = args
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("usage: ESM CELL_EDID"))?;
 
     let bytes = std::fs::read(&esm_path)?;
     println!(

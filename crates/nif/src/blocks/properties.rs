@@ -299,18 +299,17 @@ impl NiTexturingProperty {
         // populated. Pre-#450 both were consumed but discarded; the
         // slot now rides through so the importer can route it to the
         // fragment shader alongside `normal_texture` / `parallax_map`.
-        let (parallax_texture, parallax_offset) =
-            if is_v20_2_0_5_plus && texture_count > 7 {
-                let parallax = Self::read_tex_desc(stream)?;
-                let offset = if parallax.is_some() {
-                    stream.read_f32_le()?
-                } else {
-                    0.0
-                };
-                (parallax, offset)
+        let (parallax_texture, parallax_offset) = if is_v20_2_0_5_plus && texture_count > 7 {
+            let parallax = Self::read_tex_desc(stream)?;
+            let offset = if parallax.is_some() {
+                stream.read_f32_le()?
             } else {
-                (None, 0.0)
+                0.0
             };
+            (parallax, offset)
+        } else {
+            (None, 0.0)
+        };
         // Decal texture slots. nif.xml gates each decal at count > 8, > 9, > 10, > 11
         // (v20.2.0.5+) or count > 6, > 7, > 8, > 9 (pre-20.2.0.5). Slot count
         // depends on whether normal+parallax exist:
@@ -681,8 +680,8 @@ mod tests {
                                                         // in the middle gap, so NO flags field. apply_mode u32 reads
                                                         // (v <= 20.1.0.1).
         data.extend_from_slice(&1u32.to_le_bytes()); // apply_mode
-                                                      // texture_count = 8 → slots 0..=7 consumed, slots 6 and 7
-                                                      // become decals 0 and 1.
+                                                     // texture_count = 8 → slots 0..=7 consumed, slots 6 and 7
+                                                     // become decals 0 and 1.
         data.extend_from_slice(&8u32.to_le_bytes());
         // Helper: minimal TexDesc for v=20.0.0.5 with has=1.
         // v < 10.1.0.3 → ELSE branch: source_ref + 3 × u32 (clamp / filter /
@@ -709,7 +708,7 @@ mod tests {
                                // skipped. Decal loop picks up 8-6 = 2 slots.
         push_populated(&mut data, 101); // decal 0
         push_populated(&mut data, 202); // decal 1
-        // Shader map list trailer (since v >= 10.0.1.0).
+                                        // Shader map list trailer (since v >= 10.0.1.0).
         data.extend_from_slice(&0u32.to_le_bytes()); // num_shader_textures = 0
 
         let expected_len = data.len();
@@ -997,15 +996,15 @@ mod tests {
         data.extend_from_slice(&0u32.to_le_bytes()); // name length = 0
         data.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count = 0
         data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = NULL
-        // No flags field — Oblivion sits in the 10.0.1.3..20.1.0.1
-        // gap where NiTexturingProperty has neither the legacy u16
-        // flags nor the modern TexturingFlags. Apply mode IS still
-        // present (until 20.1.0.1) — write the u32.
+                                                        // No flags field — Oblivion sits in the 10.0.1.3..20.1.0.1
+                                                        // gap where NiTexturingProperty has neither the legacy u16
+                                                        // flags nor the modern TexturingFlags. Apply mode IS still
+                                                        // present (until 20.1.0.1) — write the u32.
         data.extend_from_slice(&0u32.to_le_bytes()); // apply_mode
         data.extend_from_slice(&8u32.to_le_bytes()); // texture_count = 8
-        // Slots 0-5: each is a `has = 0` bool (no body). Slots 6-7
-        // do NOT exist on this version — pre-fix the parser would
-        // also try to read those, eating 2 bytes from below.
+                                                     // Slots 0-5: each is a `has = 0` bool (no body). Slots 6-7
+                                                     // do NOT exist on this version — pre-fix the parser would
+                                                     // also try to read those, eating 2 bytes from below.
         for _ in 0..6 {
             data.push(0); // has = false
         }
@@ -1059,13 +1058,13 @@ mod tests {
         data.extend_from_slice(&(-1i32).to_le_bytes()); // name index = -1
         data.extend_from_slice(&0u32.to_le_bytes()); // extra_data count
         data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
-        // NiProperty.Flags (u16) present since 20.1.0.2.
+                                                        // NiProperty.Flags (u16) present since 20.1.0.2.
         data.extend_from_slice(&0u16.to_le_bytes());
         // apply_mode omitted (gated `<= 20.1.0.1`) — v20.2.0.7 skips it.
         data.extend_from_slice(&8u32.to_le_bytes()); // texture_count = 8
-        // Slots 0..=7: base/dark/detail/gloss/glow/bump/normal/parallax.
-        // All `has = 0` — the parser's fixed-slot loop consumes every
-        // one so slot accounting lines up. No decals at count=8.
+                                                     // Slots 0..=7: base/dark/detail/gloss/glow/bump/normal/parallax.
+                                                     // All `has = 0` — the parser's fixed-slot loop consumes every
+                                                     // one so slot accounting lines up. No decals at count=8.
         for _ in 0..8 {
             data.push(0); // has = 0
         }
@@ -1096,7 +1095,7 @@ mod tests {
         data.extend_from_slice(&(-1i32).to_le_bytes());
         data.extend_from_slice(&0u16.to_le_bytes()); // flags
         data.extend_from_slice(&9u32.to_le_bytes()); // texture_count = 9
-        // Slots 0..=7 empty + 1 populated decal.
+                                                     // Slots 0..=7 empty + 1 populated decal.
         for _ in 0..8 {
             data.push(0);
         }
@@ -1133,7 +1132,7 @@ mod tests {
         data.extend_from_slice(&0u32.to_le_bytes()); // name length = 0
         data.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count
         data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
-        // No flags field on v20.0.0.5 (10.0.1.3..20.1.0.1 gap).
+                                                        // No flags field on v20.0.0.5 (10.0.1.3..20.1.0.1 gap).
         data.extend_from_slice(&0u32.to_le_bytes()); // apply_mode
         data.extend_from_slice(&6u32.to_le_bytes()); // texture_count = 6
         for _ in 0..6 {
@@ -1569,8 +1568,8 @@ mod fog_property_tests {
         data.extend_from_slice(&0u32.to_le_bytes()); // name index 0
         data.extend_from_slice(&0u32.to_le_bytes()); // num extra data
         data.extend_from_slice(&(-1i32).to_le_bytes()); // controller ref = null
-        // No NiProperty.Flags (v20.2.0.7 > 10.0.1.2)
-        // FogFlags: 1 (enabled)
+                                                        // No NiProperty.Flags (v20.2.0.7 > 10.0.1.2)
+                                                        // FogFlags: 1 (enabled)
         data.extend_from_slice(&1u16.to_le_bytes());
         // fog_depth: 0.5
         data.extend_from_slice(&0.5f32.to_le_bytes());

@@ -4,7 +4,6 @@
 //! `pub(super)` so the walker siblings can call them; not part of the
 //! public `esm::cell` API.
 
-
 /// Read a null-terminated string from sub-record data.
 pub(super) fn read_zstring(data: &[u8]) -> String {
     let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());

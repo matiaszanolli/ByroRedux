@@ -527,10 +527,8 @@ pub fn create_blend_pipeline(
 /// cull / depth-bias state on `pipeline_ui` is intentionally STATIC
 /// (off / off / NONE / off) — pipeline bind applies those values
 /// automatically, no per-bind cmd_set needed. See #663.
-pub const UI_PIPELINE_DYNAMIC_STATES: &[vk::DynamicState] = &[
-    vk::DynamicState::VIEWPORT,
-    vk::DynamicState::SCISSOR,
-];
+pub const UI_PIPELINE_DYNAMIC_STATES: &[vk::DynamicState] =
+    &[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
 
 /// Creates the UI overlay pipeline (no depth, no lighting, alpha blend).
 ///

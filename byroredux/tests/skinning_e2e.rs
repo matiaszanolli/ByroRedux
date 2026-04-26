@@ -38,8 +38,7 @@ const SSE_DEFAULT_DATA: &str =
 const SSE_MESH_BSA: &str = "Skyrim - Meshes0.bsa";
 const SSE_FIXTURE_NIF: &str = "meshes\\actors\\character\\character assets\\malebody_0.nif";
 
-const FNV_DEFAULT_DATA: &str =
-    "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
+const FNV_DEFAULT_DATA: &str = "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
 const FNV_MESH_BSA: &str = "Fallout - Meshes.bsa";
 const FNV_FIXTURE_NIF: &str = "meshes\\characters\\_male\\upperbody.nif";
 
@@ -71,12 +70,7 @@ struct Fixture {
 /// *largest* skinned mesh (most positions). Sub-meshes with small bone
 /// counts (e.g. 'meathead01' on FNV upperbody) are attached but the
 /// body / torso carries the gameplay-relevant skin.
-fn load_fixture(
-    env_var: &str,
-    default: &str,
-    bsa_name: &str,
-    nif_path: &str,
-) -> Option<Fixture> {
+fn load_fixture(env_var: &str, default: &str, bsa_name: &str, nif_path: &str) -> Option<Fixture> {
     let data = data_dir(env_var, default).or_else(|| {
         eprintln!("[M29] skipping: no data dir (set {env_var} or install to {default})");
         None
@@ -218,7 +212,10 @@ fn fnv_vertex_indices_within_palette_bounds() {
         max_index,
         bone_count
     );
-    assert!(max_index > 0, "FNV vertices all pinned to bone 0 — partition decode regression");
+    assert!(
+        max_index > 0,
+        "FNV vertices all pinned to bone 0 — partition decode regression"
+    );
 }
 
 #[test]
@@ -261,7 +258,10 @@ fn fnv_palette_responds_to_bone_transform() {
         .zip(mutated[target as usize].to_cols_array().iter())
         .map(|(a, b)| (a - b).abs())
         .sum();
-    assert!(diff > 1e-3, "FNV palette did not respond to bone Transform mutation");
+    assert!(
+        diff > 1e-3,
+        "FNV palette did not respond to bone Transform mutation"
+    );
 }
 
 #[test]
@@ -307,8 +307,14 @@ fn fnv_kf_playback_drives_palette() {
                 .any(|(x, y)| (x - y).abs() > 1e-4)
         })
         .count();
-    eprintln!("[M29 FNV] frame Δ: {} / {} palette slots changed", diff_slots, bone_count);
-    assert!(diff_slots > 0, "FNV palette did not change across simulated KF tick");
+    eprintln!(
+        "[M29 FNV] frame Δ: {} / {} palette slots changed",
+        diff_slots, bone_count
+    );
+    assert!(
+        diff_slots > 0,
+        "FNV palette did not change across simulated KF tick"
+    );
 }
 
 // ── SSE path: BSTriShape + BSSkinInstance + SseSkinGlobalBuffer ─────
@@ -350,7 +356,11 @@ fn sse_imports_skinned_mesh_with_resolved_bones() {
         skin.bones.len(),
         rate * 100.0
     );
-    assert!(rate >= 0.80, "SSE bone resolution rate {:.1}% < 80%", rate * 100.0);
+    assert!(
+        rate >= 0.80,
+        "SSE bone resolution rate {:.1}% < 80%",
+        rate * 100.0
+    );
 }
 
 #[test]
@@ -448,5 +458,8 @@ fn sse_palette_responds_to_bone_transform() {
         .zip(mutated[target as usize].to_cols_array().iter())
         .map(|(a, b)| (a - b).abs())
         .sum();
-    assert!(diff > 1e-3, "SSE palette did not respond to bone Transform mutation");
+    assert!(
+        diff > 1e-3,
+        "SSE palette did not respond to bone Transform mutation"
+    );
 }

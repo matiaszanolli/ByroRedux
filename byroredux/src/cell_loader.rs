@@ -15,7 +15,9 @@ use byroredux_renderer::VulkanContext;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::asset_provider::{merge_bgsm_into_mesh, resolve_texture, MaterialProvider, TextureProvider};
+use crate::asset_provider::{
+    merge_bgsm_into_mesh, resolve_texture, MaterialProvider, TextureProvider,
+};
 use crate::components::{
     AlphaBlend, CellLightingRes, DarkMapHandle, Decal, ExtraTextureMaps, NormalMapHandle,
     SkyParamsRes, TerrainTileSlot, TwoSided, WeatherDataRes, WeatherTransitionRes,
@@ -425,8 +427,7 @@ fn build_remap_for_plugin(
 fn parse_cell_indexes_in_load_order(
     plugin_paths: &[&str],
 ) -> anyhow::Result<(esm::cell::EsmCellIndex, Vec<String>)> {
-    let load_order: Vec<String> =
-        plugin_paths.iter().map(|p| plugin_basename_lc(p)).collect();
+    let load_order: Vec<String> = plugin_paths.iter().map(|p| plugin_basename_lc(p)).collect();
 
     // Detect duplicates in the supplied load order — an easy CLI
     // misconfig that would silently make the second copy override
@@ -481,8 +482,7 @@ fn plugin_for_form_id(form_id: u32, load_order: &[String]) -> Option<&str> {
 fn parse_record_indexes_in_load_order(
     plugin_paths: &[&str],
 ) -> anyhow::Result<(esm::records::EsmIndex, Vec<String>)> {
-    let load_order: Vec<String> =
-        plugin_paths.iter().map(|p| plugin_basename_lc(p)).collect();
+    let load_order: Vec<String> = plugin_paths.iter().map(|p| plugin_basename_lc(p)).collect();
     {
         let mut seen = std::collections::HashSet::with_capacity(load_order.len());
         for name in &load_order {
@@ -508,8 +508,8 @@ fn parse_record_indexes_in_load_order(
             idx,
         );
         let remap = build_remap_for_plugin(path, &bytes, idx, &load_order)?;
-        let plugin_records =
-            esm::records::parse_esm_with_load_order(&bytes, Some(remap)).unwrap_or_else(|e| {
+        let plugin_records = esm::records::parse_esm_with_load_order(&bytes, Some(remap))
+            .unwrap_or_else(|e| {
                 log::warn!("Record parse failed for '{}': {}", path, e);
                 esm::records::EsmIndex::default()
             });
@@ -1040,11 +1040,7 @@ fn quadrant_samples_for_vertex(row: usize, col: usize) -> [(u8, u8, u8); 4] {
 /// Sample one splat weight for a global vertex by taking the max
 /// across every contributing quadrant's alpha grid. Absent quadrants
 /// contribute 0. Returns a u8 ready to pack into the vertex attribute.
-fn splat_weight_for_vertex(
-    layer: &CellSplatLayer,
-    row: usize,
-    col: usize,
-) -> u8 {
+fn splat_weight_for_vertex(layer: &CellSplatLayer, row: usize, col: usize) -> u8 {
     let samples = quadrant_samples_for_vertex(row, col);
     let mut best = 0.0_f32;
     for (q, lr, lc) in samples {
@@ -1386,11 +1382,8 @@ fn load_references(
         // synthetic SCOL child — FO4 REFRs that overlay textures at the
         // SCOL level apply the same swap to every child placement.
         // #584.
-        let refr_overlay = build_refr_texture_overlay(
-            placed_ref,
-            index,
-            mat_provider.as_deref_mut(),
-        );
+        let refr_overlay =
+            build_refr_texture_overlay(placed_ref, index, mat_provider.as_deref_mut());
 
         // Compose REFR expansion from composite-record helpers:
         //   1. PKIN (#589) — Pack-In bundle fans out to one synth per
@@ -1431,15 +1424,10 @@ fn load_references(
                     // surface actual FormIDs without pulling down a
                     // full RUST_LOG=debug run. Linear dedup is fine
                     // for 20 entries. See #386.
-                    if stat_miss_sample.len() < 20
-                        && !stat_miss_sample.contains(&child_form_id)
-                    {
+                    if stat_miss_sample.len() < 20 && !stat_miss_sample.contains(&child_form_id) {
                         stat_miss_sample.push(child_form_id);
                     }
-                    log::debug!(
-                        "REFR base {:08X} not in statics table",
-                        child_form_id
-                    );
+                    log::debug!("REFR base {:08X} not in statics table", child_form_id);
                     continue;
                 }
             };
@@ -1453,10 +1441,7 @@ fn load_references(
                 if let Some(ref ld) = stat.light_data {
                     let entity = world.spawn();
                     world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
-                    world.insert(
-                        entity,
-                        GlobalTransform::new(ref_pos, ref_rot, ref_scale),
-                    );
+                    world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
                     world.insert(
                         entity,
                         LightSource {
@@ -1502,10 +1487,7 @@ fn load_references(
                 if let Some(ref ld) = stat.light_data {
                     let entity = world.spawn();
                     world.insert(entity, Transform::from_translation(ref_pos));
-                    world.insert(
-                        entity,
-                        GlobalTransform::new(ref_pos, Quat::IDENTITY, 1.0),
-                    );
+                    world.insert(entity, GlobalTransform::new(ref_pos, Quat::IDENTITY, 1.0));
                     world.insert(
                         entity,
                         LightSource {
@@ -1556,11 +1538,9 @@ fn load_references(
                     None => {
                         // Slow-path: parse outside any registry borrow.
                         let parsed = match tex_provider.extract_mesh(&model_path) {
-                            Some(d) => parse_and_import_nif(
-                                &d,
-                                &model_path,
-                                mat_provider.as_deref_mut(),
-                            ),
+                            Some(d) => {
+                                parse_and_import_nif(&d, &model_path, mat_provider.as_deref_mut())
+                            }
                             None => {
                                 log::debug!("NIF not found in BSA: '{}'", model_path);
                                 None
@@ -1645,8 +1625,7 @@ fn load_references(
         let sample_str = stat_miss_sample
             .iter()
             .map(|id| {
-                let plugin = plugin_for_form_id(*id, load_order)
-                    .unwrap_or("???");
+                let plugin = plugin_for_form_id(*id, load_order).unwrap_or("???");
                 format!("{:08X} (from '{}')", id, plugin)
             })
             .collect::<Vec<_>>()
@@ -2113,7 +2092,10 @@ fn is_spawnable_nif_light(light: &byroredux_nif::import::ImportedLight) -> bool 
 /// a NIF carrying only zero-colour placeholders still receives the
 /// ESM LIGH-authored `LightSource` (#632).
 fn count_spawnable_nif_lights(nif_lights: &[byroredux_nif::import::ImportedLight]) -> usize {
-    nif_lights.iter().filter(|l| is_spawnable_nif_light(l)).count()
+    nif_lights
+        .iter()
+        .filter(|l| is_spawnable_nif_light(l))
+        .count()
 }
 
 fn spawn_placed_instances(
@@ -2210,12 +2192,14 @@ fn spawn_placed_instances(
     // `NiPSysColorModifier` → `NiColorData`) stays open at #707; this
     // is the heuristic band-aid that landed first.
     for em in &cached.particle_emitters {
-        let nif_pos = Vec3::new(em.local_position[0], em.local_position[1], em.local_position[2]);
+        let nif_pos = Vec3::new(
+            em.local_position[0],
+            em.local_position[1],
+            em.local_position[2],
+        );
         let world_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
         let host = em.host_name.as_deref().unwrap_or("").to_ascii_lowercase();
-        let preset = if host.contains("spark")
-            || host.contains("ember")
-            || host.contains("cinder")
+        let preset = if host.contains("spark") || host.contains("ember") || host.contains("cinder")
         {
             ParticleEmitter::embers()
         } else if host.contains("torch")

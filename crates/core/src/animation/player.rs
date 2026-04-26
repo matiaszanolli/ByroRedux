@@ -111,12 +111,17 @@ mod inspect_tests {
         player.playing = true;
 
         let json = serde_json::to_value(&player).expect("serialize");
-        assert_eq!(json.get("reverse_direction"), Some(&serde_json::Value::Bool(true)));
+        assert_eq!(
+            json.get("reverse_direction"),
+            Some(&serde_json::Value::Bool(true))
+        );
 
-        let reloaded: AnimationPlayer =
-            serde_json::from_value(json).expect("deserialize");
+        let reloaded: AnimationPlayer = serde_json::from_value(json).expect("deserialize");
         assert_eq!(reloaded.clip_handle, 42);
-        assert!(reloaded.reverse_direction, "ping-pong direction must survive snapshot reload");
+        assert!(
+            reloaded.reverse_direction,
+            "ping-pong direction must survive snapshot reload"
+        );
         assert_eq!(reloaded.local_time, 0.75);
         assert_eq!(reloaded.prev_time, 1.05);
         assert_eq!(reloaded.speed, 1.25);

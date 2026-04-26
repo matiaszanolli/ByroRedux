@@ -4,7 +4,9 @@
 use byroredux_bsa::BsaArchive;
 
 fn main() {
-    let bsa = std::env::args().nth(1).expect("usage: bsa_list <bsa> <substr>");
+    let bsa = std::env::args()
+        .nth(1)
+        .expect("usage: bsa_list <bsa> <substr>");
     let needle = std::env::args()
         .nth(2)
         .expect("missing substring")

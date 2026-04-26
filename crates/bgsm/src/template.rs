@@ -180,9 +180,7 @@ impl TemplateCache {
         // Capture the parent path BEFORE moving `file` into the Arc.
         let parent_path = file.root_material_path.clone();
         let parent = match parent_path {
-            Some(pp) if !pp.is_empty() => {
-                Some(self.resolve_depth(resolver, &pp, remaining - 1)?)
-            }
+            Some(pp) if !pp.is_empty() => Some(self.resolve_depth(resolver, &pp, remaining - 1)?),
             _ => None,
         };
 
@@ -370,7 +368,9 @@ mod tests {
         );
 
         let mut cache = TemplateCache::new(16);
-        let r = cache.resolve(&mut resolver, "materials/child.bgsm").unwrap();
+        let r = cache
+            .resolve(&mut resolver, "materials/child.bgsm")
+            .unwrap();
         assert_eq!(r.depth(), 3);
 
         // walk() iterates child → parent → grandparent.
@@ -437,10 +437,7 @@ mod tests {
     fn lru_eviction_caps_memory() {
         let mut resolver = StubResolver::new();
         for i in 0..5 {
-            resolver.add(
-                &format!("materials/file_{i}.bgsm"),
-                minimal_v2_bytes(),
-            );
+            resolver.add(&format!("materials/file_{i}.bgsm"), minimal_v2_bytes());
         }
 
         let mut cache = TemplateCache::new(3);
@@ -453,7 +450,9 @@ mod tests {
         // file_0, file_1 were evicted; file_2, file_3, file_4 remain.
         // Re-resolving file_0 triggers a fresh resolver read.
         let before = resolver.read_count;
-        cache.resolve(&mut resolver, "materials/file_0.bgsm").unwrap();
+        cache
+            .resolve(&mut resolver, "materials/file_0.bgsm")
+            .unwrap();
         assert_eq!(resolver.read_count, before + 1);
     }
 }

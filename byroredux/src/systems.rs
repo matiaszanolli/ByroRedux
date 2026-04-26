@@ -961,9 +961,7 @@ pub(crate) fn particle_system(world: &World, dt: f32) {
     // GlobalTransform. We only mutate ParticleEmitter (live SoA +
     // accumulator), so the GlobalTransform query stays read-only and
     // doesn't fight any other PostUpdate writer.
-    let Some((gt_q, mut em_q)) =
-        world.query_2_mut::<GlobalTransform, ParticleEmitter>()
-    else {
+    let Some((gt_q, mut em_q)) = world.query_2_mut::<GlobalTransform, ParticleEmitter>() else {
         return;
     };
 
@@ -1268,87 +1266,88 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // per-side (target may use the same `keys` table since `tod_hours`
     // is on WeatherDataRes; we re-derive it from the target's own
     // breakpoints to stay correct if the target ships a different CLMT).
-    let (zenith, horizon, sun_col, ambient, sunlight, fog_col, fog_near, fog_far) = if transition_t
-        > 0.0
-    {
-        let tr = world
-            .try_resource::<WeatherTransitionRes>()
-            .expect("transition_t > 0 implies WeatherTransitionRes");
-        let target = &tr.target;
+    let (zenith, horizon, sun_col, ambient, sunlight, fog_col, fog_near, fog_far) =
+        if transition_t > 0.0 {
+            let tr = world
+                .try_resource::<WeatherTransitionRes>()
+                .expect("transition_t > 0 implies WeatherTransitionRes");
+            let target = &tr.target;
 
-        let keys_b = build_tod_keys(target.tod_hours);
-        let (b_a, b_b, b_t) = {
-            let h = if hour < keys_b[0].0 { hour + 24.0 } else { hour };
-            let last = keys_b.len() - 1;
-            let mut found = (keys_b[last].1, keys_b[0].1, 0.0f32);
-            for i in 0..last {
-                let (h0, s0) = keys_b[i];
-                let (h1, s1) = keys_b[i + 1];
-                if h >= h0 && h < h1 {
-                    found = (s0, s1, (h - h0) / (h1 - h0));
-                    break;
+            let keys_b = build_tod_keys(target.tod_hours);
+            let (b_a, b_b, b_t) = {
+                let h = if hour < keys_b[0].0 {
+                    hour + 24.0
+                } else {
+                    hour
+                };
+                let last = keys_b.len() - 1;
+                let mut found = (keys_b[last].1, keys_b[0].1, 0.0f32);
+                for i in 0..last {
+                    let (h0, s0) = keys_b[i];
+                    let (h1, s1) = keys_b[i + 1];
+                    if h >= h0 && h < h1 {
+                        found = (s0, s1, (h - h0) / (h1 - h0));
+                        break;
+                    }
                 }
-            }
-            if h >= keys_b[last].0 {
-                let h0 = keys_b[last].0;
-                let h1 = keys_b[0].0 + 24.0;
-                let frac = ((h - h0) / (h1 - h0)).clamp(0.0, 1.0);
-                found = (keys_b[last].1, keys_b[0].1, frac);
-            }
-            found
+                if h >= keys_b[last].0 {
+                    let h0 = keys_b[last].0;
+                    let h1 = keys_b[0].0 + 24.0;
+                    let frac = ((h - h0) / (h1 - h0)).clamp(0.0, 1.0);
+                    found = (keys_b[last].1, keys_b[0].1, frac);
+                }
+                found
+            };
+
+            let target_zenith = lerp3(
+                target.sky_colors[SKY_UPPER][b_a],
+                target.sky_colors[SKY_UPPER][b_b],
+                b_t,
+            );
+            let target_horizon = lerp3(
+                target.sky_colors[SKY_HORIZON][b_a],
+                target.sky_colors[SKY_HORIZON][b_b],
+                b_t,
+            );
+            let target_sun_col = lerp3(
+                target.sky_colors[SKY_SUN][b_a],
+                target.sky_colors[SKY_SUN][b_b],
+                b_t,
+            );
+            let target_ambient = lerp3(
+                target.sky_colors[SKY_AMBIENT][b_a],
+                target.sky_colors[SKY_AMBIENT][b_b],
+                b_t,
+            );
+            let target_sunlight = lerp3(
+                target.sky_colors[SKY_SUNLIGHT][b_a],
+                target.sky_colors[SKY_SUNLIGHT][b_b],
+                b_t,
+            );
+            let target_fog_col = lerp3(
+                target.sky_colors[SKY_FOG][b_a],
+                target.sky_colors[SKY_FOG][b_b],
+                b_t,
+            );
+            let target_fog_near = target.fog[0] + (target.fog[2] - target.fog[0]) * night_factor;
+            let target_fog_far = target.fog[1] + (target.fog[3] - target.fog[1]) * night_factor;
+
+            let lerp1 = |a: f32, b: f32, k: f32| a + (b - a) * k;
+            (
+                lerp3(zenith, target_zenith, transition_t),
+                lerp3(horizon, target_horizon, transition_t),
+                lerp3(sun_col, target_sun_col, transition_t),
+                lerp3(ambient, target_ambient, transition_t),
+                lerp3(sunlight, target_sunlight, transition_t),
+                lerp3(fog_col, target_fog_col, transition_t),
+                lerp1(fog_near, target_fog_near, transition_t),
+                lerp1(fog_far, target_fog_far, transition_t),
+            )
+        } else {
+            (
+                zenith, horizon, sun_col, ambient, sunlight, fog_col, fog_near, fog_far,
+            )
         };
-
-        let target_zenith = lerp3(
-            target.sky_colors[SKY_UPPER][b_a],
-            target.sky_colors[SKY_UPPER][b_b],
-            b_t,
-        );
-        let target_horizon = lerp3(
-            target.sky_colors[SKY_HORIZON][b_a],
-            target.sky_colors[SKY_HORIZON][b_b],
-            b_t,
-        );
-        let target_sun_col = lerp3(
-            target.sky_colors[SKY_SUN][b_a],
-            target.sky_colors[SKY_SUN][b_b],
-            b_t,
-        );
-        let target_ambient = lerp3(
-            target.sky_colors[SKY_AMBIENT][b_a],
-            target.sky_colors[SKY_AMBIENT][b_b],
-            b_t,
-        );
-        let target_sunlight = lerp3(
-            target.sky_colors[SKY_SUNLIGHT][b_a],
-            target.sky_colors[SKY_SUNLIGHT][b_b],
-            b_t,
-        );
-        let target_fog_col = lerp3(
-            target.sky_colors[SKY_FOG][b_a],
-            target.sky_colors[SKY_FOG][b_b],
-            b_t,
-        );
-        let target_fog_near =
-            target.fog[0] + (target.fog[2] - target.fog[0]) * night_factor;
-        let target_fog_far =
-            target.fog[1] + (target.fog[3] - target.fog[1]) * night_factor;
-
-        let lerp1 = |a: f32, b: f32, k: f32| a + (b - a) * k;
-        (
-            lerp3(zenith, target_zenith, transition_t),
-            lerp3(horizon, target_horizon, transition_t),
-            lerp3(sun_col, target_sun_col, transition_t),
-            lerp3(ambient, target_ambient, transition_t),
-            lerp3(sunlight, target_sunlight, transition_t),
-            lerp3(fog_col, target_fog_col, transition_t),
-            lerp1(fog_near, target_fog_near, transition_t),
-            lerp1(fog_far, target_fog_far, transition_t),
-        )
-    } else {
-        (
-            zenith, horizon, sun_col, ambient, sunlight, fog_col, fog_near, fog_far,
-        )
-    };
 
     // Sun direction: semicircular arc from east (6h) through zenith (12h) to west (18h).
     // Below horizon at night. Y-up coordinate system.
@@ -1658,7 +1657,7 @@ mod weather_tod_keys_tests {
     #[test]
     fn tod_keys_are_monotonic_on_realistic_climates() {
         for tod_hours in [
-            [6.0, 10.0, 18.0, 22.0], // FNV
+            [6.0, 10.0, 18.0, 22.0],  // FNV
             [5.33, 10.0, 17.0, 22.0], // FO3 Wasteland
             [4.5, 9.0, 19.5, 22.0],   // Skyrim Tundra (hypothetical)
             [7.0, 11.0, 16.0, 19.0],  // compressed-day winter
