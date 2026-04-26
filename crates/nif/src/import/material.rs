@@ -150,6 +150,38 @@ impl VertexColorMode {
             _ => Self::AmbientDiffuse,
         }
     }
+
+    /// Decode the full `NiVertexColorProperty` (vertex_mode, lighting_mode)
+    /// pair into our 1-D `VertexColorMode` axis. See #694 / O4-02.
+    ///
+    /// Gamebryo's lighting equation gates which terms contribute:
+    ///
+    /// * `LIGHTING_E_A_D` (1, default): Emissive + Ambient + Diffuse
+    ///   terms all participate. Vertex color routes per `vertex_mode`.
+    /// * `LIGHTING_E` (0): only the Emissive term contributes — Ambient
+    ///   and Diffuse are dropped from the lighting integral.
+    ///
+    /// When `LIGHTING_E` combines with `SOURCE_AMB_DIFF`, the vertex
+    /// colors feed terms the engine has just dropped — they become
+    /// invisible. Collapse that to `Ignore` so the renderer's PBR
+    /// pipeline skips the (`texColor.rgb * fragColor`) multiplication
+    /// that the fragment shader unconditionally applies. Pre-fix this
+    /// double-counted material colors on the rare LIGHTING_E meshes
+    /// (Oblivion FX / a few statics).
+    ///
+    /// Other (vertex_mode, lighting_mode) combinations either route
+    /// through Emissive (which we already special-case) or are the
+    /// LIGHTING_E_A_D default which keeps the source-mode unchanged.
+    pub(super) fn from_property(vertex_mode: u32, lighting_mode: u32) -> Self {
+        let src = Self::from_source_mode(vertex_mode);
+        // `lighting_mode == 0` is `LIGHTING_E`; any other value (including
+        // missing-field default `1`) is `LIGHTING_E_A_D`.
+        if lighting_mode == 0 && src == Self::AmbientDiffuse {
+            Self::Ignore
+        } else {
+            src
+        }
+    }
 }
 
 /// Material properties extracted from a NiTriShape's property list in a single pass.
@@ -1028,8 +1060,17 @@ pub(super) fn extract_material_info_from_refs(
         // actual behavior split on Ignore is enforced by
         // `extract_material` below when it decides whether to return
         // the vertex color vec or fall back to the material diffuse.
+        //
+        // #694 — the property carries a second enum, `lighting_mode`,
+        // that gates which lighting terms actually consume the vertex
+        // color. `from_property` collapses the 2D enum into our 1D
+        // `VertexColorMode` axis: when LIGHTING_E drops the
+        // ambient/diffuse contributions, a SRC_AMB_DIFF vertex_mode
+        // becomes effectively invisible — demote to `Ignore` so the
+        // renderer skips the `texColor * fragColor` double-count.
         if let Some(vcol) = scene.get_as::<NiVertexColorProperty>(idx) {
-            info.vertex_color_mode = VertexColorMode::from_source_mode(vcol.vertex_mode);
+            info.vertex_color_mode =
+                VertexColorMode::from_property(vcol.vertex_mode, vcol.lighting_mode);
         }
     }
 
@@ -1818,6 +1859,85 @@ mod secondary_slot_tests {
         );
         assert_eq!(
             VertexColorMode::from_source_mode(2),
+            VertexColorMode::AmbientDiffuse
+        );
+    }
+
+    // ── #694 / O4-02 regression guards ─────────────────────────────────
+    //
+    // `NiVertexColorProperty` carries a (vertex_mode, lighting_mode)
+    // pair. Pre-fix only `vertex_mode` was read, so LIGHTING_E meshes
+    // got their material colors double-counted (vertex color
+    // multiplied albedo even though Gamebryo's lighting equation had
+    // dropped the ambient + diffuse contributions). `from_property`
+    // collapses the 2D enum into the 1D source-mode axis so the
+    // renderer's existing `Ignore` branch handles the case.
+
+    #[test]
+    fn lighting_e_with_amb_diff_demotes_to_ignore() {
+        // The pathological case the audit flagged: SOURCE_AMB_DIFF +
+        // LIGHTING_E. Engine drops the diffuse contribution → vertex
+        // color is invisible → `Ignore` is the visually correct mode.
+        assert_eq!(
+            VertexColorMode::from_property(2, 0),
+            VertexColorMode::Ignore
+        );
+    }
+
+    #[test]
+    fn lighting_e_with_emissive_stays_emissive() {
+        // SOURCE_EMISSIVE + LIGHTING_E: vertex color drives the only
+        // term that contributes (Emissive). Stays Emissive — the
+        // collapse only applies when vertex color would be invisible.
+        assert_eq!(
+            VertexColorMode::from_property(1, 0),
+            VertexColorMode::Emissive
+        );
+    }
+
+    #[test]
+    fn lighting_e_with_ignore_stays_ignore() {
+        // SOURCE_IGNORE + any lighting_mode: vertex color disabled at
+        // the source, stays Ignore.
+        assert_eq!(
+            VertexColorMode::from_property(0, 0),
+            VertexColorMode::Ignore
+        );
+        assert_eq!(
+            VertexColorMode::from_property(0, 1),
+            VertexColorMode::Ignore
+        );
+    }
+
+    #[test]
+    fn lighting_e_a_d_default_keeps_source_mode_unchanged() {
+        // LIGHTING_E_A_D (= 1, the engine default) is the
+        // pre-#694 behaviour — every (source_mode, lighting_mode=1)
+        // pair must still decode to its source_mode component. Guards
+        // against the fix accidentally regressing the common case.
+        assert_eq!(
+            VertexColorMode::from_property(0, 1),
+            VertexColorMode::Ignore
+        );
+        assert_eq!(
+            VertexColorMode::from_property(1, 1),
+            VertexColorMode::Emissive
+        );
+        assert_eq!(
+            VertexColorMode::from_property(2, 1),
+            VertexColorMode::AmbientDiffuse
+        );
+    }
+
+    #[test]
+    fn unknown_lighting_mode_treated_as_default_e_a_d() {
+        // The packed-flags decoder emits `lighting_mode = 0 | 1` only
+        // (it's a 1-bit field on FO3+), but pre-10.0.5 streams read a
+        // raw u32 — defensive guard that anything other than 0 keeps
+        // the LIGHTING_E_A_D semantics so corrupt bytes don't silently
+        // hide vertex colors.
+        assert_eq!(
+            VertexColorMode::from_property(2, 0xFFFF_FFFF),
             VertexColorMode::AmbientDiffuse
         );
     }
