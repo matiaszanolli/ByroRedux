@@ -263,14 +263,14 @@ fn is_decal_legacy_helper_matches_both_flag_sources() {
 fn is_decal_modern_helper_ignores_flag2_bit_21() {
     use super::is_decal_from_modern_shader_flags;
     // SLSF1 / F4SF1 bit 26 — shared with legacy, must classify.
-    assert!(is_decal_from_modern_shader_flags(0x0400_0000, 0));
-    assert!(is_decal_from_modern_shader_flags(0x0800_0000, 0));
+    assert!(is_decal_from_modern_shader_flags(0x0400_0000, 0, &[], &[]));
+    assert!(is_decal_from_modern_shader_flags(0x0800_0000, 0, &[], &[]));
     // Flag2 bit 21 — Cloud_LOD on Skyrim / Anisotropic_Lighting on
     // FO4. MUST NOT classify as decal.
-    assert!(!is_decal_from_modern_shader_flags(0, 0x0020_0000));
+    assert!(!is_decal_from_modern_shader_flags(0, 0x0020_0000, &[], &[]));
     // Sanity: unrelated bits, all zeros.
-    assert!(!is_decal_from_modern_shader_flags(0, 0));
-    assert!(!is_decal_from_modern_shader_flags(0x1000, 0x0010));
+    assert!(!is_decal_from_modern_shader_flags(0, 0, &[], &[]));
+    assert!(!is_decal_from_modern_shader_flags(0x1000, 0x0010, &[], &[]));
 }
 
 /// #414 end-to-end: a FO4-shaped `BSLightingShaderProperty` with
@@ -309,4 +309,132 @@ fn skyrim_bs_lighting_flags2_zero_leaves_default_culling() {
     shape.shader_property_ref = BlockRef(0);
     let info = extract_material_info(&scene, &shape, &[]);
     assert!(!info.two_sided);
+}
+
+// ── #712 / NIF-D4-01 — FO76/Starfield CRC32 shader-flag fallback ──────
+
+/// Inject CRC arrays into a `BSLightingShaderProperty` whose legacy
+/// flag pair is zero — the FO76/Starfield shape on disk per
+/// `shader.rs:604-608`.
+fn make_bs_lighting_with_crcs(sf1: Vec<u32>, sf2: Vec<u32>) -> BSLightingShaderProperty {
+    let mut shader = make_bs_lighting_with_flags(0, 0);
+    shader.sf1_crcs = sf1;
+    shader.sf2_crcs = sf2;
+    shader
+}
+
+/// Pre-#712 a Starfield decal mesh imports with `is_decal == false`
+/// because the legacy `shader_flags_1` field is zero on BSVER >= 132 and
+/// nothing read the CRC arrays. Now: the CRC `BSShaderCRC32::DECAL`
+/// (3849131744) found anywhere in `sf1_crcs` or `sf2_crcs` flips
+/// `is_decal` to true.
+#[test]
+fn starfield_decal_crc_flips_is_decal_when_legacy_flags_are_zero() {
+    use crate::shader_flags::bs_shader_crc32;
+
+    let shader = make_bs_lighting_with_crcs(vec![bs_shader_crc32::DECAL], Vec::new());
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let mut shape = shape_with_shader_ref(0);
+    shape.av.properties.clear();
+    shape.shader_property_ref = BlockRef(0);
+    let info = extract_material_info(&scene, &shape, &[]);
+    assert!(
+        info.is_decal,
+        "Starfield decal CRC in sf1_crcs must flip is_decal"
+    );
+}
+
+/// `Dynamic_Decal` CRC found via the SF2 (second) array also flips
+/// `is_decal`. The split between SF1 and SF2 is purely a wire detail —
+/// the same `BSShaderCRC32` enum populates both. See nif.xml lines
+/// 6590–6591.
+#[test]
+fn starfield_dynamic_decal_crc_in_sf2_array_flips_is_decal() {
+    use crate::shader_flags::bs_shader_crc32;
+
+    let shader = make_bs_lighting_with_crcs(Vec::new(), vec![bs_shader_crc32::DYNAMIC_DECAL]);
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let mut shape = shape_with_shader_ref(0);
+    shape.av.properties.clear();
+    shape.shader_property_ref = BlockRef(0);
+    let info = extract_material_info(&scene, &shape, &[]);
+    assert!(info.is_decal);
+}
+
+/// `BSShaderCRC32::TWO_SIDED` flips `info.two_sided` on the modern path.
+/// Pre-fix every Starfield grass / hair / cloth mesh rendered with
+/// backface culling on regardless of the authored Two_Sided flag.
+#[test]
+fn starfield_two_sided_crc_flips_two_sided_when_legacy_flags_are_zero() {
+    use crate::shader_flags::bs_shader_crc32;
+
+    let shader = make_bs_lighting_with_crcs(vec![bs_shader_crc32::TWO_SIDED], Vec::new());
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let mut shape = shape_with_shader_ref(0);
+    shape.av.properties.clear();
+    shape.shader_property_ref = BlockRef(0);
+    let info = extract_material_info(&scene, &shape, &[]);
+    assert!(
+        info.two_sided,
+        "Starfield Two_Sided CRC must flip info.two_sided"
+    );
+}
+
+/// CRC arrays carrying unrelated flags (e.g. `Skinned`, `Cast_Shadows`)
+/// do NOT flip `is_decal` or `two_sided`. Guards against the obvious
+/// "any CRC means decal" miswire.
+#[test]
+fn starfield_unrelated_crcs_do_not_trigger_decal_or_two_sided() {
+    use crate::shader_flags::bs_shader_crc32;
+
+    let shader = make_bs_lighting_with_crcs(
+        vec![bs_shader_crc32::SKINNED, bs_shader_crc32::CAST_SHADOWS],
+        vec![bs_shader_crc32::ZBUFFER_TEST],
+    );
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let mut shape = shape_with_shader_ref(0);
+    shape.av.properties.clear();
+    shape.shader_property_ref = BlockRef(0);
+    let info = extract_material_info(&scene, &shape, &[]);
+    assert!(!info.is_decal, "Skinned/CastShadows/ZBuffer CRCs are not decal");
+    assert!(!info.two_sided);
+}
+
+/// Helper-level regression: when both legacy flags AND the CRC arrays
+/// are empty, neither is_decal nor two_sided fires. Anchors the
+/// "no false positives on empty input" invariant.
+#[test]
+fn modern_helpers_return_false_on_empty_input() {
+    use super::{is_decal_from_modern_shader_flags, is_two_sided_from_modern_shader_flags};
+    assert!(!is_decal_from_modern_shader_flags(0, 0, &[], &[]));
+    assert!(!is_two_sided_from_modern_shader_flags(0, 0, &[], &[]));
+}
+
+/// Helper-level regression: legacy bits still classify (BSVER < 132
+/// content where `shader_flags_*` is non-zero and CRC arrays are
+/// empty). Pin the back-compat invariant so the CRC fallback addition
+/// can't accidentally regress legacy meshes.
+#[test]
+fn modern_helpers_still_honour_legacy_bits_when_crcs_empty() {
+    use super::{is_decal_from_modern_shader_flags, is_two_sided_from_modern_shader_flags};
+    // SLSF1 / F4SF1 bit 26 == Decal — same numeric value across games.
+    assert!(is_decal_from_modern_shader_flags(0x0400_0000, 0, &[], &[]));
+    // SLSF2 / F4SF2 bit 4 == Double_Sided.
+    assert!(is_two_sided_from_modern_shader_flags(0, 0x0000_0010, &[], &[]));
 }

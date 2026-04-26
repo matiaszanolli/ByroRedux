@@ -96,14 +96,58 @@ pub(super) fn is_decal_from_legacy_shader_flags(flags1: u32, flags2: u32) -> boo
 /// Decal detection for Skyrim+ / FO4 `BSLightingShaderProperty` +
 /// `BSEffectShaderProperty`.
 ///
-/// Tests SLSF1 / F4SF1 bits 26/27 (`Decal` / `Dynamic_Decal`) only.
-/// These bits have identical numeric value and semantic on Skyrim +
-/// FO4 — the split from [`is_decal_from_legacy_shader_flags`] exists
-/// to keep flags2 bit 21 (`Cloud_LOD` on Skyrim, `Anisotropic_Lighting`
-/// on FO4) out of the decal test. See #414 / FO4-D3-M1.
+/// Tests SLSF1 / F4SF1 bits 26/27 (`Decal` / `Dynamic_Decal`) AND, for
+/// FO76 / Starfield content (BSVER >= 132), the union of the
+/// `sf1_crcs` + `sf2_crcs` CRC32 arrays for the corresponding
+/// `BSShaderCRC32::DECAL` / `DYNAMIC_DECAL` identifiers per nif.xml
+/// lines 6532/6533. The legacy u32 fields are written as literal
+/// zeros on BSVER >= 132 (parser branch in `shader.rs:604-608` per
+/// the spec gate `bsver <= 130`), so without the CRC fallback every
+/// FO76+ decal silently lost its flag — see #712 / NIF-D4-01.
+///
+/// `flags2` is unused but kept on the signature for callsite symmetry
+/// with [`is_decal_from_legacy_shader_flags`] and to make a future
+/// FO4 SLSF2 decal addition a one-line change.
+///
+/// The split from [`is_decal_from_legacy_shader_flags`] exists to keep
+/// flags2 bit 21 (`Cloud_LOD` on Skyrim, `Anisotropic_Lighting` on
+/// FO4, `Alpha_Decal` on FO3/FNV — three different semantics on the
+/// same bit) out of the modern decal test. See #414 / FO4-D3-M1.
 #[inline]
-pub(super) fn is_decal_from_modern_shader_flags(flags1: u32, _flags2: u32) -> bool {
-    flags1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0
+pub(super) fn is_decal_from_modern_shader_flags(
+    flags1: u32,
+    _flags2: u32,
+    sf1_crcs: &[u32],
+    sf2_crcs: &[u32],
+) -> bool {
+    use crate::shader_flags::bs_shader_crc32::{contains_any, DECAL, DYNAMIC_DECAL as DD_CRC};
+    if flags1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 {
+        return true;
+    }
+    let targets = [DECAL, DD_CRC];
+    contains_any(sf1_crcs, &targets) || contains_any(sf2_crcs, &targets)
+}
+
+/// Two-sided detection for Skyrim+ / FO4 `BSLightingShaderProperty` +
+/// `BSEffectShaderProperty`.
+///
+/// Tests SLSF2 / F4SF2 bit 4 (`Double_Sided`) AND, for FO76 / Starfield
+/// content (BSVER >= 132), the union of `sf1_crcs` + `sf2_crcs` for
+/// `BSShaderCRC32::TWO_SIDED` per nif.xml line 6524. Same rationale as
+/// [`is_decal_from_modern_shader_flags`] — the legacy u32 fields are
+/// zero on BSVER >= 132. See #712 / NIF-D4-01.
+#[inline]
+pub(super) fn is_two_sided_from_modern_shader_flags(
+    _flags1: u32,
+    flags2: u32,
+    sf1_crcs: &[u32],
+    sf2_crcs: &[u32],
+) -> bool {
+    use crate::shader_flags::bs_shader_crc32::{contains_any, TWO_SIDED};
+    if flags2 & SF2_DOUBLE_SIDED != 0 {
+        return true;
+    }
+    contains_any(sf1_crcs, &[TWO_SIDED]) || contains_any(sf2_crcs, &[TWO_SIDED])
 }
 
 // NOTE: there is no `SF_DOUBLE_SIDED` on the FO3/FNV

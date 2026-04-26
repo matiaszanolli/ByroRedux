@@ -132,13 +132,30 @@ pub(crate) fn extract_material_info_from_refs(
             // `BSLightingShaderProperty` per nif.xml `SkyrimShaderPropertyFlags2`
             // / `Fallout4ShaderPropertyFlags2`. See #441 for why this
             // check is NOT shared with the FO3/FNV PPLighting path.
-            if shader.shader_flags_2 & SF2_DOUBLE_SIDED != 0 {
+            //
+            // For BSVER >= 132 (FO76 / Starfield) the parser stores the
+            // legacy u32 fields as literal zeros (`shader.rs:604-608`)
+            // and writes the same flag identifiers into `sf1_crcs` /
+            // `sf2_crcs` instead. The helpers below also test the CRC
+            // arrays so FO76+ meshes route through the right path. See
+            // #712 / NIF-D4-01.
+            if is_two_sided_from_modern_shader_flags(
+                shader.shader_flags_1,
+                shader.shader_flags_2,
+                &shader.sf1_crcs,
+                &shader.sf2_crcs,
+            ) {
                 info.two_sided = true;
             }
             // Skyrim+/FO4 decal path — flags2 bit 21 is `Cloud_LOD` on
             // Skyrim / `Anisotropic_Lighting` on FO4, NOT a decal bit.
             // See #414.
-            if is_decal_from_modern_shader_flags(shader.shader_flags_1, shader.shader_flags_2) {
+            if is_decal_from_modern_shader_flags(
+                shader.shader_flags_1,
+                shader.shader_flags_2,
+                &shader.sf1_crcs,
+                &shader.sf2_crcs,
+            ) {
                 info.is_decal = true;
             }
             // Capture rich material data.
@@ -202,13 +219,25 @@ pub(crate) fn extract_material_info_from_refs(
             // semantics as BSLightingShaderProperty. Pre-#129 the
             // BsTriShape path checked them explicitly via
             // `bs_tri_shape_two_sided` / `find_decal_bs`; folding those
-            // checks in here keeps both paths in lockstep.
-            if shader.shader_flags_2 & SF2_DOUBLE_SIDED != 0 {
+            // checks in here keeps both paths in lockstep. The CRC
+            // fallback covers FO76 / Starfield where the legacy u32
+            // fields are zero — see #712 / NIF-D4-01.
+            if is_two_sided_from_modern_shader_flags(
+                shader.shader_flags_1,
+                shader.shader_flags_2,
+                &shader.sf1_crcs,
+                &shader.sf2_crcs,
+            ) {
                 info.two_sided = true;
             }
             // Skyrim+/FO4 effect-shader decal path — same rationale as
             // the BSLightingShaderProperty branch above. See #414.
-            if is_decal_from_modern_shader_flags(shader.shader_flags_1, shader.shader_flags_2) {
+            if is_decal_from_modern_shader_flags(
+                shader.shader_flags_1,
+                shader.shader_flags_2,
+                &shader.sf1_crcs,
+                &shader.sf2_crcs,
+            ) {
                 info.is_decal = true;
             }
             // Capture the rich effect-shader fields (falloff cone,

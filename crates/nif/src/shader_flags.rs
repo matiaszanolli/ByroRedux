@@ -185,6 +185,101 @@ pub mod fo4_slsf2 {
     pub const REFRACTION_WRITES_DEPTH: u32 = 0x8000_0000;
 }
 
+/// FO76 / Starfield CRC32-hashed shader flag identifiers.
+///
+/// For `BSVER >= 132` the wire format replaces the `(u32, u32)` flag pair
+/// with two CRC32-tagged arrays (`SF1`/`SF2`). nif.xml defines
+/// `BSShaderCRC32` (lines 6520–6553) with the canonical u32 values for
+/// every recognised flag — sourcing the constants here directly from
+/// the spec means we don't need to compute CRC32 at runtime, and the
+/// values are pinned against any future drift.
+///
+/// The split between `SF1` and `SF2` arrays is purely a wire detail —
+/// the same `BSShaderCRC32` enum populates both, so consumers can search
+/// the union of both arrays for a target flag and stay correct.
+///
+/// Used by `BSLightingShaderProperty` / `BSEffectShaderProperty` /
+/// `BSWaterShaderProperty` / `BSSkyShaderProperty` per nif.xml lines
+/// 6590, 6647, 6701, 6714. Pre-#712 these values were parsed but no
+/// importer call site read them, so every FO76+ decal / two-sided /
+/// own-emit flag was silently dropped.
+pub mod bs_shader_crc32 {
+    /// `Decal` — bit-26 single-pass decal on legacy SLSF1.
+    pub const DECAL: u32 = 3849131744;
+    /// `Dynamic_Decal` — bit-27 runtime-spawned decal on legacy SLSF1.
+    pub const DYNAMIC_DECAL: u32 = 1576614759;
+    /// `Two_Sided` — replaces SLSF2 bit-4 `Double_Sided` at the CRC
+    /// layer. nif.xml uses `TWO_SIDED` (the underscored spelling) here;
+    /// the legacy bit was named `Double_Sided`. Same render semantic.
+    pub const TWO_SIDED: u32 = 759557230;
+    /// `Cast_Shadows` — Cast Shadows.
+    pub const CAST_SHADOWS: u32 = 1563274220;
+    /// `ZBuffer_Test` — Depth test enable.
+    pub const ZBUFFER_TEST: u32 = 1740048692;
+    /// `ZBuffer_Write` — Depth write enable.
+    pub const ZBUFFER_WRITE: u32 = 3166356979;
+    /// `Vertex_Colors` — Vertex-color modulation.
+    pub const VERTEX_COLORS: u32 = 348504749;
+    /// `PBR` — PBR pipeline path.
+    pub const PBR: u32 = 731263983;
+    /// `Skinned` — Skinned mesh.
+    pub const SKINNED: u32 = 3744563888;
+    /// `EnvMap` — Environment-map enable. (nif.xml: `ENVMAP`.)
+    pub const ENVMAP: u32 = 2893749418;
+    /// `Vertex_Alpha` — Vertex-alpha modulation.
+    pub const VERTEX_ALPHA: u32 = 2333069810;
+    /// `Face` — Face / FaceGen path.
+    pub const FACE: u32 = 314919375;
+    /// `Greyscale_To_Palette_Color` — palette-mapped colour.
+    pub const GRAYSCALE_TO_PALETTE_COLOR: u32 = 442246519;
+    /// `Hairtint` — hair-tint path.
+    pub const HAIRTINT: u32 = 1264105798;
+    /// `Skin_Tint` — skin-tint path.
+    pub const SKIN_TINT: u32 = 1483897208;
+    /// `Emit_Enabled` — Bethesda's CRC-era replacement for
+    /// `Own_Emit` (legacy SLSF1 bit 22).
+    pub const EMIT_ENABLED: u32 = 2262553490;
+    /// `Glowmap` — glow-map slot routing.
+    pub const GLOWMAP: u32 = 2399422528;
+    /// `Refraction`.
+    pub const REFRACTION: u32 = 1957349758;
+    /// `Refraction_Falloff`.
+    pub const REFRACTION_FALLOFF: u32 = 902349195;
+    /// `NoFade`.
+    pub const NOFADE: u32 = 2994043788;
+    /// `Inverted_Fade_Pattern`.
+    pub const INVERTED_FADE_PATTERN: u32 = 3030867718;
+    /// `RGB_Falloff`.
+    pub const RGB_FALLOFF: u32 = 3448946507;
+    /// `External_Emittance`.
+    pub const EXTERNAL_EMITTANCE: u32 = 2150459555;
+    /// `ModelSpaceNormals`.
+    pub const MODELSPACENORMALS: u32 = 2548465567;
+    /// `Transform_Changed`.
+    pub const TRANSFORM_CHANGED: u32 = 3196772338;
+    /// `Effect_Lighting`.
+    pub const EFFECT_LIGHTING: u32 = 3473438218;
+    /// `Falloff`.
+    pub const FALLOFF: u32 = 3980660124;
+    /// `Soft_Effect`.
+    pub const SOFT_EFFECT: u32 = 3503164976;
+    /// `Greyscale_To_Palette_Alpha` — palette-mapped alpha.
+    pub const GRAYSCALE_TO_PALETTE_ALPHA: u32 = 2901038324;
+    /// `Weapon_Blood` — weapon blood decals.
+    pub const WEAPON_BLOOD: u32 = 2078326675;
+    /// `LOD_Objects` — LOD object render path.
+    pub const LOD_OBJECTS: u32 = 2896726515;
+    /// `No_Exposure` — opt-out of auto-exposure (Starfield).
+    pub const NO_EXPOSURE: u32 = 3707406987;
+
+    /// `true` when any of the supplied CRC32 flag identifiers is in
+    /// `crcs`. Used by the importer to test SF1+SF2 union.
+    #[inline]
+    pub fn contains_any(crcs: &[u32], targets: &[u32]) -> bool {
+        crcs.iter().any(|c| targets.contains(c))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +336,75 @@ mod tests {
     #[test]
     fn fo4_shares_double_sided_bit_with_skyrim() {
         assert_eq!(fo4_slsf2::DOUBLE_SIDED, skyrim_slsf2::DOUBLE_SIDED);
+    }
+
+    /// #712 — pin the `BSShaderCRC32` constants against the literal
+    /// `value="..."` integers in nif.xml lines 6520-6553. The exact
+    /// algorithm Bethesda uses to derive these from flag-name strings
+    /// is opaque (probing with standard CRC-32/IEEE 802.3 over various
+    /// case-/prefix-/separator-permutations of the names produces no
+    /// match — it's not the documented IEEE polynomial). What matters
+    /// for correctness is that the values match the wire literals
+    /// Bethesda's tools emit, and nif.xml is the authority.
+    ///
+    /// This test exists so a future edit copy-pasting a wrong digit
+    /// fails immediately with a clear message instead of silently
+    /// dropping decal/two-sided detection on a subset of Starfield
+    /// content.
+    #[test]
+    fn bs_shader_crc32_matches_nif_xml_literals() {
+        // (constant, nif.xml line, literal value).
+        for (name, line, expected) in [
+            ("DECAL", 6532, 3849131744),
+            ("DYNAMIC_DECAL", 6533, 1576614759),
+            ("TWO_SIDED", 6524, 759557230),
+            ("CAST_SHADOWS", 6521, 1563274220),
+            ("ZBUFFER_TEST", 6522, 1740048692),
+            ("ZBUFFER_WRITE", 6523, 3166356979),
+            ("VERTEX_COLORS", 6525, 348504749),
+            ("SKINNED", 6527, 3744563888),
+            ("EMIT_ENABLED", 6536, 2262553490),
+            ("EXTERNAL_EMITTANCE", 6543, 2150459555),
+        ] {
+            let actual = match name {
+                "DECAL" => bs_shader_crc32::DECAL,
+                "DYNAMIC_DECAL" => bs_shader_crc32::DYNAMIC_DECAL,
+                "TWO_SIDED" => bs_shader_crc32::TWO_SIDED,
+                "CAST_SHADOWS" => bs_shader_crc32::CAST_SHADOWS,
+                "ZBUFFER_TEST" => bs_shader_crc32::ZBUFFER_TEST,
+                "ZBUFFER_WRITE" => bs_shader_crc32::ZBUFFER_WRITE,
+                "VERTEX_COLORS" => bs_shader_crc32::VERTEX_COLORS,
+                "SKINNED" => bs_shader_crc32::SKINNED,
+                "EMIT_ENABLED" => bs_shader_crc32::EMIT_ENABLED,
+                "EXTERNAL_EMITTANCE" => bs_shader_crc32::EXTERNAL_EMITTANCE,
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                actual, expected,
+                "{name} constant must match nif.xml line {line} literal {expected}",
+            );
+        }
+    }
+
+    #[test]
+    fn bs_shader_crc32_contains_any_finds_target() {
+        let crcs = [
+            bs_shader_crc32::SKINNED,
+            bs_shader_crc32::DECAL,
+            bs_shader_crc32::CAST_SHADOWS,
+        ];
+        assert!(bs_shader_crc32::contains_any(
+            &crcs,
+            &[bs_shader_crc32::DECAL]
+        ));
+        assert!(bs_shader_crc32::contains_any(
+            &crcs,
+            &[bs_shader_crc32::DYNAMIC_DECAL, bs_shader_crc32::DECAL]
+        ));
+        assert!(!bs_shader_crc32::contains_any(
+            &crcs,
+            &[bs_shader_crc32::TWO_SIDED]
+        ));
+        assert!(!bs_shader_crc32::contains_any(&[], &[bs_shader_crc32::DECAL]));
     }
 }
