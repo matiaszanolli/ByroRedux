@@ -520,6 +520,18 @@ pub fn create_blend_pipeline(
     Ok(pipelines[0])
 }
 
+/// Dynamic states declared by the UI pipeline. Cross-referenced by
+/// the overlay call site in `vulkan/context/draw.rs` so a future
+/// addition to this list trips a `const_assert` and forces the
+/// author to add the matching `cmd_set_*` defensive call. Depth /
+/// cull / depth-bias state on `pipeline_ui` is intentionally STATIC
+/// (off / off / NONE / off) — pipeline bind applies those values
+/// automatically, no per-bind cmd_set needed. See #663.
+pub const UI_PIPELINE_DYNAMIC_STATES: &[vk::DynamicState] = &[
+    vk::DynamicState::VIEWPORT,
+    vk::DynamicState::SCISSOR,
+];
+
 /// Creates the UI overlay pipeline (no depth, no lighting, alpha blend).
 ///
 /// Uses the same pipeline layout as the scene pipelines (set 0 = bindless
@@ -618,9 +630,19 @@ pub fn create_ui_pipeline(
         .attachments(&color_blend_attachment);
 
     // No DEPTH_BIAS — UI pipeline has depth_bias_enable(false).
-    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+    //
+    // **Contract** (#663). The UI overlay path in
+    // `vulkan/context/draw.rs` (post-`cmd_bind_pipeline(pipeline_ui)`)
+    // defensively re-sets every state in this list, then relies on
+    // pipeline_ui's STATIC depth/cull state to take effect on bind.
+    // If you add a state here, you MUST also extend the overlay path
+    // to `cmd_set_*` it — otherwise the new dynamic state will inherit
+    // whatever the last main-batch pipeline left set, which is a hard-
+    // to-reproduce visual bug. The `_UI_PIPELINE_DYNAMIC_STATES_LEN`
+    // const_assert at the call site fires at compile time when this
+    // list grows, forcing you to come read the contract.
     let dynamic_state =
-        vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        vk::PipelineDynamicStateCreateInfo::default().dynamic_states(UI_PIPELINE_DYNAMIC_STATES);
 
     let pipeline_info = [vk::GraphicsPipelineCreateInfo::default()
         .stages(&shader_stages)

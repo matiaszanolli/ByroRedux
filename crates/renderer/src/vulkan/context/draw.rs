@@ -1405,8 +1405,29 @@ impl VulkanContext {
             // UI overlay: draw a fullscreen quad with the Ruffle-rendered texture.
             // The UI instance was appended to gpu_instances before the bulk upload,
             // so it's already in the SSBO with a proper flush.
+            //
+            // CONTRACT (#663). Defensive `cmd_set_*` calls below cover
+            // every state in `UI_PIPELINE_DYNAMIC_STATES` so the UI
+            // overlay is decoupled from whatever dynamic-state values
+            // the last main-batch pipeline left set. Depth / cull /
+            // depth-bias state on `pipeline_ui` is STATIC and applied
+            // by the pipeline bind itself — no `cmd_set_*` is legal
+            // for those (validation would reject it). If you grow
+            // `UI_PIPELINE_DYNAMIC_STATES`, the const assertion below
+            // fires and you must add the matching `cmd_set_*` here
+            // before the draw.
             if let (Some(idx), Some(ui_quad)) = (ui_instance_idx, self.ui_quad_handle) {
                 if let Some(mesh) = self.mesh_registry.get(ui_quad) {
+                    use super::super::pipeline::UI_PIPELINE_DYNAMIC_STATES;
+                    const _UI_OVERLAY_DEFENSIVE_STATE_INVARIANT: () = {
+                        // Update the explicit cmd_set_* calls below to cover
+                        // every state in this list when the count changes.
+                        assert!(
+                            UI_PIPELINE_DYNAMIC_STATES.len() == 2,
+                            "UI overlay path covers VIEWPORT + SCISSOR only — \
+                             extend it before growing UI_PIPELINE_DYNAMIC_STATES",
+                        );
+                    };
                     self.device.cmd_bind_pipeline(
                         cmd,
                         vk::PipelineBindPoint::GRAPHICS,
