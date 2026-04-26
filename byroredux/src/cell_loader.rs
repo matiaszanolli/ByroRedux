@@ -354,10 +354,189 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     );
 }
 
-/// Load an interior cell by editor ID.
+/// Lowercase basename of a plugin path. Used as the global load-order
+/// key (case-insensitive on Bethesda content).
+fn plugin_basename_lc(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path)
+        .to_ascii_lowercase()
+}
+
+/// Build the [`FormIdRemap`] that turns this plugin's local FormIDs
+/// (top byte = mod-index in its own MASTERS list) into globally
+/// load-order-indexed FormIDs (top byte = position in the load order
+/// passed to the cell loader).
 ///
-/// Parses the ESM, finds the cell, loads all placed static objects from the BSA.
-pub fn load_cell(
+/// Returns `Err` when the plugin declares a master that isn't in the
+/// global load order — that's a load-order misconfiguration the
+/// caller must fix (ESMs must be loaded in order: every declared
+/// master must be present and earlier).
+///
+/// See M46.0 / #561 / #445.
+fn build_remap_for_plugin(
+    plugin_path: &str,
+    plugin_data: &[u8],
+    plugin_index: usize,
+    load_order: &[String],
+) -> anyhow::Result<esm::reader::FormIdRemap> {
+    let mut reader = esm::reader::EsmReader::new(plugin_data);
+    let header = reader
+        .read_file_header()
+        .map_err(|e| anyhow::anyhow!("Failed to read TES4 header for '{}': {}", plugin_path, e))?;
+
+    let master_indices: Vec<u8> = header
+        .master_files
+        .iter()
+        .map(|m| {
+            let m_lc = m.to_ascii_lowercase();
+            load_order
+                .iter()
+                .position(|name| name == &m_lc)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Plugin '{}' declares master '{}' which is not in the load order — \
+                         pass `--master {}` before `--esm`",
+                        plugin_path,
+                        m,
+                        m,
+                    )
+                })
+                .map(|i| i as u8)
+        })
+        .collect::<anyhow::Result<Vec<u8>>>()?;
+
+    Ok(esm::reader::FormIdRemap {
+        plugin_index: plugin_index as u8,
+        master_indices,
+    })
+}
+
+/// Parse a sequence of plugins in load order (masters first, main
+/// plugin last) and return a single merged `EsmCellIndex` plus the
+/// load-order plugin basenames.
+///
+/// Each plugin gets a [`FormIdRemap`] built against the global load
+/// order so cross-plugin REFRs land in the merged maps under their
+/// global FormIDs. Last-write-wins on key collisions per
+/// [`EsmCellIndex::merge_from`] — a DLC overriding a master cell or
+/// static record wins. See M46.0 / #561.
+fn parse_cell_indexes_in_load_order(
+    plugin_paths: &[&str],
+) -> anyhow::Result<(esm::cell::EsmCellIndex, Vec<String>)> {
+    let load_order: Vec<String> =
+        plugin_paths.iter().map(|p| plugin_basename_lc(p)).collect();
+
+    // Detect duplicates in the supplied load order — an easy CLI
+    // misconfig that would silently make the second copy override
+    // the first with itself.
+    {
+        let mut seen = std::collections::HashSet::with_capacity(load_order.len());
+        for name in &load_order {
+            if !seen.insert(name) {
+                return Err(anyhow::anyhow!(
+                    "Plugin '{}' appears twice in the load order — \
+                     a plugin can only be passed once",
+                    name
+                ));
+            }
+        }
+    }
+
+    let mut merged = esm::cell::EsmCellIndex::default();
+    for (idx, path) in plugin_paths.iter().enumerate() {
+        let bytes = std::fs::read(path)
+            .map_err(|e| anyhow::anyhow!("Failed to read ESM '{}': {}", path, e))?;
+        log::info!(
+            "Parsing plugin {}/{} '{}' ({:.1} MB) at load-order index {}…",
+            idx + 1,
+            plugin_paths.len(),
+            path,
+            bytes.len() as f64 / 1_048_576.0,
+            idx,
+        );
+        let remap = build_remap_for_plugin(path, &bytes, idx, &load_order)?;
+        let plugin_cells = esm::cell::parse_esm_cells_with_load_order(&bytes, Some(remap))?;
+        merged.merge_from(plugin_cells);
+    }
+    Ok((merged, load_order))
+}
+
+/// Resolve a FormID's mod-index byte to the owning plugin's basename.
+/// Used by the loud-fail diagnostic when a REFR's `base_form_id` is
+/// unresolved — the audit's #561 completeness item: "name the missing
+/// master" instead of silently rendering empty.
+fn plugin_for_form_id(form_id: u32, load_order: &[String]) -> Option<&str> {
+    let mod_index = (form_id >> 24) as usize;
+    load_order.get(mod_index).map(|s| s.as_str())
+}
+
+/// Same shape as [`parse_cell_indexes_in_load_order`] but uses the
+/// full `parse_esm_with_load_order` walker so the broader
+/// [`esm::records::EsmIndex`] (climates, weathers, items, NPCs, …)
+/// is available alongside the cell tables. Exterior loads need this
+/// for the `wrld → CLMT` and `CELL → WTHR` resolution paths the
+/// renderer's day-night arc consumes.
+fn parse_record_indexes_in_load_order(
+    plugin_paths: &[&str],
+) -> anyhow::Result<(esm::records::EsmIndex, Vec<String>)> {
+    let load_order: Vec<String> =
+        plugin_paths.iter().map(|p| plugin_basename_lc(p)).collect();
+    {
+        let mut seen = std::collections::HashSet::with_capacity(load_order.len());
+        for name in &load_order {
+            if !seen.insert(name) {
+                return Err(anyhow::anyhow!(
+                    "Plugin '{}' appears twice in the load order — \
+                     a plugin can only be passed once",
+                    name
+                ));
+            }
+        }
+    }
+    let mut merged = esm::records::EsmIndex::default();
+    for (idx, path) in plugin_paths.iter().enumerate() {
+        let bytes = std::fs::read(path)
+            .map_err(|e| anyhow::anyhow!("Failed to read ESM '{}': {}", path, e))?;
+        log::info!(
+            "Parsing plugin {}/{} '{}' ({:.1} MB) at load-order index {}…",
+            idx + 1,
+            plugin_paths.len(),
+            path,
+            bytes.len() as f64 / 1_048_576.0,
+            idx,
+        );
+        let remap = build_remap_for_plugin(path, &bytes, idx, &load_order)?;
+        let plugin_records =
+            esm::records::parse_esm_with_load_order(&bytes, Some(remap)).unwrap_or_else(|e| {
+                log::warn!("Record parse failed for '{}': {}", path, e);
+                esm::records::EsmIndex::default()
+            });
+        merged.merge_from(plugin_records);
+    }
+    Ok((merged, load_order))
+}
+
+/// Load an interior cell with explicit master plugins.
+///
+/// `masters` is an ordered list of master ESM paths (base game first,
+/// then any required DLC masters); `esm_path` is the main plugin
+/// being loaded (DLC or mod). Each plugin's FormIDs are remapped to
+/// global load-order indices before being merged into a single cell
+/// index, so cross-plugin REFRs (e.g. a Dawnguard interior placing a
+/// Skyrim.esm STAT) resolve correctly.
+///
+/// Pre-#561 the cell loader only accepted a single ESM and silently
+/// rendered empty interiors when REFRs pointed into a missing master.
+/// This entry point closes the audit's SK-D6-01 gap by threading
+/// `parse_esm_with_load_order` through the cell-loader pipeline.
+///
+/// On unresolved REFR `base_form_id` lookups, the warning summary now
+/// names the missing plugin so the failure mode is diagnosable
+/// instead of silent. See M46.0 / #561.
+pub fn load_cell_with_masters(
+    masters: &[String],
     esm_path: &str,
     cell_editor_id: &str,
     world: &mut World,
@@ -370,16 +549,15 @@ pub fn load_cell(
     // CellRoot stamped on it for later unload. See #372.
     let first_entity = world.next_entity_id();
 
-    // 1. Parse the ESM.
-    let esm_data = std::fs::read(esm_path)
-        .map_err(|e| anyhow::anyhow!("Failed to read ESM '{}': {}", esm_path, e))?;
-
-    log::info!(
-        "Parsing ESM '{}' ({:.1} MB)...",
-        esm_path,
-        esm_data.len() as f64 / 1_048_576.0
-    );
-    let index = esm::cell::parse_esm_cells(&esm_data)?;
+    // 1. Parse the ESM(s) into a single merged cell index. Empty
+    //    `masters` list reduces to single-plugin behaviour (FormIDs
+    //    pass through unchanged via the remap's self-reference path).
+    let plugin_paths: Vec<&str> = masters
+        .iter()
+        .map(|s| s.as_str())
+        .chain(std::iter::once(esm_path))
+        .collect();
+    let (index, load_order) = parse_cell_indexes_in_load_order(&plugin_paths)?;
 
     // 2. Find the cell.
     let cell_key = cell_editor_id.to_ascii_lowercase();
@@ -415,6 +593,7 @@ pub fn load_cell(
         tex_provider,
         mat_provider,
         &cell.editor_id,
+        &load_order,
     );
 
     log::info!("Cell lighting: {:?}", cell.lighting);
@@ -439,8 +618,13 @@ pub fn load_cell(
     })
 }
 
-/// Load a 3x3 grid of exterior cells from a worldspace.
-pub fn load_exterior_cells(
+/// Load a 3x3 grid of exterior cells from a worldspace, optionally
+/// across a multi-plugin load order. Same semantics as
+/// [`load_cell_with_masters`] — masters parsed first and merged into
+/// a unified EsmIndex via FormID load-order remap. Pass `&[]` for a
+/// single-plugin load. See M46.0 / #561.
+pub fn load_exterior_cells_with_masters(
+    masters: &[String],
     esm_path: &str,
     center_x: i32,
     center_y: i32,
@@ -454,25 +638,15 @@ pub fn load_exterior_cells(
     // See `load_cell` — same pattern for unload tracking (#372).
     let first_entity = world.next_entity_id();
 
-    let esm_data = std::fs::read(esm_path)
-        .map_err(|e| anyhow::anyhow!("Failed to read ESM '{}': {}", esm_path, e))?;
-
-    log::info!(
-        "Parsing ESM '{}' ({:.1} MB)...",
-        esm_path,
-        esm_data.len() as f64 / 1_048_576.0
-    );
-    // Single combined parse: `parse_esm` already calls `parse_esm_cells`
-    // internally for its `cells` field, so calling them separately ran a
-    // second full walk over the (potentially 500 MB) ESM buffer for no
-    // gain. Pre-#374 this triggered three "ESM parsed: ..." log lines
-    // per exterior load (1 from the standalone cell parse + 2 from the
-    // record parse's internal cell parse + record-walk pass) and added
-    // ~1.2 s of avoidable load stall on FNV.
-    let record_index = esm::records::parse_esm(&esm_data).unwrap_or_else(|e| {
-        log::warn!("Record parse failed: {e}");
-        esm::records::EsmIndex::default()
-    });
+    // Parse all plugins in load order with FormID remap. Empty
+    // `masters` reduces to single-plugin behaviour (the remap's
+    // self-reference path is a no-op).
+    let plugin_paths: Vec<&str> = masters
+        .iter()
+        .map(|s| s.as_str())
+        .chain(std::iter::once(esm_path))
+        .collect();
+    let (record_index, load_order) = parse_record_indexes_in_load_order(&plugin_paths)?;
     let index = &record_index.cells;
 
     // Find the best worldspace. Priority:
@@ -623,6 +797,7 @@ pub fn load_exterior_cells(
         tex_provider,
         mat_provider,
         &label,
+        &load_order,
     );
 
     // Camera spawn: use terrain height at the center cell's midpoint
@@ -1110,6 +1285,13 @@ struct RefLoadResult {
 }
 
 /// Shared reference-loading pipeline: resolve base forms, load NIFs, spawn entities.
+///
+/// `load_order` holds the global plugin basenames (lowercase) — used
+/// only to enrich the loud-fail diagnostic when a REFR's
+/// `base_form_id` doesn't resolve. Pass `&[]` for legacy single-plugin
+/// callers; the cell loader entry points (`load_cell_with_masters`,
+/// `load_exterior_cells_with_masters`) thread the real load order.
+/// See M46.0 / #561.
 fn load_references(
     refs: &[esm::cell::PlacedRef],
     index: &esm::cell::EsmCellIndex,
@@ -1118,6 +1300,7 @@ fn load_references(
     tex_provider: &TextureProvider,
     mut mat_provider: Option<&mut MaterialProvider>,
     label: &str,
+    load_order: &[String],
 ) -> RefLoadResult {
     let mut entity_count = 0;
     // Number of mesh-bearing entities (those that receive a
@@ -1461,7 +1644,11 @@ fn load_references(
         // toward leveled-list resolution.
         let sample_str = stat_miss_sample
             .iter()
-            .map(|id| format!("{:08X}", id))
+            .map(|id| {
+                let plugin = plugin_for_form_id(*id, load_order)
+                    .unwrap_or("???");
+                format!("{:08X} (from '{}')", id, plugin)
+            })
             .collect::<Vec<_>>()
             .join(", ");
         let truncation_marker = if (stat_miss_sample.len() as u32) < stat_miss {
@@ -1469,11 +1656,37 @@ fn load_references(
         } else {
             String::new()
         };
+        // #561 — when load_order has more than one plugin, also break
+        // down misses by plugin so the user can tell whether a missing
+        // master is the cause (top byte points at a plugin in the
+        // load order whose statics table is missing the FormID =
+        // unresolved cross-plugin override) vs. a leveled-list /
+        // dynamic-form target (top byte points at a loaded plugin
+        // whose statics table genuinely doesn't carry the form).
+        let plugin_breakdown = if load_order.len() > 1 {
+            let mut by_plugin: std::collections::HashMap<&str, u32> =
+                std::collections::HashMap::new();
+            for id in &stat_miss_sample {
+                let plugin = plugin_for_form_id(*id, load_order).unwrap_or("???");
+                *by_plugin.entry(plugin).or_insert(0) += 1;
+            }
+            let mut rows: Vec<_> = by_plugin.into_iter().collect();
+            rows.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+            let s = rows
+                .iter()
+                .map(|(p, n)| format!("{}={}", p, n))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(" — by plugin (in sample): {}", s)
+        } else {
+            String::new()
+        };
         log::warn!(
-            "  {} base forms not found in statics table (sample: {}{})",
+            "  {} base forms not found in statics table (sample: {}{}){}",
             stat_miss,
             sample_str,
             truncation_marker,
+            plugin_breakdown,
         );
     }
     if enable_skipped > 0 {
@@ -3390,5 +3603,51 @@ mod nif_light_spawn_gate_tests {
     fn empty_array_counts_zero() {
         let nif_lights: Vec<ImportedLight> = Vec::new();
         assert_eq!(count_spawnable_nif_lights(&nif_lights), 0);
+    }
+
+    // ── M46.0 / #561 multi-plugin helpers ─────────────────────────────
+
+    #[test]
+    fn plugin_basename_lc_strips_path_and_lowercases() {
+        assert_eq!(super::plugin_basename_lc("Skyrim.esm"), "skyrim.esm");
+        assert_eq!(
+            super::plugin_basename_lc("/some/abs/Path/Dawnguard.esm"),
+            "dawnguard.esm"
+        );
+        assert_eq!(
+            super::plugin_basename_lc("Update.ESM"),
+            "update.esm",
+            "Bethesda content uses case-insensitive plugin names"
+        );
+    }
+
+    #[test]
+    fn plugin_for_form_id_resolves_top_byte_to_load_order_basename() {
+        let load_order = vec![
+            "skyrim.esm".to_string(),
+            "update.esm".to_string(),
+            "dawnguard.esm".to_string(),
+        ];
+        // Top byte 0 → first plugin in the order.
+        assert_eq!(
+            super::plugin_for_form_id(0x0001_2345, &load_order),
+            Some("skyrim.esm")
+        );
+        assert_eq!(
+            super::plugin_for_form_id(0x0100_BEEF, &load_order),
+            Some("update.esm")
+        );
+        assert_eq!(
+            super::plugin_for_form_id(0x0200_DEAD, &load_order),
+            Some("dawnguard.esm")
+        );
+        // Out-of-range mod-index byte (e.g. malformed FormID, or a
+        // plugin not in the loaded order) returns None so the
+        // diagnostic can mark it as `???` instead of indexing past.
+        assert_eq!(
+            super::plugin_for_form_id(0xFF00_0000, &load_order),
+            None,
+            "out-of-range mod-index byte must return None, not panic"
+        );
     }
 }

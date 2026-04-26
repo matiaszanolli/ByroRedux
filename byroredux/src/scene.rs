@@ -91,11 +91,37 @@ pub(crate) fn setup_scene(
             .map(|s| parse_exterior_radius(s))
             .unwrap_or(3);
 
+        // #561 — repeatable `--master <path>` arg. Order matters:
+        // base masters first, then any required intermediate masters
+        // (Update.esm before Dawnguard.esm), and finally the main
+        // ESM via `--esm`. Each `--master` is collected in CLI order;
+        // the cell loader's `_with_masters` entry points compose the
+        // global load order as `[masters…, esm]` and parse each plugin
+        // with the appropriate FormID remap so a DLC interior REFR
+        // placing a base-game STAT resolves cleanly. Without this,
+        // Dawnguard / HearthFires / Dragonborn interiors render
+        // empty silently. See M46.0.
+        let masters: Vec<String> = args
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| {
+                if a == "--master" {
+                    args.get(i + 1).cloned()
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !masters.is_empty() {
+            log::info!("Load order: masters={:?}, main='{:?}'", masters, esm_path);
+        }
+
         if let (Some(ref esm_path), Some(ref cell_id)) = (&esm_path, &cell_id) {
             // Interior cell mode
             let tex_provider = build_texture_provider(&args);
             let mut mat_provider = build_material_provider(&args);
-            match cell_loader::load_cell(
+            match cell_loader::load_cell_with_masters(
+                &masters,
                 esm_path,
                 cell_id,
                 world,
@@ -165,7 +191,8 @@ pub(crate) fn setup_scene(
             // units view distance). Overridable via `--radius N`,
             // clamped to 1..=7 so worst-case is a 15×15 = 225 cell
             // stress load. See #531.
-            match cell_loader::load_exterior_cells(
+            match cell_loader::load_exterior_cells_with_masters(
+                &masters,
                 esm_path,
                 cx,
                 cy,

@@ -199,6 +199,63 @@ impl EsmIndex {
             + self.cells.cells.len()
             + self.cells.statics.len()
     }
+
+    /// Merge `other` into `self` with **later-plugin-wins** semantics
+    /// — the canonical Bethesda load-order rule. A DLC ESM that
+    /// redefines a base-game form's STAT, item, NPC, or cell record
+    /// overrides the master's entry; cells / statics defined only in
+    /// the master pass through.
+    ///
+    /// Callers parse plugins in load order (masters first, main ESM
+    /// last) and call `merge_from` on each successive parse so the
+    /// final `EsmIndex` resolves cross-plugin REFRs and applies
+    /// override layers in the right order.
+    ///
+    /// HashMap::extend already implements last-write-wins on key
+    /// collisions, which exactly matches the load-order semantics; we
+    /// just need to thread it through every map. The exterior-cells
+    /// nested map merges per-worldspace so a DLC adding a new
+    /// worldspace doesn't stomp the base game's entry. See M46.0 / #561.
+    pub fn merge_from(&mut self, other: EsmIndex) {
+        // Nested cell index — needs per-worldspace handling.
+        self.cells.merge_from(other.cells);
+
+        // Top-level record maps — last-write-wins per HashMap::extend.
+        self.items.extend(other.items);
+        self.containers.extend(other.containers);
+        self.leveled_items.extend(other.leveled_items);
+        self.leveled_npcs.extend(other.leveled_npcs);
+        self.leveled_creatures.extend(other.leveled_creatures);
+        self.npcs.extend(other.npcs);
+        self.creatures.extend(other.creatures);
+        self.races.extend(other.races);
+        self.classes.extend(other.classes);
+        self.factions.extend(other.factions);
+        self.globals.extend(other.globals);
+        self.game_settings.extend(other.game_settings);
+        self.weathers.extend(other.weathers);
+        self.climates.extend(other.climates);
+        self.scripts.extend(other.scripts);
+        self.waters.extend(other.waters);
+        self.navi_info.extend(other.navi_info);
+        self.navmeshes.extend(other.navmeshes);
+        self.regions.extend(other.regions);
+        self.encounter_zones.extend(other.encounter_zones);
+        self.lighting_templates.extend(other.lighting_templates);
+        self.head_parts.extend(other.head_parts);
+        self.eyes.extend(other.eyes);
+        self.hair.extend(other.hair);
+        self.packages.extend(other.packages);
+        self.quests.extend(other.quests);
+        self.dialogues.extend(other.dialogues);
+        self.messages.extend(other.messages);
+        self.perks.extend(other.perks);
+        self.spells.extend(other.spells);
+        self.magic_effects.extend(other.magic_effects);
+        self.actor_values.extend(other.actor_values);
+        self.activators.extend(other.activators);
+        self.terminals.extend(other.terminals);
+    }
 }
 
 /// Parse an entire ESM/ESP file in a single pass.

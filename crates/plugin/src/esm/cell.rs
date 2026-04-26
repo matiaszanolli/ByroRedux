@@ -549,6 +549,43 @@ pub struct EsmCellIndex {
     pub material_swaps: HashMap<u32, super::records::MaterialSwapRecord>,
 }
 
+impl EsmCellIndex {
+    /// Merge `other` into `self` with last-write-wins semantics on
+    /// every map. Mirrors `EsmIndex::merge_from`'s contract — the
+    /// caller parses plugins in load order and folds each into the
+    /// running index.
+    ///
+    /// Interior cells (`HashMap<String, _>`) and exterior_cells
+    /// (`HashMap<String, HashMap<(i32,i32), _>>`) need slightly
+    /// different treatment than the flat record maps:
+    ///
+    /// * Interior cells just `extend` — DLC redefining a base cell
+    ///   wins the entire CellData (REFRs, lighting, water level).
+    /// * Exterior cells merge per-worldspace so a DLC adding a new
+    ///   worldspace doesn't stomp the base game's exterior table.
+    ///   Within a shared worldspace, per-(x, y) overrides apply.
+    ///
+    /// See M46.0 / #561.
+    pub fn merge_from(&mut self, other: EsmCellIndex) {
+        self.cells.extend(other.cells);
+
+        for (worldspace, grids) in other.exterior_cells {
+            self.exterior_cells
+                .entry(worldspace)
+                .or_default()
+                .extend(grids);
+        }
+
+        self.statics.extend(other.statics);
+        self.landscape_textures.extend(other.landscape_textures);
+        self.worldspace_climates.extend(other.worldspace_climates);
+        self.texture_sets.extend(other.texture_sets);
+        self.scols.extend(other.scols);
+        self.packins.extend(other.packins);
+        self.material_swaps.extend(other.material_swaps);
+    }
+}
+
 /// Parse an ESM file and extract cells, worldspaces, and base object definitions.
 pub fn parse_esm_cells(data: &[u8]) -> Result<EsmCellIndex> {
     parse_esm_cells_with_load_order(data, None)
@@ -4423,5 +4460,138 @@ mod tests {
             r.ownership.is_none(),
             "XRNK + XGLB without XOWN must NOT synthesize a partial tuple"
         );
+    }
+
+    // ── M46.0 / #561 EsmCellIndex::merge_from regression guards ───────
+    //
+    // Cell-side last-write-wins semantics on every map, with the
+    // exterior_cells nested map merging per-worldspace so a DLC
+    // adding a new worldspace doesn't stomp the base game's table.
+
+    fn make_static(form_id: u32, model: &str) -> StaticObject {
+        StaticObject {
+            form_id,
+            editor_id: String::new(),
+            model_path: model.to_string(),
+            light_data: None,
+            addon_data: None,
+            has_script: false,
+        }
+    }
+
+    fn make_interior_cell(form_id: u32, edid: &str) -> CellData {
+        CellData {
+            form_id,
+            editor_id: edid.to_string(),
+            references: Vec::new(),
+            is_interior: true,
+            grid: None,
+            lighting: None,
+            landscape: None,
+            water_height: None,
+            image_space_form: None,
+            water_type_form: None,
+            acoustic_space_form: None,
+            music_type_form: None,
+            location_form: None,
+            regions: Vec::new(),
+            ownership: None,
+        }
+    }
+
+    #[test]
+    fn merge_from_extends_disjoint_statics_and_cells() {
+        // Master plugin contributes one cell + one static; child
+        // plugin contributes a disjoint pair. Merge → both visible.
+        let mut master = EsmCellIndex::default();
+        master
+            .statics
+            .insert(0x0001_0001, make_static(0x0001_0001, "master/wall.nif"));
+        master
+            .cells
+            .insert("homecell".into(), make_interior_cell(0x0001_AAAA, "HomeCell"));
+
+        let mut child = EsmCellIndex::default();
+        child
+            .statics
+            .insert(0x0002_0001, make_static(0x0002_0001, "child/door.nif"));
+        child.cells.insert(
+            "newcell".into(),
+            make_interior_cell(0x0002_BBBB, "NewCell"),
+        );
+
+        master.merge_from(child);
+
+        assert_eq!(master.statics.len(), 2);
+        assert_eq!(master.cells.len(), 2);
+        assert_eq!(
+            master.statics.get(&0x0001_0001).unwrap().model_path,
+            "master/wall.nif"
+        );
+        assert_eq!(
+            master.statics.get(&0x0002_0001).unwrap().model_path,
+            "child/door.nif"
+        );
+    }
+
+    #[test]
+    fn merge_from_later_plugin_wins_on_overlapping_statics() {
+        // Both master and child define the same FormID. Bethesda
+        // load-order semantics: child overrides master.
+        let mut master = EsmCellIndex::default();
+        master
+            .statics
+            .insert(0x0001_0001, make_static(0x0001_0001, "master/v1.nif"));
+
+        let mut child = EsmCellIndex::default();
+        child
+            .statics
+            .insert(0x0001_0001, make_static(0x0001_0001, "child/v2.nif"));
+
+        master.merge_from(child);
+
+        assert_eq!(master.statics.len(), 1);
+        assert_eq!(
+            master.statics.get(&0x0001_0001).unwrap().model_path,
+            "child/v2.nif",
+            "child plugin must override master's STAT (last-write-wins)"
+        );
+    }
+
+    #[test]
+    fn merge_from_exterior_cells_merge_per_worldspace() {
+        // Master defines Tamriel grid (0,0); child defines Tamriel
+        // grid (1,0) AND a new "soulcairn" worldspace. Both Tamriel
+        // entries must coexist; soulcairn lands as a new key.
+        let mut master = EsmCellIndex::default();
+        master
+            .exterior_cells
+            .entry("tamriel".into())
+            .or_default()
+            .insert((0, 0), make_interior_cell(0x0001_C000, "Tamriel00"));
+
+        let mut child = EsmCellIndex::default();
+        child
+            .exterior_cells
+            .entry("tamriel".into())
+            .or_default()
+            .insert((1, 0), make_interior_cell(0x0002_C001, "Tamriel10"));
+        child
+            .exterior_cells
+            .entry("soulcairn".into())
+            .or_default()
+            .insert(
+                (0, 0),
+                make_interior_cell(0x0002_D000, "SoulCairn00"),
+            );
+
+        master.merge_from(child);
+
+        assert_eq!(master.exterior_cells.len(), 2);
+        let tam = master.exterior_cells.get("tamriel").unwrap();
+        assert_eq!(tam.len(), 2, "DLC adding tamriel grid (1,0) must NOT stomp master's grid (0,0)");
+        assert!(tam.contains_key(&(0, 0)));
+        assert!(tam.contains_key(&(1, 0)));
+        assert!(master.exterior_cells.contains_key("soulcairn"));
     }
 }
