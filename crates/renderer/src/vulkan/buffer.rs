@@ -363,6 +363,13 @@ pub struct GpuBuffer {
     // Fixed at bind time — querying it per flush cost ~5–15 µs/frame
     // across the ~10 per-frame mapped writes (#498).
     is_coherent: bool,
+    /// Stashed at construction so `Drop` can self-free if the
+    /// canonical `destroy(device, allocator)` path is missed.
+    /// `ash::Device` is `Arc`-backed and `SharedAllocator` is already
+    /// `Arc<Mutex<…>>`, so cloning is cheap. Sibling fix to
+    /// `Texture` (#656) — same release-build leak otherwise.
+    device: ash::Device,
+    allocator: SharedAllocator,
 }
 
 impl GpuBuffer {
@@ -486,6 +493,8 @@ impl GpuBuffer {
             size,
             allocation: Some(allocation),
             is_coherent,
+            device: device.clone(),
+            allocator: allocator.clone(),
         })
     }
 
@@ -538,6 +547,8 @@ impl GpuBuffer {
             // DEVICE_LOCAL without HOST_VISIBLE is never mapped; flush paths
             // don't run on it. Value is inert.
             is_coherent: false,
+            device: device.clone(),
+            allocator: allocator.clone(),
         })
     }
 
@@ -827,15 +838,44 @@ impl GpuBuffer {
             allocation: Some(allocation),
             // DEVICE_LOCAL staging target — never mapped by the owner.
             is_coherent: false,
+            device: device.clone(),
+            allocator: allocator.clone(),
         })
     }
 }
 
 impl Drop for GpuBuffer {
+    /// Safety net mirroring `Texture::Drop` (#656). When the canonical
+    /// path called `destroy(device, allocator)`, `allocation` is None
+    /// and Drop is a no-op. When something escapes the canonical
+    /// destroy chain (panic, ad-hoc construction, future code path)
+    /// Drop self-cleans using the stashed handles. Pre-fix release
+    /// builds dropped the `Allocation` on the floor and leaked the
+    /// VkBuffer plus the gpu_allocator slab.
     fn drop(&mut self) {
-        if self.allocation.is_some() {
-            log::warn!("GpuBuffer dropped without destroy() — VkBuffer and GPU allocation leaked");
-            debug_assert!(false, "GpuBuffer leaked: call destroy() before dropping");
+        if self.allocation.is_none() {
+            return;
+        }
+        log::warn!(
+            "GpuBuffer dropped without destroy() — running cleanup from Drop (#656 safety net)",
+        );
+        debug_assert!(false, "GpuBuffer leaked into Drop: call destroy() first");
+        unsafe {
+            self.device.destroy_buffer(self.buffer, None);
+        }
+        if let Some(alloc) = self.allocation.take() {
+            match self.allocator.lock() {
+                Ok(mut a) => {
+                    if let Err(e) = a.free(alloc) {
+                        log::error!("GpuBuffer::Drop failed to free allocation: {e}");
+                    }
+                }
+                Err(_) => {
+                    log::error!(
+                        "GpuBuffer::Drop saw a poisoned allocator mutex — slab leaks deliberately to avoid double-panic",
+                    );
+                }
+            }
         }
     }
 }

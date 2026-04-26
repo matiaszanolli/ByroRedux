@@ -13,6 +13,19 @@ pub struct Texture {
     pub image_view: vk::ImageView,
     pub sampler: vk::Sampler,
     allocation: Option<vk_alloc::Allocation>,
+    /// Stashed at construction so `Drop` can self-free if `destroy()`
+    /// was missed — the canonical lifecycle is still
+    /// `TextureRegistry::tick_deferred_destroy` calling `destroy()`
+    /// after the safe MAX_FRAMES_IN_FLIGHT delay, but textures that
+    /// escape the registry (panic mid-cell-load, direct-construction
+    /// callers, future code paths) now release their VkImage,
+    /// VkImageView, and gpu_allocator slab via Drop instead of
+    /// silently leaking. Cloning is cheap: `ash::Device` is a thin
+    /// `Arc`-backed handle and `SharedAllocator` is already
+    /// `Arc<Mutex<…>>`. Sampler is shared and owned elsewhere
+    /// (`TextureRegistry`) so neither path touches it. #656.
+    device: ash::Device,
+    allocator: SharedAllocator,
 }
 
 impl Texture {
@@ -264,6 +277,8 @@ impl Texture {
             image_view,
             sampler,
             allocation: Some(image_alloc),
+            device: device.clone(),
+            allocator: allocator.clone(),
         })
     }
 
@@ -528,6 +543,8 @@ impl Texture {
             image_view,
             sampler,
             allocation: Some(image_alloc),
+            device: device.clone(),
+            allocator: allocator.clone(),
         })
     }
 
@@ -596,12 +613,50 @@ impl Texture {
 }
 
 impl Drop for Texture {
+    /// Safety net: when `TextureRegistry::tick_deferred_destroy`
+    /// already called `destroy()`, `allocation` is `None` and this
+    /// path is a no-op. When the registry path is bypassed (panic
+    /// mid-cell-load, direct ad-hoc Texture, etc.) Drop self-cleans
+    /// using the stashed device + allocator handles instead of
+    /// silently leaking VkImage / VkImageView and the gpu_allocator
+    /// slab. Sampler is shared (owned by `TextureRegistry`) so neither
+    /// path touches it. Pre-#656 release builds dropped the
+    /// allocation handle on the floor — `gpu_allocator::Allocation::Drop`
+    /// does not free, the slab kept the bytes, and every escaped
+    /// Texture leaked four resources. The debug assertion is
+    /// preserved as a louder signal in dev builds: hitting Drop with
+    /// `allocation = Some` still indicates a missed destroy() in the
+    /// canonical path and is worth investigating, even though Drop
+    /// now releases the resources cleanly.
     fn drop(&mut self) {
-        if self.allocation.is_some() {
-            log::warn!(
-                "Texture dropped without destroy() — VkImage, VkImageView, VkSampler, and GPU allocation leaked"
-            );
-            debug_assert!(false, "Texture leaked: call destroy() before dropping");
+        if self.allocation.is_none() {
+            return;
+        }
+        log::warn!(
+            "Texture dropped without destroy() — running cleanup from Drop (#656 safety net)",
+        );
+        debug_assert!(false, "Texture leaked into Drop: call destroy() first");
+        unsafe {
+            self.device.destroy_image_view(self.image_view, None);
+            self.device.destroy_image(self.image, None);
+        }
+        if let Some(alloc) = self.allocation.take() {
+            // Drop must not panic. Surface allocator failures as
+            // log::error! and leak quietly rather than blowing up the
+            // process from a destructor (e.g. on a poisoned mutex
+            // during a panic unwind).
+            match self.allocator.lock() {
+                Ok(mut a) => {
+                    if let Err(e) = a.free(alloc) {
+                        log::error!("Texture::Drop failed to free allocation: {e}");
+                    }
+                }
+                Err(_) => {
+                    log::error!(
+                        "Texture::Drop saw a poisoned allocator mutex — slab leaks deliberately to avoid double-panic",
+                    );
+                }
+            }
         }
     }
 }
