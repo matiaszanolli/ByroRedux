@@ -4,6 +4,7 @@
 
 use super::helpers::{read_form_id, read_form_id_array, read_zstring};
 use super::*;
+use crate::esm::sub_reader::SubReader;
 
 /// Walk the CELL group hierarchy to find interior cells and their placed references.
 pub(super) fn parse_cell_group(
@@ -69,18 +70,13 @@ pub(super) fn parse_cell_group(
                     match &sub.sub_type {
                         b"EDID" => editor_id = read_zstring(&sub.data),
                         b"DATA" if sub.data.len() >= 1 => is_interior = sub.data[0] & 1 != 0,
-                        b"XCLW" if sub.data.len() >= 4 => {
+                        b"XCLW" => {
                             // XCLW: f32 water plane height in world units
                             // (Z-up). Same layout across Oblivion / FO3 / FNV
                             // / Skyrim — the cell's water surface sits at
                             // this Z (interior) or Z-in-worldspace (exterior).
                             // See #397 / #356.
-                            water_height = Some(f32::from_le_bytes([
-                                sub.data[0],
-                                sub.data[1],
-                                sub.data[2],
-                                sub.data[3],
-                            ]));
+                            water_height = SubReader::new(&sub.data).f32().ok();
                         }
                         // Skyrim extended CELL sub-records (#356). Each is
                         // a 4-byte FormID; the walker previously dropped
@@ -99,104 +95,55 @@ pub(super) fn parse_cell_group(
                         // XGLB global-variable FormID. Same shape on
                         // CELL + REFR. Cross-game (Oblivion / FO3 /
                         // FNV / Skyrim+).
-                        b"XOWN" if sub.data.len() >= 4 => {
+                        b"XOWN" => {
                             ownership_owner = read_form_id(&sub.data);
                         }
-                        b"XRNK" if sub.data.len() >= 4 => {
-                            ownership_rank = Some(i32::from_le_bytes([
-                                sub.data[0],
-                                sub.data[1],
-                                sub.data[2],
-                                sub.data[3],
-                            ]));
+                        b"XRNK" => {
+                            ownership_rank = SubReader::new(&sub.data).i32().ok();
                         }
-                        b"XGLB" if sub.data.len() >= 4 => {
+                        b"XGLB" => {
                             ownership_global = read_form_id(&sub.data);
                         }
                         b"XCLL" if sub.data.len() >= 28 => {
-                            // XCLL layout (shared prefix for all games):
-                            //   0-3:   Ambient RGBA (byte 0=R, 1=G, 2=B, 3=unused)
-                            //   4-7:   Directional RGBA
-                            //   8-11:  Fog color near RGBA
-                            //   12-15: Fog near (f32)
-                            //   16-19: Fog far (f32)
-                            //   20-23: Directional rotation X (i32, degrees)
-                            //   24-27: Directional rotation Y (i32, degrees)
+                            // XCLL layout (shared 28-byte prefix across all games):
+                            //   ambient RGBA, directional RGBA, fog-near RGBA
+                            //   fog_near f32, fog_far f32
+                            //   directional rotation X (i32, degrees)
+                            //   directional rotation Y (i32, degrees)
                             //
-                            // Oblivion: 36 bytes. FNV: 40 bytes.
-                            // Skyrim+: 92 bytes with extended fields.
-                            // Detect by length — unambiguous.
+                            // Oblivion stops at 36 bytes (no extended tail).
+                            // FNV adds 12 bytes — dir_fade / fog_clip /
+                            // fog_power. Skyrim+ extends to 92 bytes with
+                            // the 6×RGBA ambient cube + specular + extended
+                            // fog + light fade range. Two separate gates
+                            // mirror the on-disk shape (#379).
                             //
-                            // Byte order is RGB (not D3DCOLOR/BGR): xEdit
-                            // defines XCLL color fields as (Red, Green, Blue,
-                            // Unknown). This matches the LIGH DATA byte order
-                            // after the #389 revert. A dim cool-blue ambient
-                            // on a saloon interior is correct — the warm look
-                            // comes from the placed LIGH oil-lanterns, not
-                            // from the cell fill.
-                            let d = &sub.data;
-                            let ambient = [
-                                d[0] as f32 / 255.0,
-                                d[1] as f32 / 255.0,
-                                d[2] as f32 / 255.0,
-                            ];
-                            let directional_color = [
-                                d[4] as f32 / 255.0,
-                                d[5] as f32 / 255.0,
-                                d[6] as f32 / 255.0,
-                            ];
-                            let rot_x = {
-                                let raw = i32::from_le_bytes([d[20], d[21], d[22], d[23]]);
-                                (raw as f32).to_radians()
-                            };
-                            let rot_y = {
-                                let raw = i32::from_le_bytes([d[24], d[25], d[26], d[27]]);
-                                (raw as f32).to_radians()
-                            };
-                            // Fog fields land in bytes 8..20, always
-                            // present under the outer `>= 28` gate. Pre-#483
-                            // a redundant `if d.len() >= 20` nested here
-                            // with a dead-code `else` branch that couldn't
-                            // be reached (the outer gate already proves
-                            // `len >= 28 > 20`). See FNV-2-L3.
-                            // RGB byte order (bytes 8=R, 9=G, 10=B).
-                            let fog_color = [
-                                d[8] as f32 / 255.0,
-                                d[9] as f32 / 255.0,
-                                d[10] as f32 / 255.0,
-                            ];
-                            let fog_near = f32::from_le_bytes([d[12], d[13], d[14], d[15]]);
-                            let fog_far = f32::from_le_bytes([d[16], d[17], d[18], d[19]]);
+                            // Byte order in colour fields is RGB, not
+                            // BGR/D3DCOLOR; the 4th byte is unused padding
+                            // — xEdit defines XCLL colours as (Red, Green,
+                            // Blue, Unknown). The cool-blue saloon ambient
+                            // is correct; warmth comes from placed LIGH
+                            // oil-lanterns, not from the cell fill.
+                            // See #389 / FNV-2-L3.
+                            let mut r = SubReader::new(&sub.data);
+                            let ambient = r.rgb_color().unwrap_or([0.0; 3]);
+                            let directional_color = r.rgb_color().unwrap_or([0.0; 3]);
+                            let fog_color = r.rgb_color().unwrap_or([0.0; 3]);
+                            let fog_near = r.f32_or_default();
+                            let fog_far = r.f32_or_default();
+                            let rot_x = (r.i32_or_default() as f32).to_radians();
+                            let rot_y = (r.i32_or_default() as f32).to_radians();
 
-                            // XCLL extended layout — per UESP + Gamebryo 2.3
-                            // `NiDirectionalLight` source + nif.xml:
-                            //   28-31: Directional fade (f32)      — FNV + Skyrim
-                            //   32-35: Fog clip distance (f32)     — FNV + Skyrim
-                            //   36-39: Fog power (f32)             — FNV + Skyrim
-                            //   40-63: Directional ambient 6×RGBA  — Skyrim only
-                            //   64-67: Specular color RGBA         — Skyrim only
-                            //   68-71: Fresnel power (f32)         — Skyrim only
-                            //   72-75: Fog far color RGBA          — Skyrim only
-                            //   76-79: Fog max (f32)               — Skyrim only
-                            //   80-83: Light fade begin (f32)      — Skyrim only
-                            //   84-87: Light fade end (f32)        — Skyrim only
-                            //   88-91: Inherits flags (u32, unused)
-                            //
-                            // FNV XCLL is 40 bytes — it carries `dir_fade`,
-                            // `fog_clip`, `fog_power` in the 28..40 tail. Pre-
-                            // #379 the whole block 28-87 was gated on `>= 92`
-                            // so FNV cells reported all three as `None` and
-                            // the renderer fell back to a flat 0.6× fill.
-                            // Two separate gates now mirror the on-disk shape.
-                            let (dir_fade, fog_clip, fog_power) = if d.len() >= 40 {
+                            let (dir_fade, fog_clip, fog_power) = if sub.data.len() >= 40 {
                                 (
-                                    Some(f32::from_le_bytes([d[28], d[29], d[30], d[31]])),
-                                    Some(f32::from_le_bytes([d[32], d[33], d[34], d[35]])),
-                                    Some(f32::from_le_bytes([d[36], d[37], d[38], d[39]])),
+                                    Some(r.f32_or_default()),
+                                    Some(r.f32_or_default()),
+                                    Some(r.f32_or_default()),
                                 )
                             } else {
                                 (None, None, None)
                             };
+
                             let (
                                 directional_ambient,
                                 specular_color,
@@ -206,36 +153,24 @@ pub(super) fn parse_cell_group(
                                 fog_max,
                                 lf_begin,
                                 lf_end,
-                            ) = if d.len() >= 92 {
-                                // Unpack the 6 × RGBA ambient cube (#367). RGB
-                                // byte order (o=R, o+1=G, o+2=B); the alpha/
-                                // padding byte at o+3 is ignored.
+                            ) = if sub.data.len() >= 92 {
+                                // 6 × RGBA ambient cube (#367) — alpha pad
+                                // discarded. Specular's 4th byte IS used as
+                                // an alpha (handled below).
                                 let mut ambient_cube = [[0.0f32; 3]; 6];
-                                for (face, out) in ambient_cube.iter_mut().enumerate() {
-                                    let o = 40 + face * 4;
-                                    *out = [
-                                        d[o] as f32 / 255.0,
-                                        d[o + 1] as f32 / 255.0,
-                                        d[o + 2] as f32 / 255.0,
-                                    ];
+                                for face in &mut ambient_cube {
+                                    *face = r.rgb_color().unwrap_or([0.0; 3]);
                                 }
+                                let spec = r.rgba_color().unwrap_or([0.0; 4]);
                                 (
                                     Some(ambient_cube),
-                                    Some([
-                                        d[64] as f32 / 255.0,
-                                        d[65] as f32 / 255.0,
-                                        d[66] as f32 / 255.0,
-                                    ]),
-                                    Some(d[67] as f32 / 255.0),
-                                    Some(f32::from_le_bytes([d[68], d[69], d[70], d[71]])),
-                                    Some([
-                                        d[72] as f32 / 255.0,
-                                        d[73] as f32 / 255.0,
-                                        d[74] as f32 / 255.0,
-                                    ]),
-                                    Some(f32::from_le_bytes([d[76], d[77], d[78], d[79]])),
-                                    Some(f32::from_le_bytes([d[80], d[81], d[82], d[83]])),
-                                    Some(f32::from_le_bytes([d[84], d[85], d[86], d[87]])),
+                                    Some([spec[0], spec[1], spec[2]]),
+                                    Some(spec[3]),
+                                    Some(r.f32_or_default()),
+                                    Some(r.rgb_color().unwrap_or([0.0; 3])),
+                                    Some(r.f32_or_default()),
+                                    Some(r.f32_or_default()),
+                                    Some(r.f32_or_default()),
                                 )
                             } else {
                                 (None, None, None, None, None, None, None, None)
@@ -352,42 +287,19 @@ pub(super) fn parse_refr_group(
             let mut ownership_rank: Option<i32> = None;
             let mut ownership_global: Option<u32> = None;
 
-            // Helpers to decode LE values from sub-record slices. Kept
-            // local so the REFR match arm doesn't sprout u32 / f32
-            // shuffling at each new sub-type.
-            let read_u32 = |bytes: &[u8], off: usize| -> u32 {
-                u32::from_le_bytes([
-                    bytes[off],
-                    bytes[off + 1],
-                    bytes[off + 2],
-                    bytes[off + 3],
-                ])
-            };
-            let read_f32 = |bytes: &[u8], off: usize| -> f32 {
-                f32::from_le_bytes([
-                    bytes[off],
-                    bytes[off + 1],
-                    bytes[off + 2],
-                    bytes[off + 3],
-                ])
-            };
-
             for sub in &subs {
+                let mut r = SubReader::new(&sub.data);
                 match &sub.sub_type {
-                    b"NAME" if sub.data.len() >= 4 => {
-                        base_form_id = read_u32(&sub.data, 0);
+                    b"NAME" => {
+                        base_form_id = r.u32_or_default();
                     }
                     b"DATA" if sub.data.len() >= 24 => {
                         // 6 floats: posX, posY, posZ, rotX, rotY, rotZ
-                        for i in 0..3 {
-                            position[i] = read_f32(&sub.data, i * 4);
-                        }
-                        for i in 0..3 {
-                            rotation[i] = read_f32(&sub.data, 12 + i * 4);
-                        }
+                        position = r.f32_array::<3>().unwrap_or([0.0; 3]);
+                        rotation = r.f32_array::<3>().unwrap_or([0.0; 3]);
                     }
-                    b"XSCL" if sub.data.len() >= 4 => {
-                        scale = read_f32(&sub.data, 0);
+                    b"XSCL" => {
+                        scale = r.f32().unwrap_or(1.0);
                     }
                     // XESP — enable-parent gating (Skyrim+). 4-byte
                     // parent FormID + 1-byte flags; bit 0 = inverted.
@@ -396,8 +308,8 @@ pub(super) fn parse_refr_group(
                     // load; the cell loader now skips these via
                     // `enable_parent.default_disabled()`.
                     b"XESP" if sub.data.len() >= 5 => {
-                        let form_id = read_u32(&sub.data, 0);
-                        let inverted = sub.data[4] & 1 != 0;
+                        let form_id = r.u32_or_default();
+                        let inverted = r.u8_or_default() & 1 != 0;
                         enable_parent = Some(EnableParent { form_id, inverted });
                     }
                     // XTEL — Teleport destination (doors). Layout per
@@ -408,17 +320,9 @@ pub(super) fn parse_refr_group(
                     // same as Skyrim/FO4. Pre-#412 every interior door
                     // was dead on activation.
                     b"XTEL" if sub.data.len() >= 28 => {
-                        let destination = read_u32(&sub.data, 0);
-                        let dest_pos = [
-                            read_f32(&sub.data, 4),
-                            read_f32(&sub.data, 8),
-                            read_f32(&sub.data, 12),
-                        ];
-                        let dest_rot = [
-                            read_f32(&sub.data, 16),
-                            read_f32(&sub.data, 20),
-                            read_f32(&sub.data, 24),
-                        ];
+                        let destination = r.u32_or_default();
+                        let dest_pos = r.f32_array::<3>().unwrap_or([0.0; 3]);
+                        let dest_rot = r.f32_array::<3>().unwrap_or([0.0; 3]);
                         teleport = Some(TeleportDest {
                             destination,
                             position: dest_pos,
@@ -430,18 +334,10 @@ pub(super) fn parse_refr_group(
                     // color(3×f32) + unknown(f32) + shape_type(u32) =
                     // 32 bytes. Pre-#412 triggers were invisible.
                     b"XPRM" if sub.data.len() >= 32 => {
-                        let bounds = [
-                            read_f32(&sub.data, 0),
-                            read_f32(&sub.data, 4),
-                            read_f32(&sub.data, 8),
-                        ];
-                        let color = [
-                            read_f32(&sub.data, 12),
-                            read_f32(&sub.data, 16),
-                            read_f32(&sub.data, 20),
-                        ];
-                        let unknown = read_f32(&sub.data, 24);
-                        let shape_type = read_u32(&sub.data, 28);
+                        let bounds = r.f32_array::<3>().unwrap_or([0.0; 3]);
+                        let color = r.f32_array::<3>().unwrap_or([0.0; 3]);
+                        let unknown = r.f32_or_default();
+                        let shape_type = r.u32_or_default();
                         primitive = Some(PrimitiveBounds {
                             bounds,
                             color,
@@ -455,8 +351,8 @@ pub(super) fn parse_refr_group(
                     // targets). Pre-#412 NPCs didn't patrol and doors
                     // didn't pair.
                     b"XLKR" if sub.data.len() >= 8 => {
-                        let keyword = read_u32(&sub.data, 0);
-                        let target = read_u32(&sub.data, 4);
+                        let keyword = r.u32_or_default();
+                        let target = r.u32_or_default();
                         linked_refs.push(LinkedRef { keyword, target });
                     }
                     // XRMR — Room membership. Layout per UESP:
@@ -465,25 +361,25 @@ pub(super) fn parse_refr_group(
                     // Guard the count against the remaining bytes so a
                     // corrupt record can't over-read.
                     b"XRMR" if sub.data.len() >= 4 => {
-                        let count = read_u32(&sub.data, 0) as usize;
-                        let max = (sub.data.len() - 4) / 4;
+                        let count = r.u32_or_default() as usize;
+                        let max = r.remaining() / 4;
                         let n = count.min(max);
                         rooms.reserve(n);
-                        for i in 0..n {
-                            rooms.push(read_u32(&sub.data, 4 + i * 4));
+                        for _ in 0..n {
+                            rooms.push(r.u32_or_default());
                         }
                     }
                     // XPOD — Portal origin/destination pair. 8 bytes.
                     // Multiple XPOD sub-records allowed (one per portal
                     // connected to this REFR).
                     b"XPOD" if sub.data.len() >= 8 => {
-                        let origin = read_u32(&sub.data, 0);
-                        let destination = read_u32(&sub.data, 4);
+                        let origin = r.u32_or_default();
+                        let destination = r.u32_or_default();
                         portals.push(PortalLink { origin, destination });
                     }
                     // XRDS — Light radius override. Single f32.
-                    b"XRDS" if sub.data.len() >= 4 => {
-                        radius_override = Some(read_f32(&sub.data, 0));
+                    b"XRDS" => {
+                        radius_override = r.f32().ok();
                     }
                     // XATO — alternate TXST form ID. 4 bytes. When this
                     // REFR places a base mesh whose textures should be
@@ -492,16 +388,16 @@ pub(super) fn parse_refr_group(
                     // this against `EsmCellIndex.texture_sets` and
                     // overlays the 8 slot paths + MNAM onto the spawned
                     // mesh. See audit FO4-DIM6-02 / #584.
-                    b"XATO" if sub.data.len() >= 4 => {
-                        alt_texture_ref = Some(read_u32(&sub.data, 0));
+                    b"XATO" => {
+                        alt_texture_ref = r.u32().ok();
                     }
                     // XTNM — landscape TXST override form ID. Same
                     // 4-byte layout as XATO but scopes the override to
                     // LAND references (LTEX default swap). Kept for
                     // completeness; the LAND-side consumer path is
                     // separate from the mesh path wired for XATO. #584.
-                    b"XTNM" if sub.data.len() >= 4 => {
-                        land_texture_ref = Some(read_u32(&sub.data, 0));
+                    b"XTNM" => {
+                        land_texture_ref = r.u32().ok();
                     }
                     // XTXR — per-slot texture swap. 8 bytes: TXST
                     // FormID(u32) + slot_index(u32). Lets a REFR
@@ -510,8 +406,8 @@ pub(super) fn parse_refr_group(
                     // XTXR sub-records allowed per REFR; we collect
                     // them in authoring order. #584.
                     b"XTXR" if sub.data.len() >= 8 => {
-                        let texture_set = read_u32(&sub.data, 0);
-                        let slot_index = read_u32(&sub.data, 4);
+                        let texture_set = r.u32_or_default();
+                        let slot_index = r.u32_or_default();
                         texture_slot_swaps.push(TextureSlotSwap {
                             texture_set,
                             slot_index,
@@ -522,26 +418,21 @@ pub(super) fn parse_refr_group(
                     // placement-specific light to the base mesh. Parsed
                     // for completeness; consumer wiring (per-REFR
                     // emissive light spawn) is follow-up work. #584.
-                    b"XEMI" if sub.data.len() >= 4 => {
-                        emissive_light_ref = Some(read_u32(&sub.data, 0));
+                    b"XEMI" => {
+                        emissive_light_ref = r.u32().ok();
                     }
                     // #692 — per-REFR ownership override (mirrors the
                     // CELL walker arms). XOWN owner FormID, XRNK
                     // faction-rank gate, XGLB global-var gate. Same
                     // 4-byte layout as the CELL form. Cross-game.
-                    b"XOWN" if sub.data.len() >= 4 => {
-                        ownership_owner = Some(read_u32(&sub.data, 0));
+                    b"XOWN" => {
+                        ownership_owner = r.u32().ok();
                     }
-                    b"XRNK" if sub.data.len() >= 4 => {
-                        ownership_rank = Some(i32::from_le_bytes([
-                            sub.data[0],
-                            sub.data[1],
-                            sub.data[2],
-                            sub.data[3],
-                        ]));
+                    b"XRNK" => {
+                        ownership_rank = r.i32().ok();
                     }
-                    b"XGLB" if sub.data.len() >= 4 => {
-                        ownership_global = Some(read_u32(&sub.data, 0));
+                    b"XGLB" => {
+                        ownership_global = r.u32().ok();
                     }
                     _ => {}
                 }
@@ -622,16 +513,16 @@ pub(super) fn parse_land_record(
         match sub.sub_type.as_slice() {
             b"VHGT" if sub.data.len() >= 1093 => {
                 // UESP VHGT algorithm: delta-encoded heightmap.
-                let base_offset =
-                    f32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
+                let mut r = SubReader::new(&sub.data);
+                let base_offset = r.f32_or_default();
                 let mut offset = base_offset * 8.0;
                 for row in 0..33usize {
-                    let first_delta = sub.data[4 + row * 33] as i8 as f32 * 8.0;
+                    let first_delta = r.u8_or_default() as i8 as f32 * 8.0;
                     offset += first_delta;
                     heights[row * 33] = offset;
                     let mut col_accum = offset;
                     for col in 1..33usize {
-                        let d = sub.data[4 + row * 33 + col] as i8 as f32 * 8.0;
+                        let d = r.u8_or_default() as i8 as f32 * 8.0;
                         col_accum += d;
                         heights[row * 33 + col] = col_accum;
                     }
@@ -645,19 +536,20 @@ pub(super) fn parse_land_record(
             }
             b"BTXT" if sub.data.len() >= 8 => {
                 // Base texture: formid(4) + quadrant(1) + unused(3).
-                let ltex_id =
-                    u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
-                let quadrant = sub.data[4] as usize;
+                let mut r = SubReader::new(&sub.data);
+                let ltex_id = r.u32_or_default();
+                let quadrant = r.u8_or_default() as usize;
                 if quadrant < 4 {
                     quadrants[quadrant].base = Some(ltex_id);
                 }
             }
             b"ATXT" if sub.data.len() >= 8 => {
-                // Additional texture header: formid(4) + quadrant(1) + unused(1) + layer(2).
-                let ltex_id =
-                    u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
-                let quadrant = sub.data[4] as usize;
-                let layer = u16::from_le_bytes([sub.data[6], sub.data[7]]);
+                // Additional texture header: formid(4) + quadrant(1) + unused(1) + layer(u16).
+                let mut r = SubReader::new(&sub.data);
+                let ltex_id = r.u32_or_default();
+                let quadrant = r.u8_or_default() as usize;
+                let _unused = r.u8_or_default();
+                let layer = r.u16_or_default();
                 if quadrant < 4 {
                     pending_atxt = Some((quadrant, ltex_id, layer));
                 }
@@ -667,19 +559,11 @@ pub(super) fn parse_land_record(
                 // Array of 8-byte entries: position(u16) + unused(u16) + opacity(f32).
                 if let Some((quadrant, ltex_id, layer)) = pending_atxt.take() {
                     let mut alpha = vec![0.0f32; 17 * 17];
-                    let entry_count = sub.data.len() / 8;
-                    for i in 0..entry_count {
-                        let off = i * 8;
-                        if off + 8 > sub.data.len() {
-                            break;
-                        }
-                        let pos = u16::from_le_bytes([sub.data[off], sub.data[off + 1]]) as usize;
-                        let opacity = f32::from_le_bytes([
-                            sub.data[off + 4],
-                            sub.data[off + 5],
-                            sub.data[off + 6],
-                            sub.data[off + 7],
-                        ]);
+                    let mut r = SubReader::new(&sub.data);
+                    while r.remaining() >= 8 {
+                        let pos = r.u16_or_default() as usize;
+                        let _unused = r.u16_or_default();
+                        let opacity = r.f32_or_default();
                         if pos < 17 * 17 {
                             alpha[pos] = opacity;
                         }

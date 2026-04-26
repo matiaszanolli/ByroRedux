@@ -9,8 +9,9 @@
 //! Adding more fields later is straightforward; the parsers walk sub-records
 //! by 4-char code and ignore anything they don't recognize.
 
-use super::common::{read_f32_at, read_u16_at, read_u32_at, CommonItemFields};
+use super::common::CommonItemFields;
 use crate::esm::reader::{GameKind, SubRecord};
+use crate::esm::sub_reader::SubReader;
 
 /// What kind of item this is, with kind-specific stats.
 #[derive(Debug, Clone)]
@@ -147,52 +148,50 @@ pub fn parse_weap(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
 
     for sub in subs {
         match &sub.sub_type {
-            b"DATA" => match game {
-                // Oblivion WEAP DATA (30 bytes — measured 100% across 1319
-                // records in Oblivion.esm, see #685):
-                //   type(u32) speed(f32) reach(f32) flags(u32)
-                //   value(u32) health(u32) weight(f32) damage(u16)
-                // Oblivion stores all weapon stats in DATA; there is no
-                // DNAM, no AMMO ref (arrows are separate AMMO records),
-                // no clip (no magazine system). Type 0..5 maps to
-                // Blade1H/Blade2H/Blunt1H/Blunt2H/Staff/Bow.
-                GameKind::Oblivion => {
-                    if sub.data.len() >= 30 {
-                        common.value = read_u32_at(&sub.data, 16).unwrap_or(0);
-                        common.weight = read_f32_at(&sub.data, 24).unwrap_or(0.0);
-                        damage = read_u16_at(&sub.data, 28).unwrap_or(0) as u32;
-                        // Oblivion `type` (u32 at offset 0, values 0..5
-                        // for Blade1H/Blade2H/Blunt1H/Blunt2H/Staff/Bow)
-                        // doesn't share semantics with FO3/FNV's
-                        // anim_type (handgun/rifle/launcher); leave
-                        // anim_type at its 0 default rather than mix
-                        // the two enums.
+            b"DATA" => {
+                let mut r = SubReader::new(&sub.data);
+                match game {
+                    // Oblivion WEAP DATA (30 bytes — measured 100% across 1319
+                    // records in Oblivion.esm, see #685):
+                    //   type(u32) speed(f32) reach(f32) flags(u32)
+                    //   value(u32) health(u32) weight(f32) damage(u16)
+                    // Oblivion stores all weapon stats in DATA; there is no
+                    // DNAM, no AMMO ref (arrows are separate AMMO records),
+                    // no clip (no magazine system). `type` (0..5 →
+                    // Blade1H/Blade2H/Blunt1H/Blunt2H/Staff/Bow) doesn't
+                    // share semantics with FO3/FNV's anim_type — leave
+                    // anim_type at its 0 default rather than mix enums.
+                    GameKind::Oblivion => {
+                        let _type = r.u32_or_default();
+                        let _speed = r.f32_or_default();
+                        let _reach = r.f32_or_default();
+                        let _flags = r.u32_or_default();
+                        common.value = r.u32_or_default();
+                        let _health = r.u32_or_default();
+                        common.weight = r.f32_or_default();
+                        damage = r.u16_or_default() as u32;
+                    }
+                    // FO3/FNV WEAP DATA (15 bytes — measured): value(u32),
+                    // health(u32), weight(f32), damage(u16), clip(u8). FO4
+                    // groups here pending its own per-game arm (mis-bucketing
+                    // tracked separately, AUDIT_FNV_2026-04-20 follow-up).
+                    GameKind::Fallout3NV | GameKind::Fallout4 => {
+                        common.value = r.u32_or_default();
+                        let _health = r.u32_or_default();
+                        common.weight = r.f32_or_default();
+                        damage = r.u16_or_default() as u32;
+                        clip_size = r.u8_or_default();
+                    }
+                    // Skyrim WEAP DATA (10 bytes): value(u32), weight(f32),
+                    // damage(u16). No health, no clip. Skyrim dropped the
+                    // condition/durability system and clip lives in DNAM.
+                    GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {
+                        common.value = r.u32_or_default();
+                        common.weight = r.f32_or_default();
+                        damage = r.u16_or_default() as u32;
                     }
                 }
-                // FO3/FNV WEAP DATA (15 bytes — measured): value(u32),
-                // health(u32), weight(f32), damage(u16), clip(u8). FO4
-                // groups here pending its own per-game arm (mis-bucketing
-                // tracked separately, AUDIT_FNV_2026-04-20 follow-up).
-                GameKind::Fallout3NV | GameKind::Fallout4 => {
-                    if sub.data.len() >= 15 {
-                        common.value = read_u32_at(&sub.data, 0).unwrap_or(0);
-                        let _health = read_u32_at(&sub.data, 4).unwrap_or(0);
-                        common.weight = read_f32_at(&sub.data, 8).unwrap_or(0.0);
-                        damage = read_u16_at(&sub.data, 12).unwrap_or(0) as u32;
-                        clip_size = sub.data.get(14).copied().unwrap_or(0);
-                    }
-                }
-                // Skyrim WEAP DATA (10 bytes): value(u32), weight(f32),
-                // damage(u16). No health, no clip. Skyrim dropped the
-                // condition/durability system and clip lives in DNAM.
-                GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {
-                    if sub.data.len() >= 10 {
-                        common.value = read_u32_at(&sub.data, 0).unwrap_or(0);
-                        common.weight = read_f32_at(&sub.data, 4).unwrap_or(0.0);
-                        damage = read_u16_at(&sub.data, 8).unwrap_or(0) as u32;
-                    }
-                }
-            },
+            }
             // DNAM is a large, version-dependent stats blob present on
             // FO3/FNV/FO4 but absent on Oblivion (which inlines all
             // weapon stats in DATA). The FO3/FNV layout starts with
@@ -201,31 +200,36 @@ pub fn parse_weap(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
             // field positions); extracting per-field values for Skyrim
             // requires a separate layout walk that isn't wired yet.
             b"DNAM" if matches!(game, GameKind::Fallout3NV) => {
-                if sub.data.len() >= 24 {
-                    anim_type = sub.data[0];
-                    ap_cost = read_u32_at(&sub.data, 16).unwrap_or(0);
-                    min_spread = read_f32_at(&sub.data, 20).unwrap_or(0.0);
-                }
+                let mut r = SubReader::new(&sub.data);
+                anim_type = r.u8_or_default();
+                r.skip_or_eof(15); // pad up to ap_cost at offset 16
+                ap_cost = r.u32_or_default();
+                min_spread = r.f32_or_default();
             }
-            b"ANAM" => reload_anim = sub.data.first().copied().unwrap_or(0),
+            b"ANAM" => {
+                reload_anim = SubReader::new(&sub.data).u8_or_default();
+            }
             // Ammunition reference (FO3/FNV). Skyrim uses ETYP for ammo
             // *type* and per-arrow NAM7; not yet decoded.
-            b"AMMO" if sub.data.len() >= 4 => {
-                ammo_form = read_u32_at(&sub.data, 0).unwrap_or(0);
+            b"AMMO" => {
+                ammo_form = SubReader::new(&sub.data).u32_or_default();
             }
             b"DESC" => {} // description string (we don't store it yet)
-            b"ETYP" if sub.data.len() >= 4 => {
-                skill_form = read_u32_at(&sub.data, 0).unwrap_or(0);
+            b"ETYP" => {
+                skill_form = SubReader::new(&sub.data).u32_or_default();
             }
-            b"CRDT" if sub.data.len() >= 8 => {
+            b"CRDT" => {
                 // Critical data: chance(u16), unused(u16), mult(f32). Shared
                 // shape across FO3/FNV; Skyrim extends with extra tail
                 // fields but the leading 8 bytes still produce a sane mult.
-                crit_mult = read_f32_at(&sub.data, 4).unwrap_or(1.0);
+                let mut r = SubReader::new(&sub.data);
+                let _chance = r.u16_or_default();
+                let _unused = r.u16_or_default();
+                crit_mult = r.f32().unwrap_or(1.0);
             }
-            b"NAM6" if sub.data.len() >= 4 => {
+            b"NAM6" => {
                 // Spread (FO3/FNV). Skyrim doesn't emit NAM6.
-                spread = read_f32_at(&sub.data, 0).unwrap_or(0.0);
+                spread = SubReader::new(&sub.data).f32_or_default();
             }
             _ => {}
         }
@@ -265,71 +269,69 @@ pub fn parse_armo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
             // vs FO3/FNV/FO4 (8 bytes — biped_flags u32 + general_flags
             // u32). Skyrim+ dropped BMDT entirely in favor of BOD2.
             // Measured: Oblivion.esm 996/996 ARMO records use 4-byte BMDT.
-            b"BMDT" if sub.data.len() >= 4 => {
-                biped_flags = read_u32_at(&sub.data, 0).unwrap_or(0);
+            b"BMDT" => {
+                biped_flags = SubReader::new(&sub.data).u32_or_default();
                 slot_mask = (biped_flags & 0xFFFF) as u16;
             }
             // BOD2 (Skyrim+): biped_slots (u32) + armor_type (u32).
             // armor_type: 0=light, 1=clothing, 2=heavy, 3=none, 4=gauntlets.
-            b"BOD2" if sub.data.len() >= 8 => {
-                biped_flags = read_u32_at(&sub.data, 0).unwrap_or(0);
+            b"BOD2" => {
+                let mut r = SubReader::new(&sub.data);
+                biped_flags = r.u32_or_default();
                 slot_mask = (biped_flags & 0xFFFF) as u16;
-                armor_type = Some(read_u32_at(&sub.data, 4).unwrap_or(0));
+                if let Ok(t) = r.u32() {
+                    armor_type = Some(t);
+                }
             }
-            b"DATA" => match game {
-                // Oblivion ARMO DATA (14 bytes — measured 100% across
-                // 996 records, see #686):
-                //   armor(u16) value(u32) health(u32) weight(f32)
-                // armor is rating × 100, same convention as Skyrim's
-                // DNAM (so we route it through `armor_rating_x100` for
-                // a uniform consumer surface). DT/DR didn't exist
-                // pre-Fallout 3.
-                GameKind::Oblivion => {
-                    if sub.data.len() >= 14 {
-                        armor_rating_x100 =
-                            read_u16_at(&sub.data, 0).unwrap_or(0) as u32;
-                        common.value = read_u32_at(&sub.data, 2).unwrap_or(0);
-                        health = read_u32_at(&sub.data, 6).unwrap_or(0);
-                        common.weight = read_f32_at(&sub.data, 10).unwrap_or(0.0);
+            b"DATA" => {
+                let mut r = SubReader::new(&sub.data);
+                match game {
+                    // Oblivion ARMO DATA (14 bytes — measured 100% across
+                    // 996 records, see #686):
+                    //   armor(u16) value(u32) health(u32) weight(f32)
+                    // armor is rating × 100, same convention as Skyrim's
+                    // DNAM (so we route it through `armor_rating_x100` for
+                    // a uniform consumer surface). DT/DR didn't exist
+                    // pre-Fallout 3.
+                    GameKind::Oblivion => {
+                        armor_rating_x100 = r.u16_or_default() as u32;
+                        common.value = r.u32_or_default();
+                        health = r.u32_or_default();
+                        common.weight = r.f32_or_default();
+                    }
+                    // FO3/FNV/FO4 ARMO DATA (12 bytes):
+                    //   value(u32), health(u32), weight(f32).
+                    GameKind::Fallout3NV | GameKind::Fallout4 => {
+                        common.value = r.u32_or_default();
+                        health = r.u32_or_default();
+                        common.weight = r.f32_or_default();
+                    }
+                    // Skyrim+ ARMO DATA (8 bytes):
+                    //   value(u32), weight(f32). No health — condition/repair
+                    //   was removed from Skyrim's ARMO data block; equipment
+                    //   durability lives in the enchantment/tempering system.
+                    GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {
+                        common.value = r.u32_or_default();
+                        common.weight = r.f32_or_default();
                     }
                 }
-                // FO3/FNV/FO4 ARMO DATA (12 bytes):
-                //   value(u32), health(u32), weight(f32).
-                GameKind::Fallout3NV | GameKind::Fallout4 => {
-                    if sub.data.len() >= 12 {
-                        common.value = read_u32_at(&sub.data, 0).unwrap_or(0);
-                        health = read_u32_at(&sub.data, 4).unwrap_or(0);
-                        common.weight = read_f32_at(&sub.data, 8).unwrap_or(0.0);
-                    }
-                }
-                // Skyrim+ ARMO DATA (8 bytes):
-                //   value(u32), weight(f32). No health — condition/repair
-                //   was removed from Skyrim's ARMO data block; equipment
-                //   durability lives in the enchantment/tempering system.
-                GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {
-                    if sub.data.len() >= 8 {
-                        common.value = read_u32_at(&sub.data, 0).unwrap_or(0);
-                        common.weight = read_f32_at(&sub.data, 4).unwrap_or(0.0);
-                    }
-                }
-            },
+            }
             // DNAM exists on FO3/FNV/FO4 (DT/DR, 8 bytes) and Skyrim+
             // (armor_rating × 100, 4 bytes). Oblivion has no DNAM —
             // armor rating lives in DATA (handled above).
-            b"DNAM" => match game {
-                GameKind::Fallout3NV | GameKind::Fallout4 => {
-                    if sub.data.len() >= 8 {
-                        dt = read_f32_at(&sub.data, 0).unwrap_or(0.0);
-                        dr = read_u32_at(&sub.data, 4).unwrap_or(0);
+            b"DNAM" => {
+                let mut r = SubReader::new(&sub.data);
+                match game {
+                    GameKind::Fallout3NV | GameKind::Fallout4 => {
+                        dt = r.f32_or_default();
+                        dr = r.u32_or_default();
                     }
-                }
-                GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {
-                    if sub.data.len() >= 4 {
-                        armor_rating_x100 = read_u32_at(&sub.data, 0).unwrap_or(0);
+                    GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {
+                        armor_rating_x100 = r.u32_or_default();
                     }
+                    GameKind::Oblivion => {}
                 }
-                GameKind::Oblivion => {}
-            },
+            }
             _ => {}
         }
     }
@@ -359,55 +361,56 @@ pub fn parse_ammo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
 
     for sub in subs {
         match &sub.sub_type {
-            b"DATA" => match game {
-                // Oblivion AMMO DATA (18 bytes — measured 100% across
-                // 128 records, see #691):
-                //   speed(f32) flags(u32) value(u32) weight(f32) damage(u16)
-                // Oblivion arrows carry inline damage (the WEAP "bow"
-                // record's damage is the bow's, not the arrow's). No
-                // clipRounds — magazines arrived with FO3.
-                GameKind::Oblivion => {
-                    if sub.data.len() >= 18 {
-                        common.value = read_u32_at(&sub.data, 8).unwrap_or(0);
-                        common.weight = read_f32_at(&sub.data, 12).unwrap_or(0.0);
-                        damage = read_u16_at(&sub.data, 16).unwrap_or(0) as f32;
+            b"DATA" => {
+                let mut r = SubReader::new(&sub.data);
+                match game {
+                    // Oblivion AMMO DATA (18 bytes — measured 100% across
+                    // 128 records, see #691):
+                    //   speed(f32) flags(u32) value(u32) weight(f32) damage(u16)
+                    // Oblivion arrows carry inline damage (the WEAP "bow"
+                    // record's damage is the bow's, not the arrow's). No
+                    // clipRounds — magazines arrived with FO3.
+                    GameKind::Oblivion => {
+                        let _speed = r.f32_or_default();
+                        let _flags = r.u32_or_default();
+                        common.value = r.u32_or_default();
+                        common.weight = r.f32_or_default();
+                        damage = r.u16_or_default() as f32;
+                    }
+                    // FO3/FNV AMMO DATA (13 bytes): speed(f32), flags(u8),
+                    // pad(u8)×3, value(u32), clipRounds(u8). FO4 grouped
+                    // here pending its own arm; weight comes from DAT2.
+                    GameKind::Fallout3NV | GameKind::Fallout4 => {
+                        let _speed = r.f32_or_default();
+                        let _flags_pad = r.u32_or_default();
+                        common.value = r.u32_or_default();
+                        clip_rounds = r.u8_or_default();
+                    }
+                    // Skyrim AMMO DATA (16 bytes): projectile_form(u32),
+                    // flags(u32), damage(f32), value(u32). "Ignores weapon
+                    // resistance" etc. live in the flags bitfield.
+                    GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {
+                        casing_form = r.u32_or_default();
+                        let _flags = r.u32_or_default();
+                        damage = r.f32_or_default();
+                        common.value = r.u32_or_default();
                     }
                 }
-                // FO3/FNV AMMO DATA (13 bytes): speed(f32), flags(u8),
-                // pad(u8)×3, value(u32), clipRounds(u8). FO4 grouped
-                // here pending its own arm; weight comes from DAT2.
-                GameKind::Fallout3NV | GameKind::Fallout4 => {
-                    if sub.data.len() >= 13 {
-                        let _speed = read_f32_at(&sub.data, 0).unwrap_or(0.0);
-                        common.value = read_u32_at(&sub.data, 8).unwrap_or(0);
-                        clip_rounds = sub.data.get(12).copied().unwrap_or(0);
-                    }
-                }
-                // Skyrim AMMO DATA (16 bytes): projectile_form(u32),
-                // flags(u32), damage(f32), value(u32). "Ignores weapon
-                // resistance" etc. live in the flags bitfield.
-                GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {
-                    if sub.data.len() >= 16 {
-                        casing_form = read_u32_at(&sub.data, 0).unwrap_or(0);
-                        let _flags = read_u32_at(&sub.data, 4).unwrap_or(0);
-                        damage = read_f32_at(&sub.data, 8).unwrap_or(0.0);
-                        common.value = read_u32_at(&sub.data, 12).unwrap_or(0);
-                    }
-                }
-            },
+            }
             // DAT2 (FO3/FNV only): projPerShot(u32), proj(formID),
             // weight(f32), consumedAmmo(formID), consumedPercentage(f32).
             // Oblivion stores weight inline in DATA (handled above);
             // Skyrim doesn't emit DAT2.
-            b"DAT2" if matches!(game, GameKind::Fallout3NV) && sub.data.len() >= 16 => {
-                let _proj_count = read_u32_at(&sub.data, 0).unwrap_or(0);
-                let _proj = read_u32_at(&sub.data, 4).unwrap_or(0);
-                common.weight = read_f32_at(&sub.data, 8).unwrap_or(0.0);
-                casing_form = read_u32_at(&sub.data, 12).unwrap_or(0);
+            b"DAT2" if matches!(game, GameKind::Fallout3NV) => {
+                let mut r = SubReader::new(&sub.data);
+                let _proj_count = r.u32_or_default();
+                let _proj = r.u32_or_default();
+                common.weight = r.f32_or_default();
+                casing_form = r.u32_or_default();
             }
             // DAMG (rare/legacy FO3).
-            b"DAMG" if sub.data.len() >= 4 => {
-                damage = read_f32_at(&sub.data, 0).unwrap_or(0.0);
+            b"DAMG" => {
+                damage = SubReader::new(&sub.data).f32_or_default();
             }
             _ => {}
         }
@@ -429,9 +432,10 @@ pub fn parse_ammo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
 pub fn parse_misc(form_id: u32, subs: &[SubRecord]) -> ItemRecord {
     let mut common = CommonItemFields::from_subs(subs);
     for sub in subs {
-        if &sub.sub_type == b"DATA" && sub.data.len() >= 8 {
-            common.value = read_u32_at(&sub.data, 0).unwrap_or(0);
-            common.weight = read_f32_at(&sub.data, 4).unwrap_or(0.0);
+        if &sub.sub_type == b"DATA" {
+            let mut r = SubReader::new(&sub.data);
+            common.value = r.u32_or_default();
+            common.weight = r.f32_or_default();
         }
     }
     ItemRecord {
@@ -444,9 +448,10 @@ pub fn parse_misc(form_id: u32, subs: &[SubRecord]) -> ItemRecord {
 pub fn parse_keym(form_id: u32, subs: &[SubRecord]) -> ItemRecord {
     let mut common = CommonItemFields::from_subs(subs);
     for sub in subs {
-        if &sub.sub_type == b"DATA" && sub.data.len() >= 8 {
-            common.value = read_u32_at(&sub.data, 0).unwrap_or(0);
-            common.weight = read_f32_at(&sub.data, 4).unwrap_or(0.0);
+        if &sub.sub_type == b"DATA" {
+            let mut r = SubReader::new(&sub.data);
+            common.value = r.u32_or_default();
+            common.weight = r.f32_or_default();
         }
     }
     ItemRecord {
@@ -463,19 +468,20 @@ pub fn parse_alch(form_id: u32, subs: &[SubRecord]) -> ItemRecord {
 
     for sub in subs {
         match &sub.sub_type {
-            b"DATA" if sub.data.len() >= 4 => {
-                common.weight = read_f32_at(&sub.data, 0).unwrap_or(0.0);
+            b"DATA" => {
+                common.weight = SubReader::new(&sub.data).f32_or_default();
             }
-            b"ENIT" if sub.data.len() >= 8 => {
+            b"ENIT" => {
                 // ENIT (FNV ALCH): value(i32), flags(u8), pad(u8)x3, withdrawal(formID),
                 // addictChance(f32), consumedSound(formID)
-                common.value = read_u32_at(&sub.data, 0).unwrap_or(0);
-                if sub.data.len() >= 16 {
-                    addiction_chance = read_f32_at(&sub.data, 12).unwrap_or(0.0);
-                }
+                let mut r = SubReader::new(&sub.data);
+                common.value = r.u32_or_default();
+                let _flags_pad = r.u32_or_default();
+                let _withdrawal = r.u32_or_default();
+                addiction_chance = r.f32_or_default();
             }
-            b"EFID" if sub.data.len() >= 4 => {
-                magic_effects.push(read_u32_at(&sub.data, 0).unwrap_or(0));
+            b"EFID" => {
+                magic_effects.push(SubReader::new(&sub.data).u32_or_default());
             }
             _ => {}
         }
@@ -495,8 +501,8 @@ pub fn parse_ingr(form_id: u32, subs: &[SubRecord]) -> ItemRecord {
     let common = CommonItemFields::from_subs(subs);
     let mut magic_effects = Vec::new();
     for sub in subs {
-        if &sub.sub_type == b"EFID" && sub.data.len() >= 4 {
-            magic_effects.push(read_u32_at(&sub.data, 0).unwrap_or(0));
+        if &sub.sub_type == b"EFID" {
+            magic_effects.push(SubReader::new(&sub.data).u32_or_default());
         }
     }
     ItemRecord {
@@ -515,14 +521,15 @@ pub fn parse_book(form_id: u32, subs: &[SubRecord]) -> ItemRecord {
     for sub in subs {
         match &sub.sub_type {
             // DATA (FNV BOOK): flags(u8), skill(byte=AVIF index), value(i32), weight(f32)
-            b"DATA" if sub.data.len() >= 10 => {
-                flags = sub.data[0];
-                skill_bonus = sub.data[1];
-                common.value = read_u32_at(&sub.data, 2).unwrap_or(0);
-                common.weight = read_f32_at(&sub.data, 6).unwrap_or(0.0);
+            b"DATA" => {
+                let mut r = SubReader::new(&sub.data);
+                flags = r.u8_or_default();
+                skill_bonus = r.u8_or_default();
+                common.value = r.u32_or_default();
+                common.weight = r.f32_or_default();
             }
-            b"SKIL" if sub.data.len() >= 4 => {
-                teaches_skill = read_u32_at(&sub.data, 0).unwrap_or(0);
+            b"SKIL" => {
+                teaches_skill = SubReader::new(&sub.data).u32_or_default();
             }
             _ => {}
         }
@@ -546,14 +553,16 @@ pub fn parse_note(form_id: u32, subs: &[SubRecord]) -> ItemRecord {
 
     for sub in subs {
         match &sub.sub_type {
-            b"DATA" if !sub.data.is_empty() => {
-                note_type = sub.data[0];
-                if sub.data.len() >= 8 {
-                    common.weight = read_f32_at(&sub.data, 4).unwrap_or(0.0);
-                }
+            b"DATA" => {
+                let mut r = SubReader::new(&sub.data);
+                note_type = r.u8_or_default();
+                // Pre-cursor: byte 0 = note_type, weight at offset 4.
+                // Cursor jumps from byte 1 to byte 4 — 3 padding bytes.
+                r.skip_or_eof(3);
+                common.weight = r.f32_or_default();
             }
-            b"SNAM" if sub.data.len() >= 4 => {
-                topic_form = read_u32_at(&sub.data, 0).unwrap_or(0);
+            b"SNAM" => {
+                topic_form = SubReader::new(&sub.data).u32_or_default();
             }
             _ => {}
         }
