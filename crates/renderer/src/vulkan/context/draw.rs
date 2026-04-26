@@ -1487,7 +1487,19 @@ impl VulkanContext {
             // until a real lost-device repro. See #479.
             if !self.svgf_failed {
                 if let Some(ref mut svgf) = self.svgf {
-                    if let Err(e) = svgf.dispatch(&self.device, cmd, frame) {
+                    // #674 — temporal α state machine. 0.2 steady-state
+                    // (Schied 2017 §4 floor), 0.5 in the recovery
+                    // window after a discontinuity. Bumped via
+                    // `signal_temporal_discontinuity`; consumes one
+                    // frame from the window each draw_frame.
+                    let (alpha_color, alpha_moments, next_frames) =
+                        crate::vulkan::svgf::next_svgf_temporal_alpha(
+                            self.svgf_recovery_frames,
+                        );
+                    self.svgf_recovery_frames = next_frames;
+                    if let Err(e) =
+                        svgf.dispatch(&self.device, cmd, frame, alpha_color, alpha_moments)
+                    {
                         log::error!(
                             "SVGF dispatch failed — pass disabled for the rest of the session: {e}"
                         );

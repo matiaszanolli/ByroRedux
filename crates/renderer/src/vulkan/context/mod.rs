@@ -437,6 +437,15 @@ pub struct VulkanContext {
     /// to raw-indirect is more invasive and deferred until a real
     /// lost-device repro). See #479 SIBLING.
     pub svgf_failed: bool,
+    /// Frames remaining in the SVGF temporal-α recovery window. When
+    /// non-zero, the SVGF temporal pass uses an elevated α (0.5) for
+    /// both color and moments so the noisy current frame gets more
+    /// weight after a discontinuity (cell load, weather flip, fast
+    /// camera turn). Decremented once per `draw_frame`. The cell
+    /// loader / weather system bumps this via
+    /// [`Self::signal_temporal_discontinuity`]. Schied 2017 §4 floor
+    /// (0.2) takes over once the counter reaches 0. See #674 / DEN-4.
+    pub svgf_recovery_frames: u32,
     /// Same latch for the caustic scatter pass. Composite keeps
     /// sampling the stale accumulator; on the failure mode the
     /// caustic contribution is at most one frame stale for the rest
@@ -1105,6 +1114,7 @@ impl VulkanContext {
             caustic,
             taa_failed: false,
             svgf_failed: false,
+            svgf_recovery_frames: 0,
             caustic_failed: false,
             depth_allocation: Some(depth_allocation),
             depth_image,
@@ -1191,6 +1201,19 @@ impl VulkanContext {
             requested: Arc::clone(&self.screenshot_requested),
             result: Arc::clone(&self.screenshot_result),
         }
+    }
+
+    /// Signal a temporal discontinuity (cell load, weather flip, fast
+    /// camera turn) so the SVGF temporal pass uses an elevated α for
+    /// `frames` upcoming frames. The current frame and `frames - 1`
+    /// after it run with α = 0.5 (color + moments) instead of the
+    /// 0.2 steady-state floor; this gives the freshly-noisy current
+    /// frame more weight while history variance settles.
+    ///
+    /// Calls accumulate via `max` — bumping by 5 mid-recovery extends
+    /// the window rather than truncating it. Schied 2017 §4 / #674.
+    pub fn signal_temporal_discontinuity(&mut self, frames: u32) {
+        self.svgf_recovery_frames = self.svgf_recovery_frames.max(frames);
     }
 
     /// Snapshot every persistent CPU-side scratch `Vec` owned by the

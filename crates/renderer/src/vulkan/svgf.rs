@@ -59,6 +59,33 @@ const INDIRECT_HIST_FORMAT: vk::Format = vk::Format::B10G11R11_UFLOAT_PACK32;
 /// precision — luminance² values up to 100+ need 10+ bit mantissa.
 const MOMENTS_HIST_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 
+/// Steady-state SVGF temporal blend α (Schied 2017 §4 floor). One-fifth
+/// weight on the current frame, four-fifths on the temporally-clamped
+/// history. Per-pixel age modulation in-shader recovers from
+/// reset / disocclusion automatically; the host-side α drives the
+/// coarse-grained recovery window. See #674.
+pub const SVGF_ALPHA_STEADY_STATE: f32 = 0.2;
+/// Elevated α used during a discontinuity-recovery window (cell load,
+/// weather flip, fast camera turn). Half weight on the current frame
+/// for `svgf_recovery_frames` upcoming frames.
+pub const SVGF_ALPHA_RECOVERY: f32 = 0.5;
+
+/// Pure-fn state machine for the SVGF temporal-α recovery window.
+/// Returns `(alpha_color, alpha_moments, next_recovery_frames)`.
+/// Extracted from the dispatch site so it can be unit-tested without
+/// a Vulkan device. See #674 / DEN-4.
+pub fn next_svgf_temporal_alpha(recovery_frames: u32) -> (f32, f32, u32) {
+    if recovery_frames > 0 {
+        (
+            SVGF_ALPHA_RECOVERY,
+            SVGF_ALPHA_RECOVERY,
+            recovery_frames - 1,
+        )
+    } else {
+        (SVGF_ALPHA_STEADY_STATE, SVGF_ALPHA_STEADY_STATE, 0)
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SvgfTemporalParams {
@@ -632,6 +659,8 @@ impl SvgfPipeline {
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         frame: usize,
+        alpha_color: f32,
+        alpha_moments: f32,
     ) -> Result<()> {
         let first_frame = if self.frames_since_creation < MAX_FRAMES_IN_FLIGHT as u32 {
             1.0
@@ -645,7 +674,14 @@ impl SvgfPipeline {
                 1.0 / self.width as f32,
                 1.0 / self.height as f32,
             ],
-            params: [0.2, 0.2, first_frame, 0.0],
+            // Temporal blend α — caller-controlled. Schied 2017 §4
+            // recommends 0.2 as the steady-state floor, with per-pixel
+            // age-modulated recovery already in-shader. Bumping the
+            // host-side α (e.g. 0.5) for a few frames after a
+            // discontinuity (cell load, weather flip, fast camera
+            // turn) gives a coarse-grained recovery the per-pixel
+            // weights complement. See #674 / DEN-4.
+            params: [alpha_color, alpha_moments, first_frame, 0.0],
         };
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))?;
 
@@ -858,5 +894,48 @@ impl SvgfPipeline {
                 allocator.lock().expect("allocator lock").free(a).ok();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #674 — at the steady state (no recent discontinuity), the
+    /// temporal-α floor is 0.2 for both color and moments. Counter
+    /// stays at 0; subsequent calls keep the floor.
+    #[test]
+    fn steady_state_alpha_is_schied_floor() {
+        let (a_color, a_moments, next) = next_svgf_temporal_alpha(0);
+        assert!((a_color - SVGF_ALPHA_STEADY_STATE).abs() < 1e-6);
+        assert!((a_moments - SVGF_ALPHA_STEADY_STATE).abs() < 1e-6);
+        assert_eq!(next, 0);
+    }
+
+    /// In the recovery window, both α values bump to 0.5 and the
+    /// counter decrements by 1 per frame so the elevated weighting
+    /// expires naturally.
+    #[test]
+    fn recovery_window_uses_elevated_alpha_and_decrements() {
+        let (a_color, a_moments, next) = next_svgf_temporal_alpha(5);
+        assert!((a_color - SVGF_ALPHA_RECOVERY).abs() < 1e-6);
+        assert!((a_moments - SVGF_ALPHA_RECOVERY).abs() < 1e-6);
+        assert_eq!(next, 4);
+    }
+
+    /// Recovery → steady-state transition: when the counter reaches
+    /// 1, the current frame still uses the elevated α, but the
+    /// next-frame counter is 0 so subsequent frames return to the
+    /// floor. Guards against an off-by-one that would keep the
+    /// elevated weighting one frame too long (or one frame too short).
+    #[test]
+    fn last_recovery_frame_uses_elevated_alpha_then_reverts() {
+        let (a_color, _, next) = next_svgf_temporal_alpha(1);
+        assert!((a_color - SVGF_ALPHA_RECOVERY).abs() < 1e-6);
+        assert_eq!(next, 0);
+
+        let (a_color2, _, next2) = next_svgf_temporal_alpha(next);
+        assert!((a_color2 - SVGF_ALPHA_STEADY_STATE).abs() < 1e-6);
+        assert_eq!(next2, 0, "counter must NOT underflow past 0");
     }
 }
