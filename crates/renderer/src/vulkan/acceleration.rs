@@ -884,6 +884,42 @@ impl AccelerationManager {
         Ok(())
     }
 
+    /// Emit the inter-build scratch-buffer serialise barrier required
+    /// when consecutive `cmd_build_acceleration_structures` calls share
+    /// the same scratch region (as every BLAS build / refit in this
+    /// manager does — `blas_scratch_buffer` is allocated once and
+    /// reused). Vulkan spec
+    /// (`VkAccelerationStructureBuildGeometryInfoKHR > scratchData`)
+    /// requires `ACCELERATION_STRUCTURE_WRITE → ACCELERATION_STRUCTURE_WRITE`
+    /// at `ACCELERATION_STRUCTURE_BUILD_KHR` stage between such calls.
+    ///
+    /// Stateless (the `&self` is for discoverability — the helper does
+    /// not touch any field). Caller emits this between iterations of a
+    /// build loop, **not** before the first iteration. See #642.
+    pub fn record_scratch_serialize_barrier(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+    ) {
+        let barrier = vk::MemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
+            .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR);
+        unsafe {
+            // SAFETY: `cmd` is a recording command buffer the caller
+            // owns; the barrier touches only AS-build state and has
+            // no aliasing concerns.
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                vk::DependencyFlags::empty(),
+                &[barrier],
+                &[],
+                &[],
+            );
+        }
+    }
+
     /// Look up a per-skinned-entity BLAS entry. Used by the TLAS
     /// build path to override the per-mesh BLAS lookup when a
     /// `DrawCommand` carries a `skin_slot_id`.
@@ -1181,20 +1217,7 @@ impl AccelerationManager {
         let build_result = submit_one_time(device, queue, command_pool, transfer_fence, |cmd| {
             for (i, p) in prepared.iter().enumerate() {
                 if i > 0 {
-                    let barrier = vk::MemoryBarrier::default()
-                        .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
-                        .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR);
-                    unsafe {
-                        device.cmd_pipeline_barrier(
-                            cmd,
-                            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                            vk::DependencyFlags::empty(),
-                            &[barrier],
-                            &[],
-                            &[],
-                        );
-                    }
+                    self.record_scratch_serialize_barrier(device, cmd);
                 }
 
                 let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()

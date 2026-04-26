@@ -570,11 +570,21 @@ impl VulkanContext {
                                 &[],
                                 &[],
                             );
+                            // Each `refit_skinned_blas` call shares
+                            // `blas_scratch_buffer` with every other
+                            // refit in this loop, so we must emit an
+                            // AS_WRITE → AS_WRITE serialise barrier
+                            // between iterations (Vulkan spec on
+                            // `scratchData`). #642.
+                            let mut emitted_a_refit = false;
                             for &(entity_id, _, idx_buffer, idx_count, vertex_count) in &dispatches
                             {
                                 let Some(slot) = self.skin_slots.get(&entity_id) else {
                                     continue;
                                 };
+                                if emitted_a_refit {
+                                    accel.record_scratch_serialize_barrier(&self.device, cmd);
+                                }
                                 if let Err(e) = accel.refit_skinned_blas(
                                     &self.device,
                                     cmd,
@@ -587,7 +597,9 @@ impl VulkanContext {
                                     log::warn!(
                                         "skin_compute BLAS refit failed for entity {entity_id}: {e}"
                                     );
+                                    continue;
                                 }
+                                emitted_a_refit = true;
                             }
                             // BLAS refit writes → TLAS build reads.
                             let blas_to_tlas = vk::MemoryBarrier::default()
