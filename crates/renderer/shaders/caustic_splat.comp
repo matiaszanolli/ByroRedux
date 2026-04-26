@@ -237,11 +237,21 @@ void main() {
         // when the refracted ray is occluded, so OPAQUE +
         // TERMINATE_ON_FIRST_HIT cuts traversal cost dramatically vs the
         // default closest-hit walk over the full 1000-unit reach.
+        //
+        // Origin bias (#670): pre-fix used `G + refr * 0.5, tMin = 0.0`,
+        // which rides the refracted direction. For grazing incidence
+        // `refr` is nearly parallel to the surface plane (Snell's law),
+        // so the 0.5-unit step stayed close to G and tMin = 0.0 accepted
+        // re-intersection with the refractor itself. Step INTO the glass
+        // along the light-facing normal (`ns`, not `N` — `ns` already
+        // captures the back-incidence flip from line above), then let
+        // tMin = 0.05 escape it. Mirrors the triangle.frag refraction
+        // path at line 1063.
         rayQueryEXT rq;
         rayQueryInitializeEXT(rq, topLevelAS,
                               gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
                               0xFFu,
-                              G + refr * 0.5, 0.0,
+                              G - ns * 0.1, 0.05,
                               refr, 1000.0);
         rayQueryProceedEXT(rq);
         if (rayQueryGetIntersectionTypeEXT(rq, true)
