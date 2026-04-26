@@ -516,6 +516,24 @@ vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx) {
     // Sample normal map (tangent-space, [0,1] → [-1,1]).
     vec3 tangentNormal = texture(textures[nonuniformEXT(normalMapIdx)], uv).rgb;
     tangentNormal = tangentNormal * 2.0 - 1.0;
+    // Reconstruct Z from XY. Bethesda normal maps (Skyrim+/FO4 standard)
+    // ship as BC5_UNORM_BLOCK (DDS FourCC `ATI2` / `BC5U` / DX10
+    // `DXGI_FORMAT_BC5_UNORM`) which encodes only X and Y; per Vulkan
+    // spec the sampler returns `(Nx, Ny, 0, 1)` — Z is hardware-zeroed.
+    // Pre-fix the `* 2.0 - 1.0` remap turned the zero into `-1`, so
+    // every per-pixel normal pointed INTO the surface and every
+    // lighting equation ran on an inverted basis. Effect was loudest
+    // on high-frequency carvings (e.g. Dragonsreach panels) where the
+    // X/Y magnitude is largest, but it shifted the lit colour of
+    // every BC5-normal-mapped surface by a fixed amount.
+    //
+    // For genuine RGB-encoded normals (rare in Bethesda content but
+    // permitted by the format) the stored Z is already ≈ +1 and this
+    // reconstruction reproduces the same value within float precision.
+    // The `max(0, …)` clamps over-saturated artistic normals
+    // (Nx²+Ny² > 1) to a Z=0 fallback so the result stays in the
+    // tangent plane rather than producing a NaN.
+    tangentNormal.z = sqrt(max(0.0, 1.0 - dot(tangentNormal.xy, tangentNormal.xy)));
 
     // Build TBN from screen-space derivatives (no vertex tangents needed).
     vec3 dPdx = dFdx(worldPos);
