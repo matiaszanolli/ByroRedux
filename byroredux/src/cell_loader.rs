@@ -1981,23 +1981,38 @@ fn spawn_placed_instances(
     // Spawn particle emitter entities (#401). One ECS entity per
     // detected NiParticleSystem, positioned at the composed REFR + NIF-
     // local transform. The heuristic preset is picked from the nearest
-    // named ancestor in the NIF (host_name) — torch/fire/flame/brazier/
-    // candle → torch_flame, smoke/steam → smoke, magic/enchant/sparkle/
-    // glow → magic_sparkles, fallback → torch_flame so the audit's
-    // "every torch invisible" failure is resolved end-to-end even when
-    // the host node carries no descriptive name.
+    // named ancestor in the NIF (host_name):
+    //   spark/ember/cinder → embers (small, bright, additive — checked
+    //                                FIRST so "FireSparks" doesn't fall
+    //                                into the larger flame body)
+    //   torch/fire/flame/brazier/candle → torch_flame
+    //   smoke/steam/ash      → smoke
+    //   magic/enchant/sparkle/glow → magic_sparkles
+    //   fallback             → torch_flame so the audit's "every torch
+    //                          invisible" failure is resolved end-to-
+    //                          end even when the host node carries no
+    //                          descriptive name.
+    // Mirrored in `byroredux/src/scene.rs` — keep both lists in lockstep.
+    // The proper data-driven fix (NIF-authored colour curves via
+    // `NiPSysColorModifier` → `NiColorData`) stays open at #707; this
+    // is the heuristic band-aid that landed first.
     for em in &cached.particle_emitters {
         let nif_pos = Vec3::new(em.local_position[0], em.local_position[1], em.local_position[2]);
         let world_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
         let host = em.host_name.as_deref().unwrap_or("").to_ascii_lowercase();
-        let preset = if host.contains("torch")
+        let preset = if host.contains("spark")
+            || host.contains("ember")
+            || host.contains("cinder")
+        {
+            ParticleEmitter::embers()
+        } else if host.contains("torch")
             || host.contains("fire")
             || host.contains("flame")
             || host.contains("brazier")
             || host.contains("candle")
         {
             ParticleEmitter::torch_flame()
-        } else if host.contains("smoke") || host.contains("steam") {
+        } else if host.contains("smoke") || host.contains("steam") || host.contains("ash") {
             ParticleEmitter::smoke()
         } else if host.contains("magic")
             || host.contains("enchant")

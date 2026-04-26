@@ -1015,14 +1015,25 @@ pub(crate) fn load_nif_bytes(
             .as_deref()
             .map(|s| s.to_ascii_lowercase())
             .unwrap_or_default();
-        let preset = if host_name.contains("torch")
+        // Embers / sparks check FIRST so a node like "FireSparks" lands
+        // on the bright-glint preset rather than the larger torch flame
+        // (the `fire` substring would otherwise win).
+        let preset = if host_name.contains("spark")
+            || host_name.contains("ember")
+            || host_name.contains("cinder")
+        {
+            ParticleEmitter::embers()
+        } else if host_name.contains("torch")
             || host_name.contains("fire")
             || host_name.contains("flame")
             || host_name.contains("brazier")
             || host_name.contains("candle")
         {
             ParticleEmitter::torch_flame()
-        } else if host_name.contains("smoke") || host_name.contains("steam") {
+        } else if host_name.contains("smoke")
+            || host_name.contains("steam")
+            || host_name.contains("ash")
+        {
             ParticleEmitter::smoke()
         } else if host_name.contains("magic")
             || host_name.contains("enchant")

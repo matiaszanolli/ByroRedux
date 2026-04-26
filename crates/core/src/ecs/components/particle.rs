@@ -257,7 +257,15 @@ impl ParticleEmitter {
     }
 
     /// Heuristic preset for grey smoke. Used when the host node name
-    /// contains `smoke` / `steam`.
+    /// contains `smoke` / `steam` / `ash`.
+    ///
+    /// Pre-#707 the start color was a flat dark grey (0.5/0.5/0.5)
+    /// which on a dark interior backdrop (e.g. Whiterun Dragonsreach)
+    /// rendered as nearly-black columns. Warmed the base toward the
+    /// embers' hot-orange tint and lifted the value so smoke is
+    /// readable against dim cell-light environments. End color
+    /// remains a cool darkening as the particle rises and cools
+    /// off — matches the visual intuition of fire smoke.
     pub fn smoke() -> Self {
         Self {
             shape: EmitterShape::Sphere { radius: 1.0 },
@@ -270,13 +278,49 @@ impl ParticleEmitter {
             declination: 0.1,
             declination_variation: 0.1,
             gravity: [0.0, 0.0, 6.0],
-            start_color: [0.5, 0.5, 0.5, 0.6],
-            end_color: [0.3, 0.3, 0.3, 0.0],
+            start_color: [0.65, 0.55, 0.45, 0.7],
+            end_color: [0.25, 0.25, 0.27, 0.0],
             start_size: 8.0,
             end_size: 22.0,
             texture_path: None,
             src_blend: 6, // SRC_ALPHA
             dst_blend: 7, // ONE_MINUS_SRC_ALPHA — non-additive smoke
+            spawn_accumulator: 0.0,
+            particles: ParticleSoA::default(),
+        }
+    }
+
+    /// Heuristic preset for hot embers / sparks rising off a fire.
+    /// Used when the host node name contains `spark` / `ember` /
+    /// `cinder`. Visually distinguishes from `torch_flame()` (which
+    /// is the larger softer flame body): embers are smaller, faster,
+    /// brighter at start, fade to dim red, additive blend so they
+    /// glow against the smoke column.
+    ///
+    /// Pre-#707 these names fell into the `torch_flame()` fallback,
+    /// producing oversized dim glows where Bethesda authored small
+    /// bright glints. This is a heuristic band-aid until the proper
+    /// `NiPSysColorModifier` → `NiColorData` data path lands (see
+    /// #707 follow-up).
+    pub fn embers() -> Self {
+        Self {
+            shape: EmitterShape::Sphere { radius: 0.6 },
+            rate: 22.0,
+            max_particles: 96,
+            life: 1.4,
+            life_variation: 0.5,
+            speed: 7.0,
+            speed_variation: 1.5,
+            declination: 0.15,
+            declination_variation: 0.1,
+            gravity: [0.0, 0.0, 8.0], // strong upward buoyancy
+            start_color: [1.0, 0.55, 0.18, 1.0],
+            end_color: [0.6, 0.05, 0.0, 0.0],
+            start_size: 1.5,
+            end_size: 0.5,
+            texture_path: None,
+            src_blend: 6,
+            dst_blend: 1, // additive — glints against smoke
             spawn_accumulator: 0.0,
             particles: ParticleSoA::default(),
         }
@@ -373,6 +417,7 @@ mod tests {
             ParticleEmitter::torch_flame(),
             ParticleEmitter::smoke(),
             ParticleEmitter::magic_sparkles(),
+            ParticleEmitter::embers(),
         ] {
             assert!(preset.rate > 0.0);
             assert!(preset.life > 0.0);
@@ -380,5 +425,50 @@ mod tests {
             assert!(preset.start_size > 0.0);
             assert!(preset.start_color[3] > 0.0);
         }
+    }
+
+    /// #707 (band-aid) — embers must be visually distinguishable from
+    /// the torch flame: smaller, additive, brighter at start. Pin the
+    /// invariants so a future tweak can't accidentally collapse the
+    /// two presets.
+    #[test]
+    fn embers_preset_is_distinct_from_torch_flame() {
+        let embers = ParticleEmitter::embers();
+        let flame = ParticleEmitter::torch_flame();
+        assert!(
+            embers.start_size < flame.start_size,
+            "embers must be smaller than the flame body"
+        );
+        assert_eq!(embers.dst_blend, 1, "embers use additive blend");
+        // Both embers and flame are warm — pin that the embers' start
+        // is at least as warm/bright as the flame's start so the
+        // visual hierarchy (bright glints over a softer flame) holds.
+        assert!(embers.start_color[0] >= flame.start_color[0]);
+        // End color fades to alpha 0 — without that the embers would
+        // accumulate into a static glow rather than rising-and-fading.
+        assert_eq!(embers.end_color[3], 0.0);
+    }
+
+    /// #707 (band-aid) — the smoke preset's start color was darkened
+    /// to the point of rendering near-black against dim interiors
+    /// (Whiterun Dragonsreach hearth screenshot). Pin the brightness
+    /// floor so a future "darken smoke" change doesn't silently
+    /// regress that scene.
+    #[test]
+    fn smoke_preset_start_brightness_above_black_floor() {
+        let smoke = ParticleEmitter::smoke();
+        let luma = 0.2126 * smoke.start_color[0]
+            + 0.7152 * smoke.start_color[1]
+            + 0.0722 * smoke.start_color[2];
+        assert!(
+            luma > 0.45,
+            "smoke start luma {luma} too dark — would vanish into a dim cell"
+        );
+        // Warm tint at the base (R >= B) so smoke off a fire reads
+        // as fire-smoke rather than industrial chimney smoke.
+        assert!(
+            smoke.start_color[0] >= smoke.start_color[2],
+            "smoke base should be warm-tinted (R >= B)"
+        );
     }
 }
