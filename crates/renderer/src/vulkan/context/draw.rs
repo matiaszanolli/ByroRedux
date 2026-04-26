@@ -1490,16 +1490,24 @@ impl VulkanContext {
                     // Bind this frame's TLAS before dispatch — the AccelerationManager
                     // rebuilds/refits per frame but the handle is stable across frames
                     // once created, so we write it once and then again defensively.
-                    if let Some(ref accel) = self.accel_manager {
-                        if let Some(tlas) = accel.tlas_handle(frame) {
-                            caustic.write_tlas(&self.device, frame, tlas);
+                    // Skip the dispatch entirely when no TLAS is available
+                    // for this frame (RT unsupported or scene-load not yet
+                    // settled). Mirrors the shader's `sceneFlags.x < 0.5`
+                    // early-out — pre-#640 the dispatch ran every frame
+                    // regardless and the shader paid full ray-query cost
+                    // against unwritten / stale TLAS state.
+                    let tlas_handle = self
+                        .accel_manager
+                        .as_ref()
+                        .and_then(|accel| accel.tlas_handle(frame));
+                    if let Some(tlas) = tlas_handle {
+                        caustic.write_tlas(&self.device, frame, tlas);
+                        if let Err(e) = caustic.dispatch(&self.device, cmd, frame) {
+                            log::error!(
+                                "Caustic dispatch failed — pass disabled for the rest of the session: {e}"
+                            );
+                            self.caustic_failed = true;
                         }
-                    }
-                    if let Err(e) = caustic.dispatch(&self.device, cmd, frame) {
-                        log::error!(
-                            "Caustic dispatch failed — pass disabled for the rest of the session: {e}"
-                        );
-                        self.caustic_failed = true;
                     }
                 }
             }

@@ -170,6 +170,14 @@ void main() {
     uint meshId = meshIdRaw & 0x7FFFu;
     if (meshId == 0u) return;
 
+    // RT-enabled gate (#640). The CPU side mirrors this — the dispatch
+    // is skipped when `accel_manager.tlas_handle(frame)` is `None` —
+    // but driver readbacks of an unwritten TLAS would still cost real
+    // time, so the shader takes its own early exit. `sceneFlags.x` is
+    // 1.0 only when ray_query is supported AND the TLAS was written
+    // for the current frame (see draw.rs:268-273).
+    if (sceneFlags.x < 0.5) return;
+
     // Instance flag gate — only caustic-source pixels splat.
     uint instIdx = meshId - 1u;
     uint flags = instances[instIdx].flags;
@@ -225,8 +233,14 @@ void main() {
         if (dot(refr, refr) < 0.0001) continue; // total internal reflection
 
         // Trace along the refracted direction to find the receiving surface.
+        // Ray flags (#640): caustics only need ANY-hit to cancel splatting
+        // when the refracted ray is occluded, so OPAQUE +
+        // TERMINATE_ON_FIRST_HIT cuts traversal cost dramatically vs the
+        // default closest-hit walk over the full 1000-unit reach.
         rayQueryEXT rq;
-        rayQueryInitializeEXT(rq, topLevelAS, 0u, 0xFFu,
+        rayQueryInitializeEXT(rq, topLevelAS,
+                              gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+                              0xFFu,
                               G + refr * 0.5, 0.0,
                               refr, 1000.0);
         rayQueryProceedEXT(rq);
