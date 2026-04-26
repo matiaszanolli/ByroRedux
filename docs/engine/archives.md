@@ -352,6 +352,11 @@ on real Oblivion NetImmerse-era content.
   the 4-byte magic (`BSA\0` vs `BTDX`) and picks the reader. FO4
   installations with a mix of `.ba2` and `.bsa` (modded content) now
   work without changes to the loader.
+- **Chunk-size budget bump to 1 GB** (session 18, commit `4a2b820`) —
+  the per-chunk extraction guard was 256 MB; Fallout 76's vanilla
+  mesh archive ships a single chunk that exceeds it, so the limit
+  was raised to 1 GB. The guard still catches malformed `u32` size
+  fields without aborting the process.
 
 ## Resolved gaps (session 7)
 

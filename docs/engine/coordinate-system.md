@@ -191,10 +191,12 @@ winding chain:
 4. Projection Y-flip: reverses apparent winding (CW appears CCW)
 5. Pipeline front face: CCW = front -> NIF faces are front-facing
 
-Backface culling is currently disabled (`CullModeFlags::NONE`) pending
-empirical winding verification across a broader set of NIF content.
-Two-sided meshes (from `NiStencilProperty`) use a dedicated no-cull
-pipeline variant.
+Backface culling is enabled (`CullModeFlags::BACK` with
+`front_face = CCW`); the empirical winding verification has landed.
+Two-sided meshes (from `NiStencilProperty` on FO3/FNV or
+`SF_DOUBLE_SIDED` on Skyrim+/FO4) use a dedicated `CullModeFlags::NONE`
+pipeline variant — the cull mode is keyed into the per-`(src, dst,
+two_sided)` blend pipeline cache.
 
 ## NiTriStrips Winding
 

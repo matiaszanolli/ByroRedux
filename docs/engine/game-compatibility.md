@@ -39,10 +39,11 @@ parsers at 100% on the full mesh archive.
 - **Archive**: BSA v104 ✓ (zlib compression)
 - **ESM parser**: ~23 record types via cell parser, plus the full M24
   records pass (items, NPCs, factions, leveled lists, globals)
-- **Cell loading**: interior cells (Prospector Saloon: 789 entities;
-  historical M22 bench ~85 FPS RT on RTX 4070 Ti — re-bench pending
-  per #456 since M31+/M36/M37/M37.5 shifted the cost curve) +
-  exterior 3×3 grid (WastelandNV: 720 entities)
+- **Cell loading**: interior cells (Prospector Saloon: 809 entities,
+  784 draws — historical M22 bench cited 85 FPS but predates M29 GPU
+  skinning + M31.5 + M36 + M37 + M37.5; re-bench pending per #456) +
+  exterior 3×3 / 7×7 grid (WastelandNV via M32 Phase 1+2 landscape
+  with LTEX/TXST splatting + M34 Phase 1 directional sun)
 - **Lighting**: XCLL ambient + directional, multi-light SSBO with point
   lights from LIGH records, RT shadow rays per light
 - **Coordinate system**: Z-up→Y-up with CW rotation handling
@@ -84,12 +85,23 @@ demo has been wired up).
 
 - **NIF parser**: 18,862 / 18,862 (100%)
 - **Archive**: BSA v105 ✓ (LZ4 frame compression)
-- **NIF support**: BSTriShape (packed vertex format), BSLightingShaderProperty
-  (8 shader-type variants), BSEffectShaderProperty, NiAVObject conditional
-  layout fixes — all from M18
-- **Cell loading**: ESM parser is stubbed (legacy bridge in
-  `crates/plugin/src/legacy/tes5.rs`); the full record parser hasn't been
-  ported yet. Individual mesh loading works:
+- **NIF support**: BSTriShape (packed vertex format),
+  BSLightingShaderProperty (8 shader-type variants),
+  BSEffectShaderProperty, NiAVObject conditional layout fixes — all
+  from M18; #638 added the SSE 12-byte VF_SKINNED skin payload decode
+  for M29 GPU skinning support
+- **ESM parser**: 92-byte XCLL sub-records parse cleanly (validated
+  against `Skyrim.esm` — see `parse_real_skyrim_esm`); TES5 Localized
+  flag + lstring placeholder handling for `FULL` / `DESC` fields
+  (#348). The records-side parser (items, NPCs, factions, leveled
+  lists) is largely game-agnostic and reuses the FNV implementation.
+- **Cell loading**: WhiterunBanneredMare and similar interior cells
+  load end-to-end (~2400 meshes, 2700 draws observed). BGSM material
+  resolver + per-shader-variant texture routing are still maturing
+  in the FO4-shared pipeline — the rainbow-hearth-flame artifact in
+  Whiterun (a `BSEffectShader` mis-routed slot) is the canonical
+  open issue at the time of writing.
+- **Loose-mesh entry point**:
 
 ```bash
 cargo run -- --bsa "Skyrim - Meshes0.bsa" \
@@ -97,7 +109,8 @@ cargo run -- --bsa "Skyrim - Meshes0.bsa" \
              --textures-bsa "Skyrim - Textures3.bsa"
 ```
 
-- **Status**: parser side complete, cell loader needs the Skyrim ESM parser
+- **Status**: parser + archive + cell loader all live; shader-side
+  material routing for SSE-specific variants is the active surface.
 
 #### Oblivion
 
@@ -217,20 +230,19 @@ cargo run -- --bsa "Skyrim - Meshes0.bsa" \
 
 ## Known gaps and follow-ups
 
-### Cell loaders for Skyrim SE / Oblivion / FO4 / FO76 / Starfield
+### Cell loaders for Oblivion / FO76 / Starfield
 
 The cell parser in [`crates/plugin/src/esm/cell.rs`](../../crates/plugin/src/esm/cell.rs)
-is FNV-shaped — it makes a few assumptions about the XCLL layout and the
-sub-record codes that vary slightly across games. The ESM file structure
-itself (groups, records, sub-records) is the same; what differs is which
-sub-records each record carries and at which byte offsets the lighting
-fields live.
+handles FNV / FO3 / Skyrim SE / FO4 today. Adding the rest is a
+per-game effort: write a small XCLL variant table, validate against
+one interior cell, and fix any per-game sub-record codes that differ.
+The records-side parser (`records/`) is already game-agnostic since
+it reads by sub-record code rather than fixed offsets.
 
-Adding cell loaders for the other games is a per-game effort: write a
-small XCLL variant table, validate against an interior cell from each
-game, fix the per-game sub-record codes that differ. The records-side
-parser (`records/`) is already game-agnostic since it reads by sub-record
-code rather than fixed offsets.
+FO4 cell loading covers `SCOL` / `MOVS` / `PKIN` / `TXST` (#584 / #585
+/ #589) plus `MSWP` material swaps (#590); the FO4 prefab-architecture
+records render today, while quest / dialog / perk records are still
+deferred (M24 Phase 2).
 
 ### ~~Starfield BA2 v3 DX10 textures~~ — RESOLVED (session 7)
 

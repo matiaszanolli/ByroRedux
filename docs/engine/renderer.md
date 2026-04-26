@@ -13,7 +13,7 @@ Source: `crates/renderer/src/vulkan/`
 - **Full Vulkan init chain** with validation layers in debug builds
 - **RT acceleration structures**: BLAS per mesh + TLAS rebuilt per frame in
   `DEVICE_LOCAL` memory with HOST→AS_BUILD memory barriers, LRU eviction
-  (256 MB budget), `ALLOW_COMPACTION` + async occupancy query + compacted
+  (1 GB budget), `ALLOW_COMPACTION` + async occupancy query + compacted
   copy (M36: 20–50% BLAS memory reduction), batched build submission
 - **Multi-light SSBO**: point / spot / directional lights consumed by the
   fragment shader, with `VK_KHR_ray_query` shadow rays per light
@@ -58,6 +58,29 @@ Source: `crates/renderer/src/vulkan/`
   empty-TLAS `VUID-VkBufferCopy-size-01988` / `-size-01188` suppression
   via size=0 guard, and an opt-in global lock-order graph for cross-thread
   ABBA detection
+- **M29 GPU skinning** (Phase 1+2, sessions 18-20): per-frame `skin_compute`
+  pass writes pre-skinned vertices into a per-entity output SSBO; the
+  raster path still reads the static vertex buffer today, while the
+  per-skinned-entity BLAS is **refit** in-place (`mode = UPDATE`,
+  `src == dst`) once per frame against the new vertex data so RT shadows
+  + reflections see animated geometry. First-sight setup (compute prime
+  + initial sync BUILD) is one-shot per cell load. See M29 in
+  [ROADMAP.md](../../ROADMAP.md) for the Phase 3 raster integration that's
+  gated on M41 stability.
+- **Scratch-serialise barrier** (#642): every BLAS build / refit in this
+  manager shares one `blas_scratch_buffer`; consecutive
+  `cmd_build_acceleration_structures` calls now emit
+  `AS_WRITE → AS_WRITE` at `ACCELERATION_STRUCTURE_BUILD_KHR` between
+  iterations via `AccelerationManager::record_scratch_serialize_barrier`.
+  The static batched build path and the per-frame skinned refit loop
+  both call the same helper to keep the barrier style in lockstep.
+- **Caustic scatter** (M22 / #321 Option A): `caustic_splat.comp` projects
+  refracted-light splat per refractive-source pixel into a scalar
+  R32_UINT accumulator; composite samples and adds it to direct
+  lighting. RT-enabled gates land in #640 — both shader-side
+  (`sceneFlags.x < 0.5` early-out) and CPU-side (skip dispatch when
+  no TLAS handle for the frame), plus `OPAQUE | TerminateOnFirstHit`
+  ray flags so the driver doesn't run full closest-hit traversal.
 - **Session 12 material plumbing + RT correctness** (2026-04 sweep):
   BSShaderTextureSet slots 3/4/5 (parallax / env cube / env mask)
   routed to `GpuInstance` with `parallaxHeightScale`/`parallaxMaxPasses`
@@ -91,8 +114,11 @@ crates/renderer/src/vulkan/
 ├── descriptors.rs      Descriptor set layouts (UBO, SSBO, samplers, AS)
 ├── compute.rs          Compute pipeline utilities (shared by SSAO/SVGF/TAA/cluster_cull)
 ├── scene_buffer.rs     SSBO for multi-light data; uploaded per frame
-├── acceleration.rs     BLAS + TLAS construction, scratch buffer reuse,
+├── acceleration.rs     BLAS + TLAS construction, per-skinned-entity BLAS
+│                       refit, scratch buffer reuse + serialise barrier,
 │                       LRU eviction, compaction (ALLOW_COMPACTION + query + copy)
+├── skin_compute.rs     M29 GPU pre-skinning compute pipeline (1 workgroup
+│                       per skinned entity), per-entity SkinSlot output SSBO
 ├── gbuffer.rs          G-buffer attachments: normal, motion vector, mesh ID,
 │                       raw indirect, albedo
 ├── svgf.rs             SvgfPipeline — temporal accumulation denoiser for
@@ -100,9 +126,14 @@ crates/renderer/src/vulkan/
 │                       disocclusion + albedo-demodulated history)
 ├── taa.rs              TaaPipeline — Halton jitter, Catmull-Rom resample,
 │                       YCoCg variance clamp, per-FIF ping-pong history
-├── composite.rs        CompositePipeline — direct + denoised indirect
-│                       reassembly, ACES tone mapping
+├── caustic.rs          CausticPipeline — refracted-light splat compute
+│                       pass driving the scalar accumulator (#321)
+├── composite.rs        CompositePipeline — direct + denoised indirect +
+│                       caustic reassembly, ACES tone mapping
 ├── ssao.rs             SSAO compute pipeline (noise texture, kernel)
+├── reflect.rs          SPIR-V reflection cross-check (`rspirv`) — every
+│                       descriptor layout validated against shader bindings
+│                       at pipeline create time (#427)
 ├── texture.rs          DDS upload (RGBA + BC*), staging, layout transitions
 ├── dds.rs              DDS header parser (BC1/BC3/BC5 + DX10 extended, mips)
 └── context/
@@ -155,24 +186,40 @@ everything down in reverse order under `device_wait_idle()`.
 3. Reset the fence and the command buffer
 4. Walk the ECS via `build_render_data` to collect visible mesh handles,
    transforms, materials, light sources, decals, skinned-mesh bone offsets
-5. Update the camera UBO (view + proj + **Halton jitter** for TAA)
+5. Update the camera UBO (view + proj + **Halton jitter** for TAA;
+   `flags.x` = 1.0 only when ray_query is supported AND the TLAS is
+   written for this frame, used by the shaders' RT-enable gates)
 6. Update the scene SSBO with the per-frame light array (point/spot/dir)
 7. Dispatch `cluster_cull.comp` to assign lights to froxel clusters
-8. Rebuild/refit the TLAS over visible BLASes (UPDATE mode when BLAS
-   layout is unchanged; full rebuild otherwise). HOST→AS_BUILD memory
-   barrier before the ray-query consumers.
-9. Begin the G-buffer render pass. Instanced draw batching merges
-   identical `mesh_handle` draws; `last_mesh_handle` cache avoids
-   redundant descriptor binds. Global geometry SSBO means no per-draw
-   VB/IB rebind — only push constants (`model_index`, `bone_offset`,
-   `material_index`) change per draw.
-10. Dispatch `ssao.comp` for screen-space ambient occlusion.
-11. Dispatch `svgf_temporal.comp` for indirect-light denoise.
-12. Dispatch the composite pass to assemble `direct + indirect * albedo`
-    with ACES tone mapping.
-13. Dispatch `taa.comp` for temporal AA; ping-pong history images.
-14. Blit/copy into the swapchain color attachment.
-15. End command buffer, submit to the graphics queue with semaphore
+8. **Skin chain** (M29) — for every skinned entity in the visible draw
+   list:
+    - Dispatch `skin_compute.comp` to write pre-skinned vertices into
+      the entity's `SkinSlot` output SSBO (read by step 9's BLAS refit)
+    - Emit `COMPUTE_WRITE → AS_BUILD_INPUT_READ` barrier
+    - Refit the per-skinned-entity BLAS (`mode = UPDATE`, `src == dst`)
+      against the new vertex data; `record_scratch_serialize_barrier`
+      between iterations so multiple skinned actors don't race the
+      shared scratch buffer (#642)
+    - Emit `AS_BUILD_WRITE → AS_BUILD_INPUT_READ` barrier
+9. Rebuild/refit the TLAS over visible BLASes — `build_tlas` overrides
+   the per-mesh BLAS lookup with `skinned_blas[entity_id]` whenever
+   `DrawCommand.bone_offset != 0`. HOST→AS_BUILD memory barrier
+   before the ray-query consumers.
+10. Begin the G-buffer render pass. Instanced draw batching merges
+    identical `mesh_handle` draws; `last_mesh_handle` cache avoids
+    redundant descriptor binds. Global geometry SSBO means no per-draw
+    VB/IB rebind — only push constants (`model_index`, `bone_offset`,
+    `material_index`) change per draw.
+11. Dispatch `ssao.comp` for screen-space ambient occlusion.
+12. Dispatch `svgf_temporal.comp` for indirect-light denoise.
+13. Dispatch `caustic_splat.comp` to project refracted-light splats
+    into the scalar caustic accumulator (skipped when no TLAS handle
+    is available for the frame — #640).
+14. Dispatch the composite pass to assemble
+    `direct + indirect * albedo + caustic` with ACES tone mapping.
+15. Dispatch `taa.comp` for temporal AA; ping-pong history images.
+16. Blit/copy into the swapchain color attachment.
+17. End command buffer, submit to the graphics queue with semaphore
     sync, present to the swapchain.
 
 Errors during step recording propagate as Rust `Result`s and abort the
@@ -204,21 +251,32 @@ Located in [`vulkan/acceleration.rs`](../../crates/renderer/src/vulkan/accelerat
   query reports the compacted size; a compact copy is allocated at that
   exact size and the original BLAS is queued for `deferred_destroy`. 20–50%
   memory reduction on typical cells.
-- **BLAS LRU eviction**: 256 MB budget. When a new build would exceed
+- **BLAS LRU eviction**: 1 GB budget. When a new build would exceed
   budget, the LRU entries are evicted and their instances drop out of the
   next TLAS rebuild.
+- **Per-skinned-entity BLAS** (M29): keyed by `EntityId`, built sync at
+  cell load with `ALLOW_UPDATE | PREFER_FAST_BUILD`, then refit per
+  frame via `mode = UPDATE` (`src == dst`) against the M29 skin
+  compute output. The TLAS-build path looks up
+  `skinned_blas[entity_id]` whenever `DrawCommand.bone_offset != 0`,
+  so static draws keep the per-mesh `blas_entries` lookup unchanged.
 - **TLAS per frame**: rebuilt every frame from the visible mesh handles
   and their world transforms, with frustum culling against the camera.
   Scratch memory is amortized across frames. Instance data is staged
   through a **device-local instance buffer** (#289) with a two-stage
   barrier chain (HOST_WRITE→TRANSFER_READ→AS_READ). `MAX_INSTANCES = 8192`.
-- **Ray query in the fragment shader**: four query sites — shadow,
-  reflection, 1-bounce GI, window-portal — all against the same TLAS
-  (set 1, binding 2). Shadow query is driven by the streaming-RIS
-  reservoir pipeline (M31.5). Reflection rays get exponential distance
-  falloff + roughness-driven angular jitter (#320). 1-bounce GI samples
-  cosine-weighted hemisphere directions; far hits fall back to a
-  simplified cost model beyond the GI ray horizon.
+- **Ray query in the fragment shader + caustic splat compute**: shadow,
+  reflection, 1-bounce GI, window-portal, and refracted-light caustic
+  rays — all against the same TLAS (set 1, binding 2). Shadow query is
+  driven by the streaming-RIS reservoir pipeline (M31.5). Reflection
+  rays get exponential distance falloff + roughness-driven angular
+  jitter (#320). 1-bounce GI samples cosine-weighted hemisphere
+  directions with `tMin = 0.05` matching the bias (#669); far hits fall
+  back to a simplified cost model beyond the GI ray horizon. Caustic
+  ray uses `OPAQUE | TerminateOnFirstHit` (#640) — refracted rays
+  through small glass volumes only need any-hit semantics. Every
+  consumer is gated on `sceneFlags.x > 0.5` (rt_flag = ray_query
+  supported AND TLAS written this frame).
 
 The `VK_KHR_ray_query` extension is queried at device-pick time. When it's
 not present, the fragment shader falls back to non-shadowed multi-light.

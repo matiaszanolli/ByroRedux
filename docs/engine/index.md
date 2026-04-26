@@ -11,7 +11,7 @@ built, where the code lives, and what guarantees it makes.
 | [Architecture Overview](architecture.md) | all | Design principles, workspace layout, crate dependency graph |
 | [ECS](ecs.md) | core | Components, storage backends, queries, scheduler, resources |
 | [Vulkan Renderer](renderer.md) | renderer | Init chain, RT pipeline, multi-light, BLAS/TLAS, swapchain |
-| [NIF Parser](nif-parser.md) | nif | ~210 block types, version handling, robustness, parse-rate matrix |
+| [NIF Parser](nif-parser.md) | nif | Block-type dispatch (~190 entries), version handling, robustness; per-game parse-rate matrix in [Game Compatibility](game-compatibility.md) |
 | [Archives (BSA + BA2)](archives.md) | bsa | BSA v103/104/105, BA2 v1/2/3/7/8, GNRL + DX10 |
 | [ESM Records](esm-records.md) | plugin | Cell loading, items, NPCs, factions, leveled lists |
 | [Asset Pipeline](asset-pipeline.md) | byroredux, nif, bsa | TextureProvider, mesh cache, NIF→ECS import |
@@ -67,24 +67,24 @@ built, where the code lives, and what guarantees it makes.
 
 ## Stats
 
-| Metric                              | Value          |
-|-------------------------------------|----------------|
-| Rust source files                   | 188            |
-| Lines of Rust                       | ~81,000        |
-| Workspace members                   | 15 (13 engine crates + binary + debug CLI) |
-| Unit tests passing                  | 888            |
-| Integration tests (`#[ignore]`'d)   | 35             |
-| NIFs in per-game integration sweeps | 177,286        |
-| Per-game NIF parse success rate     | 100% (7 games) |
-| External dependency crates          | ~30            |
-| ESM record categories indexed       | 18 (items, CONT, LVLI/LVLN/LVLC, NPC/CREA, RACE/CLAS/FACT, GLOB/GMST, WTHR/CLMT, SCPT, WATR/NAVI/NAVM/REGN/ECZN/LGTM/HDPT/EYES/HAIR) |
-| FO3 SCPT records parsed             | 1257 (on-disk) |
-| Megaton Player House REFRs          | 929 (on-disk) — FPS claim pending re-bench (#456) |
+Live counts (test totals, LOC, source files, parse-rate matrix,
+bench-of-record) live in [ROADMAP.md → Project Stats](../../ROADMAP.md).
+This doc deliberately does **not** mirror those numbers — every fact
+should live in exactly one home, and ROADMAP is refreshed at every
+session-close ritual.
 
-Numbers above are accurate as of session 12 closeout (2026-04-20).
-For the live counts run `cargo test` and
-`cargo test -- --ignored` (covers the real-master integration tests
-under `BYROREDUX_*_DATA` env vars).
+For an at-the-keyboard live count:
+
+```bash
+cargo test --workspace --lib 2>&1 | grep "^test result:" | \
+    awk '{s+=$4} END {print "tests:", s}'
+find . -name "*.rs" -not -path "*/target/*" -not -path "*/tests/*" | \
+    grep -v "/tests/" | xargs wc -l | tail -1
+```
+
+Per-game NIF parse-rate sweeps live in
+[Game Compatibility](game-compatibility.md). ESM record categories
+indexed are listed in [ESM Records](esm-records.md).
 
 ## Reading order
 

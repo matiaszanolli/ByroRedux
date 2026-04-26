@@ -322,7 +322,10 @@ variants — material override lists, bone LOD metadata), `BSBound`,
 `BSEffect/Lighting Shader Property {Float,Color}Controller`,
 `NiGeomMorpherController`, `NiMorphData`, `NiUVController` +
 `NiUVData` (scrolling UV animation for water / fire / banners — see #154),
-`NiSequenceStreamHelper` (pre-Skyrim KF animation root).
+`NiFlipController` (texture-flipbook driver — fire / smoke / explosion
+cross-strips — channel emission lands in #545), `NiSequenceStreamHelper`
+(pre-Skyrim KF animation root), `NiLookAtInterpolator` (replaces the
+deprecated `NiLookAtController` from Oblivion-era cinematics).
 Interpolators: `NiTransformInterpolator`, `BSRotAccumTransfInterpolator`,
 `NiTransformData`/`NiKeyframeData`, `NiFloatInterpolator`, `NiFloatData`,
 `NiPoint3Interpolator`, `NiPosData`, `NiBoolInterpolator`, `NiBoolData`,
@@ -332,7 +335,10 @@ by `NiControllerManager` blending.
 ### Skinning
 `NiSkinInstance`, `NiSkinData` (per-bone transforms + vertex weights),
 `NiSkinPartition`, `BsDismemberSkinInstance`, `BSSkin::Instance`,
-`BSSkin::BoneData`. (GPU skinning runtime is M29; the parser is done.)
+`BSSkin::BoneData`. M29 GPU skinning Phase 1+2 ships end-to-end through
+the per-skinned-entity BLAS refit; #638 added the SSE
+`BSTriShape` 12-byte VF_SKINNED block decoder so SSE skin payloads
+flow from parser through to compute.
 
 ### Particle systems (~48 types)
 `NiParticles`, `NiParticleSystem`, `NiMeshParticleSystem`,
@@ -506,14 +512,19 @@ every known CRITICAL / HIGH audit item. Known follow-ups that
 - ~~Starfield BA2 v3 DX10 textures~~ — resolved in session 7. The issue
   was a missing compression method field in the v3 header + LZ4 block
   compression. See [Archives — Resolved gaps](archives.md#resolved-gaps-session-7).
-- **NiUV animation importer** (#154 follow-up) — `NiUVController` +
-  `NiUVData` parse correctly but the `anim.rs` importer doesn't yet
-  emit scrolling-UV channels. Needs new `FloatTarget::UvOffsetU/V` +
-  `UvTileU/V` variants. Pure parser work was the blocker.
-- **NiSequenceStreamHelper animation importer** (#144 follow-up) —
-  parses cleanly but the `anim.rs` importer doesn't yet build
-  `AnimationClip`s from its controller chain. Tracked alongside #107
-  (Oblivion string-palette format for `NiControllerSequence`).
+- ~~**NiUV animation importer** (#154 follow-up)~~ — closed: `anim.rs`
+  emits `FloatTarget::UvOffsetU/V/UvScaleU/V` channels both per-clip
+  (KF) and per-NIF-embedded paths.
+- ~~**NiSequenceStreamHelper animation importer** (#144 follow-up)~~ —
+  closed alongside #402: Oblivion string-palette resolution shipped,
+  `import_kf` now produces clips for every Oblivion KF on disk
+  (`NiTransformData` parse went 3 → 40,623 in #402's measured impact).
+- **NiFlipController GPU sample** (#545 follow-up) — channel data is
+  captured into `AnimationClip::texture_flip_channels` (resolved
+  source-texture filenames + cycle keys); the renderer-side
+  sample-and-bind that drives `GpuInstance.albedo_texture` from the
+  sampled flipbook position is deferred (matches the `MorphWeight`
+  precedent — channel data first, GPU plumbing follows).
 - **NiLight FO4+ inheritance flip** (#156 follow-up) — FO4+ (BSVER
   ≥ 130) reparents `NiLight` directly onto `NiAVObject`, skipping the
   `NiDynamicEffect` base. Not implemented until FO4 cell rendering

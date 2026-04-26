@@ -3,39 +3,22 @@
 ByroRedux uses two layers of tests:
 
 1. **Unit tests** (`#[cfg(test)] mod tests` inside source files) — fast,
-   no game data required, run on every `cargo test`. **888 passing**
-   (Session 12 closeout, 2026-04-20).
+   no game data required, run on every `cargo test`.
 2. **Integration tests** (`#[ignore]`'d by default) — exercise real game
    archives, parse rates, and end-to-end byte-level round-trips. Need
    the relevant game installed and resolve paths via env vars or Steam
-   defaults. Run with `cargo test ... -- --ignored`. **35 in total.**
+   defaults. Run with `cargo test ... -- --ignored`.
 
 The split keeps CI fast and game-data-free while letting developers run
-the heavy sweeps locally on demand.
+the heavy sweeps locally on demand. Live test totals (workspace +
+ignored) live in [ROADMAP.md → Project Stats](../../ROADMAP.md).
 
-## Per-crate test counts
+## At-the-keyboard live count
 
-Numbers are accurate at the time of writing (Session 12 closeout,
-2026-04-20). For a live count, run
-`cargo test 2>&1 | awk '/test result/ {pass+=$4; fail+=$6} END {printf "pass=%d fail=%d\n", pass, fail}'`.
-
-| Crate | Unit tests | Ignored |
-|---|---|---|
-| `byroredux-core` | 207 | — |
-| `byroredux-nif` | 340+ | 9 (parse_real_nifs) |
-| `byroredux-plugin` | 136 | 11 (FO3 CREA/LVLC/SCPT/Megaton + FNV/Skyrim/Oblivion) |
-| `byroredux-physics` | 17 | — |
-| `byroredux-renderer` | 62 | — |
-| `byroredux-papyrus` | 45 | — |
-| `byroredux-scripting` | 8 | — |
-| `byroredux-bsa` | 19 | 7 |
-| `byroredux-debug-protocol` | 4 | — |
-| `byroredux-debug-server` | — | — |
-| `byroredux-platform` | — | — |
-| `byroredux` (binary) | 37 | 2 |
-| Integration: `synthetic_fixtures.rs` | 9 | — |
-| Integration: `parse_real_nifs.rs` | 3 | (included above) |
-| **Total** | **888** | **~35** |
+```bash
+cargo test --workspace --lib 2>&1 | grep "^test result:" | \
+    awk '{s+=$4} END {print s}'
+```
 
 ## Unit test coverage by area
 
@@ -124,7 +107,7 @@ the `nif_stats` example binary in `crates/nif/examples/nif_stats.rs`.
 ## Running tests
 
 ```bash
-# Default — fast, no game data required (~888 tests)
+# Default — fast, no game data required.
 cargo test
 
 # A single crate
@@ -160,9 +143,12 @@ cargo run -p byroredux-nif --example nif_stats --release -- \
   audit sweep. Each test drives `parse_block` on a minimal Oblivion-shaped
   payload and asserts *exact* stream consumption, catching any future
   byte-width or version-gate drift on v20.0.0.5's block-sizes-less path.
-- **M28 Phase 1** added the `byroredux-physics` crate with 14 unit tests
+- **M28 Phase 1** added the `byroredux-physics` crate with unit tests
   proving the Rapier bridge end-to-end: shape mapping, dynamic bodies
   falling under gravity, and static floors blocking them.
+- **#638** extended the BSTriShape skin payload tests (SSE 12-byte
+  VF_SKINNED block decode) so the M29 GPU pre-skinning path has
+  parser-side regression coverage.
 
 See [Game Compatibility](game-compatibility.md) for the per-game parse
 rate matrix the integration tests produce.

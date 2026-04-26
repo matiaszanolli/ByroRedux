@@ -338,3 +338,43 @@ impl Component for Name {
 Sparse storage — most entities (static geometry, particles) have no name.
 Only actors, triggers, markers, and quest-relevant objects need one.
 Equality is integer comparison via `FixedString`.
+
+### Component inventory
+
+The full set lives in
+[`crates/core/src/ecs/components/`](../../crates/core/src/ecs/components/).
+Grouped by domain:
+
+| Domain | Components |
+|---|---|
+| Hierarchy | `Parent`, `Children`, `CellRoot`, `Transform` (Packed), `GlobalTransform`, `LocalBound`, `WorldBound` |
+| Identity | `Name` (Sparse, FixedString-keyed), `FormIdComponent` |
+| Render | `MeshHandle`, `Material`, `LightSource`, `Camera` + `ActiveCamera`, `Billboard`, `BSXFlags`, `SceneFlags` |
+| Skinning | `SkinnedMesh` (M29 — bone palette, weights, partition data) |
+| Animation outputs | `AnimatedVisibility`, `AnimatedAlpha`, `AnimatedDiffuseColor`, `AnimatedAmbientColor`, `AnimatedSpecularColor`, `AnimatedEmissiveColor`, `AnimatedShaderColor` |
+| Physics | `RigidBody`, `Collider` (in `byroredux-physics`) |
+
+#### The animated-color split (#517)
+
+Pre-#517 every color channel wrote into a single `AnimatedColor` slot,
+so an emissive pulse on the same entity clobbered a diffuse tint and
+vice-versa. Each material channel now lives in its own
+`SparseSetStorage` so an entity carrying both a diffuse and an
+emissive controller keeps both animations independent. The matching
+animation systems live in
+[`byroredux/src/systems.rs::apply_color_channels`](../../byroredux/src/systems.rs)
+and route by `ColorChannel.target` to the right component.
+
+## Lock-ordering policy
+
+Multi-component queries acquire RwLocks in `TypeId` sort order
+(`query_2_mut`, `query_3_mut`, etc.) regardless of declaration order.
+This guarantees deadlock-freedom across systems that take
+overlapping component sets — the global lock-order graph in
+`byroredux_core::sync` (opt-in) cross-checks at runtime in debug
+builds, catching ABBA cycles before they can materialise.
+
+Same-type double-lock panics immediately with a clear message
+(`"already write-locked"`) rather than blocking forever, so the
+classic mistake of `query_2_mut::<Foo, Foo>()` is loud at the
+boundary.

@@ -202,8 +202,10 @@ for the per-step breakdown.
 For each `ImportedCollision`, the loader composes the REFR transform with
 the NIF-internal collision transform and spawns an entity carrying the
 collision shape and rigid body components. The shapes come from the
-N23.6 Havok parser and are inert today — they'll be consumed by M28
-physics when that lands.
+N23.6 Havok parser and feed Rapier3D via `byroredux-physics` (M28
+Phase 1) — dynamic bodies fall under gravity, static floors block
+them. Constraints / ragdolls remain parse-only pending M29's full
+ragdoll integration.
 
 ### 11. Mesh GPU upload
 
