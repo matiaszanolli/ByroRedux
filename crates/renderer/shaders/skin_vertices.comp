@@ -63,7 +63,8 @@ layout(push_constant) uniform PushConstants {
     // Where this mesh's bone palette starts in the BoneBuffer (in
     // mat4 entries).
     uint bone_offset;
-    uint _pad;
+    // 12 B total — std430 doesn't require 16-B block alignment when
+    // no vec4 follows; layout matches Rust `SkinPushConstants` exactly.
 };
 
 void main() {

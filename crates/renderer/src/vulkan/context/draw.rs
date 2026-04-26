@@ -442,7 +442,6 @@ impl VulkanContext {
                             vertex_offset: mesh.global_vertex_offset,
                             vertex_count: mesh.vertex_count,
                             bone_offset: dc.bone_offset,
-                            _pad: 0,
                         };
                         dispatches.push((
                             dc.entity_id,

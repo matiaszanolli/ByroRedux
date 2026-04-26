@@ -36,8 +36,9 @@ pub const VERTEX_STRIDE_BYTES: u64 = (VERTEX_STRIDE_FLOATS as u64) * 4;
 const WORKGROUP_SIZE: u32 = 64;
 
 /// Push constant payload — matches `skin_vertices.comp::PushConstants`.
-/// 16 bytes (4 × u32) keeps the layout in the safe portion of every
-/// device's `maxPushConstantsSize` (128 B minimum).
+/// 12 bytes (3 × u32). std430 doesn't require 16-B block alignment when
+/// no vec4 follows, so we ship the tight layout. Well inside the 128 B
+/// `maxPushConstantsSize` floor every Vulkan implementation guarantees.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SkinPushConstants {
@@ -49,7 +50,6 @@ pub struct SkinPushConstants {
     /// mat4 entries). Must match the value the inline-skinning vertex
     /// shader reads from `GpuInstance.boneOffset`.
     pub bone_offset: u32,
-    pub _pad: u32,
 }
 
 const PUSH_CONSTANTS_SIZE: u32 = std::mem::size_of::<SkinPushConstants>() as u32;
@@ -397,8 +397,11 @@ impl SkinComputePipeline {
             &[descriptor_set],
             &[],
         );
-        // SAFETY: `SkinPushConstants` is `repr(C)` with all u32 fields,
-        // 16 bytes, no padding. The slice is contiguous + aligned.
+        // SAFETY: `SkinPushConstants` is `repr(C)` with three u32 fields,
+        // 12 bytes, no interior padding. The slice is contiguous +
+        // aligned (`size_of::<SkinPushConstants>()` matches the
+        // shader-side `PushConstants` block byte-for-byte; mismatched
+        // shape is caught by `push_constants_size_is_12_bytes` test).
         let bytes = std::slice::from_raw_parts(
             (&push as *const SkinPushConstants) as *const u8,
             PUSH_CONSTANTS_SIZE as usize,
@@ -458,8 +461,12 @@ mod tests {
     /// assert here catches the common drift case (adding a field
     /// without updating both sides).
     #[test]
-    fn push_constants_size_is_16_bytes() {
-        assert_eq!(PUSH_CONSTANTS_SIZE, 16);
-        assert_eq!(std::mem::size_of::<SkinPushConstants>(), 16);
+    fn push_constants_size_is_12_bytes() {
+        // Three u32 fields, no trailing pad. std430 doesn't require
+        // 16-B block alignment when no vec4 follows. Pinning the size
+        // catches the common drift case (adding a field without
+        // updating both Rust + GLSL sides).
+        assert_eq!(PUSH_CONSTANTS_SIZE, 12);
+        assert_eq!(std::mem::size_of::<SkinPushConstants>(), 12);
     }
 }
