@@ -2,7 +2,7 @@
 //!
 //! Functions: parse_modl_group, parse_ltex_group, parse_txst_group, parse_scol_group, parse_pkin_group, parse_mswp_group.
 
-use super::helpers::{read_form_id, read_form_id_array, read_zstring};
+use super::helpers::read_zstring;
 use super::*;
 
 /// Walk a top-level record group and extract any record with a MODL sub-record.
