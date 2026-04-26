@@ -16,10 +16,10 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 | Aspect            | State                                                              |
 |-------------------|--------------------------------------------------------------------|
 | NIF format        | v20.0.0.5 (no block sizes, inline strings, u16 flags)              |
-| BSA format        | v103 — archive opens, **decompression NOT WORKING** (open blocker) |
+| BSA format        | v103 — archive opens AND extracts cleanly (147 629 / 147 629 vanilla files; nif_stats round-trips 8032 NIFs through the v103 decompression path) |
 | ESM parser        | Stub                                                               |
-| Parse rate        | 100.00% on 8032 NIFs (header fixes + N26 coverage sweep)           |
-| Cell loading      | Deferred until BSA v103 decompression lands                        |
+| Parse rate        | 96.24% clean (7 730 / 8 032), 99.99% recoverable; 1 hard-fail (`marker_radius.nif`, #698)            |
+| Cell loading      | Interior renders end-to-end (Anvil Heinrich Oaken Halls). Exterior blocked on TES4 worldspace + LAND wiring (same shape as FO3 was — the original "BSA decompression" blocker is empirically refuted) |
 | Reference data    | `/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data/`           |
 
 ### Known Quirks (do NOT re-derive — verify still hold)
@@ -53,7 +53,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 ### Dimension 2: BSA v103 Archive
 **Subagent**: `general-purpose`
 **Entry points**: `crates/bsa/src/archive.rs`
-**Checklist**: BSA v103 header recognition (version byte). Hash function produces correct folder/file hashes. Decompression path — **this is the known blocker**. Identify the exact failure mode: does zlib fail on truncated streams? Is the compression flag being read correctly? Is the hash-to-offset table walked correctly? Is there a v103-specific field layout difference vs v104 that the reader is missing? Check whether `meshes/*.nif` extraction succeeds even for uncompressed entries. Report the smallest reproducer.
+**Checklist**: BSA v103 header recognition (version byte) — **regression guard, decompression has been working since the 2026-04-17 sweep that confirmed 147 629 / 147 629 vanilla extractions clean**. Pre-2026-04-17 audits (and pre-#699 doc references) framed v103 as a blocker; that premise is dead. Verify the 16-byte folder-record offset is still respected (different from v104's 24 B), the bit 7-10 flag semantics still resolve via the v103 path, hash function still produces correct folder/file hashes, and full-archive sweep stays at 100 %. Only escalate to "open finding" if `meshes/*.nif` extraction starts failing on a previously-clean archive. Look for misleading diagnostics that paint v103 as broken without measurement.
 **Output**: `/tmp/audit/oblivion/dim_2.md`
 
 ### Dimension 3: ESM Record Coverage
@@ -77,7 +77,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 ### Dimension 6: Blockers & Game-Specific Quirks
 **Subagent**: `general-purpose`
 **Entry points**: `ROADMAP.md` (Known Issues), `docs/audits/`
-**Checklist**: Is BSA v103 decompression still the primary blocker? Does the `--bsa` CLI path work for Oblivion archives (open + list, even if extract fails)? Are there Oblivion-specific record types the cell loader would need beyond the FNV-aligned set? Are there animation blocks that parse but cannot play because scene-graph name resolution is missing? Does the pre-Gamebryo v3.3.0.13 fallback log as `warn` or `debug` (spam risk on full archive sweeps)? Any 100%-parse-rate NIFs that would still render wrong visually (e.g., legacy particle emitters that parse but don't route to the renderer)?
+**Checklist**: Real exterior blocker is TES4 worldspace + LAND wiring (same shape FO3 was in pre-cell-loader era — *not* BSA v103 decompression, which has been working end-to-end since 2026-04-17; see Dim 2 regression guard). Does the `--bsa` CLI path open + list + extract Oblivion archives end-to-end? Are there Oblivion-specific record types the cell loader would need beyond the FNV-aligned set? Are there animation blocks that parse but cannot play because scene-graph name resolution is missing? Does the pre-Gamebryo v3.3.0.13 fallback log as `warn` or `debug` (spam risk on full archive sweeps)? Any 100 %-parse-rate NIFs that would still render wrong visually (e.g., legacy particle emitters that parse but don't route to the renderer)? Don't re-derive "v103 is broken" — that finding has been dead since 2026-04-17 (#699).
 **Output**: `/tmp/audit/oblivion/dim_6.md`
 
 ## Phase 3: Merge
@@ -86,7 +86,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 2. Combine into `docs/audits/AUDIT_OBLIVION_<TODAY>.md` with structure:
    - **Executive Summary** — Current compatibility level (NIF parse, archive extract, ESM parse, render end-to-end), top blockers in priority order.
    - **Dimension Findings** — Grouped by severity per dimension.
-   - **Blocker Chain** — Sequential list of what must land to reach "interior cell renders" (e.g., BSA v103 decompression → minimal TES4 ESM → ...).
+   - **Blocker Chain** — Sequential list of what must land to reach "exterior cell renders" — interiors already work end-to-end (Anvil Heinrich Oaken Halls). Real chain today is TES4 worldspace + LAND wiring → CELL exterior REFR placement → exterior bench. The pre-#699 chain rooted in "BSA v103 decompression" is a stale framing the audit must NOT regenerate.
    - **Regression Guard List** — Issues previously fixed that this audit verified are still correct (NiTexturingProperty u32 count, BSStreamHeader conditional, `user_version` threshold).
 3. Remove cross-dimension duplicates.
 

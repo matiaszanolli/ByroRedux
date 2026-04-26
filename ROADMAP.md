@@ -66,9 +66,13 @@ scripting (events + timers) exists; the Papyrus runtime consuming
 
 **What doesn't work yet.** No skinned rendering (every NPC is in
 bind pose, M29). No world streaming — cells load once and persist
-(M40). Oblivion needs BSA v103 decompression before its cells
-load. Weather transitions (fade between WTHR states) and cloud layers
-2/3 closed in M33.1 (`2bfb622`).
+(M40). Oblivion exterior needs TES4 worldspace + LAND wiring
+(same shape FO3 was in pre-cell-loader era — the long-running "BSA
+v103 decompression" framing is a stale premise refuted by the
+2026-04-17 + 2026-04-25 sweeps; v103 extracts 147 629 / 147 629
+vanilla files end-to-end, see #699). Weather transitions (fade
+between WTHR states) and cloud layers 2/3 closed in M33.1
+(`2bfb622`).
 
 ### Compatibility matrix
 
@@ -113,7 +117,7 @@ typically gates a specific milestone.
 | PERF-1 | CPU frame-time audit           | ~~(1) Fix bench~~ done `e6e8091`. ~~(2) Profile CPU hotpath~~ done `b7deb4c` — **we are GPU-bound**: fence_wait=4.28 ms (76%) of 5.64 ms wall frame. brd=0.87 ms, ssbo=0.03 ms, tlas=0.02 ms. CPU work is not the bottleneck. (3) RT glass ray cost in `triangle.frag` is the real target — refraction+reflection on Prospector's bottle-heavy interior drives the GPU stall. See Tier 5 renderer polish. | —                  |
 | ~~M33.1~~ | ~~Sky & atmosphere (follow-up)~~ | **Closed** `2bfb622`. Cloud layers 2/3 (ANAM/BNAM) sampled with parallax scroll. Weather fades over 8 s via `WeatherTransitionRes` + post-TOD-sample color blend. All 4 cloud layers active in exterior cells.                                                                                              | —                  |
 | ~~M34~~ | ~~Exterior lighting~~         | **Closed.** Per-frame sun arc from game time in `weather_system`. TOD ambient + fog + directional from WTHR NAM0. Interior fill at 0.6× + `radius=-1` (unshadowed) in `render.rs`; `triangle.frag` line 1321 gates RT shadow on `radius >= 0`. All pieces were complete before this session.                                | —                  |
-| ~~M32.5~~ | ~~Per-game cell loader parity~~ | **Closed.** Skyrim SE WhiterunBanneredMare 1258 entities @ 237 FPS. FO4 MedTekResearch01 7434 entities @ 90 FPS. No code changes — session 14 infrastructure was complete. Oblivion exterior still blocked on BSA v103 decompression.                                                                     | —                  |
+| ~~M32.5~~ | ~~Per-game cell loader parity~~ | **Closed.** Skyrim SE WhiterunBanneredMare 1258 entities @ 237 FPS. FO4 MedTekResearch01 7434 entities @ 90 FPS. No code changes — session 14 infrastructure was complete. Oblivion exterior gated on TES4 worldspace + LAND wiring (same shape FO3 was — *not* BSA v103 decompression; that was a stale framing closed via #699).                                                                     | —                  |
 | ~~R6a~~ | ~~Prospector re-bench~~       | **Closed.** 192.8 FPS / 5.19 ms at `e6e8091` with wall-clock bench. Scene is glass-heavy (RT refraction/reflection); representative tough-case FNV interior.                                                                                                                                                | —                  |
 
 ### Tier 2 — Actors visible & animated (blocks "cells are populated")
@@ -327,7 +331,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] ~~RT shadows / reflections / GI see bind-pose only on skinned meshes~~ — **closed (M29 Phase 1.5+2)** in `1ae235b`. New `SkinComputePipeline` pre-skins vertices each frame; per-skinned-entity BLAS (keyed on `EntityId`, separate from the per-mesh `blas_entries` table) refits via `VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR` against the compute output. TLAS build relocated to after the skin chain so RT picks up this-frame's pose with zero lag. Phase 3 (raster reads pre-skinned vertices, dropping inline skinning math from `triangle.vert`) deferred to **M29.3** — gated on M41 NPC rollout proving the compute + BLAS-refit chain stable on visible content.
 - [ ] NPCs + creatures don't spawn as ECS entities even when parsed (M41 / M41.0)
 - [ ] No world streaming — entire cell re-imported from scratch on every load (M40)
-- [ ] BSA v103 (Oblivion) decompression not working — blocks Oblivion exterior cell loading
+- [x] ~~BSA v103 (Oblivion) decompression not working~~ — **stale premise, closed via #699**. v103 archive opens AND extracts cleanly: 147 629 / 147 629 vanilla files across all 17 Oblivion BSAs (2026-04-17 + 2026-04-25 sweeps); `nif_stats` round-trips 8032 NIFs through the v103 path. The real Oblivion exterior blocker is TES4 worldspace + LAND wiring (same shape FO3 was) — already covered by the M40 / M41 / "exterior renderer" Tier-1/2 plan, no separate tracker needed.
 - [x] Skyrim + FO4 cells not wired through `cell_loader` — **closed M32.5**, both render end-to-end
 
 ### Open — Tier 3 / 4 gaps
