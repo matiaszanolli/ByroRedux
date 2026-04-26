@@ -78,11 +78,20 @@ void main() {
     vec2 texel = params.screen.zw;
     vec2 uv = (vec2(pix) + 0.5) * texel;
 
-    vec3 currRgb = texelFetch(uCurrHdr, pix, 0).rgb;
+    // Read RGBA together: HDR.a carries the alpha-blend marker bit
+    // that the main pass authors per fragment. Pre-fix this shader
+    // wrote `vec4(rgb, 1.0)` at all three imageStore sites and clobbered
+    // that marker — harmless today (composite forwards .a to the
+    // swapchain which ignores it) but a future composite branch that
+    // gates on alpha (glass tint / decal markers) would silently see
+    // a zeroed bit. See #676 / DEN-6.
+    vec4 curr    = texelFetch(uCurrHdr, pix, 0);
+    vec3 currRgb = curr.rgb;
+    float currA  = curr.a;
 
     // First frame or after swapchain resize: history is garbage, pass current.
     if (params.params.y > 0.5) {
-        imageStore(uOutput, pix, vec4(currRgb, 1.0));
+        imageStore(uOutput, pix, vec4(currRgb, currA));
         return;
     }
 
@@ -111,7 +120,7 @@ void main() {
     bool alphaBlend = (currMid & 0x8000u) != 0u;
 
     if (offscreen || disocclusion || alphaBlend) {
-        imageStore(uOutput, pix, vec4(currRgb, 1.0));
+        imageStore(uOutput, pix, vec4(currRgb, currA));
         return;
     }
 
@@ -154,5 +163,5 @@ void main() {
     vec3 outRgb = (currRgb * wCurr * alpha + clampedHist * wHist * (1.0 - alpha))
                 / max(wCurr * alpha + wHist * (1.0 - alpha), 1e-6);
 
-    imageStore(uOutput, pix, vec4(max(outRgb, vec3(0.0)), 1.0));
+    imageStore(uOutput, pix, vec4(max(outRgb, vec3(0.0)), currA));
 }
