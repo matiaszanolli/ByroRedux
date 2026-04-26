@@ -1098,11 +1098,23 @@ pub(super) fn extract_material_info_from_refs(
         }
     }
 
-    // Zero out specular strength when the property is disabled. We do
-    // this once at the end so later code (pipeline selection, draw
-    // command population) doesn't need to know about the flag.
+    // Zero out specular strength **and color** when the property is
+    // disabled. We do this once at the end so later code (pipeline
+    // selection, draw command population) doesn't need to know about
+    // the flag.
+    //
+    // #696 — clearing `specular_strength` alone is insufficient on
+    // glass-classified meshes. The IOR glass branch in
+    // `triangle.frag:1004` does `specStrength = max(specStrength,
+    // 3.0)`, which silently re-promotes the spec term on every glass
+    // surface even when the NIF said `NiSpecularProperty { flags: 0 }`.
+    // The downstream BRDF multiplies (`specStrength * specColor` at
+    // lines 1293 + 1396) then gate on the *color* — zeroing it here
+    // collapses both glass-IOR and standard paths to zero spec
+    // contribution as the original engine would.
     if !info.specular_enabled {
         info.specular_strength = 0.0;
+        info.specular_color = [0.0, 0.0, 0.0];
     }
 
     info
@@ -2569,6 +2581,90 @@ mod texture_slot_3_4_5_tests {
             texture_arrays: Vec::new(),
             shader_type_data: ShaderTypeData::None,
         }
+    }
+
+    #[test]
+    fn nispecular_disabled_clears_color_for_glass_ior_path() {
+        // #696 / O4-04 — when NiSpecularProperty has bit 0 clear
+        // (specular disabled), pre-fix only `specular_strength` was
+        // zeroed. The IOR glass branch in triangle.frag:1004 does
+        // `specStrength = max(specStrength, 3.0)`, silently re-
+        // enabling spec on glass-classified meshes. The downstream
+        // BRDF gates on `specStrength * specColor` — clearing the
+        // color too kills the contribution on every path, including
+        // the IOR glass re-promotion.
+        //
+        // Synthesise a scene where a NiTriShape's properties list
+        // carries: a NiMaterialProperty (gives a non-trivial spec
+        // color via `info.specular_color = ...`), then a disabled
+        // NiSpecularProperty. Pre-fix: specular_color stayed at the
+        // material's authored value. Post-fix: zeroed alongside
+        // specular_strength.
+        use crate::blocks::properties::{NiFlagProperty, NiMaterialProperty};
+        use crate::types::NiColor;
+
+        let mat_prop = NiMaterialProperty {
+            net: empty_net(),
+            ambient: NiColor { r: 1.0, g: 1.0, b: 1.0 },
+            diffuse: NiColor { r: 1.0, g: 1.0, b: 1.0 },
+            specular: NiColor { r: 0.8, g: 0.8, b: 0.8 },
+            emissive: NiColor { r: 0.0, g: 0.0, b: 0.0 },
+            shininess: 80.0,
+            alpha: 1.0,
+            emissive_mult: 1.0,
+        };
+        let spec_prop = NiFlagProperty::for_test(0, "NiSpecularProperty");
+
+        let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(mat_prop), Box::new(spec_prop)];
+        let scene = NifScene {
+            blocks,
+            ..NifScene::default()
+        };
+        let shape = make_tri_shape_with_props(vec![BlockRef(0), BlockRef(1)]);
+        let info = extract_material_info(&scene, &shape, &[]);
+
+        assert!(!info.specular_enabled);
+        assert_eq!(info.specular_strength, 0.0);
+        assert_eq!(
+            info.specular_color, [0.0, 0.0, 0.0],
+            "specular_color must zero out alongside strength so the IOR \
+             glass branch's max(specStrength, 3.0) re-promotion can't \
+             revive a disabled spec via the (strength * color) gate"
+        );
+    }
+
+    #[test]
+    fn nispecular_enabled_preserves_color() {
+        // Negative guard: a NiSpecularProperty with bit 0 set
+        // (default behavior) must NOT zero specular_color. Without
+        // this guard, a future "always zero specular_color" refactor
+        // would silently kill spec on every working material.
+        use crate::blocks::properties::{NiFlagProperty, NiMaterialProperty};
+        use crate::types::NiColor;
+
+        let mat_prop = NiMaterialProperty {
+            net: empty_net(),
+            ambient: NiColor { r: 1.0, g: 1.0, b: 1.0 },
+            diffuse: NiColor { r: 1.0, g: 1.0, b: 1.0 },
+            specular: NiColor { r: 0.8, g: 0.8, b: 0.8 },
+            emissive: NiColor { r: 0.0, g: 0.0, b: 0.0 },
+            shininess: 80.0,
+            alpha: 1.0,
+            emissive_mult: 1.0,
+        };
+        let spec_prop = NiFlagProperty::for_test(1, "NiSpecularProperty");
+
+        let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(mat_prop), Box::new(spec_prop)];
+        let scene = NifScene {
+            blocks,
+            ..NifScene::default()
+        };
+        let shape = make_tri_shape_with_props(vec![BlockRef(0), BlockRef(1)]);
+        let info = extract_material_info(&scene, &shape, &[]);
+
+        assert!(info.specular_enabled);
+        assert_eq!(info.specular_color, [0.8, 0.8, 0.8]);
+        assert!(info.specular_strength > 0.0);
     }
 
     #[test]

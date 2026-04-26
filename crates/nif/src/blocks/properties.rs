@@ -1277,6 +1277,24 @@ impl NiFlagProperty {
     pub fn enabled(&self) -> bool {
         self.flags & 1 != 0
     }
+
+    /// Test-only constructor — synthesise a NiFlagProperty without
+    /// going through `parse`. Used by `material.rs` regression tests
+    /// that need to feed NiSpecularProperty / NiWireframeProperty /
+    /// NiDitherProperty / NiShadeProperty into `extract_material_info`
+    /// without hand-rolling the NiObjectNETData byte layout.
+    #[doc(hidden)]
+    pub fn for_test(flags: u16, type_name: &'static str) -> Self {
+        Self {
+            net: NiObjectNETData {
+                name: None,
+                extra_data_refs: Vec::new(),
+                controller_ref: crate::types::BlockRef::NULL,
+            },
+            flags,
+            type_name,
+        }
+    }
 }
 
 // ── NiStringPalette ─────────────────────────────────────────────────
