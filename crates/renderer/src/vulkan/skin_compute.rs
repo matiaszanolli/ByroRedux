@@ -74,6 +74,15 @@ pub struct SkinSlot {
     /// vertex_count changes (NIF re-import, mod swap), the slot must
     /// be destroyed + recreated rather than reused.
     vertex_count: u32,
+    /// LRU bookkeeping: frame counter at the most-recent dispatch into
+    /// this slot. Bumped from `VulkanContext::draw_frame`'s skin chain
+    /// every time the entity appears in `draw_commands`. Read by the
+    /// per-frame eviction sweep — a slot whose `last_used_frame`
+    /// trails the current frame by more than `MAX_FRAMES_IN_FLIGHT`
+    /// has no in-flight reference and is safe to destroy
+    /// synchronously. Same threshold the static `evict_unused_blas`
+    /// path uses for non-skinned BLAS. See #643 / MEM-2-1.
+    pub last_used_frame: u64,
 }
 
 impl SkinSlot {
@@ -81,6 +90,32 @@ impl SkinSlot {
     pub fn vertex_count(&self) -> u32 {
         self.vertex_count
     }
+}
+
+/// LRU eviction predicate for [`SkinSlot`] / `skinned_blas` cleanup.
+///
+/// Returns `true` when a slot whose most-recent dispatch was at
+/// `last_used_frame` should be dropped given the current frame
+/// counter `current_frame` and the safety threshold `min_idle`.
+///
+/// The threshold callers use is `MAX_FRAMES_IN_FLIGHT + 1` — that
+/// guarantees no in-flight command buffer still references the slot's
+/// descriptor sets / output buffer / matching skinned BLAS, so
+/// synchronous destroy is safe. Mirrors
+/// `acceleration.rs::evict_unused_blas` for the static-mesh BLAS path.
+///
+/// `last_used_frame == 0` is a sentinel for "never dispatched" — the
+/// predicate skips eviction in that case so a slot created mid-frame
+/// (where compute prime + first dispatch happen later in the same
+/// `draw_frame`) isn't immediately reaped before its first
+/// steady-state dispatch can bump the counter. See #643 / MEM-2-1.
+#[inline]
+pub fn should_evict_skin_slot(last_used_frame: u64, current_frame: u64, min_idle: u64) -> bool {
+    if last_used_frame == 0 {
+        return false;
+    }
+    let idle = current_frame.saturating_sub(last_used_frame);
+    idle >= min_idle
 }
 
 /// GPU pre-skinning compute pipeline.
@@ -308,6 +343,10 @@ impl SkinComputePipeline {
             output_size,
             descriptor_sets,
             vertex_count,
+            // Initialise to 0; the draw chain bumps to the current
+            // frame counter on the first dispatch (and every
+            // subsequent one). #643 / MEM-2-1.
+            last_used_frame: 0,
         })
     }
 
@@ -473,5 +512,48 @@ mod tests {
         // updating both Rust + GLSL sides).
         assert_eq!(PUSH_CONSTANTS_SIZE, 12);
         assert_eq!(std::mem::size_of::<SkinPushConstants>(), 12);
+    }
+
+    // ── #643 / MEM-2-1 — SkinSlot LRU eviction predicate ────────────
+
+    /// Active this frame: idle = 0, must NOT evict regardless of
+    /// threshold. Catches a "fence-post" off-by-one where current ==
+    /// last_used wraps to a huge unsigned value via subtraction.
+    #[test]
+    fn should_evict_keeps_active_slot() {
+        assert!(!should_evict_skin_slot(/*last=*/ 100, /*now=*/ 100, /*min=*/ 3));
+        assert!(!should_evict_skin_slot(/*last=*/ 100, /*now=*/ 101, /*min=*/ 3));
+    }
+
+    /// Idle below threshold: keep. Idle at threshold: evict.
+    /// `min_idle = MAX_FRAMES_IN_FLIGHT + 1 = 3` matches what the
+    /// production caller in `draw.rs` uses.
+    #[test]
+    fn should_evict_at_or_above_threshold() {
+        // idle = 2 (frames 100..103 - 2 = 101) → keep.
+        assert!(!should_evict_skin_slot(/*last=*/ 100, /*now=*/ 102, /*min=*/ 3));
+        // idle = 3 → evict.
+        assert!(should_evict_skin_slot(/*last=*/ 100, /*now=*/ 103, /*min=*/ 3));
+        // idle = 4 → also evict.
+        assert!(should_evict_skin_slot(/*last=*/ 100, /*now=*/ 104, /*min=*/ 3));
+    }
+
+    /// `last_used_frame == 0` is the "never dispatched" sentinel. A
+    /// slot created mid-frame whose first steady-state dispatch hasn't
+    /// run yet must NOT be evicted, even if `current_frame >= min_idle`
+    /// (which is true on every frame after `min_idle - 1`).
+    #[test]
+    fn should_evict_skips_never_dispatched_sentinel() {
+        // Even at frame 1_000_000, a sentinel-zero slot survives.
+        assert!(!should_evict_skin_slot(/*last=*/ 0, /*now=*/ 1_000_000, /*min=*/ 3));
+    }
+
+    /// Underflow guard: a future-dated `last_used_frame` (would happen
+    /// only if the caller bumped it after a counter overflow / reset)
+    /// must not flip eviction true via wrap-around. `saturating_sub`
+    /// makes idle = 0 → keep.
+    #[test]
+    fn should_evict_does_not_wrap_on_future_last_used() {
+        assert!(!should_evict_skin_slot(/*last=*/ 105, /*now=*/ 100, /*min=*/ 3));
     }
 }

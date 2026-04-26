@@ -538,9 +538,16 @@ impl VulkanContext {
                     if !dispatches.is_empty() {
                         unsafe {
                             for &(entity_id, push, _, _, _) in &dispatches {
-                                let Some(slot) = self.skin_slots.get(&entity_id) else {
+                                let Some(slot) = self.skin_slots.get_mut(&entity_id) else {
                                     continue;
                                 };
+                                // #643 / MEM-2-1 — bump LRU before the
+                                // dispatch so the eviction sweep below
+                                // sees this entity as "active this
+                                // frame" and won't drop it. Mirrors
+                                // the BLAS-side `last_used_frame` bump
+                                // in `acceleration.rs::build_tlas`.
+                                slot.last_used_frame = self.frame_counter as u64;
                                 skin_pipeline.dispatch(
                                     &self.device,
                                     cmd,
@@ -611,6 +618,52 @@ impl VulkanContext {
                                 &[],
                                 &[],
                             );
+                        }
+                    }
+
+                    // #643 / MEM-2-1 — drop SkinSlots (and the matching
+                    // skinned BLAS) for entities whose `last_used_frame`
+                    // trails the current draw by more than
+                    // `MAX_FRAMES_IN_FLIGHT` frames. Mirrors
+                    // `evict_unused_blas`'s LRU pattern: the threshold
+                    // guarantees no in-flight command buffer still
+                    // references the descriptor sets / output buffer /
+                    // BLAS, so synchronous destroy is safe — no
+                    // deferred-destroy queue needed.
+                    //
+                    // Pre-fix the `skin_slots` HashMap and the
+                    // `skinned_blas` map only ever had entries
+                    // *inserted* (draw.rs first-sight loop) or *drained
+                    // wholesale on Drop* (context/mod.rs). On long
+                    // sessions that streamed through several
+                    // worldspaces, every NPC ever rendered stayed
+                    // resident; the FREE_DESCRIPTOR_SET pool would
+                    // exhaust well before the player's exterior
+                    // population caught up.
+                    let min_idle = MAX_FRAMES_IN_FLIGHT as u64 + 1;
+                    let now = self.frame_counter as u64;
+                    let evictees: Vec<EntityId> = self
+                        .skin_slots
+                        .iter()
+                        .filter_map(|(&eid, slot)| {
+                            super::super::skin_compute::should_evict_skin_slot(
+                                slot.last_used_frame,
+                                now,
+                                min_idle,
+                            )
+                            .then_some(eid)
+                        })
+                        .collect();
+                    if !evictees.is_empty() {
+                        log::debug!(
+                            "skin_slots eviction: dropping {} idle SkinSlot(s) and matching skinned BLAS",
+                            evictees.len()
+                        );
+                        for eid in evictees {
+                            if let Some(slot) = self.skin_slots.remove(&eid) {
+                                skin_pipeline.destroy_slot(&self.device, alloc, slot);
+                            }
+                            accel.drop_skinned_blas(&self.device, alloc, eid);
                         }
                     }
                 }
