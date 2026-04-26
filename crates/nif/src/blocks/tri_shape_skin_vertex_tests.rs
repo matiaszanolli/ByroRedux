@@ -1051,3 +1051,131 @@ fn fo4_bs_tri_shape_with_zero_data_size_and_nonzero_counts_parses_clean() {
     assert!(matches!(shape.kind, BsTriShapeKind::Plain));
     assert_eq!(stream.position() as usize, bytes.len());
 }
+
+// ── #621 / SK-D1-LOW — BsTriShape parser hardening ──────────────────────
+
+/// SK-D1-04 regression. `parse_dynamic` overwrites the BSTriShape
+/// positions with the trailing Vector4 array — an authoritatively
+/// full-precision f32 source — but pre-fix it left `vertex_desc`
+/// untouched. Downstream consumers reading
+/// `vertex_attrs & VF_FULL_PRECISION` thought positions were still
+/// half-precision, despite the override. Latent today (no consumer
+/// cross-checks); a future GPU-skinning path that re-uploads from the
+/// packed buffer would read stale half-precision metadata.
+///
+/// Pin the post-overwrite invariant: `vertex_attrs` must include
+/// `VF_FULL_PRECISION` (bit 10 of the high u16) after `parse_dynamic`
+/// successfully copies a non-empty dynamic-vertex array.
+#[test]
+fn bs_dynamic_tri_shape_sets_full_precision_flag_after_position_overwrite() {
+    let header = test_header();
+    let mut bytes = minimal_bs_tri_shape_bytes();
+    // dynamic_data_size = 1 vertex × 16 = 16 bytes, then one Vector4.
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    for f in [3.5f32, -1.25, 7.0, 0.0] {
+        bytes.extend_from_slice(&f.to_le_bytes());
+    }
+
+    let mut stream = crate::stream::NifStream::new(&bytes, &header);
+    let block = parse_block("BSDynamicTriShape", &mut stream, Some(bytes.len() as u32))
+        .expect("BSDynamicTriShape parse");
+    let shape = block
+        .as_any()
+        .downcast_ref::<BsTriShape>()
+        .expect("BSDynamicTriShape did not downcast to BsTriShape");
+
+    // Sanity: the dynamic Vector4 actually overwrote the (empty)
+    // packed positions — that's the precondition for the descriptor
+    // patch to fire.
+    assert_eq!(shape.vertices.len(), 1);
+    assert!((shape.vertices[0].x - 3.5).abs() < 1e-6);
+
+    // VF_FULL_PRECISION is bit 10 of the vertex_attrs field (bits
+    // 44..56 of the u64 vertex_desc per nif.xml `BSVertexDesc` line
+    // 2092). 0x400 << 44 = 0x0040_0000_0000_0000.
+    let attrs = ((shape.vertex_desc >> 44) & 0xFFF) as u16;
+    assert_eq!(
+        attrs & 0x400,
+        0x400,
+        "VF_FULL_PRECISION must be set on vertex_desc after parse_dynamic \
+         override (raw vertex_desc = 0x{:016x})",
+        shape.vertex_desc,
+    );
+}
+
+/// SK-D1-05 regression. When `data_size` disagrees with the
+/// descriptor-derived expected value, the parser must trust
+/// `data_size` (the on-disk authority) and adopt the data_size-derived
+/// stride for the per-vertex loop. Pre-fix the parser logged the
+/// mismatch but plowed ahead with the suspect `vertex_size_quads * 4`
+/// stride, silently misaligning every vertex past the first.
+///
+/// Fixture: SSE BSTriShape (bsver < 130 → full-precision implicit) with
+/// `VF_VERTEX` set, `vertex_size_quads = 3` (deliberately wrong — only
+/// covers 12 of the 16 bytes the field actually consumes), 2 vertices,
+/// 0 triangles. data_size = 32 (= 2 × 16) implies the correct stride.
+/// Pre-fix the per-vertex loop would have hard-erred at the
+/// `consumed > vertex_size_bytes` assertion (16 > 12). Post-fix the
+/// derived stride lifts the loop to 16 bytes/vertex and the read
+/// completes cleanly.
+#[test]
+fn bs_tri_shape_data_size_mismatch_uses_derived_stride() {
+    let header = test_header();
+    let mut bytes = minimal_bs_tri_shape_bytes();
+
+    // Patch vertex_desc (offset 100, 8 bytes): set
+    // vertex_size_quads = 3 in low nibble, set VF_VERTEX (bit 0 of
+    // the high u16, raw value 0x001 — see tri_shape.rs:331).
+    let vertex_desc: u64 = 3 | ((/* VF_VERTEX = */ 0x001u64) << 44);
+    let vd_offset = 100;
+    bytes[vd_offset..vd_offset + 8].copy_from_slice(&vertex_desc.to_le_bytes());
+
+    // Patch num_vertices (offset 110, u16) = 2.
+    let nv_offset = 110;
+    bytes[nv_offset..nv_offset + 2].copy_from_slice(&2u16.to_le_bytes());
+
+    // Patch data_size (offset 112, u32) = 32 (= 2 × 16, no triangles).
+    // Descriptor-derived expected = vertex_size_quads * 4 * num_vertices +
+    //                               num_triangles * 6
+    //                             = 3 * 4 * 2 + 0 = 24
+    // → mismatch fires; derived stride = (32 - 0) / 2 = 16.
+    let ds_offset = 112;
+    bytes[ds_offset..ds_offset + 4].copy_from_slice(&32u32.to_le_bytes());
+
+    // Splice the 32 bytes of vertex data BEFORE the trailing 4-byte
+    // particle_data_size that minimal_bs_tri_shape_bytes appends. The
+    // helper's particle_data_size starts at offset 116 (= ds_offset + 4),
+    // so insert at offset 116.
+    let particle_size_offset = 116;
+    let mut vertex_payload = Vec::with_capacity(32);
+    for v in [
+        [10.0f32, 20.0, 30.0, 0.0],
+        [-1.5f32, -2.5, -3.5, 0.0],
+    ] {
+        for f in v {
+            vertex_payload.extend_from_slice(&f.to_le_bytes());
+        }
+    }
+    bytes.splice(particle_size_offset..particle_size_offset, vertex_payload);
+    // Sanity: 120 (helper) + 32 (vertex payload) = 152 bytes total.
+    assert_eq!(bytes.len(), 152);
+
+    let mut stream = crate::stream::NifStream::new(&bytes, &header);
+    let block = parse_block("BSTriShape", &mut stream, Some(bytes.len() as u32))
+        .expect("data_size-mismatch BSTriShape must parse via the derived stride");
+    let shape = block
+        .as_any()
+        .downcast_ref::<BsTriShape>()
+        .expect("BSTriShape did not downcast");
+
+    assert_eq!(shape.vertices.len(), 2, "both vertices must be read");
+    assert!((shape.vertices[0].x - 10.0).abs() < 1e-6);
+    assert!((shape.vertices[1].x + 1.5).abs() < 1e-6);
+    assert!((shape.vertices[1].z + 3.5).abs() < 1e-6);
+    assert_eq!(
+        stream.position() as usize,
+        bytes.len(),
+        "block must consume exactly — derived stride must align the \
+         per-vertex loop with the data_size payload"
+    );
+}

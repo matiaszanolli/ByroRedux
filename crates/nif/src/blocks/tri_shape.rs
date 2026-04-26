@@ -437,20 +437,51 @@ impl BsTriShape {
         // here (real positions live in the trailing dynamic Vector4
         // array) — flagging that case would mean 21k false positives
         // per Skyrim - Meshes0.bsa scan.
+        //
+        // #621 / SK-D1-05: when the assertion fails AND
+        // (data_size − num_triangles*6) is a clean multiple of
+        // num_vertices, prefer the data_size-derived stride for the
+        // per-vertex loop. data_size is the on-disk authority — pre-fix
+        // the parser logged the mismatch but plowed ahead with the
+        // suspect `vertex_size_quads * 4` stride, silently misaligning
+        // every vertex past the first. block_size recovery hid the
+        // slip from the parse-rate metric. The non-standard FO4 padding
+        // mentioned above is exactly the case where data_size > expected
+        // — and routing through the derived stride aligns the loop
+        // correctly across all such content.
+        let mut vertex_size_bytes = vertex_size_quads * 4;
         if data_size != 0 {
             let expected_data_size =
-                (vertex_size_quads * num_vertices as usize * 4) + (num_triangles as usize * 6);
+                (vertex_size_bytes * num_vertices as usize) + (num_triangles as usize * 6);
             if (data_size as usize) != expected_data_size {
+                let derived_stride = if num_vertices > 0 {
+                    let payload = (data_size as usize)
+                        .saturating_sub(num_triangles as usize * 6);
+                    if payload % num_vertices as usize == 0 {
+                        Some(payload / num_vertices as usize)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 log::warn!(
                     "BSTriShape data_size mismatch: stored {} vs derived {} \
                      (vertex_size_quads={}, num_vertices={}, num_triangles={}) — \
-                     vertex_desc / num_vertices / num_triangles may be misparsed",
+                     trusting data_size-derived stride{}",
                     data_size,
                     expected_data_size,
                     vertex_size_quads,
                     num_vertices,
                     num_triangles,
+                    match derived_stride {
+                        Some(s) => format!(" ({s} bytes/vertex)"),
+                        None => " (irrational; falling back to descriptor stride)".into(),
+                    },
                 );
+                if let Some(s) = derived_stride {
+                    vertex_size_bytes = s;
+                }
             }
         }
 
@@ -494,7 +525,10 @@ impl BsTriShape {
                 bone_indices = stream.allocate_vec(nv_u32)?;
             }
 
-            let vertex_size_bytes = vertex_size_quads * 4;
+            // `vertex_size_bytes` was computed above the `data_size > 0`
+            // gate so the #621 / SK-D1-05 mismatch path can override
+            // the descriptor's quad count with the data_size-derived
+            // stride before the per-vertex loop runs.
 
             // Parse each vertex from the packed format.
             for _ in 0..num_vertices {
@@ -676,6 +710,18 @@ impl BsTriShape {
             }
             if !dynamic_vertices.is_empty() {
                 shape.vertices = dynamic_vertices;
+                // #621 / SK-D1-04: the dynamic Vector4 array is full-
+                // precision f32 — it overwrote the (typically packed
+                // half-precision on FO4+ facegen) positions. Update
+                // `vertex_desc` so downstream consumers reading
+                // `vertex_attrs & VF_FULL_PRECISION` see the post-
+                // overwrite reality. Latent today (no consumer cross-
+                // checks), but a future GPU-skinning path that re-
+                // uploads from the packed buffer needs this metadata
+                // to match. The bit lives in the high u16 of the u64
+                // vertex_desc per nif.xml `BSVertexDesc` (line 2092):
+                // `vertex_attrs` is bits 44..56.
+                shape.vertex_desc |= (VF_FULL_PRECISION as u64) << 44;
             }
         }
         shape.kind = BsTriShapeKind::Dynamic;
