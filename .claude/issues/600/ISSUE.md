@@ -1,9 +1,6 @@
-# #600: FO4-DIM4-05: EsmCellIndex.texture_sets populated but never consumed by byroredux/
+# FO4-DIM4-05: EsmCellIndex.texture_sets populated but never consumed by byroredux/
 
-**URL**: https://github.com/matiaszanolli/ByroRedux/issues/600
-**Labels**: enhancement, low, legacy-compat, 
-
----
+State: OPEN
 
 **From**: `docs/audits/AUDIT_FO4_2026-04-23.md` (Dim 4)
 **Severity**: LOW

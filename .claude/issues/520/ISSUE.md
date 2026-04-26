@@ -1,19 +1,18 @@
-# FNV-ESM-9: PerkRecord is stub, PRKE entry points unparsed
+# FNV-ESM-9: PerkRecord is EDID/FULL/DESC/flag stub — PRKE entry points unparsed
 
-- **GitHub**: https://github.com/matiaszanolli/ByroRedux/issues/520
-- **Severity**: MEDIUM
-- **Dimension**: ESM record parser
-- **Audit**: `docs/audits/AUDIT_FNV_2026-04-21.md`
-- **Status**: NEW (created 2026-04-21)
+**Severity:** MEDIUM | esm
+**Source:** `docs/audits/AUDIT_FNV_2026-04-21.md`
 
-## Location
+## Problem
+`parse_perk` at `crates/plugin/src/esm/records/misc.rs:524-550` reads only EDID, FULL, DESC, and the first byte of DATA. The runtime-behaviour-driving PRKE/PRKC/DATA entry-point groups are unparsed — coverage gap, not a regression. FNV ships ~120 perks; behavior dormant until perk runtime lands.
 
-`crates/plugin/src/esm/records/misc.rs:524-550`
+## Audit's defer rationale
+> "When the perk-entry-point condition pipeline (`perk_entry_points.md`) lands, extend PerkRecord with a Vec<PerkEntry> parsed from PRKE groups."
 
-## Summary
+> "Not audit-blocking for M24 Phase 1."
 
-`parse_perk` reads only EDID/FULL/DESC/first DATA byte. PRKE/PRKC/DATA entry-point blocks (damage bonuses, skill-check overrides, condition gates) are deferred. FNV perk modifiers cannot apply.
+## SIBLING
+SPEL / MGEF condition lists also parse PRKE-style blocks?
 
-Fix: extend `PerkRecord` with `Vec<PerkEntry>` when perk-entry-point condition pipeline lands.
-
-Fix with: `/fix-issue 520`
+## TESTS
+Regression on Bloody Mess perk (EntryPoint damage modifier).
