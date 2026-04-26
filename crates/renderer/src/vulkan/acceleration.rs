@@ -2354,6 +2354,25 @@ impl AccelerationManager {
 
     /// Destroy all acceleration structures and buffers.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        // #639 / LIFE-H1: drain `pending_destroy_blas` first.
+        // `drop_blas` queues entries with a 2-frame countdown that only
+        // ticks down inside `tick_deferred_destroy` (called from
+        // `draw_frame`); on shutdown the renderer skips the next draw,
+        // so any entry whose countdown was still > 0 would leak its
+        // VkAccelerationStructureKHR + GpuBuffer. The parent Drop's
+        // `device_wait_idle` (`context/mod.rs:1300`) already covers
+        // any in-flight command-buffer reference, so it is safe to
+        // destroy these immediately regardless of the residual
+        // countdown. Same drain shape as `tick_deferred_destroy`
+        // above, minus the countdown branch. Sibling fixes already
+        // landed in `mesh.rs::MeshRegistry::destroy` (#deferred_destroy
+        // drain) and `texture_registry.rs::TextureRegistry::destroy`
+        // (per-entry pending_destroy drain).
+        for (mut entry, _countdown) in self.pending_destroy_blas.drain(..) {
+            self.accel_loader
+                .destroy_acceleration_structure(entry.accel, None);
+            entry.buffer.destroy(device, allocator);
+        }
         for entry in self.blas_entries.drain(..) {
             if let Some(mut e) = entry {
                 self.accel_loader
