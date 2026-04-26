@@ -865,6 +865,9 @@ pub struct NiControllerSequence {
     pub text_keys_ref: BlockRef,
     pub cycle_type: u32,
     pub frequency: f32,
+    /// Phase offset within the cycle (radians). Present on
+    /// v ∈ [10.1.0.106, 10.4.0.1]; defaults to 0 on later content.
+    pub phase: f32,
     pub start_time: f32,
     pub stop_time: f32,
     pub manager_ref: BlockRef,
@@ -978,8 +981,36 @@ impl NiControllerSequence {
         let text_keys_ref = stream.read_block_ref()?;
         let cycle_type = stream.read_u32_le()?;
         let frequency = stream.read_f32_le()?;
+
+        // Phase — only present in v ∈ [10.1.0.106, 10.4.0.1]. nif.xml:
+        //   <field name="Phase" type="float" since="10.1.0.106"
+        //          until="10.4.0.1" />
+        // Skipping it on pre-Oblivion content (e.g. Oblivion's
+        // v=10.2.0.0 / bsver=9 ships in `meshes/dungeons/ayleidruins/
+        // interior/traps/artrapchannelspikes01.nif`) misaligned
+        // start_time/stop_time/manager_ref by 4 bytes, then read
+        // `accum_root_name`'s u32 length from the stop_time slot.
+        // The downstream block read mid-string and the file truncated
+        // after kept block 8 with 233 dropped (audit O5-2 / #687).
+        let phase = if stream.version() >= NifVersion(0x0A01006A)
+            && stream.version() <= NifVersion(0x0A040001)
+        {
+            stream.read_f32_le()?
+        } else {
+            0.0
+        };
+
         let start_time = stream.read_f32_le()?;
         let stop_time = stream.read_f32_le()?;
+
+        // Play Backwards — exactly v=10.1.0.106. None of our targets
+        // ship content at that exact version (Oblivion is 20.0.0.x,
+        // pre-Oblivion sample files we've seen are 10.2.0.0), so this
+        // is a no-op today; left in for completeness against nif.xml.
+        if stream.version() == NifVersion(0x0A01006A) {
+            let _play_backwards = stream.read_u8()?;
+        }
+
         let manager_ref = stream.read_block_ref()?;
         let accum_root_name = stream.read_string()?;
 
@@ -1028,6 +1059,7 @@ impl NiControllerSequence {
             text_keys_ref,
             cycle_type,
             frequency,
+            phase,
             start_time,
             stop_time,
             manager_ref,
@@ -1533,7 +1565,7 @@ mod tests {
     /// Build an Oblivion-era header (v20.0.0.5, user_version=11, uv2=11).
     /// String table is empty — Oblivion doesn't use it, and per-block
     /// strings go through the NiStringPalette format instead.
-    fn make_header_oblivion() -> NifHeader {
+    pub(super) fn make_header_oblivion() -> NifHeader {
         NifHeader {
             version: NifVersion::V20_0_0_5,
             little_endian: true,
@@ -1683,6 +1715,51 @@ impl NiGeomMorpherController {
                 interpolator_ref,
                 weight,
             });
+        }
+
+        // Trailing Num Unknown Ints + Unknown Ints array. nif.xml:
+        //   <field name="Num Unknown Ints" type="uint"
+        //          since="10.2.0.0" until="20.1.0.3"
+        //          vercond="(#BSVER# #LE# 11) #AND# (#BSVER# #NE# 0)" />
+        //   <field name="Unknown Ints" type="uint"
+        //          length="Num Unknown Ints" since="10.2.0.0" until="20.1.0.3"
+        //          vercond="(#BSVER# #LE# 11) #AND# (#BSVER# #NE# 0)" />
+        // Targets Bethesda content with bsver in 1..=11 — Oblivion
+        // (bsver 11) hits this; FNV/FO3 (bsver 24+) and Skyrim+ skip
+        // it entirely. Pre-fix the 4-byte u32 (typically 0) was left
+        // unread, which misaligned the next block. On `meshes/oblivion/
+        // gate/obgatemini01.nif` the trailing bytes were `0x00000000`,
+        // so the next block (NiMorphData) read num_morphs from the
+        // wrong slot, parsed as a 9-byte stub, and downstream
+        // interpolator blocks tripped the alloc cap with billions of
+        // ghost morph keys (audit O5-2 / #687).
+        let version = stream.version();
+        let bsver = stream.bsver();
+        if version >= NifVersion(0x0A020000)
+            && version <= NifVersion(0x14010003)
+            && bsver != 0
+            && bsver <= 11
+        {
+            let num_unknown_ints = stream.read_u32_le()?;
+            // Sanity bound: `num_unknown_ints` is a count that has
+            // never been observed > a handful in practice. A drifted
+            // u32 here would otherwise allocate gigabytes; the
+            // `allocate_vec` cap also bounds it but a tighter early
+            // return makes the failure mode obvious if upstream drift
+            // ever puts garbage here.
+            if num_unknown_ints > 65_536 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "NiGeomMorpherController: implausible \
+                         num_unknown_ints={num_unknown_ints} — \
+                         upstream drift (Oblivion bsver={bsver})"
+                    ),
+                ));
+            }
+            for _ in 0..num_unknown_ints {
+                let _ = stream.read_u32_le()?;
+            }
         }
 
         Ok(Self {
@@ -2123,5 +2200,198 @@ mod path_lookat_tests {
         assert_eq!(c.follow_axis, 2);
         assert_eq!(c.path_data_ref.index(), Some(5));
         assert_eq!(c.percent_data_ref.index(), Some(6));
+    }
+
+    // ── #687 regression guards ────────────────────────────────────────
+    //
+    // Both perpetrators identified by tracing audit-O5-2 example files
+    // — `obgatemini01.nif` (NiGeomMorpherController missing trailing
+    // bsver-gated u32 array) and `artrapchannelspikes01.nif`
+    // (NiControllerSequence missing the v∈[10.1.0.106,10.4.0.1]
+    // `Phase` field). The fix recovered 83 of the 384 truncated
+    // Oblivion files (95.21% → 96.24% clean).
+
+    use crate::header::NifHeader;
+
+    fn make_header_pre_oblivion_v10_2() -> NifHeader {
+        // Pre-Gamebryo content shipped in Oblivion's BSA — v=10.2.0.0
+        // bsver=9 hits the `Phase` window in NiControllerSequence.
+        NifHeader {
+            version: NifVersion(0x0A020000),
+            little_endian: true,
+            user_version: 10,
+            user_version_2: 9,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    #[test]
+    fn nigeommorpher_oblivion_consumes_trailing_unknown_ints() {
+        // Layout for v=20.0.0.5 / bsver=11:
+        //   NiTimeControllerBase (26 B)
+        //   morpher_flags u16 (2 B) + data_ref i32 (4 B) +
+        //   always_update u8 (1 B) + num_interpolators u32 (4 B) = 11 B
+        //   no interpolator weights for this test (num=0)
+        //   trailing num_unknown_ints u32 (4 B) — array empty
+        let header = make_header_oblivion();
+        let mut data = Vec::new();
+        write_time_controller_base(&mut data);
+        data.extend_from_slice(&0u16.to_le_bytes()); // morpher_flags
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // data_ref null
+        data.push(1); // always_update
+        data.extend_from_slice(&0u32.to_le_bytes()); // num_interpolators
+        data.extend_from_slice(&0u32.to_le_bytes()); // num_unknown_ints (TRAILING)
+        assert_eq!(data.len(), 26 + 11 + 4);
+
+        let mut stream = NifStream::new(&data, &header);
+        let _block = NiGeomMorpherController::parse(&mut stream)
+            .expect("Oblivion NiGeomMorpherController parses with trailing field");
+        assert_eq!(
+            stream.position(),
+            data.len() as u64,
+            "must consume the full Oblivion-trailing layout, not stop at the \
+             interpolator-weights end (pre-fix #687 stopped 4 bytes early, \
+             cascading drift into NiMorphData)"
+        );
+    }
+
+    #[test]
+    fn nigeommorpher_fnv_skips_trailing_unknown_ints() {
+        // FNV bsver=34 — the (BSVER <= 11) gate excludes the trailing
+        // u32. Confirms the fix is Oblivion-only and doesn't regress
+        // FNV/FO3 (clean rate must remain 100%).
+        let header = make_header_fnv();
+        let mut data = Vec::new();
+        write_time_controller_base(&mut data);
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.push(1);
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // No trailing field — FNV layout ends here.
+        let original_len = data.len();
+        // Pad with 4 sentinel bytes that MUST NOT be consumed.
+        data.extend_from_slice(&0xDEADBEEFu32.to_le_bytes());
+
+        let mut stream = NifStream::new(&data, &header);
+        NiGeomMorpherController::parse(&mut stream).expect("FNV path parses");
+        assert_eq!(
+            stream.position(),
+            original_len as u64,
+            "FNV (bsver=34) must NOT read the bsver<=11-gated trailing field \
+             — over-consuming would shift downstream blocks"
+        );
+    }
+
+    #[test]
+    fn nicontrollersequence_v10_2_reads_phase() {
+        // Pre-Oblivion v=10.2.0.0 content. Layout for the trailing
+        // fields: weight + text_keys + cycle_type + frequency +
+        // **phase** (here) + start_time + stop_time + manager +
+        // accum_root_name + deprecated_string_palette_ref.
+        //
+        // Pre-fix #687 the parser jumped from `frequency` straight
+        // to `start_time`, reading the on-disk `phase` slot as
+        // `start_time` and shifting every later field by 4 bytes.
+        // accum_root_name's u32 length was then read from
+        // stop_time, decoding the first 3 chars of the real
+        // accum_root_name and bleeding the rest into the next block.
+        let header = make_header_pre_oblivion_v10_2();
+        let mut data = Vec::new();
+        // name (empty inline)
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // num_controlled_blocks = 0
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // array_grow_by (since 10.1.0.106) = 1
+        data.extend_from_slice(&1u32.to_le_bytes());
+        // weight=1.0, text_keys=null, cycle_type=2 (LOOP), frequency=1.0
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&2u32.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        // phase=0.5 — distinctive sentinel
+        data.extend_from_slice(&0.5f32.to_le_bytes());
+        // start_time=0.0, stop_time=7.36
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        data.extend_from_slice(&7.36f32.to_le_bytes());
+        // manager_ref=3
+        data.extend_from_slice(&3u32.to_le_bytes());
+        // accum_root_name = "Root" (4 chars)
+        data.extend_from_slice(&4u32.to_le_bytes());
+        data.extend_from_slice(b"Root");
+        // deprecated_string_palette_ref (since 10.1.0.113) = -1
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+
+        let mut stream = NifStream::new(&data, &header);
+        let seq = NiControllerSequence::parse(&mut stream)
+            .expect("v=10.2.0.0 NiControllerSequence parses with phase");
+        assert_eq!(
+            stream.position(),
+            data.len() as u64,
+            "must consume the full v=10.2.0.0 layout including the Phase field"
+        );
+        assert!(
+            (seq.phase - 0.5).abs() < 1e-6,
+            "phase routes to its own struct field, not start_time"
+        );
+        assert_eq!(seq.start_time, 0.0, "start_time stays at 0 (not the phase value)");
+        assert!(
+            (seq.stop_time - 7.36).abs() < 1e-6,
+            "stop_time follows phase, not the manager_ref slot"
+        );
+        assert_eq!(
+            seq.accum_root_name.as_deref(),
+            Some("Root"),
+            "accum_root_name reads its own string, not part of stop_time"
+        );
+    }
+
+    #[test]
+    fn nicontrollersequence_oblivion_skips_phase() {
+        // Oblivion v=20.0.0.5 is past the Phase window's `until="10.4.0.1"`.
+        // Layout has no phase field — confirming the fix doesn't
+        // over-consume on Oblivion's NiControllerSequence (which is the
+        // primary KF-file consumer and was previously working).
+        let header = make_header_oblivion();
+        let mut data = Vec::new();
+        // name empty + num_controlled=0 + array_grow_by=1
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes());
+        // weight + text_keys + cycle_type + frequency
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        // (no phase on Oblivion)
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // start_time
+        data.extend_from_slice(&1.0f32.to_le_bytes()); // stop_time
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // manager
+        data.extend_from_slice(&0u32.to_le_bytes()); // accum_root_name empty
+        // deprecated_string_palette_ref (within the [10.1.0.113, 20.1.0.1) window)
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // anim notes: bsver=11 — `(24..=28).contains(&bsver)` false,
+        // bsver > 28 false → empty Vec (no bytes read).
+
+        let original_len = data.len();
+        // Sentinel that MUST NOT be consumed — over-consuming would
+        // mean the Oblivion path is reading a phase field it shouldn't.
+        data.extend_from_slice(&0xDEADBEEFu32.to_le_bytes());
+
+        let mut stream = NifStream::new(&data, &header);
+        let seq = NiControllerSequence::parse(&mut stream)
+            .expect("Oblivion NiControllerSequence parses without phase");
+        assert_eq!(
+            stream.position(),
+            original_len as u64,
+            "Oblivion (v=20.0.0.5) must NOT read Phase — that field is \
+             gated to v ≤ 10.4.0.1"
+        );
+        assert_eq!(seq.phase, 0.0, "phase defaults to 0 outside the gated window");
     }
 }
