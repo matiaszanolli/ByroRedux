@@ -404,18 +404,15 @@ pub(crate) fn extract_material_info_from_refs(
                     info.parallax_map = Some(path);
                 }
             }
-            // Decal slots (0..=3 per nif.xml). Append every slot whose
-            // `source_ref` resolves to a real filename; inherited props
-            // only contribute when the shape itself has no decals yet,
-            // matching the precedence rule used by the other slots.
-            // #400 / OBL-D4-H4.
-            if info.decal_maps.is_empty() {
-                for desc in &tex_prop.decal_textures {
-                    if let Some(path) = tex_desc_source_path(scene, Some(desc)) {
-                        info.decal_maps.push(path);
-                    }
-                }
-            }
+            // NOTE: NiTexturingProperty decal slots 0..=3 are NOT
+            // copied to MaterialInfo. #705 / O4-07 removed the
+            // extraction (originally added in #400 / OBL-D4-H4)
+            // because no descriptor bindings or fragment-shader
+            // overlay path consumes them — the import-side cost
+            // was paid for a render-side no-op. The block parser
+            // still exposes the raw slots on
+            // `NiTexturingProperty.decal_textures` so re-extraction
+            // is a one-line addition when consumer wiring lands.
             // Propagate the base slot's UV transform to the shared
             // `uv_offset` / `uv_scale` fields. The renderer shader applies
             // them per-vertex to every sampled texture — fine for the

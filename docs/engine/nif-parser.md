@@ -673,8 +673,12 @@ structured data landed zero-initialised, wrong, or in the wrong field.
   scalars on FO3/FNV so the POM pipeline has consistent inputs
   across eras.
 - `#400` — `NiTexturingProperty.decal_textures: Vec<TexDesc>` now
-  retained instead of read-and-discarded. Blood splatters, map
-  decals, faction symbols ride through as `MaterialInfo.decal_maps`.
+  retained on the parser-side struct instead of read-and-discarded;
+  the importer used to copy them to `MaterialInfo.decal_maps` but
+  no descriptor binding or fragment-shader overlay consumed the
+  field, so #705 / O4-07 dropped the import-side hop. Re-add a
+  one-line `for desc in &tex_prop.decal_textures` push when
+  consumer wiring lands.
 - `#350` — Skyrim+ shader controllers preserve the controlled-variable
   enum (see Shaders section above).
 - `#329` — added `read_extra_data_name()` with the `since=10.0.1.0` gate;

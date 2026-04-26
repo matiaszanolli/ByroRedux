@@ -268,14 +268,14 @@ pub(super) struct MaterialInfo {
     /// Baked shadow/grime modulation on Oblivion interior architecture.
     /// Applied as `albedo.rgb *= dark_sample.rgb`. See #264.
     pub dark_map: Option<String>,
-    /// Decal overlay textures (NiTexturingProperty decal slots 0..=3).
-    /// Oblivion uses these for blood splatters, wall paintings / map
-    /// decals, and faction symbols — content that persists in the world
-    /// but lives on top of the base material. Before #400 the parser
-    /// dropped the slots silently; now populated entries ride through to
-    /// the renderer for alpha-blend overlay. Empty slots are omitted so
-    /// downstream consumers only see reachable textures.
-    pub decal_maps: Vec<String>,
+    // NOTE: `decal_maps: Vec<String>` (NiTexturingProperty decal slots
+    // 0..=3) was removed in #705 / O4-07. The walker extracted them
+    // but no consumer in the renderer ever bound the descriptors or
+    // surfaced an overlay loop in the fragment shader, so the import
+    // cost was paid for a render-side no-op. The block parser still
+    // exposes the raw slots on `NiTexturingProperty.decal_textures`;
+    // re-extraction is a one-line addition when descriptor bindings +
+    // shader overlay land. See discussion in the issue.
     /// Parallax / height texture (`BSShaderTextureSet` slot 3). FO3/FNV
     /// architecture relies on this for brick-wall / concrete
     /// parallax-occlusion mapping on `shader_type = 3` (Parallax_Shader_Index_15)
@@ -515,7 +515,6 @@ impl Default for MaterialInfo {
             detail_map: None,
             gloss_map: None,
             dark_map: None,
-            decal_maps: Vec::new(),
             parallax_map: None,
             env_map: None,
             env_mask: None,
