@@ -6,9 +6,25 @@
 // For each cluster, tests all lights against the cluster's world-space AABB
 // and writes matching light indices into a flat list.
 //
-// Dispatch: (TILES_X, TILES_Y, SLICES_Z) = (16, 9, 24) = 3456 workgroups.
+// Dispatch: one workgroup per cluster — `(TILES_X, TILES_Y, SLICES_Z) =
+// (16, 9, 24) = 3456 workgroups`. Each workgroup is 32 threads wide
+// (`local_size_x = THREADS_PER_CLUSTER`) so the light scan parallelises
+// across one full warp / wavefront. Pre-#652 the workgroup was a single
+// thread, leaving the SIMD largely idle and walking the per-cluster
+// light loop serially (~1.5% compute utilisation on a 4070 Ti at the
+// 80–200-light populated-exterior worst case).
+//
+// Cluster ID derives from `gl_WorkGroupID.{x,y,z}`; the per-thread
+// `gl_LocalInvocationID.x` only fans out the light scan + the index
+// writeback. The frustum-voxel AABB is computed redundantly by every
+// thread — no divergence, so the GPU runs the 32 lockstep threads at
+// the same cost as one. Shared memory accumulates per-thread hits with
+// an atomic counter; thread 0 writes the final count + indices back to
+// global memory after a barrier.
 
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+const uint THREADS_PER_CLUSTER = 32;
+
+layout(local_size_x = THREADS_PER_CLUSTER, local_size_y = 1, local_size_z = 1) in;
 
 const uint TILES_X = 16;
 const uint TILES_Y = 9;
@@ -96,11 +112,20 @@ bool sphereIntersectsAABB(vec3 center, float radius, vec3 aabbMin, vec3 aabbMax)
 
 // ── Main ────────────────────────────────────────────────────────────
 
+// Shared accumulator + per-cluster index buffer. `sharedCount` may
+// transiently exceed MAX_LIGHTS_PER_CLUSTER while threads race the
+// `atomicAdd`; the writeback below clamps to the cap and threads check
+// the slot index before storing into `sharedIndices` so we never write
+// out of bounds.
+shared uint sharedCount;
+shared uint sharedIndices[MAX_LIGHTS_PER_CLUSTER];
+
 void main() {
     uint tileX = gl_WorkGroupID.x;
     uint tileY = gl_WorkGroupID.y;
     uint sliceZ = gl_WorkGroupID.z;
     uint clusterIdx = tileX + tileY * TILES_X + sliceZ * TILES_X * TILES_Y;
+    uint threadId = gl_LocalInvocationID.x;
 
     // invViewProj is precomputed on the CPU and provided via CameraUBO.
     vec3 camPos = cameraPos.xyz;
@@ -129,6 +154,12 @@ void main() {
     // ray `nearCorners - camPos` in perspective projection. The resulting
     // AABB was skewed, producing tile-shaped lighting discontinuities
     // where lights were missed at cluster boundaries.
+    //
+    // Every thread in the workgroup recomputes the AABB. On Nvidia /
+    // AMD / Intel SIMD architectures (warp = 32 lanes, wavefront = 32
+    // or 64 lanes), 32 lockstep divergence-free threads cost the same
+    // as one, so the redundancy is free in practice. Avoiding the
+    // shared-memory broadcast keeps the kernel simpler.
     vec3 nearCorners[4];
     nearCorners[0] = ndcToWorld(vec2(ndcMinX, ndcMinY), 0.0, invViewProj);
     nearCorners[1] = ndcToWorld(vec2(ndcMaxX, ndcMinY), 0.0, invViewProj);
@@ -155,17 +186,28 @@ void main() {
     aabbMin -= inflate;
     aabbMax += inflate;
 
-    // Test each light against this cluster's AABB.
-    uint count = 0;
-    uint baseOffset = clusterIdx * MAX_LIGHTS_PER_CLUSTER;
+    // Reset shared accumulator. Only one thread does the store; barrier
+    // makes the zero visible to every other lane before they begin
+    // accumulating.
+    if (threadId == 0u) {
+        sharedCount = 0u;
+    }
+    barrier();
 
-    for (uint i = 0; i < lightCount && count < MAX_LIGHTS_PER_CLUSTER; i++) {
+    // Strided light scan: each of the 32 threads pulls every 32nd
+    // light. Hit append uses an atomicAdd-then-bounds-check pattern so
+    // that overflow past MAX_LIGHTS_PER_CLUSTER is safely silently
+    // dropped (we still bump `sharedCount` so the writeback knows to
+    // clamp). Pre-#652 the same loop ran on thread 0 only, walking the
+    // 80-200 lights of a populated exterior cell serially — 1.5% GPU
+    // utilisation. Each thread now walks ~7 lights in the worst case.
+    for (uint i = threadId; i < lightCount; i += THREADS_PER_CLUSTER) {
         float lightType = lights[i].color_type.w;
+        bool intersects;
 
         if (lightType > 1.5) {
             // Directional light — always affects all clusters.
-            lightIndices[baseOffset + count] = i;
-            count++;
+            intersects = true;
         } else {
             // Point/spot light — sphere-vs-AABB test.
             // The ESM radius is a culling hint, not the attenuation range.
@@ -173,14 +215,32 @@ void main() {
             // (Gamebryo lights have effectively infinite range via 1/d).
             vec3 lightPos = lights[i].position_radius.xyz;
             float lightRadius = abs(lights[i].position_radius.w) * 4.0;
+            intersects = sphereIntersectsAABB(lightPos, lightRadius, aabbMin, aabbMax);
+        }
 
-            if (sphereIntersectsAABB(lightPos, lightRadius, aabbMin, aabbMax)) {
-                lightIndices[baseOffset + count] = i;
-                count++;
+        if (intersects) {
+            uint slot = atomicAdd(sharedCount, 1u);
+            if (slot < MAX_LIGHTS_PER_CLUSTER) {
+                sharedIndices[slot] = i;
             }
         }
     }
+    barrier();
 
-    clusters[clusterIdx].offset = baseOffset;
-    clusters[clusterIdx].count = count;
+    // Thread 0 writes the cluster header + the per-light indices.
+    // Clamp `sharedCount` against the cap — atomicAdd may have raced
+    // past it, but the bounds-check above guaranteed only the first
+    // `MAX_LIGHTS_PER_CLUSTER` slots actually hold data. The
+    // remaining slots in `lightIndices[baseOffset..]` from a previous
+    // frame are now stale; the fragment shader iterates exactly
+    // `cluster.count` entries so it never reads them.
+    if (threadId == 0u) {
+        uint count = min(sharedCount, MAX_LIGHTS_PER_CLUSTER);
+        uint baseOffset = clusterIdx * MAX_LIGHTS_PER_CLUSTER;
+        for (uint i = 0u; i < count; i++) {
+            lightIndices[baseOffset + i] = sharedIndices[i];
+        }
+        clusters[clusterIdx].offset = baseOffset;
+        clusters[clusterIdx].count = count;
+    }
 }

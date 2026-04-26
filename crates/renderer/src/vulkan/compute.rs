@@ -307,6 +307,11 @@ impl ClusterCullPipeline {
     ///
     /// Must be called AFTER light + camera uploads and BEFORE the render pass.
     /// The caller must insert a COMPUTE→FRAGMENT barrier after this returns.
+    ///
+    /// One workgroup per cluster — the shader's `local_size_x = 32`
+    /// fans the per-cluster light scan out across one warp / wavefront
+    /// (#652). Total threads = `TILES_X × TILES_Y × SLICES_Z × 32 =
+    /// 3456 × 32 = 110_592` per dispatch.
     pub unsafe fn dispatch(&self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
         device.cmd_bind_descriptor_sets(
