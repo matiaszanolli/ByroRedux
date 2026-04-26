@@ -41,6 +41,23 @@ impl NiSourceTexture {
         let use_external = stream.read_u8()? != 0;
         let use_string_table = stream.version() >= crate::version::NifVersion::V20_2_0_7;
 
+        // nif.xml line 5117: `Use Internal: byte cond="Use External == 0"
+        // until="10.0.1.3"`. On the legacy embedded path Bethesda emits
+        // an extra byte distinguishing "embedded NiPixelData" (1) from
+        // "neither external nor internal" (0). At 10.0.1.4+ the byte is
+        // gone and Pixel Data is always present when Use External == 0.
+        // Pre-#715 the byte was unread on pre-Oblivion content with
+        // embedded textures, so every block on that path under-read by
+        // 1 byte and any following blocks drifted (block_size recovery
+        // masked the symptom). See NIF-D1-02 / nif.xml lines 5117/5121.
+        let use_internal = if !use_external
+            && stream.version() <= crate::version::NifVersion(0x0A000103)
+        {
+            stream.read_u8()? != 0
+        } else {
+            true
+        };
+
         let (filename, pixel_data_ref) = if use_external {
             let fname: Option<Arc<str>> = if use_string_table {
                 stream.read_string()?
@@ -59,7 +76,17 @@ impl NiSourceTexture {
                     let _unknown = stream.read_sized_string()?;
                 }
             }
-            let pix_ref = stream.read_block_ref()?;
+            // nif.xml line 5121: Pixel Data is gated on
+            // `Use Internal == 1` for v <= 10.0.1.3. On v >= 10.0.1.4
+            // (line 5122) it's unconditional. `use_internal` is `true`
+            // on the modern path, so the gate collapses to "always
+            // read the ref" — the dual nif.xml lines model a single
+            // observable behaviour above 10.0.1.3.
+            let pix_ref = if use_internal {
+                stream.read_block_ref()?
+            } else {
+                BlockRef::NULL
+            };
             (None, pix_ref)
         };
 
@@ -311,6 +338,138 @@ mod tests {
             max_string_length: 0,
             num_groups: 0,
         }
+    }
+
+    /// Build a Morrowind-era (10.0.1.0) NIF header so the parser
+    /// hits the legacy embedded-pixel branch (`version <= 10.0.1.3`).
+    fn make_pre_oblivion_header(version: NifVersion) -> NifHeader {
+        NifHeader {
+            version,
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    /// Build the wire bytes for a `NiSourceTexture` block, optionally
+    /// emitting the legacy `use_internal` byte (gated on
+    /// `version <= 10.0.1.3 && !use_external` per nif.xml line 5117).
+    /// Returns the assembled byte vec the parser is expected to consume
+    /// in its entirety.
+    fn build_legacy_embedded_source_texture(
+        use_internal: bool,
+        with_pixel_ref: bool,
+    ) -> Vec<u8> {
+        let mut data = Vec::new();
+        // NiObjectNET (pre-10.0.1.0): no name string at all on the
+        // ancient layout, but our parser reads NiObjectNETData::parse
+        // which itself version-gates the name. For 10.0.1.0 the name
+        // is read inline as a sized string — author an empty string
+        // (u32 length=0).
+        data.extend_from_slice(&0u32.to_le_bytes()); // name length = 0
+                                                      // extra_data_refs and controller_ref are read for v >= 10.0.1.0
+                                                      // — author empty list + null ref.
+        data.extend_from_slice(&0u32.to_le_bytes()); // extra_data count = 0
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+                                                         // use_external = 0 → embedded path.
+        data.push(0u8);
+        // use_internal byte (legacy gate).
+        data.push(if use_internal { 1u8 } else { 0u8 });
+        // pix_ref only present when use_internal == 1 per nif.xml 5121.
+        if with_pixel_ref {
+            data.extend_from_slice(&7i32.to_le_bytes()); // arbitrary block index
+        }
+        // Format Prefs (3× u32) + is_static + later booleans.
+        data.extend_from_slice(&1u32.to_le_bytes()); // pixel_layout
+        data.extend_from_slice(&0u32.to_le_bytes()); // use_mipmaps
+        data.extend_from_slice(&0u32.to_le_bytes()); // alpha_format
+                                                      // is_static — present when v >= 5.0.0.1; 10.0.1.0 satisfies.
+        data.push(1u8);
+        data
+    }
+
+    /// #715 / NIF-D1-02 — pre-Oblivion (v ≤ 10.0.1.3) embedded path
+    /// must consume the `Use Internal` byte after `Use External == 0`
+    /// and then read the Pixel Data ref when `Use Internal == 1`.
+    /// Pre-fix the byte was unread, so every block on this path
+    /// under-read by 1 byte and the parser drifted into the next
+    /// field (read what should be the pixel-ref low byte as the
+    /// pixel_layout u32's first byte, etc.).
+    #[test]
+    fn pre_oblivion_embedded_path_consumes_use_internal_byte_and_pixel_ref() {
+        let header = make_pre_oblivion_header(NifVersion(0x0A000103));
+        let data = build_legacy_embedded_source_texture(/* use_internal = */ true, true);
+        let mut stream = NifStream::new(&data, &header);
+        let tex = NiSourceTexture::parse(&mut stream).unwrap();
+
+        assert!(!tex.use_external, "embedded path");
+        assert!(tex.filename.is_none(), "no filename on legacy embedded path");
+        assert_eq!(
+            tex.pixel_data_ref.index(),
+            Some(7),
+            "pixel-data ref must read after the use_internal byte (off-by-one symptom pre-#715)"
+        );
+        assert_eq!(tex.pixel_layout, 1, "format prefs must follow the ref");
+        assert_eq!(
+            stream.position() as usize,
+            data.len(),
+            "parser must consume the block exactly — no drift"
+        );
+    }
+
+    /// nif.xml line 5121 gates Pixel Data on `Use External == 0 #AND#
+    /// Use Internal == 1`. When `Use Internal == 0` the ref is absent
+    /// — the texture is "neither external nor internal pixel data"
+    /// (procedural / runtime-generated). Our parser must not read a
+    /// phantom 4-byte ref in this case.
+    #[test]
+    fn pre_oblivion_embedded_path_skips_pixel_ref_when_use_internal_is_zero() {
+        let header = make_pre_oblivion_header(NifVersion(0x0A000103));
+        let data = build_legacy_embedded_source_texture(/* use_internal = */ false, false);
+        let mut stream = NifStream::new(&data, &header);
+        let tex = NiSourceTexture::parse(&mut stream).unwrap();
+
+        assert!(!tex.use_external);
+        assert_eq!(
+            tex.pixel_data_ref,
+            BlockRef::NULL,
+            "use_internal = 0 → no Pixel Data ref written / read"
+        );
+        assert_eq!(stream.position() as usize, data.len());
+    }
+
+    /// Modern path (v >= 10.0.1.4) — the legacy `Use Internal` byte is
+    /// absent. Sanity-check that bumping the version one notch above
+    /// the gate triggers the modern flow (no `use_internal` consumed,
+    /// pixel ref read unconditionally on the embedded branch).
+    #[test]
+    fn post_10_0_1_4_embedded_path_skips_use_internal_byte() {
+        let header = make_pre_oblivion_header(NifVersion(0x0A000104));
+        let mut data = Vec::new();
+        // NiObjectNET: empty name + empty extra_data + null controller.
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.push(0u8); // use_external = 0
+                         // No use_internal byte at this version.
+        data.extend_from_slice(&5i32.to_le_bytes()); // pixel ref
+        data.extend_from_slice(&1u32.to_le_bytes()); // pixel_layout
+        data.extend_from_slice(&0u32.to_le_bytes()); // use_mipmaps
+        data.extend_from_slice(&0u32.to_le_bytes()); // alpha_format
+        data.push(1u8); // is_static
+
+        let mut stream = NifStream::new(&data, &header);
+        let tex = NiSourceTexture::parse(&mut stream).unwrap();
+        assert!(!tex.use_external);
+        assert_eq!(tex.pixel_data_ref.index(), Some(5));
+        assert_eq!(stream.position() as usize, data.len());
     }
 
     #[test]
