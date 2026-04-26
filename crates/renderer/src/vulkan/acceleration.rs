@@ -175,6 +175,20 @@ fn decide_use_update(
     cached_addresses: &[vk::DeviceAddress],
     current_addresses: &[vk::DeviceAddress],
 ) -> (bool, bool) {
+    // Empty current frame → must BUILD (#657). The naive zip-compare
+    // would treat two empty lists as identical and pick UPDATE, then
+    // submit `mode = UPDATE, src == dst, primitiveCount = 0` against
+    // a TLAS that may have been built with a non-empty primitive list
+    // last frame. Today this is masked by `needs_full_rebuild = true`
+    // at TLAS creation, but the helper's contract should not depend
+    // on the caller setting that flag — any future refactor that
+    // resets needs_full_rebuild after a successful BUILD without
+    // checking instance_count > 0 would otherwise hit this. Cost:
+    // one extra BUILD on transition between empty-scene frames (zero
+    // measurable impact since `primitiveCount = 0`).
+    if current_addresses.is_empty() {
+        return (false, false);
+    }
     let blas_map_dirty = tlas_last_gen != current_gen;
     if needs_full_rebuild || blas_map_dirty {
         // Headed to BUILD regardless — skip the O(N) comparison.
@@ -447,9 +461,26 @@ impl AccelerationManager {
 
         let primitive_count = index_count / 3;
 
+        // Match the flag set used by the batched-build path (#658) so
+        // the single-shot path stays in lockstep. ALLOW_COMPACTION is
+        // a no-op on its own — no compact-copy phase is wired in here
+        // — but having the flag set means a future caller that wants
+        // to compact this BLAS can issue
+        // `cmd_copy_acceleration_structure(MODE = COMPACT)` against it
+        // without rebuilding from scratch. Today this path is reached
+        // only by UI-quad / single-mesh registration where compaction
+        // would save trivial bytes; routing an RT mesh through here
+        // (e.g. lazy first-sight upload) without the flag would
+        // silently consume the BLAS budget twice as fast as a
+        // batched-path peer.
+        const STATIC_BLAS_FLAGS: vk::BuildAccelerationStructureFlagsKHR =
+            vk::BuildAccelerationStructureFlagsKHR::from_raw(
+                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE.as_raw()
+                    | vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION.as_raw(),
+            );
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+            .flags(STATIC_BLAS_FLAGS)
             .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
             .geometries(std::slice::from_ref(&geometry));
 
@@ -525,11 +556,12 @@ impl AccelerationManager {
                 )
             };
 
-            // Build the BLAS via one-time command buffer.
+            // Build the BLAS via one-time command buffer. Flags must
+            // match the size-query above per Vulkan spec.
             // SAFETY: DeviceOrHostAddressKHR union — device_address field used for device builds.
             let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                 .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-                .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+                .flags(STATIC_BLAS_FLAGS)
                 .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
                 .dst_acceleration_structure(accel)
                 .geometries(std::slice::from_ref(&geometry))
@@ -2436,6 +2468,29 @@ mod tests {
         let cached: Vec<u64> = Vec::new();
         let current = vec![1u64, 2, 3];
         let (use_update, did_zip) = decide_use_update(true, u64::MAX, 0, &cached, &current);
+        assert!(!use_update);
+        assert!(!did_zip);
+    }
+
+    /// Regression: #657. Two empty address lists must NOT zip-match
+    /// into UPDATE — the helper has to force BUILD when this frame
+    /// has no instances, regardless of the dirty / generation flags.
+    /// Pre-fix `(false, last_gen, last_gen, &[], &[])` returned
+    /// `(true, true)`; the call site was masked only by
+    /// `needs_full_rebuild = true` at TLAS creation.
+    #[test]
+    fn decide_empty_current_forces_build() {
+        let cached: Vec<u64> = Vec::new();
+        let current: Vec<u64> = Vec::new();
+        let (use_update, did_zip) = decide_use_update(false, 7, 7, &cached, &current);
+        assert!(!use_update, "empty instance list must force BUILD");
+        assert!(!did_zip, "must short-circuit before zip");
+
+        // And with a non-empty cached prior frame too — the previous
+        // frame had instances, this one does not.
+        let cached_nonempty = vec![1u64, 2, 3];
+        let (use_update, did_zip) =
+            decide_use_update(false, 7, 7, &cached_nonempty, &current);
         assert!(!use_update);
         assert!(!did_zip);
     }
