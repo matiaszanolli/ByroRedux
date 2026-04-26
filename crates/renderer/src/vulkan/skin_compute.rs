@@ -269,16 +269,21 @@ impl SkinComputePipeline {
         //   - ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR — the AS
         //                            build reads the buffer as a vertex
         //                            source
-        //   - VERTEX_BUFFER       — Phase 3 (optional) lets raster
-        //                            bind this buffer directly
+        //
+        // VERTEX_BUFFER is deliberately NOT requested here: Phase 3
+        // (M29.3, raster reading skinned output as VBO) is deferred,
+        // and an unused usage bit tightens the memory-type mask
+        // gpu-allocator must satisfy — on unified-memory iGPU configs
+        // it can push the allocation onto a smaller heap. Re-add the
+        // flag in the same commit that lands the raster bind path.
+        // See #681 / MEM-2-6.
         let output_buffer = GpuBuffer::create_device_local_uninit(
             device,
             allocator,
             output_size,
             vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-                | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-                | vk::BufferUsageFlags::VERTEX_BUFFER,
+                | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
         )
         .context("allocate skin slot output buffer")?;
 
