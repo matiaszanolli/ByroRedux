@@ -113,6 +113,12 @@ pub struct AccelerationManager {
     /// Reusable scratch buffer for TLAS instance data. Amortized across
     /// frames to avoid ~320KB/frame heap allocation for large scenes.
     tlas_instances_scratch: Vec<vk::AccelerationStructureInstanceKHR>,
+    /// Reusable scratch for the per-frame BLAS address sequence used by
+    /// the BUILD-vs-UPDATE decision (#660). Same amortization story as
+    /// `tlas_instances_scratch`: ping-ponged with `tlas[i].last_blas_addresses`
+    /// via `std::mem::swap` so neither Vec churns the heap. 8 bytes per
+    /// instance — ~64 KB at the 8k-instance ceiling.
+    tlas_addresses_scratch: Vec<u64>,
     /// Monotonic frame counter for BLAS LRU tracking.
     frame_counter: u64,
     /// Total BLAS memory currently allocated (sum of all BlasEntry.size_bytes).
@@ -321,6 +327,7 @@ impl AccelerationManager {
             scratch_buffers: [None, None],
             blas_scratch_buffer: None,
             tlas_instances_scratch: Vec::new(),
+            tlas_addresses_scratch: Vec::new(),
             frame_counter: 0,
             total_blas_bytes: 0,
             blas_budget_bytes,
@@ -1841,8 +1848,10 @@ impl AccelerationManager {
         // SAFETY: AccelerationStructureReferenceKHR is a union; our
         // BLAS entries are always device-built so `device_handle` is
         // the live variant on every push site in this manager.
-        let mut current_addresses_scratch: Vec<vk::DeviceAddress> =
-            Vec::with_capacity(instances.len());
+        let mut current_addresses_scratch =
+            std::mem::take(&mut self.tlas_addresses_scratch);
+        current_addresses_scratch.clear();
+        current_addresses_scratch.reserve(instances.len());
         for inst in &instances {
             current_addresses_scratch
                 .push(unsafe { inst.acceleration_structure_reference.device_handle });
@@ -1855,11 +1864,16 @@ impl AccelerationManager {
             &current_addresses_scratch,
         );
 
-        // Cache the current BLAS sequence so the next frame can compare.
-        // Move-from-scratch avoids the second `union -> u64` round-trip
-        // since `decide_use_update` already needed the materialised
-        // sequence.
-        tlas.last_blas_addresses = current_addresses_scratch;
+        // Promote this frame's addresses to be next frame's "last", and
+        // recover the previous "last" Vec into the manager-level scratch
+        // for next frame to refill (#660). Pre-fix this was a fresh
+        // `Vec::with_capacity(N)` per frame — 64 KB heap churn at the
+        // 8k-instance ceiling, 3.84 MB/s at 60 FPS, all to feed a 4-byte
+        // bool. Swap is allocation-free: each TLAS slot's Vec ping-pongs
+        // with the manager scratch.
+        std::mem::swap(&mut tlas.last_blas_addresses, &mut current_addresses_scratch);
+        self.tlas_addresses_scratch = current_addresses_scratch;
+        shrink_scratch_if_oversized(&mut self.tlas_addresses_scratch, instances.len(), 512);
         // After this BUILD/UPDATE completes, the next frame can refit
         // unless something invalidates it (resize, layout change).
         tlas.needs_full_rebuild = false;
@@ -2214,6 +2228,17 @@ impl AccelerationManager {
         (
             self.tlas_instances_scratch.len(),
             self.tlas_instances_scratch.capacity(),
+        )
+    }
+
+    /// CPU-side TLAS BLAS-address staging Vec — `(len, capacity)`. 8
+    /// bytes per entry. Used by the BUILD-vs-UPDATE compare; ping-pongs
+    /// with each per-frame TLAS slot's `last_blas_addresses` so capacity
+    /// converges to the working-set size with no per-frame churn (#660).
+    pub fn tlas_addresses_scratch_telemetry(&self) -> (usize, usize) {
+        (
+            self.tlas_addresses_scratch.len(),
+            self.tlas_addresses_scratch.capacity(),
         )
     }
 
