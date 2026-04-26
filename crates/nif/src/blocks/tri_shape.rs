@@ -455,25 +455,45 @@ impl BsTriShape {
         }
 
         let nv_u32 = num_vertices as u32;
-        // #388/#408 — bounds-check every file-driven count before allocation.
-        let mut vertices = stream.allocate_vec(nv_u32)?;
-        let mut uvs = stream.allocate_vec(nv_u32)?;
-        let mut normals = stream.allocate_vec(nv_u32)?;
-        let mut vertex_colors = stream.allocate_vec(nv_u32)?;
-        let mut triangles: Vec<[u16; 3]> = stream.allocate_vec(num_triangles)?;
         let is_skinned = vertex_attrs & VF_SKINNED != 0;
-        let mut bone_weights: Vec<[f32; 4]> = if is_skinned {
-            stream.allocate_vec(nv_u32)?
-        } else {
-            Vec::new()
-        };
-        let mut bone_indices: Vec<[u8; 4]> = if is_skinned {
-            stream.allocate_vec(nv_u32)?
-        } else {
-            Vec::new()
-        };
+        // FO4 precombined LOD chunks (the dominant pattern in
+        // `Fallout4 - MeshesExtra.ba2`) ship with `data_size == 0` and
+        // non-trivial `num_vertices` / `num_triangles` — the actual
+        // vertex / index payload lives in a sidecar precombined buffer
+        // and the on-disk BSTriShape body is just metadata. Pre-#711
+        // the file-driven `allocate_vec(num_vertices)` precheck fired
+        // before the `data_size > 0` gate, comparing a 15k-vertex claim
+        // against the few bytes left in the block — causing 45,521
+        // `BSMeshLODTriShape` and 18,073 `BSTriShape` blocks to error
+        // out and fall to NiUnknown. Move the file-driven allocations
+        // inside the gate so they only run when there's actual data
+        // to populate. Vectors stay empty otherwise — same convention
+        // as the SSE skin-reconstruction path (#178) and BSDynamicTriShape
+        // facegen (#341), both of which already pass `BsTriShape` with
+        // empty inline arrays through to downstream consumers.
+        let mut vertices: Vec<NiPoint3> = Vec::new();
+        let mut uvs: Vec<[f32; 2]> = Vec::new();
+        let mut normals: Vec<NiPoint3> = Vec::new();
+        let mut vertex_colors: Vec<[f32; 4]> = Vec::new();
+        let mut triangles: Vec<[u16; 3]> = Vec::new();
+        let mut bone_weights: Vec<[f32; 4]> = Vec::new();
+        let mut bone_indices: Vec<[u8; 4]> = Vec::new();
 
         if data_size > 0 {
+            // #388/#408 — bounds-check every file-driven count before
+            // allocation. Now safely below the `data_size > 0` gate so
+            // empty-payload LOD blocks aren't measured against impossible
+            // capacity targets.
+            vertices = stream.allocate_vec(nv_u32)?;
+            uvs = stream.allocate_vec(nv_u32)?;
+            normals = stream.allocate_vec(nv_u32)?;
+            vertex_colors = stream.allocate_vec(nv_u32)?;
+            triangles = stream.allocate_vec(num_triangles)?;
+            if is_skinned {
+                bone_weights = stream.allocate_vec(nv_u32)?;
+                bone_indices = stream.allocate_vec(nv_u32)?;
+            }
+
             let vertex_size_bytes = vertex_size_quads * 4;
 
             // Parse each vertex from the packed format.

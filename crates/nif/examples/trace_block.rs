@@ -9,7 +9,7 @@
 //! exact block start position, name, and a short hex dump of the
 //! first 32 bytes so you can hand-decode the next field.
 
-use byroredux_bsa::BsaArchive;
+use byroredux_bsa::{Ba2Archive, BsaArchive};
 use byroredux_nif::{blocks::parse_block, header::NifHeader, stream::NifStream};
 use std::env;
 
@@ -20,11 +20,16 @@ fn main() {
     let data = match args.len() {
         2 => std::fs::read(&args[1]).expect("read file"),
         3 => {
-            let archive = BsaArchive::open(&args[1]).expect("open BSA");
-            archive.extract(&args[2]).expect("extract NIF")
+            // Try BSA first; fall back to BA2 (FO4+).
+            if let Ok(archive) = BsaArchive::open(&args[1]) {
+                archive.extract(&args[2]).expect("extract NIF (BSA)")
+            } else {
+                let archive = Ba2Archive::open(&args[1]).expect("open BA2");
+                archive.extract(&args[2]).expect("extract NIF (BA2)")
+            }
         }
         _ => {
-            eprintln!("usage: trace_block <path> | <bsa> <path-in-bsa>");
+            eprintln!("usage: trace_block <path> | <archive> <path-in-archive>");
             std::process::exit(1);
         }
     };
@@ -49,9 +54,15 @@ fn main() {
         let block_size = header.block_sizes.get(i).copied();
         let start = stream.position();
 
-        // Peek 64 bytes for context.
+        // Peek up to the block's full size for context (capped at 256
+        // bytes so the line stays readable on big blocks). For failing
+        // BSMeshLODTriShape / BSTriShape blocks the entire wire layout
+        // is < 200 bytes, so this prints the full contents.
         let tail = &block_bytes[start as usize..];
-        let peek = &tail[..tail.len().min(64)];
+        let peek_len = block_size
+            .map(|s| (s as usize).min(256).min(tail.len()))
+            .unwrap_or(tail.len().min(64));
+        let peek = &tail[..peek_len];
         let hex: String = peek
             .iter()
             .map(|b| format!("{:02x}", b))

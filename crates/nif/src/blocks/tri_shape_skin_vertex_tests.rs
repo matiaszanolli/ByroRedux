@@ -884,3 +884,170 @@ fn read_vertex_skin_data_four_bones_normalized() {
     }
     assert_eq!(indices, [3, 7, 12, 42]);
 }
+
+/// Regression: #711 / NIF-D5-05 — FO4 precombined LOD chunks
+/// (`Fallout4 - MeshesExtra.ba2`) ship `data_size = 0` together with
+/// nontrivial `num_vertices` / `num_triangles` because the actual
+/// vertex / index payload lives in a sidecar precombined-mesh buffer.
+/// Pre-fix the parser ran `allocate_vec(num_vertices)` BEFORE the
+/// `data_size > 0` gate, causing 45,521 `BSMeshLODTriShape` and
+/// 18,073 `BSTriShape` blocks to error out with "claims N elements
+/// but only M bytes remain" and fall to NiUnknown via err-recovery —
+/// every FO4 distant-LOD piece rendered as an empty bounding box.
+///
+/// The fixture is the byte-exact 134-byte body of block 2 from
+/// `meshes\precombined\0000e163_135b94fb_oc.nif`. It carries
+/// `num_vertices = 15102`, `num_triangles = 13588`, `data_size = 0`,
+/// no inline geometry — the canonical precombined-LOD pattern. The
+/// 3-u32 LOD-size trailer brings the total to 146 bytes (134 BSTriShape
+/// body + 12 LOD trailer). Post-fix the parser must consume the full
+/// block, recognise the `data_size == 0` sentinel, leave the inline
+/// vertex / index Vecs empty, and route through `parse_lod` to the
+/// LOD trailer.
+#[test]
+fn fo4_precombined_lod_chunk_with_zero_data_size_parses_clean() {
+    // FO4 header (BSVER 130).
+    let header = NifHeader {
+        user_version_2: 130,
+        ..test_header()
+    };
+
+    // Captured byte-exact from `Fallout4 - MeshesExtra.ba2` block 2 of
+    // meshes\precombined\0000e163_135b94fb_oc.nif via trace_block.rs.
+    // 134 bytes total. Layout walkthrough (offsets in block):
+    //   0-15:    NiObjectNET (name=1, extra_data count=1, extra[0]=3, ctrl=-1)
+    //   16-19:   AV flags = 0x120e
+    //   20-31:   translation (precombined cell origin — large values)
+    //   32-67:   rotation 3x3 (effectively identity, sanitized downstream)
+    //   68-71:   scale = 1.0
+    //   72-75:   collision_ref = -1
+    //   76-91:   bounding sphere (center 0,0,0 + radius ≈ 884.64)
+    //   92-103:  skin_ref=-1, shader_ref=4, alpha_ref=6
+    //   104-111: vertex_desc u64 = 0x0043_b000_0765_0408
+    //   112-115: num_triangles = 13588 (u32 on bsver>=130)
+    //   116-117: num_vertices = 15102 (u16, raw 0x3afe)
+    //   118-121: data_size = 0  ← the precombined-LOD sentinel
+    //   122-125: lod0 = 9668     ← BSLODTriShape 3-u32 trailer
+    //   126-129: lod1 = 0
+    //   130-133: lod2 = 3920
+    let bytes: [u8; 134] = [
+        0x01, 0x00, 0x00, 0x00, // NET name idx = 1
+        0x01, 0x00, 0x00, 0x00, // NET extra_data count = 1
+        0x03, 0x00, 0x00, 0x00, // NET extra_data[0] = 3
+        0xff, 0xff, 0xff, 0xff, // NET controller_ref = -1
+        0x0e, 0x12, 0x00, 0x00, // AV flags = 0x120e
+        // Translation (3 f32) — large precombined-cell offset.
+        0xf4, 0x78, 0x91, 0x47, // tx ≈ 74393.91
+        0xc2, 0x6b, 0x24, 0xc7, // ty ≈ -42091.76
+        0x98, 0x90, 0x30, 0xc5, // tz ≈ -2825.04
+        // Rotation 3x3 (effectively identity, sanitized downstream).
+        0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f,
+        0x00, 0x00, 0x80, 0x3f, // scale = 1.0
+        0xff, 0xff, 0xff, 0xff, // collision_ref = -1
+        // Bounding sphere: center (0,0,0) + radius ≈ 884.64.
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x46, 0x29, 0x5d, 0x44,
+        // Refs.
+        0xff, 0xff, 0xff, 0xff, // skin_ref = -1
+        0x04, 0x00, 0x00, 0x00, // shader_property_ref = 4
+        0x06, 0x00, 0x00, 0x00, // alpha_property_ref = 6
+        // vertex_desc u64.
+        0x08, 0x04, 0x65, 0x07, 0x00, 0xb0, 0x43, 0x00,
+        0x14, 0x35, 0x00, 0x00, // num_triangles = 13588
+        0xfe, 0x3a, // num_vertices = 15102
+        0x00, 0x00, 0x00, 0x00, // data_size = 0  ← canonical FO4 LOD sentinel
+        // BSLODTriShape 3-u32 LOD-size trailer (consumed by parse_lod).
+        0xc4, 0x25, 0x00, 0x00, // lod0 = 9668
+        0x00, 0x00, 0x00, 0x00, // lod1 = 0
+        0x50, 0x0f, 0x00, 0x00, // lod2 = 3920
+    ];
+
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("BSMeshLODTriShape", &mut stream, Some(bytes.len() as u32))
+        .expect("FO4 precombined-LOD chunk must parse cleanly with data_size = 0");
+    let shape = block
+        .as_any()
+        .downcast_ref::<BsTriShape>()
+        .expect("BSMeshLODTriShape did not downcast to BsTriShape");
+
+    // Metadata round-tripped from the wire.
+    assert_eq!(shape.num_triangles, 13588);
+    assert_eq!(shape.num_vertices, 15102);
+    assert_eq!(shape.data_size, 0);
+    // No inline geometry on this branch — the precombined-LOD pattern
+    // points the renderer at a sidecar buffer.
+    assert!(shape.vertices.is_empty());
+    assert!(shape.uvs.is_empty());
+    assert!(shape.normals.is_empty());
+    assert!(shape.triangles.is_empty());
+    // Bounding sphere recovered for spatial dispatch.
+    assert!((shape.radius - 884.64).abs() < 0.1);
+    // The 3-u32 LOD trailer is consumed by `parse_lod`. The
+    // `BSMeshLODTriShape` dispatch arm calls `with_kind(MeshLOD)` to
+    // overwrite the LOD-sizes-bearing `Kind::LOD` variant — Skyrim SE
+    // DLC's `BSMeshLODTriShape` doesn't consult the cutoffs, so they
+    // are intentionally discarded at the wire-type-discriminator level.
+    // See blocks/mod.rs `BSMeshLODTriShape` arm + the `kind` doc on
+    // `BsTriShape` (#157, #560). What matters here is that the trailer
+    // bytes were consumed (asserted by the position check below) and
+    // the kind ends up as `MeshLOD`.
+    assert!(
+        matches!(shape.kind, BsTriShapeKind::MeshLOD),
+        "expected MeshLOD kind, got {:?}",
+        shape.kind,
+    );
+    // Block consumed exactly — no `block_size`-driven realignment.
+    assert_eq!(
+        stream.position() as usize,
+        bytes.len(),
+        "BSMeshLODTriShape with data_size=0 must consume the block exactly"
+    );
+}
+
+/// Sibling check from #711: the same `data_size = 0 + non-zero
+/// num_vertices` pattern occurs on plain `BSTriShape` blocks (18,073
+/// hits in `MeshesExtra.ba2`). `parse_lod` calls `parse` first, so the
+/// fix lands in the shared base — pin the plain dispatch arm with the
+/// same precombined-LOD shape minus the 3-u32 LOD trailer.
+#[test]
+fn fo4_bs_tri_shape_with_zero_data_size_and_nonzero_counts_parses_clean() {
+    let header = NifHeader {
+        user_version_2: 130,
+        ..test_header()
+    };
+
+    // BSTriShape body proper is 122 bytes (no LOD trailer on the plain
+    // dispatch arm). Drop the 12 trailing bytes the LOD test included
+    // — for the plain `BSTriShape` arm the `data_size = 0` sentinel
+    // means the body ends exactly at the data_size u32.
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[
+        0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+        0xff, 0xff, 0xff, 0xff, 0x0e, 0x12, 0x00, 0x00, 0xf4, 0x78, 0x91, 0x47,
+        0xc2, 0x6b, 0x24, 0xc7, 0x98, 0x90, 0x30, 0xc5, 0x00, 0x00, 0x80, 0x3f,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x80, 0x3f,
+        0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x46, 0x29, 0x5d, 0x44, 0xff, 0xff, 0xff, 0xff,
+        0x04, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x08, 0x04, 0x65, 0x07,
+        0x00, 0xb0, 0x43, 0x00, 0x14, 0x35, 0x00, 0x00, 0xfe, 0x3a, 0x00, 0x00,
+        0x00, 0x00,
+    ]);
+    assert_eq!(bytes.len(), 122);
+
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("BSTriShape", &mut stream, Some(bytes.len() as u32))
+        .expect("plain FO4 BSTriShape with data_size = 0 must parse cleanly");
+    let shape = block
+        .as_any()
+        .downcast_ref::<BsTriShape>()
+        .expect("BSTriShape did not downcast to BsTriShape");
+    assert_eq!(shape.num_vertices, 15102);
+    assert_eq!(shape.data_size, 0);
+    assert!(shape.vertices.is_empty());
+    assert!(matches!(shape.kind, BsTriShapeKind::Plain));
+    assert_eq!(stream.position() as usize, bytes.len());
+}
