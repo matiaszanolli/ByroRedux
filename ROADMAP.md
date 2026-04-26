@@ -12,7 +12,7 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-04-25.
+**Last verified**: 2026-04-26.
 **Bench-of-record**: Prospector Saloon 172.6 FPS / 5.79 ms — commit
 `6a6950a`, wall-clock bench. Scene is glass-heavy (bottles, pitcher,
 marquee sign); RT refraction/reflection cost is representative of a
@@ -347,7 +347,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] **R6** `VulkanContext` scratch buffers have no capacity telemetry — **closed**. `ctx.scratch` console command + `ScratchTelemetry` resource cover all 5 persistent scratches; per-frame refresh via `VulkanContext::fill_scratch_telemetry`. Prospector baseline: 337 KB total, 320 B wasted.
 - [x] **R6a** Prospector re-bench — **closed**. 192.8 FPS / 5.19 ms at `e6e8091`, wall-clock bench.
 - [x] **R6a-stale** Bench-of-record refreshed at `6a6950a` (2026-04-24). Prospector 172.6 FPS / 5.79 ms (was 192.8 / 5.19 — slight regression in compositor-jitter range; fence_ms unchanged at 4.34, GPU still the bottleneck). Skyrim Whiterun 253.3 FPS / 3.95 ms at 1932 entities (was 237 FPS at 1258 entities — entity count up 53% while FPS improved, indicating more REFRs land now without perf cost). FO4 MedTek 92.5 FPS / 10.82 ms (was 90, 7434 entities unchanged).
-- [ ] **R6a-stale-3** Bench-of-record `6a6950a` is now 45 commits stale. Session 20 added M29 GPU pre-skinning + per-entity BLAS refit, but the chain has no work to do in current cells (no M41 NPC spawning, no actors to skin). `#628` cluster_cull FAR change is an interior-bench no-op (Prospector fog short). Refresh deferred until M41 lands a measurable skinned-mesh load; not blocking.
+- [ ] **R6a-stale-4** Bench-of-record `6a6950a` is now 65 commits stale. Sessions 20 + 21 added M29 GPU pre-skinning, per-entity BLAS refit, AS scratch barrier, SVGF/TAA stage-mask widening, GI tMin tightening, reflection N_view flip, caustic flags + RT-enable gates — all sync / correctness work that doesn't move the Prospector / Whiterun / MedTek bench measurably without an actor-skinning workload. `#652` cluster_cull workgroup parallelisation could move populated-exterior cell-load timing, but the bench-of-record cells are interiors. Refresh still deferred until M41 lands actor spawning; not blocking.
 - [x] **R7** Scheduler access declarations — **closed**. `Access` builder + `System::access()` opt-in + `Scheduler::add_to_with_access` for closures + `sys.accesses` console command surface a per-stage Conflict / Unknown report. 3 of 12 systems declared so far (fly_camera, spin, log_stats); 4 Unknown pairs remaining. M27 flip is diagnosable now; eliminating the Unknown rows is incremental migration work.
 
 ### Open — Misc
@@ -362,16 +362,16 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-04-25, verified by `/session-close`.
+Ground-truth as of 2026-04-26, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (non-test)            | ~108 030                     |
-| Rust total lines                        | ~111 003                     |
+| Rust source lines (non-test)            | ~108 815                     |
+| Rust total lines                        | ~111 862                     |
 | Source files (non-test)                 | 208                          |
 | Workspace members                       | 16                           |
-| Tests (last reported by ROADMAP)        | 1270                         |
-| Open issue directories                  | 597 (`.claude/issues/`)       |
+| Tests (last reported by ROADMAP)        | 1273                         |
+| Open issue directories                  | 665 (`.claude/issues/`)       |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 95.21%, FO4 96.46%, FO76 97.34%, Starfield 0.80% (see compat matrix). Recoverable 100% on all except Oblivion 99.99%. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |

@@ -24,6 +24,65 @@ Commits hold that record.
 
 ---
 
+## Session 21 — RT shader bug-bash + AS sync hardening  (2026-04-26, 333b79e..f41912e)
+
+Pure audit-bundle closeout on top of `AUDIT_RENDERER_2026-04-25.md`
+filed at commit `20b8ef0`. No milestone churn — every commit pays
+down a CRITICAL / HIGH or a MEDIUM/LOW finding the post-M29 audit
+pass surfaced. The signal: a clutch of latent ray-query mathematical
+errors (grazing-angle reflections, empty-instance TLAS UPDATE,
+mis-sized GI tMin), AS scratch hazards exposed by M29's per-frame
+skinned refit, and lifecycle gaps in `Texture` / `GpuBuffer` Drop
+that release builds silently leaked through. Audit-finding hygiene
+also closed out two stale-premise findings (`#689`, `#684`).
+
+- **RT shader correctness** — `#545` (NiFlipController parser →
+  TextureFlipChannel emission), `#640` (caustic_splat ray flags +
+  shader/CPU RT-enable gates), `#666` (fog_near clamp at scene-buffer
+  upload), `#668` (reflection ray V-aligned `N_view` flip in lockstep
+  with the glass-IOR path), `#669` (GI ray `tMin` 0.5 → 0.05 to match
+  bias), `#670` (caustic origin bias along light-facing normal with
+  non-zero tMin).
+- **Acceleration structure hardening** — `#642` (per-frame skinned
+  BLAS refit emits AS_WRITE→AS_WRITE serialise barrier between
+  iterations), `#657` (`decide_use_update` empty-list short-circuit
+  + regression test), `#658` (single-shot `build_blas` declares
+  `ALLOW_COMPACTION` in lockstep with the batched path), `#659`
+  (runtime assert on `minAccelerationStructureScratchOffsetAlignment`),
+  `#660` (TLAS BUILD-vs-UPDATE address scratch amortized via swap
+  with `tlas.last_blas_addresses`).
+- **Sync hardening** — `#653` (SVGF + TAA post-dispatch dst-stage
+  widened to `FRAGMENT | COMPUTE` so next-frame compute reads see
+  the right barrier without depending on the per-frame fence).
+- **Compute pipeline polish** — `#652` (`cluster_cull.comp`
+  parallelised to 32-thread workgroups, ~32× compute occupancy on
+  populated exteriors), `#662` (`SkinPushConstants` trimmed
+  16 → 12 B by dropping the decorative `_pad`), `#663` (UI overlay
+  static-vs-dynamic-state invariant codified via
+  `pub const UI_PIPELINE_DYNAMIC_STATES` + a `const_assert` at the
+  call site).
+- **Resource lifecycle** — `#656` (Texture + GpuBuffer Drop now
+  self-clean using stashed device + allocator handles instead of
+  silently leaking VkImage/VkBuffer + the gpu_allocator slab in
+  release builds).
+- **Audit-finding hygiene** — `#684` (per-game parse-rate claim
+  refreshed against a fresh 7-game integration sweep at `0681fc7`:
+  Oblivion 95.21%, FO4 96.46%, recover=100% framing replaces the
+  stale "100% across 177 286 NIFs"), `#689` (NiSequenceStreamHelper
+  marked vanilla-unused — 0 of 47 934 vanilla NIFs use it; the
+  audit's missing-importer-path concern was the wrong tree).
+- **Doc tracking** — `9820f28` committed 4 audit reports + ~70
+  curated `ISSUE.md` / json dumps under `.claude/issues/`, `549a5f7`
+  refreshed `docs/engine/*.md` against sessions 13-20 reality
+  (M29 GPU skinning, NiFlipController, scratch barrier,
+  AnimatedColor split, BLAS budget, GI tMin).
+
+Net: tests +3 (1273), LOC +785 non-test (108 815), 19 commits, no
+milestone churn, no bench refresh (R6a-stale-3 → R6a-stale-4 — 65
+commits stale; M41 actor spawning is still the gating event).
+
+---
+
 ## Session 20 — M29 GPU pre-skinning end-to-end + audit closeout  (2026-04-25, 6e70751..b8834cc)
 
 11-commit session anchored on M29: discovered the existing CPU
