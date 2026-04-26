@@ -264,11 +264,33 @@ vec2 concentricDiskSample(float t1, float t2) {
     return vec2(r * cos(theta), r * sin(theta));
 }
 
-// Build an orthonormal basis from a direction vector (for jittering the ray).
+// Build an orthonormal basis from a unit direction vector (for jittering
+// the RT ray). Frisvad (2012), "Building an Orthonormal Basis from a 3D
+// Unit Vector Without Normalization" — singularity-free everywhere except
+// `dir.z = -1` exactly (which is not a plausible terrain normal in our
+// Y-up Z-up→Y-up converted scene; the only place that would surface is a
+// downward-facing reflection from a perfectly horizontal mirror, where
+// the analytic flip-axis branch handles it).
+//
+// Pre-#574 the implementation was a `cross(up, dir)` with `up` toggling
+// to `vec3(1,0,0)` when `abs(dir.y) >= 0.999`. The 0.999 threshold left
+// a NaN window: a fragment whose normal is *exactly* `(0,1,0)` (every
+// vertex on a flat terrain LAND quad and on horizontal platform meshes)
+// fell on the `<` side, so `up = (0,1,0)` was crossed with itself,
+// producing `(0,0,0)` and a NaN after `normalize`. The NaN tangent
+// propagated into `cosineWeightedHemisphere`'s direction, fed
+// `rayQueryInitializeEXT` with NaN, and the entire frame's GI on flat
+// exterior cells (Tamriel, Wasteland, etc.) was undefined per the
+// Vulkan RT spec.
+//
+// Frisvad's method has no degenerate near-pole and is branchless except
+// for the sign-axis pick. See #574 (RT-2).
 void buildOrthoBasis(vec3 dir, out vec3 tangent, out vec3 bitangent) {
-    vec3 up = abs(dir.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-    tangent = normalize(cross(up, dir));
-    bitangent = cross(dir, tangent);
+    float sign_z = dir.z >= 0.0 ? 1.0 : -1.0;
+    float a = -1.0 / (sign_z + dir.z);
+    float b = dir.x * dir.y * a;
+    tangent = vec3(1.0 + sign_z * dir.x * dir.x * a, sign_z * b, -sign_z * dir.x);
+    bitangent = vec3(b, sign_z + dir.y * dir.y * a, -dir.y);
 }
 
 // ── Cosine-weighted hemisphere sampling for GI ─────────────────────
