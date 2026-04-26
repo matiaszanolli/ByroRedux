@@ -70,7 +70,10 @@ pub enum ItemKind {
         health: u32,
         /// Equip slot mask (FO3/FNV-only biped-flag low 16 bits).
         slot_mask: u16,
-        /// Skyrim+: armor rating × 100 from DNAM. 0 on FO3/FNV (use dt/dr).
+        /// Armor rating × 100. Sourced from DATA on Oblivion (u16 at
+        /// offset 0) and from DNAM on Skyrim+. 0 on FO3/FNV/FO4 — use
+        /// `dt`/`dr` instead, which the original engine paired with a
+        /// separate damage-resist roll.
         armor_rating_x100: u32,
         /// Skyrim+: armor type from BOD2 second u32 (0=light, 1=clothing,
         /// 2=heavy). `None` on pre-Skyrim games.
@@ -145,10 +148,33 @@ pub fn parse_weap(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
     for sub in subs {
         match &sub.sub_type {
             b"DATA" => match game {
-                // FO3/FNV WEAP DATA (16 bytes): value(i32), health(i32),
-                // weight(f32), damage(i16), clip(u8) + pad.
-                GameKind::Fallout3NV | GameKind::Oblivion | GameKind::Fallout4 => {
-                    if sub.data.len() >= 16 {
+                // Oblivion WEAP DATA (30 bytes — measured 100% across 1319
+                // records in Oblivion.esm, see #685):
+                //   type(u32) speed(f32) reach(f32) flags(u32)
+                //   value(u32) health(u32) weight(f32) damage(u16)
+                // Oblivion stores all weapon stats in DATA; there is no
+                // DNAM, no AMMO ref (arrows are separate AMMO records),
+                // no clip (no magazine system). Type 0..5 maps to
+                // Blade1H/Blade2H/Blunt1H/Blunt2H/Staff/Bow.
+                GameKind::Oblivion => {
+                    if sub.data.len() >= 30 {
+                        common.value = read_u32_at(&sub.data, 16).unwrap_or(0);
+                        common.weight = read_f32_at(&sub.data, 24).unwrap_or(0.0);
+                        damage = read_u16_at(&sub.data, 28).unwrap_or(0) as u32;
+                        // Oblivion `type` (u32 at offset 0, values 0..5
+                        // for Blade1H/Blade2H/Blunt1H/Blunt2H/Staff/Bow)
+                        // doesn't share semantics with FO3/FNV's
+                        // anim_type (handgun/rifle/launcher); leave
+                        // anim_type at its 0 default rather than mix
+                        // the two enums.
+                    }
+                }
+                // FO3/FNV WEAP DATA (15 bytes — measured): value(u32),
+                // health(u32), weight(f32), damage(u16), clip(u8). FO4
+                // groups here pending its own per-game arm (mis-bucketing
+                // tracked separately, AUDIT_FNV_2026-04-20 follow-up).
+                GameKind::Fallout3NV | GameKind::Fallout4 => {
+                    if sub.data.len() >= 15 {
                         common.value = read_u32_at(&sub.data, 0).unwrap_or(0);
                         let _health = read_u32_at(&sub.data, 4).unwrap_or(0);
                         common.weight = read_f32_at(&sub.data, 8).unwrap_or(0.0);
@@ -167,13 +193,14 @@ pub fn parse_weap(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
                     }
                 }
             },
-            // DNAM is a large, version-dependent stats blob. The FO3/FNV
-            // layout starts with anim_type(u8) and places ap_cost/min_spread
-            // at fixed offsets. Skyrim rewrote the whole blob (~100 bytes,
-            // different field positions); extracting per-field values for
-            // Skyrim requires a separate layout walk that isn't wired yet.
-            // For Skyrim we leave these fields at their zero defaults.
-            b"DNAM" if matches!(game, GameKind::Fallout3NV | GameKind::Oblivion) => {
+            // DNAM is a large, version-dependent stats blob present on
+            // FO3/FNV/FO4 but absent on Oblivion (which inlines all
+            // weapon stats in DATA). The FO3/FNV layout starts with
+            // anim_type(u8) and places ap_cost/min_spread at fixed
+            // offsets. Skyrim rewrote the whole blob (~100 bytes, different
+            // field positions); extracting per-field values for Skyrim
+            // requires a separate layout walk that isn't wired yet.
+            b"DNAM" if matches!(game, GameKind::Fallout3NV) => {
                 if sub.data.len() >= 24 {
                     anim_type = sub.data[0];
                     ap_cost = read_u32_at(&sub.data, 16).unwrap_or(0);
@@ -234,9 +261,11 @@ pub fn parse_armo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
 
     for sub in subs {
         match &sub.sub_type {
-            // BMDT (FO3/FNV/Oblivion): biped flags (u32) + general flags
-            // (u32). Skyrim dropped BMDT in favor of BOD2.
-            b"BMDT" if sub.data.len() >= 8 => {
+            // BMDT shape varies: Oblivion (4 bytes — just biped_flags u32)
+            // vs FO3/FNV/FO4 (8 bytes — biped_flags u32 + general_flags
+            // u32). Skyrim+ dropped BMDT entirely in favor of BOD2.
+            // Measured: Oblivion.esm 996/996 ARMO records use 4-byte BMDT.
+            b"BMDT" if sub.data.len() >= 4 => {
                 biped_flags = read_u32_at(&sub.data, 0).unwrap_or(0);
                 slot_mask = (biped_flags & 0xFFFF) as u16;
             }
@@ -248,9 +277,25 @@ pub fn parse_armo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
                 armor_type = Some(read_u32_at(&sub.data, 4).unwrap_or(0));
             }
             b"DATA" => match game {
-                // FO3/FNV/Oblivion ARMO DATA (12 bytes):
+                // Oblivion ARMO DATA (14 bytes — measured 100% across
+                // 996 records, see #686):
+                //   armor(u16) value(u32) health(u32) weight(f32)
+                // armor is rating × 100, same convention as Skyrim's
+                // DNAM (so we route it through `armor_rating_x100` for
+                // a uniform consumer surface). DT/DR didn't exist
+                // pre-Fallout 3.
+                GameKind::Oblivion => {
+                    if sub.data.len() >= 14 {
+                        armor_rating_x100 =
+                            read_u16_at(&sub.data, 0).unwrap_or(0) as u32;
+                        common.value = read_u32_at(&sub.data, 2).unwrap_or(0);
+                        health = read_u32_at(&sub.data, 6).unwrap_or(0);
+                        common.weight = read_f32_at(&sub.data, 10).unwrap_or(0.0);
+                    }
+                }
+                // FO3/FNV/FO4 ARMO DATA (12 bytes):
                 //   value(u32), health(u32), weight(f32).
-                GameKind::Fallout3NV | GameKind::Oblivion | GameKind::Fallout4 => {
+                GameKind::Fallout3NV | GameKind::Fallout4 => {
                     if sub.data.len() >= 12 {
                         common.value = read_u32_at(&sub.data, 0).unwrap_or(0);
                         health = read_u32_at(&sub.data, 4).unwrap_or(0);
@@ -268,24 +313,22 @@ pub fn parse_armo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
                     }
                 }
             },
+            // DNAM exists on FO3/FNV/FO4 (DT/DR, 8 bytes) and Skyrim+
+            // (armor_rating × 100, 4 bytes). Oblivion has no DNAM —
+            // armor rating lives in DATA (handled above).
             b"DNAM" => match game {
-                // FO3/FNV/Oblivion ARMO DNAM (8 bytes):
-                //   DT (f32), DR (u32).
-                GameKind::Fallout3NV | GameKind::Oblivion | GameKind::Fallout4 => {
+                GameKind::Fallout3NV | GameKind::Fallout4 => {
                     if sub.data.len() >= 8 {
                         dt = read_f32_at(&sub.data, 0).unwrap_or(0.0);
                         dr = read_u32_at(&sub.data, 4).unwrap_or(0);
                     }
                 }
-                // Skyrim+ ARMO DNAM (4 bytes):
-                //   armor_rating × 100 (u32). Skyrim rolled DT/DR into a
-                //   single per-armor rating; the × 100 scaling matches the
-                //   Creation Kit UI and UESP convention.
                 GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {
                     if sub.data.len() >= 4 {
                         armor_rating_x100 = read_u32_at(&sub.data, 0).unwrap_or(0);
                     }
                 }
+                GameKind::Oblivion => {}
             },
             _ => {}
         }
@@ -317,9 +360,23 @@ pub fn parse_ammo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
     for sub in subs {
         match &sub.sub_type {
             b"DATA" => match game {
-                // FO3/FNV AMMO DATA (13+ bytes): speed(f32), flags(u8),
-                // pad(u8)×3, value(u32), clipRounds(u8).
-                GameKind::Fallout3NV | GameKind::Oblivion | GameKind::Fallout4 => {
+                // Oblivion AMMO DATA (18 bytes — measured 100% across
+                // 128 records, see #691):
+                //   speed(f32) flags(u32) value(u32) weight(f32) damage(u16)
+                // Oblivion arrows carry inline damage (the WEAP "bow"
+                // record's damage is the bow's, not the arrow's). No
+                // clipRounds — magazines arrived with FO3.
+                GameKind::Oblivion => {
+                    if sub.data.len() >= 18 {
+                        common.value = read_u32_at(&sub.data, 8).unwrap_or(0);
+                        common.weight = read_f32_at(&sub.data, 12).unwrap_or(0.0);
+                        damage = read_u16_at(&sub.data, 16).unwrap_or(0) as f32;
+                    }
+                }
+                // FO3/FNV AMMO DATA (13 bytes): speed(f32), flags(u8),
+                // pad(u8)×3, value(u32), clipRounds(u8). FO4 grouped
+                // here pending its own arm; weight comes from DAT2.
+                GameKind::Fallout3NV | GameKind::Fallout4 => {
                     if sub.data.len() >= 13 {
                         let _speed = read_f32_at(&sub.data, 0).unwrap_or(0.0);
                         common.value = read_u32_at(&sub.data, 8).unwrap_or(0);
@@ -340,11 +397,9 @@ pub fn parse_ammo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
             },
             // DAT2 (FO3/FNV only): projPerShot(u32), proj(formID),
             // weight(f32), consumedAmmo(formID), consumedPercentage(f32).
+            // Oblivion stores weight inline in DATA (handled above);
             // Skyrim doesn't emit DAT2.
-            b"DAT2"
-                if matches!(game, GameKind::Fallout3NV | GameKind::Oblivion)
-                    && sub.data.len() >= 16 =>
-            {
+            b"DAT2" if matches!(game, GameKind::Fallout3NV) && sub.data.len() >= 16 => {
                 let _proj_count = read_u32_at(&sub.data, 0).unwrap_or(0);
                 let _proj = read_u32_at(&sub.data, 4).unwrap_or(0);
                 common.weight = read_f32_at(&sub.data, 8).unwrap_or(0.0);
@@ -719,6 +774,173 @@ mod tests {
                 assert_eq!(armor_rating_x100, 2500);
             }
             _ => panic!("expected Armor kind"),
+        }
+    }
+
+    // ── Oblivion regression guards (issues #685 / #686 / #691) ─────────
+    //
+    // Sample byte sequences captured directly from Oblivion.esm via
+    // crates/plugin/examples/dump_item_data_sizes.rs. Anchoring tests in
+    // real on-disk bytes prevents the audit-cycle that produced the
+    // original audit's incorrect "15-byte WEAP / 16-byte ARMO" claims:
+    // the actual Oblivion shapes are 30 / 14 / 18.
+
+    #[test]
+    fn oblivion_weap_data_is_30_bytes_with_value_at_16() {
+        // SE13TrophySword1 (form 0x000966A9): a Blade2H trophy sword.
+        // Layout: type(u32) speed(f32) reach(f32) flags(u32)
+        //         value(u32) health(u32) weight(f32) damage(u16)
+        // Decoded from disk: type=1, speed=0.8, reach=1.3, flags=1,
+        //                    value=500, health=300, weight=35.0, damage=14.
+        let data = [
+            0x01, 0x00, 0x00, 0x00, // type = Blade2H
+            0xcd, 0xcc, 0x4c, 0x3f, // speed = 0.8
+            0x66, 0x66, 0xa6, 0x3f, // reach = 1.3
+            0x01, 0x00, 0x00, 0x00, // flags
+            0xf4, 0x01, 0x00, 0x00, // value = 500
+            0x2c, 0x01, 0x00, 0x00, // health = 300
+            0x00, 0x00, 0x0c, 0x42, // weight = 35.0
+            0x0e, 0x00, // damage = 14
+        ];
+        assert_eq!(data.len(), 30);
+        let subs = vec![sub(b"EDID", b"SE13TrophySword1\0"), sub(b"DATA", &data)];
+        let item = parse_weap(0x000966A9, &subs, GameKind::Oblivion);
+        assert_eq!(item.common.value, 500, "value at offset 16, not 0");
+        assert!(
+            (item.common.weight - 35.0).abs() < 1e-6,
+            "weight at offset 24, not 8"
+        );
+        match item.kind {
+            ItemKind::Weapon {
+                damage, clip_size, ..
+            } => {
+                assert_eq!(damage, 14, "damage u16 at offset 28");
+                assert_eq!(clip_size, 0, "Oblivion has no magazine system");
+            }
+            _ => panic!("expected Weapon kind"),
+        }
+    }
+
+    #[test]
+    fn oblivion_weap_with_fnv_layout_would_corrupt_every_field() {
+        // Guard against the pre-fix behavior: an Oblivion DATA fed to
+        // the FO3/FNV arm would read `value` from offset 0 (which is
+        // the WEAP `type` u32), `weight` from offset 8 (which is the
+        // upper bytes of `reach`), etc. Demonstrate that the per-game
+        // dispatch now keeps these distinct.
+        let oblivion_data = [
+            0x01, 0x00, 0x00, 0x00, // type
+            0xcd, 0xcc, 0x4c, 0x3f, // speed
+            0x66, 0x66, 0xa6, 0x3f, // reach
+            0x01, 0x00, 0x00, 0x00, // flags
+            0xf4, 0x01, 0x00, 0x00, // value = 500
+            0x2c, 0x01, 0x00, 0x00, // health
+            0x00, 0x00, 0x0c, 0x42, // weight = 35.0
+            0x0e, 0x00, // damage
+        ];
+        let subs = vec![sub(b"DATA", &oblivion_data)];
+        let oblivion = parse_weap(0x1, &subs, GameKind::Oblivion);
+        let fnv = parse_weap(0x1, &subs, GameKind::Fallout3NV);
+        assert_eq!(oblivion.common.value, 500);
+        assert_ne!(
+            fnv.common.value, 500,
+            "FO3/FNV arm reads `type` as `value` — confirms separation matters"
+        );
+    }
+
+    #[test]
+    fn oblivion_armo_data_is_14_bytes_armor_u16_then_value_health_weight() {
+        // SE32CirionsHelmet4 (form 0x000972BB): a Shivering Isles helmet.
+        // BMDT is 4 bytes (Oblivion drops the second flags word).
+        // DATA is 14 bytes: armor(u16) value(u32) health(u32) weight(f32).
+        // Decoded from disk: armor_x100=575 (5.75), value=400, health=775,
+        //                    weight=9.8.
+        let bmdt = [0x00, 0x00, 0x00, 0x00]; // 4-byte BMDT, biped flags 0 for sample
+        let data = [
+            0x3f, 0x02, // armor = 575 (= 5.75 × 100)
+            0x90, 0x01, 0x00, 0x00, // value = 400
+            0x07, 0x03, 0x00, 0x00, // health = 775
+            0xcd, 0xcc, 0x1c, 0x41, // weight = 9.8
+        ];
+        assert_eq!(data.len(), 14);
+        assert_eq!(bmdt.len(), 4);
+        let subs = vec![
+            sub(b"EDID", b"SE32CirionsHelmet4\0"),
+            sub(b"BMDT", &bmdt),
+            sub(b"DATA", &data),
+        ];
+        let item = parse_armo(0x000972BB, &subs, GameKind::Oblivion);
+        assert_eq!(item.common.value, 400, "value at offset 2 (after armor u16)");
+        assert!(
+            (item.common.weight - 9.8).abs() < 1e-4,
+            "weight at offset 10, not 8"
+        );
+        match item.kind {
+            ItemKind::Armor {
+                health,
+                armor_rating_x100,
+                dt,
+                dr,
+                ..
+            } => {
+                assert_eq!(armor_rating_x100, 575, "armor u16 at offset 0");
+                assert_eq!(health, 775);
+                assert_eq!(dt, 0.0, "Oblivion has no DT/DR");
+                assert_eq!(dr, 0);
+            }
+            _ => panic!("expected Armor kind"),
+        }
+    }
+
+    #[test]
+    fn oblivion_armo_4byte_bmdt_no_longer_drops_biped_flags() {
+        // Pre-fix the parser required `len >= 8` on BMDT, so Oblivion's
+        // 4-byte BMDT silently dropped biped_flags entirely. Guard that
+        // a 4-byte BMDT is now accepted on Oblivion records.
+        let bmdt = [0x04, 0x00, 0x00, 0x00]; // biped_flags = Hair (bit 2)
+        let data = [
+            0x00, 0x00, 0xc8, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let subs = vec![sub(b"BMDT", &bmdt), sub(b"DATA", &data)];
+        let item = parse_armo(0x1, &subs, GameKind::Oblivion);
+        match item.kind {
+            ItemKind::Armor { biped_flags, .. } => assert_eq!(biped_flags, 0x4),
+            _ => panic!("expected Armor kind"),
+        }
+    }
+
+    #[test]
+    fn oblivion_ammo_data_is_18_bytes_with_damage_not_clip_rounds() {
+        // SE30MadnessMagicArrowA (form 0x0009277E): an Oblivion arrow.
+        // Layout: speed(f32) flags(u32) value(u32) weight(f32) damage(u16)
+        // Decoded from disk: speed=1.0, flags=2, value=2, weight=0.1, damage=9.
+        let data = [
+            0x00, 0x00, 0x80, 0x3f, // speed = 1.0
+            0x00, 0x00, 0x00, 0x00, // flags = 0
+            0x02, 0x00, 0x00, 0x00, // value = 2
+            0xcd, 0xcc, 0xcc, 0x3d, // weight = 0.1
+            0x09, 0x00, // damage = 9
+        ];
+        assert_eq!(data.len(), 18);
+        let subs = vec![sub(b"EDID", b"SE30MadnessMagicArrowA\0"), sub(b"DATA", &data)];
+        let item = parse_ammo(0x0009277E, &subs, GameKind::Oblivion);
+        assert_eq!(item.common.value, 2);
+        assert!((item.common.weight - 0.1).abs() < 1e-4);
+        match item.kind {
+            ItemKind::Ammo {
+                damage,
+                clip_rounds,
+                casing_form,
+                ..
+            } => {
+                assert!(
+                    (damage - 9.0).abs() < 1e-4,
+                    "Oblivion damage at offset 16, u16 cast to f32"
+                );
+                assert_eq!(clip_rounds, 0, "no magazine system on Oblivion");
+                assert_eq!(casing_form, 0, "no projectile/casing on Oblivion AMMO");
+            }
+            _ => panic!("expected Ammo kind"),
         }
     }
 
