@@ -49,7 +49,7 @@ shader declarations at pipeline-create time.
 **Parser coverage.** NIF parses across seven games (184 886 files
 on the latest sweep — see compatibility matrix below). FO3 / FNV /
 Skyrim SE land at 100% clean; Oblivion / FO4 / FO76 in the 95–97%
-band (drift-induced truncation per #687 / #688); Starfield at 0.80%
+band (drift-induced truncation per #687 / #688); Starfield at 97.19%
 clean (recent BA2 v3 LZ4 chunked content the parser doesn't yet
 fully cover). Recoverable rate is 100% on all seven games except
 Oblivion (99.99%, single hard-fail on a corrupt-by-design debug
@@ -91,7 +91,7 @@ parse-rate work for the games where clean < 100%.
 | Skyrim SE         | BSA v105 LZ4  | 100% (18 862)                                | Interior (WhiterunBanneredMare 1932 entities @ 253.3 FPS / 3.95 ms, bench 6a6950a; entity count up from 1258 since M32.5 close — more REFRs land now). |
 | Fallout 4         | BA2 v1/v7/v8  | **96.46%** (33 757 / 34 995) · recover 100%  | Interior (MedTekResearch01 7434 entities @ 92.5 FPS / 10.82 ms, bench 6a6950a). FaceGen NIFs dominate the truncation tail (1 235 of 1 238 truncated files). |
 | Fallout 76        | BA2 v1        | **97.34%** (56 915 / 58 469) · recover 100%  | —                                                        |
-| Starfield         | BA2 v2/v3 LZ4 | **0.80%** (248 / 31 058) · recover 100%      | — Mesh archive expanded from 31 k → 320 k files; the 0.80% reflects new BA2 v3 LZ4 chunked content the parser doesn't fully cover yet. |
+| Starfield         | BA2 v2/v3 LZ4 | **97.19%** (30 184 / 31 058) · recover 100%  | #708 closeout — BSGeometry / SkinAttach / BoneTranslations now dispatch (Starfield skinned-geometry triple). 190 549 BSGeometry blocks recovered from NiUnknown. Truncation tail (874 files) is `BSClothExtraData` (cloth sim extra data, no consumer yet) + a handful of `BSEffectShaderProperty` / `NiPointLight` outliers. |
 
 ---
 
@@ -378,7 +378,7 @@ Ground-truth as of 2026-04-26, verified by `/session-close`.
 | Tests (last reported by ROADMAP)        | 1273                         |
 | Open issue directories                  | 665 (`.claude/issues/`)       |
 | NIFs in per-game integration sweeps     | 184 886                       |
-| Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 95.21%, FO4 96.46%, FO76 97.34%, Starfield 0.80% (see compat matrix). Recoverable 100% on all except Oblivion 99.99%. |
+| Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 95.21%, FO4 96.46%, FO76 97.34%, Starfield 97.19% (see compat matrix). Recoverable 100% on all except Oblivion 99.99%. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
 
 ### Repro commands for every bench claim

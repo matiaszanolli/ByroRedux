@@ -5,6 +5,7 @@
 //! and provides the NiObject trait that all parsed blocks implement.
 
 pub mod base;
+pub mod bs_geometry;
 pub mod collision;
 pub mod controller;
 pub mod extra_data;
@@ -264,6 +265,17 @@ pub fn parse_block(
         // + CPU-mutable trailing Vector4 vertex array. Routing this to
         // NiUnknown caused invisible faces on every NPC. See issue #157.
         "BSDynamicTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse_dynamic(stream)?)),
+        // BSGeometry: Starfield-era replacement for BSTriShape /
+        // BSSubIndexTriShape. The .nif holds bounds + skin/shader/alpha
+        // refs + up to 4 mesh-LOD slots; each slot carries either an
+        // external `.mesh` filename (the 99% Starfield case) or — when
+        // bit 0x200 of the parent's flags is set — an inline mesh body
+        // (UDEC3 packed normals/tangents, half-float UVs, meshlets, cull
+        // data). Pre-#708 every Starfield mesh fell into NiUnknown:
+        // 190,549 hits in `Starfield - Meshes01.ba2` (24.74% of every
+        // block). Wire layout sourced from nifly's BSGeometry::Sync
+        // (Geometry.cpp:1769); nif.xml has no <niobject> for this block.
+        "BSGeometry" => Ok(Box::new(bs_geometry::BSGeometry::parse(stream)?)),
         "NiTriShapeData" => Ok(Box::new(NiTriShapeData::parse(stream)?)),
         "NiTriStripsData" => Ok(Box::new(NiTriStripsData::parse(stream)?)),
         // NiAdditionalGeometryData + BSPackedAdditionalGeometryData: per-vertex
@@ -376,7 +388,15 @@ pub fn parse_block(
         // the type name had no dispatch arm; the fallback consumed the
         // bytes via block_size recovery but recorded the file as
         // truncated, dropping the parse rate from 100% to ~99.7%.
-        | "BSBoneLODExtraData" => Ok(Box::new(NiExtraData::parse(stream, type_name)?)),
+        | "BSBoneLODExtraData"
+        // SkinAttach / BoneTranslations (Starfield, #708 / NIF-D5-02 +
+        // NIF-D5-08). Pair with BSGeometry to attach the mesh to a
+        // skeleton and supply per-bone translation deltas at LOD
+        // boundaries. Wire layouts sourced from nifly's
+        // SkinAttach::Sync and BoneTranslations::Sync (ExtraData.cpp:436/441);
+        // nif.xml does not define either block.
+        | "SkinAttach"
+        | "BoneTranslations" => Ok(Box::new(NiExtraData::parse(stream, type_name)?)),
         "BSWArray" => Ok(Box::new(BsWArray::parse(stream)?)),
         "BSBound" => Ok(Box::new(BsBound::parse(stream)?)),
         "BSDecalPlacementVectorExtraData" => {

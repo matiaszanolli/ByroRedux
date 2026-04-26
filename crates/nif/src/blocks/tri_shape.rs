@@ -975,7 +975,7 @@ fn read_vertex_skin_data(stream: &mut NifStream) -> io::Result<([f32; 4], [u8; 4
 }
 
 /// Convert IEEE 754 half-precision float (u16) to f32.
-fn half_to_f32(h: u16) -> f32 {
+pub(crate) fn half_to_f32(h: u16) -> f32 {
     let sign = ((h >> 15) & 1) as u32;
     let exp = ((h >> 10) & 0x1F) as u32;
     let mantissa = (h & 0x3FF) as u32;

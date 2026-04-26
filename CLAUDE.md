@@ -226,10 +226,11 @@ M26+: Oblivion clean-parse fixes via header user_version threshold (10.0.1.0 →
       BSStreamHeader for v10.0.1.2 / user_version>=3, and pre-Gamebryo empty-scene fallback.
 Full-archive parse rates (2026-04-26 sweep, 184 886 NIFs across 7 games — see
 ROADMAP.md compat matrix for full breakdown): clean=100% on FO3 / FNV / Skyrim SE;
-Oblivion 95.21%, FO4 96.46%, FO76 97.34%, Starfield 0.80% (drift-induced
-truncation tracked at #687 / #688 / #697 / #698). Recoverable rate is 100%
-on all except Oblivion's single hard-fail on a corrupt-by-design debug
-marker (#698).
+Oblivion 95.21%, FO4 96.46%, FO76 97.34%, Starfield 97.19% (drift-induced
+truncation tracked at #687 / #688 / #697 / #698; SF jumped from 0.80%
+after #708 closeout — BSGeometry / SkinAttach / BoneTranslations now
+dispatch). Recoverable rate is 100% on all except Oblivion's single
+hard-fail on a corrupt-by-design debug marker (#698).
 M24 (Phase 1): records/ module with WEAP/ARMO/AMMO/MISC/KEYM/ALCH/INGR/BOOK/NOTE,
       CONT, LVLI/LVLN, NPC_, RACE, CLAS, FACT, GLOB, GMST. Real FNV.esm parses to
       13,684 structured records on top of cells in 0.19s release.

@@ -35,6 +35,16 @@ pub struct NiExtraData {
     /// `NiFixedString` name; resolves to `None` for empty / null
     /// string-table indices. See nif.xml `BoneLOD` (line 2597) and #614.
     pub bone_lods: Option<Vec<(u32, Option<Arc<str>>)>>,
+    /// Populated for `SkinAttach` (Starfield) — list of bone names
+    /// the parent BSGeometry's skin instance should attach to. Each
+    /// entry is a length-prefixed `NiString` (4-byte length). Per
+    /// `nifly::SkinAttach::Sync` (ExtraData.cpp:436). See #708.
+    pub skin_attach_bones: Option<Vec<String>>,
+    /// Populated for `BoneTranslations` (Starfield) — `(bone_name,
+    /// translation)` pairs supplying per-bone offset deltas for the
+    /// skeleton at this LOD. Per `nifly::BoneTranslations::Sync`
+    /// (ExtraData.cpp:441). See #708.
+    pub bone_translations: Option<Vec<(String, [f32; 3])>>,
 }
 
 impl NiObject for NiExtraData {
@@ -77,6 +87,8 @@ impl NiExtraData {
         let mut integers_array = None;
         let mut floats_array = None;
         let mut bone_lods = None;
+        let mut skin_attach_bones = None;
+        let mut bone_translations = None;
 
         match type_name {
             "NiStringExtraData" => {
@@ -166,6 +178,34 @@ impl NiExtraData {
                 }
                 bone_lods = Some(arr);
             }
+            // SkinAttach (Starfield, #708 / NIF-D5-02). Pairs with
+            // BSGeometry's skin-instance ref to tell the engine which
+            // skeleton bones the mesh attaches to. Per
+            // `nifly::SkinAttach::Sync`: a single NiStringVector field
+            // = u32 count + count × NiString(u32 length + bytes).
+            "SkinAttach" => {
+                let count = stream.read_u32_le()?;
+                let mut arr = stream.allocate_vec::<String>(count)?;
+                for _ in 0..count {
+                    arr.push(stream.read_sized_string()?);
+                }
+                skin_attach_bones = Some(arr);
+            }
+            // BoneTranslations (Starfield, #708 / NIF-D5-08). Per-LOD
+            // bone-offset deltas. Per `nifly::BoneTranslations::Sync`:
+            // u32 count + count × { NiString(u32 length) + Vector3 }.
+            "BoneTranslations" => {
+                let count = stream.read_u32_le()?;
+                let mut arr = stream.allocate_vec::<(String, [f32; 3])>(count)?;
+                for _ in 0..count {
+                    let bone = stream.read_sized_string()?;
+                    let tx = stream.read_f32_le()?;
+                    let ty = stream.read_f32_le()?;
+                    let tz = stream.read_f32_le()?;
+                    arr.push((bone, [tx, ty, tz]));
+                }
+                bone_translations = Some(arr);
+            }
             _ => {
                 // Unknown extra data subtype — can't skip without size
             }
@@ -182,6 +222,8 @@ impl NiExtraData {
             integers_array,
             floats_array,
             bone_lods,
+            skin_attach_bones,
+            bone_translations,
         })
     }
 
@@ -225,6 +267,8 @@ impl NiExtraData {
             integers_array: None,
             floats_array: None,
             bone_lods: None,
+            skin_attach_bones: None,
+            bone_translations: None,
         })
     }
 
@@ -266,6 +310,8 @@ impl NiExtraData {
             integers_array: None,
             floats_array: None,
             bone_lods: None,
+            skin_attach_bones: None,
+            bone_translations: None,
         })
     }
 }
