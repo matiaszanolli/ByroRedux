@@ -549,12 +549,20 @@ pub(crate) fn build_render_data(
                 //     transparent-refractive materials from
                 //     alpha-blend-for-edges. See follow-up to #515.
                 let base_material_kind = mat.map(|m| m.material_kind as u32).unwrap_or(0);
-                let material_kind =
-                    if alpha_blend && !is_decal && metalness < 0.3 && roughness < 0.4 {
-                        byroredux_renderer::MATERIAL_KIND_GLASS
-                    } else {
-                        base_material_kind
-                    };
+                // Engine-synthesized kinds (>= 100) are pre-classified
+                // upstream and must win over the heuristic Glass branch.
+                // Today: BSEffectShaderProperty meshes arrive with
+                // material_kind=101 (MATERIAL_KIND_EFFECT_SHADER) set at
+                // import; the glass heuristic (alpha_blend + low metal +
+                // low roughness) would otherwise misclassify a fire plane
+                // as glass. See #706.
+                let material_kind = if base_material_kind >= 100 {
+                    base_material_kind
+                } else if alpha_blend && !is_decal && metalness < 0.3 && roughness < 0.4 {
+                    byroredux_renderer::MATERIAL_KIND_GLASS
+                } else {
+                    base_material_kind
+                };
 
                 // #562 / #619 — Skyrim+ BSLightingShaderProperty variant
                 // payload. Each field group is gated on the matching

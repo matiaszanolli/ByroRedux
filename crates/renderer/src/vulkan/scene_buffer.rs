@@ -77,6 +77,24 @@ pub const INSTANCE_TERRAIN_TILE_MASK: u32 = 0xFFFF;
 /// kind BEFORE populating `DrawCommand.material_kind`.
 pub const MATERIAL_KIND_GLASS: u32 = 100;
 
+/// `EffectShader` (`#706` / FX-1): Skyrim+ `BSEffectShaderProperty`
+/// surface — fire flames, magic auras, glow rings, force fields, dust
+/// planes, decals over emissive cones. The fragment shader branches on
+/// this value to short-circuit lit shading: no scene point/spot lights,
+/// no ambient, no GI bounce reads — output is `emissive_color *
+/// emissive_mult * texColor.rgba`. Without this branch, fires get
+/// modulated by every nearby lantern + ambient term + RT GI bounce,
+/// producing rainbow-tinted flames where Bethesda authored a pure
+/// orange/yellow additive surface.
+///
+/// Callers (`render.rs`) override the base shader_type-derived kind
+/// to this value when `Material.effect_shader.is_some()`. Pre-existing
+/// effect-shader data (falloff cone, greyscale palette, lighting_influence)
+/// captured via #345 rides through on the same instance — the variant
+/// branch in the fragment shader is the missing renderer-side dispatch
+/// (SK-D3-02 follow-up).
+pub const MATERIAL_KIND_EFFECT_SHADER: u32 = 101;
+
 /// Per-terrain-tile data uploaded to the terrain-tile SSBO each cell load.
 /// Indexed in the fragment shader via
 /// `(instance.flags >> 16) & 0xFFFF` when the splat bit is set.

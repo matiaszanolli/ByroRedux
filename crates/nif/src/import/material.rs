@@ -756,6 +756,30 @@ pub(super) fn extract_material_info_from_refs(
             // so downstream consumers can route them when the renderer-
             // side dispatch lands. See #345 / audit S4-01.
             info.effect_shader = Some(capture_effect_shader_data(shader));
+            // #706 / FX-1 — flag the material as effect-shader for the
+            // renderer's `material_kind` dispatch. Routes through the
+            // existing u8 ladder (same plumbing the BSLightingShaderProperty
+            // shader_type uses) into `triangle.frag`'s `MATERIAL_KIND_EFFECT_SHADER`
+            // branch, which short-circuits lit shading and emits only
+            // `emissive_color * emissive_mult * texColor.rgba`. Without
+            // this flag, fire / magic / glow planes get scene-lit by
+            // every nearby point light + ambient + RT GI bounce — pure
+            // emissive surfaces are then modulated against scene colors
+            // and render rainbow. See #706.
+            //
+            // 101 fits in the `u8` field (max 255). The contract on
+            // `MaterialInfo.material_kind` widens here: 0..=19 is the
+            // BSLightingShaderProperty shader_type; >= 100 is an
+            // engine-synthesized kind (mirrors the Glass = 100 pattern
+            // already shipped in scene_buffer.rs). The variant-specific
+            // packs in render.rs gate on `base_material_kind == N` for
+            // N in {5, 6, 11, 14, 16}, none of which collide with 101.
+            // 101 = MATERIAL_KIND_EFFECT_SHADER (defined in
+            // `byroredux-renderer/src/vulkan/scene_buffer.rs`). Inlined
+            // here as a literal because the nif crate is upstream of
+            // renderer in the dep graph; the existing test
+            // `effect_shader_sets_material_kind_to_101` pins the value.
+            info.material_kind = 101;
             // Implicit alpha blend: BSEffectShaderProperty is the
             // Skyrim+ transparency source of truth. Bethesda effect
             // NIFs frequently omit NiAlphaProperty entirely because
@@ -2429,6 +2453,150 @@ mod texture_slot_3_4_5_tests {
     #[allow(dead_code)]
     fn _uses_ni_texturing_property() -> NiTexturingProperty {
         panic!()
+    }
+
+    // ── #706 / FX-1 regression guards ──────────────────────────────
+    //
+    // BSEffectShaderProperty meshes must arrive at the renderer with
+    // `material_kind = 101` so `triangle.frag` short-circuits lit
+    // shading and writes pure additive emissive. Pre-fix every effect
+    // surface (fire, magic, glow rings, force fields) ran the full
+    // PBR + RT-GI pipeline and got modulated by every nearby light.
+
+    fn empty_effect_shader_with_base_color(rgba: [f32; 4]) -> BSEffectShaderProperty {
+        BSEffectShaderProperty {
+            net: empty_net(),
+            material_reference: false,
+            shader_flags_1: 0,
+            shader_flags_2: 0,
+            sf1_crcs: Vec::new(),
+            sf2_crcs: Vec::new(),
+            uv_offset: [0.0, 0.0],
+            uv_scale: [1.0, 1.0],
+            source_texture: "fx/glow.dds".to_string(),
+            texture_clamp_mode: 3,
+            lighting_influence: 0,
+            env_map_min_lod: 0,
+            falloff_start_angle: 1.0,
+            falloff_stop_angle: 0.0,
+            falloff_start_opacity: 1.0,
+            falloff_stop_opacity: 0.0,
+            refraction_power: 0.0,
+            base_color: rgba,
+            base_color_scale: 1.0,
+            soft_falloff_depth: 1.0,
+            greyscale_texture: String::new(),
+            env_map_texture: String::new(),
+            normal_texture: String::new(),
+            env_mask_texture: String::new(),
+            env_map_scale: 1.0,
+            reflectance_texture: String::new(),
+            lighting_texture: String::new(),
+            emittance_color: [0.0; 3],
+            emit_gradient_texture: String::new(),
+            luminance: None,
+        }
+    }
+
+    #[test]
+    fn bs_effect_shader_property_sets_material_kind_to_101() {
+        // Synthesised scene: a NiTriShape whose properties list
+        // points at a single BSEffectShaderProperty. The pre-fix
+        // import path captured `effect_shader: Some(_)` but left
+        // `material_kind = 0` (Default Lit), causing the renderer
+        // to drop the surface into the lit pipeline.
+        let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(
+            empty_effect_shader_with_base_color([1.0, 0.5, 0.1, 1.0]),
+        )];
+        let scene = NifScene {
+            blocks,
+            ..NifScene::default()
+        };
+        // BSEffectShaderProperty binds via the dedicated Skyrim+
+        // shader_property_ref (same slot as BSLightingShaderProperty).
+        let mut shape = make_tri_shape_with_props(Vec::new());
+        shape.shader_property_ref = BlockRef(0);
+        let info = extract_material_info(&scene, &shape, &[]);
+
+        assert_eq!(
+            info.material_kind, 101,
+            "BSEffectShaderProperty must route through MATERIAL_KIND_EFFECT_SHADER \
+             (101) so the fragment shader short-circuits lit shading"
+        );
+        assert!(
+            info.effect_shader.is_some(),
+            "rich effect-shader payload also captured (#345)"
+        );
+        // Existing import-side data plumbing still runs (regression
+        // guard — the material_kind override must not stomp emissive
+        // routing, alpha_blend, or texture path):
+        assert_eq!(info.texture_path.as_deref(), Some("fx/glow.dds"));
+        assert!(info.alpha_blend, "BSEffectShaderProperty implies alpha-blend");
+        assert_eq!(info.emissive_color, [1.0, 0.5, 0.1]);
+    }
+
+    fn skin_tint_lighting_shader() -> BSLightingShaderProperty {
+        BSLightingShaderProperty {
+            shader_type: 5, // SkinTint
+            net: empty_net(),
+            material_reference: false,
+            shader_flags_1: 0,
+            shader_flags_2: 0,
+            sf1_crcs: Vec::new(),
+            sf2_crcs: Vec::new(),
+            uv_offset: [0.0, 0.0],
+            uv_scale: [1.0, 1.0],
+            texture_set_ref: BlockRef::NULL,
+            emissive_color: [0.0; 3],
+            emissive_multiple: 1.0,
+            texture_clamp_mode: 0,
+            alpha: 1.0,
+            refraction_strength: 0.0,
+            glossiness: 80.0,
+            specular_color: [1.0; 3],
+            specular_strength: 1.0,
+            lighting_effect_1: 0.0,
+            lighting_effect_2: 0.0,
+            subsurface_rolloff: 0.0,
+            rimlight_power: 0.0,
+            backlight_power: 0.0,
+            grayscale_to_palette_scale: 0.0,
+            fresnel_power: 0.0,
+            wetness: None,
+            luminance: None,
+            do_translucency: false,
+            translucency: None,
+            texture_arrays: Vec::new(),
+            shader_type_data: ShaderTypeData::None,
+        }
+    }
+
+    #[test]
+    fn bs_lighting_shader_property_keeps_low_range_material_kind() {
+        // Negative guard: a normal Skyrim+ BSLightingShaderProperty
+        // mesh (SkinTint = 5) must NOT be promoted to 101. Only
+        // BSEffectShaderProperty triggers the engine-synthesized
+        // material_kind. Without this guard, a future refactor that
+        // conflates the two property types would silently demote
+        // normal lit meshes to the emit-only path.
+        let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(skin_tint_lighting_shader())];
+        let scene = NifScene {
+            blocks,
+            ..NifScene::default()
+        };
+        let mut shape = make_tri_shape_with_props(Vec::new());
+        shape.shader_property_ref = BlockRef(0);
+        let info = extract_material_info(&scene, &shape, &[]);
+
+        assert_eq!(
+            info.material_kind, 5,
+            "BSLightingShaderProperty must stay in the 0..=19 range — \
+             only BSEffectShaderProperty promotes to 101"
+        );
+        assert!(
+            info.effect_shader.is_none(),
+            "no effect-shader payload on a lit material"
+        );
     }
 }
 

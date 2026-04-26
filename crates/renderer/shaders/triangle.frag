@@ -692,6 +692,40 @@ void main() {
     float rtFootprint = max(length(dFdx(fragWorldPos)), length(dFdy(fragWorldPos)));
     float rtLOD = clamp(log2(rtFootprint * RT_LOD_SCALE), 0.0, 3.0);
 
+    // ── #706 / FX-1: BSEffectShaderProperty emit-only early-out ─────
+    //
+    // Engine-synthesized `MATERIAL_KIND_EFFECT_SHADER` (101) marks fire
+    // flames, magic auras, glow rings, force fields, dust planes —
+    // surfaces the original Skyrim+ engine renders as pure additive
+    // emit, ignoring scene point/spot lights, ambient term, and GI
+    // bounces. Pre-fix these went through the full lit pipeline and
+    // got modulated by every nearby lantern + ambient + RT bounce,
+    // producing rainbow-tinted flames at e.g. Whiterun's hearth.
+    //
+    // outRawIndirect is forced to zero (SVGF treats the surface as
+    // emit-only — no indirect light to denoise). outAlbedo gets the
+    // actual emit color so the composite pass's
+    // `direct + indirect * albedo + emissive` math passes through
+    // cleanly. outColor carries the additive emit weighted by the
+    // shader-authored emissiveMult and modulated by the texture's
+    // alpha (so a flame texture's transparent edges fade out).
+    //
+    // The G-buffer slots (outNormal, outMotion, outMeshID) were
+    // already written above and stay valid — TAA + motion-vector
+    // reprojection on flame planes still works correctly across frames.
+    const uint MATERIAL_KIND_EFFECT_SHADER = 101u;
+    if (inst.materialKind == MATERIAL_KIND_EFFECT_SHADER) {
+        vec3 emit = texColor.rgb
+                  * vec3(inst.emissiveR, inst.emissiveG, inst.emissiveB)
+                  * inst.emissiveMult;
+        // texColor.a already has `inst.materialAlpha` baked in upstream
+        // (line ~567), so don't double-multiply here.
+        outColor = vec4(emit, texColor.a);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(emit, 1.0);
+        return;
+    }
+
     // Base reflectance: dielectrics use 0.04, metals use albedo color.
     vec3 albedo = texColor.rgb * fragColor;
 
