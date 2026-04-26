@@ -152,6 +152,42 @@ pub struct CellData {
     /// Regions drive ambient SFX, weather overrides, and encounter
     /// tables in worldspace cells.
     pub regions: Vec<u32>,
+    /// Cell ownership tuple (XOWN / XRNK / XGLB sub-records). When
+    /// `Some`, a stealing-detection / property-crime gameplay layer
+    /// can resolve the owner (NPC_ or FACT FormID), the minimum
+    /// faction rank required to bypass the ownership check, and an
+    /// optional global-variable FormID that gates ownership at
+    /// runtime. Absent on most cells (public spaces). Same shape on
+    /// CELL and REFR records — the REFR-side override scopes
+    /// ownership to a single placed object (chest, bed) rather than
+    /// the whole cell. Cross-game (Oblivion / FO3 / FNV / Skyrim+).
+    /// Parsed for completeness; the gameplay consumer is M47 ECS
+    /// runtime work. See #692.
+    pub ownership: Option<CellOwnership>,
+}
+
+/// Ownership tuple from `XOWN` / `XRNK` / `XGLB` sub-records. Lives
+/// on both CELL records (whole-cell ownership) and REFR records
+/// (per-placed-object override). All three fields can appear
+/// independently — XRNK and XGLB are gates on top of the base XOWN
+/// owner, but Bethesda content also ships XOWN-only cells (no rank
+/// requirement, no global gate). See #692 / O3-N-04.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellOwnership {
+    /// XOWN — owner FormID. References either an NPC_ (individual
+    /// owner like a homeowner) or a FACT (faction-owned, like the
+    /// Imperial Legion barracks). 0 / `None` would be unowned.
+    pub owner_form_id: u32,
+    /// XRNK — minimum faction rank required to bypass the ownership
+    /// check. Only meaningful when `owner_form_id` references a FACT;
+    /// `None` means no rank gate (any faction member counts).
+    pub faction_rank: Option<i32>,
+    /// XGLB — global variable FormID that controls ownership state
+    /// at runtime. When set, the gameplay layer evaluates the global
+    /// before applying ownership (e.g. quest-gated houses that the
+    /// player can claim only after a stage). `None` means the
+    /// ownership is always-active.
+    pub global_var_form_id: Option<u32>,
 }
 
 /// A placed object reference within a cell (REFR or ACHR).
@@ -232,6 +268,12 @@ pub struct PlacedRef {
     /// the consumer wiring (per-REFR emissive light spawn) is follow-up
     /// work. See audit FO4-DIM6-02.
     pub emissive_light_ref: Option<u32>,
+    /// Per-REFR ownership override (XOWN / XRNK / XGLB). When `Some`,
+    /// the placed object (chest, bed, individual storage) is owned
+    /// independently of the parent cell's ownership — stealing the
+    /// item is a crime even in a public cell. See `CellOwnership`
+    /// docs and #692.
+    pub ownership: Option<CellOwnership>,
 }
 
 /// Per-slot texture swap from one `XTXR` sub-record — a TXST form ID
@@ -739,6 +781,14 @@ fn parse_cell_group(
                 let mut music_type_form: Option<u32> = None;
                 let mut location_form: Option<u32> = None;
                 let mut regions: Vec<u32> = Vec::new();
+                // #692 — XOWN / XRNK / XGLB ownership tuple. All three
+                // sub-records optional; cell ends up with `Some` only
+                // when at least XOWN is present. XRNK and XGLB without
+                // XOWN are nonsensical and dropped (the consumer would
+                // have nothing to gate against).
+                let mut ownership_owner: Option<u32> = None;
+                let mut ownership_rank: Option<i32> = None;
+                let mut ownership_global: Option<u32> = None;
 
                 for sub in &subs {
                     match &sub.sub_type {
@@ -770,6 +820,24 @@ fn parse_cell_group(
                         // referenced by REGN records. Variable length;
                         // empty list is normal.
                         b"XCLR" => regions = read_form_id_array(&sub.data),
+                        // #692 — XOWN owner, XRNK faction-rank gate,
+                        // XGLB global-variable FormID. Same shape on
+                        // CELL + REFR. Cross-game (Oblivion / FO3 /
+                        // FNV / Skyrim+).
+                        b"XOWN" if sub.data.len() >= 4 => {
+                            ownership_owner = read_form_id(&sub.data);
+                        }
+                        b"XRNK" if sub.data.len() >= 4 => {
+                            ownership_rank = Some(i32::from_le_bytes([
+                                sub.data[0],
+                                sub.data[1],
+                                sub.data[2],
+                                sub.data[3],
+                            ]));
+                        }
+                        b"XGLB" if sub.data.len() >= 4 => {
+                            ownership_global = read_form_id(&sub.data);
+                        }
                         b"XCLL" if sub.data.len() >= 28 => {
                             // XCLL layout (shared prefix for all games):
                             //   0-3:   Ambient RGBA (byte 0=R, 1=G, 2=B, 3=unused)
@@ -924,6 +992,11 @@ fn parse_cell_group(
 
                 if is_interior && !editor_id.is_empty() {
                     let key = editor_id.to_ascii_lowercase();
+                    let ownership = ownership_owner.map(|owner| CellOwnership {
+                        owner_form_id: owner,
+                        faction_rank: ownership_rank,
+                        global_var_form_id: ownership_global,
+                    });
                     cells.insert(
                         key,
                         CellData {
@@ -941,6 +1014,7 @@ fn parse_cell_group(
                             music_type_form,
                             location_form,
                             regions: regions.clone(),
+                            ownership,
                         },
                     );
                     current_cell = Some((header.form_id, editor_id));
@@ -996,6 +1070,12 @@ fn parse_refr_group(
             let mut land_texture_ref: Option<u32> = None;
             let mut texture_slot_swaps: Vec<TextureSlotSwap> = Vec::new();
             let mut emissive_light_ref: Option<u32> = None;
+            // #692 — per-REFR ownership override. Scopes ownership to a
+            // single placed object (chest, bed, locker) when the parent
+            // cell is public. Same XOWN / XRNK / XGLB layout as CELL.
+            let mut ownership_owner: Option<u32> = None;
+            let mut ownership_rank: Option<i32> = None;
+            let mut ownership_global: Option<u32> = None;
 
             // Helpers to decode LE values from sub-record slices. Kept
             // local so the REFR match arm doesn't sprout u32 / f32
@@ -1170,11 +1250,34 @@ fn parse_refr_group(
                     b"XEMI" if sub.data.len() >= 4 => {
                         emissive_light_ref = Some(read_u32(&sub.data, 0));
                     }
+                    // #692 — per-REFR ownership override (mirrors the
+                    // CELL walker arms). XOWN owner FormID, XRNK
+                    // faction-rank gate, XGLB global-var gate. Same
+                    // 4-byte layout as the CELL form. Cross-game.
+                    b"XOWN" if sub.data.len() >= 4 => {
+                        ownership_owner = Some(read_u32(&sub.data, 0));
+                    }
+                    b"XRNK" if sub.data.len() >= 4 => {
+                        ownership_rank = Some(i32::from_le_bytes([
+                            sub.data[0],
+                            sub.data[1],
+                            sub.data[2],
+                            sub.data[3],
+                        ]));
+                    }
+                    b"XGLB" if sub.data.len() >= 4 => {
+                        ownership_global = Some(read_u32(&sub.data, 0));
+                    }
                     _ => {}
                 }
             }
 
             if base_form_id != 0 {
+                let ownership = ownership_owner.map(|owner| CellOwnership {
+                    owner_form_id: owner,
+                    faction_rank: ownership_rank,
+                    global_var_form_id: ownership_global,
+                });
                 refs.push(PlacedRef {
                     base_form_id,
                     position,
@@ -1191,6 +1294,7 @@ fn parse_refr_group(
                     land_texture_ref,
                     texture_slot_swaps,
                     emissive_light_ref,
+                    ownership,
                 });
             }
         } else if &header.record_type == b"LAND" {
@@ -1453,6 +1557,12 @@ fn parse_wrld_children(
                 let mut music_type_form: Option<u32> = None;
                 let mut location_form: Option<u32> = None;
                 let mut regions: Vec<u32> = Vec::new();
+                // #692 — exterior CELL ownership (worldspace owner +
+                // faction-rank gate + global-var gate). Same layout as
+                // interior CELL above; cross-game.
+                let mut ownership_owner: Option<u32> = None;
+                let mut ownership_rank: Option<i32> = None;
+                let mut ownership_global: Option<u32> = None;
 
                 for sub in &subs {
                     match &sub.sub_type {
@@ -1489,11 +1599,32 @@ fn parse_wrld_children(
                         b"XCMO" => music_type_form = read_form_id(&sub.data),
                         b"XLCN" => location_form = read_form_id(&sub.data),
                         b"XCLR" => regions = read_form_id_array(&sub.data),
+                        // #692 — exterior CELL ownership tuple (mirrors
+                        // the interior walker arms above).
+                        b"XOWN" if sub.data.len() >= 4 => {
+                            ownership_owner = read_form_id(&sub.data);
+                        }
+                        b"XRNK" if sub.data.len() >= 4 => {
+                            ownership_rank = Some(i32::from_le_bytes([
+                                sub.data[0],
+                                sub.data[1],
+                                sub.data[2],
+                                sub.data[3],
+                            ]));
+                        }
+                        b"XGLB" if sub.data.len() >= 4 => {
+                            ownership_global = read_form_id(&sub.data);
+                        }
                         _ => {}
                     }
                 }
 
                 if let Some(g) = grid {
+                    let ownership = ownership_owner.map(|owner| CellOwnership {
+                        owner_form_id: owner,
+                        faction_rank: ownership_rank,
+                        global_var_form_id: ownership_global,
+                    });
                     exterior_cells.insert(
                         g,
                         CellData {
@@ -1511,6 +1642,7 @@ fn parse_wrld_children(
                             music_type_form,
                             location_form,
                             regions,
+                            ownership,
                         },
                     );
                     current_cell = Some(g);
@@ -4175,5 +4307,121 @@ mod tests {
         let set = sets.get(&0xDEAD).expect("set missing");
         assert_eq!(set.diffuse.as_deref(), Some("textures/diffuse.dds"));
         assert!(set.normal.is_none(), "empty TX01 must surface as None");
+    }
+
+    // ── #692 / O3-N-04 regression guards ──────────────────────────────
+    //
+    // CELL + REFR ownership tuple (XOWN / XRNK / XGLB). Pre-fix every
+    // arm dropped these on the `_` match — stealing-detection /
+    // property-crime gameplay had no input. Cross-game (Oblivion +
+    // FO3 + FNV + Skyrim+ all use the same wire format).
+
+    /// Build a REFR record carrying a name + minimal DATA + a chosen
+    /// subset of XOWN / XRNK / XGLB sub-records.
+    fn build_refr_with_ownership(
+        base_form: u32,
+        owner: Option<u32>,
+        rank: Option<i32>,
+        global: Option<u32>,
+    ) -> Vec<u8> {
+        let mut sub_data = Vec::new();
+        // NAME (base form)
+        sub_data.extend_from_slice(b"NAME");
+        sub_data.extend_from_slice(&4u16.to_le_bytes());
+        sub_data.extend_from_slice(&base_form.to_le_bytes());
+        // DATA (minimal 24-byte placement)
+        sub_data.extend_from_slice(b"DATA");
+        sub_data.extend_from_slice(&24u16.to_le_bytes());
+        sub_data.extend_from_slice(&[0u8; 24]);
+        if let Some(o) = owner {
+            sub_data.extend_from_slice(b"XOWN");
+            sub_data.extend_from_slice(&4u16.to_le_bytes());
+            sub_data.extend_from_slice(&o.to_le_bytes());
+        }
+        if let Some(r) = rank {
+            sub_data.extend_from_slice(b"XRNK");
+            sub_data.extend_from_slice(&4u16.to_le_bytes());
+            sub_data.extend_from_slice(&r.to_le_bytes());
+        }
+        if let Some(g) = global {
+            sub_data.extend_from_slice(b"XGLB");
+            sub_data.extend_from_slice(&4u16.to_le_bytes());
+            sub_data.extend_from_slice(&g.to_le_bytes());
+        }
+
+        let mut record = Vec::new();
+        record.extend_from_slice(b"REFR");
+        record.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        record.extend_from_slice(&0u32.to_le_bytes()); // flags
+        record.extend_from_slice(&0xBEEFu32.to_le_bytes()); // form id
+        record.extend_from_slice(&[0u8; 8]); // version + unknown
+        record.extend_from_slice(&sub_data);
+        record
+    }
+
+    fn parse_one_refr_for_ownership(record: &[u8]) -> PlacedRef {
+        let mut reader = EsmReader::new(record);
+        let end = record.len();
+        let mut refs = Vec::new();
+        let mut land = None;
+        parse_refr_group(&mut reader, end, &mut refs, &mut land).unwrap();
+        assert_eq!(refs.len(), 1, "one REFR per record");
+        refs.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn refr_with_no_ownership_subrecords_leaves_field_none() {
+        let record = build_refr_with_ownership(0xABCD, None, None, None);
+        let r = parse_one_refr_for_ownership(&record);
+        assert!(
+            r.ownership.is_none(),
+            "REFR without XOWN must NOT synthesize an ownership tuple"
+        );
+    }
+
+    #[test]
+    fn refr_with_xown_only_populates_owner_and_no_gates() {
+        // Public-cell case: a chest with an individual NPC owner, no
+        // faction-rank gate, no global-var gate. The audit's primary
+        // example.
+        let record = build_refr_with_ownership(0xABCD, Some(0x0001_4242), None, None);
+        let r = parse_one_refr_for_ownership(&record);
+        let o = r.ownership.expect("XOWN must populate ownership");
+        assert_eq!(o.owner_form_id, 0x0001_4242);
+        assert_eq!(o.faction_rank, None);
+        assert_eq!(o.global_var_form_id, None);
+    }
+
+    #[test]
+    fn refr_with_full_ownership_tuple_routes_all_three_fields() {
+        // Faction-owned: XOWN points at FACT, XRNK gates on minimum
+        // rank (negative ranks like -1 = Untouchable are real values
+        // in vanilla Oblivion content), XGLB references a quest-state
+        // global that flips ownership at runtime.
+        let record = build_refr_with_ownership(
+            0xABCD,
+            Some(0x0001_5005),
+            Some(-1),
+            Some(0x0001_AAAA),
+        );
+        let r = parse_one_refr_for_ownership(&record);
+        let o = r.ownership.expect("ownership tuple");
+        assert_eq!(o.owner_form_id, 0x0001_5005);
+        assert_eq!(o.faction_rank, Some(-1));
+        assert_eq!(o.global_var_form_id, Some(0x0001_AAAA));
+    }
+
+    #[test]
+    fn refr_with_rank_and_global_but_no_owner_is_dropped() {
+        // Defensive: XRNK + XGLB without XOWN is structurally
+        // nonsensical (nothing to gate). The walker drops the
+        // dangling fields rather than fabricating an owner=0 tuple
+        // that downstream code might mistake for a real placement.
+        let record = build_refr_with_ownership(0xABCD, None, Some(5), Some(0xCAFE));
+        let r = parse_one_refr_for_ownership(&record);
+        assert!(
+            r.ownership.is_none(),
+            "XRNK + XGLB without XOWN must NOT synthesize a partial tuple"
+        );
     }
 }

@@ -2635,6 +2635,7 @@ mod refr_texture_overlay_tests {
             land_texture_ref: None,
             texture_slot_swaps: Vec::new(),
             emissive_light_ref: None,
+            ownership: None,
         }
     }
 
