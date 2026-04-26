@@ -242,3 +242,77 @@ fn real_archive_torch_meshes_surface_particle_emitters() {
          mode is back)"
     );
 }
+
+/// #689 — verify the empirical absence of `NiSequenceStreamHelper` in
+/// vanilla content. The 2026-04-25 audit (and the 2026-04-17 audit
+/// before it) inferred a missing-importer-path bug from the comment in
+/// `crates/nif/src/blocks/controller.rs` that says we don't consume the
+/// block. This test walks Oblivion + FNV + Skyrim SE meshes archives
+/// (`.nif` + `.kf`) and asserts zero `NiSequenceStreamHelper` blocks
+/// across the whole corpus — pinning the audit's stale premise so a
+/// future audit doesn't spend cycles on it.
+///
+/// If this assertion ever fires, vanilla content has appeared that
+/// uses the legacy chain and the importer needs the Path-3 arm sketched
+/// in `.claude/issues/689/INVESTIGATION.md`.
+#[test]
+#[ignore]
+fn vanilla_archives_have_zero_nisequencestreamhelper() {
+    let games = [Game::Oblivion, Game::FalloutNV, Game::SkyrimSE];
+    let mut total_scanned = 0usize;
+    let mut total_ssh = 0usize;
+    let mut ssh_examples: Vec<(String, String)> = Vec::new();
+    let mut tried_any_archive = false;
+
+    for game in games {
+        let Some(archive) = open_mesh_archive(game) else {
+            continue;
+        };
+        tried_any_archive = true;
+        for path in archive.list_files() {
+            let lower = path.to_ascii_lowercase();
+            if !(lower.ends_with(".nif") || lower.ends_with(".kf")) {
+                continue;
+            }
+            total_scanned += 1;
+            let Ok(bytes) = archive.extract(&path) else {
+                continue;
+            };
+            let Ok(scene) = byroredux_nif::parse_nif(&bytes) else {
+                continue;
+            };
+            for block in &scene.blocks {
+                if block.block_type_name() == "NiSequenceStreamHelper" {
+                    total_ssh += 1;
+                    if ssh_examples.len() < 8 {
+                        ssh_examples.push((game.label().to_string(), path.clone()));
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    if !tried_any_archive {
+        eprintln!(
+            "no reference game data available — skipping (set BYROREDUX_*_DATA env vars)"
+        );
+        return;
+    }
+
+    eprintln!(
+        "scanned {} files across vanilla Oblivion + FNV + Skyrim SE meshes BSAs",
+        total_scanned
+    );
+    eprintln!("NiSequenceStreamHelper occurrences: {}", total_ssh);
+
+    assert_eq!(
+        total_ssh, 0,
+        "expected zero NiSequenceStreamHelper blocks in vanilla content; found {} \
+         (first {} examples: {:?}). The importer's Path 3 arm is now needed — \
+         see .claude/issues/689/INVESTIGATION.md for the fix sketch.",
+        total_ssh,
+        ssh_examples.len(),
+        ssh_examples
+    );
+}

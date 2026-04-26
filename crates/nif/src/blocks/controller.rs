@@ -1827,15 +1827,25 @@ impl NiMorphData {
 
 // ── NiSequenceStreamHelper ─────────────────────────────────────────────
 //
-// Pre-Skyrim animation root used by Oblivion / Morrowind / FO3 / FNV KF
-// files. Inherits from NiObjectNET with no extra fields: the per-bone
-// drivers hang off the controller chain (NiKeyframeController instances)
-// and the text keys hang off the extra_data list.
+// Morrowind / NetImmerse-era animation root. Inherits from NiObjectNET
+// with no extra fields: the per-bone drivers hang off the controller
+// chain (NiKeyframeController instances) and the text keys hang off the
+// extra_data list.
 //
-// We don't currently consume this from the animation importer — that
-// work remains as a follow-up — but parsing it here lets Oblivion KF
-// files load without hard-failing on unknown block types (v20.0.0.5 has
-// no block_sizes fallback).
+// Empirically not used by any vanilla content we ship support for: a
+// 47,934-NIF sweep across Oblivion + FNV + Skyrim SE meshes BSAs found
+// zero references — pinned by `vanilla_archives_have_zero_nisequencestreamhelper`
+// in `crates/nif/tests/parse_real_nifs.rs` (see also
+// `.claude/issues/689/INVESTIGATION.md`). All vanilla animated content
+// uses NiControllerSequence, which the importer already handles via
+// `import_kf` Path 2.
+//
+// Bethesda kept the block parseable in their Gamebryo runtime for
+// backwards-compat with Morrowind / very-early mod content, so we mirror
+// that — the parser accepts it (no hard-fail on unknown types in
+// v20.0.0.5 which has no block_sizes recovery), but the importer has no
+// consumer for it. An importer path will be needed when Morrowind ESM
+// support lands; estimate is 1-2 days against real Morrowind .kf files.
 
 #[derive(Debug)]
 pub struct NiSequenceStreamHelper {
