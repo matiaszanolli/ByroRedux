@@ -1496,11 +1496,19 @@ void main() {
             vec3 giDir = cosineWeightedHemisphere(N, n1, n2);
             vec3 giOrigin = fragWorldPos + N * 0.1;
 
+            // tMin = 0.05 matches the bias and the rest of the ray sites
+            // (refraction line 1063, window portal line 931). Pre-#669
+            // tMin was 0.5 — five times the bias — so grazing GI rays
+            // skipped any close-clutter intersections inside the first
+            // 0.5u of travel and registered a false-far hit instead,
+            // producing chronically over-bright AO on populated tables
+            // and shelf clutter. Tighter tMin + bias keeps both
+            // self-intersect protection AND near-clutter occlusion.
             rayQueryEXT giRQ;
             rayQueryInitializeEXT(
                 giRQ, topLevelAS,
                 gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0xFF,
-                giOrigin, 0.5, giDir, 3000.0
+                giOrigin, 0.05, giDir, 3000.0
             );
             rayQueryProceedEXT(giRQ);
 
