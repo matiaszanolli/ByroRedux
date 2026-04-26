@@ -119,9 +119,20 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 jitter;         // xy = sub-pixel TAA jitter in NDC, zw = reserved.
 };
 
-// Bone palette SSBO (set 1, binding 3) — skinning matrices.
+// Bone palette SSBO (set 1, binding 3) — skinning matrices for the
+// CURRENT frame.
 layout(std430, set = 1, binding = 3) readonly buffer BoneBuffer {
     mat4 bones[];
+};
+
+// Previous-frame bone palette SSBO (set 1, binding 12) — same layout as
+// `bones[]` but populated from the prior frame's upload. The descriptor
+// is wired to the OTHER slot in the per-frame `bone_buffers` ring (see
+// `SceneBuffers::new`), so reading it yields last frame's joint poses
+// for the same bone indices. Used to compute a true skinned previous-
+// frame world position for motion vectors. SH-3 / #641.
+layout(std430, set = 1, binding = 12) readonly buffer BonesPrevBuffer {
+    mat4 bones_prev[];
 };
 
 layout(location = 0) out vec3 fragColor;
@@ -133,8 +144,11 @@ layout(location = 5) flat out int fragInstanceIndex;
 // Current + previous frame clip-space positions for screen-space motion
 // vector computation in the fragment shader. Passing both positions as
 // varyings (not the motion vector itself) avoids perspective interpolation
-// artifacts near edges. Assumes static geometry — skinned meshes get the
-// wrong motion vector but SVGF will detect that as a disocclusion.
+// artifacts near edges. Skinned vertices reproject through last frame's
+// bone palette via `bones_prev` (SH-3 / #641); rigid vertices reuse the
+// per-instance model matrix (treated as static across the frame pair —
+// fast-moving rigid actors / decals would still mis-reproject, tracked
+// separately).
 layout(location = 6) out vec4 fragCurrClipPos;
 layout(location = 7) out vec4 fragPrevClipPos;
 // Splat weights forwarded flat — terrain tile data is constant across
@@ -147,11 +161,18 @@ layout(location = 9) out vec4 fragSplat1;
 void main() {
     GpuInstance inst = instances[gl_InstanceIndex];
 
-    // Rigid vs skinned vertex selection.
+    // Rigid vs skinned vertex selection. `xform` is the current-frame
+    // transform; `xformPrev` is the same composition through the prior
+    // frame's bone palette (SH-3 / #641). For rigid vertices we reuse
+    // the per-instance model matrix on both frames — `GpuInstance` is
+    // rebuilt every frame with the current transform, so this is exact
+    // for static geometry and a one-frame lag on moving rigid bodies.
     float wsum = inBoneWeights.x + inBoneWeights.y + inBoneWeights.z + inBoneWeights.w;
     mat4 xform;
+    mat4 xformPrev;
     if (wsum < 0.001) {
         xform = inst.model;
+        xformPrev = inst.model;
     } else {
         uint base = inst.boneOffset;
         xform =
@@ -159,9 +180,15 @@ void main() {
             + inBoneWeights.y * bones[base + inBoneIndices.y]
             + inBoneWeights.z * bones[base + inBoneIndices.z]
             + inBoneWeights.w * bones[base + inBoneIndices.w];
+        xformPrev =
+              inBoneWeights.x * bones_prev[base + inBoneIndices.x]
+            + inBoneWeights.y * bones_prev[base + inBoneIndices.y]
+            + inBoneWeights.z * bones_prev[base + inBoneIndices.z]
+            + inBoneWeights.w * bones_prev[base + inBoneIndices.w];
     }
 
     vec4 worldPos = xform * vec4(inPosition, 1.0);
+    vec4 prevWorldPos = xformPrev * vec4(inPosition, 1.0);
     vec4 currClip = viewProj * worldPos;
     // NOTE: gl_Position is jittered below for TAA. fragCurrClipPos must
     // remain un-jittered so motion vectors are correct across frames.
@@ -186,12 +213,16 @@ void main() {
     fragInstanceIndex = gl_InstanceIndex;
 
     // Motion vector: current + previous clip-space positions. Fragment
-    // shader does the perspective divide and screen-space delta.
-    // Assumes static geometry (same world position both frames).
-    // Both positions are UN-JITTERED — motion must reflect scene motion
-    // only, not the per-frame sub-pixel sampling offset.
+    // shader does the perspective divide and screen-space delta. Skinned
+    // vertices project `prevWorldPos` (composed via `bones_prev`) so the
+    // motion vector reflects per-vertex joint motion, not just camera
+    // motion. Pre-#641 this used `worldPos` for both, leaving SVGF / TAA
+    // to reproject the wrong source pixel on every actor body /
+    // hand / face fragment. Both positions are UN-JITTERED — motion
+    // must reflect scene motion only, not the per-frame sub-pixel
+    // sampling offset.
     fragCurrClipPos = currClip;
-    fragPrevClipPos = prevViewProj * worldPos;
+    fragPrevClipPos = prevViewProj * prevWorldPos;
     fragSplat0 = inSplat0;
     fragSplat1 = inSplat1;
 

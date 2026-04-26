@@ -544,7 +544,10 @@ pub struct SceneBuffers {
     descriptor_pool: vk::DescriptorPool,
     /// Layout for set 1: binding 0 = SSBO (lights), binding 1 = UBO (camera),
     /// binding 2 = TLAS (RT only), binding 3 = SSBO (bone palette),
-    /// binding 4 = SSBO (instance data).
+    /// binding 4 = SSBO (instance data), …, binding 12 = SSBO (previous-frame
+    /// bone palette — SH-3 / #641, vertex-stage only, points at the
+    /// frame-in-flight ring's other slot so motion vectors on skinned
+    /// vertices reflect actual joint motion rather than zero).
     pub descriptor_set_layout: vk::DescriptorSetLayout,
     /// One descriptor set per frame-in-flight.
     pub descriptor_sets: Vec<vk::DescriptorSet>,
@@ -734,6 +737,25 @@ impl SceneBuffers {
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         );
+        // Binding 12: previous-frame bone palette SSBO (vertex shader —
+        // skinned-vertex motion vectors, SH-3 / #641). Bound to the OTHER
+        // slot in the `bone_buffers` frame-in-flight ring, so reading it
+        // yields the palette uploaded last frame. Pre-#641 the vertex
+        // shader composed `fragPrevClipPos = prevViewProj * worldPos`
+        // using the CURRENT-frame skinned worldPos — every actor pixel
+        // had a motion vector encoding only camera + rigid motion, and
+        // SVGF / TAA reprojected the wrong source pixel on intra-mesh
+        // disocclusions (forearm crossing torso). Same indices/weights as
+        // binding 3, so the per-mesh bone offset stamped on the
+        // `GpuInstance` still resolves correctly as long as the offset
+        // assignment is stable across the two frames.
+        bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(12)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX),
+        );
         // Mark bindings 5+6 (cluster data) as PARTIALLY_BOUND so they are
         // valid even when unwritten (cluster cull pipeline may fail to create).
         // The fragment shader guards access with a lightCount > 0 check.
@@ -788,10 +810,10 @@ impl SceneBuffers {
         let mut pool_sizes = vec![
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
-                // 9 SSBOs per frame: lights(0), bones(3), instances(4), cluster grid(5),
-                // light indices(6), vertices(8), indices(9), terrain tiles(10),
-                // ray budget counter(11).
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 9) as u32,
+                // 10 SSBOs per frame: lights(0), bones(3), instances(4), cluster
+                // grid(5), light indices(6), vertices(8), indices(9), terrain
+                // tiles(10), ray budget counter(11), bones_prev(12 — SH-3 / #641).
+                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 10) as u32,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
@@ -846,6 +868,17 @@ impl SceneBuffers {
                 offset: 0,
                 range: bone_buf_size,
             }];
+            // Previous-frame bone palette: the OTHER slot in the ring.
+            // Frame N writes its palette to `bone_buffers[N % MAX]` and
+            // reads `bone_buffers[(N + MAX - 1) % MAX]` as last frame's.
+            // SH-3 / #641. With MAX_FRAMES_IN_FLIGHT=2 the prev index is
+            // `(i + 1) % 2`. The mapping is static — written once here.
+            let bone_prev_idx = (i + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
+            let bone_prev_buf_info = [vk::DescriptorBufferInfo {
+                buffer: bone_buffers[bone_prev_idx].buffer,
+                offset: 0,
+                range: bone_buf_size,
+            }];
             let instance_buf_info = [vk::DescriptorBufferInfo {
                 buffer: instance_buffers[i].buffer,
                 offset: 0,
@@ -892,6 +925,11 @@ impl SceneBuffers {
                     .dst_binding(11)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .buffer_info(&ray_budget_buf_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_sets[i])
+                    .dst_binding(12)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(&bone_prev_buf_info),
             ];
             unsafe {
                 device.update_descriptor_sets(&writes, &[]);
@@ -1680,5 +1718,47 @@ mod gpu_instance_layout_tests {
                  320-byte Rust struct."
             );
         }
+    }
+
+    /// SH-3 / #641 regression. The vertex shader must compose
+    /// `fragPrevClipPos` through the previous-frame bone palette so
+    /// motion vectors on skinned vertices encode actual joint motion.
+    /// Pre-#641 it composed through the current-frame palette, leaving
+    /// every actor body / hand / face pixel with a wrong motion vector
+    /// that SVGF + TAA reprojected as a ghost trail.
+    ///
+    /// Static source check (no `glslangValidator` dependency): the
+    /// shader must declare a `bones_prev` SSBO at `set 1, binding 12`
+    /// and feed `prevWorldPos` (composed through `bones_prev`) into
+    /// `fragPrevClipPos = prevViewProj * …`.
+    #[test]
+    fn triangle_vert_uses_bones_prev_for_motion_vectors() {
+        let src = include_str!("../../shaders/triangle.vert");
+        assert!(
+            src.contains("binding = 12) readonly buffer BonesPrevBuffer"),
+            "triangle.vert must declare a previous-frame bone palette \
+             SSBO at `set 1, binding = 12` (SH-3 / #641). Without it \
+             skinned vertices produce wrong motion vectors and SVGF / \
+             TAA ghost actor limbs in motion."
+        );
+        assert!(
+            src.contains("mat4 bones_prev[]"),
+            "triangle.vert: `BonesPrevBuffer` must expose a `mat4 \
+             bones_prev[]` array — same layout as `bones[]` so the \
+             current and previous palettes can share `inBoneIndices`."
+        );
+        assert!(
+            src.contains("fragPrevClipPos = prevViewProj * prevWorldPos"),
+            "triangle.vert: `fragPrevClipPos` must project the \
+             previous-frame skinned `prevWorldPos`, not the current \
+             frame's `worldPos`. SH-3 / #641 — composing through \
+             `bones[]` for both frames is the bug this test guards."
+        );
+        assert!(
+            src.contains("xformPrev"),
+            "triangle.vert: a separate `xformPrev` matrix must be \
+             composed from `bones_prev` so `prevWorldPos` reflects \
+             last frame's joint poses (SH-3 / #641)."
+        );
     }
 }
