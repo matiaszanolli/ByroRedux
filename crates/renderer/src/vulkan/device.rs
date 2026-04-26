@@ -40,6 +40,19 @@ pub struct DeviceCapabilities {
     /// bindless array with this so we don't silently truncate on cells with
     /// many unique textures. Fixes the REN-MEM-C3 residency cliff (#425).
     pub max_bindless_sampled_images: u32,
+    /// `minAccelerationStructureScratchOffsetAlignment` from
+    /// `VkPhysicalDeviceAccelerationStructurePropertiesKHR`. Every BLAS /
+    /// TLAS build's `scratch_data.device_address` must be a multiple of
+    /// this value (typically 128 or 256 on desktop drivers, but the spec
+    /// permits any power of two). `gpu-allocator` returns GpuOnly
+    /// allocations at >= 256 B alignment on every desktop driver we've
+    /// shipped against, so the constraint is currently met for free, but
+    /// nothing in the allocator API guarantees it. The
+    /// `debug_assert!(scratch_address % align == 0)` at every
+    /// `cmd_build_acceleration_structures` call site catches a future
+    /// driver that returns a smaller alignment than the AS spec needs.
+    /// Zero when `ray_query_supported` is false. See #659 / #260 R-05.
+    pub min_accel_struct_scratch_offset_alignment: u32,
 }
 
 /// Sum of `VkMemoryHeap.size` across every `DEVICE_LOCAL` heap exposed
@@ -182,8 +195,20 @@ fn is_device_suitable(
     // `vkGetPhysicalDeviceProperties2`. Falls back to the plain
     // `maxPerStageDescriptorSampledImages` limit on older drivers — still
     // vastly larger than the hardcoded 1024 we were using before (#425).
+    //
+    // Same `vkGetPhysicalDeviceProperties2` call also pulls
+    // `VkPhysicalDeviceAccelerationStructurePropertiesKHR` so the BLAS /
+    // TLAS scratch alignment requirement is available without a second
+    // round-trip. The AS struct is only meaningful when the RT extensions
+    // are present; we still chain it unconditionally because Vulkan
+    // tolerates pNext entries the driver doesn't recognise (returns
+    // zero-initialised), and reading zero out lets us default to a
+    // trivial alignment of 1 when RT is unsupported (#659).
     let mut indexing_props = vk::PhysicalDeviceDescriptorIndexingProperties::default();
-    let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut indexing_props);
+    let mut accel_props = vk::PhysicalDeviceAccelerationStructurePropertiesKHR::default();
+    let mut props2 = vk::PhysicalDeviceProperties2::default()
+        .push_next(&mut indexing_props)
+        .push_next(&mut accel_props);
     unsafe {
         instance.get_physical_device_properties2(device, &mut props2);
     }
@@ -199,6 +224,22 @@ fn is_device_suitable(
         properties.limits.max_per_stage_descriptor_sampled_images
     };
     let max_bindless_sampled_images = reported_limit.min(BINDLESS_CEILING);
+
+    // AS scratch alignment. Default to 1 (trivial — every address is a
+    // multiple of 1) when ray_query is unsupported so the
+    // `debug_assert!` at each `scratch_data` site is a no-op on
+    // RT-disabled GPUs. When RT IS supported but the driver still
+    // reports zero (spec violation, but cheap to handle), we also
+    // fall back to 1 — the assert can't catch what the driver lied
+    // about, and crashing on init is worse than letting the build
+    // run.
+    let min_accel_struct_scratch_offset_alignment = if ray_query_supported
+        && accel_props.min_acceleration_structure_scratch_offset_alignment > 0
+    {
+        accel_props.min_acceleration_structure_scratch_offset_alignment
+    } else {
+        1
+    };
 
     // Find queue families.
     let queue_families = unsafe { instance.get_physical_device_queue_family_properties(device) };
@@ -240,6 +281,7 @@ fn is_device_suitable(
                 max_sampler_anisotropy,
                 multi_draw_indirect_supported,
                 max_bindless_sampled_images,
+                min_accel_struct_scratch_offset_alignment,
             },
         ))),
         _ => Ok(None),

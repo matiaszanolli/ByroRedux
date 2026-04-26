@@ -156,6 +156,16 @@ pub struct AccelerationManager {
     /// `blas_map_generation` so the TLAS-side cache invalidation
     /// tracks skinned BLAS alongside the static `blas_entries`.
     skinned_blas: std::collections::HashMap<EntityId, BlasEntry>,
+    /// `minAccelerationStructureScratchOffsetAlignment` queried at
+    /// device init (#659 / #260 R-05). Every `scratch_data.device_address`
+    /// passed to `cmd_build_acceleration_structures` must be a multiple
+    /// of this value. Held to drive the
+    /// `debug_assert_scratch_aligned` helper at every scratch-site;
+    /// `gpu-allocator` returns sufficiently-aligned GpuOnly allocations
+    /// on every desktop driver today, but nothing in the allocator API
+    /// guarantees it, so the assert catches a regression before the
+    /// driver does.
+    scratch_align: u32,
 }
 
 /// Decide whether the next TLAS build can `UPDATE` (refit) or must
@@ -313,6 +323,25 @@ fn should_evict_mid_batch(
 /// idle cost is one add + one compare per N iterations.
 const BATCH_EVICTION_CHECK_INTERVAL: usize = 64;
 
+/// Vulkan-spec compliance check for AS-build scratch addresses.
+///
+/// Every `scratch_data.device_address` passed to
+/// `cmd_build_acceleration_structures` must be a multiple of
+/// `VkPhysicalDeviceAccelerationStructurePropertiesKHR::minAccelerationStructureScratchOffsetAlignment`.
+/// Pulled out as a pure function so the unit test can pin the math
+/// without a live Vulkan device. See #659 / #260 R-05.
+///
+/// Trivially true when `align <= 1` — used as the no-op path on
+/// RT-disabled GPUs (the caller in `device::pick_physical_device`
+/// clamps to 1 when the property isn't queryable).
+#[inline]
+fn is_scratch_aligned(scratch_address: vk::DeviceAddress, align: u32) -> bool {
+    if align <= 1 {
+        return true;
+    }
+    scratch_address % align as vk::DeviceAddress == 0
+}
+
 fn compute_blas_budget(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
@@ -327,12 +356,21 @@ impl AccelerationManager {
         instance: &ash::Instance,
         device: &ash::Device,
         physical_device: vk::PhysicalDevice,
+        scratch_align: u32,
     ) -> Self {
         let accel_loader = ash::khr::acceleration_structure::Device::new(instance, device);
         let blas_budget_bytes = compute_blas_budget(instance, physical_device);
         log::info!(
-            "BLAS memory budget: {} MB (derived from VRAM)",
-            blas_budget_bytes / (1024 * 1024)
+            "BLAS memory budget: {} MB (derived from VRAM); scratch alignment: {} B",
+            blas_budget_bytes / (1024 * 1024),
+            scratch_align,
+        );
+        // Caller (`device::pick_physical_device`) clamps to 1 when RT is
+        // unsupported or the driver reports zero, so this is always at
+        // least 1 here.
+        debug_assert!(
+            scratch_align > 0,
+            "scratch_align must be >=1; caller clamps zero / non-RT to 1"
         );
         Self {
             accel_loader,
@@ -348,7 +386,23 @@ impl AccelerationManager {
             pending_destroy_blas: Vec::new(),
             blas_map_generation: 0,
             skinned_blas: std::collections::HashMap::new(),
+            scratch_align,
         }
+    }
+
+    /// Debug-only assertion that a scratch device address satisfies the
+    /// AS-spec alignment requirement. See #659 / #260 R-05.
+    #[inline]
+    fn debug_assert_scratch_aligned(&self, scratch_address: vk::DeviceAddress, site: &str) {
+        debug_assert!(
+            is_scratch_aligned(scratch_address, self.scratch_align),
+            "{site}: scratch device address {scratch_address:#x} is not aligned to \
+             minAccelerationStructureScratchOffsetAlignment ({align}); the build will \
+             violate Vulkan spec. gpu-allocator returned a misaligned GpuOnly \
+             allocation — wire round-up-at-use mitigation per #659.",
+            site = site,
+            align = self.scratch_align,
+        );
     }
 
     /// Queue a BLAS for deferred destruction.
@@ -542,19 +596,21 @@ impl AccelerationManager {
             }
 
             // SAFETY: scratch buffer was just created with SHADER_DEVICE_ADDRESS flag.
-            // NOTE: scratch device address should be aligned to
-            // minAccelerationStructureScratchOffsetAlignment (typically
-            // 128 or 256). gpu-allocator returns GpuOnly allocations at
-            // 256+ alignment on all known desktop drivers, but this is not
-            // explicitly guaranteed. A future hardening pass should query
-            // the property at device selection and enforce alignment here.
-            // See #260 (R-05).
+            // The `scratch_address` is required by Vulkan spec to be a
+            // multiple of `minAccelerationStructureScratchOffsetAlignment`
+            // (typically 128 or 256). `gpu-allocator` returns GpuOnly
+            // allocations at >= 256 B alignment on every desktop driver
+            // we ship support for, but nothing in the allocator API
+            // guarantees it — the `debug_assert_scratch_aligned` call
+            // catches a future driver / mobile GPU regression at the
+            // earliest possible point. See #659 / #260 R-05.
             let scratch_address = unsafe {
                 device.get_buffer_device_address(
                     &vk::BufferDeviceAddressInfo::default()
                         .buffer(self.blas_scratch_buffer.as_ref().unwrap().buffer),
                 )
             };
+            self.debug_assert_scratch_aligned(scratch_address, "build_blas");
 
             // Build the BLAS via one-time command buffer. Flags must
             // match the size-query above per Vulkan spec.
@@ -763,6 +819,7 @@ impl AccelerationManager {
                         .buffer(self.blas_scratch_buffer.as_ref().unwrap().buffer),
                 )
             };
+            self.debug_assert_scratch_aligned(scratch_address, "build_skinned_blas");
             let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                 .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
                 .flags(build_flags)
@@ -849,6 +906,10 @@ impl AccelerationManager {
         index_buffer: vk::Buffer,
         index_count: u32,
     ) -> Result<()> {
+        // Capture scratch_align before the mutable borrow on
+        // `self.skinned_blas` so the alignment assert further down
+        // doesn't try to re-borrow `&self` (#659).
+        let scratch_align = self.scratch_align;
         let entry = self
             .skinned_blas
             .get_mut(&entity_id)
@@ -890,6 +951,12 @@ impl AccelerationManager {
                 &vk::BufferDeviceAddressInfo::default().buffer(scratch_buffer.buffer),
             )
         };
+        debug_assert!(
+            is_scratch_aligned(scratch_address, scratch_align),
+            "refit_skinned_blas: scratch device address {scratch_address:#x} is not \
+             aligned to minAccelerationStructureScratchOffsetAlignment \
+             ({scratch_align}); see #659"
+        );
 
         // mode = UPDATE: src == dst == this entity's BLAS. Vulkan
         // refits in-place against the new vertex data; topology must
@@ -1236,6 +1303,7 @@ impl AccelerationManager {
                     .buffer(self.blas_scratch_buffer.as_ref().unwrap().buffer),
             )
         };
+        self.debug_assert_scratch_aligned(scratch_address, "build_blas_batched");
 
         // Phase 3: Create query pool for compacted size readback.
         let n = prepared.len() as u32;
@@ -1809,8 +1877,10 @@ impl AccelerationManager {
 
             // Grow-only per-frame scratch buffer (#424 SIBLING) — reuse
             // the existing allocation when it still fits the new build.
-            // DEVICE_LOCAL: GPU-only scratch during TLAS build. Same
-            // scratch alignment caveat as BLAS (#260 R-05).
+            // DEVICE_LOCAL: GPU-only scratch during TLAS build. The
+            // `scratch_data.device_address` alignment requirement is
+            // checked at the call site below via
+            // `debug_assert_scratch_aligned` (#659 / #260 R-05).
             let needs_new_scratch = scratch_needs_growth(
                 self.scratch_buffers[frame_index].as_ref().map(|b| b.size),
                 sizes.build_scratch_size,
@@ -1856,6 +1926,11 @@ impl AccelerationManager {
                 last_blas_map_gen: u64::MAX,
             });
         }
+
+        // Capture scratch_align before the mutable borrow on
+        // `self.tlas[frame_index]` so the alignment assert further down
+        // doesn't try to re-borrow `&self` (#659).
+        let scratch_align = self.scratch_align;
 
         let tlas = self.tlas[frame_index].as_mut().unwrap();
 
@@ -2019,6 +2094,11 @@ impl AccelerationManager {
         let scratch_address = device.get_buffer_device_address(
             &vk::BufferDeviceAddressInfo::default()
                 .buffer(self.scratch_buffers[frame_index].as_ref().unwrap().buffer),
+        );
+        debug_assert!(
+            is_scratch_aligned(scratch_address, scratch_align),
+            "build_tlas: scratch device address {scratch_address:#x} is not aligned to \
+             minAccelerationStructureScratchOffsetAlignment ({scratch_align}); see #659"
         );
 
         // Mirror the flags used at creation time so Vulkan's validation
@@ -2634,5 +2714,33 @@ mod tests {
         // current = 2× peak exactly — ratio check is strict `>`, so
         // equality does NOT trigger.
         assert!(!scratch_should_shrink(64 * MB, 32 * MB));
+    }
+
+    /// #659 — `is_scratch_aligned` enforces the AS-spec
+    /// `minAccelerationStructureScratchOffsetAlignment` requirement at
+    /// every `cmd_build_acceleration_structures` call site. The pure
+    /// helper keeps the math testable without a Vulkan device; the
+    /// debug_assert wrapper inside `AccelerationManager` adds the live
+    /// firing path.
+    #[test]
+    fn scratch_alignment_check_matches_modulo() {
+        // Trivial-align fast paths.
+        assert!(is_scratch_aligned(0, 0));
+        assert!(is_scratch_aligned(0xDEAD_BEEF, 0));
+        assert!(is_scratch_aligned(0xDEAD_BEEF, 1));
+
+        // 256-byte alignment (typical desktop driver).
+        assert!(is_scratch_aligned(0x0000_1000, 256));
+        assert!(is_scratch_aligned(0x0000_1100, 256));
+        assert!(!is_scratch_aligned(0x0000_1001, 256));
+        assert!(!is_scratch_aligned(0x0000_10FF, 256));
+
+        // 128-byte alignment.
+        assert!(is_scratch_aligned(0x0000_0080, 128));
+        assert!(!is_scratch_aligned(0x0000_0081, 128));
+
+        // 1024 — hypothetical mobile GPU with a stricter requirement.
+        assert!(is_scratch_aligned(0x0010_0000, 1024));
+        assert!(!is_scratch_aligned(0x0010_0001, 1024));
     }
 }
