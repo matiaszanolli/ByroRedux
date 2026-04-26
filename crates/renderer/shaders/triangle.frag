@@ -537,7 +537,18 @@ vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx) {
 
 // ── Main ────────────────────────────────────────────────────────────
 
+// Debug bypass bits packed into `jitter.z` by the renderer
+// (`parse_render_debug_flags_env` + `GpuCamera` upload). Use for
+// runtime-relaunch bisection of texture / lighting artifacts —
+// branches collapse to free no-ops when the env var is unset.
+const uint DBG_BYPASS_POM     = 0x1u;
+const uint DBG_BYPASS_DETAIL  = 0x2u;
+const uint DBG_VIZ_NORMALS    = 0x4u;
+
 void main() {
+    // Decode debug-bypass flags (zero on production runs).
+    uint dbgFlags = floatBitsToUint(jitter.z);
+
     // Read per-instance material data up-front — parallax-occlusion
     // mapping displaces `fragUV` before the base-albedo sample, and
     // the POM parameters + parallax map index live on the instance.
@@ -566,7 +577,7 @@ void main() {
     // consistent. Parallax operates on the post-transform UV so the
     // displaced height lookup lines up with the other samplers.
     vec2 sampleUV = baseUV;
-    if (inst.parallaxMapIndex != 0u) {
+    if (inst.parallaxMapIndex != 0u && (dbgFlags & DBG_BYPASS_POM) == 0u) {
         vec3 N0 = normalize(fragNormal);
         vec3 V0 = normalize(cameraPos.xyz - fragWorldPos);
         sampleUV = parallaxDisplaceUV(
@@ -684,6 +695,23 @@ void main() {
     bool alphaBlendFrag = (inst.flags & 2u) != 0u;
     outMeshID = meshIdBase | (alphaBlendFrag ? 0x8000u : 0u);
 
+    // Debug normal-visualization exit. World-space N is fully resolved
+    // here (post normal-map perturb), so this is the right place to
+    // route it to the colour output. SVGF / composite see zero
+    // indirect + an albedo identity so the displayed colour is the
+    // raw normal mapped into [0,1]³. Useful for catching tangent /
+    // UV-mismatch artifacts where the lighting cues drift relative
+    // to the diffuse carving — the carving's bumps should align
+    // exactly with the colour gradient under this view. See
+    // BYROREDUX_RENDER_DEBUG=0x4.
+    if ((dbgFlags & DBG_VIZ_NORMALS) != 0u) {
+        vec3 nViz = N * 0.5 + 0.5;
+        outColor = vec4(nViz, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(nViz, 1.0);
+        return;
+    }
+
     // View direction. NdotV is clamped to 0.05 (~87°) to prevent the
     // Cook-Torrance `D*G*F / (4*NdotV*NdotL)` specular term from blowing
     // up at grazing view angles — the microfacet model is not valid in
@@ -769,7 +797,7 @@ void main() {
     // half the wavelength of the base diffuse) and modulated into the
     // albedo. Center the modulation around 1.0 so a 0.5 grey detail
     // sample is a no-op rather than halving the surface brightness.
-    if (inst.detailMapIndex != 0u) {
+    if (inst.detailMapIndex != 0u && (dbgFlags & DBG_BYPASS_DETAIL) == 0u) {
         vec3 detailSample = texture(
             textures[nonuniformEXT(inst.detailMapIndex)],
             sampleUV * 2.0

@@ -343,11 +343,50 @@ impl ScreenshotHandle {
     }
 }
 
+/// Parse the `BYROREDUX_RENDER_DEBUG` env var into a fragment-shader
+/// debug-bypass bitmask. Accepts plain decimal (`3`) or hex (`0x3`).
+/// Absent / invalid returns 0 — every bypass is off and the shader
+/// branches are statically optimised away by the GPU's branch
+/// predictor on a uniform-zero value.
+fn parse_render_debug_flags_env() -> u32 {
+    let Ok(s) = std::env::var("BYROREDUX_RENDER_DEBUG") else {
+        return 0;
+    };
+    let s = s.trim();
+    let parsed = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16).ok()
+    } else {
+        s.parse::<u32>().ok()
+    };
+    match parsed {
+        Some(v) => {
+            log::info!("BYROREDUX_RENDER_DEBUG = 0x{:x} (POM bypass={}, detail bypass={}, normals viz={})",
+                v, v & 1 != 0, v & 2 != 0, v & 4 != 0);
+            v
+        }
+        None => {
+            log::warn!("BYROREDUX_RENDER_DEBUG = {:?} could not be parsed as u32; ignoring", s);
+            0
+        }
+    }
+}
+
 pub struct VulkanContext {
     // Ordered for drop safety — later fields are destroyed first.
     pub current_frame: usize,
     /// Monotonic frame counter for temporal effects (jitter seed, accumulation).
     pub frame_counter: u32,
+    /// Debug-only fragment-shader bypass flags piped through
+    /// `GpuCamera.jitter[2]`. Read once from `BYROREDUX_RENDER_DEBUG`
+    /// at construction; stays put for the process lifetime. Bits:
+    ///   `0x1` — bypass parallax-occlusion (`sampleUV = baseUV`)
+    ///   `0x2` — bypass detail-map modulation
+    ///   `0x4` — output world-space normal (gbuffer + outColor) and exit
+    /// Env values are parsed as `0xN` hex or plain decimal; absent /
+    /// invalid → 0 (all paths active, zero overhead). For ad-hoc
+    /// bisection of texture / lighting artifacts. See engineering
+    /// notes around the Dragonsreach "ghost carving" diagnosis.
+    pub render_debug_flags: u32,
     /// Previous frame's view-projection matrix (column-major [f32; 16]).
     /// Used to compute screen-space motion vectors in the vertex shader.
     /// On the very first frame, equals the current frame's viewProj (no motion).
@@ -1129,6 +1168,7 @@ impl VulkanContext {
             frame_sync,
             current_frame: 0,
             frame_counter: 0,
+            render_debug_flags: parse_render_debug_flags_env(),
             // Initialize to identity; first frame will overwrite with current
             // viewProj so motion vector is zero on the first frame.
             prev_view_proj: [

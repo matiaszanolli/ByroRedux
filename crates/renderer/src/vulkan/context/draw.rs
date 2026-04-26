@@ -362,7 +362,11 @@ impl VulkanContext {
                 fog_color[2],
                 if fog_far > fog_near { 1.0 } else { 0.0 }, // fog enabled flag
             ],
-            jitter: [jx, jy, 0.0, 0.0],
+            // jitter[2] carries the debug-bypass bitmask for the
+            // fragment shader (see `parse_render_debug_flags_env` and
+            // `triangle.frag`'s `floatBitsToUint(jitter.z)` branches).
+            // Zero-bits → free no-op; non-zero → debug paths active.
+            jitter: [jx, jy, f32::from_bits(self.render_debug_flags), 0.0],
         };
         self.scene_buffers
             .upload_camera(&self.device, frame, &camera)
