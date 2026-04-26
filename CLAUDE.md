@@ -221,9 +221,14 @@ Collision import with Havok→engine transform. Normal map from BSShaderPPLighti
 FO76/Starfield shader blocks: CRC32 flag arrays, Luminance/Translucency, stopcond on BGSM name.
 Test infra: nif_stats example + per-game integration tests + graceful per-block parse recovery.
 M26: BA2 reader (BTDX v1/v2/v3/v7/v8, GNRL + DX10) + NIF header BSStreamHeader fix for FO4/FO76.
-M26+: Oblivion → 100% via header user_version threshold fix (10.0.1.0 → 10.0.1.8),
+M26+: Oblivion clean-parse fixes via header user_version threshold (10.0.1.0 → 10.0.1.8),
       BSStreamHeader for v10.0.1.2 / user_version>=3, and pre-Gamebryo empty-scene fallback.
-Full-archive parse rates: ALL 7 games at 100% (177,286 NIFs). Oblivion was 99.13%.
+Full-archive parse rates (2026-04-26 sweep, 184 886 NIFs across 7 games — see
+ROADMAP.md compat matrix for full breakdown): clean=100% on FO3 / FNV / Skyrim SE;
+Oblivion 95.21%, FO4 96.46%, FO76 97.34%, Starfield 0.80% (drift-induced
+truncation tracked at #687 / #688 / #697 / #698). Recoverable rate is 100%
+on all except Oblivion's single hard-fail on a corrupt-by-design debug
+marker (#698).
 M24 (Phase 1): records/ module with WEAP/ARMO/AMMO/MISC/KEYM/ALCH/INGR/BOOK/NOTE,
       CONT, LVLI/LVLN, NPC_, RACE, CLAS, FACT, GLOB, GMST. Real FNV.esm parses to
       13,684 structured records on top of cells in 0.19s release.

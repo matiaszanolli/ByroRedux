@@ -46,11 +46,17 @@ through every create site with disk persistence (10–50 ms cold → <1
 ms warm). SPIR-V reflection cross-checks descriptor layouts against
 shader declarations at pipeline-create time.
 
-**Parser coverage.** NIF parses cleanly across seven games
-(177 286 files, 100% rate per game). ESM parses structured records
-across ~25 types on FNV; 62 219 records on the latest sweep.
-Archive readers cover BSA v103/v104/v105 and BA2 v1/v2/v3/v7/v8
-(GNRL + DX10 with reconstructed DDS headers, zlib + LZ4).
+**Parser coverage.** NIF parses across seven games (184 886 files
+on the latest sweep — see compatibility matrix below). FO3 / FNV /
+Skyrim SE land at 100% clean; Oblivion / FO4 / FO76 in the 95–97%
+band (drift-induced truncation per #687 / #688); Starfield at 0.80%
+clean (recent BA2 v3 LZ4 chunked content the parser doesn't yet
+fully cover). Recoverable rate is 100% on all seven games except
+Oblivion (99.99%, single hard-fail on a corrupt-by-design debug
+marker — #698). ESM parses structured records across ~25 types on
+FNV; 62 219 records on the latest sweep. Archive readers cover BSA
+v103/v104/v105 and BA2 v1/v2/v3/v7/v8 (GNRL + DX10 with
+reconstructed DDS headers, zlib + LZ4).
 
 **Scripting, physics, UI.** Papyrus lexer + expression parser shipped
 (Phase 1). Rapier3D physics bridge with dynamic capsule player
@@ -66,15 +72,22 @@ load. Weather transitions (fade between WTHR states) and cloud layers
 
 ### Compatibility matrix
 
-| Game              | Archive       | NIF parse rate    | Cells                                                    |
-|-------------------|---------------|-------------------|----------------------------------------------------------|
-| Oblivion          | BSA v103      | 100% (8 032)      | Interior (Anvil Heinrich Oaken Halls). Exterior blocked on BSA v103 decompression. |
-| Fallout 3         | BSA v104      | 100% (10 989)     | Interior (Megaton, 929 REFRs). Exterior wired; fresh GPU bench pending (R6a). |
-| Fallout New Vegas | BSA v104      | 100% (14 881)     | Interior (Prospector 1200 entities @ 172.6 FPS / 5.79 ms on RTX 4070 Ti, bench 6a6950a). Exterior 3×3. |
-| Skyrim SE         | BSA v105 LZ4  | 100% (18 862)     | Interior (WhiterunBanneredMare 1932 entities @ 253.3 FPS / 3.95 ms, bench 6a6950a; entity count up from 1258 since M32.5 close — more REFRs land now). |
-| Fallout 4         | BA2 v1/v7/v8  | 100% (34 995)     | Interior (MedTekResearch01 7434 entities @ 92.5 FPS / 10.82 ms, bench 6a6950a). |
-| Fallout 76        | BA2 v1        | 100% (58 469)     | —                                                        |
-| Starfield         | BA2 v2/v3 LZ4 | 100% (31 058)     | —                                                        |
+Parse-rate columns measured 2026-04-26 against vanilla mesh archives
+on commit 0681fc7 (`cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored parse_rate`).
+Clean = no NiUnknown placeholders + no truncation. Recoverable = file
+parses end-to-end (counting NiUnknown / truncation as recoverable).
+The audit-publish run #684–#688 / #697 / #698 tracks the open
+parse-rate work for the games where clean < 100%.
+
+| Game              | Archive       | NIF parse rate (clean / recoverable)         | Cells                                                    |
+|-------------------|---------------|----------------------------------------------|----------------------------------------------------------|
+| Oblivion          | BSA v103      | **95.21%** (7 647 / 8 032) · recover 99.99%  | Interior (Anvil Heinrich Oaken Halls). Exterior blocked on TES4 worldspace + LAND wiring (same shape as FO3 was). #687 / #688 / #698 track the open clean-rate gaps. |
+| Fallout 3         | BSA v104      | 100% (10 989)                                | Interior (Megaton, 929 REFRs). Exterior wired; fresh GPU bench pending (R6a). |
+| Fallout New Vegas | BSA v104      | 100% (14 881)                                | Interior (Prospector 1200 entities @ 172.6 FPS / 5.79 ms on RTX 4070 Ti, bench 6a6950a). Exterior 3×3. |
+| Skyrim SE         | BSA v105 LZ4  | 100% (18 862)                                | Interior (WhiterunBanneredMare 1932 entities @ 253.3 FPS / 3.95 ms, bench 6a6950a; entity count up from 1258 since M32.5 close — more REFRs land now). |
+| Fallout 4         | BA2 v1/v7/v8  | **96.46%** (33 757 / 34 995) · recover 100%  | Interior (MedTekResearch01 7434 entities @ 92.5 FPS / 10.82 ms, bench 6a6950a). FaceGen NIFs dominate the truncation tail (1 235 of 1 238 truncated files). |
+| Fallout 76        | BA2 v1        | **97.34%** (56 915 / 58 469) · recover 100%  | —                                                        |
+| Starfield         | BA2 v2/v3 LZ4 | **0.80%** (248 / 31 058) · recover 100%      | — Mesh archive expanded from 31 k → 320 k files; the 0.80% reflects new BA2 v3 LZ4 chunked content the parser doesn't fully cover yet. |
 
 ---
 
@@ -82,9 +95,10 @@ load. Weather transitions (fade between WTHR states) and cloud layers
 
 Priority: **shortest path to a playable cell**, not shortest path to a
 shinier frame. The renderer is mature (RT + RIS + SVGF + TAA + POM)
-and the content pipeline parses at 100% across every target; next
-bottlenecks are *consumers* — things that make what we parse actually
-do something on screen or at the speakers.
+and the content pipeline parses recoverably across every target
+(clean rates per the matrix above; tracked under #687 / #688 / #697
+/ #698); next bottlenecks are *consumers* — things that make what we
+parse actually do something on screen or at the speakers.
 
 **Two axes.** Milestones (`M…`) ship user-visible capability.
 Risk-reducers (`R…`) are structural fixes flagged in the 2026-04-22
@@ -158,7 +172,7 @@ active for incremental wins; don't let them block Tier 1–4.
 | M24.2   | ESM Phase 2                         | QUST / DIAL / INFO / PERK / MGEF / SPEL / ENCH / AVIF semantic parsing. Quest stages, dialogue trees, perk entry points, magic effects.                                                                                                                                                                                                                                                                                                                                                                                                                                                | R2             |
 | M30.2   | Papyrus Phase 2–4                   | Statement parser, script declarations, FO4 extensions. Full `.psc` → AST for the entire Skyrim / FO4 corpus.                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | M30            |
 | M46.0   | Multi-plugin CLI                    | Thread `parse_esm_with_load_order` (#445, landed) through `--esm` so the CLI can accept a load order. FormID remap is done; CLI surface is the missing piece.                                                                                                                                                                                                                                                                                                                                                                                                                          | #445 (done)    |
-| **R3**  | NIF per-block-type parse histogram  | 100% file parse rate is real, but the `NiUnknown` soft-fail path means **a per-block parser regression shows up as missing geometry, not as a parse failure**. `MIN_SUCCESS_RATE = 1.0` catches file-level; per-block-type it doesn't. Have `nif_stats` emit a per-block-type `parsed vs NiUnknown` histogram and fail CI on regression. **Why now:** cheap (1-day), closes the biggest blind spot in the "100%" claim.                                                                                                                                                                 | —              |
+| **R3**  | NIF per-block-type parse histogram  | Recoverable file parse is at 100% on six of seven games (Oblivion 99.99% — see #698), but the `NiUnknown` soft-fail path means **a per-block parser regression shows up as missing geometry, not as a parse failure**. The recoverable gate catches file-level; per-block-type it doesn't. Have `nif_stats` emit a per-block-type `parsed vs NiUnknown` histogram and fail CI on regression. **Why now:** cheap (1-day), closes the biggest blind spot in the recoverable claim and the per-game clean-rate gaps tracked at #687/#688/#697.                                                                                                                                                                 | —              |
 
 ### Tier 7 — Deep gameplay systems (deferred until Tier 1–4 proves out)
 
@@ -252,7 +266,9 @@ N23.10 test infrastructure. **Current: 186 registered type names,
 M9 NIF parser · M10 NIF→ECS import · M11 BSA reader ·
 M14 DDS texture loading · M16 ESM parser & cell loading ·
 M18 Skyrim SE NIF · M19 full cell loading · M26 BA2 archive
-support (v1/v2/v3/v7/v8, zlib + LZ4, 100% across 7 games).
+support (v1/v2/v3/v7/v8, zlib + LZ4). Per-game clean-parse rates
+in the compat matrix above; recoverable rate at 100% across all
+seven games except Oblivion's single hard-fail (#698).
 
 **ESM records (M24 Phase 1)**
 Items (WEAP/ARMO/AMMO/MISC/KEYM/ALCH/INGR/BOOK/NOTE), containers,
@@ -356,8 +372,8 @@ Ground-truth as of 2026-04-25, verified by `/session-close`.
 | Workspace members                       | 16                           |
 | Tests (last reported by ROADMAP)        | 1270                         |
 | Open issue directories                  | 597 (`.claude/issues/`)       |
-| NIFs in per-game integration sweeps     | 177 286                       |
-| Per-game NIF parse success rate         | 100% (7 games)                |
+| NIFs in per-game integration sweeps     | 184 886                       |
+| Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 95.21%, FO4 96.46%, FO76 97.34%, Starfield 0.80% (see compat matrix). Recoverable 100% on all except Oblivion 99.99%. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
 
 ### Repro commands for every bench claim
@@ -369,7 +385,7 @@ Ground-truth as of 2026-04-25, verified by `/session-close`.
 | FO4 MedTekResearch01 7434 entities @ 92.5 FPS / 10.82 ms (commit `6a6950a`, 2026-04-24) | `cargo run --release -- --esm "Fallout 4/Data/Fallout4.esm" --cell MedTekResearch01 --bsa "Fallout4 - Meshes.ba2" --textures-bsa "Fallout4 - Textures1.ba2" --textures-bsa "Fallout4 - Textures2.ba2" --bench-frames 300` |
 | Skyrim sweetroll single-mesh ~3000-5000 FPS (2026-04-22, RTX 4070 Ti @ 1280×720)        | `cargo run --release -- --bsa "Skyrim Special Edition/Data/Skyrim - Meshes0.bsa" --mesh meshes\\clutter\\ingredients\\sweetroll01.nif --textures-bsa "Skyrim Special Edition/Data/Skyrim - Textures3.bsa"` |
 | Megaton interior parse-side 929 REFRs (2026-04-19)                        | `cargo test -p byroredux-plugin --release --test parse_real_esm parse_real_fo3_megaton_cell_baseline -- --ignored`                                                                             |
-| Per-game full mesh sweep, 100% per game                                   | `cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored`                                                                                                                     |
+| Per-game full mesh sweep (clean rates above; recoverable 100% gate)       | `cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored parse_rate`                                                                                                          |
 | Full ESM record counts (FNV 62 219 / FO3 31 101)                          | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored`                                                                                                                   |
 
 **Rule**: every "FPS / ms / count" claim in this document must have a
