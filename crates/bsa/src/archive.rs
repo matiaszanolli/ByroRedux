@@ -17,33 +17,35 @@ use std::sync::Mutex;
 /// - `hash_high` is a rolling `(h * 0x1003f) + c` over the middle chars
 ///   `[1 .. len-2)`.
 ///
+/// **Caller contract**: `name` must already be ASCII-lowercased. Both
+/// production callers (debug-only validation hooks at the folder-name
+/// and file-name pass) pre-lowercase via `String::to_lowercase`, so an
+/// inner `to_ascii_lowercase` collect was a no-op heap allocation per
+/// entry — ~22k pointless allocs per Skyrim Meshes0 open in debug
+/// builds. See #622 / SK-D2-02.
+///
 /// See UESP `Oblivion_Mod:BSA_File_Format#Hash_Calculation` and the
 /// BSArch / libbsarch reference implementations. See #361.
 #[allow(dead_code)]
-fn genhash_folder(name: &str) -> u64 {
-    let lower: Vec<u8> = name
-        .as_bytes()
-        .iter()
-        .map(|b| b.to_ascii_lowercase())
-        .collect();
-    let len = lower.len();
+fn genhash_folder(name: &[u8]) -> u64 {
+    let len = name.len();
 
     let mut hash_low: u32 = 0;
     if len > 0 {
-        hash_low |= lower[len - 1] as u32;
+        hash_low |= name[len - 1] as u32;
     }
     if len >= 3 {
-        hash_low |= (lower[len - 2] as u32) << 8;
+        hash_low |= (name[len - 2] as u32) << 8;
     }
     hash_low |= (len as u32) << 16;
     if len > 0 {
-        hash_low |= (lower[0] as u32) << 24;
+        hash_low |= (name[0] as u32) << 24;
     }
 
     let mut hash_high: u32 = 0;
     // Middle range `[1, len - 2)` — empty for len <= 3.
     if len > 3 {
-        for &c in &lower[1..len - 2] {
+        for &c in &name[1..len - 2] {
             hash_high = hash_high.wrapping_mul(0x1003f).wrapping_add(c as u32);
         }
     }
@@ -56,32 +58,27 @@ fn genhash_folder(name: &str) -> u64 {
 /// handful of privileged extensions) and an extra rolling hash pass
 /// that gets folded into the high word.
 ///
-/// `name` is the filename only — no directory component.
+/// **Caller contract**: `name` must already be ASCII-lowercased — see
+/// `genhash_folder` for rationale. `name` is the filename only — no
+/// directory component.
 #[allow(dead_code)]
-fn genhash_file(name: &str) -> u64 {
-    let lower: Vec<u8> = name
-        .as_bytes()
-        .iter()
-        .map(|b| b.to_ascii_lowercase())
-        .collect();
-    let (stem_bytes, ext_bytes) = match lower.iter().rposition(|&c| c == b'.') {
-        Some(i) => (&lower[..i], &lower[i..]),
-        None => (&lower[..], &lower[..0]),
+fn genhash_file(name: &[u8]) -> u64 {
+    let (stem_bytes, ext_bytes) = match name.iter().rposition(|&c| c == b'.') {
+        Some(i) => (&name[..i], &name[i..]),
+        None => (&name[..], &name[..0]),
     };
 
     // Base hash over the stem.
-    let stem = std::str::from_utf8(stem_bytes).unwrap_or("");
-    let mut hash = genhash_folder(stem);
+    let mut hash = genhash_folder(stem_bytes);
 
     // Extension adds a known XOR constant to the low word for the most
     // common asset types.
-    let ext = std::str::from_utf8(ext_bytes).unwrap_or("");
-    let ext_xor: u32 = match ext {
-        ".kf" => 0x80,
-        ".nif" => 0x8000,
-        ".dds" => 0x8080,
-        ".wav" => 0x80000000,
-        ".adp" => 0x00202e1a,
+    let ext_xor: u32 = match ext_bytes {
+        b".kf" => 0x80,
+        b".nif" => 0x8000,
+        b".dds" => 0x8080,
+        b".wav" => 0x80000000,
+        b".adp" => 0x00202e1a,
         _ => 0,
     };
     let hash_low = (hash as u32) ^ ext_xor;
@@ -212,16 +209,26 @@ impl BsaArchive {
         // validation time. See `expected_offset` below. (#362)
         let folder_record_size: usize = if version == 105 { 24 } else { 16 };
         struct FolderRecord {
+            /// Stored folder-name hash. Only retained in debug builds
+            /// for the per-folder hash validation in the name-pass
+            /// loop below (#361). Release builds drop the field
+            /// entirely so the dead-code warning doesn't fire — same
+            /// pattern as the sibling `RawFileRecord.hash`. See #622 /
+            /// SK-D2-07.
+            #[cfg(debug_assertions)]
             hash: u64,
             count: usize,
             /// v104: u32 at [12..16]. v105: u64 at [16..24]. Used to
             /// validate folder-block layout in debug builds (#362).
+            /// Release-only dead-code per #622 / SK-D2-07.
+            #[cfg(debug_assertions)]
             offset: u64,
         }
         let mut folder_records: Vec<FolderRecord> = Vec::with_capacity(folder_count);
         for _ in 0..folder_count {
             let mut rec = [0u8; 24];
             reader.read_exact(&mut rec[..folder_record_size])?;
+            #[cfg(debug_assertions)]
             let hash = u64::from_le_bytes(rec[0..8].try_into().unwrap());
             // Per-folder file count: also attacker-controlled, and the
             // inner loop below pushes one entry per iteration — a
@@ -230,6 +237,7 @@ impl BsaArchive {
             // sink the whole read. Cap it the same way. See #586.
             let count_raw = u32::from_le_bytes(rec[8..12].try_into().unwrap());
             let count = checked_entry_count(count_raw, "BSA folder.count")?;
+            #[cfg(debug_assertions)]
             let offset = if version == 105 {
                 u64::from_le_bytes(rec[16..24].try_into().unwrap())
             } else {
@@ -237,8 +245,10 @@ impl BsaArchive {
                 u32::from_le_bytes(rec[12..16].try_into().unwrap()) as u64
             };
             folder_records.push(FolderRecord {
+                #[cfg(debug_assertions)]
                 hash,
                 count,
+                #[cfg(debug_assertions)]
                 offset,
             });
         }
@@ -257,6 +267,19 @@ impl BsaArchive {
         }
 
         let mut raw_files: Vec<RawFileRecord> = Vec::with_capacity(file_count);
+        // #622 / SK-D2-05: track running consumed lengths for the two
+        // header total fields the original parse silently dropped on
+        // the floor (`_total_folder_name_length`, `_total_file_name_length`).
+        // After both passes complete, log a warn if the running totals
+        // disagree with the header — surfaces malformed / hand-crafted
+        // archives early instead of letting them fail later in the
+        // file-name pass with a misleading "read past end" error. Same
+        // debug-only approach #361/#362 use for the per-folder hash +
+        // offset checks.
+        #[cfg(debug_assertions)]
+        let mut folder_names_consumed: u64 = 0;
+        #[cfg(debug_assertions)]
+        let mut file_names_consumed: u64 = 0;
 
         for folder in &folder_records {
             // B2-04 (#362): verify the folder offset in the header matches
@@ -283,6 +306,14 @@ impl BsaArchive {
             let name_len = len_buf[0] as usize;
             let mut name_buf = vec![0u8; name_len];
             reader.read_exact(&mut name_buf)?;
+            // SK-D2-05 (#622): per UESP, `total_folder_name_length`
+            // counts the name + trailing NUL but NOT the 1-byte length
+            // prefix. `name_len` here already includes the NUL, so
+            // accumulate it directly.
+            #[cfg(debug_assertions)]
+            {
+                folder_names_consumed += name_len as u64;
+            }
             // Remove null terminator
             if name_buf.last() == Some(&0) {
                 name_buf.pop();
@@ -296,7 +327,7 @@ impl BsaArchive {
             // in debug builds.
             #[cfg(debug_assertions)]
             {
-                let computed = genhash_folder(&folder_name);
+                let computed = genhash_folder(folder_name.as_bytes());
                 if computed != folder.hash {
                     log::warn!(
                         "BSA folder hash mismatch for '{}': stored {:#018x}, computed {:#018x}",
@@ -344,6 +375,13 @@ impl BsaArchive {
                 }
                 name.push(byte[0]);
             }
+            // SK-D2-05 (#622): file names contribute (name bytes + 1
+            // NUL) each to `total_file_name_length`. `name.len()` here
+            // is already without the NUL; +1 covers the terminator.
+            #[cfg(debug_assertions)]
+            {
+                file_names_consumed += name.len() as u64 + 1;
+            }
             let file_name = String::from_utf8_lossy(&name).to_lowercase();
 
             // B2-03 (#361): file hash validation mirrors the folder one.
@@ -351,7 +389,7 @@ impl BsaArchive {
             // bug in our hash algorithm — either way, surface in debug.
             #[cfg(debug_assertions)]
             {
-                let computed = genhash_file(&file_name);
+                let computed = genhash_file(file_name.as_bytes());
                 if computed != raw.hash {
                     log::warn!(
                         "BSA file hash mismatch for '{}\\{}': stored {:#018x}, computed {:#018x}",
@@ -373,6 +411,29 @@ impl BsaArchive {
                     compression_toggle: raw.compression_toggle,
                 },
             );
+        }
+
+        // #622 / SK-D2-05: validate the running totals against the
+        // header. A mismatch points at a malformed / hand-crafted
+        // archive — the header says the name tables are N bytes total
+        // but we actually consumed M reading them. Surface it in
+        // debug builds; release builds skip the bookkeeping entirely.
+        #[cfg(debug_assertions)]
+        {
+            if folder_names_consumed != _total_folder_name_length as u64 {
+                log::warn!(
+                    "BSA total_folder_name_length mismatch: header {} vs consumed {}",
+                    _total_folder_name_length,
+                    folder_names_consumed,
+                );
+            }
+            if file_names_consumed != _total_file_name_length as u64 {
+                log::warn!(
+                    "BSA total_file_name_length mismatch: header {} vs consumed {}",
+                    _total_file_name_length,
+                    file_names_consumed,
+                );
+            }
         }
 
         // Take ownership of the file handle (BufReader::into_inner is
@@ -496,17 +557,40 @@ impl BsaArchive {
             drop(file);
 
             // v104 uses zlib, v105 uses LZ4 frame format.
-            let decompressed = if self.version >= 105 {
+            let (decompressed, codec) = if self.version >= 105 {
                 let mut decoder = lz4_flex::frame::FrameDecoder::new(&compressed[..]);
                 let mut buf = Vec::with_capacity(original_size);
                 decoder.read_to_end(&mut buf)?;
-                buf
+                (buf, "LZ4 frame")
             } else {
                 let mut decoder = ZlibDecoder::new(&compressed[..]);
                 let mut buf = Vec::with_capacity(original_size);
                 decoder.read_to_end(&mut buf)?;
-                buf
+                (buf, "zlib")
             };
+
+            // #622 / SK-D2-04: post-decompression sanity. Pre-fix a
+            // truncated frame would silently produce a short buffer and
+            // the downstream parser would error with a misleading
+            // message ("NIF magic not found", "data underflow", etc.)
+            // far from the actual cause. Surface the real cause clearly.
+            // Mirrors the BA2 zlib path at `ba2.rs:457-462` — `log` not
+            // hard-fail because some shipped archives have known
+            // padding deltas where the decompressed payload reads short
+            // by a handful of bytes; bumping to `warn` (BA2 uses
+            // `debug`) keeps the signal visible without breaking
+            // parse-rate on borderline content.
+            if decompressed.len() != original_size {
+                log::warn!(
+                    "BSA {} decompression for '{}' produced {} bytes \
+                     but original_size declared {} (delta {:+})",
+                    codec,
+                    path,
+                    decompressed.len(),
+                    original_size,
+                    decompressed.len() as i64 - original_size as i64,
+                );
+            }
 
             Ok(decompressed)
         } else {
@@ -562,14 +646,19 @@ mod tests {
     fn genhash_folder_empty_string_is_zero() {
         // Edge case: empty folder name. Algorithm returns 0 because no
         // bytes contribute to either word.
-        assert_eq!(genhash_folder(""), 0);
+        assert_eq!(genhash_folder(b""), 0);
     }
 
+    /// #622 / SK-D2-02: `genhash_folder` accepts a pre-lowercased
+    /// `&[u8]` per its caller-contract; case sensitivity is the
+    /// caller's responsibility. Pin the contract — feeding upper-case
+    /// bytes produces a *different* hash, which is exactly what we
+    /// want any future call site that forgets to lowercase to see.
     #[test]
-    fn genhash_folder_is_case_insensitive() {
-        assert_eq!(
-            genhash_folder("meshes\\clutter"),
-            genhash_folder("MESHES\\CLUTTER"),
+    fn genhash_folder_treats_input_as_already_lowercased() {
+        assert_ne!(
+            genhash_folder(b"meshes\\clutter"),
+            genhash_folder(b"MESHES\\CLUTTER"),
         );
     }
 
@@ -579,8 +668,8 @@ mod tests {
         // (Not cryptographically guaranteed, but true for any two
         // distinct non-trivial Bethesda folder names.)
         assert_ne!(
-            genhash_folder("meshes\\clutter"),
-            genhash_folder("meshes\\architecture"),
+            genhash_folder(b"meshes\\clutter"),
+            genhash_folder(b"meshes\\architecture"),
         );
     }
 
@@ -589,15 +678,15 @@ mod tests {
         // Extension should affect the hash; two files with the same
         // stem but different extensions must hash differently.
         assert_ne!(
-            genhash_file("beerbottle01.nif"),
-            genhash_file("beerbottle01.dds"),
+            genhash_file(b"beerbottle01.nif"),
+            genhash_file(b"beerbottle01.dds"),
         );
     }
 
     #[test]
     fn genhash_file_handles_no_extension() {
         // A name without `.` shouldn't panic. Falls back to empty ext.
-        let _ = genhash_file("noextension");
+        let _ = genhash_file(b"noextension");
     }
 
     /// Regression: #449 — `genhash_file` must produce the same hash the
@@ -621,7 +710,7 @@ mod tests {
         // `glover.nif` is the filename component; the folder is hashed
         // separately by genhash_folder. genhash_file takes only the
         // filename.
-        let computed = genhash_file("glover.nif");
+        let computed = genhash_file(b"glover.nif");
         assert_eq!(
             computed,
             0xc86aec30_6706e572,
@@ -1146,7 +1235,7 @@ mod tests {
                                                                      // per the parser's `expected_offset` validation comment.
         let stored_folder_offset = folder_block_offset + total_file_name_length as u64;
 
-        let folder_hash = genhash_folder(&folder_lc);
+        let folder_hash = genhash_folder(folder_lc.as_bytes());
         data.extend_from_slice(&folder_hash.to_le_bytes());
         data.extend_from_slice(&1u32.to_le_bytes()); // count
         data.extend_from_slice(&0u32.to_le_bytes()); // padding
@@ -1193,7 +1282,7 @@ mod tests {
         data.extend_from_slice(&file_body);
 
         // ── Patch the file record ───────────────────────────────────
-        let file_hash = genhash_file(&file_lc);
+        let file_hash = genhash_file(file_lc.as_bytes());
         let mut frec = [0u8; 16];
         frec[0..8].copy_from_slice(&file_hash.to_le_bytes());
         frec[8..12].copy_from_slice(&file_size.to_le_bytes());
