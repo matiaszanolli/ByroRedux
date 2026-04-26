@@ -661,7 +661,12 @@ impl TaaPipeline {
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            // dst = FRAGMENT for composite's read this frame + COMPUTE for
+            // next frame's TAA dispatch reading this slot as
+            // `prev_history`. Per-frame fence currently serialises both
+            // consumers, but the dst-stage mask still has to cover both
+            // for correctness once the fence wait is relaxed. #653.
+            vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER,
             vk::DependencyFlags::empty(),
             &[],
             &[],

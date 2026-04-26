@@ -733,7 +733,13 @@ impl SvgfPipeline {
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            // dst = FRAGMENT for composite's read this frame + COMPUTE for
+            // next frame's SVGF dispatch reading this slot as
+            // `prev_indirect_hist`. The per-frame fence implicitly serialises
+            // both consumers today, but if MAX_FRAMES_IN_FLIGHT goes past 2 or
+            // a future timeline-semaphore refactor relaxes the fence wait,
+            // missing the COMPUTE bit would become a real hazard. #653.
+            vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER,
             vk::DependencyFlags::empty(),
             &[],
             &[],
