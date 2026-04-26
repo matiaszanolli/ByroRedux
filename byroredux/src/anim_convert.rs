@@ -2,8 +2,8 @@
 
 use byroredux_core::animation::{
     AnimBoolKey, AnimColorKey, AnimFloatKey, AnimationClip, BoolChannel, ColorChannel, ColorTarget,
-    CycleType, FloatChannel, FloatTarget, KeyType, RotationKey, ScaleKey, TransformChannel,
-    TranslationKey,
+    CycleType, FloatChannel, FloatTarget, KeyType, RotationKey, ScaleKey, TextureFlipChannel,
+    TransformChannel, TranslationKey,
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Children, Name, World};
@@ -206,6 +206,28 @@ pub(crate) fn convert_nif_clip(
         })
         .collect();
 
+    let texture_flip_channels = nif
+        .texture_flip_channels
+        .iter()
+        .map(|(name, ch)| {
+            (
+                pool.intern(name),
+                TextureFlipChannel {
+                    texture_slot: ch.texture_slot,
+                    source_paths: ch.source_paths.clone(),
+                    keys: ch
+                        .keys
+                        .iter()
+                        .map(|k| AnimFloatKey {
+                            time: k.time,
+                            value: k.value,
+                        })
+                        .collect(),
+                },
+            )
+        })
+        .collect();
+
     AnimationClip {
         name: nif.name.clone(),
         duration: nif.duration,
@@ -217,6 +239,7 @@ pub(crate) fn convert_nif_clip(
         float_channels,
         color_channels,
         bool_channels,
+        texture_flip_channels,
         text_keys: nif.text_keys.clone(),
     }
 }

@@ -31,8 +31,8 @@ pub use stack::{
 pub use text_events::{collect_text_key_events, visit_text_key_events};
 pub use types::{
     AnimBoolKey, AnimColorKey, AnimFloatKey, AnimationClip, BoolChannel, ColorChannel, ColorTarget,
-    CycleType, FloatChannel, FloatTarget, KeyType, RotationKey, ScaleKey, TransformChannel,
-    TranslationKey,
+    CycleType, FloatChannel, FloatTarget, KeyType, RotationKey, ScaleKey, TextureFlipChannel,
+    TransformChannel, TranslationKey,
 };
 
 #[cfg(test)]
@@ -358,6 +358,7 @@ mod tests {
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
         };
         let mut player = AnimationPlayer::new(0);
@@ -381,6 +382,7 @@ mod tests {
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
         };
         let mut player = AnimationPlayer::new(0);
@@ -401,6 +403,7 @@ mod tests {
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
         };
         let mut player = AnimationPlayer::new(0);
@@ -429,6 +432,7 @@ mod tests {
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
         };
         let handle = reg.add(clip);
@@ -450,6 +454,7 @@ mod tests {
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
             text_keys: vec![
                 (0.5, "hit".into()),
                 (1.0, "sound: swing".into()),
@@ -483,6 +488,7 @@ mod tests {
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
             text_keys: vec![(0.2, "start".into()), (1.8, "end".into())],
         };
 
@@ -504,6 +510,7 @@ mod tests {
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
         };
         let events = collect_text_key_events(&clip, 0.0, 1.0);
@@ -523,6 +530,7 @@ mod tests {
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
             text_keys: vec![
                 (0.5, "hit".into()),
                 (1.0, "sound: swing".into()),
@@ -600,6 +608,7 @@ mod tests {
                 float_channels: Vec::new(),
                 color_channels: Vec::new(),
                 bool_channels: Vec::new(),
+                texture_flip_channels: Vec::new(),
                 text_keys: Vec::new(),
             }
         };

@@ -3,6 +3,7 @@
 use crate::math::{Quat, Vec3};
 use crate::string::FixedString;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// How the animation behaves when it reaches its end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +130,30 @@ pub struct BoolChannel {
     pub keys: Vec<AnimBoolKey>,
 }
 
+/// Texture flipbook animation channel — `NiFlipController` semantics.
+///
+/// The float-typed `keys` carry the cycle position (the controller's
+/// `NiFloatInterpController` interpolator output: typically a 0..N saw
+/// or stepped ramp). At sample time the runtime picks the source
+/// `source_paths[floor(value) % source_paths.len()]` and rebinds it
+/// into the texture slot identified by `texture_slot`. Source paths
+/// are resolved at clip-load time from the chain
+/// `NiFlipController.sources → NiSourceTexture.filename`, so the
+/// runtime never has to walk back into the NIF scene.
+///
+/// `texture_slot` is the raw `TexType` enum from the controller —
+/// 0=BASE_MAP, 1=DARK_MAP, 2=DETAIL_MAP, 3=GLOSS_MAP, 4=GLOW_MAP, etc.
+/// (per nif.xml). The renderer consumer is expected to interpret it.
+///
+/// Renderer integration is deferred — only Oblivion / FO3 / FNV ship
+/// `NiFlipController`; Skyrim+ moved to `BSEffectShader` UV scrolling.
+#[derive(Debug, Clone)]
+pub struct TextureFlipChannel {
+    pub texture_slot: u32,
+    pub source_paths: Vec<Arc<str>>,
+    pub keys: Vec<AnimFloatKey>,
+}
+
 /// A complete animation clip (one per NiControllerSequence).
 #[derive(Debug, Clone)]
 pub struct AnimationClip {
@@ -160,6 +185,11 @@ pub struct AnimationClip {
     pub color_channels: Vec<(FixedString, ColorChannel)>,
     /// Bool channels: (node_name, channel).
     pub bool_channels: Vec<(FixedString, BoolChannel)>,
+    /// Texture-flipbook channels: (node_name, channel). Captured from
+    /// `NiFlipController` blocks during NIF import. Carries resolved
+    /// source-texture paths so the sample-time consumer can rebind a
+    /// texture without re-walking the NIF scene. See `TextureFlipChannel`.
+    pub texture_flip_channels: Vec<(FixedString, TextureFlipChannel)>,
     /// Text key events: (time, label). Imported from NiTextKeyExtraData.
     /// Emitted as transient ECS markers when crossed during playback.
     pub text_keys: Vec<(f32, String)>,

@@ -174,6 +174,22 @@ pub struct BoolChannel {
     pub keys: Vec<AnimBoolKey>,
 }
 
+/// Texture-flipbook animation channel — `NiFlipController` semantics.
+///
+/// Source paths are resolved at clip-load time from
+/// `NiFlipController.sources → NiSourceTexture.filename` so the
+/// runtime never has to walk back into the NIF scene. The float keys
+/// drive a cycle position; the consumer picks
+/// `source_paths[floor(value) % source_paths.len()]`. `texture_slot`
+/// is the raw `TexType` enum value (0=BASE_MAP, 4=GLOW_MAP, …) — the
+/// runtime decides which material slot it routes to.
+#[derive(Debug, Clone)]
+pub struct TextureFlipChannel {
+    pub texture_slot: u32,
+    pub source_paths: Vec<Arc<str>>,
+    pub keys: Vec<AnimFloatKey>,
+}
+
 /// A complete animation clip extracted from one NiControllerSequence.
 #[derive(Debug, Clone)]
 pub struct AnimationClip {
@@ -195,6 +211,10 @@ pub struct AnimationClip {
     pub color_channels: Vec<(Arc<str>, ColorChannel)>,
     /// Bool (visibility) channels keyed by node_name.
     pub bool_channels: Vec<(Arc<str>, BoolChannel)>,
+    /// Texture-flipbook channels keyed by node_name. Captured from
+    /// `NiFlipController` blocks during NIF import. See
+    /// `TextureFlipChannel`. #545.
+    pub texture_flip_channels: Vec<(Arc<str>, TextureFlipChannel)>,
     /// Text key events: (time, label). Imported from NiTextKeyExtraData.
     /// Emitted as transient ECS markers when crossed during playback.
     pub text_keys: Vec<(f32, String)>,
@@ -293,6 +313,7 @@ fn clip_has_data(clip: &AnimationClip) -> bool {
         || !clip.float_channels.is_empty()
         || !clip.color_channels.is_empty()
         || !clip.bool_channels.is_empty()
+        || !clip.texture_flip_channels.is_empty()
 }
 
 /// Import mesh-embedded animation controllers into a single looping
@@ -319,7 +340,7 @@ fn clip_has_data(clip: &AnimationClip) -> bool {
 pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
     use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
     use crate::blocks::controller::{
-        BsShaderController, NiMaterialColorController, NiSingleInterpController,
+        BsShaderController, NiFlipController, NiMaterialColorController, NiSingleInterpController,
         NiTextureTransformController,
     };
     use crate::blocks::node::{NiCamera, NiNode};
@@ -387,6 +408,10 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                 c.base.next_controller_ref
             } else if let Some(c) = any.downcast_ref::<NiTextureTransformController>() {
                 c.base.next_controller_ref
+            } else if let Some(c) = any.downcast_ref::<NiFlipController>() {
+                // NiFlipController : NiFloatInterpController : NiSingleInterpController.
+                // Two `.base` hops to reach NiTimeControllerBase.
+                c.base.base.next_controller_ref
             } else if let Some(c) = any.downcast_ref::<BsShaderController>() {
                 c.base.base.next_controller_ref
             } else if let Some(c) = any.downcast_ref::<NiMaterialColorController>() {
@@ -425,6 +450,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
         float_channels: Vec::new(),
         color_channels: Vec::new(),
         bool_channels: Vec::new(),
+        texture_flip_channels: Vec::new(),
         text_keys: Vec::new(),
     };
 
@@ -542,6 +568,41 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                         }
                     }
                 }
+                "NiFlipController" => {
+                    // Texture-flipbook controller (#545). Resolve the
+                    // per-frame source list to filenames at import time
+                    // so the runtime never has to walk back into the
+                    // NIF scene. Float keys come from the inherited
+                    // NiSingleInterpController.interpolator_ref —
+                    // typically a stepped saw 0..N over the cycle.
+                    if let Some(c) = any.downcast_ref::<NiFlipController>() {
+                        let source_paths = resolve_flip_source_paths(scene, &c.sources);
+                        if source_paths.is_empty() {
+                            // Empty source list — controller is structurally
+                            // valid but contributes nothing to render.
+                            return;
+                        }
+                        let keys = c
+                            .base
+                            .interpolator_ref
+                            .index()
+                            .and_then(|idx| extract_float_channel_at(
+                                scene,
+                                idx,
+                                FloatTarget::ShaderFloat,
+                            ))
+                            .map(|ch| ch.keys)
+                            .unwrap_or_default();
+                        clip.texture_flip_channels.push((
+                            Arc::clone(&node_name),
+                            TextureFlipChannel {
+                                texture_slot: c.texture_slot,
+                                source_paths,
+                                keys,
+                            },
+                        ));
+                    }
+                }
                 "NiUVController" => {
                     // The NiUVController + NiUVData path is distinct from
                     // the NiTextureTransformController: UVData stores four
@@ -618,6 +679,11 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
             max_time = max_time.max(k.time);
         }
     }
+    for (_, ch) in &clip.texture_flip_channels {
+        if let Some(k) = ch.keys.last() {
+            max_time = max_time.max(k.time);
+        }
+    }
     clip.duration = if max_time > 0.0 { max_time } else { 1.0 };
 
     Some(clip)
@@ -638,6 +704,7 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
     let mut float_channels = Vec::new();
     let mut color_channels = Vec::new();
     let mut bool_channels = Vec::new();
+    let mut texture_flip_channels = Vec::new();
 
     for cb in &seq.controlled_blocks {
         let resolved_node_name = resolve_cb_string(scene, cb, CbString::NodeName);
@@ -703,6 +770,38 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
                     float_channels.push((Arc::clone(&node_name), ch));
                 }
             }
+            "NiFlipController" => {
+                // Texture flipbook (#545). The KF path resolves the
+                // controller block via `cb.controller_ref` so we can
+                // pick up `texture_slot` + the `sources` array; the
+                // float keys come from `cb.interpolator_ref`. Skip
+                // silently if either ref fails to resolve.
+                if let Some(ctrl_idx) = cb.controller_ref.index() {
+                    if let Some(ctrl) = scene
+                        .get_as::<crate::blocks::controller::NiFlipController>(ctrl_idx)
+                    {
+                        let source_paths = resolve_flip_source_paths(scene, &ctrl.sources);
+                        if source_paths.is_empty() {
+                            continue;
+                        }
+                        let keys = extract_float_channel(
+                            scene,
+                            cb,
+                            FloatTarget::ShaderFloat,
+                        )
+                        .map(|ch| ch.keys)
+                        .unwrap_or_default();
+                        texture_flip_channels.push((
+                            Arc::clone(&node_name),
+                            TextureFlipChannel {
+                                texture_slot: ctrl.texture_slot,
+                                source_paths,
+                                keys,
+                            },
+                        ));
+                    }
+                }
+            }
             _ => {
                 log::debug!(
                     "Skipping unsupported controller type: '{}'",
@@ -766,6 +865,7 @@ fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationCli
         float_channels,
         color_channels,
         bool_channels,
+        texture_flip_channels,
         text_keys,
     }
 }
@@ -1455,6 +1555,33 @@ fn extract_float_channel_at(
         return None;
     }
     Some(FloatChannel { target, keys })
+}
+
+/// Resolve a `NiFlipController.sources` BlockRef list into source
+/// texture filenames — used by the embedded and KF import paths to
+/// freeze the per-frame texture roster at clip-load time. Refs that
+/// fail to resolve, or that point at a `NiSourceTexture` without an
+/// external filename (embedded `NiPixelData`), are silently skipped.
+/// The returned ordering matches the source list so frame indices
+/// stay aligned with the original NIF.
+fn resolve_flip_source_paths(
+    scene: &NifScene,
+    sources: &[crate::types::BlockRef],
+) -> Vec<Arc<str>> {
+    let mut out = Vec::with_capacity(sources.len());
+    for src_ref in sources {
+        let Some(src_idx) = src_ref.index() else {
+            continue;
+        };
+        let Some(tex) = scene.get_as::<crate::blocks::texture::NiSourceTexture>(src_idx)
+        else {
+            continue;
+        };
+        if let Some(name) = &tex.filename {
+            out.push(Arc::clone(name));
+        }
+    }
+    out
 }
 
 /// Resolve the interpolator referenced by a controlled block into a flat
@@ -2756,6 +2883,143 @@ mod tests {
         );
         assert_eq!(ch.keys.len(), 2);
         assert!((ch.keys[1].value - 0.5).abs() < 1e-6);
+    }
+
+    /// Regression: #545. A NiTriShape with a `NiFlipController` on
+    /// `controller_ref` must surface as a looping `AnimationClip`
+    /// carrying a `texture_flip_channels` entry whose `source_paths`
+    /// list resolves the controller's `sources` BlockRefs against the
+    /// underlying `NiSourceTexture.filename` strings, in order. Pre-fix
+    /// the controller_ref walked into `_ => debug!("Skipping unsupported
+    /// embedded controller type")` and Oblivion / FO3 / FNV fire / smoke /
+    /// torch flame meshes rendered with a frozen first frame.
+    #[test]
+    fn import_embedded_animations_captures_flip_controller() {
+        use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+        use crate::blocks::controller::{
+            NiFlipController, NiSingleInterpController, NiTimeControllerBase,
+        };
+        use crate::blocks::interpolator::{FloatKey, KeyGroup, KeyType};
+        use crate::blocks::texture::NiSourceTexture;
+        use crate::blocks::tri_shape::NiTriShape;
+        use crate::types::{BlockRef, NiTransform};
+        use std::sync::Arc;
+
+        // Scene layout:
+        //   [0] NiFloatData (two linear keys, 0→1 over 1 s — flipbook ramp)
+        //   [1] NiFloatInterpolator → [0]
+        //   [2] NiSourceTexture (filename = "fire_a.dds")
+        //   [3] NiSourceTexture (filename = "fire_b.dds")
+        //   [4] NiFlipController → interp=[1], texture_slot=0,
+        //       sources=[[2], [3]]
+        //   [5] NiTriShape (name="HearthFire") with controller_ref=[4]
+        let data = NiFloatData {
+            keys: KeyGroup {
+                key_type: KeyType::Linear,
+                keys: vec![
+                    FloatKey {
+                        time: 0.0,
+                        value: 0.0,
+                        tangent_forward: 0.0,
+                        tangent_backward: 0.0,
+                        tbc: None,
+                    },
+                    FloatKey {
+                        time: 1.0,
+                        value: 2.0,
+                        tangent_forward: 0.0,
+                        tangent_backward: 0.0,
+                        tbc: None,
+                    },
+                ],
+            },
+        };
+        let interp = NiFloatInterpolator {
+            value: 0.0,
+            data_ref: BlockRef(0),
+        };
+        let make_src = |name: &'static str| NiSourceTexture {
+            net: NiObjectNETData {
+                name: None,
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            use_external: true,
+            filename: Some(Arc::from(name)),
+            pixel_data_ref: BlockRef::NULL,
+            pixel_layout: 0,
+            use_mipmaps: 0,
+            alpha_format: 0,
+            is_static: true,
+        };
+        let src_a = make_src("fire_a.dds");
+        let src_b = make_src("fire_b.dds");
+        let ctrl = NiFlipController {
+            base: NiSingleInterpController {
+                base: NiTimeControllerBase {
+                    next_controller_ref: BlockRef::NULL,
+                    flags: 0,
+                    frequency: 1.0,
+                    phase: 0.0,
+                    start_time: 0.0,
+                    stop_time: 1.0,
+                    target_ref: BlockRef::NULL,
+                },
+                interpolator_ref: BlockRef(1),
+            },
+            texture_slot: 0,
+            sources: vec![BlockRef(2), BlockRef(3)],
+        };
+        let node = NiTriShape {
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: Some(Arc::from("HearthFire")),
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef(4),
+                },
+                flags: 0,
+                transform: NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            data_ref: BlockRef::NULL,
+            skin_instance_ref: BlockRef::NULL,
+            shader_property_ref: BlockRef::NULL,
+            alpha_property_ref: BlockRef::NULL,
+            num_materials: 0,
+            active_material_index: 0,
+        };
+        let scene = NifScene {
+            blocks: vec![
+                Box::new(data),
+                Box::new(interp),
+                Box::new(src_a),
+                Box::new(src_b),
+                Box::new(ctrl),
+                Box::new(node),
+            ],
+            ..NifScene::default()
+        };
+
+        let clip = import_embedded_animations(&scene).expect("expected embedded clip");
+        assert_eq!(clip.cycle_type, CycleType::Loop);
+        assert_eq!(
+            clip.texture_flip_channels.len(),
+            1,
+            "exactly one flipbook channel expected"
+        );
+        let (node_name, ch) = &clip.texture_flip_channels[0];
+        assert_eq!(&**node_name, "HearthFire");
+        assert_eq!(ch.texture_slot, 0);
+        assert_eq!(
+            ch.source_paths
+                .iter()
+                .map(|s| &**s)
+                .collect::<Vec<_>>(),
+            vec!["fire_a.dds", "fire_b.dds"]
+        );
+        assert_eq!(ch.keys.len(), 2);
+        assert!((ch.keys[1].value - 2.0).abs() < 1e-6);
     }
 
     /// Regression: #261. A NiNode with no `controller_ref` must
