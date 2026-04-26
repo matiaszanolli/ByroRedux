@@ -962,7 +962,18 @@ pub(crate) fn build_render_data(
     // fog via WTHR/CLMT in weather_system, which writes into
     // CellLightingRes before render.
     let fog_color = cell_lit.as_ref().map(|l| l.fog_color).unwrap_or([0.0; 3]);
-    let fog_near = cell_lit.as_ref().map(|l| l.fog_near).unwrap_or(0.0);
+    // CLMT-authored fog_near can be negative (artistic intent: "fog
+    // starts before the camera"). The composite shader's gate
+    // `fog_far > fog_near` would still pass with a negative near, but
+    // `smoothstep(neg, pos, dist)` then returns nonzero at dist=0 and
+    // every fragment — including the camera origin — gets fog mixed in.
+    // Clamping at the render-side boundary keeps both the camera UBO
+    // upload (draw.rs:356) and the composite UBO upload (draw.rs:1566)
+    // in sync without a per-fragment branch. #666.
+    let fog_near = cell_lit
+        .as_ref()
+        .map(|l| l.fog_near.max(0.0))
+        .unwrap_or(0.0);
     let fog_far = cell_lit.as_ref().map(|l| l.fog_far).unwrap_or(0.0);
     drop(cell_lit);
 
