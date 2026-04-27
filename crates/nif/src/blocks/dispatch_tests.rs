@@ -1196,7 +1196,18 @@ fn oblivion_node_subtypes_dispatch_with_correct_payload() {
     }
 
     // Pure-alias variants — parse as plain NiNode with no trailing bytes.
-    for type_name in ["AvoidNode", "NiBSAnimationNode", "NiBSParticleNode"] {
+    // BSFaceGenNiNode (Starfield, #727) is an unconfirmed-layout stub: the
+    // FaceGen-coefficient trailing fields are unknown, so the alias just
+    // catches the dispatch and lets `block_size` recovery skip whatever
+    // trailing bytes the real wire layout carries. Test asserts the
+    // dispatch lands on `NiNode` so the FaceMeshes.ba2 corpus stops
+    // demoting all 1,282 face NIFs to NiUnknown.
+    for type_name in [
+        "AvoidNode",
+        "NiBSAnimationNode",
+        "NiBSParticleNode",
+        "BSFaceGenNiNode",
+    ] {
         let mut stream = NifStream::new(&base, &header);
         let block = parse_block(type_name, &mut stream, Some(base.len() as u32))
             .unwrap_or_else(|e| panic!("{type_name} dispatch: {e}"));

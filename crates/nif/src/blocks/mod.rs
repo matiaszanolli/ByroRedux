@@ -152,9 +152,19 @@ pub fn parse_block(
         // NiNode base. AvoidNode / NiBSAnimationNode / NiBSParticleNode are
         // legacy Morrowind/Oblivion-era NiNode subclasses; the rest are
         // Bethesda node tags. See issue #142.
+        //
+        // BSFaceGenNiNode (Starfield, 1,282 / 1,282 in `FaceMeshes.ba2`,
+        // #727) is aliased here as a coverage-first stub: the wire
+        // layout is unconfirmed and nif.xml has no SF schema for it.
+        // Outer per-block `block_size` reconciliation in `lib.rs:312`
+        // skips any trailing FaceGen-coefficient bytes so the alias
+        // can't desync downstream blocks. Promoting to a dedicated
+        // parser is follow-up work once a sample face NIF is reverse-
+        // engineered (FaceGen morph data is dropped under the alias).
         "NiNode"
         | "BSFadeNode"
         | "BSLeafAnimNode"
+        | "BSFaceGenNiNode"
         | "RootCollisionNode"
         | "AvoidNode"
         | "NiBSAnimationNode"
