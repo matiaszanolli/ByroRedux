@@ -453,6 +453,13 @@ impl BsaArchive {
     }
 
     /// List all file paths in the archive (lowercase, backslash-separated).
+    /// BSA format version (103 = Oblivion, 104 = FO3/FNV/Skyrim LE,
+    /// 105 = Skyrim SE/FO4). Mirrors `Ba2Archive::version` so tests
+    /// can pin the version-dispatch path. See #587 / FO4-DIM2-05.
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+
     pub fn list_files(&self) -> Vec<&str> {
         self.files.keys().map(|s| s.as_str()).collect()
     }
