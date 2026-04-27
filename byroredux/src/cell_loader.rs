@@ -435,26 +435,70 @@ pub(crate) fn resolve_cell_lighting(
     })
 }
 
-/// Load a 3x3 grid of exterior cells from a worldspace, optionally
-/// across a multi-plugin load order. Same semantics as
-/// [`load_cell_with_masters`] — masters parsed first and merged into
-/// a unified EsmIndex via FormID load-order remap. Pass `&[]` for a
-/// single-plugin load. See M46.0 / #561.
-pub fn load_exterior_cells_with_masters(
+/// Reusable per-worldspace context for streaming cell loads.
+///
+/// Built once per session (`build_exterior_world_context`) — holds the
+/// parsed `EsmIndex` snapshot, the global load-order list, the chosen
+/// worldspace's lowercase EDID key, and the resolved
+/// climate + default-weather records for that worldspace. Cheap to
+/// clone the `Arc`s into a streaming worker thread so the worker can
+/// look up cell records, base forms, and landscape textures without
+/// re-parsing.
+///
+/// Pre-#M40 the bulk loader rebuilt all of this every call. The
+/// streaming system needs a stable handle so the per-cell loader
+/// (`load_one_exterior_cell`) is cheap enough to call once per cell
+/// boundary crossed.
+#[allow(dead_code)] // `record_index` / `load_order` consumed by streaming worker (M40 Phase 1a)
+pub struct ExteriorWorldContext {
+    pub record_index: Arc<byroredux_plugin::esm::records::EsmIndex>,
+    pub load_order: Arc<Vec<String>>,
+    /// Lowercase EDID key into `record_index.cells.exterior_cells`.
+    pub worldspace_key: String,
+    /// Pre-resolved climate (one per worldspace).
+    pub climate: Option<byroredux_plugin::esm::records::ClimateRecord>,
+    /// Default weather — highest-chance entry from the climate's
+    /// weather table. Used to seed `SkyParamsRes` / `WeatherDataRes` /
+    /// `CellLightingRes` on the first cell load; subsequent loads
+    /// reuse the same resources via the streaming control loop.
+    pub default_weather: Option<byroredux_plugin::esm::records::WeatherRecord>,
+}
+
+/// Per-cell load result emitted by [`load_one_exterior_cell`]. Each
+/// cell gets its own `cell_root` so streaming can unload cells
+/// independently as the player moves.
+#[allow(dead_code)] // `cell_root` consumed by streaming `WorldStreamingState` (M40 Phase 1a)
+pub struct OneCellLoadInfo {
+    pub cell_root: EntityId,
+    pub entity_count: usize,
+    pub mesh_count: usize,
+    /// Mid-cell terrain ground point in Y-up world space (only used by
+    /// the bulk loader to seat the initial camera).
+    pub center: Vec3,
+    pub gx: i32,
+    pub gy: i32,
+}
+
+/// Build the once-per-session context for exterior streaming.
+///
+/// Parses every plugin in load order, picks the worldspace using the
+/// same priority chain the bulk loader has used since #444 (override →
+/// preferred game-default → grid-coord match → max cells), and
+/// resolves the worldspace's climate + default weather.
+///
+/// `center_x` / `center_y` / `radius` are used only by the
+/// grid-coord-match step in the worldspace selector — pass the
+/// initial player grid coords plus an estimate of the eventual stream
+/// radius (e.g. 3) so the worldspace lookup picks the worldspace that
+/// actually contains the player.
+pub fn build_exterior_world_context(
     masters: &[String],
     esm_path: &str,
     center_x: i32,
     center_y: i32,
     radius: i32,
-    world: &mut World,
-    ctx: &mut VulkanContext,
-    tex_provider: &TextureProvider,
-    mat_provider: Option<&mut MaterialProvider>,
     wrld_override: Option<&str>,
-) -> anyhow::Result<CellLoadResult> {
-    // See `load_cell` — same pattern for unload tracking (#372).
-    let first_entity = world.next_entity_id();
-
+) -> anyhow::Result<ExteriorWorldContext> {
     // Parse all plugins in load order with FormID remap. Empty
     // `masters` reduces to single-plugin behaviour (the remap's
     // self-reference path is a no-op).
@@ -475,7 +519,7 @@ pub fn load_exterior_cells_with_masters(
     // Pre-fix the Wasteland EDID was missing, so `--esm Fallout3.esm
     // --grid 0,0` landed on the max-cells fallback and silently picked
     // the wrong worldspace when any DLC master added its own. See #444.
-    let wrld_key = {
+    let worldspace_key = {
         let override_match = wrld_override.and_then(|name| {
             let lower = name.to_ascii_lowercase();
             index
@@ -522,174 +566,309 @@ pub fn load_exterior_cells_with_masters(
                     .max_by_key(|(_, cells)| cells.len())
                     .map(|(name, _)| name.clone())
             })
+            .ok_or_else(|| anyhow::anyhow!("No worldspace found in plugin set"))?
     };
 
-    let wrld_name = wrld_key.as_deref().unwrap_or("(none)");
     log::info!(
-        "Loading exterior cells around ({},{}) radius {} from worldspace '{}'",
+        "Exterior world context built: worldspace '{}' (target ({},{}) ±{})",
+        worldspace_key,
         center_x,
         center_y,
         radius,
-        wrld_name,
     );
 
-    let wrld_cells = match &wrld_key {
-        Some(key) => index.exterior_cells.get(key),
-        None => None,
-    };
-
-    // Collect all references from cells in the grid and spawn terrain meshes.
-    let mut all_refs = Vec::new();
-    let mut cells_loaded = 0u32;
-    let mut terrain_entities = 0usize;
-    // Accumulator for terrain BLAS specs across the whole grid — built in
-    // one batched submission below instead of N one-shots (#382). On a
-    // 7×7 load that's ~49 GPU submits collapsed into 1.
-    let mut terrain_blas_specs: Vec<(u32, u32, u32)> = Vec::new();
-    if let Some(cells_map) = wrld_cells {
-        for gx in (center_x - radius)..=(center_x + radius) {
-            for gy in (center_y - radius)..=(center_y + radius) {
-                if let Some(cell) = cells_map.get(&(gx, gy)) {
-                    let has_land = cell.landscape.is_some();
-                    log::info!(
-                        "  Cell ({},{}) '{}': {} references{}",
-                        gx,
-                        gy,
-                        cell.editor_id,
-                        cell.references.len(),
-                        if has_land { " + LAND" } else { "" },
-                    );
-                    all_refs.extend_from_slice(&cell.references);
-                    // Spawn terrain mesh from LAND heightmap.
-                    if let Some(ref land) = cell.landscape {
-                        if let Some(count) = terrain::spawn_terrain_mesh(
-                            world,
-                            ctx,
-                            tex_provider,
-                            &index.landscape_textures,
-                            gx,
-                            gy,
-                            land,
-                            &mut terrain_blas_specs,
-                        ) {
-                            terrain_entities += count;
-                        }
-                    }
-                    cells_loaded += 1;
-                }
-            }
-        }
-    }
-
-    // Single batched terrain BLAS build for the entire grid (#382).
-    // Done before `load_references` so terrain appears in the TLAS for
-    // the first frame; clutter BLAS still builds per-spawn inside
-    // `spawn_placed_instances` (consolidating that path is a separate
-    // follow-up — see audit's "AND clutter" extension).
-    if !terrain_blas_specs.is_empty() {
-        let built = ctx.build_blas_batched(&terrain_blas_specs);
-        log::info!(
-            "Terrain BLAS batch: {built}/{} tiles (one submit, was {} submits pre-#382)",
-            terrain_blas_specs.len(),
-            terrain_blas_specs.len()
-        );
-    }
-
-    let grid_size = (radius * 2 + 1) as u32;
-    log::info!(
-        "Found {}/{} cells in {}x{} grid ({} terrain meshes)",
-        cells_loaded,
-        grid_size * grid_size,
-        grid_size,
-        grid_size,
-        terrain_entities,
-    );
-
-    let label = format!("exterior({},{})", center_x, center_y);
-    let result = load_references(
-        &all_refs,
-        index,
-        world,
-        ctx,
-        tex_provider,
-        mat_provider,
-        &label,
-        &load_order,
-    );
-
-    // Camera spawn: use terrain height at the center cell's midpoint
-    // so the camera starts at ground level instead of inside the terrain.
-    let spawn_center = if let Some(cells_map) = wrld_cells {
-        if let Some(cell) = cells_map.get(&(center_x, center_y)) {
-            if let Some(ref land) = cell.landscape {
-                // Sample the center of the 33×33 grid (vertex 16,16).
-                let mid_height = land.heights[16 * 33 + 16];
-                let world_x = center_x as f32 * 4096.0 + 16.0 * 128.0;
-                let world_y = center_y as f32 * 4096.0 + 16.0 * 128.0;
-                // Z-up → Y-up: (x, height, -y), plus 200 units above ground.
-                Vec3::new(world_x, mid_height + 200.0, -world_y)
-            } else {
-                result.center
-            }
-        } else {
-            result.center
-        }
-    } else {
-        result.center
-    };
-
-    // Resolve weather + climate: WRLD → CLMT → WTHR.
-    // The climate record carries per-worldspace TNAM sunrise/sunset
-    // hours so the time-of-day interpolator runs on the right clock.
-    // See #463.
-    let climate = wrld_key.as_deref().and_then(|wrld_name_lc| {
-        let climate_fid = index.worldspace_climates.get(wrld_name_lc)?;
-        let climate = record_index.climates.get(climate_fid)?.clone();
-        log::info!(
-            "Worldspace '{}' climate '{}' ({:08X}): {} weathers, \
-             sunrise {:.2}–{:.2}h, sunset {:.2}–{:.2}h",
-            wrld_name_lc,
-            climate.editor_id,
-            climate_fid,
-            climate.weathers.len(),
-            climate.sunrise_begin as f32 / 6.0,
-            climate.sunrise_end as f32 / 6.0,
-            climate.sunset_begin as f32 / 6.0,
-            climate.sunset_end as f32 / 6.0,
-        );
-        Some(climate)
-    });
-    let weather = climate.as_ref().and_then(|climate| {
-        // Pick the weather with the highest chance (most common / default).
-        // Skip entries with negative chance — mods use -1 as a sentinel
-        // or subtractive weight, not a valid selection score. See #476.
+    // Resolve weather + climate: WRLD → CLMT → WTHR. Climate carries
+    // per-worldspace TNAM sunrise/sunset hours so the TOD interpolator
+    // runs on the right clock (#463). Default weather is the
+    // highest-chance entry; mods use -1 as a sentinel / subtractive
+    // weight (#476).
+    let climate = record_index
+        .cells
+        .worldspace_climates
+        .get(&worldspace_key)
+        .and_then(|fid| record_index.climates.get(fid).cloned())
+        .map(|climate| {
+            log::info!(
+                "Worldspace '{}' climate '{}' ({:08X}): {} weathers, \
+                 sunrise {:.2}–{:.2}h, sunset {:.2}–{:.2}h",
+                worldspace_key,
+                climate.editor_id,
+                climate.form_id,
+                climate.weathers.len(),
+                climate.sunrise_begin as f32 / 6.0,
+                climate.sunrise_end as f32 / 6.0,
+                climate.sunset_begin as f32 / 6.0,
+                climate.sunset_end as f32 / 6.0,
+            );
+            climate
+        });
+    let default_weather = climate.as_ref().and_then(|climate| {
         let best = climate
             .weathers
             .iter()
             .filter(|w| w.chance >= 0)
             .max_by_key(|w| w.chance)?;
-        let wthr = record_index.weathers.get(&best.weather_form_id)?;
+        let wthr = record_index.weathers.get(&best.weather_form_id)?.clone();
         log::info!(
             "Default weather: '{}' ({:08X}, chance {})",
             wthr.editor_id,
             wthr.form_id,
             best.chance,
         );
-        Some(wthr.clone())
+        Some(wthr)
     });
+
+    Ok(ExteriorWorldContext {
+        record_index: Arc::new(record_index),
+        load_order: Arc::new(load_order),
+        worldspace_key,
+        climate,
+        default_weather,
+    })
+}
+
+/// Load a single exterior cell at `(gx, gy)`.
+///
+/// Stamps its own `cell_root` so the streaming system can unload it
+/// independently when the player moves out of range. Returns `None`
+/// when the cell doesn't exist at that coord in the worldspace
+/// (off-map / hole in the grid — common at exterior edges).
+///
+/// `terrain_blas_accumulator`:
+///   * `Some(&mut acc)` — caller (bulk loader) collects BLAS specs
+///     across all cells and submits one batched build at the end (the
+///     #382 optimization for the 49-cell `--grid` initial load).
+///   * `None` — submit BLAS immediately (one cell, one submit). The
+///     streaming system passes `None` because cells stream in one at
+///     a time; the per-cell submit overhead is negligible compared to
+///     the parse cost the worker just paid.
+pub fn load_one_exterior_cell(
+    wctx: &ExteriorWorldContext,
+    gx: i32,
+    gy: i32,
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+    terrain_blas_accumulator: Option<&mut Vec<(u32, u32, u32)>>,
+) -> anyhow::Result<Option<OneCellLoadInfo>> {
+    let index = &wctx.record_index.cells;
+    let Some(cells_map) = index.exterior_cells.get(&wctx.worldspace_key) else {
+        return Ok(None);
+    };
+    let Some(cell) = cells_map.get(&(gx, gy)) else {
+        return Ok(None);
+    };
+
+    let first_entity = world.next_entity_id();
+    let has_land = cell.landscape.is_some();
+    log::info!(
+        "  Cell ({},{}) '{}': {} references{}",
+        gx,
+        gy,
+        cell.editor_id,
+        cell.references.len(),
+        if has_land { " + LAND" } else { "" },
+    );
+
+    // Terrain mesh from LAND heightmap. Either accumulate the BLAS
+    // spec for caller's batched build (bulk loader) or build it
+    // ourselves (streaming).
+    let mut terrain_entities = 0usize;
+    let mut local_blas: Vec<(u32, u32, u32)> = Vec::new();
+    let blas_sink: &mut Vec<(u32, u32, u32)> = match terrain_blas_accumulator {
+        Some(acc) => acc,
+        None => &mut local_blas,
+    };
+    if let Some(ref land) = cell.landscape {
+        if let Some(count) = terrain::spawn_terrain_mesh(
+            world,
+            ctx,
+            tex_provider,
+            &index.landscape_textures,
+            gx,
+            gy,
+            land,
+            blas_sink,
+        ) {
+            terrain_entities += count;
+        }
+    }
+    // Streaming path: submit our own BLAS build now (one mesh, one submit).
+    if !local_blas.is_empty() {
+        let built = ctx.build_blas_batched(&local_blas);
+        log::info!(
+            "  Cell ({},{}) terrain BLAS: {built}/{} tiles",
+            gx,
+            gy,
+            local_blas.len(),
+        );
+    }
+
+    // Spawn placed references. Pre-#M40 every grid load went through a
+    // single `load_references` over all 49 cells' refs; per-cell calls
+    // share the process-lifetime `NifImportRegistry` so cross-cell mesh
+    // re-use still hits the cache (#381).
+    let label = format!("exterior({},{})", gx, gy);
+    let result = load_references(
+        &cell.references,
+        index,
+        world,
+        ctx,
+        tex_provider,
+        mat_provider,
+        &label,
+        wctx.load_order.as_ref(),
+    );
+
+    // Mid-cell terrain ground point — only meaningful for the
+    // initial-load camera-positioning path used by the bulk loader.
+    let center = if let Some(ref land) = cell.landscape {
+        let mid_height = land.heights[16 * 33 + 16];
+        let world_x = gx as f32 * 4096.0 + 16.0 * 128.0;
+        let world_y = gy as f32 * 4096.0 + 16.0 * 128.0;
+        // Z-up → Y-up: (x, height, -y), plus 200 units above ground.
+        Vec3::new(world_x, mid_height + 200.0, -world_y)
+    } else {
+        result.center
+    };
 
     let last_entity = world.next_entity_id();
     let cell_root = world.spawn();
     stamp_cell_root(world, cell_root, first_entity, last_entity);
 
-    Ok(CellLoadResult {
-        cell_name: format!("{} ({},{})", wrld_name, center_x, center_y),
+    Ok(Some(OneCellLoadInfo {
+        cell_root,
         entity_count: result.entity_count + terrain_entities,
         mesh_count: result.mesh_count + terrain_entities,
+        center,
+        gx,
+        gy,
+    }))
+}
+
+/// Load a (`radius` × 2 + 1)² grid of exterior cells at once. Thin
+/// wrapper around [`build_exterior_world_context`] +
+/// [`load_one_exterior_cell`] that preserves the pre-#M40
+/// `--grid` CLI behaviour: build context once, walk the grid with a
+/// shared BLAS accumulator (preserves the #382 batched submit), insert
+/// worldspace-wide sky/weather/climate resources, and return a
+/// `CellLoadResult` for the CLI's bench/log path.
+///
+/// The streaming system (M40 Phase 1a) calls
+/// `build_exterior_world_context` itself and drives
+/// `load_one_exterior_cell` per (gx, gy) on demand, bypassing this
+/// wrapper entirely.
+pub fn load_exterior_cells_with_masters(
+    masters: &[String],
+    esm_path: &str,
+    center_x: i32,
+    center_y: i32,
+    radius: i32,
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    mut mat_provider: Option<&mut MaterialProvider>,
+    wrld_override: Option<&str>,
+) -> anyhow::Result<CellLoadResult> {
+    let wctx = build_exterior_world_context(
+        masters,
+        esm_path,
+        center_x,
+        center_y,
+        radius,
+        wrld_override,
+    )?;
+
+    log::info!(
+        "Loading exterior cells around ({},{}) radius {} from worldspace '{}'",
+        center_x,
+        center_y,
+        radius,
+        wctx.worldspace_key,
+    );
+
+    let mut blas_accum: Vec<(u32, u32, u32)> = Vec::new();
+    let mut total_entities = 0usize;
+    let mut total_meshes = 0usize;
+    let mut cells_loaded = 0u32;
+    let mut representative_root: Option<EntityId> = None;
+    let mut spawn_center = Vec3::ZERO;
+    let mut representative_set = false;
+
+    for gx in (center_x - radius)..=(center_x + radius) {
+        for gy in (center_y - radius)..=(center_y + radius) {
+            let info = load_one_exterior_cell(
+                &wctx,
+                gx,
+                gy,
+                world,
+                ctx,
+                tex_provider,
+                mat_provider.as_deref_mut(),
+                Some(&mut blas_accum),
+            )?;
+            if let Some(info) = info {
+                total_entities += info.entity_count;
+                total_meshes += info.mesh_count;
+                cells_loaded += 1;
+                if (gx, gy) == (center_x, center_y) {
+                    spawn_center = info.center;
+                    representative_root = Some(info.cell_root);
+                    representative_set = true;
+                } else if representative_root.is_none() {
+                    representative_root = Some(info.cell_root);
+                    spawn_center = info.center;
+                }
+            }
+        }
+    }
+
+    // Single batched terrain BLAS build for the entire grid (#382).
+    // Streaming `load_one_exterior_cell` calls bypass this by submitting
+    // their own BLAS per cell (one cell at a time, no batching loss).
+    if !blas_accum.is_empty() {
+        let built = ctx.build_blas_batched(&blas_accum);
+        log::info!(
+            "Terrain BLAS batch: {built}/{} tiles (one submit, was {} submits pre-#382)",
+            blas_accum.len(),
+            blas_accum.len()
+        );
+    }
+
+    let grid_size = (radius * 2 + 1) as u32;
+    log::info!(
+        "Found {}/{} cells in {}x{} grid",
+        cells_loaded,
+        grid_size * grid_size,
+        grid_size,
+        grid_size,
+    );
+
+    if !representative_set {
+        log::warn!(
+            "Center cell ({},{}) not found in worldspace '{}'; using first available cell as bench anchor",
+            center_x,
+            center_y,
+            wctx.worldspace_key,
+        );
+    }
+    // CLI compat: every exterior load needs a cell_root for the
+    // CellLoadResult shape. If the entire grid was empty (no cells
+    // exist anywhere in the requested radius), spawn a sentinel root
+    // — the CLI doesn't unload exterior loads in practice (process
+    // exits at cell unload), and the streaming system uses its own
+    // per-(gx,gy) roots in WorldStreamingState.
+    let cell_root = representative_root.unwrap_or_else(|| world.spawn());
+
+    Ok(CellLoadResult {
+        cell_name: format!("{} ({},{})", wctx.worldspace_key, center_x, center_y),
+        entity_count: total_entities,
+        mesh_count: total_meshes,
         center: spawn_center,
         lighting: None,
-        weather,
-        climate,
+        weather: wctx.default_weather.clone(),
+        climate: wctx.climate.clone(),
         cell_root,
     })
 }
