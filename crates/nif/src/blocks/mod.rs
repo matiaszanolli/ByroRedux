@@ -444,10 +444,20 @@ pub fn parse_block(
         "BSConnectPoint::Children" => Ok(Box::new(BsConnectPointChildren::parse(stream)?)),
         // BSPackedCombined[Shared]GeomDataExtra — FO4+ distant-LOD
         // merged geometry batches attached to BSMultiBoundNode roots in
-        // cell LOD NIFs. The fixed-layout header is parsed; the
-        // variable-size per-object data + vertex/triangle pools are
-        // skipped via block_size until a downstream LOD importer picks
-        // them up (terrain streaming milestone). See issue #158.
+        // cell LOD NIFs. The full wire format is parsed (header +
+        // per-object combined data + vertex/triangle pools / shared
+        // geom-object refs); the trailing `block_size` skip below is a
+        // belt-and-braces pad for streams whose `num_data` is zero or
+        // whose author trimmed bytes after the documented payload. See
+        // issue #158 / #365 for the parser landing.
+        //
+        // Renderer-side consumption is still deferred to the M35
+        // terrain-streaming milestone — the import walker
+        // (`crates/nif/src/import/walk.rs`) detects a BSMultiBoundNode
+        // host whose extra_data carries one of these blocks and skips
+        // its subtree so the LOD NIF doesn't contribute zero-mesh
+        // ImportedNode entries to the cell's ECS until the LOD
+        // importer lands. See SK-D4-04 / #564.
         "BSPackedCombinedGeomDataExtra" | "BSPackedCombinedSharedGeomDataExtra" => {
             let start = stream.position();
             let type_name_static: &'static str = match type_name {

@@ -20,8 +20,31 @@ use super::{
     ImportedCollision, ImportedLight, ImportedMesh, ImportedNode, ImportedScene, LightKind,
     TreeBones,
 };
+use crate::blocks::extra_data::BsPackedCombinedGeomDataExtra;
 use crate::blocks::node::BsRangeKind;
 use byroredux_core::string::StringPool;
+
+/// SK-D4-04 / #564 — return `true` when any of `node`'s extra_data refs
+/// resolves to a `BSPackedCombinedGeomDataExtra` (or its Shared
+/// variant). Used by the walkers to skip the host BSMultiBoundNode
+/// subtree until the M35 terrain-streaming milestone consumes the
+/// packed-extra payload.
+fn has_packed_combined_geom_extra(scene: &NifScene, node: &NiNode) -> bool {
+    for &ref_idx in &node.av.net.extra_data_refs {
+        let Some(idx) = ref_idx.index() else { continue };
+        let Some(block) = scene.blocks.get(idx) else {
+            continue;
+        };
+        if block
+            .as_any()
+            .downcast_ref::<BsPackedCombinedGeomDataExtra>()
+            .is_some()
+        {
+            return true;
+        }
+    }
+    false
+}
 
 /// Downcast a `NiObject` to its underlying `NiNode` representation,
 /// unwrapping any known subclass that wraps a `base: NiNode` (directly
@@ -183,6 +206,23 @@ pub(super) fn walk_node_hierarchical(
     // mid-scope plumbing.
     if let Some(mbn) = block.as_any().downcast_ref::<BsMultiBoundNode>() {
         if mbn.culling_mode == 2 || mbn.culling_mode == 3 {
+            return;
+        }
+        // SK-D4-04 / #564 — FO4+ distant-LOD merged-geometry hosts.
+        // A BSMultiBoundNode whose extra_data carries a
+        // BSPackedCombinedGeomDataExtra (or its Shared variant) is a
+        // dedicated LOD-batch root: the geometry lives entirely in
+        // the packed-extra block and the M35 terrain-streaming
+        // milestone owns its consumption. Walking the subtree
+        // produces empty `ImportedNode` entries that contribute no
+        // meshes today — skip the host so the cell's ECS doesn't
+        // pick up dead nodes. The packed-extra block stays available
+        // on the scene's block table for the future LOD importer.
+        if has_packed_combined_geom_extra(scene, &mbn.base) {
+            log::debug!(
+                "Skipping BSMultiBoundNode LOD-batch subtree (SK-D4-04 / #564) — \
+                 packed-combined-geom consumer is M35 terrain-streaming work"
+            );
             return;
         }
     }
@@ -382,9 +422,18 @@ pub(super) fn walk_node_flat(
     }
 
     // BsMultiBoundNode culling-mode guard (#355, partial) — sibling of
-    // the hierarchical walker above.
+    // the hierarchical walker above. Same SK-D4-04 / #564 LOD-batch
+    // skip applies on the flat path so loose-NIF imports (`scene.rs`)
+    // honor the M35 deferral the same way cell-loader imports do.
     if let Some(mbn) = block.as_any().downcast_ref::<BsMultiBoundNode>() {
         if mbn.culling_mode == 2 || mbn.culling_mode == 3 {
+            return;
+        }
+        if has_packed_combined_geom_extra(scene, &mbn.base) {
+            log::debug!(
+                "Skipping BSMultiBoundNode LOD-batch subtree on flat walk \
+                 (SK-D4-04 / #564) — packed-combined-geom consumer is M35"
+            );
             return;
         }
     }

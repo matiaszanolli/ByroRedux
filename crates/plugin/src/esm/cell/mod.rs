@@ -164,6 +164,15 @@ pub struct CellData {
     /// Regions drive ambient SFX, weather overrides, and encounter
     /// tables in worldspace cells.
     pub regions: Vec<u32>,
+    /// Lighting template (LTMP, FormID — references an LGTM record).
+    /// Skyrim+ cells that omit XCLL inherit lighting from this template
+    /// (Solitude inn cluster, Dragonsreach throne room, Markarth cells
+    /// all rely on this fallback). Pre-#566 the link was unparsed and
+    /// every template-only cell rendered with the engine default
+    /// ambient. The cell loader resolves through `EsmIndex.lighting_templates`
+    /// when `lighting.is_none() && lighting_template_form.is_some()`.
+    /// See SK-D6-02.
+    pub lighting_template_form: Option<u32>,
     /// Cell ownership tuple (XOWN / XRNK / XGLB sub-records). When
     /// `Some`, a stealing-detection / property-crime gameplay layer
     /// can resolve the owner (NPC_ or FACT FormID), the minimum

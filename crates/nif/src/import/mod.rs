@@ -1885,4 +1885,104 @@ mod tests {
         let mut pool = StringPool::new(); let imported = import_nif_scene(&scene, &mut pool);
         assert!(imported.nodes[0].tree_bones.is_none());
     }
+
+    /// SK-D4-04 / #564 — distant-LOD `BSMultiBoundNode` hosts whose
+    /// extra_data carries a `BSPackedCombinedGeomDataExtra` are
+    /// skipped wholesale. The packed-extra block is renderer-side
+    /// deferred (M35 terrain-streaming) and the host subtree carries
+    /// no other geometry, so walking it would only produce empty
+    /// `ImportedNode` entries.
+    #[test]
+    fn bs_multi_bound_node_with_packed_geom_extra_subtree_is_skipped() {
+        use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+        use crate::blocks::extra_data::{
+            BsPackedCombinedGeomDataExtra, BsPackedCombinedPayload,
+        };
+        use crate::blocks::node::BsMultiBoundNode;
+
+        // [0] BSMultiBoundNode root with extra_data → block 1.
+        // [1] BSPackedCombinedGeomDataExtra (the LOD batch).
+        let packed = BsPackedCombinedGeomDataExtra {
+            type_name: "BSPackedCombinedGeomDataExtra",
+            name: None,
+            vertex_desc: 0,
+            num_vertices: 0,
+            num_triangles: 0,
+            unknown_flags_1: 0,
+            unknown_flags_2: 0,
+            num_data: 0,
+            payload: BsPackedCombinedPayload::Baked(Vec::new()),
+        };
+        let host = BsMultiBoundNode {
+            base: crate::blocks::node::NiNode {
+                av: NiAVObjectData {
+                    net: NiObjectNETData {
+                        name: Some(std::sync::Arc::from("LODHost")),
+                        extra_data_refs: vec![BlockRef(1)],
+                        controller_ref: BlockRef::NULL,
+                    },
+                    flags: 0,
+                    transform: NiTransform::default(),
+                    properties: Vec::new(),
+                    collision_ref: BlockRef::NULL,
+                },
+                children: Vec::new(),
+                effects: Vec::new(),
+            },
+            multi_bound_ref: BlockRef::NULL,
+            culling_mode: 0,
+        };
+        let scene = scene_from_blocks(vec![Box::new(host), Box::new(packed)]);
+        let mut pool = StringPool::new();
+        let imported = import_nif_scene(&scene, &mut pool);
+
+        assert!(
+            imported.nodes.is_empty(),
+            "LOD-batch host must be skipped — no ImportedNode entries should leak"
+        );
+        assert!(imported.meshes.is_empty());
+    }
+
+    /// Sanity: a plain `BSMultiBoundNode` with no packed-extra
+    /// extra_data still produces an `ImportedNode` so non-LOD scenes
+    /// (Dragonsreach interior, College of Winterhold) keep working.
+    /// Pre-#564 the skip applied unconditionally, which would have
+    /// broken these.
+    #[test]
+    fn plain_bs_multi_bound_node_without_packed_geom_extra_still_imports() {
+        use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+        use crate::blocks::node::BsMultiBoundNode;
+
+        let host = BsMultiBoundNode {
+            base: crate::blocks::node::NiNode {
+                av: NiAVObjectData {
+                    net: NiObjectNETData {
+                        name: Some(std::sync::Arc::from("DragonsreachInterior")),
+                        // No extra_data_refs — the packed-extra detector
+                        // returns false and the walker falls through to
+                        // the normal NiNode path.
+                        extra_data_refs: Vec::new(),
+                        controller_ref: BlockRef::NULL,
+                    },
+                    flags: 0,
+                    transform: NiTransform::default(),
+                    properties: Vec::new(),
+                    collision_ref: BlockRef::NULL,
+                },
+                children: Vec::new(),
+                effects: Vec::new(),
+            },
+            multi_bound_ref: BlockRef::NULL,
+            culling_mode: 0,
+        };
+        let scene = scene_from_blocks(vec![Box::new(host)]);
+        let mut pool = StringPool::new();
+        let imported = import_nif_scene(&scene, &mut pool);
+
+        assert_eq!(
+            imported.nodes.len(),
+            1,
+            "Plain BSMultiBoundNode (no packed-extra) must still produce a node"
+        );
+    }
 }

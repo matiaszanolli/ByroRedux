@@ -57,6 +57,11 @@ pub(super) fn parse_cell_group(
                 let mut music_type_form: Option<u32> = None;
                 let mut location_form: Option<u32> = None;
                 let mut regions: Vec<u32> = Vec::new();
+                // SK-D6-02 / #566 — LTMP lighting-template FormID. Skyrim+
+                // cells that omit XCLL fall back to this LGTM reference;
+                // pre-#566 the link was dropped on the catch-all `_` arm
+                // and the cell rendered with the engine default ambient.
+                let mut lighting_template_form: Option<u32> = None;
                 // #692 — XOWN / XRNK / XGLB ownership tuple. All three
                 // sub-records optional; cell ends up with `Some` only
                 // when at least XOWN is present. XRNK and XGLB without
@@ -84,6 +89,14 @@ pub(super) fn parse_cell_group(
                         // quest system had no per-cell context.
                         b"XCIM" => image_space_form = read_form_id(&sub.data),
                         b"XCWT" => water_type_form = read_form_id(&sub.data),
+                        // LTMP — lighting-template FormID (SK-D6-02 / #566).
+                        // Same shape as the other 4-byte FormID slots; the
+                        // cell loader walks `EsmIndex.lighting_templates`
+                        // when XCLL is absent so vanilla Skyrim interior
+                        // cells (Solitude inn cluster, Dragonsreach
+                        // throne room, Markarth cells) render with the
+                        // template ambient instead of the engine default.
+                        b"LTMP" => lighting_template_form = read_form_id(&sub.data),
                         b"XCAS" => acoustic_space_form = read_form_id(&sub.data),
                         b"XCMO" => music_type_form = read_form_id(&sub.data),
                         b"XLCN" => location_form = read_form_id(&sub.data),
@@ -224,6 +237,7 @@ pub(super) fn parse_cell_group(
                             music_type_form,
                             location_form,
                             regions: regions.clone(),
+                            lighting_template_form,
                             ownership,
                         },
                     );

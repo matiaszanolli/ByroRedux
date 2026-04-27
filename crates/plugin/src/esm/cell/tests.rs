@@ -2350,6 +2350,7 @@ fn make_interior_cell(form_id: u32, edid: &str) -> CellData {
         music_type_form: None,
         location_form: None,
         regions: Vec::new(),
+        lighting_template_form: None,
         ownership: None,
     }
 }

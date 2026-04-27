@@ -547,52 +547,12 @@ fn build_remap_for_plugin(
 
 /// Parse a sequence of plugins in load order (masters first, main
 /// plugin last) and return a single merged `EsmCellIndex` plus the
-/// load-order plugin basenames.
-///
-/// Each plugin gets a [`FormIdRemap`] built against the global load
-/// order so cross-plugin REFRs land in the merged maps under their
-/// global FormIDs. Last-write-wins on key collisions per
-/// [`EsmCellIndex::merge_from`] — a DLC overriding a master cell or
-/// static record wins. See M46.0 / #561.
-fn parse_cell_indexes_in_load_order(
-    plugin_paths: &[&str],
-) -> anyhow::Result<(esm::cell::EsmCellIndex, Vec<String>)> {
-    let load_order: Vec<String> = plugin_paths.iter().map(|p| plugin_basename_lc(p)).collect();
-
-    // Detect duplicates in the supplied load order — an easy CLI
-    // misconfig that would silently make the second copy override
-    // the first with itself.
-    {
-        let mut seen = std::collections::HashSet::with_capacity(load_order.len());
-        for name in &load_order {
-            if !seen.insert(name) {
-                return Err(anyhow::anyhow!(
-                    "Plugin '{}' appears twice in the load order — \
-                     a plugin can only be passed once",
-                    name
-                ));
-            }
-        }
-    }
-
-    let mut merged = esm::cell::EsmCellIndex::default();
-    for (idx, path) in plugin_paths.iter().enumerate() {
-        let bytes = std::fs::read(path)
-            .map_err(|e| anyhow::anyhow!("Failed to read ESM '{}': {}", path, e))?;
-        log::info!(
-            "Parsing plugin {}/{} '{}' ({:.1} MB) at load-order index {}…",
-            idx + 1,
-            plugin_paths.len(),
-            path,
-            bytes.len() as f64 / 1_048_576.0,
-            idx,
-        );
-        let remap = build_remap_for_plugin(path, &bytes, idx, &load_order)?;
-        let plugin_cells = esm::cell::parse_esm_cells_with_load_order(&bytes, Some(remap))?;
-        merged.merge_from(plugin_cells);
-    }
-    Ok((merged, load_order))
-}
+// `parse_cell_indexes_in_load_order` (cell-only loader) was retired in
+// SK-D6-02 / #566 — interior cell loads now route through
+// `parse_record_indexes_in_load_order` so the LGTM lighting-template
+// fallback can resolve through `EsmIndex.lighting_templates`. Keeping
+// the cell-only helper would have duplicated the load-order +
+// duplicate-detection logic and stayed dead-code-only after the switch.
 
 /// Resolve a FormID's mod-index byte to the owning plugin's basename.
 /// Used by the loud-fail diagnostic when a REFR's `base_form_id` is
@@ -687,13 +647,21 @@ pub fn load_cell_with_masters(
         .map(|s| s.as_str())
         .chain(std::iter::once(esm_path))
         .collect();
-    let (index, load_order) = parse_cell_indexes_in_load_order(&plugin_paths)?;
+    // SK-D6-02 / #566 — use the full-record parser so the LGTM
+    // lighting-template fallback can resolve through
+    // `EsmIndex.lighting_templates`. Pre-#566 this path only loaded the
+    // cell index, which couldn't see LGTM records and silently dropped
+    // the XCLL-absent fallback. The cost is bounded: ~1 s extra to
+    // parse the surrounding categories on FNV / Skyrim, paid once per
+    // cell load.
+    let (index, load_order) = parse_record_indexes_in_load_order(&plugin_paths)?;
 
     // 2. Find the cell.
     let cell_key = cell_editor_id.to_ascii_lowercase();
-    let cell = index.cells.get(&cell_key).ok_or_else(|| {
+    let cell = index.cells.cells.get(&cell_key).ok_or_else(|| {
         // List available cells for debugging.
         let available: Vec<&str> = index
+            .cells
             .cells
             .values()
             .take(20)
@@ -702,7 +670,7 @@ pub fn load_cell_with_masters(
         anyhow::anyhow!(
             "Cell '{}' not found. {} interior cells available. Examples: {:?}",
             cell_editor_id,
-            index.cells.len(),
+            index.cells.cells.len(),
             available,
         )
     })?;
@@ -717,7 +685,7 @@ pub fn load_cell_with_masters(
     // 3. Load placed references.
     let result = load_references(
         &cell.references,
-        &index,
+        &index.cells,
         world,
         ctx,
         tex_provider,
@@ -726,7 +694,14 @@ pub fn load_cell_with_masters(
         &load_order,
     );
 
-    log::info!("Cell lighting: {:?}", cell.lighting);
+    // SK-D6-02 / #566 — LGTM lighting-template fallback. Vanilla
+    // Skyrim ships interior cells (Solitude inn cluster, Dragonsreach
+    // throne room, Markarth cells) that omit XCLL and rely on this
+    // template chain. Pre-#566 the LTMP FormID was unparsed, so the
+    // fallback never fired and these cells rendered with the engine
+    // default ambient.
+    let resolved_lighting = resolve_cell_lighting(cell, &index);
+    log::info!("Cell lighting: {:?}", resolved_lighting);
 
     // Reserve a dedicated root entity and stamp CellRoot on every
     // entity in [first_entity, last_entity). The stamp is sparse-set
@@ -741,10 +716,63 @@ pub fn load_cell_with_masters(
         entity_count: result.entity_count,
         mesh_count: result.mesh_count,
         center: result.center,
-        lighting: cell.lighting.clone(),
+        lighting: resolved_lighting,
         weather: None,
         climate: None,
         cell_root,
+    })
+}
+
+/// Resolve a cell's lighting against the ESM index, applying the
+/// XCLL → LTMP → engine-default fallback chain (SK-D6-02 / #566).
+///
+/// 1. **Explicit XCLL wins.** Every Skyrim+/FNV/FO3/Oblivion CELL that
+///    authors `XCLL` returns its parsed `CellLighting` verbatim — the
+///    template path is never consulted.
+/// 2. **LGTM template synthesises a CellLighting.** When the cell has
+///    no XCLL but its `LTMP` resolves through `index.lighting_templates`,
+///    the LgtmRecord's ambient / directional / fog scalars project into
+///    a fresh `CellLighting`. Fields the LGTM stub doesn't carry
+///    (directional_rotation, ambient cube, specular) stay at their
+///    pre-XCLL defaults — directional_rotation `[0, 0]` matches a
+///    sun-from-+X cell origin and the Skyrim-extended optionals stay
+///    `None` (the renderer falls back to legacy single-color ambient
+///    when they're absent, the same path FO3/FNV cells take).
+/// 3. **No XCLL and no resolvable LGTM** → `None` (engine default).
+pub(crate) fn resolve_cell_lighting(
+    cell: &esm::cell::CellData,
+    index: &esm::records::EsmIndex,
+) -> Option<esm::cell::CellLighting> {
+    if let Some(lit) = cell.lighting.clone() {
+        return Some(lit);
+    }
+    let template_form = cell.lighting_template_form?;
+    let template = index.lighting_templates.get(&template_form)?;
+    Some(esm::cell::CellLighting {
+        ambient: template.ambient,
+        directional_color: template.directional,
+        // LGTM doesn't carry directional rotation. Sun-from-+X origin
+        // is what FO3/FNV cells defaulted to before #379 added explicit
+        // rotation parsing — same fallback shape here.
+        directional_rotation: [0.0, 0.0],
+        fog_color: template.fog_color,
+        fog_near: template.fog_near,
+        fog_far: template.fog_far,
+        directional_fade: template.directional_fade,
+        fog_clip: template.fog_clip,
+        fog_power: template.fog_power,
+        // Skyrim extended fields (ambient cube, specular, light fade,
+        // fog far color) ride on the 92-byte XCLL only. The current
+        // LgtmRecord stub doesn't extract them; future LGTM expansion
+        // can fill these in without touching the fallback's call shape.
+        fog_far_color: None,
+        fog_max: None,
+        light_fade_begin: None,
+        light_fade_end: None,
+        directional_ambient: None,
+        specular_color: None,
+        specular_alpha: None,
+        fresnel_power: None,
     })
 }
 
@@ -2825,3 +2853,7 @@ mod sky_params_cleanup_tests;
 #[cfg(test)]
 #[path = "cell_loader_nif_light_spawn_gate_tests.rs"]
 mod nif_light_spawn_gate_tests;
+
+#[cfg(test)]
+#[path = "cell_loader_lgtm_fallback_tests.rs"]
+mod lgtm_fallback_tests;

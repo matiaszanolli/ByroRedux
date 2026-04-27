@@ -129,6 +129,10 @@ pub(super) fn parse_wrld_children(
                 let mut music_type_form: Option<u32> = None;
                 let mut location_form: Option<u32> = None;
                 let mut regions: Vec<u32> = Vec::new();
+                // SK-D6-02 / #566 — exterior cells can also carry an
+                // LTMP lighting-template FormID. Same fallback semantics
+                // as interior cells: XCLL wins, LGTM fills in.
+                let mut lighting_template_form: Option<u32> = None;
                 // #692 — exterior CELL ownership (worldspace owner +
                 // faction-rank gate + global-var gate). Same layout as
                 // interior CELL above; cross-game.
@@ -171,6 +175,8 @@ pub(super) fn parse_wrld_children(
                         b"XCMO" => music_type_form = read_form_id(&sub.data),
                         b"XLCN" => location_form = read_form_id(&sub.data),
                         b"XCLR" => regions = read_form_id_array(&sub.data),
+                        // LTMP — lighting template FormID (SK-D6-02 / #566).
+                        b"LTMP" => lighting_template_form = read_form_id(&sub.data),
                         // #692 — exterior CELL ownership tuple (mirrors
                         // the interior walker arms above).
                         b"XOWN" if sub.data.len() >= 4 => {
@@ -214,6 +220,7 @@ pub(super) fn parse_wrld_children(
                             music_type_form,
                             location_form,
                             regions,
+                            lighting_template_form,
                             ownership,
                         },
                     );
