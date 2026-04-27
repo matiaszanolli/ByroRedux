@@ -86,6 +86,114 @@ fn failed_parse_entry_is_remembered_and_reused() {
     assert_eq!(reg.parsed_count, 0);
 }
 
+/// #635 / FNV-D3-05 — opt-in LRU eviction. With `max_entries == 0`
+/// (the default, mirrors pre-#635 behavior) the cache grows without
+/// bound and `evictions` stays at 0.
+#[test]
+fn unlimited_mode_never_evicts() {
+    let mut reg = NifImportRegistry::new();
+    assert_eq!(reg.max_entries(), 0, "default cap is unlimited");
+    for i in 0..100u32 {
+        reg.insert(format!("mesh_{i}.nif"), Some(dummy_cached()));
+    }
+    assert_eq!(reg.len(), 100);
+    assert_eq!(reg.evictions, 0);
+    assert_eq!(reg.parsed_count, 100);
+}
+
+/// #635 / FNV-D3-05 — explicit cap evicts the least-recently inserted
+/// entry once the cache exceeds the threshold. Mirrors a doorwalking
+/// session that touches more meshes than fit in the configured budget.
+#[test]
+fn lru_cap_evicts_least_recently_inserted_entry() {
+    let mut reg = NifImportRegistry {
+        cache: HashMap::new(),
+        access_tick: HashMap::new(),
+        next_tick: 0,
+        max_entries: 3,
+        hits: 0,
+        misses: 0,
+        parsed_count: 0,
+        failed_count: 0,
+        evictions: 0,
+    };
+    reg.insert("a.nif".into(), Some(dummy_cached()));
+    reg.insert("b.nif".into(), Some(dummy_cached()));
+    reg.insert("c.nif".into(), Some(dummy_cached()));
+    assert_eq!(reg.len(), 3);
+    assert_eq!(reg.evictions, 0);
+
+    // Fourth insert evicts the oldest entry (a.nif).
+    reg.insert("d.nif".into(), Some(dummy_cached()));
+    assert_eq!(reg.len(), 3);
+    assert_eq!(reg.evictions, 1);
+    assert!(!reg.cache.contains_key("a.nif"), "a.nif must have been evicted");
+    assert!(reg.cache.contains_key("b.nif"));
+    assert!(reg.cache.contains_key("c.nif"));
+    assert!(reg.cache.contains_key("d.nif"));
+    assert_eq!(reg.parsed_count, 3, "evicted slot drops parsed_count");
+}
+
+/// #635 / FNV-D3-05 — `touch_keys` bumps the access tick of hit keys
+/// so they survive an eviction sweep that would otherwise drop them.
+/// Without this, an LRU cap would degrade to "least-recently inserted",
+/// flushing out frequently-revisited shared meshes (door frames, sky
+/// planes) on every cell load — exactly the case M40 doorwalking
+/// can't afford.
+#[test]
+fn touch_keys_protects_recently_hit_entries_from_lru() {
+    let mut reg = NifImportRegistry {
+        cache: HashMap::new(),
+        access_tick: HashMap::new(),
+        next_tick: 0,
+        max_entries: 3,
+        hits: 0,
+        misses: 0,
+        parsed_count: 0,
+        failed_count: 0,
+        evictions: 0,
+    };
+    reg.insert("door.nif".into(), Some(dummy_cached())); // tick 0
+    reg.insert("wall.nif".into(), Some(dummy_cached())); // tick 1
+    reg.insert("sky.nif".into(), Some(dummy_cached()));  // tick 2
+
+    // Simulate a cell load that hits door.nif again — it must rise
+    // above wall.nif and sky.nif in LRU order.
+    reg.touch_keys(["door.nif"].iter().copied());
+
+    // Adding a fresh entry now evicts wall.nif (now the oldest tick).
+    reg.insert("table.nif".into(), Some(dummy_cached()));
+    assert_eq!(reg.evictions, 1);
+    assert!(reg.cache.contains_key("door.nif"), "touched key must survive");
+    assert!(!reg.cache.contains_key("wall.nif"), "untouched-and-oldest is the victim");
+    assert!(reg.cache.contains_key("sky.nif"));
+    assert!(reg.cache.contains_key("table.nif"));
+}
+
+/// #635 / FNV-D3-05 — `insert` keeps `parsed_count` and `failed_count`
+/// in lockstep with the cache contents across overwrites. A failed
+/// parse upgraded to a successful re-parse must move from the failed
+/// bucket to the parsed bucket without leaking a phantom entry in
+/// either counter.
+#[test]
+fn insert_overwrite_transitions_parsed_failed_counters() {
+    let mut reg = NifImportRegistry::new();
+    reg.insert("broken.nif".into(), None);
+    assert_eq!(reg.parsed_count, 0);
+    assert_eq!(reg.failed_count, 1);
+
+    // Replace with a successful parse.
+    reg.insert("broken.nif".into(), Some(dummy_cached()));
+    assert_eq!(reg.parsed_count, 1);
+    assert_eq!(reg.failed_count, 0);
+    assert_eq!(reg.len(), 1);
+
+    // Replace with a failed parse again (e.g., the BSA file rotted).
+    reg.insert("broken.nif".into(), None);
+    assert_eq!(reg.parsed_count, 0);
+    assert_eq!(reg.failed_count, 1);
+}
+
 #[test]
 fn batched_commit_matches_per_iteration_semantics() {
     // #523 regression — the batched commit path (`pending_new`

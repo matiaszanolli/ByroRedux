@@ -31,7 +31,7 @@ use crate::components::{
 /// one chair.nif) reuse the `Arc` instead of re-parsing. This cuts
 /// the parser warning spam down from O(N placements) to O(M unique
 /// meshes) and halves the parse CPU cost at load time.
-struct CachedNifImport {
+pub(crate) struct CachedNifImport {
     meshes: Vec<byroredux_nif::import::ImportedMesh>,
     collisions: Vec<byroredux_nif::import::ImportedCollision>,
     lights: Vec<byroredux_nif::import::ImportedLight>,
@@ -72,14 +72,27 @@ struct CachedNifImport {
 /// `None` entries record a model that failed to parse (or had zero
 /// useful geometry) so we don't re-try the parse on every placement.
 ///
-/// **Memory bound:** unbounded for now. A full FNV mesh-archive sweep
-/// would resolve into ~14k entries totaling a few hundred MB at most;
-/// the engine's other registries (texture, mesh) are similarly
-/// unbounded. An LRU cap is a follow-up if memory pressure justifies
-/// it, exposed via the `mesh.cache` debug command.
-#[derive(Default)]
+/// **Memory bound:** opt-in LRU via `BYRO_NIF_CACHE_MAX` env var (#635 /
+/// FNV-D3-05). Default is `0` = unlimited, matching pre-#635 behavior so
+/// short-session loads aren't penalized. Setting `BYRO_NIF_CACHE_MAX=N`
+/// caps the cache at N entries; the LRU victim is the entry with the
+/// smallest access tick (least-recently inserted *or* hit). Eviction
+/// counts surface in the `mesh.cache` debug command. M40 doorwalking is
+/// the first consumer that genuinely needs the cap — the engine's other
+/// registries (texture, mesh) are similarly unbounded today.
 pub(crate) struct NifImportRegistry {
     cache: HashMap<String, Option<Arc<CachedNifImport>>>,
+    /// Monotonic access tick per cached key. Bumped on every batched
+    /// touch (insert + hit-set commits at end-of-load). Larger value =
+    /// more recently accessed. Eviction picks the entry with the
+    /// smallest tick when `cache.len() > max_entries`.
+    access_tick: HashMap<String, u64>,
+    /// Next access tick value to assign. Wraps at u64::MAX (~10^19
+    /// touches — the cache will OOM long before this overflows).
+    next_tick: u64,
+    /// LRU cap; `0` = unlimited (default). Read once at construction
+    /// from the `BYRO_NIF_CACHE_MAX` env var.
+    max_entries: usize,
     /// Cumulative cache hits across the process lifetime.
     pub(crate) hits: u64,
     /// Cumulative cache misses (a parse was performed) across the
@@ -91,18 +104,47 @@ pub(crate) struct NifImportRegistry {
     pub(crate) parsed_count: u64,
     /// Failed-parse entries currently in the cache (`None` entries).
     pub(crate) failed_count: u64,
+    /// LRU evictions performed across the process lifetime. Stays at 0
+    /// when `max_entries == 0` (unlimited mode).
+    pub(crate) evictions: u64,
+}
+
+impl Default for NifImportRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl NifImportRegistry {
     pub(crate) fn new() -> Self {
-        Self::default()
+        // Resolve LRU cap at construction. `BYRO_NIF_CACHE_MAX=0` and a
+        // missing env var both map to "unlimited" — the eviction loop
+        // is gated on `max_entries > 0` so the unlimited path stays
+        // allocation-free aside from the access_tick HashMap inserts.
+        let max_entries = std::env::var("BYRO_NIF_CACHE_MAX")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0);
+        Self {
+            cache: HashMap::new(),
+            access_tick: HashMap::new(),
+            next_tick: 0,
+            max_entries,
+            hits: 0,
+            misses: 0,
+            parsed_count: 0,
+            failed_count: 0,
+            evictions: 0,
+        }
     }
 
-    /// Clear all entries (e.g. before a hard world reset). Counters are
-    /// preserved so the debug command can still display lifetime stats.
+    /// Clear all entries (e.g. before a hard world reset). Lifetime
+    /// counters (hits/misses/evictions) are preserved so the debug
+    /// command can still display historical activity.
     #[allow(dead_code)]
     pub(crate) fn clear(&mut self) {
         self.cache.clear();
+        self.access_tick.clear();
         self.parsed_count = 0;
         self.failed_count = 0;
     }
@@ -110,6 +152,11 @@ impl NifImportRegistry {
     /// Total number of cached entries (parsed + failed).
     pub(crate) fn len(&self) -> usize {
         self.cache.len()
+    }
+
+    /// Configured LRU cap (`0` = unlimited).
+    pub(crate) fn max_entries(&self) -> usize {
+        self.max_entries
     }
 
     /// Hit rate as a percentage `[0, 100]`. `0.0` when no lookups have
@@ -120,6 +167,89 @@ impl NifImportRegistry {
             0.0
         } else {
             100.0 * self.hits as f64 / total as f64
+        }
+    }
+
+    /// Look up `key` in the cache (read-only). Mirrors the previous
+    /// direct `cache.get` access; access-tick updates happen via
+    /// [`touch_keys`] in the batched end-of-load commit so the read
+    /// path can stay on a shared lock.
+    pub(crate) fn get(&self, key: &str) -> Option<&Option<Arc<CachedNifImport>>> {
+        self.cache.get(key)
+    }
+
+    /// Bump the access tick for every key in `keys` so freshly-hit
+    /// entries are protected from LRU eviction. Called from the
+    /// end-of-load batched commit (one write lock instead of one per
+    /// REFR — preserves #523's batching invariant).
+    pub(crate) fn touch_keys<'a, I: IntoIterator<Item = &'a str>>(&mut self, keys: I) {
+        for key in keys {
+            if self.access_tick.contains_key(key) {
+                let t = self.next_tick;
+                self.next_tick = self.next_tick.wrapping_add(1);
+                self.access_tick.insert(key.to_string(), t);
+            }
+        }
+    }
+
+    /// Insert (or overwrite) a cache entry, refresh its access tick,
+    /// adjust `parsed_count` / `failed_count` to reflect the post-insert
+    /// state, and evict LRU entries while `len > max_entries`. The
+    /// eviction loop is a no-op when `max_entries == 0` (unlimited
+    /// mode), so the default path stays O(1) per insert.
+    pub(crate) fn insert(&mut self, key: String, value: Option<Arc<CachedNifImport>>) {
+        // Adjust parsed/failed state so they stay in lockstep with
+        // `cache.values().filter(|v| v.is_some()).count()`.
+        match (self.cache.get(&key), &value) {
+            (None, Some(_)) => {
+                self.parsed_count = self.parsed_count.saturating_add(1);
+            }
+            (None, None) => {
+                self.failed_count = self.failed_count.saturating_add(1);
+            }
+            (Some(Some(_)), None) => {
+                self.parsed_count = self.parsed_count.saturating_sub(1);
+                self.failed_count = self.failed_count.saturating_add(1);
+            }
+            (Some(None), Some(_)) => {
+                self.failed_count = self.failed_count.saturating_sub(1);
+                self.parsed_count = self.parsed_count.saturating_add(1);
+            }
+            // Same-state overwrite: counts unchanged.
+            (Some(Some(_)), Some(_)) | (Some(None), None) => {}
+        }
+        self.cache.insert(key.clone(), value);
+        let t = self.next_tick;
+        self.next_tick = self.next_tick.wrapping_add(1);
+        self.access_tick.insert(key, t);
+
+        if self.max_entries > 0 {
+            while self.cache.len() > self.max_entries {
+                // O(N) sweep over access_tick. For caches sized in the
+                // low thousands this is ~50 ns × N. A min-heap would
+                // bookkeep on every touch for the unlimited path's
+                // benefit only.
+                let victim = self
+                    .access_tick
+                    .iter()
+                    .min_by_key(|(_, &tick)| tick)
+                    .map(|(k, _)| k.clone());
+                let Some(victim_key) = victim else {
+                    break;
+                };
+                let removed = self.cache.remove(&victim_key);
+                self.access_tick.remove(&victim_key);
+                match removed {
+                    Some(Some(_)) => {
+                        self.parsed_count = self.parsed_count.saturating_sub(1);
+                    }
+                    Some(None) => {
+                        self.failed_count = self.failed_count.saturating_sub(1);
+                    }
+                    None => {}
+                }
+                self.evictions = self.evictions.saturating_add(1);
+            }
         }
     }
 }
@@ -1339,13 +1469,16 @@ fn load_references(
     // #523.
     let mut this_call_hits: u64 = 0;
     let mut this_call_misses: u64 = 0;
-    let mut this_call_parsed: u64 = 0;
-    let mut this_call_failed: u64 = 0;
     // Parses performed during this call. Merged into the registry at
     // end-of-function. `pending_new.get` shadows the registry read so
     // subsequent iterations of the loop see this call's own parses
     // without re-entering the registry.
     let mut pending_new: HashMap<String, Option<Arc<CachedNifImport>>> = HashMap::new();
+    // Cache keys that resolved through a registry hit this call. Bulk-
+    // bumped through `NifImportRegistry::touch_keys` at end-of-load so
+    // recently-used entries float above the LRU eviction watermark.
+    // #635 / FNV-D3-05.
+    let mut pending_hits: Vec<String> = Vec::new();
 
     for placed_ref in refs {
         // Skip REFRs whose XESP gating would keep them hidden under
@@ -1528,11 +1661,17 @@ fn load_references(
             } else {
                 let reg_entry = {
                     let reg = world.resource::<NifImportRegistry>();
-                    reg.cache.get(&cache_key).cloned()
+                    reg.get(&cache_key).cloned()
                 };
                 match reg_entry {
                     Some(entry) => {
                         this_call_hits += 1;
+                        // Mark for LRU touch at the end-of-load batched
+                        // commit so frequently-revisited meshes don't
+                        // get evicted under `BYRO_NIF_CACHE_MAX`. The
+                        // batched flush keeps the read path on a shared
+                        // lock — preserves the #523 invariant.
+                        pending_hits.push(cache_key.clone());
                         entry
                     }
                     None => {
@@ -1547,11 +1686,6 @@ fn load_references(
                             }
                         };
                         this_call_misses += 1;
-                        if parsed.is_some() {
-                            this_call_parsed += 1;
-                        } else {
-                            this_call_failed += 1;
-                        }
                         pending_new.insert(cache_key, parsed.clone());
                         parsed
                     }
@@ -1579,15 +1713,17 @@ fn load_references(
     let dims = bounds_max - bounds_min;
     // Commit the accumulated counters + pending entries in a single
     // write lock. Stats snapshot happens in the same scope so the log
-    // line below reflects post-commit numbers. See #523.
+    // line below reflects post-commit numbers. See #523. `insert`
+    // drives `parsed_count` / `failed_count` and runs LRU eviction; we
+    // touch hit keys first so they bump above the LRU watermark before
+    // any new inserts fight them for cache space (#635 / FNV-D3-05).
     let (this_cell_hits, this_cell_misses, this_cell_unique, lifetime_hit_rate) = {
         let mut reg = world.resource_mut::<NifImportRegistry>();
         reg.hits += this_call_hits;
         reg.misses += this_call_misses;
-        reg.parsed_count += this_call_parsed;
-        reg.failed_count += this_call_failed;
+        reg.touch_keys(pending_hits.iter().map(String::as_str));
         for (key, entry) in pending_new {
-            reg.cache.insert(key, entry);
+            reg.insert(key, entry);
         }
         let new_entries = reg.len().saturating_sub(cache_size_at_entry);
         (
@@ -1904,6 +2040,12 @@ impl RefrTextureOverlay {
     }
 }
 
+/// Maximum PKIN-of-PKIN recursion depth (#635 / FNV-D3-06). Vanilla FO4
+/// has zero PKIN-of-PKIN nesting; mods occasionally chain a few levels
+/// deep but never (sanely) more than a handful. The cap exists as a
+/// guard against author-error cycles, not a normal-case constraint.
+const MAX_PKIN_DEPTH: u32 = 4;
+
 /// Expand a PKIN (Pack-In) REFR into synthetic children.
 ///
 /// PKIN records (FO4+) bundle LVLI / CONT / STAT / MSTT / FURN
@@ -1913,6 +2055,15 @@ impl RefrTextureOverlay {
 /// ESM-load time; this helper fans the REFR out into one synthetic
 /// placement per content entry — all at the SAME outer transform
 /// (PKIN carries no per-child placement data, unlike SCOL).
+///
+/// PKIN-of-PKIN nesting is resolved recursively up to [`MAX_PKIN_DEPTH`]
+/// levels (#635 / FNV-D3-06) so a child PKIN's contents fan out instead
+/// of being silently dropped at the caller's `index.statics.get` lookup.
+/// Children that resolve to a non-PKIN form (STAT, MSTT, CONT, …) are
+/// passed through unchanged. Children that resolve to a SCOL or LVLI
+/// stay single-level — those expansions live in `expand_scol_placements`
+/// (#585) and an as-yet-unimplemented LVLI helper (#386); reaching them
+/// from PKIN content nodes is tracked separately.
 ///
 /// Returns `None` when the outer REFR's base isn't a PKIN (so the
 /// caller can fall through to the SCOL / default-single-entry paths),
@@ -1929,19 +2080,47 @@ pub(crate) fn expand_pkin_placements(
     outer_scale: f32,
     index: &esm::cell::EsmCellIndex,
 ) -> Option<Vec<(u32, Vec3, Quat, f32)>> {
+    expand_pkin_placements_with_depth(base_form_id, outer_pos, outer_rot, outer_scale, index, 0)
+}
+
+fn expand_pkin_placements_with_depth(
+    base_form_id: u32,
+    outer_pos: Vec3,
+    outer_rot: Quat,
+    outer_scale: f32,
+    index: &esm::cell::EsmCellIndex,
+    depth: u32,
+) -> Option<Vec<(u32, Vec3, Quat, f32)>> {
     let pkin = index.packins.get(&base_form_id)?;
     if pkin.contents.is_empty() {
         return None;
     }
     // Every child spawns at the outer REFR's world transform — PKIN
     // has no per-child offset. The cell_loader's inner spawn body
-    // then resolves each `child_form_id` through `statics` exactly
-    // as for a normal REFR.
-    let out = pkin
-        .contents
-        .iter()
-        .map(|&child_form_id| (child_form_id, outer_pos, outer_rot, outer_scale))
-        .collect();
+    // then resolves each non-PKIN `child_form_id` through `statics`
+    // exactly as for a normal REFR.
+    let mut out = Vec::with_capacity(pkin.contents.len());
+    for &child_form_id in &pkin.contents {
+        // Recurse when the child is itself a PKIN and we're below the
+        // depth cap. Beyond the cap, fall through to the leaf path so
+        // the synthetic placement is at least logged via the caller's
+        // `stat_miss` accounting (matches pre-#635 truncation but
+        // bounded — safe against accidental cycles).
+        if depth + 1 < MAX_PKIN_DEPTH && index.packins.contains_key(&child_form_id) {
+            if let Some(nested) = expand_pkin_placements_with_depth(
+                child_form_id,
+                outer_pos,
+                outer_rot,
+                outer_scale,
+                index,
+                depth + 1,
+            ) {
+                out.extend(nested);
+                continue;
+            }
+        }
+        out.push((child_form_id, outer_pos, outer_rot, outer_scale));
+    }
     Some(out)
 }
 

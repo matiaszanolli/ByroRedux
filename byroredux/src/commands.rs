@@ -255,6 +255,11 @@ impl ConsoleCommand for MeshCacheCommand {
         let Some(reg) = world.try_resource::<crate::cell_loader::NifImportRegistry>() else {
             return CommandOutput::line("NifImportRegistry resource not present");
         };
+        let cap_str = if reg.max_entries() == 0 {
+            "unlimited (set BYRO_NIF_CACHE_MAX=N to enable LRU)".to_string()
+        } else {
+            format!("{} (LRU eviction)", reg.max_entries())
+        };
         CommandOutput::lines(vec![
             "NIF import cache:".to_string(),
             format!(
@@ -263,8 +268,10 @@ impl ConsoleCommand for MeshCacheCommand {
                 reg.parsed_count,
                 reg.failed_count,
             ),
+            format!("  capacity:      {}", cap_str),
             format!("  lifetime hits: {}", reg.hits),
             format!("  lifetime miss: {}", reg.misses),
+            format!("  evictions:     {}", reg.evictions),
             format!("  hit rate:      {:.1}%", reg.hit_rate_pct()),
         ])
     }

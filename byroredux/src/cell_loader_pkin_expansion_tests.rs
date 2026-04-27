@@ -110,3 +110,105 @@ fn expand_pkin_with_empty_contents_returns_none() {
     let result = expand_pkin_placements(pkin_id, Vec3::ZERO, Quat::IDENTITY, 1.0, &index);
     assert!(result.is_none());
 }
+
+/// #635 / FNV-D3-06 — PKIN-of-PKIN nesting fans out one extra level.
+/// Pre-fix the inner PKIN's content was silently dropped when the
+/// outer caller looked up the inner PKIN's form ID in `index.statics`
+/// and missed (PKINs don't live in the statics table). Verify the
+/// outer expansion now flattens to the leaf STAT form IDs.
+#[test]
+fn expand_pkin_recurses_into_nested_pkin() {
+    let mut index = EsmCellIndex::default();
+    let outer_pkin_id = 0x0066_0001;
+    let inner_pkin_id = 0x0066_0002;
+    let leaf_a = 0x0021_0001;
+    let leaf_b = 0x0021_0002;
+    let leaf_c = 0x0021_0003;
+    // Outer PKIN points at a leaf STAT plus a nested PKIN.
+    index.packins.insert(
+        outer_pkin_id,
+        mk_pkin(outer_pkin_id, "OuterBundle", vec![leaf_a, inner_pkin_id]),
+    );
+    // Inner PKIN expands into two more leaf STATs.
+    index.packins.insert(
+        inner_pkin_id,
+        mk_pkin(inner_pkin_id, "InnerBundle", vec![leaf_b, leaf_c]),
+    );
+
+    let outer_pos = Vec3::new(7.0, 8.0, 9.0);
+    let outer_rot = Quat::from_rotation_z(0.25);
+    let outer_scale = 1.25;
+    let synths =
+        expand_pkin_placements(outer_pkin_id, outer_pos, outer_rot, outer_scale, &index)
+            .expect("PKIN-of-PKIN must still fan out");
+    assert_eq!(synths.len(), 3, "leaf_a + (leaf_b + leaf_c) flattened");
+    let leaf_ids: Vec<u32> = synths.iter().map(|s| s.0).collect();
+    assert_eq!(leaf_ids, vec![leaf_a, leaf_b, leaf_c]);
+    // All leaves inherit the outer REFR's transform — PKIN has no
+    // per-child placement data at any nesting level.
+    for s in &synths {
+        assert_eq!(s.1, outer_pos);
+        assert_eq!(s.2, outer_rot);
+        assert_eq!(s.3, outer_scale);
+    }
+}
+
+/// #635 / FNV-D3-06 — depth cap at MAX_PKIN_DEPTH (4) prevents
+/// runaway recursion. Construct a self-referential PKIN (its own
+/// CNAM points back at itself); the expander must terminate and at
+/// most emit MAX_PKIN_DEPTH synth entries (one per level explored)
+/// rather than looping until the stack overflows.
+#[test]
+fn expand_pkin_self_referential_terminates_at_depth_cap() {
+    let mut index = EsmCellIndex::default();
+    let cycle_pkin_id = 0x0066_0010;
+    // PKIN whose only content is itself — pathological author error.
+    index.packins.insert(
+        cycle_pkin_id,
+        mk_pkin(cycle_pkin_id, "Cycle", vec![cycle_pkin_id]),
+    );
+
+    let synths = expand_pkin_placements(cycle_pkin_id, Vec3::ZERO, Quat::IDENTITY, 1.0, &index)
+        .expect("self-reference must still return Some(_) for the depth-cap leaf");
+    // At the cap, the expander stops recursing and emits the last
+    // form ID as a leaf. Verify recursion terminated cleanly with a
+    // single trailing leaf entry (the caller's `stat_miss` accounting
+    // handles the bogus form ID downstream).
+    assert!(
+        !synths.is_empty(),
+        "depth-cap fallback must still produce a leaf so the bogus \
+         form ID is logged via stat_miss rather than silently dropped"
+    );
+    assert!(
+        synths.len() <= 8,
+        "MAX_PKIN_DEPTH (4) caps blow-up; observed {} synths",
+        synths.len()
+    );
+    // Every synth points at the cycle PKIN's own ID (the only content
+    // entry at every level).
+    for s in &synths {
+        assert_eq!(s.0, cycle_pkin_id);
+    }
+}
+
+/// #635 / FNV-D3-06 — children that are NOT PKINs pass through
+/// unchanged. The recursive helper must not mistakenly probe
+/// non-PKIN form IDs against `index.packins`.
+#[test]
+fn expand_pkin_non_pkin_children_pass_through_unchanged() {
+    let mut index = EsmCellIndex::default();
+    let pkin_id = 0x0066_0020;
+    let stat_a = 0x0030_0001;
+    let stat_b = 0x0030_0002;
+    index.packins.insert(
+        pkin_id,
+        mk_pkin(pkin_id, "FlatBundle", vec![stat_a, stat_b]),
+    );
+    // Note: no nested PKINs registered.
+
+    let synths = expand_pkin_placements(pkin_id, Vec3::ZERO, Quat::IDENTITY, 1.0, &index)
+        .expect("flat PKIN still expands");
+    assert_eq!(synths.len(), 2);
+    assert_eq!(synths[0].0, stat_a);
+    assert_eq!(synths[1].0, stat_b);
+}
