@@ -41,6 +41,96 @@ pub(crate) fn parse_exterior_radius(s: &str) -> i32 {
     }
 }
 
+/// Reference cloud sprite width — Bethesda's typical authoring
+/// resolution. Per-layer baselines (`CLOUD_TILE_SCALE_*`) assume this
+/// width; an authored cloud DDS at any other resolution is rescaled
+/// inversely so a 1024² cloud tiles half as often as a 512² and a
+/// 256² tiles twice as often, preserving on-screen blob density across
+/// WTHR records that ship sharper or coarser cloud layers. See #529.
+const CLOUD_REF_WIDTH: f32 = 512.0;
+
+/// Cloud layer tile-scale baselines for a 512² authored sprite. Higher
+/// indices = higher-altitude, finer-grained cloud decks. Pre-#529 these
+/// were inline literals at every WTHR layer site.
+const CLOUD_TILE_SCALE_LAYER_0: f32 = 0.15;
+const CLOUD_TILE_SCALE_LAYER_1: f32 = 0.20;
+const CLOUD_TILE_SCALE_LAYER_2: f32 = 0.25;
+const CLOUD_TILE_SCALE_LAYER_3: f32 = 0.30;
+
+/// Derive a per-WTHR cloud tile scale from the authored DDS width.
+///
+/// `cloud_tile_scale = baseline * CLOUD_REF_WIDTH / authored_width`
+///
+/// Falls back to `baseline` when the DDS header is unparseable or the
+/// width comes back as zero — keeps the visual identical to pre-#529
+/// behaviour for any cloud sprite at the 512² reference resolution.
+///
+/// Pure helper so the math has a unit test without standing up Vulkan.
+fn cloud_tile_scale_for_dds(dds_bytes: &[u8], baseline: f32) -> f32 {
+    match byroredux_renderer::vulkan::dds::parse_dds(dds_bytes) {
+        Ok(meta) if meta.width > 0 => baseline * CLOUD_REF_WIDTH / meta.width as f32,
+        _ => baseline,
+    }
+}
+
+/// Resolve a single WTHR cloud layer end-to-end:
+///   path → archive extract → DDS upload → (handle, tile_scale).
+///
+/// Returns `(0, 0.0)` (texture handle 0 = fallback, scale 0.0 = shader
+/// branch-skips the layer) when the path is absent, the texture isn't
+/// in any loaded archive, or the DDS upload fails. The tile scale is
+/// derived per-WTHR from the authored DDS width via
+/// [`cloud_tile_scale_for_dds`] so cloud density tracks the sprite's
+/// authored resolution rather than a fixed per-layer constant. See #529.
+///
+/// Collapses 4 near-identical match blocks (one per layer) that were
+/// drifting in log message wording and error handling.
+fn resolve_cloud_layer(
+    path: Option<&str>,
+    baseline_scale: f32,
+    layer_label: &str,
+    tex_provider: &TextureProvider,
+    ctx: &mut VulkanContext,
+) -> (u32, f32) {
+    let Some(path) = path else {
+        return (0, 0.0);
+    };
+    let Some(dds_bytes) = tex_provider.extract(path) else {
+        log::debug!("Cloud layer {} texture '{}' not in archives", layer_label, path);
+        return (0, 0.0);
+    };
+    let scale = cloud_tile_scale_for_dds(&dds_bytes, baseline_scale);
+    let alloc = ctx.allocator.as_ref().unwrap();
+    match ctx.texture_registry.load_dds(
+        &ctx.device,
+        alloc,
+        &ctx.graphics_queue,
+        ctx.transfer_pool,
+        path,
+        &dds_bytes,
+    ) {
+        Ok(h) => {
+            log::info!(
+                "Cloud layer {} '{}' → handle {} (tile_scale {:.3})",
+                layer_label,
+                path,
+                h,
+                scale,
+            );
+            (h, scale)
+        }
+        Err(e) => {
+            log::warn!(
+                "Cloud layer {} DDS load failed '{}': {} — disabling layer",
+                layer_label,
+                path,
+                e,
+            );
+            (0, 0.0)
+        }
+    }
+}
+
 /// Called once after the renderer is ready — uploads meshes and spawns entities.
 pub(crate) fn setup_scene(
     world: &mut World,
@@ -243,145 +333,50 @@ pub(crate) fn setup_scene(
                             fog_near: wthr.fog_day_near,
                             fog_far: wthr.fog_day_far,
                         });
-                        // Resolve WTHR cloud layer 0 through the texture provider.
-                        // On failure (no path / archive miss / corrupt DDS) we keep
-                        // cloud rendering disabled rather than falling back to the
-                        // checkerboard — a magenta sky dome is worse than no clouds.
+                        // Resolve all 4 WTHR cloud layers through the shared
+                        // helper. Each layer's tile scale is derived per-WTHR
+                        // from the authored DDS width (see
+                        // `cloud_tile_scale_for_dds` / #529) — cloud density
+                        // now tracks the sprite's resolution rather than a
+                        // fixed per-layer constant. Path normalization
+                        // (`textures\` prefix) happens inside
+                        // `TextureProvider::extract` (#468). On failure
+                        // (no path / archive miss / corrupt DDS) the layer
+                        // is disabled rather than falling back to the
+                        // checkerboard — a magenta sky dome is worse than
+                        // no clouds.
                         //
-                        // Path normalization (textures\ prefix) happens inside
-                        // `TextureProvider::extract` — authored WTHR cloud paths
-                        // are `textures\`-root-relative (`sky\cloudsnoon.dds`)
-                        // but the BSA layer stores them with the full prefix.
-                        // See #468.
-                        let (cloud_tex_index, cloud_tile_scale) = match wthr.cloud_textures[0]
-                            .as_deref()
-                        {
-                            Some(path) => match tex_provider.extract(path) {
-                                Some(dds_bytes) => {
-                                    let alloc = ctx.allocator.as_ref().unwrap();
-                                    match ctx.texture_registry.load_dds(
-                                        &ctx.device,
-                                        alloc,
-                                        &ctx.graphics_queue,
-                                        ctx.transfer_pool,
-                                        path,
-                                        &dds_bytes,
-                                    ) {
-                                        Ok(h) => {
-                                            log::info!("Cloud texture '{}' → handle {}", path, h);
-                                            // Tile scale 0.15 spreads one texture
-                                            // over ~6.7 view-direction units above
-                                            // the horizon — looks right at typical
-                                            // Bethesda 512² cloud authoring.
-                                            (h, 0.15_f32)
-                                        }
-                                        Err(e) => {
-                                            log::warn!(
-                                                "Cloud DDS load failed '{}': {} — disabling clouds",
-                                                path,
-                                                e
-                                            );
-                                            (0u32, 0.0_f32)
-                                        }
-                                    }
-                                }
-                                None => {
-                                    log::debug!("Cloud texture '{}' not in archives", path);
-                                    (0u32, 0.0_f32)
-                                }
-                            },
-                            None => (0u32, 0.0_f32),
-                        };
-                        // Resolve WTHR cloud layer 1 (CNAM). Same pattern as layer 0.
-                        // Tile scale 0.20 (slightly higher than layer 0's 0.15) so
-                        // layer 1 visually reads as a higher-altitude, finer-grained
-                        // cloud deck — most obvious when both layers are visible
-                        // simultaneously. Disabled (0.0) when CNAM is absent.
-                        let (cloud_tex_index_1, cloud_tile_scale_1) = match wthr.cloud_textures[1]
-                            .as_deref()
-                        {
-                            Some(path) => match tex_provider.extract(path) {
-                                Some(dds_bytes) => {
-                                    let alloc = ctx.allocator.as_ref().unwrap();
-                                    match ctx.texture_registry.load_dds(
-                                        &ctx.device,
-                                        alloc,
-                                        &ctx.graphics_queue,
-                                        ctx.transfer_pool,
-                                        path,
-                                        &dds_bytes,
-                                    ) {
-                                        Ok(h) => {
-                                            log::info!(
-                                                "Cloud layer 1 texture '{}' → handle {}",
-                                                path,
-                                                h
-                                            );
-                                            (h, 0.20_f32)
-                                        }
-                                        Err(e) => {
-                                            log::warn!(
-                                                    "Cloud layer 1 DDS load failed '{}': {} — disabling layer 1",
-                                                    path,
-                                                    e
-                                                );
-                                            (0u32, 0.0_f32)
-                                        }
-                                    }
-                                }
-                                None => {
-                                    log::debug!("Cloud layer 1 texture '{}' not in archives", path);
-                                    (0u32, 0.0_f32)
-                                }
-                            },
-                            None => (0u32, 0.0_f32),
-                        };
-                        // Resolve WTHR cloud layer 2 (ANAM). Tile scale 0.25 —
-                        // higher altitude than layers 0/1, finer-grained. (M33.1)
-                        let (cloud_tex_index_2, cloud_tile_scale_2) =
-                            match wthr.cloud_textures[2].as_deref() {
-                                Some(path) => match tex_provider.extract(path) {
-                                    Some(dds_bytes) => {
-                                        let alloc = ctx.allocator.as_ref().unwrap();
-                                        match ctx.texture_registry.load_dds(
-                                            &ctx.device,
-                                            alloc,
-                                            &ctx.graphics_queue,
-                                            ctx.transfer_pool,
-                                            path,
-                                            &dds_bytes,
-                                        ) {
-                                            Ok(h) => (h, 0.25_f32),
-                                            Err(_) => (0u32, 0.0_f32),
-                                        }
-                                    }
-                                    None => (0u32, 0.0_f32),
-                                },
-                                None => (0u32, 0.0_f32),
-                            };
-                        // Resolve WTHR cloud layer 3 (BNAM). Tile scale 0.30 —
-                        // topmost, finest-grained cirrus-style layer. (M33.1)
-                        let (cloud_tex_index_3, cloud_tile_scale_3) =
-                            match wthr.cloud_textures[3].as_deref() {
-                                Some(path) => match tex_provider.extract(path) {
-                                    Some(dds_bytes) => {
-                                        let alloc = ctx.allocator.as_ref().unwrap();
-                                        match ctx.texture_registry.load_dds(
-                                            &ctx.device,
-                                            alloc,
-                                            &ctx.graphics_queue,
-                                            ctx.transfer_pool,
-                                            path,
-                                            &dds_bytes,
-                                        ) {
-                                            Ok(h) => (h, 0.30_f32),
-                                            Err(_) => (0u32, 0.0_f32),
-                                        }
-                                    }
-                                    None => (0u32, 0.0_f32),
-                                },
-                                None => (0u32, 0.0_f32),
-                            };
+                        // FNV/FO3 ship 4 layers (DNAM/CNAM/ANAM/BNAM);
+                        // Oblivion ships 2 (DNAM/CNAM) — slots 2/3 stay
+                        // disabled for the latter via the `None` branch.
+                        let (cloud_tex_index, cloud_tile_scale) = resolve_cloud_layer(
+                            wthr.cloud_textures[0].as_deref(),
+                            CLOUD_TILE_SCALE_LAYER_0,
+                            "0",
+                            &tex_provider,
+                            ctx,
+                        );
+                        let (cloud_tex_index_1, cloud_tile_scale_1) = resolve_cloud_layer(
+                            wthr.cloud_textures[1].as_deref(),
+                            CLOUD_TILE_SCALE_LAYER_1,
+                            "1",
+                            &tex_provider,
+                            ctx,
+                        );
+                        let (cloud_tex_index_2, cloud_tile_scale_2) = resolve_cloud_layer(
+                            wthr.cloud_textures[2].as_deref(),
+                            CLOUD_TILE_SCALE_LAYER_2,
+                            "2",
+                            &tex_provider,
+                            ctx,
+                        );
+                        let (cloud_tex_index_3, cloud_tile_scale_3) = resolve_cloud_layer(
+                            wthr.cloud_textures[3].as_deref(),
+                            CLOUD_TILE_SCALE_LAYER_3,
+                            "3",
+                            &tex_provider,
+                            ctx,
+                        );
                         // CLMT FNAM sun-sprite resolution — #478.
                         // Same extract-then-load-DDS pattern as the
                         // cloud texture above; path normalization
@@ -1510,5 +1505,99 @@ mod radius_parse_tests {
     #[test]
     fn trims_whitespace_before_parse() {
         assert_eq!(parse_exterior_radius("  5  "), 5);
+    }
+}
+
+#[cfg(test)]
+mod cloud_tile_scale_tests {
+    //! Regression tests for [`cloud_tile_scale_for_dds`] — issue #529.
+    //!
+    //! WTHR records ship cloud TEXTURE paths but no authored
+    //! `cloud_scale` field (DATA bytes 1-2 are cloud_speed_lower /
+    //! cloud_speed_upper, NOT scales — see `weather.rs` DATA arm).
+    //! The audit (FNV-CELL-5) hedged on whether the format carried
+    //! scale; verifying against `weather.rs` confirmed it does not.
+    //!
+    //! Per-WTHR authority over cloud density therefore comes from the
+    //! authored DDS *width* — a 1024² sprite tiles half as often as a
+    //! 512², a 256² sprite tiles twice as often. The pure helper
+    //! `cloud_tile_scale_for_dds` does that math; these tests pin it.
+    //!
+    //! Pre-#529 the per-layer baseline was inlined as `0.15` / `0.20`
+    //! / `0.25` / `0.30` and identical for every WTHR regardless of
+    //! the sprite the artist authored.
+    use super::{
+        cloud_tile_scale_for_dds, CLOUD_TILE_SCALE_LAYER_0, CLOUD_TILE_SCALE_LAYER_1,
+    };
+
+    /// Build a minimal DDS file with just enough of a header for
+    /// `parse_dds` to read width / height / a recognised pixel format.
+    /// Uses the BC1/DXT1 fast-path so we don't need the DX10 extended
+    /// header (which would add 20 B and a DXGI format code).
+    fn make_dds_header(width: u32, height: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; 128];
+        // Magic 'DDS '
+        buf[0..4].copy_from_slice(b"DDS ");
+        // DDS_HEADER size (124) at offset 4
+        buf[4..8].copy_from_slice(&124u32.to_le_bytes());
+        // Height @ 12, width @ 16
+        buf[12..16].copy_from_slice(&height.to_le_bytes());
+        buf[16..20].copy_from_slice(&width.to_le_bytes());
+        // mip_count @ 28 = 1
+        buf[28..32].copy_from_slice(&1u32.to_le_bytes());
+        // pf_flags @ 80 = DDPF_FOURCC (0x4)
+        buf[80..84].copy_from_slice(&0x4u32.to_le_bytes());
+        // pf_fourcc @ 84 = 'DXT1'
+        buf[84..88].copy_from_slice(b"DXT1");
+        buf
+    }
+
+    #[test]
+    fn reference_512_returns_baseline_unchanged() {
+        let dds = make_dds_header(512, 512);
+        // 512² is the reference resolution → scale must equal baseline
+        // exactly so existing fixtures and live cloud rendering at the
+        // canonical width are bit-identical to pre-#529 behaviour.
+        let s = cloud_tile_scale_for_dds(&dds, CLOUD_TILE_SCALE_LAYER_0);
+        assert!((s - CLOUD_TILE_SCALE_LAYER_0).abs() < 1e-6, "got {}", s);
+    }
+
+    #[test]
+    fn higher_resolution_lowers_tile_scale() {
+        // 1024² → half the tile scale → twice the on-screen blob size,
+        // preserving the artist's authored detail. Without this fix a
+        // sharp 1024 cloud would be tiled as densely as a 512² sprite,
+        // squashing every blob to 256 px on screen.
+        let dds = make_dds_header(1024, 1024);
+        let s = cloud_tile_scale_for_dds(&dds, CLOUD_TILE_SCALE_LAYER_0);
+        assert!((s - CLOUD_TILE_SCALE_LAYER_0 * 0.5).abs() < 1e-6, "got {}", s);
+    }
+
+    #[test]
+    fn lower_resolution_raises_tile_scale() {
+        // 256² → twice the tile scale → twice as many tiled instances,
+        // preserving on-screen blob density when the artist authored
+        // a coarser sprite (some Oblivion DLC clouds ship at 256²).
+        let dds = make_dds_header(256, 256);
+        let s = cloud_tile_scale_for_dds(&dds, CLOUD_TILE_SCALE_LAYER_1);
+        assert!((s - CLOUD_TILE_SCALE_LAYER_1 * 2.0).abs() < 1e-6, "got {}", s);
+    }
+
+    #[test]
+    fn malformed_dds_falls_back_to_baseline() {
+        // Garbage bytes → parse_dds errors → fall back to baseline so
+        // the cloud still renders at the per-layer reference density
+        // rather than disappearing or rendering at scale 0.
+        let bogus = vec![0xFFu8; 128];
+        let s = cloud_tile_scale_for_dds(&bogus, CLOUD_TILE_SCALE_LAYER_0);
+        assert!((s - CLOUD_TILE_SCALE_LAYER_0).abs() < 1e-6, "got {}", s);
+    }
+
+    #[test]
+    fn truncated_dds_falls_back_to_baseline() {
+        // Header shorter than 128 B → parse_dds errors → baseline.
+        let truncated = vec![0u8; 32];
+        let s = cloud_tile_scale_for_dds(&truncated, CLOUD_TILE_SCALE_LAYER_0);
+        assert!((s - CLOUD_TILE_SCALE_LAYER_0).abs() < 1e-6, "got {}", s);
     }
 }
