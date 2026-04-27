@@ -540,6 +540,13 @@ impl BsWArray {
 // ── BSClothExtraData ───────────────────────────────────────────────
 
 /// Havok cloth simulation data (opaque binary blob). FO4+.
+///
+/// Inherits `BSExtraData`, NOT `NiExtraData` directly — this matters
+/// because nif.xml line 3222 marks the `Name` field as
+/// `excludeT="BSExtraData"`, so the BS-side hierarchy explicitly
+/// drops it. `name` therefore stays `None` for every cloth block;
+/// kept on the struct as a placeholder for shape symmetry with the
+/// other `Bs*ExtraData` parsers.
 #[derive(Debug)]
 pub struct BsClothExtraData {
     pub name: Option<Arc<str>>,
@@ -557,11 +564,17 @@ impl NiObject for BsClothExtraData {
 
 impl BsClothExtraData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // NiExtraData base — gated since 10.0.1.0 per nif.xml. See #329.
-        let name = stream.read_extra_data_name()?;
+        // BSExtraData omits the NiExtraData `Name` field — nif.xml
+        // line 3222 carries `excludeT="BSExtraData"` on it. Pre-#722
+        // the parser called `read_extra_data_name` here, consuming 4
+        // bytes (string-table index) of the cloth payload as a name
+        // reference and then reading the next 4 bytes as the length.
+        // 1,523 / 1,523 cloth-bearing FO4 / FO76 / Starfield NIFs
+        // failed through `block_size` recovery as a result — capes,
+        // flags, curtains, hair fell back to rigid geometry.
         let length = stream.read_u32_le()? as usize;
         let data = stream.read_bytes(length)?;
-        Ok(Self { name, data })
+        Ok(Self { name: None, data })
     }
 }
 

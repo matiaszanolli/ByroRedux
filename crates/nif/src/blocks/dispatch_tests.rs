@@ -1774,6 +1774,120 @@ fn oblivion_lights_parse_with_attenuation_and_color() {
     assert_eq!(stream.position(), sl.len() as u64);
 }
 
+/// Build an "empty NiAVObject" body sized for FO4+ (NIF 20.2.0.7,
+/// bsver 130). Same field order as Oblivion but: `name` is a string-
+/// table index (i32, -1 = absent), `flags` is u32, properties list is
+/// gone (bsver > 34), and the collision_ref is still present (NIF v
+/// >= 10.0.1.0).
+fn fo4_niavobject_bytes() -> Vec<u8> {
+    let mut d = Vec::new();
+    d.extend_from_slice(&(-1i32).to_le_bytes()); // name idx (none)
+    d.extend_from_slice(&0u32.to_le_bytes()); // extra_data count
+    d.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+    d.extend_from_slice(&0u32.to_le_bytes()); // flags (u32 since bsver > 26)
+    for _ in 0..3 {
+        d.extend_from_slice(&0.0f32.to_le_bytes()); // translation
+    }
+    for row in [[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+        for v in row {
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    d.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+    // No properties list (bsver=130 > 34, dropped per nif.xml).
+    d.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
+    d
+}
+
+/// Regression for #721 (NIF-D5-06): FO4+ NiLight reparents directly
+/// onto NiAVObject — `Switch State` and the `Affected Nodes` list both
+/// carry `vercond="#NI_BS_LT_FO4#"` in nif.xml line 3499-3504. Pre-fix
+/// the parser keyed only on NIF version (always true for FO4) and
+/// consumed 5 bytes of NiLight color data as the dropped fields,
+/// throwing every mesh-embedded light through `block_size` recovery.
+/// 681 light blocks across FO4 / FO76 / SF Meshes archives demoted.
+///
+/// This fixture has NO `switch_state` byte and NO `affected_nodes`
+/// count/list — directly into NiLight `dimmer + 3 colors` after the
+/// NiAVObject base. A pre-#721 parser would over-read by 5 bytes, the
+/// `dimmer` would land on garbage, and the per-block size assertion
+/// at the end would fail.
+#[test]
+fn fo4_point_light_skips_dynamic_effect_tail() {
+    use crate::blocks::light::NiPointLight;
+
+    let header = fo4_header();
+    let mut bytes = fo4_niavobject_bytes();
+    // No NiDynamicEffect tail on FO4+.
+    bytes.extend_from_slice(&0.85f32.to_le_bytes()); // dimmer
+    for _ in 0..3 {
+        bytes.extend_from_slice(&0.0f32.to_le_bytes()); // ambient
+    }
+    for &c in &[1.0f32, 0.4, 0.1] {
+        bytes.extend_from_slice(&c.to_le_bytes()); // diffuse
+    }
+    for _ in 0..3 {
+        bytes.extend_from_slice(&0.0f32.to_le_bytes()); // specular
+    }
+    bytes.extend_from_slice(&1.0f32.to_le_bytes()); // constant_attenuation
+    bytes.extend_from_slice(&0.02f32.to_le_bytes()); // linear
+    bytes.extend_from_slice(&0.0f32.to_le_bytes()); // quadratic
+
+    let expected_len = bytes.len();
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("NiPointLight", &mut stream, Some(bytes.len() as u32))
+        .expect("FO4 NiPointLight must dispatch and consume the stream cleanly");
+    let p = block.as_any().downcast_ref::<NiPointLight>().unwrap();
+    // dimmer reads correctly only when the parser SKIPPED the FO4-
+    // dropped NiDynamicEffect tail. Pre-fix this lands on the
+    // ambient_r byte and reads as garbage.
+    assert!(
+        (p.base.dimmer - 0.85).abs() < 1e-6,
+        "dimmer must read 0.85 (got {}) — parser likely over-read the FO4 NiDynamicEffect tail",
+        p.base.dimmer
+    );
+    assert!((p.base.diffuse_color.r - 1.0).abs() < 1e-6);
+    assert!((p.base.diffuse_color.g - 0.4).abs() < 1e-6);
+    assert_eq!(p.constant_attenuation, 1.0);
+    assert!((p.linear_attenuation - 0.02).abs() < 1e-6);
+    assert_eq!(stream.position(), expected_len as u64);
+}
+
+/// Regression for #722 (NIF-D5-07): BSClothExtraData inherits
+/// BSExtraData, which nif.xml line 3222 explicitly excludes from the
+/// `Name` field via `excludeT="BSExtraData"`. Pre-fix the parser
+/// called `read_extra_data_name` here, consuming 4 bytes (string-
+/// table index) of the cloth payload as a name reference and then
+/// reading the next 4 bytes as the length. 1,523 / 1,523 cloth-
+/// bearing FO4 / FO76 / SF NIFs failed through `block_size` recovery
+/// — capes, flags, curtains, hair fell back to rigid geometry.
+#[test]
+fn fo4_bs_cloth_extra_data_omits_name_field() {
+    use crate::blocks::extra_data::BsClothExtraData;
+
+    let header = fo4_header();
+    // BSExtraData omits the NiExtraData Name. Wire layout reduces to
+    // `length: u32 + data: u8[length]`. Use a sentinel payload so an
+    // off-by-4 (pre-fix) consumes the length bytes as part of the
+    // payload and trips the consume-exact assertion below.
+    let payload: &[u8] = b"CLOTHBLOB";
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(payload);
+
+    let expected_len = bytes.len();
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("BSClothExtraData", &mut stream, Some(bytes.len() as u32))
+        .expect("BSClothExtraData must dispatch on FO4 without consuming a phantom Name field");
+    let cloth = block.as_any().downcast_ref::<BsClothExtraData>().unwrap();
+    assert!(
+        cloth.name.is_none(),
+        "BSExtraData explicitly excludes Name (nif.xml line 3222 `excludeT`); name must stay None"
+    );
+    assert_eq!(cloth.data.as_slice(), payload);
+    assert_eq!(stream.position(), expected_len as u64);
+}
+
 /// Regression test for issue #154: NiUVController + NiUVData.
 #[test]
 fn oblivion_uv_controller_and_data_roundtrip() {

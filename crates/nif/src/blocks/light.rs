@@ -24,9 +24,13 @@
 //!                     exponent:f32
 //!
 //! FO4 (BSVER >= 130) reparents NiLight directly onto NiAVObject and
-//! drops the dynamic effect / affected-node plumbing. We don't target
-//! FO4 meshes for light extraction yet, so the FO4 path is not
-//! implemented.
+//! drops the NiDynamicEffect plumbing entirely — both `Switch State`
+//! and the `Affected Nodes` list carry `vercond="#NI_BS_LT_FO4#"` in
+//! nif.xml line 3499-3504. The base parser below honours that gate via
+//! `stream.bsver() < 130`. Pre-#721 the parser unconditionally read the
+//! NiDynamicEffect tail on every NIF version >= 10.1.0.x, demoting 681
+//! mesh-embedded lights across FO4 / FO76 / Starfield Meshes archives
+//! through the outer `block_size`-driven recovery path.
 
 use super::base::NiAVObjectData;
 use super::traits::{HasAVObject, HasObjectNET};
@@ -57,17 +61,22 @@ impl NiLightBase {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let av = NiAVObjectData::parse(stream)?;
 
-        // NiDynamicEffect: switch state introduced in 10.1.0.106 and
-        // disappears in FO4 (BSVER >= 130). Every game from Oblivion
-        // onward that we target sits in that window.
-        let switch_state = if stream.version() >= NifVersion(0x0A01006A) {
+        // NiDynamicEffect base — present only when bsver < 130 (FO4
+        // reparents NiLight directly onto NiAVObject, dropping both
+        // fields per nif.xml `vercond="#NI_BS_LT_FO4#"`). Pre-#721 the
+        // parser checked only the NIF version gate, so on FO4 / FO76 /
+        // Starfield (NIF 20.2.0.7, bsver >= 130) it consumed 5+ bytes
+        // of NiLight color data as `switch_state + affected_nodes`,
+        // throwing every mesh-embedded light through `block_size`
+        // recovery as NiUnknown.
+        let pre_fo4 = stream.bsver() < 130;
+        let switch_state = if pre_fo4 && stream.version() >= NifVersion(0x0A01006A) {
             stream.read_u8()? != 0
         } else {
             true
         };
 
-        // Affected node ptrs: list appears since 10.1.0.0 (new form).
-        let affected_nodes = if stream.version() >= NifVersion(0x0A010000) {
+        let affected_nodes = if pre_fo4 && stream.version() >= NifVersion(0x0A010000) {
             let count = stream.read_u32_le()?;
             let mut nodes = stream.allocate_vec(count)?;
             for _ in 0..count {
