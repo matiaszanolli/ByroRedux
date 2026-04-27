@@ -580,19 +580,32 @@ impl VulkanContext {
                             );
                             // Each `refit_skinned_blas` call shares
                             // `blas_scratch_buffer` with every other
-                            // refit in this loop, so we must emit an
+                            // refit in this loop AND with any sync
+                            // BUILD that ran earlier this frame
+                            // (`build_skinned_blas` first-sight,
+                            // `build_blas_batched` cell-load) — Vulkan
+                            // spec on `scratchData` requires an
                             // AS_WRITE → AS_WRITE serialise barrier
-                            // between iterations (Vulkan spec on
-                            // `scratchData`). #642.
-                            let mut emitted_a_refit = false;
+                            // between every pair of AS-builds that
+                            // share scratch, regardless of submission
+                            // boundary (the host fence-wait is a
+                            // host-side dependency only and does NOT
+                            // establish device-side memory ordering
+                            // for the next submission). Emitting the
+                            // barrier before EVERY iteration covers
+                            // both refit→refit (#642) and the
+                            // cross-submission BUILD→first-refit case
+                            // (#644 / MEM-2-2). The redundant
+                            // first-iteration barrier is essentially
+                            // free when the cmd has no prior AS-build
+                            // — same-stage AS_WRITE↔AS_WRITE on a
+                            // queue with no in-flight build work.
                             for &(entity_id, _, idx_buffer, idx_count, vertex_count) in &dispatches
                             {
                                 let Some(slot) = self.skin_slots.get(&entity_id) else {
                                     continue;
                                 };
-                                if emitted_a_refit {
-                                    accel.record_scratch_serialize_barrier(&self.device, cmd);
-                                }
+                                accel.record_scratch_serialize_barrier(&self.device, cmd);
                                 if let Err(e) = accel.refit_skinned_blas(
                                     &self.device,
                                     cmd,
@@ -607,7 +620,6 @@ impl VulkanContext {
                                     );
                                     continue;
                                 }
-                                emitted_a_refit = true;
                             }
                             // BLAS refit writes → TLAS build reads.
                             let blas_to_tlas = vk::MemoryBarrier::default()
