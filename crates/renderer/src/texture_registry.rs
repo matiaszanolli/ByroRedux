@@ -801,7 +801,16 @@ impl TextureRegistry {
         // Tear down the texture staging pool before the descriptor
         // set + sampler — the pool holds VkBuffers that must be
         // destroyed while the device is still valid. See #239.
-        if let Some(pool) = self.staging_pool.as_mut() {
+        //
+        // #732 LIFE-N1 — `take()` drops the `StagingPool` struct after
+        // `destroy()` trims its free-list to zero, releasing the
+        // pool's own `Arc<Mutex<Allocator>>` clone. Pre-fix the
+        // `as_mut()` form left a populated `Some(StagingPool)` in
+        // place; the Arc clone only released when `TextureRegistry`
+        // itself naturally dropped at the tail of
+        // `VulkanContext::Drop`, after `Arc::try_unwrap` had already
+        // failed.
+        if let Some(mut pool) = self.staging_pool.take() {
             pool.destroy();
         }
 

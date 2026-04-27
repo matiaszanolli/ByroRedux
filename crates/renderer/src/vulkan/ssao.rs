@@ -594,6 +594,12 @@ impl SsaoPipeline {
         for buf in &mut self.param_buffers {
             buf.destroy(device, allocator);
         }
+        // #732 LIFE-N1 — drop the `GpuBuffer` structs after their GPU
+        // allocations are freed so each one's `Arc<Mutex<Allocator>>`
+        // clone releases now, not when `SsaoPipeline` itself naturally
+        // drops at the tail of `VulkanContext::Drop` (after
+        // `Arc::try_unwrap` has already given up).
+        self.param_buffers.clear();
         device.destroy_sampler(self.ao_sampler, None);
         device.destroy_sampler(self.depth_sampler, None);
         device.destroy_pipeline(self.pipeline, None);

@@ -1437,25 +1437,42 @@ impl SceneBuffers {
     }
 
     /// Destroy all resources.
+    ///
+    /// Pre-#732 LIFE-N1 the per-Vec `buf.destroy()` loops below freed
+    /// every GPU allocation but never cleared the `Vec`s, so each
+    /// `GpuBuffer` struct stayed alive (with `allocation: None` after
+    /// `destroy`) and kept its `Arc<Mutex<Allocator>>` clone live until
+    /// `SceneBuffers` itself naturally dropped — *after*
+    /// `VulkanContext::Drop` had already failed `Arc::try_unwrap` and
+    /// taken the warn-and-leak fall-through path. The post-fix
+    /// `.clear()` calls drop each `GpuBuffer` immediately so the
+    /// allocator unwrap sees a smaller strong count by the time it
+    /// runs.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         for buf in &mut self.light_buffers {
             buf.destroy(device, allocator);
         }
+        self.light_buffers.clear();
         for buf in &mut self.camera_buffers {
             buf.destroy(device, allocator);
         }
+        self.camera_buffers.clear();
         for buf in &mut self.bone_buffers {
             buf.destroy(device, allocator);
         }
+        self.bone_buffers.clear();
         for buf in &mut self.instance_buffers {
             buf.destroy(device, allocator);
         }
+        self.instance_buffers.clear();
         for buf in &mut self.indirect_buffers {
             buf.destroy(device, allocator);
         }
+        self.indirect_buffers.clear();
         for buf in &mut self.ray_budget_buffers {
             buf.destroy(device, allocator);
         }
+        self.ray_budget_buffers.clear();
         self.terrain_tile_buffer.destroy(device, allocator);
         device.destroy_descriptor_pool(self.descriptor_pool, None);
         device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
