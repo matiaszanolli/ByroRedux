@@ -162,13 +162,14 @@ fn apply_worldspace_weather(
         let horizon = wthr.sky_colors[SKY_HORIZON][TOD_DAY].to_rgb_f32();
         let sun_col = wthr.sky_colors[SKY_SUN][TOD_DAY].to_rgb_f32();
         log::info!(
-            "WTHR '{}': zenith={:?} horizon={:?} sun={:?} ambient={:?} sunlight={:?} fog_day={:.0}\u{2013}{:.0}",
+            "WTHR '{}': zenith={:?} horizon={:?} sun={:?} ambient={:?} sunlight={:?} fog_color={:?} fog_day={:.0}\u{2013}{:.0}",
             wthr.editor_id,
             zenith,
             horizon,
             sun_col,
             ambient,
             sunlight,
+            fog_col,
             wthr.fog_day_near,
             wthr.fog_day_far,
         );

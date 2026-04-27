@@ -4,11 +4,25 @@
 //! and cloud layers. Each worldspace references a default weather; the game
 //! interpolates between weathers based on time of day and climate.
 //!
-//! FNV layout (NAM0 = 240 bytes):
+//! FNV / FO3 layout (NAM0 = 240 bytes):
 //!   10 color groups × 6 time-of-day slots × 4 bytes (RGBA u8).
-//!   Groups: sky_upper, fog, ambient, sunlight, sun, stars,
-//!           sky_lower, horizon, clouds_lower, clouds_upper.
+//!   Groups, per tes5edit fopdoc (FNV + FO3 WTHR records — both games
+//!   share this schema):
+//!     0 sky_upper, 1 fog, 2 unused, 3 ambient, 4 sunlight, 5 sun,
+//!     6 stars, 7 sky_lower, 8 horizon, 9 unused.
 //!   Slots: sunrise, day, sunset, night, high_noon, midnight.
+//!
+//! Pre-fix the constants below were `sky_upper, fog, ambient, sunlight,
+//! sun, stars, sky_lower, horizon, clouds_lower, clouds_upper` —
+//! collapsing the index-2 "Unused" slot and renumbering every group
+//! after it by one. The downstream `scene.rs` / `weather_system`
+//! consumers therefore read junk from the real Unused slot for the
+//! cell ambient term, the real Ambient slot for the directional
+//! sunlight term, and the real Sky-Lower slot for the sky horizon
+//! ring. The real Horizon slot (8) was never read at all because the
+//! invented `clouds_lower` / `clouds_upper` slots had no consumer
+//! (cloud colours come from the cloud TEXTURE paths in
+//! DNAM/CNAM/ANAM/BNAM, not NAM0). See issue #729 / EXT-RENDER-1.
 
 use super::common::{read_f32_at, read_zstring};
 use crate::esm::reader::SubRecord;
@@ -18,17 +32,26 @@ pub const SKY_COLOR_GROUPS: usize = 10;
 /// Number of time-of-day slots per color group (FNV).
 pub const SKY_TIME_SLOTS: usize = 6;
 
-/// Color group indices into `sky_colors`.
+/// Color group indices into `sky_colors`. Indices match the tes5edit
+/// fopdoc layout for FNV + FO3 verbatim — slots 2 and 9 are explicitly
+/// "Unused" in the schema and exist here only as no-op placeholders so
+/// the on-disk stride still walks 10 groups deep.
 pub const SKY_UPPER: usize = 0;
 pub const SKY_FOG: usize = 1;
-pub const SKY_AMBIENT: usize = 2;
-pub const SKY_SUNLIGHT: usize = 3;
-pub const SKY_SUN: usize = 4;
-pub const SKY_STARS: usize = 5;
-pub const SKY_LOWER: usize = 6;
-pub const SKY_HORIZON: usize = 7;
-pub const SKY_CLOUDS_LOWER: usize = 8;
-pub const SKY_CLOUDS_UPPER: usize = 9;
+/// Slot 2 is documented as "Unused" by tes5edit fopdoc. Authored data
+/// occasionally appears here in vanilla weathers (e.g. NVWastelandClear)
+/// but the original engine ignores it. Exposed so consumers that want
+/// to dump the full table can still address it by name. See #729.
+pub const SKY_UNUSED_2: usize = 2;
+pub const SKY_AMBIENT: usize = 3;
+pub const SKY_SUNLIGHT: usize = 4;
+pub const SKY_SUN: usize = 5;
+pub const SKY_STARS: usize = 6;
+pub const SKY_LOWER: usize = 7;
+pub const SKY_HORIZON: usize = 8;
+/// Slot 9 — second documented "Unused" slot. Same rationale as
+/// `SKY_UNUSED_2`.
+pub const SKY_UNUSED_9: usize = 9;
 
 /// Time-of-day slot indices.
 pub const TOD_SUNRISE: usize = 0;
@@ -364,7 +387,7 @@ mod tests {
         nam0_data[offset + 2] = 200;
         nam0_data[offset + 3] = 255;
 
-        // Set horizon/day (group 7, slot 1).
+        // Set horizon/day (group 8 per #729, slot 1).
         let offset = (SKY_HORIZON * SKY_TIME_SLOTS + TOD_DAY) * 4;
         nam0_data[offset] = 180;
         nam0_data[offset + 1] = 170;
@@ -693,11 +716,12 @@ mod tests {
         ];
 
         let w = parse_wthr(0x2468, &subs);
-        // On-disk slots populate as authored.
+        // On-disk slots populate as authored. Indices match #729 / xEdit
+        // fopdoc — `SKY_SUN = 5`, `SKY_HORIZON = 8`.
         let sun_sunrise = w.sky_colors[SKY_SUN][TOD_SUNRISE];
-        assert_eq!((sun_sunrise.r, sun_sunrise.g), (40, 0));
+        assert_eq!((sun_sunrise.r, sun_sunrise.g), (50, 0));
         let horiz_sunset = w.sky_colors[SKY_HORIZON][TOD_SUNSET];
-        assert_eq!((horiz_sunset.r, horiz_sunset.g), (70, 100));
+        assert_eq!((horiz_sunset.r, horiz_sunset.g), (80, 100));
 
         // Synthesised slots: HIGH_NOON = DAY, MIDNIGHT = NIGHT.
         for group in 0..SKY_COLOR_GROUPS {
@@ -737,6 +761,65 @@ mod tests {
                 assert_eq!((c.r, c.g, c.b, c.a), (0, 0, 0, 0));
             }
         }
+    }
+
+    /// Regression for #729 / EXT-RENDER-1: SKY_* constants must match
+    /// the tes5edit fopdoc layout for FNV / FO3 verbatim. Pre-fix the
+    /// indices collapsed the index-2 "Unused" slot and renumbered every
+    /// group after it by one (so the renderer's "ambient" was actually
+    /// the Unused slot, "sunlight" was actually Ambient, etc.). This
+    /// test pins the canonical mapping so a future drift surfaces here
+    /// rather than as a silent lighting regression in exteriors.
+    #[test]
+    fn sky_group_indices_match_xedit_fopdoc() {
+        assert_eq!(SKY_UPPER, 0);
+        assert_eq!(SKY_FOG, 1);
+        assert_eq!(SKY_UNUSED_2, 2);
+        assert_eq!(SKY_AMBIENT, 3);
+        assert_eq!(SKY_SUNLIGHT, 4);
+        assert_eq!(SKY_SUN, 5);
+        assert_eq!(SKY_STARS, 6);
+        assert_eq!(SKY_LOWER, 7);
+        assert_eq!(SKY_HORIZON, 8);
+        assert_eq!(SKY_UNUSED_9, 9);
+    }
+
+    /// Regression for #729 / EXT-RENDER-1: the parser must place each
+    /// authored byte at the slot xEdit documents for it. Build a NAM0
+    /// where every group ships a unique sentinel byte at its Day slot
+    /// and verify each `SKY_*` constant resolves to the right sentinel —
+    /// catches a future re-collapse of the Unused slot from any
+    /// direction (constant drift, parser stride math, struct re-order).
+    #[test]
+    fn parse_wthr_nam0_groups_route_to_documented_slots() {
+        let mut nam0 = vec![0u8; SKY_COLOR_GROUPS * SKY_TIME_SLOTS * 4];
+        // Sentinel R = group_index * 16 so each group is uniquely
+        // identifiable. G/B fixed so an off-by-one slip surfaces as a
+        // wrong R-channel value rather than a lucky zero.
+        for group in 0..SKY_COLOR_GROUPS {
+            let off = (group * SKY_TIME_SLOTS + TOD_DAY) * 4;
+            nam0[off] = (group as u8) * 16;
+            nam0[off + 1] = 0xAA;
+            nam0[off + 2] = 0xBB;
+            nam0[off + 3] = 0xFF;
+        }
+        let subs = vec![
+            make_sub(b"EDID", b"SlotPin\0".to_vec()),
+            make_sub(b"NAM0", nam0),
+        ];
+        let w = parse_wthr(0x729, &subs);
+
+        let day = TOD_DAY;
+        assert_eq!(w.sky_colors[SKY_UPPER][day].r, 0); // 0  Sky-Upper
+        assert_eq!(w.sky_colors[SKY_FOG][day].r, 16); // 1  Fog
+        assert_eq!(w.sky_colors[SKY_UNUSED_2][day].r, 32); // 2  Unused
+        assert_eq!(w.sky_colors[SKY_AMBIENT][day].r, 48); // 3  Ambient
+        assert_eq!(w.sky_colors[SKY_SUNLIGHT][day].r, 64); // 4  Sunlight
+        assert_eq!(w.sky_colors[SKY_SUN][day].r, 80); // 5  Sun
+        assert_eq!(w.sky_colors[SKY_STARS][day].r, 96); // 6  Stars
+        assert_eq!(w.sky_colors[SKY_LOWER][day].r, 112); // 7  Sky-Lower
+        assert_eq!(w.sky_colors[SKY_HORIZON][day].r, 128); // 8  Horizon
+        assert_eq!(w.sky_colors[SKY_UNUSED_9][day].r, 144); // 9  Unused
     }
 
     #[test]
