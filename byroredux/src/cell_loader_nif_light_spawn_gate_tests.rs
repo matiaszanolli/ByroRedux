@@ -92,6 +92,59 @@ fn empty_array_counts_zero() {
     assert_eq!(count_spawnable_nif_lights(&nif_lights), 0);
 }
 
+// ── RT-9 / #672 radius-zero sanitisation ──────────────────────────
+
+/// Authored Bethesda XCLL radii are 256–4096 units; any positive
+/// value here must pass through unchanged. Locks the "ground
+/// truth from the level designer is preserved" half of the
+/// contract.
+#[test]
+fn light_radius_or_default_passes_positive_radii_through() {
+    assert_eq!(super::light_radius_or_default(256.0), 256.0);
+    assert_eq!(super::light_radius_or_default(1024.0), 1024.0);
+    assert_eq!(super::light_radius_or_default(4096.0), 4096.0);
+    // Sub-unit positive — still preserved. The shader's
+    // `radius * 0.025 = 0.025u` disk is degenerate, but that's
+    // an authored value and the contract says positives ride
+    // through unchanged.
+    assert_eq!(super::light_radius_or_default(1.0), 1.0);
+}
+
+/// Exact zero — the audit's headline failure mode. A LIGH
+/// `DATA` sub-record that ships `radius=0` would otherwise
+/// zero the shader's `effectiveRange = radius * 4.0`
+/// attenuation window AND collapse the shadow-ray jitter disk
+/// to the dead 1.5u floor. Sanitisation kicks the radius up
+/// to the existing 4096u cell-scale fallback.
+#[test]
+fn light_radius_or_default_kicks_zero_to_cell_scale() {
+    assert_eq!(super::light_radius_or_default(0.0), 4096.0);
+}
+
+/// Negative values are nonsensical (radius is a length) but
+/// could arrive from a malformed record's `u32 → f32` reading
+/// of a value that overflowed sign somewhere upstream. Treated
+/// the same as zero.
+#[test]
+fn light_radius_or_default_kicks_negative_to_cell_scale() {
+    assert_eq!(super::light_radius_or_default(-1.0), 4096.0);
+    assert_eq!(super::light_radius_or_default(f32::MIN), 4096.0);
+}
+
+/// `f32::NAN` propagates through every comparison as `false`,
+/// so the `radius > 0.0` guard rejects it and we fall back to
+/// the cell-scale default. Without the guard the shader would
+/// see `position_radius.w = NaN` and contaminate the entire
+/// lighting reservoir downstream — every comparison against a
+/// NaN evaluates to false, so the WRS would silently lose this
+/// light AND any ratio-based culling that touched it.
+#[test]
+fn light_radius_or_default_handles_nan() {
+    let result = super::light_radius_or_default(f32::NAN);
+    assert_eq!(result, 4096.0);
+    assert!(result.is_finite());
+}
+
 // ── M46.0 / #561 multi-plugin helpers ─────────────────────────────
 
 #[test]

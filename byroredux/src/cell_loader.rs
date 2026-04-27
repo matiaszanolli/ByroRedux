@@ -1654,7 +1654,7 @@ fn load_references(
                     world.insert(
                         entity,
                         LightSource {
-                            radius: ld.radius,
+                            radius: light_radius_or_default(ld.radius),
                             color: ld.color,
                             flags: ld.flags,
                         },
@@ -1700,7 +1700,7 @@ fn load_references(
                     world.insert(
                         entity,
                         LightSource {
-                            radius: ld.radius,
+                            radius: light_radius_or_default(ld.radius),
                             color: ld.color,
                             flags: ld.flags,
                         },
@@ -2450,6 +2450,25 @@ fn count_spawnable_nif_lights(nif_lights: &[byroredux_nif::import::ImportedLight
         .count()
 }
 
+/// Sanitise a placement-time light radius before it reaches the GPU
+/// `position_radius.w` slot. A non-positive value would zero the
+/// shader's `effectiveRange = radius * 4.0` attenuation window
+/// (light contributes nothing) AND collapse the shadow-ray jitter
+/// disk to the dead 1.5u floor (RT-9 / #672 — penumbra degenerates
+/// to a hard point shadow if the light ever crosses the
+/// `contribution >= 0.001` gate).
+///
+/// `4096.0` matches the cell-scale fallback already used at the
+/// NIF-direct spawn site for ambient / directional placeholders
+/// without an authored radius. Authored Bethesda XCLL radii are
+/// 256–4096 units, so this default is a "covers the cell" net,
+/// not a typical value — a malformed LIGH record that ships
+/// `radius=0` becomes visible rather than silently invisible.
+#[inline]
+fn light_radius_or_default(radius: f32) -> f32 {
+    if radius > 0.0 { radius } else { 4096.0 }
+}
+
 fn spawn_placed_instances(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -2526,16 +2545,19 @@ fn spawn_placed_instances(
             light.translation[2],
         );
         let final_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
-        let radius = if let Some(r) = esm_radius {
-            // ESM radius is authored by the level designer — ground truth.
-            r * ref_scale
-        } else if light.radius > 0.0 {
-            light.radius * ref_scale
-        } else {
-            // Ambient / directional lights have no meaningful placement radius;
-            // fall back to a large cell-scale default.
-            4096.0
+        // Pick the authored radius source, then sanitise. Pre-#672
+        // an `esm_radius == Some(0.0)` slipped through as a real
+        // `0 * ref_scale = 0` and the light became invisible at
+        // the shader (zero attenuation, dead-floor jitter disk).
+        // Falling through to `light_radius_or_default` keeps the
+        // 4096u cell-scale fallback that previously only fired on
+        // the NIF-side `else` branch.
+        let raw_radius = match esm_radius {
+            Some(r) if r > 0.0 => r * ref_scale,
+            _ if light.radius > 0.0 => light.radius * ref_scale,
+            _ => 0.0,
         };
+        let radius = light_radius_or_default(raw_radius);
         let entity = world.spawn();
         world.insert(entity, Transform::from_translation(final_pos));
         world.insert(entity, GlobalTransform::new(final_pos, Quat::IDENTITY, 1.0));
@@ -2938,7 +2960,7 @@ fn spawn_placed_instances(
                 world.insert(
                     entity,
                     LightSource {
-                        radius: ld.radius,
+                        radius: light_radius_or_default(ld.radius),
                         color: ld.color,
                         flags: ld.flags,
                     },
