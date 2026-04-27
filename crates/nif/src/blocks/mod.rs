@@ -24,6 +24,7 @@ pub mod traits;
 pub mod tri_shape;
 
 use crate::stream::NifStream;
+use crate::version::NifVersion;
 use collision::{
     BhkAabbPhantom, BhkBoxShape, BhkBreakableConstraint, BhkCapsuleShape, BhkCollisionObject,
     BhkCompressedMeshShape, BhkCompressedMeshShapeData, BhkConstraint, BhkConvexListShape,
@@ -121,6 +122,25 @@ pub fn parse_block(
     stream: &mut NifStream,
     block_size: Option<u32>,
 ) -> io::Result<Box<dyn NiObject>> {
+    // O5-3 / #688 — early-Gamebryo NIFs in the file-version range
+    // [10.0.0.0, 10.1.0.114) ship a 4-byte `groupID` field on every
+    // `NiObject` that nifly's `NiObject::Get` consumes before any
+    // subclass payload. Pre-#688 this byte was misread as the first
+    // u32 of the block — usually the `NiObjectNET.Name` SizedString
+    // length — and 154 / 8032 Oblivion-era files (39 at v10.0.1.0 +
+    // 12+9 at v10.0.1.2 + 8 at v10.1.0.101 + 77 at v10.1.0.106 + 9
+    // others) truncated at root with "failed to fill whole buffer".
+    // The version gate is the exact pair niflib uses
+    // (`crates/reference/nifly/include/BasicTypes.hpp:972`).
+    //
+    // The field is named `groupID` after nifly's name; vanilla
+    // Bethesda content always ships zero. We read it and discard —
+    // the value isn't consumed by any downstream parser.
+    let v = stream.version();
+    if v >= NifVersion(0x0A000000) && v < NifVersion(0x0A010072) {
+        let _group_id = stream.read_u32_le()?;
+    }
+
     match type_name {
         // NiLight hierarchy — see issue #156. All four subtypes share the
         // NiDynamicEffect + NiLight base; NiSpotLight extends NiPointLight.

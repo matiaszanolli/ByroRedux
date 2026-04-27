@@ -2476,3 +2476,162 @@ fn starfield_bone_translations_dispatches() {
     assert!((translations[1].1[2] + 0.6).abs() < 1e-6);
     assert_eq!(stream.position() as usize, bytes.len());
 }
+
+// ── O5-3 / #688 — early-Gamebryo NiObject groupID prefix ─────────
+
+/// Build a header for an early-Gamebryo NIF (file version in the
+/// `[10.0.0.0, 10.1.0.114)` window). Every block in this range is
+/// prefixed with a 4-byte `NiObject.groupID` field per nifly's
+/// `NiObject::Get`. Pre-#688 the byte was misread as the first u32
+/// of the block payload (typically `NiObjectNET.Name`'s SizedString
+/// length), causing 145 / 8032 Oblivion-era files to truncate at
+/// root with "failed to fill whole buffer".
+fn early_gamebryo_header(packed_version: u32) -> NifHeader {
+    NifHeader {
+        version: NifVersion(packed_version),
+        little_endian: true,
+        user_version: 0,
+        user_version_2: 0,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: Vec::new(),
+        max_string_length: 0,
+        num_groups: 0,
+    }
+}
+
+/// O5-3 / #688: a v10.0.1.0 NiNode with the leading `groupID` u32
+/// must parse all of NiObjectNET (name + extra_data + controller)
+/// + NiAVObject (flags + transform + properties + collision) +
+/// NiNode (children + effects). Pre-fix the parser swallowed the
+/// 4-byte groupID as the start of `Name.length`, then drifted by
+/// 4 bytes through every downstream field — eventually failing
+/// the buffer-fill check far past the actual layout.
+#[test]
+fn ni_node_v10_0_1_0_consumes_groupid_prefix_and_full_payload() {
+    let header = early_gamebryo_header(0x0A000100);
+    let mut bytes = Vec::new();
+    // NiObject.groupID — vanilla Bethesda content always ships zero.
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    // NiObjectNET.Name (SizedString = u32 length + bytes).
+    bytes.extend_from_slice(&6u32.to_le_bytes());
+    bytes.extend_from_slice(b"HornsA");
+    // NiObjectNET.NumExtraDataList + Extra Data List.
+    bytes.extend_from_slice(&1u32.to_le_bytes()); // count
+    bytes.extend_from_slice(&1i32.to_le_bytes()); // ref[0]
+    // NiObjectNET.Controller — NULL.
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    // NiAVObject.Flags (u16, BSVER == 0 ≤ 26).
+    bytes.extend_from_slice(&0x0010u16.to_le_bytes());
+    // NiAVObject.Transform: translation (3×f32) + rotation (9×f32) + scale.
+    for _ in 0..3 {
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    }
+    for v in [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    bytes.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+    // NiAVObject.NumProperties + Properties (count=0 → empty).
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    // NiAVObject.CollisionObject (since 10.0.1.0).
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    // NiNode.NumChildren + Children + NumEffects + Effects (all 0).
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+
+    let consumed_expected = bytes.len();
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("NiNode", &mut stream, None)
+        .expect("v10.0.1.0 NiNode with groupID prefix must parse");
+    let node = block
+        .as_any()
+        .downcast_ref::<crate::blocks::node::NiNode>()
+        .expect("downcast to NiNode");
+    assert_eq!(node.av.net.name.as_deref(), Some("HornsA"));
+    assert_eq!(node.av.flags, 0x0010);
+    assert_eq!(node.av.net.extra_data_refs.len(), 1);
+    assert_eq!(stream.position() as usize, consumed_expected);
+}
+
+/// O5-3 / #688: same payload at v10.1.0.106 — the upper edge of the
+/// reported failing bucket (77 of 145 files). The fix uses an
+/// inclusive-low / exclusive-high gate, so 10.1.0.106 (= 0x0A01006A,
+/// just below the 10.1.0.114 = 0x0A010072 cap) must still consume
+/// the prefix.
+#[test]
+fn ni_node_v10_1_0_106_consumes_groupid_prefix() {
+    let header = early_gamebryo_header(0x0A01006A);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // groupID
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // name length 0
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // num extra data
+    bytes.extend_from_slice(&(-1i32).to_le_bytes()); // controller
+    bytes.extend_from_slice(&0u16.to_le_bytes()); // flags
+    for _ in 0..13 {
+        bytes.extend_from_slice(&0.0f32.to_le_bytes()); // transform
+    }
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // num properties
+    bytes.extend_from_slice(&(-1i32).to_le_bytes()); // collision
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // children
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // effects
+
+    let consumed_expected = bytes.len();
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("NiNode", &mut stream, None)
+        .expect("v10.1.0.106 NiNode with groupID prefix must parse");
+    assert!(block.as_any().is::<crate::blocks::node::NiNode>());
+    assert_eq!(stream.position() as usize, consumed_expected);
+}
+
+/// O5-3 / #688: above the 10.1.0.114 cap (e.g. v20.0.0.5 / Oblivion
+/// mainstream) the groupID prefix is gone — the parser must NOT
+/// consume an extra 4 bytes. This pins the upper bound; without the
+/// gate every Oblivion / FO3 / FNV / Skyrim block would lose 4 bytes
+/// at the head.
+#[test]
+fn ni_node_v20_0_0_5_does_not_consume_groupid_prefix() {
+    // Use the existing oblivion_header() (V20_0_0_5 / user_version=11).
+    let header = oblivion_header();
+    let mut bytes = Vec::new();
+    // No groupID — name index goes first.
+    bytes.extend_from_slice(&0i32.to_le_bytes()); // name index = 0
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // num extra data
+    bytes.extend_from_slice(&(-1i32).to_le_bytes()); // controller
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // flags (u32 since BSVER=0… wait, header sets user_version=11, bsver=0)
+    for _ in 0..13 {
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    }
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // num properties
+    bytes.extend_from_slice(&(-1i32).to_le_bytes()); // collision
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // children
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // effects
+    // The oblivion_header has bsver=0, so flags is u16 not u32 — fix:
+    // re-build with u16 flags.
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&0i32.to_le_bytes()); // name index = 0
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // num extra data
+    bytes.extend_from_slice(&(-1i32).to_le_bytes()); // controller
+    bytes.extend_from_slice(&0u16.to_le_bytes()); // flags (u16, bsver=0 ≤ 26)
+    for _ in 0..13 {
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    }
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // num properties
+    bytes.extend_from_slice(&(-1i32).to_le_bytes()); // collision
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // children
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // effects
+
+    let consumed_expected = bytes.len();
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("NiNode", &mut stream, None)
+        .expect("v20.0.0.5 NiNode without groupID prefix must parse");
+    assert!(block.as_any().is::<crate::blocks::node::NiNode>());
+    assert_eq!(
+        stream.position() as usize,
+        consumed_expected,
+        "v20.0.0.5 must NOT consume a phantom groupID — pre-#688 it \
+         stopped at the right offset because the byte was \
+         (mis-)read into NiObjectNET.Name.length"
+    );
+}
