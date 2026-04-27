@@ -43,11 +43,12 @@ pub use items::{
     parse_weap, ItemKind, ItemRecord,
 };
 pub use misc::{
-    parse_acti, parse_avif, parse_dial, parse_eczn, parse_eyes, parse_hair, parse_hdpt, parse_info,
-    parse_lgtm, parse_mesg, parse_mgef, parse_navi, parse_navm, parse_pack, parse_perk, parse_qust,
-    parse_regn, parse_spel, parse_term, parse_watr, ActiRecord, AvifRecord, DialRecord, EcznRecord,
-    EyesRecord, HairRecord, HdptRecord, InfoRecord, LgtmRecord, MesgRecord, MgefRecord, NaviRecord,
-    NavmRecord, PackRecord, PerkRecord, QustRecord, RegnRecord, SpelRecord, TermRecord, WatrRecord,
+    parse_acti, parse_avif, parse_dial, parse_eczn, parse_ench, parse_eyes, parse_hair, parse_hdpt,
+    parse_info, parse_lgtm, parse_mesg, parse_mgef, parse_navi, parse_navm, parse_pack, parse_perk,
+    parse_qust, parse_regn, parse_spel, parse_term, parse_watr, ActiRecord, AvifRecord, DialRecord,
+    EcznRecord, EnchRecord, EyesRecord, HairRecord, HdptRecord, InfoRecord, LgtmRecord, MesgRecord,
+    MgefRecord, NaviRecord, NavmRecord, PackRecord, PerkRecord, QustRecord, RegnRecord, SpelRecord,
+    TermRecord, WatrRecord,
 };
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
 pub use weather::{parse_wthr, OblivionHdrLighting, SkyColor, WeatherRecord};
@@ -137,6 +138,12 @@ pub struct EsmIndex {
     pub perks: HashMap<u32, PerkRecord>,
     /// `SPEL` spells / abilities / auto-cast effects.
     pub spells: HashMap<u32, SpelRecord>,
+    /// `ENCH` enchantment records — `WEAP/AMMO/ARMO.eitm` cross-refs
+    /// resolve here. Pre-#629 the entire top-level group fell through
+    /// to the catch-all skip and every weapon enchantment dangled
+    /// (Pulse Gun, This Machine, Holorifle on FNV; the full Skyrim
+    /// weapon-enchant table). See FNV-D2-01.
+    pub enchantments: HashMap<u32, EnchRecord>,
     /// `MGEF` magic effects — universal bridge for Actor Value mods.
     pub magic_effects: HashMap<u32, MgefRecord>,
     /// `AVIF` actor-value definitions — SPECIAL attributes, governed
@@ -192,6 +199,7 @@ impl EsmIndex {
             + self.messages.len()
             + self.perks.len()
             + self.spells.len()
+            + self.enchantments.len()
             + self.magic_effects.len()
             + self.actor_values.len()
             + self.activators.len()
@@ -251,6 +259,7 @@ impl EsmIndex {
         self.messages.extend(other.messages);
         self.perks.extend(other.perks);
         self.spells.extend(other.spells);
+        self.enchantments.extend(other.enchantments);
         self.magic_effects.extend(other.magic_effects);
         self.actor_values.extend(other.actor_values);
         self.activators.extend(other.activators);
@@ -486,6 +495,12 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             b"SPEL" => extract_records(&mut reader, end, b"SPEL", &mut |fid, subs| {
                 index.spells.insert(fid, parse_spel(fid, subs));
             })?,
+            // ENCH enchantments (#629 / FNV-D2-01). Same scaffolding as
+            // SPEL — ENIT carries type/charge/cost/flags; full effect
+            // chain decoding lands with MGEF application.
+            b"ENCH" => extract_records(&mut reader, end, b"ENCH", &mut |fid, subs| {
+                index.enchantments.insert(fid, parse_ench(fid, subs));
+            })?,
             b"MGEF" => extract_records(&mut reader, end, b"MGEF", &mut |fid, subs| {
                 index.magic_effects.insert(fid, parse_mgef(fid, subs));
             })?,
@@ -516,8 +531,8 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         "ESM parsed: {} cells, {} statics, {} items, {} containers, {} LVLI, {} LVLN, {} LVLC, \
          {} NPCs, {} creatures, {} races, {} classes, {} factions, {} globals, {} game settings, \
          {} weathers, {} climates, {} scripts, {} packages, {} quests, {} dialogues, \
-         {} messages, {} perks, {} spells, {} magic effects, {} actor values, \
-         {} activators, {} terminals",
+         {} messages, {} perks, {} spells, {} enchantments, {} magic effects, \
+         {} actor values, {} activators, {} terminals",
         index.cells.cells.len(),
         index.cells.statics.len(),
         index.items.len(),
@@ -541,6 +556,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         index.messages.len(),
         index.perks.len(),
         index.spells.len(),
+        index.enchantments.len(),
         index.magic_effects.len(),
         index.actor_values.len(),
         index.activators.len(),
@@ -1111,6 +1127,19 @@ mod tests {
                 .any(|av| av.editor_id == special);
             assert!(found, "expected SPECIAL AVIF '{special}' to be indexed");
         }
+
+        // #629 / FNV-D2-01 — ENCH dispatch. Pre-fix the entire
+        // top-level group fell through to the catch-all skip and every
+        // weapon EITM dangled. FNV ships ~150 ENCH records (Pulse Gun,
+        // This Machine, Holorifle, the energy-weapon variants, and
+        // armor-side enchants); the floor is conservative against DLC
+        // patch drift.
+        eprintln!("FNV ENCH: {} enchantments", index.enchantments.len());
+        assert!(
+            index.enchantments.len() >= 50,
+            "expected ≥50 ENCH enchantments, got {}",
+            index.enchantments.len()
+        );
 
         // Spot-check a known FNV item: Varmint Rifle (form 0x000086A8) should
         // be a Weapon kind with damage and a clip size.
