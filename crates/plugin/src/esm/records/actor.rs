@@ -23,6 +23,63 @@ pub struct NpcInventoryEntry {
     pub count: i32,
 }
 
+/// One face-morph entry on an FO4 NPC. Built from a paired
+/// `FMRI` / `FMRS` sub-record sequence — they appear alternating on the
+/// wire (I, S, I, S, …) and pair 1-to-1.
+///
+/// `setting` is 9 floats laid out as `position[3]`, `rotation[3]`,
+/// `scale[3]` per the morph target identified by `form_id`. Verified
+/// against vanilla `Fallout4.esm` named-NPC records (Hancock, Piper,
+/// MQ101 player duplicates) — the audit's claim that FMRS is a single
+/// `f32` slider was stale; FMRS payloads are 36 bytes everywhere they
+/// appear. See #591 / FO4-DIM6-06.
+#[derive(Debug, Clone, Copy)]
+pub struct NpcFaceMorph {
+    /// FMRI — morph-target FormID (HDPT or face-morph-data form).
+    pub form_id: u32,
+    /// FMRS — 9 floats: position[3], rotation[3], scale[3].
+    pub setting: [f32; 9],
+}
+
+/// FO4 NPC face-morph block. Set on `NpcRecord` only when at least one
+/// of the underlying sub-records was present — most generic settler
+/// NPCs ship none and stay at `None`. See #591 / FO4-DIM6-06.
+#[derive(Debug, Clone, Default)]
+pub struct NpcFaceMorphs {
+    /// Paired FMRI + FMRS entries. The wire format alternates the two
+    /// sub-records; the parser pairs them positionally and truncates
+    /// to the shorter of the two arrays if a record is malformed.
+    pub morphs: Vec<NpcFaceMorph>,
+    /// MSDK — slider key FormIDs (parallel to `slider_values`).
+    pub slider_keys: Vec<u32>,
+    /// MSDV — slider values (parallel to `slider_keys`).
+    pub slider_values: Vec<f32>,
+    /// QNAM — RGB texture-lighting tint + alpha (4 × f32). The trailing
+    /// component on every vanilla FO4 record sampled was `1.0`; preserve
+    /// it verbatim for round-trip rather than dropping it.
+    pub texture_lighting: Option<[f32; 4]>,
+    /// HCLF — hair-color FormID.
+    pub hair_color: Option<u32>,
+    /// BCLF — body-color override FormID. Rare on vanilla; preserved
+    /// when present so future renderer work doesn't have to re-walk the
+    /// record.
+    pub body_color: Option<u32>,
+    /// PNAM — head-part FormIDs (one FormID per sub-record, multiple).
+    pub head_parts: Vec<u32>,
+}
+
+impl NpcFaceMorphs {
+    fn is_empty(&self) -> bool {
+        self.morphs.is_empty()
+            && self.slider_keys.is_empty()
+            && self.slider_values.is_empty()
+            && self.texture_lighting.is_none()
+            && self.hair_color.is_none()
+            && self.body_color.is_none()
+            && self.head_parts.is_empty()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NpcRecord {
     pub form_id: u32,
@@ -54,6 +111,12 @@ pub struct NpcRecord {
     /// Papyrus VM attached-script blob). Presence flag only; full
     /// decoding deferred to scripting-as-ECS work. See #369.
     pub has_script: bool,
+    /// FO4 face-morph block (FMRI/FMRS/MSDK/MSDV/QNAM/HCLF/BCLF/PNAM).
+    /// `None` when the record carries no face-morph sub-records (most
+    /// pre-FO4 NPCs and FO4 generic settlers). Driven by audit
+    /// FO4-DIM6-06 / #591 — actual morph-target application is
+    /// downstream of HDPT mesh linking + the skinning pipeline.
+    pub face_morphs: Option<NpcFaceMorphs>,
 }
 
 #[derive(Debug, Clone)]
@@ -122,7 +185,14 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord]) -> NpcRecord {
         disposition_base: 50,
         acbs_flags: 0,
         has_script: false,
+        face_morphs: None,
     };
+    // FMRI and FMRS are collected separately and zipped after the walk
+    // since they appear alternating on the wire and we don't want to
+    // assume a strict ordering inside the sub-record list.
+    let mut fmri_forms: Vec<u32> = Vec::new();
+    let mut fmrs_settings: Vec<[f32; 9]> = Vec::new();
+    let mut face = NpcFaceMorphs::default();
 
     for sub in subs {
         match &sub.sub_type {
@@ -174,8 +244,95 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord]) -> NpcRecord {
             }
             // VMAD presence-only flag — see `has_script` field doc.
             b"VMAD" => record.has_script = true,
+            // ── #591 / FO4-DIM6-06 face-morph block ────────────────────
+            b"FMRI" if sub.data.len() >= 4 => {
+                fmri_forms.push(read_u32_at(&sub.data, 0).unwrap_or(0));
+            }
+            b"FMRS" if sub.data.len() >= 36 => {
+                let mut s = [0f32; 9];
+                for (i, slot) in s.iter_mut().enumerate() {
+                    let off = i * 4;
+                    *slot = f32::from_le_bytes([
+                        sub.data[off],
+                        sub.data[off + 1],
+                        sub.data[off + 2],
+                        sub.data[off + 3],
+                    ]);
+                }
+                fmrs_settings.push(s);
+            }
+            // MSDK / MSDV are parallel arrays of u32 / f32 entries; on
+            // vanilla FO4 they're single sub-records carrying the full
+            // table. Reading them as variable-length flat arrays is
+            // forward-compatible with malformed records that split the
+            // table across multiple sub-records (last-wins per arm
+            // would silently drop earlier entries — `extend` preserves).
+            b"MSDK" if sub.data.len() >= 4 => {
+                for chunk in sub.data.chunks_exact(4) {
+                    face.slider_keys
+                        .push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+                }
+            }
+            b"MSDV" if sub.data.len() >= 4 => {
+                for chunk in sub.data.chunks_exact(4) {
+                    face.slider_values
+                        .push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+                }
+            }
+            // QNAM (FO4): 4 × f32 = texture-lighting tint (RGB + alpha).
+            // Pre-FO4 games carry a smaller QNAM payload on different
+            // record types (e.g. WTHR), so the length gate keeps this
+            // arm scoped to the FO4 NPC variant.
+            b"QNAM" if sub.data.len() >= 16 => {
+                let mut t = [0f32; 4];
+                for (i, slot) in t.iter_mut().enumerate() {
+                    let off = i * 4;
+                    *slot = f32::from_le_bytes([
+                        sub.data[off],
+                        sub.data[off + 1],
+                        sub.data[off + 2],
+                        sub.data[off + 3],
+                    ]);
+                }
+                face.texture_lighting = Some(t);
+            }
+            b"HCLF" if sub.data.len() >= 4 => {
+                face.hair_color = Some(read_u32_at(&sub.data, 0).unwrap_or(0));
+            }
+            b"BCLF" if sub.data.len() >= 4 => {
+                face.body_color = Some(read_u32_at(&sub.data, 0).unwrap_or(0));
+            }
+            b"PNAM" if sub.data.len() >= 4 => {
+                face.head_parts
+                    .push(read_u32_at(&sub.data, 0).unwrap_or(0));
+            }
             _ => {}
         }
+    }
+
+    // Pair FMRI + FMRS positionally. Truncation to the shorter length
+    // is the defensive choice — Bethesda's authoring tool emits paired
+    // sub-records, but a malformed mod could ship one without the
+    // other, and silently dropping the unpaired tail is preferable to
+    // panicking the cell load.
+    let pair_count = fmri_forms.len().min(fmrs_settings.len());
+    if fmri_forms.len() != fmrs_settings.len() {
+        log::debug!(
+            "NPC {form_id:08X}: FMRI/FMRS count mismatch ({} vs {}); pairing first {}",
+            fmri_forms.len(),
+            fmrs_settings.len(),
+            pair_count,
+        );
+    }
+    for i in 0..pair_count {
+        face.morphs.push(NpcFaceMorph {
+            form_id: fmri_forms[i],
+            setting: fmrs_settings[i],
+        });
+    }
+
+    if !face.is_empty() {
+        record.face_morphs = Some(face);
     }
 
     record
@@ -486,5 +643,143 @@ mod tests {
             f.flags, 0,
             "empty DATA must not override the FactionRecord default"
         );
+    }
+
+    // ── #591 / FO4-DIM6-06 face-morph capture ──────────────────────────
+
+    /// Build a 36-byte FMRS payload from 9 floats.
+    fn fmrs_bytes(values: [f32; 9]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(36);
+        for v in values {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out
+    }
+
+    /// FMRI / FMRS appear in alternating order on the wire and pair
+    /// 1-to-1 inside the parsed record. Shape verified against vanilla
+    /// `Fallout4.esm` named-NPC sub-records (Hancock has 6 paired
+    /// FMRI/FMRS; MQ101KelloggScene player duplicate has 30).
+    #[test]
+    fn npc_pairs_fmri_with_fmrs_in_order() {
+        let s0 = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let s1 = [-1.0, -2.0, -3.0, -4.0, -5.0, -6.0, -7.0, -8.0, -9.0];
+        let subs = vec![
+            sub(b"EDID", b"NamedNpc\0"),
+            sub(b"FMRI", &0xDEADu32.to_le_bytes()),
+            sub(b"FMRS", &fmrs_bytes(s0)),
+            sub(b"FMRI", &0xBEEFu32.to_le_bytes()),
+            sub(b"FMRS", &fmrs_bytes(s1)),
+        ];
+        let n = parse_npc(0x600, &subs);
+        let face = n
+            .face_morphs
+            .as_ref()
+            .expect("face_morphs must be Some when FMRI/FMRS present");
+        assert_eq!(face.morphs.len(), 2);
+        assert_eq!(face.morphs[0].form_id, 0xDEAD);
+        assert_eq!(face.morphs[0].setting, s0);
+        assert_eq!(face.morphs[1].form_id, 0xBEEF);
+        assert_eq!(face.morphs[1].setting, s1);
+    }
+
+    /// MSDK / MSDV are parallel arrays: u32 keys + matching f32 values.
+    /// One sub-record carries the full table on vanilla FO4 NPCs;
+    /// `chunks_exact` walks every entry without dropping a tail.
+    #[test]
+    fn npc_msdk_msdv_walk_full_table() {
+        let mut msdk = Vec::new();
+        msdk.extend_from_slice(&0x10u32.to_le_bytes());
+        msdk.extend_from_slice(&0x20u32.to_le_bytes());
+        msdk.extend_from_slice(&0x30u32.to_le_bytes());
+        let mut msdv = Vec::new();
+        msdv.extend_from_slice(&0.25f32.to_le_bytes());
+        msdv.extend_from_slice(&0.5f32.to_le_bytes());
+        msdv.extend_from_slice(&0.75f32.to_le_bytes());
+        let subs = vec![
+            sub(b"EDID", b"Slidered\0"),
+            sub(b"MSDK", &msdk),
+            sub(b"MSDV", &msdv),
+        ];
+        let n = parse_npc(0x601, &subs);
+        let face = n.face_morphs.as_ref().unwrap();
+        assert_eq!(face.slider_keys, vec![0x10, 0x20, 0x30]);
+        assert_eq!(face.slider_values, vec![0.25, 0.5, 0.75]);
+    }
+
+    /// QNAM is 4 × f32 on FO4 NPCs (texture-lighting tint). HCLF / BCLF
+    /// each are u32 FormIDs; multiple PNAM head-part FormIDs accumulate.
+    #[test]
+    fn npc_captures_qnam_hclf_bclf_pnam() {
+        let mut qnam = Vec::new();
+        for v in [0.6f32, 0.7, 0.8, 1.0] {
+            qnam.extend_from_slice(&v.to_le_bytes());
+        }
+        let subs = vec![
+            sub(b"EDID", b"FullFace\0"),
+            sub(b"QNAM", &qnam),
+            sub(b"HCLF", &0x1111u32.to_le_bytes()),
+            sub(b"BCLF", &0x2222u32.to_le_bytes()),
+            sub(b"PNAM", &0xAAAAu32.to_le_bytes()),
+            sub(b"PNAM", &0xBBBBu32.to_le_bytes()),
+            sub(b"PNAM", &0xCCCCu32.to_le_bytes()),
+        ];
+        let n = parse_npc(0x602, &subs);
+        let face = n.face_morphs.as_ref().unwrap();
+        assert_eq!(face.texture_lighting, Some([0.6, 0.7, 0.8, 1.0]));
+        assert_eq!(face.hair_color, Some(0x1111));
+        assert_eq!(face.body_color, Some(0x2222));
+        assert_eq!(face.head_parts, vec![0xAAAA, 0xBBBB, 0xCCCC]);
+    }
+
+    /// Face-morph block stays `None` for NPCs that ship none of the
+    /// covered sub-records — pre-FO4 NPCs and FO4 generic settlers
+    /// land in this branch. Regression pin so the
+    /// `if !face.is_empty()` gate doesn't drift to `Some(Default)`.
+    #[test]
+    fn npc_without_face_subs_leaves_face_morphs_none() {
+        let subs = vec![sub(b"EDID", b"PlainSettler\0")];
+        let n = parse_npc(0x603, &subs);
+        assert!(n.face_morphs.is_none());
+    }
+
+    /// Mismatched FMRI/FMRS counts truncate to the shorter array
+    /// instead of panicking. Defensive against malformed mod records;
+    /// vanilla Bethesda content always pairs them 1-to-1.
+    #[test]
+    fn npc_mismatched_fmri_fmrs_truncates_to_shorter() {
+        let s = [1.0; 9];
+        // 3 FMRI but only 2 FMRS — should yield 2 paired entries.
+        let subs = vec![
+            sub(b"EDID", b"Malformed\0"),
+            sub(b"FMRI", &0xA1u32.to_le_bytes()),
+            sub(b"FMRI", &0xA2u32.to_le_bytes()),
+            sub(b"FMRI", &0xA3u32.to_le_bytes()),
+            sub(b"FMRS", &fmrs_bytes(s)),
+            sub(b"FMRS", &fmrs_bytes(s)),
+        ];
+        let n = parse_npc(0x604, &subs);
+        let face = n.face_morphs.as_ref().unwrap();
+        assert_eq!(face.morphs.len(), 2);
+        assert_eq!(face.morphs[0].form_id, 0xA1);
+        assert_eq!(face.morphs[1].form_id, 0xA2);
+    }
+
+    /// Wrong-sized FMRS (e.g. a Skyrim record that ships a smaller
+    /// payload, or a corrupt mod) is dropped silently — the length
+    /// gate `>= 36` keeps malformed bytes from being re-interpreted as
+    /// a partial setting array. The matched FMRI then becomes an
+    /// orphan and the truncation rule above drops it too.
+    #[test]
+    fn npc_undersized_fmrs_is_dropped() {
+        let subs = vec![
+            sub(b"EDID", b"BadBytes\0"),
+            sub(b"FMRI", &0xF00Du32.to_le_bytes()),
+            sub(b"FMRS", &[0u8; 16]), // < 36 bytes
+        ];
+        let n = parse_npc(0x605, &subs);
+        // FMRI captured but FMRS dropped → mismatched (1 vs 0) →
+        // truncate to 0 → no morphs → block is empty → None.
+        assert!(n.face_morphs.is_none());
     }
 }

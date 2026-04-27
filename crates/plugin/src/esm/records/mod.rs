@@ -1487,6 +1487,7 @@ mod tests {
                 disposition_base: 50,
                 acbs_flags: 0,
                 has_script: false,
+                face_morphs: None,
             },
         );
         assert_eq!(idx.total(), 2);
