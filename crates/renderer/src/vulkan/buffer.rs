@@ -7,6 +7,31 @@ use ash::vk;
 use gpu_allocator::vulkan;
 use gpu_allocator::MemoryLocation;
 
+/// MEM-2-5 / #680 — startup assertion that a freshly-allocated
+/// `MemoryLocation::CpuToGpu` allocation came back with a persistent
+/// host mapping. `gpu-allocator` 0.27 maps `CpuToGpu` linear
+/// allocations once at `allocate()` and keeps them mapped for the
+/// allocation's lifetime; that contract is documented but not asserted
+/// at our buffer construction. A future allocator-config flag (or a
+/// backend swap) that defers mapping would silently make every
+/// downstream `.mapped_slice_mut()` panic on "Buffer not mapped"
+/// the first time the renderer tries to upload — instead of failing
+/// loudly at startup. Calling this helper after every CpuToGpu
+/// `allocate()` is the cheap belt-and-braces guard the audit asked
+/// for. `debug_assert!` so release builds pay zero cycles.
+#[inline]
+pub(crate) fn debug_assert_cpu_to_gpu_mapped(
+    allocation: &vulkan::Allocation,
+    context: &'static str,
+) {
+    debug_assert!(
+        allocation.mapped_slice().is_some(),
+        "{context}: gpu-allocator returned a CpuToGpu allocation with no \
+         persistent mapping — `mapped_slice_mut()` will panic on the first \
+         write. See MEM-2-5 / #680."
+    );
+}
+
 /// Default upper bound on total staging-pool capacity.
 ///
 /// Sized for a typical interior → exterior transition burst: ~20 BC7
@@ -135,6 +160,10 @@ impl StagingPool {
                 allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
             })
             .context("Failed to allocate staging memory")?;
+        // MEM-2-5 / #680 sibling — every staging buffer surfaced by this
+        // pool is written through `mapped_slice_mut`. See
+        // `debug_assert_cpu_to_gpu_mapped` for the rationale.
+        debug_assert_cpu_to_gpu_mapped(&allocation, "StagingPool::acquire");
 
         unsafe {
             self.device
@@ -477,6 +506,12 @@ impl GpuBuffer {
                 allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
             })
             .context("Failed to allocate host-visible memory")?;
+        // MEM-2-5 / #680 — every per-frame buffer (lights, camera, bones,
+        // instances, indirect, ray-budget, TLAS instance staging) reaches
+        // `mapped_slice_mut` on its hot path. Catch a regression in the
+        // allocator's mapping policy at construction, not on the first
+        // write.
+        debug_assert_cpu_to_gpu_mapped(&allocation, "create_host_visible");
 
         unsafe {
             device
@@ -745,6 +780,10 @@ impl GpuBuffer {
                     allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
                 })
                 .context("Failed to allocate staging memory")?;
+            debug_assert_cpu_to_gpu_mapped(
+                &alloc,
+                "create_device_local_with_data buffer_staging",
+            );
 
             unsafe {
                 device

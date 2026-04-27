@@ -85,6 +85,7 @@ impl Texture {
                     allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
                 })
                 .context("Failed to allocate staging memory")?;
+            super::buffer::debug_assert_cpu_to_gpu_mapped(&alloc, "texture_staging");
             unsafe {
                 device
                     .bind_buffer_memory(buf, alloc.memory(), alloc.offset())
@@ -340,6 +341,7 @@ impl Texture {
                     allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
                 })
                 .context("Failed to allocate BC staging memory")?;
+            super::buffer::debug_assert_cpu_to_gpu_mapped(&alloc, "bc_texture_staging");
             unsafe {
                 device
                     .bind_buffer_memory(buf, alloc.memory(), alloc.offset())

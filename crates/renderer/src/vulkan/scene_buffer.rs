@@ -1201,6 +1201,10 @@ impl SceneBuffers {
                 allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
             })
             .context("Failed to allocate terrain tile staging memory")?;
+        super::buffer::debug_assert_cpu_to_gpu_mapped(
+            &staging_alloc,
+            "terrain_tile_staging",
+        );
         unsafe {
             device
                 .bind_buffer_memory(
