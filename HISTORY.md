@@ -24,6 +24,107 @@ Commits hold that record.
 
 ---
 
+## Session 22 — Cell-loader monolith refactor + Oblivion / NIF audit closeouts  (2026-04-27, 552f494..db62c94)
+
+Two-track session driven by the next-day filing of two large audit
+reports (`AUDIT_OBLIVION_2026-04-25.md` + `AUDIT_NIF_2026-04-26.md`)
+on top of session 21's audit closeout. The first half tore the cell
+loader out of the byroredux binary monolith into submodules; the
+second half worked the audit backlogs in parallel, closing 30+
+issues across NIF parser correctness (FO4+ wire-layout gaps surfaced
+by the corpus sweep), Oblivion mesh / ESM hardening, memory and
+acceleration-structure lifecycle (MEM-2-* bundle), and a cluster
+of small RT / denoiser / VFX corrections.
+
+- **Cell-loader monolith refactor (stages A–D + targeted extracts)** —
+  `883d5ed` stage A pulled test mods to sibling files, `a231fd5`
+  stage B split `esm/cell.rs` into a moduledir, `26e11db` stage C
+  did the same for `controller.rs` + `material.rs`, `b8d5ed9`
+  stage D introduced a `SubReader` cursor for typed sub-record decode
+  (R2 risk-reducer first installment). Then `d338dd6` / `8bfb521` /
+  `c101925` / `15a2bb3` extracted `terrain` / `refr` / `load_order` /
+  `nif_import_registry` submodules out of the monolithic `cell_loader.rs`.
+  `09dbcfc` cargo-fmt sweep across the workspace closed the refactor.
+- **NIF parser correctness (audit `2026-04-26` closeout)** — `#708`
+  Starfield BSGeometry/SkinAttach/BoneTranslations triple (190 549
+  blocks recovered from NiUnknown), `#711` FO4 LOD chunks
+  `data_size=0` with non-zero counts, `#712` FO76/Starfield CRC32
+  shader-flag arrays, `#713` BSSkyShaderProperty + BSWaterShaderProperty
+  split off the FO3 PP alias arm, `#715` pre-10.0.1.4 embedded
+  `NiSourceTexture` `Use Internal` byte, `#721` FO4+ NiLight
+  reparented onto NiAVObject (`vercond=#NI_BS_LT_FO4#` — 681
+  light blocks), `#722` BSClothExtraData omits NiExtraData Name
+  per `excludeT="BSExtraData"` (1 523 cloth blocks), `#727`
+  Starfield BSFaceGenNiNode aliased to NiNode (1 282 face NIFs).
+- **Oblivion audit closeout (`2026-04-25`)** — `1feb678` filed the
+  audit + 20 issue dumps. Code fixes: `#687` two NiController*
+  parsers misalign Oblivion stream (NiGeomMorpherController +
+  NiControllerSequence), `#688` defer-with-empirical-refutation of
+  the audit's "v=20.0.0.5 subset" framing for root-NiNode truncation
+  (the 149 affected files are pre-Gamebryo NetImmerse-vintage —
+  `f9fc292` documents this so future audits don't re-derive the
+  stale framing), `#692` XOWN/XRNK/XGLB ownership tuple plumbed
+  through CELL + REFR, `#694` consume `NiVertexColorProperty.lighting_mode`,
+  `#696` zero `specular_color` too when `NiSpecularProperty` disabled,
+  `#699` killed stale "BSA v103 decompression NOT WORKING" framing
+  (`v103` extracts 147 629 / 147 629 vanilla files), `#700` / `#702`
+  comment-only fixes for stale BSA flag and LIGH BGRA framing,
+  `#704` route NiTexturingProperty slot 3 to roughness (Phong
+  exponent), not specStrength (`O4-06`), `#705` drop unconsumed
+  `MaterialInfo.decal_maps`.
+- **Skyrim audit hardening (`SK-D1` / `SK-D2` series)** — `#621`
+  BsTriShape parser hardening (VF_FULL_PRECISION + derived stride),
+  `#622` BSA reader hardening bundle (4 items), `#564` LOD-batch
+  subtree skip, `#566` LGTM lighting-template fallback.
+- **MEM-2-* + lifecycle bundle** — `#639` (LIFE-H1)
+  `pending_destroy_blas` drained in `AccelerationManager::destroy`,
+  `#643` evict idle SkinSlots + matching skinned BLAS per frame,
+  `#644` (MEM-2-2) emit scratch barrier before every per-frame BLAS
+  refit, `#680` (MEM-2-5) assert persistent mapping on CpuToGpu
+  allocations, `#681` (MEM-2-6) drop unused VERTEX_BUFFER from
+  skin_compute output.
+- **RT / denoiser / VFX** — `#574` (RT-2) Frisvad orthonormal basis
+  kills NaN on (0,1,0) normals, `#672` (RT-9) sanitise zero-radius
+  lights at spawn, `#674` (DEN-4) host-side SVGF temporal-α knob
+  for discontinuity recovery, `#676` (DEN-6) TAA preserves HDR.a
+  alpha-blend marker bit, `#641` (SH-3) skinned motion vectors via
+  prev-frame bone palette, `#706` (FX-1) BSEffectShaderProperty
+  routed through emit-only `MATERIAL_KIND_EFFECT_SHADER` (101) —
+  fixes rainbow-tinted Whiterun hearth flames, `#707` brighter
+  smoke + dedicated embers preset for fire emitters,
+  `137c50d` reconstruct BC5 normal-map Z in `perturbNormal`,
+  `e38f08a` `BYROREDUX_RENDER_DEBUG` env-driven fragment-shader
+  bypass flags.
+- **ESM dispatch + cell-loading + asset path hygiene** — `#561`
+  multi-master CLI (M46.0) — repeatable `--master <path>` arg +
+  `EsmIndex::merge_from`, `#629` (FNV-D2-01) ENCH enchantment
+  records dispatch, `#634` (FNV-D2-06) drive `EsmIndex::total()`
+  + log line off one table, `#635` (FNV-D3-05/06) NifImportRegistry
+  LRU + nested PKIN expansion, `#540` (M33-08) WLST entry size
+  dispatched on GameKind not data length, `#544` cell-loader REFR
+  meshes carry Name + Parent + AnimationPlayer, `#587`
+  (FO4-DIM2-05) integration tests for BA2 + BSA readers, `#609`
+  (D6-NEW-01) intern NIF texture paths through `StringPool`.
+- **#529 (FNV-CELL-5)** — derive cloud `tile_scale` from authored
+  DDS width (audit hedged on a non-existent `cloud_scales` field;
+  per-WTHR authority comes from the artist's sprite resolution
+  choice — 5-test pure-helper coverage).
+- **Doc tracking** — 2 audit reports added (`AUDIT_OBLIVION_2026-04-25.md`,
+  `AUDIT_NIF_2026-04-26.md`) plus ~30 curated `ISSUE.md` dumps
+  under `.claude/issues/` for #708–#728.
+
+Net: tests +127 (1 400), LOC +8 284 non-test (~117 099), source
+files +51 (259 — monolith refactor accounts for almost all of it),
+issue dirs +23 (688), 53 commits, no milestone churn, no bench
+refresh (`6a6950a` now 121 commits stale → R6a-stale-5; M41 actor
+spawning still the gating event). Per-game NIF parse rates
+unchanged in the matrix because no fresh corpus sweep ran;
+`#721` / `#722` / `#727` predict ~3 500 fewer demotions across
+FO4 / FO76 / SF Meshes archives once `BYROREDUX_REGEN_BASELINES=1`
+runs locally.
+
+---
+
 ## Session 21 — RT shader bug-bash + AS sync hardening  (2026-04-26, 333b79e..f41912e)
 
 Pure audit-bundle closeout on top of `AUDIT_RENDERER_2026-04-25.md`

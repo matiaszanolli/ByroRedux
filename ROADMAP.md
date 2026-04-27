@@ -12,7 +12,7 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-04-26.
+**Last verified**: 2026-04-27.
 **Bench-of-record**: Prospector Saloon 172.6 FPS / 5.79 ms — commit
 `6a6950a`, wall-clock bench. Scene is glass-heavy (bottles, pitcher,
 marquee sign); RT refraction/reflection cost is representative of a
@@ -351,7 +351,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] **R6** `VulkanContext` scratch buffers have no capacity telemetry — **closed**. `ctx.scratch` console command + `ScratchTelemetry` resource cover all 5 persistent scratches; per-frame refresh via `VulkanContext::fill_scratch_telemetry`. Prospector baseline: 337 KB total, 320 B wasted.
 - [x] **R6a** Prospector re-bench — **closed**. 192.8 FPS / 5.19 ms at `e6e8091`, wall-clock bench.
 - [x] **R6a-stale** Bench-of-record refreshed at `6a6950a` (2026-04-24). Prospector 172.6 FPS / 5.79 ms (was 192.8 / 5.19 — slight regression in compositor-jitter range; fence_ms unchanged at 4.34, GPU still the bottleneck). Skyrim Whiterun 253.3 FPS / 3.95 ms at 1932 entities (was 237 FPS at 1258 entities — entity count up 53% while FPS improved, indicating more REFRs land now without perf cost). FO4 MedTek 92.5 FPS / 10.82 ms (was 90, 7434 entities unchanged).
-- [ ] **R6a-stale-4** Bench-of-record `6a6950a` is now 65 commits stale. Sessions 20 + 21 added M29 GPU pre-skinning, per-entity BLAS refit, AS scratch barrier, SVGF/TAA stage-mask widening, GI tMin tightening, reflection N_view flip, caustic flags + RT-enable gates — all sync / correctness work that doesn't move the Prospector / Whiterun / MedTek bench measurably without an actor-skinning workload. `#652` cluster_cull workgroup parallelisation could move populated-exterior cell-load timing, but the bench-of-record cells are interiors. Refresh still deferred until M41 lands actor spawning; not blocking.
+- [ ] **R6a-stale-5** Bench-of-record `6a6950a` is now 121 commits stale. Session 22 added the cell-loader monolith refactor (test mods → sibling files, controller / material / cell.rs moduledirs, terrain / refr / load_order / nif_import_registry extracts) plus 30+ parser / lifecycle / RT correctness fixes — none touch the GPU hot path on the Prospector / Whiterun / MedTek interior benches. `#643` per-frame skinned BLAS eviction + `#641` SH-3 motion-vector fix and `#644` AS scratch barrier all sit on the actor-spawning critical path; refresh still deferred until M41 lands the actual workload. Not blocking.
 - [x] **R7** Scheduler access declarations — **closed**. `Access` builder + `System::access()` opt-in + `Scheduler::add_to_with_access` for closures + `sys.accesses` console command surface a per-stage Conflict / Unknown report. 3 of 12 systems declared so far (fly_camera, spin, log_stats); 4 Unknown pairs remaining. M27 flip is diagnosable now; eliminating the Unknown rows is incremental migration work.
 
 ### Open — Misc
@@ -359,7 +359,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [ ] `parry3d` panics on nested compound collision shapes (catch_unwind guard in place)
 - [x] ~~`--esm` accepts only one plugin~~ — **closed via #561 / M46.0** (repeatable `--master <path>` CLI arg + multi-plugin merge through `EsmIndex::merge_from`).
 - [ ] `BSBoneLODExtraData` has no parser — surfaced by R3 baselines: 0/34 on FO4, 0/52 on Skyrim SE, 0/56 on FO76 (no instances on the other four games). Single-fix candidate matching the Session 18 R3-driven pattern.
-- [ ] `BSClothExtraData` 0/298 on Starfield — biggest single-game unparsed type in the R3 baselines. Cloth simulation extra data; out of scope for current rendering but blocks any future cloth animation work.
+- [x] ~~`BSClothExtraData` 0/298 on Starfield~~ — **closed via #722**. Parser was reading the NiExtraData `Name` field that nif.xml line 3222 marks `excludeT="BSExtraData"`; consumed 4 bytes of cloth payload as a string-table index, then read garbage as length and tripped EOF. Fix unblocks 1 523 cloth blocks across FO4 (309) / FO76 (365) / SF Meshes01 (298) + SF FaceMeshes (551). Cloth-simulation animation consumer still future work; parser side now correct. Baseline TSVs need a fresh sweep (`BYROREDUX_REGEN_BASELINES=1`) to lock the per-block delta.
 - [ ] One Starfield NIF (`meshes\marker_radius.nif`) requests a 318 MB single-buffer allocation at parse time, exceeding `byroredux_nif::stream::MAX_SINGLE_ALLOC_BYTES = 256 MB`. Per-allocation cap is a different trade-off from the BA2 chunk cap bumped in Session 18 — bumping this one weakens defence against attacker-controlled `u32` sizes inside individual NIF blocks. Tracked separately; one file out of 320 483 in the Starfield mesh archive.
 - [ ] **`#688`** — 149 Oblivion files truncate at root NiNode "failed to fill whole buffer". Investigation refuted the audit's "v=20.0.0.5 subset" framing (see `.claude/issues/688/INVESTIGATION.md`): all 149 are pre-Gamebryo NetImmerse-vintage content shipped in Oblivion's BSA, dominated by **v=10.1.0.106 / bsver=5 (77 files, 52% of bucket)** plus v=10.0.1.0 (39), v=10.0.1.2 (21), v=10.1.0.101 (8), v=4.0.0.2 (4). Empirical hex dump of `meshes\menus\hud_brackets\a_b_c_d_seq.nif` shows a 4-byte leading zero before the NiObjectNET.name field that neither `nif.xml` nor `nifly` document. Two block-layout hypotheses tested (per-block u32 prefix; one-time block_data_offset shift), both partial — different blocks expect different leading layouts. The audit's recommended `block_size` end-of-block assertion doesn't apply because `block_sizes` is gated `since 20.2.0.5` and these files are < 20.2.0.5. **Deferred** until Gamebryo 2.3 / NetImmerse-era `NiObjectNET::LoadBinary` source is mounted to bisect against. Affected files are non-critical-path (HUD brackets, menu assets, one creature head); interior cells render fine. **Caution for future audit runs**: do NOT re-derive the "v=20.0.0.5 subset" framing — it's been empirically refuted.
 
@@ -367,18 +367,18 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-04-26, verified by `/session-close`.
+Ground-truth as of 2026-04-27, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (non-test)            | ~108 815                     |
-| Rust total lines                        | ~111 862                     |
-| Source files (non-test)                 | 208                          |
+| Rust source lines (non-test)            | ~117 099                     |
+| Rust total lines                        | ~120 743                     |
+| Source files (non-test)                 | 259                          |
 | Workspace members                       | 16                           |
-| Tests (last reported by ROADMAP)        | 1273                         |
-| Open issue directories                  | 665 (`.claude/issues/`)       |
+| Tests (last reported by ROADMAP)        | 1400                         |
+| Open issue directories                  | 688 (`.claude/issues/`)       |
 | NIFs in per-game integration sweeps     | 184 886                       |
-| Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 95.21%, FO4 96.46%, FO76 97.34%, Starfield 97.19% (see compat matrix). Recoverable 100% on all except Oblivion 99.99%. |
+| Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 96.24%, FO4 96.46%, FO76 97.34%, Starfield 97.19% (see compat matrix). Recoverable 100% on all except Oblivion 99.99%. Session 22 fixes (#721 / #722 / #727) predict ~3 500 fewer FO4 / FO76 / SF demotions on the next sweep but the percentages above are pre-fix. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
 
 ### Repro commands for every bench claim
