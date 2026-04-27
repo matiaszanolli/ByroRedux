@@ -345,39 +345,105 @@ fn apply_worldspace_weather(
     } else {
         // Procedural fallback — warm Mojave desert sky. Same defaults
         // the bulk loader used pre-#M40 when a worldspace had no
-        // climate / weather.
-        world.insert_resource(CellLightingRes {
-            ambient: [0.15, 0.14, 0.12],
-            directional_color: [1.0, 0.95, 0.8],
-            directional_dir: sun_dir,
-            is_interior: false,
-            fog_color: [0.65, 0.7, 0.8],
-            fog_near: 15000.0,
-            fog_far: 80000.0,
-        });
-        world.insert_resource(SkyParamsRes {
-            zenith_color: [0.15, 0.3, 0.65],
-            horizon_color: [0.55, 0.5, 0.42],
-            sun_direction: sun_dir,
-            sun_color: [1.0, 0.95, 0.8],
-            sun_size: 0.9995,
-            sun_intensity: 4.0,
-            is_exterior: true,
-            cloud_scroll: [0.0, 0.0],
-            cloud_tile_scale: 0.0,
-            cloud_texture_index: 0,
-            sun_texture_index: 0,
-            cloud_scroll_1: [0.0, 0.0],
-            cloud_tile_scale_1: 0.0,
-            cloud_texture_index_1: 0,
-            cloud_scroll_2: [0.0, 0.0],
-            cloud_tile_scale_2: 0.0,
-            cloud_texture_index_2: 0,
-            cloud_scroll_3: [0.0, 0.0],
-            cloud_tile_scale_3: 0.0,
-            cloud_texture_index_3: 0,
-        });
+        // climate / weather. Factored out (#542 / M33-10) so the
+        // procedural-fallback branch also installs `GameTimeRes` +
+        // a synthetic `WeatherDataRes` — without those,
+        // `weather_system` early-returns and the fallback sun stays
+        // pinned at its initial direction forever, freezing exterior
+        // lighting on any cell whose worldspace failed to resolve a
+        // climate / weather (corrupt ESM, broken plugin, bespoke
+        // synthetic test cell).
+        insert_procedural_fallback_resources(world, sun_dir);
     }
+}
+
+/// Procedural Mojave-style sky + lighting + game-time resources for a
+/// worldspace that has no resolved climate / weather record. Mirrors
+/// the per-WTHR insert above but with hardcoded warm-desert defaults.
+///
+/// Crucially also installs `GameTimeRes` (default hour=10 / time_scale
+/// 30×) and a synthetic `WeatherDataRes` whose 6 TOD slots all carry
+/// the same fallback colours, so `weather_system` runs the sun arc
+/// each frame instead of early-returning. The TOD-slot lerp of two
+/// identical endpoints reproduces the procedural colours unchanged
+/// while letting `sun_direction` and `sun_intensity` animate
+/// across the simulated day. Synthetic NAM0 groups outside the six
+/// `weather_system` reads (`SKY_UPPER`, `SKY_FOG`, `SKY_AMBIENT`,
+/// `SKY_SUNLIGHT`, `SKY_SUN`, `SKY_HORIZON`) stay at zero — those
+/// slots aren't sampled in the fallback path.
+fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [f32; 3]) {
+    use byroredux_plugin::esm::records::weather as wthr;
+    const AMBIENT: [f32; 3] = [0.15, 0.14, 0.12];
+    const SUNLIGHT: [f32; 3] = [1.0, 0.95, 0.8];
+    const FOG_COLOR: [f32; 3] = [0.65, 0.7, 0.8];
+    const ZENITH: [f32; 3] = [0.15, 0.3, 0.65];
+    const HORIZON: [f32; 3] = [0.55, 0.5, 0.42];
+    const SUN_COLOR: [f32; 3] = [1.0, 0.95, 0.8];
+    const FOG_NEAR: f32 = 15000.0;
+    const FOG_FAR: f32 = 80000.0;
+
+    world.insert_resource(CellLightingRes {
+        ambient: AMBIENT,
+        directional_color: SUNLIGHT,
+        directional_dir: sun_dir,
+        is_interior: false,
+        fog_color: FOG_COLOR,
+        fog_near: FOG_NEAR,
+        fog_far: FOG_FAR,
+    });
+    world.insert_resource(SkyParamsRes {
+        zenith_color: ZENITH,
+        horizon_color: HORIZON,
+        sun_direction: sun_dir,
+        sun_color: SUN_COLOR,
+        sun_size: 0.9995,
+        sun_intensity: 4.0,
+        is_exterior: true,
+        cloud_scroll: [0.0, 0.0],
+        cloud_tile_scale: 0.0,
+        cloud_texture_index: 0,
+        sun_texture_index: 0,
+        cloud_scroll_1: [0.0, 0.0],
+        cloud_tile_scale_1: 0.0,
+        cloud_texture_index_1: 0,
+        cloud_scroll_2: [0.0, 0.0],
+        cloud_tile_scale_2: 0.0,
+        cloud_texture_index_2: 0,
+        cloud_scroll_3: [0.0, 0.0],
+        cloud_tile_scale_3: 0.0,
+        cloud_texture_index_3: 0,
+    });
+
+    // Synthetic NAM0 table — every TOD slot gets the same procedural
+    // colour for the six groups `weather_system` reads. The lerp of
+    // two equal endpoints is a no-op for colour, so the TOD pass
+    // re-writes the same procedural values each frame while still
+    // refreshing `sun_direction` / `sun_intensity` from the advancing
+    // game hour. See #542 / M33-10.
+    let mut sky_colors = [[[0.0f32; 3]; wthr::SKY_TIME_SLOTS]; wthr::SKY_COLOR_GROUPS];
+    let synthetic = [
+        (wthr::SKY_UPPER, ZENITH),
+        (wthr::SKY_FOG, FOG_COLOR),
+        (wthr::SKY_AMBIENT, AMBIENT),
+        (wthr::SKY_SUNLIGHT, SUNLIGHT),
+        (wthr::SKY_SUN, SUN_COLOR),
+        (wthr::SKY_HORIZON, HORIZON),
+    ];
+    for (group, color) in synthetic {
+        for slot in 0..wthr::SKY_TIME_SLOTS {
+            sky_colors[group][slot] = color;
+        }
+    }
+    world.insert_resource(WeatherDataRes {
+        sky_colors,
+        // Day/night fog distances kept identical — no authored night
+        // distance to interpolate toward.
+        fog: [FOG_NEAR, FOG_FAR, FOG_NEAR, FOG_FAR],
+        // Pre-#463 hardcoded TOD breakpoints — sunrise 6h, day 10h,
+        // sunset 18h, night 22h.
+        tod_hours: [6.0, 10.0, 18.0, 22.0],
+    });
+    world.insert_resource(GameTimeRes::default());
 }
 
 /// Stream the initial radius around the player's spawn cell. Returns
@@ -1764,5 +1830,113 @@ mod cloud_tile_scale_tests {
         let truncated = vec![0u8; 32];
         let s = cloud_tile_scale_for_dds(&truncated, CLOUD_TILE_SCALE_LAYER_0);
         assert!((s - CLOUD_TILE_SCALE_LAYER_0).abs() < 1e-6, "got {}", s);
+    }
+}
+
+#[cfg(test)]
+mod procedural_fallback_tests {
+    //! Regression tests for [`insert_procedural_fallback_resources`] —
+    //! issue #542 / M33-10.
+    //!
+    //! Pre-fix the no-WTHR fallback branch installed `SkyParamsRes` +
+    //! `CellLightingRes` but skipped `GameTimeRes` + `WeatherDataRes`.
+    //! `weather_system` (`systems.rs:1136`) early-returns on missing
+    //! resources, so the fallback sun stayed pinned at the initial
+    //! `sun_direction = [-0.4, 0.8, -0.45]` and `sun_intensity = 4.0`
+    //! forever — every cell whose worldspace failed to resolve a WTHR
+    //! got a frozen sky.
+    //!
+    //! The fix inserts both resources alongside the existing ones,
+    //! with a synthetic NAM0 table whose 6 TOD slots all carry the
+    //! same procedural Mojave defaults so the lerp is a no-op for
+    //! colour while `sun_direction` / `sun_intensity` still animate.
+
+    use super::*;
+    use crate::systems::weather_system;
+    use byroredux_core::ecs::World;
+
+    fn run_fallback_world() -> World {
+        let mut world = World::new();
+        let sun_dir = [-0.4_f32, 0.8, -0.45];
+        insert_procedural_fallback_resources(&mut world, sun_dir);
+        world
+    }
+
+    /// All four resources land in the world.
+    #[test]
+    fn fallback_inserts_all_four_resources() {
+        let world = run_fallback_world();
+        assert!(world.try_resource::<CellLightingRes>().is_some());
+        assert!(world.try_resource::<SkyParamsRes>().is_some());
+        assert!(world.try_resource::<WeatherDataRes>().is_some());
+        assert!(world.try_resource::<GameTimeRes>().is_some());
+    }
+
+    /// `weather_system` runs (no early-return on missing resource)
+    /// and updates `SkyParamsRes.sun_direction` in response to a
+    /// changed `GameTimeRes.hour`. Pin against the initial direction
+    /// the procedural fallback set at install time.
+    #[test]
+    fn weather_system_animates_sun_arc_across_hours() {
+        let world = run_fallback_world();
+        let initial_dir = world.try_resource::<SkyParamsRes>().unwrap().sun_direction;
+
+        // Default game time is hour=10. Advance to mid-afternoon and
+        // confirm the sun moves. Direct field write because
+        // `weather_system`'s own `dt × time_scale / 3600` advance is
+        // tiny per frame and would need millions of dt=1.0 ticks to
+        // span a few hours — manipulating the resource directly
+        // bypasses the multiplier and tests the system's response
+        // shape, not its real-time pacing.
+        {
+            let mut gt = world.try_resource_mut::<GameTimeRes>().unwrap();
+            gt.hour = 16.0;
+        }
+        weather_system(&world, 0.0);
+        let afternoon_dir = world.try_resource::<SkyParamsRes>().unwrap().sun_direction;
+        assert!(
+            (afternoon_dir[0] - initial_dir[0]).abs()
+                + (afternoon_dir[1] - initial_dir[1]).abs()
+                + (afternoon_dir[2] - initial_dir[2]).abs()
+                > 0.01,
+            "sun direction should differ between hour=10 init and hour=16 afternoon, \
+             got initial={:?} afternoon={:?}",
+            initial_dir,
+            afternoon_dir,
+        );
+
+        // Push to hour=22 (night) and confirm sun_intensity drops to
+        // zero — the per-hour intensity ramp is the second half of
+        // the system's response that the fallback freeze was hiding.
+        {
+            let mut gt = world.try_resource_mut::<GameTimeRes>().unwrap();
+            gt.hour = 22.0;
+        }
+        weather_system(&world, 0.0);
+        let night_intensity = world.try_resource::<SkyParamsRes>().unwrap().sun_intensity;
+        assert_eq!(
+            night_intensity, 0.0,
+            "sun_intensity must be 0 at hour=22 (night)",
+        );
+    }
+
+    /// The procedural colours survive the synthetic-NAM0 round-trip:
+    /// `weather_system` re-writes `SkyParamsRes.sun_color` from the
+    /// `SKY_SUN` slot and `CellLightingRes.ambient` from `SKY_AMBIENT`.
+    /// Both should match the install-time procedural values exactly
+    /// because every TOD slot carries the same colour, so the lerp
+    /// of two equal endpoints is identity.
+    #[test]
+    fn weather_system_preserves_procedural_colors() {
+        let world = run_fallback_world();
+        weather_system(&world, 0.0);
+        let sky = world.try_resource::<SkyParamsRes>().unwrap();
+        assert_eq!(sky.sun_color, [1.0, 0.95, 0.8]);
+        assert_eq!(sky.zenith_color, [0.15, 0.3, 0.65]);
+        assert_eq!(sky.horizon_color, [0.55, 0.5, 0.42]);
+        let cell = world.try_resource::<CellLightingRes>().unwrap();
+        assert_eq!(cell.ambient, [0.15, 0.14, 0.12]);
+        assert_eq!(cell.directional_color, [1.0, 0.95, 0.8]);
+        assert_eq!(cell.fog_color, [0.65, 0.7, 0.8]);
     }
 }
