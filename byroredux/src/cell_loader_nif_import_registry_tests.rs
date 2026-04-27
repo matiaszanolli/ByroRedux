@@ -116,6 +116,7 @@ fn lru_cap_evicts_least_recently_inserted_entry() {
         parsed_count: 0,
         failed_count: 0,
         evictions: 0,
+        clip_handles: HashMap::new(),
     };
     reg.insert("a.nif".into(), Some(dummy_cached()));
     reg.insert("b.nif".into(), Some(dummy_cached()));
@@ -152,6 +153,7 @@ fn touch_keys_protects_recently_hit_entries_from_lru() {
         parsed_count: 0,
         failed_count: 0,
         evictions: 0,
+        clip_handles: HashMap::new(),
     };
     reg.insert("door.nif".into(), Some(dummy_cached())); // tick 0
     reg.insert("wall.nif".into(), Some(dummy_cached())); // tick 1
@@ -250,4 +252,111 @@ fn batched_commit_matches_per_iteration_semantics() {
         "3 hits / 5 lookups = 60.0%, got {}",
         reg.hit_rate_pct()
     );
+}
+
+// ── #544: embedded animation clip handle cache ──────────────────────
+
+/// #544 — `clip_handle_for` returns `None` for keys that have never
+/// been registered so the spawn loop can fall through to its
+/// "register now" branch on the first REFR of a new NIF.
+#[test]
+fn clip_handle_for_returns_none_for_unregistered_key() {
+    let reg = NifImportRegistry::new();
+    assert!(reg.clip_handle_for("torch.nif").is_none());
+}
+
+/// #544 — `set_clip_handle` round-trips through `clip_handle_for`
+/// without touching the rest of the registry's state. Subsequent
+/// REFRs of the same model — within a load or across cells — pick up
+/// the memoised handle through the read-only lookup.
+#[test]
+fn set_clip_handle_round_trips_through_clip_handle_for() {
+    let mut reg = NifImportRegistry::new();
+    reg.set_clip_handle("torch.nif".into(), 7);
+    assert_eq!(reg.clip_handle_for("torch.nif"), Some(7));
+    assert_eq!(
+        reg.clip_handle_for("OTHER.nif"),
+        None,
+        "lookup must not leak across keys"
+    );
+    // Cache content is unaffected — clip_handles is an orthogonal
+    // index, not derived from `cache`.
+    assert_eq!(reg.len(), 0);
+}
+
+/// #544 — re-registering a clip for the same key overwrites the
+/// previous handle. Future cell loads of a NIF whose embedded clip
+/// changes (cache eviction → re-parse) reach the fresh handle.
+#[test]
+fn set_clip_handle_overwrite_replaces_previous_value() {
+    let mut reg = NifImportRegistry::new();
+    reg.set_clip_handle("torch.nif".into(), 1);
+    reg.set_clip_handle("torch.nif".into(), 42);
+    assert_eq!(reg.clip_handle_for("torch.nif"), Some(42));
+}
+
+/// #544 — `clear()` drops the clip-handle map in lockstep with the
+/// cache so a forced flush can never produce stale handles. The
+/// `mesh.cache` operator command relies on this invariant when
+/// triggering a manual reset.
+#[test]
+fn clear_drops_clip_handles_alongside_cache() {
+    let mut reg = NifImportRegistry::new();
+    reg.cache
+        .insert("torch.nif".into(), Some(dummy_cached()));
+    reg.parsed_count = 1;
+    reg.set_clip_handle("torch.nif".into(), 12);
+    assert_eq!(reg.clip_handle_for("torch.nif"), Some(12));
+
+    reg.clear();
+    assert_eq!(reg.len(), 0);
+    assert!(
+        reg.clip_handle_for("torch.nif").is_none(),
+        "clear must drop the clip-handle map in lockstep with the cache"
+    );
+}
+
+/// #544 — when the LRU sweep evicts a cache entry, its clip handle
+/// must drop in the same step so a future re-parse of the key
+/// registers a fresh clip. Without this, the registry would hand out
+/// a stale handle pointing at a clip that's still in the
+/// `AnimationClipRegistry` but is logically discarded; the player
+/// would mis-bind silently. Mirrors the eviction-counter bookkeeping
+/// in #635.
+#[test]
+fn lru_eviction_drops_clip_handle_for_victim() {
+    let mut reg = NifImportRegistry {
+        cache: HashMap::new(),
+        access_tick: HashMap::new(),
+        next_tick: 0,
+        max_entries: 2,
+        hits: 0,
+        misses: 0,
+        parsed_count: 0,
+        failed_count: 0,
+        evictions: 0,
+        clip_handles: HashMap::new(),
+    };
+    reg.insert("a.nif".into(), Some(dummy_cached()));
+    reg.set_clip_handle("a.nif".into(), 1);
+    reg.insert("b.nif".into(), Some(dummy_cached()));
+    reg.set_clip_handle("b.nif".into(), 2);
+    assert_eq!(reg.clip_handle_for("a.nif"), Some(1));
+    assert_eq!(reg.clip_handle_for("b.nif"), Some(2));
+
+    // Triggers eviction of `a.nif` (least-recently inserted).
+    reg.insert("c.nif".into(), Some(dummy_cached()));
+
+    assert_eq!(reg.evictions, 1);
+    assert!(
+        !reg.cache.contains_key("a.nif"),
+        "a.nif must have been evicted"
+    );
+    assert!(
+        reg.clip_handle_for("a.nif").is_none(),
+        "eviction must drop the matching clip handle so a future re-parse \
+         registers a fresh clip rather than reaching for a stale handle"
+    );
+    // Surviving entries' handles untouched.
+    assert_eq!(reg.clip_handle_for("b.nif"), Some(2));
 }

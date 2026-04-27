@@ -107,6 +107,16 @@ pub(crate) struct NifImportRegistry {
     /// LRU evictions performed across the process lifetime. Stays at 0
     /// when `max_entries == 0` (unlimited mode).
     pub(crate) evictions: u64,
+    /// Memoised `AnimationClipRegistry` handles per cache key (#544).
+    /// Each parsed NIF whose `embedded_clip` is non-empty is registered
+    /// with the global `AnimationClipRegistry` once and the resulting
+    /// `u32` handle is stashed here so subsequent REFRs of the same
+    /// model — within this cell or any future cell — re-use the same
+    /// clip without re-converting the channel arrays. Cleared in
+    /// lockstep with `cache` and `access_tick` on `clear()` /
+    /// LRU eviction so a stale handle can never reach the player after
+    /// the underlying cache entry has been dropped.
+    clip_handles: HashMap<String, u32>,
 }
 
 impl Default for NifImportRegistry {
@@ -135,6 +145,7 @@ impl NifImportRegistry {
             parsed_count: 0,
             failed_count: 0,
             evictions: 0,
+            clip_handles: HashMap::new(),
         }
     }
 
@@ -145,8 +156,27 @@ impl NifImportRegistry {
     pub(crate) fn clear(&mut self) {
         self.cache.clear();
         self.access_tick.clear();
+        self.clip_handles.clear();
         self.parsed_count = 0;
         self.failed_count = 0;
+    }
+
+    /// Look up a previously-registered embedded-clip handle for `key`.
+    /// Returns `None` when the cache key has never been parsed, when
+    /// the parsed NIF authored no controllers, or when the entry was
+    /// evicted by the LRU sweep. The lookup is read-only — used in
+    /// the spawn hot path before falling through to the (write-locked)
+    /// registration site. See #544.
+    pub(crate) fn clip_handle_for(&self, key: &str) -> Option<u32> {
+        self.clip_handles.get(key).copied()
+    }
+
+    /// Memoise an embedded-clip handle for `key`. Called once per
+    /// unique parsed NIF that authored controllers — the spawn loop
+    /// then reads the handle through [`clip_handle_for`] without
+    /// re-converting the channel arrays. See #544.
+    pub(crate) fn set_clip_handle(&mut self, key: String, handle: u32) {
+        self.clip_handles.insert(key, handle);
     }
 
     /// Total number of cached entries (parsed + failed).
@@ -239,6 +269,12 @@ impl NifImportRegistry {
                 };
                 let removed = self.cache.remove(&victim_key);
                 self.access_tick.remove(&victim_key);
+                // #544 — drop the memoised clip handle in lockstep so
+                // a future re-parse of the same key registers a fresh
+                // clip rather than reaching into the
+                // `AnimationClipRegistry` for a stale handle pointing
+                // at a clip that was logically discarded.
+                self.clip_handles.remove(&victim_key);
                 match removed {
                     Some(Some(_)) => {
                         self.parsed_count = self.parsed_count.saturating_sub(1);
@@ -1507,6 +1543,16 @@ fn load_references(
     // recently-used entries float above the LRU eviction watermark.
     // #635 / FNV-D3-05.
     let mut pending_hits: Vec<String> = Vec::new();
+    // Embedded-clip handles registered during this call. Mirrors
+    // `pending_new` so the spawn loop can reach a freshly-registered
+    // handle through the per-call shadow before the end-of-load
+    // batched commit pushes it into `NifImportRegistry.clip_handles`.
+    // Each parsed NIF whose `embedded_clip` is `Some` produces one
+    // entry (after the conversion + `AnimationClipRegistry::add`
+    // round-trip). Subsequent REFRs of the same model — within this
+    // load or across cells — reach the same `u32` handle without
+    // re-running `convert_nif_clip`. See #544 / #261.
+    let mut pending_clip_handles: HashMap<String, u32> = HashMap::new();
 
     for placed_ref in refs {
         // Skip REFRs whose XESP gating would keep them hidden under
@@ -1728,12 +1774,59 @@ fn load_references(
                             }
                         };
                         this_call_misses += 1;
-                        pending_new.insert(cache_key, parsed.clone());
+                        // #544 — register the embedded animation clip
+                        // exactly once per parsed NIF, before stashing
+                        // into `pending_new`. Subsequent REFRs of this
+                        // model reach the handle through the per-call
+                        // shadow (`pending_clip_handles`) or, on later
+                        // cell loads, through `NifImportRegistry::
+                        // clip_handle_for` after the end-of-load
+                        // commit. The conversion runs at most once per
+                        // unique model across the process — matches
+                        // the loose-NIF path's one-clip-per-NIF
+                        // invariant from #261.
+                        if let Some(ref cached) = parsed {
+                            if let Some(nif_clip) = cached.embedded_clip.as_ref() {
+                                let handle = {
+                                    let mut pool = world.resource_mut::<
+                                        byroredux_core::string::StringPool,
+                                    >();
+                                    let clip = crate::anim_convert::convert_nif_clip(
+                                        nif_clip, &mut pool,
+                                    );
+                                    drop(pool);
+                                    let mut clip_reg = world.resource_mut::<
+                                        byroredux_core::animation::AnimationClipRegistry,
+                                    >();
+                                    clip_reg.add(clip)
+                                };
+                                pending_clip_handles.insert(cache_key.clone(), handle);
+                            }
+                        }
+                        pending_new.insert(cache_key.clone(), parsed.clone());
                         parsed
                     }
                 }
             };
             let Some(cached) = cached else { continue };
+
+            // #544 — embedded animation-clip handle for this REFR's
+            // model. Three-tier lookup mirrors the cache:
+            //   1. `pending_clip_handles` — registered earlier in this
+            //      call's slow path.
+            //   2. `NifImportRegistry::clip_handle_for` — registered
+            //      by an earlier cell load. Read-only / shared lock.
+            //   3. `None` — the cached NIF authored no controllers.
+            // Subsequent REFRs of the same model in this same load
+            // hit case (1) and never touch the registry write path.
+            let clip_handle = pending_clip_handles
+                .get(&cache_key)
+                .copied()
+                .or_else(|| {
+                    world
+                        .resource::<NifImportRegistry>()
+                        .clip_handle_for(&cache_key)
+                });
 
             let count = spawn_placed_instances(
                 world,
@@ -1745,6 +1838,7 @@ fn load_references(
                 ref_scale,
                 stat.light_data.as_ref(),
                 refr_overlay.as_ref(),
+                clip_handle,
             );
             entity_count += count;
             mesh_entity_count += count;
@@ -1766,6 +1860,13 @@ fn load_references(
         reg.touch_keys(pending_hits.iter().map(String::as_str));
         for (key, entry) in pending_new {
             reg.insert(key, entry);
+        }
+        // #544 — commit per-call clip handles into the process-lifetime
+        // registry. Future cell loads of the same NIF reach the
+        // memoised handle through `clip_handle_for` without
+        // re-converting the channel arrays.
+        for (key, handle) in pending_clip_handles {
+            reg.set_clip_handle(key, handle);
         }
         let new_entries = reg.len().saturating_sub(cache_size_at_entry);
         (
@@ -2359,13 +2460,37 @@ fn spawn_placed_instances(
     ref_scale: f32,
     light_data: Option<&esm::cell::LightData>,
     refr_overlay: Option<&RefrTextureOverlay>,
+    clip_handle: Option<u32>,
 ) -> usize {
+    use byroredux_core::ecs::{Name, Parent};
     use byroredux_renderer::Vertex;
 
     let imported = &cached.meshes;
     let collisions = &cached.collisions;
     let nif_lights = &cached.lights;
     let mut count = 0;
+
+    // #544 — per-REFR placement root entity. Mesh entities spawned
+    // below become its children with NIF-local transforms; the
+    // transform-propagation system composes the REFR transform onto
+    // them each frame. Pre-#544 every mesh was anchored independently
+    // at the world-space-composed transform, which prevented the
+    // embedded animation clip's subtree walk from finding the spawned
+    // entities (no `Parent` / `Children` edges, no `Name` to bind
+    // node-keyed channels against). The placement root carries the
+    // composed REFR transform AND the world-space `GlobalTransform`
+    // up front so any read that hits the entity before the next
+    // propagation tick still sees the right placement (e.g. BLAS
+    // build during `build_blas_batched` later in the function).
+    let placement_root = world.spawn();
+    world.insert(
+        placement_root,
+        Transform::new(ref_pos, ref_rot, ref_scale),
+    );
+    world.insert(
+        placement_root,
+        GlobalTransform::new(ref_pos, ref_rot, ref_scale),
+    );
     // Pre-compute how many NIF lights will actually spawn. The
     // ESM-fallback gate at the bottom of this function uses this
     // count instead of `nif_lights.is_empty()` so a NIF that
@@ -2616,8 +2741,21 @@ fn spawn_placed_instances(
         // Load texture (shared resolve: cache → BSA → fallback).
         let tex_handle = resolve_texture(ctx, tex_provider, eff_texture_path.as_deref());
 
-        // Compose: REFR parent transform * NIF local transform.
-        // mesh.rotation is already a Y-up quaternion [x,y,z,w] extracted via SVD.
+        // #544 — mesh entities now sit in the NIF-local frame and
+        // descend from the placement root. The transform-propagation
+        // system composes `placement_root` (the REFR transform) onto
+        // them each frame to produce the world-space `GlobalTransform`
+        // the renderer / BLAS / lighting consume. Pre-#544 every mesh
+        // pre-baked the REFR composition into its own `Transform`,
+        // which left it anchored to nothing the embedded animation
+        // clip could walk to.
+        //
+        // The composed `final_*` values are still computed up front
+        // because the `GlobalTransform` we seed on the mesh has to
+        // match what the propagation pass will compute on the first
+        // tick — anything that reads `GlobalTransform` before then
+        // (renderer's per-frame data collection, BLAS build below)
+        // gets a correctly-placed value in the meantime.
         let nif_quat = Quat::from_xyzw(
             mesh.rotation[0],
             mesh.rotation[1],
@@ -2630,7 +2768,10 @@ fn spawn_placed_instances(
             mesh.translation[2],
         );
 
-        // Composed: parent_rot * (parent_scale * child_pos) + parent_pos
+        // World-space placement (parent_rot * (parent_scale *
+        // child_pos) + parent_pos) — used only to seed the initial
+        // `GlobalTransform`. `Transform` itself stays NIF-local so
+        // the propagation pass produces the same value next tick.
         let final_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
         let final_rot = ref_rot * nif_quat;
         let final_scale = ref_scale * mesh.scale;
@@ -2654,11 +2795,29 @@ fn spawn_placed_instances(
         }
 
         let entity = world.spawn();
-        world.insert(entity, Transform::new(final_pos, final_rot, final_scale));
+        // NIF-local Transform for hierarchy propagation; world-space
+        // GlobalTransform for first-tick consumers. See #544.
+        world.insert(entity, Transform::new(nif_pos, nif_quat, mesh.scale));
         world.insert(
             entity,
             GlobalTransform::new(final_pos, final_rot, final_scale),
         );
+        // Parent/Children edge → embedded animation clip's subtree
+        // walk discovers this mesh through `placement_root`.
+        world.insert(entity, Parent(placement_root));
+        crate::helpers::add_child(world, placement_root, entity);
+        // Name from `ImportedMesh.name` so the clip's node-keyed
+        // channels (`FixedString` interned at parse time, #340)
+        // resolve through `build_subtree_name_map` to this entity.
+        // Pre-#544 the cell-loader path skipped this insert, so even
+        // if `Parent` had been wired the channels would have failed
+        // their name lookup and silently no-op'd.
+        if let Some(ref name) = mesh.name {
+            let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
+            let sym = pool.intern(name);
+            drop(pool);
+            world.insert(entity, Name(sym));
+        }
         world.insert(entity, MeshHandle(mesh_handle));
         world.insert(entity, TextureHandle(tex_handle));
         world.insert(
@@ -2795,6 +2954,24 @@ fn spawn_placed_instances(
         log::info!("Cell BLAS batch: {built}/{} meshes", blas_specs.len());
     }
 
+    // #544 — bind the embedded animation clip to this REFR. Mirrors
+    // the loose-NIF path in `scene.rs::load_nif_bytes`. The clip
+    // registration itself happens once per unique parsed NIF in
+    // `load_references` (cached on `NifImportRegistry`); here we
+    // just spawn one `AnimationPlayer` per placement so the
+    // animation system's subtree walk finds this REFR's mesh
+    // children. Without this insert, water UV scrolls / lava
+    // emissive pulses / torch visibility flickers / fade-in alphas
+    // all stay frozen on cell-rendered REFRs, while loose-NIF
+    // imports of the same models animate correctly.
+    if let Some(handle) = clip_handle {
+        let player_entity = world.spawn();
+        let mut player =
+            byroredux_core::animation::AnimationPlayer::new(handle);
+        player.root_entity = Some(placement_root);
+        world.insert(player_entity, player);
+    }
+
     count
 }
 
@@ -2857,3 +3034,7 @@ mod nif_light_spawn_gate_tests;
 #[cfg(test)]
 #[path = "cell_loader_lgtm_fallback_tests.rs"]
 mod lgtm_fallback_tests;
+
+#[cfg(test)]
+#[path = "cell_loader_placement_root_subtree_tests.rs"]
+mod placement_root_subtree_tests;
