@@ -463,6 +463,43 @@ impl AccelerationManager {
         });
     }
 
+    /// Drain `pending_destroy_blas` synchronously, regardless of the
+    /// per-entry countdown. Call from a shutdown sweep AFTER
+    /// `device_wait_idle` has settled all in-flight command buffers
+    /// (the countdown's only purpose is to stand in for that wait).
+    /// Each drained entry's BLAS, backing buffer, and `Arc<Mutex<…>>`
+    /// allocator clones are released here, ahead of the parent
+    /// `VulkanContext::Drop` that would otherwise run the same drain
+    /// inline. Counterpart of [`Self::tick_deferred_destroy`] for the
+    /// "no future frames will tick the countdown" shutdown path. See
+    /// #732 / LIFE-H2.
+    ///
+    /// # Safety
+    ///
+    /// Caller must guarantee no live command buffer references any
+    /// queued BLAS — typically by an immediately preceding
+    /// `device_wait_idle`.
+    pub unsafe fn drain_pending_destroys(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+    ) {
+        for (mut entry, _countdown) in self.pending_destroy_blas.drain(..) {
+            unsafe {
+                self.accel_loader
+                    .destroy_acceleration_structure(entry.accel, None);
+            }
+            entry.buffer.destroy(device, allocator);
+        }
+    }
+
+    /// Number of entries currently waiting in `pending_destroy_blas`.
+    /// Surfaced for [`drain_pending_destroys`]'s unit test and shutdown
+    /// telemetry — the count must reach zero after a drain. See #732.
+    pub fn pending_destroy_blas_count(&self) -> usize {
+        self.pending_destroy_blas.len()
+    }
+
     /// Build a BLAS for a mesh. Call after uploading the mesh to GPU.
     ///
     /// NOTE: This submits a one-time command buffer and blocks on a fence
@@ -2373,12 +2410,10 @@ impl AccelerationManager {
         // above, minus the countdown branch. Sibling fixes already
         // landed in `mesh.rs::MeshRegistry::destroy` (#deferred_destroy
         // drain) and `texture_registry.rs::TextureRegistry::destroy`
-        // (per-entry pending_destroy drain).
-        for (mut entry, _countdown) in self.pending_destroy_blas.drain(..) {
-            self.accel_loader
-                .destroy_acceleration_structure(entry.accel, None);
-            entry.buffer.destroy(device, allocator);
-        }
+        // (per-entry pending_destroy drain). #732 factored the body
+        // into `drain_pending_destroys` so the App-level shutdown
+        // sweep can call the same drain explicitly before `Drop`.
+        self.drain_pending_destroys(device, allocator);
         for entry in self.blas_entries.drain(..) {
             if let Some(mut e) = entry {
                 self.accel_loader

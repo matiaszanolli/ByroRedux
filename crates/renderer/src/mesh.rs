@@ -95,6 +95,33 @@ impl MeshRegistry {
         });
     }
 
+    /// Drain `deferred_destroy` synchronously regardless of countdown.
+    /// Counterpart of [`Self::tick_deferred_destroy`] for the shutdown
+    /// path where no future frames will tick the countdown. Caller must
+    /// have already called `device_wait_idle` so the queued buffers
+    /// can't be in-flight. See #732 / LIFE-H2.
+    pub fn drain_deferred_destroy(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+    ) {
+        for (mut vb, mut ib, _countdown) in self.deferred_destroy.drain(..) {
+            if let Some(ref mut b) = vb {
+                b.destroy(device, allocator);
+            }
+            if let Some(ref mut b) = ib {
+                b.destroy(device, allocator);
+            }
+        }
+    }
+
+    /// Number of pairs currently waiting in `deferred_destroy`. Surfaced
+    /// for the [`drain_deferred_destroy`] regression test and shutdown
+    /// telemetry. See #732.
+    pub fn deferred_destroy_count(&self) -> usize {
+        self.deferred_destroy.len()
+    }
+
     /// Upload a mesh to the GPU and return its handle ID.
     ///
     /// Uses a staging buffer to place geometry in DEVICE_LOCAL memory.
@@ -408,15 +435,10 @@ impl MeshRegistry {
         }
         self.global_vertex_buffer = None;
         self.global_index_buffer = None;
-        // Drain deferred-destroy list.
-        for (mut vb, mut ib, _) in self.deferred_destroy.drain(..) {
-            if let Some(ref mut b) = vb {
-                b.destroy(device, allocator);
-            }
-            if let Some(ref mut b) = ib {
-                b.destroy(device, allocator);
-            }
-        }
+        // Drain deferred-destroy list. #732 factored the body into
+        // `drain_deferred_destroy` so the App-level shutdown sweep can
+        // call the same drain explicitly before `Drop`.
+        self.drain_deferred_destroy(device, allocator);
     }
 }
 
@@ -673,4 +695,39 @@ pub fn fullscreen_quad_ui_vertices() -> (Vec<UiVertex>, Vec<u32>) {
     ];
     let indices = vec![0, 1, 2, 2, 3, 0];
     (vertices, indices)
+}
+
+#[cfg(test)]
+mod drain_tests {
+    use super::*;
+
+    /// Regression for #732 / LIFE-H2: `deferred_destroy_count` must
+    /// reflect every queued row (regardless of per-row countdown) so
+    /// the shutdown sweep can assert "zero pending after drain"
+    /// without paying the integration-test setup of a live Vulkan
+    /// device. Real `drain_deferred_destroy` invocation is exercised
+    /// by the integration path in
+    /// `byroredux::main::WindowEvent::CloseRequested`; this is the
+    /// pure-Rust pin against the counter accessor's accuracy.
+    #[test]
+    fn deferred_destroy_count_pins_to_queue_length() {
+        let mut reg = MeshRegistry::new();
+        assert_eq!(reg.deferred_destroy_count(), 0);
+        // Push three placeholder rows with countdowns 2 / 1 / 0.
+        // `(None, None, n)` is the legitimate row shape for a mesh
+        // whose vertex/index buffers were already taken — the queue
+        // still tracks the row's countdown until the next tick or
+        // drain.
+        reg.deferred_destroy.push((None, None, 2));
+        reg.deferred_destroy.push((None, None, 1));
+        reg.deferred_destroy.push((None, None, 0));
+        assert_eq!(reg.deferred_destroy_count(), 3);
+
+        // Simulate the drain's post-condition (real drain calls
+        // `destroy(device, allocator)` on each Some payload, which
+        // needs Vulkan; the queue-clear half of the drain is the
+        // shutdown-correctness invariant).
+        reg.deferred_destroy.clear();
+        assert_eq!(reg.deferred_destroy_count(), 0);
+    }
 }

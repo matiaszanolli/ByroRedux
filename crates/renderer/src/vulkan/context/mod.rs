@@ -1184,6 +1184,50 @@ impl VulkanContext {
         })
     }
 
+    /// Synchronously drain every deferred-destroy queue across the
+    /// three resource registries (BLAS, mesh buffers, textures),
+    /// regardless of per-entry countdowns / frame-id aging. Intended
+    /// for the App's window-close shutdown sweep — after
+    /// `cell_loader::unload_cell` has populated the queues but before
+    /// `self.renderer.take()` runs `VulkanContext::Drop`. See
+    /// #732 / LIFE-H2.
+    ///
+    /// Issues a `device_wait_idle` first so the queued resources can't
+    /// be referenced by any in-flight command buffer. After this call
+    /// the deferred-destroy queue counters reach zero, the per-entry
+    /// `GpuBuffer` / `Texture` structs are dropped (releasing each
+    /// entry's `Arc<Mutex<Allocator>>` clone), and the gpu-allocator's
+    /// internal slabs are returned to its free-list. The destroy chain
+    /// inside `Drop` would do the same drain inline; calling it
+    /// explicitly here moves the queue release out of the
+    /// `if let Some(ref alloc)` block in `Drop` so the intent is
+    /// visible at the App's shutdown call site, and gives the
+    /// allocator unwrap a chance at a smaller `Arc` strong count.
+    ///
+    /// No-op when `accel_manager` or the allocator are absent (headless
+    /// / pre-init paths).
+    pub fn flush_pending_destroys(&mut self) {
+        let Some(allocator) = self.allocator.clone() else {
+            return;
+        };
+        // SAFETY: `device_wait_idle` settles all in-flight command
+        // buffers — required precondition for both
+        // `AccelerationManager::drain_pending_destroys` and the texture
+        // / mesh registry drains.
+        unsafe {
+            let _ = self.device.device_wait_idle();
+        }
+        if let Some(accel) = self.accel_manager.as_mut() {
+            unsafe {
+                accel.drain_pending_destroys(&self.device, &allocator);
+            }
+        }
+        self.mesh_registry
+            .drain_deferred_destroy(&self.device, &allocator);
+        self.texture_registry
+            .drain_pending_destroys(&self.device, &allocator);
+    }
+
     /// Run a closure in a one-time-submit command buffer, reusing the
     /// persistent transfer fence (#302). Prefer this over the free-function
     /// `with_one_time_commands` to avoid per-call fence create/destroy.

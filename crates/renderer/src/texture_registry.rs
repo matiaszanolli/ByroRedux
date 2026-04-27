@@ -505,6 +505,30 @@ impl TextureRegistry {
         }
     }
 
+    /// Drain every entry's `pending_destroy` queue synchronously,
+    /// regardless of `current_frame_id` aging. Counterpart of
+    /// [`Self::tick_deferred_destroy`] for the shutdown path — caller
+    /// must have already called `device_wait_idle` so queued textures
+    /// can't be in-flight on any command buffer. See #732 / LIFE-H2.
+    pub fn drain_pending_destroys(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        for entry in &mut self.textures {
+            for (_, mut pending) in entry.pending_destroy.drain(..) {
+                pending.destroy(device, allocator);
+            }
+        }
+    }
+
+    /// Total number of textures still waiting across every entry's
+    /// `pending_destroy` queue. Surfaced for the
+    /// [`drain_pending_destroys`] regression test and shutdown
+    /// telemetry. See #732.
+    pub fn pending_destroy_count(&self) -> usize {
+        self.textures
+            .iter()
+            .map(|e| e.pending_destroy.len())
+            .sum()
+    }
+
     /// Advance the frame counter for deferred-destroy aging (issue #134).
     /// Advance the deferred-destroy frame counter and mark `slot` as
     /// the descriptor-set that will be recorded next. The caller MUST
@@ -760,10 +784,13 @@ impl TextureRegistry {
 
     /// Destroy all textures, descriptor pool, and layout.
     pub fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        // #732 — factored the per-entry pending_destroy drain into
+        // `drain_pending_destroys` so the App-level shutdown sweep can
+        // call the same drain explicitly before `Drop`. Per-texture
+        // teardown that follows still iterates `self.textures` directly
+        // because it consumes each entry's `texture` Option.
+        self.drain_pending_destroys(device, allocator);
         for entry in &mut self.textures {
-            for (_, mut pending) in entry.pending_destroy.drain(..) {
-                pending.destroy(device, allocator);
-            }
             if let Some(mut t) = entry.texture.take() {
                 t.destroy(device, allocator);
             }

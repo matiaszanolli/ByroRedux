@@ -691,6 +691,20 @@ impl ApplicationHandler for App {
                     for ((_gx, _gy), slot) in cells {
                         cell_loader::unload_cell(&mut self.world, ctx, slot.cell_root);
                     }
+                    // #732 / LIFE-H2 — `unload_cell` queues per-cell
+                    // BLAS/mesh/texture into the renderer's deferred-
+                    // destroy lists with a `MAX_FRAMES_IN_FLIGHT`
+                    // countdown. The countdown only ticks inside
+                    // `draw_frame`, but the window-close path goes
+                    // straight from the unload sweep to `ctx Drop` with
+                    // no intervening render frames. `Drop`'s in-block
+                    // drain catches them eventually, but doing the
+                    // drain explicitly here releases the per-queue
+                    // entries' `Arc<Mutex<Allocator>>` clones before we
+                    // even start tearing down the context — keeps the
+                    // shutdown ordering visible at the call site rather
+                    // than buried inside `VulkanContext::Drop`.
+                    ctx.flush_pending_destroys();
                 }
                 // Drop the streaming state explicitly — joins the
                 // worker thread cleanly via the request_tx Drop chain
