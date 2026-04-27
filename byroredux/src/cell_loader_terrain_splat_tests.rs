@@ -5,7 +5,7 @@
 //! Regression tests for #470 — LAND splat layer packing. Covers
 //! quantization, seam max-reconciliation, and absent-quadrant
 //! handling. Pure-Rust, no GPU.
-use super::{quadrant_samples_for_vertex, splat_weight_for_vertex, CellSplatLayer};
+use super::terrain::{quadrant_samples_for_vertex, splat_weight_for_vertex, CellSplatLayer};
 
 fn mk_layer(per_quadrant_alpha: [Option<Vec<f32>>; 4]) -> CellSplatLayer {
     CellSplatLayer {
