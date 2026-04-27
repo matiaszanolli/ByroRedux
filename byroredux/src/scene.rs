@@ -74,6 +74,31 @@ fn cloud_tile_scale_for_dds(dds_bytes: &[u8], baseline: f32) -> f32 {
     }
 }
 
+/// Diagnostic snapshot of an authored cloud DDS — width × height,
+/// compressed/uncompressed, mip-chain depth — for the
+/// `resolve_cloud_layer` log line. Returned as a pre-formatted string
+/// so the log site can stay terse.
+///
+/// Added for #730 / EXT-RENDER-2: the user reported visible texel
+/// boundaries on FNV WastelandNV clouds despite the bindless sampler
+/// being LINEAR/LINEAR/REPEAT/anisotropic, and asked for the cloud
+/// sprite's actual dimensions in the bootstrap log so the next
+/// streaming session reveals whether the artefact is "tiny DDS
+/// magnified hard" vs. "missing mip chain in `from_rgba`" (which
+/// hard-codes `mip_levels(1)`).
+fn cloud_dds_diag(dds_bytes: &[u8]) -> String {
+    match byroredux_renderer::vulkan::dds::parse_dds(dds_bytes) {
+        Ok(meta) => format!(
+            "{}×{} {} mips={}",
+            meta.width,
+            meta.height,
+            if meta.compressed { "BC" } else { "RGBA" },
+            meta.mip_count,
+        ),
+        Err(_) => "unparseable DDS".to_string(),
+    }
+}
+
 /// Resolve a single WTHR cloud layer end-to-end:
 ///   path → archive extract → DDS upload → (handle, tile_scale).
 ///
@@ -101,6 +126,7 @@ fn resolve_cloud_layer(
         return (0, 0.0);
     };
     let scale = cloud_tile_scale_for_dds(&dds_bytes, baseline_scale);
+    let diag = cloud_dds_diag(&dds_bytes);
     let alloc = ctx.allocator.as_ref().unwrap();
     match ctx.texture_registry.load_dds(
         &ctx.device,
@@ -112,11 +138,12 @@ fn resolve_cloud_layer(
     ) {
         Ok(h) => {
             log::info!(
-                "Cloud layer {} '{}' → handle {} (tile_scale {:.3})",
+                "Cloud layer {} '{}' → handle {} (tile_scale {:.3}, {})",
                 layer_label,
                 path,
                 h,
                 scale,
+                diag,
             );
             (h, scale)
         }
