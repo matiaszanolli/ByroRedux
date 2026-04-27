@@ -217,7 +217,19 @@ void main() {
         vec3 sky = compute_sky(dir);
 
         const float exposure = 0.85;
-        outColor = vec4(aces(sky * exposure), 1.0);
+        // Pass `direct4.a` through (mirroring the geometry branch at
+        // line 279) so the alpha-blend marker bit `DEN-6 / #676`
+        // preserves through TAA stays consistent across both sky and
+        // geometry pixels. Sky pixels by construction don't have a
+        // glass surface in front of them today, so today's
+        // `direct4.a` on a sky-branch fragment is zero — but a future
+        // decal pass / transparent UI / lens-flare feature that asks
+        // "is this swapchain pixel sky?" via swapchain alpha would
+        // see an asymmetric "1.0 = sky, anything else = geometry"
+        // contract that's harder to reason about than the symmetric
+        // "alpha is the marker bit, branch on it the same way."
+        // DEN-11.
+        outColor = vec4(aces(sky * exposure), direct4.a);
     } else {
         // Geometry pixel: combine direct + (indirect × albedo) and tone map.
         // The shader wrote lighting-only indirect (no local albedo) so
