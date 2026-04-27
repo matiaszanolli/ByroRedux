@@ -475,9 +475,12 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             b"WTHR" => extract_records(&mut reader, end, b"WTHR", &mut |fid, subs| {
                 index.weathers.insert(fid, parse_wthr(fid, subs));
             })?,
-            // Climate records — weather probability tables.
+            // Climate records — weather probability tables. The WLST
+            // entry size dispatches off `game` (M33-08 / #540) so
+            // multi-of-3-entry Oblivion CLMTs don't autodetect to the
+            // 12-byte FO3+ schema and mis-thread their FormID slots.
             b"CLMT" => extract_records(&mut reader, end, b"CLMT", &mut |fid, subs| {
-                index.climates.insert(fid, parse_clmt(fid, subs));
+                index.climates.insert(fid, parse_clmt(fid, subs, game));
             })?,
             // FO3 / FNV / Oblivion pre-Papyrus SCPT scripts — bytecode
             // blob + source text + local-var table. Pre-#443 the group
