@@ -79,7 +79,13 @@ fn build_addn_record(
 
 // Helper: build minimal LIGH record with DATA subrecord. The DATA
 // payload uses the real on-disk layout: time(u32) + radius(u32) +
-// color(BGRA u8×4) + flags(u32) = 16 bytes. EDID comes first.
+// color(R, G, B, Unknown — u8×4) + flags(u32) = 16 bytes. EDID comes
+// first. The on-disk byte order matches xEdit's `Color { Red; Green;
+// Blue; Unknown }` definition; pre-#389-revert this comment said BGRA
+// to match a transient D3DCOLOR_XRGB interpretation that flipped warm
+// EDIDs (`OurLadyHopeRed`, `BasementLightKickerWarm`) to their cool
+// complements. See `parse_ligh_decodes_color_as_rgba` below for the
+// FNV-sample evidence.
 fn build_ligh_record(
     form_id: u32,
     editor_id: &str,

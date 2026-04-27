@@ -180,8 +180,14 @@ impl BsaArchive {
         let include_dir_names = archive_flags & 1 != 0;
         let include_file_names = archive_flags & 2 != 0;
         let compressed_by_default = archive_flags & 4 != 0;
-        // Bit 0x100 means "embed file names" only in v104+ (FO3/Skyrim).
-        // Oblivion v103 uses different flag semantics for bits 7-10.
+        // Bit 0x100 has different meaning across versions:
+        //   v103 (Oblivion): "Xbox archive" — irrelevant on PC. Several
+        //     vanilla v103 archives set this bit; ignoring it for embed-
+        //     name purposes is what allows their 100% extraction rate.
+        //   v104+ (FO3/Skyrim): "embed file names" — extract path skips a
+        //     bstring prefix in each file body.
+        // Source: UESP `Oblivion_Mod:BSA_File_Format#Archive_Flags`,
+        // libbsarch `bsa_open.cpp` flag table.
         let embed_file_names = version >= 104 && archive_flags & 0x100 != 0;
 
         if !include_dir_names || !include_file_names {
