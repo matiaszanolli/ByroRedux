@@ -8,6 +8,7 @@ mod components;
 mod helpers;
 mod render;
 mod scene;
+mod streaming;
 mod systems;
 
 use anyhow::Result;
