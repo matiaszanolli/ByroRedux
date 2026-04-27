@@ -149,13 +149,13 @@ fn light_radius_or_default_handles_nan() {
 
 #[test]
 fn plugin_basename_lc_strips_path_and_lowercases() {
-    assert_eq!(super::plugin_basename_lc("Skyrim.esm"), "skyrim.esm");
+    assert_eq!(super::load_order::plugin_basename_lc("Skyrim.esm"), "skyrim.esm");
     assert_eq!(
-        super::plugin_basename_lc("/some/abs/Path/Dawnguard.esm"),
+        super::load_order::plugin_basename_lc("/some/abs/Path/Dawnguard.esm"),
         "dawnguard.esm"
     );
     assert_eq!(
-        super::plugin_basename_lc("Update.ESM"),
+        super::load_order::plugin_basename_lc("Update.ESM"),
         "update.esm",
         "Bethesda content uses case-insensitive plugin names"
     );
@@ -170,22 +170,22 @@ fn plugin_for_form_id_resolves_top_byte_to_load_order_basename() {
     ];
     // Top byte 0 → first plugin in the order.
     assert_eq!(
-        super::plugin_for_form_id(0x0001_2345, &load_order),
+        super::load_order::plugin_for_form_id(0x0001_2345, &load_order),
         Some("skyrim.esm")
     );
     assert_eq!(
-        super::plugin_for_form_id(0x0100_BEEF, &load_order),
+        super::load_order::plugin_for_form_id(0x0100_BEEF, &load_order),
         Some("update.esm")
     );
     assert_eq!(
-        super::plugin_for_form_id(0x0200_DEAD, &load_order),
+        super::load_order::plugin_for_form_id(0x0200_DEAD, &load_order),
         Some("dawnguard.esm")
     );
     // Out-of-range mod-index byte (e.g. malformed FormID, or a
     // plugin not in the loaded order) returns None so the
     // diagnostic can mark it as `???` instead of indexing past.
     assert_eq!(
-        super::plugin_for_form_id(0xFF00_0000, &load_order),
+        super::load_order::plugin_for_form_id(0xFF00_0000, &load_order),
         None,
         "out-of-range mod-index byte must return None, not panic"
     );
