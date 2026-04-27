@@ -359,4 +359,31 @@ mod tests {
         // Sum: 32768 + 8192 + 2048 + 512 + 128 + 32 + 8 + 8 + 8 = 43704
         assert_eq!(total, 43704);
     }
+
+    /// Regression for #730: `Texture::from_dds_with_mip_chain` now
+    /// handles uncompressed RGBA DDS files too (pre-fix the
+    /// uncompressed branch hard-coded `mip_levels(1)` and dropped the
+    /// authored mip chain). The mip-aware upload path uses
+    /// `total_data_size` to size the staging buffer; this test pins the
+    /// byte total for a typical 256×256 RGBA mip chain so a future
+    /// drift in `mip_size` for `compressed=false` surfaces here rather
+    /// than as a buffer-overrun assert at runtime.
+    #[test]
+    fn total_data_size_rgba_256_full_mip_chain() {
+        let meta = DdsMetadata {
+            width: 256,
+            height: 256,
+            mip_count: 9, // 256 → 128 → 64 → 32 → 16 → 8 → 4 → 2 → 1
+            format: vk::Format::R8G8B8A8_SRGB,
+            block_size: 4, // bytes per pixel
+            compressed: false,
+            data_offset: 128,
+        };
+        let total = total_data_size(&meta);
+        // Geometric sum over mips:
+        //   256² + 128² + 64² + 32² + 16² + 8² + 4² + 2² + 1²
+        //   = 65536 + 16384 + 4096 + 1024 + 256 + 64 + 16 + 4 + 1
+        //   = 87381 pixels × 4 bytes = 349_524.
+        assert_eq!(total, 349_524);
+    }
 }

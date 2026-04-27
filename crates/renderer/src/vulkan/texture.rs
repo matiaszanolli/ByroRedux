@@ -287,11 +287,20 @@ impl Texture {
         })
     }
 
-    /// Create a texture from block-compressed (BC) data — DDS payload with mip chain.
+    /// Create a texture from a DDS pixel-data payload with its full
+    /// authored mip chain.
     ///
-    /// Uploads compressed data directly to the GPU; no CPU decompression.
-    /// BC1/BC2/BC3 are mandatory in Vulkan core.
-    pub fn from_bc(
+    /// Handles both block-compressed (BC1/BC2/BC3/BC4/BC5/BC7) and
+    /// uncompressed RGBA formats — `meta.compressed` flips the per-mip
+    /// byte-size math in `dds::mip_size` and the rest of the upload
+    /// (image creation with `meta.mip_count`, per-mip
+    /// `BufferImageCopy` regions, image view `level_count`) is
+    /// format-agnostic. Pre-#730 closeout the uncompressed path went
+    /// through `from_rgba` which hard-coded `mip_levels(1)` and
+    /// dropped the authored mip chain — uncompressed cloud sprites
+    /// then aliased visibly under minification because the sampler
+    /// could only ever read mip 0.
+    pub fn from_dds_with_mip_chain(
         device: &ash::Device,
         allocator: &SharedAllocator,
         queue: &std::sync::Mutex<vk::Queue>,
@@ -306,11 +315,13 @@ impl Texture {
         let total_size = dds::total_data_size(meta);
         assert!(
             pixel_data.len() as u64 >= total_size,
-            "BC pixel data too small: {} bytes for {}x{} {} mips",
+            "DDS pixel data too small: {} bytes for {}x{} {:?} {} mips ({} expected)",
             pixel_data.len(),
             meta.width,
             meta.height,
+            meta.format,
             meta.mip_count,
+            total_size,
         );
 
         let image_size = total_size as vk::DeviceSize;
@@ -327,32 +338,32 @@ impl Texture {
             let buf = unsafe {
                 device
                     .create_buffer(&staging_buffer_info, None)
-                    .context("Failed to create BC staging buffer")?
+                    .context("Failed to create DDS staging buffer")?
             };
             let reqs = unsafe { device.get_buffer_memory_requirements(buf) };
             let alloc = allocator
                 .lock()
                 .expect("allocator lock poisoned")
                 .allocate(&vk_alloc::AllocationCreateDesc {
-                    name: "bc_texture_staging",
+                    name: "dds_texture_staging",
                     requirements: reqs,
                     location: MemoryLocation::CpuToGpu,
                     linear: true,
                     allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
                 })
-                .context("Failed to allocate BC staging memory")?;
-            super::buffer::debug_assert_cpu_to_gpu_mapped(&alloc, "bc_texture_staging");
+                .context("Failed to allocate DDS staging memory")?;
+            super::buffer::debug_assert_cpu_to_gpu_mapped(&alloc, "dds_texture_staging");
             unsafe {
                 device
                     .bind_buffer_memory(buf, alloc.memory(), alloc.offset())
-                    .context("Failed to bind BC staging buffer")?;
+                    .context("Failed to bind DDS staging buffer")?;
             }
             (buf, alloc)
         };
 
         staging_alloc
             .mapped_slice_mut()
-            .context("BC staging buffer not mapped")?[..total_size as usize]
+            .context("DDS staging buffer not mapped")?[..total_size as usize]
             .copy_from_slice(&pixel_data[..total_size as usize]);
 
         // Wrap staging in RAII guard — ensures cleanup on early return.
@@ -383,7 +394,7 @@ impl Texture {
         let image = unsafe {
             device
                 .create_image(&image_info, None)
-                .context("Failed to create BC texture image")?
+                .context("Failed to create DDS texture image")?
         };
 
         let image_reqs = unsafe { device.get_image_memory_requirements(image) };
@@ -392,18 +403,18 @@ impl Texture {
             .lock()
             .expect("allocator lock poisoned")
             .allocate(&vk_alloc::AllocationCreateDesc {
-                name: "bc_texture_image",
+                name: "dds_texture_image",
                 requirements: image_reqs,
                 location: MemoryLocation::GpuOnly,
                 linear: false,
                 allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
             })
-            .context("Failed to allocate BC texture image memory")?;
+            .context("Failed to allocate DDS texture image memory")?;
 
         unsafe {
             device
                 .bind_image_memory(image, image_alloc.memory(), image_alloc.offset())
-                .context("Failed to bind BC texture image memory")?;
+                .context("Failed to bind DDS texture image memory")?;
         }
 
         // Build per-mip copy regions.
@@ -537,11 +548,11 @@ impl Texture {
         let image_view = unsafe {
             device
                 .create_image_view(&view_info, None)
-                .context("Failed to create BC texture image view")?
+                .context("Failed to create DDS texture image view")?
         };
 
         log::info!(
-            "BC texture uploaded: {}x{}, {:?}, {} mips",
+            "DDS texture uploaded: {}x{}, {:?}, {} mips",
             meta.width,
             meta.height,
             meta.format,
@@ -560,7 +571,15 @@ impl Texture {
 
     /// Create a texture from DDS file bytes (header + pixel data).
     ///
-    /// Parses the DDS header, then uploads via `from_bc` or `from_rgba` as appropriate.
+    /// Parses the DDS header, then uploads via
+    /// [`Self::from_dds_with_mip_chain`] regardless of whether the
+    /// payload is block-compressed or uncompressed RGBA — both paths
+    /// share the same per-mip upload shape, only the byte-size math
+    /// changes (and `dds::mip_size` already gates that on
+    /// `meta.compressed`). Pre-#730 the uncompressed branch routed
+    /// through `from_rgba` which hard-coded `mip_levels(1)` and lost
+    /// every authored mip below 0 — uncompressed cloud sprites were
+    /// the visible victim.
     pub fn from_dds(
         device: &ash::Device,
         allocator: &SharedAllocator,
@@ -573,30 +592,16 @@ impl Texture {
         let meta = super::dds::parse_dds(dds_bytes)?;
         let pixel_data = &dds_bytes[meta.data_offset..];
 
-        if meta.compressed {
-            Self::from_bc(
-                device,
-                allocator,
-                queue,
-                command_pool,
-                &meta,
-                pixel_data,
-                sampler,
-                staging_pool,
-            )
-        } else {
-            Self::from_rgba(
-                device,
-                allocator,
-                queue,
-                command_pool,
-                meta.width,
-                meta.height,
-                pixel_data,
-                sampler,
-                staging_pool,
-            )
-        }
+        Self::from_dds_with_mip_chain(
+            device,
+            allocator,
+            queue,
+            command_pool,
+            &meta,
+            pixel_data,
+            sampler,
+            staging_pool,
+        )
     }
 
     /// Destroy the texture and free GPU memory.
