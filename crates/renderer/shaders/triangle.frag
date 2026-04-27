@@ -739,6 +739,24 @@ void main() {
     vec3 V = normalize(cameraPos.xyz - fragWorldPos);
     float NdotV = max(dot(N, V), 0.05);
 
+    // ── RT ray-origin bias normal ───────────────────────────────────────
+    //
+    // Every RT ray that fires from this fragment biases its origin
+    // along the surface normal to escape the macro-surface
+    // self-intersect. The bump map at line 689 can perturb `N` such
+    // that `dot(N, V) < 0` on grazing views or noisy normal maps; the
+    // raw `N` would then bias the origin BEHIND the macro surface and
+    // the ray either self-hits or punches through.
+    //
+    // `#668` (RT-3) introduced this V-aligned normal flip on the metal
+    // reflection (line 1331) and glass IOR (line 1134) paths. RT-11
+    // (#733) hoisted it once here so the per-light reservoir shadow
+    // ray (line 1543) and the GI hemisphere ray (line 1621) — both
+    // sibling sites that originally inherited the pre-#668 raw-`N`
+    // bias — fire from the same V-aligned origin. Self-shadow acne
+    // on bump-mapped grazing geometry was the visible symptom.
+    vec3 N_bias = dot(N, V) < 0.0 ? -N : N;
+
     bool rtEnabled = sceneFlags.x > 0.5;
 
     // ── RT mipmap LOD — analogous to textureGrad mip selection ──────────
@@ -1139,7 +1157,7 @@ void main() {
 
         // Reflection ray — micro-surface normal is correct here.
         vec3 R = reflect(-V, N_view);
-        vec4 reflRay = traceReflection(fragWorldPos + N_view * 0.05, R, 3000.0);
+        vec4 reflRay = traceReflection(fragWorldPos + N_bias * 0.05, R, 3000.0);
         vec3 reflColor = reflRay.rgb;
 
         // Refraction ray using the smooth geometric normal.
@@ -1337,7 +1355,7 @@ void main() {
         buildOrthoBasis(R, T2, B2);
         vec2 cone = concentricDiskSample(n1, n2) * (roughness * roughness);
         vec3 jitteredR = normalize(R + T2 * cone.x + B2 * cone.y);
-        vec4 reflResult = traceReflection(fragWorldPos + N_view * 0.1, jitteredR, 5000.0);
+        vec4 reflResult = traceReflection(fragWorldPos + N_bias * 0.1, jitteredR, 5000.0);
 
         // Fresnel-weighted reflection: stronger at grazing angles.
         vec3 F = fresnelSchlick(NdotV, F0);
@@ -1540,7 +1558,7 @@ void main() {
             buildOrthoBasis(L, T, B);
             vec2 diskSample = concentricDiskSample(noise1, noise2);
 
-            vec3 rayOrigin = fragWorldPos + N * 0.05;
+            vec3 rayOrigin = fragWorldPos + N_bias * 0.05;
             vec3 rayDir;
             float rayDist;
 
@@ -1618,7 +1636,7 @@ void main() {
             float n2 = interleavedGradientNoise(gl_FragCoord.xy + vec2(73.7, 191.3), giSeed + 37.0);
 
             vec3 giDir = cosineWeightedHemisphere(N, n1, n2);
-            vec3 giOrigin = fragWorldPos + N * 0.1;
+            vec3 giOrigin = fragWorldPos + N_bias * 0.1;
 
             // tMin = 0.05 matches the bias and the rest of the ray sites
             // (refraction line 1063, window portal line 931). Pre-#669
