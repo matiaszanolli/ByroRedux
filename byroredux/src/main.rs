@@ -672,6 +672,33 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => {
                 log::info!("Close requested — shutting down");
+                // M40 streaming cleanup: every per-cell streamed load owns
+                // GPU resources (BLAS / mesh buffers / texture refcounts)
+                // released only via `cell_loader::unload_cell`. Without
+                // this sweep the allocator finds 1 dangling ref per
+                // (BLAS + mesh + texture) per loaded cell at ctx
+                // destruction time, triggers the
+                // "leaking allocator to avoid use-after-free" path, and
+                // SIGSEGVs as the orphaned device handles get reaped.
+                if let (Some(ref mut state), Some(ref mut ctx)) =
+                    (self.streaming.as_mut(), self.renderer.as_mut())
+                {
+                    let cells: Vec<_> = state.loaded.drain().collect();
+                    log::info!(
+                        "Streaming shutdown: unloading {} streamed cells before ctx destroy",
+                        cells.len()
+                    );
+                    for ((_gx, _gy), slot) in cells {
+                        cell_loader::unload_cell(&mut self.world, ctx, slot.cell_root);
+                    }
+                }
+                // Drop the streaming state explicitly — joins the
+                // worker thread cleanly via the request_tx Drop chain
+                // before we tear down the GPU. Without this, the
+                // worker could still be holding `Arc<TextureProvider>`
+                // file handles that the allocator's leak path would
+                // observe as outstanding refs.
+                self.streaming.take();
                 self.renderer.take();
                 self.window.take();
                 event_loop.exit();
