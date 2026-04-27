@@ -1849,6 +1849,37 @@ impl VulkanContext {
             512,
         );
 
+        // #645 / MEM-2-3 — TLAS instance buffer mirrored shrink. The
+        // slot we just incremented to (`current_frame` after the line
+        // above) is the one whose previous frame work signalled at
+        // the start of this frame, so its instance / staging /
+        // device-local buffers are GPU-idle at this point and safe to
+        // tear down. The slot we just SUBMITTED on (the one before
+        // the increment) stays in flight and is left alone.
+        //
+        // SAFETY: see precondition on
+        // `AccelerationManager::shrink_tlas_to_fit` — caller must
+        // ensure no in-flight command buffer references the target
+        // slot. The `current_frame_after_increment` slot's fence was
+        // waited on at the start of this frame's recording (the
+        // standard MAX_FRAMES_IN_FLIGHT alternation), so by the time
+        // we reach this line its previous use has completed by
+        // construction. Same justification used by `#504` for the
+        // CPU-side scratch shrink above.
+        if let Some(accel) = self.accel_manager.as_mut() {
+            if let Some(allocator) = self.allocator.as_ref() {
+                let slot_to_shrink = self.current_frame;
+                unsafe {
+                    accel.shrink_tlas_to_fit(
+                        slot_to_shrink,
+                        working_instances as u32,
+                        &self.device,
+                        allocator,
+                    );
+                }
+            }
+        }
+
         Ok(suboptimal || present_suboptimal)
     }
 }

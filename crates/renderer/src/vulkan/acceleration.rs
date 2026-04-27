@@ -278,6 +278,28 @@ fn scratch_should_shrink(current_capacity: vk::DeviceSize, peak_required: vk::De
         && current_capacity.saturating_sub(peak_required) > SLACK
 }
 
+/// Hysteresis decision for the TLAS instance buffer pair (`#645` /
+/// MEM-2-3). Mirrors [`scratch_should_shrink`]'s `2× + slack` shape
+/// but with a TLAS-calibrated slack: instance buffers are 64 B/entry
+/// and live at MB scale, so the BLAS-scratch's 16 MB slack would
+/// effectively never trigger here (a 32 K-instance peak buffer is
+/// only 2 MB). 1 MB ≈ 16 K instances — wide enough to absorb
+/// adjacent-cell-load variance, narrow enough to actually fire when a
+/// big exterior peak settles back into a small interior working set.
+///
+/// `current_capacity_bytes` is `max_instances × sizeof(VkASInstance)`;
+/// `working_set_bytes` is `working_count × sizeof(VkASInstance)`. Pure
+/// function so the unit test can pin the threshold math without a
+/// live Vulkan device.
+fn tlas_instance_should_shrink(
+    current_capacity_bytes: vk::DeviceSize,
+    working_set_bytes: vk::DeviceSize,
+) -> bool {
+    const SLACK: vk::DeviceSize = 1024 * 1024;
+    current_capacity_bytes > working_set_bytes.saturating_mul(2)
+        && current_capacity_bytes.saturating_sub(working_set_bytes) > SLACK
+}
+
 /// Shrink a per-frame scratch `Vec` back toward its working set when a
 /// past peak frame left it holding far more capacity than the steady
 /// state needs. Called at the end of the restore path so scratch
@@ -2362,9 +2384,102 @@ impl AccelerationManager {
         }
     }
 
+    /// Drop the TLAS instance buffer pair on `slot_index` when its
+    /// capacity has grown out of proportion to the current `working_set`
+    /// instance count. Mirror of [`shrink_blas_scratch_to_fit`] for the
+    /// TLAS staging side (`#645` / MEM-2-3) — `instance_buffer` and
+    /// `instance_buffer_device` are grow-only via the existing resize
+    /// path at line 1804 (`max_instances < instance_count` triggers a
+    /// rebuild), so a 32 K-instance exterior peak pinned ~2 MB of
+    /// host-visible BAR + ~2 MB DEVICE_LOCAL stage residue for the
+    /// rest of the session even after the player walked into a
+    /// small interior.
+    ///
+    /// Hysteresis matches the BLAS-scratch policy ([`scratch_should_shrink`])
+    /// in shape: `2×` ratio + slack (calibrated for TLAS scale via
+    /// [`tlas_instance_should_shrink`]). The slot is destroyed
+    /// outright; the next [`Self::build_tlas`] call sees
+    /// `tlas[slot_index].is_none()` and recreates the slot at the
+    /// fresh-build padded size (which the existing `*2 .max(8192)`
+    /// padding still honours).
+    ///
+    /// Returns `true` if the slot was destroyed.
+    ///
+    /// # Safety
+    ///
+    /// - Caller must guarantee no command buffer in flight references
+    ///   `slot_index`'s TLAS / instance / scratch buffers. Typical
+    ///   call site is the App's end-of-frame path **after** the
+    ///   per-frame fence wait that gates the next recording into
+    ///   `slot_index` — at that point the previous use has
+    ///   completed by definition. See `draw.rs::draw_frame` end-of-
+    ///   frame block (`#504` SIBLING).
+    /// - The `device` and `allocator` must be the same ones that
+    ///   allocated the slot's buffers.
+    pub unsafe fn shrink_tlas_to_fit(
+        &mut self,
+        slot_index: usize,
+        working_set: u32,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+    ) -> bool {
+        const INSTANCE_STRIDE: vk::DeviceSize =
+            std::mem::size_of::<vk::AccelerationStructureInstanceKHR>() as vk::DeviceSize;
+        // Match the floor that `build_tlas` itself imposes on every
+        // resize (line 1827 — `padded_count = max(2 * count, 8192)`).
+        // Treating the working set as `max(working, FLOOR)` means a
+        // shrink targeting a tiny working set can't churn below the
+        // floor — the very next build would just re-pad back to it
+        // and we'd burn a free+create cycle for no behavioural change.
+        const WORKING_SET_FLOOR: u32 = 8192;
+
+        let Some(slot) = self.tlas[slot_index].as_ref() else {
+            return false;
+        };
+        let current_capacity_bytes = (slot.max_instances as vk::DeviceSize) * INSTANCE_STRIDE;
+        let working_floor = working_set.max(WORKING_SET_FLOOR);
+        let working_set_bytes = (working_floor as vk::DeviceSize) * INSTANCE_STRIDE;
+        if !tlas_instance_should_shrink(current_capacity_bytes, working_set_bytes) {
+            return false;
+        }
+
+        // Tear down the slot. The next build_tlas re-creates from
+        // scratch via the `tlas[slot_index].is_none()` arm at line
+        // 1804 — that path also sets `needs_full_rebuild = true` so
+        // we don't try to UPDATE-mode an empty slot.
+        if let Some(mut old) = self.tlas[slot_index].take() {
+            log::debug!(
+                "TLAS[{}] instance buffer shrunk: {} → 0 instances ({:.1} MB → 0 MB, working set {})",
+                slot_index,
+                old.max_instances,
+                current_capacity_bytes as f64 / (1024.0 * 1024.0),
+                working_set,
+            );
+            self.accel_loader
+                .destroy_acceleration_structure(old.accel, None);
+            old.buffer.destroy(device, allocator);
+            old.instance_buffer.destroy(device, allocator);
+            old.instance_buffer_device.destroy(device, allocator);
+        }
+        true
+    }
+
     /// Current total BLAS memory in bytes.
     pub fn total_blas_bytes(&self) -> vk::DeviceSize {
         self.total_blas_bytes
+    }
+
+    /// Current TLAS instance-buffer capacity for a frame slot, in
+    /// bytes. `None` if the slot is empty (post-shrink, pre-first-
+    /// build, or never built). Exposed for [`shrink_tlas_to_fit`]'s
+    /// regression test and shutdown telemetry. See #645.
+    pub fn tlas_instance_capacity_bytes(&self, slot_index: usize) -> Option<vk::DeviceSize> {
+        const INSTANCE_STRIDE: vk::DeviceSize =
+            std::mem::size_of::<vk::AccelerationStructureInstanceKHR>() as vk::DeviceSize;
+        self.tlas
+            .get(slot_index)?
+            .as_ref()
+            .map(|t| (t.max_instances as vk::DeviceSize) * INSTANCE_STRIDE)
     }
 
     /// Current BLAS scratch buffer capacity in bytes. `None` if the
@@ -2493,6 +2608,59 @@ mod tests {
         let mut under: Vec<u8> = Vec::with_capacity(800);
         shrink_scratch_if_oversized(&mut under, 500, 512);
         assert_eq!(under.capacity(), 800);
+    }
+
+    /// Regression for #645 / MEM-2-3: the TLAS-instance-buffer shrink
+    /// predicate must fire when a past peak (e.g. 32 K-instance
+    /// exterior cell) has settled back into a small working set, but
+    /// must NOT thrash when the working set is close to the current
+    /// capacity. SLACK is 1 MB (≈16 K instances).
+    #[test]
+    fn tlas_instance_should_shrink_fires_after_exterior_peak() {
+        const STRIDE: vk::DeviceSize = 64;
+        // 32 K-instance peak (= 2 MB) settling into an 8 K-instance
+        // small interior (= 512 KB working). Capacity is 4× working
+        // and 1.5 MB > 1 MB SLACK → shrink.
+        let current = 32_768 * STRIDE;
+        let working = 8_192 * STRIDE;
+        assert!(tlas_instance_should_shrink(current, working));
+    }
+
+    #[test]
+    fn tlas_instance_should_shrink_holds_inside_2x_band() {
+        const STRIDE: vk::DeviceSize = 64;
+        // Capacity 16 K instances (= 1 MB), working 12 K instances
+        // (= 768 KB). Capacity is < 2 × working → don't shrink (the
+        // 2× hysteresis still holds even before the slack check).
+        let current = 16_384 * STRIDE;
+        let working = 12_288 * STRIDE;
+        assert!(!tlas_instance_should_shrink(current, working));
+    }
+
+    #[test]
+    fn tlas_instance_should_shrink_holds_below_slack() {
+        const STRIDE: vk::DeviceSize = 64;
+        // Capacity 16 K (= 1 MB), working 4 K (= 256 KB). Ratio is
+        // 4× (above 2×) but `current - working = 768 KB` is below
+        // the 1 MB SLACK → leave alone, we're already small enough
+        // that a destroy-and-recreate would burn more than it saves.
+        let current = 16_384 * STRIDE;
+        let working = 4_096 * STRIDE;
+        assert!(!tlas_instance_should_shrink(current, working));
+    }
+
+    #[test]
+    fn tlas_instance_should_shrink_zero_working_set_with_big_peak() {
+        const STRIDE: vk::DeviceSize = 64;
+        // 32 K-instance peak with zero working — far above the 2×
+        // band and 2 MB > 1 MB SLACK → shrink. (The
+        // `shrink_tlas_to_fit` wrapper imposes a `WORKING_SET_FLOOR`
+        // of 8 192 on its caller-passed working count, so the
+        // raw-zero case here is for the helper's algebraic
+        // contract; the wrapper's floor is what callers see.)
+        let current = 32_768 * STRIDE;
+        let working = 0;
+        assert!(tlas_instance_should_shrink(current, working));
     }
 
     /// Zero working set must still honour the floor — don't shrink
