@@ -350,16 +350,22 @@ fn apply_worldspace_weather(
     }
 }
 
-/// Sync-load the initial radius around the player's spawn cell.
-/// Returns the camera-spawn point — center of the player's cell on
-/// the terrain surface (sampled at vertex 16,16 of the 33×33
-/// heightmap), or `Vec3::ZERO` if no center cell exists. After this
-/// returns, the streaming state's `loaded` map holds one entry per
-/// successfully-loaded cell.
+/// Stream the initial radius around the player's spawn cell. Returns
+/// the camera-spawn point (center cell terrain mid-height + 200 units,
+/// or `Vec3::ZERO` when there's no center cell).
 ///
-/// Phase 1a synchronous load: blocks the bootstrap thread until every
-/// cell in the initial radius is loaded. Phase 1b moves this to the
-/// worker thread + a payload drain pass on the first few frames.
+/// Dispatches the initial radius via the streaming worker and blocks
+/// (with `payload_rx.recv()`, not `try_recv`) until every pending
+/// load resolves — bench harness expects the world fully populated
+/// before measurement starts. Each payload is consumed via the same
+/// `finish_partial_import` + `load_one_exterior_cell` pipeline the
+/// per-frame `step_streaming` uses.
+///
+/// Phase 1b: worker still does the heavy CPU work off-thread while
+/// the bootstrap thread blocks on the `recv()`. The win vs. Phase 1a
+/// sync is bounded — the bootstrap is single-threaded by design — but
+/// it keeps the post-bootstrap streaming loop using exactly one code
+/// path for cell load (no separate sync vs async branches).
 fn stream_initial_radius(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -373,35 +379,101 @@ fn stream_initial_radius(
         state.radius_load,
         state.radius_unload,
     );
+
+    // Dispatch every cell in the initial radius. Generation counter
+    // ticks per request so a future re-load on the same cell (e.g.
+    // after a scripted teleport in M40 Phase 2) can distinguish stale
+    // payloads from the new one.
+    for (gx, gy) in &deltas.to_load {
+        let coord = (*gx, *gy);
+        let generation = state.next_generation;
+        state.next_generation = state.next_generation.wrapping_add(1);
+        state.pending.insert(coord, generation);
+        let req = streaming::LoadCellRequest {
+            gx: *gx,
+            gy: *gy,
+            generation,
+            wctx: state.wctx.clone(),
+            tex_provider: state.tex_provider.clone(),
+        };
+        if state.request_tx.send(req).is_err() {
+            log::error!(
+                "Streaming worker channel closed during initial-radius dispatch \
+                 — cell ({},{}) cannot be loaded",
+                gx,
+                gy
+            );
+            state.pending.remove(&coord);
+        }
+    }
+
+    // Block on the receiver until every pending load resolves. Loads
+    // arrive in worker-completion order, not dispatch order, so we
+    // consume any payload that arrives and only stop when `pending`
+    // is empty.
     let mut center = Vec3::ZERO;
     let wctx = state.wctx.clone();
-    for (gx, gy) in deltas.to_load {
+    while !state.pending.is_empty() {
+        let payload = match state.payload_rx.recv() {
+            Ok(p) => p,
+            Err(_) => {
+                log::error!(
+                    "Streaming worker disconnected mid-bootstrap with {} pending cells",
+                    state.pending.len()
+                );
+                break;
+            }
+        };
+        let coord = (payload.gx, payload.gy);
+        // Stale-load gate via the testable `classify_payload` helper.
+        match streaming::classify_payload(&state.pending, coord, payload.generation) {
+            streaming::PayloadDecision::Apply => {
+                state.pending.remove(&coord);
+            }
+            streaming::PayloadDecision::StaleNewerPending { .. }
+            | streaming::PayloadDecision::StaleNoPending => continue,
+        }
+        for (model_path, partial_opt) in payload.parsed {
+            match partial_opt {
+                Some(partial) => cell_loader::finish_partial_import(
+                    world,
+                    Some(&mut state.mat_provider),
+                    &model_path,
+                    partial,
+                ),
+                None => {
+                    let cache_key = model_path.to_ascii_lowercase();
+                    let mut reg = world.resource_mut::<cell_loader::NifImportRegistry>();
+                    reg.insert(cache_key, None);
+                }
+            }
+        }
         match cell_loader::load_one_exterior_cell(
             wctx.as_ref(),
-            gx,
-            gy,
+            payload.gx,
+            payload.gy,
             world,
             ctx,
-            &state.tex_provider,
+            state.tex_provider.as_ref(),
             Some(&mut state.mat_provider),
             None,
         ) {
             Ok(Some(info)) => {
-                if (gx, gy) == (cx, cy) {
+                if coord == (cx, cy) {
                     center = info.center;
                 }
                 state.loaded.insert(
-                    (gx, gy),
+                    coord,
                     LoadedCell {
                         cell_root: info.cell_root,
                     },
                 );
             }
             Ok(None) => {
-                // Hole in the worldspace at (gx, gy) — common at edges.
+                // Worldspace hole — common at edges.
             }
             Err(e) => {
-                log::warn!("Initial cell ({},{}) load failed: {:#}", gx, gy, e);
+                log::warn!("Initial cell ({},{}) spawn failed: {:#}", coord.0, coord.1, e);
             }
         }
     }

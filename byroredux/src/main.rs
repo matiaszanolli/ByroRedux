@@ -369,26 +369,61 @@ impl App {
         );
     }
 
-    /// World-streaming tick (M40 Phase 1a). Reads the active camera's
-    /// world position, diffs the loaded cell set against the player's
-    /// current grid coords, and synchronously loads / unloads the
-    /// deltas via `cell_loader::load_one_exterior_cell` /
-    /// `cell_loader::unload_cell`. No-ops when `self.streaming` is
-    /// `None` (interior cell or NIF-only modes) or when the player
-    /// hasn't crossed a cell boundary since the last tick.
+    /// World-streaming tick (M40 Phase 1b). Two-phase per frame:
+    ///
+    /// 1. **Drain ready payloads** from the worker thread. Each
+    ///    payload was a cell pre-parsed off the main thread; we
+    ///    finish the pool-bound import (string interning + BGSM
+    ///    merge) into [`cell_loader::NifImportRegistry`], then call
+    ///    [`cell_loader::load_one_exterior_cell`] which now hits
+    ///    cache for every NIF in the cell (skipping the slow parse
+    ///    path that pre-#Phase-1b ran on the main thread).
+    /// 2. **Diff + dispatch** — read the camera position, compute
+    ///    streaming deltas, send `LoadCellRequest`s for new cells,
+    ///    and unload cells outside `radius_unload`.
+    ///
+    /// The drain runs every frame (worker payloads accumulate
+    /// independent of player movement); the diff+dispatch is gated on
+    /// the player crossing a cell boundary. A stale-load drop happens
+    /// inside the drain when a payload's generation doesn't match
+    /// `state.pending[(gx, gy)]` — the player may have moved out of
+    /// range and back during the parse, invalidating the in-flight
+    /// load.
+    ///
+    /// No-ops when `self.streaming` is `None` (interior cell or
+    /// NIF-only modes).
     fn step_streaming(&mut self) {
-        let Some(state) = self.streaming.as_mut() else {
-            return;
-        };
         let Some(ctx) = self.renderer.as_mut() else {
             return;
         };
+        if self.streaming.is_none() {
+            return;
+        }
 
-        // Resolve the active camera's world translation. ActiveCamera
-        // points at an entity; its `Transform.translation` is the
-        // player position. Without a camera we can't decide what to
-        // stream — bail (the initial-radius load already happened in
-        // setup_scene).
+        // ── 1. Drain ready payloads ─────────────────────────────────
+        //
+        // Pull payloads off the worker's channel one at a time. Each
+        // is consumed via `consume_streaming_payload` (free function,
+        // takes split-borrows of world/state/ctx — keeps the App
+        // method signature borrow-checker friendly). Non-blocking via
+        // `try_recv` — fall through immediately when no payload is
+        // ready.
+        loop {
+            let payload_opt = self
+                .streaming
+                .as_mut()
+                .and_then(|s| s.payload_rx.try_recv().ok());
+            let Some(payload) = payload_opt else { break };
+
+            consume_streaming_payload(
+                &mut self.world,
+                ctx,
+                self.streaming.as_mut().unwrap(),
+                payload,
+            );
+        }
+
+        // ── 2. Diff + dispatch ──────────────────────────────────────
         let player_pos = {
             let Some(active) = self
                 .world
@@ -397,10 +432,7 @@ impl App {
                 return;
             };
             let cam_entity = active.0;
-            let Some(tq) = self
-                .world
-                .query::<byroredux_core::ecs::Transform>()
-            else {
+            let Some(tq) = self.world.query::<byroredux_core::ecs::Transform>() else {
                 return;
             };
             let Some(tform) = tq.get(cam_entity) else {
@@ -408,9 +440,8 @@ impl App {
             };
             tform.translation
         };
-
         let player_grid = streaming::world_pos_to_grid(player_pos.x, player_pos.z);
-        // No-op fast path: player hasn't crossed a cell boundary.
+        let state = self.streaming.as_mut().unwrap();
         if state.last_player_grid == Some(player_grid) {
             return;
         }
@@ -431,45 +462,142 @@ impl App {
             state.radius_unload,
         );
 
-        // Unload first to free GPU resources before loading new cells —
+        // Unload first to free GPU resources before kicking new loads —
         // cuts peak VRAM at the boundary crossing.
         for coord in deltas.to_unload {
             if let Some(slot) = state.loaded.remove(&coord) {
                 cell_loader::unload_cell(&mut self.world, ctx, slot.cell_root);
-                log::info!("Unloaded cell ({},{}) (root {})", coord.0, coord.1, slot.cell_root);
+                log::info!(
+                    "Unloaded cell ({},{}) (root {})",
+                    coord.0,
+                    coord.1,
+                    slot.cell_root
+                );
             }
+            // If a load was in flight for this cell, leave the
+            // pending entry; the drain step compares generation and
+            // drops the stale payload when it eventually arrives.
         }
 
-        // Load new cells. Phase 1a: synchronous on the main thread —
-        // each load blocks the rest of the frame. Phase 1b moves this
-        // to a worker thread + drain pass.
-        let wctx = state.wctx.clone();
+        // Dispatch new loads — non-blocking send, worker picks them up
+        // off-thread.
         for (gx, gy) in deltas.to_load {
-            match cell_loader::load_one_exterior_cell(
-                wctx.as_ref(),
+            // Skip if a load is already in flight or the cell is
+            // already loaded (the diff already filtered loaded, but a
+            // duplicate compute_streaming_deltas call could happen
+            // mid-frame).
+            if state.pending.contains_key(&(gx, gy)) {
+                continue;
+            }
+            let generation = state.next_generation;
+            state.next_generation = state.next_generation.wrapping_add(1);
+            state.pending.insert((gx, gy), generation);
+            let req = streaming::LoadCellRequest {
                 gx,
                 gy,
-                &mut self.world,
-                ctx,
-                &state.tex_provider,
-                Some(&mut state.mat_provider),
-                None,
-            ) {
-                Ok(Some(info)) => {
-                    state.loaded.insert(
-                        (gx, gy),
-                        streaming::LoadedCell {
-                            cell_root: info.cell_root,
-                        },
-                    );
-                }
-                Ok(None) => {
-                    // Hole in worldspace at (gx, gy) — common at edges.
-                }
-                Err(e) => {
-                    log::warn!("Streaming cell ({},{}) load failed: {:#}", gx, gy, e);
-                }
+                generation,
+                wctx: state.wctx.clone(),
+                tex_provider: state.tex_provider.clone(),
+            };
+            if state.request_tx.send(req).is_err() {
+                log::error!(
+                    "Streaming worker channel closed; cell ({},{}) cannot be loaded",
+                    gx,
+                    gy
+                );
+                state.pending.remove(&(gx, gy));
             }
+        }
+    }
+
+}
+
+/// Apply a single worker-pre-parsed [`streaming::LoadCellPayload`]:
+/// stale-generation gate, finish-import every entry into the NIF
+/// cache, then synchronously call
+/// [`cell_loader::load_one_exterior_cell`] (which now hits cache for
+/// every NIF — the slow parse path is skipped).
+///
+/// Free function (not an `App` method) so the caller can split-borrow
+/// `&mut self.world` / `&mut self.streaming.as_mut().unwrap()` /
+/// `&mut self.renderer.as_mut().unwrap()` without aliasing — `App`
+/// method signatures take `&mut self` whole, which conflicts with the
+/// drain loop's `&mut self.renderer` borrow.
+fn consume_streaming_payload(
+    world: &mut byroredux_core::ecs::World,
+    ctx: &mut byroredux_renderer::VulkanContext,
+    state: &mut streaming::WorldStreamingState,
+    payload: streaming::LoadCellPayload,
+) {
+    let coord = (payload.gx, payload.gy);
+    // Stale-load gate via the testable `classify_payload` helper.
+    match streaming::classify_payload(&state.pending, coord, payload.generation) {
+        streaming::PayloadDecision::Apply => {
+            state.pending.remove(&coord);
+        }
+        streaming::PayloadDecision::StaleNewerPending { .. }
+        | streaming::PayloadDecision::StaleNoPending => {
+            log::debug!(
+                "Dropping stale streaming payload ({},{}) gen={}",
+                payload.gx,
+                payload.gy,
+                payload.generation
+            );
+            return;
+        }
+    }
+
+    // Finish-import every pre-parsed entry into the cache. Subsequent
+    // load_one_exterior_cell calls now hit cache for every NIF.
+    let wctx = state.wctx.clone();
+    for (model_path, partial_opt) in payload.parsed {
+        match partial_opt {
+            Some(partial) => {
+                cell_loader::finish_partial_import(
+                    world,
+                    Some(&mut state.mat_provider),
+                    &model_path,
+                    partial,
+                );
+            }
+            None => {
+                let cache_key = model_path.to_ascii_lowercase();
+                let mut reg = world.resource_mut::<cell_loader::NifImportRegistry>();
+                reg.insert(cache_key, None);
+            }
+        }
+    }
+
+    // Spawn pass — every NIF lookup hits cache (slow parse path skipped).
+    match cell_loader::load_one_exterior_cell(
+        wctx.as_ref(),
+        payload.gx,
+        payload.gy,
+        world,
+        ctx,
+        state.tex_provider.as_ref(),
+        Some(&mut state.mat_provider),
+        None,
+    ) {
+        Ok(Some(info)) => {
+            state.loaded.insert(
+                coord,
+                streaming::LoadedCell {
+                    cell_root: info.cell_root,
+                },
+            );
+        }
+        Ok(None) => {
+            // Worldspace hole — common at edges; pending entry already
+            // cleared above.
+        }
+        Err(e) => {
+            log::warn!(
+                "Streaming cell ({},{}) spawn failed after pre-parse: {:#}",
+                payload.gx,
+                payload.gy,
+                e
+            );
         }
     }
 }

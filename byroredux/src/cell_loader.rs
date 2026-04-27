@@ -1328,6 +1328,98 @@ fn parse_and_import_nif(
     }))
 }
 
+/// Finish the main-thread portion of a worker-pre-parsed NIF and
+/// insert it into the [`NifImportRegistry`].
+///
+/// Worker side did:
+///   * BSA byte extract
+///   * `parse_nif`
+///   * `extract_bsx_flags`
+///   * `import_nif_lights`
+///   * `import_nif_particle_emitters`
+///   * `import_embedded_animations`
+///
+/// Main thread (here) does:
+///   * `import_nif_with_collision` (string interning, needs `StringPool`)
+///   * `merge_bgsm_into_mesh` per mesh (needs `&mut MaterialProvider`)
+///   * Editor-marker (BSXFlags 0x20) skip
+///   * Embedded-clip handle registration
+///   * Cache insert
+///
+/// This split mirrors `parse_and_import_nif` but lets the heavy parse
+/// step run off the main thread (M40 Phase 1b). Subsequent
+/// `load_one_exterior_cell` calls find the model in the cache and
+/// skip the slow parse path entirely.
+///
+/// Returns the cache-key string (lowercased model path) so callers can
+/// later issue batched `touch_keys` LRU updates if desired. The
+/// streaming drain doesn't currently bother — pre-warmed entries
+/// touch naturally on first placement.
+pub(crate) fn finish_partial_import(
+    world: &mut World,
+    mat_provider: Option<&mut MaterialProvider>,
+    model_path: &str,
+    partial: crate::streaming::PartialNifImport,
+) {
+    let cache_key = model_path.to_ascii_lowercase();
+    // Editor markers — pre-warmed scene gets cached as `None` so future
+    // placements skip silently. Matches the `parse_and_import_nif` skip
+    // semantics.
+    if partial.bsx & 0x20 != 0 {
+        log::debug!(
+            "[stream-drain] Skipping editor marker NIF '{}'",
+            model_path
+        );
+        let mut reg = world.resource_mut::<NifImportRegistry>();
+        reg.insert(cache_key, None);
+        return;
+    }
+
+    let crate::streaming::PartialNifImport {
+        scene,
+        bsx: _,
+        lights,
+        particle_emitters,
+        embedded_clip,
+    } = partial;
+
+    let (mut meshes, collisions) = {
+        let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
+        byroredux_nif::import::import_nif_with_collision(&scene, &mut pool)
+    };
+    if let Some(provider) = mat_provider {
+        let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
+        for mesh in &mut meshes {
+            merge_bgsm_into_mesh(mesh, provider, &mut pool);
+        }
+    }
+
+    // Embedded animation clip — register exactly once per unique NIF.
+    let clip_handle = embedded_clip.as_ref().map(|nif_clip| {
+        let clip = {
+            let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
+            crate::anim_convert::convert_nif_clip(nif_clip, &mut pool)
+        };
+        let mut clip_reg = world
+            .resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
+        clip_reg.add(clip)
+    });
+
+    let cached = Arc::new(CachedNifImport {
+        meshes,
+        collisions,
+        lights,
+        particle_emitters,
+        embedded_clip,
+    });
+
+    let mut reg = world.resource_mut::<NifImportRegistry>();
+    reg.insert(cache_key.clone(), Some(cached));
+    if let Some(handle) = clip_handle {
+        reg.set_clip_handle(cache_key, handle);
+    }
+}
+
 /// `true` when an `ImportedLight` has a non-trivial diffuse colour
 /// contribution and therefore would actually spawn a `LightSource`
 /// entity. Authored-off placeholder lights (FNV light-bulb meshes

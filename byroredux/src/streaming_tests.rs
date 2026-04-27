@@ -6,7 +6,10 @@
 //! semantics so a future refactor of the App-level driver can't
 //! silently miscompute the load / unload set.
 
-use super::{compute_streaming_deltas, world_pos_to_grid, LoadedCell, StreamingDeltas};
+use super::{
+    classify_payload, compute_streaming_deltas, world_pos_to_grid, LoadedCell, PayloadDecision,
+    StreamingDeltas,
+};
 use byroredux_core::ecs::storage::EntityId;
 use std::collections::HashMap;
 
@@ -177,4 +180,56 @@ fn world_pos_to_grid_floor_semantics() {
     assert_eq!(world_pos_to_grid(4095.99, 0.0), (0, 0));
     assert_eq!(world_pos_to_grid(4096.01, 0.0), (1, 0));
     assert_eq!(world_pos_to_grid(-0.01, 0.0), (-1, 0));
+}
+
+// ── Payload generation-counter gate (M40 Phase 1b) ──────────────
+
+#[test]
+fn payload_decision_apply_on_matching_generation() {
+    // Pending request at gen=7 for (3, 4). Worker payload comes back
+    // tagged with the same gen. Drain must apply.
+    let mut pending = HashMap::new();
+    pending.insert((3, 4), 7u64);
+    let decision = classify_payload(&pending, (3, 4), 7);
+    assert_eq!(decision, PayloadDecision::Apply);
+}
+
+#[test]
+fn payload_decision_stale_no_pending_on_unloaded_cell() {
+    // Cell was unloaded while the payload was in flight. Pending
+    // map has no entry for the coord. Drain must drop the payload —
+    // applying it would re-spawn entities the player already left
+    // behind.
+    let pending = HashMap::new();
+    let decision = classify_payload(&pending, (3, 4), 7);
+    assert_eq!(decision, PayloadDecision::StaleNoPending);
+}
+
+#[test]
+fn payload_decision_stale_newer_pending_on_reload_cycle() {
+    // Player walked out of (3, 4) (pending entry cleared), then back
+    // into it (new request with gen=12). The original gen=7 payload
+    // arrives late. Drain must drop it — applying would clobber the
+    // gen=12 entity set with the older worker output.
+    let mut pending = HashMap::new();
+    pending.insert((3, 4), 12u64);
+    let decision = classify_payload(&pending, (3, 4), 7);
+    assert_eq!(
+        decision,
+        PayloadDecision::StaleNewerPending {
+            pending_generation: 12,
+            payload_generation: 7,
+        }
+    );
+}
+
+#[test]
+fn payload_decision_does_not_consult_unrelated_coords() {
+    // pending[(3, 4)] should not gate decisions for (0, 0).
+    let mut pending = HashMap::new();
+    pending.insert((3, 4), 7u64);
+    assert_eq!(
+        classify_payload(&pending, (0, 0), 7),
+        PayloadDecision::StaleNoPending
+    );
 }
