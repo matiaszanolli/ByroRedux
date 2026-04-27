@@ -11,6 +11,20 @@ use crate::blocks::shader::{
 use crate::blocks::tri_shape::NiTriShape;
 use crate::blocks::NiObject;
 use crate::types::{BlockRef, NiTransform};
+use byroredux_core::string::StringPool;
+
+/// Test helper — runs the walker against a fresh per-call `StringPool`.
+/// Tests in this file only assert on flag fields, never on path
+/// strings, so the pool's lifetime can stay scoped to one assertion.
+/// See #609 / D6-NEW-01 for the FixedString plumbing motivation.
+fn extract_with_pool(
+    scene: &NifScene,
+    shape: &NiTriShape,
+    inherited: &[BlockRef],
+) -> MaterialInfo {
+    let mut pool = StringPool::new();
+    extract_material_info(scene, shape, inherited, &mut pool)
+}
 
 fn empty_net() -> NiObjectNETData {
     NiObjectNETData {
@@ -132,7 +146,7 @@ fn fo3_pp_lighting_flags1_bit12_is_not_double_sided() {
         ..NifScene::default()
     };
     let shape = shape_with_shader_ref(0);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let info = extract_with_pool(&scene, &shape, &[]);
     assert!(
         !info.two_sided,
         "FO3 PPLighting flags1 bit 12 (Unknown_3) must NOT mark two_sided (#441)"
@@ -150,7 +164,7 @@ fn fo3_no_lighting_flags1_bit12_is_not_double_sided() {
         ..NifScene::default()
     };
     let shape = shape_with_shader_ref(0);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let info = extract_with_pool(&scene, &shape, &[]);
     assert!(
         !info.two_sided,
         "FO3 NoLighting flags1 bit 12 (Unknown_3) must NOT mark two_sided (#441)"
@@ -170,7 +184,7 @@ fn fo3_pp_lighting_flags2_bit4_refraction_tint_is_not_double_sided() {
         ..NifScene::default()
     };
     let shape = shape_with_shader_ref(0);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let info = extract_with_pool(&scene, &shape, &[]);
     assert!(
         !info.two_sided,
         "FO3 PPLighting flags2 bit 4 (Refraction_Tint) must NOT mark two_sided (#441)"
@@ -193,7 +207,7 @@ fn skyrim_bs_lighting_flags2_bit4_marks_double_sided() {
     let mut shape = shape_with_shader_ref(0);
     shape.av.properties.clear();
     shape.shader_property_ref = BlockRef(0);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let info = extract_with_pool(&scene, &shape, &[]);
     assert!(
         info.two_sided,
         "Skyrim BSLightingShaderProperty flags2 bit 4 MUST mark two_sided (#441)"
@@ -231,7 +245,7 @@ fn no_lighting_alpha_decal_flag2_marks_is_decal() {
         ..NifScene::default()
     };
     let shape = shape_with_shader_ref(0);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let info = extract_with_pool(&scene, &shape, &[]);
     assert!(
         info.is_decal,
         "NoLighting flags2 bit 21 (ALPHA_DECAL_F2) MUST mark is_decal (#454)"
@@ -287,7 +301,7 @@ fn fo4_anisotropic_lighting_does_not_trigger_decal_classification() {
         ..NifScene::default()
     };
     let shape = shape_with_shader_ref(0);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let info = extract_with_pool(&scene, &shape, &[]);
     assert!(
         !info.is_decal,
         "FO4 Anisotropic_Lighting (F4SF2 bit 21) MUST NOT mark is_decal (#414)"
@@ -307,7 +321,7 @@ fn skyrim_bs_lighting_flags2_zero_leaves_default_culling() {
     let mut shape = shape_with_shader_ref(0);
     shape.av.properties.clear();
     shape.shader_property_ref = BlockRef(0);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let info = extract_with_pool(&scene, &shape, &[]);
     assert!(!info.two_sided);
 }
 
@@ -341,7 +355,7 @@ fn starfield_decal_crc_flips_is_decal_when_legacy_flags_are_zero() {
     let mut shape = shape_with_shader_ref(0);
     shape.av.properties.clear();
     shape.shader_property_ref = BlockRef(0);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let info = extract_with_pool(&scene, &shape, &[]);
     assert!(
         info.is_decal,
         "Starfield decal CRC in sf1_crcs must flip is_decal"
@@ -365,7 +379,7 @@ fn starfield_dynamic_decal_crc_in_sf2_array_flips_is_decal() {
     let mut shape = shape_with_shader_ref(0);
     shape.av.properties.clear();
     shape.shader_property_ref = BlockRef(0);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let info = extract_with_pool(&scene, &shape, &[]);
     assert!(info.is_decal);
 }
 
@@ -385,7 +399,7 @@ fn starfield_two_sided_crc_flips_two_sided_when_legacy_flags_are_zero() {
     let mut shape = shape_with_shader_ref(0);
     shape.av.properties.clear();
     shape.shader_property_ref = BlockRef(0);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let info = extract_with_pool(&scene, &shape, &[]);
     assert!(
         info.two_sided,
         "Starfield Two_Sided CRC must flip info.two_sided"
@@ -411,7 +425,7 @@ fn starfield_unrelated_crcs_do_not_trigger_decal_or_two_sided() {
     let mut shape = shape_with_shader_ref(0);
     shape.av.properties.clear();
     shape.shader_property_ref = BlockRef(0);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let info = extract_with_pool(&scene, &shape, &[]);
     assert!(!info.is_decal, "Skinned/CastShadows/ZBuffer CRCs are not decal");
     assert!(!info.two_sided);
 }

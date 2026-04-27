@@ -356,21 +356,32 @@ impl MaterialProvider {
 pub(crate) fn merge_bgsm_into_mesh(
     mesh: &mut ImportedMesh,
     provider: &mut MaterialProvider,
+    pool: &mut byroredux_core::string::StringPool,
 ) -> bool {
-    let Some(path) = mesh.material_path.clone() else {
+    let Some(path_sym) = mesh.material_path else {
         return false;
     };
-    let lower = path.to_ascii_lowercase();
+    // `StringPool::resolve` returns the canonical lowercased form, so
+    // we own the string for the BGSM dispatch + suffix matching here
+    // without an extra `to_ascii_lowercase` allocation. See #609.
+    let path: String = match pool.resolve(path_sym) {
+        Some(s) => s.to_string(),
+        None => return false,
+    };
 
     let mut touched = false;
-    // `fill` is a helper: populate an Option<String> slot only when
-    // it's None and the incoming value is non-empty. Written as an
-    // `fn` (not a closure) so scalar writes to `touched` elsewhere in
-    // the function don't run into borrow-checker conflicts with the
-    // closure's captured `&mut touched`. See #583.
-    fn fill(slot: &mut Option<String>, value: &str, touched: &mut bool) {
+    // `fill` populates an `Option<FixedString>` slot only when it's
+    // None and the incoming value is non-empty. Routes through the
+    // engine's `StringPool` so the BGSM/BGEM-resolved paths share the
+    // same intern table as the NIF-side paths (#609 / D6-NEW-01).
+    fn fill(
+        slot: &mut Option<byroredux_core::string::FixedString>,
+        value: &str,
+        touched: &mut bool,
+        pool: &mut byroredux_core::string::StringPool,
+    ) {
         if slot.is_none() && !value.is_empty() {
-            *slot = Some(value.to_string());
+            *slot = Some(pool.intern(value));
             *touched = true;
         }
     }
@@ -390,24 +401,25 @@ pub(crate) fn merge_bgsm_into_mesh(
     let mut set_alpha = false;
     let mut set_uv = false;
 
-    if lower.ends_with(".bgsm") {
+    if path.ends_with(".bgsm") {
         let Some(resolved) = provider.resolve_bgsm(&path) else {
             return false;
         };
         for step in resolved.walk() {
             let bgsm = &step.file;
-            fill(&mut mesh.texture_path, &bgsm.diffuse_texture, &mut touched);
-            fill(&mut mesh.normal_map, &bgsm.normal_texture, &mut touched);
-            fill(&mut mesh.glow_map, &bgsm.glow_texture, &mut touched);
+            fill(&mut mesh.texture_path, &bgsm.diffuse_texture, &mut touched, pool);
+            fill(&mut mesh.normal_map, &bgsm.normal_texture, &mut touched, pool);
+            fill(&mut mesh.glow_map, &bgsm.glow_texture, &mut touched, pool);
             // Smoothness/spec mask — .r encodes per-texel specular
             // strength in the engine's existing gloss_map slot. #453.
-            fill(&mut mesh.gloss_map, &bgsm.smooth_spec_texture, &mut touched);
+            fill(&mut mesh.gloss_map, &bgsm.smooth_spec_texture, &mut touched, pool);
             // Legacy v <= 2 environment cube; newer BGSMs drop the slot.
-            fill(&mut mesh.env_map, &bgsm.envmap_texture, &mut touched);
+            fill(&mut mesh.env_map, &bgsm.envmap_texture, &mut touched, pool);
             fill(
                 &mut mesh.parallax_map,
                 &bgsm.displacement_texture,
                 &mut touched,
+                pool,
             );
 
             // Scalar PBR forwarding (#583). Child-first: first authored
@@ -458,15 +470,15 @@ pub(crate) fn merge_bgsm_into_mesh(
                 touched = true;
             }
         }
-    } else if lower.ends_with(".bgem") {
+    } else if path.ends_with(".bgem") {
         let Some(bgem) = provider.resolve_bgem(&path) else {
             return false;
         };
-        fill(&mut mesh.texture_path, &bgem.base_texture, &mut touched);
-        fill(&mut mesh.normal_map, &bgem.normal_texture, &mut touched);
-        fill(&mut mesh.glow_map, &bgem.glow_texture, &mut touched);
-        fill(&mut mesh.env_map, &bgem.envmap_texture, &mut touched);
-        fill(&mut mesh.env_mask, &bgem.envmap_mask_texture, &mut touched);
+        fill(&mut mesh.texture_path, &bgem.base_texture, &mut touched, pool);
+        fill(&mut mesh.normal_map, &bgem.normal_texture, &mut touched, pool);
+        fill(&mut mesh.glow_map, &bgem.glow_texture, &mut touched, pool);
+        fill(&mut mesh.env_map, &bgem.envmap_texture, &mut touched, pool);
+        fill(&mut mesh.env_mask, &bgem.envmap_mask_texture, &mut touched, pool);
 
         // BGEM has no inheritance so there's no child-first chain —
         // we just forward whatever the single file authored. The

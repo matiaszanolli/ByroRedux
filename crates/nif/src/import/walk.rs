@@ -21,6 +21,7 @@ use super::{
     TreeBones,
 };
 use crate::blocks::node::BsRangeKind;
+use byroredux_core::string::StringPool;
 
 /// Downcast a `NiObject` to its underlying `NiNode` representation,
 /// unwrapping any known subclass that wraps a `base: NiNode` (directly
@@ -116,6 +117,7 @@ pub(super) fn walk_node_hierarchical(
     parent_node_idx: Option<usize>,
     inherited_props: &mut Vec<BlockRef>,
     out: &mut ImportedScene,
+    pool: &mut StringPool,
 ) {
     let Some(block) = scene.get(block_idx) else {
         return;
@@ -160,7 +162,7 @@ pub(super) fn walk_node_hierarchical(
         let prev_len = inherited_props.len();
         inherited_props.extend_from_slice(&node.av.properties);
         for idx in active_children {
-            walk_node_hierarchical(scene, idx, Some(this_node_idx), inherited_props, out);
+            walk_node_hierarchical(scene, idx, Some(this_node_idx), inherited_props, out, pool);
         }
         inherited_props.truncate(prev_len);
         return;
@@ -232,7 +234,7 @@ pub(super) fn walk_node_hierarchical(
         inherited_props.extend_from_slice(&node.av.properties);
         for child_ref in &node.children {
             if let Some(idx) = child_ref.index() {
-                walk_node_hierarchical(scene, idx, Some(this_node_idx), inherited_props, out);
+                walk_node_hierarchical(scene, idx, Some(this_node_idx), inherited_props, out, pool);
             }
         }
         inherited_props.truncate(prev_len);
@@ -259,7 +261,7 @@ pub(super) fn walk_node_hierarchical(
             return;
         }
 
-        if let Some(mesh) = extract_mesh_local(scene, shape, inherited_props) {
+        if let Some(mesh) = extract_mesh_local(scene, shape, inherited_props, pool) {
             let mut mesh = mesh;
             mesh.parent_node = parent_node_idx;
             out.meshes.push(mesh);
@@ -286,7 +288,7 @@ pub(super) fn walk_node_hierarchical(
             return;
         }
 
-        if let Some(mesh) = extract_bs_tri_shape_local(scene, shape) {
+        if let Some(mesh) = extract_bs_tri_shape_local(scene, shape, pool) {
             let mut mesh = mesh;
             mesh.parent_node = parent_node_idx;
             out.meshes.push(mesh);
@@ -334,6 +336,7 @@ pub(super) fn walk_node_flat(
     inherited_props: &mut Vec<BlockRef>,
     out: &mut Vec<ImportedMesh>,
     mut collisions: Option<&mut Vec<ImportedCollision>>,
+    pool: &mut StringPool,
 ) {
     let Some(block) = scene.get(block_idx) else {
         return;
@@ -371,6 +374,7 @@ pub(super) fn walk_node_flat(
                 inherited_props,
                 out,
                 collisions.as_deref_mut(),
+                pool,
             );
         }
         inherited_props.truncate(prev_len);
@@ -420,6 +424,7 @@ pub(super) fn walk_node_flat(
                     inherited_props,
                     out,
                     collisions.as_deref_mut(),
+                    pool,
                 );
             }
         }
@@ -448,7 +453,7 @@ pub(super) fn walk_node_flat(
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
 
-        if let Some(mesh) = extract_mesh(scene, shape, &world_transform, inherited_props) {
+        if let Some(mesh) = extract_mesh(scene, shape, &world_transform, inherited_props, pool) {
             out.push(mesh);
         }
     }
@@ -474,7 +479,7 @@ pub(super) fn walk_node_flat(
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
 
-        if let Some(mesh) = extract_bs_tri_shape(scene, shape, &world_transform) {
+        if let Some(mesh) = extract_bs_tri_shape(scene, shape, &world_transform, pool) {
             out.push(mesh);
         }
     }

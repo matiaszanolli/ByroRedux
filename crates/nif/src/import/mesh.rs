@@ -16,6 +16,7 @@ use crate::types::{BlockRef, NiPoint3, NiTransform};
 use super::coord::{zup_matrix_to_yup_quat, zup_point_to_yup};
 use super::material::{extract_material_info, extract_vertex_colors};
 use super::{ImportedBone, ImportedMesh, ImportedSkin};
+use byroredux_core::string::{FixedString, StringPool};
 
 /// Intermediate geometry data extracted from either NiTriShapeData or NiTriStripsData.
 #[allow(dead_code)]
@@ -39,6 +40,7 @@ pub(super) fn extract_mesh(
     shape: &NiTriShape,
     world_transform: &NiTransform,
     inherited_props: &[BlockRef],
+    pool: &mut StringPool,
 ) -> Option<ImportedMesh> {
     let data_idx = shape.data_ref.index()?;
 
@@ -96,7 +98,7 @@ pub(super) fn extract_mesh(
     // both vertex color resolution and material fields. Eliminates the double
     // extract_material_info that previously occurred via extract_material →
     // find_texture_path → extract_material_info + direct call. #279 D5-10.
-    let mat = extract_material_info(scene, shape, inherited_props);
+    let mat = extract_material_info(scene, shape, inherited_props, pool);
 
     // Determine vertex colors: prefer per-vertex colors, then material diffuse, then white.
     let colors = extract_vertex_colors(scene, shape, &geom, inherited_props, &mat);
@@ -231,8 +233,9 @@ pub(super) fn extract_mesh_local(
     scene: &NifScene,
     shape: &NiTriShape,
     inherited_props: &[BlockRef],
+    pool: &mut StringPool,
 ) -> Option<ImportedMesh> {
-    extract_mesh(scene, shape, &shape.av.transform, inherited_props)
+    extract_mesh(scene, shape, &shape.av.transform, inherited_props, pool)
 }
 
 /// Extract an ImportedMesh from a BsTriShape (Skyrim SE+ self-contained geometry).
@@ -249,6 +252,7 @@ pub(super) fn extract_bs_tri_shape(
     scene: &NifScene,
     shape: &BsTriShape,
     world_transform: &NiTransform,
+    pool: &mut StringPool,
 ) -> Option<ImportedMesh> {
     // Skyrim SE / FO4 skinned meshes ship `data_size == 0` on the
     // `BsTriShape` itself — the real geometry lives on the linked
@@ -325,6 +329,7 @@ pub(super) fn extract_bs_tri_shape(
         shape.alpha_property_ref,
         &[],
         &[],
+        pool,
     );
 
     let t = &world_transform.translation;
@@ -415,8 +420,9 @@ pub(super) fn extract_bs_tri_shape(
 pub(super) fn extract_bs_tri_shape_local(
     scene: &NifScene,
     shape: &BsTriShape,
+    pool: &mut StringPool,
 ) -> Option<ImportedMesh> {
-    extract_bs_tri_shape(scene, shape, &shape.av.transform)
+    extract_bs_tri_shape(scene, shape, &shape.av.transform, pool)
 }
 
 // ── #559: SSE skinned-geometry reconstruction ─────────────────────
@@ -731,14 +737,18 @@ fn byte_to_normal(b: u8) -> f32 {
 /// effect-shader-backed meshes silently dropped the flag and rendered
 /// backface-culled glow geometry that should have been visible from
 /// either side.
-/// Return `Some(name)` when `name` is a `.bgsm`/`.bgem` material file
-/// path, else `None`. Shared between the BsTriShape and NiTriShape
-/// material-path extractors so both report material pointers consistently.
-pub(super) fn material_path_from_name(name: Option<&str>) -> Option<String> {
+/// Return `Some(handle)` when `name` is a `.bgsm`/`.bgem` material file
+/// path interned in the engine's [`StringPool`], else `None`. Shared
+/// between the BsTriShape and NiTriShape material-path extractors so
+/// both report material pointers consistently. See #609 / D6-NEW-01.
+pub(super) fn material_path_from_name(
+    name: Option<&str>,
+    pool: &mut StringPool,
+) -> Option<FixedString> {
     let name = name?;
     let lower = name.to_ascii_lowercase();
     if lower.ends_with(".bgsm") || lower.ends_with(".bgem") {
-        Some(name.to_string())
+        Some(pool.intern(name))
     } else {
         None
     }

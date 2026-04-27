@@ -1515,8 +1515,10 @@ fn load_references(
         // synthetic SCOL child — FO4 REFRs that overlay textures at the
         // SCOL level apply the same swap to every child placement.
         // #584.
-        let refr_overlay =
-            build_refr_texture_overlay(placed_ref, index, mat_provider.as_deref_mut());
+        let refr_overlay = {
+            let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
+            build_refr_texture_overlay(placed_ref, index, mat_provider.as_deref_mut(), &mut pool)
+        };
 
         // Compose REFR expansion from composite-record helpers:
         //   1. PKIN (#589) — Pack-In bundle fans out to one synth per
@@ -1676,9 +1678,21 @@ fn load_references(
                     }
                     None => {
                         // Slow-path: parse outside any registry borrow.
+                        // Take the StringPool write lock only for the
+                        // parse + intern + BGSM merge — the read lock
+                        // on `NifImportRegistry` was released at the
+                        // close of the `reg_entry` scope above, so the
+                        // two locks never overlap. See #609.
                         let parsed = match tex_provider.extract_mesh(&model_path) {
                             Some(d) => {
-                                parse_and_import_nif(&d, &model_path, mat_provider.as_deref_mut())
+                                let mut pool =
+                                    world.resource_mut::<byroredux_core::string::StringPool>();
+                                parse_and_import_nif(
+                                    &d,
+                                    &model_path,
+                                    mat_provider.as_deref_mut(),
+                                    &mut pool,
+                                )
                             }
                             None => {
                                 log::debug!("NIF not found in BSA: '{}'", model_path);
@@ -1836,6 +1850,7 @@ fn parse_and_import_nif(
     nif_data: &[u8],
     label: &str,
     mat_provider: Option<&mut MaterialProvider>,
+    pool: &mut byroredux_core::string::StringPool,
 ) -> Option<Arc<CachedNifImport>> {
     let scene = match byroredux_nif::parse_nif(nif_data) {
         Ok(s) => {
@@ -1863,14 +1878,14 @@ fn parse_and_import_nif(
         return None;
     }
 
-    let (mut meshes, collisions) = byroredux_nif::import::import_nif_with_collision(&scene);
+    let (mut meshes, collisions) = byroredux_nif::import::import_nif_with_collision(&scene, pool);
     // FO4+ external material resolution (#493). Walk once at cache-fill
     // time so every REFR sharing this NIF sees the merged texture paths.
     // NIF fields take precedence; only empty slots are filled from the
     // resolved BGSM/BGEM chain.
     if let Some(provider) = mat_provider {
         for mesh in &mut meshes {
-            merge_bgsm_into_mesh(mesh, provider);
+            merge_bgsm_into_mesh(mesh, provider, pool);
         }
     }
     let lights = byroredux_nif::import::import_nif_lights(&scene);
@@ -1934,49 +1949,67 @@ fn parse_and_import_nif(
 /// parsed cleanly into `EsmCellIndex.texture_sets` with nowhere to go.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct RefrTextureOverlay {
-    pub(crate) diffuse: Option<String>,
-    pub(crate) normal: Option<String>,
-    pub(crate) glow: Option<String>,
-    pub(crate) height: Option<String>,
-    pub(crate) env: Option<String>,
-    pub(crate) env_mask: Option<String>,
+    /// Texture-slot paths interned through the engine [`StringPool`]
+    /// (#609 / D6-NEW-01) so REFR overlays share the same dedup table
+    /// as `ImportedMesh` and avoid per-overlay heap allocations.
+    pub(crate) diffuse: Option<byroredux_core::string::FixedString>,
+    pub(crate) normal: Option<byroredux_core::string::FixedString>,
+    pub(crate) glow: Option<byroredux_core::string::FixedString>,
+    pub(crate) height: Option<byroredux_core::string::FixedString>,
+    pub(crate) env: Option<byroredux_core::string::FixedString>,
+    pub(crate) env_mask: Option<byroredux_core::string::FixedString>,
     /// BSShaderTextureSet slot 6 — MultiLayerParallax inner layer.
     /// Not yet consumed by the spawn path; preserved for parity with
     /// `TextureSet.inner` so the slot_index=6 XTXR swap round-trips.
     #[allow(dead_code)]
-    pub(crate) inner: Option<String>,
-    pub(crate) specular: Option<String>,
-    pub(crate) material_path: Option<String>,
+    pub(crate) inner: Option<byroredux_core::string::FixedString>,
+    pub(crate) specular: Option<byroredux_core::string::FixedString>,
+    pub(crate) material_path: Option<byroredux_core::string::FixedString>,
 }
 
 impl RefrTextureOverlay {
-    /// First-non-empty-wins fill for an overlay slot.
-    fn fill(slot: &mut Option<String>, value: Option<&str>) {
+    /// First-non-empty-wins fill for an overlay slot. Routes through
+    /// the engine [`StringPool`] so the resolved path lives in one
+    /// dedup table shared with `ImportedMesh`. See #609.
+    fn fill(
+        slot: &mut Option<byroredux_core::string::FixedString>,
+        value: Option<&str>,
+        pool: &mut byroredux_core::string::StringPool,
+    ) {
         if slot.is_none() {
             if let Some(v) = value {
                 if !v.is_empty() {
-                    *slot = Some(v.to_string());
+                    *slot = Some(pool.intern(v));
                 }
             }
         }
     }
 
-    fn merge_from_texture_set(&mut self, ts: &esm::cell::TextureSet) {
-        Self::fill(&mut self.diffuse, ts.diffuse.as_deref());
-        Self::fill(&mut self.normal, ts.normal.as_deref());
-        Self::fill(&mut self.glow, ts.glow.as_deref());
-        Self::fill(&mut self.height, ts.height.as_deref());
-        Self::fill(&mut self.env, ts.env.as_deref());
-        Self::fill(&mut self.env_mask, ts.env_mask.as_deref());
-        Self::fill(&mut self.inner, ts.inner.as_deref());
-        Self::fill(&mut self.specular, ts.specular.as_deref());
-        Self::fill(&mut self.material_path, ts.material_path.as_deref());
+    fn merge_from_texture_set(
+        &mut self,
+        ts: &esm::cell::TextureSet,
+        pool: &mut byroredux_core::string::StringPool,
+    ) {
+        Self::fill(&mut self.diffuse, ts.diffuse.as_deref(), pool);
+        Self::fill(&mut self.normal, ts.normal.as_deref(), pool);
+        Self::fill(&mut self.glow, ts.glow.as_deref(), pool);
+        Self::fill(&mut self.height, ts.height.as_deref(), pool);
+        Self::fill(&mut self.env, ts.env.as_deref(), pool);
+        Self::fill(&mut self.env_mask, ts.env_mask.as_deref(), pool);
+        Self::fill(&mut self.inner, ts.inner.as_deref(), pool);
+        Self::fill(&mut self.specular, ts.specular.as_deref(), pool);
+        Self::fill(&mut self.material_path, ts.material_path.as_deref(), pool);
     }
 
     /// Apply a single XTXR slot swap. `slot_index` picks one of TX00..TX07
     /// on the host mesh; the source path comes from the swap TXST's
     /// same-index slot. Later XTXR for the same slot overwrites.
-    fn apply_slot_swap(&mut self, ts: &esm::cell::TextureSet, slot_index: u32) {
+    fn apply_slot_swap(
+        &mut self,
+        ts: &esm::cell::TextureSet,
+        slot_index: u32,
+        pool: &mut byroredux_core::string::StringPool,
+    ) {
         let src = match slot_index {
             0 => ts.diffuse.as_deref(),
             1 => ts.normal.as_deref(),
@@ -2003,7 +2036,7 @@ impl RefrTextureOverlay {
             7 => &mut self.specular,
             _ => return,
         };
-        *dest = Some(path.to_string());
+        *dest = Some(pool.intern(path));
     }
 
     /// Walk the overlay's `material_path` BGSM/BGEM chain and fill any
@@ -2011,31 +2044,41 @@ impl RefrTextureOverlay {
     /// first-wins policy so REFR overlays and per-mesh imports agree on
     /// precedence for MNAM-only TXSTs. No-op when the path isn't a
     /// `.bgsm` / `.bgem` or the provider can't resolve it.
-    fn fill_from_bgsm(&mut self, provider: &mut MaterialProvider) {
-        let Some(path) = self.material_path.clone() else {
+    fn fill_from_bgsm(
+        &mut self,
+        provider: &mut MaterialProvider,
+        pool: &mut byroredux_core::string::StringPool,
+    ) {
+        let Some(path_sym) = self.material_path else {
             return;
         };
-        let lower = path.to_ascii_lowercase();
-        if lower.ends_with(".bgsm") {
+        // `pool.resolve` returns the canonical lowercased form, so this
+        // doubles as the suffix-dispatch check without an extra
+        // `to_ascii_lowercase` allocation.
+        let path: String = match pool.resolve(path_sym) {
+            Some(s) => s.to_string(),
+            None => return,
+        };
+        if path.ends_with(".bgsm") {
             let Some(resolved) = provider.resolve_bgsm(&path) else {
                 return;
             };
             for step in resolved.walk() {
                 let f = &step.file;
-                Self::fill(&mut self.diffuse, Some(f.diffuse_texture.as_str()));
-                Self::fill(&mut self.normal, Some(f.normal_texture.as_str()));
-                Self::fill(&mut self.glow, Some(f.glow_texture.as_str()));
-                Self::fill(&mut self.specular, Some(f.smooth_spec_texture.as_str()));
-                Self::fill(&mut self.env, Some(f.envmap_texture.as_str()));
-                Self::fill(&mut self.height, Some(f.displacement_texture.as_str()));
+                Self::fill(&mut self.diffuse, Some(f.diffuse_texture.as_str()), pool);
+                Self::fill(&mut self.normal, Some(f.normal_texture.as_str()), pool);
+                Self::fill(&mut self.glow, Some(f.glow_texture.as_str()), pool);
+                Self::fill(&mut self.specular, Some(f.smooth_spec_texture.as_str()), pool);
+                Self::fill(&mut self.env, Some(f.envmap_texture.as_str()), pool);
+                Self::fill(&mut self.height, Some(f.displacement_texture.as_str()), pool);
             }
-        } else if lower.ends_with(".bgem") {
+        } else if path.ends_with(".bgem") {
             let Some(bgem) = provider.resolve_bgem(&path) else {
                 return;
             };
-            Self::fill(&mut self.normal, Some(bgem.normal_texture.as_str()));
-            Self::fill(&mut self.glow, Some(bgem.glow_texture.as_str()));
-            Self::fill(&mut self.env, Some(bgem.envmap_texture.as_str()));
+            Self::fill(&mut self.normal, Some(bgem.normal_texture.as_str()), pool);
+            Self::fill(&mut self.glow, Some(bgem.glow_texture.as_str()), pool);
+            Self::fill(&mut self.env, Some(bgem.envmap_texture.as_str()), pool);
         }
     }
 }
@@ -2201,6 +2244,7 @@ pub(crate) fn build_refr_texture_overlay(
     placed: &esm::cell::PlacedRef,
     index: &esm::cell::EsmCellIndex,
     mat_provider: Option<&mut MaterialProvider>,
+    pool: &mut byroredux_core::string::StringPool,
 ) -> Option<RefrTextureOverlay> {
     if placed.alt_texture_ref.is_none()
         && placed.land_texture_ref.is_none()
@@ -2215,7 +2259,7 @@ pub(crate) fn build_refr_texture_overlay(
     // onto the overlay's 8 slots + material_path.
     if let Some(txst_ref) = placed.alt_texture_ref {
         if let Some(ts) = index.texture_sets.get(&txst_ref) {
-            ov.merge_from_texture_set(ts);
+            ov.merge_from_texture_set(ts, pool);
         }
     }
     // XTNM — LAND-scoped TXST override. Same wire layout as XATO; fills
@@ -2224,7 +2268,7 @@ pub(crate) fn build_refr_texture_overlay(
     // whichever is present.
     if let Some(txst_ref) = placed.land_texture_ref {
         if let Some(ts) = index.texture_sets.get(&txst_ref) {
-            ov.merge_from_texture_set(ts);
+            ov.merge_from_texture_set(ts, pool);
         }
     }
 
@@ -2233,7 +2277,7 @@ pub(crate) fn build_refr_texture_overlay(
     // XTXR for the same slot wins (authoring-order semantics).
     for swap in &placed.texture_slot_swaps {
         if let Some(ts) = index.texture_sets.get(&swap.texture_set) {
-            ov.apply_slot_swap(ts, swap.slot_index);
+            ov.apply_slot_swap(ts, swap.slot_index, pool);
         }
     }
 
@@ -2243,7 +2287,7 @@ pub(crate) fn build_refr_texture_overlay(
     // `merge_bgsm_into_mesh` semantics.
     if ov.material_path.is_some() {
         if let Some(mp) = mat_provider {
-            ov.fill_from_bgsm(mp);
+            ov.fill_from_bgsm(mp, pool);
         }
     }
 
@@ -2510,31 +2554,36 @@ fn spawn_placed_instances(
         // wins over the NIF-authored paths when present; for slots the
         // overlay left empty the cached NIF's texture rides through.
         // `None` on both sides means this slot has no texture. See #584.
+        //
+        // Both inputs hold `FixedString` handles (#609). Resolve through
+        // the engine `StringPool` once here so the per-slot Material
+        // construction below can stay on `Option<String>` paths.
+        // Resolved strings are owned `String`s — one allocation per
+        // populated slot per entity, much better than the pre-#609
+        // ~3-allocations-per-slot per entity from the redundant
+        // ImportedMesh.clone path.
         let ov = refr_overlay;
-        let eff_texture_path = ov
-            .and_then(|o| o.diffuse.clone())
-            .or_else(|| mesh.texture_path.clone());
-        let eff_normal_map = ov
-            .and_then(|o| o.normal.clone())
-            .or_else(|| mesh.normal_map.clone());
-        let eff_glow_map = ov
-            .and_then(|o| o.glow.clone())
-            .or_else(|| mesh.glow_map.clone());
-        let eff_gloss_map = ov
-            .and_then(|o| o.specular.clone())
-            .or_else(|| mesh.gloss_map.clone());
-        let eff_parallax_map = ov
-            .and_then(|o| o.height.clone())
-            .or_else(|| mesh.parallax_map.clone());
-        let eff_env_map = ov
-            .and_then(|o| o.env.clone())
-            .or_else(|| mesh.env_map.clone());
-        let eff_env_mask = ov
-            .and_then(|o| o.env_mask.clone())
-            .or_else(|| mesh.env_mask.clone());
-        let eff_material_path = ov
-            .and_then(|o| o.material_path.clone())
-            .or_else(|| mesh.material_path.clone());
+        let pool_read = world.resource::<byroredux_core::string::StringPool>();
+        let resolve_owned = |sym: Option<byroredux_core::string::FixedString>| -> Option<String> {
+            sym.and_then(|s| pool_read.resolve(s))
+                .map(|s| s.to_string())
+        };
+        let eff_texture_path =
+            resolve_owned(ov.and_then(|o| o.diffuse).or(mesh.texture_path));
+        let eff_normal_map = resolve_owned(ov.and_then(|o| o.normal).or(mesh.normal_map));
+        let eff_glow_map = resolve_owned(ov.and_then(|o| o.glow).or(mesh.glow_map));
+        let eff_gloss_map = resolve_owned(ov.and_then(|o| o.specular).or(mesh.gloss_map));
+        let eff_parallax_map = resolve_owned(ov.and_then(|o| o.height).or(mesh.parallax_map));
+        let eff_env_map = resolve_owned(ov.and_then(|o| o.env).or(mesh.env_map));
+        let eff_env_mask = resolve_owned(ov.and_then(|o| o.env_mask).or(mesh.env_mask));
+        let eff_material_path =
+            resolve_owned(ov.and_then(|o| o.material_path).or(mesh.material_path));
+        // The detail/dark slots come straight from `mesh`; resolve the
+        // same way so the downstream `resolve` closure that walks them
+        // stays uniform.
+        let eff_detail_map = resolve_owned(mesh.detail_map);
+        let eff_dark_map = resolve_owned(mesh.dark_map);
+        drop(pool_read);
 
         // Load texture (shared resolve: cache → BSA → fallback).
         let tex_handle = resolve_texture(ctx, tex_provider, eff_texture_path.as_deref());
@@ -2602,9 +2651,9 @@ fn spawn_placed_instances(
                 texture_path: eff_texture_path.clone(),
                 material_path: eff_material_path.clone(),
                 glow_map: eff_glow_map.clone(),
-                detail_map: mesh.detail_map.clone(),
+                detail_map: eff_detail_map.clone(),
                 gloss_map: eff_gloss_map.clone(),
-                dark_map: mesh.dark_map.clone(),
+                dark_map: eff_dark_map.clone(),
                 vertex_color_mode: mesh.vertex_color_mode,
                 alpha_test: mesh.alpha_test,
                 alpha_threshold: mesh.alpha_threshold,
@@ -2628,7 +2677,7 @@ fn spawn_placed_instances(
             }
         }
         // Load and attach dark/lightmap if the material specifies one (#264).
-        if let Some(ref dark_path) = mesh.dark_map {
+        if let Some(ref dark_path) = eff_dark_map {
             let h = resolve_texture(ctx, tex_provider, Some(dark_path.as_str()));
             if h != ctx.texture_registry.fallback() {
                 world.insert(entity, DarkMapHandle(h));
@@ -2646,7 +2695,7 @@ fn spawn_placed_instances(
                 .unwrap_or(0)
         };
         let glow_h = resolve(&eff_glow_map);
-        let detail_h = resolve(&mesh.detail_map);
+        let detail_h = resolve(&eff_detail_map);
         let gloss_h = resolve(&eff_gloss_map);
         let parallax_h = resolve(&eff_parallax_map);
         let env_h = resolve(&eff_env_map);

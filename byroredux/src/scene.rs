@@ -927,14 +927,20 @@ pub(crate) fn load_nif_bytes(
         }
     };
 
-    let mut imported = byroredux_nif::import::import_nif_scene(&scene);
-    // FO4+ external material resolution (#493). NIF fields take precedence;
-    // only empty slots fill in from the resolved BGSM/BGEM chain.
-    if let Some(provider) = mat_provider {
-        for mesh in &mut imported.meshes {
-            merge_bgsm_into_mesh(mesh, provider);
+    let imported = {
+        let mut pool = world.resource_mut::<StringPool>();
+        let mut imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
+        // FO4+ external material resolution (#493). NIF fields take precedence;
+        // only empty slots fill in from the resolved BGSM/BGEM chain. The
+        // BGSM merge interns through the same pool so REFR overlays and
+        // per-mesh imports share the dedup table. See #609.
+        if let Some(provider) = mat_provider {
+            for mesh in &mut imported.meshes {
+                merge_bgsm_into_mesh(mesh, provider, &mut pool);
+            }
         }
-    }
+        imported
+    };
 
     // Phase 1: Spawn node entities (NiNode hierarchy).
     // node_index → EntityId mapping.
@@ -1161,7 +1167,42 @@ pub(crate) fn load_nif_bytes(
         // Collect BLAS specs for batched build after the loop.
         blas_specs.push((mesh_handle, num_verts as u32, mesh.indices.len() as u32));
 
-        let tex_handle = resolve_texture(ctx, tex_provider, mesh.texture_path.as_deref());
+        // Mesh paths are interned `FixedString` handles (#609). Resolve
+        // each populated slot to an owned `String` once for the
+        // downstream `Material` component + texture-resolve calls. The
+        // pool read lock is short-lived; the resolved Strings outlive it.
+        let (
+            owned_texture_path,
+            owned_normal_map,
+            owned_glow_map,
+            owned_detail_map,
+            owned_gloss_map,
+            owned_dark_map,
+            owned_parallax_map,
+            owned_env_map,
+            owned_env_mask,
+            owned_material_path,
+        ) = {
+            let pool_read = world.resource::<StringPool>();
+            let resolve_owned =
+                |sym: Option<byroredux_core::string::FixedString>| -> Option<String> {
+                    sym.and_then(|s| pool_read.resolve(s)).map(|s| s.to_string())
+                };
+            (
+                resolve_owned(mesh.texture_path),
+                resolve_owned(mesh.normal_map),
+                resolve_owned(mesh.glow_map),
+                resolve_owned(mesh.detail_map),
+                resolve_owned(mesh.gloss_map),
+                resolve_owned(mesh.dark_map),
+                resolve_owned(mesh.parallax_map),
+                resolve_owned(mesh.env_map),
+                resolve_owned(mesh.env_mask),
+                resolve_owned(mesh.material_path),
+            )
+        };
+
+        let tex_handle = resolve_texture(ctx, tex_provider, owned_texture_path.as_deref());
 
         let quat = Quat::from_xyzw(
             mesh.rotation[0],
@@ -1233,13 +1274,13 @@ pub(crate) fn load_nif_bytes(
                 uv_scale: mesh.uv_scale,
                 alpha: mesh.mat_alpha,
                 env_map_scale: mesh.env_map_scale,
-                normal_map: mesh.normal_map.clone(),
-                texture_path: mesh.texture_path.clone(),
-                material_path: mesh.material_path.clone(),
-                glow_map: mesh.glow_map.clone(),
-                detail_map: mesh.detail_map.clone(),
-                gloss_map: mesh.gloss_map.clone(),
-                dark_map: mesh.dark_map.clone(),
+                normal_map: owned_normal_map.clone(),
+                texture_path: owned_texture_path.clone(),
+                material_path: owned_material_path.clone(),
+                glow_map: owned_glow_map.clone(),
+                detail_map: owned_detail_map.clone(),
+                gloss_map: owned_gloss_map.clone(),
+                dark_map: owned_dark_map.clone(),
                 vertex_color_mode: mesh.vertex_color_mode,
                 alpha_test: mesh.alpha_test,
                 alpha_threshold: mesh.alpha_threshold,
@@ -1257,14 +1298,14 @@ pub(crate) fn load_nif_bytes(
         );
 
         // Load and attach normal map texture handle.
-        if let Some(ref nmap_path) = mesh.normal_map {
+        if let Some(ref nmap_path) = owned_normal_map {
             let h = resolve_texture(ctx, tex_provider, Some(nmap_path.as_str()));
             if h != ctx.texture_registry.fallback() {
                 world.insert(entity, NormalMapHandle(h));
             }
         }
         // Load and attach dark/lightmap texture handle.
-        if let Some(ref dark_path) = mesh.dark_map {
+        if let Some(ref dark_path) = owned_dark_map {
             let h = resolve_texture(ctx, tex_provider, Some(dark_path.as_str()));
             if h != ctx.texture_registry.fallback() {
                 world.insert(entity, DarkMapHandle(h));
@@ -1279,12 +1320,12 @@ pub(crate) fn load_nif_bytes(
                 .filter(|&h| h != ctx.texture_registry.fallback())
                 .unwrap_or(0)
         };
-        let glow_h = resolve(&mesh.glow_map);
-        let detail_h = resolve(&mesh.detail_map);
-        let gloss_h = resolve(&mesh.gloss_map);
-        let parallax_h = resolve(&mesh.parallax_map);
-        let env_h = resolve(&mesh.env_map);
-        let env_mask_h = resolve(&mesh.env_mask);
+        let glow_h = resolve(&owned_glow_map);
+        let detail_h = resolve(&owned_detail_map);
+        let gloss_h = resolve(&owned_gloss_map);
+        let parallax_h = resolve(&owned_parallax_map);
+        let env_h = resolve(&owned_env_map);
+        let env_mask_h = resolve(&owned_env_mask);
         if glow_h != 0
             || detail_h != 0
             || gloss_h != 0

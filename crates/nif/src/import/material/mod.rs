@@ -13,8 +13,28 @@ use crate::blocks::tri_shape::NiTriShape;
 use crate::blocks::NiObject;
 use crate::scene::NifScene;
 use crate::types::BlockRef;
+use byroredux_core::string::{FixedString, StringPool};
 
 use super::mesh::GeomData;
+
+/// Intern a non-empty path through the engine's `StringPool` and return
+/// the resolved [`FixedString`] handle. Empty inputs collapse to
+/// `None` — matches the pre-#609 `Option<String>` semantic where an
+/// empty path field meant "no texture for this slot".
+///
+/// Centralised so every site that pulls a texture-slot name out of a
+/// NIF block routes through one helper — the audit's "store FixedString
+/// instead of String" recommendation reduces to swapping every
+/// `Some(s.to_string())` / `Some(s.clone())` site over to this call.
+/// See #609 / D6-NEW-01.
+#[inline]
+pub(super) fn intern_texture_path(pool: &mut StringPool, path: &str) -> Option<FixedString> {
+    if path.is_empty() {
+        None
+    } else {
+        Some(pool.intern(path))
+    }
+}
 
 mod shader_data;
 mod walker;
@@ -245,29 +265,37 @@ impl VertexColorMode {
 }
 
 /// Material properties extracted from a NiTriShape's property list in a single pass.
+///
+/// Texture-slot path fields hold [`FixedString`] handles into the
+/// engine-wide [`StringPool`] (#609 / D6-NEW-01). Pre-fix every slot
+/// stored an `Option<String>` and re-allocated the path on every
+/// `MaterialInfo::clone` and every cell load — ~50 KB redundant heap
+/// per ~200-mesh interior cell. Now a clone is a refcount + copy of
+/// the symbol handle (4 bytes), and resolving back to a `&str` for the
+/// texture provider is a `pool.resolve()` call away.
 #[derive(Debug)]
 pub(super) struct MaterialInfo {
-    pub texture_path: Option<String>,
+    pub texture_path: Option<FixedString>,
     /// BGSM/BGEM material file reference (FO4+). Present when the
     /// BSLightingShaderProperty has a non-empty name.
-    pub material_path: Option<String>,
-    pub normal_map: Option<String>,
+    pub material_path: Option<FixedString>,
+    pub normal_map: Option<FixedString>,
     /// Glow / self-illumination texture (NiTexturingProperty slot 4).
     /// Filled on Oblivion/FO3/FNV meshes where a dedicated emissive
     /// map supplements or replaces `NiMaterialProperty.emissive`. See #214.
-    pub glow_map: Option<String>,
+    pub glow_map: Option<FixedString>,
     /// Detail overlay texture (NiTexturingProperty slot 2). Blends with
     /// the base texture at higher frequency; used for terrain detail
     /// variation and clothing micro-texture.
-    pub detail_map: Option<String>,
+    pub detail_map: Option<FixedString>,
     /// Specular-mask / gloss texture (NiTexturingProperty slot 3).
     /// Per-texel specular strength; enables armor highlights masked
     /// by leather/fabric regions.
-    pub gloss_map: Option<String>,
+    pub gloss_map: Option<FixedString>,
     /// Dark / multiplicative lightmap texture (NiTexturingProperty slot 1).
     /// Baked shadow/grime modulation on Oblivion interior architecture.
     /// Applied as `albedo.rgb *= dark_sample.rgb`. See #264.
-    pub dark_map: Option<String>,
+    pub dark_map: Option<FixedString>,
     // NOTE: `decal_maps: Vec<String>` (NiTexturingProperty decal slots
     // 0..=3) was removed in #705 / O4-07. The walker extracted them
     // but no consumer in the renderer ever bound the descriptors or
@@ -282,17 +310,17 @@ pub(super) struct MaterialInfo {
     /// and `shader_type = 7` (Parallax_Occlusion) PPLighting materials.
     /// Pre-#452 the importer stopped reading at slot 2, so every Pitt /
     /// Point Lookout / Hoover Dam parallax wall landed flat. See #452.
-    pub parallax_map: Option<String>,
+    pub parallax_map: Option<FixedString>,
     /// Environment cubemap (`BSShaderTextureSet` slot 4). Drives the
     /// glass bottle / power-armor / smooth-metal reflection branch.
     /// `env_map_scale` is already captured but had no texture route
     /// until #452.
-    pub env_map: Option<String>,
+    pub env_map: Option<FixedString>,
     /// Environment-reflection mask (`BSShaderTextureSet` slot 5). Per-
     /// texel attenuation of the `env_map` reflection — used on armor
     /// edges and rim highlights so only the polished surface reflects.
     /// See #452.
-    pub env_mask: Option<String>,
+    pub env_mask: Option<FixedString>,
     /// How vertex colors should participate in shading. See #214 /
     /// `VertexColorMode`. Defaults to `AmbientDiffuse` — the value
     /// Gamebryo uses when the NIF has no `NiVertexColorProperty`.
@@ -617,11 +645,21 @@ pub(super) fn apply_alpha_flags(info: &mut MaterialInfo, alpha: &NiAlphaProperty
 /// is null, or the source texture has no external filename (embedded
 /// NiPixelData is not supported here — the downstream texture
 /// provider can't resolve those anyway). See issue #131.
-fn tex_desc_source_path(scene: &NifScene, desc: Option<&TexDesc>) -> Option<String> {
+///
+/// The path is interned through the engine's [`StringPool`] (#609 /
+/// D6-NEW-01). Pre-fix this returned `Option<String>` via `to_string`
+/// on an `Arc<str>`; same path mentioned by N meshes in a cell paid
+/// N allocations even though the source was already shared.
+pub(super) fn tex_desc_source_path(
+    scene: &NifScene,
+    desc: Option<&TexDesc>,
+    pool: &mut StringPool,
+) -> Option<FixedString> {
     let desc = desc?;
     let src_idx = desc.source_ref.index()?;
     let src_tex = scene.get_as::<NiSourceTexture>(src_idx)?;
-    src_tex.filename.as_ref().map(|f| f.to_string())
+    let name = src_tex.filename.as_ref()?;
+    intern_texture_path(pool, name)
 }
 
 #[cfg(test)]

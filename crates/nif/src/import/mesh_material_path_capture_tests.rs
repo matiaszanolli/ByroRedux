@@ -144,9 +144,27 @@ fn renderable_shape(shader_idx: u32) -> BsTriShape {
     }
 }
 
-fn import(scene: &NifScene, shape: &BsTriShape) -> ImportedMesh {
-    extract_bs_tri_shape(scene, shape, &NiTransform::default())
-        .expect("renderable shape must produce ImportedMesh")
+/// Import the shape and return both the `ImportedMesh` and the engine
+/// `StringPool` so tests asserting on resolved texture / material paths
+/// can call `pool.resolve` (#609 / D6-NEW-01).
+fn import(
+    scene: &NifScene,
+    shape: &BsTriShape,
+) -> (ImportedMesh, byroredux_core::string::StringPool) {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let mesh = extract_bs_tri_shape(scene, shape, &NiTransform::default(), &mut pool)
+        .expect("renderable shape must produce ImportedMesh");
+    (mesh, pool)
+}
+
+/// Resolve a path handle through the engine `StringPool`. The pool
+/// lowercases on intern (Gamebryo `GlobalStringTable` semantic); test
+/// assertions therefore compare against the canonical lowercase form.
+fn resolved_path<'a>(
+    pool: &'a byroredux_core::string::StringPool,
+    sym: Option<byroredux_core::string::FixedString>,
+) -> Option<&'a str> {
+    sym.and_then(|s| pool.resolve(s))
 }
 
 #[test]
@@ -155,11 +173,10 @@ fn bgsm_on_lighting_shader_still_captured() {
     scene.blocks.push(Box::new(minimal_lighting_shader_named(
         "Materials\\Architecture\\WhiterunStone.BGSM",
     )));
+    let (mesh, pool) = import(&scene, &renderable_shape(0));
     assert_eq!(
-        import(&scene, &renderable_shape(0))
-            .material_path
-            .as_deref(),
-        Some("Materials\\Architecture\\WhiterunStone.BGSM")
+        resolved_path(&pool, mesh.material_path),
+        Some("materials\\architecture\\whiterunstone.bgsm")
     );
 }
 
@@ -172,11 +189,10 @@ fn bgem_on_effect_shader_is_captured() {
     scene.blocks.push(Box::new(minimal_effect_shader_named(
         "Materials\\Weapons\\LaserRifle\\LaserBeam.BGEM",
     )));
+    let (mesh, pool) = import(&scene, &renderable_shape(0));
     assert_eq!(
-        import(&scene, &renderable_shape(0))
-            .material_path
-            .as_deref(),
-        Some("Materials\\Weapons\\LaserRifle\\LaserBeam.BGEM")
+        resolved_path(&pool, mesh.material_path),
+        Some("materials\\weapons\\laserrifle\\laserbeam.bgem")
     );
 }
 
@@ -188,11 +204,10 @@ fn bgsm_on_effect_shader_also_captured() {
     scene.blocks.push(Box::new(minimal_effect_shader_named(
         "Materials\\Statics\\Sign01.BGSM",
     )));
+    let (mesh, pool) = import(&scene, &renderable_shape(0));
     assert_eq!(
-        import(&scene, &renderable_shape(0))
-            .material_path
-            .as_deref(),
-        Some("Materials\\Statics\\Sign01.BGSM")
+        resolved_path(&pool, mesh.material_path),
+        Some("materials\\statics\\sign01.bgsm")
     );
 }
 
@@ -202,7 +217,8 @@ fn non_material_name_returns_none() {
     scene
         .blocks
         .push(Box::new(minimal_effect_shader_named("FxGlowEdge01")));
-    assert!(import(&scene, &renderable_shape(0)).material_path.is_none());
+    let (mesh, _pool) = import(&scene, &renderable_shape(0));
+    assert!(mesh.material_path.is_none());
 }
 
 #[test]
@@ -215,24 +231,25 @@ fn lighting_shader_name_takes_priority() {
     scene.blocks.push(Box::new(minimal_lighting_shader_named(
         "Materials\\Primary.BGSM",
     )));
+    let (mesh, pool) = import(&scene, &renderable_shape(0));
     assert_eq!(
-        import(&scene, &renderable_shape(0))
-            .material_path
-            .as_deref(),
-        Some("Materials\\Primary.BGSM")
+        resolved_path(&pool, mesh.material_path),
+        Some("materials\\primary.bgsm")
     );
 }
 
 #[test]
 fn material_path_from_name_helper_accepts_both_suffixes() {
+    let mut pool = byroredux_core::string::StringPool::new();
     assert_eq!(
-        material_path_from_name(Some("x/y/z.bgem")).as_deref(),
+        material_path_from_name(Some("x/y/z.bgem"), &mut pool).and_then(|s| pool.resolve(s)),
         Some("x/y/z.bgem")
     );
+    // StringPool lowercases on intern, so `.BGSM` round-trips as `.bgsm`.
     assert_eq!(
-        material_path_from_name(Some("x/y/z.BGSM")).as_deref(),
-        Some("x/y/z.BGSM")
+        material_path_from_name(Some("x/y/z.BGSM"), &mut pool).and_then(|s| pool.resolve(s)),
+        Some("x/y/z.bgsm")
     );
-    assert_eq!(material_path_from_name(Some("plain_name")), None);
-    assert_eq!(material_path_from_name(None), None);
+    assert_eq!(material_path_from_name(Some("plain_name"), &mut pool), None);
+    assert_eq!(material_path_from_name(None, &mut pool), None);
 }

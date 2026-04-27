@@ -112,8 +112,21 @@ fn effect_shader(flags2: u32) -> BSEffectShaderProperty {
 }
 
 fn import(scene: &NifScene, shape: &BsTriShape) -> ImportedMesh {
-    extract_bs_tri_shape(scene, shape, &crate::types::NiTransform::default())
-        .expect("renderable shape must produce ImportedMesh")
+    let (mesh, _) = import_with_pool(scene, shape);
+    mesh
+}
+
+/// Variant returning both the mesh and the engine `StringPool` so
+/// tests asserting on resolved texture paths can call `pool.resolve`
+/// (#609 / D6-NEW-01).
+fn import_with_pool(
+    scene: &NifScene,
+    shape: &BsTriShape,
+) -> (ImportedMesh, byroredux_core::string::StringPool) {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let mesh = extract_bs_tri_shape(scene, shape, &crate::types::NiTransform::default(), &mut pool)
+        .expect("renderable shape must produce ImportedMesh");
+    (mesh, pool)
 }
 
 /// #128 — Double_Sided bit on BSEffectShaderProperty.shader_flags_2
@@ -221,14 +234,17 @@ fn effect_shader_with_payload() -> BSEffectShaderProperty {
 fn extract_bs_tri_shape_pulls_effect_shader_emissive_uv_alpha_normal() {
     let mut scene = NifScene::default();
     scene.blocks.push(Box::new(effect_shader_with_payload()));
-    let mesh = import(&scene, &renderable_shape(0));
+    let (mesh, pool) = import_with_pool(&scene, &renderable_shape(0));
     assert_eq!(mesh.emissive_color, [0.7, 0.8, 0.9]);
     assert!((mesh.emissive_mult - 3.5).abs() < 1e-6);
     assert_eq!(mesh.uv_offset, [0.25, 0.5]);
     assert_eq!(mesh.uv_scale, [2.0, 4.0]);
     assert!((mesh.mat_alpha - 0.5).abs() < 1e-6);
     assert!((mesh.env_map_scale - 0.75).abs() < 1e-6);
-    assert_eq!(mesh.normal_map.as_deref(), Some("fx/glow_n.dds"));
+    assert_eq!(
+        mesh.normal_map.and_then(|s| pool.resolve(s)),
+        Some("fx/glow_n.dds")
+    );
     let fx = mesh.effect_shader.expect("effect_shader should populate");
     assert_eq!(fx.greyscale_texture.as_deref(), Some("fx/fire_palette.dds"));
     assert!((fx.env_map_scale - 0.75).abs() < 1e-6);

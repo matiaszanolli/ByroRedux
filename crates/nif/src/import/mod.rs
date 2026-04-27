@@ -22,6 +22,7 @@ pub use material::{BsEffectShaderData, NoLightingFalloff, ShaderTypeFields};
 use crate::scene::NifScene;
 use crate::types::NiTransform;
 use byroredux_core::ecs::components::collision::{CollisionShape, RigidBodyData};
+use byroredux_core::string::{FixedString, StringPool};
 use std::sync::Arc;
 
 /// One light source extracted from a NIF scene, positioned in world space.
@@ -176,11 +177,14 @@ pub struct ImportedMesh {
     pub rotation: [f32; 4],
     pub scale: f32,
     /// Texture file path (if a base texture was found in BSShaderTextureSet).
-    pub texture_path: Option<String>,
+    /// Holds an interned [`FixedString`] handle into the engine-wide
+    /// [`StringPool`] (#609 / D6-NEW-01). Resolve via
+    /// `pool.resolve(handle)` to get the original `&str`.
+    pub texture_path: Option<FixedString>,
     /// BGSM/BGEM material file path (FO4+). When present and texture_path is
     /// None, the real texture paths live inside this .bgsm file in the
     /// Materials BA2. Stored for debug diagnostics and future BGSM parsing.
-    pub material_path: Option<String>,
+    pub material_path: Option<FixedString>,
     /// Node name from the NIF. Uses `Arc<str>` to avoid heap copies from the string table.
     pub name: Option<Arc<str>>,
     /// Whether this mesh uses alpha blending (from NiAlphaProperty bit 0).
@@ -210,28 +214,28 @@ pub struct ImportedMesh {
     /// Whether this mesh is a decal (should render on top of coplanar surfaces).
     pub is_decal: bool,
     /// Normal map texture path (if found in shader texture set).
-    pub normal_map: Option<String>,
+    pub normal_map: Option<FixedString>,
     /// Glow / self-illumination texture (NiTexturingProperty slot 4,
     /// Oblivion/FO3/FNV). Separate from the BSShaderTextureSet glow
     /// slot, which the Skyrim+ path pulls directly. See #214.
-    pub glow_map: Option<String>,
+    pub glow_map: Option<FixedString>,
     /// Detail overlay texture (NiTexturingProperty slot 2). See #214.
-    pub detail_map: Option<String>,
+    pub detail_map: Option<FixedString>,
     /// Specular-mask / gloss texture (NiTexturingProperty slot 3).
     /// Per-texel specular strength. See #214.
-    pub gloss_map: Option<String>,
+    pub gloss_map: Option<FixedString>,
     /// Dark / multiplicative lightmap (NiTexturingProperty slot 1).
     /// Baked shadow modulation for Oblivion interior architecture. #264.
-    pub dark_map: Option<String>,
+    pub dark_map: Option<FixedString>,
     /// Parallax / height texture (BSShaderTextureSet slot 3). FO3/FNV
     /// `shader_type = 3` / `7` surfaces plus Skyrim ParallaxOcc /
     /// MultiLayerParallax materials route through this. See #452.
-    pub parallax_map: Option<String>,
+    pub parallax_map: Option<FixedString>,
     /// Environment cubemap (BSShaderTextureSet slot 4). Paired with
     /// `env_map_scale` — glass, polished metal, power armor. See #452.
-    pub env_map: Option<String>,
+    pub env_map: Option<FixedString>,
     /// Environment-reflection mask (BSShaderTextureSet slot 5). #452.
-    pub env_mask: Option<String>,
+    pub env_mask: Option<FixedString>,
     /// Parallax-occlusion max ray-march passes (from
     /// `BSShaderPPLightingProperty` or Skyrim `ShaderTypeData::ParallaxOcc`).
     /// `None` when the material doesn't author a value. See #452.
@@ -471,6 +475,24 @@ pub struct ImportedParticleEmitterFlat {
     pub original_type: String,
 }
 
+/// Test-only helpers for the FixedString migration (#609 / D6-NEW-01).
+/// Sibling test modules across the import tree resolve mesh paths via
+/// these so per-test boilerplate stays minimal.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    /// Resolve a `FixedString` path back to a `&str` using the supplied
+    /// pool. Returns `None` when the handle is `None` or the lookup
+    /// misses (which would indicate the wrong pool was used).
+    pub(crate) fn resolve_path<'a>(
+        pool: &'a StringPool,
+        sym: Option<FixedString>,
+    ) -> Option<&'a str> {
+        sym.and_then(|s| pool.resolve(s))
+    }
+}
+
 /// Walk a parsed NIF scene flat and return every renderable particle
 /// emitter (`NiParticleSystem` and friends), with NIF-local positions
 /// and the nearest named ancestor's name. See #401.
@@ -494,7 +516,12 @@ pub fn import_nif_particle_emitters(scene: &NifScene) -> Vec<ImportedParticleEmi
 /// Returns an `ImportedScene` with nodes (NiNode hierarchy) and meshes (geometry leaves).
 /// Transforms are local-space (relative to parent). Use the parent indices
 /// to rebuild the hierarchy in the ECS.
-pub fn import_nif_scene(scene: &NifScene) -> ImportedScene {
+///
+/// `pool` interns every texture-slot path through the engine-wide
+/// [`StringPool`] so `MaterialInfo` / `ImportedMesh` can carry
+/// [`FixedString`] handles instead of fresh `Option<String>` heap
+/// allocations on every cell load. See #609 / D6-NEW-01.
+pub fn import_nif_scene(scene: &NifScene, pool: &mut StringPool) -> ImportedScene {
     let mut imported = ImportedScene {
         nodes: Vec::new(),
         meshes: Vec::new(),
@@ -521,7 +548,7 @@ pub fn import_nif_scene(scene: &NifScene) -> ImportedScene {
     };
 
     let mut props_stack: Vec<crate::types::BlockRef> = Vec::new();
-    walk::walk_node_hierarchical(scene, root_idx, None, &mut props_stack, &mut imported);
+    walk::walk_node_hierarchical(scene, root_idx, None, &mut props_stack, &mut imported, pool);
 
     // Resolve extra data from the root node (BSXFlags, BSBound).
     if let Some(root_block) = scene.blocks.get(root_idx) {
@@ -562,7 +589,10 @@ pub fn import_nif_scene(scene: &NifScene) -> ImportedScene {
 ///
 /// Returns one `ImportedMesh` per NiTriShape with world-space transforms
 /// (parent chain composed). Meshes have `parent_node: None`.
-pub fn import_nif(scene: &NifScene) -> Vec<ImportedMesh> {
+///
+/// See [`import_nif_scene`] for the rationale behind the `pool`
+/// parameter (#609).
+pub fn import_nif(scene: &NifScene, pool: &mut StringPool) -> Vec<ImportedMesh> {
     let mut meshes = Vec::new();
 
     let Some(root_idx) = scene.root_index else {
@@ -577,6 +607,7 @@ pub fn import_nif(scene: &NifScene) -> Vec<ImportedMesh> {
         &mut props_stack,
         &mut meshes,
         None,
+        pool,
     );
     meshes
 }
@@ -633,7 +664,10 @@ pub fn import_nif_lights(scene: &NifScene) -> Vec<ImportedLight> {
 /// Like `import_nif()`, returns world-space meshes (flat, no hierarchy).
 /// Additionally extracts collision shapes from NiNodes, returning them
 /// in world space alongside the geometry.
-pub fn import_nif_with_collision(scene: &NifScene) -> (Vec<ImportedMesh>, Vec<ImportedCollision>) {
+pub fn import_nif_with_collision(
+    scene: &NifScene,
+    pool: &mut StringPool,
+) -> (Vec<ImportedMesh>, Vec<ImportedCollision>) {
     let mut meshes = Vec::new();
     let mut collisions = Vec::new();
 
@@ -649,6 +683,7 @@ pub fn import_nif_with_collision(scene: &NifScene) -> (Vec<ImportedMesh>, Vec<Im
         &mut props_stack,
         &mut meshes,
         Some(&mut collisions),
+        pool,
     );
     (meshes, collisions)
 }
@@ -781,7 +816,7 @@ mod tests {
     #[test]
     fn import_empty_scene() {
         let scene = NifScene::default();
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
         assert!(meshes.is_empty());
     }
 
@@ -798,7 +833,7 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(meshes.len(), 1);
         let m = &meshes[0];
@@ -823,7 +858,7 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(meshes.len(), 1);
         let m = &meshes[0];
@@ -846,7 +881,7 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(meshes.len(), 1);
         let m = &meshes[0];
@@ -876,7 +911,7 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(meshes.len(), 1);
         let m = &meshes[0];
@@ -907,7 +942,7 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(meshes.len(), 2);
         assert_eq!(meshes[0].name, Some(Arc::from("A")));
@@ -934,7 +969,7 @@ mod tests {
             Box::new(data),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(meshes[0].colors[0], [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(meshes[0].colors[1], [0.0, 1.0, 0.0, 1.0]);
@@ -967,7 +1002,7 @@ mod tests {
             Box::new(data),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(meshes.len(), 1, "expected exactly one mesh");
         let alphas: Vec<f32> = meshes[0].colors.iter().map(|c| c[3]).collect();
@@ -1067,17 +1102,17 @@ mod tests {
             Box::new(base_src),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(meshes.len(), 1);
         let m = &meshes[0];
         assert_eq!(
-            m.texture_path.as_deref(),
+            test_support::resolve_path(&pool, m.texture_path),
             Some("textures\\architecture\\wall01.dds"),
             "base_texture should still be extracted"
         );
         assert_eq!(
-            m.normal_map.as_deref(),
+            test_support::resolve_path(&pool, m.normal_map),
             Some("textures\\architecture\\wall01_n.dds"),
             "bump_texture slot should populate normal_map for Oblivion meshes"
         );
@@ -1150,10 +1185,10 @@ mod tests {
             Box::new(make_src("modern_normal.dds")),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(
-            meshes[0].normal_map.as_deref(),
+            test_support::resolve_path(&pool, meshes[0].normal_map),
             Some("modern_normal.dds"),
             "normal_texture should win when both slots are populated"
         );
@@ -1202,7 +1237,7 @@ mod tests {
             Box::new(mat),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
 
         for color in &meshes[0].colors {
             assert!((color[0] - 0.8).abs() < 1e-6);
@@ -1224,7 +1259,7 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
 
         for color in &meshes[0].colors {
             assert_eq!(*color, [1.0, 1.0, 1.0, 1.0]);
@@ -1241,7 +1276,7 @@ mod tests {
             Box::new(shape),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
         assert!(meshes.is_empty());
     }
 
@@ -1277,7 +1312,7 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
         let m = &meshes[0];
 
         assert_eq!(m.positions[0], [0.0, 0.0, 0.0]);
@@ -1298,7 +1333,7 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
 
         for n in &meshes[0].normals {
             assert_eq!(*n, [0.0, 1.0, 0.0]);
@@ -1313,7 +1348,7 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
 
         assert!((meshes[0].translation[0]).abs() < 1e-6);
         assert!((meshes[0].translation[1] - 5.0).abs() < 1e-6);
@@ -1333,7 +1368,7 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
 
         assert!((meshes[0].translation[0]).abs() < 1e-6);
         assert!((meshes[0].translation[1]).abs() < 1e-6);
@@ -1348,7 +1383,7 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
 
         let q = &meshes[0].rotation;
         assert!(q[0].abs() < 1e-4, "qx={}", q[0]);
@@ -1370,7 +1405,7 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(meshes[0].indices, vec![0, 1, 2]);
     }
@@ -1537,7 +1572,7 @@ mod tests {
         let scene = scene_from_blocks(blocks);
 
         // Flat path — would return zero meshes before the fix.
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
         assert_eq!(
             meshes.len(),
             1,
@@ -1546,7 +1581,7 @@ mod tests {
         assert_eq!(meshes[0].name, Some(Arc::from("OrderedChild")));
 
         // Hierarchical path — must register the parent node AND the mesh.
-        let imported = import_nif_scene(&scene);
+        let mut pool = StringPool::new(); let imported = import_nif_scene(&scene, &mut pool);
         assert_eq!(imported.nodes.len(), 1);
         assert_eq!(imported.meshes.len(), 1);
         assert_eq!(imported.meshes[0].parent_node, Some(0));
@@ -1576,7 +1611,7 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let meshes = import_nif(&scene);
+        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
         assert_eq!(meshes.len(), 1);
         assert_eq!(meshes[0].name, Some(Arc::from("ValueChild")));
     }
@@ -1599,7 +1634,7 @@ mod tests {
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
             vec![Box::new(root), Box::new(ni_psys_block("NiParticleSystem"))];
         let scene = scene_from_blocks(blocks);
-        let imported = import_nif_scene(&scene);
+        let mut pool = StringPool::new(); let imported = import_nif_scene(&scene, &mut pool);
         assert_eq!(imported.particle_emitters.len(), 1);
         let em = &imported.particle_emitters[0];
         assert_eq!(em.original_type, "NiParticleSystem");
@@ -1726,7 +1761,7 @@ mod tests {
             let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
                 vec![Box::new(ni_range_node(kind, 0, 5, 2))];
             let scene = scene_from_blocks(blocks);
-            let imported = import_nif_scene(&scene);
+            let mut pool = StringPool::new(); let imported = import_nif_scene(&scene, &mut pool);
             assert_eq!(imported.nodes.len(), 1, "{:?}", kind);
             assert_eq!(
                 imported.nodes[0].range_kind,
@@ -1745,7 +1780,7 @@ mod tests {
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
             vec![Box::new(make_ni_node(identity_transform(), Vec::new()))];
         let scene = scene_from_blocks(blocks);
-        let imported = import_nif_scene(&scene);
+        let mut pool = StringPool::new(); let imported = import_nif_scene(&scene, &mut pool);
         assert_eq!(imported.nodes.len(), 1);
         assert!(imported.nodes[0].range_kind.is_none());
     }
@@ -1807,7 +1842,7 @@ mod tests {
             bone("Branch_B"),
         ];
         let scene = scene_from_blocks(blocks);
-        let imported = import_nif_scene(&scene);
+        let mut pool = StringPool::new(); let imported = import_nif_scene(&scene, &mut pool);
         let host_node = &imported.nodes[0];
         let bones = host_node
             .tree_bones
@@ -1847,7 +1882,7 @@ mod tests {
             bones_2: Vec::new(),
         };
         let scene = scene_from_blocks(vec![Box::new(tree)]);
-        let imported = import_nif_scene(&scene);
+        let mut pool = StringPool::new(); let imported = import_nif_scene(&scene, &mut pool);
         assert!(imported.nodes[0].tree_bones.is_none());
     }
 }

@@ -147,7 +147,8 @@ fn main() {
 
     // Also run the import pipeline and show results
     println!("\n=== Import Results (Y-up) ===");
-    let meshes = byroredux_nif::import::import_nif(&scene);
+    let mut pool = byroredux_core::string::StringPool::new();
+    let meshes = byroredux_nif::import::import_nif(&scene, &mut pool);
     for (i, m) in meshes.iter().enumerate() {
         println!("\nMesh {}: name={:?}", i, m.name);
         println!(

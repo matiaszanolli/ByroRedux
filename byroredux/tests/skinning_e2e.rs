@@ -84,7 +84,8 @@ fn load_fixture(env_var: &str, default: &str, bsa_name: &str, nif_path: &str) ->
         .map_err(|e| eprintln!("[M29] skipping: extract {nif_path} failed: {e}"))
         .ok()?;
     let scene = parse_nif(&bytes).expect("parse_nif must succeed on canonical fixture");
-    let imported = import_nif_scene(&scene);
+    let mut pool = byroredux_core::string::StringPool::new();
+    let imported = import_nif_scene(&scene, &mut pool);
 
     let node_names: Vec<Arc<str>> = imported
         .nodes

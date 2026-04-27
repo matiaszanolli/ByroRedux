@@ -3,6 +3,7 @@
 //! Lead types: extract_vertex_colors, extract_material_info, extract_material_info_from_refs.
 
 use super::*;
+use byroredux_core::string::StringPool;
 
 /// Extract vertex colors using a pre-computed `MaterialInfo`.
 ///
@@ -46,6 +47,7 @@ pub(crate) fn extract_material_info(
     scene: &NifScene,
     shape: &NiTriShape,
     inherited_props: &[BlockRef],
+    pool: &mut StringPool,
 ) -> MaterialInfo {
     extract_material_info_from_refs(
         scene,
@@ -53,6 +55,7 @@ pub(crate) fn extract_material_info(
         shape.alpha_property_ref,
         &shape.av.properties,
         inherited_props,
+        pool,
     )
 }
 
@@ -71,6 +74,7 @@ pub(crate) fn extract_material_info_from_refs(
     alpha_property_ref: BlockRef,
     direct_properties: &[BlockRef],
     inherited_props: &[BlockRef],
+    pool: &mut StringPool,
 ) -> MaterialInfo {
     let mut info = MaterialInfo::default();
 
@@ -80,26 +84,22 @@ pub(crate) fn extract_material_info_from_refs(
             if let Some(name) = shader.net.name.as_deref() {
                 let lower = name.to_ascii_lowercase();
                 if lower.ends_with(".bgsm") || lower.ends_with(".bgem") {
-                    info.material_path = Some(name.to_string());
+                    info.material_path = intern_texture_path(pool, name);
                 }
             }
             if let Some(ts_idx) = shader.texture_set_ref.index() {
                 if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
                     if let Some(path) = tex_set.textures.first() {
-                        if !path.is_empty() {
-                            info.texture_path = Some(path.clone());
-                        }
+                        info.texture_path = intern_texture_path(pool, path);
                     }
                     // Normal map is textures[1] in BSShaderTextureSet.
                     if let Some(normal) = tex_set.textures.get(1) {
-                        if !normal.is_empty() {
-                            info.normal_map = Some(normal.clone());
-                        }
+                        info.normal_map = intern_texture_path(pool, normal);
                     }
                     // Glow / emissive map is textures[2].
                     if info.glow_map.is_none() {
-                        if let Some(glow) = tex_set.textures.get(2).filter(|s| !s.is_empty()) {
-                            info.glow_map = Some(glow.clone());
+                        if let Some(glow) = tex_set.textures.get(2) {
+                            info.glow_map = intern_texture_path(pool, glow);
                         }
                     }
                     // Parallax / height (textures[3]). Used by
@@ -109,21 +109,21 @@ pub(crate) fn extract_material_info_from_refs(
                     // `apply_shader_type_data`; pair them with the
                     // texture here. #452.
                     if info.parallax_map.is_none() {
-                        if let Some(px) = tex_set.textures.get(3).filter(|s| !s.is_empty()) {
-                            info.parallax_map = Some(px.clone());
+                        if let Some(px) = tex_set.textures.get(3) {
+                            info.parallax_map = intern_texture_path(pool, px);
                         }
                     }
                     // Env cube (textures[4]) + env mask (textures[5])
                     // — reach the renderer alongside the existing
                     // `env_map_scale`. #452.
                     if info.env_map.is_none() {
-                        if let Some(env) = tex_set.textures.get(4).filter(|s| !s.is_empty()) {
-                            info.env_map = Some(env.clone());
+                        if let Some(env) = tex_set.textures.get(4) {
+                            info.env_map = intern_texture_path(pool, env);
                         }
                     }
                     if info.env_mask.is_none() {
-                        if let Some(mask) = tex_set.textures.get(5).filter(|s| !s.is_empty()) {
-                            info.env_mask = Some(mask.clone());
+                        if let Some(mask) = tex_set.textures.get(5) {
+                            info.env_mask = intern_texture_path(pool, mask);
                         }
                     }
                 }
@@ -175,10 +175,10 @@ pub(crate) fn extract_material_info_from_refs(
         if let Some(shader) = scene.get_as::<BSEffectShaderProperty>(idx) {
             if info.material_path.is_none() {
                 info.material_path =
-                    crate::import::mesh::material_path_from_name(shader.net.name.as_deref());
+                    crate::import::mesh::material_path_from_name(shader.net.name.as_deref(), pool);
             }
-            if info.texture_path.is_none() && !shader.source_texture.is_empty() {
-                info.texture_path = Some(shader.source_texture.clone());
+            if info.texture_path.is_none() {
+                info.texture_path = intern_texture_path(pool, &shader.source_texture);
             }
             if !info.has_material_data {
                 // BSEffect's base_color is semantically a diffuse
@@ -208,8 +208,8 @@ pub(crate) fn extract_material_info_from_refs(
                 // FO4+ effect shaders (BSVER >= 130) carry their own
                 // normal + env maps alongside the greyscale palette.
                 // Pre-#129 only the BsTriShape path read them.
-                if !shader.normal_texture.is_empty() {
-                    info.normal_map = Some(shader.normal_texture.clone());
+                if info.normal_map.is_none() {
+                    info.normal_map = intern_texture_path(pool, &shader.normal_texture);
                 }
                 info.env_map_scale = shader.env_map_scale;
                 info.has_material_data = true;
@@ -344,9 +344,8 @@ pub(crate) fn extract_material_info_from_refs(
 
         if let Some(tex_prop) = scene.get_as::<NiTexturingProperty>(idx) {
             if info.texture_path.is_none() {
-                if let Some(path) = tex_desc_source_path(scene, tex_prop.base_texture.as_ref()) {
-                    info.texture_path = Some(path);
-                }
+                info.texture_path =
+                    tex_desc_source_path(scene, tex_prop.base_texture.as_ref(), pool);
             }
             // Oblivion stores tangent-space normal maps in the `bump_texture`
             // slot (the dedicated `normal_texture` slot landed later in FO3).
@@ -354,11 +353,12 @@ pub(crate) fn extract_material_info_from_refs(
             // this branch is specifically for pre-Skyrim static meshes.
             // See issue #131.
             if info.normal_map.is_none() {
-                if let Some(path) = tex_desc_source_path(scene, tex_prop.normal_texture.as_ref())
-                    .or_else(|| tex_desc_source_path(scene, tex_prop.bump_texture.as_ref()))
-                {
-                    info.normal_map = Some(path);
-                }
+                info.normal_map = tex_desc_source_path(
+                    scene,
+                    tex_prop.normal_texture.as_ref(),
+                    pool,
+                )
+                .or_else(|| tex_desc_source_path(scene, tex_prop.bump_texture.as_ref(), pool));
             }
             // Secondary texture slots (#214). NiTexturingProperty has
             // up to 8 slots — base and normal/bump are consumed above,
@@ -370,26 +370,22 @@ pub(crate) fn extract_material_info_from_refs(
             // We only overwrite if a Skyrim+ BSShader path hasn't
             // already set them, matching the base/normal policy.
             if info.glow_map.is_none() {
-                if let Some(path) = tex_desc_source_path(scene, tex_prop.glow_texture.as_ref()) {
-                    info.glow_map = Some(path);
-                }
+                info.glow_map =
+                    tex_desc_source_path(scene, tex_prop.glow_texture.as_ref(), pool);
             }
             if info.detail_map.is_none() {
-                if let Some(path) = tex_desc_source_path(scene, tex_prop.detail_texture.as_ref()) {
-                    info.detail_map = Some(path);
-                }
+                info.detail_map =
+                    tex_desc_source_path(scene, tex_prop.detail_texture.as_ref(), pool);
             }
             if info.gloss_map.is_none() {
-                if let Some(path) = tex_desc_source_path(scene, tex_prop.gloss_texture.as_ref()) {
-                    info.gloss_map = Some(path);
-                }
+                info.gloss_map =
+                    tex_desc_source_path(scene, tex_prop.gloss_texture.as_ref(), pool);
             }
             // Dark / multiplicative lightmap (slot 1). Baked shadow data
             // on Oblivion interior architecture — `albedo *= dark`. #264.
             if info.dark_map.is_none() {
-                if let Some(path) = tex_desc_source_path(scene, tex_prop.dark_texture.as_ref()) {
-                    info.dark_map = Some(path);
-                }
+                info.dark_map =
+                    tex_desc_source_path(scene, tex_prop.dark_texture.as_ref(), pool);
             }
             // Parallax height-map (slot 7, v20.2.0.5+). Pre-#450 the
             // parser consumed + dropped this slot so FO3 meshes that
@@ -399,10 +395,8 @@ pub(crate) fn extract_material_info_from_refs(
             // slot 3 path at line 532 so the shader does not need to
             // distinguish the two sources.
             if info.parallax_map.is_none() {
-                if let Some(path) = tex_desc_source_path(scene, tex_prop.parallax_texture.as_ref())
-                {
-                    info.parallax_map = Some(path);
-                }
+                info.parallax_map =
+                    tex_desc_source_path(scene, tex_prop.parallax_texture.as_ref(), pool);
             }
             // NOTE: NiTexturingProperty decal slots 0..=3 are NOT
             // copied to MaterialInfo. #705 / O4-07 removed the
@@ -441,31 +435,27 @@ pub(crate) fn extract_material_info_from_refs(
                 if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
                     if info.texture_path.is_none() {
                         if let Some(path) = tex_set.textures.first() {
-                            if !path.is_empty() {
-                                info.texture_path = Some(path.clone());
-                            }
+                            info.texture_path = intern_texture_path(pool, path);
                         }
                     }
                     // Normal map is textures[1] in BSShaderTextureSet (same layout as Skyrim).
                     if info.normal_map.is_none() {
                         if let Some(normal) = tex_set.textures.get(1) {
-                            if !normal.is_empty() {
-                                info.normal_map = Some(normal.clone());
-                            }
+                            info.normal_map = intern_texture_path(pool, normal);
                         }
                     }
                     // Glow / emissive map is textures[2].
                     if info.glow_map.is_none() {
-                        if let Some(glow) = tex_set.textures.get(2).filter(|s| !s.is_empty()) {
-                            info.glow_map = Some(glow.clone());
+                        if let Some(glow) = tex_set.textures.get(2) {
+                            info.glow_map = intern_texture_path(pool, glow);
                         }
                     }
                     // Parallax / height map is textures[3] (FO3/FNV
                     // Parallax_Shader_Index_15 / Parallax_Occlusion).
                     // See #452.
                     if info.parallax_map.is_none() {
-                        if let Some(px) = tex_set.textures.get(3).filter(|s| !s.is_empty()) {
-                            info.parallax_map = Some(px.clone());
+                        if let Some(px) = tex_set.textures.get(3) {
+                            info.parallax_map = intern_texture_path(pool, px);
                         }
                     }
                     // Environment cubemap is textures[4]. Glass bottles,
@@ -473,14 +463,14 @@ pub(crate) fn extract_material_info_from_refs(
                     // read and thrown away. env_map_scale was captured
                     // but had no texture to route to.
                     if info.env_map.is_none() {
-                        if let Some(env) = tex_set.textures.get(4).filter(|s| !s.is_empty()) {
-                            info.env_map = Some(env.clone());
+                        if let Some(env) = tex_set.textures.get(4) {
+                            info.env_map = intern_texture_path(pool, env);
                         }
                     }
                     // Environment-reflection mask is textures[5]. #452.
                     if info.env_mask.is_none() {
-                        if let Some(mask) = tex_set.textures.get(5).filter(|s| !s.is_empty()) {
-                            info.env_mask = Some(mask.clone());
+                        if let Some(mask) = tex_set.textures.get(5) {
+                            info.env_mask = intern_texture_path(pool, mask);
                         }
                     }
                 }
@@ -510,8 +500,8 @@ pub(crate) fn extract_material_info_from_refs(
         }
 
         if let Some(shader) = scene.get_as::<BSShaderNoLightingProperty>(idx) {
-            if info.texture_path.is_none() && !shader.file_name.is_empty() {
-                info.texture_path = Some(shader.file_name.clone());
+            if info.texture_path.is_none() {
+                info.texture_path = intern_texture_path(pool, &shader.file_name);
             }
             // Same rationale as the PPLighting branch above: no Double_Sided
             // bit on the FO3/FNV flag enum. #441. Pre-#454 this branch

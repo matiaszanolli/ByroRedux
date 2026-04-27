@@ -12,7 +12,32 @@ use crate::blocks::shader::{
 use crate::blocks::tri_shape::NiTriShape;
 use crate::blocks::NiObject;
 use crate::types::{BlockRef, NiTransform};
+use byroredux_core::string::{FixedString, StringPool};
 use std::sync::Arc;
+
+/// Walker invocation paired with the engine `StringPool` so tests can
+/// resolve the [`FixedString`] handles back to `&str` for assertion
+/// (#609 / D6-NEW-01). Returns `(MaterialInfo, StringPool)` so the
+/// pool stays alive for the resolver lookups.
+fn extract_with_pool(
+    scene: &NifScene,
+    shape: &NiTriShape,
+    inherited: &[BlockRef],
+) -> (MaterialInfo, StringPool) {
+    let mut pool = StringPool::new();
+    let info = extract_material_info(scene, shape, inherited, &mut pool);
+    (info, pool)
+}
+
+#[track_caller]
+fn assert_path(pool: &StringPool, sym: Option<FixedString>, expected: &str) {
+    let resolved = sym.and_then(|s| pool.resolve(s));
+    assert_eq!(
+        resolved,
+        Some(expected),
+        "FixedString resolves to a different path"
+    );
+}
 
 fn identity_transform() -> NiTransform {
     NiTransform::default()
@@ -104,13 +129,13 @@ fn pp_lighting_populates_parallax_env_env_mask_from_slots_3_4_5() {
         ..NifScene::default()
     };
     let shape = make_tri_shape_with_props(vec![BlockRef(1)]);
-    let info = extract_material_info(&scene, &shape, &[]);
-    assert_eq!(info.texture_path.as_deref(), Some("textures\\wall_d.dds"));
-    assert_eq!(info.normal_map.as_deref(), Some("textures\\wall_n.dds"));
-    assert_eq!(info.glow_map.as_deref(), Some("textures\\wall_g.dds"));
-    assert_eq!(info.parallax_map.as_deref(), Some("textures\\wall_p.dds"));
-    assert_eq!(info.env_map.as_deref(), Some("textures\\wall_e.dds"));
-    assert_eq!(info.env_mask.as_deref(), Some("textures\\wall_em.dds"));
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+    assert_path(&pool, info.texture_path, "textures\\wall_d.dds");
+    assert_path(&pool, info.normal_map, "textures\\wall_n.dds");
+    assert_path(&pool, info.glow_map, "textures\\wall_g.dds");
+    assert_path(&pool, info.parallax_map, "textures\\wall_p.dds");
+    assert_path(&pool, info.env_map, "textures\\wall_e.dds");
+    assert_path(&pool, info.env_mask, "textures\\wall_em.dds");
     // Scalars ride through from BSShaderPPLightingProperty.
     assert_eq!(info.parallax_max_passes, Some(4.0));
     assert_eq!(info.parallax_height_scale, Some(0.04));
@@ -137,7 +162,7 @@ fn pp_lighting_with_only_3_slots_leaves_parallax_and_env_none() {
         ..NifScene::default()
     };
     let shape = make_tri_shape_with_props(vec![BlockRef(0)]);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
     assert!(info.parallax_map.is_none());
     assert!(info.env_map.is_none());
     assert!(info.env_mask.is_none());
@@ -196,10 +221,10 @@ fn bs_lighting_shader_populates_parallax_env_slots() {
     };
     let mut shape = make_tri_shape_with_props(Vec::new());
     shape.shader_property_ref = BlockRef(0);
-    let info = extract_material_info(&scene, &shape, &[]);
-    assert_eq!(info.parallax_map.as_deref(), Some("p.dds"));
-    assert_eq!(info.env_map.as_deref(), Some("e.dds"));
-    assert_eq!(info.env_mask.as_deref(), Some("em.dds"));
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+    assert_path(&pool, info.parallax_map, "p.dds");
+    assert_path(&pool, info.env_map, "e.dds");
+    assert_path(&pool, info.env_mask, "em.dds");
 }
 
 // Keep the MaterialInfo default honest: new fields land as None.
@@ -277,7 +302,7 @@ fn ni_texturing_uv_transform_survives_preceding_ni_material_property() {
         ..NifScene::default()
     };
     let shape = make_tri_shape_with_props(vec![BlockRef(0), BlockRef(1)]);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
     assert_eq!(
         info.uv_offset,
         [0.5, 0.0],
@@ -327,7 +352,7 @@ fn ni_material_property_ambient_color_reaches_material_info() {
         ..NifScene::default()
     };
     let shape = make_tri_shape_with_props(vec![BlockRef(0)]);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
     assert!((info.ambient_color[0] - 0.25).abs() < 1e-6);
     assert!((info.ambient_color[1] - 0.5).abs() < 1e-6);
     assert!((info.ambient_color[2] - 0.75).abs() < 1e-6);
@@ -409,7 +434,7 @@ fn bs_lighting_shader_uv_transform_blocks_later_ni_texturing_property() {
     // wiring extract_material_info uses.
     let mut shape = make_tri_shape_with_props(vec![BlockRef(1)]);
     shape.shader_property_ref = BlockRef(0);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
     // Shader transform wins — the later NiTexturingProperty must
     // not stomp it.
     assert_eq!(info.uv_offset, [0.25, 0.75]);
@@ -485,7 +510,7 @@ fn bs_effect_shader_property_sets_material_kind_to_101() {
     // shader_property_ref (same slot as BSLightingShaderProperty).
     let mut shape = make_tri_shape_with_props(Vec::new());
     shape.shader_property_ref = BlockRef(0);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
 
     assert_eq!(
         info.material_kind, 101,
@@ -499,7 +524,7 @@ fn bs_effect_shader_property_sets_material_kind_to_101() {
     // Existing import-side data plumbing still runs (regression
     // guard — the material_kind override must not stomp emissive
     // routing, alpha_blend, or texture path):
-    assert_eq!(info.texture_path.as_deref(), Some("fx/glow.dds"));
+    assert_path(&pool, info.texture_path, "fx/glow.dds");
     assert!(
         info.alpha_blend,
         "BSEffectShaderProperty implies alpha-blend"
@@ -597,7 +622,7 @@ fn nispecular_disabled_clears_color_for_glass_ior_path() {
         ..NifScene::default()
     };
     let shape = make_tri_shape_with_props(vec![BlockRef(0), BlockRef(1)]);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
 
     assert!(!info.specular_enabled);
     assert_eq!(info.specular_strength, 0.0);
@@ -653,7 +678,7 @@ fn nispecular_enabled_preserves_color() {
         ..NifScene::default()
     };
     let shape = make_tri_shape_with_props(vec![BlockRef(0), BlockRef(1)]);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
 
     assert!(info.specular_enabled);
     assert_eq!(info.specular_color, [0.8, 0.8, 0.8]);
@@ -675,7 +700,7 @@ fn bs_lighting_shader_property_keeps_low_range_material_kind() {
     };
     let mut shape = make_tri_shape_with_props(Vec::new());
     shape.shader_property_ref = BlockRef(0);
-    let info = extract_material_info(&scene, &shape, &[]);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
 
     assert_eq!(
         info.material_kind, 5,
