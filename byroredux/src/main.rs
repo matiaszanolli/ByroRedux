@@ -210,6 +210,13 @@ struct App {
     /// Decremented each AboutToWait pass while the result slot is
     /// empty.
     screenshot_deadline_frames: u32,
+    /// World cell streaming state (M40 Phase 1a). `None` outside
+    /// `--esm + --grid` exterior mode. When `Some`, every
+    /// `about_to_wait` tick reads `ActiveCamera` translation, diffs
+    /// the loaded cell set against the player's current grid coords,
+    /// and synchronously loads / unloads the deltas via the per-cell
+    /// loader.
+    streaming: Option<streaming::WorldStreamingState>,
 }
 
 impl App {
@@ -344,6 +351,7 @@ impl App {
             camera_forward_override: None,
             screenshot_requested: false,
             screenshot_deadline_frames: 0,
+            streaming: None,
         }
     }
 
@@ -357,7 +365,112 @@ impl App {
             &mut self.ui_texture_handle,
             self.camera_pos_override,
             self.camera_forward_override,
+            &mut self.streaming,
         );
+    }
+
+    /// World-streaming tick (M40 Phase 1a). Reads the active camera's
+    /// world position, diffs the loaded cell set against the player's
+    /// current grid coords, and synchronously loads / unloads the
+    /// deltas via `cell_loader::load_one_exterior_cell` /
+    /// `cell_loader::unload_cell`. No-ops when `self.streaming` is
+    /// `None` (interior cell or NIF-only modes) or when the player
+    /// hasn't crossed a cell boundary since the last tick.
+    fn step_streaming(&mut self) {
+        let Some(state) = self.streaming.as_mut() else {
+            return;
+        };
+        let Some(ctx) = self.renderer.as_mut() else {
+            return;
+        };
+
+        // Resolve the active camera's world translation. ActiveCamera
+        // points at an entity; its `Transform.translation` is the
+        // player position. Without a camera we can't decide what to
+        // stream — bail (the initial-radius load already happened in
+        // setup_scene).
+        let player_pos = {
+            let Some(active) = self
+                .world
+                .try_resource::<byroredux_core::ecs::ActiveCamera>()
+            else {
+                return;
+            };
+            let cam_entity = active.0;
+            let Some(tq) = self
+                .world
+                .query::<byroredux_core::ecs::Transform>()
+            else {
+                return;
+            };
+            let Some(tform) = tq.get(cam_entity) else {
+                return;
+            };
+            tform.translation
+        };
+
+        let player_grid = streaming::world_pos_to_grid(player_pos.x, player_pos.z);
+        // No-op fast path: player hasn't crossed a cell boundary.
+        if state.last_player_grid == Some(player_grid) {
+            return;
+        }
+        state.last_player_grid = Some(player_grid);
+        log::info!(
+            "Player crossed cell boundary → grid ({},{}) (world {:.0},{:.0},{:.0})",
+            player_grid.0,
+            player_grid.1,
+            player_pos.x,
+            player_pos.y,
+            player_pos.z,
+        );
+
+        let deltas = streaming::compute_streaming_deltas(
+            &state.loaded,
+            player_grid,
+            state.radius_load,
+            state.radius_unload,
+        );
+
+        // Unload first to free GPU resources before loading new cells —
+        // cuts peak VRAM at the boundary crossing.
+        for coord in deltas.to_unload {
+            if let Some(slot) = state.loaded.remove(&coord) {
+                cell_loader::unload_cell(&mut self.world, ctx, slot.cell_root);
+                log::info!("Unloaded cell ({},{}) (root {})", coord.0, coord.1, slot.cell_root);
+            }
+        }
+
+        // Load new cells. Phase 1a: synchronous on the main thread —
+        // each load blocks the rest of the frame. Phase 1b moves this
+        // to a worker thread + drain pass.
+        let wctx = state.wctx.clone();
+        for (gx, gy) in deltas.to_load {
+            match cell_loader::load_one_exterior_cell(
+                wctx.as_ref(),
+                gx,
+                gy,
+                &mut self.world,
+                ctx,
+                &state.tex_provider,
+                Some(&mut state.mat_provider),
+                None,
+            ) {
+                Ok(Some(info)) => {
+                    state.loaded.insert(
+                        (gx, gy),
+                        streaming::LoadedCell {
+                            cell_root: info.cell_root,
+                        },
+                    );
+                }
+                Ok(None) => {
+                    // Hole in worldspace at (gx, gy) — common at edges.
+                }
+                Err(e) => {
+                    log::warn!("Streaming cell ({},{}) load failed: {:#}", gx, gy, e);
+                }
+            }
+        }
     }
 }
 
@@ -699,6 +812,13 @@ impl ApplicationHandler for App {
             self.bench_systems_ns += systems_t0.elapsed().as_nanos() as u64;
             self.bench_systems_ticks += 1;
         }
+
+        // World cell streaming (M40 Phase 1a). Runs after the
+        // scheduler so the scheduler-driven `fly_camera_system` has
+        // already published the player's current Transform translation
+        // for this frame. No-ops outside `--esm + --grid` exterior
+        // mode and when the player hasn't crossed a boundary.
+        self.step_streaming();
 
         // Update window title with stats (throttled: every 16 frames ≈ 4×/sec at 60fps).
         let config_debug = self.world.resource::<EngineConfig>().debug_logging;

@@ -30,12 +30,6 @@
 //! Worker thread does the parse off main thread. The diff logic and
 //! state shape on this struct stay the same.
 
-// `dead_code` allow lifts in M40 Phase 1a (3/N) when the App driver
-// imports these items. The unit tests already exercise
-// `compute_streaming_deltas` + `world_pos_to_grid`, but the binary
-// crate's compiler view warns until `main.rs` calls them.
-#![allow(dead_code)]
-
 use byroredux_core::ecs::storage::EntityId;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

@@ -23,6 +23,7 @@ use crate::components::{
     NormalMapHandle, SkyParamsRes, Spinning, TwoSided, WeatherDataRes, WeatherTransitionRes,
 };
 use crate::helpers::add_child;
+use crate::streaming::{self, LoadedCell, WorldStreamingState};
 
 /// Parse the `--radius` CLI argument into a clamped grid radius for
 /// [`cell_loader::load_exterior_cells`]. Falls back to `3` (7×7 = 49
@@ -131,6 +132,282 @@ fn resolve_cloud_layer(
     }
 }
 
+/// Insert exterior worldspace lighting + sky resources into the world,
+/// driven by the (already-resolved) climate + default-weather sitting
+/// on the streaming context. Worldspace-wide concern, run once at
+/// streaming bootstrap rather than per cell load.
+///
+/// Falls back to a procedural Mojave-style warm desert sky when the
+/// worldspace has no climate / no default weather (common for stub
+/// worldspaces and bare-DLC parses). Pre-#M40 this was inlined in the
+/// `--grid` CLI arm next to the bulk loader; factoring it out lets
+/// the streaming system bootstrap reuse it.
+fn apply_worldspace_weather(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    wctx: &cell_loader::ExteriorWorldContext,
+) {
+    let sun_dir: [f32; 3] = [-0.4, 0.8, -0.45];
+    if let Some(ref wthr) = wctx.default_weather {
+        use byroredux_plugin::esm::records::weather::*;
+        // Day-slot snapshot for the initial CellLightingRes / SkyParamsRes —
+        // the per-frame `weather_system` interpolator advances through the
+        // stored NAM0 table over the in-game day. Raw monitor-space colors
+        // (commit 0e8efc6) — sRGB decode would darken every warm hue.
+        let ambient = wthr.sky_colors[SKY_AMBIENT][TOD_DAY].to_rgb_f32();
+        let sunlight = wthr.sky_colors[SKY_SUNLIGHT][TOD_DAY].to_rgb_f32();
+        let fog_col = wthr.sky_colors[SKY_FOG][TOD_DAY].to_rgb_f32();
+        let zenith = wthr.sky_colors[SKY_UPPER][TOD_DAY].to_rgb_f32();
+        let horizon = wthr.sky_colors[SKY_HORIZON][TOD_DAY].to_rgb_f32();
+        let sun_col = wthr.sky_colors[SKY_SUN][TOD_DAY].to_rgb_f32();
+        log::info!(
+            "WTHR '{}': zenith={:?} horizon={:?} sun={:?} fog_day={:.0}–{:.0}",
+            wthr.editor_id,
+            zenith,
+            horizon,
+            sun_col,
+            wthr.fog_day_near,
+            wthr.fog_day_far,
+        );
+        world.insert_resource(CellLightingRes {
+            ambient,
+            directional_color: sunlight,
+            directional_dir: sun_dir,
+            is_interior: false,
+            fog_color: fog_col,
+            fog_near: wthr.fog_day_near,
+            fog_far: wthr.fog_day_far,
+        });
+        // Resolve all 4 WTHR cloud layers via the shared per-WTHR
+        // helper (#529 — derives tile_scale from authored DDS width).
+        let (cloud_tex_index, cloud_tile_scale) = resolve_cloud_layer(
+            wthr.cloud_textures[0].as_deref(),
+            CLOUD_TILE_SCALE_LAYER_0,
+            "0",
+            tex_provider,
+            ctx,
+        );
+        let (cloud_tex_index_1, cloud_tile_scale_1) = resolve_cloud_layer(
+            wthr.cloud_textures[1].as_deref(),
+            CLOUD_TILE_SCALE_LAYER_1,
+            "1",
+            tex_provider,
+            ctx,
+        );
+        let (cloud_tex_index_2, cloud_tile_scale_2) = resolve_cloud_layer(
+            wthr.cloud_textures[2].as_deref(),
+            CLOUD_TILE_SCALE_LAYER_2,
+            "2",
+            tex_provider,
+            ctx,
+        );
+        let (cloud_tex_index_3, cloud_tile_scale_3) = resolve_cloud_layer(
+            wthr.cloud_textures[3].as_deref(),
+            CLOUD_TILE_SCALE_LAYER_3,
+            "3",
+            tex_provider,
+            ctx,
+        );
+        // CLMT FNAM sun-sprite resolution (#478). 0 = procedural disc fallback.
+        let sun_tex_index: u32 = wctx
+            .climate
+            .as_ref()
+            .and_then(|c| c.sun_texture.as_deref())
+            .filter(|s| !s.is_empty())
+            .and_then(|path| {
+                let dds = tex_provider.extract(path)?;
+                let alloc = ctx.allocator.as_ref().unwrap();
+                match ctx.texture_registry.load_dds(
+                    &ctx.device,
+                    alloc,
+                    &ctx.graphics_queue,
+                    ctx.transfer_pool,
+                    path,
+                    &dds,
+                ) {
+                    Ok(h) => {
+                        log::info!("Sun texture '{}' → handle {}", path, h);
+                        Some(h)
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Sun DDS load failed '{}': {} — using procedural disc",
+                            path,
+                            e
+                        );
+                        None
+                    }
+                }
+            })
+            .unwrap_or(0);
+        world.insert_resource(SkyParamsRes {
+            zenith_color: zenith,
+            horizon_color: horizon,
+            sun_direction: sun_dir,
+            sun_color: sun_col,
+            sun_size: 0.9995,
+            sun_intensity: 4.0,
+            is_exterior: true,
+            cloud_scroll: [0.0, 0.0],
+            cloud_tile_scale,
+            cloud_texture_index: cloud_tex_index,
+            sun_texture_index: sun_tex_index,
+            cloud_scroll_1: [0.0, 0.0],
+            cloud_tile_scale_1,
+            cloud_texture_index_1: cloud_tex_index_1,
+            cloud_scroll_2: [0.0, 0.0],
+            cloud_tile_scale_2,
+            cloud_texture_index_2: cloud_tex_index_2,
+            cloud_scroll_3: [0.0, 0.0],
+            cloud_tile_scale_3,
+            cloud_texture_index_3: cloud_tex_index_3,
+        });
+        // Full NAM0 color table for per-frame TOD interpolation.
+        let mut sky_colors = [[[0.0f32; 3]; 6]; 10];
+        for g in 0..SKY_COLOR_GROUPS {
+            for s in 0..SKY_TIME_SLOTS {
+                sky_colors[g][s] = wthr.sky_colors[g][s].to_rgb_f32();
+            }
+        }
+        // #463 — per-climate sunrise/sunset breakpoints. CLMT TNAM
+        // bytes are in 10-min units → divide by 6 for hours. Fall back
+        // to the pre-#463 hardcoded 6h/10h/18h/22h when the worldspace
+        // has no climate (or all bytes zero — stub data).
+        let tod_hours = wctx
+            .climate
+            .as_ref()
+            .filter(|c| {
+                c.sunrise_begin | c.sunrise_end | c.sunset_begin | c.sunset_end != 0
+            })
+            .map(|c| {
+                [
+                    c.sunrise_begin as f32 / 6.0,
+                    c.sunrise_end as f32 / 6.0,
+                    c.sunset_begin as f32 / 6.0,
+                    c.sunset_end as f32 / 6.0,
+                ]
+            })
+            .unwrap_or([6.0, 10.0, 18.0, 22.0]);
+        let new_weather = WeatherDataRes {
+            sky_colors,
+            fog: [
+                wthr.fog_day_near,
+                wthr.fog_day_far,
+                wthr.fog_night_near,
+                wthr.fog_night_far,
+            ],
+            tod_hours,
+        };
+        // First-time bootstrap: insert directly. A subsequent worldspace
+        // change (door-walking interior↔exterior, M40 Phase 2) will
+        // trigger the 8-second crossfade via WeatherTransitionRes.
+        if world.try_resource::<WeatherDataRes>().is_some() {
+            world.insert_resource(WeatherTransitionRes {
+                target: new_weather,
+                elapsed_secs: 0.0,
+                duration_secs: 8.0,
+            });
+        } else {
+            world.insert_resource(new_weather);
+            world.insert_resource(GameTimeRes::default());
+        }
+    } else {
+        // Procedural fallback — warm Mojave desert sky. Same defaults
+        // the bulk loader used pre-#M40 when a worldspace had no
+        // climate / weather.
+        world.insert_resource(CellLightingRes {
+            ambient: [0.15, 0.14, 0.12],
+            directional_color: [1.0, 0.95, 0.8],
+            directional_dir: sun_dir,
+            is_interior: false,
+            fog_color: [0.65, 0.7, 0.8],
+            fog_near: 15000.0,
+            fog_far: 80000.0,
+        });
+        world.insert_resource(SkyParamsRes {
+            zenith_color: [0.15, 0.3, 0.65],
+            horizon_color: [0.55, 0.5, 0.42],
+            sun_direction: sun_dir,
+            sun_color: [1.0, 0.95, 0.8],
+            sun_size: 0.9995,
+            sun_intensity: 4.0,
+            is_exterior: true,
+            cloud_scroll: [0.0, 0.0],
+            cloud_tile_scale: 0.0,
+            cloud_texture_index: 0,
+            sun_texture_index: 0,
+            cloud_scroll_1: [0.0, 0.0],
+            cloud_tile_scale_1: 0.0,
+            cloud_texture_index_1: 0,
+            cloud_scroll_2: [0.0, 0.0],
+            cloud_tile_scale_2: 0.0,
+            cloud_texture_index_2: 0,
+            cloud_scroll_3: [0.0, 0.0],
+            cloud_tile_scale_3: 0.0,
+            cloud_texture_index_3: 0,
+        });
+    }
+}
+
+/// Sync-load the initial radius around the player's spawn cell.
+/// Returns the camera-spawn point — center of the player's cell on
+/// the terrain surface (sampled at vertex 16,16 of the 33×33
+/// heightmap), or `Vec3::ZERO` if no center cell exists. After this
+/// returns, the streaming state's `loaded` map holds one entry per
+/// successfully-loaded cell.
+///
+/// Phase 1a synchronous load: blocks the bootstrap thread until every
+/// cell in the initial radius is loaded. Phase 1b moves this to the
+/// worker thread + a payload drain pass on the first few frames.
+fn stream_initial_radius(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    state: &mut WorldStreamingState,
+    cx: i32,
+    cy: i32,
+) -> Vec3 {
+    let deltas = streaming::compute_streaming_deltas(
+        &state.loaded,
+        (cx, cy),
+        state.radius_load,
+        state.radius_unload,
+    );
+    let mut center = Vec3::ZERO;
+    let wctx = state.wctx.clone();
+    for (gx, gy) in deltas.to_load {
+        match cell_loader::load_one_exterior_cell(
+            wctx.as_ref(),
+            gx,
+            gy,
+            world,
+            ctx,
+            &state.tex_provider,
+            Some(&mut state.mat_provider),
+            None,
+        ) {
+            Ok(Some(info)) => {
+                if (gx, gy) == (cx, cy) {
+                    center = info.center;
+                }
+                state.loaded.insert(
+                    (gx, gy),
+                    LoadedCell {
+                        cell_root: info.cell_root,
+                    },
+                );
+            }
+            Ok(None) => {
+                // Hole in the worldspace at (gx, gy) — common at edges.
+            }
+            Err(e) => {
+                log::warn!("Initial cell ({},{}) load failed: {:#}", gx, gy, e);
+            }
+        }
+    }
+    center
+}
+
 /// Called once after the renderer is ready — uploads meshes and spawns entities.
 pub(crate) fn setup_scene(
     world: &mut World,
@@ -139,6 +416,7 @@ pub(crate) fn setup_scene(
     ui_texture_handle: &mut Option<u32>,
     camera_pos_override: Option<(f32, f32, f32)>,
     camera_forward_override: Option<(f32, f32, f32)>,
+    streaming_slot: &mut Option<WorldStreamingState>,
 ) {
     // Load content from CLI: cell, loose NIF, or BSA NIF.
     let args: Vec<String> = std::env::args().collect();
@@ -273,259 +551,44 @@ pub(crate) fn setup_scene(
                 Err(e) => log::error!("Failed to load cell: {:#}", e),
             }
         } else if let (Some(ref esm_path), Some(ref grid)) = (&esm_path, &grid_str) {
-            // Exterior cell mode: --esm <path> --grid <x>,<y>
+            // Exterior cell mode: --esm <path> --grid <x>,<y> — driven
+            // through `WorldStreamingState` (M40 Phase 1a). The bulk
+            // loader has been retired from this path; cells stream in
+            // around the player via `step_streaming` from frame 1.
+            // Initial-radius cells are loaded synchronously here so
+            // the first rendered frame has a populated world.
             let (cx, cy) = parse_grid_coords(grid);
             let tex_provider = build_texture_provider(&args);
-            let mut mat_provider = build_material_provider(&args);
-            // Radius defaults to 3 (7×7 = 49 cells, ~28K terrain
-            // units view distance). Overridable via `--radius N`,
-            // clamped to 1..=7 so worst-case is a 15×15 = 225 cell
-            // stress load. See #531.
-            match cell_loader::load_exterior_cells_with_masters(
+            let mat_provider = build_material_provider(&args);
+            match cell_loader::build_exterior_world_context(
                 &masters,
                 esm_path,
                 cx,
                 cy,
                 radius,
-                world,
-                ctx,
-                &tex_provider,
-                Some(&mut mat_provider),
                 wrld_name.as_deref(),
             ) {
-                Ok(result) => {
-                    cam_center = result.center;
+                Ok(wctx) => {
                     has_nif_content = true;
-                    log::info!(
-                        "Exterior '{}' ready: {} entities",
-                        result.cell_name,
-                        result.entity_count
+                    apply_worldspace_weather(world, ctx, &tex_provider, &wctx);
+                    let mut state = WorldStreamingState::new(
+                        wctx,
+                        tex_provider,
+                        mat_provider,
+                        radius,
                     );
-                    // Exterior cells: set up lighting + sky from WTHR data
-                    // or a procedural Mojave-style fallback.
-                    let sun_dir: [f32; 3] = [-0.4, 0.8, -0.45];
-                    if let Some(ref wthr) = result.weather {
-                        use byroredux_plugin::esm::records::weather::*;
-                        // Extract "day" time slot colors (initial state).
-                        // Raw monitor-space per commit 0e8efc6 — matches XCLL / LIGH /
-                        // NIF material policy. sRGB decode would darken every warm hue.
-                        let ambient = wthr.sky_colors[SKY_AMBIENT][TOD_DAY].to_rgb_f32();
-                        let sunlight = wthr.sky_colors[SKY_SUNLIGHT][TOD_DAY].to_rgb_f32();
-                        let fog_col = wthr.sky_colors[SKY_FOG][TOD_DAY].to_rgb_f32();
-                        let zenith = wthr.sky_colors[SKY_UPPER][TOD_DAY].to_rgb_f32();
-                        let horizon = wthr.sky_colors[SKY_HORIZON][TOD_DAY].to_rgb_f32();
-                        let sun_col = wthr.sky_colors[SKY_SUN][TOD_DAY].to_rgb_f32();
-                        log::info!(
-                            "WTHR '{}': zenith={:?} horizon={:?} sun={:?} fog_day={:.0}–{:.0}",
-                            wthr.editor_id,
-                            zenith,
-                            horizon,
-                            sun_col,
-                            wthr.fog_day_near,
-                            wthr.fog_day_far,
-                        );
-                        world.insert_resource(CellLightingRes {
-                            ambient,
-                            directional_color: sunlight,
-                            directional_dir: sun_dir,
-                            is_interior: false,
-                            fog_color: fog_col,
-                            fog_near: wthr.fog_day_near,
-                            fog_far: wthr.fog_day_far,
-                        });
-                        // Resolve all 4 WTHR cloud layers through the shared
-                        // helper. Each layer's tile scale is derived per-WTHR
-                        // from the authored DDS width (see
-                        // `cloud_tile_scale_for_dds` / #529) — cloud density
-                        // now tracks the sprite's resolution rather than a
-                        // fixed per-layer constant. Path normalization
-                        // (`textures\` prefix) happens inside
-                        // `TextureProvider::extract` (#468). On failure
-                        // (no path / archive miss / corrupt DDS) the layer
-                        // is disabled rather than falling back to the
-                        // checkerboard — a magenta sky dome is worse than
-                        // no clouds.
-                        //
-                        // FNV/FO3 ship 4 layers (DNAM/CNAM/ANAM/BNAM);
-                        // Oblivion ships 2 (DNAM/CNAM) — slots 2/3 stay
-                        // disabled for the latter via the `None` branch.
-                        let (cloud_tex_index, cloud_tile_scale) = resolve_cloud_layer(
-                            wthr.cloud_textures[0].as_deref(),
-                            CLOUD_TILE_SCALE_LAYER_0,
-                            "0",
-                            &tex_provider,
-                            ctx,
-                        );
-                        let (cloud_tex_index_1, cloud_tile_scale_1) = resolve_cloud_layer(
-                            wthr.cloud_textures[1].as_deref(),
-                            CLOUD_TILE_SCALE_LAYER_1,
-                            "1",
-                            &tex_provider,
-                            ctx,
-                        );
-                        let (cloud_tex_index_2, cloud_tile_scale_2) = resolve_cloud_layer(
-                            wthr.cloud_textures[2].as_deref(),
-                            CLOUD_TILE_SCALE_LAYER_2,
-                            "2",
-                            &tex_provider,
-                            ctx,
-                        );
-                        let (cloud_tex_index_3, cloud_tile_scale_3) = resolve_cloud_layer(
-                            wthr.cloud_textures[3].as_deref(),
-                            CLOUD_TILE_SCALE_LAYER_3,
-                            "3",
-                            &tex_provider,
-                            ctx,
-                        );
-                        // CLMT FNAM sun-sprite resolution — #478.
-                        // Same extract-then-load-DDS pattern as the
-                        // cloud texture above; path normalization
-                        // (`textures\` prefix + slash flip) happens
-                        // inside `TextureProvider::extract` and
-                        // `TextureRegistry::load_dds` (see #522).
-                        // `0` = fall back to the procedural disc in
-                        // composite.frag (every code path that hit
-                        // the sun rendering pre-#478 continues to).
-                        let sun_tex_index: u32 = result
-                            .climate
-                            .as_ref()
-                            .and_then(|c| c.sun_texture.as_deref())
-                            .filter(|s| !s.is_empty())
-                            .and_then(|path| {
-                                let dds = tex_provider.extract(path)?;
-                                let alloc = ctx.allocator.as_ref().unwrap();
-                                match ctx.texture_registry.load_dds(
-                                    &ctx.device,
-                                    alloc,
-                                    &ctx.graphics_queue,
-                                    ctx.transfer_pool,
-                                    path,
-                                    &dds,
-                                ) {
-                                    Ok(h) => {
-                                        log::info!("Sun texture '{}' → handle {}", path, h);
-                                        Some(h)
-                                    }
-                                    Err(e) => {
-                                        log::warn!(
-                                            "Sun DDS load failed '{}': {} — using procedural disc",
-                                            path,
-                                            e
-                                        );
-                                        None
-                                    }
-                                }
-                            })
-                            .unwrap_or(0);
-                        world.insert_resource(SkyParamsRes {
-                            zenith_color: zenith,
-                            horizon_color: horizon,
-                            sun_direction: sun_dir,
-                            sun_color: sun_col,
-                            sun_size: 0.9995,
-                            sun_intensity: 4.0,
-                            is_exterior: true,
-                            cloud_scroll: [0.0, 0.0],
-                            cloud_tile_scale,
-                            cloud_texture_index: cloud_tex_index,
-                            sun_texture_index: sun_tex_index,
-                            cloud_scroll_1: [0.0, 0.0],
-                            cloud_tile_scale_1,
-                            cloud_texture_index_1: cloud_tex_index_1,
-                            cloud_scroll_2: [0.0, 0.0],
-                            cloud_tile_scale_2,
-                            cloud_texture_index_2: cloud_tex_index_2,
-                            cloud_scroll_3: [0.0, 0.0],
-                            cloud_tile_scale_3,
-                            cloud_texture_index_3: cloud_tex_index_3,
-                        });
-                        // Store full NAM0 color table for per-frame time-of-day interpolation.
-                        let mut sky_colors = [[[0.0f32; 3]; 6]; 10];
-                        for g in 0..SKY_COLOR_GROUPS {
-                            for s in 0..SKY_TIME_SLOTS {
-                                sky_colors[g][s] = wthr.sky_colors[g][s].to_rgb_f32();
-                            }
-                        }
-                        // #463 — Per-climate sunrise/sunset breakpoints.
-                        // CLMT TNAM bytes are in 10-minute units →
-                        // divide by 6 for hours. Fall back to the pre-
-                        // #463 hardcoded values (6h/10h/18h/22h) when
-                        // the cell has no climate record (or all bytes
-                        // are zero, which happens on stubbed test data).
-                        let tod_hours = result
-                            .climate
-                            .as_ref()
-                            .filter(|c| {
-                                c.sunrise_begin | c.sunrise_end | c.sunset_begin | c.sunset_end != 0
-                            })
-                            .map(|c| {
-                                [
-                                    c.sunrise_begin as f32 / 6.0,
-                                    c.sunrise_end as f32 / 6.0,
-                                    c.sunset_begin as f32 / 6.0,
-                                    c.sunset_end as f32 / 6.0,
-                                ]
-                            })
-                            .unwrap_or([6.0, 10.0, 18.0, 22.0]);
-                        let new_weather = WeatherDataRes {
-                            sky_colors,
-                            fog: [
-                                wthr.fog_day_near,
-                                wthr.fog_day_far,
-                                wthr.fog_night_near,
-                                wthr.fog_night_far,
-                            ],
-                            tod_hours,
-                        };
-                        // If a previous weather is already live, fade into the
-                        // new one over 8 seconds rather than snapping. On first
-                        // load there is no previous weather so we insert directly.
-                        if world.try_resource::<WeatherDataRes>().is_some() {
-                            world.insert_resource(WeatherTransitionRes {
-                                target: new_weather,
-                                elapsed_secs: 0.0,
-                                duration_secs: 8.0,
-                            });
-                        } else {
-                            world.insert_resource(new_weather);
-                            world.insert_resource(GameTimeRes::default());
-                        }
-                    } else {
-                        // Procedural fallback — warm Mojave desert sky.
-                        world.insert_resource(CellLightingRes {
-                            ambient: [0.15, 0.14, 0.12],
-                            directional_color: [1.0, 0.95, 0.8],
-                            directional_dir: sun_dir,
-                            is_interior: false,
-                            fog_color: [0.65, 0.7, 0.8],
-                            fog_near: 15000.0,
-                            fog_far: 80000.0,
-                        });
-                        world.insert_resource(SkyParamsRes {
-                            zenith_color: [0.15, 0.3, 0.65],
-                            horizon_color: [0.55, 0.5, 0.42],
-                            sun_direction: sun_dir,
-                            sun_color: [1.0, 0.95, 0.8],
-                            sun_size: 0.9995,
-                            sun_intensity: 4.0,
-                            is_exterior: true,
-                            cloud_scroll: [0.0, 0.0],
-                            cloud_tile_scale: 0.0, // no WTHR → no clouds
-                            cloud_texture_index: 0,
-                            sun_texture_index: 0, // procedural disc (#478)
-                            cloud_scroll_1: [0.0, 0.0],
-                            cloud_tile_scale_1: 0.0,
-                            cloud_texture_index_1: 0,
-                            cloud_scroll_2: [0.0, 0.0],
-                            cloud_tile_scale_2: 0.0,
-                            cloud_texture_index_2: 0,
-                            cloud_scroll_3: [0.0, 0.0],
-                            cloud_tile_scale_3: 0.0,
-                            cloud_texture_index_3: 0,
-                        });
-                    }
+                    state.last_player_grid = Some((cx, cy));
+                    cam_center = stream_initial_radius(world, ctx, &mut state, cx, cy);
+                    log::info!(
+                        "Streaming context ready: worldspace '{}', radius {} (load), {} (unload), {} cells loaded initially",
+                        state.wctx.worldspace_key,
+                        state.radius_load,
+                        state.radius_unload,
+                        state.loaded.len(),
+                    );
+                    *streaming_slot = Some(state);
                 }
-                Err(e) => log::error!("Failed to load exterior cells: {:#}", e),
+                Err(e) => log::error!("Failed to build exterior world context: {:#}", e),
             }
         } else {
             log::error!("--esm requires either --cell <editor_id> or --grid <x>,<y>");
