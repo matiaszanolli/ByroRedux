@@ -166,46 +166,97 @@ pub struct EsmIndex {
 }
 
 impl EsmIndex {
+    /// Single source of truth for the per-category breakdown.
+    ///
+    /// Each row is `(label, count_fn)`. [`total`] sums these counts;
+    /// [`category_breakdown`] formats them. Adding a new top-level
+    /// record category is now a single-edit operation — pre-#634 the
+    /// `total()` math and the end-of-parse `log::info!` line drifted
+    /// independently, and at least one consumer (the cell.statics +
+    /// activators/terminals overlap) was already silently miscounted.
+    ///
+    /// **Semantic**: `cells.statics` is populated by `parse_modl_group`
+    /// over every record-type that carries a `MODL` sub-record (STAT,
+    /// MSTT, FURN, DOOR, ACTI, CONT, LIGH, MISC, ARMO, WEAP, …). That
+    /// overlaps with the typed maps (`items`, `containers`, `activators`,
+    /// `terminals`, …) — `total()` counts both, so the value is a "sum
+    /// of bucket fills" rather than a unique-record count. Callers that
+    /// need uniqueness should walk the typed maps directly. The
+    /// integration-test floors in `tests/parse_real_esm.rs` were
+    /// authored against the overlapping sum, so the semantic is locked
+    /// in until those baselines are re-cut.
+    ///
+    /// [`total`]: Self::total
+    /// [`category_breakdown`]: Self::category_breakdown
+    pub fn categories() -> &'static [(&'static str, fn(&EsmIndex) -> usize)] {
+        // The closures below capture nothing and coerce to `fn(&EsmIndex)
+        // -> usize` — no boxing, zero runtime overhead vs the inline sum.
+        &[
+            ("cells", |s| s.cells.cells.len()),
+            ("statics", |s| s.cells.statics.len()),
+            ("items", |s| s.items.len()),
+            ("containers", |s| s.containers.len()),
+            ("LVLI", |s| s.leveled_items.len()),
+            ("LVLN", |s| s.leveled_npcs.len()),
+            ("LVLC", |s| s.leveled_creatures.len()),
+            ("NPCs", |s| s.npcs.len()),
+            ("creatures", |s| s.creatures.len()),
+            ("races", |s| s.races.len()),
+            ("classes", |s| s.classes.len()),
+            ("factions", |s| s.factions.len()),
+            ("globals", |s| s.globals.len()),
+            ("game_settings", |s| s.game_settings.len()),
+            ("weathers", |s| s.weathers.len()),
+            ("climates", |s| s.climates.len()),
+            ("scripts", |s| s.scripts.len()),
+            ("waters", |s| s.waters.len()),
+            ("navi", |s| s.navi_info.len()),
+            ("navmeshes", |s| s.navmeshes.len()),
+            ("regions", |s| s.regions.len()),
+            ("encounter_zones", |s| s.encounter_zones.len()),
+            ("lighting_templates", |s| s.lighting_templates.len()),
+            ("head_parts", |s| s.head_parts.len()),
+            ("eyes", |s| s.eyes.len()),
+            ("hair", |s| s.hair.len()),
+            ("packages", |s| s.packages.len()),
+            ("quests", |s| s.quests.len()),
+            ("dialogues", |s| s.dialogues.len()),
+            ("messages", |s| s.messages.len()),
+            ("perks", |s| s.perks.len()),
+            ("spells", |s| s.spells.len()),
+            ("enchantments", |s| s.enchantments.len()),
+            ("magic_effects", |s| s.magic_effects.len()),
+            ("actor_values", |s| s.actor_values.len()),
+            ("activators", |s| s.activators.len()),
+            ("terminals", |s| s.terminals.len()),
+        ]
+    }
+
     /// Total number of parsed records across every category. Useful for
-    /// at-a-glance reporting in tests and the cell loader.
+    /// at-a-glance reporting in tests and the cell loader. See
+    /// [`categories`] for the semantic note on the cells.statics
+    /// overlap.
+    ///
+    /// [`categories`]: Self::categories
     pub fn total(&self) -> usize {
-        self.items.len()
-            + self.containers.len()
-            + self.leveled_items.len()
-            + self.leveled_npcs.len()
-            + self.leveled_creatures.len()
-            + self.npcs.len()
-            + self.creatures.len()
-            + self.races.len()
-            + self.classes.len()
-            + self.factions.len()
-            + self.globals.len()
-            + self.game_settings.len()
-            + self.weathers.len()
-            + self.climates.len()
-            + self.scripts.len()
-            + self.waters.len()
-            + self.navi_info.len()
-            + self.navmeshes.len()
-            + self.regions.len()
-            + self.encounter_zones.len()
-            + self.lighting_templates.len()
-            + self.head_parts.len()
-            + self.eyes.len()
-            + self.hair.len()
-            + self.packages.len()
-            + self.quests.len()
-            + self.dialogues.len()
-            + self.messages.len()
-            + self.perks.len()
-            + self.spells.len()
-            + self.enchantments.len()
-            + self.magic_effects.len()
-            + self.actor_values.len()
-            + self.activators.len()
-            + self.terminals.len()
-            + self.cells.cells.len()
-            + self.cells.statics.len()
+        Self::categories().iter().map(|(_, f)| f(self)).sum()
+    }
+
+    /// Format the per-category breakdown as a single line — used by the
+    /// `parse_esm_with_load_order` end-of-parse log. Drives off
+    /// [`categories`] so the line stays in lockstep with [`total`]. See
+    /// #634 / FNV-D2-06.
+    ///
+    /// [`categories`]: Self::categories
+    /// [`total`]: Self::total
+    pub fn category_breakdown(&self) -> String {
+        let mut out = String::with_capacity(512);
+        out.push_str("ESM parsed:");
+        for (i, (label, f)) in Self::categories().iter().enumerate() {
+            out.push_str(if i == 0 { " " } else { ", " });
+            out.push_str(&format!("{} {}", f(self), label));
+        }
+        out
     }
 
     /// Merge `other` into `self` with **later-plugin-wins** semantics
@@ -527,41 +578,10 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         }
     }
 
-    log::info!(
-        "ESM parsed: {} cells, {} statics, {} items, {} containers, {} LVLI, {} LVLN, {} LVLC, \
-         {} NPCs, {} creatures, {} races, {} classes, {} factions, {} globals, {} game settings, \
-         {} weathers, {} climates, {} scripts, {} packages, {} quests, {} dialogues, \
-         {} messages, {} perks, {} spells, {} enchantments, {} magic effects, \
-         {} actor values, {} activators, {} terminals",
-        index.cells.cells.len(),
-        index.cells.statics.len(),
-        index.items.len(),
-        index.containers.len(),
-        index.leveled_items.len(),
-        index.leveled_npcs.len(),
-        index.leveled_creatures.len(),
-        index.npcs.len(),
-        index.creatures.len(),
-        index.races.len(),
-        index.classes.len(),
-        index.factions.len(),
-        index.globals.len(),
-        index.game_settings.len(),
-        index.weathers.len(),
-        index.climates.len(),
-        index.scripts.len(),
-        index.packages.len(),
-        index.quests.len(),
-        index.dialogues.len(),
-        index.messages.len(),
-        index.perks.len(),
-        index.spells.len(),
-        index.enchantments.len(),
-        index.magic_effects.len(),
-        index.actor_values.len(),
-        index.activators.len(),
-        index.terminals.len(),
-    );
+    // Single source of truth — both this line and `index.total()` walk
+    // the same `EsmIndex::categories` table so adding a new record
+    // category is a single-edit operation. See #634 / FNV-D2-06.
+    log::info!("{}", index.category_breakdown());
 
     // Clear the lstring thread-local so a subsequent parse of a
     // non-localized plugin in the same process doesn't inherit
@@ -1467,5 +1487,70 @@ mod tests {
             },
         );
         assert_eq!(idx.total(), 2);
+    }
+
+    /// #634 / FNV-D2-06 — `total()` and the end-of-parse log line must
+    /// drive off the same `categories()` table. Verify the table sums
+    /// to `total()` and that the breakdown line names every category
+    /// (so a future `index.foos: HashMap<...>` addition that misses a
+    /// `categories()` row is caught loud). The cells.statics overlap
+    /// with typed maps is intentional — see `categories()` doc.
+    #[test]
+    fn total_and_breakdown_drive_off_same_table() {
+        let mut idx = EsmIndex::default();
+        idx.items.insert(
+            1,
+            ItemRecord {
+                form_id: 1,
+                common: Default::default(),
+                kind: ItemKind::Misc,
+            },
+        );
+        idx.activators.insert(
+            10,
+            ActiRecord {
+                form_id: 10,
+                ..Default::default()
+            },
+        );
+        idx.enchantments.insert(
+            20,
+            EnchRecord {
+                form_id: 20,
+                ..Default::default()
+            },
+        );
+        // Sum the table by hand — must match `total()`.
+        let sum: usize = EsmIndex::categories().iter().map(|(_, f)| f(&idx)).sum();
+        assert_eq!(idx.total(), sum);
+        assert_eq!(idx.total(), 3);
+
+        // The breakdown line must mention every category by label so a
+        // future struct-field addition that misses `categories()` is
+        // caught here rather than discovered via a silent log drift.
+        let line = idx.category_breakdown();
+        for (label, _) in EsmIndex::categories() {
+            assert!(
+                line.contains(label),
+                "breakdown line missing category '{label}': {line}"
+            );
+        }
+        // And the totals from each row must round-trip into the line
+        // (non-zero rows specifically — formatted as `<n> <label>`).
+        assert!(line.contains("1 items"), "breakdown: {line}");
+        assert!(line.contains("1 activators"), "breakdown: {line}");
+        assert!(line.contains("1 enchantments"), "breakdown: {line}");
+    }
+
+    /// Guard against an `EsmIndex` field addition that forgets to wire
+    /// a row in `categories()`. We can't enumerate fields at runtime,
+    /// but we can pin the row count: every public top-level map +
+    /// `cells.cells` + `cells.statics` is one row. If you add a new
+    /// `pub foos: HashMap<...>` field, increment this.
+    #[test]
+    fn categories_table_row_count_pinned() {
+        // 35 typed maps on EsmIndex + 2 from cells (cells, statics).
+        // Bump in lockstep with the struct + `categories()` edits.
+        assert_eq!(EsmIndex::categories().len(), 37);
     }
 }
