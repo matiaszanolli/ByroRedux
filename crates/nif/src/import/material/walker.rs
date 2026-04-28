@@ -212,6 +212,19 @@ pub(crate) fn extract_material_info_from_refs(
                     info.normal_map = intern_texture_path(pool, &shader.normal_texture);
                 }
                 info.env_map_scale = shader.env_map_scale;
+                // FO4+ BSEffectShaderProperty (BSVER >= 130) carries env_map_texture /
+                // env_mask_texture alongside the normal map. Forward them into the
+                // standard MaterialInfo slots so the renderer's env-map branch fires
+                // the same way it does for BSLightingShaderProperty. Pre-#719 these
+                // fields were captured only into effect_shader.env_map_texture, leaving
+                // mat.env_map = None and silently disabling env reflections on all
+                // FO4+ effect-shader surfaces. (#719 / NIF-D4-03)
+                if info.env_map.is_none() {
+                    info.env_map = intern_texture_path(pool, &shader.env_map_texture);
+                }
+                if info.env_mask.is_none() {
+                    info.env_mask = intern_texture_path(pool, &shader.env_mask_texture);
+                }
                 info.has_material_data = true;
             }
             // Double_Sided (`shader_flags_2 & 0x10`) and the decal

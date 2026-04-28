@@ -3,9 +3,12 @@
 //! Same qualified path preserved (`effect_shader_capture_tests::FOO`).
 
 use super::*;
-use crate::blocks::base::NiObjectNETData;
+use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
 use crate::blocks::shader::BSEffectShaderProperty;
-use crate::types::BlockRef;
+use crate::blocks::tri_shape::NiTriShape;
+use crate::blocks::NiObject;
+use crate::types::{BlockRef, NiTransform};
+use byroredux_core::string::StringPool;
 
 /// Build a fully-populated FO4-style `BSEffectShaderProperty` with
 /// every field set to a distinct, recognisable value.
@@ -97,4 +100,62 @@ fn material_info_default_has_no_effect_shader() {
     // materials don't get spurious capture data.
     let info = MaterialInfo::default();
     assert!(info.effect_shader.is_none());
+}
+
+/// Regression for #719 / NIF-D4-03: BSEffectShaderProperty on FO4+ carries
+/// `env_map_texture` / `env_mask_texture` (BSVER >= 130 fields).  Pre-fix
+/// these were only stored in `effect_shader.env_map_texture` but never
+/// forwarded to `MaterialInfo.env_map` / `env_mask`.  The renderer checks
+/// `mat.env_map`, so FO4+ effect-shader env reflections silently dropped.
+#[test]
+fn fo4_effect_shader_env_map_texture_forwards_to_material_info() {
+    let mut shader = fully_populated_fo4_shader();
+    shader.env_map_texture = "fx/env_cube.dds".to_string();
+    shader.env_mask_texture = "fx/env_mask.dds".to_string();
+
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+
+    // BSEffectShaderProperty is a Skyrim+ shader; bind via shader_property_ref
+    // (not the legacy NiProperty chain). Properties chain stays empty.
+    let shape = NiTriShape {
+        av: NiAVObjectData {
+            net: NiObjectNETData {
+                name: None,
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            flags: 0,
+            transform: NiTransform::default(),
+            properties: vec![],
+            collision_ref: BlockRef::NULL,
+        },
+        data_ref: BlockRef::NULL,
+        skin_instance_ref: BlockRef::NULL,
+        shader_property_ref: BlockRef(0),
+        alpha_property_ref: BlockRef::NULL,
+        num_materials: 0,
+        active_material_index: 0,
+    };
+
+    let mut pool = StringPool::new();
+    let info = extract_material_info(&scene, &shape, &[], &mut pool);
+
+    let env = info.env_map.and_then(|s| pool.resolve(s));
+    let mask = info.env_mask.and_then(|s| pool.resolve(s));
+
+    assert_eq!(
+        env,
+        Some("fx/env_cube.dds"),
+        "pre-#719: env_map_texture was captured in effect_shader but never \
+         forwarded to MaterialInfo.env_map — renderer env branch stayed dark"
+    );
+    assert_eq!(
+        mask,
+        Some("fx/env_mask.dds"),
+        "pre-#719: env_mask_texture not forwarded to MaterialInfo.env_mask"
+    );
 }
