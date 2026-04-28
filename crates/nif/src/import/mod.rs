@@ -368,6 +368,15 @@ pub struct ImportedMesh {
     /// BSEffectShaderProperty soft-falloff consumption). Pre-#451
     /// the parser captured these but the importer dropped them.
     pub no_lighting_falloff: Option<NoLightingFalloff>,
+    /// Forces wireframe rendering (polygon_mode = LINE). Set by
+    /// `NiWireframeProperty { flags: 1 }`. Oblivion vanilla never uses this;
+    /// common in FO3/FNV mods. Renderer-side VK_POLYGON_MODE_LINE is future work.
+    pub wireframe: bool,
+    /// Forces flat shading (no per-vertex normal interpolation). Set by
+    /// `NiShadeProperty { flags: 0 }` (bit 0 off = flat). Used on a handful
+    /// of Oblivion architectural pieces for a faceted look. Renderer-side
+    /// `flat` GLSL qualifier is future work.
+    pub flat_shading: bool,
 }
 
 /// Per-bone binding for a skinned mesh. Bone space is Y-up (converted

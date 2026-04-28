@@ -190,6 +190,8 @@ pub(super) fn extract_mesh(
         // #451 — forward the BSShaderNoLightingProperty soft-falloff
         // cone (FO3/FNV HUD overlays). `None` for non-NoLighting meshes.
         no_lighting_falloff: mat.no_lighting_falloff,
+        wireframe: mat.wireframe,
+        flat_shading: mat.flat_shading,
         flags: shape.av.flags,
     })
 }
@@ -421,6 +423,8 @@ pub(super) fn extract_bs_tri_shape(
         // doesn't bind to BsTriShape (Skyrim+); the shared extractor
         // won't populate it here. See #451.
         no_lighting_falloff: mat.no_lighting_falloff,
+        wireframe: mat.wireframe,
+        flat_shading: mat.flat_shading,
         flags: shape.av.flags,
     })
 }
@@ -618,6 +622,8 @@ pub(super) fn extract_bs_geometry(
         material_kind: mat.material_kind,
         shader_type_fields,
         no_lighting_falloff: mat.no_lighting_falloff,
+        wireframe: mat.wireframe,
+        flat_shading: mat.flat_shading,
         flags: shape.av.flags,
     })
 }

@@ -413,6 +413,16 @@ pub(super) struct MaterialInfo {
     /// / glow halos that author non-default depth state z-fought
     /// against world geometry.
     pub z_function: u8,
+    /// Forces wireframe rendering (polygon_mode = LINE). Set when a
+    /// `NiWireframeProperty { flags: 1 }` block is present. Oblivion vanilla
+    /// does not ship this; common in FO3/FNV mods. Renderer-side consumption
+    /// (VK_POLYGON_MODE_LINE) is tracked separately.
+    pub wireframe: bool,
+    /// Forces flat shading (no per-vertex normal interpolation). Set when a
+    /// `NiShadeProperty { flags: 0 }` block is present (bit 0 off = flat).
+    /// Used on a handful of Oblivion architectural pieces to fake a faceted
+    /// look. Renderer-side consumption (GLSL `flat` qualifier) is future work.
+    pub flat_shading: bool,
 
     // ── BSLightingShaderProperty.shader_type dispatch (SK-D3-01) ────
     // Each variant of `ShaderTypeData` exposes different trailing
@@ -589,6 +599,8 @@ impl Default for MaterialInfo {
             z_test: true,
             z_write: true,
             z_function: 3, // LESSEQUAL — Gamebryo default
+            wireframe: false,
+            flat_shading: false,
 
             material_kind: 0,
             skin_tint_color: None,

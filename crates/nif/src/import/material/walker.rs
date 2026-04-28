@@ -562,18 +562,32 @@ pub(crate) fn extract_material_info_from_refs(
             }
         }
 
-        // NiSpecularProperty (issue #220) — bit 0 of flags is the enable
-        // toggle. Many matte surfaces in Oblivion/FNV set flags=0 here to
-        // explicitly disable specular; without honoring this, every wall
-        // and ceiling panel gets a bright PBR specular highlight from
-        // point lights that looks like a lighting artifact.
-        //
-        // We use a type_name match because `NiFlagProperty` is shared by
-        // NiSpecular/Wireframe/Dither/Shade and we only care about
-        // specular here.
+        // NiFlagProperty subtypes: bit 0 of `flags` is the enable toggle for
+        // all four trivial properties that share this struct. The type_name
+        // distinguishes them at import time (#703).
         if let Some(flag_prop) = scene.get_as::<NiFlagProperty>(idx) {
-            if flag_prop.block_type_name() == "NiSpecularProperty" && !flag_prop.enabled() {
-                info.specular_enabled = false;
+            match flag_prop.block_type_name() {
+                // NiSpecularProperty (issue #220): flags=0 disables specular.
+                // Matte Oblivion/FNV surfaces use this to suppress PBR glare.
+                "NiSpecularProperty" if !flag_prop.enabled() => {
+                    info.specular_enabled = false;
+                }
+                // NiWireframeProperty: flags=1 enables wireframe rendering
+                // (polygon_mode = LINE). Not present in Oblivion vanilla but
+                // used by FO3/FNV mods. Renderer consumption is future work.
+                "NiWireframeProperty" if flag_prop.enabled() => {
+                    info.wireframe = true;
+                }
+                // NiShadeProperty: flags=0 requests flat shading (no
+                // per-vertex normal interpolation — faceted look). Used on a
+                // handful of Oblivion architectural pieces. Renderer consumption
+                // (GLSL `flat` qualifier) is future work.
+                "NiShadeProperty" if !flag_prop.enabled() => {
+                    info.flat_shading = true;
+                }
+                // NiDitherProperty: flags=1 enables 16-bit color dithering,
+                // a legacy hint with no Vulkan analogue. Safe to ignore.
+                "NiDitherProperty" | _ => {}
             }
         }
 
