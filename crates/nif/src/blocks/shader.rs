@@ -328,6 +328,40 @@ impl WaterShaderProperty {
     }
 }
 
+/// Zero-field `BSShaderProperty` subclasses (nif.xml lines 6346, 6350, 6359, 6363).
+///
+/// `HairShaderProperty`, `VolumetricFogShaderProperty`,
+/// `DistantLODShaderProperty`, `BSDistantTreeShaderProperty` all inherit
+/// `BSShaderProperty` directly with no additional fields — only the NET +
+/// `BSShaderPropertyData` base. Pre-#717 all four were aliased to
+/// `BSShaderPPLightingProperty::parse` which over-read up to 24 bytes
+/// (`texture_clamp_mode` + `texture_set_ref` + refraction + parallax),
+/// masked by `block_sizes` recovery but silently drifting on any modded NIF
+/// that carries one of these types.
+#[derive(Debug)]
+pub struct BSShaderPropertyBaseOnly {
+    pub net: NiObjectNETData,
+    pub shader: BSShaderPropertyData,
+    type_name: &'static str,
+}
+
+impl NiObject for BSShaderPropertyBaseOnly {
+    fn block_type_name(&self) -> &'static str {
+        self.type_name
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BSShaderPropertyBaseOnly {
+    pub fn parse(stream: &mut NifStream, type_name: &'static str) -> io::Result<Self> {
+        let net = NiObjectNETData::parse(stream)?;
+        let shader = BSShaderPropertyData::parse_base(stream)?;
+        Ok(Self { net, shader, type_name })
+    }
+}
+
 /// `TallGrassShaderProperty` — FO3/FNV grass shader (nif.xml line 6354).
 ///
 /// Inherits `BSShaderProperty` directly and adds a single

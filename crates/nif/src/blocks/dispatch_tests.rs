@@ -72,13 +72,13 @@ fn oblivion_shader_variants_route_to_bsshader_pp_lighting() {
     // base + UV transform + per-block tail). Both have dedicated
     // dispatch tests — `bs_sky_shader_property_parses_skyrim_layout_exactly`
     // and friends in `shader_tests.rs`.
+    // #717 / NIF-D3-02: `HairShaderProperty`, `VolumetricFogShaderProperty`,
+    // `DistantLODShaderProperty`, `BSDistantTreeShaderProperty` moved to
+    // `BSShaderPropertyBaseOnly` (they inherit `BSShaderProperty` directly,
+    // no Lighting fields). Covered by `zero_field_shader_variants_route_to_base_only`.
     let variants = [
         "BSShaderPPLightingProperty",
         "Lighting30ShaderProperty",
-        "HairShaderProperty",
-        "VolumetricFogShaderProperty",
-        "DistantLODShaderProperty",
-        "BSDistantTreeShaderProperty",
     ];
     let header = oblivion_header();
     let bytes = oblivion_bsshader_bytes();
@@ -2759,4 +2759,69 @@ fn ni_node_v20_0_0_5_does_not_consume_groupid_prefix() {
          stopped at the right offset because the byte was \
          (mis-)read into NiObjectNET.Name.length"
     );
+}
+
+/// Regression for #717 / NIF-D3-02: `HairShaderProperty`,
+/// `VolumetricFogShaderProperty`, `DistantLODShaderProperty`, and
+/// `BSDistantTreeShaderProperty` all inherit `BSShaderProperty` directly
+/// with **no additional fields**.  Pre-fix they were aliased to
+/// `BSShaderPPLightingProperty::parse`, which over-read up to 24 bytes
+/// (`texture_clamp_mode` + `texture_set_ref` + refraction + parallax)
+/// that are absent on these wire layouts — masked by `block_sizes`
+/// recovery but producing silent stream drift on any modded NIF that
+/// carries one of these types.
+#[test]
+fn zero_field_shader_variants_route_to_base_only() {
+    let header = oblivion_header();
+
+    // Minimal payload for a zero-field BSShaderProperty subclass:
+    // NiObjectNET (12 bytes) + BSShaderPropertyData.parse_base (18 bytes) = 30 bytes.
+    let mut bytes = Vec::new();
+    // NiObjectNET
+    bytes.extend_from_slice(&0i32.to_le_bytes()); // name string index
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count
+    bytes.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+    // BSShaderPropertyData (parse_base)
+    bytes.extend_from_slice(&0u16.to_le_bytes()); // shade_flags
+    bytes.extend_from_slice(&3u32.to_le_bytes()); // shader_type (Tall_Grass=3 for visibility)
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_1
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_2
+    bytes.extend_from_slice(&1.0f32.to_le_bytes()); // env_map_scale
+
+    let variants = [
+        "HairShaderProperty",
+        "VolumetricFogShaderProperty",
+        "DistantLODShaderProperty",
+        "BSDistantTreeShaderProperty",
+    ];
+
+    for variant in variants {
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block(variant, &mut stream, Some(bytes.len() as u32))
+            .unwrap_or_else(|e| panic!("variant '{variant}' failed: {e}"));
+
+        // Must downcast to BSShaderPropertyBaseOnly, NOT BSShaderPPLightingProperty.
+        let base = block
+            .as_any()
+            .downcast_ref::<crate::blocks::shader::BSShaderPropertyBaseOnly>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "variant '{variant}' must downcast to BSShaderPropertyBaseOnly, \
+                     not BSShaderPPLightingProperty (pre-#717 regression)"
+                )
+            });
+
+        assert_eq!(
+            base.block_type_name(),
+            variant,
+            "block_type_name must reflect the wire type, not the Rust wrapper"
+        );
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "variant '{variant}' must consume exactly {} bytes (pre-#717 \
+             over-read 24 extra bytes of PPLighting fields)",
+            bytes.len()
+        );
+    }
 }

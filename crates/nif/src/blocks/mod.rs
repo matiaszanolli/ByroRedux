@@ -61,8 +61,9 @@ use properties::{
 };
 use shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
-    BSShaderPPLightingProperty, BSShaderTextureSet, BSSkyShaderProperty, BSWaterShaderProperty,
-    SkyShaderProperty, TallGrassShaderProperty, TileShaderProperty, WaterShaderProperty,
+    BSShaderPPLightingProperty, BSShaderPropertyBaseOnly, BSShaderTextureSet, BSSkyShaderProperty,
+    BSWaterShaderProperty, SkyShaderProperty, TallGrassShaderProperty, TileShaderProperty,
+    WaterShaderProperty,
 };
 use skin::{
     BsDismemberSkinInstance, BsSkinBoneData, BsSkinInstance, NiSkinData, NiSkinInstance,
@@ -332,22 +333,24 @@ pub fn parse_block(
         // Specializing the differences (e.g. sky scroll, water reflection) can
         // come later — for now this unblocks Oblivion exterior cells, which
         // hard-failed on any of these.
-        // Blocks that genuinely inherit BSShaderPPLightingProperty (or
-        // haven't been split out yet — HairShaderProperty/
-        // VolumetricFogShaderProperty/DistantLODShaderProperty/
-        // BSDistantTreeShaderProperty are still aliased pending NIF-D3-02
-        // per-game validation). Pre-#474 `WaterShaderProperty` and
-        // `TallGrassShaderProperty` were here too but over-read 20+ bytes
-        // — split out below. Pre-#713 `BSSkyShaderProperty` /
-        // `BSWaterShaderProperty` (Skyrim-era variants, distinct from
-        // their FO3/FNV cousins on the FO3 lines just above) shared the
-        // same problem and now have dedicated parsers.
+        // Blocks that genuinely inherit BSShaderPPLightingProperty.
+        // `Lighting30ShaderProperty` legitimately uses the PPLighting wire
+        // layout (nif.xml:6367 inherit="BSShaderPPLightingProperty") — do NOT
+        // move it into the base-only arm below. Pre-#474 `WaterShaderProperty`
+        // and `TallGrassShaderProperty` were here but over-read; split out
+        // below. Pre-#713 `BSSkyShaderProperty` / `BSWaterShaderProperty`
+        // (Skyrim-era variants) shared the same problem; now dedicated.
         "BSShaderPPLightingProperty"
-        | "Lighting30ShaderProperty"
-        | "HairShaderProperty"
-        | "VolumetricFogShaderProperty"
-        | "DistantLODShaderProperty"
-        | "BSDistantTreeShaderProperty" => Ok(Box::new(BSShaderPPLightingProperty::parse(stream)?)),
+        | "Lighting30ShaderProperty" => Ok(Box::new(BSShaderPPLightingProperty::parse(stream)?)),
+        // Zero-field BSShaderProperty subclasses (nif.xml lines 6346, 6350,
+        // 6359, 6363): only NET + BSShaderPropertyData base, no additional
+        // fields. Pre-#717 these were in the PPLighting arm above and over-read
+        // up to 24 bytes (texture_clamp_mode + texture_set_ref + refraction +
+        // parallax), masked by block_sizes recovery.
+        "HairShaderProperty" => Ok(Box::new(BSShaderPropertyBaseOnly::parse(stream, "HairShaderProperty")?)),
+        "VolumetricFogShaderProperty" => Ok(Box::new(BSShaderPropertyBaseOnly::parse(stream, "VolumetricFogShaderProperty")?)),
+        "DistantLODShaderProperty" => Ok(Box::new(BSShaderPropertyBaseOnly::parse(stream, "DistantLODShaderProperty")?)),
+        "BSDistantTreeShaderProperty" => Ok(Box::new(BSShaderPropertyBaseOnly::parse(stream, "BSDistantTreeShaderProperty")?)),
         // Skyrim-era BSSkyShaderProperty / BSWaterShaderProperty
         // (versions="#SKY_AND_LATER#", inherit="BSShaderProperty"
         // directly per nif.xml lines 6695 / 6708). They carry the
