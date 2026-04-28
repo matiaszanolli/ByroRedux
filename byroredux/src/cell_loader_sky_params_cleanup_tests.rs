@@ -16,6 +16,7 @@ fn mk_sky(indices: [u32; 5]) -> SkyParamsRes {
     SkyParamsRes {
         zenith_color: [0.0; 3],
         horizon_color: [0.0; 3],
+        lower_color: [0.0; 3],
         sun_direction: [0.0, 1.0, 0.0],
         sun_color: [1.0; 3],
         sun_size: 1.0,

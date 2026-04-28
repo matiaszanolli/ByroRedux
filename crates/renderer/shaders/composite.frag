@@ -26,6 +26,7 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 depth_params;   // x = is_exterior (1.0 = sky enabled), y/z/w = unused
     vec4 sky_zenith;     // xyz = zenith color (linear RGB), w = sun_size (cos threshold)
     vec4 sky_horizon;    // xyz = horizon color (linear RGB), w = unused
+    vec4 sky_lower;      // xyz = below-horizon ground tint (WTHR SKY_LOWER), w = unused (#541)
     vec4 sun_dir;        // xyz = sun direction (world-space, normalized), w = sun_intensity
     vec4 sun_color;      // xyz = sun disc color (linear RGB), w = CLMT FNAM sun sprite idx (floatBitsToUint; 0 = procedural disc)
     vec4 cloud_params;   // x=scroll_u, y=scroll_v, z=tile_scale (0=disabled), w=texture_idx(uintBits)
@@ -87,12 +88,17 @@ vec3 compute_sky(vec3 dir) {
     t = sqrt(t); // widen horizon band
     vec3 sky = mix(horizon, zenith, t);
 
-    // Below-horizon darkening: ground approximation (not a ground plane,
-    // just a color fade toward a darker horizon).
+    // Below-horizon darkening: ground approximation (not a ground
+    // plane, just a colour fade toward the WTHR-authored ground
+    // tint). #541 — pre-fix this branch faked the ground colour as
+    // `horizon * 0.3` and dropped the authored `SKY_LOWER` group
+    // entirely. The real Sky-Lower colour ships per-TOD on every
+    // exterior WTHR, so the night ground is appropriately dark and
+    // the sunrise / sunset fringe inherits the warm authored tint
+    // without compositor-side tweaking.
     if (elevation < 0.0) {
         float below = clamp(-elevation * 3.0, 0.0, 1.0);
-        vec3 ground = horizon * 0.3;
-        sky = mix(horizon, ground, below);
+        sky = mix(horizon, params.sky_lower.xyz, below);
     }
 
     // Cloud layer 0 (from WTHR cloud_textures[0]).

@@ -221,6 +221,13 @@ pub struct SkyParams {
     pub zenith_color: [f32; 3],
     /// Horizon color, raw monitor-space per 0e8efc6.
     pub horizon_color: [f32; 3],
+    /// Below-horizon ground / lower-hemisphere color from WTHR's
+    /// `SKY_LOWER` group (real `Sky-Lower` per nif.xml's NAM0
+    /// schema — slot 7, fixed in #729). Pre-#541 the composite
+    /// shader faked the below-horizon tint as `horizon_color * 0.3`,
+    /// dropping the authored colour entirely. Now drives
+    /// `composite.frag::compute_sky`'s `elevation < 0` branch.
+    pub lower_color: [f32; 3],
     /// Sun direction (normalized, world-space Y-up).
     pub sun_direction: [f32; 3],
     /// Sun disc color, raw monitor-space per 0e8efc6.
@@ -273,6 +280,10 @@ impl Default for SkyParams {
         Self {
             zenith_color: [0.15, 0.3, 0.6],
             horizon_color: [0.5, 0.5, 0.45],
+            // Pre-#541 fake `horizon * 0.3` baseline preserved as the
+            // default; real WTHR-driven exterior cells overwrite from
+            // their authored `SKY_LOWER` slot.
+            lower_color: [0.15, 0.15, 0.135],
             sun_direction: [-0.4, 0.8, -0.45],
             sun_color: [1.0, 0.95, 0.8],
             sun_size: 0.9994, // cos(~2°) — visible disc, larger than real sun

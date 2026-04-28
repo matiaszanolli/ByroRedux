@@ -188,6 +188,11 @@ fn apply_worldspace_weather(
         let zenith = wthr.sky_colors[SKY_UPPER][TOD_DAY].to_rgb_f32();
         let horizon = wthr.sky_colors[SKY_HORIZON][TOD_DAY].to_rgb_f32();
         let sun_col = wthr.sky_colors[SKY_SUN][TOD_DAY].to_rgb_f32();
+        // #541 — `SKY_LOWER` (real `Sky-Lower` per nif.xml NAM0
+        // schema, slot 7 post-#729) drives `composite.frag`'s
+        // below-horizon branch. Pre-fix the shader faked it as
+        // `horizon * 0.3`, dropping the authored colour entirely.
+        let lower = wthr.sky_colors[SKY_LOWER][TOD_DAY].to_rgb_f32();
         log::info!(
             "WTHR '{}': zenith={:?} horizon={:?} sun={:?} ambient={:?} sunlight={:?} fog_color={:?} fog_day={:.0}\u{2013}{:.0}",
             wthr.editor_id,
@@ -274,6 +279,7 @@ fn apply_worldspace_weather(
         world.insert_resource(SkyParamsRes {
             zenith_color: zenith,
             horizon_color: horizon,
+            lower_color: lower,
             sun_direction: sun_dir,
             sun_color: sun_col,
             sun_size: 0.9995,
@@ -378,6 +384,10 @@ fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [f32; 3]) {
     const FOG_COLOR: [f32; 3] = [0.65, 0.7, 0.8];
     const ZENITH: [f32; 3] = [0.15, 0.3, 0.65];
     const HORIZON: [f32; 3] = [0.55, 0.5, 0.42];
+    // Pre-#541 the `compute_sky` below-horizon branch faked the
+    // ground tint as `horizon * 0.3`; matching that scaling here
+    // keeps the procedural look unchanged when no WTHR is present.
+    const LOWER: [f32; 3] = [HORIZON[0] * 0.3, HORIZON[1] * 0.3, HORIZON[2] * 0.3];
     const SUN_COLOR: [f32; 3] = [1.0, 0.95, 0.8];
     const FOG_NEAR: f32 = 15000.0;
     const FOG_FAR: f32 = 80000.0;
@@ -394,6 +404,7 @@ fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [f32; 3]) {
     world.insert_resource(SkyParamsRes {
         zenith_color: ZENITH,
         horizon_color: HORIZON,
+        lower_color: LOWER,
         sun_direction: sun_dir,
         sun_color: SUN_COLOR,
         sun_size: 0.9995,
@@ -427,6 +438,11 @@ fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [f32; 3]) {
         (wthr::SKY_AMBIENT, AMBIENT),
         (wthr::SKY_SUNLIGHT, SUNLIGHT),
         (wthr::SKY_SUN, SUN_COLOR),
+        // #541 — `weather_system` now also reads SKY_LOWER for the
+        // below-horizon branch. Synthetic value matches the
+        // procedural `LOWER` constant so the lerp re-writes the same
+        // ground tint each frame.
+        (wthr::SKY_LOWER, LOWER),
         (wthr::SKY_HORIZON, HORIZON),
     ];
     for (group, color) in synthetic {
@@ -1934,6 +1950,19 @@ mod procedural_fallback_tests {
         assert_eq!(sky.sun_color, [1.0, 0.95, 0.8]);
         assert_eq!(sky.zenith_color, [0.15, 0.3, 0.65]);
         assert_eq!(sky.horizon_color, [0.55, 0.5, 0.42]);
+        // #541 — SKY_LOWER routes through `weather_system` and lands
+        // on `sky.lower_color`. The synthetic NAM0 entry seeds the
+        // procedural `LOWER` constant (`HORIZON * 0.3`) at every TOD
+        // slot, so the lerp identity preserves it.
+        let expected_lower = [0.55_f32 * 0.3, 0.5_f32 * 0.3, 0.42_f32 * 0.3];
+        for axis in 0..3 {
+            assert!(
+                (sky.lower_color[axis] - expected_lower[axis]).abs() < 1e-6,
+                "lower_color[{axis}] = {} != {}",
+                sky.lower_color[axis],
+                expected_lower[axis]
+            );
+        }
         let cell = world.try_resource::<CellLightingRes>().unwrap();
         assert_eq!(cell.ambient, [0.15, 0.14, 0.12]);
         assert_eq!(cell.directional_color, [1.0, 0.95, 0.8]);

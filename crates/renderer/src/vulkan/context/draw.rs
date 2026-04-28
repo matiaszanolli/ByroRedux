@@ -1677,6 +1677,15 @@ impl VulkanContext {
                         sky_params.horizon_color[2],
                         0.0,
                     ],
+                    // #541 — WTHR `SKY_LOWER` group. Pre-fix the
+                    // shader faked this as `sky_horizon * 0.3`,
+                    // dropping the authored colour entirely.
+                    sky_lower: [
+                        sky_params.lower_color[0],
+                        sky_params.lower_color[1],
+                        sky_params.lower_color[2],
+                        0.0,
+                    ],
                     sun_dir: [
                         sky_params.sun_direction[0],
                         sky_params.sun_direction[1],

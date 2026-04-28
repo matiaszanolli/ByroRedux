@@ -1225,6 +1225,13 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         wd.sky_colors[SKY_HORIZON][slot_b],
         t,
     );
+    // #541 — SKY_LOWER drives `composite.frag`'s below-horizon
+    // branch in lieu of the pre-fix `horizon * 0.3` fake.
+    let lower = lerp3(
+        wd.sky_colors[SKY_LOWER][slot_a],
+        wd.sky_colors[SKY_LOWER][slot_b],
+        t,
+    );
     let sun_col = lerp3(
         wd.sky_colors[SKY_SUN][slot_a],
         wd.sky_colors[SKY_SUN][slot_b],
@@ -1266,7 +1273,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // per-side (target may use the same `keys` table since `tod_hours`
     // is on WeatherDataRes; we re-derive it from the target's own
     // breakpoints to stay correct if the target ships a different CLMT).
-    let (zenith, horizon, sun_col, ambient, sunlight, fog_col, fog_near, fog_far) =
+    let (zenith, horizon, lower, sun_col, ambient, sunlight, fog_col, fog_near, fog_far) =
         if transition_t > 0.0 {
             let tr = world
                 .try_resource::<WeatherTransitionRes>()
@@ -1309,6 +1316,13 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
                 target.sky_colors[SKY_HORIZON][b_b],
                 b_t,
             );
+            // #541 — `SKY_LOWER` cross-fades with the rest of the sky
+            // colour set during a WTHR transition.
+            let target_lower = lerp3(
+                target.sky_colors[SKY_LOWER][b_a],
+                target.sky_colors[SKY_LOWER][b_b],
+                b_t,
+            );
             let target_sun_col = lerp3(
                 target.sky_colors[SKY_SUN][b_a],
                 target.sky_colors[SKY_SUN][b_b],
@@ -1336,6 +1350,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             (
                 lerp3(zenith, target_zenith, transition_t),
                 lerp3(horizon, target_horizon, transition_t),
+                lerp3(lower, target_lower, transition_t),
                 lerp3(sun_col, target_sun_col, transition_t),
                 lerp3(ambient, target_ambient, transition_t),
                 lerp3(sunlight, target_sunlight, transition_t),
@@ -1345,7 +1360,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             )
         } else {
             (
-                zenith, horizon, sun_col, ambient, sunlight, fog_col, fog_near, fog_far,
+                zenith, horizon, lower, sun_col, ambient, sunlight, fog_col, fog_near, fog_far,
             )
         };
 
@@ -1399,6 +1414,10 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     if let Some(mut sky) = world.try_resource_mut::<SkyParamsRes>() {
         sky.zenith_color = zenith;
         sky.horizon_color = horizon;
+        // #541 — SKY_LOWER drives the renderer's below-horizon
+        // gradient. Pre-fix the value was discarded and the shader
+        // faked it as `horizon * 0.3`.
+        sky.lower_color = lower;
         sky.sun_color = sun_col;
         sky.sun_direction = sun_dir;
         sky.sun_intensity = sun_intensity;

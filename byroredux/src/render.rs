@@ -979,6 +979,7 @@ pub(crate) fn build_render_data(
         SkyParams {
             zenith_color: sky_res.zenith_color,
             horizon_color: sky_res.horizon_color,
+            lower_color: sky_res.lower_color,
             sun_direction: sky_res.sun_direction,
             sun_color: sky_res.sun_color,
             sun_size: sky_res.sun_size,

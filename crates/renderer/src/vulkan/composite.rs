@@ -54,6 +54,12 @@ pub struct CompositeParams {
     pub sky_zenith: [f32; 4],
     /// xyz = horizon color in linear RGB, w = unused.
     pub sky_horizon: [f32; 4],
+    /// `xyz` = below-horizon ground colour from WTHR's `SKY_LOWER`
+    /// group (real `Sky-Lower` per nif.xml NAM0 schema, slot 7
+    /// post-#729). `w` = unused. Drives the `compute_sky` shader
+    /// branch when `dir.y < 0`. Pre-#541 the shader faked this as
+    /// `sky_horizon * 0.3` and the authored colour was discarded.
+    pub sky_lower: [f32; 4],
     /// xyz = sun direction (normalized, world-space Y-up), w = sun intensity.
     pub sun_dir: [f32; 4],
     /// xyz = sun disc color in linear RGB, w = bindless texture index
@@ -1134,24 +1140,28 @@ mod composite_params_layout_tests {
         assert_eq!(offset_of!(CompositeParams, depth_params), 32);
         assert_eq!(offset_of!(CompositeParams, sky_zenith), 48);
         assert_eq!(offset_of!(CompositeParams, sky_horizon), 64);
-        assert_eq!(offset_of!(CompositeParams, sun_dir), 80);
-        assert_eq!(offset_of!(CompositeParams, sun_color), 96);
-        assert_eq!(offset_of!(CompositeParams, cloud_params), 112);
-        assert_eq!(offset_of!(CompositeParams, cloud_params_1), 128);
+        // #541 — `sky_lower` slotted between `sky_horizon` and
+        // `sun_dir`. Every subsequent field shifts by 16 B; the GLSL
+        // declaration in `composite.frag` is updated in lockstep.
+        assert_eq!(offset_of!(CompositeParams, sky_lower), 80);
+        assert_eq!(offset_of!(CompositeParams, sun_dir), 96);
+        assert_eq!(offset_of!(CompositeParams, sun_color), 112);
+        assert_eq!(offset_of!(CompositeParams, cloud_params), 128);
+        assert_eq!(offset_of!(CompositeParams, cloud_params_1), 144);
         // M33.1 — cloud layers 2/3 inserted between cloud_params_1 and
         // camera_pos so the new vec4s slot in cleanly without disturbing
         // the trailing camera_pos + inv_view_proj layout shape.
-        assert_eq!(offset_of!(CompositeParams, cloud_params_2), 144);
-        assert_eq!(offset_of!(CompositeParams, cloud_params_3), 160);
+        assert_eq!(offset_of!(CompositeParams, cloud_params_2), 160);
+        assert_eq!(offset_of!(CompositeParams, cloud_params_3), 176);
         // #428 — `camera_pos` was added after `cloud_params` and before
         // `inv_view_proj`. Fixing the offset here prevents a future
         // reorder from silently corrupting the fog-distance origin.
-        assert_eq!(offset_of!(CompositeParams, camera_pos), 176);
-        assert_eq!(offset_of!(CompositeParams, inv_view_proj), 192);
+        assert_eq!(offset_of!(CompositeParams, camera_pos), 192);
+        assert_eq!(offset_of!(CompositeParams, inv_view_proj), 208);
         assert_eq!(
             size_of::<CompositeParams>(),
-            192 + 64,
-            "CompositeParams must be 256 bytes (12 × vec4 + mat4)"
+            208 + 64,
+            "CompositeParams must be 272 bytes (13 × vec4 + mat4)"
         );
     }
 }

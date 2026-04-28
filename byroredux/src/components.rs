@@ -125,6 +125,13 @@ impl Resource for CellLightingRes {}
 pub(crate) struct SkyParamsRes {
     pub(crate) zenith_color: [f32; 3],
     pub(crate) horizon_color: [f32; 3],
+    /// Below-horizon ground / lower-hemisphere tint from WTHR's
+    /// `SKY_LOWER` group (real Sky-Lower at NAM0 slot 7 per nif.xml,
+    /// post-#729). Per-frame `weather_system` interpolates the
+    /// authored TOD slots; the renderer's `compute_sky` branches on
+    /// negative elevation and uses this colour instead of the pre-#541
+    /// `horizon * 0.3` fake.
+    pub(crate) lower_color: [f32; 3],
     pub(crate) sun_direction: [f32; 3],
     pub(crate) sun_color: [f32; 3],
     pub(crate) sun_size: f32,
