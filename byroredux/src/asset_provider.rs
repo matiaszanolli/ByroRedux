@@ -357,6 +357,14 @@ impl MaterialProvider {
         }
     }
 
+    /// Read the first 4 bytes of a material file from the archives to detect
+    /// whether it is BGSM or BGEM by magic, independent of its file extension.
+    /// Returns `None` when the file isn't found or the magic is unrecognised.
+    fn peek_magic(&self, path: &str) -> Option<byroredux_bgsm::MaterialKind> {
+        let bytes = self.extract_from_archives(path)?;
+        byroredux_bgsm::detect_kind(&bytes)
+    }
+
     /// Resolve a BGEM effect-material file. No template inheritance.
     pub(crate) fn resolve_bgem(&mut self, path: &str) -> Option<Arc<BgemFile>> {
         let key = path.to_ascii_lowercase();
@@ -438,7 +446,34 @@ pub(crate) fn merge_bgsm_into_mesh(
     let mut set_alpha = false;
     let mut set_uv = false;
 
-    if path.ends_with(".bgsm") {
+    // Determine dispatch kind from magic (authoritative) with extension as
+    // fallback. Warn once per path when they disagree — e.g. a mod shipping a
+    // `.bgsm`-named file that carries BGEM magic (wrong-extension footgun).
+    use byroredux_bgsm::MaterialKind;
+    let ext_kind = if path.ends_with(".bgsm") {
+        Some(MaterialKind::Bgsm)
+    } else if path.ends_with(".bgem") {
+        Some(MaterialKind::Bgem)
+    } else {
+        None
+    };
+    let magic_kind = provider.peek_magic(&path);
+    if let (Some(ext), Some(magic)) = (ext_kind, magic_kind) {
+        if ext != magic {
+            log::warn!(
+                "material '{}': extension implies {:?} but file magic implies {:?}; \
+                 dispatching on magic to avoid wrong override semantics",
+                path,
+                ext,
+                magic
+            );
+        }
+    }
+    // Magic wins when present; extension is the fallback for files not (yet)
+    // in any loaded archive (caller already got None from peek_magic).
+    let dispatch_kind = magic_kind.or(ext_kind);
+
+    if dispatch_kind == Some(MaterialKind::Bgsm) {
         let Some(resolved) = provider.resolve_bgsm(&path) else {
             return false;
         };
@@ -507,7 +542,7 @@ pub(crate) fn merge_bgsm_into_mesh(
                 touched = true;
             }
         }
-    } else if path.ends_with(".bgem") {
+    } else if dispatch_kind == Some(MaterialKind::Bgem) {
         let Some(bgem) = provider.resolve_bgem(&path) else {
             return false;
         };
@@ -915,5 +950,37 @@ mod tests {
         // Boolean OR across the chain — child authored true.
         assert!(two_sided);
         assert!(!is_decal);
+    }
+
+    /// `detect_kind` returns `Bgem` for a buffer with BGEM magic even
+    /// when the caller intended BGSM dispatch. This is the unit
+    /// foundation for the wrong-extension footgun guard (#758): a forged
+    /// `.bgsm`-named file carrying BGEM magic is correctly identified.
+    #[test]
+    fn detect_kind_returns_bgem_for_bgem_magic_in_bgsm_named_file() {
+        use byroredux_bgsm::{detect_kind, MaterialKind};
+        // Minimal BGEM header (just the 4-byte magic) — enough for detect_kind.
+        let bgem_magic_bytes: &[u8] = b"BGEM";
+        assert_eq!(
+            detect_kind(bgem_magic_bytes),
+            Some(MaterialKind::Bgem),
+            "detect_kind must return Bgem even when the caller opened a .bgsm-named file"
+        );
+
+        let bgsm_magic_bytes: &[u8] = b"BGSM";
+        assert_eq!(
+            detect_kind(bgsm_magic_bytes),
+            Some(MaterialKind::Bgsm),
+            "detect_kind must return Bgsm for genuine BGSM magic"
+        );
+
+        // A mismatched extension is detected by comparing ext_kind vs magic_kind
+        // as done in merge_bgsm_into_mesh. Simulate the comparison logic.
+        let ext_kind = Some(MaterialKind::Bgsm); // extension says .bgsm
+        let magic_kind = detect_kind(bgem_magic_bytes); // magic says BGEM
+        assert_ne!(
+            ext_kind, magic_kind,
+            "extension (.bgsm) and magic (BGEM) must disagree — this is the mismatch case"
+        );
     }
 }

@@ -50,6 +50,26 @@ pub use bgem::BgemFile;
 pub use bgsm::BgsmFile;
 pub use template::{TemplateCache, TemplateResolver};
 
+/// File kind inferred from the 4-byte leading magic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaterialKind {
+    /// `"BGSM"` — lit material with optional template chain.
+    Bgsm,
+    /// `"BGEM"` — effect material, no inheritance.
+    Bgem,
+}
+
+/// Inspect the leading 4 bytes to determine whether a buffer is a BGSM or
+/// BGEM file. Returns `None` when the buffer is too short or carries an
+/// unrecognised magic.
+pub fn detect_kind(bytes: &[u8]) -> Option<MaterialKind> {
+    match bytes.get(..4)? {
+        b"BGSM" => Some(MaterialKind::Bgsm),
+        b"BGEM" => Some(MaterialKind::Bgem),
+        _ => None,
+    }
+}
+
 /// Error returned by the parser.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -179,5 +199,18 @@ mod tests {
             Err(Error::UnexpectedEof { .. }) => {}
             other => panic!("expected UnexpectedEof, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn detect_kind_identifies_bgsm_and_bgem() {
+        assert_eq!(detect_kind(b"BGSM\x00"), Some(MaterialKind::Bgsm));
+        assert_eq!(detect_kind(b"BGEM\x00"), Some(MaterialKind::Bgem));
+    }
+
+    #[test]
+    fn detect_kind_returns_none_on_bad_magic_or_short_buf() {
+        assert_eq!(detect_kind(b""), None);
+        assert_eq!(detect_kind(b"BGS"), None);
+        assert_eq!(detect_kind(b"NOPE"), None);
     }
 }
