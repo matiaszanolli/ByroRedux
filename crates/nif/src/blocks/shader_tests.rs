@@ -1225,3 +1225,112 @@ fn dispatch_routes_bs_sky_and_water_to_dedicated_parsers() {
         );
     }
 }
+
+// ── #746 + #747 Starfield BSVER 172 regressions ─────────────────────
+
+/// Starfield header (NIF 20.2.0.7 / `bsver = 172` per
+/// `crates/nif/src/version.rs:129`). Mirror of `make_fo76_header`
+/// for the regression of #109 captured in #746 / #747.
+fn make_starfield_header(name: &str) -> NifHeader {
+    NifHeader {
+        version: NifVersion::V20_2_0_7,
+        little_endian: true,
+        user_version: 12,
+        user_version_2: 172,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: vec![Arc::from(name)],
+        max_string_length: name.len() as u32,
+        num_groups: 0,
+    }
+}
+
+/// Regression for #746 / SF-D1: every BSVER-`>= 155`-gated tail
+/// field on `BSLightingShaderProperty` must populate at Starfield
+/// BSVER (172) too. Pre-fix the gates were `bsver == 155`, so
+/// Starfield blocks under-read the WetnessParams `unknown_2` (4 B),
+/// the LuminanceParams + TranslucencyParams + texture_arrays
+/// (~24 + 22 + variable B), and silently dropped every authored
+/// PBR scalar. The test reuses the exact byte body that the FO76
+/// regression test (`parse_bs_lighting_fo76_minimal`) walks — the
+/// only difference is the header's `user_version_2`. If the
+/// `bsver == 155` gate ever returns, every assertion past
+/// `wetness.unknown_2` flips to its default and the test fails.
+#[test]
+fn parse_bs_lighting_starfield_minimal_picks_up_fo76_tail() {
+    let header = make_starfield_header("");
+    let data = build_fo76_bs_lighting_minimal();
+    let mut stream = NifStream::new(&data, &header);
+
+    let prop = BSLightingShaderProperty::parse(&mut stream)
+        .expect("Starfield BLSP body must parse via the FO76+ tail");
+    let w = prop
+        .wetness
+        .as_ref()
+        .expect("wetness present on Starfield");
+    // The pre-#746 regression dropped exactly this byte.
+    assert!(
+        (w.unknown_2 - 0.77).abs() < 1e-6,
+        "unknown_2 must read on BSVER 172 (was: {})",
+        w.unknown_2,
+    );
+    let lum = prop
+        .luminance
+        .as_ref()
+        .expect("luminance present on Starfield (BSVER >= 155)");
+    assert!((lum.lum_emittance - 100.0).abs() < 1e-6);
+    assert!((lum.exposure_offset - 13.5).abs() < 1e-6);
+    assert!((lum.final_exposure_max - 3.0).abs() < 1e-6);
+    assert!(
+        !prop.do_translucency,
+        "translucency byte read; default is false"
+    );
+    assert!(prop.translucency.is_none());
+    assert!(
+        prop.texture_arrays.is_empty(),
+        "has_texture_arrays byte read; default is empty"
+    );
+    // The whole body must consume — block_size is None here, so any
+    // missed read would leave bytes on the stream.
+    assert_eq!(
+        stream.position(),
+        data.len() as u64,
+        "Starfield parse must consume the same body length as FO76",
+    );
+}
+
+/// Regression for #747 / SF-D1-DISPATCH: Starfield uses the same
+/// `BSShaderType155` numeric mapping as FO76 (type 4 = skin tint
+/// Color4, type 5 = hair tint Color3 per nif.xml). Pre-fix the
+/// dispatch gate was `bsver == 155`, so Starfield routed through
+/// `parse_shader_type_data_fo4` which mis-interprets the type-4
+/// payload — character / face / hair meshes lost 12 B of tint data.
+#[test]
+fn parse_bs_lighting_starfield_skin_tint_routes_via_fo76_dispatch() {
+    let header = make_starfield_header("");
+    let mut data = build_fo76_bs_lighting_minimal();
+    // Patch Shader Type (NiObjectNET = 12 B, then shader_type u32) from 0 → 4.
+    let st_off = 12;
+    data[st_off..st_off + 4].copy_from_slice(&4u32.to_le_bytes());
+    // Append the BSShaderType155 type-4 payload (Color4).
+    for v in [0.95f32, 0.72, 0.60, 1.0] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+
+    let mut stream = NifStream::new(&data, &header);
+    let prop = BSLightingShaderProperty::parse(&mut stream)
+        .expect("Starfield skin-tint BLSP must dispatch via FO76 enum");
+    match prop.shader_type_data {
+        ShaderTypeData::Fo76SkinTint { skin_tint_color } => {
+            assert!((skin_tint_color[0] - 0.95).abs() < 1e-6);
+            assert!((skin_tint_color[3] - 1.0).abs() < 1e-6);
+        }
+        other => panic!(
+            "expected Fo76SkinTint on Starfield (BSVER 172), got {other:?} \
+             — `bsver == 155` dispatch gate has regressed",
+        ),
+    }
+    assert_eq!(stream.position(), data.len() as u64);
+}

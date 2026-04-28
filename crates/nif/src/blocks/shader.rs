@@ -795,8 +795,13 @@ impl BSLightingShaderProperty {
             (0, 0)
         };
 
-        // FO76 BSShaderType155 field (BSVER == 155 only).
-        let fo76_shader_type = if bsver == 155 {
+        // FO76+ BSShaderType155 field. nif.xml gates this on
+        // `BSVER #GTE# 155`; pre-#747 the parser used `==` and
+        // Starfield (`bsver = 172` per `version.rs:129`) silently
+        // skipped, drifting every subsequent block read by 4 bytes
+        // and mis-routing the shader-type dispatch through the FO4
+        // table at `:990`. SF-D1-DISPATCH.
+        let fo76_shader_type = if bsver >= 155 {
             stream.read_u32_le()?
         } else {
             0
@@ -822,9 +827,15 @@ impl BSLightingShaderProperty {
             }
         }
 
-        // Effective shader type for the downstream dispatch (uses different enums
-        // depending on version).
-        let shader_type = if bsver == 155 {
+        // Effective shader type for the downstream dispatch (uses
+        // different enums depending on version). #747 / SF-D1-DISPATCH
+        // — Starfield reuses the FO76 BSShaderType155 numeric mapping
+        // (type 4 = skin tint Color4, type 5 = hair tint Color3 per
+        // nif.xml), so the gate is `>= 155`, not `== 155`. Pre-fix
+        // Starfield character / hair / face meshes routed through the
+        // FO4 dispatch which mis-interprets the type-4/5 payload and
+        // drops 12 B of tint data.
+        let shader_type = if bsver >= 155 {
             fo76_shader_type
         } else {
             legacy_shader_type
@@ -920,7 +931,11 @@ impl BSLightingShaderProperty {
             } else {
                 0.0
             };
-            let unknown_2 = if bsver == 155 {
+            // #746 / SF-D1-02 — nif.xml gates `Unknown 2` on
+            // `BSVER #GTE# 155`. Pre-fix the parser used `==` and
+            // every Starfield (`bsver = 172`) WetnessParams under-
+            // read by 4 bytes, drifting the rest of the block.
+            let unknown_2 = if bsver >= 155 {
                 stream.read_f32_le()?
             } else {
                 0.0
@@ -939,12 +954,19 @@ impl BSLightingShaderProperty {
             None
         };
 
-        // FO76 (BSVER == 155) trailing fields.
+        // FO76+ (BSVER >= 155) trailing fields. #746 / SF-D1-01 —
+        // nif.xml gates the LuminanceParams + TranslucencyParams +
+        // texture_arrays block on `BSVER #GTE# 155`. Pre-fix the
+        // parser used `==` and every Starfield (`bsver = 172`)
+        // BLSP under-read by ~24+22+variable bytes, leaving every
+        // subsequent block to drift by tens of bytes (block_size
+        // skip recovered the cell load but the tail-field captures
+        // ended up zeroed).
         let mut luminance = None;
         let mut do_translucency = false;
         let mut translucency = None;
         let mut texture_arrays: Vec<BSTextureArray> = Vec::new();
-        if bsver == 155 {
+        if bsver >= 155 {
             luminance = Some(LuminanceParams {
                 lum_emittance: stream.read_f32_le()?,
                 exposure_offset: stream.read_f32_le()?,
@@ -984,10 +1006,15 @@ impl BSLightingShaderProperty {
             }
         }
 
-        // Shader-type-specific trailing fields. For FO76 (BSVER == 155) these use
-        // the BSShaderType155 numeric mapping (type 4 = skin tint Color4, type 5 =
-        // hair tint Color3). For Skyrim/FO4 we keep the existing dispatch.
-        let shader_type_data = if bsver == 155 {
+        // Shader-type-specific trailing fields. For FO76+ (BSVER >=
+        // 155) these use the BSShaderType155 numeric mapping (type 4
+        // = skin tint Color4, type 5 = hair tint Color3 per nif.xml).
+        // Starfield (`bsver = 172`) reuses the same enum, so the gate
+        // is `>= 155` not `== 155`. Pre-#747 Starfield character /
+        // hair / face meshes routed through the FO4 dispatch which
+        // mis-interpreted the type-4/5 payload and dropped 12 B of
+        // tint data.
+        let shader_type_data = if bsver >= 155 {
             parse_shader_type_data_fo76(stream, shader_type)?
         } else if bsver < 130 {
             parse_shader_type_data(stream, shader_type)?
@@ -1265,7 +1292,8 @@ pub struct BSEffectShaderProperty {
     pub falloff_stop_angle: f32,
     pub falloff_start_opacity: f32,
     pub falloff_stop_opacity: f32,
-    /// FO76+ refraction power (BSVER == 155).
+    /// FO76+ refraction power (BSVER >= 155 — fixed in #746 to
+    /// also pick up the Starfield 168/172 streams).
     pub refraction_power: f32,
     /// Base color (Color4) — multiplicative diffuse tint applied on
     /// top of the source texture sample. Pre-#166 this was called
@@ -1414,8 +1442,11 @@ impl BSEffectShaderProperty {
         let falloff_start_opacity = stream.read_f32_le()?;
         let falloff_stop_opacity = stream.read_f32_le()?;
 
-        // FO76 refraction power.
-        let refraction_power = if bsver == 155 {
+        // FO76+ refraction power. #746 / SF-D1-04 — nif.xml gates
+        // this on `BSVER #GTE# 155`. Pre-fix the parser used `==`
+        // and every Starfield (`bsver = 172`) BSEffect block under-
+        // read by 4 B, drifting the rest of the block. See #746.
+        let refraction_power = if bsver >= 155 {
             stream.read_f32_le()?
         } else {
             0.0
@@ -1453,13 +1484,17 @@ impl BSEffectShaderProperty {
             (String::new(), String::new(), String::new(), 0.0)
         };
 
-        // FO76 trailing fields.
+        // FO76+ trailing fields. #746 / SF-D1-04 — same value-gate
+        // regression as `refraction_power` and the BLSP tail. nif.xml
+        // gates this block on `BSVER #GTE# 155`; pre-fix the parser
+        // used `==` and Starfield (`bsver = 172`) BSEffect blocks
+        // under-read by ≥40 B + 4 sized strings.
         let mut reflectance_texture = String::new();
         let mut lighting_texture = String::new();
         let mut emittance_color = [0.0f32; 3];
         let mut emit_gradient_texture = String::new();
         let mut luminance = None;
-        if bsver == 155 {
+        if bsver >= 155 {
             reflectance_texture = stream.read_sized_string()?;
             lighting_texture = stream.read_sized_string()?;
             emittance_color = [
