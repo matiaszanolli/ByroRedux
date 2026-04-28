@@ -296,10 +296,14 @@ fn create_triangle_pipeline_with_layout(
         }
     };
 
+    // LESS_OR_EQUAL matches draw.rs:cmd_set_depth_compare_op (the live source of truth).
+    // depth_test/write/compare_op are all dynamic (#398); these static values are
+    // ignored at runtime but must match the dynamic default to prevent silent breakage
+    // if the dynamic-state declaration is ever dropped.
     let depth_stencil_opaque = vk::PipelineDepthStencilStateCreateInfo::default()
         .depth_test_enable(true)
         .depth_write_enable(true)
-        .depth_compare_op(vk::CompareOp::LESS)
+        .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
         .depth_bounds_test_enable(false)
         .stencil_test_enable(false);
 
@@ -455,10 +459,11 @@ pub fn create_blend_pipeline(
     // Transparent surfaces never write depth — prevents z-fight with
     // other translucents at the same depth and keeps opaque geometry
     // visible behind glass / decals.
+    // LESS_OR_EQUAL matches draw.rs:cmd_set_depth_compare_op (the live source of truth).
     let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
         .depth_test_enable(true)
         .depth_write_enable(false)
-        .depth_compare_op(vk::CompareOp::LESS)
+        .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
         .depth_bounds_test_enable(false)
         .stencil_test_enable(false);
 
