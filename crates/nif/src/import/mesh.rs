@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use crate::blocks::node::NiNode;
+use crate::blocks::shader::is_material_reference;
 use crate::blocks::skin::{
     BsDismemberSkinInstance, BsSkinBoneData, BsSkinInstance, NiSkinData, NiSkinInstance,
     NiSkinPartition, SseSkinGlobalBuffer,
@@ -743,17 +744,19 @@ fn byte_to_normal(b: u8) -> f32 {
 /// effect-shader-backed meshes silently dropped the flag and rendered
 /// backface-culled glow geometry that should have been visible from
 /// either side.
-/// Return `Some(handle)` when `name` is a `.bgsm`/`.bgem` material file
-/// path interned in the engine's [`StringPool`], else `None`. Shared
-/// between the BsTriShape and NiTriShape material-path extractors so
-/// both report material pointers consistently. See #609 / D6-NEW-01.
+/// Return `Some(handle)` when `name` is a `.bgsm` / `.bgem` / `.mat`
+/// material file path interned in the engine's [`StringPool`], else
+/// `None`. Shared between the BsTriShape and NiTriShape material-path
+/// extractors so both report material pointers consistently. See
+/// #609 / D6-NEW-01. Suffix logic deferred to
+/// [`is_material_reference`] so this stays in lockstep with the
+/// FO76+/Starfield shader-property stopcond — see #749.
 pub(super) fn material_path_from_name(
     name: Option<&str>,
     pool: &mut StringPool,
 ) -> Option<FixedString> {
     let name = name?;
-    let lower = name.to_ascii_lowercase();
-    if lower.ends_with(".bgsm") || lower.ends_with(".bgem") {
+    if is_material_reference(name) {
         Some(pool.intern(name))
     } else {
         None

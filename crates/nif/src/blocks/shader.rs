@@ -11,6 +11,22 @@ use crate::types::BlockRef;
 use std::any::Any;
 use std::io;
 
+/// Returns `true` when `name` looks like a `.bgsm` / `.bgem` / `.mat`
+/// material file path. The FO76+/Starfield shader-property stopcond
+/// fires only when the editor stored a material-file reference in
+/// `Name`; plain editor labels (e.g. "Material_Slot_01") must NOT
+/// trigger the short-circuit, otherwise every PBR scalar silently
+/// defaults. See #749 / SF-D3-01.
+///
+/// Trailing `\0` and ASCII whitespace are stripped before the suffix
+/// check — artists occasionally export with stale terminators (the
+/// path got copy-pasted from a longer string buffer).
+pub(crate) fn is_material_reference(name: &str) -> bool {
+    let trimmed = name.trim_end_matches(|c: char| c == '\0' || c.is_ascii_whitespace());
+    let lower = trimmed.to_ascii_lowercase();
+    lower.ends_with(".bgsm") || lower.ends_with(".bgem") || lower.ends_with(".mat")
+}
+
 /// BSShaderPPLightingProperty — Fallout 3/NV per-pixel lighting shader.
 ///
 /// Inheritance: NiProperty → BSShaderProperty → BSShaderLightingProperty
@@ -768,12 +784,16 @@ impl BSLightingShaderProperty {
 
         let net = NiObjectNETData::parse(stream)?;
 
-        // FO76+ stopcond: if Name is a non-empty BGSM file path, the rest of the
-        // block is absent (the BGSM file holds the real material data). Return
-        // a stub and let block_size skip any trailing padding.
+        // FO76+ stopcond: if Name is a `.bgsm` / `.bgem` / `.mat` material-
+        // file reference, the rest of the block is absent (the material
+        // file holds the real PBR data). Return a stub and let block_size
+        // skip any trailing padding. The suffix gate is critical — pre-
+        // #749 this fired on ANY non-empty Name, so every Starfield block
+        // with an editor label (e.g. "Material_Slot_01") had its entire
+        // PBR body silently defaulted to zero. See SF-D3-01.
         if bsver >= 155 {
             if let Some(name) = net.name.as_deref() {
-                if !name.is_empty() {
+                if is_material_reference(name) {
                     return Ok(Self::material_reference_stub(net));
                 }
             }
@@ -1386,10 +1406,13 @@ impl BSEffectShaderProperty {
         let bsver = stream.bsver();
         let net = NiObjectNETData::parse(stream)?;
 
-        // FO76+ stopcond: non-empty Name means the block is an external BGEM reference.
+        // FO76+ stopcond: Name is an external `.bgem` / `.mat` material-file
+        // reference (sibling of the BSLightingShaderProperty gate above).
+        // The suffix-aware test ensures editor labels with no path suffix
+        // continue through to the full body parse — see #749 / SF-D3-01.
         if bsver >= 155 {
             if let Some(name) = net.name.as_deref() {
-                if !name.is_empty() {
+                if is_material_reference(name) {
                     return Ok(Self::material_reference_stub(net));
                 }
             }

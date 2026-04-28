@@ -1334,3 +1334,132 @@ fn parse_bs_lighting_starfield_skin_tint_routes_via_fo76_dispatch() {
     }
     assert_eq!(stream.position(), data.len() as u64);
 }
+
+// ── #749 / SF-D3-01: BGSM/BGEM/MAT stopcond suffix gate ───────────────
+
+/// Direct unit tests for `is_material_reference` — the suffix-aware
+/// gate shared between the FO76+/Starfield shader-property stopconds
+/// and `material_path_from_name`. Pre-#749 the stopcond fired on any
+/// non-empty Name, so editor labels with no path suffix collapsed
+/// into stub material references with all PBR scalars zeroed.
+#[test]
+fn is_material_reference_recognises_known_suffixes() {
+    // `super::*` already pulls in the helper; this test fixes its
+    // semantics so future audits land against the same gate.
+
+    // True cases: documented suffixes, mixed case, stale terminators.
+    assert!(is_material_reference("materials/weapons/rifle.bgsm"));
+    assert!(is_material_reference("materials/weapons/rifle.BGSM"));
+    assert!(is_material_reference("materials/effects/glow.bgem"));
+    assert!(is_material_reference("materials/effects/glow.BGEM"));
+    assert!(is_material_reference("materials/sf/armor.mat"));
+    assert!(is_material_reference("materials/sf/armor.MAT"));
+    assert!(is_material_reference("materials/weapons/rifle.bgsm\0\0"));
+    assert!(is_material_reference("materials/weapons/rifle.bgsm  "));
+    assert!(is_material_reference("materials/weapons/rifle.bgsm \0\0 "));
+
+    // False cases: editor labels, plain words, empty.
+    assert!(!is_material_reference(""));
+    assert!(!is_material_reference("Material_Slot_01"));
+    assert!(!is_material_reference("FaceTint_FOR_BLINK"));
+    assert!(!is_material_reference("rifle"));
+    assert!(!is_material_reference("rifle.dds"));
+    assert!(!is_material_reference("rifle.bgsmext"));
+    assert!(!is_material_reference("   "));
+}
+
+/// Regression for #749 / SF-D3-01: a FO76+ BSLightingShaderProperty
+/// whose Name is a non-path editor label must NOT trigger the BGSM
+/// stopcond — the trailing PBR body still has to parse. Pre-fix the
+/// stub fired on any non-empty Name and every editor-tagged Starfield
+/// material lost its scalars.
+#[test]
+fn parse_bs_lighting_fo76_editor_label_does_not_short_circuit() {
+    let header = make_fo76_header("Material_Slot_01");
+    let data = build_fo76_bs_lighting_minimal();
+    let mut stream = NifStream::new(&data, &header);
+
+    let prop = BSLightingShaderProperty::parse(&mut stream)
+        .expect("editor-label Name must continue through to the full body parse");
+    assert!(
+        !prop.material_reference,
+        "stopcond must not fire for non-path Name (pre-#749 it did)",
+    );
+    // Spot-check that the trailing body actually populated.
+    assert!((prop.glossiness - 0.6).abs() < 1e-6);
+    assert!((prop.fresnel_power - 4.2).abs() < 1e-6);
+    assert!(prop.wetness.is_some());
+    assert!(prop.luminance.is_some());
+    assert_eq!(stream.position(), data.len() as u64);
+}
+
+/// Regression for #749 / SF-D3-01: a Starfield `.mat` reference
+/// (the new SF material format) must trigger the stopcond. The
+/// pre-#749 gate happened to do the right thing here as a side
+/// effect of `!is_empty()`; the post-fix gate must keep working
+/// once the Name is suffix-checked.
+#[test]
+fn parse_bs_lighting_fo76_mat_extension_triggers_stopcond() {
+    let header = make_fo76_header("materials/sf/armor.mat");
+    // Only NiObjectNET bytes are present; no shader fields follow.
+    let mut data = Vec::new();
+    data.extend_from_slice(&0i32.to_le_bytes()); // name → string-table index 0
+    data.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count = 0
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = -1
+
+    let mut stream = NifStream::new(&data, &header);
+    let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
+    assert!(prop.material_reference);
+    assert_eq!(prop.net.name.as_deref(), Some("materials/sf/armor.mat"));
+    assert_eq!(stream.position(), data.len() as u64);
+}
+
+/// Sibling regression: BSEffectShaderProperty must apply the same
+/// suffix gate. Pre-#749 it shared the bug 1:1 with
+/// BSLightingShaderProperty.
+#[test]
+fn parse_bs_effect_shader_fo76_editor_label_does_not_short_circuit() {
+    // Build a minimal FO76 BSEffectShaderProperty body. We don't need
+    // the body to exercise every field — just enough to confirm
+    // parsing went past the stopcond. Match the existing FO76 effect
+    // shader test structure when one lands; for now, point the parser
+    // past NiObjectNET and assert the stopcond returned `false`.
+    let header = make_fo76_header("EffectMat_Slot_03");
+    let mut data = Vec::new();
+    data.extend_from_slice(&0i32.to_le_bytes()); // name → string-table index 0
+    data.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count = 0
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = -1
+    // BSVER 155 effect shader trailing body. Mirror the layout used
+    // by the parser: shader_flags_1/2 absent (bsver > 130), CRC arrays
+    // empty, then UV + texture + scalar fields. We only need enough
+    // bytes for the parse to succeed without underrunning the
+    // stream — `block_size` recovery would otherwise mask a regression.
+    data.extend_from_slice(&0u32.to_le_bytes()); // num SF1 = 0
+    data.extend_from_slice(&0u32.to_le_bytes()); // num SF2 = 0
+    // uv_offset, uv_scale
+    for v in [0.0f32, 0.0, 1.0, 1.0] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    // source_texture: NiFixedString = -1 (empty)
+    data.extend_from_slice(&(-1i32).to_le_bytes());
+    // texture_clamp_mode, lighting_influence, env_map_min_lod
+    data.extend_from_slice(&3u32.to_le_bytes());
+    data.push(0u8); // lighting_influence
+    data.push(0u8); // env_map_min_lod
+    // padding fields up to falloff and beyond can vary across BSVER —
+    // this test asserts only that the stopcond did NOT fire; the
+    // detailed FO76 effect-shader body shape is covered by other
+    // tests. Use block_size recovery to consume any remainder.
+    let mut stream = NifStream::new(&data, &header);
+    // Best-effort parse: if the body shape differs from this fixture,
+    // an Err is fine — what matters is that on a successful parse the
+    // stopcond did not fire. If the parse errors, that's a sign the
+    // editor-label gate let parsing continue (good); if it returned
+    // a stub (`material_reference = true`), the gate is broken.
+    if let Ok(prop) = BSEffectShaderProperty::parse(&mut stream) {
+        assert!(
+            !prop.material_reference,
+            "stopcond must not fire for non-path Name on BSEffectShaderProperty",
+        );
+    }
+}
