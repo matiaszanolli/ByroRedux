@@ -9,18 +9,21 @@
 //!   per-mip-chain chunk records; the DDS header is not stored and must be
 //!   reconstructed from the record fields (format, dimensions, mip count).
 //! - **Starfield (v2/v3)** — extends the archive header by 8 (v2) or 12 (v3)
-//!   bytes. v3 adds a `compression_method` field: 0 = zlib, 3 = LZ4 block.
-//!   Both GNRL and DX10 extraction are fully supported.
+//!   bytes. v2 carries both GNRL (mesh) and DX10 (texture) archives in
+//!   vanilla Starfield; v3 is DX10-only in the shipped game (no v3 GNRL
+//!   observed across 108 vanilla archives). v3 adds a `compression_method`
+//!   field: 0 = zlib, 3 = LZ4 block. Both GNRL and DX10 extraction are
+//!   fully supported for v2 and v3.
 //!
 //! # Version mapping
 //!
-//! | BTDX version | Games                          | Notes                          |
-//! |--------------|--------------------------------|--------------------------------|
-//! | 1            | FO4 (original), FO76           | 24-byte header, zlib           |
-//! | 2            | FO4 (patches), Starfield meshes | 32-byte header (base + 8)      |
-//! | 3            | Starfield textures             | 36-byte header (base + 12, +compression method) |
-//! | 7            | FO4 Next Gen textures          | 24-byte header, zlib           |
-//! | 8            | FO4 Next Gen meshes            | 24-byte header, zlib           |
+//! | BTDX version | Games                              | Notes                                               |
+//! |--------------|------------------------------------|-----------------------------------------------------|
+//! | 1            | FO4 (original), FO76               | 24-byte header, zlib only                           |
+//! | 2            | FO4 (patches), Starfield GNRL+DX10 | 32-byte header (base + 8); v2 DX10 exists in vanilla |
+//! | 3            | Starfield DX10                     | 36-byte header (base + 12, +compression_method); 0=zlib, 3=LZ4 block |
+//! | 7            | FO4 Next Gen textures              | 24-byte header, zlib only                           |
+//! | 8            | FO4 Next Gen meshes                | 24-byte header, zlib only                           |
 //!
 //! # Usage
 //!
@@ -160,9 +163,12 @@ impl Ba2Archive {
         // FO4 original / FO76, v2/v3 = Starfield, v7/v8 = FO4 Next Gen
         // patches with the same 24-byte header as v1.
         //
-        // v2 (Starfield GNRL): +8 bytes (2×u32 unknown, likely compressed
-        //   name-table metadata). Compression is always zlib.
-        // v3 (Starfield DX10): +12 bytes (2×u32 unknown + u32 compression
+        // v2 (Starfield GNRL and DX10): +8 bytes (2×u32 unknown, likely
+        //   compressed name-table metadata). Compression is always zlib for
+        //   v1/v2/v7/v8 — the `self.compression` field threaded through every
+        //   dispatch site will always be Zlib for these versions.
+        // v3 (Starfield DX10 only in vanilla; no v3 GNRL observed across 108
+        //   vanilla archives): +12 bytes (2×u32 unknown + u32 compression
         //   method). Method 0 = zlib, 3 = LZ4 block.
         let mut compression = Ba2Compression::Zlib;
         if version == 2 || version == 3 {
