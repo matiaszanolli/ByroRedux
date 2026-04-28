@@ -207,6 +207,29 @@ pub fn open_mesh_archive(game: Game) -> Option<MeshArchive> {
     }
 }
 
+/// Open an arbitrary BA2 archive by explicit filename within a game's data dir.
+/// Used by multi-archive tests (e.g. the 5-archive Starfield mesh sweep).
+pub fn open_ba2_by_name(game: Game, archive_name: &str) -> Option<MeshArchive> {
+    let data = game_data_dir(game)?;
+    let archive_path = data.join(archive_name);
+    if !archive_path.is_file() {
+        eprintln!("[{}] skipping: {:?} not found", game.label(), archive_path);
+        return None;
+    }
+    match Ba2Archive::open(&archive_path).map(MeshArchive::Ba2) {
+        Ok(a) => Some(a),
+        Err(e) => {
+            eprintln!(
+                "[{}] skipping: failed to open {:?}: {}",
+                game.label(),
+                archive_path,
+                e
+            );
+            None
+        }
+    }
+}
+
 /// Per-file parse outcome: a parse that returned `Err`, or a parse
 /// that returned `Ok` but with a scene that aborted mid-file. See #393.
 #[derive(Debug)]

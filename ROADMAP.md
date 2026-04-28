@@ -91,7 +91,7 @@ parse-rate work for the games where clean < 100%.
 | Skyrim SE         | BSA v105 LZ4  | 100% (18 862)                                | Interior (WhiterunBanneredMare 1932 entities @ 253.3 FPS / 3.95 ms, bench 6a6950a; entity count up from 1258 since M32.5 close — more REFRs land now). |
 | Fallout 4         | BA2 v1/v7/v8  | **96.46%** (33 757 / 34 995) · recover 100%  | Interior (MedTekResearch01 7434 entities @ 92.5 FPS / 10.82 ms, bench 6a6950a). FaceGen NIFs dominate the truncation tail (1 235 of 1 238 truncated files). |
 | Fallout 76        | BA2 v1        | **97.34%** (56 915 / 58 469) · recover 100%  | —                                                        |
-| Starfield         | BA2 v2/v3 LZ4 | **97.19%** (30 184 / 31 058) · recover 100%  | #708 closeout — BSGeometry / SkinAttach / BoneTranslations now dispatch (Starfield skinned-geometry triple). 190 549 BSGeometry blocks recovered from NiUnknown. Truncation tail (874 files) is `BSClothExtraData` (cloth sim extra data, no consumer yet) + a handful of `BSEffectShaderProperty` / `NiPointLight` outliers. |
+| Starfield         | BA2 v2/v3 LZ4 | **98.6%** aggregate · recover 100% (all 5 archives, 2026-04-27 post-#754) | Per-archive: Meshes01 97.21% (31 058 NIFs), Meshes02 **100%** (7 552; was 0% pre-#754 BSWeakReferenceNode), MeshesPatch 98.11% (29 849; was 74% pre-#754), LODMeshes 99.92% (19 535), FaceMeshes **100%** (1 282). Truncation tail in Meshes01/MeshesPatch is residual drift (#746/#747). |
 
 ---
 
@@ -378,7 +378,7 @@ Ground-truth as of 2026-04-27, verified by `/session-close`.
 | Tests (last reported by ROADMAP)        | 1400                         |
 | Open issue directories                  | 688 (`.claude/issues/`)       |
 | NIFs in per-game integration sweeps     | 184 886                       |
-| Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 96.24%, FO4 96.46%, FO76 97.34%, Starfield 97.19% (see compat matrix). Recoverable 100% on all except Oblivion 99.99%. Session 22 fixes (#721 / #722 / #727) predict ~3 500 fewer FO4 / FO76 / SF demotions on the next sweep but the percentages above are pre-fix. |
+| Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 96.24%, FO4 96.46%, FO76 97.34%, Starfield 98.6% aggregate (see compat matrix for per-archive breakdown). Recoverable 100% on all except Oblivion 99.99%. Sweep date 2026-04-27. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
 
 ### Repro commands for every bench claim

@@ -14,7 +14,7 @@
 
 mod common;
 
-use common::{open_mesh_archive, parse_all_nifs_in_archive, Game};
+use common::{open_ba2_by_name, open_mesh_archive, parse_all_nifs_in_archive, Game};
 
 /// Acceptance threshold per N23.10 + ROADMAP. Gates on the
 /// **recoverable** rate (clean + NiUnknown-recovered + truncated) so a
@@ -114,6 +114,69 @@ fn parse_rate_starfield() {
     // Texture archives (BA2 v3 DX10) use a different chunk layout that's
     // not yet supported and is tracked separately.
     run_game(Game::Starfield, None);
+}
+
+/// Full Starfield mesh corpus — walks all 5 vanilla mesh archives so the
+/// per-archive clean rates are each independently gated. The headline
+/// `parse_rate_starfield` test only covers Meshes01 (~35% of total NIFs).
+/// Thresholds set from the 2026-04-27 audit sweep post-#754 (#759).
+///
+/// Per-archive minimums (clean %) — measured post-#754 (2026-04-27):
+///   Meshes01.ba2        ≥ 97.0% (31 058 NIFs; 97.21% actual)
+///   Meshes02.ba2        ≥ 99.0% ( 7 552 NIFs; 100.00% actual; #754 BSWeakReferenceNode)
+///   MeshesPatch.ba2     ≥ 97.0% (29 849 NIFs; 98.11% actual; was 74% pre-#754)
+///   LODMeshes.ba2       ≥ 99.5% (19 535 NIFs; 99.92% actual)
+///   FaceMeshes.ba2      ≥ 99.5% ( 1 282 NIFs; 100.00% actual)
+#[test]
+#[ignore]
+fn parse_rate_starfield_all_meshes() {
+    struct ArchiveSpec {
+        name: &'static str,
+        // Minimum clean-parse rate (0.0–1.0). Recoverable is always gated
+        // at 100% via the outer assertion.
+        min_clean: f64,
+    }
+    let archives: &[ArchiveSpec] = &[
+        ArchiveSpec { name: "Starfield - Meshes01.ba2",    min_clean: 0.970 },
+        ArchiveSpec { name: "Starfield - Meshes02.ba2",    min_clean: 0.990 },
+        ArchiveSpec { name: "Starfield - MeshesPatch.ba2", min_clean: 0.970 },
+        ArchiveSpec { name: "Starfield - LODMeshes.ba2",   min_clean: 0.995 },
+        ArchiveSpec { name: "Starfield - FaceMeshes.ba2",  min_clean: 0.995 },
+    ];
+
+    let Some(_data_dir) = common::game_data_dir(Game::Starfield) else {
+        return; // skip cleanly when Starfield is not installed
+    };
+
+    for spec in archives {
+        let Some(archive) = open_ba2_by_name(Game::Starfield, spec.name) else {
+            eprintln!("[Starfield] skipping {}: not found", spec.name);
+            continue;
+        };
+        let stats = parse_all_nifs_in_archive(&archive, None);
+        stats.print_summary(&format!("Starfield/{}", spec.name));
+
+        assert!(
+            stats.total > 0,
+            "[Starfield/{}] expected at least one NIF",
+            spec.name
+        );
+        assert!(
+            stats.recoverable_rate() >= MIN_RECOVERABLE_RATE,
+            "[Starfield/{}] recoverable rate {:.2}% below 100% threshold ({} hard failures)",
+            spec.name,
+            stats.recoverable_rate() * 100.0,
+            stats.failures.len()
+        );
+        assert!(
+            stats.success_rate() >= spec.min_clean,
+            "[Starfield/{}] clean rate {:.2}% below {:.1}% minimum ({} truncated)",
+            spec.name,
+            stats.success_rate() * 100.0,
+            spec.min_clean * 100.0,
+            stats.truncated.len()
+        );
+    }
 }
 
 /// Smoke subset — runs the first 50 NIFs from each available game in one
