@@ -50,6 +50,7 @@ fn make_pp_lighting(flags1: u32, flags2: u32) -> BSShaderPPLightingProperty {
         refraction_fire_period: 0,
         parallax_max_passes: 4.0,
         parallax_scale: 0.04,
+        emissive_color: [0.0, 0.0, 0.0, 1.0],
     }
 }
 

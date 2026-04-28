@@ -26,6 +26,10 @@ fn make_header(user_version: u32, user_version_2: u32) -> NifHeader {
 
 /// Build bytes for BSShaderPPLightingProperty, optionally including emissive color.
 fn build_bsshader_bytes(user_version_2: u32) -> Vec<u8> {
+    build_bsshader_bytes_with_emissive(user_version_2, None)
+}
+
+fn build_bsshader_bytes_with_emissive(user_version_2: u32, emissive: Option<[f32; 4]>) -> Vec<u8> {
     let mut data = Vec::new();
     // NiObjectNET: name (string table index 0)
     data.extend_from_slice(&0i32.to_le_bytes());
@@ -56,6 +60,13 @@ fn build_bsshader_bytes(user_version_2: u32) -> Vec<u8> {
     if user_version_2 >= 24 {
         data.extend_from_slice(&4.0f32.to_le_bytes()); // parallax_max_passes
         data.extend_from_slice(&1.5f32.to_le_bytes()); // parallax_scale
+    }
+    // nif.xml: Emissive Color (Color4) for bsver > 34.
+    if let Some([r, g, b, a]) = emissive {
+        data.extend_from_slice(&r.to_le_bytes());
+        data.extend_from_slice(&g.to_le_bytes());
+        data.extend_from_slice(&b.to_le_bytes());
+        data.extend_from_slice(&a.to_le_bytes());
     }
     data
 }
@@ -1462,4 +1473,64 @@ fn parse_bs_effect_shader_fo76_editor_label_does_not_short_circuit() {
             "stopcond must not fire for non-path Name on BSEffectShaderProperty",
         );
     }
+}
+
+/// Regression for #716 — BSShaderPPLightingProperty.Emissive Color (Color4)
+/// is gated by `#BS_GT_FO3#` (bsver > 34).  Pre-fix the field was never read,
+/// leaving 16 bytes in the stream; block_size recovery silently masked this on
+/// Skyrim-era PPLighting content.
+#[test]
+fn bsshader_pplighting_skyrim_era_reads_emissive_color() {
+    // bsver=83 → Skyrim SE (user_version=12, user_version_2=83)
+    let header = make_header(12, 83);
+    let emissive = [0.8f32, 0.2, 0.0, 1.0];
+    let data = build_bsshader_bytes_with_emissive(83, Some(emissive));
+    let expected_len = data.len();
+    let mut stream = NifStream::new(&data, &header);
+
+    let prop = BSShaderPPLightingProperty::parse(&mut stream)
+        .expect("Skyrim-era PPLighting should parse including emissive color");
+
+    assert_eq!(
+        stream.position() as usize,
+        expected_len,
+        "emissive Color4 (16 bytes) must be consumed on bsver > 34"
+    );
+    assert!(
+        (prop.emissive_color[0] - 0.8).abs() < 1e-6,
+        "emissive R"
+    );
+    assert!(
+        (prop.emissive_color[1] - 0.2).abs() < 1e-6,
+        "emissive G"
+    );
+    assert!(
+        (prop.emissive_color[2] - 0.0).abs() < 1e-6,
+        "emissive B"
+    );
+    assert!(
+        (prop.emissive_color[3] - 1.0).abs() < 1e-6,
+        "emissive A"
+    );
+}
+
+/// FO3/FNV (bsver=34) must NOT read the emissive color field — it is absent
+/// on pre-Skyrim PPLighting blocks.  Verifies the bsver > 34 gate is strict.
+#[test]
+fn bsshader_pplighting_fnv_has_no_emissive_color() {
+    let header = make_header(11, 34); // FNV
+    let data = build_bsshader_bytes(34); // no emissive bytes appended
+    let expected_len = data.len();
+    let mut stream = NifStream::new(&data, &header);
+
+    let prop = BSShaderPPLightingProperty::parse(&mut stream)
+        .expect("FNV PPLighting should parse without emissive field");
+
+    assert_eq!(
+        stream.position() as usize,
+        expected_len,
+        "FNV PPLighting (bsver=34) must not over-read into emissive bytes"
+    );
+    // Default emissive when absent: [0,0,0,1]
+    assert_eq!(prop.emissive_color, [0.0, 0.0, 0.0, 1.0]);
 }

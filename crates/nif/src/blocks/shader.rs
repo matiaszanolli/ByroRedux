@@ -55,6 +55,9 @@ pub struct BSShaderPPLightingProperty {
     pub parallax_max_passes: f32,
     /// Parallax scale. Present when bsver >= 24.
     pub parallax_scale: f32,
+    /// Emissive glow color (RGBA). nif.xml: "Emissive Color" vercond="#BS_GT_FO3#" (bsver > 34).
+    /// Defaults to black/opaque when absent (FO3/FNV bsver <= 34).
+    pub emissive_color: [f32; 4],
 }
 
 impl BSShaderPPLightingProperty {
@@ -96,6 +99,19 @@ impl BSShaderPPLightingProperty {
             (4.0, 1.0)
         };
 
+        // nif.xml:6250 — "Emissive Color" Color4 vercond="#BS_GT_FO3#" (i.e. bsver > 34).
+        // FO3/FNV (bsver <= 34) do not carry this field; Skyrim-era PPLighting does.
+        let emissive_color = if bsver > 34 {
+            [
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+            ]
+        } else {
+            [0.0, 0.0, 0.0, 1.0]
+        };
+
         Ok(Self {
             net,
             shader,
@@ -105,6 +121,7 @@ impl BSShaderPPLightingProperty {
             refraction_fire_period,
             parallax_max_passes,
             parallax_scale,
+            emissive_color,
         })
     }
 }

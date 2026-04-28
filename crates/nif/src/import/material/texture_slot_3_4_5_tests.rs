@@ -68,6 +68,7 @@ fn fo3_pp_lighting_with_texture_set(tex_set_idx: u32) -> BSShaderPPLightingPrope
         refraction_fire_period: 0,
         parallax_max_passes: 4.0,
         parallax_scale: 0.04,
+        emissive_color: [0.0, 0.0, 0.0, 1.0],
     }
 }
 
