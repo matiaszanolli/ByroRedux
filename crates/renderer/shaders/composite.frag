@@ -42,9 +42,17 @@ layout(set = 0, binding = 5) uniform usampler2D causticTex;  // R32_UINT caustic
 // Set 1: bindless texture array from TextureRegistry — shared with the
 // main geometry pipeline. Used here to sample WTHR cloud textures by index.
 layout(set = 1, binding = 0) uniform sampler2D textures[];
-// CAUSTIC_FIXED_SCALE from caustic.rs — divide uint accumulator by this to
-// recover luminance. Kept in sync manually; if it changes in caustic.rs, the
-// layout test there will not fail (it's Rust-only), so update this constant.
+// CAUSTIC_FIXED_SCALE — divide the uint accumulator by this to
+// recover luminance. The compute side (`caustic_splat.comp`) reads
+// the same value via the `causticTune.x` UBO uploaded by
+// `caustic.rs` every frame, so the splat→accumulator path is
+// auto-synced. Composite reads from the storage image directly
+// without going through that UBO, so the literal is duplicated
+// here. Pinned in lockstep with `caustic.rs::CAUSTIC_FIXED_SCALE`
+// by the unit test
+// `caustic_fixed_scale_sync_tests::composite_frag_caustic_fixed_scale_matches_rust_const`
+// — bumping the Rust const fails the test until this literal is
+// updated. See #667 / SH-12.
 const float CAUSTIC_FIXED_SCALE = 65536.0;
 
 layout(location = 0) in vec2 fragUV;
