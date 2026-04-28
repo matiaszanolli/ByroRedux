@@ -342,3 +342,138 @@ fn fo4_meshes_ba2_v8_brute_force_extract_zero_errors() {
         );
     }
 }
+
+// ── Real-Starfield BA2 coverage (gated, opt-in via `--ignored`) ─────
+
+fn starfield_data_dir() -> Option<PathBuf> {
+    data_dir(
+        "BYROREDUX_STARFIELD_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data",
+    )
+}
+
+/// Starfield v2 GNRL — open `Starfield - Meshes01.ba2`, extract a real
+/// NIF, assert the first four bytes spell the Gamebryo magic `"Game"`.
+/// This guards the v2 GNRL extraction path that was only verified by a
+/// one-shot external sweep in session 7 (#756).
+#[test]
+#[ignore]
+fn starfield_meshes01_ba2_v2_gnrl_extracts_nif_with_starfield_magic() {
+    let Some(data) = starfield_data_dir() else {
+        eprintln!("Skipping: BYROREDUX_STARFIELD_DATA not set and default path missing");
+        return;
+    };
+    let archive_path = data.join("Starfield - Meshes01.ba2");
+    if !archive_path.is_file() {
+        eprintln!("Skipping: {archive_path:?} not found");
+        return;
+    }
+
+    let archive = Ba2Archive::open(&archive_path).expect("open Starfield Meshes01.ba2");
+    assert_eq!(archive.version(), 2, "Starfield Meshes01.ba2 must be v2");
+    assert_eq!(archive.variant(), Ba2Variant::General);
+    assert!(
+        archive.file_count() > 10_000,
+        "Starfield Meshes01.ba2 ships >300k entries; got {}",
+        archive.file_count()
+    );
+
+    let entry = pick_entry(&archive, ".nif").expect("at least one .nif in Starfield Meshes01.ba2");
+    let bytes = archive
+        .extract(&entry)
+        .unwrap_or_else(|e| panic!("extract '{entry}' failed: {e}"));
+    assert!(
+        bytes.len() >= 20,
+        "NIF '{entry}' decompressed to {} bytes — too small for magic header",
+        bytes.len()
+    );
+    assert_eq!(
+        &bytes[..4],
+        b"Game",
+        "extracted '{entry}' lacks Gamebryo magic; got {:?}",
+        &bytes[..4]
+    );
+}
+
+/// Starfield v3 DX10 — open `Starfield - Textures01.ba2`, extract a
+/// DDS, assert DDS magic and that the decompressed buffer is non-trivial.
+/// This specifically guards the v3 LZ4-block decompression path
+/// (`compression_method = 3` in the 12-byte v3 header extension) that
+/// was only exercised externally (#756).
+#[test]
+#[ignore]
+fn starfield_textures01_ba2_v3_dx10_extracts_lz4_block_dds() {
+    let Some(data) = starfield_data_dir() else {
+        eprintln!("Skipping: BYROREDUX_STARFIELD_DATA not set and default path missing");
+        return;
+    };
+    let archive_path = data.join("Starfield - Textures01.ba2");
+    if !archive_path.is_file() {
+        eprintln!("Skipping: {archive_path:?} not found");
+        return;
+    }
+
+    let archive = Ba2Archive::open(&archive_path).expect("open Starfield Textures01.ba2");
+    assert_eq!(archive.version(), 3, "Starfield Textures01.ba2 must be v3");
+    assert_eq!(archive.variant(), Ba2Variant::Dx10);
+
+    let entry = pick_entry(&archive, ".dds").expect("at least one .dds in Starfield Textures01.ba2");
+    let dds = archive
+        .extract(&entry)
+        .unwrap_or_else(|e| panic!("extract '{entry}' failed: {e}"));
+    assert!(
+        dds.len() > 128,
+        "DDS '{entry}' must include header + payload; got {} bytes",
+        dds.len()
+    );
+    assert_eq!(
+        &dds[..4],
+        b"DDS ",
+        "extracted '{entry}' lacks DDS magic; got {:?}",
+        &dds[..4]
+    );
+    // LZ4 round-trip smoke: at least one byte in the mip data must be non-zero.
+    assert!(
+        dds[128..].iter().any(|&b| b != 0),
+        "DDS '{entry}' payload appears to be all-zero after LZ4 decompress (decompression bug?)"
+    );
+}
+
+/// Starfield v2 DX10 (zlib) — open `Constellation - Textures.ba2`,
+/// extract a DDS, assert DDS magic. This guards the DX10 path for
+/// Starfield DLC archives that use v2 (zlib) rather than v3 (LZ4),
+/// ensuring we don't gate extraction on archive type_tag alone (#756).
+#[test]
+#[ignore]
+fn starfield_constellation_textures_ba2_v2_dx10_extracts_zlib_dds() {
+    let Some(data) = starfield_data_dir() else {
+        eprintln!("Skipping: BYROREDUX_STARFIELD_DATA not set and default path missing");
+        return;
+    };
+    let archive_path = data.join("Constellation - Textures.ba2");
+    if !archive_path.is_file() {
+        eprintln!("Skipping: {archive_path:?} not found");
+        return;
+    }
+
+    let archive = Ba2Archive::open(&archive_path).expect("open Constellation Textures.ba2");
+    assert_eq!(archive.version(), 2, "Constellation Textures.ba2 must be v2");
+    assert_eq!(archive.variant(), Ba2Variant::Dx10);
+
+    let entry = pick_entry(&archive, ".dds")
+        .expect("at least one .dds in Constellation Textures.ba2");
+    let dds = archive
+        .extract(&entry)
+        .unwrap_or_else(|e| panic!("extract '{entry}' failed: {e}"));
+    assert!(
+        dds.len() > 128,
+        "DDS '{entry}' must include header + payload; got {} bytes",
+        dds.len()
+    );
+    assert_eq!(
+        &dds[..4],
+        b"DDS ",
+        "extracted '{entry}' lacks DDS magic; got {:?}",
+        &dds[..4]
+    );
+}
