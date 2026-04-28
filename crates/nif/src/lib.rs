@@ -235,15 +235,37 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         let inline_name: String;
         let type_name: &str = if inline_type_names {
             // Pre-Gamebryo: each block is prefixed by a u32-length-prefixed type name string.
-            inline_name = stream.read_sized_string()?;
-            &inline_name
+            // Use truncation rather than hard-Err if the inline name read fails (e.g. a
+            // corrupt-by-design debug NIF whose type-name length field overflows the alloc
+            // cap — #698 Oblivion `marker_radius.nif`).
+            match stream.read_sized_string() {
+                Ok(name) => {
+                    inline_name = name;
+                    &inline_name
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Block {} inline type-name read failed: {} — truncating (keeping {} blocks)",
+                        i, e, blocks.len()
+                    );
+                    truncated = true;
+                    dropped_block_count = header.num_blocks as usize - i;
+                    break;
+                }
+            }
         } else {
-            header.block_type_name(i).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("block {} has no type name", i),
-                )
-            })?
+            match header.block_type_name(i) {
+                Some(name) => name,
+                None => {
+                    log::warn!(
+                        "Block {} has no type name in header table — truncating (keeping {} blocks)",
+                        i, blocks.len()
+                    );
+                    truncated = true;
+                    dropped_block_count = header.num_blocks as usize - i;
+                    break;
+                }
+            }
         };
 
         let block_size = header.block_sizes.get(i).copied();
