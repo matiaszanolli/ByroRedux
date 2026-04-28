@@ -1682,7 +1682,7 @@ impl VulkanContext {
                     fog_params: [fog_near, fog_far, 0.0, 0.0],
                     depth_params: [
                         if sky_params.is_exterior { 1.0 } else { 0.0 },
-                        0.0,
+                        0.85, // exposure — default Bethesda-era HDR target; promote to WTHR field (#743)
                         0.0,
                         0.0,
                     ],

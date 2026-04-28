@@ -23,7 +23,7 @@ layout(set = 0, binding = 2) uniform sampler2D albedoTex;    // surface albedo (
 layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 fog_color;      // xyz = RGB, w = enabled (1.0 = yes)
     vec4 fog_params;     // x = near, y = far, z/w = unused
-    vec4 depth_params;   // x = is_exterior (1.0 = sky enabled), y/z/w = unused
+    vec4 depth_params;   // x = is_exterior (1.0 = sky enabled), y = exposure, z/w = unused
     vec4 sky_zenith;     // xyz = zenith color (linear RGB), w = sun_size (cos threshold)
     vec4 sky_horizon;    // xyz = horizon color (linear RGB), w = unused
     vec4 sky_lower;      // xyz = below-horizon ground tint (WTHR SKY_LOWER), w = unused (#541)
@@ -230,7 +230,7 @@ void main() {
         vec3 dir = screen_to_world_dir(fragUV);
         vec3 sky = compute_sky(dir);
 
-        const float exposure = 0.85;
+        float exposure = params.depth_params.y;  // host-set; default 0.85 (DEN-10)
         // Pass `direct4.a` through (mirroring the geometry branch at
         // line 279) so the alpha-blend marker bit `DEN-6 / #676`
         // preserves through TAA stays consistent across both sky and
@@ -301,7 +301,7 @@ void main() {
             combined = mix(combined, params.fog_color.xyz, fogFactor);
         }
 
-        const float exposure = 0.85;
+        float exposure = params.depth_params.y;  // host-set; default 0.85 (DEN-10)
         outColor = vec4(aces(combined * exposure), direct4.a);
     }
 }

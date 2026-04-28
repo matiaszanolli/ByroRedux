@@ -48,7 +48,7 @@ pub struct CompositeParams {
     pub fog_color: [f32; 4],
     /// x = fog near, y = fog far, z/w = unused.
     pub fog_params: [f32; 4],
-    /// x = is_exterior (1.0 = sky enabled), y/z/w = reserved.
+    /// x = is_exterior (1.0 = sky enabled), y = exposure (default 0.85), z/w = reserved.
     pub depth_params: [f32; 4],
     /// xyz = zenith (top-of-sky) color in linear RGB, w = sun angular size (cos threshold).
     pub sky_zenith: [f32; 4],
