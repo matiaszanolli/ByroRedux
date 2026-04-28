@@ -12,7 +12,7 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-04-27.
+**Last verified**: 2026-04-28.
 **Bench-of-record**: Prospector Saloon 172.6 FPS / 5.79 ms — commit
 `6a6950a`, wall-clock bench. Scene is glass-heavy (bottles, pitcher,
 marquee sign); RT refraction/reflection cost is representative of a
@@ -128,7 +128,7 @@ typically gates a specific milestone.
 | M29.5  | Compute-shader palette dispatch | Move CPU palette eval to a Vulkan compute pass (workgroup-per-skinned-mesh, DEVICE_LOCAL bone SSBO + COMPUTE→VERTEX barrier). Gated on M41 (workload exists; today's bench has 0 skinned meshes) and R1 (DrawCommand → material_id reduces sibling churn).                                                                    | M41, R1            |
 | M41.0  | FaceGen heads render           | Spawn NPC entities with HDPT / EYES / HAIR meshes assembled into the NPC body. Parse already lands via #458 (misc stubs) + #440 (FaceGen NIF geometry fix). Skinning chain verified by M29.                                                                                                                                | M29, #458          |
 | M41    | NPC spawning                   | Resolve NPC_ / CREA records → ECS entities with race/class/equipped armor + weapons. Spawn ACHR references from CELL REFRs. Movement is fly-by-waypoint until M42. SSE actors will hit #638 until that lands.                                                                                                              | M24, M29, M41.0    |
-| M40    | World streaming                | Cell load/unload based on player position. Multi-cell exterior grid with async loading. BLAS streaming (evict/reload) ties into M31's LRU eviction.                                                                                                                                                                          | M32, M35           |
+| M40    | World streaming                | **Phase 1a/1b shipped** in Session 23 — `streaming` module with diff logic (`cdfef07`), `WorldStreamingState` wired into App (`80e2966`), async cell-pre-parse worker thread (`592e7bf`), shutdown drain (`7dc354a`). Single-cell-at-a-time today. Remaining: multi-cell exterior grid + BLAS streaming (evict/reload) ties into M31's LRU eviction. | M32, M35           |
 | ~~R6~~ | ~~Scratch-buffer instrumentation~~ | **Closed.** `ScratchTelemetry` resource refreshed per frame from `VulkanContext::fill_scratch_telemetry`, surfaced via the `ctx.scratch` console command. Reports per-Vec `len` / `capacity` / `bytes_used` / `wasted` for all 5 scratches (gpu_instances, batches, indirect_draws, terrain_tile, tlas_instances). On Prospector (1200 ent / 773 draws): 337 KB total, 320 B wasted — well right-sized; M40 cell transitions can now be diffed against this baseline. | —                  |
 
 ### Tier 3 — Scripting runtime (unblocks 1 257 FO3 SCPT records)
@@ -351,7 +351,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] **R6** `VulkanContext` scratch buffers have no capacity telemetry — **closed**. `ctx.scratch` console command + `ScratchTelemetry` resource cover all 5 persistent scratches; per-frame refresh via `VulkanContext::fill_scratch_telemetry`. Prospector baseline: 337 KB total, 320 B wasted.
 - [x] **R6a** Prospector re-bench — **closed**. 192.8 FPS / 5.19 ms at `e6e8091`, wall-clock bench.
 - [x] **R6a-stale** Bench-of-record refreshed at `6a6950a` (2026-04-24). Prospector 172.6 FPS / 5.79 ms (was 192.8 / 5.19 — slight regression in compositor-jitter range; fence_ms unchanged at 4.34, GPU still the bottleneck). Skyrim Whiterun 253.3 FPS / 3.95 ms at 1932 entities (was 237 FPS at 1258 entities — entity count up 53% while FPS improved, indicating more REFRs land now without perf cost). FO4 MedTek 92.5 FPS / 10.82 ms (was 90, 7434 entities unchanged).
-- [ ] **R6a-stale-5** Bench-of-record `6a6950a` is now 121 commits stale. Session 22 added the cell-loader monolith refactor (test mods → sibling files, controller / material / cell.rs moduledirs, terrain / refr / load_order / nif_import_registry extracts) plus 30+ parser / lifecycle / RT correctness fixes — none touch the GPU hot path on the Prospector / Whiterun / MedTek interior benches. `#643` per-frame skinned BLAS eviction + `#641` SH-3 motion-vector fix and `#644` AS scratch barrier all sit on the actor-spawning critical path; refresh still deferred until M41 lands the actual workload. Not blocking.
+- [ ] **R6a-stale-6** Bench-of-record `6a6950a` is now 182 commits stale. Session 23 layered M40 Phase 1 streaming + the NIF audit 04-26/04-28 closeout + Starfield import path Stage A/B + a round of RT-shader / denoiser / lifecycle fixes (DEN-10/-11, RT-11/-12/-14, SH-13/-14/-15, LIFE-L1/-N1, MEM-2-3, AS-8-13/-14). Some of those touch GPU-side correctness (composite exposure routing, shadow tMin alignment, GI tMax raise, cloud `textureLod`, SVGF temporal fallback) but Prospector / Whiterun / MedTek interiors don't exercise the affected paths heavily; refresh still deferred until M41 lands the visible-actor workload. Not blocking.
 - [x] **R7** Scheduler access declarations — **closed**. `Access` builder + `System::access()` opt-in + `Scheduler::add_to_with_access` for closures + `sys.accesses` console command surface a per-stage Conflict / Unknown report. 3 of 12 systems declared so far (fly_camera, spin, log_stats); 4 Unknown pairs remaining. M27 flip is diagnosable now; eliminating the Unknown rows is incremental migration work.
 
 ### Open — Misc
@@ -367,16 +367,16 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-04-27, verified by `/session-close`.
+Ground-truth as of 2026-04-28, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (non-test)            | ~117 099                     |
-| Rust total lines                        | ~120 743                     |
-| Source files (non-test)                 | 259                          |
+| Rust source lines (non-test)            | ~121 669                     |
+| Rust total lines                        | ~125 534                     |
+| Source files (non-test)                 | 264                          |
 | Workspace members                       | 16                           |
-| Tests (last reported by ROADMAP)        | 1400                         |
-| Open issue directories                  | 688 (`.claude/issues/`)       |
+| Tests (last reported by ROADMAP)        | 1456                         |
+| Open issue directories                  | 726 (`.claude/issues/`)       |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 96.24%, FO4 96.46%, FO76 97.34%, Starfield 98.6% aggregate (see compat matrix for per-archive breakdown). Recoverable 100% on all except Oblivion 99.99%. Sweep date 2026-04-27. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |

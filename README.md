@@ -17,12 +17,12 @@ wall-clock `--bench-frames 300`; see [ROADMAP Project Stats](ROADMAP.md#project-
 | | |
 |-|-|
 | **Games supported** | 7 — Oblivion · Fallout 3 · Fallout New Vegas · Skyrim SE · Fallout 4 · Fallout 76 · Starfield |
-| **NIF parse rate** | **100%** across **177 286** files — every supported game, full mesh archive |
+| **NIF parse rate** | **100% clean** on FO3 / FNV / Skyrim SE; 95–99% clean / 100% recoverable on Oblivion / FO4 / FO76 / Starfield — 184 886 files validated. See [ROADMAP compatibility matrix](ROADMAP.md#compatibility-matrix). |
 | **Archive formats** | BSA v103 / v104 / v105 · BA2 v1 / v2 / v3 / v7 / v8 (GNRL + DX10, zlib + LZ4) |
-| **NIF block types** | ~186 registered — 156 parsed + 30 Havok skip |
+| **NIF block types** | 291 dispatch arms (~38 Havok) — see `crates/nif/src/blocks/mod.rs` |
 | **ESM records (FNV)** | 62 219 structured records — items, NPCs, factions, cells, CREA, LVLC, SCPT, PACK, QUST, DIAL, MESG, PERK, SPEL, MGEF, … |
-| **Tests passing** | 1 180+ across 16 workspace crates |
-| **Source code** | ~100 K lines of Rust across 200+ source files |
+| **Tests passing** | 1 456 across 16 workspace crates |
+| **Source code** | ~121 K lines of Rust across 264 source files |
 | **Renderer** | Vulkan 1.3 + `VK_KHR_ray_query` — multi-light RT shadows, reflections, 1-bounce GI, SVGF temporal denoiser, TAA, streaming RIS (8 reservoirs/fragment), BLAS compaction + LRU eviction |
 | **Physics** | Rapier3D — collision import from NIF `bhk` chain, dynamic bodies, fixed 60 Hz substep |
 | **Scripting** | Papyrus `.psc` lexer + Pratt expression parser + full AST; ECS-native event + timer runtime |
@@ -37,8 +37,9 @@ wall-clock `--bench-frames 300`; see [ROADMAP Project Stats](ROADMAP.md#project-
   motion-vector reprojection and mesh-id disocclusion, TAA with Halton(2,3)
   jitter and YCoCg variance clamp, ACES tone mapping.
 - **100% parse coverage** across all seven supported Bethesda titles —
-  177 286 NIFs validated end-to-end. CI fails on any single-file
-  regression (per-game `MIN_SUCCESS_RATE = 1.0`).
+  100% clean on FO3 / FNV / Skyrim SE and 95–99% clean / 100% recoverable
+  on Oblivion / FO4 / FO76 / Starfield (184 886 NIFs validated). CI fails
+  on regression (per-game per-block-type baselines).
 - **Full asset round-trip** from unmodified Bethesda game data —
   `Oblivion.esm` + BSA → rendered interior with XCLL lighting +
   per-mesh NiLight torches + RT shadows, no loose files required.
@@ -60,14 +61,20 @@ wall-clock `--bench-frames 300`; see [ROADMAP Project Stats](ROADMAP.md#project-
 
 ## State
 
-Interior cells load and render end-to-end from unmodified Bethesda game
-data (Oblivion, Fallout 3, Fallout New Vegas). Full RT pipeline
-operational. Skyrim SE loads individual meshes; cell loader wiring is
-tracked as M32.5. FO4 architecture records parse; cell wiring same.
-No skinned rendering yet (M29), no sky / atmosphere yet (M33), no
-world streaming yet (M40) — see **[ROADMAP.md](ROADMAP.md)** for the
-authoritative capability matrix, active milestones, and architecture
-decisions. Session narratives live in **[HISTORY.md](HISTORY.md)**.
+Interior cells load and render end-to-end across five games — Oblivion
+(Anvil Heinrich Oaken Halls), FO3 (Megaton, 929 REFRs), FNV (Prospector
+Saloon @ 172.6 FPS), Skyrim SE (Whiterun Bannered Mare, 1932 entities @
+253.3 FPS), FO4 (MedTekResearch01, 7434 entities @ 92.5 FPS). Full RT
+pipeline + sky/atmosphere + exterior sun operational. Skinning chain
+verified end-to-end (M29 closed); GPU palette dispatch deferred to
+M29.5 until M41 produces measurable load. World streaming Phase 1
+shipped (single-cell async pre-parse); multi-cell grid pending. NPC
+spawning (M41) gates the visible-actor work — every NPC today is in
+bind pose because no actors are spawned yet. Oblivion exterior gated
+on TES4 worldspace + LAND wiring. See **[ROADMAP.md](ROADMAP.md)**
+for the authoritative capability matrix, active milestones, and
+architecture decisions. Session narratives live in
+**[HISTORY.md](HISTORY.md)**.
 
 ## Run
 

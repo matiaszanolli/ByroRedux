@@ -24,6 +24,145 @@ Commits hold that record.
 
 ---
 
+## Session 23 — M40 Phase 1 streaming kickoff + NIF audit 04-26 / 04-28 closeout + Starfield import path  (2026-04-27, c3072e9..d926b97)
+
+Two-day session driven by three parallel threads. M40 (world
+streaming) was overdue — exterior cells loaded once and persisted —
+so Phase 1 split into a `load_one_exterior_cell` extract plus a
+diff-based `streaming` module with an async pre-parse worker. In
+the same window the 04-26 NIF audit (`AUDIT_NIF_2026-04-26.md` +
+23 curated issue dumps for #708–#728) landed and the backlog worked
+through to a ~98.6 % aggregate Starfield clean-parse rate. The
+third thread was the start of an end-to-end Starfield content path:
+BSGeometry inline geometry → ImportedMesh, `.mesh` companion files,
+BA2 v3 hardening, BSWeakReferenceNode dispatch. A round of RT-shader
+/ denoiser / lifecycle fixes ran alongside (DEN-10/-11, RT-11/-12/
+-14, SH-12/-13/-14/-15, LIFE-L1/-N1, MEM-2-3, AS-8-13/-14). The
+session closed with a fresh audit (`AUDIT_NIF_2026-04-28.md`) that
+found 0 CRITICAL / 0 HIGH remaining and tracked the residual via
+#764–#766; `#764` (allocate_vec hardening across 7 file-driven count
+sites) committed in the same session.
+
+- **M40 Phase 1 — World streaming kickoff** —
+  `2e3f73e` Phase 1a (1/N) factored `load_one_exterior_cell` out of
+  the bulk loader, `cdfef07` (2/N) introduced the `streaming` module
+  with diff logic + 11 pure-function tests, `80e2966` (3/N) wired
+  `WorldStreamingState` into `App` and dropped the bulk loader.
+  `592e7bf` Phase 1b added an async cell-pre-parse worker thread +
+  payload drain; `7dc354a` shutdown sweep drains streamed cells
+  before `VulkanContext::destroy` and logs WTHR ambient/sunlight
+  per cell. Single-cell-at-a-time today; multi-cell grid + M41
+  actor spawning follow.
+
+- **Starfield import path (Stage A + B + BA2 hardening)** —
+  `e5bb8d3` (#752) BSGeometry Stage A importer wires inline geometry
+  to `ImportedMesh` (~190 549 SF blocks were dispatched-but-unimported
+  pre-fix); `3f04c11` (#753) Stage B parses the external `.mesh`
+  companion-file format. `5224a94` (#754) BSWeakReferenceNode parser
+  closes Meshes02.ba2 / MeshesPatch.ba2 truncation (Meshes02 0 % →
+  100 %, MeshesPatch 74 % → 98.11 %). BA2 hardening: `bdf29fc` (#755)
+  v3 unknown `compression_method` returns `InvalidData` instead of
+  warn+fallback, `dfcc1d3` (#756) integration tests across v2/v3
+  GNRL+DX10, `0a76d89` (#758) dispatch `merge_bgsm_into_mesh` on
+  file magic not extension, `dd203a0` (#759) `parse_rate_starfield_all_meshes`
+  covers all 5 vanilla archives, `4480a98` (#760) corrects the BA2
+  docstring (v2=GNRL+DX10, v3=DX10-only), `f67605c` (#748) pins
+  `bs_shader_crc32` to all 32 nif.xml entries. Shader / material:
+  `cf9d348` (#746/#747 / SF-D1) widens the `bsver == 155` shader
+  gate to `>= 155` so Starfield (BSVER 172) takes the FO76 path,
+  `01a7885` (#749 / SF-D3-01) suffix-gates the BGSM/BGEM/MAT
+  stopcond on the FO76+/Starfield path, `b0f589f` (#751) log-once
+  warn for unknown material extensions, `c4cbea3` (#750) corrects
+  the bgsm doc-comment, `f8ad67a` (#757) allocation-free
+  `is_material_reference` via `eq_ignore_ascii_case`.
+
+- **NIF parser correctness (audit 04-26 + 04-28 closeout)** —
+  `f47450f` filed `AUDIT_NIF_2026-04-26.md` + 23 curated `ISSUE.md`
+  dumps for #708–#728. Code fixes from the bundle: `33090a6` (#714)
+  consume legacy `Order` float in pre-10.1 NiTransformData XYZ
+  rotations, `a1aeb54` (#716) parse Emissive Color in
+  BSShaderPPLightingProperty for bsver > 34, `a0eb216` (#717) route
+  4 zero-field BSShaderProperty subtypes (Hair / VolumetricFog /
+  DistantLOD / BSDistantTree) to BSShaderPropertyBaseOnly,
+  `20ad676` (#718) skip NiSwitchNode/NiLODNode in `walk_node_lights`
+  + `walk_node_particle_emitters_flat`, `c1a7f55` (#719) forward
+  BSEffectShaderProperty `env_map_texture` / `env_mask_texture` to
+  `MaterialInfo`. `1b9c005` (#698) truncate on inline type-name
+  read failure instead of hard-`Err`. `d840d55` (#703) routes
+  `NiWireframeProperty` + `NiShadeProperty` flags into ImportedMesh.
+  `d6087dd` (#549 / NIF-04) `bhkBlendCollisionObject` reads
+  bsver < 9 Unknown Float pair. `33f713c` (#761) documents
+  `texture_clamp_mode = 3` default in `material_reference_stub`.
+  AUDIT_NIF_2026-04-28 produced `d926b97` (#764) — 7 file-driven
+  count sites (`read_block_ref_list` + 6 sibling `reserve` /
+  `with_capacity` calls) routed through `allocate_vec` so corrupt
+  `0xFFFFFFFF` counts reject before allocating. `#765` / `#766`
+  carry forward as LOW.
+
+- **RT shader / denoiser / lifecycle bug-bash** —
+  `2e5a56c` (#733 / RT-11) hoist `N_bias` for V-aligned ray-origin
+  flip on all 4 RT sites, `07bfef8` (#741 / RT-12) align shadow ray
+  tMin to 0.05 to match `N_bias`, `9885a9c` (#742 / RT-14) raise GI
+  ray tMax to 6000.0 to match the fade window, `4f743a0` (#743 /
+  DEN-10) wire composite exposure through `depth_params.y` instead
+  of a const, `6385bfa` (#744 / DEN-11) pass `direct4.a` through
+  composite sky branch, `7da94e8` (#745 / SH-13) `textureLod` with
+  analytic mip for all 4 cloud layers (kills horizon aliasing),
+  `0b18cd8` (#737 / SH-14) SVGF temporal nearest-tap fallback for
+  sub-pixel silhouette miss, `6d12f75` (#738 / SH-15) bounds-check
+  caustic_splat instance against R16_UINT ceiling. Lifecycle:
+  `cb230ad` + `96d5fbd` (#732 / LIFE-N1) explicit deferred-destroy
+  drain in App shutdown + clear long-lived GpuBuffer Vecs + take
+  staging pool on destroy, `faee6a3` (#665 / LIFE-L1) early-return
+  Drop when allocator Arc unwrap fails, `320712f` (#33 / R-10)
+  align renderer teardown order via shared helpers, `5b73aa1`
+  (#735) resolve `pipeline_cache.bin` next to executable rather than
+  cwd. AS / pipeline cache: `f8a9719` (#739 / AS-8-13) route
+  `drop_skinned_blas` through `pending_destroy_blas`, `bd0db2f`
+  (#740 / AS-8-14) advance `frame_counter` in `build_blas_batched`
+  so M40 streaming bursts enforce the BLAS budget, `0a440b5` (#736
+  / PS-9) eliminate null-handle footgun in
+  `recreate_triangle_pipelines`, `30fc453` (#734) align static
+  `depth_compare_op` to LESS_OR_EQUAL on opaque/blend pipelines.
+  Risk-reducer follow-ups: `fc7445a` (#647 / RP-1) +
+  `0fc1e03` (#648 / RP-2) + `ae5ea0e` (#667 / SH-12) +
+  `961e77f` (#651 / SH-6) + `6738c05` (#645 / MEM-2-3 — shrink TLAS
+  instance buffer after exterior peak).
+
+- **Cell loader / weather / fallback** — `de71b4f` (#542 / M33-10)
+  procedural-fallback exterior installs `GameTimeRes` + synthetic
+  `WeatherDataRes` so the overworld renders before any WTHR loads,
+  `979ad9e` (#541 / M33-09 minimum) plumbs SKY_LOWER through to
+  composite.frag's below-horizon branch, `4f3b50f` (#729) corrects
+  WTHR NAM0 group indices to match xEdit fopdoc, `4f705eb` +
+  `5986ba7` (#730) log cloud DDS dimensions/format/mip count +
+  preserve authored mip chain on uncompressed-RGBA DDS, `a7eb039`
+  parses FO4 NPC face-morph block (FMRI/FMRS/MSDK/MSDV/QNAM/HCLF/
+  BCLF/PNAM).
+
+- **Animation / asset path hygiene** — `881c2d5` (#231 / SI-04)
+  intern animation text-key labels into `StringPool`, `a62c5fc`
+  (#610 / D4-NEW-02) plumb `TexClampMode` end-to-end so
+  CLAMP-authored decals stop bleeding.
+
+- **Doc tracking** — `AUDIT_NIF_2026-04-26.md` + 23 issue dumps
+  filed (`f47450f`); `AUDIT_NIF_2026-04-28.md` +
+  `AUDIT_RENDERER_2026-04-27.md` + `AUDIT_STARFIELD_2026-04-27.md`
+  drafted but uncommitted at session close (#764 closed in-session;
+  #765 / #766 carry forward).
+
+Net: tests +56 (1 456), LOC +4 570 non-test (~121 669), source
+files +5 (264), issue dirs +38 (726), 60 commits, no milestone
+churn (M40 Phase 1a/1b shipped but the milestone stays open until
+the multi-cell grid + M41 actor spawning land), no bench refresh
+(`6a6950a` now 182 commits stale → R6a-stale-6; some session
+changes are GPU-side correctness — DEN-10/-11, RT-11/-12/-14,
+SH-13/-14/-15 — that may shift the bench numbers, but Prospector /
+Whiterun / MedTek don't exercise the affected paths heavily, and
+M41 remains the gating event for the next bench-of-record).
+
+---
+
 ## Session 22 — Cell-loader monolith refactor + Oblivion / NIF audit closeouts  (2026-04-27, 552f494..db62c94)
 
 Two-track session driven by the next-day filing of two large audit
