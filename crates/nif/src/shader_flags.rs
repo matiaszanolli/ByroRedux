@@ -351,37 +351,51 @@ mod tests {
     /// fails immediately with a clear message instead of silently
     /// dropping decal/two-sided detection on a subset of Starfield
     /// content.
+    /// #748 — extends #712 pin to cover all 32 BSShaderCRC32 entries
+    /// defined in nif.xml (lines 6520-6553). nif.xml defines exactly 32;
+    /// the issue's "~120 unmapped" premise was incorrect — all 32 entries
+    /// were already present in bs_shader_crc32.
     #[test]
     fn bs_shader_crc32_matches_nif_xml_literals() {
-        // (constant, nif.xml line, literal value).
-        for (name, line, expected) in [
-            ("DECAL", 6532, 3849131744),
-            ("DYNAMIC_DECAL", 6533, 1576614759),
-            ("TWO_SIDED", 6524, 759557230),
-            ("CAST_SHADOWS", 6521, 1563274220),
-            ("ZBUFFER_TEST", 6522, 1740048692),
-            ("ZBUFFER_WRITE", 6523, 3166356979),
-            ("VERTEX_COLORS", 6525, 348504749),
-            ("SKINNED", 6527, 3744563888),
-            ("EMIT_ENABLED", 6536, 2262553490),
-            ("EXTERNAL_EMITTANCE", 6543, 2150459555),
-        ] {
-            let actual = match name {
-                "DECAL" => bs_shader_crc32::DECAL,
-                "DYNAMIC_DECAL" => bs_shader_crc32::DYNAMIC_DECAL,
-                "TWO_SIDED" => bs_shader_crc32::TWO_SIDED,
-                "CAST_SHADOWS" => bs_shader_crc32::CAST_SHADOWS,
-                "ZBUFFER_TEST" => bs_shader_crc32::ZBUFFER_TEST,
-                "ZBUFFER_WRITE" => bs_shader_crc32::ZBUFFER_WRITE,
-                "VERTEX_COLORS" => bs_shader_crc32::VERTEX_COLORS,
-                "SKINNED" => bs_shader_crc32::SKINNED,
-                "EMIT_ENABLED" => bs_shader_crc32::EMIT_ENABLED,
-                "EXTERNAL_EMITTANCE" => bs_shader_crc32::EXTERNAL_EMITTANCE,
-                _ => unreachable!(),
-            };
+        use bs_shader_crc32::*;
+        let cases: &[(&str, u32, u32)] = &[
+            ("CAST_SHADOWS",             1563274220, CAST_SHADOWS),
+            ("ZBUFFER_TEST",             1740048692, ZBUFFER_TEST),
+            ("ZBUFFER_WRITE",            3166356979, ZBUFFER_WRITE),
+            ("TWO_SIDED",                 759557230, TWO_SIDED),
+            ("VERTEX_COLORS",             348504749, VERTEX_COLORS),
+            ("PBR",                        731263983, PBR),
+            ("SKINNED",                  3744563888, SKINNED),
+            ("ENVMAP",                   2893749418, ENVMAP),
+            ("VERTEX_ALPHA",             2333069810, VERTEX_ALPHA),
+            ("FACE",                       314919375, FACE),
+            ("GRAYSCALE_TO_PALETTE_COLOR",  442246519, GRAYSCALE_TO_PALETTE_COLOR),
+            ("DECAL",                    3849131744, DECAL),
+            ("DYNAMIC_DECAL",            1576614759, DYNAMIC_DECAL),
+            ("HAIRTINT",                 1264105798, HAIRTINT),
+            ("SKIN_TINT",                1483897208, SKIN_TINT),
+            ("EMIT_ENABLED",             2262553490, EMIT_ENABLED),
+            ("GLOWMAP",                  2399422528, GLOWMAP),
+            ("REFRACTION",               1957349758, REFRACTION),
+            ("REFRACTION_FALLOFF",        902349195, REFRACTION_FALLOFF),
+            ("NOFADE",                   2994043788, NOFADE),
+            ("INVERTED_FADE_PATTERN",    3030867718, INVERTED_FADE_PATTERN),
+            ("RGB_FALLOFF",              3448946507, RGB_FALLOFF),
+            ("EXTERNAL_EMITTANCE",       2150459555, EXTERNAL_EMITTANCE),
+            ("MODELSPACENORMALS",        2548465567, MODELSPACENORMALS),
+            ("TRANSFORM_CHANGED",        3196772338, TRANSFORM_CHANGED),
+            ("EFFECT_LIGHTING",          3473438218, EFFECT_LIGHTING),
+            ("FALLOFF",                  3980660124, FALLOFF),
+            ("SOFT_EFFECT",              3503164976, SOFT_EFFECT),
+            ("GRAYSCALE_TO_PALETTE_ALPHA", 2901038324, GRAYSCALE_TO_PALETTE_ALPHA),
+            ("WEAPON_BLOOD",             2078326675, WEAPON_BLOOD),
+            ("LOD_OBJECTS",              2896726515, LOD_OBJECTS),
+            ("NO_EXPOSURE",              3707406987, NO_EXPOSURE),
+        ];
+        for &(name, expected, actual) in cases {
             assert_eq!(
                 actual, expected,
-                "{name} constant must match nif.xml line {line} literal {expected}",
+                "{name} must match nif.xml BSShaderCRC32 literal {expected}",
             );
         }
     }
