@@ -118,6 +118,20 @@ pub struct PipelineSet {
     pub layout: vk::PipelineLayout,
 }
 
+fn build_triangle_pipeline_layout(
+    device: &ash::Device,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    scene_set_layout: vk::DescriptorSetLayout,
+) -> Result<vk::PipelineLayout> {
+    let set_layouts = [descriptor_set_layout, scene_set_layout];
+    let layout_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts);
+    unsafe {
+        device
+            .create_pipeline_layout(&layout_info, None)
+            .context("Failed to create pipeline layout")
+    }
+}
+
 /// Creates the graphics pipelines with textured rendering.
 pub fn create_triangle_pipeline(
     device: &ash::Device,
@@ -127,15 +141,8 @@ pub fn create_triangle_pipeline(
     scene_set_layout: vk::DescriptorSetLayout,
     pipeline_cache: vk::PipelineCache,
 ) -> Result<PipelineSet> {
-    create_triangle_pipeline_with_layout(
-        device,
-        render_pass,
-        extent,
-        pipeline_cache,
-        None, // create new layout
-        descriptor_set_layout,
-        scene_set_layout,
-    )
+    let layout = build_triangle_pipeline_layout(device, descriptor_set_layout, scene_set_layout)?;
+    triangle_pipeline_inner(device, render_pass, extent, pipeline_cache, layout)
 }
 
 /// Recreate triangle pipelines reusing an existing pipeline layout.
@@ -147,25 +154,15 @@ pub fn recreate_triangle_pipelines(
     pipeline_cache: vk::PipelineCache,
     existing_layout: vk::PipelineLayout,
 ) -> Result<PipelineSet> {
-    create_triangle_pipeline_with_layout(
-        device,
-        render_pass,
-        extent,
-        pipeline_cache,
-        Some(existing_layout),
-        vk::DescriptorSetLayout::null(), // unused when layout is provided
-        vk::DescriptorSetLayout::null(),
-    )
+    triangle_pipeline_inner(device, render_pass, extent, pipeline_cache, existing_layout)
 }
 
-fn create_triangle_pipeline_with_layout(
+fn triangle_pipeline_inner(
     device: &ash::Device,
     render_pass: vk::RenderPass,
     extent: vk::Extent2D,
     pipeline_cache: vk::PipelineCache,
-    existing_layout: Option<vk::PipelineLayout>,
-    descriptor_set_layout: vk::DescriptorSetLayout,
-    scene_set_layout: vk::DescriptorSetLayout,
+    pipeline_layout: vk::PipelineLayout,
 ) -> Result<PipelineSet> {
     let vert_module = load_shader_module(device, TRIANGLE_VERT_SPV)?;
     let frag_module = load_shader_module(device, TRIANGLE_FRAG_SPV)?;
@@ -280,21 +277,6 @@ fn create_triangle_pipeline_with_layout(
     ];
     let dynamic_state =
         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
-
-    // No push constants — per-draw data (model matrix, texture index, bone offset)
-    // lives in the instance SSBO (set 1, binding 4). The vertex shader reads
-    // instances[gl_InstanceIndex] for all per-instance data.
-    let pipeline_layout = if let Some(layout) = existing_layout {
-        layout
-    } else {
-        let set_layouts = [descriptor_set_layout, scene_set_layout];
-        let layout_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts);
-        unsafe {
-            device
-                .create_pipeline_layout(&layout_info, None)
-                .context("Failed to create pipeline layout")?
-        }
-    };
 
     // LESS_OR_EQUAL matches draw.rs:cmd_set_depth_compare_op (the live source of truth).
     // depth_test/write/compare_op are all dynamic (#398); these static values are
