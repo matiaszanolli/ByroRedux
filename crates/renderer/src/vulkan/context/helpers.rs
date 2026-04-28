@@ -360,6 +360,96 @@ pub(super) fn create_depth_resources(
     Ok((image, view, allocation))
 }
 
+// --- Shared teardown helpers (#33 / R-10) -----------------------------------
+//
+// Both `recreate_swapchain` (resize.rs) and `Drop` (mod.rs) tear down the
+// same three resource categories in the same relative order: framebuffers,
+// depth attachment, and the rasterization pipelines bound to the main render
+// pass. Pre-#33 each site inlined its own loops, which were correct but
+// drifted from each other and made future additions (e.g., a new render-
+// pass-bound pipeline) easy to miss in one location. The helpers below
+// encode the correct order once.
+//
+// The helpers null out handles after destruction so callers can rebuild
+// idempotently (resize) or fall through cleanly (Drop, where nulling is a
+// no-op since the struct is being dropped anyway).
+
+/// Destroy every entry in the main framebuffer set and clear the Vec.
+/// Called by both `recreate_swapchain` (rebuild path) and `Drop` (final
+/// teardown) — see #33 / R-10.
+///
+/// SAFETY: All framebuffers must have been created by `device` and not
+/// already destroyed. `device_wait_idle` (or equivalent fence wait) must
+/// have completed before the call so no in-flight command buffer is still
+/// referencing them.
+pub(super) unsafe fn destroy_main_framebuffers(
+    device: &ash::Device,
+    framebuffers: &mut Vec<vk::Framebuffer>,
+) {
+    for &fb in framebuffers.iter() {
+        device.destroy_framebuffer(fb, None);
+    }
+    framebuffers.clear();
+}
+
+/// Destroy the depth attachment in the order Vulkan requires:
+/// view → image → backing allocation. The image must outlive its memory
+/// (VUID-vkFreeMemory-memory-00677). Handles are nulled so callers can
+/// rebuild idempotently. Called by both `recreate_swapchain` and `Drop`
+/// — see #33 / R-10.
+///
+/// SAFETY: All three handles must have been created by `device` /
+/// `allocator` and not already destroyed. `device_wait_idle` must have
+/// completed before the call.
+pub(super) unsafe fn destroy_depth_resources(
+    device: &ash::Device,
+    allocator: &SharedAllocator,
+    view: &mut vk::ImageView,
+    image: &mut vk::Image,
+    allocation: &mut Option<vk_alloc::Allocation>,
+) {
+    device.destroy_image_view(*view, None);
+    *view = vk::ImageView::null();
+    device.destroy_image(*image, None);
+    *image = vk::Image::null();
+    if let Some(alloc) = allocation.take() {
+        allocator
+            .lock()
+            .expect("allocator lock poisoned")
+            .free(alloc)
+            .expect("Failed to free depth allocation");
+    }
+}
+
+/// Destroy the rasterization pipelines that bind the main render pass:
+/// forward, two-sided variant, the on-demand blend pipeline cache, and the
+/// UI overlay pipeline. The render pass itself is **not** destroyed here:
+/// `recreate_swapchain` keeps it on a format-stable resize, and `Drop` has
+/// additional dependencies (pipeline_layout, mesh_registry, pipeline_cache)
+/// to walk in order before reaching it. Handles are nulled so callers can
+/// rebuild idempotently. See #33 / R-10.
+///
+/// SAFETY: All pipeline handles must have been created by `device` and
+/// must outlive any descriptor set / command buffer still referencing them.
+/// `device_wait_idle` must have completed before the call.
+pub(super) unsafe fn destroy_render_pass_pipelines(
+    device: &ash::Device,
+    pipeline: &mut vk::Pipeline,
+    pipeline_two_sided: &mut vk::Pipeline,
+    blend_pipeline_cache: &mut std::collections::HashMap<(u8, u8, bool), vk::Pipeline>,
+    pipeline_ui: &mut vk::Pipeline,
+) {
+    device.destroy_pipeline(*pipeline, None);
+    *pipeline = vk::Pipeline::null();
+    device.destroy_pipeline(*pipeline_two_sided, None);
+    *pipeline_two_sided = vk::Pipeline::null();
+    for (_, pipe) in blend_pipeline_cache.drain() {
+        device.destroy_pipeline(pipe, None);
+    }
+    device.destroy_pipeline(*pipeline_ui, None);
+    *pipeline_ui = vk::Pipeline::null();
+}
+
 pub(super) fn create_command_pool(
     device: &ash::Device,
     queue_family: u32,

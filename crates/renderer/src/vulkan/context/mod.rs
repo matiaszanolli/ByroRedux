@@ -1410,9 +1410,7 @@ impl Drop for VulkanContext {
             self.device
                 .free_command_buffers(self.command_pool, &self.command_buffers);
             self.device.destroy_command_pool(self.command_pool, None);
-            for &fb in &self.framebuffers {
-                self.device.destroy_framebuffer(fb, None);
-            }
+            destroy_main_framebuffers(&self.device, &mut self.framebuffers);
             // Destroy texture registry, scene buffers, and acceleration structures.
             if let Some(ref alloc) = self.allocator {
                 self.texture_registry.destroy(&self.device, alloc);
@@ -1469,28 +1467,27 @@ impl Drop for VulkanContext {
             }
 
             // Destroy depth resources before the allocator.
-            // Order: view → image → free allocation. The image must be
-            // destroyed while its bound memory is still valid (Vulkan spec
-            // VUID-vkFreeMemory-memory-00677).
-            self.device.destroy_image_view(self.depth_image_view, None);
-            self.device.destroy_image(self.depth_image, None);
-            if let Some(alloc) = self.depth_allocation.take() {
-                if let Some(ref allocator) = self.allocator {
-                    allocator
-                        .lock()
-                        .expect("allocator lock poisoned")
-                        .free(alloc)
-                        .expect("Failed to free depth allocation");
-                }
+            // Helper enforces order: view → image → free allocation. The
+            // image must be destroyed while its bound memory is still
+            // valid (Vulkan spec VUID-vkFreeMemory-memory-00677). Same
+            // helper used by recreate_swapchain — see #33 / R-10.
+            if let Some(ref allocator) = self.allocator {
+                destroy_depth_resources(
+                    &self.device,
+                    allocator,
+                    &mut self.depth_image_view,
+                    &mut self.depth_image,
+                    &mut self.depth_allocation,
+                );
             }
 
-            self.device.destroy_pipeline(self.pipeline, None);
-            self.device.destroy_pipeline(self.pipeline_two_sided, None);
-            for &pipe in self.blend_pipeline_cache.values() {
-                self.device.destroy_pipeline(pipe, None);
-            }
-            self.blend_pipeline_cache.clear();
-            self.device.destroy_pipeline(self.pipeline_ui, None);
+            destroy_render_pass_pipelines(
+                &self.device,
+                &mut self.pipeline,
+                &mut self.pipeline_two_sided,
+                &mut self.blend_pipeline_cache,
+                &mut self.pipeline_ui,
+            );
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
             // Meshes after pipelines: pipelines consume meshes at draw time,
@@ -1562,6 +1559,7 @@ impl Drop for VulkanContext {
 // Helper functions are in helpers.rs — use helpers:: prefix.
 use helpers::{
     allocate_command_buffers, create_command_pool, create_depth_resources,
-    create_main_framebuffers, create_render_pass, create_transfer_pool, find_depth_format,
+    create_main_framebuffers, create_render_pass, create_transfer_pool, destroy_depth_resources,
+    destroy_main_framebuffers, destroy_render_pass_pipelines, find_depth_format,
     load_or_create_pipeline_cache, save_pipeline_cache,
 };

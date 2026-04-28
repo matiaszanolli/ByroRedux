@@ -7,7 +7,10 @@ use super::super::gbuffer::{
 use super::super::ssao::SsaoPipeline;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::super::{pipeline, swapchain};
-use super::helpers::{create_depth_resources, create_main_framebuffers, create_render_pass};
+use super::helpers::{
+    create_depth_resources, create_main_framebuffers, create_render_pass,
+    destroy_depth_resources, destroy_main_framebuffers, destroy_render_pass_pipelines,
+};
 use super::VulkanContext;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -33,29 +36,21 @@ impl VulkanContext {
         // Destroy old framebuffers, depth resources, swapchain views.
         // Handles are nulled after destruction so that if a later creation
         // step fails and Drop runs, the destroy calls are no-ops (Vulkan
-        // spec: vkDestroy* on VK_NULL_HANDLE is always valid).
+        // spec: vkDestroy* on VK_NULL_HANDLE is always valid). The
+        // framebuffer + depth steps are encoded once in helpers.rs so
+        // Drop and resize stay in lockstep — see #33 / R-10.
         unsafe {
-            for &fb in &self.framebuffers {
-                self.device.destroy_framebuffer(fb, None);
-            }
-            self.framebuffers.clear();
+            destroy_main_framebuffers(&self.device, &mut self.framebuffers);
 
-            // Depth: view → image → free allocation. The image must be
-            // destroyed while its bound memory is still valid (Vulkan spec
-            // VUID-vkFreeMemory-memory-00677).
-            self.device.destroy_image_view(self.depth_image_view, None);
-            self.depth_image_view = vk::ImageView::null();
-            self.device.destroy_image(self.depth_image, None);
-            self.depth_image = vk::Image::null();
-            if let Some(alloc) = self.depth_allocation.take() {
+            destroy_depth_resources(
+                &self.device,
                 self.allocator
                     .as_ref()
-                    .expect("allocator missing during resize")
-                    .lock()
-                    .expect("allocator lock poisoned")
-                    .free(alloc)
-                    .expect("Failed to free depth allocation");
-            }
+                    .expect("allocator missing during resize"),
+                &mut self.depth_image_view,
+                &mut self.depth_image,
+                &mut self.depth_allocation,
+            );
 
             // Destroy old image views (but keep the old swapchain handle for handoff).
             for &view in &self.swapchain_state.image_views {
@@ -98,20 +93,18 @@ impl VulkanContext {
             unsafe {
                 // Destroy old pipelines before the render pass they
                 // reference (Vulkan spec: pipelines must outlive their
-                // render pass for a clean teardown).
-                self.device.destroy_pipeline(self.pipeline, None);
-                self.pipeline = vk::Pipeline::null();
-                self.device.destroy_pipeline(self.pipeline_two_sided, None);
-                self.pipeline_two_sided = vk::Pipeline::null();
-                // Drain the blend cache — every pipeline in it is bound
-                // to the old render pass and must be rebuilt against the
-                // new one. Subsequent frames lazy-create on demand. See
-                // #392.
-                for (_, pipe) in self.blend_pipeline_cache.drain() {
-                    self.device.destroy_pipeline(pipe, None);
-                }
-                self.device.destroy_pipeline(self.pipeline_ui, None);
-                self.pipeline_ui = vk::Pipeline::null();
+                // render pass for a clean teardown). Helper drains the
+                // blend cache — every pipeline in it is bound to the
+                // old render pass and must be rebuilt against the new
+                // one. Subsequent frames lazy-create on demand. See
+                // #392 / #33.
+                destroy_render_pass_pipelines(
+                    &self.device,
+                    &mut self.pipeline,
+                    &mut self.pipeline_two_sided,
+                    &mut self.blend_pipeline_cache,
+                    &mut self.pipeline_ui,
+                );
 
                 self.device.destroy_render_pass(self.render_pass, None);
                 self.render_pass = vk::RenderPass::null();
