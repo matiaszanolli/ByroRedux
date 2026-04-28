@@ -532,6 +532,22 @@ pub(crate) fn merge_bgsm_into_mesh(
         }
         touched = true;
     } else {
+        // Unknown extension — most likely a Starfield .mat JSON path that
+        // SF-D3-01's suffix gate now correctly routes here. The .mat format
+        // is not yet parsed (tracked in SF-D6-03). Log once per path so the
+        // absence of material data is visible without spamming every frame.
+        static WARNED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+            std::sync::OnceLock::new();
+        let mut set = WARNED
+            .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if set.insert(path.to_owned()) {
+            log::warn!(
+                "material path '{}' is not a .bgsm/.bgem — unsupported format (Starfield .mat?); mesh will use NIF defaults",
+                path
+            );
+        }
         return false;
     }
 
