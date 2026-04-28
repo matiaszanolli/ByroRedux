@@ -54,7 +54,7 @@ use interpolator::{
     NiTransformData, NiTransformInterpolator, NiUVData,
 };
 use multibound::{BsMultiBound, BsMultiBoundAABB, BsMultiBoundOBB, BsMultiBoundSphere};
-use node::{BsOrderedNode, BsValueNode, NiNode};
+use node::{BsOrderedNode, BsValueNode, BsWeakReferenceNode, NiNode};
 use properties::{
     NiAlphaProperty, NiFlagProperty, NiFogProperty, NiMaterialProperty, NiStencilProperty,
     NiStringPalette, NiTexturingProperty, NiVertexColorProperty, NiZBufferProperty,
@@ -245,6 +245,13 @@ pub fn parse_block(
         )?)),
         "BSOrderedNode" => Ok(Box::new(BsOrderedNode::parse(stream)?)),
         "BSValueNode" => Ok(Box::new(BsValueNode::parse(stream)?)),
+        // BSWeakReferenceNode: Starfield composite-LOD / packin reference node.
+        // Extends NiNode with BSWeakReference[] (packin mesh + material bindings)
+        // and an optional water-reference list. Appears in Meshes02.ba2 /
+        // MeshesPatch.ba2 terrain LOD meshes (7552 / 7552 and 7552 / 29849 NIFs
+        // respectively). nif.xml has no entry; wire layout sourced from nifly
+        // Nodes.hpp / Nodes.cpp. See SF-D5-02 / #754.
+        "BSWeakReferenceNode" => Ok(Box::new(BsWeakReferenceNode::parse(stream)?)),
         // Multi-bound spatial volumes
         "BSMultiBound" => Ok(Box::new(BsMultiBound::parse(stream)?)),
         "BSMultiBoundAABB" => Ok(Box::new(BsMultiBoundAABB::parse(stream)?)),

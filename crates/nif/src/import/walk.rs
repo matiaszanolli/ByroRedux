@@ -2,8 +2,8 @@
 
 use crate::blocks::light::{NiAmbientLight, NiDirectionalLight, NiPointLight, NiSpotLight};
 use crate::blocks::node::{
-    BsMultiBoundNode, BsOrderedNode, BsRangeNode, BsTreeNode, BsValueNode, NiBillboardNode,
-    NiLODNode, NiNode, NiSortAdjustNode, NiSwitchNode,
+    BsMultiBoundNode, BsOrderedNode, BsRangeNode, BsTreeNode, BsValueNode, BsWeakReferenceNode,
+    NiBillboardNode, NiLODNode, NiNode, NiSortAdjustNode, NiSwitchNode,
 };
 use crate::blocks::bs_geometry::BSGeometry;
 use crate::blocks::tri_shape::{BsTriShape, NiTriShape};
@@ -88,6 +88,9 @@ pub(super) fn as_ni_node(block: &dyn NiObject) -> Option<&NiNode> {
         return Some(&n.base);
     }
     if let Some(n) = any.downcast_ref::<BsRangeNode>() {
+        return Some(&n.base);
+    }
+    if let Some(n) = any.downcast_ref::<BsWeakReferenceNode>() {
         return Some(&n.base);
     }
     None

@@ -745,3 +745,93 @@ impl NiCamera {
         })
     }
 }
+
+// ── BSWeakReferenceNode ────────────────────────────────────────────────────────
+
+/// Starfield composite-LOD / packin reference node (SF-D5-02 / #754).
+///
+/// Extends `NiNode` with a list of `BSWeakReference` entries (packin mesh +
+/// material bindings) and an optional list of water-surface references.
+/// Wire layout sourced from nifly `Nodes.hpp` / `Nodes.cpp`. nif.xml has no
+/// `<niobject>` entry — this struct was introduced in Starfield and is absent
+/// from all pre-Starfield games.
+///
+/// The engine currently does not consume the weak-ref or water-ref payloads
+/// (they feed the LOD-streaming / packin system which is M35+ work). The
+/// parser reads and discards the trailing data so block alignment is
+/// maintained and downstream block refs remain valid.
+#[derive(Debug)]
+pub struct BsWeakReferenceNode {
+    pub base: NiNode,
+}
+
+impl NiObject for BsWeakReferenceNode {
+    fn block_type_name(&self) -> &'static str {
+        "BSWeakReferenceNode"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_object_net(&self) -> Option<&dyn HasObjectNET> {
+        Some(&self.base)
+    }
+    fn as_av_object(&self) -> Option<&dyn HasAVObject> {
+        Some(&self.base)
+    }
+}
+
+impl BsWeakReferenceNode {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiNode::parse(stream)?;
+
+        // BSWeakReference[] — nifly Nodes.cpp:166
+        let num_weak_refs = stream.read_u32_le()?;
+        for _ in 0..num_weak_refs {
+            // formID: present when bsver >= 173 (some Starfield builds).
+            if stream.bsver() >= 173 {
+                let _form_id = stream.read_u32_le()?;
+            }
+            // BSResourceID: fileHash(u32) + extension([u8;4]) + dirHash(u32)
+            stream.skip(12)?;
+            // Matrix4 transforms: 16 × f32 = 64 bytes each.
+            let num_transforms = stream.read_u32_le()?;
+            stream.skip(num_transforms as u64 * 64)?;
+            // UnkMaterialStruct[]: biomeFormID(u32) + dirHash(u32) + fileHash(u32) + null-terminated mat string.
+            let num_materials = stream.read_u32_le()?;
+            for _ in 0..num_materials {
+                stream.skip(12)?; // 3 × u32
+                // null-terminated string — read until '\0'
+                read_past_cstring(stream)?;
+            }
+        }
+
+        // unkInt1: u32
+        let _unk_int1 = stream.read_u32_le()?;
+
+        // BSWaterReferenceStruct[]: Matrix4(64) + BSResourceID(12) + unkInt1(u32) + NiString(u32 length-prefix)
+        let num_water_refs = stream.read_u32_le()?;
+        for _ in 0..num_water_refs {
+            stream.skip(64 + 12 + 4)?; // transform + resourceID + unkInt1
+            let mat_len = stream.read_u32_le()?;
+            stream.skip(mat_len as u64)?;
+        }
+
+        Ok(Self { base })
+    }
+}
+
+/// Read and discard a null-terminated (C-style) string from the stream.
+/// Advances past the terminal '\0'. Used only for `BSWeakReferenceNode`'s
+/// `UnkMaterialStruct.mat` field (nifly `SyncString` → `getstring`). The
+/// alloc cap from `MAX_SINGLE_ALLOC_BYTES` is not applied here because the
+/// data is discarded one byte at a time — excess bytes would require
+/// maliciously large null-free runs to hang the parser, which is not a
+/// realistic NIF corpus threat given the block-size bound wrapping this call.
+fn read_past_cstring(stream: &mut NifStream) -> io::Result<()> {
+    loop {
+        let b = stream.read_u8()?;
+        if b == 0 {
+            return Ok(());
+        }
+    }
+}
