@@ -307,11 +307,8 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
                 continue;
             };
             events.clear();
-            visit_text_key_events(clip, ps.prev_time, ps.current_time, |time, label| {
-                events.push(AnimationTextKeyEvent {
-                    label: label.to_owned(),
-                    time,
-                });
+            visit_text_key_events(clip, ps.prev_time, ps.current_time, |time, sym| {
+                events.push(AnimationTextKeyEvent { label: sym, time });
             });
             if !events.is_empty() {
                 eq.insert(
@@ -489,11 +486,12 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         // into owned / registry-borrowed data so the lock drops before any
         // writes. Dominant info is stored as (clip_handle, local_time) —
         // NO channel Vec clones (#265).
-        // Text-key events scratch + dedup seen-set (#339). Owned by
-        // this call; Vec capacity amortizes across layers.
+        // Text-key events scratch + dedup seen-set (#339 / #231). Owned by
+        // this call; Vec capacity amortizes across layers. seen-set holds
+        // interned `FixedString` symbols so dedup is integer comparison.
         use byroredux_scripting::events::AnimationTextKeyEvent;
         let mut events: Vec<AnimationTextKeyEvent> = Vec::new();
-        let mut seen_labels: Vec<&str> = Vec::new();
+        let mut seen_labels: Vec<FixedString> = Vec::new();
         let accum_root: Option<FixedString>;
         let dominant_info: Option<(u32, f32)>;
         let stack_root: Option<EntityId>;
@@ -502,13 +500,11 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
             let stack = sq.get(entity).unwrap();
             stack_root = stack.root_entity;
 
-            // Text key events (#211 / #339) — visitor form allocates
-            // `AnimationTextKeyEvent` only when events actually fire.
-            visit_stack_text_events(stack, &registry, &mut seen_labels, |time, label| {
-                events.push(AnimationTextKeyEvent {
-                    label: label.to_owned(),
-                    time,
-                });
+            // Text key events (#211 / #339 / #231) — visitor form allocates
+            // `AnimationTextKeyEvent` only when events actually fire. Labels
+            // are passed through as interned `FixedString` symbols.
+            visit_stack_text_events(stack, &registry, &mut seen_labels, |time, sym| {
+                events.push(AnimationTextKeyEvent { label: sym, time });
             });
 
             // Scoped name resolver — reads subtree cache (outer lock).

@@ -11,6 +11,7 @@
 
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
+use byroredux_core::string::FixedString;
 
 /// Fired when an entity is activated by another entity (e.g., player uses a door).
 /// Replaces Papyrus `OnActivate`.
@@ -52,10 +53,16 @@ impl Component for TimerExpired {
 }
 
 /// A single text key event crossed during animation playback.
-#[derive(Debug, Clone)]
+///
+/// `label` is an interned `FixedString` (#231 / SI-04) — resolve via
+/// `world.resource::<StringPool>().resolve(event.label)` to recover
+/// the original `&str`. Carrying the symbol instead of an owned
+/// `String` removes the per-fire allocation in
+/// `byroredux::systems::animation_system`.
+#[derive(Debug, Clone, Copy)]
 pub struct AnimationTextKeyEvent {
     /// The text key label from the NIF (e.g., "hit", "sound: wpn_swing").
-    pub label: String,
+    pub label: FixedString,
     /// The clip time at which this event was defined.
     pub time: f32,
 }

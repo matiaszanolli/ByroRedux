@@ -199,14 +199,15 @@ pub fn advance_stack(stack: &mut AnimationStack, registry: &AnimationClipRegistr
 /// labels so overlapping layers don't fire the same event twice. The
 /// visitor is called once per unique label with `(time, label)`.
 ///
-/// Zero allocations — the caller supplies a `&mut Vec<&str>` scratch
+/// Zero allocations — the caller supplies a `&mut Vec<FixedString>` scratch
 /// buffer for the seen-set so the scratch can be reused frame-to-frame.
-/// Must be called after `advance_stack()`.
-pub fn visit_stack_text_events<'clip>(
+/// Dedup is integer comparison on the interned symbol (#231 / SI-04). Must
+/// be called after `advance_stack()`.
+pub fn visit_stack_text_events(
     stack: &AnimationStack,
-    registry: &'clip AnimationClipRegistry,
-    seen: &mut Vec<&'clip str>,
-    mut visit: impl FnMut(f32, &'clip str),
+    registry: &AnimationClipRegistry,
+    seen: &mut Vec<FixedString>,
+    mut visit: impl FnMut(f32, FixedString),
 ) {
     seen.clear();
     for layer in &stack.layers {
@@ -216,20 +217,16 @@ pub fn visit_stack_text_events<'clip>(
         let Some(clip) = registry.get(layer.clip_handle) else {
             continue;
         };
-        visit_text_key_events(clip, layer.prev_time, layer.local_time, |time, label| {
+        visit_text_key_events(clip, layer.prev_time, layer.local_time, |time, sym| {
             // Deduplicate labels across layers. Small seen-set (usually
-            // 0–3 entries per frame); linear scan is cheaper than a
-            // hash set at that size.
-            if seen.iter().any(|s| *s == label) {
+            // 0–3 entries per frame); linear scan on `FixedString` is
+            // integer comparison so a Vec is faster than a hash set at
+            // this size.
+            if seen.contains(&sym) {
                 return;
             }
-            // Re-borrow the label from the clip so the 'clip lifetime
-            // is preserved past the visitor closure. The clip's
-            // text_keys vector is not mutated while we hold it.
-            if let Some((_, clip_label)) = clip.text_keys.iter().find(|(_, l)| l == label) {
-                seen.push(clip_label.as_str());
-                visit(time, clip_label.as_str());
-            }
+            seen.push(sym);
+            visit(time, sym);
         });
     }
 }
@@ -285,15 +282,18 @@ mod inspect_tests {
 
 /// Allocation-full wrapper around `visit_stack_text_events` — retained
 /// for test ergonomics. Hot paths in `byroredux::systems` should
-/// call the visitor form directly.
+/// call the visitor form directly and keep `FixedString` symbols.
 pub fn collect_stack_text_events(
     stack: &AnimationStack,
     registry: &AnimationClipRegistry,
+    pool: &crate::string::StringPool,
 ) -> Vec<(String, f32)> {
     let mut events = Vec::new();
-    let mut seen: Vec<&str> = Vec::new();
-    visit_stack_text_events(stack, registry, &mut seen, |time, label| {
-        events.push((label.to_owned(), time));
+    let mut seen: Vec<FixedString> = Vec::new();
+    visit_stack_text_events(stack, registry, &mut seen, |time, sym| {
+        if let Some(s) = pool.resolve(sym) {
+            events.push((s.to_owned(), time));
+        }
     });
     events
 }

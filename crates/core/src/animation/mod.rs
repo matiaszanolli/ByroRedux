@@ -443,6 +443,8 @@ mod tests {
 
     #[test]
     fn text_key_forward_crossing() {
+        use crate::string::StringPool;
+        let mut pool = StringPool::new();
         let clip = AnimationClip {
             name: "test".into(),
             duration: 2.0,
@@ -456,27 +458,29 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: vec![
-                (0.5, "hit".into()),
-                (1.0, "sound: swing".into()),
-                (1.5, "end".into()),
+                (0.5, pool.intern("hit")),
+                (1.0, pool.intern("sound: swing")),
+                (1.5, pool.intern("end")),
             ],
         };
 
         // Cross the first key.
-        let events = collect_text_key_events(&clip, 0.3, 0.6);
+        let events = collect_text_key_events(&clip, &pool, 0.3, 0.6);
         assert_eq!(events, vec!["hit"]);
 
         // Cross two keys at once.
-        let events = collect_text_key_events(&clip, 0.4, 1.1);
+        let events = collect_text_key_events(&clip, &pool, 0.4, 1.1);
         assert_eq!(events, vec!["hit", "sound: swing"]);
 
         // No crossing.
-        let events = collect_text_key_events(&clip, 0.1, 0.4);
+        let events = collect_text_key_events(&clip, &pool, 0.1, 0.4);
         assert!(events.is_empty());
     }
 
     #[test]
     fn text_key_loop_wrap() {
+        use crate::string::StringPool;
+        let mut pool = StringPool::new();
         let clip = AnimationClip {
             name: "test".into(),
             duration: 2.0,
@@ -489,16 +493,18 @@ mod tests {
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
-            text_keys: vec![(0.2, "start".into()), (1.8, "end".into())],
+            text_keys: vec![(0.2, pool.intern("start")), (1.8, pool.intern("end"))],
         };
 
         // Loop wrap: prev=1.7, curr=0.3 → fires "end" (>1.7) and "start" (<=0.3).
-        let events = collect_text_key_events(&clip, 1.7, 0.3);
+        let events = collect_text_key_events(&clip, &pool, 1.7, 0.3);
         assert_eq!(events, vec!["start", "end"]);
     }
 
     #[test]
     fn text_key_empty_clip() {
+        use crate::string::StringPool;
+        let pool = StringPool::new();
         let clip = AnimationClip {
             name: "test".into(),
             duration: 1.0,
@@ -513,12 +519,14 @@ mod tests {
             texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
         };
-        let events = collect_text_key_events(&clip, 0.0, 1.0);
+        let events = collect_text_key_events(&clip, &pool, 0.0, 1.0);
         assert!(events.is_empty());
     }
 
     #[test]
     fn advance_time_tracks_prev_time_for_text_keys() {
+        use crate::string::StringPool;
+        let mut pool = StringPool::new();
         let clip = AnimationClip {
             name: "test".into(),
             duration: 2.0,
@@ -532,27 +540,27 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: vec![
-                (0.5, "hit".into()),
-                (1.0, "sound: swing".into()),
-                (1.8, "end".into()),
+                (0.5, pool.intern("hit")),
+                (1.0, pool.intern("sound: swing")),
+                (1.8, pool.intern("end")),
             ],
         };
         let mut player = AnimationPlayer::new(0);
 
         // First advance: 0.0 → 0.6, should cross "hit" at 0.5.
         advance_time(&mut player, &clip, 0.6);
-        let events = collect_text_key_events(&clip, player.prev_time, player.local_time);
+        let events = collect_text_key_events(&clip, &pool, player.prev_time, player.local_time);
         assert_eq!(events, vec!["hit"]);
 
         // Second advance: 0.6 → 1.2, should cross "sound: swing" at 1.0.
         advance_time(&mut player, &clip, 0.6);
-        let events = collect_text_key_events(&clip, player.prev_time, player.local_time);
+        let events = collect_text_key_events(&clip, &pool, player.prev_time, player.local_time);
         assert_eq!(events, vec!["sound: swing"]);
 
         // Advance past loop wrap: 1.2 → (1.2+1.0=2.2 mod 2.0=0.2),
         // should cross "end" at 1.8.
         advance_time(&mut player, &clip, 1.0);
-        let events = collect_text_key_events(&clip, player.prev_time, player.local_time);
+        let events = collect_text_key_events(&clip, &pool, player.prev_time, player.local_time);
         assert!(events.contains(&"end".to_string()));
     }
 

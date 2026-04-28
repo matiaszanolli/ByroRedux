@@ -228,6 +228,17 @@ pub(crate) fn convert_nif_clip(
         })
         .collect();
 
+    // Intern text key labels (#231 / SI-04). Most labels are short
+    // ("hit", "FootLeft", "sound: wpn_swing") and repeat heavily across
+    // clips of the same actor, so dedup into the StringPool eliminates
+    // both the per-clip label allocation here and the per-fire
+    // `to_owned()` in the event-emission path.
+    let text_keys = nif
+        .text_keys
+        .iter()
+        .map(|(t, label)| (*t, pool.intern(label)))
+        .collect();
+
     AnimationClip {
         name: nif.name.clone(),
         duration: nif.duration,
@@ -240,6 +251,6 @@ pub(crate) fn convert_nif_clip(
         color_channels,
         bool_channels,
         texture_flip_channels,
-        text_keys: nif.text_keys.clone(),
+        text_keys,
     }
 }

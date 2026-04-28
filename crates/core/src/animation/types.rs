@@ -192,5 +192,9 @@ pub struct AnimationClip {
     pub texture_flip_channels: Vec<(FixedString, TextureFlipChannel)>,
     /// Text key events: (time, label). Imported from NiTextKeyExtraData.
     /// Emitted as transient ECS markers when crossed during playback.
-    pub text_keys: Vec<(f32, String)>,
+    /// Labels are interned at clip-load time so the visitor and event-
+    /// emission paths can hand symbols around without per-fire allocations
+    /// (#231 / SI-04). Resolve via `StringPool::resolve` when a `&str`
+    /// is actually required.
+    pub text_keys: Vec<(f32, FixedString)>,
 }
