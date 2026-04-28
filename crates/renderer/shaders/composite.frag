@@ -119,6 +119,13 @@ vec3 compute_sky(vec3 dir) {
     //
     // cloud_params.z == 0 disables the sample so the checkerboard fallback
     // handle is never read on cells without WTHR cloud data.
+    // Analytic mip LOD: as elevation → 0 the UV magnitude grows as 1/elevation,
+    // so the mip should rise by log2(1/elevation). Factor 0.5 keeps the transition
+    // gentler than the raw log2 slope. textureLod bypasses the driver's dFdx/dFdy
+    // estimate, which would see a 100x–500x UV discontinuity across horizon-fade
+    // quads and snap to mip-0 (per-texel aliasing visible in #730). SH-13.
+    float cloud_lod = log2(1.0 / max(elevation, 0.05)) * 0.5;
+
     float tile_scale = params.cloud_params.z;
     if (tile_scale > 0.0 && elevation > 0.0) {
         uint cloud_idx = floatBitsToUint(params.cloud_params.w);
@@ -126,7 +133,7 @@ vec3 compute_sky(vec3 dir) {
         // producing NaN UVs. 0.05 matches ~3° of remaining foreshortening.
         vec2 uv = dir.xz / max(elevation, 0.05) * tile_scale
                 + params.cloud_params.xy;
-        vec4 cloud = texture(textures[nonuniformEXT(cloud_idx)], uv);
+        vec4 cloud = textureLod(textures[nonuniformEXT(cloud_idx)], uv, cloud_lod);
         // Fade clouds out at the horizon so the projection singularity
         // doesn't produce an ugly stretched band right at elevation=0.
         float horizon_fade = smoothstep(0.0, 0.12, elevation);
@@ -141,7 +148,7 @@ vec3 compute_sky(vec3 dir) {
         uint cloud_idx_1 = floatBitsToUint(params.cloud_params_1.w);
         vec2 uv_1 = dir.xz / max(elevation, 0.05) * tile_scale_1
                   + params.cloud_params_1.xy;
-        vec4 cloud_1 = texture(textures[nonuniformEXT(cloud_idx_1)], uv_1);
+        vec4 cloud_1 = textureLod(textures[nonuniformEXT(cloud_idx_1)], uv_1, cloud_lod);
         float horizon_fade_1 = smoothstep(0.0, 0.12, elevation);
         sky = mix(sky, cloud_1.rgb, cloud_1.a * horizon_fade_1);
     }
@@ -152,7 +159,7 @@ vec3 compute_sky(vec3 dir) {
         uint cloud_idx_2 = floatBitsToUint(params.cloud_params_2.w);
         vec2 uv_2 = dir.xz / max(elevation, 0.05) * tile_scale_2
                   + params.cloud_params_2.xy;
-        vec4 cloud_2 = texture(textures[nonuniformEXT(cloud_idx_2)], uv_2);
+        vec4 cloud_2 = textureLod(textures[nonuniformEXT(cloud_idx_2)], uv_2, cloud_lod);
         float horizon_fade_2 = smoothstep(0.0, 0.12, elevation);
         sky = mix(sky, cloud_2.rgb, cloud_2.a * horizon_fade_2);
     }
@@ -163,7 +170,7 @@ vec3 compute_sky(vec3 dir) {
         uint cloud_idx_3 = floatBitsToUint(params.cloud_params_3.w);
         vec2 uv_3 = dir.xz / max(elevation, 0.05) * tile_scale_3
                   + params.cloud_params_3.xy;
-        vec4 cloud_3 = texture(textures[nonuniformEXT(cloud_idx_3)], uv_3);
+        vec4 cloud_3 = textureLod(textures[nonuniformEXT(cloud_idx_3)], uv_3, cloud_lod);
         float horizon_fade_3 = smoothstep(0.0, 0.12, elevation);
         sky = mix(sky, cloud_3.rgb, cloud_3.a * horizon_fade_3);
     }
