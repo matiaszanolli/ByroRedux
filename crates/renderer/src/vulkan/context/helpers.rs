@@ -513,11 +513,18 @@ pub(super) fn allocate_command_buffers(
     Ok(buffers)
 }
 
-const PIPELINE_CACHE_PATH: &str = "pipeline_cache.bin";
+fn pipeline_cache_path() -> std::path::PathBuf {
+    // Resolve next to the executable so the cache persists across working-directory
+    // changes (launcher, read-only cwd, packaged distribution).
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("pipeline_cache.bin")))
+        .unwrap_or_else(|| std::path::PathBuf::from("pipeline_cache.bin"))
+}
 
 /// Load pipeline cache data from disk, or create an empty cache.
 pub(super) fn load_or_create_pipeline_cache(device: &ash::Device) -> Result<vk::PipelineCache> {
-    let initial_data = std::fs::read(PIPELINE_CACHE_PATH).unwrap_or_default();
+    let initial_data = std::fs::read(pipeline_cache_path()).unwrap_or_default();
 
     let create_info = if initial_data.is_empty() {
         log::info!("Creating empty pipeline cache");
@@ -553,9 +560,10 @@ pub(super) fn save_pipeline_cache(device: &ash::Device, cache: vk::PipelineCache
         }
     };
 
-    if let Err(e) = std::fs::write(PIPELINE_CACHE_PATH, &data) {
-        log::warn!("Failed to save pipeline cache to disk: {}", e);
+    let path = pipeline_cache_path();
+    if let Err(e) = std::fs::write(&path, &data) {
+        log::error!("Failed to save pipeline cache to {}: {}", path.display(), e);
     } else {
-        log::info!("Pipeline cache saved ({} bytes)", data.len());
+        log::info!("Pipeline cache saved to {} ({} bytes)", path.display(), data.len());
     }
 }
