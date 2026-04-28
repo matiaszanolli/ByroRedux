@@ -5,6 +5,7 @@ use crate::blocks::node::{
     BsMultiBoundNode, BsOrderedNode, BsRangeNode, BsTreeNode, BsValueNode, NiBillboardNode,
     NiLODNode, NiNode, NiSortAdjustNode, NiSwitchNode,
 };
+use crate::blocks::bs_geometry::BSGeometry;
 use crate::blocks::tri_shape::{BsTriShape, NiTriShape};
 use crate::blocks::NiObject;
 use crate::scene::NifScene;
@@ -13,7 +14,8 @@ use crate::types::{BlockRef, NiTransform};
 use super::collision::extract_collision;
 use super::coord::{zup_matrix_to_yup_quat, zup_point_to_yup};
 use super::mesh::{
-    extract_bs_tri_shape, extract_bs_tri_shape_local, extract_mesh, extract_mesh_local,
+    extract_bs_geometry, extract_bs_geometry_local, extract_bs_tri_shape,
+    extract_bs_tri_shape_local, extract_mesh, extract_mesh_local,
 };
 use super::transform::compose_transforms;
 use super::{
@@ -335,6 +337,20 @@ pub(super) fn walk_node_hierarchical(
         }
     }
 
+    if let Some(shape) = block.as_any().downcast_ref::<BSGeometry>() {
+        if shape.av.flags & 0x01 != 0 {
+            return;
+        }
+        if is_editor_marker(shape.av.net.name.as_deref()) {
+            return;
+        }
+        if let Some(mesh) = extract_bs_geometry_local(scene, shape, pool) {
+            let mut mesh = mesh;
+            mesh.parent_node = parent_node_idx;
+            out.meshes.push(mesh);
+        }
+    }
+
     // Particle systems — see #401 / `ImportedParticleEmitter`.
     // The parser keeps every NiPSys* variant opaque (`NiPSysBlock`), so
     // we identify the renderable subset by the original_type string.
@@ -529,6 +545,19 @@ pub(super) fn walk_node_flat(
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
 
         if let Some(mesh) = extract_bs_tri_shape(scene, shape, &world_transform, pool) {
+            out.push(mesh);
+        }
+    }
+
+    if let Some(shape) = block.as_any().downcast_ref::<BSGeometry>() {
+        if shape.av.flags & 0x01 != 0 {
+            return;
+        }
+        if is_editor_marker(shape.av.net.name.as_deref()) {
+            return;
+        }
+        let world_transform = compose_transforms(parent_transform, &shape.av.transform);
+        if let Some(mesh) = extract_bs_geometry(scene, shape, &world_transform, pool) {
             out.push(mesh);
         }
     }
