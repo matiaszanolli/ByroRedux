@@ -253,3 +253,27 @@ fn material_path_from_name_helper_accepts_both_suffixes() {
     assert_eq!(material_path_from_name(Some("plain_name"), &mut pool), None);
     assert_eq!(material_path_from_name(None, &mut pool), None);
 }
+
+#[test]
+fn mat_suffix_recognised_case_insensitively() {
+    use crate::blocks::shader::is_material_reference;
+    assert!(is_material_reference("materials\\test.mat"));
+    assert!(is_material_reference("materials\\test.MAT"));
+    assert!(is_material_reference("materials\\test.Mat"));
+    assert!(!is_material_reference("materials\\test.matx"));
+    assert!(!is_material_reference("mat"));
+    assert!(!is_material_reference(""));
+}
+
+#[test]
+fn mat_captured_via_material_path_from_name() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    assert!(
+        material_path_from_name(Some("materials\\foo.mat"), &mut pool).is_some(),
+        ".mat suffix should be treated as a material reference"
+    );
+    assert!(
+        material_path_from_name(Some("materials\\foo.MAT"), &mut pool).is_some(),
+        ".MAT suffix (uppercase) should be treated as a material reference"
+    );
+}

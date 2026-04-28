@@ -23,8 +23,15 @@ use std::io;
 /// path got copy-pasted from a longer string buffer).
 pub(crate) fn is_material_reference(name: &str) -> bool {
     let trimmed = name.trim_end_matches(|c: char| c == '\0' || c.is_ascii_whitespace());
-    let lower = trimmed.to_ascii_lowercase();
-    lower.ends_with(".bgsm") || lower.ends_with(".bgem") || lower.ends_with(".mat")
+    let b = trimmed.as_bytes();
+    let n = b.len();
+    if n < 4 {
+        return false;
+    }
+    let tail5 = &b[n.saturating_sub(5)..];
+    tail5.eq_ignore_ascii_case(b".bgsm")
+        || tail5.eq_ignore_ascii_case(b".bgem")
+        || b[n.saturating_sub(4)..].eq_ignore_ascii_case(b".mat")
 }
 
 /// BSShaderPPLightingProperty — Fallout 3/NV per-pixel lighting shader.
