@@ -20,7 +20,7 @@ use super::mesh::{
 use super::transform::compose_transforms;
 use super::{
     ImportedCollision, ImportedLight, ImportedMesh, ImportedNode, ImportedScene, LightKind,
-    TreeBones,
+    MeshResolver, TreeBones,
 };
 use crate::blocks::extra_data::BsPackedCombinedGeomDataExtra;
 use crate::blocks::node::BsRangeKind;
@@ -143,6 +143,7 @@ pub(super) fn walk_node_hierarchical(
     inherited_props: &mut Vec<BlockRef>,
     out: &mut ImportedScene,
     pool: &mut StringPool,
+    resolver: Option<&dyn MeshResolver>,
 ) {
     let Some(block) = scene.get(block_idx) else {
         return;
@@ -187,7 +188,7 @@ pub(super) fn walk_node_hierarchical(
         let prev_len = inherited_props.len();
         inherited_props.extend_from_slice(&node.av.properties);
         for idx in active_children {
-            walk_node_hierarchical(scene, idx, Some(this_node_idx), inherited_props, out, pool);
+            walk_node_hierarchical(scene, idx, Some(this_node_idx), inherited_props, out, pool, resolver);
         }
         inherited_props.truncate(prev_len);
         return;
@@ -276,7 +277,7 @@ pub(super) fn walk_node_hierarchical(
         inherited_props.extend_from_slice(&node.av.properties);
         for child_ref in &node.children {
             if let Some(idx) = child_ref.index() {
-                walk_node_hierarchical(scene, idx, Some(this_node_idx), inherited_props, out, pool);
+                walk_node_hierarchical(scene, idx, Some(this_node_idx), inherited_props, out, pool, resolver);
             }
         }
         inherited_props.truncate(prev_len);
@@ -344,7 +345,7 @@ pub(super) fn walk_node_hierarchical(
         if is_editor_marker(shape.av.net.name.as_deref()) {
             return;
         }
-        if let Some(mesh) = extract_bs_geometry_local(scene, shape, pool) {
+        if let Some(mesh) = extract_bs_geometry_local(scene, shape, pool, resolver) {
             let mut mesh = mesh;
             mesh.parent_node = parent_node_idx;
             out.meshes.push(mesh);
@@ -393,6 +394,7 @@ pub(super) fn walk_node_flat(
     out: &mut Vec<ImportedMesh>,
     mut collisions: Option<&mut Vec<ImportedCollision>>,
     pool: &mut StringPool,
+    resolver: Option<&dyn MeshResolver>,
 ) {
     let Some(block) = scene.get(block_idx) else {
         return;
@@ -431,6 +433,7 @@ pub(super) fn walk_node_flat(
                 out,
                 collisions.as_deref_mut(),
                 pool,
+                resolver,
             );
         }
         inherited_props.truncate(prev_len);
@@ -490,6 +493,7 @@ pub(super) fn walk_node_flat(
                     out,
                     collisions.as_deref_mut(),
                     pool,
+                    resolver,
                 );
             }
         }
@@ -557,7 +561,7 @@ pub(super) fn walk_node_flat(
             return;
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
-        if let Some(mesh) = extract_bs_geometry(scene, shape, &world_transform, pool) {
+        if let Some(mesh) = extract_bs_geometry(scene, shape, &world_transform, pool, resolver) {
             out.push(mesh);
         }
     }

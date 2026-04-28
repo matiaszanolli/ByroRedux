@@ -18,7 +18,7 @@ use crate::types::{BlockRef, NiPoint3, NiTransform};
 
 use super::coord::{zup_matrix_to_yup_quat, zup_point_to_yup};
 use super::material::{extract_material_info, extract_vertex_colors};
-use super::{ImportedBone, ImportedMesh, ImportedSkin};
+use super::{ImportedBone, ImportedMesh, ImportedSkin, MeshResolver};
 use byroredux_core::string::{FixedString, StringPool};
 
 /// Intermediate geometry data extracted from either NiTriShapeData or NiTriStripsData.
@@ -434,11 +434,11 @@ pub(super) fn extract_bs_tri_shape_local(
     extract_bs_tri_shape(scene, shape, &shape.av.transform, pool)
 }
 
-/// Extract an ImportedMesh from a `BSGeometry` block (Starfield, Stage A).
+/// Extract an ImportedMesh from a `BSGeometry` block (Starfield).
 ///
-/// Only the inline-geom path (`has_internal_geom_data() == true`) is
-/// handled here. External `.mesh` file decoding (Stage B, SF-D4-02) is not
-/// yet implemented — if the first LOD slot is external, returns `None`.
+/// Handles both Stage A (inline `has_internal_geom_data()`) and Stage B
+/// (external `.mesh` companion file via `resolver`). The first populated
+/// LOD slot is used; if none can be decoded, returns `None`.
 ///
 /// Vertex positions and normals are already decoded to Y-up by the parser
 /// (havok-scaled i16 NORM → f32; Starfield uses Y-up natively). The node
@@ -450,18 +450,46 @@ pub(super) fn extract_bs_geometry(
     shape: &BSGeometry,
     world_transform: &NiTransform,
     pool: &mut StringPool,
+    resolver: Option<&dyn MeshResolver>,
 ) -> Option<ImportedMesh> {
-    if !shape.has_internal_geom_data() {
-        return None; // Stage B (external .mesh) not yet implemented
-    }
+    use crate::blocks::bs_geometry::{BSGeometryMeshData, BSGeometryMeshKind};
 
-    let mesh_data = shape.meshes.first().and_then(|m| {
-        use crate::blocks::bs_geometry::BSGeometryMeshKind;
-        match &m.kind {
+    // Try each LOD slot in order; use the first one that yields geometry.
+    let mesh_data_owned: Option<BSGeometryMeshData>;
+    let mesh_data: &BSGeometryMeshData = if shape.has_internal_geom_data() {
+        // Stage A: inline geometry embedded in the NIF.
+        let m = shape.meshes.first().and_then(|m| match &m.kind {
             BSGeometryMeshKind::Internal { mesh_data } => Some(mesh_data),
             BSGeometryMeshKind::External { .. } => None,
+        })?;
+        m
+    } else {
+        // Stage B: external `.mesh` companion file. Try each LOD slot until
+        // one resolves. When no resolver is provided, skip external geometry.
+        let resolver = resolver?;
+        let mut found = None;
+        for m in &shape.meshes {
+            if let BSGeometryMeshKind::External { mesh_name } = &m.kind {
+                if let Some(bytes) = resolver.resolve(mesh_name) {
+                    match BSGeometryMeshData::parse_from_bytes(&bytes) {
+                        Ok(data) => {
+                            found = Some(data);
+                            break;
+                        }
+                        Err(e) => {
+                            log::debug!(
+                                "BSGeometry external mesh '{}' parse error: {}",
+                                mesh_name,
+                                e
+                            );
+                        }
+                    }
+                }
+            }
         }
-    })?;
+        mesh_data_owned = found;
+        mesh_data_owned.as_ref()?
+    };
 
     if mesh_data.vertices.is_empty() || mesh_data.triangles.is_empty() {
         return None;
@@ -599,8 +627,9 @@ pub(super) fn extract_bs_geometry_local(
     scene: &NifScene,
     shape: &BSGeometry,
     pool: &mut StringPool,
+    resolver: Option<&dyn MeshResolver>,
 ) -> Option<ImportedMesh> {
-    extract_bs_geometry(scene, shape, &shape.av.transform, pool)
+    extract_bs_geometry(scene, shape, &shape.av.transform, pool, resolver)
 }
 
 // ── #559: SSE skinned-geometry reconstruction ─────────────────────

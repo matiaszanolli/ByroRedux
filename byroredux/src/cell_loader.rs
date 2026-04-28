@@ -1047,6 +1047,7 @@ fn load_references(
                                     &model_path,
                                     mat_provider.as_deref_mut(),
                                     &mut pool,
+                                    Some(tex_provider),
                                 )
                             }
                             None => {
@@ -1261,6 +1262,7 @@ fn parse_and_import_nif(
     label: &str,
     mat_provider: Option<&mut MaterialProvider>,
     pool: &mut byroredux_core::string::StringPool,
+    mesh_resolver: Option<&dyn byroredux_nif::import::MeshResolver>,
 ) -> Option<Arc<CachedNifImport>> {
     let scene = match byroredux_nif::parse_nif(nif_data) {
         Ok(s) => {
@@ -1288,7 +1290,11 @@ fn parse_and_import_nif(
         return None;
     }
 
-    let (mut meshes, collisions) = byroredux_nif::import::import_nif_with_collision(&scene, pool);
+    let (mut meshes, collisions) = byroredux_nif::import::import_nif_with_collision_and_resolver(
+        &scene,
+        pool,
+        mesh_resolver,
+    );
     // FO4+ external material resolution (#493). Walk once at cache-fill
     // time so every REFR sharing this NIF sees the merged texture paths.
     // NIF fields take precedence; only empty slots are filled from the
@@ -1359,6 +1365,7 @@ fn parse_and_import_nif(
 pub(crate) fn finish_partial_import(
     world: &mut World,
     mat_provider: Option<&mut MaterialProvider>,
+    mesh_resolver: Option<&dyn byroredux_nif::import::MeshResolver>,
     model_path: &str,
     partial: crate::streaming::PartialNifImport,
 ) {
@@ -1386,7 +1393,7 @@ pub(crate) fn finish_partial_import(
 
     let (mut meshes, collisions) = {
         let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
-        byroredux_nif::import::import_nif_with_collision(&scene, &mut pool)
+        byroredux_nif::import::import_nif_with_collision_and_resolver(&scene, &mut pool, mesh_resolver)
     };
     if let Some(provider) = mat_provider {
         let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();

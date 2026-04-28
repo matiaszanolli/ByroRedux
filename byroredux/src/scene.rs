@@ -550,6 +550,7 @@ fn stream_initial_radius(
                 Some(partial) => cell_loader::finish_partial_import(
                     world,
                     Some(&mut state.mat_provider),
+                    Some(state.tex_provider.as_ref()),
                     &model_path,
                     partial,
                 ),
@@ -1171,7 +1172,11 @@ pub(crate) fn load_nif_bytes(
 
     let imported = {
         let mut pool = world.resource_mut::<StringPool>();
-        let mut imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
+        let mut imported = byroredux_nif::import::import_nif_scene_with_resolver(
+            &scene,
+            &mut pool,
+            Some(tex_provider),
+        );
         // FO4+ external material resolution (#493). NIF fields take precedence;
         // only empty slots fill in from the resolved BGSM/BGEM chain. The
         // BGSM merge interns through the same pool so REFR overlays and

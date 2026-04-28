@@ -25,6 +25,20 @@ use byroredux_core::ecs::components::collision::{CollisionShape, RigidBodyData};
 use byroredux_core::string::{FixedString, StringPool};
 use std::sync::Arc;
 
+/// Callback for resolving Starfield external `.mesh` companion files (SF-D4-02).
+///
+/// Implementations look up the raw bytes of an external mesh file by its
+/// archive-relative path (e.g. `"geometries/abc/abc.mesh"`). Returns `None`
+/// when the file is not available (stripped archive, wrong BA2 chain, etc.).
+///
+/// The NIF importer calls this for each `BSGeometry` LOD slot whose
+/// `mesh_name` reference is external. When `None` is returned the LOD slot
+/// is silently skipped — existing callers that don't need Starfield mesh
+/// support pass `None` for the resolver and take the same path.
+pub trait MeshResolver {
+    fn resolve(&self, mesh_name: &str) -> Option<Vec<u8>>;
+}
+
 /// One light source extracted from a NIF scene, positioned in world space.
 ///
 /// Populated from NiAmbientLight / NiDirectionalLight / NiPointLight /
@@ -532,7 +546,30 @@ pub fn import_nif_particle_emitters(scene: &NifScene) -> Vec<ImportedParticleEmi
 /// [`StringPool`] so `MaterialInfo` / `ImportedMesh` can carry
 /// [`FixedString`] handles instead of fresh `Option<String>` heap
 /// allocations on every cell load. See #609 / D6-NEW-01.
+///
+/// For Starfield content that uses external `.mesh` companion files,
+/// pass a [`MeshResolver`] implementation that can look up the raw bytes
+/// by archive-relative path. Pass `None` to skip external meshes.
+pub fn import_nif_scene_with_resolver(
+    scene: &NifScene,
+    pool: &mut StringPool,
+    resolver: Option<&dyn MeshResolver>,
+) -> ImportedScene {
+    import_nif_scene_impl(scene, pool, resolver)
+}
+
+/// Import all renderable meshes from a parsed NIF scene, preserving hierarchy.
+///
+/// Equivalent to [`import_nif_scene_with_resolver`] with no external mesh resolver.
 pub fn import_nif_scene(scene: &NifScene, pool: &mut StringPool) -> ImportedScene {
+    import_nif_scene_impl(scene, pool, None)
+}
+
+fn import_nif_scene_impl(
+    scene: &NifScene,
+    pool: &mut StringPool,
+    resolver: Option<&dyn MeshResolver>,
+) -> ImportedScene {
     let mut imported = ImportedScene {
         nodes: Vec::new(),
         meshes: Vec::new(),
@@ -559,7 +596,7 @@ pub fn import_nif_scene(scene: &NifScene, pool: &mut StringPool) -> ImportedScen
     };
 
     let mut props_stack: Vec<crate::types::BlockRef> = Vec::new();
-    walk::walk_node_hierarchical(scene, root_idx, None, &mut props_stack, &mut imported, pool);
+    walk::walk_node_hierarchical(scene, root_idx, None, &mut props_stack, &mut imported, pool, resolver);
 
     // Resolve extra data from the root node (BSXFlags, BSBound).
     if let Some(root_block) = scene.blocks.get(root_idx) {
@@ -601,9 +638,25 @@ pub fn import_nif_scene(scene: &NifScene, pool: &mut StringPool) -> ImportedScen
 /// Returns one `ImportedMesh` per NiTriShape with world-space transforms
 /// (parent chain composed). Meshes have `parent_node: None`.
 ///
-/// See [`import_nif_scene`] for the rationale behind the `pool`
-/// parameter (#609).
+/// For Starfield external mesh support pass [`import_nif_with_resolver`].
 pub fn import_nif(scene: &NifScene, pool: &mut StringPool) -> Vec<ImportedMesh> {
+    import_nif_impl(scene, pool, None)
+}
+
+/// Flat import with an optional external mesh resolver (SF-D4-02 Stage B).
+pub fn import_nif_with_resolver(
+    scene: &NifScene,
+    pool: &mut StringPool,
+    resolver: Option<&dyn MeshResolver>,
+) -> Vec<ImportedMesh> {
+    import_nif_impl(scene, pool, resolver)
+}
+
+fn import_nif_impl(
+    scene: &NifScene,
+    pool: &mut StringPool,
+    resolver: Option<&dyn MeshResolver>,
+) -> Vec<ImportedMesh> {
     let mut meshes = Vec::new();
 
     let Some(root_idx) = scene.root_index else {
@@ -619,6 +672,7 @@ pub fn import_nif(scene: &NifScene, pool: &mut StringPool) -> Vec<ImportedMesh> 
         &mut meshes,
         None,
         pool,
+        resolver,
     );
     meshes
 }
@@ -679,6 +733,23 @@ pub fn import_nif_with_collision(
     scene: &NifScene,
     pool: &mut StringPool,
 ) -> (Vec<ImportedMesh>, Vec<ImportedCollision>) {
+    import_nif_with_collision_impl(scene, pool, None)
+}
+
+/// Flat import with collision data and an optional external mesh resolver (SF-D4-02).
+pub fn import_nif_with_collision_and_resolver(
+    scene: &NifScene,
+    pool: &mut StringPool,
+    resolver: Option<&dyn MeshResolver>,
+) -> (Vec<ImportedMesh>, Vec<ImportedCollision>) {
+    import_nif_with_collision_impl(scene, pool, resolver)
+}
+
+fn import_nif_with_collision_impl(
+    scene: &NifScene,
+    pool: &mut StringPool,
+    resolver: Option<&dyn MeshResolver>,
+) -> (Vec<ImportedMesh>, Vec<ImportedCollision>) {
     let mut meshes = Vec::new();
     let mut collisions = Vec::new();
 
@@ -695,6 +766,7 @@ pub fn import_nif_with_collision(
         &mut meshes,
         Some(&mut collisions),
         pool,
+        resolver,
     );
     (meshes, collisions)
 }

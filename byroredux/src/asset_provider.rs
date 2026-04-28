@@ -2,7 +2,7 @@
 
 use byroredux_bgsm::template::ResolvedMaterial;
 use byroredux_bgsm::{BgemFile, TemplateCache, TemplateResolver};
-use byroredux_nif::import::ImportedMesh;
+use byroredux_nif::import::{ImportedMesh, MeshResolver};
 use byroredux_renderer::VulkanContext;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -88,6 +88,12 @@ impl TextureProvider {
             }
         }
         None
+    }
+}
+
+impl MeshResolver for TextureProvider {
+    fn resolve(&self, mesh_name: &str) -> Option<Vec<u8>> {
+        self.extract_mesh(mesh_name)
     }
 }
 

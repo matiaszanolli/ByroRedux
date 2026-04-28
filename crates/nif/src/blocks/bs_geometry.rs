@@ -319,6 +319,31 @@ impl BSGeometryMeshData {
     /// Per `BSGeometryMeshData::havokScale` (private member).
     const HAVOK_SCALE: f32 = 69.969;
 
+    /// Parse a standalone external `.mesh` file (SF-D4-02 Stage B).
+    ///
+    /// The external `.mesh` format is identical to the inline `BSGeometryMeshData`
+    /// body — nifly's `NifFile::LoadExternalShapeData` calls `meshData.Sync(s)`
+    /// directly on the raw stream with no wrapper header or magic number.
+    pub fn parse_from_bytes(bytes: &[u8]) -> io::Result<Self> {
+        use crate::header::NifHeader;
+        use crate::version::NifVersion;
+        let header = NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 12,
+            user_version_2: 172,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        let mut stream = NifStream::new(bytes, &header);
+        Self::parse(&mut stream)
+    }
+
     fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let version = stream.read_u32_le()?;
         // nifly: `if (version > 2) return;` — leave every body field
