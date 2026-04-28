@@ -742,6 +742,10 @@ impl BSLightingShaderProperty {
             texture_set_ref: BlockRef::NULL,
             emissive_color: [0.0, 0.0, 0.0],
             emissive_multiple: 1.0,
+            // 3 = WRAP_S_WRAP_T — the most common Starfield default and safe
+            // for the stopcond stub path. The authoritative value lives in the
+            // companion .mat JSON file (SF-D6-03 / #762). When that parser
+            // lands the asset_provider merge step should overwrite this field.
             texture_clamp_mode: 3,
             alpha: 1.0,
             refraction_strength: 0.0,
