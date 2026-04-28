@@ -679,7 +679,7 @@ impl VulkanContext {
                             if let Some(slot) = self.skin_slots.remove(&eid) {
                                 skin_pipeline.destroy_slot(&self.device, alloc, slot);
                             }
-                            accel.drop_skinned_blas(&self.device, alloc, eid);
+                            accel.drop_skinned_blas(eid);
                         }
                     }
                 }

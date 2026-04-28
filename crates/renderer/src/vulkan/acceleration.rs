@@ -1096,23 +1096,16 @@ impl AccelerationManager {
         self.skinned_blas.get(&entity_id)
     }
 
-    /// Drop a per-skinned-entity BLAS. Caller must defer the destroy
-    /// until any in-flight frame referencing it has completed (the
-    /// renderer pairs this with `device_wait_idle` in the Drop chain
-    /// + a per-frame deferred-destroy queue for cell unloads).
-    pub fn drop_skinned_blas(
-        &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        entity_id: EntityId,
-    ) {
-        if let Some(mut entry) = self.skinned_blas.remove(&entity_id) {
+    /// Drop a per-skinned-entity BLAS. Routes through `pending_destroy_blas`
+    /// with a `MAX_FRAMES_IN_FLIGHT`-frame countdown so the acceleration
+    /// structure is never destroyed while a command buffer still references
+    /// it. Mirrors `drop_blas`; `tick_deferred_destroy` and `destroy`
+    /// both drain the queue.
+    pub fn drop_skinned_blas(&mut self, entity_id: EntityId) {
+        if let Some(entry) = self.skinned_blas.remove(&entity_id) {
             self.total_blas_bytes = self.total_blas_bytes.saturating_sub(entry.size_bytes);
-            unsafe {
-                self.accel_loader
-                    .destroy_acceleration_structure(entry.accel, None);
-            }
-            entry.buffer.destroy(device, allocator);
+            self.pending_destroy_blas
+                .push((entry, MAX_FRAMES_IN_FLIGHT as u32));
             self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
         }
     }

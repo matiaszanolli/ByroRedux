@@ -1436,7 +1436,7 @@ impl Drop for VulkanContext {
                     // `blas_entries`, so manager.destroy() wouldn't see
                     // them. Walk + drop here.
                     for eid in accel.skinned_blas_entities() {
-                        accel.drop_skinned_blas(&self.device, alloc, eid);
+                        accel.drop_skinned_blas(eid);
                     }
                     accel.destroy(&self.device, alloc);
                 }
