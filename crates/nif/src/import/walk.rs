@@ -582,6 +582,21 @@ pub(super) fn walk_node_lights(
         return;
     };
 
+    // NiSwitchNode / NiLODNode: only walk the active children (#718).
+    if let Some((node, active_children)) = switch_active_children(block) {
+        if node.av.flags & 0x01 != 0 {
+            return;
+        }
+        if is_editor_marker(node.av.net.name.as_deref()) {
+            return;
+        }
+        let world_transform = compose_transforms(parent_transform, &node.av.transform);
+        for idx in active_children {
+            walk_node_lights(scene, idx, &world_transform, out);
+        }
+        return;
+    }
+
     if let Some(node) = as_ni_node(block) {
         if node.av.flags & 0x01 != 0 {
             return;
@@ -676,6 +691,25 @@ pub(super) fn walk_node_particle_emitters_flat(
     let Some(block) = scene.get(block_idx) else {
         return;
     };
+
+    // NiSwitchNode / NiLODNode: only walk the active children (#718).
+    if let Some((node, active_children)) = switch_active_children(block) {
+        if node.av.flags & 0x01 != 0 {
+            return;
+        }
+        let world_transform = compose_transforms(parent_transform, &node.av.transform);
+        let new_parent_name = node.av.net.name.clone().or(parent_node_name);
+        for idx in active_children {
+            walk_node_particle_emitters_flat(
+                scene,
+                idx,
+                &world_transform,
+                new_parent_name.clone(),
+                out,
+            );
+        }
+        return;
+    }
 
     if let Some(node) = as_ni_node(block) {
         if node.av.flags & 0x01 != 0 {
@@ -1056,5 +1090,110 @@ mod editor_marker_tests {
         // prefix match is intentional (vanilla doesn't author non-
         // marker nodes starting with these prefixes).
         assert!(is_editor_marker(Some("MapMarkerMesh")));
+    }
+}
+
+#[cfg(test)]
+mod switch_node_walker_tests {
+    //! Regression tests for #718 / NIF-D4-02: `walk_node_lights` and
+    //! `walk_node_particle_emitters_flat` must walk through
+    //! `NiSwitchNode` subtrees (previously they only called
+    //! `as_ni_node`, which returns `None` for NiSwitchNode/NiLODNode,
+    //! silently dropping any lights/emitters inside them).
+    use super::*;
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::light::{NiLightBase, NiPointLight};
+    use crate::blocks::node::{NiLODNode, NiNode, NiSwitchNode};
+    use crate::types::{BlockRef, NiColor, NiTransform};
+    use std::sync::Arc;
+
+    fn blank_av(name: Option<&str>) -> NiAVObjectData {
+        NiAVObjectData {
+            net: NiObjectNETData {
+                name: name.map(Arc::from),
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            flags: 0,
+            transform: NiTransform::default(),
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        }
+    }
+
+    fn blank_node(name: Option<&str>, children: Vec<BlockRef>) -> NiNode {
+        NiNode {
+            av: blank_av(name),
+            children,
+            effects: Vec::new(),
+        }
+    }
+
+    fn point_light_block() -> Box<dyn NiObject> {
+        Box::new(NiPointLight {
+            base: NiLightBase {
+                av: blank_av(Some("TestLight")),
+                switch_state: true,
+                affected_nodes: Vec::new(),
+                dimmer: 1.0,
+                ambient_color: NiColor { r: 0.0, g: 0.0, b: 0.0 },
+                diffuse_color: NiColor { r: 1.0, g: 0.0, b: 0.0 },
+                specular_color: NiColor { r: 0.0, g: 0.0, b: 0.0 },
+            },
+            constant_attenuation: 0.0,
+            linear_attenuation: 0.0,
+            quadratic_attenuation: 1.0,
+        })
+    }
+
+    /// Regression for #718: a NiSwitchNode wrapping a NiPointLight child
+    /// must yield the light from `walk_node_lights`.  Pre-fix the walker
+    /// went straight to `as_ni_node`, which returns `None` for
+    /// NiSwitchNode, silently dropping the light.
+    #[test]
+    fn walk_node_lights_traverses_ni_switch_node() {
+        // Scene layout:
+        //   [0] NiSwitchNode  { active_index=0, children=[1] }
+        //   [1] NiPointLight  { diffuse=(1,0,0) }
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(NiSwitchNode {
+            base: blank_node(None, vec![BlockRef(1)]),
+            switch_flags: 0,
+            index: 0,
+        }));
+        scene.blocks.push(point_light_block());
+        scene.root_index = Some(0);
+
+        let mut lights = Vec::new();
+        walk_node_lights(&scene, 0, &NiTransform::default(), &mut lights);
+
+        assert_eq!(
+            lights.len(),
+            1,
+            "pre-#718: NiSwitchNode was invisible to walk_node_lights — light lost"
+        );
+        assert_eq!(lights[0].color, [1.0, 0.0, 0.0]);
+    }
+
+    /// Regression for #718: a NiLODNode wrapping a NiPointLight child
+    /// must also yield the light (LOD 0 = highest detail is always walked).
+    #[test]
+    fn walk_node_lights_traverses_ni_lod_node() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(NiLODNode {
+            base: NiSwitchNode {
+                base: blank_node(None, vec![BlockRef(1), BlockRef::NULL]),
+                switch_flags: 0,
+                index: 0,
+            },
+            lod_level_data: BlockRef::NULL,
+        }));
+        scene.blocks.push(point_light_block());
+        scene.root_index = Some(0);
+
+        let mut lights = Vec::new();
+        walk_node_lights(&scene, 0, &NiTransform::default(), &mut lights);
+
+        assert_eq!(lights.len(), 1, "NiLODNode must expose its LOD-0 light");
     }
 }
