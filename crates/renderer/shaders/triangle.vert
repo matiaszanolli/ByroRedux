@@ -13,6 +13,12 @@ layout(location = 5) in vec4  inBoneWeights;
 layout(location = 6) in vec4 inSplat0; // layers 0-3
 layout(location = 7) in vec4 inSplat1; // layers 4-7
 
+// Per-mesh bone-palette stride. Matches the Rust constant
+// `MAX_BONES_PER_MESH` at `crates/core/src/ecs/components/skinned_mesh.rs:29`.
+// Pinned in `skin_vertices.comp` to the same value so a future change
+// updates both shader sites in lockstep. See #651 / SH-6.
+const uint MAX_BONES_PER_MESH = 128u;
+
 // Per-instance data from the instance SSBO. Each draw's gl_InstanceIndex
 // maps to one entry containing model matrix, texture index, and bone offset.
 // Must match Rust GpuInstance layout exactly — all scalars, no vec3.
@@ -175,16 +181,24 @@ void main() {
         xformPrev = inst.model;
     } else {
         uint base = inst.boneOffset;
+        // #651 / SH-6 SIBLING — same per-vertex bone-index clamp as
+        // `skin_vertices.comp`. Raster mode is more forgiving than
+        // the compute path's BLAS-refit output (a degenerate vertex
+        // is one off-screen triangle, not corrupt geometry in the
+        // TLAS), but mirroring the clamp keeps the two sites in
+        // lockstep so a future regression / corrupt NIF index byte
+        // can't silently diverge the two paths.
+        uvec4 bIdx = min(inBoneIndices, uvec4(MAX_BONES_PER_MESH - 1u));
         xform =
-              inBoneWeights.x * bones[base + inBoneIndices.x]
-            + inBoneWeights.y * bones[base + inBoneIndices.y]
-            + inBoneWeights.z * bones[base + inBoneIndices.z]
-            + inBoneWeights.w * bones[base + inBoneIndices.w];
+              inBoneWeights.x * bones[base + bIdx.x]
+            + inBoneWeights.y * bones[base + bIdx.y]
+            + inBoneWeights.z * bones[base + bIdx.z]
+            + inBoneWeights.w * bones[base + bIdx.w];
         xformPrev =
-              inBoneWeights.x * bones_prev[base + inBoneIndices.x]
-            + inBoneWeights.y * bones_prev[base + inBoneIndices.y]
-            + inBoneWeights.z * bones_prev[base + inBoneIndices.z]
-            + inBoneWeights.w * bones_prev[base + inBoneIndices.w];
+              inBoneWeights.x * bones_prev[base + bIdx.x]
+            + inBoneWeights.y * bones_prev[base + bIdx.y]
+            + inBoneWeights.z * bones_prev[base + bIdx.z]
+            + inBoneWeights.w * bones_prev[base + bIdx.w];
     }
 
     vec4 worldPos = xform * vec4(inPosition, 1.0);

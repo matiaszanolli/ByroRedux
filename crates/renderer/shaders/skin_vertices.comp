@@ -33,6 +33,14 @@
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 const uint VERTEX_STRIDE_FLOATS = 21u;
+// Per-mesh bone-palette stride. Matches the Rust constant
+// `MAX_BONES_PER_MESH` defined at
+// `crates/core/src/ecs/components/skinned_mesh.rs:29`. Each skinned
+// mesh occupies exactly `MAX_BONES_PER_MESH` consecutive `bones[]`
+// slots starting at `bone_offset`; clamping per-vertex bone indices
+// to `< MAX_BONES_PER_MESH` ensures no out-of-mesh palette read.
+// See #651 / SH-6.
+const uint MAX_BONES_PER_MESH = 128u;
 
 // Bind-pose vertex SSBO (the shared geometry buffer; one mesh's
 // vertices live at `vertex_offset .. vertex_offset + vertex_count`).
@@ -116,10 +124,21 @@ void main() {
     if (wsum < 0.001) {
         xform = mat4(1.0);
     } else {
-        xform = boneW.x * bones[bone_offset + boneIdx.x]
-              + boneW.y * bones[bone_offset + boneIdx.y]
-              + boneW.z * bones[bone_offset + boneIdx.z]
-              + boneW.w * bones[bone_offset + boneIdx.w];
+        // #651 / SH-6 — clamp every per-vertex bone index to this
+        // mesh's palette (`< MAX_BONES_PER_MESH`). Bethesda meshes
+        // routinely ship 4-byte index payloads where only the low
+        // byte is meaningful and the upper 3 bytes are zeroed; a few
+        // modded NIFs ship with a corrupted index byte that —
+        // unclamped — would read past `bone_offset + 127` into the
+        // adjacent mesh's palette and produce gigantic vertex
+        // displacements. Phase 2's BLAS refit then writes those
+        // displaced positions into the TLAS, breaking ray queries
+        // cluster-wide for that frame.
+        uvec4 bIdx = min(boneIdx, uvec4(MAX_BONES_PER_MESH - 1u));
+        xform = boneW.x * bones[bone_offset + bIdx.x]
+              + boneW.y * bones[bone_offset + bIdx.y]
+              + boneW.z * bones[bone_offset + bIdx.z]
+              + boneW.w * bones[bone_offset + bIdx.w];
     }
 
     vec3 skinnedPos = (xform * vec4(pos, 1.0)).xyz;
