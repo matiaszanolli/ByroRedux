@@ -1513,12 +1513,38 @@ impl Drop for VulkanContext {
                 match std::sync::Arc::try_unwrap(alloc_arc) {
                     Ok(mutex) => drop(mutex.into_inner().expect("allocator lock poisoned")),
                     Err(arc) => {
+                        // #665 / LIFE-L1 — the strong-count clones live
+                        // inside `GpuBuffer` / `Texture` / `StagingPool`
+                        // fields that haven't naturally dropped yet.
+                        // Pre-fix the code logged a warning, hit
+                        // `debug_assert!(false, …)` (silent in release
+                        // builds), and FELL THROUGH to
+                        // `device.destroy_device` below. The natural-
+                        // Drop pass that runs once this method returns
+                        // would then release those Arc clones; when the
+                        // last one drops, the inner `Allocator` runs
+                        // its destructor, which calls `vkFreeMemory`
+                        // on whatever sub-allocations are still tracked
+                        // — against a destroyed `VkDevice`. Driver-
+                        // level use-after-free.
+                        //
+                        // Safer in release: leak the device + surface +
+                        // instance + debug messenger handles entirely.
+                        // The natural-Drop pass below now happens with
+                        // a still-valid device, the late `vkFreeMemory`
+                        // calls succeed against alive memory, and the
+                        // OS reaps the leaked Vulkan handles at process
+                        // exit. Debug builds still hit the assertion
+                        // so the leak source is investigatable in CI.
                         log::error!(
                             "GPU allocator has {} outstanding references — \
-                             leaking allocator to avoid use-after-free on device destroy",
+                             leaking allocator + device + surface + instance to avoid \
+                             use-after-free on driver-side `vkFreeMemory` of late \
+                             natural-Drop allocations. Process must terminate to reclaim.",
                             std::sync::Arc::strong_count(&arc),
                         );
                         debug_assert!(false, "GPU allocator leaked: outstanding Arc references");
+                        return;
                     }
                 }
             }
