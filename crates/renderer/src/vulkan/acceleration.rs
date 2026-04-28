@@ -1143,6 +1143,14 @@ impl AccelerationManager {
             return Ok(0);
         }
 
+        // Advance frame_counter so evict_unused_blas sees meaningful idle
+        // counts during cell-streaming bursts. build_tlas also bumps it
+        // once per draw_frame, but draw_frame never runs between back-to-back
+        // build_blas_batched calls during initial cell loads (M40 streaming).
+        // Without this bump, every entry looks idle=0 and the BLAS budget
+        // is unenforced across loading bursts.
+        self.frame_counter = self.frame_counter.wrapping_add(1);
+
         let vertex_stride = std::mem::size_of::<Vertex>() as vk::DeviceSize;
 
         // Phase 1: Query sizes and allocate result buffers for all meshes.
