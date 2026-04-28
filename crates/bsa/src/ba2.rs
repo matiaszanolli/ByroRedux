@@ -177,11 +177,14 @@ impl Ba2Archive {
                 0 => Ba2Compression::Zlib,
                 3 => Ba2Compression::Lz4Block,
                 other => {
-                    log::warn!(
-                        "BA2 v3: unknown compression method {}, assuming zlib",
-                        other
-                    );
-                    Ba2Compression::Zlib
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "BA2 v3: unsupported compression method {} \
+                             (expected 0=zlib or 3=lz4_block)",
+                            other
+                        ),
+                    ));
                 }
             };
             log::debug!("BA2 v3 compression method: {:?}", compression);
@@ -1001,6 +1004,47 @@ mod tests {
         let garbage = [0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA];
         let result = decompress_chunk(&garbage, 1024, Ba2Compression::Lz4Block);
         assert!(result.is_err());
+    }
+
+    /// Regression for #755 (SF-DIM2-02) — a v3 BA2 header with an
+    /// unrecognised `compression_method` (2 in this case) must return
+    /// `InvalidData` immediately at `open()` time, not emit a warn and
+    /// proceed to decompress garbage bytes.
+    #[test]
+    fn v3_unknown_compression_method_rejected() {
+        use std::io::Write;
+        // Build a minimal v3 BA2 header:
+        //   24-byte base + 8-byte v2/v3 extra + 4-byte compression_method
+        // name_table_offset points just past those 36 bytes so the seek
+        // would succeed even if we got that far (we don't).
+        let mut hdr = Vec::with_capacity(36);
+        hdr.extend_from_slice(b"BTDX");        // magic
+        hdr.extend_from_slice(&3u32.to_le_bytes()); // version = 3 (Starfield DX10)
+        hdr.extend_from_slice(b"GNRL");        // type_tag
+        hdr.extend_from_slice(&0u32.to_le_bytes()); // file_count = 0
+        hdr.extend_from_slice(&36u64.to_le_bytes()); // name_table_offset = 36
+        hdr.extend_from_slice(&[0u8; 8]);      // 2×u32 unknown (v2/v3 extra)
+        hdr.extend_from_slice(&2u32.to_le_bytes()); // compression_method = 2 (unknown)
+        assert_eq!(hdr.len(), 36);
+
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "byroredux_ba2_v3_bad_compression_{}.ba2",
+            std::process::id()
+        ));
+        {
+            let mut f = std::fs::File::create(&path).expect("create temp BA2");
+            f.write_all(&hdr).expect("write header");
+        }
+        let result = Ba2Archive::open(&path);
+        let _ = std::fs::remove_file(&path);
+        let err = match result {
+            Ok(_) => panic!("unknown compression_method must not be accepted"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        let msg = format!("{err}");
+        assert!(msg.contains("unsupported compression method"), "got: {msg}");
     }
 
     /// Regression for #586 (FO4-DIM2-01) — a corrupted / hostile BA2
