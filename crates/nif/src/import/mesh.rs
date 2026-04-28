@@ -156,6 +156,9 @@ pub(super) fn extract_mesh(
         parallax_max_passes: mat.parallax_max_passes,
         parallax_height_scale: mat.parallax_height_scale,
         vertex_color_mode: mat.vertex_color_mode as u8,
+        // #610 — diffuse-slot `TexClampMode` from
+        // `NiTexturingProperty.base_texture` or `BSEffectShaderProperty`.
+        texture_clamp_mode: mat.texture_clamp_mode,
         emissive_color: mat.emissive_color,
         emissive_mult: mat.emissive_mult,
         specular_color: mat.specular_color,
@@ -383,6 +386,9 @@ pub(super) fn extract_bs_tri_shape(
         parallax_max_passes: mat.parallax_max_passes,
         parallax_height_scale: mat.parallax_height_scale,
         vertex_color_mode: mat.vertex_color_mode as u8,
+        // #610 — diffuse-slot `TexClampMode` from BSShader /
+        // BSEffectShader (BsTriShape's effective clamp source).
+        texture_clamp_mode: mat.texture_clamp_mode,
         emissive_color: mat.emissive_color,
         emissive_mult: mat.emissive_mult,
         specular_color: mat.specular_color,

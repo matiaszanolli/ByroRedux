@@ -197,10 +197,33 @@ pub(crate) fn build_material_provider(args: &[String]) -> MaterialProvider {
 }
 
 /// Resolve a texture path to a texture handle, with BSA/BA2 lookup and caching.
+///
+/// Uses Gamebryo's default `WRAP_S_WRAP_T` clamp mode (`3` per
+/// nif.xml's `TexClampMode`). Call [`resolve_texture_with_clamp`] when
+/// the source material's `texture_clamp_mode` is non-default — decals
+/// / scope reticles / skybox seams need `0 = CLAMP_S_CLAMP_T` to
+/// avoid edge bleed. See #610.
 pub(crate) fn resolve_texture(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
     tex_path: Option<&str>,
+) -> u32 {
+    // 3 = WRAP_S_WRAP_T per nif.xml — the legacy REPEAT default.
+    resolve_texture_with_clamp(ctx, tex_provider, tex_path, 3)
+}
+
+/// `resolve_texture`'s clamp-aware variant (#610 / D4-NEW-02). Routes
+/// through the registry's per-`(path, clamp_mode)` cache so the same
+/// DDS path requested with two different `TexClampMode` values gets
+/// two distinct bindless entries with the right `VkSamplerAddressMode`
+/// pair attached. `clamp_mode` values outside `0..=3` are clamped to
+/// `3` (REPEAT) by the registry — defensive default for upstream
+/// parser garbage.
+pub(crate) fn resolve_texture_with_clamp(
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    tex_path: Option<&str>,
+    clamp_mode: u8,
 ) -> u32 {
     let Some(tex_path) = tex_path else {
         return ctx.texture_registry.fallback();
@@ -210,21 +233,29 @@ pub(crate) fn resolve_texture(
     // unload. `load_dds` on the miss path bumps from 0→1 on fresh
     // uploads; both routes produce exactly one outstanding ref per
     // caller. See #524.
-    if let Some(cached) = ctx.texture_registry.acquire_by_path(tex_path) {
+    if let Some(cached) = ctx
+        .texture_registry
+        .acquire_by_path_with_clamp(tex_path, clamp_mode)
+    {
         return cached;
     }
     if let Some(dds_bytes) = tex_provider.extract(tex_path) {
         let alloc = ctx.allocator.as_ref().unwrap();
-        match ctx.texture_registry.load_dds(
+        match ctx.texture_registry.load_dds_with_clamp(
             &ctx.device,
             alloc,
             &ctx.graphics_queue,
             ctx.transfer_pool,
             tex_path,
             &dds_bytes,
+            clamp_mode,
         ) {
             Ok(h) => {
-                log::info!("Loaded DDS texture: '{}'", tex_path);
+                log::info!(
+                    "Loaded DDS texture: '{}' (clamp_mode {})",
+                    tex_path,
+                    clamp_mode,
+                );
                 return h;
             }
             Err(e) => {

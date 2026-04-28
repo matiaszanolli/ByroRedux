@@ -473,6 +473,19 @@ pub(super) struct MaterialInfo {
     /// is follow-up work (tracked separately alongside the BSEffect
     /// soft-falloff hookup under SK-D3-02).
     pub no_lighting_falloff: Option<NoLightingFalloff>,
+    /// Diffuse-slot `TexClampMode` (`0..=3`, see nif.xml's enum) —
+    /// captured from `NiTexturingProperty.base_texture.flags` (Oblivion
+    /// / FO3 / FNV statics) or `BSEffectShaderProperty.texture_clamp_mode`
+    /// (Skyrim+ effects). Default `3 = WRAP_S_WRAP_T` (REPEAT/REPEAT)
+    /// matches Gamebryo's pre-clamp default. Pre-#610 the field was
+    /// dropped at every authoring site; the renderer hardcoded REPEAT
+    /// and CLAMP-authored decals / scope reticles / skybox seams
+    /// rendered with edge bleed. The `BsEffectShaderData` struct
+    /// keeps its own `texture_clamp_mode` for back-compat (effect-
+    /// shader-specific consumers route through that), but
+    /// `extract_material_info` mirrors the value here so the
+    /// importer's per-mesh export needs only one field.
+    pub texture_clamp_mode: u8,
 }
 
 /// Soft-falloff cone captured from `BSShaderNoLightingProperty` (FO3/FNV
@@ -593,6 +606,10 @@ impl Default for MaterialInfo {
             sparkle_parameters: None,
             effect_shader: None,
             no_lighting_falloff: None,
+            // 3 = WRAP_S_WRAP_T per nif.xml — pre-#610 hardcoded
+            // default. Walker overwrites with the diffuse-slot value
+            // when the material's authoring source carries one.
+            texture_clamp_mode: 3,
         }
     }
 }

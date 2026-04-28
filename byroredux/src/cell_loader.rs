@@ -16,7 +16,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::asset_provider::{
-    merge_bgsm_into_mesh, resolve_texture, MaterialProvider, TextureProvider,
+    merge_bgsm_into_mesh, resolve_texture, resolve_texture_with_clamp, MaterialProvider,
+    TextureProvider,
 };
 use crate::components::{
     AlphaBlend, CellLightingRes, DarkMapHandle, Decal, ExtraTextureMaps, NormalMapHandle,
@@ -1764,7 +1765,17 @@ fn spawn_placed_instances(
         drop(pool_read);
 
         // Load texture (shared resolve: cache → BSA → fallback).
-        let tex_handle = resolve_texture(ctx, tex_provider, eff_texture_path.as_deref());
+        // #610 — pass the diffuse-slot `TexClampMode` so the bindless
+        // descriptor's sampler picks the matching `VkSamplerAddressMode`
+        // pair. CLAMP-authored decals / scope reticles / Oblivion
+        // architecture trim no longer render with the legacy
+        // REPEAT/REPEAT bleed.
+        let tex_handle = resolve_texture_with_clamp(
+            ctx,
+            tex_provider,
+            eff_texture_path.as_deref(),
+            mesh.texture_clamp_mode,
+        );
 
         // #544 — mesh entities now sit in the NIF-local frame and
         // descend from the placement root. The transform-propagation

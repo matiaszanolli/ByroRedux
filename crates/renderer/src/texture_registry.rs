@@ -72,8 +72,24 @@ pub struct TextureRegistry {
     pub descriptor_set_layout: vk::DescriptorSetLayout,
     /// One bindless descriptor set per frame-in-flight.
     bindless_sets: Vec<vk::DescriptorSet>,
-    /// Shared sampler for all textures.
+    /// Default LINEAR/REPEAT sampler. Aliased onto `samplers[0]` so
+    /// the legacy `shared_sampler` field stays valid for non-bindless
+    /// callers (composite.rs reads it for the HDR sampler in some
+    /// codepaths).
     pub shared_sampler: vk::Sampler,
+    /// Samplers indexed by Gamebryo `TexClampMode` (`#610`). Encoding
+    /// matches nif.xml's `<enum name="TexClampMode">`:
+    ///   0 = CLAMP_S_CLAMP_T  (decals / scope reticles / skybox seams)
+    ///   1 = CLAMP_S_WRAP_T
+    ///   2 = WRAP_S_CLAMP_T
+    ///   3 = WRAP_S_WRAP_T    (default — the legacy REPEAT/REPEAT)
+    /// Decoded from the lower 4 bits of `TexDesc.flags` in the parser
+    /// (`crates/nif/src/blocks/properties.rs:464`) and from
+    /// `BSEffectShaderProperty.texture_clamp_mode` directly. Pre-#610
+    /// the renderer hardcoded REPEAT for every texture and CLAMP-
+    /// authored decals / Oblivion architecture trim rendered with
+    /// bleeding edges.
+    samplers: [vk::Sampler; 4],
     max_textures: u32,
     /// Monotonic frame counter for deferred-destroy aging (issue #134).
     current_frame_id: u64,
@@ -213,32 +229,75 @@ impl TextureRegistry {
                 .context("Failed to allocate bindless texture descriptor sets")?
         };
 
-        // Shared sampler: LINEAR/REPEAT with anisotropic filtering.
+        // Build one sampler per Gamebryo `TexClampMode` value (4
+        // total) so a per-texture `clamp_mode` can route to the right
+        // VkSamplerAddressMode pair. All four share the LINEAR /
+        // anisotropic / mipmap-LINEAR filtering setup; only U/V wrap
+        // axes differ. See #610 / D4-NEW-02.
         let anisotropy_enable = max_sampler_anisotropy > 1.0;
-        let sampler_info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::LINEAR)
-            .min_filter(vk::Filter::LINEAR)
-            .address_mode_u(vk::SamplerAddressMode::REPEAT)
-            .address_mode_v(vk::SamplerAddressMode::REPEAT)
-            .address_mode_w(vk::SamplerAddressMode::REPEAT)
-            .anisotropy_enable(anisotropy_enable)
-            .max_anisotropy(if anisotropy_enable {
-                max_sampler_anisotropy
-            } else {
-                1.0
-            })
-            .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
-            .unnormalized_coordinates(false)
-            .compare_enable(false)
-            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
-            .min_lod(0.0)
-            .max_lod(16.0);
-
-        let shared_sampler = unsafe {
-            device
-                .create_sampler(&sampler_info, None)
-                .context("Failed to create shared texture sampler")?
+        let max_anisotropy = if anisotropy_enable {
+            max_sampler_anisotropy
+        } else {
+            1.0
         };
+        let make_sampler = |u_mode: vk::SamplerAddressMode,
+                            v_mode: vk::SamplerAddressMode|
+         -> Result<vk::Sampler> {
+            let info = vk::SamplerCreateInfo::default()
+                .mag_filter(vk::Filter::LINEAR)
+                .min_filter(vk::Filter::LINEAR)
+                .address_mode_u(u_mode)
+                .address_mode_v(v_mode)
+                // W axis is unused on 2D bindless reads — set to REPEAT
+                // for consistency with the pre-#610 single-sampler shape.
+                .address_mode_w(vk::SamplerAddressMode::REPEAT)
+                .anisotropy_enable(anisotropy_enable)
+                .max_anisotropy(max_anisotropy)
+                .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
+                .unnormalized_coordinates(false)
+                .compare_enable(false)
+                .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+                .min_lod(0.0)
+                .max_lod(16.0);
+            unsafe {
+                device
+                    .create_sampler(&info, None)
+                    .context("Failed to create texture sampler")
+            }
+        };
+        // Index order matches `TexClampMode` from nif.xml. The lower 4
+        // bits of `TexDesc.flags` are written in this exact encoding by
+        // the parser at `properties.rs:464`, and BSEffectShaderProperty
+        // ships the same encoding directly. Note `0` is CLAMP/CLAMP
+        // (the audit's primary fix target — decals / scope reticles)
+        // and `3` is REPEAT/REPEAT (the default Skyrim wrap).
+        let samplers = [
+            // 0 = CLAMP_S_CLAMP_T — full clamp: decals, scope reticles,
+            // skybox seams, the audit's primary fix target.
+            make_sampler(
+                vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                vk::SamplerAddressMode::CLAMP_TO_EDGE,
+            )?,
+            // 1 = CLAMP_S_WRAP_T — vertical strips that should clamp
+            // horizontally and repeat vertically.
+            make_sampler(
+                vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                vk::SamplerAddressMode::REPEAT,
+            )?,
+            // 2 = WRAP_S_CLAMP_T — mirror of mode 1 (cylindrical labels
+            // etc.).
+            make_sampler(
+                vk::SamplerAddressMode::REPEAT,
+                vk::SamplerAddressMode::CLAMP_TO_EDGE,
+            )?,
+            // 3 = WRAP_S_WRAP_T — pre-#610 default for everything.
+            make_sampler(vk::SamplerAddressMode::REPEAT, vk::SamplerAddressMode::REPEAT)?,
+        ];
+        // Legacy public field — kept as an alias on `samplers[3]` (the
+        // REPEAT/REPEAT entry) so any non-bindless caller that reads
+        // it (composite.rs's HDR sampler path) keeps the pre-#610
+        // wrap behaviour.
+        let shared_sampler = samplers[3];
 
         log::info!(
             "TextureRegistry created: bindless array[{}] × {} frames, anisotropy {}",
@@ -264,6 +323,7 @@ impl TextureRegistry {
             descriptor_set_layout,
             bindless_sets,
             shared_sampler,
+            samplers,
             max_textures,
             current_frame_id: 0,
             staging_pool,
@@ -293,7 +353,13 @@ impl TextureRegistry {
     ///
     /// Both the initial upload and a cache hit bump the entry's
     /// reference count. Pair each call with a matching `drop_texture`.
-    /// See #524.
+    /// See #524. Uses the default WRAP_S_WRAP_T (REPEAT/REPEAT) sampler
+    /// — call [`Self::load_dds_with_clamp`] with the source material's
+    /// `TexClampMode` (`0..=3` — see `samplers`) when it differs, so
+    /// the descriptor write picks the matching
+    /// `VkSamplerAddressMode` pair. The default arm also covers
+    /// content that has no authored clamp data (procedural / engine-
+    /// fallback textures). See #610.
     pub fn load_dds(
         &mut self,
         device: &ash::Device,
@@ -303,7 +369,35 @@ impl TextureRegistry {
         path: &str,
         dds_bytes: &[u8],
     ) -> Result<TextureHandle> {
-        let normalized = normalize_path(path);
+        // 3 = WRAP_S_WRAP_T per nif.xml — the legacy REPEAT/REPEAT.
+        self.load_dds_with_clamp(device, allocator, queue, command_pool, path, dds_bytes, 3)
+    }
+
+    /// Load a DDS texture with an explicit Gamebryo `TexClampMode`
+    /// (`0..=3`, see `samplers` field). Same caching + refcount
+    /// semantics as [`Self::load_dds`]; the only behavioural difference
+    /// is the sampler bound to the bindless descriptor entry.
+    ///
+    /// `clamp_mode` values outside `0..=3` are clamped to `0` (REPEAT)
+    /// — defensive default for upstream parser garbage.
+    ///
+    /// Cache key includes `clamp_mode`: the same `path` requested with
+    /// two different clamp modes produces two distinct entries (the
+    /// underlying GPU image is uploaded twice — acceptable since this
+    /// is rare in Bethesda content; per-material clamp_mode is the
+    /// almost-universal authoring pattern). See #610 / D4-NEW-02.
+    pub fn load_dds_with_clamp(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        command_pool: vk::CommandPool,
+        path: &str,
+        dds_bytes: &[u8],
+        clamp_mode: u8,
+    ) -> Result<TextureHandle> {
+        let clamp_mode = clamp_mode.min(3);
+        let normalized = clamp_keyed_path(path, clamp_mode);
 
         if let Some(&handle) = self.path_map.get(&normalized) {
             if let Some(entry) = self.textures.get_mut(handle as usize) {
@@ -321,7 +415,7 @@ impl TextureRegistry {
             queue,
             command_pool,
             dds_bytes,
-            self.shared_sampler,
+            self.samplers[clamp_mode as usize],
             self.staging_pool.as_mut(),
         )
         .with_context(|| format!("Failed to load DDS texture '{}'", path))?;
@@ -345,7 +439,19 @@ impl TextureRegistry {
     /// intends to hold the handle and must pair it with a
     /// `drop_texture`. See #524.
     pub fn get_by_path(&self, path: &str) -> Option<TextureHandle> {
-        self.path_map.get(&normalize_path(path)).copied()
+        // 3 = WRAP_S_WRAP_T per nif.xml — the legacy REPEAT cache entry.
+        self.get_by_path_with_clamp(path, 3)
+    }
+
+    /// `get_by_path`'s clamp-aware variant — looks up the cache entry
+    /// for `(path, clamp_mode)`. Pre-#610 the cache was keyed by path
+    /// alone; today the same path with two different clamp modes
+    /// produces two distinct entries so the descriptor write picks the
+    /// right `VkSamplerAddressMode`. Defaults (`clamp_mode == 0` =
+    /// REPEAT) preserve the legacy single-key shape.
+    pub fn get_by_path_with_clamp(&self, path: &str, clamp_mode: u8) -> Option<TextureHandle> {
+        let clamp_mode = clamp_mode.min(3);
+        self.path_map.get(&clamp_keyed_path(path, clamp_mode)).copied()
     }
 
     /// Acquire a texture handle by path, bumping the refcount on hit.
@@ -357,7 +463,22 @@ impl TextureRegistry {
     /// `load_dds` on miss) so every cell-loader resolve ends up with
     /// exactly one acquire. See #524.
     pub fn acquire_by_path(&mut self, path: &str) -> Option<TextureHandle> {
-        let normalized = normalize_path(path);
+        // 3 = WRAP_S_WRAP_T per nif.xml — the legacy REPEAT cache entry.
+        self.acquire_by_path_with_clamp(path, 3)
+    }
+
+    /// `acquire_by_path`'s clamp-aware variant. Same refcount semantics
+    /// as the legacy entry point; the cache lookup includes
+    /// `clamp_mode` so a non-zero clamp request resolves to its own
+    /// entry instead of accidentally adopting the REPEAT-bound
+    /// descriptor. See #610 / D4-NEW-02.
+    pub fn acquire_by_path_with_clamp(
+        &mut self,
+        path: &str,
+        clamp_mode: u8,
+    ) -> Option<TextureHandle> {
+        let clamp_mode = clamp_mode.min(3);
+        let normalized = clamp_keyed_path(path, clamp_mode);
         let &handle = self.path_map.get(&normalized)?;
         let entry = self.textures.get_mut(handle as usize)?;
         entry.ref_count = entry.ref_count.saturating_add(1);
@@ -815,7 +936,12 @@ impl TextureRegistry {
         }
 
         unsafe {
-            device.destroy_sampler(self.shared_sampler, None);
+            // #610 — destroy every clamp-mode sampler. `shared_sampler`
+            // aliases `samplers[0]` so iterating the array covers it
+            // too; don't double-destroy.
+            for sampler in self.samplers {
+                device.destroy_sampler(sampler, None);
+            }
             device.destroy_descriptor_pool(self.descriptor_pool, None);
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
         }
@@ -868,6 +994,22 @@ fn normalize_path(path: &str) -> String {
     } else {
         format!("textures/{}", lowered)
     }
+}
+
+/// Cache key for the per-`(path, clamp_mode)` map (#610). Normalises
+/// the path the same way as [`normalize_path`] then suffixes the
+/// clamp-mode byte so the same texture path requested with different
+/// `TexClampMode` values lands in separate entries — the underlying
+/// GPU image is uploaded twice in that case but the descriptor binds
+/// the right `VkSamplerAddressMode` pair. The default-REPEAT path
+/// (`clamp_mode = 0`) keeps the legacy single-entry shape so existing
+/// `acquire_by_path` / `get_by_path` (which look up the no-clamp key
+/// implicitly) still hit.
+fn clamp_keyed_path(path: &str, clamp_mode: u8) -> String {
+    let mut s = normalize_path(path);
+    s.push('|');
+    s.push_str(&clamp_mode.to_string());
+    s
 }
 
 fn should_destroy_pending(current_frame: u64, queued_frame: u64) -> bool {
@@ -973,6 +1115,7 @@ mod tests {
             descriptor_set_layout: vk::DescriptorSetLayout::null(),
             bindless_sets: Vec::new(),
             shared_sampler: vk::Sampler::null(),
+            samplers: [vk::Sampler::null(); 4],
             max_textures,
             current_frame_id: 0,
             // Unit-test path: `check_slot_available` doesn't touch the
@@ -1029,7 +1172,10 @@ mod tests {
             pending_destroy: VecDeque::new(),
             ref_count: initial_ref_count,
         });
-        reg.path_map.insert(normalize_path(path), 1);
+        // 3 = WRAP_S_WRAP_T per nif.xml — the legacy REPEAT entry the
+        // pre-#610 cache lookups (`acquire_by_path` / `get_by_path`)
+        // implicitly target.
+        reg.path_map.insert(clamp_keyed_path(path, 3), 1);
         reg
     }
 
@@ -1065,6 +1211,54 @@ mod tests {
         assert_eq!(reg.textures[1].ref_count, 1);
     }
 
+    /// Regression for #610 / D4-NEW-02: the cache must distinguish
+    /// `(path, clamp_mode)` so the same DDS requested with two
+    /// different `TexClampMode` values gets two separate entries with
+    /// the right `VkSamplerAddressMode` pair attached. Pre-#610 the
+    /// cache was keyed by path alone — every texture got REPEAT and
+    /// CLAMP-authored decals bled at edges.
+    #[test]
+    fn cache_separates_entries_by_clamp_mode() {
+        let mut reg = make_registry_with_entry("chair.dds", 1);
+        // Default `acquire_by_path` looks up the REPEAT (`3`) entry.
+        assert_eq!(reg.acquire_by_path("chair.dds"), Some(1));
+        assert_eq!(reg.textures[1].ref_count, 2);
+        // Same path with `0 = CLAMP_S_CLAMP_T` is a different cache
+        // entry — the seeded fixture has no entry under that key, so
+        // the lookup MUST miss instead of accidentally adopting the
+        // REPEAT-bound texture.
+        assert_eq!(
+            reg.acquire_by_path_with_clamp("chair.dds", 0),
+            None,
+            "CLAMP request must NOT alias to the REPEAT entry"
+        );
+        // The miss didn't touch the REPEAT entry's refcount.
+        assert_eq!(reg.textures[1].ref_count, 2);
+    }
+
+    /// Sibling: `acquire_by_path_with_clamp(path, 3)` must hit the
+    /// same entry the legacy `acquire_by_path` produced — the default
+    /// arm is `WRAP_S_WRAP_T = 3` so existing call sites that don't
+    /// pass a clamp keep their behaviour unchanged.
+    #[test]
+    fn legacy_acquire_path_routes_to_clamp_3() {
+        let mut reg = make_registry_with_entry("chair.dds", 1);
+        let h_legacy = reg.acquire_by_path("chair.dds");
+        let h_explicit = reg.acquire_by_path_with_clamp("chair.dds", 3);
+        assert_eq!(h_legacy, Some(1));
+        assert_eq!(h_explicit, Some(1));
+    }
+
+    /// Sibling: out-of-range `clamp_mode` is clamped to `3` (REPEAT)
+    /// in `acquire_by_path_with_clamp` — defensive default for
+    /// upstream parser garbage.
+    #[test]
+    fn out_of_range_clamp_mode_falls_back_to_3() {
+        let mut reg = make_registry_with_entry("chair.dds", 1);
+        let h = reg.acquire_by_path_with_clamp("chair.dds", 99);
+        assert_eq!(h, Some(1), "values >3 must clamp to the REPEAT entry");
+    }
+
     #[test]
     fn release_ref_decrements_without_freeing_until_zero() {
         // Cell A + cell B both hold a ref. Cell A unloads: decrement to
@@ -1076,8 +1270,11 @@ mod tests {
             "first release should not authorise a GPU drop"
         );
         assert_eq!(reg.textures[1].ref_count, 1);
+        // #610 — path_map keys now suffix the clamp_mode (`|3` =
+        // WRAP_S_WRAP_T, the default REPEAT). Pre-#610 the key was
+        // `"textures/chair.dds"` alone.
         assert!(
-            reg.path_map.contains_key("textures/chair.dds"),
+            reg.path_map.contains_key("textures/chair.dds|3"),
             "cell B still holds a ref — path_map must survive"
         );
         assert!(
@@ -1086,7 +1283,7 @@ mod tests {
         );
         assert_eq!(reg.textures[1].ref_count, 0);
         assert!(
-            !reg.path_map.contains_key("textures/chair.dds"),
+            !reg.path_map.contains_key("textures/chair.dds|3"),
             "last release purges path_map"
         );
     }

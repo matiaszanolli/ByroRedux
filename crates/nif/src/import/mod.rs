@@ -250,6 +250,17 @@ pub struct ImportedMesh {
     /// system can route `Emissive` to self-illumination later.
     /// See #214.
     pub vertex_color_mode: u8,
+    /// Gamebryo `TexClampMode` from the diffuse slot's `TexDesc.flags`
+    /// (lower 4 bits): `0 = WRAP_S_WRAP_T` (default REPEAT), `1 =
+    /// WRAP_S_CLAMP_T`, `2 = CLAMP_S_WRAP_T`, `3 = CLAMP_S_CLAMP_T`.
+    /// Sourced from either `NiTexturingProperty.base_texture` (Oblivion
+    /// / FO3 / FNV statics) or `BSEffectShaderProperty.texture_clamp_mode`
+    /// (Skyrim+ effects). The renderer's bindless cache picks the
+    /// matching `VkSamplerAddressMode` pair at descriptor-write time
+    /// — pre-#610 the value was dropped and every texture rendered
+    /// with REPEAT, leaving decal / scope-reticle / skybox-seam edges
+    /// visibly bleeding.
+    pub texture_clamp_mode: u8,
     /// Emissive color (RGB, linear).
     pub emissive_color: [f32; 3],
     /// Emissive intensity multiplier.

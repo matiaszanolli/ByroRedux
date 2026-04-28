@@ -244,7 +244,15 @@ pub(crate) fn extract_material_info_from_refs(
             // greyscale palette, FO4+/FO76 companion textures, etc.)
             // so downstream consumers can route them when the renderer-
             // side dispatch lands. See #345 / audit S4-01.
-            info.effect_shader = Some(capture_effect_shader_data(shader));
+            let effect = capture_effect_shader_data(shader);
+            // #610 — mirror the effect's `texture_clamp_mode` onto
+            // `MaterialInfo` so the per-mesh export only needs to
+            // forward one field. Effect-shader meshes (force fields,
+            // glow edges, scope reticles, fire planes) are heavy
+            // CLAMP authors so this path is the dominant fix path
+            // on Skyrim+ content.
+            info.texture_clamp_mode = effect.texture_clamp_mode;
+            info.effect_shader = Some(effect);
             // #706 / FX-1 — flag the material as effect-shader for the
             // renderer's `material_kind` dispatch. Routes through the
             // existing u8 ladder (same plumbing the BSLightingShaderProperty
@@ -419,6 +427,23 @@ pub(crate) fn extract_material_info_from_refs(
             // no UV transform of its own and so was wrongly suppressing
             // this branch when it preceded `NiTexturingProperty` in
             // Oblivion / FO3 / FNV property arrays).
+            // Capture the diffuse slot's `clamp_mode` (lower 4 bits of
+            // `TexDesc.flags` — see `properties.rs:464`) so the
+            // renderer can pick the matching `VkSamplerAddressMode`
+            // pair at descriptor-write time. Pre-#610 the value was
+            // dropped and every NiTexturingProperty texture rendered
+            // with REPEAT/REPEAT — visible as edge bleed on decals,
+            // Oblivion architecture trim, and pre-shader skybox seams.
+            // Only update when no earlier shader path supplied a
+            // non-default clamp_mode (e.g. BSEffectShader's dedicated
+            // field) so the more-specific source still wins. Default
+            // is `3 = WRAP_S_WRAP_T` per nif.xml — the legacy
+            // REPEAT/REPEAT.
+            if info.texture_clamp_mode == 3 {
+                if let Some(base) = tex_prop.base_texture.as_ref() {
+                    info.texture_clamp_mode = (base.flags & 0xF) as u8;
+                }
+            }
             if !info.has_uv_transform {
                 if let Some(base) = tex_prop.base_texture.as_ref() {
                     if let Some(tx) = base.transform {
