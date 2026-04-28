@@ -14,6 +14,8 @@ impl NifVersion {
     // Well-known versions
     /// Morrowind era
     pub const V4_0_0_2: Self = Self(0x04000002);
+    /// Pre-Gamebryo boundary: Order float present in XYZ-rotation blocks at <= this version
+    pub const V10_1_0_0: Self = Self(0x0A010000);
     /// Oblivion (v20.0.0.4 — most common Oblivion version)
     pub const V20_0_0_4: Self = Self(0x14000004);
     /// Oblivion (v20.0.0.5 — some Oblivion NIFs)

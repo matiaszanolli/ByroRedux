@@ -289,6 +289,11 @@ impl NiTransformData {
             rotation_type = Some(rt);
 
             if rt == KeyType::XyzRotation {
+                // nif.xml: `Order` float present between RotationType and XYZ KeyGroups on
+                // pre-10.1.0.0 NIFs (field cond="Rotation Type == 4" until="10.1.0.0").
+                if stream.version() <= crate::version::NifVersion::V10_1_0_0 {
+                    let _order = stream.read_f32_le()?;
+                }
                 // XYZ rotation: no quaternion keys, three float key groups instead
                 let x_keys = KeyGroup::<FloatKey>::parse(stream)?;
                 let y_keys = KeyGroup::<FloatKey>::parse(stream)?;
@@ -1239,6 +1244,130 @@ mod tests {
         assert_eq!(xyz[0].keys[1].value, 0.2);
         assert_eq!(xyz[1].keys[2].value, 2.0);
         assert_eq!(xyz[2].keys[0].value, 3.0);
+    }
+
+    /// Regression for #714 — nif.xml specifies an `Order` float
+    /// (4-byte phantom) between `Rotation Type` and the three `XYZ
+    /// Rotations` KeyGroups when (a) rotation_type == XyzRotation and
+    /// (b) version <= 10.1.0.0.  Without the fix the stream under-reads
+    /// by 4 bytes and all subsequent blocks walk 4 bytes early.
+    #[test]
+    fn parse_transform_data_pre10_xyz_rotation_consumes_order_float() {
+        // Build a header with version 10.0.1.0 (pre-10.1.0.0 boundary)
+        let header = NifHeader {
+            version: NifVersion(0x0A000100), // 10.0.1.0
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+
+        let mut data = Vec::new();
+        // Num Rotation Keys = 1
+        data.extend_from_slice(&1u32.to_le_bytes());
+        // Rotation Type = XyzRotation (4)
+        data.extend_from_slice(&4u32.to_le_bytes());
+        // Order float (only present on pre-10.1): a sentinel 1.23456 so
+        // a test that silently skips it would sample the next field wrong
+        data.extend_from_slice(&1.23456f32.to_le_bytes());
+        // KeyGroup X: 1 Linear key
+        data.extend_from_slice(&1u32.to_le_bytes()); // num_keys
+        data.extend_from_slice(&1u32.to_le_bytes()); // Linear
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // time
+        data.extend_from_slice(&0.5f32.to_le_bytes()); // value=0.5 (X)
+        // KeyGroup Y: 1 Linear key
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes()); // value=1.0 (Y)
+        // KeyGroup Z: 1 Linear key
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        data.extend_from_slice(&2.0f32.to_le_bytes()); // value=2.0 (Z)
+        // Translations: 0 keys
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // Scales: 0 keys
+        data.extend_from_slice(&0u32.to_le_bytes());
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let td = NiTransformData::parse(&mut stream).unwrap();
+
+        assert_eq!(
+            stream.position() as usize,
+            expected_len,
+            "pre-10.1: Order float must be consumed so stream position is exact"
+        );
+        let xyz = td.xyz_rotations.as_ref().unwrap();
+        // If Order were not consumed the first value (1.23456 interpreted
+        // as f32 bytes) would land here and the check would fail.
+        assert_eq!(xyz[0].keys[0].value, 0.5, "X axis value");
+        assert_eq!(xyz[1].keys[0].value, 1.0, "Y axis value");
+        assert_eq!(xyz[2].keys[0].value, 2.0, "Z axis value");
+    }
+
+    /// Counterpart to the above: on a v20 NIF there is no Order float.
+    /// The existing `parse_transform_data_xyz_rotation_reads_all_three_axes`
+    /// already covers post-10.1 correctness, but this test uses identical
+    /// key values so the two can be compared side-by-side.
+    #[test]
+    fn parse_transform_data_post20_xyz_rotation_has_no_order_float() {
+        // post-10.1 header (FNV)
+        let header = NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 11,
+            user_version_2: 34,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+
+        let mut data = Vec::new();
+        // Num Rotation Keys = 1
+        data.extend_from_slice(&1u32.to_le_bytes());
+        // Rotation Type = XyzRotation (4)
+        data.extend_from_slice(&4u32.to_le_bytes());
+        // NO Order float on v20+
+        // KeyGroup X: 1 Linear key
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        data.extend_from_slice(&0.5f32.to_le_bytes());
+        // KeyGroup Y
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        // KeyGroup Z
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        data.extend_from_slice(&2.0f32.to_le_bytes());
+        // Translations: 0, Scales: 0
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let td = NiTransformData::parse(&mut stream).unwrap();
+
+        assert_eq!(stream.position() as usize, expected_len);
+        let xyz = td.xyz_rotations.as_ref().unwrap();
+        assert_eq!(xyz[0].keys[0].value, 0.5);
+        assert_eq!(xyz[1].keys[0].value, 1.0);
+        assert_eq!(xyz[2].keys[0].value, 2.0);
     }
 
     /// Regression for #548 — plain `NiBoolInterpolator` keeps the
