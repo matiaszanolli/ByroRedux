@@ -31,6 +31,7 @@
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::reflect::{validate_set_layout, ReflectedShader};
+use super::svgf::should_force_history_reset;
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -571,7 +572,12 @@ impl TaaPipeline {
         cmd: vk::CommandBuffer,
         frame: usize,
     ) -> Result<()> {
-        let first_frame = if self.frames_since_creation < MAX_FRAMES_IN_FLIGHT as u32 {
+        // #648 / RP-2 SIBLING — same first-`MAX_FRAMES_IN_FLIGHT`
+        // history-reset window as SVGF. The TAA path's
+        // `recreate_on_resize` zeroes `frames_since_creation` (line
+        // 702), and the param.y reset flag forces the shader to
+        // skip the temporal tap on the freshly-allocated history.
+        let first_frame = if should_force_history_reset(self.frames_since_creation) {
             1.0
         } else {
             0.0

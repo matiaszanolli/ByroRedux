@@ -86,6 +86,29 @@ pub fn next_svgf_temporal_alpha(recovery_frames: u32) -> (f32, f32, u32) {
     }
 }
 
+/// Should the temporal pass force a full history reset on this frame?
+///
+/// `true` when the SVGF state has fewer than `MAX_FRAMES_IN_FLIGHT`
+/// successful dispatches under its belt — either because the slot
+/// pair was just created, or because `recreate_on_resize` zeroed
+/// `frames_since_creation` and the new G-buffer / history images
+/// haven't been written enough times to host a useful prior. The
+/// dispatch maps the result onto `SvgfTemporalParams.params.z`
+/// (`1.0 = reset history`, see `svgf_temporal.comp:81`); the shader
+/// short-circuits the bilinear-tap reprojection and writes the
+/// current frame's indirect+moments without any history blend.
+///
+/// Pinned as a pure helper (#648 / RP-2) so a future change to the
+/// MAX_FRAMES_IN_FLIGHT boundary or to the resize-zero policy
+/// surfaces as a unit-test failure. Pre-#648 the audit flagged
+/// "G-buffer images sampled by SVGF temporal before any color write
+/// on first 2-3 frames after resize" — the existing
+/// `frames_since_creation` reset path already addresses it; this
+/// extraction is the regression guard the audit asked for.
+pub(super) fn should_force_history_reset(frames_since_creation: u32) -> bool {
+    frames_since_creation < MAX_FRAMES_IN_FLIGHT as u32
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SvgfTemporalParams {
@@ -662,7 +685,15 @@ impl SvgfPipeline {
         alpha_color: f32,
         alpha_moments: f32,
     ) -> Result<()> {
-        let first_frame = if self.frames_since_creation < MAX_FRAMES_IN_FLIGHT as u32 {
+        // #648 / RP-2 — force a full history reset for the first
+        // `MAX_FRAMES_IN_FLIGHT` frames after creation or
+        // `recreate_on_resize`. Pre-#648 the audit was concerned the
+        // freshly-allocated G-buffer attachments would feed garbage
+        // memory into SVGF's prev-frame mesh-id / motion taps; the
+        // history-reset gate (params.z >= 0.5 in the shader) is what
+        // protects against that. See `should_force_history_reset`'s
+        // doc for the cross-link.
+        let first_frame = if should_force_history_reset(self.frames_since_creation) {
             1.0
         } else {
             0.0
@@ -937,5 +968,41 @@ mod tests {
         let (a_color2, _, next2) = next_svgf_temporal_alpha(next);
         assert!((a_color2 - SVGF_ALPHA_STEADY_STATE).abs() < 1e-6);
         assert_eq!(next2, 0, "counter must NOT underflow past 0");
+    }
+
+    /// Regression for #648 / RP-2: after `recreate_on_resize` zeroes
+    /// `frames_since_creation`, the next `MAX_FRAMES_IN_FLIGHT`
+    /// dispatches must force a full history reset so the freshly-
+    /// allocated G-buffer attachments don't feed garbage taps into
+    /// the temporal blend.
+    #[test]
+    fn first_frames_after_resize_force_history_reset() {
+        // Sentinel boundary cases at the documented threshold.
+        for frames in 0..MAX_FRAMES_IN_FLIGHT as u32 {
+            assert!(
+                should_force_history_reset(frames),
+                "frames_since_creation = {frames} must reset history"
+            );
+        }
+    }
+
+    /// Sibling pin: once `MAX_FRAMES_IN_FLIGHT` dispatches have run,
+    /// the history is populated and subsequent frames must NOT force
+    /// a reset (otherwise SVGF would lose all temporal accumulation
+    /// and oscillate between freshly-noisy and reset every frame).
+    #[test]
+    fn history_reset_disables_after_threshold() {
+        for frames in [
+            MAX_FRAMES_IN_FLIGHT as u32,
+            MAX_FRAMES_IN_FLIGHT as u32 + 1,
+            10_000,
+            u32::MAX,
+        ] {
+            assert!(
+                !should_force_history_reset(frames),
+                "frames_since_creation = {frames} (≥ {}) must use history",
+                MAX_FRAMES_IN_FLIGHT,
+            );
+        }
     }
 }
