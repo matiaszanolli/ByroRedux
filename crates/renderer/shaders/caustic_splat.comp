@@ -169,6 +169,11 @@ void main() {
     uint meshIdRaw = texelFetch(meshIdTex, pixel, 0).r;
     uint meshId = meshIdRaw & 0x7FFFu;
     if (meshId == 0u) return;
+    // R16_UINT bit 15 is the alpha-blend marker; the remaining 15 bits
+    // give an effective ceiling of 32767 instances. Guard against values
+    // above that ceiling (possible when M40 streaming loads large exterior
+    // cells) to avoid indexing into random memory in the instance SSBO.
+    if (meshId > 32767u) return;
 
     // RT-enabled gate (#640). The CPU side mirrors this — the dispatch
     // is skipped when `accel_manager.tlas_handle(frame)` is `None` —
