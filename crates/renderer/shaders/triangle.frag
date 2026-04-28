@@ -1650,7 +1650,7 @@ void main() {
             rayQueryInitializeEXT(
                 giRQ, topLevelAS,
                 gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0xFF,
-                giOrigin, 0.05, giDir, 3000.0
+                giOrigin, 0.05, giDir, 6000.0  // tMax raised to match fade-end (was 3000, fade ends at 6000)
             );
             rayQueryProceedEXT(giRQ);
 
