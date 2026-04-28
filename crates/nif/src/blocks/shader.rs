@@ -431,24 +431,27 @@ fn parse_skyrim_shader_base(
         (0, 0)
     };
 
-    let mut sf1_crcs = Vec::new();
-    let mut sf2_crcs = Vec::new();
-    if bsver >= 132 {
-        let num_sf1 = stream.read_u32_le()? as usize;
+    // Counts go through allocate_vec so a corrupt 0xFFFFFFFF can't OOM
+    // before the inner u32 reads fail. See #764.
+    let (sf1_crcs, sf2_crcs) = if bsver >= 132 {
+        let num_sf1 = stream.read_u32_le()?;
         let num_sf2 = if bsver >= 152 {
-            stream.read_u32_le()? as usize
+            stream.read_u32_le()?
         } else {
             0
         };
-        sf1_crcs.reserve(num_sf1);
+        let mut sf1 = stream.allocate_vec::<u32>(num_sf1)?;
         for _ in 0..num_sf1 {
-            sf1_crcs.push(stream.read_u32_le()?);
+            sf1.push(stream.read_u32_le()?);
         }
-        sf2_crcs.reserve(num_sf2);
+        let mut sf2 = stream.allocate_vec::<u32>(num_sf2)?;
         for _ in 0..num_sf2 {
-            sf2_crcs.push(stream.read_u32_le()?);
+            sf2.push(stream.read_u32_le()?);
         }
-    }
+        (sf1, sf2)
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     let uv_offset = [stream.read_f32_le()?, stream.read_f32_le()?];
     let uv_scale = [stream.read_f32_le()?, stream.read_f32_le()?];
@@ -890,24 +893,27 @@ impl BSLightingShaderProperty {
         };
 
         // Num SF1 / Num SF2 (BSVER >= 132 / 152), then both arrays.
-        let mut sf1_crcs = Vec::new();
-        let mut sf2_crcs = Vec::new();
-        if bsver >= 132 {
-            let num_sf1 = stream.read_u32_le()? as usize;
+        // Counts go through allocate_vec so a corrupt 0xFFFFFFFF can't OOM
+        // before the inner u32 reads fail. See #764.
+        let (sf1_crcs, sf2_crcs) = if bsver >= 132 {
+            let num_sf1 = stream.read_u32_le()?;
             let num_sf2 = if bsver >= 152 {
-                stream.read_u32_le()? as usize
+                stream.read_u32_le()?
             } else {
                 0
             };
-            sf1_crcs.reserve(num_sf1);
+            let mut sf1 = stream.allocate_vec::<u32>(num_sf1)?;
             for _ in 0..num_sf1 {
-                sf1_crcs.push(stream.read_u32_le()?);
+                sf1.push(stream.read_u32_le()?);
             }
-            sf2_crcs.reserve(num_sf2);
+            let mut sf2 = stream.allocate_vec::<u32>(num_sf2)?;
             for _ in 0..num_sf2 {
-                sf2_crcs.push(stream.read_u32_le()?);
+                sf2.push(stream.read_u32_le()?);
             }
-        }
+            (sf1, sf2)
+        } else {
+            (Vec::new(), Vec::new())
+        };
 
         // Effective shader type for the downstream dispatch (uses
         // different enums depending on version). #747 / SF-D1-DISPATCH
@@ -1490,24 +1496,27 @@ impl BSEffectShaderProperty {
             (0, 0)
         };
 
-        let mut sf1_crcs = Vec::new();
-        let mut sf2_crcs = Vec::new();
-        if bsver >= 132 {
-            let num_sf1 = stream.read_u32_le()? as usize;
+        // Counts go through allocate_vec so a corrupt 0xFFFFFFFF can't OOM
+        // before the inner u32 reads fail. See #764.
+        let (sf1_crcs, sf2_crcs) = if bsver >= 132 {
+            let num_sf1 = stream.read_u32_le()?;
             let num_sf2 = if bsver >= 152 {
-                stream.read_u32_le()? as usize
+                stream.read_u32_le()?
             } else {
                 0
             };
-            sf1_crcs.reserve(num_sf1);
+            let mut sf1 = stream.allocate_vec::<u32>(num_sf1)?;
             for _ in 0..num_sf1 {
-                sf1_crcs.push(stream.read_u32_le()?);
+                sf1.push(stream.read_u32_le()?);
             }
-            sf2_crcs.reserve(num_sf2);
+            let mut sf2 = stream.allocate_vec::<u32>(num_sf2)?;
             for _ in 0..num_sf2 {
-                sf2_crcs.push(stream.read_u32_le()?);
+                sf2.push(stream.read_u32_le()?);
             }
-        }
+            (sf1, sf2)
+        } else {
+            (Vec::new(), Vec::new())
+        };
 
         let uv_offset = [stream.read_f32_le()?, stream.read_f32_le()?];
         let uv_scale = [stream.read_f32_le()?, stream.read_f32_le()?];

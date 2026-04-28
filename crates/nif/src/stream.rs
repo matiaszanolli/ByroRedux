@@ -436,9 +436,12 @@ impl<'a> NifStream<'a> {
     }
 
     /// Read an array of block references.
+    ///
+    /// Counts go through `allocate_vec` so a corrupt `0xFFFFFFFF` count
+    /// can't OOM the process before the inner reads fail. See #764.
     pub fn read_block_ref_list(&mut self) -> io::Result<Vec<BlockRef>> {
-        let count = self.read_u32_le()? as usize;
-        let mut refs = Vec::with_capacity(count);
+        let count = self.read_u32_le()?;
+        let mut refs = self.allocate_vec(count)?;
         for _ in 0..count {
             refs.push(self.read_block_ref()?);
         }
@@ -574,6 +577,22 @@ mod tests {
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].index(), Some(0));
         assert_eq!(refs[1].index(), Some(3));
+    }
+
+    /// Corrupt count must error before allocating capacity. See #764.
+    #[test]
+    fn read_block_ref_list_corrupt_count_errors_before_alloc() {
+        let header = test_header(NifVersion::V20_2_0_7);
+        let data: Vec<u8> = vec![
+            0xFF, 0xFF, 0xFF, 0xFF, // count: 0xFFFFFFFF (~4 GB request)
+            0x00, 0x00, 0x00, 0x00, // a single ref worth of payload
+        ];
+        let mut stream = NifStream::new(&data, &header);
+
+        let err = stream
+            .read_block_ref_list()
+            .expect_err("0xFFFFFFFF count must reject before pre-allocating");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

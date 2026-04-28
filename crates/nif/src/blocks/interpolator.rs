@@ -300,8 +300,10 @@ impl NiTransformData {
                 let z_keys = KeyGroup::<FloatKey>::parse(stream)?;
                 xyz_rotations = Some([x_keys, y_keys, z_keys]);
             } else {
-                // Quaternion keys
-                rotation_keys.reserve(num_rotation_keys as usize);
+                // Quaternion keys. Counts go through allocate_vec so a
+                // corrupt 0xFFFFFFFF can't OOM before the inner reads fail.
+                // See #764.
+                rotation_keys = stream.allocate_vec::<QuatKey>(num_rotation_keys)?;
                 for _ in 0..num_rotation_keys {
                     let time = stream.read_f32_le()?;
                     let w = stream.read_f32_le()?;

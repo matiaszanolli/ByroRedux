@@ -461,8 +461,10 @@ impl BSGeometryMeshData {
         let mut lods = stream.allocate_vec::<Vec<[u16; 3]>>(n_lods)?;
         for _ in 0..n_lods {
             let n_lod_tri_indices = stream.read_u32_le()?;
-            let lod_tri_count = (n_lod_tri_indices / 3) as usize;
-            let mut tris = Vec::with_capacity(lod_tri_count);
+            let lod_tri_count = n_lod_tri_indices / 3;
+            // Counts go through allocate_vec so a corrupt 0xFFFFFFFF can't
+            // OOM before the inner u16 reads fail. See #764.
+            let mut tris = stream.allocate_vec::<[u16; 3]>(lod_tri_count)?;
             for _ in 0..lod_tri_count {
                 let a = stream.read_u16_le()?;
                 let b = stream.read_u16_le()?;
