@@ -1,5 +1,8 @@
-//! Fallout 4 / Skyrim SE / FO76 / Starfield external material file
-//! (`.bgsm` / `.bgem`) parser.
+//! Fallout 4 / Skyrim SE / FO76 external material file (BGSM v1–v22 / BGEM v1–v22) parser.
+//!
+//! Not supported: Starfield uses `.mat` JSON descriptors and a binary
+//! `materialsbeta.cdb` component database — a different format entirely.
+//! Neither is handled here. See the tracking issue for the Starfield `.mat`/`.cdb` parser.
 //!
 //! Fallout 4 replaced the inline NIF shader-flag block with *external*
 //! material files referenced by `BSLightingShaderProperty.net.name`
