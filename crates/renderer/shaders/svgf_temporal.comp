@@ -130,6 +130,22 @@ void main() {
             histMom /= wTotal;
             histAge /= wTotal;
             hasHistory = true;
+        } else if (length(motion * screen.xy) < 1.5) {
+            // All 4 bilinear taps failed mesh-ID consistency (e.g. single-pixel
+            // silhouette between two surfaces sharing a mesh ID). Fall back to
+            // nearest-tap when motion is sub-pixel — prevents per-frame history
+            // loss and sparkle on slow-moving silhouettes.
+            ivec2 q = ivec2(round(prevPx));
+            if (q.x >= 0 && q.y >= 0 && q.x < int(screen.x) && q.y < int(screen.y)) {
+                uint nearID = texelFetch(prevMeshIdTex, q, 0).r;
+                if (nearID == currID) {
+                    vec4 sMom = texelFetch(prevMomentsHistTex, q, 0);
+                    histInd   = texelFetch(prevIndirectHistTex, q, 0).rgb;
+                    histMom   = sMom.xy;
+                    histAge   = sMom.z;
+                    hasHistory = true;
+                }
+            }
         }
     }
 
