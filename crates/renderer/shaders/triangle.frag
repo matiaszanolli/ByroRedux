@@ -1596,7 +1596,7 @@ void main() {
                 gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
                 0xFF,
                 rayOrigin,
-                0.001,
+                0.05,  // tMin matches N_bias offset above; was 0.001 (50x smaller than bias)
                 rayDir,
                 max(rayDist, 0.01)
             );
