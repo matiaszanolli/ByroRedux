@@ -218,6 +218,15 @@ pub fn spawn_npc_entity(
         placement_root,
         GlobalTransform::new(ref_pos, ref_rot, ref_scale),
     );
+    log::info!(
+        "NPC {:08X} ({}) spawning at world [{:.0},{:.0},{:.0}] scale={:.2}",
+        npc.form_id,
+        npc.editor_id,
+        ref_pos.x,
+        ref_pos.y,
+        ref_pos.z,
+        ref_scale,
+    );
     if !npc.editor_id.is_empty() {
         let mut pool = world.resource_mut::<StringPool>();
         let sym = pool.intern(&npc.editor_id);

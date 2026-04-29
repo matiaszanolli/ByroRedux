@@ -15,14 +15,22 @@ use ash::vk;
 const MAX_LIGHTS: usize = 512;
 
 /// Maximum bones we can upload per frame across all skinned meshes.
-/// 4096 × 64 B = 256 KB/frame. Slot 0 is a reserved identity fallback
-/// (used by rigid vertices through the sum-of-weights escape hatch and
-/// by `SkinnedMesh` bones that failed to resolve). The remaining 4095
-/// slots are assigned sequentially per skinned mesh, with each mesh
-/// consuming `MAX_BONES_PER_MESH` (128) slots for simplicity. That
-/// gives ~31 skinned meshes per frame — more than enough for a cell
-/// full of actors.
-pub const MAX_TOTAL_BONES: usize = 4096;
+/// 32768 × 64 B = 2 MB/frame × 3 frames-in-flight = 6 MB total. Slot 0
+/// is a reserved identity fallback (used by rigid vertices through
+/// the sum-of-weights escape hatch and by `SkinnedMesh` bones that
+/// failed to resolve). The remaining slots are assigned sequentially
+/// per skinned mesh, with each mesh consuming `MAX_BONES_PER_MESH`
+/// (128) slots for simplicity. That gives ~255 skinned meshes per
+/// frame — covers ~36 NPCs at 7 skinned meshes each (skeleton + body
+/// + 6 sub-meshes) plus rigid scene content. Pre-M41.0 the cap was
+/// 4096 (~31 meshes) which suited the no-NPC-spawn baseline; once
+/// M41.0 Phase 1b started spawning multiple actors per cell the
+/// silent-bind-pose-fallback hid spawned NPCs (FNV Prospector
+/// rendered the first ~4 actors then dropped the rest). The proper
+/// fix is variable-stride packing (M29.5); this constant just buys
+/// headroom until then. See `bone_palette` overflow path in
+/// `byroredux/src/render.rs:216`.
+pub const MAX_TOTAL_BONES: usize = 32768;
 
 /// Slot 0 of the bone palette is always the identity matrix.
 pub const IDENTITY_BONE_SLOT: u32 = 0;
