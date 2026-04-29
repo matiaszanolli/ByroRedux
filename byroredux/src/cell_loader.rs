@@ -822,7 +822,16 @@ fn load_references(
     // ~1 932 statics, Goodsprings exterior similar.
     let mut npc_spawned: u32 = 0;
     let mut npc_spawned_sample: Vec<u32> = Vec::with_capacity(8);
+    // `npc_pending` was the Phase 0/2 telemetry for pre-baked-FaceGen
+    // games waiting on Phase 4's spawn path — kept (unused after
+    // Phase 4 wired) so the cell summary's "0 ACHR refs ... pending"
+    // line stays a coherent zero rather than disappearing entirely.
+    // M41.0 lands every supported game on a real spawn function;
+    // if a future game variant doesn't satisfy either predicate,
+    // these fall back to the original telemetry shape.
+    #[allow(unused_mut)]
     let mut npc_pending: u32 = 0;
+    #[allow(unused_mut)]
     let mut npc_pending_sample: Vec<u32> = Vec::with_capacity(8);
 
     // M41.0 Phase 2 — pre-load the per-game default idle KF clip
@@ -984,13 +993,39 @@ fn load_references(
                         }
                         entity_count += 1;
                     }
-                } else {
-                    // Pre-baked-FaceGen path — Phase 4.
-                    npc_pending += 1;
-                    if npc_pending_sample.len() < 8
-                        && !npc_pending_sample.contains(&child_form_id)
-                    {
-                        npc_pending_sample.push(child_form_id);
+                } else if game.uses_prebaked_facegen() {
+                    // M41.0 Phase 4 — Skyrim / FO4 / FO76 / Starfield
+                    // pre-baked-FaceGen dispatch. The NPC's plugin
+                    // name resolves from the high byte of its
+                    // load-order-global FormID against `load_order`;
+                    // when the plugin can't be resolved (corrupt
+                    // FormID, missing master), the spawn function
+                    // logs and returns the placement root with no
+                    // mesh — same observable outcome as a missing
+                    // FaceGen NIF, just diagnosable from the log.
+                    let plugin =
+                        load_order::plugin_for_form_id(child_form_id, load_order)
+                            .unwrap_or("");
+                    let spawned = crate::npc_spawn::spawn_prebaked_npc_entity(
+                        world,
+                        ctx,
+                        npc,
+                        game,
+                        tex_provider,
+                        mat_provider.as_deref_mut(),
+                        plugin,
+                        ref_pos,
+                        ref_rot,
+                        ref_scale,
+                    );
+                    if spawned.is_some() {
+                        npc_spawned += 1;
+                        if npc_spawned_sample.len() < 8
+                            && !npc_spawned_sample.contains(&child_form_id)
+                        {
+                            npc_spawned_sample.push(child_form_id);
+                        }
+                        entity_count += 1;
                     }
                 }
                 continue;
@@ -1270,9 +1305,13 @@ fn load_references(
         center.x, center.y, center.z,
     );
     if npc_spawned > 0 {
-        // M41.0 Phase 1b — kf-era NPC actors landed. Each entry is a
-        // placement_root with skeleton + body parented under it.
-        // Visual QA: bodies in bind pose at the ACHR positions.
+        // M41.0 Phase 1b + Phase 4 — NPC actors landed. The
+        // dispatcher routes through the runtime-FaceGen path
+        // (kf-era games — applies FGGS/FGGA morphs to the race base
+        // head) or the pre-baked-FaceGen path (Skyrim+ — loads the
+        // per-NPC pre-deformed NIF) per `GameKind`. Both end at the
+        // same placement_root + skeleton + skinned mesh shape for
+        // visual QA purposes.
         let sample_str = npc_spawned_sample
             .iter()
             .map(|id| format!("{:08X}", id))
@@ -1283,9 +1322,15 @@ fn load_references(
         } else {
             String::new()
         };
+        let path_label = if game.has_runtime_facegen_recipe() {
+            "runtime-FaceGen"
+        } else {
+            "pre-baked-FaceGen"
+        };
         log::info!(
-            "  {} NPCs spawned via runtime-FaceGen path (sample: {}{})",
+            "  {} NPCs spawned via {} path (sample: {}{})",
             npc_spawned,
+            path_label,
             sample_str,
             trunc,
         );

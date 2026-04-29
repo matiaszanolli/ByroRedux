@@ -467,15 +467,16 @@ pub fn spawn_npc_entity(
                 let hook_state: Option<(
                     &byroredux_facegen::EgmFile,
                     [f32; 50],
+                    [f32; 30],
                     u32,
                 )> = match (recipe, egm_file.as_ref()) {
-                    (Some(r), Some(egm)) => Some((egm, r.fggs, npc.form_id)),
+                    (Some(r), Some(egm)) => Some((egm, r.fggs, r.fgga, npc.form_id)),
                     _ => None,
                 };
                 let has_hook = hook_state.is_some();
                 let mut hook_state = hook_state;
                 let mut hook = |scene: &mut byroredux_nif::import::ImportedScene| {
-                    let Some((egm, fggs, form_id)) = hook_state.take() else {
+                    let Some((egm, fggs, fgga, form_id)) = hook_state.take() else {
                         return;
                     };
                     // FNV race-base head NIFs (e.g. headhuman.nif:
@@ -498,22 +499,40 @@ pub fn spawn_npc_entity(
                         if mesh.positions.is_empty() {
                             continue;
                         }
-                        let new_positions = byroredux_facegen::apply_morphs(
+                        // M41.0 Phase 3b — symmetric (FGGS) deltas
+                        // first; M41.0 Phase 3c — asymmetric (FGGA)
+                        // deltas summed on top. Both passes use the
+                        // same linear evaluator; the asym pass just
+                        // targets the second morph table on disk
+                        // (`fgga_morphs`) with the second slider
+                        // array. Per-NPC effect: FGGS shapes the
+                        // bilateral features (jaw, nose bridge, eye
+                        // height) and FGGA shapes asymmetric ones
+                        // (cheek skew, eyebrow tilt) — together they
+                        // produce the per-NPC face Bethesda's
+                        // FaceGen tool authored.
+                        let after_sym = byroredux_facegen::apply_morphs(
                             &mesh.positions,
                             &egm.fggs_morphs,
                             &fggs,
                         );
-                        mesh.positions = new_positions;
+                        let after_asym = byroredux_facegen::apply_morphs(
+                            &after_sym,
+                            &egm.fgga_morphs,
+                            &fgga,
+                        );
+                        mesh.positions = after_asym;
                         deformed_meshes += 1;
                     }
                     log::debug!(
-                        "M41.0 Phase 3b: NPC {:08X} applied FGGS morphs to {} head mesh(es) \
-                         (EGM {} verts × {} morphs, head NIF mesh verts vary; \
+                        "M41.0 Phase 3b/3c: NPC {:08X} applied FGGS+FGGA morphs to {} head mesh(es) \
+                         (EGM {} verts × {} sym + {} asym; \
                          best-effort prefix until Phase 3b.x parses .tri remap)",
                         form_id,
                         deformed_meshes,
                         egm.num_vertices,
                         egm.fggs_morphs.len(),
+                        egm.fgga_morphs.len(),
                     );
                 };
                 let pre_spawn: Option<
@@ -602,9 +621,234 @@ pub fn spawn_npc_entity(
     Some(placement_root)
 }
 
+/// Path inside the meshes archive for an NPC's pre-baked FaceGen
+/// NIF on Skyrim / FO4 / FO76 / Starfield. Returns `None` for
+/// kf-era games (those use the runtime-FaceGen recipe path).
+///
+/// Vanilla SSE convention (verified by BSA scan 2026-04-28 — 3 158
+/// pre-baked NIFs in `Skyrim - Meshes0.bsa`, 1:1 match with face-
+/// tint DDS in `Skyrim - Textures0.bsa`):
+///
+/// ```text
+/// meshes\actors\character\facegendata\facegeom\<plugin>\<formid:08x>.nif
+/// ```
+///
+/// The `<plugin>` segment is the lowercase basename including the
+/// `.esm` / `.esp` extension. The `<formid:08x>` is the NPC's
+/// load-order-global FormID rendered as 8 lowercase hex digits.
+pub fn prebaked_facegen_nif_path(plugin_name: &str, form_id: u32) -> Option<String> {
+    if plugin_name.is_empty() {
+        return None;
+    }
+    Some(format!(
+        r"meshes\actors\character\facegendata\facegeom\{}\{:08x}.nif",
+        plugin_name.to_ascii_lowercase(),
+        form_id,
+    ))
+}
+
+/// Companion path to [`prebaked_facegen_nif_path`] for the per-NPC
+/// face-tint DDS. Same plugin / FormID structure under
+/// `textures\actors\character\facegendata\facetint\` instead of
+/// `meshes\...\facegeom\`. Returns `None` on empty plugin.
+pub fn prebaked_facegen_tint_path(plugin_name: &str, form_id: u32) -> Option<String> {
+    if plugin_name.is_empty() {
+        return None;
+    }
+    Some(format!(
+        r"textures\actors\character\facegendata\facetint\{}\{:08x}.dds",
+        plugin_name.to_ascii_lowercase(),
+        form_id,
+    ))
+}
+
+/// Spawn an NPC actor entity for the pre-baked-FaceGen path
+/// (Skyrim / FO4 / FO76 / Starfield) — M41.0 Phase 4. Returns the
+/// placement-root `EntityId`. Returns `None` when the game is on
+/// the kf-era runtime-FaceGen track (those route through
+/// [`spawn_npc_entity`] instead).
+///
+/// Pre-baked path: `meshes\actors\character\facegendata\facegeom\
+/// <plugin>\<formid:08x>.nif` carries the per-NPC head **and**
+/// body in one already-skinned mesh — no separate body/head load,
+/// no FaceGen morph evaluator (the SDK pre-applies the slider
+/// table before shipping). Skeleton load + skinning resolution
+/// stays identical to the kf-era path; the head NIF replaces both
+/// the race body NIF and the race-default head.
+///
+/// **Animation deferred**: Skyrim+ vanilla ships zero `.kf` files
+/// (Havok `.hkx` only). Pre-baked-track NPCs spawn in bind pose
+/// today; M41.x lands a Havok stub for idle.
+pub fn spawn_prebaked_npc_entity(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    npc: &NpcRecord,
+    game: GameKind,
+    tex_provider: &TextureProvider,
+    mut mat_provider: Option<&mut MaterialProvider>,
+    plugin_name: &str,
+    ref_pos: Vec3,
+    ref_rot: Quat,
+    ref_scale: f32,
+) -> Option<EntityId> {
+    if !game.uses_prebaked_facegen() {
+        return None;
+    }
+    let gender = Gender::from_acbs_flags(npc.acbs_flags);
+
+    // 1. Placement root.
+    let placement_root = world.spawn();
+    world.insert(placement_root, Transform::new(ref_pos, ref_rot, ref_scale));
+    world.insert(
+        placement_root,
+        GlobalTransform::new(ref_pos, ref_rot, ref_scale),
+    );
+    if !npc.editor_id.is_empty() {
+        let mut pool = world.resource_mut::<StringPool>();
+        let sym = pool.intern(&npc.editor_id);
+        drop(pool);
+        world.insert(placement_root, Name(sym));
+    }
+
+    // 2. Skeleton — same shared file as the kf-era path uses
+    //    (Skyrim+ ships `meshes\actors\character\character assets\
+    //    skeleton.nif`). The pre-baked head NIF carries its own
+    //    `BSTriShape`-skinned mesh that resolves bones against
+    //    this skeleton via the shared `external_skeleton` map.
+    let skel_path = humanoid_skeleton_path(game, gender)?;
+    let skel_data = match tex_provider.extract_mesh(skel_path) {
+        Some(d) => d,
+        None => {
+            log::warn!(
+                "NPC {:08X} ({}): skeleton '{}' not in archives — skipping spawn",
+                npc.form_id,
+                npc.editor_id,
+                skel_path,
+            );
+            return Some(placement_root);
+        }
+    };
+    let (_skel_count, skel_root, skel_map) = load_nif_bytes_with_skeleton(
+        world,
+        ctx,
+        &skel_data,
+        skel_path,
+        tex_provider,
+        mat_provider.as_deref_mut(),
+        None,
+        None,
+    );
+    if let Some(sr) = skel_root {
+        world.insert(sr, Parent(placement_root));
+        add_child(world, placement_root, sr);
+    }
+
+    // 3. Pre-baked FaceGen NIF (per-NPC head+body in one mesh).
+    let Some(facegen_path) = prebaked_facegen_nif_path(plugin_name, npc.form_id) else {
+        log::debug!(
+            "NPC {:08X}: empty plugin name in load order; skipping pre-baked FaceGen",
+            npc.form_id,
+        );
+        return Some(placement_root);
+    };
+    let facegen_data = match tex_provider.extract_mesh(&facegen_path) {
+        Some(d) => d,
+        None => {
+            log::debug!(
+                "NPC {:08X} ({}): pre-baked FaceGen '{}' not in archives — \
+                 NPC visible as skeleton-only (no per-NPC mesh)",
+                npc.form_id,
+                npc.editor_id,
+                facegen_path,
+            );
+            return Some(placement_root);
+        }
+    };
+    let (_fg_count, fg_root, _fg_map) = load_nif_bytes_with_skeleton(
+        world,
+        ctx,
+        &facegen_data,
+        &facegen_path,
+        tex_provider,
+        mat_provider,
+        Some(&skel_map),
+        None,
+    );
+    if let Some(fr) = fg_root {
+        world.insert(fr, Parent(placement_root));
+        add_child(world, placement_root, fr);
+    }
+
+    // Face-tint texture override (Phase 4.x): the per-NPC face-tint
+    // DDS at `textures\actors\character\facegendata\facetint\
+    // <plugin>\<formid:08x>.dds` should replace slot-0 diffuse on
+    // the head material. Wires through the existing
+    // `RefrTextureOverlay` machinery rather than a parallel
+    // override path. Deferred — minimum Phase 4 ships visible
+    // bind-pose NPCs without per-NPC tint, matching the visible
+    // outcome we'd get on the kf-era path before Phase 3c.x's tint
+    // compositor lands.
+    let _tint_path = prebaked_facegen_tint_path(plugin_name, npc.form_id);
+
+    Some(placement_root)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prebaked_facegen_nif_path_matches_vanilla_layout() {
+        // Vanilla SSE Whiterun Mikael (FormID 0x00013BBE in
+        // Skyrim.esm). Path scheme verified by BSA scan 2026-04-28.
+        assert_eq!(
+            prebaked_facegen_nif_path("Skyrim.esm", 0x00013BBE),
+            Some(
+                r"meshes\actors\character\facegendata\facegeom\skyrim.esm\00013bbe.nif"
+                    .to_string(),
+            ),
+        );
+        // Plugin name is lower-cased; FormID rendered as 8 lowercase hex.
+        assert_eq!(
+            prebaked_facegen_nif_path("Dawnguard.esm", 0x0001684C),
+            Some(
+                r"meshes\actors\character\facegendata\facegeom\dawnguard.esm\0001684c.nif"
+                    .to_string(),
+            ),
+        );
+    }
+
+    #[test]
+    fn prebaked_facegen_tint_path_mirrors_geom_layout() {
+        assert_eq!(
+            prebaked_facegen_tint_path("Skyrim.esm", 0x00013BBE),
+            Some(
+                r"textures\actors\character\facegendata\facetint\skyrim.esm\00013bbe.dds"
+                    .to_string(),
+            ),
+        );
+    }
+
+    #[test]
+    fn prebaked_paths_reject_empty_plugin() {
+        assert!(prebaked_facegen_nif_path("", 0x42).is_none());
+        assert!(prebaked_facegen_tint_path("", 0x42).is_none());
+    }
+
+    #[test]
+    fn facegen_sidecar_path_swaps_extension() {
+        assert_eq!(
+            facegen_sidecar_path(r"meshes\characters\head\headhuman.nif", "egm"),
+            Some(r"meshes\characters\head\headhuman.egm".to_string()),
+        );
+        // Mixed-case suffix still matches.
+        assert_eq!(
+            facegen_sidecar_path(r"Characters\Head\HeadHuman.NIF", "egt"),
+            Some(r"Characters\Head\HeadHuman.egt".to_string()),
+        );
+        // Wrong extension → None.
+        assert!(facegen_sidecar_path(r"foo\bar\baz.dds", "egm").is_none());
+    }
 
     #[test]
     fn gender_decodes_acbs_bit_0() {
