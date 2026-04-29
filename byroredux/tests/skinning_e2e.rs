@@ -170,6 +170,134 @@ fn fnv_imports_skinned_mesh_with_resolved_bones() {
 
 #[test]
 #[ignore = "requires FNV BSA — opt in with --ignored"]
+fn fnv_vertex_skin_dump_arms1() {
+    // M41.0 Phase 1b.x followup — direct dump of a few sample vertex
+    // skin entries on `Arms:1` so we can hand-verify that bone indices
+    // point at sensible bones (e.g. a chest vertex weights to spine
+    // bones, not to a foot bone). Live runtime probe says all bones
+    // agree across NIFs and the math should work, yet rendering
+    // produces a long-ribbon vertex artifact — the disagreement has
+    // to be in vertex-bone-index assignment.
+    let bytes = byroredux_bsa::BsaArchive::open(
+        &PathBuf::from(FNV_DEFAULT_DATA).join(FNV_MESH_BSA),
+    )
+    .unwrap()
+    .extract(FNV_FIXTURE_NIF)
+    .unwrap();
+    let scene = byroredux_nif::parse_nif(&bytes).unwrap();
+    let mut pool = byroredux_core::string::StringPool::new();
+    let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
+    let arms1 = imported
+        .meshes
+        .iter()
+        .find(|m| m.name.as_deref() == Some("Arms:1"))
+        .expect("Arms:1 must exist");
+    let skin = arms1.skin.as_ref().expect("Arms:1 must be skinned");
+
+    eprintln!("Arms:1 bones (in skin.bones order):");
+    for (i, b) in skin.bones.iter().enumerate() {
+        eprintln!("  [{}] {}", i, b.name);
+    }
+
+    let n = arms1.positions.len();
+    eprintln!("\nSample vertex skin assignments (first 8 + 4 from middle):");
+    let sample_indices: Vec<usize> = (0..8)
+        .chain((n / 2)..(n / 2 + 4))
+        .collect();
+    for v in sample_indices {
+        let pos = arms1.positions[v];
+        let idx = skin.vertex_bone_indices[v];
+        let w = skin.vertex_bone_weights[v];
+        eprintln!(
+            "  v[{:>3}] pos=({:6.1},{:6.1},{:6.1})  bone_idx={:?}  weights=[{:.2},{:.2},{:.2},{:.2}]  → {} {} {} {}",
+            v,
+            pos[0],
+            pos[1],
+            pos[2],
+            idx,
+            w[0],
+            w[1],
+            w[2],
+            w[3],
+            skin.bones.get(idx[0] as usize).map(|b| b.name.as_ref()).unwrap_or("?"),
+            skin.bones.get(idx[1] as usize).map(|b| b.name.as_ref()).unwrap_or("?"),
+            skin.bones.get(idx[2] as usize).map(|b| b.name.as_ref()).unwrap_or("?"),
+            skin.bones.get(idx[3] as usize).map(|b| b.name.as_ref()).unwrap_or("?"),
+        );
+    }
+
+    // Also: count how many vertices have ANY weight > 0 (i.e. skinned
+    // path active) vs all-zero (rigid fallback).
+    let mut active = 0;
+    let mut zero = 0;
+    for w in &skin.vertex_bone_weights {
+        let s = w[0] + w[1] + w[2] + w[3];
+        if s > 0.001 { active += 1 } else { zero += 1 }
+    }
+    eprintln!("\nWeight distribution: {} active, {} all-zero (rigid fallback)", active, zero);
+}
+
+#[test]
+#[ignore = "requires FNV BSA — opt in with --ignored"]
+fn fnv_vertex_skin_coverage_full() {
+    // M41.0 Phase 1b.x followup — rendering shows the body skin's
+    // vertex-bone-indices array might cover fewer vertices than the
+    // mesh has positions. The scene-side mesh attach in
+    // `scene.rs:1453-1471` falls through to `Vertex::new` (rigid,
+    // zero weights) for any vertex past `skin.vertex_bone_indices.len()`,
+    // which the shader interprets as `wsum<0.001 → use inst.model`.
+    // Surface the gap as a hard regression so a partial coverage
+    // can't sneak past with M29's main palette assertions.
+    let Some(fixture) = load_fixture(
+        "BYROREDUX_FNV_DATA",
+        FNV_DEFAULT_DATA,
+        FNV_MESH_BSA,
+        FNV_FIXTURE_NIF,
+    ) else {
+        return;
+    };
+    let bytes = byroredux_bsa::BsaArchive::open(
+        &PathBuf::from(FNV_DEFAULT_DATA).join(FNV_MESH_BSA),
+    )
+    .unwrap()
+    .extract(FNV_FIXTURE_NIF)
+    .unwrap();
+    let scene = byroredux_nif::parse_nif(&bytes).unwrap();
+    let mut pool = byroredux_core::string::StringPool::new();
+    let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
+    let mut mismatches = 0usize;
+    for mesh in &imported.meshes {
+        if let Some(skin) = mesh.skin.as_ref() {
+            let pos_n = mesh.positions.len();
+            let idx_n = skin.vertex_bone_indices.len();
+            let w_n = skin.vertex_bone_weights.len();
+            eprintln!(
+                "[M29 FNV] mesh '{}': {} positions, {} vertex_bone_indices, {} vertex_bone_weights",
+                mesh.name.as_deref().unwrap_or("?"),
+                pos_n,
+                idx_n,
+                w_n,
+            );
+            if idx_n != pos_n || w_n != pos_n {
+                mismatches += 1;
+            }
+        }
+    }
+    let _ = fixture;
+    assert_eq!(
+        mismatches, 0,
+        "FNV skinned meshes have vertex_bone_indices/weights coverage \
+         not matching positions length — every vertex past coverage \
+         falls to the rigid path in `scene.rs:1471` and renders at \
+         `inst.model × vertex_local` (placement_root × NIF-local), \
+         while neighbours render through palette × vertex_local. The \
+         mixed paths spread triangles across both regions and produce \
+         the long-ribbon vertex artifact."
+    );
+}
+
+#[test]
+#[ignore = "requires FNV BSA — opt in with --ignored"]
 fn fnv_vertex_indices_within_palette_bounds() {
     let Some(fixture) = load_fixture(
         "BYROREDUX_FNV_DATA",

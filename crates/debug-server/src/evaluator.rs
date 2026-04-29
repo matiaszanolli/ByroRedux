@@ -107,16 +107,22 @@ fn eval_walk_entity(world: &World, root: u32, max_depth: u32) -> DebugResponse {
         let kids: Vec<u32> = children_q
             .as_ref()
             .and_then(|q| q.get(entity))
-            .map(|c| c.0.iter().take(32).copied().collect())
+            .map(|c| c.0.iter().copied().collect())
             .unwrap_or_default();
         let gt_t = gt_q
             .as_ref()
             .and_then(|q| q.get(entity))
             .map(|gt| [gt.translation.x, gt.translation.y, gt.translation.z]);
+        let gt_r = gt_q.as_ref().and_then(|q| q.get(entity)).map(|gt| {
+            [gt.rotation.x, gt.rotation.y, gt.rotation.z, gt.rotation.w]
+        });
         let local_t = t_q
             .as_ref()
             .and_then(|q| q.get(entity))
             .map(|t| [t.translation.x, t.translation.y, t.translation.z]);
+        let local_r = t_q.as_ref().and_then(|q| q.get(entity)).map(|t| {
+            [t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w]
+        });
         let name = name_q.as_ref().and_then(|q| q.get(entity)).and_then(|n| {
             pool.as_ref()
                 .and_then(|p| p.resolve(n.0).map(|s| s.to_string()))
@@ -131,7 +137,9 @@ fn eval_walk_entity(world: &World, root: u32, max_depth: u32) -> DebugResponse {
             name,
             children: kids.clone(),
             gt_translation: gt_t,
+            gt_rotation: gt_r,
             local_translation: local_t,
+            local_rotation: local_r,
             has_skinned_mesh: has_skin,
             has_mesh_handle: has_mesh,
         });

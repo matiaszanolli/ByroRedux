@@ -107,8 +107,12 @@ pub struct HierarchyNode {
     pub children: Vec<u32>,
     /// World-space translation from `GlobalTransform`, or `None` if missing.
     pub gt_translation: Option<[f32; 3]>,
+    /// World-space rotation quaternion `[x, y, z, w]` from `GlobalTransform`.
+    pub gt_rotation: Option<[f32; 4]>,
     /// Local-space translation from `Transform`, or `None` if missing.
     pub local_translation: Option<[f32; 3]>,
+    /// Local-space rotation quaternion `[x, y, z, w]` from `Transform`.
+    pub local_rotation: Option<[f32; 4]>,
     /// Marker fields the renderer cares about.
     pub has_skinned_mesh: bool,
     pub has_mesh_handle: bool,
