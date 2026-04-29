@@ -41,6 +41,11 @@ pub enum DebugRequest {
     /// Capture a screenshot of the current frame.
     /// Optionally save to a file path; if None, returns raw PNG bytes.
     Screenshot { path: Option<String> },
+    /// Walk the scene hierarchy from a root entity. Returns each visited
+    /// node's id, name, parent, children, and world translation. Used to
+    /// inspect runtime entity trees (e.g. NPC spawn chains) without
+    /// needing per-component serde derives.
+    WalkEntity { entity: u32, max_depth: u32 },
     /// Ping / keep-alive.
     Ping,
 }
@@ -80,6 +85,8 @@ pub enum DebugResponse {
     Ok,
     /// Pong response to Ping.
     Pong,
+    /// Hierarchy walk result — flat list, depth-first order from the root.
+    Hierarchy { nodes: Vec<HierarchyNode> },
     /// An error message.
     Error { message: String },
 }
@@ -88,6 +95,23 @@ pub enum DebugResponse {
 pub struct EntityInfo {
     pub id: u32,
     pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HierarchyNode {
+    pub id: u32,
+    pub depth: u32,
+    pub parent: Option<u32>,
+    pub name: Option<String>,
+    /// Children entity IDs (truncated to first 32 if more).
+    pub children: Vec<u32>,
+    /// World-space translation from `GlobalTransform`, or `None` if missing.
+    pub gt_translation: Option<[f32; 3]>,
+    /// Local-space translation from `Transform`, or `None` if missing.
+    pub local_translation: Option<[f32; 3]>,
+    /// Marker fields the renderer cares about.
+    pub has_skinned_mesh: bool,
+    pub has_mesh_handle: bool,
 }
 
 impl DebugResponse {

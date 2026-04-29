@@ -61,6 +61,47 @@ pub fn print_response(response: &DebugResponse) {
         DebugResponse::Pong => {
             println!("pong");
         }
+        DebugResponse::Hierarchy { nodes } => {
+            if nodes.is_empty() {
+                println!("(empty hierarchy)");
+                return;
+            }
+            println!(
+                "{:>5} {:>5} {:>6} {:>30} {:>30} {:>5}  name",
+                "depth", "id", "parent", "GT.t", "local.t", "flags"
+            );
+            for n in nodes {
+                let fmt_t = |t: &Option<[f32; 3]>| -> String {
+                    t.map_or("                             ?".into(), |v| {
+                        format!("({:8.1},{:8.1},{:8.1})", v[0], v[1], v[2])
+                    })
+                };
+                let mut flags = String::new();
+                if n.has_skinned_mesh {
+                    flags.push('S');
+                }
+                if n.has_mesh_handle {
+                    flags.push('M');
+                }
+                let parent = n
+                    .parent
+                    .map_or("·".to_string(), |p| p.to_string());
+                let indent = "  ".repeat(n.depth as usize);
+                let name = n.name.as_deref().unwrap_or("");
+                println!(
+                    "{:>5} {:>5} {:>6} {:>30} {:>30} {:>5}  {}{}",
+                    n.depth,
+                    n.id,
+                    parent,
+                    fmt_t(&n.gt_translation),
+                    fmt_t(&n.local_translation),
+                    flags,
+                    indent,
+                    name,
+                );
+            }
+            println!("({} nodes)", nodes.len());
+        }
         DebugResponse::Error { message } => {
             eprintln!("Error: {}", message);
         }

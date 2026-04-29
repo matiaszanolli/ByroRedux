@@ -65,8 +65,84 @@ pub fn evaluate(
             DebugResponse::error("screenshot handled by system, not evaluator")
         }
 
+        DebugRequest::WalkEntity { entity, max_depth } => {
+            eval_walk_entity(world, *entity, *max_depth)
+        }
+
         DebugRequest::Eval { expr } => eval_request(world, registry, expr),
     }
+}
+
+// ── Hierarchy walk (M41.0 Phase 1b.x followup) ──────────────────────────
+//
+// Direct World access — no per-component serde derives needed. Walks the
+// `Children` chain depth-first, captures `GlobalTransform.translation` +
+// `Transform.translation` per visited node, plus boolean markers for
+// `SkinnedMesh` and `MeshHandle` (the two component types that decide
+// whether the entity actually contributes draw calls).
+
+fn eval_walk_entity(world: &World, root: u32, max_depth: u32) -> DebugResponse {
+    use byroredux_core::ecs::components::{Children, MeshHandle, Name, Parent};
+    use byroredux_core::ecs::{GlobalTransform, SkinnedMesh, Transform};
+    use byroredux_debug_protocol::HierarchyNode;
+
+    let parent_q = world.query::<Parent>();
+    let children_q = world.query::<Children>();
+    let gt_q = world.query::<GlobalTransform>();
+    let t_q = world.query::<Transform>();
+    let name_q = world.query::<Name>();
+    let skin_q = world.query::<SkinnedMesh>();
+    let mesh_q = world.query::<MeshHandle>();
+    let pool = world.try_resource::<byroredux_core::string::StringPool>();
+
+    let mut nodes: Vec<HierarchyNode> = Vec::new();
+    let mut stack: Vec<(u32, u32)> = vec![(root, 0)];
+
+    while let Some((entity, depth)) = stack.pop() {
+        if depth > max_depth {
+            continue;
+        }
+
+        let parent = parent_q.as_ref().and_then(|q| q.get(entity)).map(|p| p.0);
+        let kids: Vec<u32> = children_q
+            .as_ref()
+            .and_then(|q| q.get(entity))
+            .map(|c| c.0.iter().take(32).copied().collect())
+            .unwrap_or_default();
+        let gt_t = gt_q
+            .as_ref()
+            .and_then(|q| q.get(entity))
+            .map(|gt| [gt.translation.x, gt.translation.y, gt.translation.z]);
+        let local_t = t_q
+            .as_ref()
+            .and_then(|q| q.get(entity))
+            .map(|t| [t.translation.x, t.translation.y, t.translation.z]);
+        let name = name_q.as_ref().and_then(|q| q.get(entity)).and_then(|n| {
+            pool.as_ref()
+                .and_then(|p| p.resolve(n.0).map(|s| s.to_string()))
+        });
+        let has_skin = skin_q.as_ref().is_some_and(|q| q.get(entity).is_some());
+        let has_mesh = mesh_q.as_ref().is_some_and(|q| q.get(entity).is_some());
+
+        nodes.push(HierarchyNode {
+            id: entity,
+            depth,
+            parent,
+            name,
+            children: kids.clone(),
+            gt_translation: gt_t,
+            local_translation: local_t,
+            has_skinned_mesh: has_skin,
+            has_mesh_handle: has_mesh,
+        });
+
+        // Depth-first: push children in reverse so first child pops next.
+        for &child in kids.iter().rev() {
+            stack.push((child, depth + 1));
+        }
+    }
+
+    DebugResponse::Hierarchy { nodes }
 }
 
 /// Resolve a free-form evaluation request. Pre-#518 this fell straight

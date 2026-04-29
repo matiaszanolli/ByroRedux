@@ -24,6 +24,18 @@ use crate::components::{
 /// cell's skinned-mesh count exceeds `MAX_TOTAL_BONES`.
 static BONE_PALETTE_OVERFLOW_WARNED: Once = Once::new();
 
+/// M41.0 Phase 1b.x followup — frame-gated dump of any palette slot that
+/// resolved to `Mat4::IDENTITY` after propagation. `compute_palette_into`
+/// returns IDENTITY when (a) the bone entity was `None` at skin attach
+/// time (bone-name not in the external skeleton map and not in the local
+/// `node_by_name` either) or (b) the `world_transform_of` closure
+/// returned `None` (entity has no `GlobalTransform`). Both cases produce
+/// the long-thin-ribbon vertex artifact: vertices weighted to the
+/// IDENTITY slot land at NIF skin-space coords, vertices weighted to
+/// well-resolved slots land at world coords, and triangles span the gap.
+static SKIN_DROPOUT_DUMPED: Once = Once::new();
+static FRAME_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Convert an `f32` to a `u32` key whose unsigned ordering matches
 /// IEEE 754 total ordering of the source values across the full real
 /// domain (negatives, zero, subnormals, positives, infinities, and
@@ -174,6 +186,8 @@ pub(crate) fn build_render_data(
     palette_scratch: &mut Vec<Mat4>,
     particle_quad_handle: Option<u32>,
 ) -> ([f32; 16], [f32; 3], [f32; 3], [f32; 3], f32, f32, SkyParams) {
+    let frame_count = FRAME_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
     draw_commands.clear();
     gpu_lights.clear();
     bone_palette.clear();
@@ -234,6 +248,43 @@ pub(crate) fn build_render_data(
             skin.compute_palette_into(palette_scratch, |bone_entity| {
                 gt_q.get(bone_entity).map(|gt| gt.to_matrix())
             });
+            // M41.0 Phase 1b.x followup — flag any palette slot that
+            // resolved to identity post-propagation. These slots cause
+            // the ribbon-vertex artifact described on
+            // SKIN_DROPOUT_DUMPED.
+            if frame_count >= 60 {
+                let mut dropout_slots: Vec<(usize, bool)> = Vec::new();
+                for (i, ((bone_e, _bind), pal)) in skin
+                    .bones
+                    .iter()
+                    .zip(skin.bind_inverses.iter())
+                    .zip(palette_scratch.iter())
+                    .enumerate()
+                {
+                    let m = *pal;
+                    let is_identity = (m.x_axis - byroredux_core::math::Vec4::X).length_squared()
+                        < 1e-6
+                        && (m.y_axis - byroredux_core::math::Vec4::Y).length_squared() < 1e-6
+                        && (m.z_axis - byroredux_core::math::Vec4::Z).length_squared() < 1e-6
+                        && (m.w_axis - byroredux_core::math::Vec4::W).length_squared() < 1e-6;
+                    if is_identity {
+                        dropout_slots.push((i, bone_e.is_none()));
+                    }
+                }
+                if !dropout_slots.is_empty() {
+                    SKIN_DROPOUT_DUMPED.call_once(|| {
+                        log::warn!(
+                            "Phase 1b.x DROPOUT — skinned mesh entity {:?}: {} of {} palette \
+                             slots are IDENTITY (frame {}). Sample (slot, bone_was_None): {:?}",
+                            entity,
+                            dropout_slots.len(),
+                            skin.bones.len(),
+                            frame_count,
+                            &dropout_slots[..dropout_slots.len().min(8)],
+                        );
+                    });
+                }
+            }
             // Pad every skinned mesh to MAX_BONES_PER_MESH so per-mesh
             // bone offsets are trivially `offset + local_index` and the
             // shader doesn't need a per-mesh bone count.

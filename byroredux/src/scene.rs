@@ -1392,6 +1392,31 @@ pub(crate) fn load_nif_bytes_with_skeleton(
     let mut count = 0;
     let mut blas_specs: Vec<(u32, u32, u32)> = Vec::new();
     for mesh in &imported.meshes {
+        // M41.0 Phase 1b.x temp gate — vanilla FNV / FO3 actor body NIFs
+        // ship 4 dismemberment-cap sub-meshes alongside the visible body
+        // (`bodycaps`, `limbcaps`, `meatneck01`, `meathead01`). The
+        // legacy engine hides them via `BSDismemberSkinInstance.partitions
+        // [i].part_flag` until a body part is actually dismembered; we
+        // don't honour that flag yet, so they render as inside-the-body
+        // bloody geometry that looks like dark ribbons / spikes spilling
+        // from the actor. Skipping by name keeps NPCs visually coherent
+        // until the partition-flag visibility pipeline lands as its own
+        // followup. Match-arm naming is conservative — these are exact
+        // vanilla mesh-name conventions and won't false-positive on
+        // anything else.
+        let mesh_name = mesh.name.as_deref().unwrap_or("");
+        if matches!(
+            mesh_name,
+            "bodycaps" | "limbcaps" | "meatneck01" | "meathead01"
+        ) {
+            log::debug!(
+                "Phase 1b.x: skipping dismemberment cap '{}' until BSDismemberSkinInstance \
+                 partition flags are wired",
+                mesh_name,
+            );
+            continue;
+        }
+
         let num_verts = mesh.positions.len();
         // Skinned vertices use the per-vertex bone indices + weights that
         // #151 / #177 extracted from NiSkinData / BSTriShape. Rigid
@@ -1678,6 +1703,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 let mut bones: Vec<Option<EntityId>> = Vec::with_capacity(skin.bones.len());
                 let mut binds: Vec<Mat4> = Vec::with_capacity(skin.bones.len());
                 let mut unresolved = 0_usize;
+                let mut unresolved_names: Vec<&str> = Vec::new();
                 for bone in &skin.bones {
                     // M41.0 Phase 1b: prefer the external skeleton
                     // map (set when the spawn function is assembling
@@ -1693,6 +1719,9 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                         None => {
                             bones.push(None);
                             unresolved += 1;
+                            if unresolved_names.len() < 8 {
+                                unresolved_names.push(&bone.name);
+                            }
                         }
                     }
                     binds.push(Mat4::from_cols_array_2d(&bone.bind_inverse));
@@ -1703,13 +1732,35 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                         .or_else(|| node_by_name.get(n).copied())
                 });
                 world.insert(entity, SkinnedMesh::new(root_entity, bones, binds));
-                log::info!(
-                    "Skinned mesh '{}': {} bones ({} unresolved), root={:?}",
-                    mesh.name.as_deref().unwrap_or("?"),
-                    skin.bones.len(),
-                    unresolved,
-                    skin.skeleton_root,
-                );
+                if unresolved > 0 {
+                    // M41.0 Phase 1b.x followup — unresolved bones land
+                    // as `None` in `SkinnedMesh.bones`, and
+                    // `compute_palette_into` substitutes
+                    // `Mat4::IDENTITY` for those slots. Vertices weighted
+                    // to such a slot end up at `vertex_local` (near NIF
+                    // skin-space origin) while neighbours weighted to
+                    // resolved bones land at world coords, producing
+                    // triangle ribbons stretched from origin to the
+                    // actor's placement. Logging the names so we can see
+                    // which sub-skeleton convention is mismatched
+                    // between the source NIF and the external skeleton
+                    // map.
+                    log::warn!(
+                        "Skinned mesh '{}': {} bones ({} UNRESOLVED — names: {:?}), root={:?}",
+                        mesh.name.as_deref().unwrap_or("?"),
+                        skin.bones.len(),
+                        unresolved,
+                        unresolved_names,
+                        skin.skeleton_root,
+                    );
+                } else {
+                    log::info!(
+                        "Skinned mesh '{}': {} bones (0 unresolved), root={:?}",
+                        mesh.name.as_deref().unwrap_or("?"),
+                        skin.bones.len(),
+                        skin.skeleton_root,
+                    );
+                }
             }
         }
 
