@@ -170,6 +170,201 @@ fn fnv_imports_skinned_mesh_with_resolved_bones() {
 
 #[test]
 #[ignore = "requires FNV BSA — opt in with --ignored"]
+fn fnv_skinning_invariant_check() {
+    // M41.0 Phase 1b.x — verify the legacy NiSkinData skinning
+    // invariant against real FNV upperbody.nif data.
+    //
+    // Per niftools / nifly / Gamebryo 2.6 source:
+    //   NiSkinData.skinTransform         = transformGlobalToSkin
+    //   NiSkinData.bones[i].skinTransform = transformSkinToBone (per-bone)
+    //
+    // At BIND POSE, the runtime invariant is:
+    //   bone_world_at_bind × skinToBone[i]  =  SkinToGlobal  (constant ∀ i)
+    //   ⇔  GlobalToSkin × bone_world_at_bind × skinToBone[i] = identity
+    //
+    // i.e. composing global-to-skin × bone_world × skin-to-bone for ANY
+    // bone yields identity in bind pose. This gives us a hard, parser-
+    // independent assertion: if ANY bone breaks this invariant, our
+    // import (or the runtime composition) is dropping or misordering a
+    // factor.
+    use byroredux_nif::blocks::skin::{NiSkinData, NiSkinInstance, BsDismemberSkinInstance};
+    use byroredux_nif::blocks::tri_shape::NiTriShape;
+    use byroredux_nif::blocks::node::NiNode;
+    use byroredux_nif::types::BlockRef;
+    use byroredux_core::math::Mat4;
+
+    let bytes = byroredux_bsa::BsaArchive::open(
+        &PathBuf::from(FNV_DEFAULT_DATA).join(FNV_MESH_BSA),
+    )
+    .unwrap()
+    .extract(FNV_FIXTURE_NIF)
+    .unwrap();
+    let scene = byroredux_nif::parse_nif(&bytes).unwrap();
+
+    fn nitransform_to_mat4(t: &byroredux_nif::types::NiTransform) -> Mat4 {
+        let r = &t.rotation.rows;
+        let s = t.scale;
+        // nif.xml line 1812 claims NiMatrix3 is "OpenGL column-major
+        // format" but that contradicts how nifly (a well-tested
+        // Bethesda-NIF round-trip library) handles it: nifly does a
+        // raw memcpy from file into `Vector3 rows[3]` and its
+        // Matrix3*Vector3 multiplies treat rows[i] as ROW i (standard
+        // math notation). So the file actually stores rows
+        // sequentially despite nif.xml's wording.
+        //
+        // Our parser matches nifly's read pattern: rows[i] = row i.
+        // For glam Mat4 (column-major), col c = (M[0][c], M[1][c],
+        // M[2][c]) = (r[0][c], r[1][c], r[2][c]).
+        Mat4::from_cols_array(&[
+            r[0][0] * s, r[1][0] * s, r[2][0] * s, 0.0,  // col 0
+            r[0][1] * s, r[1][1] * s, r[2][1] * s, 0.0,  // col 1
+            r[0][2] * s, r[1][2] * s, r[2][2] * s, 0.0,  // col 2
+            t.translation.x, t.translation.y, t.translation.z, 1.0,
+        ])
+    }
+
+    // Walk the NIF node tree to compute each named node's world
+    // transform at bind. Caller-side recursion via a helper closure-y
+    // function (we just walk the raw tree).
+    fn world_xform_for_named_node(
+        scene: &byroredux_nif::scene::NifScene,
+        target_name: &str,
+    ) -> Option<Mat4> {
+        let root_idx = scene.root_index?;
+        let mut stack: Vec<(usize, Mat4)> = vec![(root_idx, Mat4::IDENTITY)];
+        while let Some((idx, parent_world)) = stack.pop() {
+            let Some(node) = scene.get_as::<NiNode>(idx) else { continue };
+            let local = nitransform_to_mat4(&node.av.transform);
+            let world = parent_world * local;
+            if node.av.net.name.as_deref().map(|n: &str| n.eq_ignore_ascii_case(target_name)).unwrap_or(false) {
+                return Some(world);
+            }
+            for child_ref in &node.children {
+                if let Some(child_idx) = (*child_ref).index() {
+                    stack.push((child_idx, world));
+                }
+            }
+        }
+        None
+    }
+
+    for shape_block_idx in 0..scene.blocks.len() {
+        let Some(shape) = scene.get_as::<NiTriShape>(shape_block_idx) else { continue };
+        let shape_name = shape.av.net.name.as_deref().unwrap_or("?").to_string();
+        if shape_name == "bodycaps" || shape_name == "limbcaps"
+            || shape_name == "meatneck01" || shape_name == "meathead01" {
+            continue; // skip dismemberment caps
+        }
+
+        let Some(skin_idx) = shape.skin_instance_ref.index() else { continue };
+        let inst = scene.get_as::<NiSkinInstance>(skin_idx);
+        let inst_dis = scene.get_as::<BsDismemberSkinInstance>(skin_idx);
+        let (data_ref, bone_refs): (BlockRef, &[BlockRef]) = if let Some(i) = inst {
+            (i.data_ref, &i.bone_refs)
+        } else if let Some(i) = inst_dis {
+            (i.base.data_ref, &i.base.bone_refs)
+        } else { continue };
+        let Some(data_idx) = data_ref.index() else { continue };
+        let Some(data) = scene.get_as::<NiSkinData>(data_idx) else { continue };
+
+        let global_to_skin = nitransform_to_mat4(&data.skin_transform);
+        eprintln!(
+            "── shape '{}' ──  global_to_skin.t=({:.3},{:.3},{:.3})  scale={:.3}",
+            shape_name,
+            data.skin_transform.translation.x,
+            data.skin_transform.translation.y,
+            data.skin_transform.translation.z,
+            data.skin_transform.scale,
+        );
+
+        // For first 3 bones, compute and check the invariant:
+        //   global_to_skin × bone_world_at_bind × skin_to_bone[i] ≈ identity
+        for (i, bone_ref) in bone_refs.iter().enumerate().take(3) {
+            let Some(bone_idx) = bone_ref.index() else { continue };
+            let Some(bone_node) = scene.get_as::<NiNode>(bone_idx) else { continue };
+            let bone_name = bone_node.av.net.name.as_deref().unwrap_or("?");
+
+            let bone_world_at_bind = world_xform_for_named_node(&scene, bone_name);
+            let Some(bone_world) = bone_world_at_bind else {
+                eprintln!("  [{}] {} — could not resolve bone in tree", i, bone_name);
+                continue;
+            };
+
+            let skin_to_bone = nitransform_to_mat4(&data.bones[i].skin_transform);
+
+            // Compose: global_to_skin × bone_world × skin_to_bone
+            let composed = global_to_skin * bone_world * skin_to_bone;
+            // Distance from identity:
+            let id = Mat4::IDENTITY;
+            let mut max_diff: f32 = 0.0;
+            for c in 0..4 {
+                for r in 0..4 {
+                    let v = composed.col(c)[r] - id.col(c)[r];
+                    if v.abs() > max_diff { max_diff = v.abs() }
+                }
+            }
+            let composed_t = composed.col(3);
+            eprintln!(
+                "  [{}] {:30} bone_world.t=({:.1},{:.1},{:.1})  skinToBone.t=({:.3},{:.3},{:.3})  composed.t=({:.3},{:.3},{:.3})  max_diff_from_I={:.4}",
+                i, bone_name,
+                bone_world.col(3)[0], bone_world.col(3)[1], bone_world.col(3)[2],
+                data.bones[i].skin_transform.translation.x,
+                data.bones[i].skin_transform.translation.y,
+                data.bones[i].skin_transform.translation.z,
+                composed_t[0], composed_t[1], composed_t[2],
+                max_diff,
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires FNV BSA — opt in with --ignored"]
+fn fnv_dump_global_skin_transform() {
+    // Check what NiSkinData.skin_transform (the global mesh→skeleton-root
+    // offset) actually contains for FNV body NIFs. If non-identity, our
+    // import currently drops it.
+    use byroredux_nif::blocks::skin::NiSkinData;
+    use byroredux_nif::blocks::tri_shape::NiTriShape;
+    let bytes = byroredux_bsa::BsaArchive::open(
+        &PathBuf::from(FNV_DEFAULT_DATA).join(FNV_MESH_BSA),
+    )
+    .unwrap()
+    .extract(FNV_FIXTURE_NIF)
+    .unwrap();
+    let scene = byroredux_nif::parse_nif(&bytes).unwrap();
+    for i in 0..scene.blocks.len() {
+        let Some(shape) = scene.get_as::<NiTriShape>(i) else { continue };
+        let Some(skin_inst_idx) = shape.skin_instance_ref.index() else { continue };
+        let inst = scene.get_as::<byroredux_nif::blocks::skin::NiSkinInstance>(skin_inst_idx);
+        let inst_dismember = scene.get_as::<byroredux_nif::blocks::skin::BsDismemberSkinInstance>(skin_inst_idx);
+        let data_ref = inst
+            .map(|i| i.data_ref)
+            .or_else(|| inst_dismember.map(|i| i.base.data_ref));
+        let Some(data_ref) = data_ref else { continue };
+        let Some(data_idx) = data_ref.index() else { continue };
+        let Some(data) = scene.get_as::<NiSkinData>(data_idx) else { continue };
+        eprintln!(
+            "shape '{}' (block {}): NiSkinData.skin_transform.translation = ({:.3}, {:.3}, {:.3})  scale={:.3}",
+            shape.av.net.name.as_deref().unwrap_or("?"),
+            i,
+            data.skin_transform.translation.x,
+            data.skin_transform.translation.y,
+            data.skin_transform.translation.z,
+            data.skin_transform.scale,
+        );
+        let r = &data.skin_transform.rotation.rows;
+        eprintln!(
+            "    rotation matrix:  [{:.3} {:.3} {:.3}]  [{:.3} {:.3} {:.3}]  [{:.3} {:.3} {:.3}]",
+            r[0][0], r[0][1], r[0][2],
+            r[1][0], r[1][1], r[1][2],
+            r[2][0], r[2][1], r[2][2],
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires FNV BSA — opt in with --ignored"]
 fn fnv_vertex_skin_dump_arms1() {
     // M41.0 Phase 1b.x followup — direct dump of a few sample vertex
     // skin entries on `Arms:1` so we can hand-verify that bone indices
