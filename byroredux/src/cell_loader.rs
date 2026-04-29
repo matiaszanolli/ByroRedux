@@ -923,69 +923,62 @@ fn load_references(
         });
 
         for (child_form_id, ref_pos, ref_rot, ref_scale) in synth_refs {
+            // M41.0 Phase 1b — NPC dispatch must run BEFORE the
+            // statics lookup. NPC_ records are also indexed in
+            // `EsmCellIndex.statics` (because they carry a MODL —
+            // the body mesh path) by `parse_modl_group` at
+            // `crates/plugin/src/esm/cell/mod.rs:703`. If the
+            // statics check ran first the static-spawn path would
+            // claim every NPC ACHR and the NPC dispatcher would
+            // never see them. Pre-fix `TestQAHairM` (31 NPCs / 61
+            // refs) reported "61 statics hits, 0 NPCs spawned" — the
+            // NPCs were silently rendered as a single non-skinned
+            // body mesh per actor instead of going through the
+            // skeleton-aware spawn function.
+            if let Some(npc) = npcs.get(&child_form_id) {
+                bounds_min = bounds_min.min(ref_pos);
+                bounds_max = bounds_max.max(ref_pos);
+                if game.has_runtime_facegen_recipe() {
+                    let race = races.get(&npc.race_form_id);
+                    let spawned = crate::npc_spawn::spawn_npc_entity(
+                        world,
+                        ctx,
+                        npc,
+                        race,
+                        game,
+                        tex_provider,
+                        mat_provider.as_deref_mut(),
+                        ref_pos,
+                        ref_rot,
+                        ref_scale,
+                    );
+                    if spawned.is_some() {
+                        npc_spawned += 1;
+                        if npc_spawned_sample.len() < 8
+                            && !npc_spawned_sample.contains(&child_form_id)
+                        {
+                            npc_spawned_sample.push(child_form_id);
+                        }
+                        entity_count += 1;
+                    }
+                } else {
+                    // Pre-baked-FaceGen path — Phase 4.
+                    npc_pending += 1;
+                    if npc_pending_sample.len() < 8
+                        && !npc_pending_sample.contains(&child_form_id)
+                    {
+                        npc_pending_sample.push(child_form_id);
+                    }
+                }
+                continue;
+            }
+
             let stat = match index.statics.get(&child_form_id) {
                 Some(s) => {
                     stat_hit += 1;
                     s
                 }
                 None => {
-                    // M41.0 Phase 1b — ACHR REFRs whose base resolves
-                    // to an `NPC_` record route through the NPC spawn
-                    // function instead of the static-mesh path. The
-                    // kf-era branch (Oblivion / FO3 / FNV) loads
-                    // skeleton + race body NIF and parents them under
-                    // a placement root; the pre-baked-FaceGen branch
-                    // (Skyrim / FO4 / FO76 / Starfield) lands in
-                    // Phase 4 and currently `npc_pending` still
-                    // counts those for telemetry. Bounds tracking
-                    // uses the placement position; mesh-entity count
-                    // and full counters lump under `entity_count` so
-                    // existing per-cell summary stays accurate.
-                    if let Some(npc) = npcs.get(&child_form_id) {
-                        bounds_min = bounds_min.min(ref_pos);
-                        bounds_max = bounds_max.max(ref_pos);
-                        if game.has_runtime_facegen_recipe() {
-                            let race = races.get(&npc.race_form_id);
-                            let spawned = crate::npc_spawn::spawn_npc_entity(
-                                world,
-                                ctx,
-                                npc,
-                                race,
-                                game,
-                                tex_provider,
-                                mat_provider.as_deref_mut(),
-                                ref_pos,
-                                ref_rot,
-                                ref_scale,
-                            );
-                            if spawned.is_some() {
-                                npc_spawned += 1;
-                                if npc_spawned_sample.len() < 8
-                                    && !npc_spawned_sample.contains(&child_form_id)
-                                {
-                                    npc_spawned_sample.push(child_form_id);
-                                }
-                                // Skeleton + body each spawn ~60-80
-                                // entities; the exact count is hard
-                                // to attribute without
-                                // `World::next_entity_id` diff
-                                // plumbing, so bump the
-                                // single-entity counter to surface
-                                // "an NPC landed" without
-                                // over-counting.
-                                entity_count += 1;
-                            }
-                        } else {
-                            // Pre-baked-FaceGen path — Phase 4.
-                            npc_pending += 1;
-                            if npc_pending_sample.len() < 8
-                                && !npc_pending_sample.contains(&child_form_id)
-                            {
-                                npc_pending_sample.push(child_form_id);
-                            }
-                        }
-                        continue;
-                    }
                     stat_miss += 1;
                     // Collect a bounded sample so the summary line can
                     // surface actual FormIDs without pulling down a

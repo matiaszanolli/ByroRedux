@@ -76,6 +76,61 @@ pub fn humanoid_skeleton_path(game: GameKind, _gender: Gender) -> Option<&'stati
     }
 }
 
+/// Hardcoded vanilla body NIF path (`upperbody.nif`).
+///
+/// On FNV / FO3 the RACE record's `MODL` fields carry **head** mesh
+/// paths (e.g. `Characters\Head\HeadHuman.NIF`), not body — the body
+/// ships at a single canonical path per gender that every humanoid
+/// race shares. This helper returns that canonical path. Pre-Phase-1c
+/// the body alone is enough for "an NPC stands here in bind pose".
+///
+/// Returns `None` for game variants on the pre-baked-FaceGen track —
+/// SSE / FO4 / FO76 / Starfield don't ship a separate skinned body
+/// NIF; the per-NPC `facegendata\facegeom\<plugin>\<formid:08x>.nif`
+/// carries head + body in one mesh. That spawn path lands in Phase 4.
+pub fn humanoid_body_path(game: GameKind, gender: Gender) -> Option<&'static str> {
+    match (game, gender) {
+        (GameKind::Oblivion | GameKind::Fallout3NV, Gender::Male) => {
+            Some(r"meshes\characters\_male\upperbody.nif")
+        }
+        // FNV vanilla ships only the male body NIF; female humanoids
+        // re-use it (verified 2026-04-28 — `_female\` directory not
+        // present in vanilla Fallout - Meshes.bsa). Mods may add a
+        // `_female\upperbody.nif`; the gender split here lets a future
+        // mod-aware lookup flip in without breaking the type signature.
+        (GameKind::Oblivion | GameKind::Fallout3NV, Gender::Female) => {
+            Some(r"meshes\characters\_male\upperbody.nif")
+        }
+        (
+            GameKind::Skyrim
+            | GameKind::Fallout4
+            | GameKind::Fallout76
+            | GameKind::Starfield,
+            _,
+        ) => None,
+    }
+}
+
+/// Prepend `meshes\` to a NIF path if the input doesn't already start
+/// with that segment (case-insensitive, accepting either separator).
+/// `MODL` sub-records on RACE / NPC_ records are authored relative to
+/// the `meshes\` root; the BSA layer stores the full prefix. Mirrors
+/// the static-spawn path's normalization at
+/// `cell_loader.rs:1064-1068`. Allocation only fires when the prefix
+/// is missing — the common case (already-prefixed) is borrowed.
+pub fn normalize_mesh_path(path: &str) -> std::borrow::Cow<'_, str> {
+    let bytes = path.as_bytes();
+    if bytes.len() >= 7 {
+        let head = &bytes[..7];
+        let already = head.eq_ignore_ascii_case(b"meshes\\")
+            || head.eq_ignore_ascii_case(b"meshes/");
+        if already {
+            return std::borrow::Cow::Borrowed(path);
+        }
+    }
+    std::borrow::Cow::Owned(format!(r"meshes\{}", path))
+}
+
 /// Path inside the meshes archive for the default idle animation
 /// (`.kf` keyframe clip) the NPC plays on loop when no AI package
 /// drives a different clip.
@@ -208,46 +263,85 @@ pub fn spawn_npc_entity(
         );
     }
 
-    // 3. Body. RACE record collects all MODL paths into `body_models`;
-    //    the first slot is the body mesh by FNV / FO3 convention. If
-    //    the race resolution failed (parse-time miss, or the race
-    //    record carries no MODL — possible on stub races), skip the
-    //    body silently. NPC still gets an animated skeleton.
-    let body_path = race.and_then(|r| r.body_models.first().map(|s| s.as_str()));
-    if let Some(body_path) = body_path {
-        if let Some(body_data) = tex_provider.extract_mesh(body_path) {
-            let (_body_count, body_root, _body_map) = load_nif_bytes_with_skeleton(
-                world,
-                ctx,
-                &body_data,
-                body_path,
-                tex_provider,
-                mat_provider,
-                Some(&skel_map),
-            );
-            if let (Some(br), Some(sr)) = (body_root, skel_root) {
-                world.insert(br, Parent(sr));
-                add_child(world, sr, br);
+    // 3. Body. Hardcoded vanilla path (`upperbody.nif`); the RACE
+    //    record's MODL fields are head models on FNV / FO3, not body.
+    //    Skip silently when the body NIF isn't extractable — modded
+    //    setups may have replaced the path, in which case the NPC
+    //    still gets a skeleton + head.
+    if let Some(body_path) = humanoid_body_path(game, gender) {
+        match tex_provider.extract_mesh(body_path) {
+            Some(body_data) => {
+                let (_body_count, body_root, _body_map) = load_nif_bytes_with_skeleton(
+                    world,
+                    ctx,
+                    &body_data,
+                    body_path,
+                    tex_provider,
+                    mat_provider.as_deref_mut(),
+                    Some(&skel_map),
+                );
+                if let (Some(br), Some(sr)) = (body_root, skel_root) {
+                    world.insert(br, Parent(sr));
+                    add_child(world, sr, br);
+                }
             }
-        } else {
-            log::debug!(
-                "NPC {:08X} ({}): body '{}' not in archives — skipping body mesh",
-                npc.form_id,
-                npc.editor_id,
-                body_path,
-            );
+            None => {
+                log::debug!(
+                    "NPC {:08X} ({}): body '{}' not in archives — skipping body mesh",
+                    npc.form_id,
+                    npc.editor_id,
+                    body_path,
+                );
+            }
+        }
+    }
+
+    // 4. Head. RACE.body_models[0] is the per-race head NIF on FNV /
+    //    FO3 (the path the FaceGen `.egm` morph evaluator will deform
+    //    in Phase 3b). Authored relative to `meshes\`, so the path
+    //    normalises before extraction. If the race resolution fails
+    //    or the path isn't archived, NPC still gets a headless body.
+    let head_path = race.and_then(|r| r.body_models.first().map(|s| s.as_str()));
+    if let Some(raw_head_path) = head_path {
+        let head_path = normalize_mesh_path(raw_head_path);
+        match tex_provider.extract_mesh(head_path.as_ref()) {
+            Some(head_data) => {
+                let (_head_count, head_root, _head_map) = load_nif_bytes_with_skeleton(
+                    world,
+                    ctx,
+                    &head_data,
+                    head_path.as_ref(),
+                    tex_provider,
+                    mat_provider,
+                    Some(&skel_map),
+                );
+                if let (Some(hr), Some(sr)) = (head_root, skel_root) {
+                    world.insert(hr, Parent(sr));
+                    add_child(world, sr, hr);
+                }
+            }
+            None => {
+                log::debug!(
+                    "NPC {:08X} ({}): head '{}' not in archives — skipping head mesh",
+                    npc.form_id,
+                    npc.editor_id,
+                    head_path,
+                );
+            }
         }
     } else {
         log::debug!(
-            "NPC {:08X} ({}): race {:08X} has no body MODL — skipping body mesh",
+            "NPC {:08X} ({}): race {:08X} has no head MODL — skipping head mesh",
             npc.form_id,
             npc.editor_id,
             npc.race_form_id,
         );
     }
 
-    // Head is deferred — Phase 1c attaches the race base head, then
-    // Phase 3 morphs it per-NPC via FGGS / FGGA + the `.egm` sidecar.
+    // Per-NPC FaceGen morphs (FGGS / FGGA / FGTS) deform the head
+    // mesh in Phase 3b. Phase 1b leaves the head at its race-default
+    // shape — every NPC of the same race renders identical until
+    // Phase 3 lands.
 
     Some(placement_root)
 }
