@@ -318,6 +318,96 @@ mod tests {
         }
     }
 
+    /// M41.0 Phase 1b.x — replicate the NPC spawn topology that's
+    /// rendering with broken body skinning interactively. Spawn order
+    /// mirrors `byroredux::npc_spawn::spawn_npc_entity`:
+    ///   1. placement_root with T + GT BOTH explicitly set to the
+    ///      cell-world ref position.
+    ///   2. skel_root spawned (no Parent), then `Parent(placement_root)`
+    ///      inserted afterwards.
+    ///   3. Several bones spawned as a deep chain *before* the skel_root
+    ///      → placement_root edge is set, so add_child runs after.
+    /// If propagation works under this exact ordering, the runtime bug
+    /// isn't in the topology — it's in the GPU palette upload or the
+    /// dispatch order against the scheduler.
+    #[test]
+    fn npc_spawn_topology_propagates_to_deep_bone_chain() {
+        let mut world = World::new();
+        // Step 1: placement_root with EXPLICIT GT (mirrors
+        // npc_spawn.rs:319-323 — both Transform AND GlobalTransform
+        // get inserted at spawn time so the renderer can read a valid
+        // pose on frame 0 before propagation runs).
+        let placement_root = world.spawn();
+        let ref_pos = Vec3::new(2288.76, 7360.0, -2244.41);
+        world.insert(placement_root, Transform::new(ref_pos, Quat::IDENTITY, 1.0));
+        world.insert(
+            placement_root,
+            GlobalTransform::new(ref_pos, Quat::IDENTITY, 1.0),
+        );
+
+        // Step 2: skel_root spawned via "import" (no Parent yet), all
+        // bones spawned next as a deep chain inside the skel.nif. Mirror
+        // load_nif_bytes_with_skeleton's Phase 1+2 ordering: spawn all
+        // node entities first, then walk the parent_node array to set
+        // Parent + add_child.
+        let skel_root = spawn_with_transform(&mut world, Vec3::ZERO, Quat::IDENTITY, 1.0);
+        let bones: Vec<EntityId> = (0..30)
+            .map(|_| {
+                spawn_with_transform(
+                    &mut world,
+                    Vec3::new(0.0, 1.0, 0.0),
+                    Quat::IDENTITY,
+                    1.0,
+                )
+            })
+            .collect();
+        // Build the bone chain: bones[0] under skel_root, bones[i] under
+        // bones[i-1].
+        world.insert(bones[0], Parent(skel_root));
+        world.insert(skel_root, Children(vec![bones[0]]));
+        for i in 1..bones.len() {
+            world.insert(bones[i], Parent(bones[i - 1]));
+            world.insert(bones[i - 1], Children(vec![bones[i]]));
+        }
+
+        // Step 3: NOW set Parent(skel_root) = placement_root and
+        // add_child(placement_root, skel_root). Mirrors npc_spawn.rs:
+        // 366-367. This is the "external skeleton parent edge" — set
+        // AFTER the NIF spawn assembled the skel internals.
+        world.insert(skel_root, Parent(placement_root));
+        world.insert(placement_root, Children(vec![skel_root]));
+
+        // Run propagation.
+        let mut sys = make_transform_propagation_system();
+        sys(&world, 0.016);
+
+        // Verify: placement_root keeps its world ref. skel_root composes
+        // ref + identity = ref. bones[0] = ref + (0,1,0) = ref+y.
+        // bones[i] should accumulate i+1 of (0,1,0) on top of ref.
+        let gq = world.query::<GlobalTransform>().unwrap();
+        let gp = gq.get(placement_root).unwrap();
+        assert!(
+            (gp.translation - ref_pos).length() < 1e-3,
+            "placement_root GT must equal ref_pos"
+        );
+        let gs = gq.get(skel_root).unwrap();
+        assert!(
+            (gs.translation - ref_pos).length() < 1e-3,
+            "skel_root GT must compose to ref_pos (got {:?})",
+            gs.translation
+        );
+        for (i, &b) in bones.iter().enumerate() {
+            let gb = gq.get(b).unwrap();
+            let expected = ref_pos + Vec3::new(0.0, (i + 1) as f32, 0.0);
+            assert!(
+                (gb.translation - expected).length() < 1e-3,
+                "bone[{i}] expected {:?}, got {:?}",
+                expected,
+                gb.translation
+            );
+        }
+    }
+
     /// Two sibling subtrees under a common root must BOTH receive the
     /// root's world translation. This pins the fan-out case — the BFS
     /// enqueues both children, and both pops must re-read the same

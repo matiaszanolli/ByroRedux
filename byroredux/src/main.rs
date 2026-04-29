@@ -655,6 +655,25 @@ impl ApplicationHandler for App {
                 self.window = Some(win);
                 self.last_frame = Instant::now();
                 self.setup_scene();
+                // M41.0 Phase 1b.x — Prime the scene's transform state
+                // BEFORE the event loop starts. winit fires the initial
+                // `WindowEvent::RedrawRequested` for the first paint
+                // *before* the first `about_to_wait` tick, so without
+                // this prime the renderer's first `build_render_data`
+                // reads every freshly-spawned entity's `GlobalTransform`
+                // at its `IDENTITY` default — for skinned meshes that
+                // means the bone palette is computed as `IDENTITY ×
+                // bind_inverse` and the body's vertices get yanked toward
+                // world-origin, producing a one-frame stretched-cone
+                // artifact that's brief but visible. Running the
+                // scheduler once here drives the propagation system
+                // through every spawned subtree (placement_root → skel /
+                // body / head NIF chains) so frame 0 has the same valid
+                // GTs every subsequent frame will. Sibling fix to the
+                // explicit `GlobalTransform::new(ref_pos, ...)` in
+                // `npc_spawn::spawn_npc_entity` — that pre-seeds the
+                // placement root, this propagates the seed.
+                self.scheduler.run(&self.world, 0.0);
                 self.renderer.as_ref().unwrap().log_memory_usage();
                 log::info!("Engine ready — entering game loop");
             }

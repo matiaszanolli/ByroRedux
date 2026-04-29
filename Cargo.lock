@@ -330,6 +330,7 @@ dependencies = [
  "byroredux-core",
  "byroredux-cxx-bridge",
  "byroredux-debug-server",
+ "byroredux-facegen",
  "byroredux-nif",
  "byroredux-physics",
  "byroredux-platform",
@@ -404,6 +405,16 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "byroredux-facegen"
+version = "0.1.0"
+dependencies = [
+ "byroredux-bsa",
+ "env_logger",
+ "log",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
