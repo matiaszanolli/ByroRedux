@@ -1162,8 +1162,16 @@ pub(crate) fn load_nif_bytes(
     tex_provider: &TextureProvider,
     mat_provider: Option<&mut MaterialProvider>,
 ) -> (usize, Option<EntityId>) {
-    let (count, root, _local_map) =
-        load_nif_bytes_with_skeleton(world, ctx, data, label, tex_provider, mat_provider, None);
+    let (count, root, _local_map) = load_nif_bytes_with_skeleton(
+        world,
+        ctx,
+        data,
+        label,
+        tex_provider,
+        mat_provider,
+        None,
+        None,
+    );
     (count, root)
 }
 
@@ -1191,6 +1199,15 @@ pub(crate) fn load_nif_bytes_with_skeleton(
     tex_provider: &TextureProvider,
     mat_provider: Option<&mut MaterialProvider>,
     external_skeleton: Option<&std::collections::HashMap<std::sync::Arc<str>, EntityId>>,
+    // M41.0 Phase 3b — optional callback invoked once after the
+    // import returns and before the per-mesh GPU upload loop runs.
+    // Lets the caller mutate `imported.meshes[i].positions`
+    // (for FaceGen morph deformation: head NIF + EGM sliders) or
+    // any other field the renderer reads from `ImportedMesh`.
+    // `&mut dyn FnMut` (rather than a generic) keeps the function
+    // monomorphisation-cheap; static-dispatch isn't worth a
+    // generic parameter for a load-time call.
+    pre_spawn_hook: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)>,
 ) -> (
     usize,
     Option<EntityId>,
@@ -1222,6 +1239,16 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         }
         imported
     };
+
+    // M41.0 Phase 3b — pre-spawn hook fires after import + BGSM
+    // merge but before any node / mesh spawning. NPC head spawn
+    // uses this hook to apply FaceGen FGGS / FGGA slider deltas to
+    // `imported.meshes[head].positions` so the per-NPC unique face
+    // shape lands in the GPU upload below.
+    let mut imported = imported;
+    if let Some(hook) = pre_spawn_hook {
+        hook(&mut imported);
+    }
 
     // Phase 1: Spawn node entities (NiNode hierarchy).
     // node_index → EntityId mapping.

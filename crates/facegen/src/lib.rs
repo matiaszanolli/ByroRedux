@@ -24,10 +24,12 @@
 
 pub mod egm;
 pub mod egt;
+pub mod eval;
 pub mod tri;
 
 pub use egm::{EgmFile, EgmMorph};
 pub use egt::{EgtFile, EgtMorph};
+pub use eval::apply_morphs;
 pub use tri::TriHeader;
 
 /// Errors surfaced by all three FaceGen sidecar parsers. Variants
@@ -115,18 +117,6 @@ pub(crate) fn read_u32_le(bytes: &[u8], offset: usize) -> Result<u32, FaceGenErr
 /// Read a little-endian `f32` at `offset` from `bytes`.
 pub(crate) fn read_f32_le(bytes: &[u8], offset: usize) -> Result<f32, FaceGenError> {
     Ok(f32::from_bits(read_u32_le(bytes, offset)?))
-}
-
-/// Read a little-endian `u16` at `offset`.
-pub(crate) fn read_u16_le(bytes: &[u8], offset: usize) -> Result<u16, FaceGenError> {
-    if offset + 2 > bytes.len() {
-        return Err(FaceGenError::Truncated {
-            needed: 2,
-            offset,
-            file_len: bytes.len(),
-        });
-    }
-    Ok(u16::from_le_bytes([bytes[offset], bytes[offset + 1]]))
 }
 
 #[cfg(test)]

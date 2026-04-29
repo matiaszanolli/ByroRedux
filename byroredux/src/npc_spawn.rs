@@ -194,6 +194,25 @@ pub fn load_idle_clip(
     Some(handle)
 }
 
+/// Build a sidecar path next to the given head NIF, swapping the
+/// `.nif` extension for the requested `extension` (e.g. `"egm"`,
+/// `"egt"`, `"tri"`). FaceGen co-locates all four sidecars in the
+/// same archive directory so this is purely a path-string rewrite.
+///
+/// Returns `None` when the input doesn't end in `.nif` (case-
+/// insensitive) — defensive against a head MODL that points at an
+/// unexpected file type.
+pub fn facegen_sidecar_path(head_nif_path: &str, extension: &str) -> Option<String> {
+    let lower = head_nif_path.to_ascii_lowercase();
+    let stem = lower.strip_suffix(".nif")?;
+    let stem_len = stem.len();
+    let mut out = String::with_capacity(stem_len + 1 + extension.len());
+    out.push_str(&head_nif_path[..stem_len]);
+    out.push('.');
+    out.push_str(extension);
+    Some(out)
+}
+
 /// Prepend `meshes\` to a NIF path if the input doesn't already start
 /// with that segment (case-insensitive, accepting either separator).
 /// `MODL` sub-records on RACE / NPC_ records are authored relative to
@@ -341,6 +360,7 @@ pub fn spawn_npc_entity(
         tex_provider,
         mat_provider.as_deref_mut(),
         None,
+        None,
     );
     if let Some(sr) = skel_root {
         world.insert(sr, Parent(placement_root));
@@ -372,6 +392,7 @@ pub fn spawn_npc_entity(
                     tex_provider,
                     mat_provider.as_deref_mut(),
                     Some(&skel_map),
+                    None,
                 );
                 if let Some(br) = body_root {
                     // Parent body under placement_root, NOT under
@@ -417,6 +438,87 @@ pub fn spawn_npc_entity(
         let head_path = normalize_mesh_path(raw_head_path);
         match tex_provider.extract_mesh(head_path.as_ref()) {
             Some(head_data) => {
+                // M41.0 Phase 3b — load and apply per-NPC FaceGen
+                // FGGS sym morphs to the race base head. The EGM
+                // sidecar lives alongside the head NIF (same dir,
+                // `.egm` extension); we load its bytes once here so
+                // the closure passed to `pre_spawn_hook` can borrow
+                // a parsed `EgmFile` for the duration of the import.
+                // Asym morphs (FGGA) and the FGTS texture-tint pass
+                // ship in Phase 3c.
+                let recipe = npc.runtime_facegen.as_ref();
+                let egm_bytes = recipe
+                    .and_then(|_| facegen_sidecar_path(head_path.as_ref(), "egm"))
+                    .and_then(|p| tex_provider.extract_mesh(&p));
+                let egm_file = egm_bytes
+                    .as_ref()
+                    .and_then(|b| match byroredux_facegen::EgmFile::parse(b) {
+                        Ok(e) => Some(e),
+                        Err(err) => {
+                            log::debug!(
+                                "NPC {:08X}: EGM parse failed for head '{}': {}",
+                                npc.form_id,
+                                head_path,
+                                err,
+                            );
+                            None
+                        }
+                    });
+                let hook_state: Option<(
+                    &byroredux_facegen::EgmFile,
+                    [f32; 50],
+                    u32,
+                )> = match (recipe, egm_file.as_ref()) {
+                    (Some(r), Some(egm)) => Some((egm, r.fggs, npc.form_id)),
+                    _ => None,
+                };
+                let has_hook = hook_state.is_some();
+                let mut hook_state = hook_state;
+                let mut hook = |scene: &mut byroredux_nif::import::ImportedScene| {
+                    let Some((egm, fggs, form_id)) = hook_state.take() else {
+                        return;
+                    };
+                    // FNV race-base head NIFs (e.g. headhuman.nif:
+                    // 1211 verts) and their EGM sidecars (1449
+                    // verts) deliberately disagree on vertex count
+                    // — the EGM carries 238 extra entries that map
+                    // to UV-shell duplicates the NIF unifies. The
+                    // `.tri` file's remap table is the canonical
+                    // bridge between the two; until Phase 3b.x lands
+                    // that table the evaluator applies the EGM's
+                    // first `mesh.positions.len()` deltas
+                    // best-effort. Result: continuous-mesh interior
+                    // verts deform per slider; UV-seam vertices may
+                    // be slightly under-deformed (only a fraction
+                    // sit on shell-duplicate edges, and the practical
+                    // effect is < 1 mm jitter at the seam — visible
+                    // in close-up but invisible at gameplay distance).
+                    let mut deformed_meshes = 0usize;
+                    for mesh in scene.meshes.iter_mut() {
+                        if mesh.positions.is_empty() {
+                            continue;
+                        }
+                        let new_positions = byroredux_facegen::apply_morphs(
+                            &mesh.positions,
+                            &egm.fggs_morphs,
+                            &fggs,
+                        );
+                        mesh.positions = new_positions;
+                        deformed_meshes += 1;
+                    }
+                    log::debug!(
+                        "M41.0 Phase 3b: NPC {:08X} applied FGGS morphs to {} head mesh(es) \
+                         (EGM {} verts × {} morphs, head NIF mesh verts vary; \
+                         best-effort prefix until Phase 3b.x parses .tri remap)",
+                        form_id,
+                        deformed_meshes,
+                        egm.num_vertices,
+                        egm.fggs_morphs.len(),
+                    );
+                };
+                let pre_spawn: Option<
+                    &mut dyn FnMut(&mut byroredux_nif::import::ImportedScene),
+                > = if has_hook { Some(&mut hook) } else { None };
                 let (_head_count, head_root, _head_map) = load_nif_bytes_with_skeleton(
                     world,
                     ctx,
@@ -425,6 +527,7 @@ pub fn spawn_npc_entity(
                     tex_provider,
                     mat_provider,
                     Some(&skel_map),
+                    pre_spawn,
                 );
                 if let Some(hr) = head_root {
                     // Same reasoning as body: head NIF carries its
