@@ -7,7 +7,7 @@
 //! systems come online.
 
 use super::common::{read_lstring_or_zstring, read_u32_at, read_zstring};
-use crate::esm::reader::SubRecord;
+use crate::esm::reader::{GameKind, SubRecord};
 
 /// One faction the NPC belongs to, with their rank within it.
 #[derive(Debug, Clone, Copy)]
@@ -168,7 +168,18 @@ pub struct FactionRecord {
 
 // ── Parsers ───────────────────────────────────────────────────────────
 
-pub fn parse_npc(form_id: u32, subs: &[SubRecord]) -> NpcRecord {
+pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord {
+    // The FMRI/FMRS/MSDK/MSDV/QNAM/HCLF/BCLF face-morph block was
+    // introduced in FO4. FNV/FO3/Skyrim NPCs ship none of those
+    // sub-records — and crucially, FNV `PNAM` carries a single
+    // eyebrow HDPT FormID, NOT a head-part list, so accumulating it
+    // into `face.head_parts` (the FO4 semantic) was a silent
+    // mis-classification pre-fix. Gate every arm of that block on
+    // the FO4-or-later games that actually use it.
+    let captures_fo4_face = matches!(
+        game,
+        GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield,
+    );
     let mut record = NpcRecord {
         form_id,
         editor_id: String::new(),
@@ -245,10 +256,13 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord]) -> NpcRecord {
             // VMAD presence-only flag — see `has_script` field doc.
             b"VMAD" => record.has_script = true,
             // ── #591 / FO4-DIM6-06 face-morph block ────────────────────
-            b"FMRI" if sub.data.len() >= 4 => {
+            // FO4+/FO76/Starfield only. Pre-fix, all of these arms ran
+            // unconditionally; FNV `PNAM` (eyebrow HDPT FormID) was
+            // misread as an FO4 head-parts entry. See `captures_fo4_face`.
+            b"FMRI" if captures_fo4_face && sub.data.len() >= 4 => {
                 fmri_forms.push(read_u32_at(&sub.data, 0).unwrap_or(0));
             }
-            b"FMRS" if sub.data.len() >= 36 => {
+            b"FMRS" if captures_fo4_face && sub.data.len() >= 36 => {
                 let mut s = [0f32; 9];
                 for (i, slot) in s.iter_mut().enumerate() {
                     let off = i * 4;
@@ -267,23 +281,23 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord]) -> NpcRecord {
             // forward-compatible with malformed records that split the
             // table across multiple sub-records (last-wins per arm
             // would silently drop earlier entries — `extend` preserves).
-            b"MSDK" if sub.data.len() >= 4 => {
+            b"MSDK" if captures_fo4_face && sub.data.len() >= 4 => {
                 for chunk in sub.data.chunks_exact(4) {
                     face.slider_keys
                         .push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
                 }
             }
-            b"MSDV" if sub.data.len() >= 4 => {
+            b"MSDV" if captures_fo4_face && sub.data.len() >= 4 => {
                 for chunk in sub.data.chunks_exact(4) {
                     face.slider_values
                         .push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
                 }
             }
             // QNAM (FO4): 4 × f32 = texture-lighting tint (RGB + alpha).
-            // Pre-FO4 games carry a smaller QNAM payload on different
-            // record types (e.g. WTHR), so the length gate keeps this
-            // arm scoped to the FO4 NPC variant.
-            b"QNAM" if sub.data.len() >= 16 => {
+            // The `captures_fo4_face` gate replaces the previous
+            // length-only `>= 16` heuristic — Skyrim WTHR-record
+            // siblings sharing the QNAM tag never reach this parser.
+            b"QNAM" if captures_fo4_face && sub.data.len() >= 16 => {
                 let mut t = [0f32; 4];
                 for (i, slot) in t.iter_mut().enumerate() {
                     let off = i * 4;
@@ -296,13 +310,17 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord]) -> NpcRecord {
                 }
                 face.texture_lighting = Some(t);
             }
-            b"HCLF" if sub.data.len() >= 4 => {
+            b"HCLF" if captures_fo4_face && sub.data.len() >= 4 => {
                 face.hair_color = Some(read_u32_at(&sub.data, 0).unwrap_or(0));
             }
-            b"BCLF" if sub.data.len() >= 4 => {
+            b"BCLF" if captures_fo4_face && sub.data.len() >= 4 => {
                 face.body_color = Some(read_u32_at(&sub.data, 0).unwrap_or(0));
             }
-            b"PNAM" if sub.data.len() >= 4 => {
+            // PNAM on FO4+ NPCs accumulates head-part FormIDs (one per
+            // sub-record). On FNV / FO3 NPCs, PNAM is a SINGLE eyebrow
+            // HDPT FormID — different semantic, captured separately
+            // when M41.0 Phase 2 lands the FNV runtime morph path.
+            b"PNAM" if captures_fo4_face && sub.data.len() >= 4 => {
                 face.head_parts
                     .push(read_u32_at(&sub.data, 0).unwrap_or(0));
             }
@@ -516,7 +534,7 @@ mod tests {
             sub(b"CNTO", &cnto),
             sub(b"PKID", &0xEEEEu32.to_le_bytes()),
         ];
-        let n = parse_npc(0x500, &subs);
+        let n = parse_npc(0x500, &subs, GameKind::Fallout3NV);
         assert_eq!(n.editor_id, "NpcTest");
         assert_eq!(n.race_form_id, 0xCCCC);
         assert_eq!(n.class_form_id, 0xDDDD);
@@ -540,7 +558,7 @@ mod tests {
             sub(b"EDID", b"ScriptedActor\0"),
             sub(b"VMAD", b"\x05\x00\x02\x00\x00\x00"),
         ];
-        let n = parse_npc(0x501, &subs);
+        let n = parse_npc(0x501, &subs, GameKind::Skyrim);
         assert!(n.has_script);
     }
 
@@ -548,7 +566,7 @@ mod tests {
     fn npc_without_vmad_has_script_false() {
         // Sibling check — bare NPC must keep has_script at default.
         let subs = vec![sub(b"EDID", b"PlainActor\0")];
-        let n = parse_npc(0x502, &subs);
+        let n = parse_npc(0x502, &subs, GameKind::Fallout3NV);
         assert!(!n.has_script);
     }
 
@@ -671,7 +689,7 @@ mod tests {
             sub(b"FMRI", &0xBEEFu32.to_le_bytes()),
             sub(b"FMRS", &fmrs_bytes(s1)),
         ];
-        let n = parse_npc(0x600, &subs);
+        let n = parse_npc(0x600, &subs, GameKind::Fallout4);
         let face = n
             .face_morphs
             .as_ref()
@@ -701,7 +719,7 @@ mod tests {
             sub(b"MSDK", &msdk),
             sub(b"MSDV", &msdv),
         ];
-        let n = parse_npc(0x601, &subs);
+        let n = parse_npc(0x601, &subs, GameKind::Fallout4);
         let face = n.face_morphs.as_ref().unwrap();
         assert_eq!(face.slider_keys, vec![0x10, 0x20, 0x30]);
         assert_eq!(face.slider_values, vec![0.25, 0.5, 0.75]);
@@ -724,7 +742,7 @@ mod tests {
             sub(b"PNAM", &0xBBBBu32.to_le_bytes()),
             sub(b"PNAM", &0xCCCCu32.to_le_bytes()),
         ];
-        let n = parse_npc(0x602, &subs);
+        let n = parse_npc(0x602, &subs, GameKind::Fallout4);
         let face = n.face_morphs.as_ref().unwrap();
         assert_eq!(face.texture_lighting, Some([0.6, 0.7, 0.8, 1.0]));
         assert_eq!(face.hair_color, Some(0x1111));
@@ -739,7 +757,7 @@ mod tests {
     #[test]
     fn npc_without_face_subs_leaves_face_morphs_none() {
         let subs = vec![sub(b"EDID", b"PlainSettler\0")];
-        let n = parse_npc(0x603, &subs);
+        let n = parse_npc(0x603, &subs, GameKind::Fallout4);
         assert!(n.face_morphs.is_none());
     }
 
@@ -758,11 +776,29 @@ mod tests {
             sub(b"FMRS", &fmrs_bytes(s)),
             sub(b"FMRS", &fmrs_bytes(s)),
         ];
-        let n = parse_npc(0x604, &subs);
+        let n = parse_npc(0x604, &subs, GameKind::Fallout4);
         let face = n.face_morphs.as_ref().unwrap();
         assert_eq!(face.morphs.len(), 2);
         assert_eq!(face.morphs[0].form_id, 0xA1);
         assert_eq!(face.morphs[1].form_id, 0xA2);
+    }
+
+    /// FNV NPC `PNAM` carries a single eyebrow HDPT FormID, NOT an
+    /// FO4-style head-parts list. The `game`-aware gate must not let
+    /// FNV PNAMs leak into `face_morphs.head_parts`. See M41.0 Phase 0
+    /// foundation work (sibling NPC face-morph audit).
+    #[test]
+    fn npc_fnv_pnam_does_not_populate_face_morphs() {
+        let subs = vec![
+            sub(b"EDID", b"FnvNpc\0"),
+            // FNV-style PNAM: a single 4-byte eyebrow HDPT FormID.
+            sub(b"PNAM", &0xDEADu32.to_le_bytes()),
+        ];
+        let n = parse_npc(0x606, &subs, GameKind::Fallout3NV);
+        assert!(
+            n.face_morphs.is_none(),
+            "FNV PNAM must not populate face_morphs.head_parts (FO4 semantic)"
+        );
     }
 
     /// Wrong-sized FMRS (e.g. a Skyrim record that ships a smaller
@@ -777,7 +813,7 @@ mod tests {
             sub(b"FMRI", &0xF00Du32.to_le_bytes()),
             sub(b"FMRS", &[0u8; 16]), // < 36 bytes
         ];
-        let n = parse_npc(0x605, &subs);
+        let n = parse_npc(0x605, &subs, GameKind::Fallout4);
         // FMRI captured but FMRS dropped → mismatched (1 vs 0) →
         // truncate to 0 → no morphs → block is empty → None.
         assert!(n.face_morphs.is_none());

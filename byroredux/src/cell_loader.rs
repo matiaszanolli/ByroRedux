@@ -346,6 +346,7 @@ pub fn load_cell_with_masters(
     let result = load_references(
         &cell.references,
         &index.cells,
+        &index.npcs,
         world,
         ctx,
         tex_provider,
@@ -714,6 +715,7 @@ pub fn load_one_exterior_cell(
     let result = load_references(
         &cell.references,
         index,
+        &wctx.record_index.npcs,
         world,
         ctx,
         tex_provider,
@@ -766,6 +768,7 @@ struct RefLoadResult {
 fn load_references(
     refs: &[esm::cell::PlacedRef],
     index: &esm::cell::EsmCellIndex,
+    npcs: &HashMap<u32, byroredux_plugin::esm::records::NpcRecord>,
     world: &mut World,
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
@@ -804,6 +807,14 @@ fn load_references(
     // debug. Cap at 20 unique IDs; duplicates (same FormID placed
     // repeatedly across a worldspace) get deduped. See #386.
     let mut stat_miss_sample: Vec<u32> = Vec::with_capacity(20);
+    // M41.0 Phase 0 — count ACHR REFRs whose base resolves to an
+    // `NPC_` record. These bypass the statics-miss tally because they
+    // are a real spawn target, just one that Phase 1 hasn't wired
+    // yet. Sample is small (8 vs 20 for stat_miss) since per-cell NPC
+    // counts are bounded — Whiterun Bannered Mare carries ~6 actors
+    // versus ~1 932 statics.
+    let mut npc_pending: u32 = 0;
+    let mut npc_pending_sample: Vec<u32> = Vec::with_capacity(8);
 
     // Per-call accumulators — committed to `NifImportRegistry` in a
     // single `resource_mut` borrow after the loop instead of acquiring
@@ -909,6 +920,26 @@ fn load_references(
                     s
                 }
                 None => {
+                    // M41.0 Phase 0 dispatcher stub. ACHR REFRs whose
+                    // base resolves to an `NPC_` record are a separate
+                    // spawn path (skeleton + FaceGen head + skinned
+                    // body + idle clip). Phase 0 surfaces the count
+                    // and a sample of FormIDs in the end-of-cell
+                    // summary so we can baseline how many actors a
+                    // cell carries before Phase 1 implements
+                    // `spawn_npc_entity`. Until then NPCs render as
+                    // nothing — same observable outcome as pre-fix,
+                    // but with telemetry instead of a `debug!` line
+                    // that nobody reads.
+                    if npcs.contains_key(&child_form_id) {
+                        npc_pending += 1;
+                        if npc_pending_sample.len() < 8
+                            && !npc_pending_sample.contains(&child_form_id)
+                        {
+                            npc_pending_sample.push(child_form_id);
+                        }
+                        continue;
+                    }
                     stat_miss += 1;
                     // Collect a bounded sample so the summary line can
                     // surface actual FormIDs without pulling down a
@@ -1176,6 +1207,28 @@ fn load_references(
         dims.x, dims.y, dims.z,
         center.x, center.y, center.z,
     );
+    if npc_pending > 0 {
+        // M41.0 Phase 0 — surface ACHR REFRs whose base resolves to an
+        // NPC_ record so the operator can see how many actors a cell
+        // would spawn once Phase 1 wires `spawn_npc_entity`. Logged at
+        // info to keep visible without flipping debug.
+        let sample_str = npc_pending_sample
+            .iter()
+            .map(|id| format!("{:08X}", id))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let trunc = if (npc_pending_sample.len() as u32) < npc_pending {
+            format!(", … +{} more", npc_pending - npc_pending_sample.len() as u32)
+        } else {
+            String::new()
+        };
+        log::info!(
+            "  {} ACHR refs resolve to NPC_ (M41.0 Phase 1 dispatch pending; sample: {}{})",
+            npc_pending,
+            sample_str,
+            trunc,
+        );
+    }
     if stat_miss > 0 {
         // Log the bounded sample at info level so the miss types are
         // diagnosable without flipping to debug. Common causes:

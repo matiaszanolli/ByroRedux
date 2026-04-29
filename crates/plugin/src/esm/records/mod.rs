@@ -444,7 +444,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             })?,
             // Actors and supporting records.
             b"NPC_" => extract_records(&mut reader, end, b"NPC_", &mut |fid, subs| {
-                index.npcs.insert(fid, parse_npc(fid, subs));
+                index.npcs.insert(fid, parse_npc(fid, subs, game));
             })?,
             // Creatures share EDID / FULL / MODL / RNAM / CNAM / SNAM /
             // CNTO / PKID / ACBS with NPC_ — `parse_npc` populates the
@@ -453,7 +453,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             // whole top-level group was dropped at the catch-all skip.
             // See #442 / audit FO3-3-02.
             b"CREA" => extract_records(&mut reader, end, b"CREA", &mut |fid, subs| {
-                index.creatures.insert(fid, parse_npc(fid, subs));
+                index.creatures.insert(fid, parse_npc(fid, subs, game));
             })?,
             b"RACE" => extract_records(&mut reader, end, b"RACE", &mut |fid, subs| {
                 index.races.insert(fid, parse_race(fid, subs));

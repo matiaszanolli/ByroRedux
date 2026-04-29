@@ -6,6 +6,7 @@ mod cell_loader;
 mod commands;
 mod components;
 mod helpers;
+mod npc_spawn;
 mod render;
 mod scene;
 mod streaming;
