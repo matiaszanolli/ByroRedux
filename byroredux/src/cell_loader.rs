@@ -825,6 +825,28 @@ fn load_references(
     let mut npc_pending: u32 = 0;
     let mut npc_pending_sample: Vec<u32> = Vec::with_capacity(8);
 
+    // M41.0 Phase 2 — pre-load the per-game default idle KF clip
+    // ONCE before the REFR loop. The result is threaded through every
+    // `spawn_npc_entity` call so the `AnimationClipRegistry` doesn't
+    // grow per-NPC (with 31 NPCs in TestQAHairM that would have meant
+    // 31 identical copies of `idle.kf` registered every cell load).
+    // Returns `None` when the game is on the Havok-animation track
+    // (Skyrim+/FO4+) or the KF isn't archived — NPCs in those cases
+    // just spawn without an animation player. Gender variation is
+    // collapsed: FNV vanilla ships only `_male\idle.kf` and uses it
+    // for both genders; Phase 2.x can add a per-gender cache if a
+    // future game variant ships separate clips.
+    let idle_clip_handle = if game.has_kf_animations() {
+        crate::npc_spawn::load_idle_clip(
+            world,
+            tex_provider,
+            game,
+            crate::npc_spawn::Gender::Male,
+        )
+    } else {
+        None
+    };
+
     // Per-call accumulators — committed to `NifImportRegistry` in a
     // single `resource_mut` borrow after the loop instead of acquiring
     // the write lock on every REFR. Previously every iteration took
@@ -948,6 +970,7 @@ fn load_references(
                         game,
                         tex_provider,
                         mat_provider.as_deref_mut(),
+                        idle_clip_handle,
                         ref_pos,
                         ref_rot,
                         ref_scale,

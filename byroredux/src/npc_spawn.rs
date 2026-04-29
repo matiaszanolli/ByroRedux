@@ -6,6 +6,12 @@
 //! Each helper maps (game, gender) → a vanilla archive path string for
 //! the per-game content layout.
 
+use byroredux_core::animation::AnimationClipRegistry;
+// `AnimationPlayer` is the consumer of `idle_clip_handle` in the Phase 2.x
+// follow-up that resolves the bind-pose-vs-clip-frame-0 mismatch — see
+// `spawn_npc_entity`'s gated-off block at the bottom of the function.
+#[allow(unused_imports)]
+use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{GlobalTransform, Name, Parent, Transform};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
@@ -15,6 +21,7 @@ use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::{NpcRecord, RaceRecord};
 use byroredux_renderer::VulkanContext;
 
+use crate::anim_convert::convert_nif_clip;
 use crate::asset_provider::{MaterialProvider, TextureProvider};
 use crate::helpers::add_child;
 use crate::scene::load_nif_bytes_with_skeleton;
@@ -111,6 +118,82 @@ pub fn humanoid_body_path(game: GameKind, gender: Gender) -> Option<&'static str
     }
 }
 
+/// Parse a `.kf` clip at `kf_path` from the texture provider's mesh
+/// archives, convert it through `byroredux_nif::anim::import_kf` →
+/// [`AnimationClip`], register the **first** clip with the
+/// [`AnimationClipRegistry`], and return its handle.
+///
+/// Returns `None` when the path isn't archived or the file produces
+/// zero clips (malformed `.kf`s do this — defensive). Vanilla
+/// `meshes\characters\_male\idle.kf` yields exactly one clip.
+///
+/// The handle is intended to be **shared across every NPC in a cell
+/// load** — Phase 2 calls this once per `load_references` invocation
+/// and threads the result through each [`spawn_npc_entity`] call so
+/// the clip lands in the registry at most once per cell.
+pub fn load_idle_clip(
+    world: &mut World,
+    tex_provider: &TextureProvider,
+    game: GameKind,
+    gender: Gender,
+) -> Option<u32> {
+    if !game.has_kf_animations() {
+        return None;
+    }
+    let kf_path = humanoid_default_idle_kf_path(game, gender)?;
+    let kf_bytes = match tex_provider.extract_mesh(kf_path) {
+        Some(b) => b,
+        None => {
+            log::debug!(
+                "M41.0 Phase 2: idle KF '{}' not found in mesh archives — \
+                 NPCs in this cell will spawn without an idle animation",
+                kf_path,
+            );
+            return None;
+        }
+    };
+    let nif_scene = match byroredux_nif::parse_nif(&kf_bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!(
+                "M41.0 Phase 2: idle KF '{}' failed to parse: {}",
+                kf_path,
+                e,
+            );
+            return None;
+        }
+    };
+    let mut clips = byroredux_nif::anim::import_kf(&nif_scene);
+    if clips.is_empty() {
+        log::warn!(
+            "M41.0 Phase 2: idle KF '{}' produced zero clips — skipping",
+            kf_path,
+        );
+        return None;
+    }
+    let nif_clip = clips.remove(0);
+    let clip_name = nif_clip.name.clone();
+    let duration = nif_clip.duration;
+    let channel_count = nif_clip.channels.len();
+    let handle = {
+        let mut pool = world.resource_mut::<StringPool>();
+        let clip = convert_nif_clip(&nif_clip, &mut pool);
+        drop(pool);
+        let mut registry = world.resource_mut::<AnimationClipRegistry>();
+        registry.add(clip)
+    };
+    log::info!(
+        "M41.0 Phase 2: idle clip '{}' registered from '{}' \
+         ({:.2}s, {} channels) → handle {}",
+        clip_name,
+        kf_path,
+        duration,
+        channel_count,
+        handle,
+    );
+    Some(handle)
+}
+
 /// Prepend `meshes\` to a NIF path if the input doesn't already start
 /// with that segment (case-insensitive, accepting either separator).
 /// `MODL` sub-records on RACE / NPC_ records are authored relative to
@@ -143,22 +226,22 @@ pub fn normalize_mesh_path(path: &str) -> std::borrow::Cow<'_, str> {
 /// SSE+ actors lands once a `.hkx` parser stub is wired — folded into
 /// M41.1 follow-up.
 ///
-/// FNV / FO3 default idle clips are listed exhaustively in
-/// `meshes\characters\_male\idleanims\` (962 entries on FNV vanilla);
-/// `idle.kf` is the canonical resting-state base. Per-NPC overrides
-/// from IDLE form records and AI packages slot in on top later.
-// Consumed by Phase 2 (universal idle animation binding) — staged
-// here in Phase 0/1 so the per-game path table stays in one place.
-// Tests below pin every case so the API is locked-in by tests until
-// the runtime caller lands.
-#[allow(dead_code)]
+/// FNV / FO3 ship the canonical resting-state idle as
+/// `meshes\characters\_male\locomotion\mtidle.kf` (move-type idle —
+/// the standing-still loop the engine plays when no AI package
+/// drives a different clip). Verified via vanilla BSA scan
+/// 2026-04-29; the more obvious `_male\idle.kf` does NOT exist in
+/// vanilla (`idleanims/` carries 962 specific clips like `talk_*`,
+/// `chair_*`, `dlcanch*`, but no plain `idle.kf` base). Per-NPC
+/// overrides from IDLE form records and AI packages slot in on top
+/// once M42 / M47 land.
 pub fn humanoid_default_idle_kf_path(
     game: GameKind,
     _gender: Gender,
 ) -> Option<&'static str> {
     match game {
         GameKind::Oblivion | GameKind::Fallout3NV => {
-            Some(r"meshes\characters\_male\idle.kf")
+            Some(r"meshes\characters\_male\locomotion\mtidle.kf")
         }
         GameKind::Skyrim
         | GameKind::Fallout4
@@ -197,6 +280,7 @@ pub fn spawn_npc_entity(
     game: GameKind,
     tex_provider: &TextureProvider,
     mut mat_provider: Option<&mut MaterialProvider>,
+    idle_clip_handle: Option<u32>,
     ref_pos: Vec3,
     ref_rot: Quat,
     ref_scale: f32,
@@ -289,9 +373,27 @@ pub fn spawn_npc_entity(
                     mat_provider.as_deref_mut(),
                     Some(&skel_map),
                 );
-                if let (Some(br), Some(sr)) = (body_root, skel_root) {
-                    world.insert(br, Parent(sr));
-                    add_child(world, sr, br);
+                if let Some(br) = body_root {
+                    // Parent body under placement_root, NOT under
+                    // skeleton root. Body NIFs ship their own
+                    // skeleton-shaped NiNode hierarchy (cosmetic
+                    // copies of "Bip01 Pelvis" etc.); leaving them
+                    // as descendants of skel_root pollutes the
+                    // animation system's BFS-from-skel_root subtree
+                    // name map (last-write-wins puts the body's
+                    // *local* `Bip01 Spine` in the slot, so KF
+                    // channels write to body's orphan copy AND
+                    // anything sharing those names — visible
+                    // regression: NPCs vanished post-Phase-2
+                    // when AnimationPlayer ran). Parenting to
+                    // placement_root instead keeps the animation
+                    // BFS strictly inside the skeleton's own
+                    // subtree. Skinning math is unaffected because
+                    // SkinnedMesh.bones already references the
+                    // skeleton's entities by ID (resolved through
+                    // `external_skeleton` at scene-import time).
+                    world.insert(br, Parent(placement_root));
+                    add_child(world, placement_root, br);
                 }
             }
             None => {
@@ -324,9 +426,16 @@ pub fn spawn_npc_entity(
                     mat_provider,
                     Some(&skel_map),
                 );
-                if let (Some(hr), Some(sr)) = (head_root, skel_root) {
-                    world.insert(hr, Parent(sr));
-                    add_child(world, sr, hr);
+                if let Some(hr) = head_root {
+                    // Same reasoning as body: head NIF carries its
+                    // own local skeleton-shaped hierarchy (head bones
+                    // like "Bip01 Head", "Bip01 L Eye"); parenting
+                    // under placement_root keeps it out of the
+                    // animation BFS's path so KF channels resolve to
+                    // the skeleton's entities, not the head's
+                    // orphans.
+                    world.insert(hr, Parent(placement_root));
+                    add_child(world, placement_root, hr);
                 }
             }
             None => {
@@ -351,6 +460,41 @@ pub fn spawn_npc_entity(
     // mesh in Phase 3b. Phase 1b leaves the head at its race-default
     // shape — every NPC of the same race renders identical until
     // Phase 3 lands.
+
+    // 5. Idle animation (M41.0 Phase 2). The clip handle is
+    //    pre-registered once per cell load by `load_idle_clip` and
+    //    threaded through every `spawn_npc_entity` call so the
+    //    `AnimationClipRegistry` doesn't grow per-NPC. The player
+    //    spawns on its own entity scoped to the skeleton root —
+    //    `AnimationPlayer.root_entity` drives the per-frame channel
+    //    lookup against the skeleton's `node_by_name` map (the same
+    //    one body and head meshes resolved through above), so KF
+    //    channels keyed by `Bip01 Spine`, `Bip01 Head`, etc. find
+    //    the shared skeleton entities and drive the bone palette.
+    // Phase 2 minimum scope ships the loader machinery
+    // (`load_idle_clip`, KF parse, `AnimationClipRegistry::add`,
+    // `humanoid_default_idle_kf_path`, the dispatcher pre-computation
+    // in `cell_loader.rs`) but the actual `AnimationPlayer` spawn is
+    // gated off until a follow-up resolves a bind-pose mismatch:
+    //
+    //   When the player ticks against `mtidle.kf` and the
+    //   animation_system's apply phase writes `transform.translation
+    //   = clip_frame_0_value` to skeleton bones, NPCs vanish from
+    //   render — empirically reproduced on FO3 TestQAHairM (31
+    //   bodies → 0 visible). The clip's frame-0 translations
+    //   evidently don't align with skeleton.nif's authored bind-pose
+    //   translations; either the KF stores deltas (not absolute
+    //   bone-local poses) or there's a coord-frame divergence
+    //   between `import_nif_scene`'s NiNode-Transform decoding and
+    //   `import_kf`'s TranslationKey decoding. Filed as Phase 2.x;
+    //   ROADMAP M41.0 closure can advance to Phase 3 (FaceGen
+    //   morphs) without unblocking this — bodies stay in bind pose
+    //   today which matches Phase 1b's visible result.
+    //
+    // The loader still fires once per cell so the registry +
+    // log line confirm the kf path resolves end-to-end.
+    let _ = idle_clip_handle;
+    let _ = skel_root;
 
     Some(placement_root)
 }
