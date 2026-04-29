@@ -1,0 +1,12 @@
+[package]
+name = "byroredux-facegen"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+log = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+byroredux-bsa = { workspace = true }
+env_logger = { workspace = true }

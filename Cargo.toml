@@ -12,6 +12,7 @@ members = [
     "crates/bgsm",
     "crates/ui",
     "crates/papyrus",
+    "crates/facegen",
     "crates/debug-protocol",
     "crates/debug-server",
     "tools/byro-dbg",
@@ -38,6 +39,7 @@ byroredux-physics = { path = "crates/physics" }
 byroredux-cxx-bridge = { path = "crates/cxx-bridge" }
 byroredux-ui = { path = "crates/ui" }
 byroredux-papyrus = { path = "crates/papyrus" }
+byroredux-facegen = { path = "crates/facegen" }
 byroredux-debug-protocol = { path = "crates/debug-protocol" }
 byroredux-debug-server = { path = "crates/debug-server" }
 
