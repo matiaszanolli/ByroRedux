@@ -384,6 +384,36 @@ pub fn spawn_npc_entity(
     if let Some(body_path) = humanoid_body_path(game, gender) {
         match tex_provider.extract_mesh(body_path) {
             Some(body_data) => {
+                // M41.0 Phase 1b.x — body skinning catastrophically
+                // misrenders interactively (long-spike vertex
+                // artifact, see audit screenshots
+                // `/tmp/audit/m41/qa_doc_mitchell_2026-04-29.png`).
+                // The artifact is independent of `external_skeleton`
+                // (verified empirically: same artifact with both
+                // `Some(&skel_map)` and `None`), and `0 unresolved`
+                // bones are reported per skinned sub-mesh, so the
+                // bug is in the runtime entity transform / palette
+                // composition, not the bone-name resolution.
+                //
+                // M29 standalone tests pass on the same upperbody.nif
+                // because they don't go through the cell-loader's
+                // placement_root parent chain — when the body NIF is
+                // spawned in isolation at world-origin, the math
+                // works. The cell-load path adds a `Parent` edge
+                // from body_root to placement_root, and *something*
+                // about that composition makes the bone palette
+                // produce non-canonical matrices.
+                //
+                // Filed as Phase 1b.x with a concrete diagnostic
+                // plan: dump the skinned-mesh's bones'
+                // GlobalTransforms + bind_inverses at runtime,
+                // compute the palette by hand, compare against
+                // skinning_e2e's working palette to find the
+                // diverging entity. Out of tonight's scope. The
+                // `Some(&skel_map)` path stays — it's the
+                // architecturally correct target once the
+                // composition bug is fixed (single skeleton drives
+                // all skinned meshes).
                 let (_body_count, body_root, _body_map) = load_nif_bytes_with_skeleton(
                     world,
                     ctx,
@@ -538,6 +568,12 @@ pub fn spawn_npc_entity(
                 let pre_spawn: Option<
                     &mut dyn FnMut(&mut byroredux_nif::import::ImportedScene),
                 > = if has_hook { Some(&mut hook) } else { None };
+                // Same Phase 1b.x note as the body load — head
+                // skinning happens to render reasonably because the
+                // head only has 5 bones in a short chain, so whatever
+                // the runtime-composition bug is, it produces a
+                // recognizable face shape rather than a spike.
+                // External skeleton stays — it's the right target.
                 let (_head_count, head_root, _head_map) = load_nif_bytes_with_skeleton(
                     world,
                     ctx,
