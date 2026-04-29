@@ -347,6 +347,8 @@ pub fn load_cell_with_masters(
         &cell.references,
         &index.cells,
         &index.npcs,
+        &index.races,
+        index.game,
         world,
         ctx,
         tex_provider,
@@ -716,6 +718,8 @@ pub fn load_one_exterior_cell(
         &cell.references,
         index,
         &wctx.record_index.npcs,
+        &wctx.record_index.races,
+        wctx.record_index.game,
         world,
         ctx,
         tex_provider,
@@ -769,6 +773,8 @@ fn load_references(
     refs: &[esm::cell::PlacedRef],
     index: &esm::cell::EsmCellIndex,
     npcs: &HashMap<u32, byroredux_plugin::esm::records::NpcRecord>,
+    races: &HashMap<u32, byroredux_plugin::esm::records::RaceRecord>,
+    game: byroredux_plugin::esm::reader::GameKind,
     world: &mut World,
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
@@ -920,23 +926,50 @@ fn load_references(
                     s
                 }
                 None => {
-                    // M41.0 Phase 0 dispatcher stub. ACHR REFRs whose
-                    // base resolves to an `NPC_` record are a separate
-                    // spawn path (skeleton + FaceGen head + skinned
-                    // body + idle clip). Phase 0 surfaces the count
-                    // and a sample of FormIDs in the end-of-cell
-                    // summary so we can baseline how many actors a
-                    // cell carries before Phase 1 implements
-                    // `spawn_npc_entity`. Until then NPCs render as
-                    // nothing — same observable outcome as pre-fix,
-                    // but with telemetry instead of a `debug!` line
-                    // that nobody reads.
-                    if npcs.contains_key(&child_form_id) {
-                        npc_pending += 1;
-                        if npc_pending_sample.len() < 8
-                            && !npc_pending_sample.contains(&child_form_id)
-                        {
-                            npc_pending_sample.push(child_form_id);
+                    // M41.0 Phase 1b — ACHR REFRs whose base resolves
+                    // to an `NPC_` record route through the NPC spawn
+                    // function instead of the static-mesh path. The
+                    // kf-era branch (Oblivion / FO3 / FNV) loads
+                    // skeleton + race body NIF and parents them under
+                    // a placement root; the pre-baked-FaceGen branch
+                    // (Skyrim / FO4 / FO76 / Starfield) lands in
+                    // Phase 4 and currently `npc_pending` still
+                    // counts those for telemetry. Bounds tracking
+                    // uses the placement position; mesh-entity count
+                    // and full counters lump under `entity_count` so
+                    // existing per-cell summary stays accurate.
+                    if let Some(npc) = npcs.get(&child_form_id) {
+                        bounds_min = bounds_min.min(ref_pos);
+                        bounds_max = bounds_max.max(ref_pos);
+                        if game.has_runtime_facegen_recipe() {
+                            let race = races.get(&npc.race_form_id);
+                            let _spawned = crate::npc_spawn::spawn_npc_entity(
+                                world,
+                                ctx,
+                                npc,
+                                race,
+                                game,
+                                tex_provider,
+                                mat_provider.as_deref_mut(),
+                                ref_pos,
+                                ref_rot,
+                                ref_scale,
+                            );
+                            // Skeleton + body each spawn ~60-80
+                            // entities; the exact count is hard to
+                            // attribute without `World::next_entity_id`
+                            // diff plumbing, so for now bump the
+                            // single-entity counter to surface "an
+                            // NPC landed" without over-counting.
+                            entity_count += 1;
+                        } else {
+                            // Pre-baked-FaceGen path — Phase 4.
+                            npc_pending += 1;
+                            if npc_pending_sample.len() < 8
+                                && !npc_pending_sample.contains(&child_form_id)
+                            {
+                                npc_pending_sample.push(child_form_id);
+                            }
                         }
                         continue;
                     }

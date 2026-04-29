@@ -1162,11 +1162,45 @@ pub(crate) fn load_nif_bytes(
     tex_provider: &TextureProvider,
     mat_provider: Option<&mut MaterialProvider>,
 ) -> (usize, Option<EntityId>) {
+    let (count, root, _local_map) =
+        load_nif_bytes_with_skeleton(world, ctx, data, label, tex_provider, mat_provider, None);
+    (count, root)
+}
+
+/// Variant of [`load_nif_bytes`] used by NPC spawn (M41.0 Phase 1b)
+/// when assembling skeleton + body + head from three separate NIFs.
+///
+/// `external_skeleton`: when `Some(map)`, every skinning-bone name
+/// lookup tries the external map first, falling back to this NIF's
+/// local nodes. The body and head NIFs each spawn their own
+/// (orphaned) copy of the skeleton's node hierarchy, but their
+/// `SkinnedMesh.bones` references point at the SHARED skeleton
+/// entities so all three palettes draw from one bone palette. Pre-fix
+/// the body and head would each resolve against their own local
+/// skeleton copies, leaving the head detached from the animated
+/// skeleton.
+///
+/// Returns the local `node_by_name` map alongside the count and root
+/// so the caller can chain it forward into the next NIF's external
+/// skeleton parameter.
+pub(crate) fn load_nif_bytes_with_skeleton(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    data: &[u8],
+    label: &str,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+    external_skeleton: Option<&std::collections::HashMap<std::sync::Arc<str>, EntityId>>,
+) -> (
+    usize,
+    Option<EntityId>,
+    std::collections::HashMap<std::sync::Arc<str>, EntityId>,
+) {
     let scene = match byroredux_nif::parse_nif(data) {
         Ok(s) => s,
         Err(e) => {
             log::error!("Failed to parse NIF '{}': {}", label, e);
-            return (0, None);
+            return (0, None, std::collections::HashMap::new());
         }
     };
 
@@ -1618,8 +1652,17 @@ pub(crate) fn load_nif_bytes(
                 let mut binds: Vec<Mat4> = Vec::with_capacity(skin.bones.len());
                 let mut unresolved = 0_usize;
                 for bone in &skin.bones {
-                    match node_by_name.get(&bone.name) {
-                        Some(&e) => bones.push(Some(e)),
+                    // M41.0 Phase 1b: prefer the external skeleton
+                    // map (set when the spawn function is assembling
+                    // skeleton + body + head) so body/head NIF
+                    // skinning resolves to the shared skeleton's
+                    // entities, not the body/head's own orphaned
+                    // local node copies.
+                    let resolved = external_skeleton
+                        .and_then(|m| m.get(&bone.name).copied())
+                        .or_else(|| node_by_name.get(&bone.name).copied());
+                    match resolved {
+                        Some(e) => bones.push(Some(e)),
                         None => {
                             bones.push(None);
                             unresolved += 1;
@@ -1627,10 +1670,11 @@ pub(crate) fn load_nif_bytes(
                     }
                     binds.push(Mat4::from_cols_array_2d(&bone.bind_inverse));
                 }
-                let root_entity = skin
-                    .skeleton_root
-                    .as_ref()
-                    .and_then(|n| node_by_name.get(n).copied());
+                let root_entity = skin.skeleton_root.as_ref().and_then(|n| {
+                    external_skeleton
+                        .and_then(|m| m.get(n).copied())
+                        .or_else(|| node_by_name.get(n).copied())
+                });
                 world.insert(entity, SkinnedMesh::new(root_entity, bones, binds));
                 log::info!(
                     "Skinned mesh '{}': {} bones ({} unresolved), root={:?}",
@@ -1707,7 +1751,7 @@ pub(crate) fn load_nif_bytes(
         count,
         label
     );
-    (count + imported.nodes.len(), root)
+    (count + imported.nodes.len(), root, node_by_name)
 }
 
 #[cfg(test)]

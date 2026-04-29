@@ -64,6 +64,13 @@ use std::collections::HashMap;
 /// renderer. The other maps are new in M24.
 #[derive(Debug, Default)]
 pub struct EsmIndex {
+    /// Game variant this index was parsed against, derived from the
+    /// TES4 HEDR `Version` f32 by [`GameKind::from_header`]. Carried
+    /// forward through [`merge_from`] (last-write-wins — multi-plugin
+    /// loads always share a single game variant in practice).
+    /// Consumed by the cell loader's NPC dispatch (M41.0 Phase 1b)
+    /// to gate runtime-FaceGen vs pre-baked-FaceGen spawn paths.
+    pub game: GameKind,
     pub cells: EsmCellIndex,
     pub items: HashMap<u32, ItemRecord>,
     pub containers: HashMap<u32, ContainerRecord>,
@@ -276,6 +283,14 @@ impl EsmIndex {
     /// nested map merges per-worldspace so a DLC adding a new
     /// worldspace doesn't stomp the base game's entry. See M46.0 / #561.
     pub fn merge_from(&mut self, other: EsmIndex) {
+        // M41.0 Phase 1b — preserve the latest plugin's game variant
+        // on the merged index. Multi-plugin loads always share a
+        // single game in practice (master + DLC of the same game), so
+        // last-write-wins is correct; the field stays at its
+        // `GameKind::default()` (Fallout3NV) until the first plugin's
+        // parse populates it.
+        self.game = other.game;
+
         // Nested cell index — needs per-worldspace handling.
         self.cells.merge_from(other.cells);
 
@@ -368,6 +383,10 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         reader.variant(),
         file_header.as_ref().map(|h| h.hedr_version).unwrap_or(0.0),
     );
+    // M41.0 Phase 1b — preserve game on the index so consumers
+    // (NPC spawn dispatcher) can route per-version without
+    // re-deriving from a HEDR they no longer have.
+    index.game = game;
 
     // #348 — push the TES4 `Localized` flag into a thread-local so
     // every record parser's FULL/DESC decoder can route through the
