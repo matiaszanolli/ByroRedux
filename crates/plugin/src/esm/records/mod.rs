@@ -1488,6 +1488,7 @@ mod tests {
                 acbs_flags: 0,
                 has_script: false,
                 face_morphs: None,
+                runtime_facegen: None,
             },
         );
         assert_eq!(idx.total(), 2);

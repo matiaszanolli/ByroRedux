@@ -80,6 +80,89 @@ impl NpcFaceMorphs {
     }
 }
 
+/// Pre-FO4 NPC FaceGen recipe — the slider-array form that the
+/// legacy engine evaluates at load time against the race base head
+/// NIF + its `.egm` (geometry) / `.egt` (texture) / `.tri` (animated
+/// targets) sidecars. Carried by Oblivion / Fallout 3 / Fallout NV
+/// NPCs; FO4+ uses the typed-morph-target form in [`NpcFaceMorphs`]
+/// instead.
+///
+/// **None** of the floats are validated at parse time — slider arrays
+/// in the wild include negative values (under-the-norm features) and
+/// values > 1 (exaggerated features). The evaluator (Phase 3b) is
+/// responsible for whatever clamping the renderer wants.
+///
+/// The `eyebrow_form_id` slot captures FNV's actual `PNAM` semantic
+/// (a single eyebrow HDPT FormID). Pre-fix, FNV `PNAM` was being
+/// accumulated into [`NpcFaceMorphs::head_parts`] (the FO4 semantic),
+/// which silently misclassified every FNV named NPC as having FO4
+/// face-morph data.
+#[derive(Debug, Clone)]
+pub struct NpcFaceGenRecipe {
+    /// FGGS — 50 symmetric morph weights (left-right mirrored sliders
+    /// like nose-bridge-width, jaw-depth, eye-vertical). Indexed by
+    /// position in the 50-slot table; the slot semantics are baked
+    /// into the race's `.egm` file. Most NPCs carry the full 50; the
+    /// parser pads or truncates to 50 if the on-disk count differs.
+    pub fggs: [f32; 50],
+    /// FGGA — 30 asymmetric morph weights (left-only / right-only
+    /// features that FGGS can't express). Same indexing scheme.
+    pub fgga: [f32; 30],
+    /// FGTS — 50 texture-morph weights driving complexion / age-line
+    /// / makeup deltas via the race's `.egt` file. Applied in the
+    /// face-tint compositor (Phase 3c).
+    pub fgts: [f32; 50],
+    /// HCLR — RGB hair color (3 bytes, `r/g/b`). Some FNV records
+    /// carry a 4th byte (alpha or padding); per UESP only the first
+    /// 3 are authoritative, so the parser drops the tail.
+    pub hair_color_rgb: Option<[u8; 3]>,
+    /// HNAM — hair style FormID (HAIR record).
+    pub hair_form_id: Option<u32>,
+    /// LNAM — unused on FNV / FO3 vanilla; preserved as opaque u32 so
+    /// future authors can wire it without revisiting the parser.
+    pub unused_lnam: Option<u32>,
+    /// ENAM — eyes FormID (EYES record).
+    pub eyes_form_id: Option<u32>,
+    /// PNAM — eyebrow HDPT FormID. `None` when the record carries no
+    /// PNAM. **Note:** FO4 reuses the `PNAM` tag for a head-parts
+    /// list (multiple sub-records), so the FO4 path captures it in
+    /// [`NpcFaceMorphs::head_parts`] instead.
+    pub eyebrow_form_id: Option<u32>,
+}
+
+impl Default for NpcFaceGenRecipe {
+    fn default() -> Self {
+        // `[f32; 50]` and `[f32; 30]` have no built-in `Default` impl
+        // (the std blanket only covers arrays up to length 32), so the
+        // derive can't synthesise one. Hand-roll it; all-zeros matches
+        // the slider-array zero-default the legacy engine assumes for
+        // any NPC that doesn't override a slot.
+        Self {
+            fggs: [0.0; 50],
+            fgga: [0.0; 30],
+            fgts: [0.0; 50],
+            hair_color_rgb: None,
+            hair_form_id: None,
+            unused_lnam: None,
+            eyes_form_id: None,
+            eyebrow_form_id: None,
+        }
+    }
+}
+
+impl NpcFaceGenRecipe {
+    fn is_empty(&self) -> bool {
+        self.fggs.iter().all(|f| *f == 0.0)
+            && self.fgga.iter().all(|f| *f == 0.0)
+            && self.fgts.iter().all(|f| *f == 0.0)
+            && self.hair_color_rgb.is_none()
+            && self.hair_form_id.is_none()
+            && self.unused_lnam.is_none()
+            && self.eyes_form_id.is_none()
+            && self.eyebrow_form_id.is_none()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NpcRecord {
     pub form_id: u32,
@@ -117,6 +200,14 @@ pub struct NpcRecord {
     /// FO4-DIM6-06 / #591 — actual morph-target application is
     /// downstream of HDPT mesh linking + the skinning pipeline.
     pub face_morphs: Option<NpcFaceMorphs>,
+    /// Pre-FO4 FaceGen recipe (FGGS/FGGA/FGTS slider arrays + HCLR /
+    /// HNAM / LNAM / ENAM / PNAM). `None` when the record carries
+    /// none of those sub-records. Mutually exclusive with
+    /// [`face_morphs`] in vanilla content (no record carries both
+    /// forms — they're per-game). M41.0 Phase 3b consumes the slider
+    /// arrays against the race's `.egm` sidecar to deform the base
+    /// head mesh per NPC.
+    pub runtime_facegen: Option<NpcFaceGenRecipe>,
 }
 
 #[derive(Debug, Clone)]
@@ -174,12 +265,12 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
     // sub-records — and crucially, FNV `PNAM` carries a single
     // eyebrow HDPT FormID, NOT a head-part list, so accumulating it
     // into `face.head_parts` (the FO4 semantic) was a silent
-    // mis-classification pre-fix. Gate every arm of that block on
-    // the FO4-or-later games that actually use it.
-    let captures_fo4_face = matches!(
-        game,
-        GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield,
-    );
+    // mis-classification pre-fix. The two paths are mutually
+    // exclusive in vanilla content; both arms key off `GameKind`
+    // semantic predicates so adding new games extends the table at
+    // one site.
+    let captures_fo4_face = game.uses_prebaked_facegen();
+    let captures_runtime_facegen = game.has_runtime_facegen_recipe();
     let mut record = NpcRecord {
         form_id,
         editor_id: String::new(),
@@ -197,6 +288,7 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
         acbs_flags: 0,
         has_script: false,
         face_morphs: None,
+        runtime_facegen: None,
     };
     // FMRI and FMRS are collected separately and zipped after the walk
     // since they appear alternating on the wire and we don't want to
@@ -204,6 +296,7 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
     let mut fmri_forms: Vec<u32> = Vec::new();
     let mut fmrs_settings: Vec<[f32; 9]> = Vec::new();
     let mut face = NpcFaceMorphs::default();
+    let mut recipe = NpcFaceGenRecipe::default();
 
     for sub in subs {
         match &sub.sub_type {
@@ -255,6 +348,42 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
             }
             // VMAD presence-only flag — see `has_script` field doc.
             b"VMAD" => record.has_script = true,
+            // ── M41.0 Phase 1a — Pre-FO4 FaceGen recipe ────────────────
+            // FGGS (50 × f32 sym morph weights), FGGA (30 × f32 asym),
+            // FGTS (50 × f32 texture morphs). Vanilla bytes are exactly
+            // the documented sizes; the parser pads short payloads with
+            // zeros and truncates over-long ones rather than panicking.
+            b"FGGS" if captures_runtime_facegen && !sub.data.is_empty() => {
+                read_f32_array_into(&sub.data, &mut recipe.fggs);
+            }
+            b"FGGA" if captures_runtime_facegen && !sub.data.is_empty() => {
+                read_f32_array_into(&sub.data, &mut recipe.fgga);
+            }
+            b"FGTS" if captures_runtime_facegen && !sub.data.is_empty() => {
+                read_f32_array_into(&sub.data, &mut recipe.fgts);
+            }
+            // HCLR carries 3-byte RGB on FNV vanilla; some records ship
+            // a 4th alpha/padding byte — drop it per UESP (only the
+            // first 3 are authoritative).
+            b"HCLR" if captures_runtime_facegen && sub.data.len() >= 3 => {
+                recipe.hair_color_rgb = Some([sub.data[0], sub.data[1], sub.data[2]]);
+            }
+            b"HNAM" if captures_runtime_facegen && sub.data.len() >= 4 => {
+                recipe.hair_form_id = Some(read_u32_at(&sub.data, 0).unwrap_or(0));
+            }
+            b"LNAM" if captures_runtime_facegen && sub.data.len() >= 4 => {
+                recipe.unused_lnam = Some(read_u32_at(&sub.data, 0).unwrap_or(0));
+            }
+            b"ENAM" if captures_runtime_facegen && sub.data.len() >= 4 => {
+                recipe.eyes_form_id = Some(read_u32_at(&sub.data, 0).unwrap_or(0));
+            }
+            // FNV / FO3 PNAM = single eyebrow HDPT FormID. The FO4 PNAM
+            // arm below carries a different semantic (head-parts list);
+            // the two are guarded by `captures_runtime_facegen` vs
+            // `captures_fo4_face` and never both fire on a single record.
+            b"PNAM" if captures_runtime_facegen && sub.data.len() >= 4 => {
+                recipe.eyebrow_form_id = Some(read_u32_at(&sub.data, 0).unwrap_or(0));
+            }
             // ── #591 / FO4-DIM6-06 face-morph block ────────────────────
             // FO4+/FO76/Starfield only. Pre-fix, all of these arms ran
             // unconditionally; FNV `PNAM` (eyebrow HDPT FormID) was
@@ -317,9 +446,11 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
                 face.body_color = Some(read_u32_at(&sub.data, 0).unwrap_or(0));
             }
             // PNAM on FO4+ NPCs accumulates head-part FormIDs (one per
-            // sub-record). On FNV / FO3 NPCs, PNAM is a SINGLE eyebrow
-            // HDPT FormID — different semantic, captured separately
-            // when M41.0 Phase 2 lands the FNV runtime morph path.
+            // sub-record). FNV / FO3 PNAM is captured by the kf-era
+            // arm above as a single eyebrow HDPT FormID; the two arms
+            // are mutually exclusive via `captures_fo4_face` vs
+            // `captures_runtime_facegen`, both keyed off `GameKind`
+            // semantic predicates.
             b"PNAM" if captures_fo4_face && sub.data.len() >= 4 => {
                 face.head_parts
                     .push(read_u32_at(&sub.data, 0).unwrap_or(0));
@@ -352,8 +483,26 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
     if !face.is_empty() {
         record.face_morphs = Some(face);
     }
+    if !recipe.is_empty() {
+        record.runtime_facegen = Some(recipe);
+    }
 
     record
+}
+
+/// Read up to `dst.len()` consecutive `f32` values out of `src` into
+/// `dst`, padding with zero on under-read and silently dropping any
+/// over-read tail. Used by [`parse_npc`] to land FGGS/FGGA/FGTS
+/// payloads against fixed-size slider arrays.
+fn read_f32_array_into(src: &[u8], dst: &mut [f32]) {
+    for (i, slot) in dst.iter_mut().enumerate() {
+        let off = i * 4;
+        if off + 4 <= src.len() {
+            *slot = f32::from_le_bytes([src[off], src[off + 1], src[off + 2], src[off + 3]]);
+        } else {
+            *slot = 0.0;
+        }
+    }
 }
 
 pub fn parse_race(form_id: u32, subs: &[SubRecord]) -> RaceRecord {
@@ -784,11 +933,12 @@ mod tests {
     }
 
     /// FNV NPC `PNAM` carries a single eyebrow HDPT FormID, NOT an
-    /// FO4-style head-parts list. The `game`-aware gate must not let
-    /// FNV PNAMs leak into `face_morphs.head_parts`. See M41.0 Phase 0
-    /// foundation work (sibling NPC face-morph audit).
+    /// FO4-style head-parts list. The `game`-aware gate keeps FNV
+    /// PNAMs out of `face_morphs.head_parts`; M41.0 Phase 1a now
+    /// captures them into `runtime_facegen.eyebrow_form_id` instead
+    /// of dropping them on the floor.
     #[test]
-    fn npc_fnv_pnam_does_not_populate_face_morphs() {
+    fn npc_fnv_pnam_lands_in_runtime_facegen_eyebrow() {
         let subs = vec![
             sub(b"EDID", b"FnvNpc\0"),
             // FNV-style PNAM: a single 4-byte eyebrow HDPT FormID.
@@ -799,6 +949,111 @@ mod tests {
             n.face_morphs.is_none(),
             "FNV PNAM must not populate face_morphs.head_parts (FO4 semantic)"
         );
+        let recipe = n
+            .runtime_facegen
+            .as_ref()
+            .expect("FNV PNAM must produce runtime_facegen");
+        assert_eq!(recipe.eyebrow_form_id, Some(0xDEAD));
+    }
+
+    /// FGGS / FGGA / FGTS slider arrays land in fixed-size float
+    /// arrays. Pre-Phase-3b the parser is the only consumer; the
+    /// spawn-side morph evaluator picks them up from
+    /// `runtime_facegen.fggs` directly.
+    #[test]
+    fn npc_fnv_fggs_fgga_fgts_populate_runtime_facegen() {
+        let mut fggs = Vec::with_capacity(50 * 4);
+        for i in 0..50 {
+            fggs.extend_from_slice(&(i as f32 * 0.1).to_le_bytes());
+        }
+        let mut fgga = Vec::with_capacity(30 * 4);
+        for i in 0..30 {
+            fgga.extend_from_slice(&(i as f32 * -0.05).to_le_bytes());
+        }
+        let mut fgts = Vec::with_capacity(50 * 4);
+        for i in 0..50 {
+            fgts.extend_from_slice(&(i as f32 * 0.02).to_le_bytes());
+        }
+        let subs = vec![
+            sub(b"EDID", b"SunnyMockup\0"),
+            sub(b"FGGS", &fggs),
+            sub(b"FGGA", &fgga),
+            sub(b"FGTS", &fgts),
+        ];
+        let n = parse_npc(0x607, &subs, GameKind::Fallout3NV);
+        let recipe = n
+            .runtime_facegen
+            .as_ref()
+            .expect("FGGS/FGGA/FGTS must produce runtime_facegen");
+        assert!((recipe.fggs[7] - 0.7).abs() < 1e-6);
+        assert!((recipe.fgga[5] - -0.25).abs() < 1e-6);
+        assert!((recipe.fgts[3] - 0.06).abs() < 1e-6);
+        // Slot beyond the table stays at the default 0.0.
+        assert_eq!(recipe.fggs[49], 4.9_f32);
+        assert_eq!(recipe.fgga[29], -1.45_f32);
+    }
+
+    /// Short FGGS payload pads with zeros — the parser must not
+    /// over-read or panic on truncated mod records.
+    #[test]
+    fn npc_fnv_short_fggs_pads_with_zero() {
+        // 5 × f32 = 20 bytes; far short of the canonical 200.
+        let mut fggs = Vec::with_capacity(5 * 4);
+        for v in [1.0f32, 2.0, 3.0, 4.0, 5.0] {
+            fggs.extend_from_slice(&v.to_le_bytes());
+        }
+        let subs = vec![sub(b"EDID", b"TruncMod\0"), sub(b"FGGS", &fggs)];
+        let n = parse_npc(0x608, &subs, GameKind::Fallout3NV);
+        let recipe = n.runtime_facegen.as_ref().unwrap();
+        assert_eq!(recipe.fggs[0], 1.0);
+        assert_eq!(recipe.fggs[4], 5.0);
+        for v in &recipe.fggs[5..] {
+            assert_eq!(*v, 0.0);
+        }
+    }
+
+    /// HCLR / HNAM / LNAM / ENAM all land in `runtime_facegen` on
+    /// kf-era games. HCLR's optional 4th byte is dropped per UESP.
+    #[test]
+    fn npc_fnv_hclr_hnam_lnam_enam_populate_runtime_facegen() {
+        let subs = vec![
+            sub(b"EDID", b"FullRecipe\0"),
+            sub(b"HCLR", &[0x33, 0x55, 0x77, 0xFF]), // 4-byte; alpha dropped
+            sub(b"HNAM", &0xCAFEu32.to_le_bytes()),
+            sub(b"LNAM", &0xBEEFu32.to_le_bytes()),
+            sub(b"ENAM", &0xF00Du32.to_le_bytes()),
+        ];
+        let n = parse_npc(0x609, &subs, GameKind::Fallout3NV);
+        let recipe = n.runtime_facegen.as_ref().unwrap();
+        assert_eq!(recipe.hair_color_rgb, Some([0x33, 0x55, 0x77]));
+        assert_eq!(recipe.hair_form_id, Some(0xCAFE));
+        assert_eq!(recipe.unused_lnam, Some(0xBEEF));
+        assert_eq!(recipe.eyes_form_id, Some(0xF00D));
+    }
+
+    /// FO4 NPCs ship none of the kf-era recipe sub-records — and
+    /// even if a malformed mod adds an FGGS payload to an FO4 NPC,
+    /// the gate keeps `runtime_facegen` at `None`. Mirror property:
+    /// kf-era NPCs with FO4-shaped FMRI/FMRS don't populate
+    /// `face_morphs`. Both are pinned to keep the predicates honest.
+    #[test]
+    fn npc_runtime_facegen_and_face_morphs_are_mutually_exclusive() {
+        let fggs = vec![0u8; 200];
+        let subs_fo4 = vec![sub(b"EDID", b"Fo4Stray\0"), sub(b"FGGS", &fggs)];
+        let n = parse_npc(0x60A, &subs_fo4, GameKind::Fallout4);
+        assert!(n.runtime_facegen.is_none(), "FO4 must not parse FGGS");
+
+        let mut fmrs = Vec::with_capacity(36);
+        for v in [0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9] {
+            fmrs.extend_from_slice(&v.to_le_bytes());
+        }
+        let subs_fnv = vec![
+            sub(b"EDID", b"FnvStray\0"),
+            sub(b"FMRI", &0xDEADu32.to_le_bytes()),
+            sub(b"FMRS", &fmrs),
+        ];
+        let n = parse_npc(0x60B, &subs_fnv, GameKind::Fallout3NV);
+        assert!(n.face_morphs.is_none(), "FNV must not parse FMRI/FMRS");
     }
 
     /// Wrong-sized FMRS (e.g. a Skyrim record that ships a smaller

@@ -152,6 +152,59 @@ impl GameKind {
             }
         }
     }
+
+    // ── Semantic predicates ────────────────────────────────────────
+    //
+    // These are the canonical version-feature gates consumed by NPC
+    // spawn code (M41.0) and any future face / animation / tint
+    // pipeline. The convention mirrors `NifVariant`'s
+    // `has_shader_alpha_refs()` / `has_material_crc()` style: each
+    // predicate names a *capability*, not a game; new games extend
+    // the match arms in one place instead of bumping a dozen
+    // `match game { ... }` blocks scattered through the parsers.
+
+    /// True when the NPC face shape is a runtime-evaluated recipe
+    /// (FGGS / FGGA / FGTS slider arrays + `.egm` / `.egt` / `.tri`
+    /// sidecar deltas applied at spawn time on top of a race-shared
+    /// base head NIF). Oblivion / FO3 / FNV use this model.
+    ///
+    /// **Mutually exclusive** with [`uses_prebaked_facegen`].
+    pub fn has_runtime_facegen_recipe(self) -> bool {
+        matches!(self, Self::Oblivion | Self::Fallout3NV)
+    }
+
+    /// True when the NPC face shape is a per-NPC pre-baked NIF
+    /// shipped under `meshes\actors\character\facegendata\facegeom\
+    /// <plugin>\<formid:08x>.nif` with a matching face-tint DDS at
+    /// `textures\actors\character\facegendata\facetint\...`.
+    /// Skyrim / FO4 / FO76 / Starfield use this model.
+    ///
+    /// **Mutually exclusive** with [`has_runtime_facegen_recipe`].
+    pub fn uses_prebaked_facegen(self) -> bool {
+        matches!(
+            self,
+            Self::Skyrim | Self::Fallout4 | Self::Fallout76 | Self::Starfield,
+        )
+    }
+
+    /// True when the engine ships `.kf` keyframe animation clips that
+    /// the existing [`crates::nif::anim::import_kf`] importer can
+    /// decode directly. FNV vanilla ships ~962 idle clips under
+    /// `meshes\characters\_male\idleanims\`. Skyrim+ vanilla ships
+    /// **zero** `.kf` files (Havok `.hkx` only).
+    pub fn has_kf_animations(self) -> bool {
+        matches!(self, Self::Oblivion | Self::Fallout3NV)
+    }
+
+    /// True when the engine animates actors via Havok Behavior Format
+    /// (`.hkx` files + behaviour graphs). Skyrim onwards. M41.0 ships
+    /// these games at bind pose; M41.x adds a minimal `.hkx` decoder.
+    pub fn has_havok_animations(self) -> bool {
+        matches!(
+            self,
+            Self::Skyrim | Self::Fallout4 | Self::Fallout76 | Self::Starfield,
+        )
+    }
 }
 
 /// Binary reader for ESM/ESP files.
@@ -1011,5 +1064,45 @@ mod tests {
         let fh = reader.read_file_header().unwrap();
         assert_eq!(fh.record_count, 123);
         assert_eq!(fh.master_files, vec!["Oblivion.esm"]);
+    }
+
+    /// M41.0 Phase 1a — face/animation predicates are exhaustive
+    /// across the 6 supported `GameKind` variants and partition them
+    /// cleanly: every game uses **either** a runtime FaceGen recipe
+    /// **or** a pre-baked NIF (no double-counting); same for `.kf` vs
+    /// `.hkx`. A new game variant must extend both `match` arms in
+    /// one place to satisfy this test.
+    #[test]
+    fn game_kind_face_animation_predicates_partition_cleanly() {
+        let all = [
+            GameKind::Oblivion,
+            GameKind::Fallout3NV,
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+            GameKind::Fallout76,
+            GameKind::Starfield,
+        ];
+        for g in all {
+            assert!(
+                g.has_runtime_facegen_recipe() ^ g.uses_prebaked_facegen(),
+                "{g:?}: must satisfy exactly one of runtime / prebaked FaceGen",
+            );
+            assert!(
+                g.has_kf_animations() ^ g.has_havok_animations(),
+                "{g:?}: must satisfy exactly one of kf / hkx animation",
+            );
+        }
+
+        // Spot-check the membership of each set so a future
+        // misclassification fails loudly here, not at spawn time.
+        assert!(GameKind::Fallout3NV.has_runtime_facegen_recipe());
+        assert!(GameKind::Oblivion.has_runtime_facegen_recipe());
+        assert!(GameKind::Skyrim.uses_prebaked_facegen());
+        assert!(GameKind::Fallout4.uses_prebaked_facegen());
+        assert!(GameKind::Starfield.uses_prebaked_facegen());
+
+        assert!(GameKind::Fallout3NV.has_kf_animations());
+        assert!(GameKind::Skyrim.has_havok_animations());
+        assert!(GameKind::Starfield.has_havok_animations());
     }
 }
