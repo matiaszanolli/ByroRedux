@@ -813,12 +813,15 @@ fn load_references(
     // debug. Cap at 20 unique IDs; duplicates (same FormID placed
     // repeatedly across a worldspace) get deduped. See #386.
     let mut stat_miss_sample: Vec<u32> = Vec::with_capacity(20);
-    // M41.0 Phase 0 — count ACHR REFRs whose base resolves to an
-    // `NPC_` record. These bypass the statics-miss tally because they
-    // are a real spawn target, just one that Phase 1 hasn't wired
-    // yet. Sample is small (8 vs 20 for stat_miss) since per-cell NPC
-    // counts are bounded — Whiterun Bannered Mare carries ~6 actors
-    // versus ~1 932 statics.
+    // M41.0 Phase 1b — separate counters for the two NPC dispatch
+    // paths so the per-cell summary distinguishes "spawned via
+    // runtime-FaceGen path" (kf-era games — has a real spawn entity)
+    // from "pre-baked-FaceGen pending" (Skyrim+/FO4+ — Phase 4 wires
+    // the spawn). Sample stays small (8) since per-cell NPC counts
+    // are bounded — Whiterun Bannered Mare carries ~6 actors versus
+    // ~1 932 statics, Goodsprings exterior similar.
+    let mut npc_spawned: u32 = 0;
+    let mut npc_spawned_sample: Vec<u32> = Vec::with_capacity(8);
     let mut npc_pending: u32 = 0;
     let mut npc_pending_sample: Vec<u32> = Vec::with_capacity(8);
 
@@ -943,7 +946,7 @@ fn load_references(
                         bounds_max = bounds_max.max(ref_pos);
                         if game.has_runtime_facegen_recipe() {
                             let race = races.get(&npc.race_form_id);
-                            let _spawned = crate::npc_spawn::spawn_npc_entity(
+                            let spawned = crate::npc_spawn::spawn_npc_entity(
                                 world,
                                 ctx,
                                 npc,
@@ -955,13 +958,23 @@ fn load_references(
                                 ref_rot,
                                 ref_scale,
                             );
-                            // Skeleton + body each spawn ~60-80
-                            // entities; the exact count is hard to
-                            // attribute without `World::next_entity_id`
-                            // diff plumbing, so for now bump the
-                            // single-entity counter to surface "an
-                            // NPC landed" without over-counting.
-                            entity_count += 1;
+                            if spawned.is_some() {
+                                npc_spawned += 1;
+                                if npc_spawned_sample.len() < 8
+                                    && !npc_spawned_sample.contains(&child_form_id)
+                                {
+                                    npc_spawned_sample.push(child_form_id);
+                                }
+                                // Skeleton + body each spawn ~60-80
+                                // entities; the exact count is hard
+                                // to attribute without
+                                // `World::next_entity_id` diff
+                                // plumbing, so bump the
+                                // single-entity counter to surface
+                                // "an NPC landed" without
+                                // over-counting.
+                                entity_count += 1;
+                            }
                         } else {
                             // Pre-baked-FaceGen path — Phase 4.
                             npc_pending += 1;
@@ -1240,11 +1253,31 @@ fn load_references(
         dims.x, dims.y, dims.z,
         center.x, center.y, center.z,
     );
+    if npc_spawned > 0 {
+        // M41.0 Phase 1b — kf-era NPC actors landed. Each entry is a
+        // placement_root with skeleton + body parented under it.
+        // Visual QA: bodies in bind pose at the ACHR positions.
+        let sample_str = npc_spawned_sample
+            .iter()
+            .map(|id| format!("{:08X}", id))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let trunc = if (npc_spawned_sample.len() as u32) < npc_spawned {
+            format!(", … +{} more", npc_spawned - npc_spawned_sample.len() as u32)
+        } else {
+            String::new()
+        };
+        log::info!(
+            "  {} NPCs spawned via runtime-FaceGen path (sample: {}{})",
+            npc_spawned,
+            sample_str,
+            trunc,
+        );
+    }
     if npc_pending > 0 {
-        // M41.0 Phase 0 — surface ACHR REFRs whose base resolves to an
-        // NPC_ record so the operator can see how many actors a cell
-        // would spawn once Phase 1 wires `spawn_npc_entity`. Logged at
-        // info to keep visible without flipping debug.
+        // M41.0 Phase 4 — Skyrim/FO4/FO76/Starfield NPCs sit on the
+        // pre-baked-FaceGen path; their dispatch lands when Phase 4
+        // wires the per-NPC NIF + face-tint resolution.
         let sample_str = npc_pending_sample
             .iter()
             .map(|id| format!("{:08X}", id))
@@ -1256,7 +1289,7 @@ fn load_references(
             String::new()
         };
         log::info!(
-            "  {} ACHR refs resolve to NPC_ (M41.0 Phase 1 dispatch pending; sample: {}{})",
+            "  {} ACHR refs resolve to NPC_ (M41.0 Phase 4 pre-baked-FaceGen dispatch pending; sample: {}{})",
             npc_pending,
             sample_str,
             trunc,
