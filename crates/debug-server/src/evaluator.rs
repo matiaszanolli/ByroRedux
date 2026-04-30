@@ -69,7 +69,48 @@ pub fn evaluate(
             eval_walk_entity(world, *entity, *max_depth)
         }
 
+        DebugRequest::InspectSkinnedMesh { entity } => {
+            eval_inspect_skinned_mesh(world, *entity)
+        }
+
         DebugRequest::Eval { expr } => eval_request(world, registry, expr),
+    }
+}
+
+fn eval_inspect_skinned_mesh(world: &World, entity: u32) -> DebugResponse {
+    use byroredux_core::ecs::components::Name;
+    use byroredux_core::ecs::SkinnedMesh;
+
+    let Some(skin_q) = world.query::<SkinnedMesh>() else {
+        return DebugResponse::error("no SkinnedMesh storage");
+    };
+    let Some(skin) = skin_q.get(entity) else {
+        return DebugResponse::error(format!("entity {} has no SkinnedMesh", entity));
+    };
+
+    let name_q = world.query::<Name>();
+    let pool = world.try_resource::<byroredux_core::string::StringPool>();
+    let bone_names: Vec<Option<String>> = skin
+        .bones
+        .iter()
+        .map(|b| {
+            b.and_then(|e| name_q.as_ref().and_then(|q| q.get(e)).map(|n| n.0))
+                .and_then(|sym| pool.as_ref().and_then(|p| p.resolve(sym).map(|s| s.to_string())))
+        })
+        .collect();
+
+    let bind_inverses: Vec<[f32; 16]> = skin
+        .bind_inverses
+        .iter()
+        .map(|m| m.to_cols_array())
+        .collect();
+
+    DebugResponse::SkinnedMesh {
+        skeleton_root: skin.skeleton_root,
+        bones: skin.bones.clone(),
+        bone_names,
+        bind_inverses,
+        global_skin_transform: skin.global_skin_transform.to_cols_array(),
     }
 }
 

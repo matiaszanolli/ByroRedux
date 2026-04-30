@@ -46,6 +46,13 @@ pub enum DebugRequest {
     /// inspect runtime entity trees (e.g. NPC spawn chains) without
     /// needing per-component serde derives.
     WalkEntity { entity: u32, max_depth: u32 },
+    /// M41.0 Phase 1b.x — dump a `SkinnedMesh` component. Returns each
+    /// bone's resolved entity (or null), the bind-inverse 4x4 matrix
+    /// (column-major), the skeleton-root entity, and the bone count.
+    /// Pairs with `WalkEntity` to let an external Python probe iterate
+    /// skinning-formula variations against live engine data without
+    /// rebuilding the engine.
+    InspectSkinnedMesh { entity: u32 },
     /// Ping / keep-alive.
     Ping,
 }
@@ -87,6 +94,20 @@ pub enum DebugResponse {
     Pong,
     /// Hierarchy walk result — flat list, depth-first order from the root.
     Hierarchy { nodes: Vec<HierarchyNode> },
+    /// SkinnedMesh component inspection — lets external probes verify
+    /// skinning formulas live against engine data.
+    SkinnedMesh {
+        skeleton_root: Option<u32>,
+        bones: Vec<Option<u32>>,
+        bone_names: Vec<Option<String>>,
+        /// Each bone's bind-inverse as a 16-float column-major mat4.
+        bind_inverses: Vec<[f32; 16]>,
+        /// Per-skin global transform (`NiSkinData::skinTransform` after
+        /// Y-up conversion). Identity if the source NIF didn't carry
+        /// one (FO4+ BSSkin paths). Stored on `SkinnedMesh` for the
+        /// Phase 1b.x palette-formula investigation.
+        global_skin_transform: [f32; 16],
+    },
     /// An error message.
     Error { message: String },
 }

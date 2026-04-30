@@ -415,7 +415,7 @@ pub struct ImportedBone {
 /// no NiSkinData backing, or a BsTriShape whose `vertex_desc` lacks
 /// VF_SKINNED), the two vecs are empty and the consumer must fall
 /// back to rigid transform propagation.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ImportedSkin {
     /// Bones this mesh binds to, in the order the interpolator refers
     /// to them by index.
@@ -439,6 +439,40 @@ pub struct ImportedSkin {
     /// Per-vertex bone weights (up to 4). Must sum to 1.0 after
     /// normalization. Parallel to `vertex_bone_indices`.
     pub vertex_bone_weights: Vec<[f32; 4]>,
+    /// **Global skin transform** (`NiSkinData::skinTransform`, the
+    /// per-skin field, NOT the per-bone one). Bethesda's legacy
+    /// NiSkinData ships this as a non-identity transform on every body
+    /// NIF. The OpenMW skinning evaluator
+    /// (`components/sceneutil/riggeometry.cpp:175-208`) composes it
+    /// into the runtime palette as the OUTERMOST factor; NifSkope's
+    /// partition path silently drops it (`tools/nifskope/src/gl/glmesh.cpp:875`)
+    /// which is why our pre-Phase-1b.x palette computed `bone × invBind`
+    /// without it and produced the body-skinning ribbon artifact. Y-up
+    /// converted at extraction; identity if the source NIF didn't carry
+    /// one (FO4+ BSSkin paths). See M41.0 Phase 1b.x research in
+    /// `byroredux/tests/skinning_e2e.rs`.
+    pub global_skin_transform: [[f32; 4]; 4],
+}
+
+impl Default for ImportedSkin {
+    fn default() -> Self {
+        Self {
+            bones: Vec::new(),
+            skeleton_root: None,
+            vertex_bone_indices: Vec::new(),
+            vertex_bone_weights: Vec::new(),
+            // Identity matrix in column-major glam form. Required so a
+            // default ImportedSkin doesn't multiply vertices by a zero
+            // matrix when `global_skin_transform` is unused (e.g.
+            // BSSkinInstance paths that don't carry this field).
+            global_skin_transform: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        }
+    }
 }
 
 /// A fully imported NIF scene with hierarchy preserved.

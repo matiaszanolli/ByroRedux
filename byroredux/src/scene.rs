@@ -1726,12 +1726,22 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                     }
                     binds.push(Mat4::from_cols_array_2d(&bone.bind_inverse));
                 }
+                // M41.0 Phase 1b.x — global_skin_transform integration
+                // pending. First attempt right-multiplied here but the
+                // visual was worse, suggesting either the OpenMW
+                // invariant doesn't hold for these NIFs or our OSG-to-
+                // glam translation has an error. Reverted; investigation
+                // continues via numerical invariant check.
+                let global_skin_transform = Mat4::from_cols_array_2d(&skin.global_skin_transform);
                 let root_entity = skin.skeleton_root.as_ref().and_then(|n| {
                     external_skeleton
                         .and_then(|m| m.get(n).copied())
                         .or_else(|| node_by_name.get(n).copied())
                 });
-                world.insert(entity, SkinnedMesh::new(root_entity, bones, binds));
+                world.insert(
+                    entity,
+                    SkinnedMesh::new_with_global(root_entity, bones, binds, global_skin_transform),
+                );
                 if unresolved > 0 {
                     // M41.0 Phase 1b.x followup — unresolved bones land
                     // as `None` in `SkinnedMesh.bones`, and

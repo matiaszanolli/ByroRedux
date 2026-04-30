@@ -1028,11 +1028,19 @@ pub(super) fn extract_skin_ni_tri_shape(
     // Build dense per-vertex weight tables.
     let (vertex_bone_indices, vertex_bone_weights) = densify_sparse_weights(num_vertices, data);
 
+    // M41.0 Phase 1b.x — surface NiSkinData::skinTransform (the global
+    // per-skin transform). Bethesda body NIFs ship this with a non-
+    // identity cyclic-permutation rotation that the runtime palette
+    // composes as the outermost factor. See OpenMW
+    // `riggeometry.cpp:175-208`.
+    let global_skin_transform = ni_transform_to_yup_matrix(&data.skin_transform);
+
     Some(ImportedSkin {
         bones,
         skeleton_root,
         vertex_bone_indices,
         vertex_bone_weights,
+        global_skin_transform,
     })
 }
 
@@ -1120,11 +1128,13 @@ pub(super) fn extract_skin_bs_tri_shape(
         }
         let bones = build_imported_bones(scene, bone_refs_slice, data)?;
         let skeleton_root = resolve_node_name(scene, skeleton_root_ref);
+        let global_skin_transform = ni_transform_to_yup_matrix(&data.skin_transform);
         return Some(ImportedSkin {
             bones,
             skeleton_root,
             vertex_bone_indices,
             vertex_bone_weights,
+            global_skin_transform,
         });
     }
 
@@ -1146,11 +1156,21 @@ pub(super) fn extract_skin_bs_tri_shape(
             });
         }
         let skeleton_root = resolve_node_name(scene, inst.skeleton_root_ref);
+        // BSSkin (FO4+/Skyrim SE) doesn't carry a per-skin global
+        // transform; identity is the right default per OpenMW's
+        // FO4-mesh fallback comment at NifFile.cpp:2600-2602
+        // ("FO4 meshes do not have this transform").
         return Some(ImportedSkin {
             bones,
             skeleton_root,
             vertex_bone_indices,
             vertex_bone_weights,
+            global_skin_transform: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
         });
     }
 

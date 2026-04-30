@@ -102,6 +102,29 @@ pub fn print_response(response: &DebugResponse) {
             }
             println!("({} nodes)", nodes.len());
         }
+        DebugResponse::SkinnedMesh {
+            skeleton_root,
+            bones,
+            bone_names,
+            bind_inverses,
+            global_skin_transform: _,
+        } => {
+            println!("skeleton_root: {:?}", skeleton_root);
+            println!("{} bones:", bones.len());
+            for (i, ((b, name), bind)) in bones
+                .iter()
+                .zip(bone_names.iter())
+                .zip(bind_inverses.iter())
+                .enumerate()
+            {
+                let nm = name.as_deref().unwrap_or("?");
+                let t = (bind[12], bind[13], bind[14]);
+                println!(
+                    "  [{:>3}] entity={:?} name={:?} bind.t=({:.3},{:.3},{:.3})",
+                    i, b, nm, t.0, t.1, t.2
+                );
+            }
+        }
         DebugResponse::Error { message } => {
             eprintln!("Error: {}", message);
         }

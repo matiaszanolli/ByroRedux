@@ -46,6 +46,13 @@ pub struct SkinnedMesh {
     /// Multiply by the bone's current world matrix to get the skinning
     /// matrix for the palette.
     pub bind_inverses: Vec<Mat4>,
+    /// `NiSkinData::skinTransform` after Y-up conversion (the per-skin
+    /// global transform). M41.0 Phase 1b.x — Bethesda body NIFs ship a
+    /// non-identity cyclic-permutation rotation here that the
+    /// pre-Phase-1b.x palette computation dropped, producing the
+    /// stretched-ribbon vertex artifact. `Mat4::IDENTITY` for FO4+
+    /// BSSkin paths that don't carry the field.
+    pub global_skin_transform: Mat4,
 }
 
 impl SkinnedMesh {
@@ -55,6 +62,18 @@ impl SkinnedMesh {
         skeleton_root: Option<EntityId>,
         bones: Vec<Option<EntityId>>,
         bind_inverses: Vec<Mat4>,
+    ) -> Self {
+        Self::new_with_global(skeleton_root, bones, bind_inverses, Mat4::IDENTITY)
+    }
+
+    /// Construct with an explicit `global_skin_transform`
+    /// (`NiSkinData::skinTransform`). Pass `Mat4::IDENTITY` to match the
+    /// legacy (pre-Phase-1b.x) behaviour.
+    pub fn new_with_global(
+        skeleton_root: Option<EntityId>,
+        bones: Vec<Option<EntityId>>,
+        bind_inverses: Vec<Mat4>,
+        global_skin_transform: Mat4,
     ) -> Self {
         assert_eq!(
             bones.len(),
@@ -71,6 +90,7 @@ impl SkinnedMesh {
             skeleton_root,
             bones,
             bind_inverses,
+            global_skin_transform,
         }
     }
 
