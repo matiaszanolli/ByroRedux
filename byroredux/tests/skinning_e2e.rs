@@ -168,6 +168,129 @@ fn fnv_imports_skinned_mesh_with_resolved_bones() {
     );
 }
 
+/// Helper for the invariant test — runs against arbitrary NIF bytes.
+fn run_skinning_invariant(label: &str, bytes: &[u8]) {
+    use byroredux_nif::blocks::skin::{NiSkinData, NiSkinInstance, BsDismemberSkinInstance};
+    use byroredux_nif::blocks::tri_shape::NiTriShape;
+    use byroredux_nif::blocks::node::NiNode;
+    use byroredux_nif::types::BlockRef;
+    use byroredux_core::math::Mat4;
+
+    let scene = byroredux_nif::parse_nif(bytes).unwrap();
+
+    fn nitransform_to_mat4(t: &byroredux_nif::types::NiTransform) -> Mat4 {
+        let r = &t.rotation.rows;
+        let s = t.scale;
+        Mat4::from_cols_array(&[
+            r[0][0] * s, r[1][0] * s, r[2][0] * s, 0.0,
+            r[0][1] * s, r[1][1] * s, r[2][1] * s, 0.0,
+            r[0][2] * s, r[1][2] * s, r[2][2] * s, 0.0,
+            t.translation.x, t.translation.y, t.translation.z, 1.0,
+        ])
+    }
+
+    fn world_xform_for_named_node(
+        scene: &byroredux_nif::scene::NifScene,
+        target_name: &str,
+    ) -> Option<Mat4> {
+        let root_idx = scene.root_index?;
+        let mut stack: Vec<(usize, Mat4)> = vec![(root_idx, Mat4::IDENTITY)];
+        while let Some((idx, parent_world)) = stack.pop() {
+            let Some(node) = scene.get_as::<NiNode>(idx) else { continue };
+            let local = nitransform_to_mat4(&node.av.transform);
+            let world = parent_world * local;
+            if node.av.net.name.as_deref().map(|n: &str| n.eq_ignore_ascii_case(target_name)).unwrap_or(false) {
+                return Some(world);
+            }
+            for child_ref in &node.children {
+                if let Some(child_idx) = (*child_ref).index() {
+                    stack.push((child_idx, world));
+                }
+            }
+        }
+        None
+    }
+
+    eprintln!("\n========== {} ==========", label);
+    for shape_block_idx in 0..scene.blocks.len() {
+        let Some(shape) = scene.get_as::<NiTriShape>(shape_block_idx) else { continue };
+        let shape_name = shape.av.net.name.as_deref().unwrap_or("?").to_string();
+        if matches!(shape_name.as_str(), "bodycaps" | "limbcaps" | "meatneck01" | "meathead01") {
+            continue;
+        }
+        let Some(skin_idx) = shape.skin_instance_ref.index() else { continue };
+        let inst = scene.get_as::<NiSkinInstance>(skin_idx);
+        let inst_dis = scene.get_as::<BsDismemberSkinInstance>(skin_idx);
+        let (data_ref, bone_refs): (BlockRef, &[BlockRef]) = if let Some(i) = inst {
+            (i.data_ref, &i.bone_refs)
+        } else if let Some(i) = inst_dis {
+            (i.base.data_ref, &i.base.bone_refs)
+        } else { continue };
+        let Some(data_idx) = data_ref.index() else { continue };
+        let Some(data) = scene.get_as::<NiSkinData>(data_idx) else { continue };
+
+        let global_to_skin = nitransform_to_mat4(&data.skin_transform);
+        eprintln!(
+            "── shape '{}' ──  global_to_skin.t=({:.3},{:.3},{:.3})  scale={:.3}",
+            shape_name,
+            data.skin_transform.translation.x,
+            data.skin_transform.translation.y,
+            data.skin_transform.translation.z,
+            data.skin_transform.scale,
+        );
+        for (i, bone_ref) in bone_refs.iter().enumerate().take(3) {
+            let Some(bone_idx) = bone_ref.index() else { continue };
+            let Some(bone_node) = scene.get_as::<NiNode>(bone_idx) else { continue };
+            let bone_name = bone_node.av.net.name.as_deref().unwrap_or("?");
+            let Some(bone_world) = world_xform_for_named_node(&scene, bone_name) else {
+                eprintln!("  [{}] {} — could not resolve bone in tree", i, bone_name);
+                continue;
+            };
+            let skin_to_bone = nitransform_to_mat4(&data.bones[i].skin_transform);
+            let composed = global_to_skin * bone_world * skin_to_bone;
+            let id = Mat4::IDENTITY;
+            let mut max_diff: f32 = 0.0;
+            for c in 0..4 {
+                for r in 0..4 {
+                    let v = composed.col(c)[r] - id.col(c)[r];
+                    if v.abs() > max_diff { max_diff = v.abs() }
+                }
+            }
+            let composed_t = composed.col(3);
+            eprintln!(
+                "  [{}] {:30} bone_world.t=({:.1},{:.1},{:.1})  skinToBone.t=({:.3},{:.3},{:.3})  composed.t=({:.3},{:.3},{:.3})  max_diff_from_I={:.4}",
+                i, bone_name,
+                bone_world.col(3)[0], bone_world.col(3)[1], bone_world.col(3)[2],
+                data.bones[i].skin_transform.translation.x,
+                data.bones[i].skin_transform.translation.y,
+                data.bones[i].skin_transform.translation.z,
+                composed_t[0], composed_t[1], composed_t[2],
+                max_diff,
+            );
+        }
+    }
+}
+
+const OBLIVION_DEFAULT_DATA: &str = "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data";
+const OBLIVION_MESH_BSA: &str = "Oblivion - Meshes.bsa";
+
+#[test]
+#[ignore = "requires Oblivion BSA — opt in with --ignored"]
+fn oblivion_skinning_invariant_check() {
+    let Some(data_dir) = data_dir("BYROREDUX_OBLIVION_DATA", OBLIVION_DEFAULT_DATA) else {
+        return;
+    };
+    let bsa_path = data_dir.join(OBLIVION_MESH_BSA);
+    let bsa = byroredux_bsa::BsaArchive::open(&bsa_path).unwrap();
+    for nif_path in &[
+        "meshes\\characters\\_male\\upperbody.nif",
+        "meshes\\characters\\_male\\lowerbody.nif",
+    ] {
+        let Ok(bytes) = bsa.extract(nif_path) else { continue };
+        run_skinning_invariant(nif_path, &bytes);
+    }
+}
+
 #[test]
 #[ignore = "requires FNV BSA — opt in with --ignored"]
 fn fnv_skinning_invariant_check() {
