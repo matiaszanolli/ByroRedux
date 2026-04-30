@@ -492,13 +492,56 @@ impl<'a> NifStream<'a> {
     }
 
     pub fn read_ni_transform(&mut self) -> io::Result<NiTransform> {
-        // Gamebryo serialization order: translation, rotation, scale
-        // (see NiAVObject::LoadBinary in Gamebryo 2.3 source)
+        // NiAVObject inline-transform field order per nif.xml's
+        // `NiAVObject` definition: Translation → Rotation → Scale.
+        //
+        // ⚠️ This is DIFFERENT from the `NiTransform` STRUCT spec
+        // (`<struct name="NiTransform" size="52">` at nif.xml line 1808),
+        // which orders Rotation → Translation → Scale. The NiTransform
+        // STRUCT is used as a sub-record inside
+        // `NiSkinData::skin_transform` (global per-skin) and
+        // `NiSkinData::bones[i].skin_transform` (per-bone bind). For
+        // those, call [`Self::read_ni_transform_struct`] instead.
+        //
+        // M41.0 Phase 1b.x — pinpointed via the live debug-protocol
+        // probe at byroredux/tests/skinning_e2e.rs. The two layouts
+        // share the same Rust `NiTransform` type but the byte order on
+        // disk is opposite, and reading NiSkinData per-bone fields
+        // through this NiAVObject-ordered helper produces a transform
+        // whose `translation` is actually the source rotation's first
+        // row and whose `rotation` is the remaining 6 source-rotation
+        // values + the source translation cells, scrambled. The
+        // resulting bind-inverse misskins every legacy NiSkinData
+        // body NIF as a horizontal ribbon (visible since M29 #178
+        // shipped without rendered skinned content).
         let translation = self.read_ni_point3()?;
         let rotation = self.read_ni_matrix3()?;
         let scale = self.read_f32_le()?;
         // Sanitize once at parse time so downstream code can treat the
         // rotation as a valid rotation matrix. See #277.
+        let rotation = crate::rotation::sanitize_rotation(rotation);
+        Ok(NiTransform {
+            rotation,
+            translation,
+            scale,
+        })
+    }
+
+    /// Read a `NiTransform` struct in nif.xml's documented field order:
+    /// **Rotation → Translation → Scale**. Used as a sub-record inside
+    /// blocks like `NiSkinData::skin_transform` (global) and
+    /// `NiSkinData::bones[i].skin_transform` (per-bone bind-inverse).
+    ///
+    /// ⚠️ Call this — NOT [`Self::read_ni_transform`] — anywhere
+    /// nif.xml writes `type="NiTransform"`. The latter is for
+    /// NiAVObject's inline transform fields which use a different
+    /// (Translation-first) order. Mixing them up scrambles the matrix
+    /// (translation column reads as rotation row 0; rotation column
+    /// reads as the next two rotation rows + translation row).
+    pub fn read_ni_transform_struct(&mut self) -> io::Result<NiTransform> {
+        let rotation = self.read_ni_matrix3()?;
+        let translation = self.read_ni_point3()?;
+        let scale = self.read_f32_le()?;
         let rotation = crate::rotation::sanitize_rotation(rotation);
         Ok(NiTransform {
             rotation,

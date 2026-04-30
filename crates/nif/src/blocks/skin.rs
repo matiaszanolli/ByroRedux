@@ -92,7 +92,12 @@ impl NiObject for NiSkinData {
 
 impl NiSkinData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let skin_transform = stream.read_ni_transform()?;
+        // Both fields are NiTransform STRUCTs (nif.xml `<struct
+        // name="NiTransform" size="52">`), Rotation → Translation →
+        // Scale on disk. Use `read_ni_transform_struct`, NOT the
+        // NiAVObject-ordered `read_ni_transform`. See M41.0 Phase 1b.x
+        // notes on `read_ni_transform_struct` for the bug this fixes.
+        let skin_transform = stream.read_ni_transform_struct()?;
         let num_bones = stream.read_u32_le()?;
 
         // has_vertex_weights (version >= 4.2.1.0, always true for Bethesda games)
@@ -100,7 +105,7 @@ impl NiSkinData {
 
         let mut bones = stream.allocate_vec(num_bones)?;
         for _ in 0..num_bones {
-            let bone_transform = stream.read_ni_transform()?;
+            let bone_transform = stream.read_ni_transform_struct()?;
 
             // Bounding sphere: center (3 floats) + radius (1 float)
             let cx = stream.read_f32_le()?;
