@@ -274,6 +274,157 @@ fn run_skinning_invariant(label: &str, bytes: &[u8]) {
 const OBLIVION_DEFAULT_DATA: &str = "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data";
 const OBLIVION_MESH_BSA: &str = "Oblivion - Meshes.bsa";
 
+/// M41.0 Phase 1b.x — compute the actual rendered world position of
+/// real Oblivion body vertices using the NifSkope formula (verified
+/// in `tools/nifskope/src/gl/glmesh.cpp:875`):
+///
+///   vertex_world = bone.localTrans(skeleton_root) × skin_trans × vertex_local
+///
+/// (NifSkope drops a `scene->view` factor which we substitute with
+/// identity to get world space.) For a vertex weighted 1.0 to a single
+/// bone, the result should land at the bone's bind-pose world position
+/// plus the vertex's offset in NIF mesh-local space — matching what a
+/// human would expect for a standing biped at origin.
+#[test]
+#[ignore = "requires Oblivion BSA — opt in with --ignored"]
+fn oblivion_vertex_world_check() {
+    use byroredux_nif::blocks::skin::{NiSkinData, NiSkinInstance, BsDismemberSkinInstance};
+    use byroredux_nif::blocks::tri_shape::{NiTriShape, NiTriShapeData};
+    use byroredux_nif::blocks::node::NiNode;
+    use byroredux_nif::types::BlockRef;
+    use byroredux_core::math::{Mat4, Vec4};
+
+    let Some(data_dir) = data_dir("BYROREDUX_OBLIVION_DATA", OBLIVION_DEFAULT_DATA) else {
+        return;
+    };
+    let bsa = byroredux_bsa::BsaArchive::open(&data_dir.join(OBLIVION_MESH_BSA)).unwrap();
+    let bytes = bsa.extract("meshes\\characters\\_male\\upperbody.nif").unwrap();
+    let scene = byroredux_nif::parse_nif(&bytes).unwrap();
+
+    fn nitransform_to_mat4(t: &byroredux_nif::types::NiTransform) -> Mat4 {
+        let r = &t.rotation.rows;
+        let s = t.scale;
+        Mat4::from_cols_array(&[
+            r[0][0] * s, r[1][0] * s, r[2][0] * s, 0.0,
+            r[0][1] * s, r[1][1] * s, r[2][1] * s, 0.0,
+            r[0][2] * s, r[1][2] * s, r[2][2] * s, 0.0,
+            t.translation.x, t.translation.y, t.translation.z, 1.0,
+        ])
+    }
+
+    /// Walk up parent chain from `target_name` to `skel_root_name`,
+    /// composing locals — replicates NifSkope's `Node::localTrans(root)`.
+    fn local_trans_to_root(
+        scene: &byroredux_nif::scene::NifScene,
+        target_name: &str,
+        skel_root_name: &str,
+    ) -> Option<Mat4> {
+        // Build parent map by walking the tree once.
+        let root_idx = scene.root_index?;
+        let mut parent_of: std::collections::HashMap<usize, usize> = Default::default();
+        let mut stack = vec![root_idx];
+        while let Some(idx) = stack.pop() {
+            if let Some(node) = scene.get_as::<NiNode>(idx) {
+                for child in &node.children {
+                    if let Some(c) = (*child).index() {
+                        parent_of.insert(c, idx);
+                        stack.push(c);
+                    }
+                }
+            }
+        }
+        // Find target by name + walk up.
+        let mut target_idx: Option<usize> = None;
+        for i in 0..scene.blocks.len() {
+            if let Some(node) = scene.get_as::<NiNode>(i) {
+                if node.av.net.name.as_deref().map(|n: &str| n.eq_ignore_ascii_case(target_name)).unwrap_or(false) {
+                    target_idx = Some(i);
+                    break;
+                }
+            }
+        }
+        let mut cur = target_idx?;
+        let mut accum = Mat4::IDENTITY;
+        loop {
+            let node = scene.get_as::<NiNode>(cur)?;
+            if node.av.net.name.as_deref().map(|n: &str| n.eq_ignore_ascii_case(skel_root_name)).unwrap_or(false) {
+                return Some(accum);
+            }
+            let local = nitransform_to_mat4(&node.av.transform);
+            accum = local * accum;
+            let Some(&p) = parent_of.get(&cur) else { return Some(accum); };
+            cur = p;
+        }
+    }
+
+    // Find Arms:0 (or any skinned shape) and verify a single-bone
+    // vertex's world position.
+    for shape_idx in 0..scene.blocks.len() {
+        let Some(shape) = scene.get_as::<NiTriShape>(shape_idx) else { continue };
+        let shape_name = shape.av.net.name.as_deref().unwrap_or("?").to_string();
+        if shape_name != "Arms" && shape_name != "UpperBody" {
+            continue;
+        }
+        let Some(skin_idx) = shape.skin_instance_ref.index() else { continue };
+        let inst = scene.get_as::<NiSkinInstance>(skin_idx);
+        let inst_dis = scene.get_as::<BsDismemberSkinInstance>(skin_idx);
+        let (data_ref, bone_refs, skel_root_ref): (BlockRef, &[BlockRef], BlockRef) =
+            if let Some(i) = inst {
+                (i.data_ref, &i.bone_refs, i.skeleton_root_ref)
+            } else if let Some(i) = inst_dis {
+                (i.base.data_ref, &i.base.bone_refs, i.base.skeleton_root_ref)
+            } else { continue };
+        let Some(data_idx) = data_ref.index() else { continue };
+        let Some(data) = scene.get_as::<NiSkinData>(data_idx) else { continue };
+        let Some(skel_root_idx) = skel_root_ref.index() else { continue };
+        let Some(skel_root_node) = scene.get_as::<NiNode>(skel_root_idx) else { continue };
+        let skel_root_name = skel_root_node.av.net.name.as_deref().unwrap_or("?").to_string();
+
+        // Find a bone we can identify and pick its first weighted vertex.
+        let Some(data_idx) = shape.data_ref.index() else { continue };
+        let Some(geom) = scene.get_as::<NiTriShapeData>(data_idx) else { continue };
+
+        eprintln!("\n══ {} (skel_root={}) ══", shape_name, skel_root_name);
+        for (i, bone_ref) in bone_refs.iter().enumerate().take(3) {
+            let Some(bone_block_idx) = bone_ref.index() else { continue };
+            let Some(bone_node) = scene.get_as::<NiNode>(bone_block_idx) else { continue };
+            let bone_name = bone_node.av.net.name.as_deref().unwrap_or("?").to_string();
+
+            let local_trans = local_trans_to_root(&scene, &bone_name, &skel_root_name)
+                .unwrap_or(Mat4::IDENTITY);
+            let skin_trans = nitransform_to_mat4(&data.bones[i].skin_transform);
+
+            // NifSkope NON-partition formula (glmesh.cpp:907,911):
+            //   trans = viewTrans() × skeletonTrans × localTrans × skinTrans
+            // viewTrans() = scene->view × meshWorld. Drop view (we want
+            // world-space). meshWorld ≈ identity for standalone Arms
+            // shape parented to body root. skeletonTrans is the GLOBAL
+            // NiSkinData.skinTransform — the field our import currently
+            // ignores entirely.
+            let skeleton_trans = nitransform_to_mat4(&data.skin_transform);
+            let palette = skeleton_trans * local_trans * skin_trans;
+
+            // Sample the bone's first heavily-weighted vertex.
+            let Some(vw) = data.bones[i].vertex_weights.iter().max_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap_or(std::cmp::Ordering::Equal)) else { continue };
+            if (vw.vertex_index as usize) >= geom.vertices.len() { continue; }
+            let v = geom.vertices[vw.vertex_index as usize];
+            let v4 = Vec4::new(v.x, v.y, v.z, 1.0);
+            let world = palette * v4;
+
+            // Where is the bone in bind world?
+            let bone_world_t = local_trans.col(3);
+
+            eprintln!(
+                "  [{}] '{}' vertex {} (weight {:.2}): NIF-local=({:.1},{:.1},{:.1})  →  world=({:.1},{:.1},{:.1})  [bone_world.t=({:.1},{:.1},{:.1})]",
+                i, bone_name, vw.vertex_index, vw.weight,
+                v.x, v.y, v.z,
+                world.x, world.y, world.z,
+                bone_world_t.x, bone_world_t.y, bone_world_t.z,
+            );
+        }
+    }
+}
+
 #[test]
 #[ignore = "requires Oblivion BSA — opt in with --ignored"]
 fn oblivion_skinning_invariant_check() {
