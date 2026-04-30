@@ -148,6 +148,18 @@ BYROREDUX_STARFIELD_DATA  .../Starfield/Data
 - [**Ruffle**](https://ruffle.rs) — the open-source Flash Player emulator.
   ByroRedux's UI layer embeds Ruffle to render the Scaleform/SWF menus
   Bethesda shipped with every Creation Engine title.
+- [**OpenMW**](https://gitlab.com/OpenMW/openmw) — the open-source
+  reimplementation of Morrowind that runs the full legacy-Gamebryo
+  pipeline (Morrowind / Oblivion / FO3 / FNV / Skyrim LE) correctly.
+  ByroRedux's understanding of the legacy `NiSkinData` skinning
+  convention — specifically the role of `NiSkinData::mTransform` (the
+  global skin transform) which NifSkope's partition path silently
+  drops — comes from reading OpenMW's NIF skinning evaluator at
+  `components/sceneutil/riggeometry.cpp` and the loader at
+  `components/nifosg/nifloader.cpp`. OpenMW is GPLv3; we use it as a
+  reference only — no code is copied. See M41.0 Phase 1b.x research
+  in [byroredux/tests/skinning_e2e.rs](byroredux/tests/skinning_e2e.rs)
+  for the specific findings.
 
 ## License
 

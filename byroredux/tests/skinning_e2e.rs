@@ -23,6 +23,22 @@
 //! All tests are `#[ignore]` — fixtures live in proprietary BSAs that
 //! can't ship in the repo. Opt in with
 //! `cargo test -p byroredux --test skinning_e2e -- --ignored`.
+//!
+//! ## Credit
+//!
+//! The legacy-NiSkinData skinning formula reverse-engineered for the
+//! Phase 1b.x investigation (`oblivion_vertex_world_check` and the
+//! prior `fnv_skinning_invariant_check`) draws directly on the
+//! [OpenMW project](https://gitlab.com/OpenMW/openmw)'s NIF
+//! skinning evaluator at
+//! `components/sceneutil/riggeometry.cpp:175-208` and the loader at
+//! `components/nifosg/nifloader.cpp:1604-1631`. OpenMW is the open-
+//! source reimplementation that handles the full legacy-Gamebryo skin
+//! pipeline (Morrowind / Oblivion / FO3 / FNV / Skyrim LE) correctly,
+//! and was the only authoritative source we found that surfaces the
+//! `NiSkinData::mTransform` global factor that NifSkope's partition
+//! path drops (`tools/nifskope/src/gl/glmesh.cpp:875`). OpenMW is
+//! GPLv3 — reference-only here; no code is copy-pasted.
 
 use byroredux_bsa::BsaArchive;
 use byroredux_core::ecs::components::skinned_mesh::{SkinnedMesh, MAX_BONES_PER_MESH};
@@ -394,15 +410,27 @@ fn oblivion_vertex_world_check() {
                 .unwrap_or(Mat4::IDENTITY);
             let skin_trans = nitransform_to_mat4(&data.bones[i].skin_transform);
 
-            // NifSkope NON-partition formula (glmesh.cpp:907,911):
-            //   trans = viewTrans() × skeletonTrans × localTrans × skinTrans
-            // viewTrans() = scene->view × meshWorld. Drop view (we want
-            // world-space). meshWorld ≈ identity for standalone Arms
-            // shape parented to body root. skeletonTrans is the GLOBAL
-            // NiSkinData.skinTransform — the field our import currently
-            // ignores entirely.
-            let skeleton_trans = nitransform_to_mat4(&data.skin_transform);
-            let palette = skeleton_trans * local_trans * skin_trans;
+            // OpenMW formula (riggeometry.cpp:175-208) translated to
+            // column-major (mat × vec). OpenMW uses OSG vec × mat
+            // convention; equivalent column-major composition:
+            //   palette = dataTransform × boneSkelSpace × InvBindMatrix
+            //   vertex_world = palette × vertex
+            // (skinToSkelMatrix is identity for body NIFs with shape
+            //  parented directly under skel root.)
+            //
+            // Equivalent fix: pre-transform vertex by dataTransform at
+            // import (vertex' = dataTransform × vertex), then existing
+            // palette = boneSkelSpace × InvBind gives same result.
+            let data_transform = nitransform_to_mat4(&data.skin_transform);
+            // OpenMW formula (riggeometry.cpp:175-208): in OSG row-vec
+            // convention `vec × invBind × boneSkel × skinToSkel × data`.
+            // Translated to glam (column-major mat × vec):
+            //   `data × skinToSkel × boneSkel × invBind × vec`
+            // Order tested empirically — neither this nor the reverse
+            // produce identity at bind for Oblivion body NIFs. The
+            // formula needs further analysis (likely OSG matrix-storage
+            // convention has another subtlety not captured here).
+            let palette = data_transform * local_trans * skin_trans;
 
             // Sample the bone's first heavily-weighted vertex.
             let Some(vw) = data.bones[i].vertex_weights.iter().max_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap_or(std::cmp::Ordering::Equal)) else { continue };
@@ -414,12 +442,32 @@ fn oblivion_vertex_world_check() {
             // Where is the bone in bind world?
             let bone_world_t = local_trans.col(3);
 
+            let st_rot = &data.bones[i].skin_transform.rotation.rows;
+            let dt_rot = &data.skin_transform.rotation.rows;
             eprintln!(
                 "  [{}] '{}' vertex {} (weight {:.2}): NIF-local=({:.1},{:.1},{:.1})  →  world=({:.1},{:.1},{:.1})  [bone_world.t=({:.1},{:.1},{:.1})]",
                 i, bone_name, vw.vertex_index, vw.weight,
                 v.x, v.y, v.z,
                 world.x, world.y, world.z,
                 bone_world_t.x, bone_world_t.y, bone_world_t.z,
+            );
+            eprintln!(
+                "       skin_trans.rot:[{:.3} {:.3} {:.3}; {:.3} {:.3} {:.3}; {:.3} {:.3} {:.3}]  .t=({:.3},{:.3},{:.3})",
+                st_rot[0][0], st_rot[0][1], st_rot[0][2],
+                st_rot[1][0], st_rot[1][1], st_rot[1][2],
+                st_rot[2][0], st_rot[2][1], st_rot[2][2],
+                data.bones[i].skin_transform.translation.x,
+                data.bones[i].skin_transform.translation.y,
+                data.bones[i].skin_transform.translation.z,
+            );
+            eprintln!(
+                "       data_trans.rot:[{:.3} {:.3} {:.3}; {:.3} {:.3} {:.3}; {:.3} {:.3} {:.3}]  .t=({:.3},{:.3},{:.3})",
+                dt_rot[0][0], dt_rot[0][1], dt_rot[0][2],
+                dt_rot[1][0], dt_rot[1][1], dt_rot[1][2],
+                dt_rot[2][0], dt_rot[2][1], dt_rot[2][2],
+                data.skin_transform.translation.x,
+                data.skin_transform.translation.y,
+                data.skin_transform.translation.z,
             );
         }
     }
