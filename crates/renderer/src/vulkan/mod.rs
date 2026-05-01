@@ -11,6 +11,7 @@ pub mod descriptors;
 pub mod device;
 pub mod gbuffer;
 pub mod instance;
+pub mod material;
 pub mod pipeline;
 pub mod reflect;
 pub mod scene_buffer;
