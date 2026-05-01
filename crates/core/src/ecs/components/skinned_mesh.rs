@@ -46,12 +46,24 @@ pub struct SkinnedMesh {
     /// Multiply by the bone's current world matrix to get the skinning
     /// matrix for the palette.
     pub bind_inverses: Vec<Mat4>,
-    /// `NiSkinData::skinTransform` after Y-up conversion (the per-skin
-    /// global transform). M41.0 Phase 1b.x — Bethesda body NIFs ship a
-    /// non-identity cyclic-permutation rotation here that the
-    /// pre-Phase-1b.x palette computation dropped, producing the
-    /// stretched-ribbon vertex artifact. `Mat4::IDENTITY` for FO4+
-    /// BSSkin paths that don't carry the field.
+    /// `NiSkinData::skinTransform` (global → skin) after Y-up
+    /// conversion. **Informational / diagnostic only** — the legacy
+    /// formula bakes this term into each `bind_inverses[i]` at NIF
+    /// author time per nifly Skin.hpp:49-51 (`bones[i].boneTransform`
+    /// = "transformSkinToBone", compose-ready). `compute_palette_into`
+    /// therefore does NOT multiply this field at runtime; doing so
+    /// would double-apply the global offset.
+    ///
+    /// Kept on the component because (a) M41.0 Phase 1b.x debugging
+    /// surfaced a Doc Mitchell NiSkinData with a non-identity cyclic
+    /// permutation here, and having the captured value visible is
+    /// useful for future investigations, and (b) `Mat4::IDENTITY`
+    /// for FO4+ `BSSkin` paths that don't carry the field — the
+    /// asymmetry is informative on its own.
+    ///
+    /// See [`SkinnedMesh::compute_palette_into`] doc-comment and the
+    /// `palette_matches_nifly_skin_to_bone_semantics_with_non_identity_global`
+    /// regression test for the formula's ground truth.
     pub global_skin_transform: Mat4,
 }
 
@@ -123,6 +135,23 @@ impl SkinnedMesh {
     /// heap allocation. The buffer is cleared and filled with one `Mat4`
     /// per bone. Callers should `.clear()` their scratch Vec between
     /// entities (this method does it internally).
+    ///
+    /// Per-bone formula in column-major (glam) form:
+    ///
+    /// ```text
+    /// palette[i] = bone_world × bind_inverses[i]
+    /// ```
+    ///
+    /// Where `bind_inverses[i]` corresponds to nifly's
+    /// `NiSkinData::bones[i].boneTransform` ("transformSkinToBone"
+    /// per Skin.hpp:49-51) — already compose-ready, encoding both
+    /// the per-bone bind-inverse AND the global skin-to-skel offset
+    /// in one matrix. The top-level `NiSkinData::skinTransform`
+    /// (`global_skin_transform` field on this struct) is **not**
+    /// multiplied here; doing so would double-apply the global
+    /// offset. See the
+    /// `palette_matches_nifly_skin_to_bone_semantics_with_non_identity_global`
+    /// test for the numeric ground truth (#771 / LC-D3-NEW-01).
     pub fn compute_palette_into<F>(&self, out: &mut Vec<Mat4>, mut world_transform_of: F)
     where
         F: FnMut(EntityId) -> Option<Mat4>,
@@ -237,5 +266,112 @@ mod tests {
         let pt = palette[0] * Vec3::new(1.0, 0.0, 0.0).extend(1.0);
         assert!(pt.x.abs() < 1e-5);
         assert!((pt.z + 1.0).abs() < 1e-5);
+    }
+
+    /// Numeric invariant for #771 / LC-D3-NEW-01.
+    ///
+    /// Establishes ground truth for the per-bone palette formula by
+    /// constructing a synthetic case where every transform is known
+    /// and the expected output can be hand-computed.
+    ///
+    /// **nifly Skin.hpp:49-51 documents NiSkinData semantics:**
+    ///   - `skinTransform` = "transformGlobalToSkin" (global → skin)
+    ///   - `bones[i].boneTransform` = "transformSkinToBone" — already
+    ///     compose-ready, encodes skin→bone-bind directly (i.e.,
+    ///     `inv(bind_world[i]) × inv(global_skin_transform)`).
+    ///
+    /// Under those semantics, the per-bone palette in column-major
+    /// glam form is:
+    ///
+    ///     palette[i] = bone_world × bind_inverses[i]
+    ///
+    /// — the global term is **already baked into** `bind_inverses[i]`
+    /// at NIF-author time and does NOT need a second multiplication
+    /// at runtime. This is the formula `compute_palette_into`
+    /// implements at line 137.
+    ///
+    /// This test discriminates the correct formula from three
+    /// plausible alternatives that the M41.0 Phase 1b.x debug
+    /// session entertained before #767 closed the field-order bug:
+    ///   - A) `world × bind_inv`                (current — correct)
+    ///   - B) `world × bind_inv × global_skin`  (right-mult, prior attempt)
+    ///   - C) `global_skin × world × bind_inv`  (left-mult)
+    ///   - D) `world × bind_inv × inv(global)`  (right-mult inverse)
+    ///
+    /// Test fixture (column-major mat × column-vector convention):
+    ///   - Vertex authored at skin-local position `v_skin = (1, 0, 0)`
+    ///   - `global_skin_transform = rotz(90°)` (skin space rotated
+    ///     90° around Z relative to global; mimics the cyclic-perm
+    ///     pattern observed on Doc Mitchell's NiSkinData)
+    ///   - Single bone with `bind_world = identity` (bone bind pose
+    ///     at global origin)
+    ///   - Bone current world = `translate(0, 5, 0)` (bone moved +5y)
+    ///   - On-disk `bind_inverses[0]` per nifly's skin→bone semantics:
+    ///     `T_skin_to_bone = inv(bind_world) × inv(global_skin) =
+    ///     I × rotz(-90°) = rotz(-90°)`
+    ///
+    /// Hand-computed expected world output:
+    ///   1. `v_global_at_bind = inv(global_skin) × v_skin =
+    ///      rotz(-90°) × (1, 0, 0) = (0, -1, 0)`
+    ///   2. `v_bone_local_bind = inv(bind_world) × v_global_bind =
+    ///      I × (0, -1, 0) = (0, -1, 0)`
+    ///   3. `v_world_now = bone_world × v_bone_local =
+    ///      T(0,5,0) × (0, -1, 0) = (0, 4, 0)`
+    ///
+    /// Per-formula output:
+    ///   - A: `T(0,5,0) × rotz(-90°) × (1,0,0) = (0, 4, 0)` ✓
+    ///   - B: `T(0,5,0) × rotz(-90°) × rotz(90°) × (1,0,0) = (1, 5, 0)` ✗
+    ///   - C: `rotz(90°) × T(0,5,0) × rotz(-90°) × (1,0,0) = (-4, 0, 0)` ✗
+    ///   - D: `T(0,5,0) × rotz(-90°) × rotz(-90°) × (1,0,0) = (-1, 5, 0)` ✗
+    ///
+    /// Only formula A matches the nifly-documented expected output,
+    /// confirming the current implementation is correct under those
+    /// semantics. The `global_skin_transform` field on `SkinnedMesh`
+    /// is therefore informational — kept for diagnostic visibility
+    /// during M41.0 Phase 1b.x but redundant in the math.
+    ///
+    /// If a future NIF surfaces a counter-example (Doc Mitchell-class
+    /// content where current formula visually breaks but a candidate
+    /// involving the global term fixes it), this test should be
+    /// updated with the captured fixture and the resolution
+    /// re-litigated against the new evidence.
+    #[test]
+    fn palette_matches_nifly_skin_to_bone_semantics_with_non_identity_global() {
+        let global_skin = Mat4::from_quat(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2));
+        // Per nifly: bind_inverses[0] encodes skin→bone (compose-ready).
+        // For bind_world = I, that's inv(global_skin) = rotz(-90°).
+        let bind_inv = Mat4::from_quat(Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2));
+
+        let sm = SkinnedMesh::new_with_global(
+            None,
+            vec![Some(1)],
+            vec![bind_inv],
+            global_skin,
+        );
+
+        // Bone moves +5 in y at runtime.
+        let bone_world = Mat4::from_translation(Vec3::new(0.0, 5.0, 0.0));
+        let palette = sm.compute_palette(|_| Some(bone_world));
+
+        // Apply palette to v_skin = (1, 0, 0); expect (0, 4, 0).
+        let v_skin = Vec3::new(1.0, 0.0, 0.0).extend(1.0);
+        let v_world = palette[0] * v_skin;
+
+        const EPS: f32 = 1e-5;
+        assert!(
+            v_world.x.abs() < EPS,
+            "expected x=0 per nifly skin→bone, got {}",
+            v_world.x
+        );
+        assert!(
+            (v_world.y - 4.0).abs() < EPS,
+            "expected y=4 per nifly skin→bone, got {}",
+            v_world.y
+        );
+        assert!(
+            v_world.z.abs() < EPS,
+            "expected z=0 per nifly skin→bone, got {}",
+            v_world.z
+        );
     }
 }

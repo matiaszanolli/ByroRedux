@@ -1726,12 +1726,18 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                     }
                     binds.push(Mat4::from_cols_array_2d(&bone.bind_inverse));
                 }
-                // M41.0 Phase 1b.x — global_skin_transform integration
-                // pending. First attempt right-multiplied here but the
-                // visual was worse, suggesting either the OpenMW
-                // invariant doesn't hold for these NIFs or our OSG-to-
-                // glam translation has an error. Reverted; investigation
-                // continues via numerical invariant check.
+                // M41.0 Phase 1b.x — global_skin_transform investigation
+                // resolved (#771 / LC-D3-NEW-01). Per nifly Skin.hpp:49-51,
+                // NiSkinData::bones[i].boneTransform IS skin→bone
+                // (compose-ready, includes the global offset). The
+                // top-level skinTransform is therefore informational
+                // only at runtime; `compute_palette_into` does NOT
+                // multiply it. The first attempt at right-multiply
+                // double-applied the global offset, which is why it
+                // looked visually worse. Captured here for diagnostic
+                // visibility (Doc Mitchell ships a non-identity cyclic
+                // permutation; FO4+ BSSkin paths ship identity — the
+                // asymmetry is informative).
                 let global_skin_transform = Mat4::from_cols_array_2d(&skin.global_skin_transform);
                 let root_entity = skin.skeleton_root.as_ref().and_then(|n| {
                     external_skeleton
