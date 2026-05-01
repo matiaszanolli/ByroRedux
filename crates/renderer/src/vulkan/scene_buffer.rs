@@ -1864,4 +1864,82 @@ mod gpu_instance_layout_tests {
              last frame's joint poses (SH-3 / #641)."
         );
     }
+
+    /// Regression for #575 / SH-1. The global `GlobalVertices` SSBO
+    /// is declared as `float vertexData[]` so every read implicitly
+    /// reinterprets the bytes as IEEE-754 float. Per the layout
+    /// table at the SSBO declaration in triangle.frag:
+    ///
+    ///   - safe float offsets: `position` (0..2), `color` (3..5),
+    ///     `normal` (6..8), `uv` (9..10), `bone_weights` (15..18).
+    ///   - **unsafe** offsets (require `floatBitsToUint` /
+    ///     `unpackUnorm4x8` recovery): `bone_indices` (11..14),
+    ///     `splat_weights_0/1` (19..20).
+    ///
+    /// Pre-fix, a future RT shader author following the existing
+    /// `vertexData[base + N]` pattern could silently read u32 /
+    /// packed-u8 bit patterns as floats. This test grep-checks the
+    /// only shader that currently reads `vertexData` (triangle.frag)
+    /// for any forbidden offset — `+ 11` through `+ 14` (bone
+    /// indices) or `+ 19` / `+ 20` (splat weights) — that ISN'T
+    /// wrapped in `floatBitsToUint(…)` or `unpackUnorm4x8(…)`.
+    ///
+    /// `caustic_splat.comp` and `ui.vert` don't bind GlobalVertices
+    /// at all and aren't checked. `skin_vertices.comp` reads bone
+    /// indices but does so through `floatBitsToUint`; the regex
+    /// excludes that pattern.
+    #[test]
+    fn triangle_frag_no_unsafe_vertex_data_reads() {
+        let src = include_str!("../../shaders/triangle.frag");
+
+        // Strip safe-recovery wrappers so a forbidden raw read
+        // surfaces as a literal `vertexData[... + 11..14|19|20]`.
+        // We don't run a full GLSL parser; instead, line-by-line
+        // we reject any line that contains the forbidden offset
+        // pattern AND no `floatBitsToUint` / `unpackUnorm4x8` /
+        // `floatBitsToInt` recovery call. Whitespace tolerant.
+        for (lineno, line) in src.lines().enumerate() {
+            // Skip the SSBO-declaration block — it documents the
+            // unsafe offsets but doesn't read them.
+            if line.contains("WARNING")
+                || line.contains("│")
+                || line.contains("//")
+                    && (line.contains("floatBitsToUint") || line.contains("unpackUnorm4x8"))
+            {
+                continue;
+            }
+            // Look for `vertexData[ ... + N ]` where N is 11-14 or
+            // 19-20. Tolerate whitespace and the `(vOff + iN)` outer
+            // expression that the existing `getHitUV` site uses.
+            for forbidden in [11, 12, 13, 14, 19, 20] {
+                let needle_simple = format!("+ {}]", forbidden);
+                let needle_alt = format!("+{}]", forbidden);
+                if line.contains(&needle_simple) || line.contains(&needle_alt) {
+                    // Allow the read when it's wrapped in a
+                    // recovery call.
+                    if line.contains("floatBitsToUint")
+                        || line.contains("unpackUnorm4x8")
+                        || line.contains("floatBitsToInt")
+                    {
+                        continue;
+                    }
+                    panic!(
+                        "triangle.frag:{}: unsafe `vertexData[... + {}]` read \
+                         (offset {} is {} — not an IEEE-754 float). Use \
+                         `floatBitsToUint(...)` or `unpackUnorm4x8(...)` to \
+                         recover the bit pattern. See #575 / SH-1.\nLine: {}",
+                        lineno + 1,
+                        forbidden,
+                        forbidden,
+                        if (11..=14).contains(&forbidden) {
+                            "u32 (bone index)"
+                        } else {
+                            "packed 4× u8 unorm (splat weight)"
+                        },
+                        line.trim()
+                    );
+                }
+            }
+        }
+    }
 }

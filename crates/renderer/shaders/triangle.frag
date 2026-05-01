@@ -194,10 +194,39 @@ layout(std430, set = 1, binding = 6) readonly buffer ClusterLightIndices {
 layout(set = 1, binding = 7) uniform sampler2D aoTexture;
 
 // Global geometry SSBOs for RT reflection UV lookups.
-// Vertex data: position (vec3) + color (vec3) + normal (vec3) + uv (vec2)
-// + bone_indices (uvec4) + bone_weights (vec4) + splat_0/1 (2× u32 unorm)
-// = 84 bytes/vertex. We only need the UV at offset 36 bytes
-// (9 floats into each vertex). See #470 — splat bytes grew the stride.
+//
+// Vertex layout (84 B = 21 floats per vertex, mirrors Rust `Vertex`
+// struct in `crates/renderer/src/vertex.rs`):
+//
+//   float offset │ bytes  │ field           │ type     │ safe-as-float?
+//   ─────────────┼────────┼─────────────────┼──────────┼───────────────
+//        0..2    │  0..11 │ position        │ vec3     │ ✓
+//        3..5    │ 12..23 │ color           │ vec3     │ ✓
+//        6..8    │ 24..35 │ normal          │ vec3     │ ✓
+//        9..10   │ 36..43 │ uv              │ vec2     │ ✓
+//       11..14   │ 44..59 │ bone_indices    │ uvec4    │ ✗ u32 bits
+//       15..18   │ 60..75 │ bone_weights    │ vec4     │ ✓
+//       19       │ 76..79 │ splat_weights_0 │ 4× u8    │ ✗ packed unorm
+//       20       │ 80..83 │ splat_weights_1 │ 4× u8    │ ✗ packed unorm
+//
+// **WARNING (#575 / SH-1)**: only float offsets 0..10 and 15..18 may
+// be read directly as `vertexData[base + N]`. Bone indices (11..14)
+// and splat weights (19..20) are NOT IEEE-754 floats — reinterpreting
+// their bit patterns silently produces NaN / denormal garbage.
+//
+// To recover the unsafe slots, use the same pattern
+// `skin_vertices.comp:101-106` uses for bone indices:
+//   `uvec4 idx = uvec4(floatBitsToUint(vertexData[base + 11]), …);`
+//
+// or for splat unorms (4× u8 packed into one float-aliased u32):
+//   `vec4 splat = unpackUnorm4x8(floatBitsToUint(vertexData[base + 19]));`
+//
+// The current RT hit shader (`getHitUV` below) only reads UV at
+// offsets 9..10 and is safe; this comment is the pit-of-failure
+// guardrail for future RT shader authors. The
+// `triangle_frag_no_unsafe_vertex_data_reads` test (scene_buffer.rs)
+// statically grep-checks the source so the next forbidden read
+// fails CI immediately.
 layout(std430, set = 1, binding = 8) readonly buffer GlobalVertices {
     float vertexData[]; // flat array, stride = 21 floats (84 bytes)
 };
