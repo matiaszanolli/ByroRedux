@@ -130,8 +130,17 @@ struct FileEntry {
     offset: u64,
     /// Raw size field from the file record (with compression toggle bit masked off).
     size: u32,
-    /// Whether compression is toggled relative to archive default.
+    /// Whether compression is toggled relative to archive default. Bit 30
+    /// (0x40000000) of the on-disk size word.
     compression_toggle: bool,
+    /// Whether the embed-name policy is toggled relative to archive default.
+    /// Bit 31 (0x80000000) of the on-disk size word. Mixed-mode BSAs (mods
+    /// that flip the flag per file rather than for the whole archive) need
+    /// this toggle XOR'd against the archive-level `embed_file_names`
+    /// before deciding whether to skip the bstring path prefix at extract
+    /// time. Vanilla Bethesda BSAs always carry a uniform per-archive
+    /// policy and never set this bit. See #616 / SK-D2-03.
+    embed_name_toggle: bool,
 }
 
 impl BsaArchive {
@@ -265,6 +274,9 @@ impl BsaArchive {
             size: u32,
             offset: u32,
             compression_toggle: bool,
+            /// Bit 31 of the on-disk size word — XOR'd against
+            /// `embed_file_names` at extract time. See #616 / SK-D2-03.
+            embed_name_toggle: bool,
             /// Stored file hash — only retained in debug builds for the
             /// later file-name-pass validation (#361). Release builds
             /// drop the field entirely.
@@ -352,6 +364,15 @@ impl BsaArchive {
                 let size_raw = u32::from_le_bytes(frec[8..12].try_into().unwrap());
                 let offset = u32::from_le_bytes(frec[12..16].try_into().unwrap());
                 let compression_toggle = size_raw & 0x40000000 != 0;
+                // #616 / SK-D2-03: bit 31 of the on-disk size word is
+                // a per-file embed-name override that XORs against the
+                // archive-level `embed_file_names` flag. Vanilla
+                // archives use a uniform per-archive policy so this bit
+                // is always zero on shipped content; mods may flip it
+                // per file. Pre-fix it was masked off as part of
+                // `size & 0x3FFFFFFF` and never re-tested, so mixed-mode
+                // BSAs extracted with the wrong path-prefix consumption.
+                let embed_name_toggle = size_raw & 0x80000000 != 0;
                 let size = size_raw & 0x3FFFFFFF;
 
                 raw_files.push(RawFileRecord {
@@ -359,6 +380,7 @@ impl BsaArchive {
                     size,
                     offset,
                     compression_toggle,
+                    embed_name_toggle,
                     #[cfg(debug_assertions)]
                     hash,
                 });
@@ -415,6 +437,7 @@ impl BsaArchive {
                     offset: raw.offset as u64,
                     size: raw.size,
                     compression_toggle: raw.compression_toggle,
+                    embed_name_toggle: raw.embed_name_toggle,
                 },
             );
         }
@@ -502,8 +525,15 @@ impl BsaArchive {
         file.seek(SeekFrom::Start(entry.offset))?;
 
         // Skip embedded file name prefix (bstring: 1 byte length + name).
-        // Present when archive flag 0x100 is set. The size field includes these bytes.
-        let name_prefix_len = if self.embed_file_names {
+        // Present when archive flag 0x100 is set, modulo the per-file
+        // override at bit 31 of the size word — mirrors the
+        // compression-toggle XOR pattern used immediately below. See
+        // #616 / SK-D2-03. Vanilla Bethesda BSAs always carry a uniform
+        // per-archive embed-name policy (the toggle bit is always
+        // zero), so this XOR is a no-op on shipped content; modded
+        // mixed-mode archives now extract correctly.
+        let file_embeds_name = self.embed_file_names != entry.embed_name_toggle;
+        let name_prefix_len = if file_embeds_name {
             let mut len_buf = [0u8; 1];
             file.read_exact(&mut len_buf)?;
             let name_len = len_buf[0] as usize;
@@ -918,6 +948,7 @@ mod tests {
                 offset: 0,
                 size: 3,
                 compression_toggle: false,
+                embed_name_toggle: false,
             },
         );
         let err = archive
@@ -952,6 +983,7 @@ mod tests {
                 offset: 0,
                 size: 3, // < 4 bytes — too short to hold the size header
                 compression_toggle: false,
+                embed_name_toggle: false,
             },
         );
         let err = archive
@@ -962,6 +994,79 @@ mod tests {
         assert!(
             msg.contains("compressed payload too short"),
             "expected payload-too-short error, got: {msg}"
+        );
+    }
+
+    /// Regression for #616 / SK-D2-03 — when archive `embed_file_names`
+    /// is OFF, a per-file `embed_name_toggle` flips the policy ON for
+    /// that one record. Pre-fix the bit was masked off as part of
+    /// `size & 0x3FFFFFFF` and never re-tested, so a mixed-mode BSA's
+    /// embed-name file extracted with the wrong path-prefix consumption
+    /// (the bstring header was treated as part of the payload).
+    ///
+    /// Test fixture: archive default OFF + per-file toggle ON should
+    /// behave identically to archive default ON + per-file toggle OFF.
+    /// We verify the embed-name file extracts as a 4-byte payload and
+    /// the bstring prefix is correctly skipped.
+    #[test]
+    fn per_file_embed_name_toggle_xors_archive_flag_for_mixed_mode_bsa() {
+        // Payload layout for an embed-name file:
+        //   bstring: 1 byte length + 5 name bytes  ("hello")
+        //   data:    4 bytes payload
+        // Total record size = 1 + 5 + 4 = 10 bytes.
+        let payload = [5u8, b'h', b'e', b'l', b'l', b'o', 0xDE, 0xAD, 0xBE, 0xEF];
+        let archive = archive_with_payload(
+            &payload,
+            false, // archive-level embed_file_names = OFF
+            false, // not compressed
+            104,
+            "mixed.dds",
+            FileEntry {
+                offset: 0,
+                size: 10,
+                compression_toggle: false,
+                embed_name_toggle: true, // per-file flip — embed-name ON for this entry
+            },
+        );
+        let data = archive
+            .extract("mixed.dds")
+            .expect("embed-name toggle must flip the policy on");
+        assert_eq!(
+            data,
+            vec![0xDE, 0xAD, 0xBE, 0xEF],
+            "extract must skip the bstring prefix when the per-file toggle is set"
+        );
+    }
+
+    /// Companion: archive `embed_file_names = ON` + per-file
+    /// `embed_name_toggle = ON` flips the policy back to OFF for that
+    /// entry. The XOR symmetry mirrors the long-standing
+    /// `compression_toggle` behaviour.
+    #[test]
+    fn per_file_embed_name_toggle_can_flip_off() {
+        // Payload is plain 4 bytes — no bstring prefix because the
+        // toggle disables embed-name for this entry.
+        let payload = [0xDE, 0xAD, 0xBE, 0xEF];
+        let archive = archive_with_payload(
+            &payload,
+            true, // archive-level embed_file_names = ON
+            false,
+            104,
+            "flipped_off.dds",
+            FileEntry {
+                offset: 0,
+                size: 4,
+                compression_toggle: false,
+                embed_name_toggle: true, // per-file flip — embed-name OFF for this entry
+            },
+        );
+        let data = archive
+            .extract("flipped_off.dds")
+            .expect("embed-name toggle must flip the policy off");
+        assert_eq!(
+            data,
+            vec![0xDE, 0xAD, 0xBE, 0xEF],
+            "extract must NOT skip a bstring prefix when the per-file toggle inverts the archive flag"
         );
     }
 
@@ -983,6 +1088,7 @@ mod tests {
                 offset: 0,
                 size: 6, // exactly 1 + 5
                 compression_toggle: false,
+                embed_name_toggle: false,
             },
         );
         let data = archive
