@@ -253,8 +253,11 @@ impl NiControllerSequence {
         // `accum_root_name`'s u32 length from the stop_time slot.
         // The downstream block read mid-string and the file truncated
         // after kept block 8 with 233 dropped (audit O5-2 / #687).
+        // NiSequence Phase: nif.xml `since="10.1.0.106" until="10.4.0.1"`.
+        // `until=` is exclusive — see #765 sweep. Field absent at
+        // v10.4.0.1 exactly.
         let phase = if stream.version() >= NifVersion(0x0A01006A)
-            && stream.version() <= NifVersion(0x0A040001)
+            && stream.version() < NifVersion(0x0A040001)
         {
             stream.read_f32_le()?
         } else {

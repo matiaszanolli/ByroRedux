@@ -448,7 +448,8 @@ impl NiTexturingProperty {
             let filter_mode = stream.read_u32_le()?;
             let uv_set = stream.read_u32_le()?;
 
-            if stream.version() <= crate::version::NifVersion(0x0A040001) {
+            // TexDesc PS2 L/K: nif.xml `until="10.4.0.1"` exclusive. See #765 sweep.
+            if stream.version() < crate::version::NifVersion(0x0A040001) {
                 let _ps2_l = stream.read_u16_le()?;
                 let _ps2_k = stream.read_u16_le()?;
             }

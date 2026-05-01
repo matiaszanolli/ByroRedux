@@ -639,9 +639,11 @@ pub fn parse_particle_system(stream: &mut NifStream, type_name: &str) -> io::Res
                 let _dirty_flag = stream.read_u8()?;
             }
         } else if stream.version() >= NifVersion(0x0A000100)
-            && stream.version() <= NifVersion(0x14010003)
+            && stream.version() < NifVersion(0x14010003)
         {
-            // NiGeometry "Has Shader" + name + impl (10.0.1.0 → 20.1.0.3).
+            // MaterialData "Has Shader" + name + impl. nif.xml gates
+            // `since="10.0.1.0" until="20.1.0.3"`; `until=` is exclusive
+            // per the #765 sweep, so the field is absent at v20.1.0.3.
             let has_shader = stream.read_bool()?;
             if has_shader {
                 let _shader_name = stream.read_sized_string()?;
@@ -812,14 +814,15 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
         // Oblivion `NiUnknown` pool via runtime-size-cache recovery.
         //
         // Per-entry size depends on the stream version (NiParticleInfo
-        // struct in nif.xml line 2263, `Rotation Axis until="10.4.0.1"`):
-        //   ≤ 10.4.0.1: Velocity(12) + Rotation Axis(12) + Age/Life/Update(12)
+        // struct in nif.xml line 2263, `Rotation Axis until="10.4.0.1"`,
+        // `until=` exclusive — see #765 sweep):
+        //   <  10.4.0.1: Velocity(12) + Rotation Axis(12) + Age/Life/Update(12)
         //                + Spawn Generation(2) + Code(2)                  = 40 B
-        //   > 10.4.0.1: Velocity(12) + Age/Life/Update(12)
+        //   >= 10.4.0.1: Velocity(12) + Age/Life/Update(12)
         //                + Spawn Generation(2) + Code(2)                  = 28 B
         // Oblivion is 20.0.0.4 → 28-byte path.
         if !is_bs_202 {
-            let info_size: u64 = if stream.version() <= NifVersion(0x0A040001) {
+            let info_size: u64 = if stream.version() < NifVersion(0x0A040001) {
                 40
             } else {
                 28
@@ -1264,7 +1267,11 @@ mod tests {
     /// reachable and exact.
     #[test]
     fn parse_particles_data_uses_40_byte_particle_info_on_pre_10_4_0_1() {
-        let version = NifVersion(0x0A040001); // 10.4.0.1 — the boundary itself
+        // v10.4.0.0 sits just below the v10.4.0.1 `until=` boundary
+        // (which is exclusive per nif.xml — see #765 sweep). At v10.4.0.1
+        // exactly the Rotation Axis is gone and the layout shrinks to
+        // 28 B; this test exercises the 40-byte legacy layout.
+        let version = NifVersion(0x0A040000);
         let header = NifHeader {
             version,
             little_endian: true,

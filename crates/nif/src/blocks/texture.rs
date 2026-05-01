@@ -50,8 +50,12 @@ impl NiSourceTexture {
         // embedded textures, so every block on that path under-read by
         // 1 byte and any following blocks drifted (block_size recovery
         // masked the symptom). See NIF-D1-02 / nif.xml lines 5117/5121.
+        // NiSourceTexture Use Internal: nif.xml `until="10.0.1.3"`
+        // exclusive — see #765 sweep. Field absent at v10.0.1.3 exactly;
+        // post-Oblivion content with embedded textures relies on the
+        // `Use External == 0` cond alone.
         let use_internal = if !use_external
-            && stream.version() <= crate::version::NifVersion(0x0A000103)
+            && stream.version() < crate::version::NifVersion(0x0A000103)
         {
             stream.read_u8()? != 0
         } else {
@@ -395,7 +399,8 @@ mod tests {
         data
     }
 
-    /// #715 / NIF-D1-02 — pre-Oblivion (v ≤ 10.0.1.3) embedded path
+    /// #715 / NIF-D1-02 — pre-Oblivion (v < 10.0.1.3 per nif.xml
+    /// `until="10.0.1.3"` exclusive — see #765 sweep) embedded path
     /// must consume the `Use Internal` byte after `Use External == 0`
     /// and then read the Pixel Data ref when `Use Internal == 1`.
     /// Pre-fix the byte was unread, so every block on this path
@@ -404,7 +409,8 @@ mod tests {
     /// pixel_layout u32's first byte, etc.).
     #[test]
     fn pre_oblivion_embedded_path_consumes_use_internal_byte_and_pixel_ref() {
-        let header = make_pre_oblivion_header(NifVersion(0x0A000103));
+        // v10.0.1.2 sits just below the v10.0.1.3 boundary; field present.
+        let header = make_pre_oblivion_header(NifVersion(0x0A000102));
         let data = build_legacy_embedded_source_texture(/* use_internal = */ true, true);
         let mut stream = NifStream::new(&data, &header);
         let tex = NiSourceTexture::parse(&mut stream).unwrap();
@@ -431,7 +437,9 @@ mod tests {
     /// phantom 4-byte ref in this case.
     #[test]
     fn pre_oblivion_embedded_path_skips_pixel_ref_when_use_internal_is_zero() {
-        let header = make_pre_oblivion_header(NifVersion(0x0A000103));
+        // v10.0.1.2: just below the v10.0.1.3 `until=` boundary so the
+        // `Use Internal` byte is still serialized (#765 sweep).
+        let header = make_pre_oblivion_header(NifVersion(0x0A000102));
         let data = build_legacy_embedded_source_texture(/* use_internal = */ false, false);
         let mut stream = NifStream::new(&data, &header);
         let tex = NiSourceTexture::parse(&mut stream).unwrap();
@@ -662,9 +670,10 @@ impl NiTextureEffect {
         let pc = stream.read_f32_le()?;
         let plane = [pn.x, pn.y, pn.z, pc];
 
-        // PS2 L/K: only present up to and including 10.2.0.0. Oblivion
-        // is 20.0.0.5 — AFTER 10.2.0.0 — so these fields are ABSENT.
-        let (ps2_l, ps2_k) = if stream.version() <= NifVersion(0x0A020000) {
+        // NiTextureEffect PS2 L/K: nif.xml `until="10.2.0.0"` exclusive
+        // — see #765 sweep. Fields absent at v10.2.0.0 exactly. Oblivion
+        // (v20.0.0.5) sits well past the boundary.
+        let (ps2_l, ps2_k) = if stream.version() < NifVersion(0x0A020000) {
             // No i16 reader in NifStream; sign-reinterpret the u16.
             let l = stream.read_u16_le()? as i16;
             let k = stream.read_u16_le()? as i16;

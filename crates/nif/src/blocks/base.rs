@@ -83,8 +83,11 @@ impl NiAVObjectData {
 
         let transform = stream.read_ni_transform()?;
 
-        // Pre-Gamebryo (v <= 4.2.2.0, Morrowind): NiAVObject has a velocity vector.
-        if stream.version() <= NifVersion(0x04020200) {
+        // Pre-Gamebryo Velocity: nif.xml `until="4.2.2.0"` exclusive — field
+        // absent at v4.2.2.0 exactly. Morrowind ships at v4.0.0.2, so this
+        // branch fires there; the Civ IV / Culpa Innata / DAOC v4.2.2.0
+        // boundary is now correctly excluded. See #765 sweep.
+        if stream.version() < NifVersion(0x04020200) {
             let _velocity = stream.read_ni_point3()?;
         }
 
@@ -104,19 +107,19 @@ impl NiAVObjectData {
         };
 
         // Three version branches per nif.xml:
-        //  - v <= 4.2.2.0 (Morrowind / early NetImmerse): legacy
+        //  - v <  4.2.2.0 (Morrowind / early NetImmerse): legacy
         //    `Has Bounding Volume: bool` + optional body
-        //    (since="3.0" until="4.2.2.0").
-        //  - v in (4.2.2.0, 10.0.1.0) — the NetImmerse→Gamebryo gap
+        //    (since="3.0" until="4.2.2.0", exclusive — see #765 sweep).
+        //  - v in [4.2.2.0, 10.0.1.0) — the NetImmerse→Gamebryo gap
         //    window: neither the bounding volume nor a collision ref
         //    is serialized. Reading `has_bv` here consumes a phantom
         //    byte and misaligns every downstream NiAVObject in the
-        //    [4.2.2.1, 10.0.0.x] range. See #328 / audit N1-04.
+        //    [4.2.2.0, 10.0.0.x] range. See #328 / audit N1-04.
         //  - v >= 10.0.1.0: dedicated `NiCollisionObject` ref
         //    (since="10.0.1.0").
         let collision_ref = if stream.version() >= NifVersion(0x0A000100) {
             stream.read_block_ref()?
-        } else if stream.version() <= NifVersion(0x04020200) {
+        } else if stream.version() < NifVersion(0x04020200) {
             skip_bounding_volume(stream)?;
             BlockRef::NULL
         } else {
@@ -336,12 +339,14 @@ mod niavobject_version_gate_tests {
         assert!(data.properties.is_empty());
     }
 
-    /// Pre-Gamebryo (v <= 4.2.2.0) still reads the legacy
-    /// `Has Bounding Volume` bool (plus the per-version velocity vector).
+    /// Pre-Gamebryo (v < 4.2.2.0 per nif.xml `until="4.2.2.0"` exclusive
+    /// — see #765 sweep) still reads the legacy `Has Bounding Volume`
+    /// bool (plus the per-version velocity vector). v4.2.1.0 sits just
+    /// below the boundary and exercises the legacy branch.
     /// has_bv=false keeps the trailing body out of the fixture.
     #[test]
     fn pre_gamebryo_consumes_has_bounding_volume_bool() {
-        let header = header_at(NifVersion(0x04020200));
+        let header = header_at(NifVersion(0x04020100));
         let mut bytes = pre_gamebryo_prologue();
         // Pre-Gamebryo velocity vector (3 f32) — see existing parse() branch.
         for _ in 0..3 {
