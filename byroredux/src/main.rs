@@ -167,6 +167,15 @@ struct App {
     /// observable in profilers). See #509 (PERF-2026-04-20 D6-L1) and
     /// #243 / #253 for the other scratch hoists this follows.
     palette_scratch: Vec<byroredux_core::math::Mat4>,
+    /// R1 — per-frame deduplicated material table. Cleared at the
+    /// top of `build_render_data`, populated as DrawCommands are
+    /// emitted, uploaded as an SSBO before draw. Phase 2 builds it
+    /// in lockstep with the legacy per-instance fields; Phases 3–6
+    /// migrate shader reads onto it and drop the redundant copies.
+    /// Retained on `App` so the `Vec`/`HashMap` allocations persist
+    /// across frames — same scratch-buffer pattern as the others
+    /// above (#243 / #253 / #509).
+    material_table: byroredux_renderer::MaterialTable,
     /// When `Some(N)`, run exactly N frames then print a `bench:` line
     /// to stdout and exit. See `--bench-frames` in main() and #366.
     bench_frames_target: Option<u32>,
@@ -338,6 +347,7 @@ impl App {
             bone_palette: Vec::new(),
             skin_offsets: HashMap::new(),
             palette_scratch: Vec::new(),
+            material_table: byroredux_renderer::MaterialTable::new(),
             bench_frames_target: None,
             bench_frames_count: 0,
             bench_start: None,
@@ -771,6 +781,7 @@ impl ApplicationHandler for App {
                             &mut self.bone_palette,
                             &mut self.skin_offsets,
                             &mut self.palette_scratch,
+                            &mut self.material_table,
                             ctx.particle_quad_handle,
                         );
                     if is_benching {

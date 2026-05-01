@@ -11,6 +11,7 @@ use super::gbuffer::{
     GBuffer, ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT,
 };
 use super::instance;
+use super::material::GpuMaterial;
 use super::pipeline;
 use super::scene_buffer;
 use super::ssao::SsaoPipeline;
@@ -220,6 +221,98 @@ pub struct DrawCommand {
     /// shader's effect-shader branch consumes them to fade alpha by view
     /// angle and soft-depth distance.
     pub effect_falloff: [f32; 5],
+    /// R1 — index into the per-frame `MaterialTable` SSBO. Phase 2
+    /// populates this from the per-material fields above; Phases 3–6
+    /// migrate shader reads from per-instance copies to
+    /// `materials[material_id].<field>` and finally drop the redundant
+    /// per-instance fields. `0` is a valid id (the first material in
+    /// the frame's table); meaningless when the table itself is empty.
+    pub material_id: u32,
+}
+
+impl DrawCommand {
+    /// Project the per-material fields onto a [`GpuMaterial`] for the
+    /// per-frame [`MaterialTable`]. Per-DRAW state (model matrix,
+    /// mesh refs, bone offset, sort depth, visibility flags,
+    /// terrain tile slot, entity id) is omitted — it stays on the
+    /// per-instance `GpuInstance` because byte-identical materials
+    /// can still appear at thousands of distinct world positions.
+    ///
+    /// R1 Phase 2 — produced once per `DrawCommand` and interned via
+    /// `MaterialTable::intern`. Identical materials collapse to one
+    /// id; distinct materials get distinct ids.
+    pub fn to_gpu_material(&self) -> GpuMaterial {
+        GpuMaterial {
+            roughness: self.roughness,
+            metalness: self.metalness,
+            emissive_mult: self.emissive_mult,
+            emissive_r: self.emissive_color[0],
+            emissive_g: self.emissive_color[1],
+            emissive_b: self.emissive_color[2],
+            specular_strength: self.specular_strength,
+            specular_r: self.specular_color[0],
+            specular_g: self.specular_color[1],
+            specular_b: self.specular_color[2],
+            alpha_threshold: self.alpha_threshold,
+            texture_index: self.texture_handle,
+            normal_map_index: self.normal_map_index,
+            dark_map_index: self.dark_map_index,
+            glow_map_index: self.glow_map_index,
+            detail_map_index: self.detail_map_index,
+            gloss_map_index: self.gloss_map_index,
+            parallax_map_index: self.parallax_map_index,
+            env_map_index: self.env_map_index,
+            env_mask_index: self.env_mask_index,
+            alpha_test_func: self.alpha_test_func,
+            material_kind: self.material_kind,
+            material_alpha: self.material_alpha,
+            parallax_height_scale: self.parallax_height_scale,
+            parallax_max_passes: self.parallax_max_passes,
+            uv_offset_u: self.uv_offset[0],
+            uv_offset_v: self.uv_offset[1],
+            uv_scale_u: self.uv_scale[0],
+            uv_scale_v: self.uv_scale[1],
+            diffuse_r: self.diffuse_color[0],
+            diffuse_g: self.diffuse_color[1],
+            diffuse_b: self.diffuse_color[2],
+            ambient_r: self.ambient_color[0],
+            ambient_g: self.ambient_color[1],
+            ambient_b: self.ambient_color[2],
+            avg_albedo_r: self.avg_albedo[0],
+            avg_albedo_g: self.avg_albedo[1],
+            avg_albedo_b: self.avg_albedo[2],
+            skin_tint_r: self.skin_tint_rgba[0],
+            skin_tint_g: self.skin_tint_rgba[1],
+            skin_tint_b: self.skin_tint_rgba[2],
+            skin_tint_a: self.skin_tint_rgba[3],
+            hair_tint_r: self.hair_tint_rgb[0],
+            hair_tint_g: self.hair_tint_rgb[1],
+            hair_tint_b: self.hair_tint_rgb[2],
+            multi_layer_envmap_strength: self.multi_layer_envmap_strength,
+            eye_left_center_x: self.eye_left_center[0],
+            eye_left_center_y: self.eye_left_center[1],
+            eye_left_center_z: self.eye_left_center[2],
+            eye_cubemap_scale: self.eye_cubemap_scale,
+            eye_right_center_x: self.eye_right_center[0],
+            eye_right_center_y: self.eye_right_center[1],
+            eye_right_center_z: self.eye_right_center[2],
+            multi_layer_inner_thickness: self.multi_layer_inner_thickness,
+            multi_layer_refraction_scale: self.multi_layer_refraction_scale,
+            multi_layer_inner_scale_u: self.multi_layer_inner_scale[0],
+            multi_layer_inner_scale_v: self.multi_layer_inner_scale[1],
+            sparkle_r: self.sparkle_rgba[0],
+            sparkle_g: self.sparkle_rgba[1],
+            sparkle_b: self.sparkle_rgba[2],
+            sparkle_intensity: self.sparkle_rgba[3],
+            falloff_start_angle: self.effect_falloff[0],
+            falloff_stop_angle: self.effect_falloff[1],
+            falloff_start_opacity: self.effect_falloff[2],
+            falloff_stop_opacity: self.effect_falloff[3],
+            soft_falloff_depth: self.effect_falloff[4],
+            _pad_pbr: 0.0,
+            _pad_falloff: 0.0,
+        }
+    }
 }
 
 /// Sky rendering parameters passed per-frame to the composite shader.

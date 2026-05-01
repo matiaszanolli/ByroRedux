@@ -8,7 +8,7 @@ use byroredux_core::ecs::{
 use byroredux_core::math::{Mat4, Quat, Vec3, Vec4};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES;
-use byroredux_renderer::SkyParams;
+use byroredux_renderer::{MaterialTable, SkyParams};
 use rayon::slice::ParallelSliceMut;
 use std::collections::HashMap;
 use std::sync::Once;
@@ -184,6 +184,7 @@ pub(crate) fn build_render_data(
     bone_palette: &mut Vec<[[f32; 4]; 4]>,
     skin_offsets: &mut HashMap<EntityId, u32>,
     palette_scratch: &mut Vec<Mat4>,
+    material_table: &mut MaterialTable,
     particle_quad_handle: Option<u32>,
 ) -> ([f32; 16], [f32; 3], [f32; 3], [f32; 3], f32, f32, SkyParams) {
     let frame_count = FRAME_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -192,6 +193,10 @@ pub(crate) fn build_render_data(
     gpu_lights.clear();
     bone_palette.clear();
     skin_offsets.clear();
+    // R1 Phase 2 — clear the material table so the per-frame dedup
+    // starts from scratch. `intern` calls below populate it as the
+    // mesh / particle paths emit DrawCommands.
+    material_table.clear();
     // Slot 0 is always identity — rigid meshes tagged with bone_offset=0
     // that somehow hit the skinning path fall here harmlessly.
     bone_palette.push([
@@ -710,7 +715,7 @@ pub(crate) fn build_render_data(
                     [1.0, 1.0, 1.0, 1.0, 0.0]
                 };
 
-                draw_commands.push(DrawCommand {
+                let mut cmd = DrawCommand {
                     mesh_handle: mesh.0,
                     texture_handle: tex_handle,
                     model_matrix: model_mat.to_cols_array(),
@@ -776,7 +781,10 @@ pub(crate) fn build_render_data(
                     multi_layer_inner_scale,
                     sparkle_rgba,
                     effect_falloff,
-                });
+                    material_id: 0,
+                };
+                cmd.material_id = material_table.intern(cmd.to_gpu_material());
+                draw_commands.push(cmd);
             }
         }
     }
@@ -838,7 +846,7 @@ pub(crate) fn build_render_data(
                     let pos_clip = vp_mat * Vec4::new(world_pos.x, world_pos.y, world_pos.z, 1.0);
                     let sort_depth = f32_sortable_u32(pos_clip.w);
 
-                    draw_commands.push(DrawCommand {
+                    let mut cmd = DrawCommand {
                         mesh_handle: particle_mesh,
                         texture_handle: 0,
                         model_matrix: model.to_cols_array(),
@@ -919,7 +927,10 @@ pub(crate) fn build_render_data(
                         // #620 — particles never carry an effect-shader
                         // falloff cone; identity-pass-through.
                         effect_falloff: [1.0, 1.0, 1.0, 1.0, 0.0],
-                    });
+                        material_id: 0,
+                    };
+                    cmd.material_id = material_table.intern(cmd.to_gpu_material());
+                    draw_commands.push(cmd);
                 }
             }
         }
@@ -1217,6 +1228,7 @@ mod draw_sort_key_tests {
             multi_layer_inner_scale: [1.0, 1.0],
             sparkle_rgba: [0.0; 4],
             effect_falloff: [1.0, 1.0, 1.0, 1.0, 0.0],
+            material_id: 0,
         }
     }
 
@@ -1545,6 +1557,7 @@ mod bone_palette_overflow_tests {
         let mut bone_palette = Vec::new();
         let mut skin_offsets = HashMap::new();
         let mut palette_scratch = Vec::new();
+        let mut material_table = byroredux_renderer::MaterialTable::new();
         let _ = build_render_data(
             world,
             &mut draw_commands,
@@ -1552,6 +1565,7 @@ mod bone_palette_overflow_tests {
             &mut bone_palette,
             &mut skin_offsets,
             &mut palette_scratch,
+            &mut material_table,
             None,
         );
         (bone_palette, skin_offsets)
@@ -1621,6 +1635,7 @@ mod variant_pack_gating_tests {
         let mut bone_palette = Vec::new();
         let mut skin_offsets = HashMap::new();
         let mut palette_scratch = Vec::new();
+        let mut material_table = byroredux_renderer::MaterialTable::new();
         let _ = build_render_data(
             world,
             &mut draw_commands,
@@ -1628,6 +1643,7 @@ mod variant_pack_gating_tests {
             &mut bone_palette,
             &mut skin_offsets,
             &mut palette_scratch,
+            &mut material_table,
             None,
         );
         draw_commands
