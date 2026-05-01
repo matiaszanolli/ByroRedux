@@ -143,58 +143,47 @@ pub struct GpuTerrainTile {
 /// u32 slot name — when you add a field here, update the expected suffix
 /// in the assertion and rename the sentinel to match the new last field.
 ///
-/// Layout: 400 bytes per instance, 16-byte aligned (25×16). Grew from
-/// 192 → 224 (#492, UV + material_alpha) → 320 (#562, Skyrim+
-/// BSLightingShaderProperty variant payloads — skin tint, hair tint,
-/// eye envmap centers, parallax-occ / multi-layer parallax, sparkle)
-/// → 352 (#221, NiMaterialProperty diffuse + ambient colors)
-/// → 384 (#620, BSEffectShaderProperty falloff cone — view-angle
-/// falloff + soft-depth feathering for magic VFX, decals, smoke
-/// planes, water edges)
-/// → 400 (R1 Phase 3, `material_id` indirection into the per-frame
-/// `MaterialTable` SSBO — Phases 4–6 migrate field reads onto it and
-/// finally drop the redundant per-instance copies above). The growth
-/// pattern is strictly append-only — every existing offset is
-/// preserved so shader struct mirrors only need to add fields, not
-/// renumber. The `size_of::<GpuInstance>() == 400` test below asserts
-/// the invariant; shader-side `GpuInstance` must match.
+/// Layout: 112 bytes per instance, 16-byte aligned (7×16). R1 Phase 6
+/// collapsed the per-material fields (texture indices, PBR scalars,
+/// alpha state, Skyrim+ shader-variant payloads, BSEffect falloff,
+/// BGSM UV transform, NiMaterialProperty diffuse/ambient, ~30 fields
+/// total) onto a separate per-frame `MaterialTable` SSBO indexed by
+/// `material_id`; the fragment shader reads them via
+/// `materials[gpuInstance.material_id]`. What remains here is
+/// strictly per-DRAW data: the model matrix, mesh refs, the
+/// caustic-source `avg_albedo` (still consumed by `caustic_splat.comp`
+/// off its own descriptor set), `flags` (mixed per-instance bits +
+/// terrain tile slot), and the `material_id` indirection.
+///
+/// **Layout history** (every step preserves earlier offsets):
+///   - 192 → 224 (#492, UV + material_alpha)
+///   - 224 → 320 (#562, Skyrim+ BSLightingShaderProperty variants)
+///   - 320 → 352 (#221, NiMaterialProperty diffuse + ambient)
+///   - 352 → 384 (#620, BSEffectShaderProperty falloff cone)
+///   - 384 → 400 (R1 Phase 3, `material_id` slot)
+///   - 400 → 112 (R1 Phase 6, drop the migrated per-material fields)
+///
+/// The `size_of::<GpuInstance>() == 112` test below asserts the
+/// invariant; shader-side `GpuInstance` must match.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuInstance {
-    pub model: [[f32; 4]; 4],  // 64 B, offset 0
-    pub texture_index: u32,    // 4 B, offset 64
-    pub bone_offset: u32,      // 4 B, offset 68
-    pub normal_map_index: u32, // 4 B, offset 72
-    pub roughness: f32,        // 4 B, offset 76
-    pub metalness: f32,        // 4 B, offset 80
-    pub emissive_mult: f32,    // 4 B, offset 84
-    /// Emissive RGB + specular_strength packed as vec4 to avoid vec3 alignment.
-    pub emissive_r: f32, // 4 B, offset 88
-    pub emissive_g: f32,       // 4 B, offset 92
-    pub emissive_b: f32,       // 4 B, offset 96
-    pub specular_strength: f32, // 4 B, offset 100
-    /// Specular RGB + padding packed to avoid vec3.
-    pub specular_r: f32, // 4 B, offset 104
-    pub specular_g: f32,       // 4 B, offset 108
-    pub specular_b: f32,       // 4 B, offset 112
+    pub model: [[f32; 4]; 4], // 64 B, offset 0
+    /// Diffuse / albedo bindless texture index. Held on the per-instance
+    /// struct (not migrated to the material table) because the UI quad
+    /// path appends an instance with a per-frame texture handle without
+    /// going through the material table; keeping it here costs 4 B per
+    /// instance and avoids a UI-specific material-intern dance.
+    pub texture_index: u32, // 4 B, offset 64
+    /// Bone palette base offset for skinned meshes. Per-DRAW; rigid
+    /// instances set `0` (the identity slot at palette index 0).
+    pub bone_offset: u32, // 4 B, offset 68
     /// Offset into the global vertex SSBO (in vertices, not bytes).
-    pub vertex_offset: u32, // 4 B, offset 116
+    pub vertex_offset: u32, // 4 B, offset 72
     /// Offset into the global index SSBO (in indices, not bytes).
-    pub index_offset: u32, // 4 B, offset 120
+    pub index_offset: u32, // 4 B, offset 76
     /// Vertex count for this mesh (for bounds checking).
-    pub vertex_count: u32, // 4 B, offset 124
-    /// Alpha test threshold [0,1]. 0.0 = no alpha test. #263.
-    pub alpha_threshold: f32, // 4 B, offset 128
-    /// Alpha test comparison function (Gamebryo TestFunction). #263.
-    pub alpha_test_func: u32, // 4 B, offset 132
-    /// Bindless texture index for dark/lightmap (0 = none). #264.
-    pub dark_map_index: u32, // 4 B, offset 136
-    /// Pre-computed average albedo for GI bounce approximation.
-    /// Avoids 11 divergent memory ops per GI ray hit by replacing
-    /// full UV lookup + texture sample with a single SSBO read.
-    pub avg_albedo_r: f32, // 4 B, offset 140
-    pub avg_albedo_g: f32,     // 4 B, offset 144
-    pub avg_albedo_b: f32,     // 4 B, offset 148
+    pub vertex_count: u32, // 4 B, offset 80
     /// Per-instance flags.
     ///   bit 0 — has non-uniform scale (needs inverse-transpose normal transform). See #273.
     ///   bit 1 — `alpha_blend` enabled (NiAlphaProperty blend bit). Used by the
@@ -202,207 +191,28 @@ pub struct GpuInstance {
     ///   bit 2 — caustic source: mesh is a plausible refractive surface
     ///           (alpha-blend, non-metal). The caustic compute pass scatters
     ///           caustic splats from every pixel whose instance has this bit. #321.
-    pub flags: u32, // 4 B, offset 152
-    /// `BSLightingShaderProperty.shader_type` enum value (0–19), used by
-    /// the fragment shader's per-variant dispatch (SkinTint, HairTint,
-    /// EyeEnvmap, SparkleSnow, MultiLayerParallax, …). 0 = Default lit
-    /// — the safe fall-through for non-Skyrim+ meshes that have no
-    /// BSLightingShaderProperty backing. Repurposed from the previous
-    /// `_pad1` field. Plumbing only here — the actual variant branches
-    /// in `triangle.frag` land per-variant in follow-up PRs. See #344.
-    pub material_kind: u32, // 4 B, offset 156
-    /// Bindless texture index for the glow / self-illumination map
-    /// (NiTexturingProperty slot 4 on Oblivion/FO3/FNV; BSShaderTextureSet
-    /// slot 2 on Skyrim+). 0 = no glow map; fragment shader falls back
-    /// to the inline `emissive_color` × `emissive_mult` constant.
-    /// See #399 (OBL-D4-H3).
-    pub glow_map_index: u32, // 4 B, offset 160
-    /// Bindless texture index for the detail overlay (NiTexturingProperty
-    /// slot 2). Sampled at 2× UV scale and modulated into the base
-    /// albedo (`base.rgb *= detail.rgb * 2`). 0 = no detail map.
-    pub detail_map_index: u32, // 4 B, offset 164
-    /// Bindless texture index for the gloss map
-    /// (NiTexturingProperty slot 3). Per Gamebryo 2.3
-    /// `HandleGlossMap(... pkGlossiness)` the .r channel feeds the
-    /// **glossiness / shininess** (Phong exponent) channel, which the
-    /// fragment shader uses to modulate per-texel `roughness` — gloss
-    /// = 1.0 → authored roughness, gloss = 0.0 → fully rough (dull).
-    /// 0 = no gloss map. See #704 / O4-06.
-    pub gloss_map_index: u32, // 4 B, offset 168
-    /// Bindless texture index for the parallax / height map
-    /// (`BSShaderTextureSet` slot 3). FO3/FNV `shader_type = 3`
-    /// (Parallax_Shader_Index_15) and `shader_type = 7`
-    /// (Parallax_Occlusion) — plus Skyrim+ ParallaxOcc /
-    /// MultiLayerParallax — drive POM ray-marching off this slot.
-    /// 0 = no parallax map; the fragment shader skips the POM branch
-    /// and falls back to flat normal-mapped sampling. See #453.
-    pub parallax_map_index: u32, // 4 B, offset 172
-    /// POM height-map scale multiplier (from
-    /// `BSShaderPPLightingProperty.parallax_scale` on FO3/FNV or
-    /// Skyrim `ShaderTypeData::ParallaxOcc.scale`). Default `0.04`
-    /// matches Bethesda's typical brick-wall depth. See #453.
-    pub parallax_height_scale: f32, // 4 B, offset 176
-    /// POM ray-march sample budget (typically 4–16). Default `4.0`
-    /// matches BSShaderPPLightingProperty's default. See #453.
-    pub parallax_max_passes: f32, // 4 B, offset 180
-    /// Bindless texture index for the environment reflection map
-    /// (`BSShaderTextureSet` slot 4). Currently treated as a 2D
-    /// sphere-map sample; full cubemap support (separate
-    /// `samplerCube` descriptor binding) is deferred. 0 = no env
-    /// map; combined with `env_map_scale` on `material_kind == 1`
-    /// (BSLightingShaderProperty EnvironmentMap). See #453.
-    pub env_map_index: u32, // 4 B, offset 184
-    /// Bindless texture index for the env-reflection mask
-    /// (`BSShaderTextureSet` slot 5). Per-texel attenuation of
-    /// the env reflection. 0 = no mask → reflection is unmasked.
-    /// See #453.
-    pub env_mask_index: u32, // 4 B, offset 188
-    /// UV transform translation X (from `MaterialInfo.uv_offset[0]`).
-    /// Applied to texture coordinates as `uv = uv * scale + offset`.
-    /// FO4 BGSM authors both offset and scale; FO3/FNV/Skyrim usually
-    /// default to identity (0, 0) / (1, 1). See #492 (FO4-BGSM-3).
-    pub uv_offset_u: f32, // 4 B, offset 192
-    pub uv_offset_v: f32,      // 4 B, offset 196
-    /// UV transform scale X / Y.
-    pub uv_scale_u: f32, // 4 B, offset 200
-    pub uv_scale_v: f32,       // 4 B, offset 204
-    /// Material alpha multiplier — the BGSM `material_alpha` field
-    /// (equivalent to `MaterialInfo.alpha` on the NIF side). Fragment
-    /// shader multiplies the sampled texture alpha by this for the
-    /// final blend-pass alpha. Default `1.0` = no attenuation.
-    pub material_alpha: f32, // 4 B, offset 208
-    /// 12 bytes of std430 tail padding for the BGSM UV/alpha block so
-    /// that block's vec4 is full (BGSM: `[uvOffsetU, uvOffsetV, uvScaleU,
-    /// uvScaleV]` + `[materialAlpha, _uv_pad0, _uv_pad1, _uv_pad2]`).
-    pub _uv_pad0: f32, // 4 B, offset 212
-    pub _uv_pad1: f32,         // 4 B, offset 216
-    pub _uv_pad2: f32,         // 4 B, offset 220
-    // ── Skyrim+ BSLightingShaderProperty variant payloads (#562) ───
-    //
-    // All six vec4 slots below carry per-variant data from
-    // `MaterialInfo::ShaderTypeFields`; the fragment shader's
-    // `material_kind` ladder branches on `GpuInstance.material_kind`
-    // (offset 156) to decide which fields to read. Default-lit meshes
-    // (`material_kind == 0`) ignore every field.
-    /// SkinTint (material_kind == 5): RGB skin tint + alpha. Shader
-    /// multiplies sampled albedo by this RGB. Alpha carries the
-    /// authored tint strength (1.0 = full tint multiply).
-    pub skin_tint_r: f32, // 4 B, offset 224
-    pub skin_tint_g: f32, // 4 B, offset 228
-    pub skin_tint_b: f32, // 4 B, offset 232
-    pub skin_tint_a: f32, // 4 B, offset 236
-    /// HairTint (material_kind == 6): RGB hair tint. Same shader
-    /// contract as skin — multiplies albedo. The w slot carries
-    /// `multi_layer_envmap_strength` for MultiLayerParallax so the
-    /// vec4 doesn't waste alignment on a lone f32; the two variants
-    /// never overlap on a single mesh.
-    pub hair_tint_r: f32, // 4 B, offset 240
-    pub hair_tint_g: f32, // 4 B, offset 244
-    pub hair_tint_b: f32, // 4 B, offset 248
-    /// MultiLayerParallax (material_kind == 11) envmap strength
-    /// scalar, packed into the hair_tint vec4 to save a dedicated
-    /// slot. Skin- and hair-tinted meshes always have
-    /// `multi_layer_envmap_strength = 0.0` (they don't set this
-    /// variant), and MultiLayer meshes always have `hair_tint_* = 0`.
-    pub multi_layer_envmap_strength: f32, // 4 B, offset 252
-    /// EyeEnvmap (material_kind == 16) left-iris reflection center
-    /// (xyz, object-space) + `eye_cubemap_scale` in w. Skyrim author
-    /// ships both left/right centers so each eye's reflection tracks
-    /// independently on a moving head mesh.
-    pub eye_left_center_x: f32, // 4 B, offset 256
-    pub eye_left_center_y: f32, // 4 B, offset 260
-    pub eye_left_center_z: f32, // 4 B, offset 264
-    pub eye_cubemap_scale: f32, // 4 B, offset 268
-    /// EyeEnvmap right-iris reflection center (xyz) + reserved w.
-    pub eye_right_center_x: f32, // 4 B, offset 272
-    pub eye_right_center_y: f32, // 4 B, offset 276
-    pub eye_right_center_z: f32, // 4 B, offset 280
-    pub _eye_pad: f32,    // 4 B, offset 284
-    /// MultiLayerParallax (material_kind == 11) inner-layer scalars —
-    /// `inner_thickness`, `refraction_scale`, `inner_layer_scale_u`,
-    /// `inner_layer_scale_v`. These drive a second UV sample of the
-    /// base texture offset along the view direction, blended with the
-    /// outer layer by Fresnel × `multi_layer_envmap_strength`. See
-    /// `ShaderTypeData::MultiLayerParallax` for the NIF-side payload.
-    pub multi_layer_inner_thickness: f32, // 4 B, offset 288
-    pub multi_layer_refraction_scale: f32, // 4 B, offset 292
-    pub multi_layer_inner_scale_u: f32, // 4 B, offset 296
-    pub multi_layer_inner_scale_v: f32, // 4 B, offset 300
-    /// SparkleSnow (material_kind == 14) sparkle-params vec4 from
-    /// `ShaderTypeData::SparkleSnow`. Bethesda's content packs RGB
-    /// sparkle color + alpha intensity; fragment shader overlays a
-    /// per-pixel hash-driven glint modulated by these. Default
-    /// (0, 0, 0, 0) produces no sparkle.
-    pub sparkle_r: f32, // 4 B, offset 304
-    pub sparkle_g: f32,   // 4 B, offset 308
-    pub sparkle_b: f32,   // 4 B, offset 312
-    pub sparkle_intensity: f32, // 4 B, offset 316
-    // ── #221: NiMaterialProperty diffuse + ambient colors ───────────
-    //
-    // `NiMaterialProperty.diffuse` and `.ambient` were captured by
-    // the importer pre-#221 but stopped at MaterialInfo — never
-    // reached the GPU. The fragment shader now multiplies the sampled
-    // albedo by `diffuseRGB` (per-material tint, no-op at white) and
-    // the cell ambient term by `ambientRGB` (per-material ambient
-    // response). Two padded vec4 slots so we keep std430 alignment
-    // without renumbering the existing `_uv_pad*` / `_eye_pad`
-    // patches above; defaults are `[1.0, 1.0, 1.0, 0.0]` so meshes
-    // without an `NiMaterialProperty` (every BSShader-only Skyrim+
-    // / FO4 mesh) are unaffected.
-    pub diffuse_r: f32,    // 4 B, offset 320
-    pub diffuse_g: f32,    // 4 B, offset 324
-    pub diffuse_b: f32,    // 4 B, offset 328
-    pub _diffuse_pad: f32, // 4 B, offset 332
-    pub ambient_r: f32,    // 4 B, offset 336
-    pub ambient_g: f32,    // 4 B, offset 340
-    pub ambient_b: f32,    // 4 B, offset 344
-    pub _ambient_pad: f32, // 4 B, offset 348
-    // ── #620 / SK-D4-01: BSEffectShaderProperty falloff cone ────────
-    //
-    // Two vec4 slots carrying the captured `BsEffectShaderData` cone
-    // parameters. The fragment shader's `material_kind ==
-    // MATERIAL_KIND_EFFECT_SHADER` (101) branch consumes them to fade
-    // alpha by view angle (`saturate((dot(N,V) - cos(stop_angle)) /
-    // (cos(start_angle) - cos(stop_angle)))`) AND soft-depth
-    // (`saturate((scene_depth - frag_depth) / soft_falloff_depth)`).
-    //
-    // Default values: identity-pass-through `(1, 1, 1, 1, 0)` — angle
-    // = 1.0 (cos(0) — every angle is "inside the cone"), opacities =
-    // 1.0 (no attenuation), soft_falloff_depth = 0.0 (no depth fade).
-    // Meshes whose `material_kind != 101` ignore these fields, so the
-    // defaults don't matter on the non-effect path.
-    /// Cosine of the angle where alpha = `falloff_start_opacity`.
-    /// `0.95 ≈ cos(18°)` is typical for Bethesda magic-aura cones.
-    pub falloff_start_angle: f32, // 4 B, offset 352
-    /// Cosine of the angle where alpha = `falloff_stop_opacity`.
-    pub falloff_stop_angle: f32, // 4 B, offset 356
-    /// Alpha at `start_angle`. `1.0` (full opacity at the cone center)
-    /// is typical for Bethesda content.
-    pub falloff_start_opacity: f32, // 4 B, offset 360
-    /// Alpha at `stop_angle`. `0.0` (fully feathered at the cone
-    /// edge) is typical.
-    pub falloff_stop_opacity: f32, // 4 B, offset 364
-    /// Soft-depth fade distance in world units. The fragment shader
-    /// fades alpha as the surface approaches an opaque background to
-    /// avoid hard edge bleed where, e.g., a smoke plane intersects a
-    /// floor. `0.0` disables the fade. Captured value samples seen in
-    /// vanilla Skyrim VFX: `8.0` (smoke), `16.0` (water-edge foam).
-    pub soft_falloff_depth: f32, // 4 B, offset 368
-    pub _falloff_pad0: f32, // 4 B, offset 372
-    pub _falloff_pad1: f32, // 4 B, offset 376
-    pub _falloff_pad2: f32, // 4 B, offset 380
-    // ── R1 Phase 3: material table id ───────────────────────────────
-    //
-    // Index into the per-frame `MaterialTable` SSBO. Phase 3 plumbs
-    // the field through the CPU pipeline + shader struct mirrors;
-    // Phase 4 attaches the SSBO + binding and migrates one field
-    // (roughness) as proof of concept; Phases 5–6 migrate the rest
-    // and finally drop the redundant per-instance copies above.
-    pub material_id: u32,    // 4 B, offset 384
-    pub _mat_pad0: f32,      // 4 B, offset 388
-    pub _mat_pad1: f32,      // 4 B, offset 392
-    pub _mat_pad2: f32,      // 4 B, offset 396 → total 400
-                             // Struct is 400 bytes (25×16), 16-byte aligned for std430.
+    ///   bits 3 — terrain-splat enable.
+    ///   bits 16..32 — terrain tile slot (when bit 3 is set). See #470.
+    pub flags: u32, // 4 B, offset 84
+    /// R1 — index into the per-frame `MaterialTable` SSBO. Most
+    /// per-material reads go through `materials[material_id].<field>`;
+    /// Phase 6 dropped the redundant per-instance copies that used to
+    /// inflate this struct from 112 B (now) to 400 B.
+    pub material_id: u32, // 4 B, offset 88
+    pub _pad_id0: f32,    // 4 B, offset 92
+    /// Pre-computed average albedo for GI bounce approximation.
+    /// Avoids 11 divergent memory ops per GI ray hit by replacing
+    /// full UV lookup + texture sample with a single SSBO read.
+    /// Kept on the per-instance struct (not migrated) because
+    /// `caustic_splat.comp` reads it from its own descriptor set
+    /// (set 0 binding 5) and migrating that path requires adding
+    /// a separate `MaterialBuffer` binding to the caustic compute
+    /// pipeline — deferred to a follow-up R1 cleanup.
+    pub avg_albedo_r: f32, // 4 B, offset 96
+    pub avg_albedo_g: f32, // 4 B, offset 100
+    pub avg_albedo_b: f32, // 4 B, offset 104
+    pub _pad_albedo: f32,  // 4 B, offset 108 → total 112
+                           // Struct is 112 bytes (7×16), 16-byte aligned for std430.
 }
 
 impl Default for GpuInstance {
@@ -416,108 +226,19 @@ impl Default for GpuInstance {
             ],
             texture_index: 0,
             bone_offset: 0,
-            normal_map_index: 0,
-            roughness: 0.5,
-            metalness: 0.0,
-            emissive_mult: 0.0,
-            emissive_r: 0.0,
-            emissive_g: 0.0,
-            emissive_b: 0.0,
-            specular_strength: 1.0,
-            specular_r: 1.0,
-            specular_g: 1.0,
-            specular_b: 1.0,
             vertex_offset: 0,
             index_offset: 0,
             vertex_count: 0,
-            alpha_threshold: 0.0,
-            alpha_test_func: 0,
-            dark_map_index: 0,
+            flags: 0,
+            // R1 — `0` is a valid material id (the first slot in the
+            // per-frame table; also the neutral-lit default material
+            // when no real one was interned).
+            material_id: 0,
+            _pad_id0: 0.0,
             avg_albedo_r: 0.5,
             avg_albedo_g: 0.5,
             avg_albedo_b: 0.5,
-            flags: 0,
-            material_kind: 0,
-            glow_map_index: 0,
-            detail_map_index: 0,
-            gloss_map_index: 0,
-            parallax_map_index: 0,
-            parallax_height_scale: 0.04,
-            parallax_max_passes: 4.0,
-            env_map_index: 0,
-            env_mask_index: 0,
-            uv_offset_u: 0.0,
-            uv_offset_v: 0.0,
-            uv_scale_u: 1.0,
-            uv_scale_v: 1.0,
-            material_alpha: 1.0,
-            _uv_pad0: 0.0,
-            _uv_pad1: 0.0,
-            _uv_pad2: 0.0,
-            // Skyrim+ variant payloads (#562) — zeroed by default.
-            // Default-lit meshes (material_kind == 0) never read them;
-            // variant branches gate on `material_kind` so these are
-            // live only when a real BSLightingShaderProperty shader
-            // type is set on the instance.
-            skin_tint_r: 0.0,
-            skin_tint_g: 0.0,
-            skin_tint_b: 0.0,
-            skin_tint_a: 0.0,
-            hair_tint_r: 0.0,
-            hair_tint_g: 0.0,
-            hair_tint_b: 0.0,
-            multi_layer_envmap_strength: 0.0,
-            eye_left_center_x: 0.0,
-            eye_left_center_y: 0.0,
-            eye_left_center_z: 0.0,
-            eye_cubemap_scale: 0.0,
-            eye_right_center_x: 0.0,
-            eye_right_center_y: 0.0,
-            eye_right_center_z: 0.0,
-            _eye_pad: 0.0,
-            multi_layer_inner_thickness: 0.0,
-            multi_layer_refraction_scale: 0.0,
-            multi_layer_inner_scale_u: 0.0,
-            multi_layer_inner_scale_v: 0.0,
-            sparkle_r: 0.0,
-            sparkle_g: 0.0,
-            sparkle_b: 0.0,
-            sparkle_intensity: 0.0,
-            // #221 — `[1.0; 3]` defaults so meshes without
-            // `NiMaterialProperty` (every BSShader-only mesh) keep
-            // identity tint + ambient response. Padding fields stay
-            // at 0.0 — they're never read by the shader.
-            diffuse_r: 1.0,
-            diffuse_g: 1.0,
-            diffuse_b: 1.0,
-            _diffuse_pad: 0.0,
-            ambient_r: 1.0,
-            ambient_g: 1.0,
-            ambient_b: 1.0,
-            _ambient_pad: 0.0,
-            // #620 — BSEffectShaderProperty falloff defaults.
-            // Identity-pass-through values: angle=1.0 (cos(0°), every
-            // angle is "inside the cone"), opacity=1.0 (no attenuation),
-            // depth=0.0 (no soft-depth fade). Meshes whose
-            // `material_kind != 101` (MATERIAL_KIND_EFFECT_SHADER)
-            // ignore these fields, so the defaults are conservative.
-            falloff_start_angle: 1.0,
-            falloff_stop_angle: 1.0,
-            falloff_start_opacity: 1.0,
-            falloff_stop_opacity: 1.0,
-            soft_falloff_depth: 0.0,
-            _falloff_pad0: 0.0,
-            _falloff_pad1: 0.0,
-            _falloff_pad2: 0.0,
-            // R1 — `0` is a valid material id (the first slot in the
-            // per-frame table, also the default "neutral lit" material
-            // when no real one was interned). The padding fields stay
-            // 0.0 — never read by any shader, only present so the
-            // std430 stride lands on a 16-byte boundary.
-            material_id: 0,
-            _mat_pad0: 0.0,
-            _mat_pad1: 0.0,
-            _mat_pad2: 0.0,
+            _pad_albedo: 0.0,
         }
     }
 }
@@ -1670,23 +1391,17 @@ mod gpu_instance_layout_tests {
     /// update protocol (grep for `struct GpuInstance` in the shaders tree
     /// before touching this struct).
     #[test]
-    fn gpu_instance_is_400_bytes_std430_compatible() {
-        // 176 → 192 in #453 (parallax/env slots).
-        // 192 → 224 in #492 (uv_offset + uv_scale + material_alpha).
-        // 224 → 320 in #562 (Skyrim+ BSLightingShaderProperty variant
-        // payloads — SkinTint / HairTint / MultiLayerParallax /
-        // EyeEnvmap / SparkleSnow — packed as 6 vec4s).
-        // 320 → 352 in #221 (NiMaterialProperty diffuse + ambient
-        // colors — 2 padded vec4 slots).
-        // 352 → 384 in #620 (BSEffectShaderProperty falloff cone —
-        // 5 floats packed into 2 vec4 slots).
-        // 384 → 400 in R1 Phase 3 (`material_id` + 3 pad floats — the
-        // material-table indirection that Phases 4–6 will consume).
-        // 25 × 16 = 400.
+    fn gpu_instance_is_112_bytes_std430_compatible() {
+        // R1 Phase 6 collapsed the per-material fields onto the
+        // separate `MaterialTable` SSBO. What's left here is
+        // strictly per-DRAW: model (64 B) + 4 mesh refs +
+        // bone_offset + flags + material_id + avg_albedo (kept
+        // for caustic compute reads off its own descriptor set)
+        // packed into 7 vec4 slots = 112 B.
         assert_eq!(
             size_of::<GpuInstance>(),
-            400,
-            "GpuInstance must stay 400 B to match std430 shader layout"
+            112,
+            "GpuInstance must stay 112 B to match std430 shader layout"
         );
     }
 
@@ -1695,109 +1410,28 @@ mod gpu_instance_layout_tests {
         assert_eq!(offset_of!(GpuInstance, model), 0);
         assert_eq!(offset_of!(GpuInstance, texture_index), 64);
         assert_eq!(offset_of!(GpuInstance, bone_offset), 68);
-        assert_eq!(offset_of!(GpuInstance, normal_map_index), 72);
-        assert_eq!(offset_of!(GpuInstance, roughness), 76);
-        assert_eq!(offset_of!(GpuInstance, metalness), 80);
-        assert_eq!(offset_of!(GpuInstance, emissive_mult), 84);
-        assert_eq!(offset_of!(GpuInstance, emissive_r), 88);
-        assert_eq!(offset_of!(GpuInstance, emissive_g), 92);
-        assert_eq!(offset_of!(GpuInstance, emissive_b), 96);
-        assert_eq!(offset_of!(GpuInstance, specular_strength), 100);
-        assert_eq!(offset_of!(GpuInstance, specular_r), 104);
-        assert_eq!(offset_of!(GpuInstance, specular_g), 108);
-        assert_eq!(offset_of!(GpuInstance, specular_b), 112);
-        assert_eq!(offset_of!(GpuInstance, vertex_offset), 116);
-        assert_eq!(offset_of!(GpuInstance, index_offset), 120);
-        assert_eq!(offset_of!(GpuInstance, vertex_count), 124);
-        assert_eq!(offset_of!(GpuInstance, alpha_threshold), 128);
-        assert_eq!(offset_of!(GpuInstance, alpha_test_func), 132);
-        assert_eq!(offset_of!(GpuInstance, dark_map_index), 136);
-        assert_eq!(offset_of!(GpuInstance, avg_albedo_r), 140);
-        assert_eq!(offset_of!(GpuInstance, avg_albedo_g), 144);
-        assert_eq!(offset_of!(GpuInstance, avg_albedo_b), 148);
-        assert_eq!(offset_of!(GpuInstance, flags), 152);
-        // material_kind reuses the previous _pad1 slot — kept at the
-        // same offset so every shader-side `pad1` reference renamed to
-        // `materialKind` continues to alias the same 4 bytes. See #344.
-        assert_eq!(offset_of!(GpuInstance, material_kind), 156);
-        // #399 — three NiTexturingProperty texture-slot indices appended
-        // after material_kind, each 4 bytes.
-        assert_eq!(offset_of!(GpuInstance, glow_map_index), 160);
-        assert_eq!(offset_of!(GpuInstance, detail_map_index), 164);
-        assert_eq!(offset_of!(GpuInstance, gloss_map_index), 168);
-        // #453 — BSShaderTextureSet slots 3/4/5 + POM scalars. The
-        // `_pad_extra_textures` u32 at offset 172 was reclaimed as
-        // `parallax_map_index`; the new fields extend to offset 192.
-        assert_eq!(offset_of!(GpuInstance, parallax_map_index), 172);
-        assert_eq!(offset_of!(GpuInstance, parallax_height_scale), 176);
-        assert_eq!(offset_of!(GpuInstance, parallax_max_passes), 180);
-        assert_eq!(offset_of!(GpuInstance, env_map_index), 184);
-        assert_eq!(offset_of!(GpuInstance, env_mask_index), 188);
-        // #492 — FO4 BGSM UV transform + material alpha. Packed as
-        // one vec4 (offset/scale) + one half-used vec4 (alpha + 3
-        // padding f32) to land on a 16-byte boundary.
-        assert_eq!(offset_of!(GpuInstance, uv_offset_u), 192);
-        assert_eq!(offset_of!(GpuInstance, uv_offset_v), 196);
-        assert_eq!(offset_of!(GpuInstance, uv_scale_u), 200);
-        assert_eq!(offset_of!(GpuInstance, uv_scale_v), 204);
-        assert_eq!(offset_of!(GpuInstance, material_alpha), 208);
-        assert_eq!(offset_of!(GpuInstance, _uv_pad0), 212);
-        assert_eq!(offset_of!(GpuInstance, _uv_pad1), 216);
-        assert_eq!(offset_of!(GpuInstance, _uv_pad2), 220);
-        // #562 — Skyrim+ BSLightingShaderProperty variant payloads.
-        // Each `vec4`-sized slot is 16 B, packed to land on std430
-        // alignment boundaries.
-        assert_eq!(offset_of!(GpuInstance, skin_tint_r), 224);
-        assert_eq!(offset_of!(GpuInstance, skin_tint_g), 228);
-        assert_eq!(offset_of!(GpuInstance, skin_tint_b), 232);
-        assert_eq!(offset_of!(GpuInstance, skin_tint_a), 236);
-        assert_eq!(offset_of!(GpuInstance, hair_tint_r), 240);
-        assert_eq!(offset_of!(GpuInstance, hair_tint_g), 244);
-        assert_eq!(offset_of!(GpuInstance, hair_tint_b), 248);
-        assert_eq!(offset_of!(GpuInstance, multi_layer_envmap_strength), 252);
-        assert_eq!(offset_of!(GpuInstance, eye_left_center_x), 256);
-        assert_eq!(offset_of!(GpuInstance, eye_left_center_y), 260);
-        assert_eq!(offset_of!(GpuInstance, eye_left_center_z), 264);
-        assert_eq!(offset_of!(GpuInstance, eye_cubemap_scale), 268);
-        assert_eq!(offset_of!(GpuInstance, eye_right_center_x), 272);
-        assert_eq!(offset_of!(GpuInstance, eye_right_center_y), 276);
-        assert_eq!(offset_of!(GpuInstance, eye_right_center_z), 280);
-        assert_eq!(offset_of!(GpuInstance, _eye_pad), 284);
-        assert_eq!(offset_of!(GpuInstance, multi_layer_inner_thickness), 288);
-        assert_eq!(offset_of!(GpuInstance, multi_layer_refraction_scale), 292);
-        assert_eq!(offset_of!(GpuInstance, multi_layer_inner_scale_u), 296);
-        assert_eq!(offset_of!(GpuInstance, multi_layer_inner_scale_v), 300);
-        assert_eq!(offset_of!(GpuInstance, sparkle_r), 304);
-        assert_eq!(offset_of!(GpuInstance, sparkle_g), 308);
-        assert_eq!(offset_of!(GpuInstance, sparkle_b), 312);
-        assert_eq!(offset_of!(GpuInstance, sparkle_intensity), 316);
-        // #221 — NiMaterialProperty diffuse + ambient. Two padded vec4
-        // slots appended at the end of the struct.
-        assert_eq!(offset_of!(GpuInstance, diffuse_r), 320);
-        assert_eq!(offset_of!(GpuInstance, diffuse_g), 324);
-        assert_eq!(offset_of!(GpuInstance, diffuse_b), 328);
-        assert_eq!(offset_of!(GpuInstance, _diffuse_pad), 332);
-        assert_eq!(offset_of!(GpuInstance, ambient_r), 336);
-        assert_eq!(offset_of!(GpuInstance, ambient_g), 340);
-        assert_eq!(offset_of!(GpuInstance, ambient_b), 344);
-        assert_eq!(offset_of!(GpuInstance, _ambient_pad), 348);
-        // #620 — BSEffectShaderProperty falloff cone. Two padded vec4
-        // slots appended at the end of the struct.
-        assert_eq!(offset_of!(GpuInstance, falloff_start_angle), 352);
-        assert_eq!(offset_of!(GpuInstance, falloff_stop_angle), 356);
-        assert_eq!(offset_of!(GpuInstance, falloff_start_opacity), 360);
-        assert_eq!(offset_of!(GpuInstance, falloff_stop_opacity), 364);
-        assert_eq!(offset_of!(GpuInstance, soft_falloff_depth), 368);
-        assert_eq!(offset_of!(GpuInstance, _falloff_pad0), 372);
-        assert_eq!(offset_of!(GpuInstance, _falloff_pad1), 376);
-        assert_eq!(offset_of!(GpuInstance, _falloff_pad2), 380);
-        // R1 Phase 3 — material table indirection (one vec4 slot,
-        // 16 B). Padding fields stay 0.0; the index itself is set
-        // by the encoding sites in `draw.rs` from `DrawCommand::material_id`.
-        assert_eq!(offset_of!(GpuInstance, material_id), 384);
-        assert_eq!(offset_of!(GpuInstance, _mat_pad0), 388);
-        assert_eq!(offset_of!(GpuInstance, _mat_pad1), 392);
-        assert_eq!(offset_of!(GpuInstance, _mat_pad2), 396);
+        assert_eq!(offset_of!(GpuInstance, vertex_offset), 72);
+        assert_eq!(offset_of!(GpuInstance, index_offset), 76);
+        assert_eq!(offset_of!(GpuInstance, vertex_count), 80);
+        assert_eq!(offset_of!(GpuInstance, flags), 84);
+        assert_eq!(offset_of!(GpuInstance, material_id), 88);
+        assert_eq!(offset_of!(GpuInstance, _pad_id0), 92);
+        assert_eq!(offset_of!(GpuInstance, avg_albedo_r), 96);
+        assert_eq!(offset_of!(GpuInstance, avg_albedo_g), 100);
+        assert_eq!(offset_of!(GpuInstance, avg_albedo_b), 104);
+        assert_eq!(offset_of!(GpuInstance, _pad_albedo), 108);
+    }
+
+    /// R1 Phase 6 sentinel — list of fields that USED to live on
+    /// `GpuInstance` and were collapsed onto the `MaterialTable` SSBO.
+    /// If this test grows back any of those names, R1 is being undone.
+    #[test]
+    fn gpu_instance_does_not_re_expand_with_per_material_fields() {
+        // Build trivially via Default and rely on the size assertion
+        // above (112 B) to fail loudly if a field is reintroduced.
+        // The list below is documentary only; the size guard is what
+        // catches actual regressions.
+        let _ = GpuInstance::default();
     }
 
     /// Regression: #309 — `VkDrawIndexedIndirectCommand` is a Vulkan-
@@ -1863,42 +1497,48 @@ mod gpu_instance_layout_tests {
                 "{name} no longer declares `struct GpuInstance` — update \
                  the sync list at feedback_shader_struct_sync.md"
             );
-            // The struct must declare the trailing slot as
-            // `materialKind`, not `_pad1` / `_pad` / `pad1`.
-            assert!(
-                src.contains("materialKind"),
-                "{name}: GpuInstance final slot must be named \
-                 `materialKind` (see #417). Found no mention — did \
-                 the shader revert to `_pad1`?"
-            );
+            // R1 Phase 6 — `material_kind` moved off `GpuInstance`
+            // into the `MaterialBuffer` SSBO. The assertion that
+            // every shader's per-instance struct names a final
+            // `materialKind` slot (#417) no longer applies.
+            // `triangle.frag` is the only shader that declares a
+            // `GpuMaterial` block at all (see binding 13 below).
             assert!(
                 !src.contains("uint _pad1"),
                 "{name}: GpuInstance slot is still named `_pad1` — \
-                 rename to `materialKind` to match the other 3 \
-                 shaders (Shader Struct Sync invariant #318 / #417)."
+                 the shader has the pre-#417 layout (Shader Struct \
+                 Sync invariant #318 / #417)."
             );
-            // #453 — the BSShaderTextureSet slots 3/4/5 + POM scalars
-            // must land in every copy so the Rust struct and the GLSL
-            // structs stay byte-identical.
-            // #492 — FO4 BGSM UV transform + material alpha extend the
-            // struct to 224 B. Every copy must declare the new fields
-            // even when the shader doesn't yet consume them (the
-            // fragment-shader wiring lands in #494).
+            // R1 Phase 6 — these fields were migrated to the
+            // `MaterialBuffer` SSBO and dropped from `GpuInstance`.
+            // `material_kind` is now read as `materials[id].materialKind`
+            // and `materialId` is the only material-table-related
+            // slot left on the per-instance struct.
             for needle in [
+                // R1 Phase 3 — material table indirection. Every shader
+                // copy declares the slot so the std430 stride stays
+                // byte-identical across the four.
+                "materialId",
+            ] {
+                assert!(
+                    src.contains(needle),
+                    "{name}: GpuInstance must declare `{needle}` (R1 Phase 3+). \
+                     Every copy updates in lockstep — see the \
+                     feedback_shader_struct_sync memory note."
+                );
+            }
+            // R1 Phase 6 — these names lived on `GpuInstance` before
+            // the material-table collapse. A reappearance means the
+            // refactor is being undone.
+            for stale in [
                 "parallaxMapIndex",
                 "parallaxHeightScale",
                 "parallaxMaxPasses",
                 "envMapIndex",
                 "envMaskIndex",
                 "uvOffsetU",
-                "uvOffsetV",
                 "uvScaleU",
-                "uvScaleV",
                 "materialAlpha",
-                // #562 — Skyrim+ BSLightingShaderProperty variant
-                // payloads. All four shader copies must declare these
-                // even when the shader doesn't consume them, so the
-                // 320 B std430 stride stays byte-identical.
                 "skinTintR",
                 "hairTintR",
                 "multiLayerEnvmapStrength",
@@ -1910,47 +1550,31 @@ mod gpu_instance_layout_tests {
                 "multiLayerInnerScaleU",
                 "sparkleR",
                 "sparkleIntensity",
-                // #221 — NiMaterialProperty diffuse + ambient. All
-                // four shader copies must declare these even if only
-                // triangle.frag consumes them today, so the 352 B
-                // std430 stride stays byte-identical across the four.
                 "diffuseR",
                 "ambientR",
-                // #620 — BSEffectShaderProperty falloff cone. Two
-                // padded vec4 slots; only triangle.frag consumes the
-                // values today (view-angle + soft-depth fade for
-                // material_kind == 101 EffectShader meshes), but every
-                // copy must declare the layout so the 384 B std430
-                // stride stays byte-identical across the four.
                 "falloffStartAngle",
                 "falloffStopAngle",
                 "falloffStartOpacity",
                 "falloffStopOpacity",
                 "softFalloffDepth",
-                // R1 Phase 3 — material table indirection. Every shader
-                // copy declares the slot so the 400 B std430 stride
-                // stays byte-identical across the four; Phase 4 attaches
-                // the `MaterialBuffer` SSBO + first reader (roughness),
-                // Phases 5–6 migrate the rest.
-                "materialId",
             ] {
-                assert!(
-                    src.contains(needle),
-                    "{name}: GpuInstance must declare `{needle}` (#453). \
-                     Every copy updates in lockstep — see the \
-                     feedback_shader_struct_sync memory note."
-                );
+                // The names CAN appear on the `GpuMaterial` mirror
+                // declarations — what's forbidden is reappearance on
+                // `struct GpuInstance` after Phase 6 dropped them.
+                let gi_start = src.find("struct GpuInstance");
+                let gi_end = gi_start
+                    .and_then(|s| src[s..].find('}').map(|e| s + e));
+                if let (Some(s), Some(e)) = (gi_start, gi_end) {
+                    let gi_block = &src[s..e];
+                    assert!(
+                        !gi_block.contains(stale),
+                        "{name}: per-material field `{stale}` reappeared on \
+                         `struct GpuInstance` — R1 Phase 6 dropped it. \
+                         Read it from `materials[gpuInstance.materialId]` \
+                         instead."
+                    );
+                }
             }
-            // The old `_pad_extra_textures` slot was reclaimed for
-            // `parallaxMapIndex`. A stale `_pad_extra_textures` mention
-            // means the shader still has the pre-#453 layout.
-            assert!(
-                !src.contains("_pad_extra_textures"),
-                "{name}: GpuInstance still declares the reclaimed \
-                 `_pad_extra_textures` slot — rename to \
-                 `parallaxMapIndex` so the byte layout matches the \
-                 320-byte Rust struct."
-            );
         }
     }
 

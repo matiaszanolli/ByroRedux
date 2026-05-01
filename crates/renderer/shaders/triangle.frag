@@ -28,34 +28,23 @@ layout(location = 5) out vec4 outAlbedo;       // surface color (composite re-mu
 // Bindless texture array.
 layout(set = 0, binding = 0) uniform sampler2D textures[];
 
-// Per-instance material data from the instance SSBO.
-// CRITICAL: all scalars, NO vec3 (vec3 has 16-byte alignment in std430,
-// which would mismatch the tightly-packed Rust #[repr(C)] struct).
+// Per-instance data from the instance SSBO. R1 Phase 6 collapsed the
+// per-material fields onto the `MaterialBuffer` SSBO indexed by
+// `materialId`; what's left is strictly per-DRAW data. Each draw's
+// gl_InstanceIndex maps to one entry containing the model matrix,
+// mesh refs, flags, materialId, and avgAlbedo (kept for caustic).
+//
+// CRITICAL: all scalars, NO vec3 (vec3 has 16-byte alignment in
+// std430, which would mismatch the tightly-packed Rust #[repr(C)]
+// struct).
 struct GpuInstance {
-    mat4 model;              // offset 0,  64 bytes
-    uint textureIndex;       // offset 64, 4 bytes
-    uint boneOffset;         // offset 68
-    uint normalMapIndex;     // offset 72
-    float roughness;         // offset 76
-    float metalness;         // offset 80
-    float emissiveMult;      // offset 84
-    float emissiveR;         // offset 88
-    float emissiveG;         // offset 92
-    float emissiveB;         // offset 96
-    float specularStrength;  // offset 100
-    float specularR;         // offset 104
-    float specularG;         // offset 108
-    float specularB;         // offset 112
-    uint vertexOffset;       // offset 116
-    uint indexOffset;        // offset 120
-    uint vertexCount;        // offset 124
-    float alphaThreshold;    // offset 128 — 0.0 = no alpha test (#263)
-    uint alphaTestFunc;      // offset 132 — Gamebryo TestFunction enum (#263)
-    uint darkMapIndex;       // offset 136 — 0 = no dark map (#264)
-    float avgAlbedoR;        // offset 140 — pre-computed average albedo for GI bounce
-    float avgAlbedoG;        // offset 144
-    float avgAlbedoB;        // offset 148
-    // offset 152: per-instance bit flags + packed fields.
+    mat4 model;            // offset 0,  64 bytes
+    uint textureIndex;     // offset 64 — diffuse / albedo
+    uint boneOffset;       // offset 68
+    uint vertexOffset;     // offset 72
+    uint indexOffset;      // offset 76
+    uint vertexCount;      // offset 80
+    // offset 84: per-instance bit flags + packed fields.
     //   bit 0      — non-uniform scale (#273)
     //   bit 1      — NiAlphaProperty blend bit (#263)
     //   bit 2      — caustic source (#321)
@@ -63,97 +52,12 @@ struct GpuInstance {
     //                against `terrainTiles[flags >> 16]`
     //   bits 16-31 — terrain tile index (only meaningful with bit 3)
     uint flags;
-    uint materialKind;       // offset 156 — BSLightingShaderProperty.shader_type (0–19) for variant dispatch (#344). 0 = Default lit.
-    // #399 — NiTexturingProperty extra slots (Oblivion glow/detail/gloss).
-    // 0 = no map; sampling code below falls through to the inline material constants.
-    uint glowMapIndex;       // offset 160 — slot 4 emissive overlay
-    uint detailMapIndex;     // offset 164 — slot 2 high-frequency 2× UV overlay
-    uint glossMapIndex;      // offset 168 — slot 3 specular mask (.r)
-    // #453 — BSShaderTextureSet slots 3/4/5 + POM scalars. Reclaims the
-    // old `_padExtraTextures` slot and extends the struct to 192 B.
-    uint parallaxMapIndex;   // offset 172 — slot 3 height/POM (0 = disable POM)
-    float parallaxHeightScale; // offset 176 — POM depth multiplier
-    float parallaxMaxPasses;   // offset 180 — POM ray-march budget
-    uint envMapIndex;        // offset 184 — slot 4 env reflection (2D proxy)
-    uint envMaskIndex;       // offset 188 — slot 5 env-reflection mask
-    // #492 — FO4 BGSM UV transform + material alpha. Plumbing only
-    // in this pass; the fragment-shader consumer wiring lands in the
-    // #494 follow-up (texture sample uses `uv * scale + offset`,
-    // final alpha multiplies by `materialAlpha`).
-    float uvOffsetU;         // offset 192
-    float uvOffsetV;         // offset 196
-    float uvScaleU;          // offset 200
-    float uvScaleV;          // offset 204
-    float materialAlpha;     // offset 208
-    float _uvPad0;           // offset 212
-    float _uvPad1;           // offset 216
-    float _uvPad2;           // offset 220
-    // ── Skyrim+ BSLightingShaderProperty variant payloads (#562) ──
-    //
-    // Activated by `materialKind` branches below: SkinTint (5),
-    // HairTint (6), MultiLayerParallax (11), SparkleSnow (14),
-    // EyeEnvmap (16). Default-lit and non-Skyrim meshes keep every
-    // slot at zero and never read them.
-    float skinTintR;                   // offset 224 — SkinTint tint RGBA
-    float skinTintG;                   // offset 228
-    float skinTintB;                   // offset 232
-    float skinTintA;                   // offset 236
-    float hairTintR;                   // offset 240 — HairTint tint RGB
-    float hairTintG;                   // offset 244
-    float hairTintB;                   // offset 248
-    float multiLayerEnvmapStrength;    // offset 252 — MultiLayer envmap mix
-    float eyeLeftCenterX;              // offset 256 — EyeEnvmap left iris
-    float eyeLeftCenterY;              // offset 260
-    float eyeLeftCenterZ;              // offset 264
-    float eyeCubemapScale;             // offset 268 — EyeEnvmap cubemap scale
-    float eyeRightCenterX;             // offset 272 — EyeEnvmap right iris
-    float eyeRightCenterY;             // offset 276
-    float eyeRightCenterZ;             // offset 280
-    float _eyePad;                     // offset 284
-    float multiLayerInnerThickness;    // offset 288 — MultiLayer inner-layer
-    float multiLayerRefractionScale;   // offset 292
-    float multiLayerInnerScaleU;       // offset 296
-    float multiLayerInnerScaleV;       // offset 300
-    float sparkleR;                    // offset 304 — SparkleSnow glint
-    float sparkleG;                    // offset 308
-    float sparkleB;                    // offset 312
-    float sparkleIntensity;            // offset 316
-    // ── #221: NiMaterialProperty diffuse + ambient colors ──────────
-    // Per-material tint multiplier on sampled albedo + per-material
-    // ambient modulator on the cell ambient term. Default `[1.0; 3]`
-    // for every BSShader-only mesh — those have no NiMaterialProperty
-    // and arrive at the shader with identity tint / identity ambient.
-    float diffuseR;                    // offset 320
-    float diffuseG;                    // offset 324
-    float diffuseB;                    // offset 328
-    float _diffusePad;                 // offset 332
-    float ambientR;                    // offset 336
-    float ambientG;                    // offset 340
-    float ambientB;                    // offset 344
-    float _ambientPad;                 // offset 348
-    // ── #620: BSEffectShaderProperty falloff cone ────────────────────
-    // View-angle + soft-depth falloff for `materialKind ==
-    // MATERIAL_KIND_EFFECT_SHADER (101)` meshes. Identity defaults
-    // (start/stop_angle=1.0, start/stop_opacity=1.0,
-    // softFalloffDepth=0.0) make the math a pass-through on every
-    // non-effect material.
-    float falloffStartAngle;           // offset 352  cos(angle), 1.0=cone center
-    float falloffStopAngle;            // offset 356  cos(angle), edge cutoff
-    float falloffStartOpacity;         // offset 360  alpha at start_angle
-    float falloffStopOpacity;          // offset 364  alpha at stop_angle
-    float softFalloffDepth;            // offset 368  world-units soft-depth fade
-    float _falloffPad0;                // offset 372
-    float _falloffPad1;                // offset 376
-    float _falloffPad2;                // offset 380
-    // ── R1 Phase 3: material table indirection ───────────────────────
-    // Index into the per-frame `MaterialBuffer` SSBO. Phase 4 attaches
-    // the SSBO + first reader (roughness) here in the fragment stage;
-    // until then the field is declared only to keep the std430 stride
-    // byte-identical with the other three shader copies.
-    uint materialId;                   // offset 384
-    float _matPad0;                    // offset 388
-    float _matPad1;                    // offset 392
-    float _matPad2;                    // offset 396 → total 400
+    uint materialId;       // offset 88 — index into MaterialBuffer SSBO (R1)
+    float _padId0;         // offset 92
+    float avgAlbedoR;      // offset 96 — kept for caustic_splat.comp (set 0 reads, not migrated)
+    float avgAlbedoG;      // offset 100
+    float avgAlbedoB;      // offset 104
+    float _padAlbedo;      // offset 108 → total 112
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
@@ -473,13 +377,15 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist) {
 
     // Look up the hit surface's texture and UV.
     GpuInstance hitInst = instances[hitInstanceIdx];
-    uint hitTexIdx = hitInst.textureIndex;
+    GpuMaterial hitMat = materials[hitInst.materialId];
+    uint hitTexIdx = hitMat.textureIndex;
     vec2 hitUV = getHitUV(uint(hitInstanceIdx), uint(hitPrimitiveIdx), hitBary);
     // #494 — apply the hit instance's own BGSM UV transform before
     // sampling. Each hit carries its own per-material offset/scale;
     // the primary path's `baseUV` transform doesn't propagate.
-    hitUV = hitUV * vec2(hitInst.uvScaleU, hitInst.uvScaleV)
-          + vec2(hitInst.uvOffsetU, hitInst.uvOffsetV);
+    // R1 Phase 6 — UV transform now lives on the material table.
+    hitUV = hitUV * vec2(hitMat.uvScaleU, hitMat.uvScaleV)
+          + vec2(hitMat.uvOffsetU, hitMat.uvOffsetV);
 
     // Sample the hit surface's texture.
     vec3 hitColor = texture(textures[nonuniformEXT(hitTexIdx)], hitUV).rgb;
@@ -1363,10 +1269,12 @@ void main() {
                 int tPrim = rayQueryGetIntersectionPrimitiveIndexEXT(refrRQ, true);
                 vec2 tBary = rayQueryGetIntersectionBarycentricsEXT(refrRQ, true);
                 GpuInstance tInst = instances[tIdx];
+                GpuMaterial tMat = materials[tInst.materialId];
                 vec2 tUV = getHitUV(uint(tIdx), uint(tPrim), tBary);
                 // #494 — BGSM UV transform on the refraction hit too.
-                tUV = tUV * vec2(tInst.uvScaleU, tInst.uvScaleV)
-                    + vec2(tInst.uvOffsetU, tInst.uvOffsetV);
+                // R1 Phase 6 — read transform from materials table.
+                tUV = tUV * vec2(tMat.uvScaleU, tMat.uvScaleV)
+                    + vec2(tMat.uvOffsetU, tMat.uvOffsetV);
                 // Sample the refracted surface at a blurred mip level so the
                 // world seen through glass is soft rather than razor-sharp.
                 // Real glass scatters transmitted light; the mip blur is a

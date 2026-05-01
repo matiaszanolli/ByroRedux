@@ -867,6 +867,11 @@ impl VulkanContext {
                 flags |= (tile_idx & INSTANCE_TERRAIN_TILE_MASK) << INSTANCE_TERRAIN_TILE_SHIFT;
             }
 
+            // R1 Phase 6 — `GpuInstance` carries only per-DRAW data
+            // now: model + mesh refs + bone_offset + flags +
+            // material_id + caustic-source avg_albedo. Every
+            // per-material field reads through `materials[material_id]`
+            // in the fragment shader.
             gpu_instances.push(GpuInstance {
                 model: [
                     [m[0], m[1], m[2], m[3]],
@@ -876,106 +881,16 @@ impl VulkanContext {
                 ],
                 texture_index: draw_cmd.texture_handle,
                 bone_offset: draw_cmd.bone_offset,
-                normal_map_index: draw_cmd.normal_map_index,
-                roughness: draw_cmd.roughness,
-                metalness: draw_cmd.metalness,
-                emissive_mult: draw_cmd.emissive_mult,
-                emissive_r: draw_cmd.emissive_color[0],
-                emissive_g: draw_cmd.emissive_color[1],
-                emissive_b: draw_cmd.emissive_color[2],
-                specular_strength: draw_cmd.specular_strength,
-                specular_r: draw_cmd.specular_color[0],
-                specular_g: draw_cmd.specular_color[1],
-                specular_b: draw_cmd.specular_color[2],
                 vertex_offset: mesh.global_vertex_offset,
                 index_offset: mesh.global_index_offset,
                 vertex_count: mesh.vertex_count,
-                alpha_threshold: draw_cmd.alpha_threshold,
-                alpha_test_func: draw_cmd.alpha_test_func,
-                dark_map_index: draw_cmd.dark_map_index,
+                flags,
+                material_id: draw_cmd.material_id,
+                _pad_id0: 0.0,
                 avg_albedo_r: draw_cmd.avg_albedo[0],
                 avg_albedo_g: draw_cmd.avg_albedo[1],
                 avg_albedo_b: draw_cmd.avg_albedo[2],
-                flags,
-                material_kind: draw_cmd.material_kind,
-                glow_map_index: draw_cmd.glow_map_index,
-                detail_map_index: draw_cmd.detail_map_index,
-                gloss_map_index: draw_cmd.gloss_map_index,
-                parallax_map_index: draw_cmd.parallax_map_index,
-                parallax_height_scale: draw_cmd.parallax_height_scale,
-                parallax_max_passes: draw_cmd.parallax_max_passes,
-                env_map_index: draw_cmd.env_map_index,
-                env_mask_index: draw_cmd.env_mask_index,
-                // #492 — plumb FO4 BGSM UV + material_alpha through
-                // to the SSBO. Fragment shader consumers follow in
-                // #494. Padding slots stay at Default (0.0) so the
-                // 224-byte stride matches the shader-side layout.
-                uv_offset_u: draw_cmd.uv_offset[0],
-                uv_offset_v: draw_cmd.uv_offset[1],
-                uv_scale_u: draw_cmd.uv_scale[0],
-                uv_scale_v: draw_cmd.uv_scale[1],
-                material_alpha: draw_cmd.material_alpha,
-                _uv_pad0: 0.0,
-                _uv_pad1: 0.0,
-                _uv_pad2: 0.0,
-                // #562 — Skyrim+ BSLightingShaderProperty variant
-                // payloads. Each field is zero on meshes whose
-                // `material_kind` doesn't use it; the fragment
-                // shader's variant ladder gates reads accordingly.
-                skin_tint_r: draw_cmd.skin_tint_rgba[0],
-                skin_tint_g: draw_cmd.skin_tint_rgba[1],
-                skin_tint_b: draw_cmd.skin_tint_rgba[2],
-                skin_tint_a: draw_cmd.skin_tint_rgba[3],
-                hair_tint_r: draw_cmd.hair_tint_rgb[0],
-                hair_tint_g: draw_cmd.hair_tint_rgb[1],
-                hair_tint_b: draw_cmd.hair_tint_rgb[2],
-                multi_layer_envmap_strength: draw_cmd.multi_layer_envmap_strength,
-                eye_left_center_x: draw_cmd.eye_left_center[0],
-                eye_left_center_y: draw_cmd.eye_left_center[1],
-                eye_left_center_z: draw_cmd.eye_left_center[2],
-                eye_cubemap_scale: draw_cmd.eye_cubemap_scale,
-                eye_right_center_x: draw_cmd.eye_right_center[0],
-                eye_right_center_y: draw_cmd.eye_right_center[1],
-                eye_right_center_z: draw_cmd.eye_right_center[2],
-                _eye_pad: 0.0,
-                multi_layer_inner_thickness: draw_cmd.multi_layer_inner_thickness,
-                multi_layer_refraction_scale: draw_cmd.multi_layer_refraction_scale,
-                multi_layer_inner_scale_u: draw_cmd.multi_layer_inner_scale[0],
-                multi_layer_inner_scale_v: draw_cmd.multi_layer_inner_scale[1],
-                sparkle_r: draw_cmd.sparkle_rgba[0],
-                sparkle_g: draw_cmd.sparkle_rgba[1],
-                sparkle_b: draw_cmd.sparkle_rgba[2],
-                sparkle_intensity: draw_cmd.sparkle_rgba[3],
-                // #620 — BSEffectShaderProperty falloff cone. Live
-                // only on `material_kind == 101` (EffectShader)
-                // meshes; identity values on the rest are no-ops.
-                falloff_start_angle: draw_cmd.effect_falloff[0],
-                falloff_stop_angle: draw_cmd.effect_falloff[1],
-                falloff_start_opacity: draw_cmd.effect_falloff[2],
-                falloff_stop_opacity: draw_cmd.effect_falloff[3],
-                soft_falloff_depth: draw_cmd.effect_falloff[4],
-                _falloff_pad0: 0.0,
-                _falloff_pad1: 0.0,
-                _falloff_pad2: 0.0,
-                // #221 — `NiMaterialProperty.diffuse` + `.ambient`. Per
-                // material tint multiplier on sampled albedo + per
-                // material ambient modulator. Identity (`[1.0; 3]`)
-                // for every BSShader-only Skyrim+/FO4 mesh.
-                diffuse_r: draw_cmd.diffuse_color[0],
-                diffuse_g: draw_cmd.diffuse_color[1],
-                diffuse_b: draw_cmd.diffuse_color[2],
-                _diffuse_pad: 0.0,
-                ambient_r: draw_cmd.ambient_color[0],
-                ambient_g: draw_cmd.ambient_color[1],
-                ambient_b: draw_cmd.ambient_color[2],
-                _ambient_pad: 0.0,
-                // R1 Phase 3 — material-table indirection. Phase 4
-                // attaches the `MaterialBuffer` SSBO and migrates one
-                // field (roughness) onto `materials[material_id]`.
-                material_id: draw_cmd.material_id,
-                _mat_pad0: 0.0,
-                _mat_pad1: 0.0,
-                _mat_pad2: 0.0,
+                _pad_albedo: 0.0,
             });
 
             // Frustum-culled draws still need an SSBO entry so RT hit

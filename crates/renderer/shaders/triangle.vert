@@ -19,115 +19,25 @@ layout(location = 7) in vec4 inSplat1; // layers 4-7
 // updates both shader sites in lockstep. See #651 / SH-6.
 const uint MAX_BONES_PER_MESH = 128u;
 
-// Per-instance data from the instance SSBO. Each draw's gl_InstanceIndex
-// maps to one entry containing model matrix, texture index, and bone offset.
-// Must match Rust GpuInstance layout exactly — all scalars, no vec3.
+// Per-instance data from the instance SSBO. R1 Phase 6 collapsed the
+// per-material fields onto the `MaterialBuffer` SSBO indexed by
+// `materialId`; what's left is strictly per-DRAW (model + mesh refs +
+// flags + materialId + caustic-source avgAlbedo). Must match Rust
+// GpuInstance layout exactly — all scalars, no vec3.
 struct GpuInstance {
-    mat4 model;              // 64 bytes
-    uint textureIndex;       // offset 64
-    uint boneOffset;         // offset 68
-    uint normalMapIndex;     // offset 72
-    float roughness;         // offset 76
-    float metalness;         // offset 80
-    float emissiveMult;      // offset 84
-    float emissiveR;         // offset 88
-    float emissiveG;         // offset 92
-    float emissiveB;         // offset 96
-    float specularStrength;  // offset 100
-    float specularR;         // offset 104
-    float specularG;         // offset 108
-    float specularB;         // offset 112
-    uint vertexOffset;       // offset 116
-    uint indexOffset;        // offset 120
-    uint vertexCount;        // offset 124
-    float alphaThreshold;    // offset 128
-    uint alphaTestFunc;      // offset 132
-    uint darkMapIndex;       // offset 136
-    float avgAlbedoR;        // offset 140
-    float avgAlbedoG;        // offset 144
-    float avgAlbedoB;        // offset 148
-    uint flags;              // offset 152 — bit 0: non-uniform scale, bit 1: alpha blend, bit 2: caustic source (#321)
-    uint materialKind;       // offset 156 — BSLightingShaderProperty.shader_type (0–19) for fragment-shader variant dispatch (#344). 0 = Default lit.
-    uint glowMapIndex;       // offset 160 — NiTexturingProperty slot 4 (#399). Vertex stage doesn't sample, but the layout must mirror.
-    uint detailMapIndex;     // offset 164 — NiTexturingProperty slot 2 (#399).
-    uint glossMapIndex;      // offset 168 — NiTexturingProperty slot 3 (#399).
-    // #453 — BSShaderTextureSet slots 3/4/5 + POM scalars. Vertex
-    // stage doesn't sample these either; layout mirror only.
-    uint parallaxMapIndex;   // offset 172 — slot 3 (reclaimed from _padExtraTextures)
-    float parallaxHeightScale; // offset 176
-    float parallaxMaxPasses;   // offset 180
-    uint envMapIndex;        // offset 184 — slot 4
-    uint envMaskIndex;       // offset 188
-    // #492 — FO4 BGSM UV transform + material alpha. Vertex stage
-    // doesn't apply these (fragment shader uses them for the
-    // texture lookup); layout mirror only.
-    float uvOffsetU;         // offset 192
-    float uvOffsetV;         // offset 196
-    float uvScaleU;          // offset 200
-    float uvScaleV;          // offset 204
-    float materialAlpha;     // offset 208
-    float _uvPad0;           // offset 212
-    float _uvPad1;           // offset 216
-    float _uvPad2;           // offset 220
-    // Skyrim+ BSLightingShaderProperty variant payloads (#562).
-    // Vertex stage doesn't read these; layout mirror only.
-    float skinTintR;                   // offset 224
-    float skinTintG;                   // offset 228
-    float skinTintB;                   // offset 232
-    float skinTintA;                   // offset 236
-    float hairTintR;                   // offset 240
-    float hairTintG;                   // offset 244
-    float hairTintB;                   // offset 248
-    float multiLayerEnvmapStrength;    // offset 252
-    float eyeLeftCenterX;              // offset 256
-    float eyeLeftCenterY;              // offset 260
-    float eyeLeftCenterZ;              // offset 264
-    float eyeCubemapScale;             // offset 268
-    float eyeRightCenterX;             // offset 272
-    float eyeRightCenterY;             // offset 276
-    float eyeRightCenterZ;             // offset 280
-    float _eyePad;                     // offset 284
-    float multiLayerInnerThickness;    // offset 288
-    float multiLayerRefractionScale;   // offset 292
-    float multiLayerInnerScaleU;       // offset 296
-    float multiLayerInnerScaleV;       // offset 300
-    float sparkleR;                    // offset 304
-    float sparkleG;                    // offset 308
-    float sparkleB;                    // offset 312
-    float sparkleIntensity;            // offset 316
-    // ── #221: NiMaterialProperty diffuse + ambient colors ──────────
-    // Two padded vec4 slots appended at the end. Vertex shader doesn't
-    // sample either; declared only to keep the std430 stride byte-
-    // identical with triangle.frag (Shader Struct Sync invariant).
-    float diffuseR;                    // offset 320
-    float diffuseG;                    // offset 324
-    float diffuseB;                    // offset 328
-    float _diffusePad;                 // offset 332
-    float ambientR;                    // offset 336
-    float ambientG;                    // offset 340
-    float ambientB;                    // offset 344
-    float _ambientPad;                 // offset 348
-    // ── #620: BSEffectShaderProperty falloff cone ────────────────────
-    // Two padded vec4 slots appended at the end. Vertex shader doesn't
-    // consume them; declared only to keep the std430 stride
-    // byte-identical with triangle.frag (Shader Struct Sync invariant).
-    float falloffStartAngle;           // offset 352
-    float falloffStopAngle;            // offset 356
-    float falloffStartOpacity;         // offset 360
-    float falloffStopOpacity;          // offset 364
-    float softFalloffDepth;            // offset 368
-    float _falloffPad0;                // offset 372
-    float _falloffPad1;                // offset 376
-    float _falloffPad2;                // offset 380
-    // ── R1 Phase 3: material table indirection ───────────────────────
-    // Index into the per-frame `MaterialBuffer` SSBO. Phase 4 attaches
-    // the SSBO + first reader (roughness); vertex stage doesn't sample
-    // material params today — declared only to keep the std430 stride
-    // byte-identical with the other three shader copies.
-    uint materialId;                   // offset 384
-    float _matPad0;                    // offset 388
-    float _matPad1;                    // offset 392
-    float _matPad2;                    // offset 396 → total 400
+    mat4 model;            // 64 bytes
+    uint textureIndex;     // offset 64 — diffuse / albedo
+    uint boneOffset;       // offset 68
+    uint vertexOffset;     // offset 72
+    uint indexOffset;      // offset 76
+    uint vertexCount;      // offset 80
+    uint flags;            // offset 84 — bit 0: non-uniform scale, bit 1: alpha blend, bit 2: caustic source, bit 3 + bits 16..32: terrain splat
+    uint materialId;       // offset 88 — index into MaterialBuffer SSBO (R1)
+    float _padId0;         // offset 92
+    float avgAlbedoR;      // offset 96 — kept for caustic_splat.comp (set 0 reads, not migrated)
+    float avgAlbedoG;      // offset 100
+    float avgAlbedoB;      // offset 104
+    float _padAlbedo;      // offset 108 → total 112
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
