@@ -1509,19 +1509,30 @@ fn bs_packed_combined_geom_data_extra_fully_parses_variable_tail() {
     fixed.extend_from_slice(&2u32.to_le_bytes()); // unknown_flags_2
     fixed.extend_from_slice(&1u32.to_le_bytes()); // num_data = 1
 
-    // One `BSPackedGeomDataCombined` — 72 bytes: f32 + NiTransform + NiBound.
-    // NiTransform = 9 f32 rotation + 3 f32 translation + 1 f32 scale.
+    // One `BSPackedGeomDataCombined` — 72 bytes: f32 + NiTransform STRUCT + NiBound.
+    // NiTransform STRUCT (nif.xml line 1808) ships rotation FIRST (9 f32),
+    // then translation (3 f32), then scale (1 f32) — opposite to
+    // NiAVObject's inline Translation→Rotation→Scale layout.
+    //
+    // #767 / 2026-04-30 — non-identity rotation chosen so scrambled
+    // field order would assert-fail. Pre-fix the parser used
+    // `read_ni_transform()` (NiAVObject order), reading the first 3
+    // floats of the rotation matrix as `translation`, the next 3 as
+    // rotation row 0, etc. Identity rotation (1,0,0,0,1,0,0,0,1) hides
+    // the scrambling because the bytes happen to be plausible. A
+    // 90°-Z rotation matrix `[[0,-1,0], [1,0,0], [0,0,1]]` plus
+    // distinguishable translation makes any field misorder visible.
     let mut combined = Vec::new();
     combined.extend_from_slice(&0.5f32.to_le_bytes()); // grayscale_to_palette_scale
-                                                       // rotation rows (identity)
-    for f in [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
+                                                       // rotation 90° around Z (CCW): row 0=(0,-1,0), row 1=(1,0,0), row 2=(0,0,1)
+    for f in [0.0f32, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0] {
         combined.extend_from_slice(&f.to_le_bytes());
     }
     for f in [10.0f32, 20.0, 30.0] {
-        // translation
+        // translation — distinguishable from rotation values
         combined.extend_from_slice(&f.to_le_bytes());
     }
-    combined.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+    combined.extend_from_slice(&2.5f32.to_le_bytes()); // scale (non-unity)
     for f in [5.0f32, 6.0, 7.0, 42.0] {
         // bounding sphere
         combined.extend_from_slice(&f.to_le_bytes());
@@ -1594,7 +1605,22 @@ fn bs_packed_combined_geom_data_extra_fully_parses_variable_tail() {
         assert_eq!(baked[0].num_verts, 2);
         assert_eq!(baked[0].tri_count_lod0, 1);
         assert_eq!(baked[0].combined.len(), 1);
-        assert!((baked[0].combined[0].grayscale_to_palette_scale - 0.5).abs() < 1e-6);
+        let c = &baked[0].combined[0];
+        assert!((c.grayscale_to_palette_scale - 0.5).abs() < 1e-6);
+        // #767 regression: NiTransform STRUCT field order (Rotation →
+        // Translation → Scale). With the pre-fix `read_ni_transform()`
+        // (NiAVObject order), translation would read the first 3
+        // rotation floats (0, -1, 0) and rotation row 0 would shift
+        // into rotation row 1's slot — these assertions fail in that
+        // case.
+        assert!((c.transform.translation.x - 10.0).abs() < 1e-6);
+        assert!((c.transform.translation.y - 20.0).abs() < 1e-6);
+        assert!((c.transform.translation.z - 30.0).abs() < 1e-6);
+        assert!((c.transform.scale - 2.5).abs() < 1e-6);
+        // 90°-Z rotation: rows[0] = (0, -1, 0), rows[1] = (1, 0, 0)
+        assert!((c.transform.rotation.rows[0][0] - 0.0).abs() < 1e-6);
+        assert!((c.transform.rotation.rows[0][1] - (-1.0)).abs() < 1e-6);
+        assert!((c.transform.rotation.rows[1][0] - 1.0).abs() < 1e-6);
         assert_eq!(baked[0].vertex_data.len(), 32);
         assert_eq!(baked[0].triangles, vec![[0, 1, 0]]);
         assert_eq!(stream.position() as usize, baked_bytes.len());

@@ -659,7 +659,15 @@ pub struct BsPackedGeomDataCombined {
 impl BsPackedGeomDataCombined {
     fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let grayscale_to_palette_scale = stream.read_f32_le()?;
-        let transform = stream.read_ni_transform()?;
+        // nif.xml line 8377: `<field name="Transform" type="NiTransform" />`.
+        // The `NiTransform` STRUCT (nif.xml line 1808) ships
+        // Rotation → Translation → Scale on disk, opposite to NiAVObject's
+        // inline (Translation → Rotation → Scale) layout. Use the STRUCT
+        // reader, NOT `read_ni_transform()`. Sibling of the M41.0 Phase
+        // 1b.x `8ec6a69` NiSkinData fix — same Rust type, same byte
+        // layout mismatch, different parser. See #767 + the
+        // `read_ni_transform_struct` doc-comment.
+        let transform = stream.read_ni_transform_struct()?;
         let cx = stream.read_f32_le()?;
         let cy = stream.read_f32_le()?;
         let cz = stream.read_f32_le()?;
