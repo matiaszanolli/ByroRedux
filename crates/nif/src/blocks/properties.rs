@@ -1507,6 +1507,22 @@ impl NiStencilProperty {
 
         if stream.version() <= NifVersion::V20_0_0_5 {
             // Oblivion format: expanded fields.
+            //
+            // #723 / NIF-D2-05 — pre-10.0.1.3 (Morrowind / pre-Gamebryo
+            // NetImmerse) NIFs prefix the expanded fields with a u16
+            // `flags` carried over from the NiProperty base
+            // (`Flags: ushort, until=10.0.1.2` per nif.xml line 5149,
+            // exclusive boundary per the #765 sweep — field absent at
+            // v10.0.1.3 exactly). Pre-fix the Oblivion-format branch
+            // claimed v < 10.0.1.3 too, attributing the legacy u16
+            // flags to `stencil_enabled`'s first byte and drifting the
+            // rest of the record by 2 bytes. No Bethesda title ships
+            // in this band; this guards pre-Gamebryo compat.
+            let flags = if stream.version() < NifVersion(0x0A000103) {
+                stream.read_u16_le()?
+            } else {
+                0
+            };
             let stencil_enabled = stream.read_u8()? != 0;
             let stencil_function = stream.read_u32_le()?;
             let stencil_ref = stream.read_u32_le()?;
@@ -1518,7 +1534,7 @@ impl NiStencilProperty {
 
             Ok(Self {
                 net,
-                flags: 0,
+                flags,
                 stencil_enabled,
                 stencil_function,
                 stencil_ref,

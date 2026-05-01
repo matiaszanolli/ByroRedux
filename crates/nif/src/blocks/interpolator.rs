@@ -718,10 +718,35 @@ impl NiObject for NiTextKeyExtraData {
 
 impl NiTextKeyExtraData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // NiObjectNET::name
-        let name = stream.read_string()?;
-        // NiExtraData base: next_extra_data_ref (version < 20.1) — skip for modern
-        // For 20.1+ there's no next_extra_data_ref, just the string index above
+        // #723 / NIF-D1-05 — pre-Gamebryo (v < 4.2.2.0) NiExtraData
+        // base format: `Next Extra Data: Ref` (linked-list head) +
+        // `Num Bytes: uint` (since 4.0.0.0, until 4.2.2.0). Both gates
+        // are exclusive per nif.xml + the #765 sweep — at v4.2.2.0
+        // exactly both fall away. The gap window (4.2.2.0 ≤ v <
+        // 10.0.1.0) carries neither prefix nor a Name field; v ≥
+        // 10.0.1.0 inherits NiObjectNET's Name.
+        //
+        // Pre-fix `read_string()` on a pre-Gamebryo NIF consumed the
+        // `Next Extra Data` ref bytes as if they were a length-
+        // prefixed inline string (read_string's pre-20.1.0.1 path),
+        // then `num_text_keys` read consumed the `Num Bytes` payload
+        // as if it were the key count. Cosmetic on shipped Bethesda
+        // content (none in the pre-Gamebryo band); guards
+        // pre-Gamebryo NetImmerse / Morrowind-era kf compat.
+        let v = stream.version();
+        if v < crate::version::NifVersion(0x04020200) {
+            let _next_extra_data_ref = stream.read_block_ref()?;
+            if v >= crate::version::NifVersion(0x04000000) {
+                let _num_bytes = stream.read_u32_le()?;
+            }
+        }
+        // NiObjectNET::name (only since 10.0.1.0; pre-Gamebryo and gap
+        // window have no name field).
+        let name = if v >= crate::version::NifVersion(0x0A000100) {
+            stream.read_string()?
+        } else {
+            None
+        };
         // num_text_keys
         let num_text_keys = stream.read_u32_le()?;
         // #388: allocate_vec gates `count * size_of::<(f32, String)>` against

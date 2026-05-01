@@ -6,6 +6,7 @@
 use super::NiObject;
 use crate::stream::NifStream;
 use crate::types::{BlockRef, NiTransform};
+use crate::version::NifVersion;
 use std::any::Any;
 use std::io;
 
@@ -36,7 +37,19 @@ impl NiObject for NiSkinInstance {
 impl NiSkinInstance {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let data_ref = stream.read_block_ref()?;
-        let skin_partition_ref = stream.read_block_ref()?;
+        // #723 / NIF-D1-04 — `Skin Partition: Ref<NiSkinPartition>` is
+        // gated `since="10.1.0.101"` per nif.xml line 5079. Pre-fix
+        // every pre-Gamebryo (v < 10.1.0.101) NIF would have its
+        // `Skeleton Root` form-ref attributed to the absent
+        // `skin_partition_ref` and then drift the rest of the
+        // record by 4 bytes. Bethesda content (Oblivion 20.0.0.5+,
+        // FO3+) is unaffected; this guards Civ IV / Freedom Force /
+        // pre-Gamebryo NetImmerse compat.
+        let skin_partition_ref = if stream.version() >= NifVersion(0x0A010065) {
+            stream.read_block_ref()?
+        } else {
+            BlockRef::NULL
+        };
         let skeleton_root_ref = stream.read_block_ref()?;
         let num_bones = stream.read_u32_le()?;
         let mut bone_refs = stream.allocate_vec(num_bones)?;
@@ -738,5 +751,85 @@ mod tests {
         let mut stream = NifStream::new(&bytes, &header);
         let part = NiSkinPartition::parse(&mut stream).unwrap();
         assert!(part.global_vertex_data.is_none());
+    }
+
+    /// Regression for #723 / NIF-D1-04. nif.xml line 5079 gates
+    /// `NiSkinInstance.Skin Partition` on `since="10.1.0.101"`. Pre-fix
+    /// the parser read the ref unconditionally; on a pre-Gamebryo NIF
+    /// (v < 10.1.0.101) that consumed the `Skeleton Root` ref's bytes
+    /// as the absent partition slot. This test pins both directions
+    /// of the gate using a header at v10.1.0.0 (below the boundary).
+    #[test]
+    fn ni_skin_instance_skin_partition_absent_pre_10_1_0_101() {
+        // Header at v10.1.0.0 — below the since=10.1.0.101 boundary.
+        let header = NifHeader {
+            version: NifVersion(0x0A010000),
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        let mut data = Vec::new();
+        // data_ref (i32 block ref) = 7
+        data.extend_from_slice(&7i32.to_le_bytes());
+        // No skin_partition_ref on disk (gated out at v < 10.1.0.101).
+        // skeleton_root_ref = 13
+        data.extend_from_slice(&13i32.to_le_bytes());
+        // num_bones = 1
+        data.extend_from_slice(&1u32.to_le_bytes());
+        // bone_refs = [42]
+        data.extend_from_slice(&42i32.to_le_bytes());
+
+        let mut stream = NifStream::new(&data, &header);
+        let inst = NiSkinInstance::parse(&mut stream).unwrap();
+        assert_eq!(inst.data_ref.index(), Some(7));
+        assert!(
+            inst.skin_partition_ref.is_null(),
+            "pre-10.1.0.101 NIFs must have NULL skin_partition_ref \
+             (field absent on disk)"
+        );
+        assert_eq!(inst.skeleton_root_ref.index(), Some(13));
+        assert_eq!(inst.bone_refs.len(), 1);
+        assert_eq!(inst.bone_refs[0].index(), Some(42));
+        assert_eq!(stream.position() as usize, data.len());
+    }
+
+    /// Companion: at v10.1.0.101 (boundary inclusive — `since=` is
+    /// inclusive, opposite of `until=`) and beyond, the partition ref
+    /// IS present.
+    #[test]
+    fn ni_skin_instance_skin_partition_present_at_10_1_0_101() {
+        let header = NifHeader {
+            version: NifVersion(0x0A010065),
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        let mut data = Vec::new();
+        data.extend_from_slice(&7i32.to_le_bytes()); // data_ref
+        data.extend_from_slice(&99i32.to_le_bytes()); // skin_partition_ref
+        data.extend_from_slice(&13i32.to_le_bytes()); // skeleton_root_ref
+        data.extend_from_slice(&0u32.to_le_bytes()); // num_bones = 0
+
+        let mut stream = NifStream::new(&data, &header);
+        let inst = NiSkinInstance::parse(&mut stream).unwrap();
+        assert_eq!(inst.data_ref.index(), Some(7));
+        assert_eq!(inst.skin_partition_ref.index(), Some(99));
+        assert_eq!(inst.skeleton_root_ref.index(), Some(13));
+        assert!(inst.bone_refs.is_empty());
+        assert_eq!(stream.position() as usize, data.len());
     }
 }

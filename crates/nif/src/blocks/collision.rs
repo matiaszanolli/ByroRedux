@@ -384,6 +384,29 @@ impl BhkRigidBody {
 
 // ── Primitive Shapes ────────────────────────────────────────────────
 
+/// Read a `HavokMaterial` from the stream — the per-shape material
+/// FormID-equivalent on every `bhk*Shape` derived from
+/// `bhkSphereRepShape` / `bhkConvexShape`.
+///
+/// Per nif.xml lines 2293-2299, the `HavokMaterial` struct has an
+/// `Unknown Int` (uint) prefix gated `until="10.0.1.2"` (exclusive)
+/// followed by the material `Material` u32. Pre-10.0.1.2 NIFs (no
+/// Bethesda title ships in that band — vanilla Oblivion is 20.0.0.5,
+/// FO3+ is later still) carry the extra 4-byte prefix; modern NIFs
+/// drop it. Pre-fix every `bhk*Shape::parse` site read just the
+/// final u32 unconditionally, so a pre-10.0.1.2 NIF would attribute
+/// the legacy padding bytes to `material` and then misalign every
+/// subsequent field by 4 bytes. See #723 / NIF-D1-03.
+///
+/// The `until=` boundary is exclusive per the #765 sweep — at
+/// v10.0.1.2 exactly the legacy field is absent.
+fn read_havok_material(stream: &mut NifStream) -> io::Result<u32> {
+    if stream.version() < NifVersion(0x0A000102) {
+        let _unknown_int = stream.read_u32_le()?;
+    }
+    stream.read_u32_le()
+}
+
 /// bhkSphereShape — sphere collision primitive.
 #[derive(Debug)]
 pub struct BhkSphereShape {
@@ -402,7 +425,7 @@ impl NiObject for BhkSphereShape {
 
 impl BhkSphereShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let material = stream.read_u32_le()?; // bhkSphereRepShape
+        let material = read_havok_material(stream)?; // bhkSphereRepShape
         let radius = stream.read_f32_le()?; // bhkConvexShape
         Ok(Self { material, radius })
     }
@@ -442,7 +465,7 @@ impl NiObject for BhkMultiSphereShape {
 
 impl BhkMultiSphereShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let material = stream.read_u32_le()?;
+        let material = read_havok_material(stream)?;
         let shape_property = [
             stream.read_u32_le()?,
             stream.read_u32_le()?,
@@ -484,7 +507,7 @@ impl NiObject for BhkBoxShape {
 
 impl BhkBoxShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let material = stream.read_u32_le()?;
+        let material = read_havok_material(stream)?;
         let radius = stream.read_f32_le()?;
         stream.skip(8)?; // unused
         let dx = stream.read_f32_le()?;
@@ -521,7 +544,7 @@ impl NiObject for BhkCapsuleShape {
 
 impl BhkCapsuleShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let material = stream.read_u32_le()?;
+        let material = read_havok_material(stream)?;
         let radius = stream.read_f32_le()?;
         stream.skip(8)?; // unused
         let p1x = stream.read_f32_le()?;
@@ -564,7 +587,7 @@ impl NiObject for BhkCylinderShape {
 
 impl BhkCylinderShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let material = stream.read_u32_le()?;
+        let material = read_havok_material(stream)?;
         let radius = stream.read_f32_le()?;
         stream.skip(8)?; // unused
         let point1 = read_vec4(stream)?;
@@ -603,7 +626,7 @@ impl NiObject for BhkConvexVerticesShape {
 
 impl BhkConvexVerticesShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let material = stream.read_u32_le()?;
+        let material = read_havok_material(stream)?;
         let radius = stream.read_f32_le()?;
         // Two bhkWorldObjCInfoProperty structs (12 bytes each)
         stream.skip(24)?;
@@ -652,7 +675,7 @@ impl BhkListShape {
         for _ in 0..num_sub_shapes {
             sub_shape_refs.push(stream.read_block_ref()?);
         }
-        let material = stream.read_u32_le()?;
+        let material = read_havok_material(stream)?;
         // Two bhkWorldObjCInfoProperty structs (12 bytes each)
         stream.skip(24)?;
         let num_filters = stream.read_u32_le()?;
@@ -689,7 +712,7 @@ impl NiObject for BhkTransformShape {
 impl BhkTransformShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let shape_ref = stream.read_block_ref()?;
-        let material = stream.read_u32_le()?;
+        let material = read_havok_material(stream)?;
         let radius = stream.read_f32_le()?;
         stream.skip(8)?; // unused
         let mut transform = [[0.0f32; 4]; 4];
@@ -771,7 +794,7 @@ impl NiObject for BhkNiTriStripsShape {
 
 impl BhkNiTriStripsShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let material = stream.read_u32_le()?;
+        let material = read_havok_material(stream)?;
         let radius = stream.read_f32_le()?;
         stream.skip(20)?; // unused
         let _grow_by = stream.read_u32_le()?;

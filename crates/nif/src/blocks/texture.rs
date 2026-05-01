@@ -682,6 +682,15 @@ impl NiTextureEffect {
             (0, 0)
         };
 
+        // #723 / NIF-D2-04 — pre-4.1 `Unknown Short` field. nif.xml
+        // line 5201 gates this on `until="4.1.0.12"` (exclusive per
+        // the #765 sweep — field absent at v4.1.0.12 exactly). No
+        // Bethesda title ships in this band; this guards pre-Gamebryo
+        // NetImmerse demo / Civ IV / Dark Age of Camelot compat.
+        if stream.version() < NifVersion(0x0401000C) {
+            let _unknown_short = stream.read_u16_le()?;
+        }
+
         Ok(Self {
             av,
             switch_state,
