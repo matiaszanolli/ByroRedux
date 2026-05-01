@@ -19,6 +19,7 @@ use byroredux_renderer::VulkanContext;
 
 use crate::anim_convert::convert_nif_clip;
 use crate::asset_provider::{MaterialProvider, TextureProvider};
+use crate::components::AnimationDiagnosticPending;
 use crate::helpers::add_child;
 use crate::scene::load_nif_bytes_with_skeleton;
 
@@ -684,9 +685,15 @@ pub fn spawn_npc_entity(
                 // builds the BFS subtree map from `root_entity`, so
                 // there's no further wiring required here.
                 world.insert(placement_root, player);
+                // One-shot diagnostic — the animation system dumps the
+                // per-channel resolution table on the first apply tick
+                // and removes the marker. Captures the data needed to
+                // pick between the three #772 hypotheses.
+                world.insert(placement_root, AnimationDiagnosticPending);
                 log::warn!(
                     "NPC {:08X} ({}): #772 experiment — AnimationPlayer attached \
-                     (idle clip {}, skel_root {:?}). Watch for vanish symptom.",
+                     (idle clip {}, skel_root {:?}). Diagnostic dump on first tick. \
+                     Watch for vanish symptom.",
                     npc.form_id,
                     npc.editor_id,
                     handle,

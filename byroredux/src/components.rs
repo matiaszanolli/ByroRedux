@@ -13,6 +13,24 @@ impl Component for Spinning {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// One-shot diagnostic for #772 — when present on an `AnimationPlayer`
+/// entity, the animation system dumps the per-channel resolution table
+/// (channel name → resolved entity → bind-pose translation → frame-0
+/// KF translation) on the next apply tick and removes the marker.
+///
+/// Inserted by `npc_spawn::spawn_npc_entity` only when the
+/// `BYRO_NPC_ANIMATION_EXPERIMENT` env var is set, alongside the
+/// `AnimationPlayer` itself. The dump captures the data needed to
+/// distinguish the three #772 hypotheses (KF deltas vs absolute,
+/// coord-frame divergence, channel-root scoping). One dump per NPC
+/// per session — the marker self-removes after the first apply tick
+/// so logs aren't flooded at 60Hz.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AnimationDiagnosticPending;
+impl Component for AnimationDiagnosticPending {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Component for entities that use alpha blending, carrying the Gamebryo
 /// blend factors extracted from NiAlphaProperty flags.
 ///
