@@ -676,10 +676,18 @@ void main() {
     // Decode debug-bypass flags (zero on production runs).
     uint dbgFlags = floatBitsToUint(jitter.z);
 
-    // Read per-instance material data up-front — parallax-occlusion
-    // mapping displaces `fragUV` before the base-albedo sample, and
-    // the POM parameters + parallax map index live on the instance.
+    // Read per-instance + per-material data up-front — parallax-
+    // occlusion mapping displaces `fragUV` before the base-albedo
+    // sample, and the POM parameters + parallax map index live on
+    // the material.
     GpuInstance inst = instances[fragInstanceIndex];
+    // R1 Phase 5 — deduplicated material payload. Single SSBO load per
+    // fragment; downstream reads use `mat.<field>` instead of
+    // `inst.<field>` for any per-material data. The legacy per-instance
+    // copies on `GpuInstance` are still populated by the CPU pipeline
+    // (Phase 6 drops them) and are byte-equal to `mat.*`, so the
+    // visible output is unchanged.
+    GpuMaterial mat = materials[inst.materialId];
 
     // #494 — BGSM-authored UV transform. FO4 BGSM ships explicit
     // offset + scale per material (pre-#494 every sample used the
@@ -691,8 +699,8 @@ void main() {
     // defaults (offset=(0,0), scale=(1,1), alpha=1.0) come from
     // `GpuInstance::default()` so pre-BGSM content is byte-identical
     // to the #492 baseline.
-    vec2 baseUV = fragUV * vec2(inst.uvScaleU, inst.uvScaleV)
-                + vec2(inst.uvOffsetU, inst.uvOffsetV);
+    vec2 baseUV = fragUV * vec2(mat.uvScaleU, mat.uvScaleV)
+                + vec2(mat.uvOffsetU, mat.uvOffsetV);
 
     // #453 — parallax-occlusion mapping. Displace UV inward along the
     // view direction projected into tangent space, using the height
@@ -704,7 +712,7 @@ void main() {
     // consistent. Parallax operates on the post-transform UV so the
     // displaced height lookup lines up with the other samplers.
     vec2 sampleUV = baseUV;
-    if (inst.parallaxMapIndex != 0u && (dbgFlags & DBG_BYPASS_POM) == 0u) {
+    if (mat.parallaxMapIndex != 0u && (dbgFlags & DBG_BYPASS_POM) == 0u) {
         vec3 N0 = normalize(fragNormal);
         vec3 V0 = normalize(cameraPos.xyz - fragWorldPos);
         sampleUV = parallaxDisplaceUV(
@@ -712,9 +720,9 @@ void main() {
             V0,
             N0,
             fragWorldPos,
-            inst.parallaxMapIndex,
-            inst.parallaxHeightScale,
-            inst.parallaxMaxPasses
+            mat.parallaxMapIndex,
+            mat.parallaxHeightScale,
+            mat.parallaxMaxPasses
         );
     }
 
@@ -724,7 +732,7 @@ void main() {
     // operates on the final blended alpha (matching FO4's in-engine
     // order of operations). Identity default is `1.0` so pre-BGSM
     // content is unchanged.
-    texColor.a *= inst.materialAlpha;
+    texColor.a *= mat.materialAlpha;
 
     // Terrain splat blending (#470). When the instance has the
     // TERRAIN_SPLAT flag set, BTXT (read above via `fragTexIndex`)
@@ -754,9 +762,9 @@ void main() {
     // has an alpha test enabled; alphaTestFunc selects the Gamebryo comparison:
     //   0=ALWAYS, 1=LESS, 2=EQUAL, 3=LESSEQUAL,
     //   4=GREATER, 5=NOTEQUAL, 6=GREATEREQUAL, 7=NEVER.
-    float aThresh = inst.alphaThreshold;
+    float aThresh = mat.alphaThreshold;
     if (aThresh > 0.0) {
-        uint aFunc = inst.alphaTestFunc;
+        uint aFunc = mat.alphaTestFunc;
         float a = texColor.a;
         bool pass = true;
         if      (aFunc == 1u) pass = (a <  aThresh);        // LESS
@@ -788,13 +796,13 @@ void main() {
     // value at `materials[inst.materialId].roughness` is byte-equal to
     // it for now, so the visible output is unchanged. Phases 5 and 6
     // migrate the remaining per-material fields one slice at a time.
-    float roughness = materials[inst.materialId].roughness;
-    float metalness = inst.metalness;
-    float emissiveMult = inst.emissiveMult;
-    vec3 emissiveColor = vec3(inst.emissiveR, inst.emissiveG, inst.emissiveB);
-    float specStrength = inst.specularStrength;
-    vec3 specColor = vec3(inst.specularR, inst.specularG, inst.specularB);
-    uint normalMapIdx = inst.normalMapIndex;
+    float roughness = mat.roughness;
+    float metalness = mat.metalness;
+    float emissiveMult = mat.emissiveMult;
+    vec3 emissiveColor = vec3(mat.emissiveR, mat.emissiveG, mat.emissiveB);
+    float specStrength = mat.specularStrength;
+    vec3 specColor = vec3(mat.specularR, mat.specularG, mat.specularB);
+    uint normalMapIdx = mat.normalMapIndex;
 
     // Surface normal — perturbed by normal map if available.
     // Normal sampling uses `sampleUV` so the parallax displacement
@@ -916,10 +924,10 @@ void main() {
     // already written above and stay valid — TAA + motion-vector
     // reprojection on flame planes still works correctly across frames.
     const uint MATERIAL_KIND_EFFECT_SHADER = 101u;
-    if (inst.materialKind == MATERIAL_KIND_EFFECT_SHADER) {
+    if (mat.materialKind == MATERIAL_KIND_EFFECT_SHADER) {
         vec3 emit = texColor.rgb
-                  * vec3(inst.emissiveR, inst.emissiveG, inst.emissiveB)
-                  * inst.emissiveMult;
+                  * vec3(mat.emissiveR, mat.emissiveG, mat.emissiveB)
+                  * mat.emissiveMult;
         // ── #620 / SK-D4-01: view-angle falloff cone ────────────────
         //
         // BSEffectShaderProperty (Skyrim+) and BSShaderNoLightingProperty
@@ -940,14 +948,14 @@ void main() {
         // field is plumbed end-to-end via GpuInstance for the future
         // wiring, but the math below currently uses cone falloff only.
         // Filed as a follow-up to SK-D4-01.
-        float coneFade = inst.falloffStartOpacity;
-        float denom = inst.falloffStartAngle - inst.falloffStopAngle;
+        float coneFade = mat.falloffStartOpacity;
+        float denom = mat.falloffStartAngle - mat.falloffStopAngle;
         if (denom > 1e-5) {
             float cosNV = clamp(dot(N, V), 0.0, 1.0);
-            float t = clamp((cosNV - inst.falloffStopAngle) / denom, 0.0, 1.0);
-            coneFade = mix(inst.falloffStopOpacity, inst.falloffStartOpacity, t);
+            float t = clamp((cosNV - mat.falloffStopAngle) / denom, 0.0, 1.0);
+            coneFade = mix(mat.falloffStopOpacity, mat.falloffStartOpacity, t);
         }
-        // texColor.a already has `inst.materialAlpha` baked in upstream
+        // texColor.a already has `mat.materialAlpha` baked in upstream
         // (line ~567), so don't double-multiply that factor here.
         float finalAlpha = texColor.a * coneFade;
         outColor = vec4(emit, finalAlpha);
@@ -964,11 +972,11 @@ void main() {
     // mesh (those have no NiMaterialProperty). Authored non-white
     // diffuse on Oblivion/FO3/FNV statics colors the sampled albedo
     // — banner cloth, painted wood, tinted glass.
-    albedo *= vec3(inst.diffuseR, inst.diffuseG, inst.diffuseB);
+    albedo *= vec3(mat.diffuseR, mat.diffuseG, mat.diffuseB);
 
     // Dark / multiplicative lightmap (#264): baked shadow modulation.
-    if (inst.darkMapIndex != 0u) {
-        vec3 darkSample = texture(textures[nonuniformEXT(inst.darkMapIndex)], sampleUV).rgb;
+    if (mat.darkMapIndex != 0u) {
+        vec3 darkSample = texture(textures[nonuniformEXT(mat.darkMapIndex)], sampleUV).rgb;
         albedo *= darkSample;
     }
 
@@ -977,9 +985,9 @@ void main() {
     // half the wavelength of the base diffuse) and modulated into the
     // albedo. Center the modulation around 1.0 so a 0.5 grey detail
     // sample is a no-op rather than halving the surface brightness.
-    if (inst.detailMapIndex != 0u && (dbgFlags & DBG_BYPASS_DETAIL) == 0u) {
+    if (mat.detailMapIndex != 0u && (dbgFlags & DBG_BYPASS_DETAIL) == 0u) {
         vec3 detailSample = texture(
-            textures[nonuniformEXT(inst.detailMapIndex)],
+            textures[nonuniformEXT(mat.detailMapIndex)],
             sampleUV * 2.0
         ).rgb;
         albedo *= detailSample * 2.0;
@@ -1003,9 +1011,9 @@ void main() {
     // got the right ON/OFF mask but a constant roughness profile, so
     // both regions shared the same specular lobe shape — only the
     // intensity differed.
-    if (inst.glossMapIndex != 0u) {
+    if (mat.glossMapIndex != 0u) {
         float glossSample = texture(
-            textures[nonuniformEXT(inst.glossMapIndex)],
+            textures[nonuniformEXT(mat.glossMapIndex)],
             sampleUV
         ).r;
         roughness = mix(1.0, roughness, glossSample);
@@ -1018,9 +1026,9 @@ void main() {
     // becomes the new emissive base; downstream emissive code below
     // multiplies by `emissiveMult` and any dark-cell amplification
     // unchanged.
-    if (inst.glowMapIndex != 0u) {
+    if (mat.glowMapIndex != 0u) {
         vec3 glowSample = texture(
-            textures[nonuniformEXT(inst.glowMapIndex)],
+            textures[nonuniformEXT(mat.glowMapIndex)],
             sampleUV
         ).rgb;
         emissiveColor *= glowSample;
@@ -1035,8 +1043,8 @@ void main() {
     //
     // Already dispatched elsewhere by data presence (no ladder entry):
     //   · 1  Envmap       — `inst.envMapIndex != 0u` fed by POM/PBR path.
-    //   · 2  Glow         — `inst.glowMapIndex` above.
-    //   · 3  Parallax     — `inst.parallaxMapIndex` (POM ray-march).
+    //   · 2  Glow         — `mat.glowMapIndex` above.
+    //   · 3  Parallax     — `mat.parallaxMapIndex` (POM ray-march).
     //   · 7  ParallaxOcc  — same path as 3.
     //   · 100 Glass       — engine-synthesized; handled below.
     //
@@ -1044,20 +1052,20 @@ void main() {
     // whose trailing payload (`skinTint*`, `hairTint*`, `sparkle*`,
     // `multiLayer*`, `eyeLeftCenter*`, …) can't be derived from
     // textures and must ride on GpuInstance. See plan in issue #562.
-    if (inst.materialKind == 5u) {
+    if (mat.materialKind == 5u) {
         // SkinTint — multiply albedo by the authored tint color,
         // weighted by `skinTintA` so an alpha of 0 cleanly disables
         // the tint (identity = texture). FO76's `Fo76SkinTint` ships
         // a real alpha; pre-FO76 Skyrim `SkinTint` fills alpha=1.0.
-        vec3 skinTint = vec3(inst.skinTintR, inst.skinTintG, inst.skinTintB);
-        albedo = mix(albedo, albedo * skinTint, inst.skinTintA);
-    } else if (inst.materialKind == 6u) {
+        vec3 skinTint = vec3(mat.skinTintR, mat.skinTintG, mat.skinTintB);
+        albedo = mix(albedo, albedo * skinTint, mat.skinTintA);
+    } else if (mat.materialKind == 6u) {
         // HairTint — unconditional albedo multiply by the authored
         // hair color. No alpha field; author-set zero means
         // intentional black-out (never seen in vanilla).
-        vec3 hairTint = vec3(inst.hairTintR, inst.hairTintG, inst.hairTintB);
+        vec3 hairTint = vec3(mat.hairTintR, mat.hairTintG, mat.hairTintB);
         albedo *= hairTint;
-    } else if (inst.materialKind == 14u) {
+    } else if (mat.materialKind == 14u) {
         // SparkleSnow — hash-driven glint overlay on top of the snow
         // albedo. `sparkleRGB` is the glint color (author-authored;
         // typical `(1, 1, 1)`), `sparkleIntensity` scales the overall
@@ -1068,8 +1076,8 @@ void main() {
         // is follow-up work.
         vec2 sparkleSeed = floor(sampleUV * 512.0);
         float sparkleHash = fract(sin(dot(sparkleSeed, vec2(12.9898, 78.233))) * 43758.5453);
-        float glint = step(0.995, sparkleHash) * inst.sparkleIntensity;
-        vec3 sparkleColor = vec3(inst.sparkleR, inst.sparkleG, inst.sparkleB);
+        float glint = step(0.995, sparkleHash) * mat.sparkleIntensity;
+        vec3 sparkleColor = vec3(mat.sparkleR, mat.sparkleG, mat.sparkleB);
         albedo += sparkleColor * glint;
     }
     // Variant stubs — data already lands in GpuInstance; the full
@@ -1079,7 +1087,7 @@ void main() {
     //   · materialKind == 11 (MultiLayerParallax): read
     //       `multiLayerInnerThickness`, `multiLayerRefractionScale`,
     //       `multiLayerInnerScaleU/V`, `multiLayerEnvmapStrength`.
-    //       Compute a second sample of `textures[inst.textureIndex]`
+    //       Compute a second sample of `textures[mat.textureIndex]`
     //       offset along `V` by `refractionScale * innerThickness`,
     //       blended with the outer layer by a Fresnel × envmapStrength
     //       mix. See `ShaderTypeData::MultiLayerParallax`.
@@ -1149,7 +1157,7 @@ void main() {
     // nested under a stable parent classification. See Tier C Phase 2.
     const uint MATERIAL_KIND_GLASS = 100u;
     bool isAlphaBlend = (inst.flags & 2u) != 0u;
-    bool isGlass = inst.materialKind == MATERIAL_KIND_GLASS && roughness < 0.35;
+    bool isGlass = mat.materialKind == MATERIAL_KIND_GLASS && roughness < 0.35;
     bool isWindow = isGlass && texColor.a < 0.5 && texColor.a > 0.02;
 
     // RT mipmap glass tier downgrade:
@@ -1420,7 +1428,7 @@ void main() {
         // cups.
         float decalWeight = smoothstep(0.3, 0.7, texColor.a);
         vec3 glassTint = textureLod(
-            textures[nonuniformEXT(inst.textureIndex)],
+            textures[nonuniformEXT(mat.textureIndex)],
             sampleUV,
             6.0
         ).rgb;
@@ -1461,7 +1469,7 @@ void main() {
     // authored ambient response (lit-from-within glass, occluded
     // alcoves) attenuate the cell ambient by their own factor.
     vec3 ambient = sceneFlags.yzw
-                   * vec3(inst.ambientR, inst.ambientG, inst.ambientB)
+                   * vec3(mat.ambientR, mat.ambientG, mat.ambientB)
                    * (1.0 - metalness);
     vec3 Lo = vec3(0.0); // Accumulated outgoing radiance.
 

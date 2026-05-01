@@ -82,14 +82,45 @@ struct GpuInstance {
     float softFalloffDepth, _falloffPad0,
           _falloffPad1, _falloffPad2;                              // offset 368
     // ── R1 Phase 3: material table indirection ───────────────────────
-    // Layout-only mirror; UI pipeline never consumes the material
-    // table. Declared so the std430 stride matches triangle.{vert,frag}
-    // + caustic_splat.comp.
+    // R1 Phase 5 — material table indirection. UI pipeline reads
+    // `textureIndex` from `materials[materialId]` (same set 1 binding
+    // 13 as the triangle pipeline). Other per-material fields aren't
+    // consumed by the UI vertex stage.
     uint materialId; float _matPad0, _matPad1, _matPad2;           // offset 384 → total 400
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
     GpuInstance instances[];
+};
+
+// ── R1 Phase 5: material table read for UI textureIndex ─────────────
+//
+// Mirrors the GpuMaterial declaration in triangle.frag — only the
+// fields the UI vertex stage might read (today: textureIndex). The
+// std430 stride must match the full 272 B layout, so every padded
+// vec4 lands at the right offset; unconsumed fields are layout-only.
+struct GpuMaterial {
+    float roughness, metalness, emissiveMult, _padPbr;
+    float emissiveR, emissiveG, emissiveB, specularStrength;
+    float specularR, specularG, specularB, alphaThreshold;
+    uint textureIndex, normalMapIndex, darkMapIndex, glowMapIndex;
+    uint detailMapIndex, glossMapIndex, parallaxMapIndex, envMapIndex;
+    uint envMaskIndex, alphaTestFunc, materialKind; float materialAlpha;
+    float parallaxHeightScale, parallaxMaxPasses, uvOffsetU, uvOffsetV;
+    float uvScaleU, uvScaleV, diffuseR, diffuseG;
+    float diffuseB, ambientR, ambientG, ambientB;
+    float avgAlbedoR, avgAlbedoG, avgAlbedoB, skinTintA;
+    float skinTintR, skinTintG, skinTintB, hairTintR;
+    float hairTintG, hairTintB, multiLayerEnvmapStrength, eyeLeftCenterX;
+    float eyeLeftCenterY, eyeLeftCenterZ, eyeCubemapScale, eyeRightCenterX;
+    float eyeRightCenterY, eyeRightCenterZ, multiLayerInnerThickness, multiLayerRefractionScale;
+    float multiLayerInnerScaleU, multiLayerInnerScaleV, sparkleR, sparkleG;
+    float sparkleB, sparkleIntensity, falloffStartAngle, falloffStopAngle;
+    float falloffStartOpacity, falloffStopOpacity, softFalloffDepth, _padFalloff;
+};
+
+layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {
+    GpuMaterial materials[];
 };
 
 layout(location = 0) out vec2 fragUV;
@@ -98,5 +129,7 @@ layout(location = 1) flat out uint fragTexIndex;
 void main() {
     gl_Position = vec4(inPosition.xy, 0.0, 1.0);
     fragUV = inUV;
-    fragTexIndex = instances[gl_InstanceIndex].textureIndex;
+    // R1 Phase 5 — read texture index from the material table.
+    GpuInstance inst = instances[gl_InstanceIndex];
+    fragTexIndex = materials[inst.materialId].textureIndex;
 }
