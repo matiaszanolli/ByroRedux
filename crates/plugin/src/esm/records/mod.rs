@@ -44,11 +44,11 @@ pub use items::{
 };
 pub use misc::{
     parse_acti, parse_avif, parse_dial, parse_eczn, parse_ench, parse_eyes, parse_hair, parse_hdpt,
-    parse_info, parse_lgtm, parse_mesg, parse_mgef, parse_navi, parse_navm, parse_pack, parse_perk,
-    parse_qust, parse_regn, parse_spel, parse_term, parse_watr, ActiRecord, AvifRecord, DialRecord,
-    EcznRecord, EnchRecord, EyesRecord, HairRecord, HdptRecord, InfoRecord, LgtmRecord, MesgRecord,
-    MgefRecord, NaviRecord, NavmRecord, PackRecord, PerkRecord, QustRecord, RegnRecord, SpelRecord,
-    TermRecord, WatrRecord,
+    parse_imgs, parse_info, parse_lgtm, parse_mesg, parse_mgef, parse_navi, parse_navm, parse_pack,
+    parse_perk, parse_qust, parse_regn, parse_spel, parse_term, parse_watr, ActiRecord, AvifRecord,
+    DialRecord, EcznRecord, EnchRecord, EyesRecord, HairRecord, HdptRecord, ImgsRecord, InfoRecord,
+    LgtmRecord, MesgRecord, MgefRecord, NaviRecord, NavmRecord, PackRecord, PerkRecord, QustRecord,
+    RegnRecord, SpelRecord, TermRecord, WatrRecord,
 };
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
 pub use weather::{parse_wthr, OblivionHdrLighting, SkyColor, WeatherRecord};
@@ -122,6 +122,13 @@ pub struct EsmIndex {
     /// `LGTM` lighting templates — ties to #379 (per-field inheritance
     /// fallback on cells without XCLL).
     pub lighting_templates: HashMap<u32, LgtmRecord>,
+    /// `IMGS` image-space records — Skyrim per-cell HDR / cinematic
+    /// tone-map LUTs referenced by `CELL.XCIM`. Pre-#624 the entire
+    /// top-level group fell through to the catch-all skip and every
+    /// XCIM cross-reference dangled. The current parse captures
+    /// `EDID` + raw `DNAM` payload so a future per-cell HDR-LUT
+    /// consumer (M48) can decode the tone-map fields lazily.
+    pub image_spaces: HashMap<u32, ImgsRecord>,
     /// `HDPT` head-part records (FaceGen).
     pub head_parts: HashMap<u32, HdptRecord>,
     /// `EYES` eye definitions (FO3/FNV NPC_ face variation).
@@ -222,6 +229,7 @@ impl EsmIndex {
             ("regions", |s| s.regions.len()),
             ("encounter_zones", |s| s.encounter_zones.len()),
             ("lighting_templates", |s| s.lighting_templates.len()),
+            ("image_spaces", |s| s.image_spaces.len()),
             ("head_parts", |s| s.head_parts.len()),
             ("eyes", |s| s.eyes.len()),
             ("hair", |s| s.hair.len()),
@@ -316,6 +324,7 @@ impl EsmIndex {
         self.regions.extend(other.regions);
         self.encounter_zones.extend(other.encounter_zones);
         self.lighting_templates.extend(other.lighting_templates);
+        self.image_spaces.extend(other.image_spaces);
         self.head_parts.extend(other.head_parts);
         self.eyes.extend(other.eyes);
         self.hair.extend(other.hair);
@@ -388,12 +397,18 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     // re-deriving from a HEDR they no longer have.
     index.game = game;
 
-    // #348 — push the TES4 `Localized` flag into a thread-local so
-    // every record parser's FULL/DESC decoder can route through the
-    // lstring helper. Cleared at the tail of this function so a
-    // subsequent parse of a non-localized plugin in the same process
-    // doesn't inherit stale state.
-    common::set_localized_plugin(file_header.as_ref().map_or(false, |h| h.localized));
+    // #348 / #624 — push the TES4 `Localized` flag into a thread-local
+    // so every record parser's FULL/DESC decoder can route through the
+    // lstring helper. The RAII guard restores the previous value on
+    // drop (including unwind from a panic mid-walk), so:
+    //   * A subsequent parse of a non-localized plugin in the same
+    //     process can't inherit a stale `Localized = true` flag.
+    //   * Overlapping parses on the same thread (nested `parse_esm`
+    //     calls) correctly stack — the outer parse's flag is restored
+    //     when the inner guard drops.
+    let _localized_guard = common::LocalizedPluginGuard::new(
+        file_header.as_ref().map_or(false, |h| h.localized),
+    );
 
     // Walk top-level groups and dispatch by record-type label.
     while reader.remaining() > 0 {
@@ -532,6 +547,14 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             b"LGTM" => extract_records(&mut reader, end, b"LGTM", &mut |fid, subs| {
                 index.lighting_templates.insert(fid, parse_lgtm(fid, subs));
             })?,
+            // #624 / SK-D6-NEW-03 — IMGS imagespace records. CELL.XCIM
+            // cross-references resolve here. Currently a stub (EDID +
+            // raw DNAM payload); full DNAM struct decode + IMAD
+            // modifier graph deferred to M48 alongside the per-cell
+            // HDR-LUT renderer consumer.
+            b"IMGS" => extract_records(&mut reader, end, b"IMGS", &mut |fid, subs| {
+                index.image_spaces.insert(fid, parse_imgs(fid, subs));
+            })?,
             b"HDPT" => extract_records(&mut reader, end, b"HDPT", &mut |fid, subs| {
                 index.head_parts.insert(fid, parse_hdpt(fid, subs));
             })?,
@@ -605,11 +628,9 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     // category is a single-edit operation. See #634 / FNV-D2-06.
     log::info!("{}", index.category_breakdown());
 
-    // Clear the lstring thread-local so a subsequent parse of a
-    // non-localized plugin in the same process doesn't inherit
-    // Skyrim's flag. See #348.
-    common::set_localized_plugin(false);
-
+    // Localized thread-local restored automatically when
+    // `_localized_guard` drops — including on early-return paths and
+    // panic unwinds. See #624.
     Ok(index)
 }
 
@@ -1573,8 +1594,9 @@ mod tests {
     /// `pub foos: HashMap<...>` field, increment this.
     #[test]
     fn categories_table_row_count_pinned() {
-        // 35 typed maps on EsmIndex + 2 from cells (cells, statics).
+        // 36 typed maps on EsmIndex + 2 from cells (cells, statics).
+        // Bumped from 37 → 38 in #624 (image_spaces map for IMGS dispatch).
         // Bump in lockstep with the struct + `categories()` edits.
-        assert_eq!(EsmIndex::categories().len(), 37);
+        assert_eq!(EsmIndex::categories().len(), 38);
     }
 }

@@ -4,6 +4,7 @@
 
 use super::helpers::{read_form_id, read_form_id_array, read_zstring};
 use super::*;
+use crate::esm::records::common::read_lstring_or_zstring;
 
 /// Walk the WRLD group hierarchy to find exterior cells and their placed references.
 pub(super) fn parse_wrld_group(
@@ -121,6 +122,11 @@ pub(super) fn parse_wrld_children(
             if &header.record_type == b"CELL" {
                 let subs = reader.read_sub_records(&header)?;
                 let mut editor_id = String::new();
+                // #624 / SK-D6-NEW-02 — exterior CELLs also ship FULL
+                // (named worldspace tiles like SolitudeWorld, the cell
+                // covering Whiterun's market district). Pre-fix the
+                // sub-record was dropped on the catch-all `_` arm.
+                let mut display_name: Option<String> = None;
                 let mut grid = None;
                 let mut water_height: Option<f32> = None;
                 let mut image_space_form: Option<u32> = None;
@@ -143,6 +149,9 @@ pub(super) fn parse_wrld_children(
                 for sub in &subs {
                     match &sub.sub_type {
                         b"EDID" => editor_id = read_zstring(&sub.data),
+                        // #624 — auto-routes the localized 4-byte
+                        // STRINGS-table case via the lstring helper.
+                        b"FULL" => display_name = Some(read_lstring_or_zstring(&sub.data)),
                         b"XCLC" if sub.data.len() >= 8 => {
                             let grid_x = i32::from_le_bytes([
                                 sub.data[0],
@@ -208,6 +217,7 @@ pub(super) fn parse_wrld_children(
                         CellData {
                             form_id: header.form_id,
                             editor_id,
+                            display_name,
                             references: Vec::new(),
                             is_interior: false,
                             grid: Some(g),

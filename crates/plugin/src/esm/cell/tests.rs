@@ -1232,6 +1232,110 @@ fn parse_cell_skyrim_extended_subrecords() {
     assert_eq!(cell.water_height, None);
 }
 
+/// Regression for #624 / SK-D6-NEW-02. Skyrim cells DO ship FULL —
+/// `WhiterunBanneredMare` carries `"The Bannered Mare"` per UESP. The
+/// pre-fix walker dropped FULL on the catch-all `_` arm, so the
+/// display name was lost. This test builds a non-localized CELL
+/// record with an inline FULL and asserts the new
+/// `CellData.display_name` field surfaces it.
+#[test]
+fn parse_cell_full_inline_zstring_populates_display_name() {
+    // Non-localized plugin path — explicit clear via guard so any
+    // earlier test that set the lstring flag can't leak through.
+    use crate::esm::records::common::LocalizedPluginGuard;
+    let _guard = LocalizedPluginGuard::new(false);
+
+    let mut sub_data = Vec::new();
+    let edid = "WhiterunBanneredMare\0";
+    sub_data.extend_from_slice(b"EDID");
+    sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(edid.as_bytes());
+
+    let full = "The Bannered Mare\0";
+    sub_data.extend_from_slice(b"FULL");
+    sub_data.extend_from_slice(&(full.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(full.as_bytes());
+
+    sub_data.extend_from_slice(b"DATA");
+    sub_data.extend_from_slice(&1u16.to_le_bytes());
+    sub_data.push(0x01); // is_interior
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"CELL");
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+    buf.extend_from_slice(&0xDEADBEEFu32.to_le_bytes()); // form_id
+    buf.extend_from_slice(&[0u8; 8]); // padding
+    buf.extend_from_slice(&sub_data);
+
+    let mut reader = super::super::reader::EsmReader::with_variant(
+        &buf,
+        super::super::reader::EsmVariant::Tes5Plus,
+    );
+    let end = buf.len();
+    let mut cells = HashMap::new();
+    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+
+    let cell = cells
+        .get("whiterunbanneredmare")
+        .expect("interior CELL present");
+    assert_eq!(
+        cell.display_name.as_deref(),
+        Some("The Bannered Mare"),
+        "FULL must surface on CellData.display_name (#624)"
+    );
+}
+
+/// Companion to the FULL test — a localized plugin's 4-byte FULL
+/// payload is a STRINGS-table index. Until the real loader lands
+/// (#348 Phase 2), `read_lstring_or_zstring` renders it as a
+/// `<lstring 0xNNNNNNNN>` placeholder. Pin that behaviour so a
+/// future loader integration can flip the assertion to the resolved
+/// string without a separate audit pass.
+#[test]
+fn parse_cell_full_lstring_index_renders_as_placeholder() {
+    use crate::esm::records::common::LocalizedPluginGuard;
+    let _guard = LocalizedPluginGuard::new(true);
+
+    let mut sub_data = Vec::new();
+    let edid = "DragonsreachJarl\0";
+    sub_data.extend_from_slice(b"EDID");
+    sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(edid.as_bytes());
+
+    // Localized FULL: 4-byte LE u32 = STRINGS-table index 0x00012345.
+    sub_data.extend_from_slice(b"FULL");
+    sub_data.extend_from_slice(&4u16.to_le_bytes());
+    sub_data.extend_from_slice(&0x00012345u32.to_le_bytes());
+
+    sub_data.extend_from_slice(b"DATA");
+    sub_data.extend_from_slice(&1u16.to_le_bytes());
+    sub_data.push(0x01);
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"CELL");
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes());
+    buf.extend_from_slice(&0xCAFEFEEDu32.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]);
+    buf.extend_from_slice(&sub_data);
+
+    let mut reader = super::super::reader::EsmReader::with_variant(
+        &buf,
+        super::super::reader::EsmVariant::Tes5Plus,
+    );
+    let end = buf.len();
+    let mut cells = HashMap::new();
+    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+
+    let cell = cells.get("dragonsreachjarl").expect("interior CELL present");
+    assert_eq!(
+        cell.display_name.as_deref(),
+        Some("<lstring 0x00012345>"),
+        "localized FULL must render as the lstring placeholder until #348 Phase 2"
+    );
+}
+
 #[test]
 fn parse_cell_without_skyrim_extras_leaves_them_default() {
     // Sibling check for the new arms — a CELL with only EDID + DATA
@@ -2344,6 +2448,7 @@ fn make_interior_cell(form_id: u32, edid: &str) -> CellData {
     CellData {
         form_id,
         editor_id: edid.to_string(),
+        display_name: None,
         references: Vec::new(),
         is_interior: true,
         grid: None,

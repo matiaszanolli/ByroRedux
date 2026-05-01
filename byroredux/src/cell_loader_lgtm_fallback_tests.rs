@@ -32,6 +32,7 @@ fn empty_cell(form_id: u32, edid: &str) -> CellData {
     CellData {
         form_id,
         editor_id: edid.to_string(),
+        display_name: None,
         references: Vec::new(),
         is_interior: true,
         grid: None,

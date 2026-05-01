@@ -123,6 +123,19 @@ pub struct LandscapeData {
 pub struct CellData {
     pub form_id: u32,
     pub editor_id: String,
+    /// Display name from the `FULL` sub-record. On localized plugins
+    /// (Skyrim+ with the TES4 `Localized` flag) the on-disk payload
+    /// is a 4-byte STRINGS-table index, decoded via
+    /// [`read_lstring_or_zstring`](crate::esm::records::common::read_lstring_or_zstring)
+    /// into a `<lstring 0xNNNNNNNN>` placeholder until Phase 2 of
+    /// #348 wires up the real `.STRINGS` loader. On non-localized
+    /// plugins this is the inline cstring (FNV / FO3 / Oblivion /
+    /// non-localized Skyrim mods). `None` when the cell has no FULL
+    /// (most exterior tiles, debug cells). Skyrim ships FULL on most
+    /// named interiors — `WhiterunBanneredMare` carries
+    /// `"The Bannered Mare"`. Pre-#624 the sub-record was dropped on
+    /// the catch-all match arm.
+    pub display_name: Option<String>,
     pub references: Vec<PlacedRef>,
     pub is_interior: bool,
     /// Grid coordinates for exterior cells (None for interior).

@@ -259,6 +259,52 @@ pub fn parse_lgtm(form_id: u32, subs: &[SubRecord]) -> LgtmRecord {
     out
 }
 
+/// Image-space record (`IMGS`). Drives per-cell HDR / colour-grading
+/// settings — cells reference an IMGS via `XCIM` to override the
+/// worldspace-default tone-map / cinematic / tint LUT.
+///
+/// Skyrim ships ~1k IMGS entries; almost every Solitude / Whiterun
+/// interior overrides the worldspace default. Vanilla Skyrim's
+/// `DNAM` is 152 bytes (HDR eye-adapt + cinematic
+/// saturation/brightness/contrast + tint RGBA + bloom params);
+/// FO3/FNV's is the 56-byte subset. Pre-#624 the entire top-level
+/// `IMGS` group fell through to the catch-all skip in `parse_esm`,
+/// so XCIM cross-references couldn't resolve to anything in the
+/// index.
+///
+/// This stub captures `EDID` + the raw `DNAM` payload so a future
+/// per-cell HDR-LUT consumer can decode the tone-map fields lazily
+/// without re-walking the ESM. The full DNAM struct decode + IMAD
+/// modifier-graph parser are deferred to M48.
+#[derive(Debug, Clone, Default)]
+pub struct ImgsRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    /// Raw `DNAM` payload — Skyrim 152 B (HDR + cinematic + tint),
+    /// FO3/FNV 56 B (subset). `None` when the record has no DNAM
+    /// (rare; a few legacy entries on FO3/FNV).
+    pub dnam_raw: Option<Vec<u8>>,
+}
+
+/// Parse an `IMGS` record into an [`ImgsRecord`]. Mirrors the
+/// stub-shape of [`parse_lgtm`] — captures EDID + the data payload
+/// and defers field-by-field decoding to the consumer. See #624 /
+/// SK-D6-NEW-03.
+pub fn parse_imgs(form_id: u32, subs: &[SubRecord]) -> ImgsRecord {
+    let mut out = ImgsRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"DNAM" => out.dnam_raw = Some(sub.data.clone()),
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Head part record (`HDPT`). Used by FaceGen to assemble NPC faces —
 /// each part (head, mouth, ears, etc.) references a mesh + texture
 /// set and a type flag. Pre-Skyrim head variation is sparse enough
@@ -1001,6 +1047,40 @@ mod tests {
         assert_eq!(l.directional_fade, Some(0.5));
         assert_eq!(l.fog_clip, Some(6000.0));
         assert_eq!(l.fog_power, Some(1.25));
+    }
+
+    /// Regression for #624 / SK-D6-NEW-03. IMGS records were dropped
+    /// on the parse_esm catch-all skip pre-fix; this tests the stub
+    /// parser captures EDID + raw DNAM so XCIM cross-references can
+    /// resolve through `EsmIndex.image_spaces`.
+    #[test]
+    fn parse_imgs_captures_edid_and_dnam_payload() {
+        // 56-byte DNAM patterned with distinct bytes so a future
+        // field decoder catches misalignment vs the captured raw
+        // payload. Vanilla FO3/FNV ship the 56-byte form; Skyrim
+        // extends to 152 — the stub captures whatever DNAM length
+        // the file ships with.
+        let dnam: Vec<u8> = (0u8..56).collect();
+        let subs = vec![
+            sub(b"EDID", b"InteriorWarmDim\0"),
+            sub(b"DNAM", &dnam),
+        ];
+        let imgs = parse_imgs(0x000A_1234, &subs);
+        assert_eq!(imgs.form_id, 0x000A_1234);
+        assert_eq!(imgs.editor_id, "InteriorWarmDim");
+        assert_eq!(imgs.dnam_raw.as_deref(), Some(dnam.as_slice()));
+    }
+
+    /// Companion: an IMGS record with no DNAM (legacy FO3 entries)
+    /// captures EDID and leaves `dnam_raw` at None — pinning the
+    /// stub's "best-effort capture" semantics so a future consumer
+    /// doesn't have to guard against the absent case downstream.
+    #[test]
+    fn parse_imgs_without_dnam_leaves_payload_none() {
+        let subs = vec![sub(b"EDID", b"LegacyImagespace\0")];
+        let imgs = parse_imgs(0x000A_5678, &subs);
+        assert_eq!(imgs.editor_id, "LegacyImagespace");
+        assert!(imgs.dnam_raw.is_none());
     }
 
     #[test]

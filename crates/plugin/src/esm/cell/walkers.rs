@@ -4,6 +4,7 @@
 
 use super::helpers::{read_form_id, read_form_id_array, read_zstring};
 use super::*;
+use crate::esm::records::common::read_lstring_or_zstring;
 use crate::esm::sub_reader::SubReader;
 
 /// Walk the CELL group hierarchy to find interior cells and their placed references.
@@ -48,6 +49,11 @@ pub(super) fn parse_cell_group(
             if &header.record_type == b"CELL" {
                 let subs = reader.read_sub_records(&header)?;
                 let mut editor_id = String::new();
+                // #624 / SK-D6-NEW-02 — display name from FULL. Routes
+                // through the lstring helper so localized Skyrim plugins
+                // get a `<lstring 0x…>` placeholder instead of garbage
+                // 3-byte cstrings.
+                let mut display_name: Option<String> = None;
                 let mut is_interior = false;
                 let mut lighting = None;
                 let mut water_height: Option<f32> = None;
@@ -74,6 +80,14 @@ pub(super) fn parse_cell_group(
                 for sub in &subs {
                     match &sub.sub_type {
                         b"EDID" => editor_id = read_zstring(&sub.data),
+                        // #624 / SK-D6-NEW-02 — Skyrim cells DO ship FULL
+                        // (e.g. WhiterunBanneredMare's FULL = "The
+                        // Bannered Mare"). Pre-fix this fell to the
+                        // catch-all `_` arm and the display name was
+                        // dropped. The lstring helper auto-routes the
+                        // 4-byte STRINGS-table case for localized
+                        // plugins.
+                        b"FULL" => display_name = Some(read_lstring_or_zstring(&sub.data)),
                         b"DATA" if sub.data.len() >= 1 => is_interior = sub.data[0] & 1 != 0,
                         b"XCLW" => {
                             // XCLW: f32 water plane height in world units
@@ -225,6 +239,7 @@ pub(super) fn parse_cell_group(
                         CellData {
                             form_id: header.form_id,
                             editor_id: editor_id.clone(),
+                            display_name: display_name.clone(),
                             references: Vec::new(),
                             is_interior: true,
                             grid: None,

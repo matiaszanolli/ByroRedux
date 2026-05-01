@@ -19,10 +19,11 @@ thread_local! {
 }
 
 /// Set the thread-local "this plugin uses lstring indirection" flag.
-/// Call once at the start of a parse pass with the value of
-/// `FileHeader.localized`, then clear at the end so subsequent
-/// parses (or non-Skyrim plugins in the same process) don't inherit
-/// stale state. See audit S6-03 / #348.
+/// Prefer [`LocalizedPluginGuard`] over manual set/clear pairs — the
+/// guard restores the previous value on drop (including unwind), so
+/// a panic inside a parse pass can't leave the flag in an undefined
+/// state for subsequent parses on the same thread. See audit S6-03 /
+/// #348 / #624.
 pub fn set_localized_plugin(flag: bool) {
     CURRENT_PLUGIN_LOCALIZED.with(|f| f.set(flag));
 }
@@ -31,6 +32,49 @@ pub fn set_localized_plugin(flag: bool) {
 /// and defensive record parsers that want to branch on it.
 pub fn is_localized_plugin() -> bool {
     CURRENT_PLUGIN_LOCALIZED.with(|f| f.get())
+}
+
+/// RAII guard that sets the localization flag for the duration of a
+/// scope and restores the previous value on drop.
+///
+/// Replaces manual `set_localized_plugin(true)` / `set_localized_plugin(false)`
+/// pairs across `parse_esm_with_load_order` (#348). Two failure modes
+/// the guard closes (#624 / SK-D6-NEW-01):
+///
+///   1. **Panic inside parse**. A malformed record that triggers a
+///      panic mid-walk used to leave the thread-local set to the last
+///      plugin's `Localized` flag forever. The next parse on this
+///      thread would inherit it and read FULL/DESC of a non-localized
+///      FNV plugin through the lstring branch, returning
+///      `<lstring 0x…>` placeholders instead of authored strings.
+///
+///   2. **Overlapping parses on the same thread**. Walking two ESMs
+///      via `parse_esm` calls nested inside one another (e.g. a
+///      master + DLC chain that re-enters the parser) clobbered the
+///      outer parse's flag. The guard restores the prior value on
+///      drop so nested calls are correctly stacked.
+///
+/// Use as `let _guard = LocalizedPluginGuard::new(localized);` at the
+/// start of a parse function; let the binding fall out of scope at
+/// the end (or on early-return / panic).
+pub struct LocalizedPluginGuard {
+    prev: bool,
+}
+
+impl LocalizedPluginGuard {
+    /// Set the flag to `localized` for the duration of `self`'s scope.
+    /// Captures the previous value so `Drop` can restore it.
+    pub fn new(localized: bool) -> Self {
+        let prev = is_localized_plugin();
+        set_localized_plugin(localized);
+        Self { prev }
+    }
+}
+
+impl Drop for LocalizedPluginGuard {
+    fn drop(&mut self) {
+        set_localized_plugin(self.prev);
+    }
 }
 
 /// Read a null-terminated ASCII string from a sub-record's data buffer.
@@ -307,5 +351,72 @@ mod tests {
         let subs = vec![sub(b"FULL", b"PlainName\0")];
         let c = CommonItemFields::from_subs(&subs);
         assert_eq!(c.full_name, "PlainName");
+    }
+
+    /// Regression for #624 / SK-D6-NEW-01. Pre-fix the manual
+    /// set/clear pair around `parse_esm_with_load_order` could leak
+    /// state in two ways:
+    ///   1. A panic mid-parse skipped the clear, leaving the
+    ///      thread-local set forever.
+    ///   2. Nested / overlapping parses on the same thread clobbered
+    ///      the outer parse's flag.
+    /// The `LocalizedPluginGuard` restores the previous value on drop
+    /// (including unwind), closing both holes.
+    #[test]
+    fn localized_plugin_guard_restores_value_on_panic_unwind() {
+        // Establish baseline.
+        set_localized_plugin(false);
+        assert!(!is_localized_plugin());
+
+        // Run a scope that creates a guard, then panics. `catch_unwind`
+        // captures the panic; the guard's Drop runs during the unwind
+        // and must restore the prior `false` value.
+        let result = std::panic::catch_unwind(|| {
+            let _guard = LocalizedPluginGuard::new(true);
+            assert!(is_localized_plugin(), "guard set the flag");
+            panic!("simulated panic mid-parse");
+        });
+        assert!(result.is_err(), "panic must propagate");
+        assert!(
+            !is_localized_plugin(),
+            "guard's Drop must restore the prior value on panic unwind"
+        );
+    }
+
+    #[test]
+    fn localized_plugin_guard_restores_value_on_normal_drop() {
+        set_localized_plugin(false);
+        {
+            let _guard = LocalizedPluginGuard::new(true);
+            assert!(is_localized_plugin());
+        }
+        assert!(
+            !is_localized_plugin(),
+            "guard's Drop must restore the prior value at end of scope"
+        );
+    }
+
+    /// Nested guards must stack — the inner guard restores to the
+    /// outer's value, not blanket false. Pre-fix the explicit `false`
+    /// clear at the end of `parse_esm_with_load_order` collapsed any
+    /// nested parse's flag regardless of caller intent.
+    #[test]
+    fn localized_plugin_guard_nests_correctly() {
+        set_localized_plugin(false);
+        {
+            let _outer = LocalizedPluginGuard::new(true);
+            assert!(is_localized_plugin(), "outer set true");
+            {
+                let _inner = LocalizedPluginGuard::new(false);
+                assert!(!is_localized_plugin(), "inner overrode to false");
+            }
+            // Inner dropped — must restore to outer's true, NOT to a
+            // blanket false.
+            assert!(
+                is_localized_plugin(),
+                "inner Drop must restore to outer's true, not false"
+            );
+        }
+        assert!(!is_localized_plugin(), "outer Drop restores baseline");
     }
 }
