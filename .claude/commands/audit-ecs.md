@@ -43,6 +43,14 @@ Read `_audit-common.md` and `_audit-severity.md` for shared protocol.
 - World::get() uses raw pointer to extend lifetime — is the safety argument valid?
 - Any other unsafe blocks: document safety invariants
 
+### 7. Streaming, Scripting & New Component Lifecycles
+- M40 streaming (`byroredux/src/streaming.rs`): cell-load attaches components, cell-unload removes them — verify no orphaned components after a load/unload cycle
+- M41 NPC spawn (`byroredux/src/npc_spawn.rs`): ACHR REFR → entity dispatch is idempotent (same REFR FormId never spawns twice)
+- Scripting events (`crates/scripting/src/events.rs`): transient marker components (ActivateEvent, HitEvent, TimerExpired) are removed by `event_cleanup_system` (Late stage) — verify single-frame lifetime
+- ScriptTimer (`crates/scripting/src/timer.rs`): `timer_tick_system` decrements per-frame, fires TimerExpired marker on hit — verify no negative-time accumulation
+- Animation controller (`crates/core/src/animation/controller.rs`): controller component lifecycle vs AnimationPlayer — verify no dangling clip references after unload
+- DebugDrainSystem (`crates/debug-server/src/system.rs`): Late-stage exclusive — verify no World mutation outside drain (per-client TCP threads must enqueue commands, not mutate)
+
 ## Process
 
 1. Read each file in `crates/core/src/ecs/`

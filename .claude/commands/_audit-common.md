@@ -7,29 +7,44 @@ This file is referenced by all audit skills. Do NOT use as a slash command (pref
 ```
 Core ECS:        crates/core/src/ecs/
 Components:      crates/core/src/ecs/components/
-Animation:       crates/core/src/animation/          (types, player, stack, registry, interpolation, root_motion, text_events)
+Animation:       crates/core/src/animation/          (types, player, stack, registry, interpolation, root_motion, text_events, controller)
 Resources:       crates/core/src/ecs/resources.rs
 Strings:         crates/core/src/string/
 NIF Parser:      crates/nif/src/
-NIF Blocks:      crates/nif/src/blocks/
-NIF Import:      crates/nif/src/import/               (walk, mesh, material, transform, coord, collision)
+NIF Blocks:      crates/nif/src/blocks/               (30 modules — see blocks/mod.rs dispatch; controller/, particle/, shader/, tri_shape/, skin/, properties/, light, multibound, palette, legacy_particle, …)
+NIF Import:      crates/nif/src/import/               (walk, mesh, material/, transform, coord, collision)
 NIF Animation:   crates/nif/src/anim.rs
 BSA Reader:      crates/bsa/src/archive.rs
 BA2 Reader:      crates/bsa/src/ba2.rs
+BGSM Materials:  crates/bgsm/src/                     (FO4+ external material parser)
+FaceGen (M41):   crates/facegen/src/                  (.tri/.egt morph + texture blend)
+Physics (M28):   crates/physics/src/                  (Rapier3D bridge)
+Papyrus (M30):   crates/papyrus/src/                  (.psc lexer + Pratt parser → AST)
+Scripting (M12): crates/scripting/src/                (ECS-native events, timers, cleanup)
+Debug Protocol:  crates/debug-protocol/src/           (wire types, component registry)
+Debug Server:    crates/debug-server/src/             (TCP server + DebugDrainSystem)
 Renderer:        crates/renderer/src/vulkan/
-VulkanContext:   crates/renderer/src/vulkan/context/  (mod.rs, draw.rs, resize.rs, resources.rs, helpers.rs)
+VulkanContext:   crates/renderer/src/vulkan/context/  (mod.rs, draw.rs, resize.rs, resources.rs, helpers.rs, screenshot.rs)
 Accel (RT):      crates/renderer/src/vulkan/acceleration.rs
 G-Buffer:        crates/renderer/src/vulkan/gbuffer.rs
 SVGF Denoiser:   crates/renderer/src/vulkan/svgf.rs
+TAA (M37.5):     crates/renderer/src/vulkan/taa.rs
 Composite:       crates/renderer/src/vulkan/composite.rs
 SSAO:            crates/renderer/src/vulkan/ssao.rs
+Caustics (M??):  crates/renderer/src/vulkan/caustic.rs
+GPU Skin (M29):  crates/renderer/src/vulkan/skin_compute.rs
+Material (R1):   crates/renderer/src/vulkan/material.rs   (MaterialBuffer SSBO, GpuMaterial dedup; replaces per-instance fields)
+SPIR-V Reflect:  crates/renderer/src/vulkan/reflect.rs    (descriptor layout reflection from SPIR-V)
 Scene Buffers:   crates/renderer/src/vulkan/scene_buffer.rs
 Descriptors:     crates/renderer/src/vulkan/descriptors.rs
+Vk Debug Util:   crates/renderer/src/vulkan/debug.rs
+Vk Instance:     crates/renderer/src/vulkan/instance.rs
+Vk Surface:      crates/renderer/src/vulkan/surface.rs
 Mesh:            crates/renderer/src/mesh.rs
 Vertex:          crates/renderer/src/vertex.rs
 Tex Registry:    crates/renderer/src/texture_registry.rs
-Shaders:         crates/renderer/shaders/             (triangle.vert/frag, svgf_temporal.comp, composite.vert/frag, ssao.comp, cluster_cull.comp, ui.vert/frag)
-Plugin/ESM:      crates/plugin/src/
+Shaders:         crates/renderer/shaders/             (triangle.vert/frag, svgf_temporal.comp, taa.comp, composite.vert/frag, ssao.comp, cluster_cull.comp, skin_vertices.comp, caustic_splat.comp, ui.vert/frag)
+Plugin/ESM:      crates/plugin/src/                   (esm/{mod, reader, sub_reader}, esm/cell/, esm/records/{actor, climate, container, global, items, misc, mswp, pkin, scol, script, weather, …}, record.rs generic dispatch, legacy/ TES3-FO4 stubs)
 Platform:        crates/platform/src/
 UI (Ruffle):     crates/ui/src/
 CXX Bridge:      crates/cxx-bridge/
@@ -37,7 +52,9 @@ Binary:          byroredux/src/main.rs
 Systems:         byroredux/src/systems.rs
 Scene Setup:     byroredux/src/scene.rs
 Render Data:     byroredux/src/render.rs
-Cell Loader:     byroredux/src/cell_loader.rs
+Cell Loader:     byroredux/src/cell_loader.rs + cell_loader_refr.rs + cell_loader_terrain.rs (+ ~10 *_tests.rs siblings)
+NPC Spawn:       byroredux/src/npc_spawn.rs           (M41 actor instantiation)
+World Stream:    byroredux/src/streaming.rs           (M40 cell lifecycle)
 Legacy Ref:      docs/legacy/
 ```
 

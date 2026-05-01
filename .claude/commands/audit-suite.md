@@ -26,16 +26,46 @@ After NIF parser changes (N23 work):
 
 ### `--preset renderer-deep`
 After significant renderer changes:
-1. `/audit-renderer`
-2. `/audit-performance --focus 1,2,3`
-3. `/audit-concurrency --focus 2,3`
+1. `/audit-renderer`              # all 15 dimensions
+2. `/audit-performance --focus 1,2,3,7,8`
+3. `/audit-concurrency --focus 2,3,5`
 4. `/audit-safety`
 
 ### `--preset rt-deep`
 After ray tracing / denoiser / G-buffer changes:
 1. `/audit-renderer --focus 8,9,10`
 2. `/audit-performance --focus 1,2`
-3. `/audit-concurrency --focus 2,3`
+3. `/audit-concurrency --focus 2,3,5`
+
+### `--preset taa-deep`
+After TAA / denoiser / motion-vector changes (M37.5):
+1. `/audit-renderer --focus 10,11`
+2. `/audit-concurrency --focus 2,5`
+3. `/audit-safety` (focus on §3 memory, §7 new compute, §6 RT)
+
+### `--preset skin-deep`
+After GPU skinning / BLAS refit changes (M29.5 / M29.3):
+1. `/audit-renderer --focus 8,12`
+2. `/audit-performance --focus 1,7`
+3. `/audit-concurrency --focus 2,3,5`
+4. `/audit-safety`
+
+### `--preset material-deep`
+After R1 material table changes (GpuMaterial layout, dedup, SSBO):
+1. `/audit-renderer --focus 6,14`
+2. `/audit-performance --focus 8`
+3. `/audit-safety` (focus on §8 R1 invariants)
+
+### `--preset sky-weather-deep`
+After M33 / M33.1 / M34 sky / weather / exterior lighting changes:
+1. `/audit-renderer --focus 9,15`
+2. `/audit-incremental --commits 10`
+
+### `--preset streaming-deep`
+After M40 world streaming / M41 NPC spawn changes:
+1. `/audit-performance --focus 9`
+2. `/audit-concurrency --focus 6`
+3. `/audit-safety`
 
 ### `--preset comprehensive`
 Full audit coverage (longest — run monthly or before major milestones):

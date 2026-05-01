@@ -13,12 +13,16 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 
 ## Parameters (from $ARGUMENTS)
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3,5`). Default: all 6.
+- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3,5`). Default: all 9.
 - `--depth shallow|deep`: `shallow` = check patterns only; `deep` = trace hot paths and measure impact. Default: `deep`.
 
 ## Extra Per-Finding Fields
 
-- **Dimension**: GPU Pipeline | GPU Memory | Draw Call Overhead | ECS Query Patterns | NIF Parse | CPU Allocations
+- **Dimension**: GPU Pipeline | GPU Memory | Draw Call Overhead | ECS Query Patterns | NIF Parse | CPU Allocations | TAA & GPU Skinning Cost | Material Table & SSBO Upload | World Streaming & Cell Transitions
+
+## Reference Telemetry
+
+`ScratchTelemetry` resource is refreshed per-frame; surface via `ctx.scratch` console command. Five tracked scratches: `gpu_instances`, `batches`, `indirect_draws`, `terrain_tile`, `tlas_instances`. Prospector baseline (1200 ent / 773 draws): 337 KB total, 320 B wasted. Use for diffing M40 cell transitions and R1 dedup wins.
 
 ## Phase 1: Setup
 
@@ -31,7 +35,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 
 ### Dimension 1: GPU Pipeline Efficiency
 **Entry points**: `crates/renderer/src/vulkan/context/draw.rs` (draw_frame), `crates/renderer/shaders/triangle.frag`
-**Checklist**: Unnecessary pipeline switches, redundant descriptor set binds, per-draw overhead (cmd_set_depth_bias on every draw?), shader branching cost (light loop divergence, RT ray query divergence), TLAS rebuild vs refit frequency, AS barrier placement, SVGF dispatch overhead per frame, composite pass fullscreen quad cost, G-buffer bandwidth (6 render targets per fragment).
+**Checklist**: Unnecessary pipeline switches, redundant descriptor set binds, per-draw overhead (cmd_set_depth_bias on every draw?), shader branching cost (light loop divergence, RT ray query divergence), TLAS rebuild vs refit frequency, AS barrier placement, SVGF dispatch overhead per frame, TAA dispatch cost (fullscreen compute, RGBA16F sample bandwidth), caustic splat dispatch cost (fullscreen compute + atomic contention), composite pass fullscreen quad cost, G-buffer bandwidth (6 render targets per fragment), instanced draw batching (M31) effectiveness.
 **Output**: `/tmp/audit/performance/dim_1.md`
 
 ### Dimension 2: GPU Memory & Allocation Patterns
@@ -56,8 +60,23 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 
 ### Dimension 6: CPU Allocation Hot Paths
 **Entry points**: `byroredux/src/systems.rs` (animation_system, transform_propagation_system), `byroredux/src/render.rs` (build_render_data)
-**Checklist**: Per-frame Vec allocations (should use pre-allocated buffers?), String allocations in name lookups (already fixed with FixedString?), HashMap rebuilds, temporary Vec<DrawCommand> growth.
+**Checklist**: Per-frame Vec allocations (should use pre-allocated buffers?), String allocations in name lookups (already fixed with FixedString?), HashMap rebuilds, temporary Vec<DrawCommand> growth, scratch reuse vs realloc — diff against `ScratchTelemetry` baseline (337 KB / 320 B wasted on Prospector).
 **Output**: `/tmp/audit/performance/dim_6.md`
+
+### Dimension 7: TAA & GPU Skinning Cost (M37.5 + M29.5)
+**Entry points**: `crates/renderer/src/vulkan/taa.rs`, `crates/renderer/src/vulkan/skin_compute.rs`, `crates/renderer/src/vulkan/acceleration.rs` (BLAS refit path), `crates/renderer/shaders/taa.comp`, `crates/renderer/shaders/skin_vertices.comp`
+**Checklist**: TAA dispatch cost relative to scene cost (compute should be O(pixels) only, not O(pixels × meshes)). History image allocation: 2× RGBA16F at swapchain res — non-trivial at 4K (~64 MB). Skin compute dispatch frequency: per-skinned-mesh per-frame is the design; verify no dispatch for static meshes (pre-skin gating). BLAS refit cost vs full rebuild — refit must dominate; full rebuild only on bone count change. Per-skinned-mesh output buffer: lazily allocated, never re-uploaded with stale data. Bone palette upload: single buffer per frame, sized to MAX_TOTAL_BONES — no per-mesh upload churn. M29.3 raster path (when shipped): vertex shader reads pre-skinned vertex SSBO instead of inline matrix sum (~50 ALU ops saved per vertex).
+**Output**: `/tmp/audit/performance/dim_7.md`
+
+### Dimension 8: Material Table & SSBO Upload (R1)
+**Entry points**: `crates/renderer/src/vulkan/material.rs`, `crates/renderer/src/vulkan/scene_buffer.rs` (MaterialBuffer SSBO), `byroredux/src/render.rs` (material intern call sites)
+**Checklist**: Dedup ratio — N placements of the same material should produce 1 GpuMaterial entry; report dedup hit rate per cell. Per-frame upload size — should be O(unique materials), not O(draws). Hash-table churn — `MaterialTable::intern` should be O(1) amortized per lookup. SSBO resize policy — does the buffer over-allocate and reuse, or realloc-shrink each frame? GpuInstance struct size win — verify the post-R1 size (target ~112 B vs ~400 B legacy) is realized in `gpu_instance_size_*` test. Memory bandwidth — confirm material table upload doesn't replace dedup wins with bandwidth losses on large scenes.
+**Output**: `/tmp/audit/performance/dim_8.md`
+
+### Dimension 9: World Streaming & Cell Transitions (M40)
+**Entry points**: `byroredux/src/streaming.rs`, `byroredux/src/cell_loader.rs` (and cell_loader_*.rs siblings), `byroredux/src/npc_spawn.rs`
+**Checklist**: Cell-transition stall budget (frame-time spike at boundary crossing). Async pre-parse worker thread doing real work off-main (verify with profiler). NIF import cache hit rate during streaming (cached across cells, not per-cell churn). BLAS LRU eviction at 1 GB budget triggers smoothly during streaming, no thrash. Texture upload budget per frame during streaming — staging buffer reuse, not realloc. Shutdown drain joins worker without leaks. Single-cell-at-a-time today (Phase 1a/1b) — multi-cell exterior grid is M40 follow-up; baseline must not regress.
+**Output**: `/tmp/audit/performance/dim_9.md`
 
 ## Phase 3: Merge
 
