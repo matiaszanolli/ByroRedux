@@ -52,17 +52,31 @@ impl VulkanContext {
                 &mut self.depth_allocation,
             );
 
-            // Destroy old image views (but keep the old swapchain handle for handoff).
-            for &view in &self.swapchain_state.image_views {
-                self.device.destroy_image_view(view, None);
-            }
-
             // NOTE: pipeline + render pass destruction is deferred
             // until after we know the new swapchain format. The
             // existing comment block below the recreate_swapchain call
             // explains the format-stable fast path that #576
             // introduced.
         }
+
+        // #654 / LIFE-M1 — defer image-view destruction until AFTER the
+        // new swapchain is created. Image views are children of the
+        // old swapchain's images; destroying them BEFORE
+        // `vkCreateSwapchainKHR(... oldSwapchain = old_swapchain ...)`
+        // leaves the old swapchain in a state where validation
+        // layers (and some IHV drivers) emit "swapchain image not in
+        // expected state" warnings on the handoff.
+        //
+        // Take ownership of the old views before the assignment at
+        // line ~80 overwrites `self.swapchain_state` — once the
+        // assignment runs, `self.swapchain_state.image_views` points
+        // at the new (just-created) views and would destroy the
+        // wrong set. `mem::take` leaves a default-empty Vec in place
+        // so the old struct is in a valid state through the
+        // create_swapchain call (and the assignment immediately
+        // replaces it anyway).
+        let old_image_views: Vec<vk::ImageView> =
+            std::mem::take(&mut self.swapchain_state.image_views);
 
         let old_swapchain = self.swapchain_state.swapchain;
 
@@ -108,6 +122,21 @@ impl VulkanContext {
 
                 self.device.destroy_render_pass(self.render_pass, None);
                 self.render_pass = vk::RenderPass::null();
+            }
+        }
+
+        // #654 / LIFE-M1 — destroy the old swapchain's image views NOW,
+        // after the new swapchain has been created (so the handoff at
+        // line ~78 saw the old swapchain in a consistent state with
+        // its child views still alive) but before we destroy the old
+        // swapchain itself. Vulkan spec allows destroying child views
+        // either before or after the parent swapchain; this ordering
+        // satisfies the strictest validation-layer interpretation
+        // (VUID-VkSwapchainCreateInfoKHR-oldSwapchain-01933 + the
+        // "swapchain image not in expected state" check).
+        unsafe {
+            for &view in &old_image_views {
+                self.device.destroy_image_view(view, None);
             }
         }
 
@@ -439,5 +468,66 @@ impl VulkanContext {
             self.swapchain_state.extent.height
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Regression for #654 / LIFE-M1. The old swapchain's image-view
+    /// destruction must happen AFTER `swapchain::create_swapchain`
+    /// returns (so the `oldSwapchain` handoff sees the parent
+    /// swapchain in a consistent state with its child views still
+    /// alive) but BEFORE the old swapchain itself is destroyed.
+    ///
+    /// This is a static source check — no Vulkan context is
+    /// available in unit tests. The check parses the file and
+    /// asserts the byte offsets of three landmark strings appear in
+    /// the right relative order, with the captured `old_image_views`
+    /// `mem::take` happening before the create_swapchain call.
+    #[test]
+    fn old_image_views_destroyed_between_new_swapchain_creation_and_old_destroy() {
+        let src = include_str!("resize.rs");
+
+        // Find the four key landmarks in the source:
+        //   1. The `mem::take` capture of old image views.
+        //   2. The `swapchain::create_swapchain(` call (new swapchain alive).
+        //   3. The `for &view in &old_image_views` destroy loop (#654 site).
+        //   4. The `destroy_swapchain(old_swapchain` call (old parent gone).
+        let take_pos = src
+            .find("std::mem::take(&mut self.swapchain_state.image_views)")
+            .expect("must capture old image_views via mem::take (#654)");
+        let create_pos = src
+            .find("swapchain::create_swapchain(")
+            .expect("must call swapchain::create_swapchain");
+        let destroy_views_pos = src
+            .find("for &view in &old_image_views")
+            .expect("must destroy old_image_views in a for-loop (#654)");
+        let destroy_swapchain_pos = src
+            .find("destroy_swapchain(old_swapchain")
+            .expect("must call destroy_swapchain on old_swapchain");
+
+        // mem::take precedes create_swapchain — so the old vec is
+        // owned before the field gets overwritten.
+        assert!(
+            take_pos < create_pos,
+            "old_image_views must be captured via mem::take BEFORE \
+             create_swapchain overwrites self.swapchain_state (#654)"
+        );
+        // create_swapchain precedes the views-destroy loop — strict
+        // validation requires the old swapchain still have its child
+        // views alive at handoff time.
+        assert!(
+            create_pos < destroy_views_pos,
+            "old image views must be destroyed AFTER create_swapchain \
+             returns (the new one is alive). Pre-fix the loop ran \
+             before create_swapchain, leaving the old swapchain in \
+             an inconsistent state during handoff. See #654 / LIFE-M1."
+        );
+        // Views destroyed before the old swapchain itself.
+        assert!(
+            destroy_views_pos < destroy_swapchain_pos,
+            "old image views must be destroyed BEFORE the old \
+             swapchain (children-before-parent). #654."
+        );
     }
 }
