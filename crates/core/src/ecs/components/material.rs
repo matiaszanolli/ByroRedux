@@ -129,6 +129,34 @@ pub struct Material {
     /// hot-path common case pays 8 bytes for the null pointer instead
     /// of inlining 56 bytes of zero. See #562.
     pub shader_type_fields: Option<Box<ShaderTypeFields>>,
+    /// `BSEffectShaderProperty` (Skyrim+) / `BSShaderNoLightingProperty`
+    /// (FO3/FNV) view-angle + soft-depth falloff cone. Inline because
+    /// the struct is small (5 × f32 = 20 B) and the Option tag fits in
+    /// the same alignment slot as the floats. `None` for non-effect
+    /// materials. The fragment shader's `material_kind ==
+    /// MATERIAL_KIND_EFFECT_SHADER` (101) branch consumes these via
+    /// `GpuInstance.{falloff_*, soft_falloff_depth}`. See #620 / #451.
+    pub effect_falloff: Option<EffectFalloff>,
+}
+
+/// View-angle + soft-depth falloff cone captured from
+/// `BSEffectShaderProperty` (Skyrim+) and `BSShaderNoLightingProperty`
+/// (FO3/FNV). The first four fields are shared by both block types;
+/// `soft_falloff_depth` is `BSEffectShaderProperty`-only and is `0.0`
+/// (no fade) on the BSShaderNoLightingProperty path.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct EffectFalloff {
+    /// Cosine of the angle where alpha = `start_opacity`.
+    pub start_angle: f32,
+    /// Cosine of the angle where alpha = `stop_opacity`.
+    pub stop_angle: f32,
+    pub start_opacity: f32,
+    pub stop_opacity: f32,
+    /// Soft-depth fade distance in world units. `0.0` disables the
+    /// fade. Always `0.0` on the `BSShaderNoLightingProperty` path
+    /// since that block has no soft-depth field.
+    pub soft_falloff_depth: f32,
 }
 
 /// Per-variant payload for `BSLightingShaderProperty` shader types
@@ -188,6 +216,7 @@ impl Default for Material {
             z_write: true,
             z_function: 3, // LESSEQUAL — Gamebryo default
             shader_type_fields: None,
+            effect_falloff: None,
         }
     }
 }

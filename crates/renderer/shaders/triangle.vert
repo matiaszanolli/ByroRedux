@@ -106,7 +106,19 @@ struct GpuInstance {
     float ambientR;                    // offset 336
     float ambientG;                    // offset 340
     float ambientB;                    // offset 344
-    float _ambientPad;                 // offset 348 → total 352
+    float _ambientPad;                 // offset 348
+    // ── #620: BSEffectShaderProperty falloff cone ────────────────────
+    // Two padded vec4 slots appended at the end. Vertex shader doesn't
+    // consume them; declared only to keep the std430 stride
+    // byte-identical with triangle.frag (Shader Struct Sync invariant).
+    float falloffStartAngle;           // offset 352
+    float falloffStopAngle;            // offset 356
+    float falloffStartOpacity;         // offset 360
+    float falloffStopOpacity;          // offset 364
+    float softFalloffDepth;            // offset 368
+    float _falloffPad0;                // offset 372
+    float _falloffPad1;                // offset 376
+    float _falloffPad2;                // offset 380 → total 384
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

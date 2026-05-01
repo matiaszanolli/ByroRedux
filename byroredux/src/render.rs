@@ -680,6 +680,35 @@ pub(crate) fn build_render_data(
                     } else {
                         ([0.0; 3], 0.0, [0.0; 3])
                     };
+                // #620 / SK-D4-01 — BSEffectShaderProperty falloff cone
+                // pulled from `MaterialInfo.effect_shader` (Skyrim+
+                // BSEffectShaderProperty path) or `no_lighting_falloff`
+                // (FO3/FNV BSShaderNoLightingProperty SIBLING path,
+                // #451). Both populate the same `[start_angle,
+                // stop_angle, start_opacity, stop_opacity, soft_depth]`
+                // tuple; the FO3/FNV path leaves `soft_depth = 0.0` since
+                // BSShaderNoLightingProperty has no soft-depth field. The
+                // fragment shader gates the read on `material_kind == 101`,
+                // so non-effect materials emit the identity-pass-through
+                // tuple `[1.0, 1.0, 1.0, 1.0, 0.0]` (no view-angle fade,
+                // no soft-depth fade).
+                let effect_falloff = if material_kind
+                    == byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
+                {
+                    mat.and_then(|m| m.effect_falloff)
+                        .map(|f| {
+                            [
+                                f.start_angle,
+                                f.stop_angle,
+                                f.start_opacity,
+                                f.stop_opacity,
+                                f.soft_falloff_depth,
+                            ]
+                        })
+                        .unwrap_or([1.0, 1.0, 1.0, 1.0, 0.0])
+                } else {
+                    [1.0, 1.0, 1.0, 1.0, 0.0]
+                };
 
                 draw_commands.push(DrawCommand {
                     mesh_handle: mesh.0,
@@ -746,6 +775,7 @@ pub(crate) fn build_render_data(
                     multi_layer_refraction_scale,
                     multi_layer_inner_scale,
                     sparkle_rgba,
+                    effect_falloff,
                 });
             }
         }
@@ -886,6 +916,9 @@ pub(crate) fn build_render_data(
                         multi_layer_refraction_scale: 0.0,
                         multi_layer_inner_scale: [1.0, 1.0],
                         sparkle_rgba: [0.0; 4],
+                        // #620 — particles never carry an effect-shader
+                        // falloff cone; identity-pass-through.
+                        effect_falloff: [1.0, 1.0, 1.0, 1.0, 0.0],
                     });
                 }
             }
@@ -1183,6 +1216,7 @@ mod draw_sort_key_tests {
             multi_layer_refraction_scale: 0.0,
             multi_layer_inner_scale: [1.0, 1.0],
             sparkle_rgba: [0.0; 4],
+            effect_falloff: [1.0, 1.0, 1.0, 1.0, 0.0],
         }
     }
 
@@ -1715,5 +1749,99 @@ mod variant_pack_gating_tests {
         assert_eq!(c.skin_tint_rgba, [0.0; 4]);
         assert_eq!(c.hair_tint_rgb, [0.0; 3]);
         assert_eq!(c.multi_layer_envmap_strength, 0.0);
+    }
+
+    /// Regression for #620 / SK-D4-01. Material with
+    /// `effect_falloff = Some(...)` and `material_kind = 101`
+    /// (`MATERIAL_KIND_EFFECT_SHADER`) must surface the falloff cone
+    /// on the resulting `DrawCommand.effect_falloff`. Identity defaults
+    /// stay in place when `material_kind != 101` even if the Material
+    /// carries `effect_falloff` (the gate is on `material_kind`, not
+    /// on the option).
+    #[test]
+    fn effect_shader_kind_packs_falloff_cone() {
+        use byroredux_core::ecs::components::material::EffectFalloff;
+        let mut world = World::new();
+        let cam = world.spawn();
+        world.insert(cam, Transform::IDENTITY);
+        world.insert(cam, GlobalTransform::IDENTITY);
+        world.insert(cam, Camera::default());
+        world.insert_resource(ActiveCamera(cam));
+
+        let mesh_e = world.spawn();
+        world.insert(mesh_e, Transform::IDENTITY);
+        world.insert(mesh_e, GlobalTransform::IDENTITY);
+        world.insert(mesh_e, MeshHandle(1));
+        world.insert(mesh_e, TextureHandle(1));
+        world.insert(
+            mesh_e,
+            Material {
+                // `MATERIAL_KIND_EFFECT_SHADER` (101) — engine-synthesized
+                // upstream of the renderer, see render.rs:603.
+                material_kind: 101,
+                effect_falloff: Some(EffectFalloff {
+                    start_angle: 0.95,
+                    stop_angle: 0.30,
+                    start_opacity: 1.0,
+                    stop_opacity: 0.0,
+                    soft_falloff_depth: 8.0,
+                }),
+                ..Material::default()
+            },
+        );
+
+        let cmds = run_build(&world);
+        assert_eq!(cmds.len(), 1);
+        let c = &cmds[0];
+        assert_eq!(
+            c.effect_falloff,
+            [0.95, 0.30, 1.0, 0.0, 8.0],
+            "effect-shader DrawCommand must carry the captured cone"
+        );
+    }
+
+    /// Companion: when `material_kind != 101` the Material's
+    /// `effect_falloff` is ignored and the DrawCommand emits the
+    /// identity-pass-through tuple. Pre-fix the gate was missing — a
+    /// non-effect mesh authored with stale `effect_falloff` would have
+    /// faded incorrectly.
+    #[test]
+    fn non_effect_kind_emits_identity_falloff_even_when_material_has_it() {
+        use byroredux_core::ecs::components::material::EffectFalloff;
+        let mut world = World::new();
+        let cam = world.spawn();
+        world.insert(cam, Transform::IDENTITY);
+        world.insert(cam, GlobalTransform::IDENTITY);
+        world.insert(cam, Camera::default());
+        world.insert_resource(ActiveCamera(cam));
+
+        let mesh_e = world.spawn();
+        world.insert(mesh_e, Transform::IDENTITY);
+        world.insert(mesh_e, GlobalTransform::IDENTITY);
+        world.insert(mesh_e, MeshHandle(1));
+        world.insert(mesh_e, TextureHandle(1));
+        world.insert(
+            mesh_e,
+            Material {
+                material_kind: 0, // default lit, NOT EffectShader
+                effect_falloff: Some(EffectFalloff {
+                    start_angle: 0.5,
+                    stop_angle: 0.1,
+                    start_opacity: 1.0,
+                    stop_opacity: 0.0,
+                    soft_falloff_depth: 4.0,
+                }),
+                ..Material::default()
+            },
+        );
+
+        let cmds = run_build(&world);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(
+            cmds[0].effect_falloff,
+            [1.0, 1.0, 1.0, 1.0, 0.0],
+            "non-effect kind must emit identity-pass-through falloff \
+             regardless of Material.effect_falloff content"
+        );
     }
 }

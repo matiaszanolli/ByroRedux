@@ -1627,6 +1627,32 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 } else {
                     Some(Box::new(mesh.shader_type_fields.to_core()))
                 },
+                // #620 — BSEffectShaderProperty falloff cone (Skyrim+)
+                // OR BSShaderNoLightingProperty falloff cone (FO3/FNV
+                // SIBLING per #451). Either yields an `EffectFalloff`;
+                // BSShaderNoLighting fills `soft_falloff_depth = 0.0`
+                // since that block has no soft-depth field.
+                effect_falloff: mesh
+                    .effect_shader
+                    .as_ref()
+                    .map(|es| byroredux_core::ecs::components::material::EffectFalloff {
+                        start_angle: es.falloff_start_angle,
+                        stop_angle: es.falloff_stop_angle,
+                        start_opacity: es.falloff_start_opacity,
+                        stop_opacity: es.falloff_stop_opacity,
+                        soft_falloff_depth: es.soft_falloff_depth,
+                    })
+                    .or_else(|| {
+                        mesh.no_lighting_falloff.as_ref().map(|nl| {
+                            byroredux_core::ecs::components::material::EffectFalloff {
+                                start_angle: nl.start_angle,
+                                stop_angle: nl.stop_angle,
+                                start_opacity: nl.start_opacity,
+                                stop_opacity: nl.stop_opacity,
+                                soft_falloff_depth: 0.0,
+                            }
+                        })
+                    }),
             },
         );
 

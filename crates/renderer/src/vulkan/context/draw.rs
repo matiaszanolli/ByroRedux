@@ -923,6 +923,17 @@ impl VulkanContext {
                 sparkle_g: draw_cmd.sparkle_rgba[1],
                 sparkle_b: draw_cmd.sparkle_rgba[2],
                 sparkle_intensity: draw_cmd.sparkle_rgba[3],
+                // #620 — BSEffectShaderProperty falloff cone. Live
+                // only on `material_kind == 101` (EffectShader)
+                // meshes; identity values on the rest are no-ops.
+                falloff_start_angle: draw_cmd.effect_falloff[0],
+                falloff_stop_angle: draw_cmd.effect_falloff[1],
+                falloff_start_opacity: draw_cmd.effect_falloff[2],
+                falloff_stop_opacity: draw_cmd.effect_falloff[3],
+                soft_falloff_depth: draw_cmd.effect_falloff[4],
+                _falloff_pad0: 0.0,
+                _falloff_pad1: 0.0,
+                _falloff_pad2: 0.0,
                 // #221 — `NiMaterialProperty.diffuse` + `.ambient`. Per
                 // material tint multiplier on sampled albedo + per
                 // material ambient modulator. Identity (`[1.0; 3]`)

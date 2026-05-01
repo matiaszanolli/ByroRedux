@@ -119,7 +119,13 @@ struct GpuInstance {
     // doesn't consume either; layout mirror only to keep the 352 B
     // std430 stride in lockstep with triangle.{vert,frag} + ui.vert.
     float diffuseR, diffuseG, diffuseB, _diffusePad;               // offset 320
-    float ambientR, ambientG, ambientB, _ambientPad;               // offset 336 → total 352
+    float ambientR, ambientG, ambientB, _ambientPad;               // offset 336
+    // #620 — BSEffectShaderProperty falloff cone. Layout-only mirror;
+    // caustic compute pass never consumes these.
+    float falloffStartAngle, falloffStopAngle,
+          falloffStartOpacity, falloffStopOpacity;                 // offset 352
+    float softFalloffDepth, _falloffPad0,
+          _falloffPad1, _falloffPad2;                              // offset 368 → total 384
 };
 
 layout(std430, set = 0, binding = 5) readonly buffer InstanceBuffer {

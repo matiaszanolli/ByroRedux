@@ -130,7 +130,21 @@ struct GpuInstance {
     float ambientR;                    // offset 336
     float ambientG;                    // offset 340
     float ambientB;                    // offset 344
-    float _ambientPad;                 // offset 348 → total 352
+    float _ambientPad;                 // offset 348
+    // ── #620: BSEffectShaderProperty falloff cone ────────────────────
+    // View-angle + soft-depth falloff for `materialKind ==
+    // MATERIAL_KIND_EFFECT_SHADER (101)` meshes. Identity defaults
+    // (start/stop_angle=1.0, start/stop_opacity=1.0,
+    // softFalloffDepth=0.0) make the math a pass-through on every
+    // non-effect material.
+    float falloffStartAngle;           // offset 352  cos(angle), 1.0=cone center
+    float falloffStopAngle;            // offset 356  cos(angle), edge cutoff
+    float falloffStartOpacity;         // offset 360  alpha at start_angle
+    float falloffStopOpacity;          // offset 364  alpha at stop_angle
+    float softFalloffDepth;            // offset 368  world-units soft-depth fade
+    float _falloffPad0;                // offset 372
+    float _falloffPad1;                // offset 376
+    float _falloffPad2;                // offset 380 → total 384
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
@@ -804,9 +818,37 @@ void main() {
         vec3 emit = texColor.rgb
                   * vec3(inst.emissiveR, inst.emissiveG, inst.emissiveB)
                   * inst.emissiveMult;
+        // ── #620 / SK-D4-01: view-angle falloff cone ────────────────
+        //
+        // BSEffectShaderProperty (Skyrim+) and BSShaderNoLightingProperty
+        // (FO3/FNV, SIBLING #451) author a soft cone where alpha fades
+        // from `falloffStartOpacity` at `falloffStartAngle` to
+        // `falloffStopOpacity` at `falloffStopAngle`. Both angles are
+        // stored as cosine values, so larger == "more aligned with
+        // surface normal" / "closer to the cone center". Identity
+        // defaults (`start=stop=1.0`, `start_op=stop_op=1.0`) result in
+        // a divide-by-zero that the `denom > 0` branch sidesteps; with
+        // identity defaults the math reduces to a no-op (alpha stays
+        // at 1.0, the texColor.a value passes through unchanged).
+        //
+        // Soft-depth fade (`softFalloffDepth`) requires sampling the
+        // scene depth behind the fragment to fade alpha as the surface
+        // approaches an opaque background. That binding (a depth
+        // sampler bound to triangle.frag) is not in place yet — the
+        // field is plumbed end-to-end via GpuInstance for the future
+        // wiring, but the math below currently uses cone falloff only.
+        // Filed as a follow-up to SK-D4-01.
+        float coneFade = inst.falloffStartOpacity;
+        float denom = inst.falloffStartAngle - inst.falloffStopAngle;
+        if (denom > 1e-5) {
+            float cosNV = clamp(dot(N, V), 0.0, 1.0);
+            float t = clamp((cosNV - inst.falloffStopAngle) / denom, 0.0, 1.0);
+            coneFade = mix(inst.falloffStopOpacity, inst.falloffStartOpacity, t);
+        }
         // texColor.a already has `inst.materialAlpha` baked in upstream
-        // (line ~567), so don't double-multiply here.
-        outColor = vec4(emit, texColor.a);
+        // (line ~567), so don't double-multiply that factor here.
+        float finalAlpha = texColor.a * coneFade;
+        outColor = vec4(emit, finalAlpha);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(emit, 1.0);
         return;

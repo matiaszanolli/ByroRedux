@@ -35,7 +35,7 @@ pub const MAX_TOTAL_BONES: usize = 32768;
 /// Slot 0 of the bone palette is always the identity matrix.
 pub const IDENTITY_BONE_SLOT: u32 = 0;
 
-/// Maximum instances per frame. 8192 × 352 B = 2.81 MB/frame — trivial.
+/// Maximum instances per frame. 8192 × 384 B = 3.0 MB/frame — trivial.
 /// Covers large exterior cells with multiple loaded cells (~5000+ references).
 pub const MAX_INSTANCES: usize = 8192;
 
@@ -134,15 +134,18 @@ pub struct GpuTerrainTile {
 /// u32 slot name — when you add a field here, update the expected suffix
 /// in the assertion and rename the sentinel to match the new last field.
 ///
-/// Layout: 352 bytes per instance, 16-byte aligned (22×16). Grew from
+/// Layout: 384 bytes per instance, 16-byte aligned (24×16). Grew from
 /// 192 → 224 (#492, UV + material_alpha) → 320 (#562, Skyrim+
 /// BSLightingShaderProperty variant payloads — skin tint, hair tint,
 /// eye envmap centers, parallax-occ / multi-layer parallax, sparkle)
-/// → 352 (#221, NiMaterialProperty diffuse + ambient colors). The
-/// growth pattern is strictly append-only — every existing offset is
-/// preserved so shader struct mirrors only need to add fields, not
-/// renumber. The `size_of::<GpuInstance>() == 352` test below asserts
-/// the invariant; shader-side `GpuInstance` must match.
+/// → 352 (#221, NiMaterialProperty diffuse + ambient colors)
+/// → 384 (#620, BSEffectShaderProperty falloff cone — view-angle
+/// falloff + soft-depth feathering for magic VFX, decals, smoke
+/// planes, water edges). The growth pattern is strictly append-only
+/// — every existing offset is preserved so shader struct mirrors
+/// only need to add fields, not renumber. The
+/// `size_of::<GpuInstance>() == 384` test below asserts the invariant;
+/// shader-side `GpuInstance` must match.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuInstance {
@@ -341,8 +344,42 @@ pub struct GpuInstance {
     pub ambient_r: f32,    // 4 B, offset 336
     pub ambient_g: f32,    // 4 B, offset 340
     pub ambient_b: f32,    // 4 B, offset 344
-    pub _ambient_pad: f32, // 4 B, offset 348 → total 352
-                           // Struct is 352 bytes (22×16), 16-byte aligned for std430.
+    pub _ambient_pad: f32, // 4 B, offset 348
+    // ── #620 / SK-D4-01: BSEffectShaderProperty falloff cone ────────
+    //
+    // Two vec4 slots carrying the captured `BsEffectShaderData` cone
+    // parameters. The fragment shader's `material_kind ==
+    // MATERIAL_KIND_EFFECT_SHADER` (101) branch consumes them to fade
+    // alpha by view angle (`saturate((dot(N,V) - cos(stop_angle)) /
+    // (cos(start_angle) - cos(stop_angle)))`) AND soft-depth
+    // (`saturate((scene_depth - frag_depth) / soft_falloff_depth)`).
+    //
+    // Default values: identity-pass-through `(1, 1, 1, 1, 0)` — angle
+    // = 1.0 (cos(0) — every angle is "inside the cone"), opacities =
+    // 1.0 (no attenuation), soft_falloff_depth = 0.0 (no depth fade).
+    // Meshes whose `material_kind != 101` ignore these fields, so the
+    // defaults don't matter on the non-effect path.
+    /// Cosine of the angle where alpha = `falloff_start_opacity`.
+    /// `0.95 ≈ cos(18°)` is typical for Bethesda magic-aura cones.
+    pub falloff_start_angle: f32, // 4 B, offset 352
+    /// Cosine of the angle where alpha = `falloff_stop_opacity`.
+    pub falloff_stop_angle: f32, // 4 B, offset 356
+    /// Alpha at `start_angle`. `1.0` (full opacity at the cone center)
+    /// is typical for Bethesda content.
+    pub falloff_start_opacity: f32, // 4 B, offset 360
+    /// Alpha at `stop_angle`. `0.0` (fully feathered at the cone
+    /// edge) is typical.
+    pub falloff_stop_opacity: f32, // 4 B, offset 364
+    /// Soft-depth fade distance in world units. The fragment shader
+    /// fades alpha as the surface approaches an opaque background to
+    /// avoid hard edge bleed where, e.g., a smoke plane intersects a
+    /// floor. `0.0` disables the fade. Captured value samples seen in
+    /// vanilla Skyrim VFX: `8.0` (smoke), `16.0` (water-edge foam).
+    pub soft_falloff_depth: f32, // 4 B, offset 368
+    pub _falloff_pad0: f32, // 4 B, offset 372
+    pub _falloff_pad1: f32, // 4 B, offset 376
+    pub _falloff_pad2: f32, // 4 B, offset 380 → total 384
+                            // Struct is 384 bytes (24×16), 16-byte aligned for std430.
 }
 
 impl Default for GpuInstance {
@@ -435,6 +472,20 @@ impl Default for GpuInstance {
             ambient_g: 1.0,
             ambient_b: 1.0,
             _ambient_pad: 0.0,
+            // #620 — BSEffectShaderProperty falloff defaults.
+            // Identity-pass-through values: angle=1.0 (cos(0°), every
+            // angle is "inside the cone"), opacity=1.0 (no attenuation),
+            // depth=0.0 (no soft-depth fade). Meshes whose
+            // `material_kind != 101` (MATERIAL_KIND_EFFECT_SHADER)
+            // ignore these fields, so the defaults are conservative.
+            falloff_start_angle: 1.0,
+            falloff_stop_angle: 1.0,
+            falloff_start_opacity: 1.0,
+            falloff_stop_opacity: 1.0,
+            soft_falloff_depth: 0.0,
+            _falloff_pad0: 0.0,
+            _falloff_pad1: 0.0,
+            _falloff_pad2: 0.0,
         }
     }
 }
@@ -1503,7 +1554,7 @@ mod gpu_instance_layout_tests {
     /// update protocol (grep for `struct GpuInstance` in the shaders tree
     /// before touching this struct).
     #[test]
-    fn gpu_instance_is_352_bytes_std430_compatible() {
+    fn gpu_instance_is_384_bytes_std430_compatible() {
         // 176 → 192 in #453 (parallax/env slots).
         // 192 → 224 in #492 (uv_offset + uv_scale + material_alpha).
         // 224 → 320 in #562 (Skyrim+ BSLightingShaderProperty variant
@@ -1511,11 +1562,13 @@ mod gpu_instance_layout_tests {
         // EyeEnvmap / SparkleSnow — packed as 6 vec4s).
         // 320 → 352 in #221 (NiMaterialProperty diffuse + ambient
         // colors — 2 padded vec4 slots).
-        // 22 × 16 = 352.
+        // 352 → 384 in #620 (BSEffectShaderProperty falloff cone —
+        // 5 floats packed into 2 vec4 slots).
+        // 24 × 16 = 384.
         assert_eq!(
             size_of::<GpuInstance>(),
-            352,
-            "GpuInstance must stay 352 B to match std430 shader layout"
+            384,
+            "GpuInstance must stay 384 B to match std430 shader layout"
         );
     }
 
@@ -1610,6 +1663,16 @@ mod gpu_instance_layout_tests {
         assert_eq!(offset_of!(GpuInstance, ambient_g), 340);
         assert_eq!(offset_of!(GpuInstance, ambient_b), 344);
         assert_eq!(offset_of!(GpuInstance, _ambient_pad), 348);
+        // #620 — BSEffectShaderProperty falloff cone. Two padded vec4
+        // slots appended at the end of the struct.
+        assert_eq!(offset_of!(GpuInstance, falloff_start_angle), 352);
+        assert_eq!(offset_of!(GpuInstance, falloff_stop_angle), 356);
+        assert_eq!(offset_of!(GpuInstance, falloff_start_opacity), 360);
+        assert_eq!(offset_of!(GpuInstance, falloff_stop_opacity), 364);
+        assert_eq!(offset_of!(GpuInstance, soft_falloff_depth), 368);
+        assert_eq!(offset_of!(GpuInstance, _falloff_pad0), 372);
+        assert_eq!(offset_of!(GpuInstance, _falloff_pad1), 376);
+        assert_eq!(offset_of!(GpuInstance, _falloff_pad2), 380);
     }
 
     /// Regression: #309 — `VkDrawIndexedIndirectCommand` is a Vulkan-
@@ -1728,6 +1791,17 @@ mod gpu_instance_layout_tests {
                 // std430 stride stays byte-identical across the four.
                 "diffuseR",
                 "ambientR",
+                // #620 — BSEffectShaderProperty falloff cone. Two
+                // padded vec4 slots; only triangle.frag consumes the
+                // values today (view-angle + soft-depth fade for
+                // material_kind == 101 EffectShader meshes), but every
+                // copy must declare the layout so the 384 B std430
+                // stride stays byte-identical across the four.
+                "falloffStartAngle",
+                "falloffStopAngle",
+                "falloffStartOpacity",
+                "falloffStopOpacity",
+                "softFalloffDepth",
             ] {
                 assert!(
                     src.contains(needle),

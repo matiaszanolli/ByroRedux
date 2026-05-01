@@ -212,6 +212,14 @@ pub struct DrawCommand {
     pub multi_layer_inner_scale: [f32; 2],
     /// SparkleSnow (material_kind == 14) sparkle RGBA: color + intensity.
     pub sparkle_rgba: [f32; 4],
+    // ── #620 / SK-D4-01: BSEffectShaderProperty falloff cone ────────
+    /// `[start_angle, stop_angle, start_opacity, stop_opacity, soft_falloff_depth]`
+    /// pulled from `MaterialInfo::effect_shader` when
+    /// `material_kind == MATERIAL_KIND_EFFECT_SHADER`. Identity-pass-through
+    /// `[1.0, 1.0, 1.0, 1.0, 0.0]` for non-effect materials. The fragment
+    /// shader's effect-shader branch consumes them to fade alpha by view
+    /// angle and soft-depth distance.
+    pub effect_falloff: [f32; 5],
 }
 
 /// Sky rendering parameters passed per-frame to the composite shader.
