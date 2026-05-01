@@ -49,6 +49,35 @@ pub struct BlasEntry {
     /// entries to decide the minimum scratch needed post-eviction. See
     /// issue #495.
     pub build_scratch_size: vk::DeviceSize,
+    /// Number of [`AccelerationManager::refit_skinned_blas`] calls
+    /// against this entry since the last fresh BUILD. Bumped each
+    /// frame for skinned BLAS; stays at 0 for static (mesh-keyed)
+    /// BLAS that never refit.
+    ///
+    /// Vulkan REFIT-only updates progressively degrade BVH traversal
+    /// quality as vertex motion exceeds the original BUILD bounds —
+    /// a long animation cycle (an NPC walking 30s) eventually has
+    /// the refit BLAS noticeably slower to traverse than a fresh
+    /// BUILD. The renderer compares this counter against
+    /// [`SKINNED_BLAS_REFIT_THRESHOLD`] each frame and triggers a
+    /// drop+rebuild when the threshold is reached. See #679 / AS-8-9.
+    pub refit_count: u32,
+}
+
+/// REFIT-count threshold beyond which a skinned BLAS is dropped and
+/// rebuilt to reset the BVH bounds. 600 frames ≈ 10 s @ 60 FPS —
+/// long enough to amortise the rebuild cost over many cheap refits,
+/// short enough that the worst-case animation cycle doesn't drift
+/// far past the original BVH. See #679 / AS-8-9.
+pub const SKINNED_BLAS_REFIT_THRESHOLD: u32 = 600;
+
+/// Pure predicate: does a skinned BLAS with `refit_count` refits
+/// since its last fresh BUILD warrant a drop+rebuild this frame?
+/// Pulled out so the threshold logic is unit-testable without a
+/// Vulkan context.
+#[inline]
+fn should_rebuild_skinned_blas_after(refit_count: u32) -> bool {
+    refit_count >= SKINNED_BLAS_REFIT_THRESHOLD
 }
 
 /// Top-level acceleration structure state.
@@ -737,6 +766,9 @@ impl AccelerationManager {
             last_used_frame: self.frame_counter,
             size_bytes: blas_size,
             build_scratch_size: sizes.build_scratch_size,
+            // Static BLAS never refit; the field stays at zero for
+            // their entire lifetime. See #679.
+            refit_count: 0,
         });
         // BLAS map mutated — see #300.
         self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
@@ -934,6 +966,9 @@ impl AccelerationManager {
                 last_used_frame: self.frame_counter,
                 size_bytes: blas_size,
                 build_scratch_size: sizes.build_scratch_size,
+                // Fresh BUILD resets the refit chain — the new BVH
+                // bounds tightly fit the current pose. See #679.
+                refit_count: 0,
             },
         );
         self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
@@ -1054,7 +1089,34 @@ impl AccelerationManager {
             );
         }
         entry.last_used_frame = self.frame_counter;
+        // #679 / AS-8-9 — track refit chain length so the renderer
+        // can drop+rebuild the BLAS once the BVH degrades from too
+        // many in-place updates. `saturating_add` rather than `+=`
+        // is paranoia: a one-frame overflow is harmless (the
+        // threshold check still fires) but avoids panicking in
+        // debug builds if a hypothetical pathological case keeps
+        // refitting an entity for ~136 years at 60 FPS without ever
+        // tripping the rebuild gate.
+        entry.refit_count = entry.refit_count.saturating_add(1);
         Ok(())
+    }
+
+    /// Decide whether the skinned BLAS for `entity_id` has refit
+    /// enough times that its BVH quality has degraded and it should
+    /// be dropped + rebuilt this frame. Returns `false` for missing
+    /// entries (no BLAS = nothing to rebuild) and for skinned BLAS
+    /// whose refit count is below [`SKINNED_BLAS_REFIT_THRESHOLD`].
+    ///
+    /// The caller (typically `draw_frame`) should drop the entry
+    /// via [`Self::drop_skinned_blas`] and then re-enter the
+    /// first-sight build path so the next frame's
+    /// `cmd_build_acceleration_structures(BUILD)` produces a fresh
+    /// BVH that tightly fits the current pose. See #679 / AS-8-9.
+    pub fn should_rebuild_skinned_blas(&self, entity_id: EntityId) -> bool {
+        self.skinned_blas
+            .get(&entity_id)
+            .map(|entry| should_rebuild_skinned_blas_after(entry.refit_count))
+            .unwrap_or(false)
     }
 
     /// Emit the inter-build scratch-buffer serialise barrier required
@@ -1645,6 +1707,8 @@ impl AccelerationManager {
                 last_used_frame: self.frame_counter,
                 size_bytes: blas_size,
                 build_scratch_size,
+                // Static (mesh-keyed) BLAS never refit. See #679.
+                refit_count: 0,
             });
         }
         // BLAS map mutated (one bump for the whole batch — generation is
@@ -2560,6 +2624,39 @@ impl AccelerationManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression for #679 / AS-8-9. The skinned-BLAS rebuild
+    /// predicate must fire only when the in-place refit chain has
+    /// reached the configured threshold; below the threshold the
+    /// BLAS keeps refitting cheaply.
+    #[test]
+    fn skinned_blas_rebuild_predicate_thresholds() {
+        // Below threshold — keep refitting.
+        assert!(!should_rebuild_skinned_blas_after(0));
+        assert!(!should_rebuild_skinned_blas_after(1));
+        assert!(!should_rebuild_skinned_blas_after(
+            SKINNED_BLAS_REFIT_THRESHOLD - 1
+        ));
+        // At threshold — fire.
+        assert!(should_rebuild_skinned_blas_after(
+            SKINNED_BLAS_REFIT_THRESHOLD
+        ));
+        // Above threshold — fire (caller missed a frame; still rebuild).
+        assert!(should_rebuild_skinned_blas_after(
+            SKINNED_BLAS_REFIT_THRESHOLD + 1
+        ));
+        assert!(should_rebuild_skinned_blas_after(u32::MAX));
+    }
+
+    /// Sibling check: the threshold must be a sane number of frames.
+    /// At 60 FPS the issue suggested ~10 s = 600 frames — too low
+    /// would thrash the rebuild path, too high defeats the bug fix.
+    #[test]
+    fn skinned_blas_threshold_is_in_sane_range() {
+        // 5 s ≤ threshold ≤ 30 s at 60 FPS.
+        assert!(SKINNED_BLAS_REFIT_THRESHOLD >= 300);
+        assert!(SKINNED_BLAS_REFIT_THRESHOLD <= 1800);
+    }
 
     /// Regression for #504: the scratch-shrink helper must reclaim
     /// capacity after a past peak frame while leaving small working

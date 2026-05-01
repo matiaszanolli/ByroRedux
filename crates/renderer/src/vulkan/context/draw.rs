@@ -459,8 +459,29 @@ impl VulkanContext {
                     // First-sight setup: for each entity that doesn't
                     // yet have a SkinSlot OR a skinned BLAS, perform
                     // sync compute prime + sync BLAS BUILD.
+                    //
+                    // #679 / AS-8-9 — also re-enter this path for
+                    // entities whose BLAS has refit too many times
+                    // and degraded BVH traversal quality. Drop the
+                    // stale BLAS first; the loop below then sees
+                    // `needs_blas = true` and emits a fresh BUILD
+                    // against the current pose. The slot's output
+                    // buffer is preserved (compute keeps streaming
+                    // poses through it), so only the BLAS object
+                    // itself is replaced.
                     for &(entity_id, push, idx_buffer, idx_count, vertex_count) in &dispatches {
                         let needs_slot = !self.skin_slots.contains_key(&entity_id);
+                        if accel.should_rebuild_skinned_blas(entity_id) {
+                            log::info!(
+                                "skin_compute BLAS rebuild for entity {entity_id} — \
+                                 refit chain reached {} frames, dropping for fresh BUILD (#679)",
+                                accel
+                                    .skinned_blas_entry(entity_id)
+                                    .map(|e| e.refit_count)
+                                    .unwrap_or(0),
+                            );
+                            accel.drop_skinned_blas(entity_id);
+                        }
                         let needs_blas = accel.skinned_blas_entry(entity_id).is_none();
                         if !needs_slot && !needs_blas {
                             continue;
