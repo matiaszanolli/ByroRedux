@@ -85,21 +85,16 @@ pub(super) fn create_render_pass(
     let raw_indirect_attachment = make_color(raw_indirect_format);
     let albedo_attachment = make_color(albedo_format);
 
-    // Depth is LOADED from the depth pre-pass (#779 / D1-M3). Pre-pass
-    // runs alpha-test discard with no color writes, populates depth
-    // buffer correctly, and ends with the depth attachment in
-    // DEPTH_STENCIL_ATTACHMENT_OPTIMAL. Main pass then early-Z's against
-    // populated depth (with `layout(early_fragment_tests) in;` on
-    // triangle.frag). Final layout is READ_ONLY for SSAO + composite
-    // shader sampling.
+    // Depth is STORED (not DONT_CARE) so the SSAO compute pass can read it
+    // after the render pass. Final layout is READ_ONLY for shader sampling.
     let depth_attachment = vk::AttachmentDescription::default()
         .format(depth_format)
         .samples(vk::SampleCountFlags::TYPE_1)
-        .load_op(vk::AttachmentLoadOp::LOAD)
+        .load_op(vk::AttachmentLoadOp::CLEAR)
         .store_op(vk::AttachmentStoreOp::STORE)
         .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
         .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-        .initial_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
         .final_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 
     // Attachments 0..=5 are color, attachment 6 is depth.
@@ -240,125 +235,6 @@ pub(super) fn create_main_framebuffers(
                 device
                     .create_framebuffer(&create_info, None)
                     .context("Failed to create main framebuffer")
-            }
-        })
-        .collect()
-}
-
-/// Depth pre-pass render pass — depth attachment only. CLEARed at
-/// the start, STOREd at the end so the main pass can LOAD it via
-/// `vk::AttachmentLoadOp::LOAD`. Final layout
-/// DEPTH_STENCIL_ATTACHMENT_OPTIMAL matches the main pass's incoming
-/// layout. See #779 / D1-M3.
-///
-/// The depth pre-pass writes a correct depth buffer (including alpha-
-/// test discards via the depth_prepass.frag shader) before the main
-/// pass runs. With `layout(early_fragment_tests) in;` on
-/// triangle.frag, the main pass then early-Z's against this depth and
-/// skips ray queries + G-buffer writes for overdrawn fragments —
-/// without producing the ghost-rectangle artifact that would result
-/// from naive `early_fragment_tests` + alpha-test discard.
-pub(super) fn create_depth_prepass_render_pass(
-    device: &ash::Device,
-    depth_format: vk::Format,
-) -> Result<vk::RenderPass> {
-    let depth_attachment = vk::AttachmentDescription::default()
-        .format(depth_format)
-        .samples(vk::SampleCountFlags::TYPE_1)
-        .load_op(vk::AttachmentLoadOp::CLEAR)
-        .store_op(vk::AttachmentStoreOp::STORE)
-        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-        .initial_layout(vk::ImageLayout::UNDEFINED)
-        .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-
-    let depth_ref = vk::AttachmentReference {
-        attachment: 0,
-        layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-    };
-
-    // Subpass writes only depth; no color attachments.
-    let subpass = vk::SubpassDescription::default()
-        .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-        .depth_stencil_attachment(&depth_ref);
-
-    // Incoming dep: previous frame's main pass may still be reading
-    // depth as SHADER_READ (composite/SSAO). Wait on FRAGMENT_SHADER
-    // before transitioning back to ATTACHMENT_OPTIMAL.
-    let dependency_in = vk::SubpassDependency::default()
-        .src_subpass(vk::SUBPASS_EXTERNAL)
-        .dst_subpass(0)
-        .src_stage_mask(
-            vk::PipelineStageFlags::FRAGMENT_SHADER
-                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
-                | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-        )
-        .src_access_mask(vk::AccessFlags::SHADER_READ)
-        .dst_stage_mask(
-            vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
-                | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-        )
-        .dst_access_mask(
-            vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
-                | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-        );
-
-    // Outgoing dep: depth-write completes before the main pass's
-    // EARLY_FRAGMENT_TESTS reads it. The main render pass's incoming
-    // dep mirrors this on the read side.
-    let dependency_out = vk::SubpassDependency::default()
-        .src_subpass(0)
-        .dst_subpass(vk::SUBPASS_EXTERNAL)
-        .src_stage_mask(vk::PipelineStageFlags::LATE_FRAGMENT_TESTS)
-        .src_access_mask(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE)
-        .dst_stage_mask(vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS)
-        .dst_access_mask(
-            vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
-                | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-        );
-
-    let attachments = [depth_attachment];
-    let subpasses = [subpass];
-    let dependencies = [dependency_in, dependency_out];
-
-    let create_info = vk::RenderPassCreateInfo::default()
-        .attachments(&attachments)
-        .subpasses(&subpasses)
-        .dependencies(&dependencies);
-
-    let render_pass = unsafe {
-        device
-            .create_render_pass(&create_info, None)
-            .context("Failed to create depth pre-pass render pass")?
-    };
-
-    log::info!("Depth pre-pass render pass created (#779)");
-    Ok(render_pass)
-}
-
-/// Create one depth pre-pass framebuffer per frame-in-flight slot.
-/// All slots share the same depth view (the engine has a single depth
-/// image; per-frame-in-flight only matters for color attachments). #779.
-pub(super) fn create_depth_prepass_framebuffers(
-    device: &ash::Device,
-    render_pass: vk::RenderPass,
-    depth_view: vk::ImageView,
-    extent: vk::Extent2D,
-    frames_in_flight: usize,
-) -> Result<Vec<vk::Framebuffer>> {
-    (0..frames_in_flight)
-        .map(|_| {
-            let attachments = [depth_view];
-            let create_info = vk::FramebufferCreateInfo::default()
-                .render_pass(render_pass)
-                .attachments(&attachments)
-                .width(extent.width)
-                .height(extent.height)
-                .layers(1);
-            unsafe {
-                device
-                    .create_framebuffer(&create_info, None)
-                    .context("Failed to create depth pre-pass framebuffer")
             }
         })
         .collect()
