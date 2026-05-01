@@ -655,6 +655,25 @@ pub struct VulkanContext {
     /// transition. See #496.
     terrain_tile_scratch: Vec<scene_buffer::GpuTerrainTile>,
     render_pass: vk::RenderPass,
+    /// Depth pre-pass render pass (#779). Single depth attachment,
+    /// CLEAR + STORE, ends in DEPTH_STENCIL_ATTACHMENT_OPTIMAL so the
+    /// main pass's `loadOp = LOAD` reads it back. Runs before the main
+    /// pass to populate depth correctly with alpha-test discards;
+    /// without this, `layout(early_fragment_tests) in;` on
+    /// triangle.frag would commit rectangular depth footprints on
+    /// alpha-tested geometry (foliage, fences, hair), creating visible
+    /// "ghost rectangle" artifacts where transparent areas should show
+    /// geometry behind. See #779 / D1-M3.
+    depth_prepass_render_pass: vk::RenderPass,
+    /// One depth pre-pass framebuffer per frame-in-flight. All slots
+    /// share the same depth view (single depth image). #779.
+    depth_prepass_framebuffers: Vec<vk::Framebuffer>,
+    /// Depth pre-pass pipelines: index 0 = BACK-cull, index 1 = NONE-
+    /// cull (foliage / cloth / glass billboards). Same vertex input
+    /// + pipeline layout as the triangle pipelines so the existing
+    /// per-frame descriptor binds work in the prepass loop. #779.
+    depth_prepass_pipeline: vk::Pipeline,
+    depth_prepass_pipeline_two_sided: vk::Pipeline,
     swapchain_state: SwapchainState,
 
     pub allocator: Option<SharedAllocator>,
@@ -775,8 +794,18 @@ impl VulkanContext {
             depth_format,
         )?;
 
+        // 10a. Depth pre-pass render pass (#779). Runs before the main
+        // pass; populates depth with alpha-test discards correctly.
+        // Main pass then `loadOp = LOAD`s this depth and early-Z's
+        // against it via `layout(early_fragment_tests) in;` on
+        // triangle.frag.
+        let depth_prepass_render_pass =
+            create_depth_prepass_render_pass(&device, depth_format)?;
+
         // 10. Main render pass: 6 color attachments (HDR + G-buffer +
-        // raw_indirect + albedo) + depth.
+        // raw_indirect + albedo) + depth. Depth `loadOp = LOAD` reads
+        // from the pre-pass above; initial layout matches the pre-
+        // pass's final layout (DEPTH_STENCIL_ATTACHMENT_OPTIMAL).
         let render_pass = create_render_pass(
             &device,
             HDR_FORMAT,
@@ -947,6 +976,17 @@ impl VulkanContext {
             scene_buffers.descriptor_set_layout,
             pipeline_cache,
         )?;
+
+        // 14b. Depth pre-pass pipelines (#779). Reuses the triangle
+        // pipeline layout so per-frame descriptor binds work unchanged
+        // in the prepass loop.
+        let (depth_prepass_pipeline, depth_prepass_pipeline_two_sided) =
+            pipeline::create_depth_prepass_pipeline(
+                &device,
+                depth_prepass_render_pass,
+                pipeline_cache,
+                pipelines.layout,
+            )?;
 
         // 15. UI overlay pipeline (no depth, alpha blend, passthrough shaders)
         let pipeline_ui = pipeline::create_ui_pipeline(
@@ -1209,6 +1249,17 @@ impl VulkanContext {
             swapchain_state.extent,
         )?;
 
+        // 15b. Depth pre-pass framebuffers (#779). All slots share the
+        // same depth view — there's a single depth image, only color
+        // attachments are per-frame-in-flight.
+        let depth_prepass_framebuffers = create_depth_prepass_framebuffers(
+            &device,
+            depth_prepass_render_pass,
+            depth_image_view,
+            swapchain_state.extent,
+            sync::MAX_FRAMES_IN_FLIGHT,
+        )?;
+
         // 16. Command buffers — one per frame-in-flight (NOT per swapchain
         // image). The in_flight fence is per-frame, so tying command buffer
         // reuse to the same index makes the fence → cmd-buf relationship
@@ -1237,6 +1288,10 @@ impl VulkanContext {
             swapchain_state,
             allocator: Some(gpu_allocator),
             render_pass,
+            depth_prepass_render_pass,
+            depth_prepass_framebuffers,
+            depth_prepass_pipeline,
+            depth_prepass_pipeline_two_sided,
             pipeline_cache,
             pipeline: pipelines.opaque,
             pipeline_two_sided: pipelines.opaque_two_sided,
@@ -1512,6 +1567,15 @@ impl Drop for VulkanContext {
                 .free_command_buffers(self.command_pool, &self.command_buffers);
             self.device.destroy_command_pool(self.command_pool, None);
             destroy_main_framebuffers(&self.device, &mut self.framebuffers);
+            // Depth pre-pass cleanup (#779). Framebuffers reuse the
+            // generic destroyer (same shape — Vec<vk::Framebuffer>).
+            destroy_main_framebuffers(&self.device, &mut self.depth_prepass_framebuffers);
+            self.device
+                .destroy_pipeline(self.depth_prepass_pipeline, None);
+            self.device
+                .destroy_pipeline(self.depth_prepass_pipeline_two_sided, None);
+            self.device
+                .destroy_render_pass(self.depth_prepass_render_pass, None);
             // Destroy texture registry, scene buffers, and acceleration structures.
             if let Some(ref alloc) = self.allocator {
                 self.texture_registry.destroy(&self.device, alloc);
@@ -1659,8 +1723,9 @@ impl Drop for VulkanContext {
 
 // Helper functions are in helpers.rs — use helpers:: prefix.
 use helpers::{
-    allocate_command_buffers, create_command_pool, create_depth_resources,
-    create_main_framebuffers, create_render_pass, create_transfer_pool, destroy_depth_resources,
-    destroy_main_framebuffers, destroy_render_pass_pipelines, find_depth_format,
-    load_or_create_pipeline_cache, save_pipeline_cache,
+    allocate_command_buffers, create_command_pool, create_depth_prepass_framebuffers,
+    create_depth_prepass_render_pass, create_depth_resources, create_main_framebuffers,
+    create_render_pass, create_transfer_pool, destroy_depth_resources, destroy_main_framebuffers,
+    destroy_render_pass_pipelines, find_depth_format, load_or_create_pipeline_cache,
+    save_pipeline_cache,
 };
