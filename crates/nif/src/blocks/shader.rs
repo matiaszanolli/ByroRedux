@@ -47,13 +47,13 @@ pub struct BSShaderPPLightingProperty {
     pub shader: BSShaderPropertyData,
     pub texture_clamp_mode: u32,
     pub texture_set_ref: BlockRef,
-    /// Refraction strength (0.0–1.0). Present when bsver >= 15.
+    /// Refraction strength (0.0–1.0). Present when bsver > 14.
     pub refraction_strength: f32,
-    /// Refraction fire period. Present when bsver >= 15.
+    /// Refraction fire period. Present when bsver > 14.
     pub refraction_fire_period: i32,
-    /// Parallax max passes. Present when bsver >= 24.
+    /// Parallax max passes. Present when bsver > 24.
     pub parallax_max_passes: f32,
-    /// Parallax scale. Present when bsver >= 24.
+    /// Parallax scale. Present when bsver > 24.
     pub parallax_scale: f32,
     /// Emissive glow color (RGBA). nif.xml: "Emissive Color" vercond="#BS_GT_FO3#" (bsver > 34).
     /// Defaults to black/opaque when absent (FO3/FNV bsver <= 34).
@@ -84,16 +84,20 @@ impl BSShaderPPLightingProperty {
         let (shader, texture_clamp_mode) = BSShaderPropertyData::parse_fo3(stream)?;
         let texture_set_ref = stream.read_block_ref()?;
 
-        // nif.xml: Refraction Strength (f32) + Refraction Fire Period (i32) for bsver >= 15.
+        // nif.xml:6245-6246 — Refraction Strength (f32) + Refraction Fire Period (i32)
+        // vercond="#BSVER# #GT# 14" (strictly greater).
         let bsver = stream.bsver();
-        let (refraction_strength, refraction_fire_period) = if bsver >= 15 {
+        let (refraction_strength, refraction_fire_period) = if bsver > 14 {
             (stream.read_f32_le()?, stream.read_i32_le()?)
         } else {
             (0.0, 0)
         };
 
-        // nif.xml: Parallax Max Passes (f32) + Parallax Scale (f32) for bsver >= 24.
-        let (parallax_max_passes, parallax_scale) = if bsver >= 24 {
+        // nif.xml:6247-6248 — Parallax Max Passes (f32) + Parallax Scale (f32)
+        // vercond="#BSVER# #GT# 24" (strictly greater). FO3 ships content at
+        // bsver=24 which must NOT carry these fields; the prior `>= 24` gate
+        // over-read 8 phantom bytes on those files (#774 / FO3-1-PARGATE).
+        let (parallax_max_passes, parallax_scale) = if bsver > 24 {
             (stream.read_f32_le()?, stream.read_f32_le()?)
         } else {
             (4.0, 1.0)

@@ -51,13 +51,15 @@ fn build_bsshader_bytes_with_emissive(user_version_2: u32, emissive: Option<[f32
     data.extend_from_slice(&3u32.to_le_bytes());
     // texture_set_ref (i32)
     data.extend_from_slice(&5i32.to_le_bytes());
-    // Refraction/parallax fields — bsver >= 15 reads refraction, bsver >= 24 adds parallax.
-    // FNV: bsver=34, so both are present. Oblivion: bsver=0, so neither.
-    if user_version_2 >= 15 {
+    // nif.xml:6245-6248 — refraction fields present for bsver > 14, parallax
+    // for bsver > 24 (strict). FNV: bsver=34, both present. FO3 ships some
+    // content at bsver=24 (parallax absent — boundary case for #774).
+    // Oblivion: bsver=0, neither.
+    if user_version_2 > 14 {
         data.extend_from_slice(&0.5f32.to_le_bytes()); // refraction_strength
         data.extend_from_slice(&10i32.to_le_bytes()); // refraction_fire_period
     }
-    if user_version_2 >= 24 {
+    if user_version_2 > 24 {
         data.extend_from_slice(&4.0f32.to_le_bytes()); // parallax_max_passes
         data.extend_from_slice(&1.5f32.to_le_bytes()); // parallax_scale
     }
@@ -169,6 +171,30 @@ fn parse_tile_shader_property_fo3() {
     assert_eq!(prop.texture_clamp_mode, 3);
     assert_eq!(prop.file_name, "textures\\interface\\airtimer.dds");
     assert_eq!(prop.shader.shader_type, 1);
+}
+
+/// Regression for #774 / FO3-1-PARGATE — nif.xml:6247-6248 specifies
+/// `vercond="#BSVER# #GT# 24"` (strictly greater) for the parallax
+/// fields. FO3 ships content at bsver=24 which must NOT carry the
+/// 8-byte parallax trailer; the prior `>= 24` gate over-read 8 phantom
+/// bytes (masked at the recoverable-rate metric by `block_sizes`
+/// re-alignment in the outer dispatch loop).
+#[test]
+fn parse_bsshader_fo3_bsver24_skips_parallax() {
+    let header = make_header(11, 24);
+    let data = build_bsshader_bytes(24);
+    let mut stream = NifStream::new(&data, &header);
+
+    let prop = BSShaderPPLightingProperty::parse(&mut stream).unwrap();
+    assert_eq!(prop.texture_set_ref.index(), Some(5));
+    // Refraction reads at bsver > 14, so bsver=24 must populate them.
+    assert!((prop.refraction_strength - 0.5).abs() < 1e-6);
+    assert_eq!(prop.refraction_fire_period, 10);
+    // Parallax gate is bsver > 24, so bsver=24 must default.
+    assert!((prop.parallax_max_passes - 4.0).abs() < 1e-6);
+    assert!((prop.parallax_scale - 1.0).abs() < 1e-6);
+    // 38 base + 8 refraction = 46 bytes; no parallax trailer.
+    assert_eq!(stream.position(), 46);
 }
 
 #[test]
