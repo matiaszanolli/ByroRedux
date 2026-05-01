@@ -12,7 +12,7 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-04-28.
+**Last verified**: 2026-05-01.
 **Bench-of-record**: Prospector Saloon 172.6 FPS / 5.79 ms — commit
 `6a6950a`, wall-clock bench. Scene is glass-heavy (bottles, pitcher,
 marquee sign); RT refraction/reflection cost is representative of a
@@ -126,7 +126,7 @@ typically gates a specific milestone.
 |--------|--------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------|
 | ~~M29~~ | ~~Skinning chain verification~~ | **Closed.** End-to-end skinning chain (`SkinnedMesh` ECS → bone-palette → vertex shader) verified on FNV NiTriShape path via 7 integration tests in `byroredux/tests/skinning_e2e.rs` (4 FNV + 3 SSE). Bones populate, names round-trip, partition-local→global remap correct, palette responds to bone Transform mutations. CPU palette eval shipped; compute-shader dispatch deferred to M29.5 (gated on M41 producing measurable load). Defensive `MAX_TOTAL_BONES` overflow guard added (`render.rs:204`, `Once`-gated warn) so the silent truncation past 32 skinned meshes is no longer invisible. SSE BSTriShape per-vertex skin path filed as #638 (separate parser bug, not in M29 scope). | —                  |
 | M29.5  | Compute-shader palette dispatch | Move CPU palette eval to a Vulkan compute pass (workgroup-per-skinned-mesh, DEVICE_LOCAL bone SSBO + COMPUTE→VERTEX barrier). Gated on M41 (workload exists; today's bench has 0 skinned meshes) and R1 (DrawCommand → material_id reduces sibling churn).                                                                    | M41, R1            |
-| M41.0  | FaceGen heads render           | Spawn NPC entities with HDPT / EYES / HAIR meshes assembled into the NPC body. Parse already lands via #458 (misc stubs) + #440 (FaceGen NIF geometry fix). Skinning chain verified by M29.                                                                                                                                | M29, #458          |
+| M41.0  | FaceGen heads render           | **Phases 0–4 shipped** in Session 24 — Phase 0 foundation (parser gate, path helpers), Phase 1a `GameKind` predicates + pre-FO4 FaceGen recipe parser, Phase 1b kf-era bind-pose spawn, Phase 2 idle-KF wiring, Phase 3a new `byroredux-facegen` crate (.egm/.egt/.tri), Phase 3b FGGS sym-morph evaluator, Phase 3c FGGA asym morphs, Phase 4 pre-baked FaceGen dispatch for Skyrim+. AnimationPlayer attach gated behind `BYRO_NPC_ANIMATION_EXPERIMENT` env var (#772) pending visible-content diagnosis. M41.0.5 GPU per-vertex morph runtime + M41.x Havok `.hkx` minimal stub remain. | M29, #458          |
 | M41    | NPC spawning                   | Resolve NPC_ / CREA records → ECS entities with race/class/equipped armor + weapons. Spawn ACHR references from CELL REFRs. Movement is fly-by-waypoint until M42. SSE actors will hit #638 until that lands.                                                                                                              | M24, M29, M41.0    |
 | M40    | World streaming                | **Phase 1a/1b shipped** in Session 23 — `streaming` module with diff logic (`cdfef07`), `WorldStreamingState` wired into App (`80e2966`), async cell-pre-parse worker thread (`592e7bf`), shutdown drain (`7dc354a`). Single-cell-at-a-time today. Remaining: multi-cell exterior grid + BLAS streaming (evict/reload) ties into M31's LRU eviction. | M32, M35           |
 | ~~R6~~ | ~~Scratch-buffer instrumentation~~ | **Closed.** `ScratchTelemetry` resource refreshed per frame from `VulkanContext::fill_scratch_telemetry`, surfaced via the `ctx.scratch` console command. Reports per-Vec `len` / `capacity` / `bytes_used` / `wasted` for all 5 scratches (gpu_instances, batches, indirect_draws, terrain_tile, tlas_instances). On Prospector (1200 ent / 773 draws): 337 KB total, 320 B wasted — well right-sized; M40 cell transitions can now be diffed against this baseline. | —                  |
@@ -329,7 +329,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] Bench measured GPU submit time only — **fixed** in `e6e8091`. Wall-clock bench now counts rendered frames; ticks_per_frame confirms ~1 on this compositor. 192.8 FPS / 5.19 ms at Prospector.
 - [x] ~~No skinned mesh rendering — every NPC / creature is stuck in bind pose (M29)~~ — **closed**. Skinning chain verified end-to-end on FNV NiTriShape via 7 integration tests; CPU palette eval ships today, compute path deferred to M29.5. SSE BSTriShape per-vertex skin extraction is gap #638 (separate parser bug, fires only for SSE actors).
 - [x] ~~RT shadows / reflections / GI see bind-pose only on skinned meshes~~ — **closed (M29 Phase 1.5+2)** in `1ae235b`. New `SkinComputePipeline` pre-skins vertices each frame; per-skinned-entity BLAS (keyed on `EntityId`, separate from the per-mesh `blas_entries` table) refits via `VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR` against the compute output. TLAS build relocated to after the skin chain so RT picks up this-frame's pose with zero lag. Phase 3 (raster reads pre-skinned vertices, dropping inline skinning math from `triangle.vert`) deferred to **M29.3** — gated on M41 NPC rollout proving the compute + BLAS-refit chain stable on visible content.
-- [ ] NPCs + creatures don't spawn as ECS entities even when parsed (M41 / M41.0)
+- [ ] NPCs + creatures don't spawn as visible entities — **Phase 0–4 of M41.0 shipped Session 24**: kf-era spawn (skeleton + body + head + FGGS+FGGA face morphs) and Skyrim+ pre-baked FaceGen dispatch land, AnimationPlayer attach env-var-gated (#772). Visible-content QA + #772 unblock + #774/#775 (FO3 audit residue) close out M41.0; M41 (NPC behavior beyond spawn) remains open.
 - [ ] No world streaming — entire cell re-imported from scratch on every load (M40)
 - [x] ~~BSA v103 (Oblivion) decompression not working~~ — **stale premise, closed via #699**. v103 archive opens AND extracts cleanly: 147 629 / 147 629 vanilla files across all 17 Oblivion BSAs (2026-04-17 + 2026-04-25 sweeps); `nif_stats` round-trips 8032 NIFs through the v103 path. The real Oblivion exterior blocker is TES4 worldspace + LAND wiring (same shape FO3 was) — already covered by the M40 / M41 / "exterior renderer" Tier-1/2 plan, no separate tracker needed.
 - [x] Skyrim + FO4 cells not wired through `cell_loader` — **closed M32.5**, both render end-to-end
@@ -351,7 +351,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] **R6** `VulkanContext` scratch buffers have no capacity telemetry — **closed**. `ctx.scratch` console command + `ScratchTelemetry` resource cover all 5 persistent scratches; per-frame refresh via `VulkanContext::fill_scratch_telemetry`. Prospector baseline: 337 KB total, 320 B wasted.
 - [x] **R6a** Prospector re-bench — **closed**. 192.8 FPS / 5.19 ms at `e6e8091`, wall-clock bench.
 - [x] **R6a-stale** Bench-of-record refreshed at `6a6950a` (2026-04-24). Prospector 172.6 FPS / 5.79 ms (was 192.8 / 5.19 — slight regression in compositor-jitter range; fence_ms unchanged at 4.34, GPU still the bottleneck). Skyrim Whiterun 253.3 FPS / 3.95 ms at 1932 entities (was 237 FPS at 1258 entities — entity count up 53% while FPS improved, indicating more REFRs land now without perf cost). FO4 MedTek 92.5 FPS / 10.82 ms (was 90, 7434 entities unchanged).
-- [ ] **R6a-stale-6** Bench-of-record `6a6950a` is now 182 commits stale. Session 23 layered M40 Phase 1 streaming + the NIF audit 04-26/04-28 closeout + Starfield import path Stage A/B + a round of RT-shader / denoiser / lifecycle fixes (DEN-10/-11, RT-11/-12/-14, SH-13/-14/-15, LIFE-L1/-N1, MEM-2-3, AS-8-13/-14). Some of those touch GPU-side correctness (composite exposure routing, shadow tMin alignment, GI tMax raise, cloud `textureLod`, SVGF temporal fallback) but Prospector / Whiterun / MedTek interiors don't exercise the affected paths heavily; refresh still deferred until M41 lands the visible-actor workload. Not blocking.
+- [ ] **R6a-stale-7** Bench-of-record `6a6950a` is now 222 commits stale. Session 24 stacked M41.0 Phases 0–4 on top of an audit-bundle closeout (#575/#616/#620/#624/#654/#664/#679/#707/#710/#723/#765-770/#771/#772/#773). Most session work touches CPU-side parser correctness and the new NPC-spawn dispatch path; render-side changes (#620 falloff cone, #654 swapchain ordering, #679 skinned BLAS rebuild policy) don't materially affect Prospector / Whiterun / MedTek interiors which have 0 NPCs and 0 effect-shader emitters. Refresh still deferred until M41 lands the visible-actor workload that exercises the new code paths. Not blocking.
 - [x] **R7** Scheduler access declarations — **closed**. `Access` builder + `System::access()` opt-in + `Scheduler::add_to_with_access` for closures + `sys.accesses` console command surface a per-stage Conflict / Unknown report. 3 of 12 systems declared so far (fly_camera, spin, log_stats); 4 Unknown pairs remaining. M27 flip is diagnosable now; eliminating the Unknown rows is incremental migration work.
 
 ### Open — Misc
@@ -367,16 +367,16 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-04-28, verified by `/session-close`.
+Ground-truth as of 2026-05-01, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (non-test)            | ~121 669                     |
-| Rust total lines                        | ~125 534                     |
-| Source files (non-test)                 | 264                          |
-| Workspace members                       | 16                           |
-| Tests (last reported by ROADMAP)        | 1456                         |
-| Open issue directories                  | 726 (`.claude/issues/`)       |
+| Rust source lines (non-test)            | ~127 098                     |
+| Rust total lines                        | ~131 727                     |
+| Source files (non-test)                 | 270                          |
+| Workspace members                       | 17                           |
+| Tests (last reported by ROADMAP)        | 1522                         |
+| Open issue directories                  | 735 (`.claude/issues/`)       |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 96.24%, FO4 96.46%, FO76 97.34%, Starfield 98.6% aggregate (see compat matrix for per-archive breakdown). Recoverable 100% on all except Oblivion 99.99%. Sweep date 2026-04-27. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |

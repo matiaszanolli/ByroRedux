@@ -24,6 +24,148 @@ Commits hold that record.
 
 ---
 
+## Session 24 — M41.0 NPC spawn pipeline + audit-bundle closeout  (2026-05-01, eda39bf..ff23881)
+
+Single-day session with one headline goal — close M41.0 Phase 0
+through Phase 4 so an ACHR REFR resolving to NPC_ produces a visible
+entity in every supported game — wrapped around an audit-fix bundle
+of 11 issues from the 04-22 + 04-28 + 04-30 + 05-01 backlog. The
+NPC pipeline went the distance: Phase 0 foundation, Phase 1a parser
+predicates + pre-FO4 FaceGen recipe parser, Phase 1b kf-era
+bind-pose spawn, Phase 2 idle-KF wiring, Phase 3a new
+`byroredux-facegen` crate (.egm/.egt/.tri parsers), Phase 3b FGGS
+sym-morph evaluator, Phase 3c FGGA asym morphs, Phase 4 pre-baked
+FaceGen dispatch for Skyrim+. A nine-commit debug trail in Phase 1b.x
+chased a body-vs-head detach symptom across walk-entity rotation
+audits, OpenMW + NifSkope formula research, and a live skinning
+inspector — the root cause was a `NiSkinData` field-order bug
+sitting in the parser since M29, fixed in `8ec6a69`. The audit-fix
+queue cleared in parallel: the 04-30 NIF audit closeout (#765
+boundary sweep + #767/#768/#769/#770), the 04-30 legacy-compat audit
+(#771 palette ground-truth + #772 NPC AnimationPlayer env-var gate),
+the new 05-01 FO3 audit (3 issues filed, #773 fixed same session),
+and the 04-22 audit residue (#575/#616/#620/#624/#654/#664/#679/
+#707/#710/#723).
+
+- **M41.0 NPC spawn pipeline (Phases 0–4)** —
+  `b16b6db` Phase 0 foundation: `parse_npc(game)` gate, path helpers
+  (`humanoid_skeleton_path`, `humanoid_default_idle_kf_path`,
+  `Gender::from_acbs_flags`), ACHR dispatcher counts unrouted NPC
+  REFRs at end-of-cell summary. `e886578` Phase 1a extends `GameKind`
+  with `has_runtime_facegen_recipe` / `uses_prebaked_facegen` /
+  `has_kf_animations` / `has_havok_animations` predicates and parses
+  FGGS / FGGA / FGTS / HCLR / HNAM / LNAM / ENAM into
+  `NpcFaceGenRecipe`; FNV.esm asserts ≥3000 NPCs carry the recipe.
+  `d5a9d03` Phase 1b kf-era bind-pose spawn — skeleton + race body
+  share a `node_by_name` map keyed at the placement root so bone
+  resolution doesn't fragment across NIFs. `211df3a` separated
+  telemetry counters (spawned vs pending), `87d3fc0` fixed dispatch
+  ordering and body/head paths, `ee6f87b` bumped `MAX_TOTAL_BONES`
+  from 4 096 → 32 768 once Goodsprings ext lit up the truncation
+  warning. `35b60cf` Phase 2 wired the default idle KF through
+  `import_kf` → `convert_nif_clip` → `AnimationPlayer::with_root` and
+  fixed the body/head re-parenting that the Phase 1b QA pass
+  surfaced. `f81460b` Phase 3a stood up the new `byroredux-facegen`
+  crate (workspace member 17) with `.egm` / `.egt` / `.tri` parsers
+  + per-format unit tests. `b1d44c9` Phase 3b CPU sym-morph evaluator
+  (`v_i' = v_i + Σ_j fggs[j] · egm.deltas[j][i]`) wired into NPC
+  head spawn before Z-up→Y-up swap. `61cc1ca` Phase 3c FGGA asym
+  morphs over the symmetric deformation + Phase 4 pre-baked FaceGen
+  dispatch (`uses_prebaked_facegen` branch loads
+  `meshes\actors\character\facegendata\facegeom\<plugin>\<formid>.nif`
+  for Skyrim / FO4 / FO76 / Starfield).
+
+- **M41.0 Phase 1b.x debugging → NiSkinData root cause** —
+  Body-vs-head detach symptom on Doc Mitchell drove a nine-commit
+  research trail. `b386eb3` filed the body-skinning regression as a
+  real follow-up. `6f048bc` primed transform propagation before
+  first render. `22e4bb0` added a hierarchy walk debug command +
+  dropout diagnostics, `34a1bea` walked entity rotations + skin
+  coverage / vertex tests, `31127d4` pinned the skinning invariant +
+  matrix-layout research test. `e7e79bd` confirmed Oblivion shares
+  the same legacy NiSkinData pattern; `f511adf` documented the
+  NifSkope formula checkpoint, `c34cb6a` credited OpenMW
+  `RigGeometry::cull` + recorded the legacy-NiSkinData formula
+  research; `41aed79` plumbed the live skinning inspector +
+  `global_skin_transform`. `8ec6a69` was the fix: `NiSkinData` per-
+  bone `Skin Transform` is a `NiTransform` STRUCT (Rotation →
+  Translation → Scale on disk) NOT a `NiAVObject` inline transform
+  (Translation → Rotation → Scale). New `read_ni_transform_struct`
+  in `crates/nif/src/blocks/skin.rs` reads the STRUCT layout; the
+  bug had been silently corrupting bind poses since M29.
+
+- **04-30 NIF audit closeout** — `4177e06` (#767)
+  `BsPackedGeomDataCombined.Transform` field-order corrected to
+  `NiTransform` STRUCT (sibling of #767 above). `1ed5cef` (#768)
+  routes `bs_geometry` inner-weights allocation through
+  `allocate_vec` (extending the #764 budget guard). `171d840` (#769)
+  flips 6 `until=` boundary uses from `<=` to `<` to match nif.xml's
+  exclusive-upper-bound convention. `20b2056` (#770) drops a dead
+  `Fallout3` arm in `has_shader_emissive_color`. `2befd8c` (#765)
+  bundles 11 more `<=` → `<` boundary flips across 7 files
+  (properties / interpolator / collision / texture / extra_data /
+  particle / skin) to close the audit's parent finding.
+
+- **04-30 legacy-compat audit closeout** — `a0ff138` (#771) pinned
+  the skinning palette ground truth: nifly's
+  `Skin.hpp:49-51` semantics confirm `bones[i].boneTransform` is
+  "transformSkinToBone" (compose-ready), so Redux's
+  `palette = bone_world × bind_inverse[i]` is correct under
+  documented nifly semantics; closed as ground-truth investigation
+  + new regression test
+  `palette_matches_nifly_skin_to_bone_semantics_with_non_identity_global`.
+  `f9a612f` (#772) gates `AnimationPlayer` attach on M41.0 NPCs
+  behind `BYRO_NPC_ANIMATION_EXPERIMENT` env var pending KF-delta /
+  coord-frame / channel-root scoping diagnosis on visible content.
+
+- **05-01 FO3 audit** — `docs/audits/AUDIT_FO3_2026-05-01.md` files
+  3 NEW issues (2 HIGH, 1 LOW) from a 6-dimension sweep
+  (NIF v20.2.0.7 / BSA v104 / Fallout3.esm record coverage / FO3
+  shaders / real-data validation / FO3-specific quirks): #773
+  PPLighting `texture_clamp_mode` + `env_map_scale` not mirrored to
+  MaterialInfo (HIGH), #774 (HIGH), #775 (LOW). `4a5a32a` (#773)
+  fixed same session — sibling fix applied to NoLighting branch.
+  12 INFO confirmations recorded; FNV-shared surface (record types,
+  block types, shader paths) inventoried.
+
+- **04-22 audit residue closeout** —
+  `c174096` (#664) cache last-bound mesh handle in per-mesh-fallback
+  dispatch.
+  `bc432e2` (#620) `BSEffectShaderProperty` view-angle falloff cone
+  reaches the GPU — `MATERIAL_KIND_EFFECT_SHADER` (101) branch in
+  `triangle.frag`, `dot(N,V)` cosine cone view-angle alpha fade;
+  `GpuInstance` grew to 384 B in lockstep across triangle.vert,
+  triangle.frag, ui.vert, caustic_splat.comp.
+  `d60e3b6` (#616) BSA per-file `embed_name_toggle` (bit 0x80000000)
+  XOR'd against the archive flag.
+  `48b5033` (#624) ESM CELL-meta hardening 3-part bundle:
+  `LocalizedPluginGuard` RAII type for thread-local lstring flag,
+  CELL FULL consumer + `display_name` field, IMGS dispatch +
+  `ImgsRecord` stub.
+  `58f3eb9` (#575) `GlobalVertices` SSBO float-reinterpretation
+  hazards documented + static guardrail test.
+  `9d6a8b1` (#679) skinned BLAS rebuild policy: drop+rebuild after
+  600 refits (`SKINNED_BLAS_REFIT_THRESHOLD`) so REFIT-only
+  trajectories don't degrade BVH quality unboundedly.
+  `a7ebeaa` (#723) pre-Bethesda NIF version-gate hardening
+  (5 sub-findings: NiSkinInstance Skin Partition pre-Bethesda gate
+  + 4 siblings).
+  `a0c6aa3` (#710) FO4/FO76 `BSPositionData` (per-vertex
+  blend-factor extra data) dispatch.
+  `b6a39e0` (#654) defer old image-view destruction past new
+  swapchain creation (`oldSwapchain` parameter requires children-
+  alive ordering).
+  `ff23881` (#707) `NiPSysColorModifier` authored color curve piped
+  through to `ParticleEmitter` via new `ParticleColorCurve` field on
+  `ImportedParticleEmitter` + Flat.
+
+Net: tests +66 (1 456 → 1 522), LOC +5.4 K (~121.7 K → 127.1 K),
+workspace +1 (new `byroredux-facegen` crate from M41.0 Phase 3a),
+6 new source files. Bench-of-record `6a6950a` is now 222 commits
+stale; refresh deferred until M41 lands the visible-actor workload.
+
+---
+
 ## Session 23 — M40 Phase 1 streaming kickoff + NIF audit 04-26 / 04-28 closeout + Starfield import path  (2026-04-27, c3072e9..d926b97)
 
 Two-day session driven by three parallel threads. M40 (world
