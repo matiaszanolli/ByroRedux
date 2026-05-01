@@ -1249,6 +1249,15 @@ impl VulkanContext {
             // on them is harmless host-side state the static pipeline
             // ignores. Track the last value to elide redundant commands.
             let mut last_cull_mode = vk::CullModeFlags::BACK;
+            // #664 — per-mesh-fallback VB/IB bind cache. Only consulted
+            // on the `global_bound == false` path (early-startup or any
+            // future failure mode). The two-sided alpha-blend split at
+            // line ~1442 calls `dispatch_direct` twice for the same
+            // batch, so without this cache the per-mesh fallback issued
+            // two redundant binds per split batch. `u32::MAX` is the
+            // never-bound sentinel — `MeshHandle` is `u32` and 0 is a
+            // valid handle.
+            let mut last_bound_mesh_handle: u32 = u32::MAX;
 
             // Set initial depth bias to zero before first draw — Vulkan
             // requires the dynamic state to be set before any draw call
@@ -1396,7 +1405,12 @@ impl VulkanContext {
                 // so we can call it twice for the two-sided alpha-blend
                 // split without duplicating the global-bound / per-mesh
                 // fallback paths.
-                let dispatch_direct = |this: &Self| {
+                //
+                // #664 — `last_bound` threads through so the per-mesh
+                // fallback elides VB/IB rebinds when consecutive
+                // dispatches share `mesh_handle` (the two-sided
+                // alpha-blend split is the dominant case).
+                let dispatch_direct = |this: &Self, last_bound: &mut u32| {
                     if global_bound {
                         this.device.cmd_draw_indexed(
                             cmd,
@@ -1407,19 +1421,22 @@ impl VulkanContext {
                             batch.first_instance,
                         );
                     } else {
-                        if let Some(mesh) = this.mesh_registry.get(batch.mesh_handle) {
-                            this.device.cmd_bind_vertex_buffers(
-                                cmd,
-                                0,
-                                &[mesh.vertex_buffer.buffer],
-                                &[0],
-                            );
-                            this.device.cmd_bind_index_buffer(
-                                cmd,
-                                mesh.index_buffer.buffer,
-                                0,
-                                vk::IndexType::UINT32,
-                            );
+                        if batch.mesh_handle != *last_bound {
+                            if let Some(mesh) = this.mesh_registry.get(batch.mesh_handle) {
+                                this.device.cmd_bind_vertex_buffers(
+                                    cmd,
+                                    0,
+                                    &[mesh.vertex_buffer.buffer],
+                                    &[0],
+                                );
+                                this.device.cmd_bind_index_buffer(
+                                    cmd,
+                                    mesh.index_buffer.buffer,
+                                    0,
+                                    vk::IndexType::UINT32,
+                                );
+                                *last_bound = batch.mesh_handle;
+                            }
                         }
                         this.device.cmd_draw_indexed(
                             cmd,
@@ -1440,9 +1457,9 @@ impl VulkanContext {
                     // `cmd_draw_indexed_indirect` over a group can't
                     // express without interleaving meshes.
                     set_cull(vk::CullModeFlags::FRONT, &mut last_cull_mode);
-                    dispatch_direct(self);
+                    dispatch_direct(self, &mut last_bound_mesh_handle);
                     set_cull(vk::CullModeFlags::BACK, &mut last_cull_mode);
-                    dispatch_direct(self);
+                    dispatch_direct(self, &mut last_bound_mesh_handle);
                     i += 1;
                 } else if use_indirect {
                     set_cull(default_cull, &mut last_cull_mode);
@@ -1482,7 +1499,7 @@ impl VulkanContext {
                     // Direct-draw fallback: global VB/IB bound or
                     // per-mesh fallback inside `dispatch_direct`.
                     set_cull(default_cull, &mut last_cull_mode);
-                    dispatch_direct(self);
+                    dispatch_direct(self, &mut last_bound_mesh_handle);
                     i += 1;
                 }
             }
