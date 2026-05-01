@@ -160,6 +160,63 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
     GpuInstance instances[];
 };
 
+// ── R1 Phase 4: deduplicated material table ─────────────────────────
+//
+// Mirrors the Rust `GpuMaterial` (272 B std430, 17 vec4 slots) defined
+// in `crates/renderer/src/vulkan/material.rs`. Indexed by
+// `GpuInstance.materialId`. Phase 4 migrates one field (`roughness`)
+// off the per-instance copy onto this path; Phases 5–6 do the rest
+// and finally remove the redundant per-instance copies.
+//
+// **Shader Struct Sync**: any field added here must be added in
+// lockstep to the Rust `GpuMaterial` struct + the matching
+// `intern`/encoding sites; the size of this struct (272 B) is pinned
+// by `gpu_material_size_is_272_bytes` on the Rust side.
+struct GpuMaterial {
+    // PBR scalars (vec4 #1)
+    float roughness;
+    float metalness;
+    float emissiveMult;
+    float _padPbr;
+    // Emissive RGB + specular_strength (vec4 #2)
+    float emissiveR, emissiveG, emissiveB, specularStrength;
+    // Specular RGB + alpha_threshold (vec4 #3)
+    float specularR, specularG, specularB, alphaThreshold;
+    // Texture indices group A (vec4 #4)
+    uint textureIndex, normalMapIndex, darkMapIndex, glowMapIndex;
+    // Texture indices group B (vec4 #5)
+    uint detailMapIndex, glossMapIndex, parallaxMapIndex, envMapIndex;
+    // env_mask + alpha_test_func + material_kind + alpha (vec4 #6)
+    uint envMaskIndex, alphaTestFunc, materialKind;
+    float materialAlpha;
+    // Parallax + UV offset (vec4 #7)
+    float parallaxHeightScale, parallaxMaxPasses, uvOffsetU, uvOffsetV;
+    // UV scale + diffuse RG (vec4 #8)
+    float uvScaleU, uvScaleV, diffuseR, diffuseG;
+    // diffuse_b + ambient RGB (vec4 #9)
+    float diffuseB, ambientR, ambientG, ambientB;
+    // avg_albedo RGB + skin_tint_a (vec4 #10)
+    float avgAlbedoR, avgAlbedoG, avgAlbedoB, skinTintA;
+    // skin_tint RGB + hair_tint_r (vec4 #11)
+    float skinTintR, skinTintG, skinTintB, hairTintR;
+    // hair_tint GB + multi_layer_envmap_strength + eye_left_x (vec4 #12)
+    float hairTintG, hairTintB, multiLayerEnvmapStrength, eyeLeftCenterX;
+    // eye_left YZ + eye_cubemap_scale + eye_right_x (vec4 #13)
+    float eyeLeftCenterY, eyeLeftCenterZ, eyeCubemapScale, eyeRightCenterX;
+    // eye_right YZ + multi_layer_inner_thickness + refraction (vec4 #14)
+    float eyeRightCenterY, eyeRightCenterZ, multiLayerInnerThickness, multiLayerRefractionScale;
+    // multi_layer_inner_scale UV + sparkle RG (vec4 #15)
+    float multiLayerInnerScaleU, multiLayerInnerScaleV, sparkleR, sparkleG;
+    // sparkle_b + sparkle_intensity + falloff angles (vec4 #16)
+    float sparkleB, sparkleIntensity, falloffStartAngle, falloffStopAngle;
+    // falloff opacities + soft_falloff_depth + pad (vec4 #17)
+    float falloffStartOpacity, falloffStopOpacity, softFalloffDepth, _padFalloff;
+};
+
+layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {
+    GpuMaterial materials[];
+};
+
 struct GpuLight {
     vec4 position_radius;  // xyz = position, w = radius
     vec4 color_type;       // rgb = color, w = type (0=point, 1=spot, 2=directional)
@@ -724,7 +781,14 @@ void main() {
         discard;
     }
 
-    float roughness = inst.roughness;
+    // R1 Phase 4 — first migrated field. `roughness` now reads from the
+    // deduplicated `MaterialBuffer` SSBO via `inst.materialId`. The
+    // per-instance `inst.roughness` slot is still populated by the CPU
+    // pipeline (Phase 6 drops it once every reader has migrated); the
+    // value at `materials[inst.materialId].roughness` is byte-equal to
+    // it for now, so the visible output is unchanged. Phases 5 and 6
+    // migrate the remaining per-material fields one slice at a time.
+    float roughness = materials[inst.materialId].roughness;
     float metalness = inst.metalness;
     float emissiveMult = inst.emissiveMult;
     vec3 emissiveColor = vec3(inst.emissiveR, inst.emissiveG, inst.emissiveB);

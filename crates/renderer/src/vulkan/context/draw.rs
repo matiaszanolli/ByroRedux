@@ -1,5 +1,6 @@
 //! Frame recording and submission — the per-frame hot path.
 
+use super::super::material::GpuMaterial;
 use super::super::pipeline::{gamebryo_to_vk_compare_op, PipelineKey};
 use super::super::scene_buffer::{
     self, GpuInstance, GpuTerrainTile, INSTANCE_FLAG_ALPHA_BLEND, INSTANCE_FLAG_CAUSTIC_SOURCE,
@@ -72,6 +73,7 @@ impl VulkanContext {
         draw_commands: &[DrawCommand],
         lights: &[scene_buffer::GpuLight],
         bone_palette: &[[[f32; 4]; 4]],
+        materials: &[GpuMaterial],
         camera_pos: [f32; 3],
         ambient_color: [f32; 3],
         fog_color: [f32; 3],
@@ -1078,6 +1080,17 @@ impl VulkanContext {
             self.scene_buffers
                 .upload_instances(&self.device, frame, &gpu_instances)
                 .unwrap_or_else(|e| log::warn!("Failed to upload instances: {e}"));
+        }
+
+        // R1 Phase 4 — upload the deduplicated material table. The
+        // fragment shader reads `materials[instance.materialId]` for
+        // migrated fields (Phase 4: roughness; Phases 5–6: the rest).
+        // Empty table means no draws → no material reads, so the
+        // upload is skipped harmlessly.
+        if !materials.is_empty() {
+            self.scene_buffers
+                .upload_materials(&self.device, frame, materials)
+                .unwrap_or_else(|e| log::warn!("Failed to upload materials: {e}"));
         }
 
         // Zero the ray budget counter so the fragment shader starts each

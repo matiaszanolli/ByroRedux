@@ -874,6 +874,7 @@ impl ApplicationHandler for App {
                         &self.draw_commands,
                         &self.gpu_lights,
                         &self.bone_palette,
+                        self.material_table.materials(),
                         camera_pos,
                         ambient,
                         fog_color,

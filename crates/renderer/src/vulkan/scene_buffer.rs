@@ -53,6 +53,15 @@ pub const MAX_INDIRECT_DRAWS: usize = 8192;
 /// 16-bit index packed into `GpuInstance.flags` (bits 16..31). See #470.
 pub const MAX_TERRAIN_TILES: usize = 1024;
 
+/// Maximum number of unique materials per frame in the
+/// [`super::material::MaterialTable`] SSBO. 4096 × 272 B = 1.1 MB
+/// per frame × 3 frames-in-flight = 3.3 MB total — trivial.
+///
+/// Real interior cells dedup to 50–200 unique materials; a 3×3
+/// exterior grid lands around 300–600. The cap is sized 6–10× over
+/// the largest observed scene to absorb future content. See R1.
+pub const MAX_MATERIALS: usize = 4096;
+
 /// Per-instance flag bits on [`GpuInstance::flags`].
 /// Kept in lockstep with the inline comments in `draw.rs` flag assembly
 /// and with the fragment shader's `flags & N` checks.
@@ -597,6 +606,12 @@ pub struct SceneBuffers {
     /// One SSBO per frame-in-flight (per-instance data for instanced drawing).
     /// Each entry contains model matrix + texture index + bone offset.
     instance_buffers: Vec<GpuBuffer>,
+    /// One SSBO per frame-in-flight ([`super::material::GpuMaterial`]
+    /// table). Indexed by `GpuInstance.materialId`. Phase 4 (R1)
+    /// migrates one field (`roughness`) onto this path; Phases 5–6
+    /// migrate the rest and finally drop the redundant per-instance
+    /// copies. Sized for [`MAX_MATERIALS`] entries.
+    material_buffers: Vec<GpuBuffer>,
     /// One `INDIRECT_BUFFER`-usage buffer per frame-in-flight for
     /// `vkCmdDrawIndexedIndirect`. Holds
     /// `VkDrawIndexedIndirectCommand` entries uploaded CPU-side each
@@ -655,6 +670,9 @@ impl SceneBuffers {
         // Instance SSBO: per-instance model matrix + texture index + bone offset.
         let instance_buf_size =
             (std::mem::size_of::<GpuInstance>() * MAX_INSTANCES) as vk::DeviceSize;
+        // Material SSBO: deduplicated `GpuMaterial` table (R1 Phase 4).
+        let material_buf_size = (std::mem::size_of::<super::material::GpuMaterial>()
+            * MAX_MATERIALS) as vk::DeviceSize;
         // Indirect buffer: one VkDrawIndexedIndirectCommand (20 B) per batch. #309.
         let indirect_buf_size = (std::mem::size_of::<vk::DrawIndexedIndirectCommand>()
             * MAX_INDIRECT_DRAWS) as vk::DeviceSize;
@@ -669,6 +687,7 @@ impl SceneBuffers {
         let mut instance_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut indirect_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut ray_budget_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut material_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             light_buffers.push(GpuBuffer::create_host_visible(
                 device,
@@ -699,6 +718,12 @@ impl SceneBuffers {
                 allocator,
                 indirect_buf_size,
                 vk::BufferUsageFlags::INDIRECT_BUFFER,
+            )?);
+            material_buffers.push(GpuBuffer::create_host_visible(
+                device,
+                allocator,
+                material_buf_size,
+                vk::BufferUsageFlags::STORAGE_BUFFER,
             )?);
             // Ray budget counter: 4 bytes, atomically incremented by the
             // fragment shader, zeroed by the CPU before each render pass.
@@ -838,6 +863,19 @@ impl SceneBuffers {
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::VERTEX),
         );
+        // Binding 13: material table SSBO (fragment — R1 Phase 4).
+        // The fragment stage reads `materials[instance.materialId]`
+        // for migrated per-material fields. Vertex stage isn't a
+        // consumer today; widen the stage mask if a future migration
+        // (e.g. M29.5 GPU skinning) needs material data in the vertex
+        // pipeline.
+        bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(13)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        );
         // Mark bindings 5+6 (cluster data) as PARTIALLY_BOUND so they are
         // valid even when unwritten (cluster cull pipeline may fail to create).
         // The fragment shader guards access with a lightCount > 0 check.
@@ -892,10 +930,11 @@ impl SceneBuffers {
         let mut pool_sizes = vec![
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
-                // 10 SSBOs per frame: lights(0), bones(3), instances(4), cluster
+                // 11 SSBOs per frame: lights(0), bones(3), instances(4), cluster
                 // grid(5), light indices(6), vertices(8), indices(9), terrain
-                // tiles(10), ray budget counter(11), bones_prev(12 — SH-3 / #641).
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 10) as u32,
+                // tiles(10), ray budget counter(11), bones_prev(12 — SH-3 / #641),
+                // materials(13 — R1 Phase 4).
+                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 11) as u32,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
@@ -976,6 +1015,11 @@ impl SceneBuffers {
                 offset: 0,
                 range: std::mem::size_of::<u32>() as vk::DeviceSize,
             }];
+            let material_buf_info = [vk::DescriptorBufferInfo {
+                buffer: material_buffers[i].buffer,
+                offset: 0,
+                range: material_buf_size,
+            }];
             let writes = [
                 vk::WriteDescriptorSet::default()
                     .dst_set(descriptor_sets[i])
@@ -1012,6 +1056,11 @@ impl SceneBuffers {
                     .dst_binding(12)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .buffer_info(&bone_prev_buf_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_sets[i])
+                    .dst_binding(13)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(&material_buf_info),
             ];
             unsafe {
                 device.update_descriptor_sets(&writes, &[]);
@@ -1044,6 +1093,7 @@ impl SceneBuffers {
             camera_buffers,
             bone_buffers,
             instance_buffers,
+            material_buffers,
             indirect_buffers,
             terrain_tile_buffer,
             terrain_tile_buf_size,
@@ -1179,6 +1229,45 @@ impl SceneBuffers {
     /// Used by the UI overlay to append a single instance after the bulk upload.
     pub fn instance_buffer_mapped_mut(&mut self, frame_index: usize) -> Result<&mut [u8]> {
         self.instance_buffers[frame_index].mapped_slice_mut()
+    }
+
+    /// Upload the deduplicated material table for the current
+    /// frame-in-flight (R1 Phase 4). Called once per frame after
+    /// `build_render_data` has populated the table; the fragment
+    /// shader reads `materials[instance.materialId]` for migrated
+    /// fields. Empty table is a no-op (no draws → no material reads).
+    pub fn upload_materials(
+        &mut self,
+        device: &ash::Device,
+        frame_index: usize,
+        materials: &[super::material::GpuMaterial],
+    ) -> Result<()> {
+        let count = materials.len().min(MAX_MATERIALS);
+        if materials.len() > MAX_MATERIALS {
+            log::warn!(
+                "Material table overflow: {} materials submitted, capped at {} \
+                 — instances pointing past the cap silently default to material 0",
+                materials.len(),
+                MAX_MATERIALS,
+            );
+        }
+        if count == 0 {
+            return Ok(());
+        }
+        let buf = &mut self.material_buffers[frame_index];
+        let mapped = buf.mapped_slice_mut()?;
+        let byte_size = std::mem::size_of::<super::material::GpuMaterial>() * count;
+        // SAFETY: GpuMaterial is #[repr(C)] with f32/u32 fields and
+        // explicit padding (no implicit Drop, no uninitialised bytes).
+        // material_buffers are sized for MAX_MATERIALS; count is clamped.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                materials.as_ptr() as *const u8,
+                mapped.as_mut_ptr(),
+                byte_size,
+            );
+        }
+        buf.flush_if_needed(device)
     }
 
     /// Upload `VkDrawIndexedIndirectCommand` entries for the current
@@ -1547,6 +1636,10 @@ impl SceneBuffers {
             buf.destroy(device, allocator);
         }
         self.instance_buffers.clear();
+        for buf in &mut self.material_buffers {
+            buf.destroy(device, allocator);
+        }
+        self.material_buffers.clear();
         for buf in &mut self.indirect_buffers {
             buf.destroy(device, allocator);
         }
