@@ -24,6 +24,113 @@ Commits hold that record.
 
 ---
 
+## Session 25 — R1 MaterialTable refactor (6 phases) + 04-30 / 05-01 audit residue  (2026-05-01, a68b3b7..b3b27a9)
+
+Same calendar day as Session 24, but with a full architectural arc on
+top of the bug-bash queue. Three open issues from the 05-01 FO3 audit
++ 04-30 legacy-compat audit (#774 / #775 / #772) cleared first, then
+the headline shipped: R1 — collapse the per-material fields out of
+`DrawCommand` / `GpuInstance` onto a deduplicated `MaterialBuffer`
+SSBO indexed by `material_id`. R1 was filed 2026-04-22 as the structural
+fix for "every new material feature grows DrawCommand + GpuInstance +
+DrawBatch + sort key + 3 shaders in lockstep" — Session 24's #620
+(BSEffect falloff cone) had just demonstrated that pain by walking
+`GpuInstance` from 320 → 384 B across all four shaders. With R1's
+backlog driver freshest, this session took it end-to-end in six phases
+rather than the staged commits the roadmap had hedged on. M38
+(transparency & water) is unblocked.
+
+- **05-01 FO3 audit residue** —
+  `a68b3b7` (#774) `BSShaderPPLightingProperty` parallax-scalar gate
+  flipped from `bsver >= 24` to `bsver > 24` per nif.xml:6247-6248
+  (`#BSVER# #GT# 24`); the off-by-one over-read 8 phantom bytes on
+  FO3 content shipped at exactly bsver=24. Sibling `bsver >= 15`
+  refraction gate (line 89) flipped to `> 14` form for spec-phrasing
+  alignment. New `parse_bsshader_fo3_bsver24_skips_parallax`
+  regression test pins the boundary case the audit identified.
+  `76b0345` (#775) added the FO3 Megaton CLI example to CLAUDE.md
+  Usage block (Tier-1 status with no example was a documentation
+  gap).
+
+- **04-30 legacy-compat audit residue** — `2195b90` (#772) instrumented
+  the env-var-gated NPC `AnimationPlayer` experimental path with a
+  one-shot per-channel resolution diagnostic. New
+  `AnimationDiagnosticPending` marker component on `placement_root`
+  triggers a single-frame log of the channel resolution table
+  (channel name → resolved entity → bind-pose translation → frame-0
+  KF translation) on the first apply tick, then self-removes. The
+  diagnostic captures the data needed to pick between the three #772
+  deferral hypotheses (KF deltas vs absolute; coord-frame divergence;
+  channel-root scoping). Static analysis
+  (`.claude/issues/772/INVESTIGATION.md`) ruled out hypothesis 3
+  already — body and head NIFs are parented to `placement_root`, not
+  `skel_root`, so BFS-from-`skel_root` doesn't visit the cosmetic
+  copies; hypotheses 1 and 2 need runtime data to distinguish.
+  Followed up with a 2026-05-08 remote agent
+  (`trig_01XT136ABer2k5MGNrT5soG2`) that checks for diagnostic
+  capture and either proposes a hypothesis-matched fix or drops a
+  nudge file in the issue dir.
+
+- **R1 MaterialTable refactor (6 phases)** —
+  `aa48d64` Phase 1: new `crates/renderer/src/vulkan/material.rs` with
+  `GpuMaterial` (272 B std430, 17 vec4 slots) + `MaterialTable`
+  (byte-level Hash/Eq for O(1)-amortised intern); 9 dedup tests pin
+  layout, defaults, distinctness on single-byte differences,
+  clear-without-dealloc, insertion-order preservation.
+  `822217e` Phase 2: `material_table: MaterialTable` scratch buffer
+  threaded through `App` → `build_render_data` → both `DrawCommand`
+  construction sites (mesh draws + particle billboards);
+  `material_id: u32` field added on `DrawCommand`;
+  `DrawCommand::to_gpu_material` projects the per-material fields
+  onto `GpuMaterial` for interning.
+  `dce7c48` Phase 3: `material_id` extended onto `GpuInstance` (384 →
+  400 B, one new vec4 + 3 pad floats); all 4 shader-side
+  `struct GpuInstance` mirrors updated in lockstep (triangle.vert,
+  triangle.frag, ui.vert, caustic_splat.comp); shader-sync test's
+  needle list extended for `materialId`.
+  `98b37a0` Phase 4: `MAX_MATERIALS = 4096` + `material_buffers:
+  Vec<GpuBuffer>` field on `SceneBuffers`; descriptor set layout
+  binding 13 (FRAGMENT-only) + descriptor write per frame +
+  `upload_materials` mirror of `upload_instances`; `triangle.frag`
+  declares `struct GpuMaterial` + `MaterialBuffer` and migrates
+  `roughness` as proof of concept
+  (`materials[inst.materialId].roughness`).
+  `7a7c145` Phase 5: every per-material read in `triangle.frag`
+  migrated to `mat.<field>` after a
+  `GpuMaterial mat = materials[inst.materialId];` hoist (~30 fields:
+  PBR scalars, texture indices, alpha state, POM, UV transform,
+  material_kind, NiMaterialProperty diffuse/ambient, Skyrim+
+  shader-variant payloads, BSEffect falloff). `ui.vert` also
+  migrated for `textureIndex`. Caustic compute deferred — reads
+  `avgAlbedo` off its own descriptor set (set 0) and would need a
+  separate `MaterialBuffer` binding on the caustic compute pipeline.
+  `22f294a` Phase 6: dropped the migrated fields from `GpuInstance`
+  + all 4 shader mirrors. `GpuInstance` collapsed **400 → 112 B
+  (72% reduction)**: 7 vec4 slots holding model + mesh refs +
+  `flags` + `materialId` + `avgAlbedo` (kept for caustic). RT
+  hit-shader read sites in `triangle.frag` (reflection + refraction
+  paths) migrated to `materials[hitInst.materialId]`. Size
+  assertion bumped 400 → 112; offset table rewrites; shader-sync
+  needle list pivoted from "must declare these fields" to "must
+  NOT re-declare on `struct GpuInstance`".
+
+- **ROADMAP closeout** — `b3b27a9` marked R1 closed across 5 ROADMAP
+  sites (Tier 5 row, M38 dependency strikethrough, risk-reducer
+  index, Known Issues checkbox, RT-lighting status block); test
+  count bumped 1522 → 1533; M38 (transparency & water) flipped from
+  gated-on-R1 to ready.
+
+Net: tests +11 (1522 → 1533: 1 from #774 regression + 9 from R1
+Phase 1 dedup tests + 1 from R1 Phase 6 sentinel), LOC +375 non-test
+(127 098 → 127 473), workspace members unchanged at 17, source files
++1 (270 → 271 — new `material.rs`). Bench-of-record `6a6950a` now
+233 commits stale; R1 is pure plumbing refactor + 72% per-instance
+SSBO reduction with unknown net perf direction (smaller cache
+footprint vs one extra SSBO load per fragment) — refresh deferred
+with M41 visible-actor workload still the gating event.
+
+---
+
 ## Session 24 — M41.0 NPC spawn pipeline + audit-bundle closeout  (2026-05-01, eda39bf..ff23881)
 
 Single-day session with one headline goal — close M41.0 Phase 0

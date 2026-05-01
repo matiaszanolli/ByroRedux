@@ -12,7 +12,7 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-05-01.
+**Last verified**: 2026-05-01 (post-Session 25, R1 closeout).
 **Bench-of-record**: Prospector Saloon 172.6 FPS / 5.79 ms — commit
 `6a6950a`, wall-clock bench. Scene is glass-heavy (bottles, pitcher,
 marquee sign); RT refraction/reflection cost is representative of a
@@ -355,7 +355,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] **R6** `VulkanContext` scratch buffers have no capacity telemetry — **closed**. `ctx.scratch` console command + `ScratchTelemetry` resource cover all 5 persistent scratches; per-frame refresh via `VulkanContext::fill_scratch_telemetry`. Prospector baseline: 337 KB total, 320 B wasted.
 - [x] **R6a** Prospector re-bench — **closed**. 192.8 FPS / 5.19 ms at `e6e8091`, wall-clock bench.
 - [x] **R6a-stale** Bench-of-record refreshed at `6a6950a` (2026-04-24). Prospector 172.6 FPS / 5.79 ms (was 192.8 / 5.19 — slight regression in compositor-jitter range; fence_ms unchanged at 4.34, GPU still the bottleneck). Skyrim Whiterun 253.3 FPS / 3.95 ms at 1932 entities (was 237 FPS at 1258 entities — entity count up 53% while FPS improved, indicating more REFRs land now without perf cost). FO4 MedTek 92.5 FPS / 10.82 ms (was 90, 7434 entities unchanged).
-- [ ] **R6a-stale-7** Bench-of-record `6a6950a` is now 222 commits stale. Session 24 stacked M41.0 Phases 0–4 on top of an audit-bundle closeout (#575/#616/#620/#624/#654/#664/#679/#707/#710/#723/#765-770/#771/#772/#773). Most session work touches CPU-side parser correctness and the new NPC-spawn dispatch path; render-side changes (#620 falloff cone, #654 swapchain ordering, #679 skinned BLAS rebuild policy) don't materially affect Prospector / Whiterun / MedTek interiors which have 0 NPCs and 0 effect-shader emitters. Refresh still deferred until M41 lands the visible-actor workload that exercises the new code paths. Not blocking.
+- [ ] **R6a-stale-7** Bench-of-record `6a6950a` is now 233 commits stale. Session 24 stacked M41.0 Phases 0–4 on top of an audit-bundle closeout (#575/#616/#620/#624/#654/#664/#679/#707/#710/#723/#765-770/#771/#772/#773); Session 25 added R1 (per-instance SSBO 400 → 112 B, +1 fragment SSBO load via material-table indirection — net perf direction unknown without a re-run). Refresh still deferred until M41 lands the visible-actor workload that exercises the new code paths. Not blocking.
 - [x] **R7** Scheduler access declarations — **closed**. `Access` builder + `System::access()` opt-in + `Scheduler::add_to_with_access` for closures + `sys.accesses` console command surface a per-stage Conflict / Unknown report. 3 of 12 systems declared so far (fly_camera, spin, log_stats); 4 Unknown pairs remaining. M27 flip is diagnosable now; eliminating the Unknown rows is incremental migration work.
 
 ### Open — Misc
@@ -375,9 +375,9 @@ Ground-truth as of 2026-05-01, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (non-test)            | ~127 098                     |
-| Rust total lines                        | ~131 727                     |
-| Source files (non-test)                 | 270                          |
+| Rust source lines (non-test)            | ~127 473                     |
+| Rust total lines                        | ~132 102                     |
+| Source files (non-test)                 | 271                          |
 | Workspace members                       | 17                           |
 | Tests (last reported by ROADMAP)        | 1533 (Session 24 closeout 1522 + R1 +11: #774 regression, 9 GpuMaterial dedup tests, Phase 6 sentinel) |
 | Open issue directories                  | 735 (`.claude/issues/`)       |
