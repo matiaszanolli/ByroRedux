@@ -2,6 +2,15 @@
 #extension GL_EXT_ray_query : enable
 #extension GL_EXT_nonuniform_qualifier : require
 
+// Early-Z: depth test runs before the fragment shader. Safe because
+// the depth pre-pass (#779) has already populated correct depth —
+// including alpha-test discards — so fragments that fail early-Z
+// here are guaranteed to be genuinely overdrawn (not "transparent
+// holes in alpha-tested geometry that happen to share polygon
+// extent with this fragment"). Saves 2-3× ray queries on overdraw-
+// heavy exteriors. See #779 / D1-M3 / PERF-N6.
+layout(early_fragment_tests) in;
+
 layout(location = 0) in vec3 fragColor;
 layout(location = 1) in vec2 fragUV;
 layout(location = 2) in vec3 fragNormal;

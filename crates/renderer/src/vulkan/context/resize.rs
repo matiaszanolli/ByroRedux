@@ -8,8 +8,9 @@ use super::super::ssao::SsaoPipeline;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::super::{pipeline, swapchain};
 use super::helpers::{
-    create_depth_resources, create_main_framebuffers, create_render_pass,
-    destroy_depth_resources, destroy_main_framebuffers, destroy_render_pass_pipelines,
+    create_depth_prepass_framebuffers, create_depth_resources, create_main_framebuffers,
+    create_render_pass, destroy_depth_resources, destroy_main_framebuffers,
+    destroy_render_pass_pipelines,
 };
 use super::VulkanContext;
 use anyhow::{Context, Result};
@@ -41,6 +42,9 @@ impl VulkanContext {
         // Drop and resize stay in lockstep — see #33 / R-10.
         unsafe {
             destroy_main_framebuffers(&self.device, &mut self.framebuffers);
+            // Depth pre-pass framebuffers reference the depth view too —
+            // destroy them before recreating depth resources. #779.
+            destroy_main_framebuffers(&self.device, &mut self.depth_prepass_framebuffers);
 
             destroy_depth_resources(
                 &self.device,
@@ -446,6 +450,15 @@ impl VulkanContext {
             &albedo_views,
             self.depth_image_view,
             self.swapchain_state.extent,
+        )?;
+
+        // Depth pre-pass framebuffers track the recreated depth view. #779.
+        self.depth_prepass_framebuffers = create_depth_prepass_framebuffers(
+            &self.device,
+            self.depth_prepass_render_pass,
+            self.depth_image_view,
+            self.swapchain_state.extent,
+            MAX_FRAMES_IN_FLIGHT,
         )?;
 
         // Command buffers are per frame-in-flight (fixed count), so they
