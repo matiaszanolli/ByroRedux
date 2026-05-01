@@ -59,6 +59,15 @@ layout(set = 0, binding = 4) uniform CameraUBO {
 // separate `MaterialBuffer` binding on the caustic compute pipeline
 // — deferred follow-up). Other per-material fields live on the
 // `MaterialBuffer` SSBO indexed by `materialId`.
+//
+// **DO NOT** rewrite the `instances[instIdx].avgAlbedoR/G/B` reads
+// below as `materials[instances[instIdx].materialId].avgAlbedoR/G/B`
+// without first adding a `MaterialBuffer` binding to set 0 — descriptor
+// set 0 here has 9 bindings (depth/normal/mesh_id/lights/camera/
+// instance/TLAS/accum/params), no MaterialBuffer. The same migration
+// mistake on `ui.vert` produced #776 (UI overlay sampled wrong
+// texture). The `caustic_splat_reads_avg_albedo_from_per_instance`
+// test in scene_buffer.rs guards this contract. See #777.
 struct GpuInstance {
     mat4 model;
     uint textureIndex;
