@@ -364,6 +364,63 @@ impl BsBound {
     }
 }
 
+// ── BSPositionData ──────────────────────────────────────────────────
+
+/// `BSPositionData` (FO4 / FO76, nif.xml line 8342) — per-vertex blend
+/// factor array carried as extra data on actor / cloth / dismemberment
+/// meshes. The single `Vertex Data: Half Float[Num Vertices]` array
+/// supplies the interpolation weight for the procedural vertex morph
+/// (cape sway, dismemberment severance, FO76 cloth). Pre-#710 the
+/// block was undispatched (2,961 instances across vanilla
+/// `Fallout4 - Meshes.ba2` + `SeventySix - Meshes.ba2` fell into
+/// `NiUnknown`), so all those meshes lost their per-vertex blend
+/// data and reverted to default rigid behaviour.
+///
+/// Half-float storage matches the FO4 / FO76 vertex-stream
+/// convention; decoded to `f32` via `tri_shape::half_to_f32` for
+/// downstream consumers.
+#[derive(Debug)]
+pub struct BsPositionData {
+    pub name: Option<Arc<str>>,
+    /// Per-vertex blend factor in the range [0, 1] (typical) — driven
+    /// by Havok cloth / dismemberment systems on FO4 / FO76.
+    pub vertex_data: Vec<f32>,
+}
+
+impl NiObject for BsPositionData {
+    fn block_type_name(&self) -> &'static str {
+        "BSPositionData"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsPositionData {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        // NiExtraData base: name — gated since 10.0.1.0 per nif.xml.
+        // Every BSPositionData target version (FO4 = 20.2.0.7,
+        // FO76 = 20.2.0.7) sits well past the boundary, so name is
+        // always present in shipped content. See #329.
+        let name = stream.read_extra_data_name()?;
+        // Num Vertices: u32 — file-driven count, route through
+        // `allocate_vec` so a corrupt 0xFFFFFFFF can't OOM-allocate
+        // a 12 GB Vec before the inner half-float reads fail. See
+        // #764 (the `allocate_vec` budget guard) and the issue's
+        // explicit ALLOCATE_VEC completeness check.
+        let num_vertices = stream.read_u32_le()?;
+        let mut vertex_data = stream.allocate_vec::<f32>(num_vertices)?;
+        for _ in 0..num_vertices {
+            // Half Float (16-bit IEEE-754) — same encoding as the
+            // FO4 / FO76 vertex-stream UV / position halfs decoded
+            // by `tri_shape::half_to_f32`.
+            let h = stream.read_u16_le()?;
+            vertex_data.push(crate::blocks::tri_shape::half_to_f32(h));
+        }
+        Ok(Self { name, vertex_data })
+    }
+}
+
 // ── BSDecalPlacementVectorExtraData ────────────────────────────────
 
 /// A block of decal placement vectors (points + normals).

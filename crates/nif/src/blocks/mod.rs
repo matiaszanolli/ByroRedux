@@ -44,7 +44,7 @@ use controller::{
 use extra_data::{
     BsAnimNote, BsAnimNotes, BsBehaviorGraphExtraData, BsBound, BsClothExtraData,
     BsConnectPointChildren, BsConnectPointParents, BsDecalPlacementVectorExtraData,
-    BsFurnitureMarker, BsInvMarker, BsWArray, NiExtraData,
+    BsFurnitureMarker, BsInvMarker, BsPositionData, BsWArray, NiExtraData,
 };
 use interpolator::{
     NiBSplineBasisData, NiBSplineCompTransformInterpolator, NiBSplineData, NiBlendBoolInterpolator,
@@ -458,6 +458,14 @@ pub fn parse_block(
         | "BoneTranslations" => Ok(Box::new(NiExtraData::parse(stream, type_name)?)),
         "BSWArray" => Ok(Box::new(BsWArray::parse(stream)?)),
         "BSBound" => Ok(Box::new(BsBound::parse(stream)?)),
+        // #710 / NIF-D5-03 — FO4 / FO76 BSPositionData. Per-vertex
+        // blend factor array for procedural cloth / dismemberment
+        // morphing. Pre-fix 2,961 instances across vanilla
+        // `Fallout4 - Meshes.ba2` (372) + `SeventySix - Meshes.ba2`
+        // (2,589) fell into NiUnknown and lost their per-vertex
+        // data — capes / flags / dismemberment effects reverted to
+        // default rigid behaviour.
+        "BSPositionData" => Ok(Box::new(BsPositionData::parse(stream)?)),
         "BSDecalPlacementVectorExtraData" => {
             Ok(Box::new(BsDecalPlacementVectorExtraData::parse(stream)?))
         }

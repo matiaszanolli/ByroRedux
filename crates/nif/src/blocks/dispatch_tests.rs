@@ -2851,3 +2851,107 @@ fn zero_field_shader_variants_route_to_base_only() {
         );
     }
 }
+
+/// Regression for #710 / NIF-D5-03. `BSPositionData` is an FO4 / FO76
+/// extra-data block carrying a per-vertex blend factor array (half-
+/// floats). Pre-fix it had no dispatch arm — 2,961 vanilla instances
+/// (372 in `Fallout4 - Meshes.ba2`, 2,589 in `SeventySix - Meshes.ba2`)
+/// fell into NiUnknown and lost their per-vertex morph data. This
+/// test builds a synthetic 4-vertex payload, dispatches via
+/// `parse_block`, asserts the downcast succeeds, and pins the
+/// half-float decode (0x3C00 ↔ 1.0, 0x0000 ↔ 0.0, 0xBC00 ↔ -1.0).
+#[test]
+fn bs_position_data_dispatches_and_decodes_half_float_array() {
+    use crate::blocks::extra_data::BsPositionData;
+
+    // FO4 header: v20.2.0.7, user_version=12, user_version_2=130 (FO4 BSVER).
+    let header = NifHeader {
+        version: NifVersion::V20_2_0_7,
+        little_endian: true,
+        user_version: 12,
+        user_version_2: 130,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        // BSPositionData reads NiObjectNET's name via the string
+        // table on v >= 20.1.0.1; supply slot 0 so the read succeeds.
+        strings: vec![Arc::from("ClothBlend")],
+        max_string_length: 16,
+        num_groups: 0,
+    };
+
+    let mut data = Vec::new();
+    // NiObjectNET name string-table index = 0 → "ClothBlend".
+    data.extend_from_slice(&0i32.to_le_bytes());
+    // num_vertices = 4
+    data.extend_from_slice(&4u32.to_le_bytes());
+    // 4 half-float blend factors: 1.0, 0.5, 0.0, -1.0
+    // 1.0   = 0x3C00
+    // 0.5   = 0x3800
+    // 0.0   = 0x0000
+    // -1.0  = 0xBC00
+    for h in [0x3C00u16, 0x3800, 0x0000, 0xBC00] {
+        data.extend_from_slice(&h.to_le_bytes());
+    }
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = parse_block("BSPositionData", &mut stream, Some(data.len() as u32))
+        .expect("BSPositionData must dispatch (#710)");
+    assert_eq!(block.block_type_name(), "BSPositionData");
+    let pos = block
+        .as_any()
+        .downcast_ref::<BsPositionData>()
+        .expect("dispatch must produce BsPositionData");
+
+    assert_eq!(pos.name.as_deref(), Some("ClothBlend"));
+    assert_eq!(pos.vertex_data.len(), 4);
+    assert!((pos.vertex_data[0] - 1.0).abs() < 1e-6);
+    assert!((pos.vertex_data[1] - 0.5).abs() < 1e-3);
+    assert!((pos.vertex_data[2] - 0.0).abs() < 1e-6);
+    assert!((pos.vertex_data[3] - (-1.0)).abs() < 1e-6);
+
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "BSPositionData must consume exactly {} bytes",
+        data.len()
+    );
+}
+
+/// Companion: hostile `num_vertices = 0xFFFFFFFF` must error out via
+/// the `allocate_vec` budget guard, not OOM-allocate ~12 GB before
+/// the inner half-float reads fail. Per the issue's ALLOCATE_VEC
+/// completeness check (#764 sweep).
+#[test]
+fn bs_position_data_hostile_num_vertices_returns_err_not_panic() {
+    let header = NifHeader {
+        version: NifVersion::V20_2_0_7,
+        little_endian: true,
+        user_version: 12,
+        user_version_2: 130,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: vec![Arc::from("Hostile")],
+        max_string_length: 8,
+        num_groups: 0,
+    };
+
+    let mut data = Vec::new();
+    data.extend_from_slice(&0i32.to_le_bytes()); // name index
+    data.extend_from_slice(&0xFFFFFFFFu32.to_le_bytes()); // hostile num_vertices
+
+    let mut stream = NifStream::new(&data, &header);
+    let result = parse_block("BSPositionData", &mut stream, Some(data.len() as u32));
+    assert!(
+        result.is_err(),
+        "hostile num_vertices must error gracefully, not panic"
+    );
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("only") && msg.contains("bytes remain"),
+        "expected `allocate_vec` budget rejection, got: {msg}"
+    );
+}
