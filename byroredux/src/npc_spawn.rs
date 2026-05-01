@@ -7,10 +7,6 @@
 //! the per-game content layout.
 
 use byroredux_core::animation::AnimationClipRegistry;
-// `AnimationPlayer` is the consumer of `idle_clip_handle` in the Phase 2.x
-// follow-up that resolves the bind-pose-vs-clip-frame-0 mismatch — see
-// `spawn_npc_entity`'s gated-off block at the bottom of the function.
-#[allow(unused_imports)]
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{GlobalTransform, Name, Parent, Transform};
 use byroredux_core::ecs::storage::EntityId;
@@ -622,37 +618,104 @@ pub fn spawn_npc_entity(
     // 5. Idle animation (M41.0 Phase 2). The clip handle is
     //    pre-registered once per cell load by `load_idle_clip` and
     //    threaded through every `spawn_npc_entity` call so the
-    //    `AnimationClipRegistry` doesn't grow per-NPC. The player
-    //    spawns on its own entity scoped to the skeleton root —
-    //    `AnimationPlayer.root_entity` drives the per-frame channel
-    //    lookup against the skeleton's `node_by_name` map (the same
-    //    one body and head meshes resolved through above), so KF
-    //    channels keyed by `Bip01 Spine`, `Bip01 Head`, etc. find
-    //    the shared skeleton entities and drive the bone palette.
-    // Phase 2 minimum scope ships the loader machinery
-    // (`load_idle_clip`, KF parse, `AnimationClipRegistry::add`,
-    // `humanoid_default_idle_kf_path`, the dispatcher pre-computation
-    // in `cell_loader.rs`) but the actual `AnimationPlayer` spawn is
-    // gated off until a follow-up resolves a bind-pose mismatch:
+    //    `AnimationClipRegistry` doesn't grow per-NPC.
     //
-    //   When the player ticks against `mtidle.kf` and the
-    //   animation_system's apply phase writes `transform.translation
-    //   = clip_frame_0_value` to skeleton bones, NPCs vanish from
-    //   render — empirically reproduced on FO3 TestQAHairM (31
-    //   bodies → 0 visible). The clip's frame-0 translations
-    //   evidently don't align with skeleton.nif's authored bind-pose
-    //   translations; either the KF stores deltas (not absolute
-    //   bone-local poses) or there's a coord-frame divergence
-    //   between `import_nif_scene`'s NiNode-Transform decoding and
-    //   `import_kf`'s TranslationKey decoding. Filed as Phase 2.x;
-    //   ROADMAP M41.0 closure can advance to Phase 3 (FaceGen
-    //   morphs) without unblocking this — bodies stay in bind pose
-    //   today which matches Phase 1b's visible result.
+    // Default OFF — gated on the env var
+    // `BYRO_NPC_ANIMATION_EXPERIMENT`. When unset, the function
+    // spawns NPCs in bind pose (the M41.0 Phase 1b shipping
+    // behaviour). When set, an `AnimationPlayer` is attached with
+    // `root_entity = skel_root` so KF channels keyed by `Bip01
+    // Spine`, `Bip01 Head`, etc. resolve against the skeleton's
+    // BFS-scoped subtree map.
     //
-    // The loader still fires once per cell so the registry +
-    // log line confirm the kf path resolves end-to-end.
-    let _ = idle_clip_handle;
-    let _ = skel_root;
+    // The gating exists because of an empirical Phase 2 finding:
+    // when the player ticks against `mtidle.kf` and the
+    // animation_system's apply phase writes
+    // `transform.translation = clip_frame_0_value` to skeleton
+    // bones, NPCs vanish from render — reproduced on FO3
+    // TestQAHairM (31 bodies → 0 visible). The clip's frame-0
+    // translations evidently don't align with skeleton.nif's
+    // authored bind-pose translations. Hypotheses to investigate at
+    // runtime via the env-var path:
+    //
+    //   1. KF stores deltas (relative to bind), not absolute
+    //      bone-local poses — `transform.translation = pos` would
+    //      write the delta directly and collapse the skeleton.
+    //   2. Coord-frame divergence between `import_nif_scene`'s
+    //      NiNode-Transform decoding and `import_kf`'s
+    //      TranslationKey decoding — both go through
+    //      `zup_to_yup_pos` so the convention should agree, but a
+    //      subtle off-by-one (e.g. parent-relative vs absolute)
+    //      could be hiding.
+    //   3. KF channel-root scoping resolves the wrong entity when
+    //      multiple sub-trees share a bone name (skeleton's
+    //      "Bip01 Spine" vs body NIF's cosmetic copy). The
+    //      `with_root(skel_root)` should constrain BFS to the
+    //      skeleton, but verify empirically.
+    //
+    // **#771 (palette `global_skin_transform`) was investigated and
+    // closed without a math change** — current `bone_world ×
+    // bind_inv` formula matches nifly's documented skin→bone
+    // semantics. So this issue's root cause is NOT the palette
+    // composition; it's strictly a KF↔skeleton bind-pose mismatch
+    // that needs runtime data to diagnose.
+    //
+    // Investigation procedure (cargo run with the env var):
+    //
+    //     BYRO_NPC_ANIMATION_EXPERIMENT=1 cargo run --release -- \
+    //       --esm "Fallout New Vegas/Data/FalloutNV.esm" \
+    //       --cell GoodspringsExt \
+    //       --bsa "Fallout - Meshes.bsa" \
+    //       --textures-bsa "Fallout - Textures.bsa" \
+    //       --textures-bsa "Fallout - Textures2.bsa"
+    //
+    // Look for the per-NPC log line emitted below; compare bone
+    // bind-pose translations against KF frame-0 sample values via
+    // the existing TCP debug protocol (`InspectSkinnedMesh`).
+    //
+    // See #772 for the full deferral rationale and tracking.
+    let attach_animation =
+        std::env::var_os("BYRO_NPC_ANIMATION_EXPERIMENT").is_some();
+    if attach_animation {
+        match (skel_root, idle_clip_handle) {
+            (Some(skel), Some(handle)) => {
+                let player = AnimationPlayer::new(handle).with_root(skel);
+                // The animation system queries `AnimationPlayer` and
+                // builds the BFS subtree map from `root_entity`, so
+                // there's no further wiring required here.
+                world.insert(placement_root, player);
+                log::warn!(
+                    "NPC {:08X} ({}): #772 experiment — AnimationPlayer attached \
+                     (idle clip {}, skel_root {:?}). Watch for vanish symptom.",
+                    npc.form_id,
+                    npc.editor_id,
+                    handle,
+                    skel,
+                );
+            }
+            (None, _) => {
+                log::warn!(
+                    "NPC {:08X} ({}): #772 experiment requested but skel_root is None \
+                     — animation skipped",
+                    npc.form_id,
+                    npc.editor_id,
+                );
+            }
+            (_, None) => {
+                log::warn!(
+                    "NPC {:08X} ({}): #772 experiment requested but idle clip handle \
+                     is None — animation skipped",
+                    npc.form_id,
+                    npc.editor_id,
+                );
+            }
+        }
+    } else {
+        // Default path — Phase 1b shipping behaviour; bodies stay
+        // in bind pose. Suppress the unused-binding warnings.
+        let _ = idle_clip_handle;
+        let _ = skel_root;
+    }
 
     Some(placement_root)
 }
