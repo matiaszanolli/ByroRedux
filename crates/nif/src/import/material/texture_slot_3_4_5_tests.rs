@@ -142,6 +142,78 @@ fn pp_lighting_populates_parallax_env_env_mask_from_slots_3_4_5() {
     assert_eq!(info.parallax_height_scale, Some(0.04));
 }
 
+/// Regression for #773 / FO3-4-PPMAT (FO3-4-01 + FO3-4-02). The
+/// FO3/FNV PPLighting walker branch must mirror two scalar fields
+/// onto `MaterialInfo`:
+///
+/// 1. `texture_clamp_mode` (u32 → u8) — pre-fix CLAMP-authored
+///    decals / scope reticles silently fell back to default WRAP
+///    because no walker site assigned the field.
+/// 2. `env_map_scale` (f32) — pre-fix env-cube + mask textures
+///    arrived (#452) but the scalar that modulates them was zeroed
+///    by `MaterialInfo::default()`, so glass / power armor / brass
+///    rendered with zero reflection intensity even with a valid
+///    env cube bound.
+///
+/// The fixture sets both fields to non-default values
+/// (`texture_clamp_mode = 1` CLAMP_S_WRAP_T; `env_map_scale = 2.5`)
+/// so a future regression that drops either back to the default
+/// (`0` / `1.0`) fails the assertion immediately.
+#[test]
+fn pp_lighting_propagates_texture_clamp_mode_and_env_map_scale() {
+    use crate::blocks::base::BSShaderPropertyData;
+    let tex_set = BSShaderTextureSet {
+        textures: vec![
+            "textures\\armor_d.dds".to_string(),
+            "textures\\armor_n.dds".to_string(),
+            "textures\\armor_g.dds".to_string(),
+            "textures\\armor_p.dds".to_string(),
+            "textures\\armor_e.dds".to_string(),
+            "textures\\armor_em.dds".to_string(),
+        ],
+    };
+    // PPLighting fixture with both NEW assignments exercised:
+    //   texture_clamp_mode = 1 (CLAMP_S_WRAP_T per nif.xml enum),
+    //   env_map_scale = 2.5 (non-default, must survive the mirror).
+    let shader = BSShaderPPLightingProperty {
+        net: empty_net(),
+        shader: BSShaderPropertyData {
+            shade_flags: 0,
+            shader_type: 7, // Parallax_Occlusion
+            shader_flags_1: 0,
+            shader_flags_2: 0,
+            env_map_scale: 2.5,
+        },
+        texture_clamp_mode: 1,
+        texture_set_ref: BlockRef(1),
+        refraction_strength: 0.0,
+        refraction_fire_period: 0,
+        parallax_max_passes: 4.0,
+        parallax_scale: 0.04,
+        emissive_color: [0.0, 0.0, 0.0, 1.0],
+    };
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader), Box::new(tex_set)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let shape = make_tri_shape_with_props(vec![BlockRef(0)]);
+    let (info, _pool) = extract_with_pool(&scene, &shape, &[]);
+
+    // FO3-4-01: texture_clamp_mode flows through.
+    assert_eq!(
+        info.texture_clamp_mode, 1,
+        "PPLighting texture_clamp_mode must mirror to MaterialInfo (#773 / FO3-4-01)"
+    );
+    // FO3-4-02: env_map_scale flows through.
+    assert!(
+        (info.env_map_scale - 2.5).abs() < 1e-6,
+        "PPLighting env_map_scale must mirror to MaterialInfo \
+         (#773 / FO3-4-02), got {}",
+        info.env_map_scale
+    );
+}
+
 #[test]
 fn pp_lighting_with_only_3_slots_leaves_parallax_and_env_none() {
     // Old-style texture set with just base/normal/glow — parallax

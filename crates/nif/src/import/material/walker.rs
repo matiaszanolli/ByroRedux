@@ -526,6 +526,29 @@ pub(crate) fn extract_material_info_from_refs(
             if info.parallax_height_scale.is_none() {
                 info.parallax_height_scale = Some(shader.parallax_scale);
             }
+            // #773 / FO3-4-01 — `texture_clamp_mode` mirror. Pre-fix
+            // the FO3/FNV PPLighting branch dropped this u32 enum
+            // (parsed at `blocks/shader.rs:84` via
+            // `BSShaderPropertyData::parse_fo3`), so CLAMP-authored
+            // decals / scope reticles / glow planes silently fell
+            // back to default WRAP. The Skyrim+ BSEffectShader path
+            // already mirrored its own copy at line 267 (#610) and
+            // the NiTexturingProperty path mirrored the per-slot
+            // `flags & 0xF` (#761) — only this PPLighting site was
+            // missing. nif.xml enum range is 0..=3 → `as u8` is safe.
+            info.texture_clamp_mode = shader.texture_clamp_mode as u8;
+            // #773 / FO3-4-02 — `env_map_scale` mirror. Pre-fix the
+            // env-cube + env-mask textures arrived via
+            // `texture_set[4]/[5]` (#452) but the scalar that
+            // modulates them was dropped, so FO3/FNV glass / polished
+            // metal / power armor rendered with `env_map_scale = 0.0`
+            // (the `MaterialInfo::default()` value) — texture bound,
+            // multiplier zero. The BSEffectShader path captures this
+            // at line 214 and the Skyrim+ EnvironmentMap variant via
+            // `apply_shader_type_data`; only this site was missing.
+            // Field path: `BSShaderPPLightingProperty.shader:
+            // BSShaderPropertyData → .env_map_scale`.
+            info.env_map_scale = shader.shader.env_map_scale;
             // FO3/FNV `BSShaderPPLightingProperty` has NO Double_Sided
             // bit on either flag pair — see the SF_DOUBLE_SIDED
             // explanatory block at the top of this file. Leave
@@ -564,6 +587,20 @@ pub(crate) fn extract_material_info_from_refs(
                 start_opacity: shader.falloff_start_opacity,
                 stop_opacity: shader.falloff_stop_opacity,
             });
+            // #773 / FO3-4-PPMAT SIBLING —
+            // `BSShaderNoLightingProperty` carries the same
+            // `texture_clamp_mode` (parsed at `blocks/shader.rs:140`)
+            // and `BSShaderPropertyData.env_map_scale` (line 139's
+            // embedded base) as the PPLighting block above. Pre-#773
+            // both fields fell off the import path here too. CLAMP-on-
+            // edge HUD scope crosshairs / VATS overlays / blood
+            // splats authoring `texture_clamp_mode != 3` (WRAP)
+            // silently fell back to default. Last-writer-wins matches
+            // the established precedence for `info.is_decal` at line
+            // 573 — PP and NoLighting rarely coexist on a single
+            // mesh in vanilla content.
+            info.texture_clamp_mode = shader.texture_clamp_mode as u8;
+            info.env_map_scale = shader.shader.env_map_scale;
         }
 
         // NiStencilProperty — proper parser replaces NiUnknown heuristic.
