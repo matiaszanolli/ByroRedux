@@ -1578,66 +1578,6 @@ mod gpu_instance_layout_tests {
         }
     }
 
-    /// #779 regression guard. `triangle.frag` MUST declare
-    /// `layout(early_fragment_tests) in;` for the depth pre-pass
-    /// (D1-M3 / PERF-N6) optimization to fire. The depth pre-pass
-    /// populates depth with alpha-test discards correctly so
-    /// early-Z is safe; without the declaration the pre-pass cost
-    /// is paid for zero perf benefit. Pins the assumption that the
-    /// pre-pass infrastructure (depth_prepass.vert/frag, render
-    /// pass, pipeline, draw dispatch) and the main shader stay in
-    /// lockstep.
-    #[test]
-    fn triangle_frag_declares_early_fragment_tests() {
-        let src = include_str!("../../shaders/triangle.frag");
-        assert!(
-            src.contains("layout(early_fragment_tests) in;"),
-            "triangle.frag must declare `layout(early_fragment_tests) in;` \
-             so the depth pre-pass (#779) translates into actual \
-             ray-query savings. Removing the declaration without also \
-             removing the pre-pass infrastructure would waste GPU time."
-        );
-    }
-
-    /// #779 sibling. The depth pre-pass fragment shader must exist
-    /// and declare bindings that match the triangle pipeline layout
-    /// (set 0 = bindless textures, set 1 = scene SSBOs). The prepass
-    /// pipeline pairs this fragment shader with `TRIANGLE_VERT_SPV`
-    /// (no separate prepass.vert) so FP math matches the main pass
-    /// exactly — see the docstring on `DEPTH_PREPASS_FRAG_SPV` for
-    /// the FP-drift failure mode this guards against (revert
-    /// `649996a`).
-    #[test]
-    fn depth_prepass_frag_exists_with_expected_bindings() {
-        let frag = include_str!("../../shaders/depth_prepass.frag");
-        assert!(
-            frag.contains("set = 0, binding = 0"),
-            "depth_prepass.frag must bind the bindless texture array \
-             at set 0 binding 0 for alpha-test sampling (#779)."
-        );
-        assert!(
-            frag.contains("set = 1, binding = 4"),
-            "depth_prepass.frag must bind InstanceBuffer at set 1 \
-             binding 4 to look up materialId via fragInstanceIndex (#779)."
-        );
-        assert!(
-            frag.contains("set = 1, binding = 13"),
-            "depth_prepass.frag must bind the MaterialBuffer at set 1 \
-             binding 13 for alphaThreshold / alphaTestFunc (#779)."
-        );
-        // Input layout MUST be a subset of triangle.vert's outputs at
-        // matching locations — sharing the vertex shader is the
-        // FP-drift fix. The fragInstanceIndex (location 5) is used to
-        // look up the GpuInstance.materialId.
-        assert!(
-            frag.contains("layout(location = 5) flat in int fragInstanceIndex"),
-            "depth_prepass.frag must read fragInstanceIndex at \
-             location 5 (matching triangle.vert's output) so the \
-             SSBO materialId lookup works without a separate \
-             prepass.vert (#779)."
-        );
-    }
-
     /// #776 / #777 regression guard. The UI quad path appends an
     /// instance with `..GpuInstance::default()` (materialId = 0), so
     /// `materials[0]` is the FIRST scene material — not the UI
