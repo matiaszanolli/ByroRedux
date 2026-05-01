@@ -44,7 +44,11 @@ and YCoCg variance clamp. BLAS per-mesh with compaction + LRU
 eviction, TLAS refit when layout unchanged. Pipeline cache threaded
 through every create site with disk persistence (10–50 ms cold → <1
 ms warm). SPIR-V reflection cross-checks descriptor layouts against
-shader declarations at pipeline-create time.
+shader declarations at pipeline-create time. **R1 (2026-05-01)**:
+per-material data deduplicated into a `MaterialBuffer` SSBO indexed
+by `material_id`; `GpuInstance` collapsed 400 → 112 B (72%
+reduction); future shading variants land in `GpuMaterial` only,
+no longer lockstep across 4 shaders + DrawCommand + GpuInstance.
 
 **Parser coverage.** NIF parses across seven games (184 886 files
 on the latest sweep — see compatibility matrix below). FO3 / FNV /
@@ -157,11 +161,11 @@ active for incremental wins; don't let them block Tier 1–4.
 
 | #       | Milestone             | Scope                                                                                                                                                                                                                                                                                                                                                                                         | Depends on |
 |---------|-----------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------|
-| **R1**  | MaterialTable refactor | `DrawCommand` has ~40 fields and ~10 shader-variant payloads (skin_tint, hair_tint, multi_layer_*, eye_*, sparkle, terrain_tile_index, POM, glow/detail/gloss, UV transform, material_alpha, z_*). Most are **per-material, not per-draw**. Collapse material fields to a single `material_id: u32` indexing a per-frame material table. GpuInstance encodes from the table. **Why now:** every new material feature grows DrawCommand + GpuInstance + DrawBatch + sort key + 3 shaders in lockstep. **Blocks M38.** | —          |
+| ~~R1~~  | ~~MaterialTable refactor~~ | **Closed (2026-05-01)** across 6 phases (`aa48d64`..`22f294a`). `GpuMaterial` (272 B std430) + `MaterialTable` with byte-level dedup; per-frame `MaterialBuffer` SSBO at scene set 1 binding 13. Every per-material read in `triangle.frag` + `ui.vert` migrated to `materials[gpuInstance.material_id]`. `GpuInstance` collapsed **400 → 112 B (72% reduction)**, dropping ~30 fields (PBR / texture indices / alpha state / POM / UV transform / NiMaterialProperty diffuse-ambient / Skyrim+ shader-variant payloads / BSEffect falloff). Two intentional deferrals (filed as R1-followup): caustic compute path still reads `avg_albedo` off its own descriptor set (set 0); `DrawCommand` still carries the legacy per-material fields consumed by `to_gpu_material`. M38 is unblocked. | —          |
 | M35     | Terrain LOD            | Parse `.btr` terrain LOD meshes + `.bto` object LOD. Distance-based LOD selection. Gameplay-relevant half is world streaming (M40); pure LOD is quality.                                                                                                                                                                                                                                        | M32        |
 | M37     | SVGF spatial filter    | A-trous wavelet filter using existing moments data. 3 iterations, edge-stopping on normal/depth/variance. 1-SPP → ~8-SPP visual quality on GI.                                                                                                                                                                                                                                                 | —          |
 | M37.3   | ReSTIR-DI              | Full spatiotemporal reservoir reuse. Drops shadow rays to 1/pixel while sampling hundreds of lights. Streaming-RIS already shipped as M31.5.                                                                                                                                                                                                                                                    | M31.5, M37 |
-| M38     | Transparency & water   | OIT or depth-peeled transparency. Water plane mesh with reflection/refraction. NIF alpha sort correctness.                                                                                                                                                                                                                                                                                      | R1         |
+| M38     | Transparency & water   | OIT or depth-peeled transparency. Water plane mesh with reflection/refraction. NIF alpha sort correctness. **R1 unblocked 2026-05-01** — material-table indirection means new shading variants land in `GpuMaterial` only, not lockstep across `DrawCommand` + `GpuInstance` + 4 shaders.                                                                                                            | ~~R1~~     |
 | M39     | Texture streaming      | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Memory budget with LRU eviction.                                                                                                                                                                                                                                                                              | —          |
 | M29.3   | Pre-skinned raster path | Phase 3 of the GPU pre-skinning arc (`SkinComputePipeline` + per-skinned-entity BLAS refit shipped in `1ae235b`, RT shadows / reflections / GI now see this-frame skinned pose). Migrate `triangle.vert:147-204` to read pre-skinned vertices from the per-skinned-entity `SkinSlot` output buffer rather than doing inline weighted-bone-matrix-sum. The same commit must re-add `VERTEX_BUFFER` to the output buffer's usage mask — dropped in `#681` (`MEM-2-6`) so deferred-Phase-3 doesn't bloat memory-type masks today. Single source of truth, drops ~50 ALU ops per skinned vertex, but adds a critical-path dependency on the compute pass: a failed slot would now break raster too. **Defer-rationale:** the rasterized skinning path is well-understood and tested on real content; the new compute path is not. Ship only after the M41 NPC-spawning rollout proves the compute + BLAS-refit chain stable on visible animated content. | `1ae235b`, M41 stable, `#681` re-add |
 
@@ -224,7 +228,7 @@ Not new features — structural fixes to keep known growth patterns
 from calcifying. Each is folded into the tier where it blocks, above.
 Index:
 
-- **R1** — MaterialTable refactor (collapse DrawCommand). Tier 5, blocks M38.
+- **R1** — MaterialTable refactor (collapse DrawCommand). **Closed 2026-05-01** across 6 phases — `GpuInstance` collapsed 400 → 112 B (72% reduction); per-frame `MaterialBuffer` SSBO with byte-level dedup. M38 unblocked.
 - **R2** — ESM typed subrecord decoder. Tier 6, blocks M24.2.
 - **R3** — NIF per-block-type parse histogram (closed via `nif_stats --tsv` + `per_block_baselines.rs` + checked-in 7-game baselines). Tier 6, prevention.
 - **R4** — SWF/GFx strategic decision. Tier 7, gates M48.
@@ -343,7 +347,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ### Open — Risk-reducers (2026-04-22)
 
-- [ ] **R1** DrawCommand has ~40 fields + 10 shader-variant payloads — collapse to `material_id` indirection (blocks M38)
+- [x] ~~**R1** DrawCommand has ~40 fields + 10 shader-variant payloads — collapse to `material_id` indirection (blocks M38)~~ — **closed 2026-05-01** across 6 phases (`aa48d64`..`22f294a`). `GpuInstance` collapsed 400 → 112 B (72% reduction); per-frame `MaterialBuffer` SSBO with byte-level dedup. M38 unblocked. Two follow-ups: caustic compute set 0 path + `DrawCommand` per-material field cleanup.
 - [ ] **R2** ESM sub-record decoder is ad-hoc across 3 000+-line walkers — typed `read_sub::<T>` API (blocks M24.2)
 - [x] **R3** NIF `NiUnknown` soft-fail masks per-block regressions — **closed**. `nif_stats --tsv` emits per-type `parsed` vs `unknown`; `crates/nif/tests/per_block_baselines.rs` (opt-in) compares against checked-in 7-game baselines and fails on any unknown growth or parsed shrinkage. Oblivion baseline refreshed 2026-04-26 against the audit-flagged truncation drift; `#687`/`#688`/`#697` track the underlying parser drift sources (R3 surfaces them, doesn't fix them).
 - [ ] **R4** SWF/GFx strategic decision needed before M48 — Ruffle+GFx-stubs vs rewrite menus natively
@@ -375,7 +379,7 @@ Ground-truth as of 2026-05-01, verified by `/session-close`.
 | Rust total lines                        | ~131 727                     |
 | Source files (non-test)                 | 270                          |
 | Workspace members                       | 17                           |
-| Tests (last reported by ROADMAP)        | 1522                         |
+| Tests (last reported by ROADMAP)        | 1533 (Session 24 closeout 1522 + R1 +11: #774 regression, 9 GpuMaterial dedup tests, Phase 6 sentinel) |
 | Open issue directories                  | 735 (`.claude/issues/`)       |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 96.24%, FO4 96.46%, FO76 97.34%, Starfield 98.6% aggregate (see compat matrix for per-archive breakdown). Recoverable 100% on all except Oblivion 99.99%. Sweep date 2026-04-27. |
