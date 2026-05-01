@@ -447,7 +447,14 @@ impl BSGeometryMeshData {
         if weights_per_vert > 0 {
             let outer_len = (n_total_weights / weights_per_vert) as usize;
             for _ in 0..outer_len {
-                let mut row = Vec::with_capacity(weights_per_vert as usize);
+                // #768: route the inner allocation through `allocate_vec`
+                // so a hostile `weights_per_vert = 0xFFFFFFFF` cannot
+                // OOM-panic the process before the inner u16 reads
+                // fail. The outer `outer_len` already goes through
+                // `allocate_vec` at line 443 (since #764), but
+                // `Vec::with_capacity(weights_per_vert)` here was an
+                // unbounded sibling — companion fix to #764.
+                let mut row = stream.allocate_vec::<BoneWeight>(weights_per_vert)?;
                 for _ in 0..weights_per_vert {
                     let bone_index = stream.read_u16_le()?;
                     let weight = stream.read_u16_le()?;
@@ -615,5 +622,60 @@ mod tests {
 
         let neg = unpack_norm_i16(-32768, 1.0, BSGeometryMeshData::HAVOK_SCALE);
         assert!((neg + BSGeometryMeshData::HAVOK_SCALE).abs() < 1e-3);
+    }
+
+    /// Regression for #768 / NIF-D3-13. A hostile `weights_per_vert =
+    /// 0xFFFFFFFF` paired with a matching `n_total_weights` makes
+    /// `outer_len = 1` (passes the outer `allocate_vec` budget guard
+    /// from #764). Pre-fix the inner row used
+    /// `Vec::with_capacity(weights_per_vert)`, which on overcommit
+    /// systems would request ~16 GB of virtual memory and the
+    /// subsequent `read_u16_le` would fail with a generic EOF
+    /// message (or, in resource-constrained environments, OOM-panic
+    /// the process). Post-fix the inner allocation routes through
+    /// `allocate_vec` and short-circuits with a descriptive
+    /// "only N bytes remain" budget rejection BEFORE any heap
+    /// allocation is attempted.
+    ///
+    /// The test stream is sized so the outer allocate_vec(1) passes
+    /// (one trailing padding byte ≥ 1 element) but the inner
+    /// allocate_vec(0xFFFFFFFF) sees remaining = 1 and fires the
+    /// budget gate. The assertion on the error message text
+    /// distinguishes the two failure modes.
+    #[test]
+    fn weights_per_vert_hostile_returns_err_not_panic() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&2u32.to_le_bytes());          // version (≤ 2 → keep parsing)
+        bytes.extend_from_slice(&0u32.to_le_bytes());          // n_tri_indices
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());        // scale (positive)
+        bytes.extend_from_slice(&0xFFFFFFFFu32.to_le_bytes()); // weights_per_vert HOSTILE
+        bytes.extend_from_slice(&0u32.to_le_bytes());          // n_vertices
+        bytes.extend_from_slice(&0u32.to_le_bytes());          // n_uv1
+        bytes.extend_from_slice(&0u32.to_le_bytes());          // n_uv2
+        bytes.extend_from_slice(&0u32.to_le_bytes());          // n_colors
+        bytes.extend_from_slice(&0u32.to_le_bytes());          // n_normals
+        bytes.extend_from_slice(&0u32.to_le_bytes());          // n_tangents
+        bytes.extend_from_slice(&0xFFFFFFFFu32.to_le_bytes()); // n_total_weights HOSTILE
+                                                                // (outer_len = 0xFFFFFFFF / 0xFFFFFFFF = 1)
+        bytes.push(0x00);                                       // 1 byte padding so outer
+                                                                // allocate_vec(1) passes its
+                                                                // remaining ≥ count check.
+
+        let result = BSGeometryMeshData::parse_from_bytes(&bytes);
+        assert!(
+            result.is_err(),
+            "hostile weights_per_vert must error gracefully, not panic"
+        );
+        // Pre-fix would either panic (OOM) or fail with a generic
+        // EOF read error; post-fix prints the budget-rejection
+        // string from `allocate_vec`. Asserting on the text catches
+        // any future regression that re-introduces the unbounded
+        // allocation pattern.
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("only") && msg.contains("bytes remain"),
+            "expected allocate_vec budget rejection, got: {msg}"
+        );
     }
 }
