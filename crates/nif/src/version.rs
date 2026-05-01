@@ -176,7 +176,13 @@ impl NifVariant {
     }
 
     /// BSShaderPPLightingProperty has emissive color (4×f32) after texture set ref.
-    /// Present in FNV+ (user_version_2 >= 34).
+    ///
+    /// nif.xml gates the field on `vercond="#BS_GT_FO3#"` (bsver > 34),
+    /// which is the AUTHORITATIVE check applied at parse time against
+    /// the file's actual user_version_2. This predicate is a coarse
+    /// pre-screen of game variants whose canonical bsver could exceed
+    /// 34; FO3 (canonical bsver = 21) is excluded because no FO3 file
+    /// can satisfy the in-file gate. See #770.
     ///
     /// FO76/Starfield are intentionally excluded: those games emit
     /// BSLightingShaderProperty, not BSShaderPPLightingProperty, so this
@@ -184,7 +190,7 @@ impl NifVariant {
     pub fn has_shader_emissive_color(self) -> bool {
         matches!(
             self,
-            Self::Fallout3 | Self::FalloutNV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4
+            Self::FalloutNV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4
         )
     }
 
