@@ -521,6 +521,27 @@ pub struct ImportedParticleEmitter {
     /// host node's name (`torch` / `fire` → flame, `smoke` → smoke,
     /// `magic` / `enchant` → sparkles, fallback → flame).
     pub original_type: String,
+    /// Authored start / end RGBA from a `NiPSysColorModifier ->
+    /// NiColorData` chain when the NIF carries one. `None` falls back
+    /// to the name-heuristic preset; `Some` overrides the preset's
+    /// `start_color` / `end_color` so authored Dragonsreach embers
+    /// (warm orange) read distinctly from generic torch flames. Pre-#707
+    /// the parser captured the ref but immediately discarded it, so
+    /// every emitter rendered with the heuristic preset's colour.
+    pub color_curve: Option<ParticleColorCurve>,
+}
+
+/// Two-keyframe sample of a `NiColorData` curve, captured at NIF import
+/// time. `start` is the t=0 RGBA value and `end` is the t=clip_end
+/// RGBA value — i.e. the per-particle colour at spawn vs at death.
+/// Skipping the in-between keys is the minimal first-pass per #707; a
+/// full curve sampler is a follow-up. RGBA components are linear-
+/// space floats in `[0, 1]` (NiColorData stores floats directly per
+/// nif.xml's `Color4Key`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParticleColorCurve {
+    pub start: [f32; 4],
+    pub end: [f32; 4],
 }
 
 /// Flat-import variant of [`ImportedParticleEmitter`] used by the cell
@@ -541,6 +562,12 @@ pub struct ImportedParticleEmitterFlat {
     pub host_name: Option<std::sync::Arc<str>>,
     /// Original NIF block type name — used only for telemetry.
     pub original_type: String,
+    /// Authored colour curve from `NiPSysColorModifier -> NiColorData`,
+    /// when the NIF carries one. Overrides the heuristic preset's
+    /// start / end colour at spawn time. `None` falls back to the
+    /// preset. See [`ImportedParticleEmitter::color_curve`] for the
+    /// rationale; same field, same #707 / FX-2 origin.
+    pub color_curve: Option<ParticleColorCurve>,
 }
 
 /// Test-only helpers for the FixedString migration (#609 / D6-NEW-01).
@@ -1812,6 +1839,115 @@ mod tests {
             );
             assert_eq!(emitters[0].original_type, variant);
         }
+    }
+
+    /// Regression for #707 / FX-2. When the scene has a real
+    /// `NiPSysColorModifier` chained to a `NiColorData` keyframe
+    /// stream, both the hierarchical and flat importers must
+    /// surface the captured `(start, end)` colour curve on every
+    /// emitter so the cell loader / scene builder can override the
+    /// name-heuristic preset's start_color / end_color.
+    ///
+    /// Pre-fix the parser captured the modifier's `color_data_ref`
+    /// then immediately discarded it, every emitter rendered with
+    /// the heuristic preset's colour, and Dragonsreach embers
+    /// rendered as generic dark torch-flame columns.
+    #[test]
+    fn import_captures_color_curve_from_psys_color_modifier_chain() {
+        use crate::blocks::interpolator::{Color4Key, KeyGroup, KeyType, NiColorData};
+        use crate::blocks::particle::{NiPSysColorModifier, NiPSysModifierBase};
+
+        // Scene layout:
+        //   [0] NiNode root with the emitter as child
+        //   [1] NiParticleSystem (the renderable emitter)
+        //   [2] NiPSysColorModifier referencing block [3]
+        //   [3] NiColorData with start = orange, end = red
+        let root = make_ni_node(identity_transform(), vec![BlockRef(1), BlockRef(2)]);
+        let modifier = NiPSysColorModifier {
+            base: NiPSysModifierBase {
+                name: Some(Arc::from("ColorMod")),
+                order: 0,
+                target_ref: BlockRef::NULL,
+                active: true,
+            },
+            color_data_ref: BlockRef(3),
+        };
+        let color_data = NiColorData {
+            keys: KeyGroup {
+                key_type: KeyType::Linear,
+                keys: vec![
+                    Color4Key {
+                        time: 0.0,
+                        value: [1.0, 0.55, 0.10, 1.0], // warm orange — start
+                        tangent_forward: [0.0; 4],
+                        tangent_backward: [0.0; 4],
+                        tbc: None,
+                    },
+                    Color4Key {
+                        time: 0.5,
+                        value: [0.85, 0.20, 0.05, 0.7], // mid (intentionally distinct
+                                                        // from start/end so an
+                                                        // off-by-one would surface)
+                        tangent_forward: [0.0; 4],
+                        tangent_backward: [0.0; 4],
+                        tbc: None,
+                    },
+                    Color4Key {
+                        time: 1.0,
+                        value: [0.30, 0.05, 0.02, 0.0], // dim red fade — end
+                        tangent_forward: [0.0; 4],
+                        tangent_backward: [0.0; 4],
+                        tbc: None,
+                    },
+                ],
+            },
+        };
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+            Box::new(root),
+            Box::new(ni_psys_block("NiParticleSystem")),
+            Box::new(modifier),
+            Box::new(color_data),
+        ];
+        let scene = scene_from_blocks(blocks);
+
+        // Hierarchical import.
+        let mut pool = StringPool::new();
+        let imported = import_nif_scene(&scene, &mut pool);
+        assert_eq!(imported.particle_emitters.len(), 1);
+        let curve = imported.particle_emitters[0]
+            .color_curve
+            .expect("hierarchical import must capture the curve");
+        assert_eq!(curve.start, [1.0, 0.55, 0.10, 1.0]);
+        assert_eq!(curve.end, [0.30, 0.05, 0.02, 0.0]);
+
+        // Flat import — same scene, same expectation.
+        let flat = import_nif_particle_emitters(&scene);
+        assert_eq!(flat.len(), 1);
+        let flat_curve = flat[0]
+            .color_curve
+            .expect("flat import must capture the curve");
+        assert_eq!(flat_curve.start, [1.0, 0.55, 0.10, 1.0]);
+        assert_eq!(flat_curve.end, [0.30, 0.05, 0.02, 0.0]);
+    }
+
+    /// Companion: when no `NiPSysColorModifier` is present, the
+    /// importer leaves `color_curve = None` and the renderer falls
+    /// back to the name-heuristic preset.
+    #[test]
+    fn import_leaves_color_curve_none_when_no_color_modifier() {
+        let root = make_ni_node(identity_transform(), vec![BlockRef(1)]);
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
+            vec![Box::new(root), Box::new(ni_psys_block("NiParticleSystem"))];
+        let scene = scene_from_blocks(blocks);
+        let mut pool = StringPool::new();
+        let imported = import_nif_scene(&scene, &mut pool);
+        assert_eq!(imported.particle_emitters.len(), 1);
+        assert!(
+            imported.particle_emitters[0].color_curve.is_none(),
+            "no NiPSysColorModifier in scene → color_curve must stay None"
+        );
+        let flat = import_nif_particle_emitters(&scene);
+        assert!(flat[0].color_curve.is_none());
     }
 
     #[test]

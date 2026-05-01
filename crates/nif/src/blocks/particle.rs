@@ -171,10 +171,54 @@ pub fn parse_collider_manager(stream: &mut NifStream) -> io::Result<NiPSysBlock>
     })
 }
 
-/// NiPSysColorModifier: base + color_data_ref(ref)
+/// `NiPSysColorModifier` — Skyrim-era + earlier modern particle colour
+/// modifier. References a [`crate::blocks::interpolator::NiColorData`]
+/// keyframe stream that drives RGBA-over-lifetime for every spawned
+/// particle.
+///
+/// Pre-#707 this dispatched to the catch-all `NiPSysBlock` and the
+/// `color_data_ref` was discarded — every torch flame, magic effect,
+/// hearth ember, and spell cast fell back to one of three name-heuristic
+/// presets (`torch_flame()` / `smoke()` / `magic_sparkles()`) regardless
+/// of what the NIF authored. Ember columns at the base of Whiterun's
+/// Dragonsreach hearth were the surfaced symptom.
+///
+/// Modeled after [`crate::blocks::legacy_particle::NiParticleColorModifier`]
+/// (the pre-Bethesda variant), which has carried `color_data_ref`
+/// since #394; the modern variant just re-uses the field with the
+/// `NiPSysModifierBase` instead of `NiParticleModifier`.
+#[derive(Debug)]
+pub struct NiPSysColorModifier {
+    pub base: NiPSysModifierBase,
+    pub color_data_ref: BlockRef,
+}
+
+impl NiObject for NiPSysColorModifier {
+    fn block_type_name(&self) -> &'static str {
+        "NiPSysColorModifier"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiPSysColorModifier {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiPSysModifierBase::parse(stream)?;
+        let color_data_ref = stream.read_block_ref()?;
+        Ok(Self {
+            base,
+            color_data_ref,
+        })
+    }
+}
+
+/// Back-compat shim — earlier dispatch returned a `NiPSysBlock` for
+/// every modifier subtype. Kept so the few internal call sites that
+/// only need byte-correct stream advancement still compile, but new
+/// code should call [`NiPSysColorModifier::parse`] directly.
 pub fn parse_color_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
-    let _base = NiPSysModifierBase::parse(stream)?;
-    let _color_data_ref = stream.read_block_ref()?;
+    let _modifier = NiPSysColorModifier::parse(stream)?;
     Ok(NiPSysBlock {
         original_type: "NiPSysColorModifier".to_string(),
     })

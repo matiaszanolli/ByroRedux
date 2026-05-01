@@ -755,7 +755,13 @@ pub fn parse_block(
         "NiPSysBombModifier" => Ok(Box::new(particle::parse_bomb_modifier(stream)?)),
         "NiPSysBoundUpdateModifier" => Ok(Box::new(particle::parse_bound_update_modifier(stream)?)),
         "NiPSysColliderManager" => Ok(Box::new(particle::parse_collider_manager(stream)?)),
-        "NiPSysColorModifier" => Ok(Box::new(particle::parse_color_modifier(stream)?)),
+        // #707 — `NiPSysColorModifier` now dispatches to its dedicated
+        // `NiPSysColorModifier::parse`, which retains the
+        // `color_data_ref → NiColorData` link. The walker's
+        // ImportedParticleEmitter capture follows the ref and surfaces
+        // the keyframe stream so emitters can override the
+        // name-heuristic preset's start/end colour.
+        "NiPSysColorModifier" => Ok(Box::new(particle::NiPSysColorModifier::parse(stream)?)),
         "NiPSysDragModifier" => Ok(Box::new(particle::parse_drag_modifier(stream)?)),
         "NiPSysGravityModifier" => Ok(Box::new(particle::parse_gravity_modifier(stream)?)),
         "NiPSysGrowFadeModifier" => Ok(Box::new(particle::parse_grow_fade_modifier(stream)?)),

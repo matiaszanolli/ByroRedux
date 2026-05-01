@@ -1355,7 +1355,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // Embers / sparks check FIRST so a node like "FireSparks" lands
         // on the bright-glint preset rather than the larger torch flame
         // (the `fire` substring would otherwise win).
-        let preset = if host_name.contains("spark")
+        let mut preset = if host_name.contains("spark")
             || host_name.contains("ember")
             || host_name.contains("cinder")
         {
@@ -1385,6 +1385,20 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             // failure is still resolved end-to-end.
             ParticleEmitter::torch_flame()
         };
+        // #707 / FX-2 — when the NIF authored a NiPSysColorModifier ->
+        // NiColorData chain, the importer captured the keyframe
+        // stream's first/last RGBA into `emitter.color_curve`.
+        // Override the heuristic preset's start/end colour so authored
+        // Dragonsreach embers / spell-cast colours / geyser steam read
+        // distinctly from the generic preset values. Pre-fix the data
+        // was parsed and immediately discarded — every torch looked
+        // identical. The other preset fields (size_curve, lifetime,
+        // emit_rate, etc.) stay at the heuristic preset's defaults
+        // because the modifier only authors colour.
+        if let Some(curve) = emitter.color_curve {
+            preset.start_color = curve.start;
+            preset.end_color = curve.end;
+        }
         world.insert(host_entity, preset);
     }
 

@@ -1788,7 +1788,7 @@ fn spawn_placed_instances(
         );
         let world_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
         let host = em.host_name.as_deref().unwrap_or("").to_ascii_lowercase();
-        let preset = if host.contains("spark") || host.contains("ember") || host.contains("cinder")
+        let mut preset = if host.contains("spark") || host.contains("ember") || host.contains("cinder")
         {
             ParticleEmitter::embers()
         } else if host.contains("torch")
@@ -1809,6 +1809,14 @@ fn spawn_placed_instances(
         } else {
             ParticleEmitter::torch_flame()
         };
+        // #707 / FX-2 — override preset start/end colour from the
+        // authored `NiPSysColorModifier -> NiColorData` keyframe stream
+        // when the NIF carries one. See the parallel block in scene.rs
+        // for the rationale; same field origin.
+        if let Some(curve) = em.color_curve {
+            preset.start_color = curve.start;
+            preset.end_color = curve.end;
+        }
         let entity = world.spawn();
         world.insert(entity, Transform::from_translation(world_pos));
         world.insert(entity, GlobalTransform::new(world_pos, Quat::IDENTITY, 1.0));
