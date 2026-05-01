@@ -1578,25 +1578,31 @@ mod gpu_instance_layout_tests {
         }
     }
 
-    /// #779 regression guard. `triangle.frag` MUST declare
-    /// `layout(early_fragment_tests) in;` for the depth pre-pass
-    /// (D1-M3 / PERF-N6) optimization to fire. The depth pre-pass
-    /// populates depth with alpha-test discards correctly so
-    /// early-Z is safe; without the declaration the pre-pass cost
-    /// is paid for zero perf benefit. Pins the assumption that the
-    /// pre-pass infrastructure (depth_prepass.vert/frag, render
-    /// pass, pipeline, draw dispatch) and the main shader stay in
-    /// lockstep.
+    /// #779 status guard. `layout(early_fragment_tests) in;` on
+    /// `triangle.frag` was DISABLED on 2026-05-01 due to visible
+    /// diagonal-seam artifacts (root cause TBD). The pre-pass
+    /// infrastructure remains wired but the perf benefit is unreached.
+    /// Re-enabling requires diagnosing the artifact first — see the
+    /// #779 issue thread.
     #[test]
-    fn triangle_frag_declares_early_fragment_tests() {
+    fn triangle_frag_early_fragment_tests_status() {
         let src = include_str!("../../shaders/triangle.frag");
-        assert!(
-            src.contains("layout(early_fragment_tests) in;"),
-            "triangle.frag must declare `layout(early_fragment_tests) in;` \
-             so the depth pre-pass (#779) translates into actual \
-             ray-query savings. Removing the declaration without also \
-             removing the pre-pass infrastructure would waste GPU time."
-        );
+        // Pin the disabled state explicitly so we don't accidentally
+        // re-enable it without re-validating against the artifact.
+        // Scan code lines only — `//` comments may legitimately mention
+        // the disabled directive (the diagnostic note in this file).
+        for (lineno, line) in src.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            assert!(
+                !code.contains("layout(early_fragment_tests)"),
+                "triangle.frag:{} re-enables `layout(early_fragment_tests)`. \
+                 This caused visible diagonal-seam artifacts on 2026-05-01 \
+                 (chrome-skin / over-bright specular / depth-based seams). \
+                 Re-enable only after diagnosing + fixing the root cause. \
+                 See #779 thread.",
+                lineno + 1
+            );
+        }
     }
 
     /// #779 sibling. The depth pre-pass fragment shader must exist
