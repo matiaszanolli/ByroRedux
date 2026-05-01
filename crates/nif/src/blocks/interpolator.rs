@@ -291,7 +291,8 @@ impl NiTransformData {
             if rt == KeyType::XyzRotation {
                 // nif.xml: `Order` float present between RotationType and XYZ KeyGroups on
                 // pre-10.1.0.0 NIFs (field cond="Rotation Type == 4" until="10.1.0.0").
-                if stream.version() <= crate::version::NifVersion::V10_1_0_0 {
+                // `until=` is exclusive — field absent at v10.1.0.0 exactly. See #769.
+                if stream.version() < crate::version::NifVersion::V10_1_0_0 {
                     let _order = stream.read_f32_le()?;
                 }
                 // XYZ rotation: no quaternion keys, three float key groups instead
@@ -1444,6 +1445,80 @@ mod tests {
             .expect("Timeline and plain share the Rust struct");
         assert_eq!(interp.kind, BoolInterpolatorKind::Timeline);
         assert_eq!(interp.data_ref.index(), Some(99));
+    }
+
+    /// Boundary regression for #769. nif.xml gates `Order` with
+    /// `until="10.1.0.0"`, which is exclusive — the field is absent
+    /// at v10.1.0.0 exactly. Pre-fix the parser used `<=`, so at
+    /// v10.1.0.0 it consumed 4 stray bytes that should have been
+    /// the X-axis KeyGroup's `num_keys`, then ran past EOF.
+    #[test]
+    fn parse_transform_data_xyz_no_order_at_v10_1_0_0_exactly() {
+        let header = NifHeader {
+            version: NifVersion::V10_1_0_0,
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u32.to_le_bytes()); // num_rotation_keys = 1
+        data.extend_from_slice(&4u32.to_le_bytes()); // KeyType::XyzRotation
+                                                     // NO Order field at v10.1.0.0 (until= is exclusive)
+        data.extend_from_slice(&0u32.to_le_bytes()); // X KeyGroup num_keys = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // Y KeyGroup num_keys = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // Z KeyGroup num_keys = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // translations num_keys = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // scales num_keys = 0
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let td = NiTransformData::parse(&mut stream)
+            .expect("v10.1.0.0 NiTransformData with XYZ rotation must parse without Order");
+        assert_eq!(stream.position() as usize, expected_len);
+        assert_eq!(td.rotation_type, Some(KeyType::XyzRotation));
+        assert!(td.xyz_rotations.is_some());
+    }
+
+    /// Companion to #769: at v10.0.1.0 (below the boundary) the
+    /// `Order` field IS still present and must be consumed.
+    #[test]
+    fn parse_transform_data_xyz_with_order_below_v10_1_0_0() {
+        let header = NifHeader {
+            version: NifVersion(0x0A000100), // v10.0.1.0 — below the until= boundary
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u32.to_le_bytes()); // num_rotation_keys = 1
+        data.extend_from_slice(&4u32.to_le_bytes()); // KeyType::XyzRotation
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // Order (present pre-10.1.0.0)
+        data.extend_from_slice(&0u32.to_le_bytes()); // X KeyGroup num_keys = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // Y KeyGroup num_keys = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // Z KeyGroup num_keys = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // translations num_keys = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // scales num_keys = 0
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let td = NiTransformData::parse(&mut stream)
+            .expect("v10.0.1.0 NiTransformData with XYZ rotation must consume Order");
+        assert_eq!(stream.position() as usize, expected_len);
+        assert!(td.xyz_rotations.is_some());
     }
 }
 

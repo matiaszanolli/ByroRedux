@@ -37,7 +37,8 @@ impl NiMaterialProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
         // NiMaterialProperty flags: since 3.0, until 10.0.1.2 (NOT present in Oblivion+).
-        if stream.version() <= NifVersion(0x0A000102) {
+        // `until=` is exclusive — field absent at v10.0.1.2 exactly. See #769 sweep.
+        if stream.version() < NifVersion(0x0A000102) {
             let _flags = stream.read_u16_le()?;
         }
 
@@ -220,8 +221,9 @@ impl NiTexturingProperty {
         let net = NiObjectNETData::parse(stream)?;
 
         // Flags: ushort until 10.0.1.2, TexturingFlags since 20.1.0.2.
-        // Gap: versions 10.0.1.3 through 20.1.0.1 have NO flags field.
-        let flags = if stream.version() <= NifVersion(0x0A000102)
+        // Gap: versions 10.0.1.2 through 20.1.0.1 have NO flags field.
+        // `until=` is exclusive — field absent at v10.0.1.2 exactly. See #769 sweep.
+        let flags = if stream.version() < NifVersion(0x0A000102)
             || stream.version() >= NifVersion(0x14010002)
         {
             stream.read_u16_le()?
@@ -230,7 +232,8 @@ impl NiTexturingProperty {
         };
 
         // Apply Mode: since 3.3.0.13, until 20.1.0.1.
-        if stream.version() <= NifVersion(0x14010001) {
+        // `until=` is exclusive — field absent at v20.1.0.1 exactly. See #769.
+        if stream.version() < NifVersion(0x14010001) {
             let _apply_mode = stream.read_u32_le()?;
         }
 
@@ -774,6 +777,86 @@ mod tests {
         );
     }
 
+    /// Boundary regression for #769. nif.xml gates `Apply Mode` with
+    /// `until="20.1.0.1"`, which is exclusive — the field is absent
+    /// at v20.1.0.1 exactly. Pre-fix the parser used `<=`, so at
+    /// v20.1.0.1 it read 4 stray bytes that should have been
+    /// `texture_count`, then mis-consumed the rest of the block and
+    /// failed with EOF on the trailing shader-map count.
+    #[test]
+    fn parse_ni_texturing_property_no_apply_mode_at_v20_1_0_1_exactly() {
+        let header = NifHeader {
+            version: NifVersion(0x14010001), // v20.1.0.1 — the until= boundary
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        let mut data = Vec::new();
+        // NiObjectNETData: name = -1 (None), extras count = 0, controller = -1.
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // v20.1.0.1 is in the gap (not <= 10.0.1.2 and not >= 20.1.0.2)
+        // → no flags u16. Apply Mode is absent at this version exactly.
+        data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
+        data.push(0); // base_texture has = 0 → None
+                      // num_decals = 0.saturating_sub(6) = 0 → no decal loop body.
+        data.extend_from_slice(&0u32.to_le_bytes()); // shader_textures count = 0
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let prop = NiTexturingProperty::parse(&mut stream)
+            .expect("v20.1.0.1 NiTexturingProperty must parse without Apply Mode");
+        assert_eq!(stream.position() as usize, expected_len);
+        assert_eq!(prop.texture_count, 0);
+        assert!(prop.base_texture.is_none());
+        assert_eq!(prop.decal_textures.len(), 0);
+    }
+
+    /// Companion to #769: at v20.1.0.0 (one version below the
+    /// boundary) the `Apply Mode` field IS still present and must
+    /// be consumed.
+    #[test]
+    fn parse_ni_texturing_property_with_apply_mode_below_v20_1_0_1() {
+        let header = NifHeader {
+            version: NifVersion(0x14010000), // v20.1.0.0 — below the boundary
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        let mut data = Vec::new();
+        // v20.1.0.0 is BELOW the v20.1.0.1 string-table boundary, so
+        // `read_string` uses the length-prefixed inline path: u32 len + bytes.
+        data.extend_from_slice(&0u32.to_le_bytes());    // name: empty inline (len = 0)
+        data.extend_from_slice(&0u32.to_le_bytes());    // extras count = 0
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = -1
+        data.extend_from_slice(&1u32.to_le_bytes());    // apply_mode = 1 (present pre-20.1.0.1)
+        data.extend_from_slice(&0u32.to_le_bytes());    // texture_count = 0
+        data.push(0);                                    // base_texture has = 0
+        data.extend_from_slice(&0u32.to_le_bytes());    // shader_textures count = 0
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let prop = NiTexturingProperty::parse(&mut stream)
+            .expect("v20.1.0.0 NiTexturingProperty must consume Apply Mode");
+        assert_eq!(stream.position() as usize, expected_len);
+        assert_eq!(prop.texture_count, 0);
+    }
+
     /// Regression: #119 / audit NIF-302 — a shader map entry with
     /// `has_map = 1` at v >= 10.1.0.0 MUST consume its
     /// `Has Texture Transform` bool and, if set, the 32-byte
@@ -1219,7 +1302,8 @@ impl NiFogProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
         // NiProperty.Flags: since 3.0, until 10.0.1.2 — not present in FO3+.
-        if stream.version() <= NifVersion(0x0A000102) {
+        // `until=` is exclusive — field absent at v10.0.1.2 exactly. See #769 sweep.
+        if stream.version() < NifVersion(0x0A000102) {
             let _prop_flags = stream.read_u16_le()?;
         }
         let flags = stream.read_u16_le()?;
