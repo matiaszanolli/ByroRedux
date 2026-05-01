@@ -118,7 +118,16 @@ struct GpuInstance {
     float softFalloffDepth;            // offset 368
     float _falloffPad0;                // offset 372
     float _falloffPad1;                // offset 376
-    float _falloffPad2;                // offset 380 → total 384
+    float _falloffPad2;                // offset 380
+    // ── R1 Phase 3: material table indirection ───────────────────────
+    // Index into the per-frame `MaterialBuffer` SSBO. Phase 4 attaches
+    // the SSBO + first reader (roughness); vertex stage doesn't sample
+    // material params today — declared only to keep the std430 stride
+    // byte-identical with the other three shader copies.
+    uint materialId;                   // offset 384
+    float _matPad0;                    // offset 388
+    float _matPad1;                    // offset 392
+    float _matPad2;                    // offset 396 → total 400
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

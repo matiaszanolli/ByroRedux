@@ -35,7 +35,7 @@ pub const MAX_TOTAL_BONES: usize = 32768;
 /// Slot 0 of the bone palette is always the identity matrix.
 pub const IDENTITY_BONE_SLOT: u32 = 0;
 
-/// Maximum instances per frame. 8192 × 384 B = 3.0 MB/frame — trivial.
+/// Maximum instances per frame. 8192 × 400 B = 3.1 MB/frame — trivial.
 /// Covers large exterior cells with multiple loaded cells (~5000+ references).
 pub const MAX_INSTANCES: usize = 8192;
 
@@ -134,18 +134,21 @@ pub struct GpuTerrainTile {
 /// u32 slot name — when you add a field here, update the expected suffix
 /// in the assertion and rename the sentinel to match the new last field.
 ///
-/// Layout: 384 bytes per instance, 16-byte aligned (24×16). Grew from
+/// Layout: 400 bytes per instance, 16-byte aligned (25×16). Grew from
 /// 192 → 224 (#492, UV + material_alpha) → 320 (#562, Skyrim+
 /// BSLightingShaderProperty variant payloads — skin tint, hair tint,
 /// eye envmap centers, parallax-occ / multi-layer parallax, sparkle)
 /// → 352 (#221, NiMaterialProperty diffuse + ambient colors)
 /// → 384 (#620, BSEffectShaderProperty falloff cone — view-angle
 /// falloff + soft-depth feathering for magic VFX, decals, smoke
-/// planes, water edges). The growth pattern is strictly append-only
-/// — every existing offset is preserved so shader struct mirrors
-/// only need to add fields, not renumber. The
-/// `size_of::<GpuInstance>() == 384` test below asserts the invariant;
-/// shader-side `GpuInstance` must match.
+/// planes, water edges)
+/// → 400 (R1 Phase 3, `material_id` indirection into the per-frame
+/// `MaterialTable` SSBO — Phases 4–6 migrate field reads onto it and
+/// finally drop the redundant per-instance copies above). The growth
+/// pattern is strictly append-only — every existing offset is
+/// preserved so shader struct mirrors only need to add fields, not
+/// renumber. The `size_of::<GpuInstance>() == 400` test below asserts
+/// the invariant; shader-side `GpuInstance` must match.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuInstance {
@@ -378,8 +381,19 @@ pub struct GpuInstance {
     pub soft_falloff_depth: f32, // 4 B, offset 368
     pub _falloff_pad0: f32, // 4 B, offset 372
     pub _falloff_pad1: f32, // 4 B, offset 376
-    pub _falloff_pad2: f32, // 4 B, offset 380 → total 384
-                            // Struct is 384 bytes (24×16), 16-byte aligned for std430.
+    pub _falloff_pad2: f32, // 4 B, offset 380
+    // ── R1 Phase 3: material table id ───────────────────────────────
+    //
+    // Index into the per-frame `MaterialTable` SSBO. Phase 3 plumbs
+    // the field through the CPU pipeline + shader struct mirrors;
+    // Phase 4 attaches the SSBO + binding and migrates one field
+    // (roughness) as proof of concept; Phases 5–6 migrate the rest
+    // and finally drop the redundant per-instance copies above.
+    pub material_id: u32,    // 4 B, offset 384
+    pub _mat_pad0: f32,      // 4 B, offset 388
+    pub _mat_pad1: f32,      // 4 B, offset 392
+    pub _mat_pad2: f32,      // 4 B, offset 396 → total 400
+                             // Struct is 400 bytes (25×16), 16-byte aligned for std430.
 }
 
 impl Default for GpuInstance {
@@ -486,6 +500,15 @@ impl Default for GpuInstance {
             _falloff_pad0: 0.0,
             _falloff_pad1: 0.0,
             _falloff_pad2: 0.0,
+            // R1 — `0` is a valid material id (the first slot in the
+            // per-frame table, also the default "neutral lit" material
+            // when no real one was interned). The padding fields stay
+            // 0.0 — never read by any shader, only present so the
+            // std430 stride lands on a 16-byte boundary.
+            material_id: 0,
+            _mat_pad0: 0.0,
+            _mat_pad1: 0.0,
+            _mat_pad2: 0.0,
         }
     }
 }
@@ -1554,7 +1577,7 @@ mod gpu_instance_layout_tests {
     /// update protocol (grep for `struct GpuInstance` in the shaders tree
     /// before touching this struct).
     #[test]
-    fn gpu_instance_is_384_bytes_std430_compatible() {
+    fn gpu_instance_is_400_bytes_std430_compatible() {
         // 176 → 192 in #453 (parallax/env slots).
         // 192 → 224 in #492 (uv_offset + uv_scale + material_alpha).
         // 224 → 320 in #562 (Skyrim+ BSLightingShaderProperty variant
@@ -1564,11 +1587,13 @@ mod gpu_instance_layout_tests {
         // colors — 2 padded vec4 slots).
         // 352 → 384 in #620 (BSEffectShaderProperty falloff cone —
         // 5 floats packed into 2 vec4 slots).
-        // 24 × 16 = 384.
+        // 384 → 400 in R1 Phase 3 (`material_id` + 3 pad floats — the
+        // material-table indirection that Phases 4–6 will consume).
+        // 25 × 16 = 400.
         assert_eq!(
             size_of::<GpuInstance>(),
-            384,
-            "GpuInstance must stay 384 B to match std430 shader layout"
+            400,
+            "GpuInstance must stay 400 B to match std430 shader layout"
         );
     }
 
@@ -1673,6 +1698,13 @@ mod gpu_instance_layout_tests {
         assert_eq!(offset_of!(GpuInstance, _falloff_pad0), 372);
         assert_eq!(offset_of!(GpuInstance, _falloff_pad1), 376);
         assert_eq!(offset_of!(GpuInstance, _falloff_pad2), 380);
+        // R1 Phase 3 — material table indirection (one vec4 slot,
+        // 16 B). Padding fields stay 0.0; the index itself is set
+        // by the encoding sites in `draw.rs` from `DrawCommand::material_id`.
+        assert_eq!(offset_of!(GpuInstance, material_id), 384);
+        assert_eq!(offset_of!(GpuInstance, _mat_pad0), 388);
+        assert_eq!(offset_of!(GpuInstance, _mat_pad1), 392);
+        assert_eq!(offset_of!(GpuInstance, _mat_pad2), 396);
     }
 
     /// Regression: #309 — `VkDrawIndexedIndirectCommand` is a Vulkan-
@@ -1802,6 +1834,12 @@ mod gpu_instance_layout_tests {
                 "falloffStartOpacity",
                 "falloffStopOpacity",
                 "softFalloffDepth",
+                // R1 Phase 3 — material table indirection. Every shader
+                // copy declares the slot so the 400 B std430 stride
+                // stays byte-identical across the four; Phase 4 attaches
+                // the `MaterialBuffer` SSBO + first reader (roughness),
+                // Phases 5–6 migrate the rest.
+                "materialId",
             ] {
                 assert!(
                     src.contains(needle),

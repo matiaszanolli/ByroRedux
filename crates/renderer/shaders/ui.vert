@@ -80,7 +80,12 @@ struct GpuInstance {
     float falloffStartAngle, falloffStopAngle,
           falloffStartOpacity, falloffStopOpacity;                 // offset 352
     float softFalloffDepth, _falloffPad0,
-          _falloffPad1, _falloffPad2;                              // offset 368 → total 384
+          _falloffPad1, _falloffPad2;                              // offset 368
+    // ── R1 Phase 3: material table indirection ───────────────────────
+    // Layout-only mirror; UI pipeline never consumes the material
+    // table. Declared so the std430 stride matches triangle.{vert,frag}
+    // + caustic_splat.comp.
+    uint materialId; float _matPad0, _matPad1, _matPad2;           // offset 384 → total 400
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

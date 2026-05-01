@@ -967,6 +967,13 @@ impl VulkanContext {
                 ambient_g: draw_cmd.ambient_color[1],
                 ambient_b: draw_cmd.ambient_color[2],
                 _ambient_pad: 0.0,
+                // R1 Phase 3 — material-table indirection. Phase 4
+                // attaches the `MaterialBuffer` SSBO and migrates one
+                // field (roughness) onto `materials[material_id]`.
+                material_id: draw_cmd.material_id,
+                _mat_pad0: 0.0,
+                _mat_pad1: 0.0,
+                _mat_pad2: 0.0,
             });
 
             // Frustum-culled draws still need an SSBO entry so RT hit
