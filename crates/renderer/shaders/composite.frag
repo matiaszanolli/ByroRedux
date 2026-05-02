@@ -270,6 +270,24 @@ void main() {
 
         vec3 combined = direct + indirect * albedo + caustic;
 
+        float exposure = params.depth_params.y;  // host-set; default 0.85 (DEN-10)
+
+        // Tone-map the unfogged combined HDR to display space FIRST,
+        // then apply fog as a display-space mix. Pre-#784 the fog
+        // was mixed into HDR-linear `combined` and then both went
+        // through ACES together — XCLL-authored `fog_color` values
+        // (raw monitor-space floats per `feedback_color_space.md`,
+        // typically 0.05-0.4 on interior cells) blended in linear
+        // HDR appear perceptually amplified once the result is
+        // tone-mapped, producing a visible yellow / sepia distance
+        // wash on distant interior surfaces. Display-space mix
+        // matches the perceptual intent of the authored fog values
+        // and preserves #428's SVGF-coherence goal (fog applied at
+        // composite, not in the geometry pass) since SVGF reads
+        // un-fogged HDR upstream regardless of where the mix lands
+        // on the post-tone-map side.
+        vec3 tonemapped = aces(combined * exposure);
+
         // Distance fog — applied here rather than in the geometry pass
         // so SVGF history carries un-fogged indirect. Pre-#428 fog was
         // baked into both direct and indirect attachments in
@@ -279,8 +297,8 @@ void main() {
         // α=0.2 accumulation washed it out.
         //
         // Reconstruct world-space fragment position from depth +
-        // inv_view_proj, then fog-blend the combined signal by the
-        // camera-to-fragment distance.
+        // inv_view_proj, then fog-blend the tone-mapped result by
+        // the camera-to-fragment distance.
         //
         // Skip fog on empty/far-plane pixels (depth >= 0.9999). Pre-fix
         // those pixels had no world position and the reconstructed
@@ -302,13 +320,21 @@ void main() {
 
             // Cap at 70% opacity — same rationale as the pre-#428
             // triangle.frag code: D3D9 rendered fog in sRGB where the
-            // blend appeared softer; linear-space fog is perceptually
-            // stronger, so the cap keeps distant geometry readable.
+            // blend appeared softer; the cap keeps distant geometry
+            // readable. With the post-#784 display-space mix the
+            // perceptual stronger-than-D3D9 issue is resolved (mixing
+            // in display space matches what the authored fog values
+            // were authored against), but the 0.7 cap stays as a
+            // value-preserving knob for "distant surface still
+            // identifiable" content rules.
             float fogFactor = smoothstep(params.fog_params.x, params.fog_params.y, worldDist) * 0.7;
-            combined = mix(combined, params.fog_color.xyz, fogFactor);
+            // Tone-map the fog target separately so the mix happens
+            // entirely in display space. Both arguments to mix() are
+            // post-ACES values in [0, 1].
+            vec3 tonemappedFog = aces(params.fog_color.xyz * exposure);
+            tonemapped = mix(tonemapped, tonemappedFog, fogFactor);
         }
 
-        float exposure = params.depth_params.y;  // host-set; default 0.85 (DEN-10)
-        outColor = vec4(aces(combined * exposure), direct4.a);
+        outColor = vec4(tonemapped, direct4.a);
     }
 }
