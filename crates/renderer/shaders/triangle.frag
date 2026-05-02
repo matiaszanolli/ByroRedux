@@ -625,6 +625,12 @@ const uint DBG_VIZ_NORMALS       = 0x4u;
 //   red     = zero tangent → screen-space derivative fallback (Path 2)
 // Set BYROREDUX_RENDER_DEBUG=8 to enable.
 const uint DBG_VIZ_TANGENT       = 0x8u;
+// Skip the per-fragment normal-map perturbation entirely; lighting
+// uses the geometric vertex normal. Use to bisect whether a chrome /
+// posterization artifact originates from `perturbNormal` (Path 1 or
+// Path 2 TBN bug) or from downstream specular / ambient code.
+// Set BYROREDUX_RENDER_DEBUG=0x10 to enable.
+const uint DBG_BYPASS_NORMAL_MAP = 0x10u;
 
 void main() {
     // Decode debug-bypass flags (zero on production runs).
@@ -779,7 +785,7 @@ void main() {
     // whose mesh boundaries (adjacent floor planks, wall panels)
     // produced TBN discontinuities at every seam. Authored tangents
     // are per-vertex smooth, so this path is seam-free.
-    if (normalMapIdx != 0u) {
+    if (normalMapIdx != 0u && (dbgFlags & DBG_BYPASS_NORMAL_MAP) == 0u) {
         N = perturbNormal(N, fragWorldPos, sampleUV, normalMapIdx, fragTangent);
     }
 

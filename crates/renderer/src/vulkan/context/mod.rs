@@ -472,8 +472,8 @@ fn parse_render_debug_flags_env() -> u32 {
     };
     match parsed {
         Some(v) => {
-            log::info!("BYROREDUX_RENDER_DEBUG = 0x{:x} (POM bypass={}, detail bypass={}, normals viz={})",
-                v, v & 1 != 0, v & 2 != 0, v & 4 != 0);
+            log::info!("BYROREDUX_RENDER_DEBUG = 0x{:x} (POM bypass={}, detail bypass={}, normals viz={}, tangent viz={}, normal-map bypass={})",
+                v, v & 1 != 0, v & 2 != 0, v & 4 != 0, v & 8 != 0, v & 0x10 != 0);
             v
         }
         None => {
@@ -494,6 +494,8 @@ pub struct VulkanContext {
     ///   `0x1` — bypass parallax-occlusion (`sampleUV = baseUV`)
     ///   `0x2` — bypass detail-map modulation
     ///   `0x4` — output world-space normal (gbuffer + outColor) and exit
+    ///   `0x8` — visualize per-fragment tangent presence (green/red)
+    ///   `0x10` — bypass normal-map perturbation (geometric N only)
     /// Env values are parsed as `0xN` hex or plain decimal; absent /
     /// invalid → 0 (all paths active, zero overhead). For ad-hoc
     /// bisection of texture / lighting artifacts. See engineering

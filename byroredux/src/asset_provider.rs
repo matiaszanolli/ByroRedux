@@ -135,6 +135,64 @@ pub(crate) fn parse_grid_coords(s: &str) -> (i32, i32) {
     }
 }
 
+/// Open the requested archive plus any numeric-suffixed siblings.
+///
+/// FNV ships its base textures across `Fallout - Textures.bsa` and
+/// `Fallout - Textures2.bsa`; passing only the first leaves Doc
+/// Mitchell's plaster and floor textures resolving to the
+/// missing-texture checkerboard placeholder, which compositing with
+/// the (correctly loaded) tangent-space normal map produced the
+/// "chrome posterized walls" diagnosis chased through R1 / #783 /
+/// #784. By auto-loading `<stem>2.bsa` … `<stem>9.bsa` siblings when
+/// the explicitly named archive ends in an unsuffixed `.bsa`, FNV's
+/// split is transparent. The pattern is inert for Skyrim's already-
+/// numeric `Skyrim - Meshes0.bsa` / `Meshes1.bsa` style (the user
+/// passes both explicitly anyway) and harmless when the sibling
+/// simply doesn't exist.
+fn open_with_numeric_siblings(path: &str, kind: &str, archives: &mut Vec<Archive>) {
+    match Archive::open(path) {
+        Ok(a) => {
+            log::info!("Opened {} archive: '{}'", kind, path);
+            archives.push(a);
+        }
+        Err(e) => {
+            log::warn!("Failed to open {} archive: {}", kind, e);
+            return;
+        }
+    }
+    // Only auto-load siblings when the explicit path ends in `.bsa`
+    // / `.ba2` with no digit immediately before the extension.
+    // `Foo.bsa`  → try `Foo2.bsa`..`Foo9.bsa`.
+    // `Foo2.bsa` → no auto-load (avoids re-opening when the user
+    //              already lists each numbered archive on the CLI).
+    let lower = path.to_ascii_lowercase();
+    let (stem, ext) = if let Some(s) = lower.strip_suffix(".bsa") {
+        (&path[..s.len()], ".bsa")
+    } else if let Some(s) = lower.strip_suffix(".ba2") {
+        (&path[..s.len()], ".ba2")
+    } else {
+        return;
+    };
+    if stem.chars().last().is_some_and(|c| c.is_ascii_digit()) {
+        return;
+    }
+    for n in 2..=9u32 {
+        let sibling = format!("{}{}{}", stem, n, ext);
+        if !std::path::Path::new(&sibling).is_file() {
+            continue;
+        }
+        match Archive::open(&sibling) {
+            Ok(a) => {
+                log::info!("Opened sibling {} archive: '{}'", kind, sibling);
+                archives.push(a);
+            }
+            Err(e) => {
+                log::warn!("Failed to open sibling {} archive: {}", kind, e);
+            }
+        }
+    }
+}
+
 /// Build a TextureProvider from CLI arguments.
 pub(crate) fn build_texture_provider(args: &[String]) -> TextureProvider {
     let mut provider = TextureProvider::new();
@@ -143,26 +201,14 @@ pub(crate) fn build_texture_provider(args: &[String]) -> TextureProvider {
         match args[i].as_str() {
             "--textures-bsa" => {
                 if let Some(path) = args.get(i + 1) {
-                    match Archive::open(path) {
-                        Ok(a) => {
-                            log::info!("Opened textures archive: '{}'", path);
-                            provider.texture_archives.push(a);
-                        }
-                        Err(e) => log::warn!("Failed to open textures archive: {}", e),
-                    }
+                    open_with_numeric_siblings(path, "textures", &mut provider.texture_archives);
                     i += 2;
                     continue;
                 }
             }
             "--bsa" => {
                 if let Some(path) = args.get(i + 1) {
-                    match Archive::open(path) {
-                        Ok(a) => {
-                            log::info!("Opened mesh archive: '{}'", path);
-                            provider.mesh_archives.push(a);
-                        }
-                        Err(e) => log::warn!("Failed to open mesh archive: {}", e),
-                    }
+                    open_with_numeric_siblings(path, "mesh", &mut provider.mesh_archives);
                     i += 2;
                     continue;
                 }
