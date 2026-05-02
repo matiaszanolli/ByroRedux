@@ -616,9 +616,15 @@ vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx, vec4 verte
 // (`parse_render_debug_flags_env` + `GpuCamera` upload). Use for
 // runtime-relaunch bisection of texture / lighting artifacts —
 // branches collapse to free no-ops when the env var is unset.
-const uint DBG_BYPASS_POM     = 0x1u;
-const uint DBG_BYPASS_DETAIL  = 0x2u;
-const uint DBG_VIZ_NORMALS    = 0x4u;
+const uint DBG_BYPASS_POM        = 0x1u;
+const uint DBG_BYPASS_DETAIL     = 0x2u;
+const uint DBG_VIZ_NORMALS       = 0x4u;
+// #783 follow-up — visualize per-fragment tangent presence:
+//   green   = tangent present (vertex shader fed authored or
+//             synthesized data → Path 1 in perturbNormal fires)
+//   red     = zero tangent → screen-space derivative fallback (Path 2)
+// Set BYROREDUX_RENDER_DEBUG=8 to enable.
+const uint DBG_VIZ_TANGENT       = 0x8u;
 
 void main() {
     // Decode debug-bypass flags (zero on production runs).
@@ -815,6 +821,17 @@ void main() {
         outColor = vec4(nViz, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(nViz, 1.0);
+        return;
+    }
+    if ((dbgFlags & DBG_VIZ_TANGENT) != 0u) {
+        // Green = authored tangent present (Path 1 fires).
+        // Red = zero tangent → screen-space derivative fallback (Path 2).
+        vec3 viz = (dot(fragTangent.xyz, fragTangent.xyz) > 1e-4)
+            ? vec3(0.0, 1.0, 0.0)
+            : vec3(1.0, 0.0, 0.0);
+        outColor = vec4(viz, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(viz, 1.0);
         return;
     }
 

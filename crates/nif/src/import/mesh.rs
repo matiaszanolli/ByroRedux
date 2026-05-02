@@ -130,6 +130,12 @@ fn extract_tangents_from_extra_data(
         }
         return tangents;
     }
+    // No authored tangent blob — caller falls through to
+    // `synthesize_tangents` which runs nifly's CalcTangentSpace
+    // algorithm on positions + normals + UVs + triangles. This
+    // hits on most FNV / FO3 / Oblivion interior content where
+    // Bethesda relied on the runtime to compute tangents at load
+    // time. See #783.
     Vec::new()
 }
 
@@ -141,6 +147,212 @@ fn read_f32_le_at(blob: &[u8], offset: usize) -> f32 {
         blob[offset + 2],
         blob[offset + 3],
     ])
+}
+
+/// Synthesize per-vertex tangents from positions + normals + UVs +
+/// triangles when the source NIF doesn't ship authored tangents.
+///
+/// Most Oblivion / FO3 / FNV interior content stores no
+/// `NiBinaryExtraData("Tangent space ...")` blob — Bethesda's runtime
+/// computes tangents at load time using a per-triangle accumulator
+/// (see `nifly::NiTriShapeData::CalcTangentSpace`). This function
+/// ports nifly's algorithm to produce the same per-vertex
+/// tangent + bitangent vectors and packs them into the
+/// `[Tx, Ty, Tz, bitangent_sign]` shape the shader expects.
+///
+/// Inputs:
+///   - `vertices` / `normals`: Z-up world-space, length == num_verts
+///   - `uvs`: per-vertex 2D coordinates, length == num_verts
+///   - `triangles`: u16 indices, 3 per triangle
+///
+/// Output: `Vec<[f32; 4]>` length == num_verts. Empty when any input
+/// is missing or vertex counts don't line up; caller falls back to
+/// the shader's screen-space derivative TBN path.
+///
+/// Algorithm (per nifly Geometry.cpp:2026-2106):
+///   1. For each triangle, compute T (sdir, ∂P/∂U) and B (tdir, ∂P/∂V)
+///      from position + UV deltas, with sign correction for flipped UVs.
+///   2. Accumulate per-vertex T and B (averaged across adjacent
+///      triangles).
+///   3. Per vertex: orthogonalize T against N (Gram-Schmidt), then B
+///      against both N and T. Degenerate cases (zero T or B) fall
+///      back to a permutation of the normal.
+///   4. Derive bitangent_sign as `sign(dot(B, cross(N, T)))` so the
+///      shader's `sign × cross(N, T)` reconstruction matches the
+///      authored handedness.
+///
+/// Z-up → Y-up conversion is applied to the final tangent + the N used
+/// for sign derivation, mirroring the authored-decode path so both
+/// produce vectors in the same coordinate space.
+fn synthesize_tangents(
+    vertices: &[NiPoint3],
+    normals_zup: &[NiPoint3],
+    uvs: &[[f32; 2]],
+    triangles: &[[u16; 3]],
+) -> Vec<[f32; 4]> {
+    let n = vertices.len();
+    if n == 0 || normals_zup.len() != n || uvs.len() != n {
+        return Vec::new();
+    }
+
+    // Per-vertex accumulators for tangent + bitangent direction.
+    // `tan_u[i]` accumulates the U-axis tangent (∂P/∂U), `tan_v[i]`
+    // the V-axis bitangent (∂P/∂V). nifly's code labels them swapped
+    // (`tan1` → bitangents, `tan2` → tangents) — we preserve the same
+    // mapping so the resulting handedness matches Bethesda content
+    // authored against the same convention.
+    let mut tan_u = vec![[0.0f32; 3]; n];
+    let mut tan_v = vec![[0.0f32; 3]; n];
+
+    for tri in triangles {
+        let i1 = tri[0] as usize;
+        let i2 = tri[1] as usize;
+        let i3 = tri[2] as usize;
+        if i1 >= n || i2 >= n || i3 >= n {
+            continue;
+        }
+
+        let v1 = vertices[i1];
+        let v2 = vertices[i2];
+        let v3 = vertices[i3];
+        let w1 = uvs[i1];
+        let w2 = uvs[i2];
+        let w3 = uvs[i3];
+
+        let x1 = v2.x - v1.x;
+        let x2 = v3.x - v1.x;
+        let y1 = v2.y - v1.y;
+        let y2 = v3.y - v1.y;
+        let z1 = v2.z - v1.z;
+        let z2 = v3.z - v1.z;
+
+        let s1 = w2[0] - w1[0];
+        let s2 = w3[0] - w1[0];
+        let t1 = w2[1] - w1[1];
+        let t2 = w3[1] - w1[1];
+
+        let det = s1 * t2 - s2 * t1;
+        let r = if det >= 0.0 { 1.0 } else { -1.0 };
+
+        let mut sdir = [
+            (t2 * x1 - t1 * x2) * r,
+            (t2 * y1 - t1 * y2) * r,
+            (t2 * z1 - t1 * z2) * r,
+        ];
+        let mut tdir = [
+            (s1 * x2 - s2 * x1) * r,
+            (s1 * y2 - s2 * y1) * r,
+            (s1 * z2 - s2 * z1) * r,
+        ];
+
+        normalize_inplace(&mut sdir);
+        normalize_inplace(&mut tdir);
+
+        for &i in &[i1, i2, i3] {
+            tan_u[i][0] += sdir[0];
+            tan_u[i][1] += sdir[1];
+            tan_u[i][2] += sdir[2];
+            tan_v[i][0] += tdir[0];
+            tan_v[i][1] += tdir[1];
+            tan_v[i][2] += tdir[2];
+        }
+    }
+
+    // Per-vertex finalize: Gram-Schmidt against N, then derive
+    // bitangent sign for the shader's reconstruction.
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let n_zup = normals_zup[i];
+        let n_yup = [n_zup.x, n_zup.z, -n_zup.y];
+
+        // nifly assigns: bitangents[i] = tan1[i] (= tan_u, our sdir
+        // accumulator), tangents[i] = tan2[i] (= tan_v, our tdir
+        // accumulator). Match.
+        let bitangent_zup = tan_u[i];
+        let tangent_zup = tan_v[i];
+
+        let (tangent_yup, bitangent_yup) =
+            if vec3_is_zero(&tangent_zup) || vec3_is_zero(&bitangent_zup) {
+                // Degenerate fallback (nifly: permute N components).
+                let t_z = [n_zup.y, n_zup.z, n_zup.x];
+                let t_y = [t_z[0], t_z[2], -t_z[1]];
+                let b_y = [
+                    n_yup[1] * t_y[2] - n_yup[2] * t_y[1],
+                    n_yup[2] * t_y[0] - n_yup[0] * t_y[2],
+                    n_yup[0] * t_y[1] - n_yup[1] * t_y[0],
+                ];
+                (t_y, b_y)
+            } else {
+                // Convert Z-up → Y-up first so the orthogonalization
+                // happens in the same coordinate space as the shader
+                // reads (consistent with the authored-decode path).
+                let mut t_yup = [tangent_zup[0], tangent_zup[2], -tangent_zup[1]];
+                let mut b_yup = [bitangent_zup[0], bitangent_zup[2], -bitangent_zup[1]];
+
+                normalize_inplace(&mut t_yup);
+                // T = T - N * dot(N, T)
+                let dot_nt =
+                    n_yup[0] * t_yup[0] + n_yup[1] * t_yup[1] + n_yup[2] * t_yup[2];
+                t_yup = [
+                    t_yup[0] - n_yup[0] * dot_nt,
+                    t_yup[1] - n_yup[1] * dot_nt,
+                    t_yup[2] - n_yup[2] * dot_nt,
+                ];
+                normalize_inplace(&mut t_yup);
+
+                normalize_inplace(&mut b_yup);
+                // B = B - N * dot(N, B)
+                let dot_nb =
+                    n_yup[0] * b_yup[0] + n_yup[1] * b_yup[1] + n_yup[2] * b_yup[2];
+                b_yup = [
+                    b_yup[0] - n_yup[0] * dot_nb,
+                    b_yup[1] - n_yup[1] * dot_nb,
+                    b_yup[2] - n_yup[2] * dot_nb,
+                ];
+                // B = B - T * dot(T, B)
+                let dot_tb =
+                    t_yup[0] * b_yup[0] + t_yup[1] * b_yup[1] + t_yup[2] * b_yup[2];
+                b_yup = [
+                    b_yup[0] - t_yup[0] * dot_tb,
+                    b_yup[1] - t_yup[1] * dot_tb,
+                    b_yup[2] - t_yup[2] * dot_tb,
+                ];
+                normalize_inplace(&mut b_yup);
+                (t_yup, b_yup)
+            };
+
+        // Bitangent sign: sign(dot(B, cross(N, T))).
+        let cross_nt = [
+            n_yup[1] * tangent_yup[2] - n_yup[2] * tangent_yup[1],
+            n_yup[2] * tangent_yup[0] - n_yup[0] * tangent_yup[2],
+            n_yup[0] * tangent_yup[1] - n_yup[1] * tangent_yup[0],
+        ];
+        let dot_b_cross = bitangent_yup[0] * cross_nt[0]
+            + bitangent_yup[1] * cross_nt[1]
+            + bitangent_yup[2] * cross_nt[2];
+        let sign = if dot_b_cross < 0.0 { -1.0 } else { 1.0 };
+
+        out.push([tangent_yup[0], tangent_yup[1], tangent_yup[2], sign]);
+    }
+    out
+}
+
+#[inline]
+fn vec3_is_zero(v: &[f32; 3]) -> bool {
+    v[0] * v[0] + v[1] * v[1] + v[2] * v[2] < 1e-12
+}
+
+#[inline]
+fn normalize_inplace(v: &mut [f32; 3]) {
+    let len2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+    if len2 > 1e-12 {
+        let inv = 1.0 / len2.sqrt();
+        v[0] *= inv;
+        v[1] *= inv;
+        v[2] *= inv;
+    } else {
+        *v = [0.0, 0.0, 0.0];
+    }
 }
 
 /// Intermediate geometry data extracted from either NiTriShapeData or NiTriStripsData.
@@ -178,18 +390,35 @@ pub(super) fn extract_mesh(
 ) -> Option<ImportedMesh> {
     let data_idx = shape.data_ref.index()?;
 
-    // Try NiTriShapeData first, then NiTriStripsData. Tangents (when
-    // authored) live on a separate `NiBinaryExtraData` block referenced
-    // by `shape.av.net.extra_data_refs`; decode them in lockstep with
-    // the geometry data so vertex count + normal data line up. See
-    // #783 / M-NORMALS.
+    // Try NiTriShapeData first, then NiTriStripsData. Tangents path
+    // (#783 / M-NORMALS):
+    //   1. Authored: walk `shape.av.net.extra_data_refs` for a
+    //      `NiBinaryExtraData("Tangent space ...")` blob. Most modern
+    //      Bethesda content (Skyrim+/FO4) ships this; the SE
+    //      Cathedral patch and many Oblivion exterior meshes do too.
+    //   2. Synthesized: when no authored blob, run nifly's
+    //      `CalcTangentSpace` algorithm at import time to produce
+    //      per-vertex tangents from positions + normals + UVs +
+    //      triangles. This is what FNV / FO3 / most Oblivion interior
+    //      content needs (the original D3D9 runtime computed them at
+    //      load time too). Without this fallback the renderer falls
+    //      back to screen-space derivative TBN — which produces the
+    //      chrome regression on every mesh boundary.
     let geom = if let Some(data) = scene.get_as::<NiTriShapeData>(data_idx) {
-        let tangents = extract_tangents_from_extra_data(
+        let mut tangents = extract_tangents_from_extra_data(
             scene,
             &shape.av.net.extra_data_refs,
             &data.normals,
             data.vertices.len(),
         );
+        if tangents.is_empty() && !data.uv_sets.is_empty() {
+            tangents = synthesize_tangents(
+                &data.vertices,
+                &data.normals,
+                &data.uv_sets[0],
+                &data.triangles,
+            );
+        }
         GeomData {
             vertices: &data.vertices,
             normals: &data.normals,
@@ -201,19 +430,28 @@ pub(super) fn extract_mesh(
             bound_radius: data.radius,
         }
     } else if let Some(data) = scene.get_as::<NiTriStripsData>(data_idx) {
-        let tangents = extract_tangents_from_extra_data(
+        let mut tangents = extract_tangents_from_extra_data(
             scene,
             &shape.av.net.extra_data_refs,
             &data.normals,
             data.vertices.len(),
         );
+        let triangles_owned = data.to_triangles();
+        if tangents.is_empty() && !data.uv_sets.is_empty() {
+            tangents = synthesize_tangents(
+                &data.vertices,
+                &data.normals,
+                &data.uv_sets[0],
+                &triangles_owned,
+            );
+        }
         GeomData {
             vertices: &data.vertices,
             normals: &data.normals,
             tangents,
             vertex_colors: &data.vertex_colors,
             uv_sets: &data.uv_sets,
-            triangles: std::borrow::Cow::Owned(data.to_triangles()),
+            triangles: std::borrow::Cow::Owned(triangles_owned),
             bound_center: data.center,
             bound_radius: data.radius,
         }
