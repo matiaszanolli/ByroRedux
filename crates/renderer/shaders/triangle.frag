@@ -715,9 +715,29 @@ void main() {
     // propagates into the bump detail (otherwise the normal map and
     // albedo would disagree on which texel belongs to each fragment).
     vec3 N = normalize(fragNormal);
-    if (normalMapIdx != 0u) {
-        N = perturbNormal(N, fragWorldPos, sampleUV, normalMapIdx);
-    }
+    // Normal-map perturbation TEMPORARILY DISABLED — see #783.
+    //
+    // Root-cause confirmed via live debug 2026-05-01: the screen-space
+    // derivative TBN reconstruction in `perturbNormal` produces wildly
+    // discontinuous tangent bases at mesh boundaries. Adjacent floor
+    // planks and wall panels rendered with arbitrarily-flipped
+    // perturbed normals, feeding the PBR specular term per-pixel
+    // chaos that ACES squashed into the "chrome posterized plaster"
+    // look across every Bethesda interior cell.
+    //
+    // The proper fix (M-NORMALS / #783) is to parse the per-vertex
+    // tangent + bitangent that Bethesda ships in NIF
+    // `NiBinaryExtraData("Tangent space (binormal & tangent vectors)")`
+    // and route them through the Vertex struct + shader so TBN is
+    // reconstructed from authored data instead of derivatives.
+    //
+    // Until then, surfaces lose fine bump detail but render with
+    // correct lighting — a visible regression on stone / fabric /
+    // engraved metal but a far smaller one than the chrome look the
+    // workaround removes.
+    // if (normalMapIdx != 0u) {
+    //     N = perturbNormal(N, fragWorldPos, sampleUV, normalMapIdx);
+    // }
 
     // ── G-buffer outputs (Phase 1) ────────────────────────────────────
     // Write these before any early return so SVGF has valid per-pixel
