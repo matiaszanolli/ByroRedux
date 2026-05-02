@@ -1490,14 +1490,22 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             (sky.cloud_scroll_3[1] + cloud_scroll_rate * 0.5 * dt).rem_euclid(1.0);
     }
 
-    // Update CellLightingRes.
+    // Update CellLightingRes — exterior cells only. Interior cells own
+    // their own ambient / directional / fog values from XCLL or LGTM
+    // records (see `scene.rs::load_cell` interior path); the weather
+    // system would otherwise clobber them with sky-tinted exterior fog
+    // and time-of-day-driven ambient/directional from the most recent
+    // exterior worldspace, producing visibly wrong lighting on every
+    // interior cell loaded after any exterior session. See #782.
     if let Some(mut cell_lit) = world.try_resource_mut::<CellLightingRes>() {
-        cell_lit.ambient = ambient;
-        cell_lit.directional_color = sunlight;
-        cell_lit.directional_dir = sun_dir;
-        cell_lit.fog_color = fog_col;
-        cell_lit.fog_near = fog_near;
-        cell_lit.fog_far = fog_far;
+        if !cell_lit.is_interior {
+            cell_lit.ambient = ambient;
+            cell_lit.directional_color = sunlight;
+            cell_lit.directional_dir = sun_dir;
+            cell_lit.fog_color = fog_col;
+            cell_lit.fog_near = fog_near;
+            cell_lit.fog_far = fog_far;
+        }
     }
 
     // M33.1 — promote the in-flight transition target into the live
@@ -1987,5 +1995,135 @@ mod particle_system_tests {
             assert!((p[1] - host.y).abs() < 1e-4);
             assert!((p[2] - host.z).abs() < 1e-4);
         }
+    }
+}
+
+/// Regression tests for #782 — `weather_system` was unconditionally
+/// writing time-of-day-derived `ambient` / `directional` / `fog_color`
+/// (etc.) into `CellLightingRes` regardless of whether the active cell
+/// was interior or exterior. Interior cells loaded after any exterior
+/// session inherited the most-recent WTHR fog tint (typically sky-blue
+/// `[0.65, 0.7, 0.8]`) instead of their own XCLL-authored fog. The
+/// composite pass blended that into distant pixels at up to 70%
+/// opacity in HDR linear space pre-ACES, producing a visibly chromy /
+/// posterized look on every distant interior surface.
+///
+/// The fix gates all six `cell_lit.*` writes on `!is_interior` —
+/// interior cells preserve their XCLL/LGTM-authored values from the
+/// cell loader; exterior cells continue to be driven by weather TOD.
+#[cfg(test)]
+mod weather_interior_gate_tests {
+    use super::*;
+    use byroredux_core::ecs::World;
+
+    /// Insert the minimum resource set that lets `weather_system` reach
+    /// the `CellLightingRes` update without early-returning, with a
+    /// `WeatherDataRes` populated to a deliberately bright sky-blue
+    /// fog so any leak into `cell_lit.fog_color` is unambiguous.
+    fn build_world(is_interior: bool) -> World {
+        let mut world = World::new();
+
+        // Interior fog the cell loader supposedly placed — a dim
+        // brownish tint that we expect to survive `weather_system`.
+        const INTERIOR_FOG_COLOR: [f32; 3] = [0.05, 0.06, 0.08];
+        const INTERIOR_FOG_NEAR: f32 = 64.0;
+        const INTERIOR_FOG_FAR: f32 = 4000.0;
+
+        world.insert_resource(CellLightingRes {
+            ambient: [0.1, 0.1, 0.1],
+            directional_color: [0.3, 0.3, 0.3],
+            directional_dir: [0.0, 1.0, 0.0],
+            is_interior,
+            fog_color: INTERIOR_FOG_COLOR,
+            fog_near: INTERIOR_FOG_NEAR,
+            fog_far: INTERIOR_FOG_FAR,
+        });
+
+        world.insert_resource(GameTimeRes {
+            hour: 12.0, // mid-day so the TOD slot is unambiguous
+            time_scale: 0.0, // freeze the clock so dt advances are no-ops
+        });
+
+        // Build a WTHR snapshot with sky-blue fog at every TOD slot so
+        // any unconditional write would clobber the interior fog with
+        // (0.65, 0.7, 0.8) — the symptom from #782.
+        let bright_sky_blue = [0.65_f32, 0.7, 0.8];
+        let mut sky_colors = [[[0.0_f32; 3]; 6]; 10];
+        for slot in 0..6 {
+            sky_colors[byroredux_plugin::esm::records::weather::SKY_FOG][slot] = bright_sky_blue;
+            sky_colors[byroredux_plugin::esm::records::weather::SKY_AMBIENT][slot] =
+                [0.5, 0.5, 0.5];
+            sky_colors[byroredux_plugin::esm::records::weather::SKY_SUNLIGHT][slot] =
+                [1.0, 1.0, 1.0];
+        }
+        world.insert_resource(WeatherDataRes {
+            sky_colors,
+            fog: [100.0, 60000.0, 200.0, 30000.0],
+            tod_hours: [6.0, 10.0, 18.0, 22.0],
+        });
+
+        world
+    }
+
+    /// Interior gate — `cell_lit.fog_color` (and the rest of the gated
+    /// fields) must NOT change after `weather_system` runs against a
+    /// world whose `CellLightingRes.is_interior == true`, even when
+    /// `WeatherDataRes` carries a fog target wildly different from the
+    /// XCLL-authored value.
+    #[test]
+    fn interior_cell_fog_is_not_overwritten_by_weather() {
+        let world = build_world(true);
+        weather_system(&world, 0.016);
+
+        let cell_lit = world.try_resource::<CellLightingRes>().unwrap();
+        assert_eq!(
+            cell_lit.fog_color,
+            [0.05, 0.06, 0.08],
+            "interior fog_color was overwritten by weather_system — \
+             #782 regression"
+        );
+        assert!(
+            (cell_lit.fog_near - 64.0).abs() < 1e-5,
+            "interior fog_near was overwritten — #782 regression"
+        );
+        assert!(
+            (cell_lit.fog_far - 4000.0).abs() < 1e-5,
+            "interior fog_far was overwritten — #782 regression"
+        );
+        // Sibling fields gated together with fog — same regression risk.
+        assert_eq!(
+            cell_lit.ambient,
+            [0.1, 0.1, 0.1],
+            "interior ambient was overwritten — #782 regression"
+        );
+        assert_eq!(
+            cell_lit.directional_color,
+            [0.3, 0.3, 0.3],
+            "interior directional_color was overwritten — #782 regression"
+        );
+    }
+
+    /// Exterior path still works — weather_system MUST update fog on
+    /// exterior cells (otherwise sky-tinted fog never reaches the
+    /// composite UBO at all). Negative test that pins the gate's
+    /// `!is_interior` polarity.
+    #[test]
+    fn exterior_cell_fog_is_updated_by_weather() {
+        let world = build_world(false);
+        weather_system(&world, 0.016);
+
+        let cell_lit = world.try_resource::<CellLightingRes>().unwrap();
+        // Mid-day with the sky-blue fog at every slot — interpolator
+        // returns the slot value unchanged.
+        assert!(
+            (cell_lit.fog_color[0] - 0.65).abs() < 1e-3,
+            "exterior fog_color was not updated by weather_system: {:?}",
+            cell_lit.fog_color
+        );
+        assert!(
+            (cell_lit.fog_color[2] - 0.8).abs() < 1e-3,
+            "exterior fog_color was not updated by weather_system: {:?}",
+            cell_lit.fog_color
+        );
     }
 }

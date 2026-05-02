@@ -587,11 +587,12 @@ void main() {
     // sample, and the POM parameters + parallax map index live on
     // the material.
     GpuInstance inst = instances[fragInstanceIndex];
-    // R1 — deduplicated material payload. Single SSBO load per fragment;
-    // every per-material read goes through `mat.<field>`. `GpuInstance`
-    // itself only carries per-DRAW data (model matrix, mesh refs, flags,
-    // materialId, plus the texture_index/avg_albedo retentions called
-    // out at scene_buffer.rs:172-216).
+    // R1 Phase 5 — deduplicated material payload. Single SSBO load per
+    // fragment; downstream reads use `mat.<field>` instead of
+    // `inst.<field>` for any per-material data. The legacy per-instance
+    // copies on `GpuInstance` are still populated by the CPU pipeline
+    // (Phase 6 drops them) and are byte-equal to `mat.*`, so the
+    // visible output is unchanged.
     GpuMaterial mat = materials[inst.materialId];
 
     // #494 — BGSM-authored UV transform. FO4 BGSM ships explicit
@@ -694,10 +695,13 @@ void main() {
         discard;
     }
 
-    // R1 — every per-material field reads from the deduplicated
-    // `MaterialBuffer` SSBO indexed by `inst.materialId`. The per-
-    // instance copies that used to ship these fields were dropped in
-    // Phase 6 (commit 22f294a).
+    // R1 Phase 4 — first migrated field. `roughness` now reads from the
+    // deduplicated `MaterialBuffer` SSBO via `inst.materialId`. The
+    // per-instance `inst.roughness` slot is still populated by the CPU
+    // pipeline (Phase 6 drops it once every reader has migrated); the
+    // value at `materials[inst.materialId].roughness` is byte-equal to
+    // it for now, so the visible output is unchanged. Phases 5 and 6
+    // migrate the remaining per-material fields one slice at a time.
     float roughness = mat.roughness;
     float metalness = mat.metalness;
     float emissiveMult = mat.emissiveMult;
@@ -907,7 +911,7 @@ void main() {
     // highlight). Black (0.0) → fully dull (broad / diffuse specular).
     //
     // In our PBR pipeline glossiness is already converted to roughness
-    // upstream (mat.roughness), so the modulation lerps from the
+    // upstream (inst.roughness), so the modulation lerps from the
     // authored roughness toward 1.0 (fully rough) as gloss → 0. Pre-fix
     // gloss-masked surfaces (polished metal trim on dull leather straps)
     // got the right ON/OFF mask but a constant roughness profile, so
@@ -944,7 +948,7 @@ void main() {
     // · 14 SparkleSnow · 16 EyeEnvmap · 19 MultiTexture.
     //
     // Already dispatched elsewhere by data presence (no ladder entry):
-    //   · 1  Envmap       — `mat.envMapIndex != 0u` fed by POM/PBR path.
+    //   · 1  Envmap       — `inst.envMapIndex != 0u` fed by POM/PBR path.
     //   · 2  Glow         — `mat.glowMapIndex` above.
     //   · 3  Parallax     — `mat.parallaxMapIndex` (POM ray-march).
     //   · 7  ParallaxOcc  — same path as 3.
