@@ -79,18 +79,18 @@ architecture decisions. Session narratives live in
 ## Run
 
 ```bash
-# FNV interior with full lighting
+# FNV interior with full lighting (Textures2.bsa picked up automatically — see note below)
 cargo run --release -- --esm FalloutNV.esm --cell GSProspectorSaloonInterior \
              --bsa "Fallout - Meshes.bsa" \
-             --textures-bsa "Fallout - Textures.bsa" \
-             --textures-bsa "Fallout - Textures2.bsa"
+             --textures-bsa "Fallout - Textures.bsa"
 
 # Oblivion interior
 cargo run --release -- --esm Oblivion.esm --cell AnvilHeinrichOakenHallsHouse \
              --bsa "Oblivion - Meshes.bsa" \
              --textures-bsa "Oblivion - Textures - Compressed.bsa"
 
-# Skyrim SE mesh + textures
+# Skyrim SE mesh + textures (Meshes0/1 are already numeric — list each
+# explicitly; Textures0…4 likewise if more than one is needed)
 cargo run -- --bsa "Skyrim - Meshes0.bsa" \
              --mesh "meshes\clutter\ingredients\sweetroll01.nif" \
              --textures-bsa "Skyrim - Textures3.bsa"
@@ -107,6 +107,23 @@ cargo run -p byro-dbg
 
 **Controls**: Escape captures mouse, WASD + mouse flies, Space/Shift
 raise/lower, Ctrl for speed boost.
+
+**Sibling archive auto-load.** When `--bsa` / `--textures-bsa` points
+at an unsuffixed `.bsa` / `.ba2` (e.g. `Fallout - Textures.bsa`), the
+loader also opens `<stem>2.bsa` … `<stem>9.bsa` next to it on disk.
+That covers FNV/FO3's split textures (`Textures.bsa` +
+`Textures2.bsa`) without a second flag. Skyrim's already-numeric
+`Skyrim - Meshes0.bsa` / `Meshes1.bsa` is inert under this rule —
+list each archive explicitly.
+
+**Diagnostics.** `BYROREDUX_RENDER_DEBUG` enables fragment-shader
+bypass / viz bits for ad-hoc bisection: `0x4` outputs world-space
+normal, `0x8` colors fragments by tangent presence (green = authored
+or synthesized tangent reaches Path 1, red = screen-space derivative
+fallback), `0x10` skips normal-map perturbation entirely. See
+[docs/engine/debug-cli.md](docs/engine/debug-cli.md) for the full bit
+catalog and the `tex.missing` triage flow that closed the
+"chrome walls" diagnosis.
 
 ## Build
 

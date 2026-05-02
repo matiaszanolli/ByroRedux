@@ -318,6 +318,57 @@ cargo run -p byro-dbg                       # connect to localhost:9876
 BYRO_DEBUG_PORT=8080 cargo run -p byro-dbg  # custom port
 ```
 
+### Fragment-shader bypass / viz bits — `BYROREDUX_RENDER_DEBUG`
+
+Parsed once at engine boot by
+[`parse_render_debug_flags_env()`](../../crates/renderer/src/vulkan/context/mod.rs)
+and piped into the fragment shader via `GpuCamera.jitter[2]`. Each bit
+collapses to a free no-op when the env var is unset (zero-overhead in
+release builds). Accept plain decimal (`8`) or hex (`0x8`).
+
+| Bit    | Constant in `triangle.frag`     | Effect |
+|--------|---------------------------------|--------|
+| `0x1`  | `DBG_BYPASS_POM`                | Skip parallax-occlusion ray-march; `sampleUV = baseUV`. |
+| `0x2`  | `DBG_BYPASS_DETAIL`             | Skip detail-map modulation. |
+| `0x4`  | `DBG_VIZ_NORMALS`               | Output the post-perturb world-space normal as RGB and exit (also written to G-buffer). |
+| `0x8`  | `DBG_VIZ_TANGENT`               | Color fragments by tangent presence: green = authored or synthesized tangent reaches `perturbNormal` Path 1, red = zero tangent → screen-space derivative Path 2 fallback. |
+| `0x10` | `DBG_BYPASS_NORMAL_MAP`         | Skip `perturbNormal(...)` entirely; lighting uses the geometric vertex normal. Use to bisect whether an artifact comes from the TBN reconstruction or from downstream specular / ambient code. |
+
+Combine bits with bitwise-OR — e.g. `BYROREDUX_RENDER_DEBUG=0x14` runs
+the normals visualization *with* the normal-map perturbation skipped,
+showing pure geometric N. The startup log line confirms the parsed
+mask:
+
+```
+BYROREDUX_RENDER_DEBUG = 0x10 (POM bypass=false, detail bypass=false,
+                               normals viz=false, tangent viz=false,
+                               normal-map bypass=true)
+```
+
+#### Diagnostic recipe — "chrome posterized" / banded specular / noisy plaster
+
+Standard order, in increasing cost:
+
+1. **`tex.missing`** (via `byro-dbg`) — if the count is non-trivial
+   (>5 unique paths or >20 entities), the artifact is almost certainly
+   the magenta-checker placeholder × a (correctly loaded) bump map.
+   Diagnose the asset path, not the lighting math. Closed the entire
+   "chrome walls" arc in Session 27 (commit `b2354a4`); see
+   [HISTORY.md](../../HISTORY.md) for the full path.
+2. **`BYROREDUX_RENDER_DEBUG=0x10`** + relaunch. Same camera, same
+   cell. If the bypass + baseline screenshots are pixel-identical,
+   `perturbNormal` is innocent — investigate specular / ambient / fog.
+3. **`BYROREDUX_RENDER_DEBUG=0x4`** — visualize the post-perturb N.
+   Adjacent fragments rendering arbitrary directions (yellow next to
+   cyan next to lavender) point at TBN discontinuity; smooth gradients
+   point at correctly-perturbed normals.
+4. **`BYROREDUX_RENDER_DEBUG=0x8`** — confirm tangent presence.
+   Should be all-green on Bethesda content (authored
+   `NiBinaryExtraData` blob on Skyrim+/FO4 + the `synthesize_tangents`
+   nifly fallback on FO3/FNV/Oblivion both feed `vertexTangent.xyz`).
+   Red fragments mean the import path didn't produce a tangent for
+   that mesh — investigate the NIF parser for that specific block.
+
 ### Headless `--cmd` (no TCP, no window)
 
 ```bash

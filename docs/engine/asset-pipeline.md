@@ -27,8 +27,7 @@ holds the open BSA / BA2 archives and exposes a tiny `extract()` /
 ```bash
 cargo run -- --esm FalloutNV.esm --cell GSProspectorSaloonInterior \
              --bsa "Fallout - Meshes.bsa" \
-             --textures-bsa "Fallout - Textures.bsa" \
-             --textures-bsa "Fallout - Textures2.bsa"
+             --textures-bsa "Fallout - Textures.bsa"
 ```
 
 ### 1. Open the archives (CLI parse)
@@ -37,8 +36,34 @@ cargo run -- --esm FalloutNV.esm --cell GSProspectorSaloonInterior \
 the CLI args and opens every `--bsa`/`--textures-bsa`/`--ba2` path with
 the appropriate reader. Mesh archives go into `mesh_archives`, texture
 archives into `texture_archives`. Both are scanned in declaration order at
-extract time, so multiple texture archives can be layered (the FNV demo
-above uses both `Textures.bsa` and `Textures2.bsa`).
+extract time, so multiple archives can be layered.
+
+#### Numeric-suffix sibling auto-load
+
+`open_with_numeric_siblings()` runs after each explicit open: when the
+path ends in an unsuffixed `.bsa` / `.ba2` (no digit immediately before
+the extension), the loader scans the same directory for
+`<stem>2.bsa` … `<stem>9.bsa` and opens each that exists. The FNV demo
+above triggers this for `Fallout - Textures.bsa` → automatically pulls
+`Fallout - Textures2.bsa`, where Bethesda parked roughly half of the
+vanilla wall / floor / trim textures (the v104 archive size budget
+forced the split). Without that second archive, ~263 entities in
+Doc Mitchell's house resolve to the magenta-checker fallback —
+verified via `byro-dbg`'s `tex.missing` command, see [Session 27 in
+HISTORY.md](../../HISTORY.md#session-27).
+
+The rule fires only on unsuffixed paths so it stays inert for
+Skyrim's already-numeric `Skyrim - Meshes0.bsa` /
+`Skyrim - Meshes1.bsa` style — those expect the user to list each
+archive explicitly. Identical helper applied to `--bsa` mesh archives
+(no Bethesda title currently splits meshes the same way; the helper is
+groundwork).
+
+If anything looks like it's missing texture detail — banded specular,
+checker grid, "chrome posterized" plaster — run `tex.missing` from
+`byro-dbg` *before* opening shader files. The full triage recipe lives
+in [debug-cli.md](debug-cli.md) under "Fragment-shader bypass /
+viz bits".
 
 The current `TextureProvider` only knows about `BsaArchive`; the unified
 `MeshArchive` enum used by tests and `nif_stats` lives in

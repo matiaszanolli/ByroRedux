@@ -306,6 +306,20 @@ Docs hygiene:
 888 tests passing.
 Next: M33 sky/atmosphere, M35 terrain LOD, M37 SVGF spatial filter,
 M29 GPU skinning, FO3 exterior GPU re-bench (#457).
+Session 27 (2026-05-02): "Chrome posterized walls" red herring nailed
+to the wrong cause across multiple sessions. Auto-loaded
+`<stem>N.bsa` siblings in `byroredux/src/asset_provider.rs` —
+`Fallout - Textures.bsa` now drags in `Fallout - Textures2.bsa`
+without a second `--textures-bsa` flag. Diagnosis: `tex.missing`
+reported 39 unique missing textures × 263 entities for
+`GSDocMitchellHouse` (walls + floor + trim); the chrome look was
+the magenta-checker placeholder × the (correctly loaded) tangent-
+space normal map. Added `DBG_BYPASS_NORMAL_MAP = 0x10` as a
+permanent bisect bit alongside `DBG_VIZ_NORMALS` / `DBG_VIZ_TANGENT`.
+With both texture archives loaded `tex.missing` drops to 1
+(`<no path, no material>` placeholder geometry). New feedback memory:
+when an artifact reads as "chrome / posterized," run `tex.missing`
+before suspecting lighting code.
 
 ## Git Conventions
 
