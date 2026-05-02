@@ -78,6 +78,24 @@ vanilla files end-to-end, see #699). Weather transitions (fade
 between WTHR states) and cloud layers 2/3 closed in M33.1
 (`2bfb622`).
 
+**Current renderer regression (2026-05-01).** Per-fragment normal
+mapping is **temporarily disabled** ([commit `8305456`](../../commit/8305456),
+[#783](https://github.com/matiaszanolli/ByroRedux/issues/783))
+pending **M-NORMALS** — per-vertex tangents parsed from NIF
+`NiBinaryExtraData("Tangent space (binormal & tangent vectors)")`
+and routed through the Vertex struct + shaders. Live debug session
+2026-05-01 against FNV `GSDocMitchellHouse` confirmed the
+chrome-posterized-plaster look that had been chasing the team across
+multiple session iterations was caused by `perturbNormal`'s
+screen-space derivative TBN reconstruction producing arbitrary
+T/B direction flips at every mesh boundary. Workaround surface
+detail loss is acceptable; the proper fix unblocks the renderer's
+visual quality target: **smooth ray-traced light + shadows on
+properly-bumped surfaces, putting ByroRedux at the doorstep of
+Oblivion-class interior fidelity** as a single coherent milestone
+once M-NORMALS + LIGHT-N2 ([#784](https://github.com/matiaszanolli/ByroRedux/issues/784))
+land together.
+
 ### Compatibility matrix
 
 Parse-rate columns measured 2026-04-26 against vanilla mesh archives
@@ -168,6 +186,8 @@ active for incremental wins; don't let them block Tier 1–4.
 | M38     | Transparency & water   | OIT or depth-peeled transparency. Water plane mesh with reflection/refraction. NIF alpha sort correctness. **R1 unblocked 2026-05-01** — material-table indirection means new shading variants land in `GpuMaterial` only, not lockstep across `DrawCommand` + `GpuInstance` + 4 shaders.                                                                                                            | ~~R1~~     |
 | M39     | Texture streaming      | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Memory budget with LRU eviction.                                                                                                                                                                                                                                                                              | —          |
 | M29.3   | Pre-skinned raster path | Phase 3 of the GPU pre-skinning arc (`SkinComputePipeline` + per-skinned-entity BLAS refit shipped in `1ae235b`, RT shadows / reflections / GI now see this-frame skinned pose). Migrate `triangle.vert:147-204` to read pre-skinned vertices from the per-skinned-entity `SkinSlot` output buffer rather than doing inline weighted-bone-matrix-sum. The same commit must re-add `VERTEX_BUFFER` to the output buffer's usage mask — dropped in `#681` (`MEM-2-6`) so deferred-Phase-3 doesn't bloat memory-type masks today. Single source of truth, drops ~50 ALU ops per skinned vertex, but adds a critical-path dependency on the compute pass: a failed slot would now break raster too. **Defer-rationale:** the rasterized skinning path is well-understood and tested on real content; the new compute path is not. Ship only after the M41 NPC-spawning rollout proves the compute + BLAS-refit chain stable on visible animated content. | `1ae235b`, M41 stable, `#681` re-add |
+| **M-NORMALS** | **Per-vertex tangents (HIGH PRIORITY)** | Parse Bethesda's per-vertex tangent + bitangent from NIF `NiBinaryExtraData("Tangent space (binormal & tangent vectors)")` (Skyrim+/FO4 standard) and the older `NiTangentData` blocks (FO3/FNV). Add `tangent: [f32; 4]` to the Vertex struct (xyz tangent + w bitangent sign) — pushes per-vertex stride 84 → 100 B. Wire through `triangle.vert/frag`, `skin_vertices.comp`, and the `gpu_instance_size_*` test. Re-enable the `perturbNormal` call at [triangle.frag:719](crates/renderer/shaders/triangle.frag#L719) once the new TBN source is wired. **Currently shipped as a workaround**: the `perturbNormal` call is disabled (commit 8305456) because the screen-space derivative TBN reconstruction produces hard normal discontinuities at every mesh boundary, feeding PBR specular per-pixel chaos that ACES squashes into a "chrome posterized plaster" look across every Bethesda interior cell. Surfaces lose fine bump detail under the workaround but render with correct lighting. Once M-NORMALS lands, the renderer hits the visual quality bar that puts ByroRedux at the doorstep of Oblivion-class interior fidelity (smooth ray-traced light + shadows on properly-bumped surfaces). See [#783](https://github.com/matiaszanolli/ByroRedux/issues/783). | NIF parser, [#783](https://github.com/matiaszanolli/ByroRedux/issues/783) |
+| LIGHT-N2 | Display-space fog blend | Move composite fog mix from HDR-linear pre-ACES to display-space post-ACES. XCLL-authored interior fog values amplify perceptually when blended in HDR linear, producing a residual yellow / sepia distance wash on far interior surfaces post-#782 + post-M-NORMALS. ~10-15 lines in `composite.frag`. See [#784](https://github.com/matiaszanolli/ByroRedux/issues/784). | M-NORMALS |
 
 ### Tier 6 — Engine infrastructure (enablers)
 
@@ -357,6 +377,11 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] **R6a-stale** Bench-of-record refreshed at `6a6950a` (2026-04-24). Prospector 172.6 FPS / 5.79 ms (was 192.8 / 5.19 — slight regression in compositor-jitter range; fence_ms unchanged at 4.34, GPU still the bottleneck). Skyrim Whiterun 253.3 FPS / 3.95 ms at 1932 entities (was 237 FPS at 1258 entities — entity count up 53% while FPS improved, indicating more REFRs land now without perf cost). FO4 MedTek 92.5 FPS / 10.82 ms (was 90, 7434 entities unchanged).
 - [ ] **R6a-stale-7** Bench-of-record `6a6950a` is now 233 commits stale. Session 24 stacked M41.0 Phases 0–4 on top of an audit-bundle closeout (#575/#616/#620/#624/#654/#664/#679/#707/#710/#723/#765-770/#771/#772/#773); Session 25 added R1 (per-instance SSBO 400 → 112 B, +1 fragment SSBO load via material-table indirection — net perf direction unknown without a re-run). Refresh still deferred until M41 lands the visible-actor workload that exercises the new code paths. Not blocking.
 - [x] **R7** Scheduler access declarations — **closed**. `Access` builder + `System::access()` opt-in + `Scheduler::add_to_with_access` for closures + `sys.accesses` console command surface a per-stage Conflict / Unknown report. 3 of 12 systems declared so far (fly_camera, spin, log_stats); 4 Unknown pairs remaining. M27 flip is diagnosable now; eliminating the Unknown rows is incremental migration work.
+
+### Open — Renderer regressions (2026-05-01 live debug session)
+
+- [ ] **M-NORMALS** ([#783](https://github.com/matiaszanolli/ByroRedux/issues/783)) — `perturbNormal` shipped disabled (commit 8305456) as a workaround for the screen-space TBN reconstruction producing hard normal discontinuities at every mesh boundary. Surfaces lose fine bump detail until per-vertex tangents land. **Currently the highest-priority renderer milestone** — visual quality bar puts the engine at the doorstep of Oblivion-class interior fidelity once it ships. See ROADMAP Tier 5 row.
+- [ ] **LIGHT-N2** ([#784](https://github.com/matiaszanolli/ByroRedux/issues/784)) — composite fog blends in HDR linear space pre-ACES, amplifying interior fog perceptually at distance. Residual yellow / sepia distance wash on far interior surfaces. ~10-15 line fix in `composite.frag`. Lower priority than M-NORMALS.
 
 ### Open — Misc
 
