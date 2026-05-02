@@ -34,6 +34,21 @@ pub struct Vertex {
     /// Terrain splat weights, layers 4–7. Unorm bytes → `vec4`. Zero
     /// on non-terrain meshes.
     pub splat_weights_1: [u8; 4],
+    /// Per-vertex tangent (xyz) + bitangent sign (w). Authored by
+    /// Bethesda content under `NiBinaryExtraData("Tangent space ...")`
+    /// (Oblivion / FO3 / FNV) and inline in the BSTriShape vertex
+    /// stream (Skyrim+ / FO4) — see [`crate::import::ImportedMesh::tangents`]
+    /// for the per-engine decode contract. Zero `[0, 0, 0, 0]` on
+    /// rigid / particle / UI / terrain content with no authored
+    /// tangents; the fragment shader's `perturbNormal` detects the
+    /// zero magnitude and falls back to screen-space derivative TBN
+    /// reconstruction (the pre-#783 code path). When non-zero, the
+    /// shader reconstructs the bitangent as `w * cross(N, T)` and
+    /// uses that authored TBN for normal-map perturbation —
+    /// eliminating the screen-space-derivative discontinuities at
+    /// mesh boundaries that produced the chrome-walls regression.
+    /// See #783 / M-NORMALS.
+    pub tangent: [f32; 4],
 }
 
 impl Vertex {
@@ -51,6 +66,7 @@ impl Vertex {
             bone_weights: [0.0, 0.0, 0.0, 0.0],
             splat_weights_0: [0, 0, 0, 0],
             splat_weights_1: [0, 0, 0, 0],
+            tangent: [0.0, 0.0, 0.0, 0.0],
         }
     }
 
@@ -73,6 +89,7 @@ impl Vertex {
             bone_weights,
             splat_weights_0: [0, 0, 0, 0],
             splat_weights_1: [0, 0, 0, 0],
+            tangent: [0.0, 0.0, 0.0, 0.0],
         }
     }
 
@@ -97,6 +114,7 @@ impl Vertex {
             bone_weights: [0.0, 0.0, 0.0, 0.0],
             splat_weights_0: splat_0,
             splat_weights_1: splat_1,
+            tangent: [0.0, 0.0, 0.0, 0.0],
         }
     }
 
@@ -110,7 +128,7 @@ impl Vertex {
     }
 
     /// Per-attribute layout within a vertex.
-    pub fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 8] {
+    pub fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 9] {
         // Field offsets computed via memoffset-style arithmetic. `repr(C)`
         // guarantees no padding between the POD fields we use, so raw
         // prefix-sum math matches the struct layout.
@@ -122,6 +140,7 @@ impl Vertex {
         const OFF_BONE_WEIGHTS: u32 = OFF_BONE_INDICES + 16; // after [u32; 4]
         const OFF_SPLAT_0: u32 = OFF_BONE_WEIGHTS + 16; // after [f32; 4]
         const OFF_SPLAT_1: u32 = OFF_SPLAT_0 + 4; // after [u8; 4]
+        const OFF_TANGENT: u32 = OFF_SPLAT_1 + 4; // after [u8; 4] — #783
         [
             // location 0: position (vec3)
             vk::VertexInputAttributeDescription {
@@ -178,6 +197,17 @@ impl Vertex {
                 binding: 0,
                 format: vk::Format::R8G8B8A8_UNORM,
                 offset: OFF_SPLAT_1,
+            },
+            // location 8: tangent (vec4) — xyz tangent + w bitangent
+            // sign. Zero on rigid / particle / UI / non-Bethesda
+            // content; the fragment shader's perturbNormal detects
+            // the zero magnitude and falls back to screen-space
+            // derivative TBN reconstruction. See #783 / M-NORMALS.
+            vk::VertexInputAttributeDescription {
+                location: 8,
+                binding: 0,
+                format: vk::Format::R32G32B32A32_SFLOAT,
+                offset: OFF_TANGENT,
             },
         ]
     }
@@ -236,8 +266,9 @@ mod tests {
     #[test]
     fn vertex_size_matches_attribute_stride() {
         // 12 (pos) + 12 (color) + 12 (normal) + 8 (uv) + 16 (indices) +
-        // 16 (weights) + 4 (splat_0) + 4 (splat_1) = 84.
-        assert_eq!(size_of::<Vertex>(), 84);
+        // 16 (weights) + 4 (splat_0) + 4 (splat_1) + 16 (tangent) = 100.
+        // Tangent slot added in #783 / M-NORMALS.
+        assert_eq!(size_of::<Vertex>(), 100);
     }
 
     #[test]
@@ -250,6 +281,7 @@ mod tests {
         assert_eq!(offset_of!(Vertex, bone_weights), 60);
         assert_eq!(offset_of!(Vertex, splat_weights_0), 76);
         assert_eq!(offset_of!(Vertex, splat_weights_1), 80);
+        assert_eq!(offset_of!(Vertex, tangent), 84); // #783
     }
 
     #[test]

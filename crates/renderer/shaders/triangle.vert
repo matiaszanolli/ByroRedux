@@ -12,6 +12,14 @@ layout(location = 5) in vec4  inBoneWeights;
 // them when `instance.flags & INSTANCE_FLAG_TERRAIN_SPLAT` is set.
 layout(location = 6) in vec4 inSplat0; // layers 0-3
 layout(location = 7) in vec4 inSplat1; // layers 4-7
+// Per-vertex tangent (xyz) + bitangent sign (w). Authored by Bethesda
+// content under NiBinaryExtraData("Tangent space ...") (Oblivion / FO3
+// / FNV) and inline in the BSTriShape vertex stream (Skyrim+ / FO4).
+// Zero on rigid / particle / UI / terrain / non-Bethesda content; the
+// fragment shader's perturbNormal detects the zero magnitude and
+// falls back to screen-space derivative TBN reconstruction.
+// See #783 / M-NORMALS.
+layout(location = 8) in vec4 inTangent;
 
 // Per-mesh bone-palette stride. Matches the Rust constant
 // `MAX_BONES_PER_MESH` at `crates/core/src/ecs/components/skinned_mesh.rs:29`.
@@ -94,6 +102,11 @@ layout(location = 7) out vec4 fragPrevClipPos;
 // *want* the blend to be smooth across the triangle).
 layout(location = 8) out vec4 fragSplat0;
 layout(location = 9) out vec4 fragSplat1;
+// #783 / M-NORMALS — per-vertex tangent (xyz) + bitangent sign (w),
+// transformed to world-space via the same xform used for position
+// + normal. Zero (length < epsilon) signals "no authored tangent;
+// fragment shader falls back to screen-space derivative TBN."
+layout(location = 10) out vec4 fragTangent;
 
 void main() {
     GpuInstance inst = instances[gl_InstanceIndex];
@@ -156,6 +169,29 @@ void main() {
     fragWorldPos = worldPos.xyz;
     fragTexIndex = inst.textureIndex;
     fragInstanceIndex = gl_InstanceIndex;
+
+    // #783 / M-NORMALS — transform tangent direction by the same xform
+    // (mat3) as the normal. Tangent is a direction vector so the
+    // upper-3x3 with normalize() handles magnitude correctly under
+    // uniform scale; non-uniform scale uses the same inverse-transpose
+    // path the normal does. Zero-length tangent (no authored data)
+    // is preserved as zero so the fragment shader's fallback gate
+    // detects it and routes to screen-space derivative TBN.
+    vec3 t_world;
+    if (dot(inTangent.xyz, inTangent.xyz) < 1e-6) {
+        t_world = vec3(0.0);
+    } else if ((inst.flags & 1u) != 0u) {
+        float det = determinant(m3);
+        t_world = (abs(det) > 1e-6)
+            ? transpose(inverse(m3)) * inTangent.xyz
+            : inTangent.xyz;
+        t_world = normalize(t_world);
+    } else {
+        t_world = m3 * inTangent.xyz;
+        float t_len2 = dot(t_world, t_world);
+        t_world = (t_len2 > 0.0) ? t_world * inversesqrt(t_len2) : vec3(0.0);
+    }
+    fragTangent = vec4(t_world, inTangent.w);
 
     // Motion vector: current + previous clip-space positions. Fragment
     // shader does the perspective divide and screen-space delta. Skinned

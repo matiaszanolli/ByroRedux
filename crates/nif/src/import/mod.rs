@@ -181,6 +181,29 @@ pub struct ImportedMesh {
     pub colors: Vec<[f32; 4]>,
     /// Vertex normals. Falls back to +Y up if the mesh has no normals.
     pub normals: Vec<[f32; 3]>,
+    /// Per-vertex tangents in the [`Vertex::tangent`] format: `[Tx, Ty, Tz,
+    /// bitangent_sign]`. The bitangent is reconstructed shader-side as
+    /// `bitangent_sign * cross(N, T)` (standard glTF/Vulkan convention).
+    /// Empty when the source NIF does not author tangent data; the
+    /// fragment shader's `perturbNormal` falls back to screen-space
+    /// derivative TBN reconstruction in that case (the pre-#783 code
+    /// path, retained for non-Bethesda content). See #783 / M-NORMALS.
+    ///
+    /// Per-game source:
+    ///   - **Oblivion / FO3 / FNV** (NiTriShape): `NiBinaryExtraData` with
+    ///     name `"Tangent space (binormal & tangent vectors)"`. Format per
+    ///     nifly NifFile.cpp: `numVerts × 24 bytes` = N tangent
+    ///     `Vector3` followed by N bitangent `Vector3`.
+    ///   - **Skyrim LE/SE / FO4** (BSTriShape): packed inline in the
+    ///     vertex stream as `bitangent_X` (in the position record's
+    ///     trailing f32/hfloat slot), `bitangent_Y` (in the normal
+    ///     record's trailing normbyte slot), and `tangent` + `bitangent_Z`
+    ///     (in the tangent record's 4 normbytes).
+    ///   - **Starfield** (BSGeometry): UDEC3 (10:10:10:2) packed in
+    ///     `tangents_raw: Vec<u32>`. The 2-bit W is the bitangent sign.
+    ///     Wired through to `tangents_raw` today; UDEC3 unpack into
+    ///     `[f32; 4]` is a follow-up to this issue.
+    pub tangents: Vec<[f32; 4]>,
     /// UV coordinates. Empty if the mesh has no UVs.
     pub uvs: Vec<[f32; 2]>,
     /// Triangle indices (u32 for Vulkan compatibility).

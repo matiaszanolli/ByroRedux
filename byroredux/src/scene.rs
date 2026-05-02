@@ -1464,6 +1464,19 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 } else {
                     [0.0, 0.0]
                 };
+                // #783 / M-NORMALS — pull the per-vertex tangent (xyz +
+                // bitangent sign) from the imported mesh when authored.
+                // Empty `mesh.tangents` falls through to the zero-vec
+                // default, which the fragment shader's perturbNormal
+                // detects and routes to its screen-space derivative
+                // fallback path. This preserves rendering correctness
+                // for both Bethesda-with-tangents and synthetic-without
+                // content paths.
+                let tangent = if i < mesh.tangents.len() {
+                    mesh.tangents[i]
+                } else {
+                    [0.0, 0.0, 0.0, 0.0]
+                };
                 if let Some(skin) = skin_vertex_data {
                     // Guard against parallel-vector truncation — if the
                     // sparse skin upload filled fewer vertices than the
@@ -1472,7 +1485,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                     if i < skin.vertex_bone_indices.len() && i < skin.vertex_bone_weights.len() {
                         let idx = skin.vertex_bone_indices[i];
                         let w = skin.vertex_bone_weights[i];
-                        return Vertex::new_skinned(
+                        let mut v = Vertex::new_skinned(
                             position,
                             color,
                             normal,
@@ -1480,9 +1493,13 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                             [idx[0] as u32, idx[1] as u32, idx[2] as u32, idx[3] as u32],
                             w,
                         );
+                        v.tangent = tangent;
+                        return v;
                     }
                 }
-                Vertex::new(position, color, normal, uv)
+                let mut v = Vertex::new(position, color, normal, uv);
+                v.tangent = tangent;
+                v
             })
             .collect();
 

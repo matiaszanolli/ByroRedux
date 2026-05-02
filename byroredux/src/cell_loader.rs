@@ -1884,7 +1884,7 @@ fn spawn_placed_instances(
                 } else {
                     [1.0, 1.0, 1.0]
                 };
-                Vertex::new(
+                let mut v = Vertex::new(
                     mesh.positions[i],
                     color3,
                     if i < mesh.normals.len() {
@@ -1897,7 +1897,17 @@ fn spawn_placed_instances(
                     } else {
                         [0.0, 0.0]
                     },
-                )
+                );
+                // #783 / M-NORMALS — propagate authored tangent
+                // (NiBinaryExtraData "Tangent space ..." for Oblivion
+                // / FO3 / FNV cell-loader content). Empty mesh.tangents
+                // → zero, which the fragment shader's perturbNormal
+                // detects and routes to its screen-space derivative
+                // fallback.
+                if i < mesh.tangents.len() {
+                    v.tangent = mesh.tangents[i];
+                }
+                v
             })
             .collect();
 

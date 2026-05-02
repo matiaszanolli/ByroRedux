@@ -21,11 +21,142 @@ use super::material::{extract_material_info, extract_vertex_colors};
 use super::{ImportedBone, ImportedMesh, ImportedSkin, MeshResolver};
 use byroredux_core::string::{FixedString, StringPool};
 
+/// Extract per-vertex tangents from an Oblivion / FO3 / FNV
+/// `NiTriShape` by walking its `extra_data_refs` for the
+/// `NiBinaryExtraData` named `"Tangent space (binormal & tangent
+/// vectors)"`. Format per nifly `NifFile.cpp`: `numVerts × 24` bytes
+/// = N tangent `Vector3` (Z-up world) followed by N bitangent
+/// `Vector3` (Z-up world).
+///
+/// Returns `Vec<[f32; 4]>` where each entry is `[Tx, Ty, Tz,
+/// bitangent_sign]` in **Y-up** coordinates (axis-converted to
+/// match the renderer's `Vertex.tangent` contract). The bitangent
+/// sign is derived as `sign(dot(B, cross(N, T)))` so the shader can
+/// reconstruct B as `bitangent_sign * cross(N, T)` without storing
+/// the full bitangent vector.
+///
+/// Returns an empty `Vec` when no matching extra-data block exists,
+/// when `binary_data.len() != numVerts × 24`, or when the normals
+/// slice doesn't match the requested vertex count. The caller's
+/// fragment shader falls back to screen-space derivative TBN
+/// reconstruction in that case (the pre-#783 path). See #783.
+fn extract_tangents_from_extra_data(
+    scene: &NifScene,
+    extra_data_refs: &[BlockRef],
+    normals_zup: &[NiPoint3],
+    num_verts: usize,
+) -> Vec<[f32; 4]> {
+    if num_verts == 0 || normals_zup.len() != num_verts {
+        return Vec::new();
+    }
+    let expected_size = num_verts * 24;
+
+    for ref_idx in extra_data_refs {
+        let Some(idx) = ref_idx.index() else { continue };
+        let Some(block) = scene.blocks.get(idx) else {
+            continue;
+        };
+        let Some(ed) = block
+            .as_any()
+            .downcast_ref::<crate::blocks::extra_data::NiExtraData>()
+        else {
+            continue;
+        };
+        if ed.type_name != "NiBinaryExtraData" {
+            continue;
+        }
+        let name = ed.name.as_deref().unwrap_or("");
+        if name != "Tangent space (binormal & tangent vectors)" {
+            continue;
+        }
+        let Some(blob) = ed.binary_data.as_ref() else {
+            continue;
+        };
+        if blob.len() != expected_size {
+            // Size-mismatched blob — skip rather than risk a partial
+            // decode. nifly's writer pads to numVerts × 24 exactly
+            // so a mismatch indicates either authored corruption or
+            // a parser drift we want to learn about, not paper over.
+            log::warn!(
+                "Tangent-space extra data size mismatch: expected {} bytes \
+                 (numVerts={}), got {}. Skipping tangent decode; renderer \
+                 will fall back to screen-space derivative TBN.",
+                expected_size,
+                num_verts,
+                blob.len()
+            );
+            continue;
+        }
+
+        let mut tangents = Vec::with_capacity(num_verts);
+        let bitangent_offset = num_verts * 12;
+        for i in 0..num_verts {
+            let t_off = i * 12;
+            let b_off = bitangent_offset + i * 12;
+            // Read Vector3 (3 × f32 LE) for tangent and bitangent.
+            let tx = read_f32_le_at(blob, t_off);
+            let ty = read_f32_le_at(blob, t_off + 4);
+            let tz = read_f32_le_at(blob, t_off + 8);
+            let bx = read_f32_le_at(blob, b_off);
+            let by = read_f32_le_at(blob, b_off + 4);
+            let bz = read_f32_le_at(blob, b_off + 8);
+
+            // Z-up → Y-up basis change applied to tangent + bitangent
+            // direction vectors: same `(x, y, z) → (x, z, -y)` swap
+            // used for positions / normals throughout import.
+            let t_yup = [tx, tz, -ty];
+            let b_yup = [bx, bz, -by];
+
+            // Normal in Y-up — use the matching vertex normal.
+            let n_zup = normals_zup[i];
+            let n_yup = [n_zup.x, n_zup.z, -n_zup.y];
+
+            // Bitangent sign: sign(dot(B, cross(N, T))). When > 0
+            // the authored bitangent points the same way as
+            // `cross(N, T)`, so the shader's `sign × cross(N, T)`
+            // reconstruction matches authored intent. When < 0 the
+            // shader flips. Zero (degenerate) defaults to +1 to
+            // avoid producing a zero-magnitude bitangent.
+            let cross_nt = [
+                n_yup[1] * t_yup[2] - n_yup[2] * t_yup[1],
+                n_yup[2] * t_yup[0] - n_yup[0] * t_yup[2],
+                n_yup[0] * t_yup[1] - n_yup[1] * t_yup[0],
+            ];
+            let dot_b_cross =
+                b_yup[0] * cross_nt[0] + b_yup[1] * cross_nt[1] + b_yup[2] * cross_nt[2];
+            let sign = if dot_b_cross < 0.0 { -1.0 } else { 1.0 };
+
+            tangents.push([t_yup[0], t_yup[1], t_yup[2], sign]);
+        }
+        return tangents;
+    }
+    Vec::new()
+}
+
+#[inline]
+fn read_f32_le_at(blob: &[u8], offset: usize) -> f32 {
+    f32::from_le_bytes([
+        blob[offset],
+        blob[offset + 1],
+        blob[offset + 2],
+        blob[offset + 3],
+    ])
+}
+
 /// Intermediate geometry data extracted from either NiTriShapeData or NiTriStripsData.
 #[allow(dead_code)]
 pub(super) struct GeomData<'a> {
     pub vertices: &'a [NiPoint3],
     pub normals: &'a [NiPoint3],
+    /// Per-vertex tangents in the renderer's
+    /// [`crate::import::ImportedMesh::tangents`] format
+    /// (`[Tx, Ty, Tz, bitangent_sign]` — Y-up world space). For
+    /// FO3/FNV/Oblivion, decoded from the NIF's
+    /// `NiBinaryExtraData("Tangent space (binormal & tangent vectors)")`
+    /// blob. Empty when the source mesh has no authored tangents;
+    /// the renderer's perturbNormal falls back to screen-space
+    /// derivative TBN reconstruction in that case. See #783.
+    pub tangents: Vec<[f32; 4]>,
     pub vertex_colors: &'a [[f32; 4]],
     pub uv_sets: &'a [Vec<[f32; 2]>],
     pub triangles: std::borrow::Cow<'a, [[u16; 3]]>,
@@ -47,11 +178,22 @@ pub(super) fn extract_mesh(
 ) -> Option<ImportedMesh> {
     let data_idx = shape.data_ref.index()?;
 
-    // Try NiTriShapeData first, then NiTriStripsData
+    // Try NiTriShapeData first, then NiTriStripsData. Tangents (when
+    // authored) live on a separate `NiBinaryExtraData` block referenced
+    // by `shape.av.net.extra_data_refs`; decode them in lockstep with
+    // the geometry data so vertex count + normal data line up. See
+    // #783 / M-NORMALS.
     let geom = if let Some(data) = scene.get_as::<NiTriShapeData>(data_idx) {
+        let tangents = extract_tangents_from_extra_data(
+            scene,
+            &shape.av.net.extra_data_refs,
+            &data.normals,
+            data.vertices.len(),
+        );
         GeomData {
             vertices: &data.vertices,
             normals: &data.normals,
+            tangents,
             vertex_colors: &data.vertex_colors,
             uv_sets: &data.uv_sets,
             triangles: std::borrow::Cow::Borrowed(&data.triangles),
@@ -59,9 +201,16 @@ pub(super) fn extract_mesh(
             bound_radius: data.radius,
         }
     } else if let Some(data) = scene.get_as::<NiTriStripsData>(data_idx) {
+        let tangents = extract_tangents_from_extra_data(
+            scene,
+            &shape.av.net.extra_data_refs,
+            &data.normals,
+            data.vertices.len(),
+        );
         GeomData {
             vertices: &data.vertices,
             normals: &data.normals,
+            tangents,
             vertex_colors: &data.vertex_colors,
             uv_sets: &data.uv_sets,
             triangles: std::borrow::Cow::Owned(data.to_triangles()),
@@ -128,10 +277,17 @@ pub(super) fn extract_mesh(
     // the `ImportedMesh` literal. See #430.
     let shader_type_fields = mat.shader_type_fields();
 
+    // #783 / M-NORMALS — pre-decoded tangents from the NIF's
+    // `NiBinaryExtraData("Tangent space (binormal & tangent vectors)")`.
+    // Empty when the source mesh has no authored tangents; the
+    // renderer falls back to screen-space derivative TBN in that case.
+    let tangents_yup = geom.tangents.clone();
+
     Some(ImportedMesh {
         positions,
         colors,
         normals,
+        tangents: tangents_yup,
         uvs,
         indices,
         translation: zup_point_to_yup(t),
@@ -359,6 +515,13 @@ pub(super) fn extract_bs_tri_shape(
         positions,
         colors,
         normals,
+        // #783 / M-NORMALS — placeholder; the NiTriShape path
+        // overwrites this with the decoded `geom.tangents` below
+        // (see Edit). BSTriShape and SSE-packed paths leave it empty
+        // until the inline-vertex-stream tangent decode lands as a
+        // follow-up; the renderer falls back to screen-space
+        // derivative TBN for now on those.
+        tangents: Vec::new(),
         uvs,
         indices,
         translation: zup_point_to_yup(t),
@@ -572,6 +735,13 @@ pub(super) fn extract_bs_geometry(
         positions,
         colors,
         normals,
+        // #783 / M-NORMALS — placeholder; the NiTriShape path
+        // overwrites this with the decoded `geom.tangents` below
+        // (see Edit). BSTriShape and SSE-packed paths leave it empty
+        // until the inline-vertex-stream tangent decode lands as a
+        // follow-up; the renderer falls back to screen-space
+        // derivative TBN for now on those.
+        tangents: Vec::new(),
         uvs,
         indices,
         translation: zup_point_to_yup(t),

@@ -14,7 +14,8 @@
 //! output buffer is unused by raster + RT (Phase 2 wires AcceleratedManager).
 //!
 //! See `shaders/skin_vertices.comp` for the shader-side contract +
-//! per-vertex layout (matches `vertex.rs::Vertex`, 21 floats / 84 B).
+//! per-vertex layout (matches `vertex.rs::Vertex`, 25 floats / 100 B
+//! post-#783; tangent slot at floats 21..24 added for M-NORMALS).
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
@@ -25,11 +26,11 @@ use ash::vk;
 
 const SKIN_VERTICES_COMP_SPV: &[u8] = include_bytes!("../../shaders/skin_vertices.comp.spv");
 
-/// Per-vertex stride in floats (matches `Vertex` Rust struct: 21 × 4 B
-/// = 84 B). Cross-checked against the shader's `VERTEX_STRIDE_FLOATS`
-/// constant — drift here means the per-vertex bone-index unpack would
-/// read random bytes.
-pub const VERTEX_STRIDE_FLOATS: u32 = 21;
+/// Per-vertex stride in floats (matches `Vertex` Rust struct: 25 × 4 B
+/// = 100 B post-#783). Cross-checked against the shader's
+/// `VERTEX_STRIDE_FLOATS` constant — drift here means the per-vertex
+/// bone-index unpack would read random bytes.
+pub const VERTEX_STRIDE_FLOATS: u32 = 25;
 pub const VERTEX_STRIDE_BYTES: u64 = (VERTEX_STRIDE_FLOATS as u64) * 4;
 
 /// Compute workgroup size (local_size_x in skin_vertices.comp).
@@ -479,12 +480,12 @@ mod tests {
     use super::*;
 
     /// Pin the per-vertex stride against the Rust `Vertex` size — the
-    /// shader hardcodes 21 floats / 84 bytes per vertex; if a vertex
-    /// field is added without bumping `VERTEX_STRIDE_FLOATS` here AND
-    /// `VERTEX_STRIDE_FLOATS` in the shader, the compute pass would
-    /// read past the end of each vertex and write the wrong target
-    /// vertex. Phase 1 catch — the renderer crate has no Vulkan-free
-    /// test path for the rest of the pipeline.
+    /// shader hardcodes 25 floats / 100 bytes per vertex post-#783; if
+    /// a vertex field is added without bumping `VERTEX_STRIDE_FLOATS`
+    /// here AND `VERTEX_STRIDE_FLOATS` in the shader, the compute pass
+    /// would read past the end of each vertex and write the wrong
+    /// target vertex. Phase 1 catch — the renderer crate has no
+    /// Vulkan-free test path for the rest of the pipeline.
     #[test]
     fn vertex_stride_matches_rust_vertex_size() {
         use crate::vertex::Vertex;
@@ -495,7 +496,7 @@ mod tests {
              skin_vertices.comp will read garbage if these drift",
             VERTEX_STRIDE_FLOATS,
         );
-        assert_eq!(VERTEX_STRIDE_BYTES, 84);
+        assert_eq!(VERTEX_STRIDE_BYTES, 100);
     }
 
     /// Push constant payload size must fit in the conservative 128 B

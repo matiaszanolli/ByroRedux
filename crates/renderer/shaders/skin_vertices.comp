@@ -10,10 +10,10 @@
 // rasterized pipeline keeps its existing inline-skinning path
 // (triangle.vert:147-204) until Phase 3 (optional) migrates it.
 //
-// Vertex layout matches `byroredux_renderer::vertex::Vertex` (84 bytes,
-// 21 floats per vertex). The same flat `float[]` indexing convention
+// Vertex layout matches `byroredux_renderer::vertex::Vertex` (100 bytes,
+// 25 floats per vertex). The same flat `float[]` indexing convention
 // is used here as in `triangle.frag` GlobalVertices @ binding 8 — see
-// the comment block at triangle.frag:182-189 for the field map.
+// the comment block at triangle.frag:175-184 for the field map.
 //
 // Per-vertex layout (offset / float index):
 //   0..2   position
@@ -24,6 +24,7 @@
 //   15..18 bone weights
 //   19     splat_weights_0 (4×u8 packed)
 //   20     splat_weights_1 (4×u8 packed)
+//   21..24 tangent (xyz + bitangent sign) — #783 / M-NORMALS
 //
 // Skinning math mirrors `triangle.vert:151-162`. Pass-through fields
 // (color, UV, splats, bone weights/indices) copy verbatim so the
@@ -32,7 +33,7 @@
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-const uint VERTEX_STRIDE_FLOATS = 21u;
+const uint VERTEX_STRIDE_FLOATS = 25u; // #783 (was 21 pre-tangent)
 // Per-mesh bone-palette stride. Matches the Rust constant
 // `MAX_BONES_PER_MESH` defined at
 // `crates/core/src/ecs/components/skinned_mesh.rs:29`. Each skinned
@@ -55,9 +56,9 @@ layout(std430, set = 0, binding = 1) readonly buffer BoneBuffer {
     mat4 bones[];
 };
 
-// Per-mesh skinned-vertex output buffer (size = vertex_count × 21 ×
-// 4 B). Phase 2 refits a BLAS against this buffer; Phase 3 may bind
-// it as the raster vertex source.
+// Per-mesh skinned-vertex output buffer (size = vertex_count × 25 ×
+// 4 B post-#783). Phase 2 refits a BLAS against this buffer; Phase 3
+// may bind it as the raster vertex source.
 layout(std430, set = 0, binding = 2) writeonly buffer OutputVertices {
     float outputVertexData[];
 };
@@ -149,6 +150,18 @@ void main() {
     // the bone palette never carries that — see triangle.vert:177.
     vec3 skinnedNormal = mat3(xform) * normal;
 
+    // #783 / M-NORMALS — skin the tangent direction the same way as
+    // the normal. Bitangent sign (lane 24) passes through unchanged
+    // because rigid bone transforms don't flip handedness, and the
+    // shader-side `sign × cross(N, T)` reconstruction stays correct
+    // under the same transform applied to N and T.
+    vec3 tangentIn = vec3(
+        inputVertexData[src_base + 21u],
+        inputVertexData[src_base + 22u],
+        inputVertexData[src_base + 23u]
+    );
+    vec3 skinnedTangent = mat3(xform) * tangentIn;
+
     // Write skinned position + normal; pass through every other
     // field verbatim so the output buffer is layout-identical to the
     // input. Phase 3 (vertex shader reads pre-skinned) needs every
@@ -180,4 +193,11 @@ void main() {
 
     outputVertexData[dst_base + 19u] = inputVertexData[src_base + 19u]; // splat 0
     outputVertexData[dst_base + 20u] = inputVertexData[src_base + 20u]; // splat 1
+
+    // Tangent (skinned through the bone palette) + bitangent sign
+    // (passed through unchanged). #783 / M-NORMALS.
+    outputVertexData[dst_base + 21u] = skinnedTangent.x;
+    outputVertexData[dst_base + 22u] = skinnedTangent.y;
+    outputVertexData[dst_base + 23u] = skinnedTangent.z;
+    outputVertexData[dst_base + 24u] = inputVertexData[src_base + 24u];
 }

@@ -16,6 +16,10 @@ layout(location = 7) in vec4 fragPrevClipPos;
 // `(inst.flags & 8u) != 0u`.
 layout(location = 8) in vec4 fragSplat0; // layers 0-3
 layout(location = 9) in vec4 fragSplat1; // layers 4-7
+// #783 / M-NORMALS — per-vertex tangent (xyz, world-space) +
+// bitangent sign (w). Zero magnitude (xyz < epsilon) signals "no
+// authored tangent — fall back to screen-space derivative TBN."
+layout(location = 10) in vec4 fragTangent;
 
 // Main render pass has 6 color attachments (Phase 2).
 layout(location = 0) out vec4 outColor;        // HDR color (direct light only)
@@ -165,7 +169,7 @@ layout(set = 1, binding = 7) uniform sampler2D aoTexture;
 
 // Global geometry SSBOs for RT reflection UV lookups.
 //
-// Vertex layout (84 B = 21 floats per vertex, mirrors Rust `Vertex`
+// Vertex layout (100 B = 25 floats per vertex, mirrors Rust `Vertex`
 // struct in `crates/renderer/src/vertex.rs`):
 //
 //   float offset │ bytes  │ field           │ type     │ safe-as-float?
@@ -178,11 +182,13 @@ layout(set = 1, binding = 7) uniform sampler2D aoTexture;
 //       15..18   │ 60..75 │ bone_weights    │ vec4     │ ✓
 //       19       │ 76..79 │ splat_weights_0 │ 4× u8    │ ✗ packed unorm
 //       20       │ 80..83 │ splat_weights_1 │ 4× u8    │ ✗ packed unorm
+//       21..24   │ 84..99 │ tangent (#783)  │ vec4     │ ✓ (xyz + sign)
 //
-// **WARNING (#575 / SH-1)**: only float offsets 0..10 and 15..18 may
-// be read directly as `vertexData[base + N]`. Bone indices (11..14)
-// and splat weights (19..20) are NOT IEEE-754 floats — reinterpreting
-// their bit patterns silently produces NaN / denormal garbage.
+// **WARNING (#575 / SH-1)**: only float offsets 0..10, 15..18, and
+// 21..24 may be read directly as `vertexData[base + N]`. Bone indices
+// (11..14) and splat weights (19..20) are NOT IEEE-754 floats —
+// reinterpreting their bit patterns silently produces NaN / denormal
+// garbage.
 //
 // To recover the unsafe slots, use the same pattern
 // `skin_vertices.comp:101-106` uses for bone indices:
@@ -198,7 +204,7 @@ layout(set = 1, binding = 7) uniform sampler2D aoTexture;
 // statically grep-checks the source so the next forbidden read
 // fails CI immediately.
 layout(std430, set = 1, binding = 8) readonly buffer GlobalVertices {
-    float vertexData[]; // flat array, stride = 21 floats (84 bytes)
+    float vertexData[]; // flat array, stride = 25 floats (100 bytes) — #783
 };
 layout(std430, set = 1, binding = 9) readonly buffer GlobalIndices {
     uint indexData[];
@@ -331,8 +337,8 @@ vec2 getHitUV(uint instanceIdx, uint primitiveIdx, vec2 barycentrics) {
     uint i1 = indexData[iOff + primitiveIdx * 3 + 1];
     uint i2 = indexData[iOff + primitiveIdx * 3 + 2];
 
-    // Vertex stride: 21 floats (84 bytes). UV starts at float offset 9 (byte 36).
-    const uint STRIDE = 21;
+    // Vertex stride: 25 floats (100 bytes) — #783. UV starts at float offset 9 (byte 36).
+    const uint STRIDE = 25;
     const uint UV_OFFSET = 9;
 
     vec2 uv0 = vec2(vertexData[(vOff + i0) * STRIDE + UV_OFFSET],
@@ -525,9 +531,31 @@ vec2 parallaxDisplaceUV(
     return mix(currentUV, prevUV, clamp(weight, 0.0, 1.0));
 }
 
-// ── Normal mapping via screen-space derivatives ─────────────────────
+// ── Normal mapping ──────────────────────────────────────────────────
+//
+// Samples the per-fragment normal map and rotates the tangent-space
+// perturbation into world space. Two TBN-source paths:
+//
+//   1. **Authored vertex tangent** (#783 / M-NORMALS) — preferred.
+//      `vertexTangent.xyz` carries the world-space tangent direction
+//      from the NIF's authored data; `.w` carries the bitangent sign.
+//      Reconstructed B as `sign × cross(N, T)` is smooth across mesh
+//      boundaries because the authored tangent itself is per-vertex
+//      smooth — no derivative discontinuity. This is the path
+//      Bethesda content uses on every BSShaderPPLighting / BSLighting
+//      mesh, and it eliminates the chrome-walls regression that
+//      surfaced the prior screen-space-derivative reconstruction.
+//
+//   2. **Screen-space derivative fallback** — used when
+//      `vertexTangent.xyz` has zero magnitude (no authored data —
+//      synthetic content like the spinning cube, particle billboards,
+//      or non-Bethesda assets). Reconstructs T/B from `dFdx/dFdy`
+//      of `worldPos` + `uv`. Suffers from boundary discontinuities
+//      that produced the chrome-walls regression on Bethesda content,
+//      but acceptable on synthetic / particle content where mesh
+//      boundaries are simpler. See revert chain at 8305456.
 
-vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx) {
+vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx, vec4 vertexTangent) {
     // Sample normal map (tangent-space, [0,1] → [-1,1]).
     vec3 tangentNormal = texture(textures[nonuniformEXT(normalMapIdx)], uv).rgb;
     tangentNormal = tangentNormal * 2.0 - 1.0;
@@ -550,7 +578,21 @@ vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx) {
     // tangent plane rather than producing a NaN.
     tangentNormal.z = sqrt(max(0.0, 1.0 - dot(tangentNormal.xy, tangentNormal.xy)));
 
-    // Build TBN from screen-space derivatives (no vertex tangents needed).
+    // Path 1 — authored vertex tangent (#783 / M-NORMALS).
+    if (dot(vertexTangent.xyz, vertexTangent.xyz) > 1e-4) {
+        vec3 T = normalize(vertexTangent.xyz);
+        // Re-orthogonalize T against N (Gram-Schmidt) so the per-
+        // fragment N (vertex-interpolated, possibly different from
+        // the authored per-vertex N at the same vertex due to
+        // smoothing groups) doesn't break the right-angle invariant
+        // the bitangent sign was authored against.
+        T = normalize(T - dot(T, N) * N);
+        vec3 B = vertexTangent.w * cross(N, T);
+        mat3 TBN = mat3(T, B, N);
+        return normalize(TBN * tangentNormal);
+    }
+
+    // Path 2 — screen-space derivative fallback (no authored tangent).
     vec3 dPdx = dFdx(worldPos);
     vec3 dPdy = dFdy(worldPos);
     vec2 dUVdx = dFdx(uv);
@@ -715,29 +757,25 @@ void main() {
     // propagates into the bump detail (otherwise the normal map and
     // albedo would disagree on which texel belongs to each fragment).
     vec3 N = normalize(fragNormal);
-    // Normal-map perturbation TEMPORARILY DISABLED — see #783.
+    // #783 / M-NORMALS — per-fragment normal-map perturbation.
     //
-    // Root-cause confirmed via live debug 2026-05-01: the screen-space
-    // derivative TBN reconstruction in `perturbNormal` produces wildly
-    // discontinuous tangent bases at mesh boundaries. Adjacent floor
-    // planks and wall panels rendered with arbitrarily-flipped
-    // perturbed normals, feeding the PBR specular term per-pixel
-    // chaos that ACES squashed into the "chrome posterized plaster"
-    // look across every Bethesda interior cell.
+    // Re-enabled 2026-05-02 with the per-vertex tangent path: the
+    // `fragTangent` varying carries the authored Bethesda tangent
+    // (xyz, world-space) + bitangent sign (w). `perturbNormal`
+    // reconstructs the bitangent as `sign × cross(N, T)` and
+    // applies the BC5 normal-map sample in tangent space. When
+    // `fragTangent.xyz` is zero (no authored data — synthetic /
+    // particle / non-Bethesda content), the function falls back
+    // to the original screen-space derivative TBN reconstruction.
     //
-    // The proper fix (M-NORMALS / #783) is to parse the per-vertex
-    // tangent + bitangent that Bethesda ships in NIF
-    // `NiBinaryExtraData("Tangent space (binormal & tangent vectors)")`
-    // and route them through the Vertex struct + shader so TBN is
-    // reconstructed from authored data instead of derivatives.
-    //
-    // Until then, surfaces lose fine bump detail but render with
-    // correct lighting — a visible regression on stone / fabric /
-    // engraved metal but a far smaller one than the chrome look the
-    // workaround removes.
-    // if (normalMapIdx != 0u) {
-    //     N = perturbNormal(N, fragWorldPos, sampleUV, normalMapIdx);
-    // }
+    // The 2026-05-01 chrome-walls regression was caused by the
+    // screen-space-only path firing on Bethesda interior content
+    // whose mesh boundaries (adjacent floor planks, wall panels)
+    // produced TBN discontinuities at every seam. Authored tangents
+    // are per-vertex smooth, so this path is seam-free.
+    if (normalMapIdx != 0u) {
+        N = perturbNormal(N, fragWorldPos, sampleUV, normalMapIdx, fragTangent);
+    }
 
     // ── G-buffer outputs (Phase 1) ────────────────────────────────────
     // Write these before any early return so SVGF has valid per-pixel
