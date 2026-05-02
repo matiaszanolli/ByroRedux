@@ -1558,8 +1558,21 @@ void main() {
             // Accumulate as if unshadowed.
             Lo += brdfResult * unshadowedRadiance;
 
-            // Per-light ambient fill.
-            Lo += lightColor * atten * albedo * 0.08;
+            // Per-light ambient fill. Was 0.08; reduced to 0.02 to
+            // resolve the over-saturated low-contrast lighting on
+            // interior cells with multiple cluster lights — the 0.08
+            // value stacked across 4-8 lights pushed every interior
+            // pixel into the ACES saturation band, crushing texture
+            // / normal variance into a posterized "chrome plaster"
+            // look. See user-validated diagnosis after #782.
+            //
+            // Combined with the /PI removal in commit b803b29
+            // (~3× diffuse boost for RT-shadow visibility on legacy
+            // content), the ambient stack was the dominant
+            // overdrive contributor — dropping the multiplier 4×
+            // pulls average HDR output back into ACES's linear
+            // band where soft cell ambient produces soft output.
+            Lo += lightColor * atten * albedo * 0.02;
 
             // Stream this light into every reservoir (WRS).
             bool unshadowed = radius < 0.0;
