@@ -1,6 +1,6 @@
 //! Walker functions extracted from ../mod.rs (stage B refactor).
 //!
-//! Functions: parse_modl_group, parse_ltex_group, parse_txst_group, parse_scol_group, parse_pkin_group, parse_mswp_group.
+//! Functions: parse_modl_group, parse_ltex_group, parse_txst_group, parse_scol_group, parse_pkin_group, parse_movs_group, parse_mswp_group.
 
 use super::helpers::read_zstring;
 use super::*;
@@ -393,6 +393,65 @@ pub(super) fn parse_pkin_group(
                 );
             }
             packins.insert(header.form_id, record);
+        } else {
+            reader.skip_record(&header);
+        }
+    }
+    Ok(())
+}
+
+/// Parse MOVS (Movable Static) records. Visually identical to STAT —
+/// MOVS distinguishes itself by being driven by Havok at runtime — so
+/// every record gets its standard `StaticObject` registration via the
+/// MODL pointer (REFR base-form resolution stays unchanged) AND its
+/// typed `MovableStaticRecord` shape lands on `EsmCellIndex::movables`
+/// for downstream physics / sound / destruction wiring. Pre-#588 MOVS
+/// was lumped into the MODL-only catch-all alongside STAT/FURN/etc.
+/// which preserved visual placement but silently dropped the
+/// distinguishing `LNAM`/`ZNAM`/`DEST`/`VMAD` sub-records.
+///
+/// Vanilla Fallout4.esm itself ships zero MOVS records — the impact is
+/// felt on DLC / mod content that authors breakable furniture,
+/// deployable workshop objects, and physics-puzzle props. See audit
+/// `FO4-DIM4-02` / #588.
+pub(super) fn parse_movs_group(
+    reader: &mut EsmReader,
+    end: usize,
+    statics: &mut HashMap<u32, StaticObject>,
+    movables: &mut HashMap<u32, crate::esm::records::MovableStaticRecord>,
+) -> Result<()> {
+    while reader.position() < end && reader.remaining() > 0 {
+        if reader.is_group() {
+            let sub = reader.read_group_header()?;
+            let sub_end = reader.group_content_end(&sub);
+            parse_movs_group(reader, sub_end, statics, movables)?;
+            continue;
+        }
+
+        let header = reader.read_record_header()?;
+        if &header.record_type == b"MOVS" {
+            let subs = reader.read_sub_records(&header)?;
+            let record = crate::esm::records::parse_movs(header.form_id, &subs);
+            // Preserve the MODL-backed StaticObject entry so REFR
+            // resolution against the MOVS form ID keeps finding the
+            // visual mesh. Mirror `parse_modl_group`'s defaults
+            // (empty light/addon data; `has_script` flips on `VMAD`
+            // presence). Skip records with neither EDID nor MODL —
+            // those are header-only stubs that wouldn't render anyway.
+            if !record.model_path.is_empty() || !record.editor_id.is_empty() {
+                statics.insert(
+                    header.form_id,
+                    StaticObject {
+                        form_id: header.form_id,
+                        editor_id: record.editor_id.clone(),
+                        model_path: record.model_path.clone(),
+                        light_data: None,
+                        addon_data: None,
+                        has_script: record.has_script,
+                    },
+                );
+            }
+            movables.insert(header.form_id, record);
         } else {
             reader.skip_record(&header);
         }

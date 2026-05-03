@@ -139,6 +139,7 @@ impl RecordType {
     pub const IDLM: Self = Self(*b"IDLM");
     pub const BNDS: Self = Self(*b"BNDS");
     pub const PKIN: Self = Self(*b"PKIN");
+    pub const MOVS: Self = Self(*b"MOVS");
     pub const ADDN: Self = Self(*b"ADDN");
     pub const ARTO: Self = Self(*b"ARTO");
     pub const MATO: Self = Self(*b"MATO");

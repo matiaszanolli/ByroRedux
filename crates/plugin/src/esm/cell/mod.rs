@@ -14,8 +14,8 @@ mod walkers;
 mod wrld;
 
 use support::{
-    parse_ltex_group, parse_modl_group, parse_mswp_group, parse_pkin_group, parse_scol_group,
-    parse_txst_group,
+    parse_ltex_group, parse_modl_group, parse_movs_group, parse_mswp_group, parse_pkin_group,
+    parse_scol_group, parse_txst_group,
 };
 use walkers::{parse_cell_group, parse_refr_group};
 use wrld::parse_wrld_group;
@@ -569,6 +569,23 @@ pub struct EsmCellIndex {
     /// through the MODL-only parser (PKIN carries no MODL).
     /// See audit FO4-DIM4-03 / #589.
     pub packins: HashMap<u32, super::records::PkinRecord>,
+    /// FO4+ MOVS (Movable Static) records keyed by form ID. Visually
+    /// identical to STAT (one `MODL` pointer); MOVS distinguishes
+    /// itself by being driven by Havok at runtime — the referenced
+    /// mesh's `bhk` collision chain produces dynamic rigid-body motion
+    /// when the cell is alive. Pre-#588 MOVS was routed through the
+    /// MODL-only catch-all alongside STAT/FURN/etc., which preserved
+    /// visual placement (REFRs targeting MOVS form IDs still rendered
+    /// the right mesh) but silently dropped the distinguishing
+    /// `LNAM` / `ZNAM` / `DEST` / `VMAD` sub-records. The dedicated
+    /// parser captures those into [`MovableStaticRecord`](super::records::MovableStaticRecord)
+    /// here pending physics / sound / destruction subsystems.
+    ///
+    /// Vanilla `Fallout4.esm` itself ships zero MOVS records — the
+    /// impact is on DLC / mod content authoring breakable furniture,
+    /// deployable workshop objects, and physics-puzzle props. See
+    /// audit `FO4-DIM4-02` / #588.
+    pub movables: HashMap<u32, super::records::MovableStaticRecord>,
     /// FO4+ MSWP (Material Swap) records keyed by form ID. Each
     /// authors a list of `(source.bgsm/.bgem → target.bgsm/.bgem,
     /// optional intensity)` substitutions plus an optional path-prefix
@@ -616,6 +633,7 @@ impl EsmCellIndex {
         self.texture_sets.extend(other.texture_sets);
         self.scols.extend(other.scols);
         self.packins.extend(other.packins);
+        self.movables.extend(other.movables);
         self.material_swaps.extend(other.material_swaps);
     }
 }
@@ -662,6 +680,7 @@ pub fn parse_esm_cells_with_load_order(
     let mut ltex_to_txst: HashMap<u32, u32> = HashMap::new();
     let mut scols: HashMap<u32, super::records::ScolRecord> = HashMap::new();
     let mut packins: HashMap<u32, super::records::PkinRecord> = HashMap::new();
+    let mut movables: HashMap<u32, super::records::MovableStaticRecord> = HashMap::new();
     let mut material_swaps: HashMap<u32, super::records::MaterialSwapRecord> = HashMap::new();
 
     // Walk top-level groups.
@@ -714,9 +733,23 @@ pub fn parse_esm_cells_with_load_order(
             b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"ACTI" | b"CONT" | b"LIGH" | b"MISC"
             | b"FLOR" | b"TREE" | b"AMMO" | b"WEAP" | b"ARMO" | b"BOOK" | b"KEYM" | b"ALCH"
             | b"INGR" | b"NOTE" | b"TACT" | b"IDLM" | b"BNDS" | b"ADDN" | b"TERM" | b"NPC_"
-            | b"CREA" | b"MOVS" => {
+            | b"CREA" => {
                 let end = reader.group_content_end(&group);
                 parse_modl_group(&mut reader, end, &mut statics)?;
+            }
+            // MOVS — FO4+ Movable Static. Visually identical to STAT
+            // (one MODL pointer); semantically distinct because the
+            // referenced mesh's `bhk` chain produces dynamic Havok
+            // motion at runtime. Pre-#588 MOVS was lumped into the
+            // MODL-only catch-all which preserved visual placement but
+            // dropped LNAM (loop sound) / ZNAM (activate sound) / DEST
+            // (destruction) / VMAD (script). The dedicated parser
+            // captures those fields into `movables` and still
+            // registers the MODL-backed `StaticObject` so REFRs against
+            // the form ID resolve unchanged. See audit FO4-DIM4-02.
+            b"MOVS" => {
+                let end = reader.group_content_end(&group);
+                parse_movs_group(&mut reader, end, &mut statics, &mut movables)?;
             }
             // SCOL — FO4+ Static Collection. Has a MODL (cached
             // combined mesh) but ALSO carries ONAM/DATA placement
@@ -797,6 +830,7 @@ pub fn parse_esm_cells_with_load_order(
         texture_sets,
         scols,
         packins,
+        movables,
         material_swaps,
     })
 }
