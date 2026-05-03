@@ -1625,13 +1625,17 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // `RenderLayer::Decal`.
         {
             use byroredux_core::ecs::components::{
-                render_layer_with_decal_escalation, RenderLayer,
+                escalate_small_static_to_clutter, render_layer_with_decal_escalation, RenderLayer,
             };
-            let layer = render_layer_with_decal_escalation(
-                RenderLayer::Architecture,
-                mesh.is_decal,
-                mesh.alpha_test,
-            );
+            // Loose-NIF spawn: no REFR, so no ref_scale to apply —
+            // the mesh's local bound is its world bound. Same small-
+            // STAT → Clutter rule as cell_loader so loose-loaded
+            // desk papers don't z-fight against the desk loaded
+            // alongside them.
+            let layer =
+                escalate_small_static_to_clutter(RenderLayer::Architecture, mesh.local_bound_radius);
+            let layer =
+                render_layer_with_decal_escalation(layer, mesh.is_decal, mesh.alpha_test);
             world.insert(entity, layer);
         }
         // Carry `NiAVObject.flags` across — gameplay systems branch on

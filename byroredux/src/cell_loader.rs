@@ -2208,9 +2208,21 @@ fn spawn_placed_instances(
         // component when `mesh.is_decal` — that marker is retired now
         // that `RenderLayer::Decal` carries the same signal end-to-end.
         {
-            use byroredux_core::ecs::components::render_layer_with_decal_escalation;
-            let layer =
-                render_layer_with_decal_escalation(base_layer, mesh.is_decal, mesh.alpha_test);
+            use byroredux_core::ecs::components::{
+                escalate_small_static_to_clutter, render_layer_with_decal_escalation,
+            };
+            // Small-STAT escalation runs first so decorative clutter
+            // authored as STAT (paper piles, folders, clipboards on
+            // desks — Bethesda's record-type classifier can't tell
+            // these from architectural STATs without spatial extent)
+            // gets the Clutter bias before the decal gate sees it.
+            // Decal escalation still wins for alpha-tested overlays
+            // and NIF-flagged decals regardless of size.
+            let layer = escalate_small_static_to_clutter(
+                base_layer,
+                mesh.local_bound_radius * ref_scale,
+            );
+            let layer = render_layer_with_decal_escalation(layer, mesh.is_decal, mesh.alpha_test);
             world.insert(entity, layer);
         }
         // Attach ESM light_data ONLY if the NIF didn't actually spawn

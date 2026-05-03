@@ -121,6 +121,57 @@ pub const fn render_layer_with_decal_escalation(
     }
 }
 
+/// World-space bounding-sphere radius (in Bethesda units) under which a
+/// [`RenderLayer::Architecture`] mesh is reclassified as
+/// [`RenderLayer::Clutter`]. See [`escalate_small_static_to_clutter`].
+///
+/// Calibrated against vanilla FNV content. 1 Bethesda unit ≈ 1.43 cm
+/// (1 yard = 64 units), so 50 units ≈ 71 cm — a sphere that comfortably
+/// encloses every desktop-clutter STAT (paper piles, folders, clipboards,
+/// books, photo frames, ashtrays, lamps; bounding-sphere radii observed
+/// in the 5-25-unit range) while staying below the smallest architectural
+/// pieces (door panels ≈ 48 units, wall sections ≥ 128, railing posts
+/// ≈ 35 are the only borderline candidates and tolerate a -16 / -1.0
+/// nudge against the floor without visual impact).
+pub const SMALL_STATIC_RADIUS_UNITS: f32 = 50.0;
+
+/// Reclassify small STAT meshes from Architecture to Clutter so they win
+/// the coplanar z-fight against the surface they rest on. In vanilla
+/// content, decorative props authored as `STAT` records (papers, folders,
+/// clipboards, ashtrays, photo frames, etc.) inherit
+/// [`RenderLayer::Architecture`] from the [`RecordType`] classifier — but
+/// they sit on top of desks / shelves / floors at exactly that surface's
+/// Y, so they z-fight the way pickup-clutter MISC items used to before
+/// the layer ladder. The base-record classifier can't tell pickup-clutter
+/// (`MISC`) from decorative-clutter (`STAT`) because Bethesda authored
+/// both forms — only the spatial extent does.
+///
+/// Threshold lives in [`SMALL_STATIC_RADIUS_UNITS`] so the calibration
+/// is one tweakable constant.
+///
+/// Only escalates Architecture; Clutter / Actor / Decal pass through
+/// unchanged (we never want to demote, and a small Actor — child NPC,
+/// small creature — should keep its Actor bias against the floor).
+///
+/// `world_bound_radius` should already include the REFR's `ref_scale`
+/// applied to `ImportedMesh::local_bound_radius`. The call site doing
+/// `mesh.local_bound_radius * ref_scale` is the contract.
+///
+/// [`RecordType`]: crate::ecs::components::RenderLayer
+pub fn escalate_small_static_to_clutter(
+    base: RenderLayer,
+    world_bound_radius: f32,
+) -> RenderLayer {
+    if matches!(base, RenderLayer::Architecture)
+        && world_bound_radius > 0.0
+        && world_bound_radius < SMALL_STATIC_RADIUS_UNITS
+    {
+        RenderLayer::Clutter
+    } else {
+        base
+    }
+}
+
 impl Component for RenderLayer {
     type Storage = SparseSetStorage<Self>;
 }
@@ -242,6 +293,89 @@ mod tests {
         // they're plain opaque architecture.
         let r = render_layer_with_decal_escalation(RenderLayer::Architecture, false, false);
         assert_eq!(r, RenderLayer::Architecture);
+    }
+
+    // ── Small-STAT escalation rule (#renderlayer follow-up) ────────────
+    //
+    // Bethesda authors decorative desk-clutter (paper piles, folders,
+    // clipboards) as STAT records — the base classifier puts them in
+    // Architecture (zero bias) and they z-fight the desk surface
+    // beneath. Spatial extent is the only signal that distinguishes
+    // them from real architecture; `escalate_small_static_to_clutter`
+    // moves Architecture meshes whose world-space bounding-sphere
+    // radius is below `SMALL_STATIC_RADIUS_UNITS` into the Clutter
+    // bias band.
+
+    #[test]
+    fn small_static_escalates_to_clutter() {
+        // 12-unit radius — ~17 cm in real-world terms; matches a folder
+        // / clipboard / paper-pile bounding sphere observed in vanilla
+        // FNV STAT meshes.
+        let r = escalate_small_static_to_clutter(RenderLayer::Architecture, 12.0);
+        assert_eq!(r, RenderLayer::Clutter);
+    }
+
+    #[test]
+    fn large_static_stays_architecture() {
+        // 200-unit radius — comfortably bigger than any clutter prop;
+        // matches a wall section or floor tile.
+        let r = escalate_small_static_to_clutter(RenderLayer::Architecture, 200.0);
+        assert_eq!(r, RenderLayer::Architecture);
+    }
+
+    #[test]
+    fn small_static_threshold_is_strict_lower_bound() {
+        // Exactly at the threshold must NOT escalate (strictly less).
+        // Pinning the comparator so a future `>=` slip doesn't let
+        // borderline architecture leak into Clutter.
+        let r = escalate_small_static_to_clutter(
+            RenderLayer::Architecture,
+            SMALL_STATIC_RADIUS_UNITS,
+        );
+        assert_eq!(r, RenderLayer::Architecture);
+    }
+
+    #[test]
+    fn small_static_zero_radius_does_not_escalate() {
+        // A zero radius means the mesh has no extracted bounds (NIF
+        // bound was zero AND the vertex-position fallback produced
+        // nothing). Don't pretend that's "small" — leave it as
+        // Architecture so a real STAT with missing bounds doesn't
+        // start drawing in front of its neighbors.
+        let r = escalate_small_static_to_clutter(RenderLayer::Architecture, 0.0);
+        assert_eq!(r, RenderLayer::Architecture);
+    }
+
+    #[test]
+    fn small_radius_does_not_demote_higher_layers() {
+        // Idempotent for non-Architecture bases: a small Actor
+        // (child NPC, small creature) keeps its Actor bias; small
+        // Decal stays Decal; already-Clutter stays Clutter.
+        let r = escalate_small_static_to_clutter(RenderLayer::Clutter, 5.0);
+        assert_eq!(r, RenderLayer::Clutter);
+        let r = escalate_small_static_to_clutter(RenderLayer::Actor, 5.0);
+        assert_eq!(r, RenderLayer::Actor);
+        let r = escalate_small_static_to_clutter(RenderLayer::Decal, 5.0);
+        assert_eq!(r, RenderLayer::Decal);
+    }
+
+    /// Composition order at the spawn site: small-STAT escalation runs
+    /// first, decal escalation second. Verify the two orderings produce
+    /// the right final layer:
+    ///   small + alpha-test STAT → Architecture → Clutter (size) → Decal
+    ///   large + alpha-test STAT (rug) → Architecture → Architecture → Decal
+    #[test]
+    fn size_then_decal_composition_order() {
+        // Small alpha-tested STAT → Decal wins over Clutter.
+        let l = escalate_small_static_to_clutter(RenderLayer::Architecture, 10.0);
+        let l = render_layer_with_decal_escalation(l, false, true);
+        assert_eq!(l, RenderLayer::Decal);
+
+        // Large alpha-tested STAT (the rug case from `ee3cb13`) →
+        // skips Clutter, lands on Decal anyway.
+        let l = escalate_small_static_to_clutter(RenderLayer::Architecture, 200.0);
+        let l = render_layer_with_decal_escalation(l, false, true);
+        assert_eq!(l, RenderLayer::Decal);
     }
 
     #[test]
