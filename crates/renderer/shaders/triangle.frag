@@ -1461,19 +1461,87 @@ void main() {
         if (totalInternalReflection) {
             refrColor = reflColor;
         } else {
-            // Step INTO the glass along the smooth geometric normal so the
-            // origin doesn't chase micro-surface bumps and self-intersect
-            // at bump-map features on thin geometry.
-            rayQueryEXT refrRQ;
-            rayQueryInitializeEXT(
-                refrRQ, topLevelAS,
-                gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFF,
-                fragWorldPos - N_geom_view * 0.1, 0.05, refractDir, 2000.0
-            );
-            rayQueryProceedEXT(refrRQ);
+            // Step INTO the glass along the smooth geometric normal so
+            // the origin doesn't chase micro-surface bumps and self-
+            // intersect at bump-map features on thin geometry.
+            //
+            // Glass-passthrough loop (#789 fix). All BLAS triangles are
+            // built with `vk::GeometryFlagsKHR::OPAQUE` and the ray
+            // query uses `gl_RayFlagsOpaqueEXT`, so the first hit on a
+            // closed glass volume is the back wall of the same shell —
+            // the ray cannot pass through any glass surface natively.
+            // Without continuation we'd sample the beaker's own diffuse
+            // (or a sibling glass part's, since multi-NiTriShape props
+            // like body+neck+base have distinct SSBO indexes), multiply
+            // by `glassTint` (also that diffuse), and produce a self-
+            // tinted opaque blob — the "translucent but no scene
+            // visible behind" symptom from issue #789.
+            //
+            // Identity check by texture: every part of a single glass
+            // prop shares one diffuse texture (verified across FNV/FO3
+            // chem props, cafeteria glassware, lab equipment), so
+            // `tInst.textureIndex == inst.textureIndex` flags both
+            // self-hits and sibling-part-hits as "skip past." Two
+            // beakers using the same `drinkingglass01.dds` will also
+            // skip each other — that's correct: clear glass IS
+            // see-through-multiple-layers in the real world.
+            //
+            // Fixed budget of 2 passthrus handles the dominant case
+            // (front + back of one shell, or two stacked beakers); a
+            // third+ glass surface terminates as the sample target,
+            // which reads as "frosted glass behind glass" — visually
+            // acceptable and bounded in cost.
+            const int REFRACT_PASSTHRU_BUDGET = 2;
+            uint selfTexture = inst.textureIndex;
+            vec3 rayOrigin = fragWorldPos - N_geom_view * 0.1;
+            float rayTMin = 0.05;
+            float accumulatedDist = 0.0;
+            int tIdx = -1;
+            int tPrim = 0;
+            vec2 tBary = vec2(0.0);
+            bool hit = false;
 
-            if (rayQueryGetIntersectionTypeEXT(refrRQ, true)
-                == gl_RayQueryCommittedIntersectionNoneEXT) {
+            for (int passthru = 0; passthru <= REFRACT_PASSTHRU_BUDGET; ++passthru) {
+                rayQueryEXT refrRQ;
+                rayQueryInitializeEXT(
+                    refrRQ, topLevelAS,
+                    gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFF,
+                    rayOrigin, rayTMin, refractDir, 2000.0
+                );
+                rayQueryProceedEXT(refrRQ);
+
+                if (rayQueryGetIntersectionTypeEXT(refrRQ, true)
+                    == gl_RayQueryCommittedIntersectionNoneEXT) {
+                    hit = false;
+                    break;
+                }
+
+                int hIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(refrRQ, true);
+                float hDist = rayQueryGetIntersectionTEXT(refrRQ, true);
+                GpuInstance hInst = instances[hIdx];
+
+                // Same-texture passthru — only continue if we still
+                // have budget for another trace AND this isn't the
+                // last allowed iteration. The terminating iteration
+                // (passthru == BUDGET) commits whatever it hits as
+                // the sample target so the loop always converges.
+                if (hInst.textureIndex == selfTexture
+                    && passthru < REFRACT_PASSTHRU_BUDGET) {
+                    rayOrigin = rayOrigin + refractDir * (hDist + 0.05);
+                    rayTMin = 0.0;
+                    accumulatedDist += hDist;
+                    continue;
+                }
+
+                tIdx  = hIdx;
+                tPrim = rayQueryGetIntersectionPrimitiveIndexEXT(refrRQ, true);
+                tBary = rayQueryGetIntersectionBarycentricsEXT(refrRQ, true);
+                accumulatedDist += hDist;
+                hit = true;
+                break;
+            }
+
+            if (!hit) {
                 // Escaped scene — fall back to sky tint (matches window
                 // portal contract). Interior cells will still see this
                 // as a soft blue because no geometry lies behind the
@@ -1481,9 +1549,6 @@ void main() {
                 // for the rare "looking out" angle.
                 refrColor = vec3(0.6, 0.75, 1.0);
             } else {
-                int tIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(refrRQ, true);
-                int tPrim = rayQueryGetIntersectionPrimitiveIndexEXT(refrRQ, true);
-                vec2 tBary = rayQueryGetIntersectionBarycentricsEXT(refrRQ, true);
                 GpuInstance tInst = instances[tIdx];
                 GpuMaterial tMat = materials[tInst.materialId];
                 vec2 tUV = getHitUV(uint(tIdx), uint(tPrim), tBary);
@@ -1491,13 +1556,20 @@ void main() {
                 // R1 Phase 6 — read transform from materials table.
                 tUV = tUV * vec2(tMat.uvScaleU, tMat.uvScaleV)
                     + vec2(tMat.uvOffsetU, tMat.uvOffsetV);
-                // Sample the refracted surface at a blurred mip level so the
-                // world seen through glass is soft rather than razor-sharp.
-                // Real glass scatters transmitted light; the mip blur is a
-                // free approximation. Clear glass (low roughness) gets a
-                // subtle haze (mip ~1.5); rough/etched glass gets more
-                // blur (mip ~3.5). TAA accumulates the per-frame IGN spread.
-                float refrMip = 1.5 + roughness * 4.0;
+                // Sample the refracted surface at a blurred mip level
+                // so the world seen through glass is soft rather than
+                // razor-sharp. Real glass scatters transmitted light;
+                // the mip blur is a free approximation that also masks
+                // the per-frame IGN spread noise. Alpha-blend draws
+                // bypass TAA history (`ALPHA_BLEND_NO_HISTORY`), so the
+                // jittered refraction direction can't rely on temporal
+                // accumulation to denoise — the mip floor does it
+                // spatially instead. `3.0 + r*4` keeps lighting
+                // plausible while washing the grain out; pre-#789-fix
+                // `1.5 + r*4` showed raw checker grain on clear (low-
+                // roughness) glass once the budget allowed IOR to fire
+                // at scale.
+                float refrMip = 3.0 + roughness * 4.0;
                 vec3 tAlbedo = textureLod(
                     textures[nonuniformEXT(tInst.textureIndex)], tUV, refrMip).rgb;
 
@@ -1518,8 +1590,7 @@ void main() {
                 // view-to-infinity spotlights. Gentler slope than the
                 // Phase 1 through-ray (0.002 vs 0.01) — we want to
                 // preserve more of the refracted detail.
-                float tDist = rayQueryGetIntersectionTEXT(refrRQ, true);
-                refrColor *= 1.0 / (1.0 + tDist * 0.002);
+                refrColor *= 1.0 / (1.0 + accumulatedDist * 0.002);
             }
         }
 
