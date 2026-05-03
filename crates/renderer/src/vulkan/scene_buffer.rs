@@ -1587,6 +1587,54 @@ mod gpu_instance_layout_tests {
         }
     }
 
+    /// Regression: #776 / #785 — `ui.vert` must read its texture index
+    /// from `inst.textureIndex` (per-instance), NOT from
+    /// `materials[inst.materialId].textureIndex`. The UI quad is
+    /// appended at `draw.rs` with `..GpuInstance::default()`, which
+    /// leaves `materialId = 0`; `materials[0]` is the first scene
+    /// material interned that frame, so the UI overlay samples an
+    /// arbitrary interior surface. See `scene_buffer.rs:172-176` for
+    /// the contract and `feedback_shader_struct_sync.md` for the
+    /// broader invariant.
+    ///
+    /// #785 was a stale-hunk regression of #776 introduced by an
+    /// unrelated commit. Static source check so any future drift
+    /// fails `cargo test` without needing glslangValidator.
+    #[test]
+    fn ui_vert_reads_texture_index_from_instance_not_material_table() {
+        let src = include_str!("../../shaders/ui.vert");
+        assert!(
+            src.contains("fragTexIndex = inst.textureIndex"),
+            "ui.vert: `fragTexIndex` must be assigned from \
+             `inst.textureIndex` (the per-instance UI texture handle). \
+             Reading `materials[inst.materialId].textureIndex` samples \
+             the first scene material instead — see #776 / #785."
+        );
+        // Match syntactic declarations only — the surrounding comments
+        // legitimately reference `MaterialBuffer` / `materials[…]` to
+        // explain why the read is forbidden, and the test must not
+        // catch its own documentation.
+        assert!(
+            !src.contains("buffer MaterialBuffer"),
+            "ui.vert: must NOT declare a `MaterialBuffer` SSBO. The UI \
+             vertex stage only consumes per-instance `textureIndex`; \
+             pulling in the material table re-enables the #776 / #785 \
+             failure mode."
+        );
+        assert!(
+            !src.contains("struct GpuMaterial"),
+            "ui.vert: must NOT declare `struct GpuMaterial`. Only \
+             `triangle.frag` mirrors the material struct (binding 13). \
+             See #776 / #785."
+        );
+        assert!(
+            !src.contains("materials[inst"),
+            "ui.vert: must NOT index into `materials[inst.…]`. The UI \
+             quad's `materialId` is 0 (default-initialized), so any \
+             read aliases the first scene material — see #776 / #785."
+        );
+    }
+
     /// SH-3 / #641 regression. The vertex shader must compose
     /// `fragPrevClipPos` through the previous-frame bone palette so
     /// motion vectors on skinned vertices encode actual joint motion.
