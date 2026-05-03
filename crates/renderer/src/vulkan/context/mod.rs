@@ -46,6 +46,14 @@ pub struct DrawCommand {
     pub two_sided: bool,
     /// Decal geometry — renders on top of coplanar surfaces via depth bias.
     pub is_decal: bool,
+    /// Content-class layer for the per-layer depth-bias ladder. Replaces
+    /// the ad-hoc `is_decal || alpha_test_func != 0` heuristic — see
+    /// `byroredux_core::ecs::components::RenderLayer` and
+    /// `byroredux_plugin::record::RecordType::render_layer`. Default
+    /// value (`Architecture`) yields zero bias = pre-#renderlayer
+    /// behaviour for everything that didn't already get the heuristic
+    /// bias.
+    pub render_layer: byroredux_core::ecs::components::RenderLayer,
     /// Base offset into the bone-palette SSBO for this draw, or 0 for rigid.
     pub bone_offset: u32,
     /// Bindless texture index for the normal map (0 = no normal map).
@@ -485,8 +493,8 @@ fn parse_render_debug_flags_env() -> u32 {
     };
     match parsed {
         Some(v) => {
-            log::info!("BYROREDUX_RENDER_DEBUG = 0x{:x} (POM bypass={}, detail bypass={}, normals viz={}, tangent viz={}, normal-map bypass={}, normal-map force-on={})",
-                v, v & 1 != 0, v & 2 != 0, v & 4 != 0, v & 8 != 0, v & 0x10 != 0, v & 0x20 != 0);
+            log::info!("BYROREDUX_RENDER_DEBUG = 0x{:x} (POM bypass={}, detail bypass={}, normals viz={}, tangent viz={}, normal-map bypass={}, normal-map force-on={}, render-layer viz={})",
+                v, v & 1 != 0, v & 2 != 0, v & 4 != 0, v & 8 != 0, v & 0x10 != 0, v & 0x20 != 0, v & 0x40 != 0);
             v
         }
         None => {
@@ -512,6 +520,11 @@ pub struct VulkanContext {
     ///   `0x20` — re-enable normal-map perturbation (DISABLED BY
     ///            DEFAULT in the 2026-05-03 chrome-regression
     ///            follow-up — see `triangle.frag::DBG_FORCE_NORMAL_MAP`).
+    ///   `0x40` — visualize render-layer classification (#renderlayer):
+    ///            Architecture grey, Clutter cyan, Actor magenta,
+    ///            Decal yellow. Empirical validation that the
+    ///            `RecordType::render_layer` classifier matches
+    ///            expectation on real cells.
     /// Env values are parsed as `0xN` hex or plain decimal; absent /
     /// invalid → 0 (all paths active, zero overhead). For ad-hoc
     /// bisection of texture / lighting artifacts. See engineering

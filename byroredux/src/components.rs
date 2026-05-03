@@ -54,12 +54,12 @@ impl Component for TwoSided {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// Marker component for decal geometry (renders on top of coplanar surfaces).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Decal;
-impl Component for Decal {
-    type Storage = SparseSetStorage<Self>;
-}
+// `Decal` marker retired in #renderlayer — its semantic ("renders on
+// top of coplanar surfaces via depth bias") is now expressed as
+// `RenderLayer::Decal` from `byroredux_core::ecs::components::RenderLayer`.
+// The render-side `is_decal: bool` on `DrawCommand` (consumed by
+// shader / GpuInstance flag paths) is now derived from
+// `render_layer == RenderLayer::Decal` at DrawCommand construction.
 
 /// Bindless texture handle for a normal map (parallels TextureHandle for diffuse).
 #[derive(Debug, Clone, Copy)]

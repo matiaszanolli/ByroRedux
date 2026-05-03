@@ -19,7 +19,7 @@ use crate::asset_provider::{
 };
 use crate::cell_loader;
 use crate::components::{
-    AlphaBlend, CellLightingRes, DarkMapHandle, Decal, ExtraTextureMaps, GameTimeRes, InputState,
+    AlphaBlend, CellLightingRes, DarkMapHandle, ExtraTextureMaps, GameTimeRes, InputState,
     NormalMapHandle, SkyParamsRes, Spinning, TwoSided, WeatherDataRes, WeatherTransitionRes,
 };
 use crate::helpers::add_child;
@@ -1613,8 +1613,26 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         if mesh.two_sided {
             world.insert(entity, TwoSided);
         }
-        if mesh.is_decal {
-            world.insert(entity, Decal);
+        // #renderlayer — loose-NIF path has no REFR base record, so
+        // the base layer defaults to Architecture (zero bias). The
+        // per-mesh `is_decal` / `alpha_test_func` escalation still
+        // applies — a NIF authored with explicit decal flags or
+        // alpha-test cutout fringes gets the Decal layer regardless
+        // of how it was spawned. NPC body / head / armor meshes
+        // overwrite this with Actor in `npc_spawn::tag_descendants_as_actor`
+        // after the spawn returns. Pre-#renderlayer this site also
+        // inserted a `Decal` marker — retired in favour of
+        // `RenderLayer::Decal`.
+        {
+            use byroredux_core::ecs::components::{
+                render_layer_with_decal_escalation, RenderLayer,
+            };
+            let layer = render_layer_with_decal_escalation(
+                RenderLayer::Architecture,
+                mesh.is_decal,
+                mesh.alpha_test,
+            );
+            world.insert(entity, layer);
         }
         // Carry `NiAVObject.flags` across — gameplay systems branch on
         // DISABLE_SORTING / SELECTIVE_UPDATE / DISPLAY_OBJECT bits

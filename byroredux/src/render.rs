@@ -2,8 +2,8 @@
 
 use byroredux_core::ecs::{
     ActiveCamera, AnimatedUvTransform, AnimatedVisibility, Camera, EntityId, GlobalTransform,
-    LightSource, Material, MeshHandle, ParticleEmitter, SkinnedMesh, TextureHandle, Transform,
-    World, WorldBound, MAX_BONES_PER_MESH,
+    LightSource, Material, MeshHandle, ParticleEmitter, RenderLayer, SkinnedMesh, TextureHandle,
+    Transform, World, WorldBound, MAX_BONES_PER_MESH,
 };
 use byroredux_core::math::{Mat4, Quat, Vec3, Vec4};
 use byroredux_renderer::vulkan::context::DrawCommand;
@@ -14,8 +14,8 @@ use std::collections::HashMap;
 use std::sync::Once;
 
 use crate::components::{
-    AlphaBlend, CellLightingRes, DarkMapHandle, Decal, ExtraTextureMaps, NormalMapHandle,
-    SkyParamsRes, TerrainTileSlot, TwoSided,
+    AlphaBlend, CellLightingRes, DarkMapHandle, ExtraTextureMaps, NormalMapHandle, SkyParamsRes,
+    TerrainTileSlot, TwoSided,
 };
 
 /// Once-per-session gate for the bone-palette overflow warn — see the
@@ -117,9 +117,9 @@ fn pack_depth_state(cmd: &DrawCommand) -> u8 {
 
 /// Sort key for `DrawCommand`s — the batch-merge pass in
 /// `VulkanContext::draw_frame` relies on consecutive identical
-/// (alpha_blend, is_decal, two_sided, depth_state, mesh, …) runs to fold
-/// into single instanced draws. Owned here so the field order can't
-/// silently drift from an assert in a downstream crate.
+/// (alpha_blend, render_layer, two_sided, depth_state, mesh, …) runs
+/// to fold into single instanced draws. Owned here so the field order
+/// can't silently drift from an assert in a downstream crate.
 ///
 /// Both branches return the same 9-tuple shape so the compiler accepts a
 /// single key closure. Per-branch semantics:
@@ -136,6 +136,11 @@ fn pack_depth_state(cmd: &DrawCommand) -> u8 {
 ///                 (src, dst) still sort back-to-front; different-blend draws
 ///                 are already visually separable (#499).
 ///
+/// Slot 1 widened from `is_decal as u8` to `render_layer as u8`
+/// (#renderlayer): same shape, but consecutive same-layer draws now
+/// cluster as one of `{0..3}` rather than `{0,1}`, matching the new
+/// per-layer depth-bias state-change boundary in `DrawBatch`.
+///
 /// The entity_id final slot makes `par_sort_unstable_by_key` behave
 /// deterministically across runs: without it, rayon's work-stealing
 /// could reorder commands whose 8-tuple prefix tied, breaking
@@ -146,7 +151,7 @@ pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u32, u32, u32, u3
     if cmd.alpha_blend {
         (
             1u8, // after opaque
-            cmd.is_decal as u8,
+            cmd.render_layer as u8,
             cmd.two_sided as u8,
             cmd.src_blend as u32,
             cmd.dst_blend as u32,
@@ -158,7 +163,7 @@ pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u32, u32, u32, u3
     } else {
         (
             0u8,
-            cmd.is_decal as u8,
+            cmd.render_layer as u8,
             cmd.two_sided as u8,
             0,
             0,
@@ -386,7 +391,6 @@ pub(crate) fn build_render_data(
     let tex_q = world.query::<TextureHandle>();
     let alpha_q = world.query::<AlphaBlend>();
     let two_sided_q = world.query::<TwoSided>();
-    let decal_q = world.query::<Decal>();
     let vis_q = world.query::<AnimatedVisibility>();
     let mat_q = world.query::<Material>();
     // #525 — `AnimatedUvTransform` overrides the static
@@ -399,6 +403,15 @@ pub(crate) fn build_render_data(
     // mean the override is a no-op until the animation system writes
     // a non-identity slot.
     let anim_uv_q = world.query::<AnimatedUvTransform>();
+    // #renderlayer — per-entity content-class for the depth-bias
+    // ladder (Architecture / Clutter / Actor / Decal). Attached at
+    // cell-load time from the REFR's base-record `RecordType` (see
+    // `RecordType::render_layer`). Absent component falls back to
+    // `Architecture` (zero bias) — identical to pre-fix behaviour.
+    // The Decal escalation (`mesh.is_decal || alpha_test_func != 0`)
+    // is applied at spawn time, not here, so this query reads the
+    // final per-entity layer directly.
+    let render_layer_q = world.query::<RenderLayer>();
     let nmap_q = world.query::<NormalMapHandle>();
     let dmap_q = world.query::<DarkMapHandle>();
     let extra_q = world.query::<ExtraTextureMaps>();
@@ -444,10 +457,16 @@ pub(crate) fn build_render_data(
                     .as_ref()
                     .map(|q| q.get(entity).is_some())
                     .unwrap_or(false);
-                let is_decal = decal_q
+                // #renderlayer — `is_decal` is now derived from
+                // `RenderLayer::Decal`, not a separate `Decal` marker.
+                // The shader / GpuInstance flag paths still want a
+                // bool, but the ECS source-of-truth is the layer enum.
+                let render_layer_for_entity = render_layer_q
                     .as_ref()
-                    .map(|q| q.get(entity).is_some())
-                    .unwrap_or(false);
+                    .and_then(|q| q.get(entity))
+                    .copied()
+                    .unwrap_or_default();
+                let is_decal = render_layer_for_entity == RenderLayer::Decal;
                 let bone_offset = skin_offsets.get(&entity).copied().unwrap_or(0);
                 let normal_map_index = nmap_q
                     .as_ref()
@@ -734,6 +753,11 @@ pub(crate) fn build_render_data(
                     dst_blend,
                     two_sided,
                     is_decal,
+                    // #renderlayer — final per-entity layer (already
+                    // computed above as `render_layer_for_entity`,
+                    // includes the spawn-time `Decal` escalation for
+                    // alpha-tested overlays).
+                    render_layer: render_layer_for_entity,
                     bone_offset,
                     normal_map_index,
                     dark_map_index,
@@ -896,6 +920,11 @@ pub(crate) fn build_render_data(
                         dst_blend: em.dst_blend,
                         two_sided: true, // billboard quads are single-faced; cull-off avoids back-face flicker on extreme angles
                         is_decal: false,
+                        // Particles ride emissive + alpha-blend with
+                        // depth-write off — they never z-fight surfaces,
+                        // so Architecture (zero bias) is correct. See
+                        // `RenderLayer::depth_bias`.
+                        render_layer: RenderLayer::Architecture,
                         bone_offset: 0,
                         normal_map_index: 0,
                         dark_map_index: 0,
@@ -1216,6 +1245,7 @@ mod draw_sort_key_tests {
     /// Minimal DrawCommand builder — only the fields that affect the
     /// sort key are interesting. Everything else is zeroed.
     fn cmd(alpha_blend: bool, is_decal: bool, two_sided: bool) -> DrawCommand {
+        use byroredux_core::ecs::components::RenderLayer;
         DrawCommand {
             mesh_handle: 0,
             texture_handle: 0,
@@ -1225,6 +1255,11 @@ mod draw_sort_key_tests {
             dst_blend: 7,
             two_sided,
             is_decal,
+            render_layer: if is_decal {
+                RenderLayer::Decal
+            } else {
+                RenderLayer::Architecture
+            },
             bone_offset: 0,
             normal_map_index: 0,
             dark_map_index: 0,
@@ -1287,6 +1322,38 @@ mod draw_sort_key_tests {
     ///   1. alpha_blend   (opaque before transparent)
     ///   2. is_decal
     ///   3. two_sided
+    /// #renderlayer — slot 1 of the sort tuple was widened from
+    /// `is_decal as u8 ∈ {0,1}` to `render_layer as u8 ∈ {0..3}`.
+    /// Verify that consecutive same-layer draws cluster correctly so
+    /// the batch coalescer and `vkCmdSetDepthBias` change-tracking
+    /// in `draw.rs` see runs of one layer at a time, not interleaved
+    /// layers thrashing the dynamic state.
+    #[test]
+    fn sort_key_clusters_by_render_layer_within_alpha_blend() {
+        use byroredux_core::ecs::components::RenderLayer;
+        let layers = [
+            RenderLayer::Decal,        // 3
+            RenderLayer::Architecture, // 0
+            RenderLayer::Actor,        // 2
+            RenderLayer::Clutter,      // 1
+        ];
+        let mut cmds: Vec<DrawCommand> = layers
+            .iter()
+            .map(|&l| {
+                let mut c = cmd(false, false, false);
+                c.render_layer = l;
+                c.is_decal = l == RenderLayer::Decal;
+                c
+            })
+            .collect();
+        cmds.sort_by_key(draw_sort_key);
+        let observed: Vec<u8> = cmds.iter().map(|c| c.render_layer as u8).collect();
+        // Ascending — Architecture (0) drawn first owns the depth
+        // buffer; Decal (3) drawn last wins every coplanar tie via
+        // its strongest bias.
+        assert_eq!(observed, vec![0u8, 1, 2, 3]);
+    }
+
     #[test]
     fn sort_key_clusters_by_alpha_decal_twosided() {
         // Construct every 2³ combination in scrambled order.

@@ -366,6 +366,15 @@ pub(super) fn spawn_terrain_mesh(
     if let Some(slot) = terrain_tile_index {
         world.insert(entity, TerrainTileSlot(slot));
     }
+    // #renderlayer — terrain LAND tiles ARE the architectural floor
+    // everything else stacks on. Explicit Architecture (zero bias) so
+    // the depth-bias ladder treats them as the canonical baseline,
+    // not as defaulted-by-omission entities (which would also yield
+    // Architecture but obscures the intent).
+    world.insert(
+        entity,
+        byroredux_core::ecs::components::RenderLayer::Architecture,
+    );
 
     log::debug!(
         "Terrain mesh ({},{}): {} verts, {} tris, height range {:.0}–{:.0}",

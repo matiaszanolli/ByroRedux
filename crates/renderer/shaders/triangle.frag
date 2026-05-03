@@ -660,6 +660,18 @@ const uint DBG_BYPASS_NORMAL_MAP = 0x10u;
 // To re-enable for testing: BYROREDUX_RENDER_DEBUG=0x20 (or 0x24
 // to combine with normals viz).
 const uint DBG_FORCE_NORMAL_MAP  = 0x20u;
+// #renderlayer — visualize the per-entity content-class layer driving
+// the depth-bias ladder. Tints fragments by layer:
+//   Architecture (0) → grey
+//   Clutter      (1) → cyan
+//   Actor        (2) → magenta
+//   Decal        (3) → yellow
+// The 2-bit layer is packed into `gpuInstance.flags` bits 4..5
+// (`INSTANCE_RENDER_LAYER_SHIFT` / `_MASK` on the Rust side). Set
+// BYROREDUX_RENDER_DEBUG=0x40 to enable.
+const uint DBG_VIZ_RENDER_LAYER  = 0x40u;
+const uint INST_RENDER_LAYER_SHIFT = 4u;
+const uint INST_RENDER_LAYER_MASK  = 0x3u;
 
 void main() {
     // Decode debug-bypass flags (zero on production runs).
@@ -891,6 +903,27 @@ void main() {
         vec3 viz = (dot(fragTangent.xyz, fragTangent.xyz) > 1e-4)
             ? vec3(0.0, 1.0, 0.0)
             : vec3(1.0, 0.0, 0.0);
+        outColor = vec4(viz, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(viz, 1.0);
+        return;
+    }
+    // #renderlayer — content-class viz. Layer is 2 bits packed into
+    // `inst.flags >> INST_RENDER_LAYER_SHIFT & INST_RENDER_LAYER_MASK`.
+    //   0 Architecture → grey   (the surfaces other things stack on)
+    //   1 Clutter      → cyan   (papers, books, ammo on tables)
+    //   2 Actor        → magenta (NPC bodies)
+    //   3 Decal        → yellow (rugs, blood splats, bullet holes)
+    if ((dbgFlags & DBG_VIZ_RENDER_LAYER) != 0u) {
+        uint layer = (inst.flags >> INST_RENDER_LAYER_SHIFT) & INST_RENDER_LAYER_MASK;
+        vec3 tint = layer == 0u ? vec3(0.5, 0.5, 0.5)
+                  : layer == 1u ? vec3(0.0, 1.0, 1.0)
+                  : layer == 2u ? vec3(1.0, 0.0, 1.0)
+                  :               vec3(1.0, 1.0, 0.0);
+        // Mix the tint with the texture so material outlines stay
+        // visible under the colour overlay — easier to identify which
+        // mesh got which classification.
+        vec3 viz = tint * 0.7 + texColor.rgb * 0.3;
         outColor = vec4(viz, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(viz, 1.0);

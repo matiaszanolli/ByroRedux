@@ -724,6 +724,7 @@ pub fn spawn_npc_entity(
         let _ = skel_root;
     }
 
+    tag_descendants_as_actor(world, placement_root);
     Some(placement_root)
 }
 
@@ -896,7 +897,49 @@ pub fn spawn_prebaked_npc_entity(
     // compositor lands.
     let _tint_path = prebaked_facegen_tint_path(plugin_name, npc.form_id);
 
+    tag_descendants_as_actor(world, placement_root);
     Some(placement_root)
+}
+
+/// Walk the subtree rooted at `root` and tag every descendant entity
+/// carrying a [`MeshHandle`] with [`RenderLayer::Actor`]. Loose-NIF
+/// spawns at `scene::load_nif_bytes` default each mesh entity to
+/// `RenderLayer::Architecture` (no REFR base record available), so
+/// every NPC body / head / armor / FaceGen mesh comes out of that path
+/// with the wrong layer for depth-bias purposes — without this
+/// override every standing NPC z-fights the floor at the foot-plant
+/// patch. Called from each [`spawn_npc_entity`] / [`spawn_prebaked_npc_entity`]
+/// success path before returning. BFS over `Children`, mirrors
+/// [`crate::anim_convert::build_subtree_name_map`]'s walk shape.
+pub(crate) fn tag_descendants_as_actor(world: &mut World, root: EntityId) {
+    use byroredux_core::ecs::components::RenderLayer;
+    use byroredux_core::ecs::{Children, MeshHandle};
+
+    // Collect first (read locks), mutate after (write locks). The
+    // ECS API forbids holding read + write guards simultaneously.
+    let mut to_tag: Vec<EntityId> = Vec::new();
+    {
+        let children_q = world.query::<Children>();
+        let mesh_q = world.query::<MeshHandle>();
+        let mut queue = vec![root];
+        while let Some(e) = queue.pop() {
+            if let Some(ref mq) = mesh_q {
+                if mq.get(e).is_some() {
+                    to_tag.push(e);
+                }
+            }
+            if let Some(ref cq) = children_q {
+                if let Some(children) = cq.get(e) {
+                    for &c in &children.0 {
+                        queue.push(c);
+                    }
+                }
+            }
+        }
+    }
+    for e in to_tag {
+        world.insert(e, RenderLayer::Actor);
+    }
 }
 
 #[cfg(test)]

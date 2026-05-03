@@ -77,6 +77,15 @@ pub const INSTANCE_FLAG_TERRAIN_SPLAT: u32 = 1 << 3;
 /// `(flags >> INSTANCE_TERRAIN_TILE_SHIFT) & 0xFFFF` yields the tile slot.
 pub const INSTANCE_TERRAIN_TILE_SHIFT: u32 = 16;
 pub const INSTANCE_TERRAIN_TILE_MASK: u32 = 0xFFFF;
+/// Bit offset for the [`RenderLayer`](byroredux_core::ecs::components::RenderLayer)
+/// classification inside `GpuInstance.flags`. Layer is a 2-bit value
+/// (Architecture / Clutter / Actor / Decal); bits 4..5 are unused by
+/// any other flag, so packing here is collision-free.
+/// `(flags >> INSTANCE_RENDER_LAYER_SHIFT) & 0x3u` yields the
+/// [`RenderLayer`] discriminant. Consumed by the fragment shader's
+/// debug-viz branch (`DBG_VIZ_RENDER_LAYER = 0x40`).
+pub const INSTANCE_RENDER_LAYER_SHIFT: u32 = 4;
+pub const INSTANCE_RENDER_LAYER_MASK: u32 = 0x3;
 
 /// Engine-synthesized material kinds for [`GpuInstance::material_kind`].
 ///

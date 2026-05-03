@@ -2438,6 +2438,7 @@ fn make_static(form_id: u32, model: &str) -> StaticObject {
         form_id,
         editor_id: String::new(),
         model_path: model.to_string(),
+        record_type: crate::record::RecordType::STAT,
         light_data: None,
         addon_data: None,
         has_script: false,

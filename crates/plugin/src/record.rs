@@ -144,6 +144,7 @@ impl RecordType {
     pub const ARTO: Self = Self(*b"ARTO");
     pub const MATO: Self = Self(*b"MATO");
     pub const HAZD: Self = Self(*b"HAZD");
+    pub const TERM: Self = Self(*b"TERM");
 
     // ── Items ───────────────────────────────────────────────────────────
     pub const WEAP: Self = Self(*b"WEAP");
@@ -166,6 +167,11 @@ impl RecordType {
 
     // ── Actors ──────────────────────────────────────────────────────────
     pub const NPC_: Self = Self(*b"NPC_");
+    /// Pre-FO4 creature record. Folded into NPC_ on FO4+ but Oblivion /
+    /// FO3 / FNV / Skyrim still ship it as a distinct record family.
+    /// Game-invariant for [`render_layer`]: maps to [`RenderLayer::Actor`]
+    /// regardless of which game emitted it.
+    pub const CREA: Self = Self(*b"CREA");
     pub const RACE: Self = Self(*b"RACE");
     pub const LVLN: Self = Self(*b"LVLN");
     pub const CLAS: Self = Self(*b"CLAS");
@@ -238,6 +244,80 @@ impl RecordType {
     pub const PGRE: Self = Self(*b"PGRE");
     pub const PMIS: Self = Self(*b"PMIS");
     pub const PHZD: Self = Self(*b"PHZD");
+
+    /// Classify this record type into a [`RenderLayer`] for the
+    /// renderer's per-layer depth-bias ladder. Game-invariant — the
+    /// mapping is the same across Oblivion / FO3 / FNV / Skyrim / FO4
+    /// / FO76 / Starfield, even when the record itself is only emitted
+    /// by a subset of games (CREA pre-FO4, SCOL/PKIN/MOVS FO4+).
+    ///
+    /// Layer assignment per
+    /// `crates/core/src/ecs/components/render_layer.rs`:
+    ///
+    /// * **Architecture** — large fixtures the level designer placed
+    ///   at fixed Y. Owns the depth buffer (zero bias). Includes
+    ///   wall-mounted lamps (LIGH), built-in containers (CONT —
+    ///   footlockers, safes), wall/desk-mounted terminals (TERM),
+    ///   activators (ACTI — vending machines, levers), and the FO4+
+    ///   collection records (SCOL/PKIN/MOVS).
+    /// * **Clutter** — player-pickup-able small items resting on
+    ///   architecture. Need a tiny depth bias to win the coplanar
+    ///   z-fight against the surface beneath (papers on desks, ammo
+    ///   on shelves).
+    /// * **Actor** — NPCs and pre-FO4 creatures. Their feet plant on
+    ///   floors at exactly the floor's Y; without bias every standing
+    ///   actor z-fights the floor at the foot-plant patch.
+    /// * **Default fallback** — Architecture (zero bias). Reached only
+    ///   for record types that shouldn't appear in `EsmCellIndex.statics`
+    ///   but might be passed in by an unforeseen caller; safe inert
+    ///   value.
+    ///
+    /// The "lay-flat overlay" decal escalation (alpha-tested rugs,
+    /// NIF-flagged blood splats, etc.) is **not** handled here — it
+    /// lives at the cell-loader spawn site as
+    /// `mesh.is_decal || mesh.alpha_test_func != 0` →
+    /// [`RenderLayer::Decal`], which overrides whatever this method
+    /// returns for the base record. See `byroredux/src/cell_loader.rs`.
+    pub const fn render_layer(&self) -> byroredux_core::ecs::components::RenderLayer {
+        use byroredux_core::ecs::components::RenderLayer;
+        match *self {
+            // Architecture — large fixtures, ground rooted, wall/desk
+            // mounted. Zero bias.
+            Self::STAT
+            | Self::MSTT
+            | Self::FURN
+            | Self::DOOR
+            | Self::FLOR
+            | Self::TREE
+            | Self::IDLM
+            | Self::BNDS
+            | Self::ADDN
+            | Self::TACT
+            | Self::ACTI
+            | Self::CONT
+            | Self::LIGH
+            | Self::TERM
+            | Self::SCOL
+            | Self::PKIN
+            | Self::MOVS => RenderLayer::Architecture,
+            // Clutter — player-pickup-able small items.
+            Self::WEAP
+            | Self::ARMO
+            | Self::AMMO
+            | Self::MISC
+            | Self::KEYM
+            | Self::ALCH
+            | Self::INGR
+            | Self::BOOK
+            | Self::NOTE => RenderLayer::Clutter,
+            // Actors — NPC_ all games, CREA pre-FO4.
+            Self::NPC_ | Self::CREA => RenderLayer::Actor,
+            // Anything else (unknown FourCC, non-renderable record
+            // type that nonetheless reached this caller) → safe
+            // inert default.
+            _ => RenderLayer::Architecture,
+        }
+    }
 
     /// Create from a 4-character ASCII string.
     ///
@@ -412,5 +492,93 @@ mod tests {
     #[should_panic(expected = "exactly 4")]
     fn record_type_from_str_wrong_length_panics() {
         RecordType::from_str("AB");
+    }
+
+    // ── #renderlayer — RecordType::render_layer() classification table ──
+    //
+    // Game-invariant classification. Per the user-confirmed taxonomy:
+    //
+    //   Architecture: STAT, MSTT, FURN, DOOR, FLOR, TREE, IDLM, BNDS,
+    //                 ADDN, TACT, ACTI, CONT, LIGH, TERM, SCOL, PKIN, MOVS
+    //   Clutter:      WEAP, ARMO, AMMO, MISC, KEYM, ALCH, INGR, BOOK, NOTE
+    //   Actor:        NPC_, CREA
+    //   Default:      Architecture (zero-bias inert fallback)
+    //
+    // The Decal layer is set at the cell-loader spawn site via the
+    // `mesh.is_decal || mesh.alpha_test_func != 0` escalation rule —
+    // not via this classifier — so no RecordType maps to Decal.
+
+    use byroredux_core::ecs::components::RenderLayer;
+
+    fn assert_layer(rt: RecordType, expected: RenderLayer) {
+        assert_eq!(
+            rt.render_layer(),
+            expected,
+            "RecordType {rt} should classify as {expected:?}"
+        );
+    }
+
+    #[test]
+    fn render_layer_architecture_record_types() {
+        for rt in [
+            RecordType::STAT,
+            RecordType::MSTT,
+            RecordType::FURN,
+            RecordType::DOOR,
+            RecordType::FLOR,
+            RecordType::TREE,
+            RecordType::IDLM,
+            RecordType::BNDS,
+            RecordType::ADDN,
+            RecordType::TACT,
+            RecordType::ACTI,
+            RecordType::CONT,
+            RecordType::LIGH,
+            RecordType::TERM,
+            RecordType::SCOL,
+            RecordType::PKIN,
+            RecordType::MOVS,
+        ] {
+            assert_layer(rt, RenderLayer::Architecture);
+        }
+    }
+
+    #[test]
+    fn render_layer_clutter_record_types() {
+        for rt in [
+            RecordType::WEAP,
+            RecordType::ARMO,
+            RecordType::AMMO,
+            RecordType::MISC,
+            RecordType::KEYM,
+            RecordType::ALCH,
+            RecordType::INGR,
+            RecordType::BOOK,
+            RecordType::NOTE,
+        ] {
+            assert_layer(rt, RenderLayer::Clutter);
+        }
+    }
+
+    #[test]
+    fn render_layer_actor_record_types() {
+        // CREA is pre-FO4 only but the classifier is game-invariant;
+        // both NPC_ and CREA always map to Actor.
+        assert_layer(RecordType::NPC_, RenderLayer::Actor);
+        assert_layer(RecordType::CREA, RenderLayer::Actor);
+    }
+
+    #[test]
+    fn render_layer_unknown_falls_back_to_architecture() {
+        // Unknown FourCC — defensive default. Zero-bias means "no
+        // visual change vs. pre-#renderlayer" for any caller that
+        // accidentally passes a non-renderable record type.
+        assert_layer(RecordType::from_str("XYZW"), RenderLayer::Architecture);
+        // Records that exist in the constants table but aren't in the
+        // classifier match arms (e.g. ENCH, GLOB) also default to
+        // Architecture — safe inert.
+        assert_layer(RecordType::ENCH, RenderLayer::Architecture);
+        assert_layer(RecordType::GLOB, RenderLayer::Architecture);
+        assert_layer(RecordType::CELL, RenderLayer::Architecture);
     }
 }

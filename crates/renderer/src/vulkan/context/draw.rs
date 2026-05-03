@@ -4,7 +4,8 @@ use super::super::material::GpuMaterial;
 use super::super::pipeline::{gamebryo_to_vk_compare_op, PipelineKey};
 use super::super::scene_buffer::{
     self, GpuInstance, GpuTerrainTile, INSTANCE_FLAG_ALPHA_BLEND, INSTANCE_FLAG_CAUSTIC_SOURCE,
-    INSTANCE_FLAG_NON_UNIFORM_SCALE, INSTANCE_FLAG_TERRAIN_SPLAT, INSTANCE_TERRAIN_TILE_MASK,
+    INSTANCE_FLAG_NON_UNIFORM_SCALE, INSTANCE_FLAG_TERRAIN_SPLAT, INSTANCE_RENDER_LAYER_MASK,
+    INSTANCE_RENDER_LAYER_SHIFT, INSTANCE_TERRAIN_TILE_MASK,
     INSTANCE_TERRAIN_TILE_SHIFT,
 };
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -39,18 +40,15 @@ pub(super) struct DrawBatch {
     /// `Blended { src, dst, two_sided }` resolves through the lazy
     /// blend pipeline cache on `VulkanContext`. See #392.
     pub pipeline_key: PipelineKey,
-    pub is_decal: bool,
-    /// Apply the decal-style depth bias to this batch even when
-    /// `is_decal == false`. Set for alpha-tested geometry that writes
-    /// to depth and is typically authored to lie ON TOP of opaque
-    /// surfaces — rugs over floors, posters over walls, fences over
-    /// terrain, dirt overlays. The NIF doesn't flag these as decals
-    /// at the property level (see `rugsmall01.nif`:
-    /// `BSShaderPPLightingProperty` with no decal bits), so without
-    /// the bias they z-fight whatever they were placed against by
-    /// the level designer. Vanilla FNV's Doc Mitchell living-room
-    /// rug is the canonical reproducer.
-    pub needs_depth_bias: bool,
+    /// Content-class layer driving the depth-bias ladder
+    /// (Architecture / Clutter / Actor / Decal). Replaces the previous
+    /// `is_decal` + per-frame `needs_depth_bias` derivation from
+    /// commits 0f13ff5 / ee3cb13 — `RenderLayer::Decal` subsumes both.
+    /// Set per-DrawCommand at cell-load time from the REFR's base
+    /// record type, with the alpha-test / NIF-decal-flag escalation
+    /// rule already applied. Bias values come from
+    /// `byroredux_core::ecs::components::RenderLayer::depth_bias`.
+    pub render_layer: byroredux_core::ecs::components::RenderLayer,
     pub first_instance: u32,
     pub instance_count: u32,
     pub index_count: u32,
@@ -810,7 +808,7 @@ impl VulkanContext {
         // ── Build instance SSBO + draw batches ────────────────────────
         //
         // Each DrawCommand becomes one GpuInstance in the SSBO. Consecutive
-        // commands with the same (pipeline_key, is_decal, mesh_handle) are
+        // commands with the same (pipeline_key, render_layer, mesh_handle) are
         // merged into a single instanced draw call.
         //
         // The two working vectors are held on `self` as scratch buffers
@@ -877,6 +875,13 @@ impl VulkanContext {
                 flags |= INSTANCE_FLAG_TERRAIN_SPLAT;
                 flags |= (tile_idx & INSTANCE_TERRAIN_TILE_MASK) << INSTANCE_TERRAIN_TILE_SHIFT;
             }
+            // #renderlayer — pack the 2-bit layer discriminant into
+            // bits 4..5 for the fragment shader's debug-viz branch
+            // (BYROREDUX_RENDER_DEBUG=0x40 tints fragments by layer).
+            // No other code reads this slot today; the field exists
+            // purely for empirical validation of classification.
+            flags |= (draw_cmd.render_layer as u32 & INSTANCE_RENDER_LAYER_MASK)
+                << INSTANCE_RENDER_LAYER_SHIFT;
 
             // R1 Phase 6 — `GpuInstance` carries only per-DRAW data
             // now: model + mesh refs + bone_offset + flags +
@@ -935,19 +940,18 @@ impl VulkanContext {
             // implicit. Now an off-screen draw pushes an SSBO entry
             // but skips batch formation, so the next rasterized draw
             // might land at a non-contiguous `instance_idx`.
-            // Decal-style depth bias is needed for `is_decal` (true
-            // NIF-flagged decals — blood splats / scorch marks / bullet
-            // holes) AND for alpha-tested geometry (rugs / posters /
-            // fences). The latter writes to depth at the same z as the
-            // opaque surface beneath and z-fights without help. See
-            // `DrawBatch::needs_depth_bias`.
-            let needs_depth_bias = draw_cmd.is_decal || draw_cmd.alpha_test_func != 0;
+            // #renderlayer — depth bias is selected from the per-layer
+            // ladder via `DrawCommand::render_layer`. `RenderLayer::Decal`
+            // subsumes both the legacy `is_decal` and `needs_depth_bias`
+            // bits — alpha-tested rugs / posters / fences and true
+            // NIF-flagged decals all carry `render_layer == Decal` set
+            // at cell-load time.
+            let render_layer = draw_cmd.render_layer;
 
             if let Some(batch) = batches.last_mut() {
                 if batch.mesh_handle == draw_cmd.mesh_handle
                     && batch.pipeline_key == pipeline_key
-                    && batch.is_decal == draw_cmd.is_decal
-                    && batch.needs_depth_bias == needs_depth_bias
+                    && batch.render_layer == render_layer
                     && batch.z_test == draw_cmd.z_test
                     && batch.z_write == draw_cmd.z_write
                     && batch.z_function == draw_cmd.z_function
@@ -962,8 +966,7 @@ impl VulkanContext {
             batches.push(DrawBatch {
                 mesh_handle: draw_cmd.mesh_handle,
                 pipeline_key,
-                is_decal: draw_cmd.is_decal,
-                needs_depth_bias,
+                render_layer,
                 first_instance: instance_idx,
                 instance_count: 1,
                 index_count: mesh.index_count,
@@ -1198,7 +1201,7 @@ impl VulkanContext {
             //    exposes `multiDrawIndirect` (universally supported on
             //    desktop Vulkan 1.0+) and the global VB/IB is bound,
             //    we group consecutive batches sharing
-            //    `(pipeline_key, is_decal)` into one
+            //    `(pipeline_key, render_layer)` into one
             //    `cmd_draw_indexed_indirect` call reading N
             //    `VkDrawIndexedIndirectCommand` entries from the
             //    per-frame indirect buffer. Pipeline / depth-bias
@@ -1220,7 +1223,12 @@ impl VulkanContext {
                 dst: u8::MAX,
                 two_sided: false,
             };
-            let mut last_needs_depth_bias = false;
+            // `Option` so the first batch always emits an explicit
+            // `cmd_set_depth_bias` rather than relying on the
+            // pipeline-default-zero matching the bias of the first
+            // batch's layer (brittle when the first batch is, say, a
+            // decal).
+            let mut last_render_layer: Option<byroredux_core::ecs::components::RenderLayer> = None;
             // #398 — extended dynamic depth state. Vulkan requires the
             // dynamic state to be set BEFORE any draw call when the
             // pipeline declares the corresponding `vk::DynamicState`.
@@ -1280,14 +1288,12 @@ impl VulkanContext {
             let indirect_stride = std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32;
 
             // Precompute indirect-buffer state for batch `i`. Returns
-            // `(pipe, is_decal, needs_depth_bias)` — consecutive batches
-            // sharing the tuple form one indirect group. `needs_depth_bias`
-            // is in the key because alpha-tested rugs/posters/fences pull
-            // the same bias as is_decal but originate from different
-            // pipeline state, so they must not be co-batched with
-            // unbiased opaque draws either (#decal-bias-rugs).
-            let batch_state =
-                |b: &DrawBatch| (b.pipeline_key, b.is_decal, b.needs_depth_bias);
+            // `(pipe, render_layer)` — consecutive batches sharing the
+            // tuple form one indirect group. `render_layer` covers the
+            // depth-bias state-change boundary that pre-#renderlayer
+            // was split between `is_decal` and `needs_depth_bias` —
+            // the per-layer ladder makes this a single key slot.
+            let batch_state = |b: &DrawBatch| (b.pipeline_key, b.render_layer);
 
             let mut i = 0;
             while i < batches.len() {
@@ -1324,33 +1330,24 @@ impl VulkanContext {
                     last_pipeline_key = batch.pipeline_key;
                 }
 
-                // Depth bias for decal geometry — only emit when state changes.
-                //
-                // The Vulkan formula is
+                // #renderlayer — per-layer depth bias from
+                // `RenderLayer::depth_bias()`. The Vulkan formula is
                 //   bias = constant_factor × r + slope_factor × |max_dz/dxy|
                 // where `r` is the smallest representable depth at the
-                // fragment (≈ 2⁻²⁴ ≈ 6e-8 for D32_SFLOAT around mid-depth).
-                // For coplanar decals like rugs on hardwood floors the
-                // surface slope is near zero, so the constant component
-                // dominates: at `constant_factor = -4` the offset works
-                // out to ≈ 5e-7 of normalised depth — orders of magnitude
-                // too small to overcome z-buffer rounding ties, and
-                // visible as the speckled / zebra-striped z-fighting the
-                // user reported on Doc Mitchell's living-room rug.
-                //
-                // Bumping the constants to (-64, -2) lifts the offset
-                // into the ~4e-6 range — same scale Bethesda's D3D
-                // engines use for decal polygon offset. Big enough to
-                // win every coplanar tie, small enough that distant
-                // decals don't poke through occluders. The slope term
-                // helps when the underlying surface IS angled (blood
-                // splatters on stairs, wall posters tilted off-axis).
-                if batch.needs_depth_bias != last_needs_depth_bias {
-                    let bias_const = if batch.needs_depth_bias { -64.0_f32 } else { 0.0 };
-                    let bias_slope = if batch.needs_depth_bias { -2.0_f32 } else { 0.0 };
+                // fragment (≈ 2⁻²⁴ ≈ 6e-8 for D32_SFLOAT around mid-
+                // depth). The `Decal` anchor (-64, -2) lifts coplanar
+                // overlays into the ~4e-6 normalised-depth range
+                // (Bethesda D3D scale for decal polygon offset);
+                // `Architecture` is zero (the surfaces other layers
+                // sit on top of); `Clutter` and `Actor` are
+                // intermediate. Per-layer table is the single source
+                // of truth — modifying it does NOT require touching
+                // this site.
+                if last_render_layer != Some(batch.render_layer) {
+                    let (bias_const, clamp, bias_slope) = batch.render_layer.depth_bias();
                     self.device
-                        .cmd_set_depth_bias(cmd, bias_const, 0.0, bias_slope);
-                    last_needs_depth_bias = batch.needs_depth_bias;
+                        .cmd_set_depth_bias(cmd, bias_const, clamp, bias_slope);
+                    last_render_layer = Some(batch.render_layer);
                 }
 
                 // #398 — extended dynamic depth state. Emit only on
@@ -1474,7 +1471,7 @@ impl VulkanContext {
                 } else if use_indirect {
                     set_cull(default_cull, &mut last_cull_mode);
                     // Gather consecutive batches that share the current
-                    // `(pipeline_key, is_decal)` tuple — each one is
+                    // `(pipeline_key, render_layer)` tuple — each one is
                     // already represented in the indirect buffer as one
                     // VkDrawIndexedIndirectCommand. A single
                     // `cmd_draw_indexed_indirect` call dispatches all N.

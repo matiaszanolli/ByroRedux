@@ -20,7 +20,7 @@ use crate::asset_provider::{
     TextureProvider,
 };
 use crate::components::{
-    AlphaBlend, CellLightingRes, DarkMapHandle, Decal, ExtraTextureMaps, NormalMapHandle,
+    AlphaBlend, CellLightingRes, DarkMapHandle, ExtraTextureMaps, NormalMapHandle,
     SkyParamsRes, TerrainTileSlot, TwoSided, WeatherDataRes, WeatherTransitionRes,
 };
 
@@ -1249,6 +1249,7 @@ fn load_references(
                 stat.light_data.as_ref(),
                 refr_overlay.as_ref(),
                 clip_handle,
+                stat.record_type.render_layer(),
             );
             entity_count += count;
             mesh_entity_count += count;
@@ -1671,6 +1672,12 @@ fn spawn_placed_instances(
     light_data: Option<&esm::cell::LightData>,
     refr_overlay: Option<&RefrTextureOverlay>,
     clip_handle: Option<u32>,
+    // #renderlayer — base content-class derived from the REFR's base
+    // record type via `RecordType::render_layer()`. Per-mesh
+    // `is_decal` / `alpha_test_func` escalate this to
+    // `RenderLayer::Decal` at the spawn site below; the caller passes
+    // the unescalated base layer.
+    base_layer: byroredux_core::ecs::components::RenderLayer,
 ) -> usize {
     use byroredux_core::ecs::{Name, Parent};
     use byroredux_renderer::Vertex;
@@ -2186,8 +2193,25 @@ fn spawn_placed_instances(
         if mesh.two_sided {
             world.insert(entity, TwoSided);
         }
-        if mesh.is_decal {
-            world.insert(entity, Decal);
+        // #renderlayer — derive the per-entity content-class layer.
+        // Base layer comes from the REFR's record type
+        // (`stat.record_type.render_layer()`); the per-mesh
+        // `mesh.is_decal` (NIF-flagged decals — blood splats, scorch
+        // marks) and `mesh.alpha_test_func != 0` (alpha-tested rugs /
+        // posters / fences / cutout foliage) escalate to
+        // [`RenderLayer::Decal`] regardless of the base, so any
+        // coplanar overlay wins its z-fight against the surface
+        // beneath. Architecture (zero bias) is the safe default for
+        // the rare "neither base nor mesh hints decal" path.
+        //
+        // Pre-#renderlayer this site also inserted a `Decal` marker
+        // component when `mesh.is_decal` — that marker is retired now
+        // that `RenderLayer::Decal` carries the same signal end-to-end.
+        {
+            use byroredux_core::ecs::components::render_layer_with_decal_escalation;
+            let layer =
+                render_layer_with_decal_escalation(base_layer, mesh.is_decal, mesh.alpha_test);
+            world.insert(entity, layer);
         }
         // Attach ESM light_data ONLY if the NIF didn't actually spawn
         // any lights (avoids duplicates) and only on the first mesh

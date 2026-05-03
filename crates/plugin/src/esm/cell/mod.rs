@@ -465,6 +465,14 @@ pub struct StaticObject {
     pub form_id: u32,
     pub editor_id: String,
     pub model_path: String,
+    /// The base record's four-CC type (STAT, MSTT, NPC_, …). Drives
+    /// [`RenderLayer`](byroredux_core::ecs::components::RenderLayer)
+    /// classification at cell-load time via
+    /// [`crate::record::RecordType::render_layer`]. Game-invariant —
+    /// the enum value is captured at parse time and the classifier
+    /// produces the same RenderLayer regardless of which game's ESM
+    /// emitted it. See #renderlayer.
+    pub record_type: crate::record::RecordType,
     /// Light properties (only populated for LIGH records).
     pub light_data: Option<LightData>,
     /// Addon-node properties (only populated for ADDN records). See #370.

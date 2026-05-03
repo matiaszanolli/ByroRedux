@@ -112,6 +112,11 @@ pub(crate) fn build_static_object_from_subs(
             form_id,
             editor_id,
             model_path,
+            // #renderlayer — capture the base record's four-CC so the
+            // cell-loader can classify the spawned entity into a
+            // RenderLayer (Architecture / Clutter / Actor) for the
+            // depth-bias ladder. See `RecordType::render_layer`.
+            record_type: crate::record::RecordType(*record_type),
             light_data,
             addon_data,
             has_script,
@@ -305,6 +310,7 @@ pub(crate) fn parse_scol_group(
                         form_id: header.form_id,
                         editor_id: record.editor_id.clone(),
                         model_path: record.model_path.clone(),
+                        record_type: crate::record::RecordType::SCOL,
                         light_data: None,
                         addon_data: None,
                         // `parse_scol` doesn't currently capture VMAD
@@ -366,6 +372,7 @@ pub(crate) fn parse_pkin_group(
                         form_id: header.form_id,
                         editor_id: record.editor_id.clone(),
                         model_path: String::new(),
+                        record_type: crate::record::RecordType::PKIN,
                         light_data: None,
                         addon_data: None,
                         has_script: false,
@@ -425,6 +432,7 @@ pub(crate) fn parse_movs_group(
                         form_id: header.form_id,
                         editor_id: record.editor_id.clone(),
                         model_path: record.model_path.clone(),
+                        record_type: crate::record::RecordType::MOVS,
                         light_data: None,
                         addon_data: None,
                         has_script: record.has_script,

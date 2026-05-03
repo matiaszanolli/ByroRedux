@@ -17,6 +17,7 @@ fn mk_stat(form_id: u32, editor_id: &str, model_path: &str) -> StaticObject {
         form_id,
         editor_id: editor_id.to_string(),
         model_path: model_path.to_string(),
+        record_type: byroredux_plugin::record::RecordType::STAT,
         light_data: None,
         addon_data: None,
         has_script: false,
