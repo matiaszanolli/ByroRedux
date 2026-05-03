@@ -638,7 +638,28 @@ const uint DBG_VIZ_TANGENT       = 0x8u;
 // posterization artifact originates from `perturbNormal` (Path 1 or
 // Path 2 TBN bug) or from downstream specular / ambient code.
 // Set BYROREDUX_RENDER_DEBUG=0x10 to enable.
+//
+// 2026-05-03 update: `perturbNormal` is now DISABLED BY DEFAULT —
+// see `DBG_FORCE_NORMAL_MAP` below. This bit retains its bypass
+// meaning for symmetry / future re-enablement; today it's a no-op
+// because perturbation is already off in the default path.
 const uint DBG_BYPASS_NORMAL_MAP = 0x10u;
+// Re-enable per-fragment normal-map perturbation (#783 / M-NORMALS).
+// Disabled by default in the 2026-05-03 chrome-regression
+// follow-up: every authored/synthesized-tangent path tested produced
+// wet/chrome highlights on plaster + wood surfaces from the user's
+// camera angles in FNV `GSDocMitchellHouse`, despite `tex.missing`
+// reporting clean (so unlike Session 27's missing-texture root
+// cause). Bypass screenshot at `BYROREDUX_RENDER_DEBUG=0x10`
+// confirmed perturbNormal as the source. Surface bump detail is
+// forfeit on the default path until Path 1 / Path 2 of the
+// perturbation is properly diagnosed (RenderDoc-grade visual
+// validation of TBN handedness / sign, per
+// `feedback_speculative_vulkan_fixes.md`).
+//
+// To re-enable for testing: BYROREDUX_RENDER_DEBUG=0x20 (or 0x24
+// to combine with normals viz).
+const uint DBG_FORCE_NORMAL_MAP  = 0x20u;
 
 void main() {
     // Decode debug-bypass flags (zero on production runs).
@@ -803,7 +824,24 @@ void main() {
     // whose mesh boundaries (adjacent floor planks, wall panels)
     // produced TBN discontinuities at every seam. Authored tangents
     // are per-vertex smooth, so this path is seam-free.
-    if (normalMapIdx != 0u && (dbgFlags & DBG_BYPASS_NORMAL_MAP) == 0u) {
+    // 2026-05-03 — perturbNormal disabled by default pending
+    // chrome-regression diagnosis. The M-NORMALS infrastructure
+    // (authored-tangent decode at `extract_tangents_from_extra_data`,
+    // nifly `synthesize_tangents` fallback, Vertex layout, Path 1 /
+    // Path 2 in `perturbNormal`) stays in place — only the call is
+    // gated off until the wet/chrome highlights on the user's FNV
+    // `GSDocMitchellHouse` camera angles are properly traced. The
+    // bypass screenshot at `BYROREDUX_RENDER_DEBUG=0x10` confirmed
+    // perturbation as the source; without RenderDoc visibility into
+    // which fragments produce chrome (Path 1 wrong handedness vs
+    // Path 2 TBN discontinuity), shipping a speculative fix would
+    // violate `feedback_speculative_vulkan_fixes.md`. To re-enable
+    // for testing: `BYROREDUX_RENDER_DEBUG=0x20`. See follow-up
+    // tracking issue.
+    if (normalMapIdx != 0u
+        && (dbgFlags & DBG_FORCE_NORMAL_MAP) != 0u
+        && (dbgFlags & DBG_BYPASS_NORMAL_MAP) == 0u)
+    {
         N = perturbNormal(N, fragWorldPos, sampleUV, normalMapIdx, fragTangent);
     }
 
