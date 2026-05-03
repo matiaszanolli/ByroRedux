@@ -12,8 +12,9 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-05-02 (post-Session 27, asset-archive sibling
-auto-load + chrome-walls closeout — see [HISTORY.md](HISTORY.md)).
+**Last verified**: 2026-05-03 (post-Session 28, RenderLayer depth-bias
+ladder + Frostbite light falloff + env_map_scale ≠ metalness — see
+[HISTORY.md](HISTORY.md)).
 **Bench-of-record**: Prospector Saloon 172.6 FPS / 5.79 ms — commit
 `6a6950a`, wall-clock bench. Scene is glass-heavy (bottles, pitcher,
 marquee sign); RT refraction/reflection cost is representative of a
@@ -400,7 +401,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] **R6** `VulkanContext` scratch buffers have no capacity telemetry — **closed**. `ctx.scratch` console command + `ScratchTelemetry` resource cover all 5 persistent scratches; per-frame refresh via `VulkanContext::fill_scratch_telemetry`. Prospector baseline: 337 KB total, 320 B wasted.
 - [x] **R6a** Prospector re-bench — **closed**. 192.8 FPS / 5.19 ms at `e6e8091`, wall-clock bench.
 - [x] **R6a-stale** Bench-of-record refreshed at `6a6950a` (2026-04-24). Prospector 172.6 FPS / 5.79 ms (was 192.8 / 5.19 — slight regression in compositor-jitter range; fence_ms unchanged at 4.34, GPU still the bottleneck). Skyrim Whiterun 253.3 FPS / 3.95 ms at 1932 entities (was 237 FPS at 1258 entities — entity count up 53% while FPS improved, indicating more REFRs land now without perf cost). FO4 MedTek 92.5 FPS / 10.82 ms (was 90, 7434 entities unchanged).
-- [ ] **R6a-stale-7** Bench-of-record `6a6950a` is now 233 commits stale. Session 24 stacked M41.0 Phases 0–4 on top of an audit-bundle closeout (#575/#616/#620/#624/#654/#664/#679/#707/#710/#723/#765-770/#771/#772/#773); Session 25 added R1 (per-instance SSBO 400 → 112 B, +1 fragment SSBO load via material-table indirection — net perf direction unknown without a re-run). Refresh still deferred until M41 lands the visible-actor workload that exercises the new code paths. Not blocking.
+- [ ] **R6a-stale-7** Bench-of-record `6a6950a` is now 266 commits stale. Sessions 24-25 stacked M41.0 Phases 0–4 + R1 MaterialTable refactor; Session 28 added the RenderLayer depth-bias ladder (extra `vkCmdSetDepthBias` at batch boundaries — likely neutral) and the Frostbite light falloff curve (2 extra multiplies per cluster light — likely neutral), plus removed `env_map_scale` → metalness mapping (fewer reflection rays from dielectrics — likely a small perf win). Refresh still deferred until M41 lands the visible-actor workload that exercises the new code paths. Not blocking.
 - [x] **R7** Scheduler access declarations — **closed**. `Access` builder + `System::access()` opt-in + `Scheduler::add_to_with_access` for closures + `sys.accesses` console command surface a per-stage Conflict / Unknown report. 3 of 12 systems declared so far (fly_camera, spin, log_stats); 4 Unknown pairs remaining. M27 flip is diagnosable now; eliminating the Unknown rows is incremental migration work.
 
 ### Closed — Renderer regressions (2026-05-01 / 02 live debug arc)
@@ -408,6 +409,9 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] **M-NORMALS** ([#783](https://github.com/matiaszanolli/ByroRedux/issues/783)) — **closed 2026-05-02** (commits 91e9011 + 82a4563). Per-vertex tangent decode (`NiBinaryExtraData("Tangent space (binormal & tangent vectors)")`) + `synthesize_tangents` fallback (Rust port of nifly's `CalcTangentSpace` per-triangle accumulator, runs on FO3/FNV/Oblivion content that ships without authored tangents). Vertex stride 84 → 100 B; `triangle.vert/frag`, `ui.vert`, `skin_vertices.comp` updated in lockstep. `perturbNormal` re-enabled with authored-tangent Path 1 + screen-space-derivative Path 2 fallback. See Tier 5 row.
 - [x] **LIGHT-N2** ([#784](https://github.com/matiaszanolli/ByroRedux/issues/784)) — **closed 2026-05-02** (commit 18bbeae). Composite fog mix moved from HDR-linear pre-ACES to display space post-ACES; ~10-line `composite.frag` change.
 - [x] **Chrome posterized walls** — **closed 2026-05-02** (commit b2354a4). `tex.missing` revealed 39 unique missing textures × 263 entities for FNV `GSDocMitchellHouse` — checker placeholder × valid normal map = "chrome" speckle. Root cause: FNV ships base textures across `Fallout - Textures.bsa` AND `Fallout - Textures2.bsa`; only the former was loaded. Fixed by `open_with_numeric_siblings` (auto-loads `<stem>2.bsa` … `<stem>9.bsa` siblings on disk when the explicit path has no digit before `.bsa` / `.ba2`). `tex.missing` now reports 1 entry (`<no path, no material>` placeholder geometry, legitimate). See Session 27 in [HISTORY.md](HISTORY.md). Permanent diagnostic bit `DBG_BYPASS_NORMAL_MAP = 0x10` retained alongside `DBG_VIZ_NORMALS` / `DBG_VIZ_TANGENT`.
+- [x] **Coplanar z-fighting on rugs / decals / desktop clutter** — **closed 2026-05-03** (commits 0f13ff5 / ee3cb13 / 088696e / c515028). New `RenderLayer` ECS component (Architecture / Clutter / Actor / Decal) attached at cell-load time from each REFR's `RecordType`; renderer applies a per-layer `vkCmdSetDepthBias` ladder via `RenderLayer::depth_bias()`. Per-mesh `is_decal` / `alpha_test` escalate to Decal at spawn (alpha-tested rugs, NIF-flagged blood splats); small-STAT meshes (bounding-sphere radius < 50 units ≈ 71 cm) escalate to Clutter so paper piles / folders / clipboards win their desk z-fights. Live verification via the new `BYROREDUX_RENDER_DEBUG=0x40` (`DBG_VIZ_RENDER_LAYER`) tint-by-layer viz. Replaces the ad-hoc `is_decal || alpha_test_func != 0` heuristic — single source of truth, game-invariant Oblivion → Starfield.
+- [x] **Cluster-light cull-radius shoulder visible on floors** — **closed 2026-05-03** (commit 78632a6). Replaced `window = 1 - (d/r)²` with the Frostbite smooth-distance attenuation curve `(1 - (d/r)⁴)²` in both point and spot arms of `triangle.frag`. Reference: Lagarde & de Rousiers, "Moving Frostbite to Physically Based Rendering" §3.1.2. Preserves ~65% more energy in the mid-zone and approaches zero with C¹ continuity at the cull radius — no more visible circular boundary on the floor. Cull range stays at `radius * 4.0`; per-light fill stays at 0.02. SPIR-V recompiled.
+- [x] **"Chrome cushion" reflective look on dielectric props near lamps** — **closed 2026-05-03** (commit 8038ae7). `Material::classify_pbr` was piping `env_map_scale` straight into `PbrMaterial.metalness`. `env_map_scale` is the legacy BSShaderPPLighting cube-map intensity authoring knob; vinyl cushions, glass, polished wood, plastic armor all author it > 0 *without being conductors*. Routed every dielectric-with-sheen into the metal-reflection branch (`triangle.frag:metalness > 0.3`), which then picked up cell ambient + nearby emissive sconces — the chromy look on FNV medical gurneys. Fix: `env_map_scale > 0.3` now drops roughness only; metalness stays 0. Real conductors caught by texture-path keyword arms above. Power armor (`metal` + `env_map_scale ≈ 2.5`) keeps `metalness=0.9` from the keyword branch.
 
 ### Open — Misc
 
@@ -422,16 +426,16 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-05-01, verified by `/session-close`.
+Ground-truth as of 2026-05-03, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (non-test)            | ~127 473                     |
-| Rust total lines                        | ~132 102                     |
-| Source files (non-test)                 | 271                          |
+| Rust source lines (non-test)            | ~130 196                     |
+| Rust total lines                        | ~134 862                     |
+| Source files (non-test)                 | 274                          |
 | Workspace members                       | 17                           |
-| Tests (last reported by ROADMAP)        | 1533 (Session 24 closeout 1522 + R1 +11: #774 regression, 9 GpuMaterial dedup tests, Phase 6 sentinel) |
-| Open issue directories                  | 735 (`.claude/issues/`)       |
+| Tests (last reported by ROADMAP)        | 1581 (Session 27 1533 unchanged + Session 28 +48 across RenderLayer ladder + escalation helpers + falloff curve + `env_map_scale` fix + 6 audit-bundle regression tests) |
+| Open issue directories                  | 744 (`.claude/issues/`)       |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 96.24%, FO4 96.46%, FO76 97.34%, Starfield 98.6% aggregate (see compat matrix for per-archive breakdown). Recoverable 100% on all except Oblivion 99.99%. Sweep date 2026-04-27. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
