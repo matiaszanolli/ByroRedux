@@ -25,15 +25,20 @@ use byroredux_core::string::{FixedString, StringPool};
 /// `NiTriShape` by walking its `extra_data_refs` for the
 /// `NiBinaryExtraData` named `"Tangent space (binormal & tangent
 /// vectors)"`. Format per nifly `NifFile.cpp`: `numVerts × 24` bytes
-/// = N tangent `Vector3` (Z-up world) followed by N bitangent
-/// `Vector3` (Z-up world).
+/// = N "tangent" `Vector3` (Z-up world) followed by N "bitangent"
+/// `Vector3` (Z-up world). Per nifly `Geometry.cpp:2084-2085`,
+/// Bethesda's "tangent" is actually `∂P/∂V` and "bitangent" is
+/// `∂P/∂U` — the labels are swapped relative to the textbook
+/// (Lengyel) convention. We unswap on read so our storage matches
+/// the renderer's standard interpretation. See #786.
 ///
 /// Returns `Vec<[f32; 4]>` where each entry is `[Tx, Ty, Tz,
 /// bitangent_sign]` in **Y-up** coordinates (axis-converted to
-/// match the renderer's `Vertex.tangent` contract). The bitangent
-/// sign is derived as `sign(dot(B, cross(N, T)))` so the shader can
-/// reconstruct B as `bitangent_sign * cross(N, T)` without storing
-/// the full bitangent vector.
+/// match the renderer's `Vertex.tangent` contract). `Tx,Ty,Tz` is
+/// `∂P/∂U` and the bitangent sign is derived as
+/// `sign(dot(∂P/∂V, cross(N, T)))` so the shader can reconstruct
+/// `B = bitangent_sign * cross(N, T)` without storing the full
+/// bitangent vector.
 ///
 /// Returns an empty `Vec` when no matching extra-data block exists,
 /// when `binary_data.len() != numVerts × 24`, or when the normals
@@ -89,34 +94,50 @@ fn extract_tangents_from_extra_data(
         }
 
         let mut tangents = Vec::with_capacity(num_verts);
-        let bitangent_offset = num_verts * 12;
+        // #786 — the on-disk blob layout (per nifly's I/O at
+        // `Geometry.cpp:81-84`) is `[tangents..., bitangents...]`,
+        // but Bethesda's `tangents` field actually holds ∂P/∂V and
+        // `bitangents` holds ∂P/∂U (see `CalcTangentSpace` swap at
+        // `Geometry.cpp:2084-2085`). Our shader Path 1 expects
+        // `vertexTangent.xyz = ∂P/∂U`, so read the bitangent half
+        // (second 12-byte stride) into our tangent and use the
+        // tangent half for the sign derivation only. Pre-fix the
+        // halves were assigned in nifly order, mismatching the
+        // shader's standard-convention `mat3(T, B, N)` and producing
+        // the chrome-walls regression on FNV (R-N2 / #786).
+        let bethesda_bitangent_offset = num_verts * 12;
         for i in 0..num_verts {
-            let t_off = i * 12;
-            let b_off = bitangent_offset + i * 12;
-            // Read Vector3 (3 × f32 LE) for tangent and bitangent.
-            let tx = read_f32_le_at(blob, t_off);
-            let ty = read_f32_le_at(blob, t_off + 4);
-            let tz = read_f32_le_at(blob, t_off + 8);
-            let bx = read_f32_le_at(blob, b_off);
-            let by = read_f32_le_at(blob, b_off + 4);
-            let bz = read_f32_le_at(blob, b_off + 8);
+            let bethesda_t_off = i * 12;
+            let bethesda_b_off = bethesda_bitangent_offset + i * 12;
+            // Read Vector3 (3 × f32 LE).
+            let bethesda_tx = read_f32_le_at(blob, bethesda_t_off);
+            let bethesda_ty = read_f32_le_at(blob, bethesda_t_off + 4);
+            let bethesda_tz = read_f32_le_at(blob, bethesda_t_off + 8);
+            let bethesda_bx = read_f32_le_at(blob, bethesda_b_off);
+            let bethesda_by = read_f32_le_at(blob, bethesda_b_off + 4);
+            let bethesda_bz = read_f32_le_at(blob, bethesda_b_off + 8);
 
-            // Z-up → Y-up basis change applied to tangent + bitangent
-            // direction vectors: same `(x, y, z) → (x, z, -y)` swap
-            // used for positions / normals throughout import.
-            let t_yup = [tx, tz, -ty];
-            let b_yup = [bx, bz, -by];
+            // Z-up → Y-up basis change applied to both direction
+            // vectors: same `(x, y, z) → (x, z, -y)` swap used for
+            // positions / normals throughout import.
+            //
+            // After the swap, our `t_yup` is ∂P/∂U (read from
+            // Bethesda's bitangent half) and `b_yup` is ∂P/∂V
+            // (read from Bethesda's tangent half).
+            let t_yup = [bethesda_bx, bethesda_bz, -bethesda_by];
+            let b_yup = [bethesda_tx, bethesda_tz, -bethesda_ty];
 
             // Normal in Y-up — use the matching vertex normal.
             let n_zup = normals_zup[i];
             let n_yup = [n_zup.x, n_zup.z, -n_zup.y];
 
-            // Bitangent sign: sign(dot(B, cross(N, T))). When > 0
-            // the authored bitangent points the same way as
-            // `cross(N, T)`, so the shader's `sign × cross(N, T)`
-            // reconstruction matches authored intent. When < 0 the
-            // shader flips. Zero (degenerate) defaults to +1 to
-            // avoid producing a zero-magnitude bitangent.
+            // Bitangent sign: sign(dot(B, cross(N, T))). With T = ∂P/∂U
+            // and B = ∂P/∂V on a standard right-handed UV winding,
+            // `cross(N, T) ≈ ∂P/∂V` so `dot(B, cross_nt) > 0` and the
+            // sign lands at +1 — the textbook case. UV-mirrored shells
+            // produce `< 0`, flipping the shader's bitangent so the
+            // tangent-space normal sample stays consistent across the
+            // mirror seam. Zero (degenerate) defaults to +1.
             let cross_nt = [
                 n_yup[1] * t_yup[2] - n_yup[2] * t_yup[1],
                 n_yup[2] * t_yup[0] - n_yup[0] * t_yup[2],
@@ -170,16 +191,24 @@ fn read_f32_le_at(blob: &[u8], offset: usize) -> f32 {
 /// the shader's screen-space derivative TBN path.
 ///
 /// Algorithm (per nifly Geometry.cpp:2026-2106):
-///   1. For each triangle, compute T (sdir, ∂P/∂U) and B (tdir, ∂P/∂V)
+///   1. For each triangle, compute sdir (∂P/∂U) and tdir (∂P/∂V)
 ///      from position + UV deltas, with sign correction for flipped UVs.
-///   2. Accumulate per-vertex T and B (averaged across adjacent
+///   2. Accumulate per-vertex sdir and tdir (averaged across adjacent
 ///      triangles).
-///   3. Per vertex: orthogonalize T against N (Gram-Schmidt), then B
-///      against both N and T. Degenerate cases (zero T or B) fall
-///      back to a permutation of the normal.
+///   3. Per vertex: orthogonalize T (= sdir) against N (Gram-Schmidt),
+///      then B (= tdir) against both N and T. Degenerate cases (zero
+///      sdir or tdir) fall back to a permutation of the normal.
 ///   4. Derive bitangent_sign as `sign(dot(B, cross(N, T)))` so the
 ///      shader's `sign × cross(N, T)` reconstruction matches the
 ///      authored handedness.
+///
+/// Convention (#786): unlike nifly which preserves Bethesda's swapped
+/// labelling (`bitangents = sdir`, `tangents = tdir`), we store
+/// `tangent = sdir = ∂P/∂U` so the value in `Vertex.tangent.xyz`
+/// matches the textbook (Lengyel) convention the renderer's
+/// `mat3(T, B, N) * tangentNormal` evaluates against. nifly's swap
+/// existed to round-trip the on-disk format losslessly; we don't
+/// write NIFs back, so we unswap on read for shader consistency.
 ///
 /// Z-up → Y-up conversion is applied to the final tangent + the N used
 /// for sign derivation, mirroring the authored-decode path so both
@@ -195,12 +224,19 @@ fn synthesize_tangents(
         return Vec::new();
     }
 
-    // Per-vertex accumulators for tangent + bitangent direction.
-    // `tan_u[i]` accumulates the U-axis tangent (∂P/∂U), `tan_v[i]`
-    // the V-axis bitangent (∂P/∂V). nifly's code labels them swapped
-    // (`tan1` → bitangents, `tan2` → tangents) — we preserve the same
-    // mapping so the resulting handedness matches Bethesda content
-    // authored against the same convention.
+    // Per-vertex accumulators for the U and V axis derivatives.
+    // `tan_u[i]` accumulates ∂P/∂U (sdir), `tan_v[i]` accumulates
+    // ∂P/∂V (tdir). nifly's `CalcTangentSpace` swaps the labels at
+    // output (`bitangents = tan1 = ∂P/∂U`, `tangents = tan2 = ∂P/∂V`)
+    // because Bethesda's NIF on-disk layout names them that way. Our
+    // shader's Path 1 (#783) builds `mat3(T, B, N)` against the
+    // Lengyel/textbook convention (T = ∂P/∂U), and Path 2 (screen-
+    // space derivative fallback) does the same. Pre-#786 we ported
+    // nifly's swap verbatim and stored ∂P/∂V in `Vertex.tangent.xyz`,
+    // mismatching the shader and producing the chrome regression on
+    // FNV `GSDocMitchellHouse` (R-N2 / #786). Confirmed by
+    // `DBG_VIZ_TANGENT` reading green on chrome fragments — Path 1
+    // was firing with a 90°-rotated TBN basis.
     let mut tan_u = vec![[0.0f32; 3]; n];
     let mut tan_v = vec![[0.0f32; 3]; n];
 
@@ -265,11 +301,15 @@ fn synthesize_tangents(
         let n_zup = normals_zup[i];
         let n_yup = [n_zup.x, n_zup.z, -n_zup.y];
 
-        // nifly assigns: bitangents[i] = tan1[i] (= tan_u, our sdir
-        // accumulator), tangents[i] = tan2[i] (= tan_v, our tdir
-        // accumulator). Match.
-        let bitangent_zup = tan_u[i];
-        let tangent_zup = tan_v[i];
+        // #786 — store `tangent = ∂P/∂U` (standard Lengyel
+        // convention), inverting nifly's Bethesda-convention swap
+        // (`bitangents = tan1 = ∂P/∂U`). Our shader's `mat3(T, B, N)
+        // * tangentNormal` evaluates to `T*tn.x + B*tn.y + N*tn.z`
+        // and the BC5 normal map authors `tn.x` along the texture
+        // U axis; for that pairing to be correct, the value sitting
+        // in `vertexTangent.xyz` must be ∂P/∂U.
+        let tangent_zup = tan_u[i];
+        let bitangent_zup = tan_v[i];
 
         let (tangent_yup, bitangent_yup) =
             if vec3_is_zero(&tangent_zup) || vec3_is_zero(&bitangent_zup) {
@@ -1955,3 +1995,7 @@ mod sse_skin_geometry_reconstruction_tests;
 #[cfg(test)]
 #[path = "mesh_bs_tri_shape_partition_remap_tests.rs"]
 mod bs_tri_shape_partition_remap_tests;
+
+#[cfg(test)]
+#[path = "mesh_tangent_convention_tests.rs"]
+mod tangent_convention_tests;
