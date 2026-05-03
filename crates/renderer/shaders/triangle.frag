@@ -673,6 +673,25 @@ const uint DBG_VIZ_RENDER_LAYER  = 0x40u;
 const uint INST_RENDER_LAYER_SHIFT = 4u;
 const uint INST_RENDER_LAYER_MASK  = 0x3u;
 
+// Glass IOR refraction passthru loop diagnostic (#789 follow-up). Tints
+// glass fragments by where the loop terminated:
+//   black   — IOR not allowed (rtLOD >= 1.0, !isGlass post-LOD-downgrade,
+//             ray budget exhausted, isWindow not demoted)
+//   red     — IOR fired but ray escaped scene (sky fallback)
+//   yellow  — terminated on first hit, no passthru (different texture
+//             from start — desk / wall / non-glass behind the surface)
+//   green   — passthru ×1, then non-self terminus (one self skip,
+//             then real scene geometry)
+//   cyan    — passthru ×2 with non-self terminus (two self skips + real
+//             geometry, e.g. through one stacked beaker to wall behind)
+//   magenta — budget exhausted, terminus STILL same-texture (passthru
+//             never escaped the glass — three+ glass surfaces in a row).
+//             Indicates the texture-equality heuristic terminated on
+//             yet-another glass fragment; the visible color is being
+//             sampled from a glass surface, not real scene geometry.
+// Set BYROREDUX_RENDER_DEBUG=0x80 to enable.
+const uint DBG_VIZ_GLASS_PASSTHRU = 0x80u;
+
 void main() {
     // Decode debug-bypass flags (zero on production runs).
     uint dbgFlags = floatBitsToUint(jitter.z);
@@ -1500,6 +1519,11 @@ void main() {
             int tPrim = 0;
             vec2 tBary = vec2(0.0);
             bool hit = false;
+            // Diagnostic state for `DBG_VIZ_GLASS_PASSTHRU` — tracked
+            // unconditionally; cheap, and the override below skips the
+            // shading work entirely when the bit is set.
+            int diagPassthru = 0;
+            bool diagSelfTerminus = false;
 
             for (int passthru = 0; passthru <= REFRACT_PASSTHRU_BUDGET; ++passthru) {
                 rayQueryEXT refrRQ;
@@ -1519,14 +1543,14 @@ void main() {
                 int hIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(refrRQ, true);
                 float hDist = rayQueryGetIntersectionTEXT(refrRQ, true);
                 GpuInstance hInst = instances[hIdx];
+                bool sameTexture = (hInst.textureIndex == selfTexture);
 
                 // Same-texture passthru — only continue if we still
                 // have budget for another trace AND this isn't the
                 // last allowed iteration. The terminating iteration
                 // (passthru == BUDGET) commits whatever it hits as
                 // the sample target so the loop always converges.
-                if (hInst.textureIndex == selfTexture
-                    && passthru < REFRACT_PASSTHRU_BUDGET) {
+                if (sameTexture && passthru < REFRACT_PASSTHRU_BUDGET) {
                     rayOrigin = rayOrigin + refractDir * (hDist + 0.05);
                     rayTMin = 0.0;
                     accumulatedDist += hDist;
@@ -1538,7 +1562,32 @@ void main() {
                 tBary = rayQueryGetIntersectionBarycentricsEXT(refrRQ, true);
                 accumulatedDist += hDist;
                 hit = true;
+                diagPassthru = passthru;
+                diagSelfTerminus = sameTexture;
                 break;
+            }
+
+            // Glass passthru diagnostic — paint the fragment by loop
+            // terminus class. Skips the rest of the IOR shading so
+            // the color is unambiguous (no Fresnel / glassTint mix).
+            if ((dbgFlags & DBG_VIZ_GLASS_PASSTHRU) != 0u) {
+                vec3 dbgColor;
+                if (!hit) {
+                    dbgColor = vec3(1.0, 0.0, 0.0); // red — escaped
+                } else if (diagPassthru == 0) {
+                    dbgColor = vec3(1.0, 1.0, 0.0); // yellow — first-hit terminus
+                } else if (diagPassthru == 1) {
+                    dbgColor = vec3(0.0, 1.0, 0.0); // green — one passthru
+                } else if (!diagSelfTerminus) {
+                    dbgColor = vec3(0.0, 1.0, 1.0); // cyan — budget hit, real geometry
+                } else {
+                    dbgColor = vec3(1.0, 0.0, 1.0); // magenta — budget exhausted, still glass
+                }
+                outColor = vec4(dbgColor, 1.0);
+                outNormal = octEncode(N_view);
+                outRawIndirect = vec4(0.0);
+                outAlbedo = vec4(albedo, 1.0);
+                return;
             }
 
             if (!hit) {
@@ -1652,6 +1701,18 @@ void main() {
     // the bump-map ribbing pattern doesn't produce crosshatch highlights at
     // the boosted specStrength = 3.0. IOR glass already returned above.
     if (isGlass) {
+        // Glass passthru diagnostic — paint black for glass fragments
+        // that didn't enter the IOR branch (rtLOD >= RT_LOD_IOR, or
+        // the per-frame ray budget was already exhausted). The IOR
+        // branch's own diagnostic returned above for fragments that
+        // did enter.
+        if ((dbgFlags & DBG_VIZ_GLASS_PASSTHRU) != 0u) {
+            outColor = vec4(0.0, 0.0, 0.0, 1.0);
+            outNormal = octEncode(normalize(fragNormal));
+            outRawIndirect = vec4(0.0);
+            outAlbedo = vec4(albedo, 1.0);
+            return;
+        }
         N = normalize(fragNormal);
     }
 

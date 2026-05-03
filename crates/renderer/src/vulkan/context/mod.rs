@@ -493,8 +493,8 @@ fn parse_render_debug_flags_env() -> u32 {
     };
     match parsed {
         Some(v) => {
-            log::info!("BYROREDUX_RENDER_DEBUG = 0x{:x} (POM bypass={}, detail bypass={}, normals viz={}, tangent viz={}, normal-map bypass={}, normal-map force-on={}, render-layer viz={})",
-                v, v & 1 != 0, v & 2 != 0, v & 4 != 0, v & 8 != 0, v & 0x10 != 0, v & 0x20 != 0, v & 0x40 != 0);
+            log::info!("BYROREDUX_RENDER_DEBUG = 0x{:x} (POM bypass={}, detail bypass={}, normals viz={}, tangent viz={}, normal-map bypass={}, normal-map force-on={}, render-layer viz={}, glass-passthru viz={})",
+                v, v & 1 != 0, v & 2 != 0, v & 4 != 0, v & 8 != 0, v & 0x10 != 0, v & 0x20 != 0, v & 0x40 != 0, v & 0x80 != 0);
             v
         }
         None => {
@@ -525,6 +525,13 @@ pub struct VulkanContext {
     ///            Decal yellow. Empirical validation that the
     ///            `RecordType::render_layer` classifier matches
     ///            expectation on real cells.
+    ///   `0x80` — visualize the IOR refraction passthru loop
+    ///            (`DBG_VIZ_GLASS_PASSTHRU`, #789 follow-up):
+    ///            black=IOR not allowed, red=escaped to sky,
+    ///            yellow=first-hit terminus, green=passthru ×1,
+    ///            cyan=passthru ×2 + non-self terminus,
+    ///            magenta=budget exhausted with terminus still on
+    ///            same-texture glass.
     /// Env values are parsed as `0xN` hex or plain decimal; absent /
     /// invalid → 0 (all paths active, zero overhead). For ad-hoc
     /// bisection of texture / lighting artifacts. See engineering
