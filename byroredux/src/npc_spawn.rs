@@ -138,6 +138,19 @@ pub fn load_idle_clip(
         return None;
     }
     let kf_path = humanoid_default_idle_kf_path(game, gender)?;
+
+    // Fast path: clip already registered for this path. Skips the BSA
+    // extract + NIF parse + channel conversion entirely. Without this
+    // gate every cell crossing that loads NPCs re-paid the parse cost
+    // AND grew `AnimationClipRegistry` unboundedly (one full keyframe
+    // copy per cell load). See #790.
+    if let Some(handle) = world
+        .resource::<AnimationClipRegistry>()
+        .get_by_path(kf_path)
+    {
+        return Some(handle);
+    }
+
     let kf_bytes = match tex_provider.extract_mesh(kf_path) {
         Some(b) => b,
         None => {
@@ -177,7 +190,9 @@ pub fn load_idle_clip(
         let clip = convert_nif_clip(&nif_clip, &mut pool);
         drop(pool);
         let mut registry = world.resource_mut::<AnimationClipRegistry>();
-        registry.add(clip)
+        // Memoise by `kf_path` so subsequent cell loads short-circuit
+        // through the fast path above (#790).
+        registry.get_or_insert_by_path(kf_path.to_string(), || clip)
     };
     log::info!(
         "M41.0 Phase 2: idle clip '{}' registered from '{}' \

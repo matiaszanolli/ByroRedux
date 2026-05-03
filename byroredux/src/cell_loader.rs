@@ -834,17 +834,19 @@ fn load_references(
     #[allow(unused_mut)]
     let mut npc_pending_sample: Vec<u32> = Vec::with_capacity(8);
 
-    // M41.0 Phase 2 — pre-load the per-game default idle KF clip
-    // ONCE before the REFR loop. The result is threaded through every
-    // `spawn_npc_entity` call so the `AnimationClipRegistry` doesn't
-    // grow per-NPC (with 31 NPCs in TestQAHairM that would have meant
-    // 31 identical copies of `idle.kf` registered every cell load).
-    // Returns `None` when the game is on the Havok-animation track
-    // (Skyrim+/FO4+) or the KF isn't archived — NPCs in those cases
-    // just spawn without an animation player. Gender variation is
-    // collapsed: FNV vanilla ships only `_male\idle.kf` and uses it
-    // for both genders; Phase 2.x can add a per-gender cache if a
-    // future game variant ships separate clips.
+    // M41.0 Phase 2 — resolve the per-game default idle KF clip once
+    // before the REFR loop. The handle is threaded through every
+    // `spawn_npc_entity` call so each NPC's `AnimationStack` references
+    // the same registry slot. `load_idle_clip` itself is path-keyed
+    // memoised (#790), so re-entry across cell loads is a HashMap hit
+    // — neither the BSA extract nor `AnimationClipRegistry::add` runs
+    // a second time for the same `kf_path`. Returns `None` when the
+    // game is on the Havok-animation track (Skyrim+/FO4+) or the KF
+    // isn't archived — NPCs in those cases just spawn without an
+    // animation player. Gender variation is collapsed: FNV vanilla
+    // ships only `_male\idle.kf` and uses it for both genders; Phase
+    // 2.x can add a per-gender cache if a future game variant ships
+    // separate clips.
     let idle_clip_handle = if game.has_kf_animations() {
         crate::npc_spawn::load_idle_clip(
             world,
