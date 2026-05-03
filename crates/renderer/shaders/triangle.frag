@@ -1701,16 +1701,28 @@ void main() {
             float atten;
 
             if (lightType < 0.5) {
-                // Point light — Gamebryo-matching 1/d attenuation.
+                // Point light — Gamebryo-matching 1/d attenuation, with a
+                // Frostbite-style smooth cull window. The previous
+                // `1 - (d/r)²` window dropped to ~0.28 at 85% of range and
+                // produced a visible circular boundary on the floor where
+                // the cull kicked in. The `(1 - (d/r)⁴)²` curve preserves
+                // mid-zone energy and is C¹-continuous at the cull radius.
+                // Reference: Lagarde & de Rousiers, "Moving Frostbite to
+                // Physically Based Rendering" §3.1.2 (smooth distance
+                // attenuation), adapted to inverse-d for Gamebryo content.
                 vec3 toLight = lightPos - fragWorldPos;
                 dist = length(toLight);
                 L = toLight / max(dist, 0.001);
                 float effectiveRange = radius * 4.0;
                 float ratio = dist / max(effectiveRange, 1.0);
-                float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
+                float r2 = ratio * ratio;
+                float r4 = r2 * r2;
+                float window = clamp(1.0 - r4, 0.0, 1.0);
+                window = window * window;
                 atten = window / (1.0 + dist * 0.01);
             } else if (lightType < 1.5) {
-                // Spot light — same 1/d attenuation + cone factor.
+                // Spot light — same 1/d + Frostbite smooth window as the
+                // point arm above, plus a cone factor.
                 vec3 toLight = lightPos - fragWorldPos;
                 dist = length(toLight);
                 L = toLight / max(dist, 0.001);
@@ -1718,7 +1730,10 @@ void main() {
                 float spotAngle = lights[i].direction_angle.w;
                 float effectiveRange = radius * 4.0;
                 float ratio = dist / max(effectiveRange, 1.0);
-                float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
+                float r2 = ratio * ratio;
+                float r4 = r2 * r2;
+                float window = clamp(1.0 - r4, 0.0, 1.0);
+                window = window * window;
                 atten = window / (1.0 + dist * 0.01);
                 float spotFactor = dot(-L, spotDir);
                 atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
