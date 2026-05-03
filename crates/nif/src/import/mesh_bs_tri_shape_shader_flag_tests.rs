@@ -70,6 +70,7 @@ fn renderable_shape(shader_idx: u32) -> BsTriShape {
         triangles: vec![[0, 1, 2]],
         bone_weights: Vec::new(),
         bone_indices: Vec::new(),
+        tangents: Vec::new(),
         kind: BsTriShapeKind::Plain,
         data_size: 0,
     }
@@ -280,4 +281,102 @@ fn decal_via_effect_shader_decal_single_pass() {
     shader.shader_flags_1 = 0x0400_0000;
     scene.blocks.push(Box::new(shader));
     assert!(import(&scene, &renderable_shape(0)).is_decal);
+}
+
+// ── #795 / SK-D1-03 — BSTriShape inline tangent decode ────────────
+//
+// The parser-side decode (in `tri_shape.rs::BsTriShape::parse`) is
+// difficult to exercise in isolation without a full byte-stream
+// fixture; instead, drive `extract_bs_tri_shape` end-to-end here and
+// pin the importer-side wire-up by injecting `shape.tangents`
+// directly. Two paths are pinned:
+//
+//   1. `shape.tangents` populated → importer copies it through with
+//      Z-up → Y-up axis swap on .xyz; sign passes through unchanged.
+//   2. `shape.tangents` empty + `VF_TANGENTS` clear → importer falls
+//      back to `synthesize_tangents` (mirroring the NiTriShape path).
+
+/// Path 1: inline `shape.tangents` (raw Z-up + sign) flows through
+/// `extract_bs_tri_shape` with axis swap, ending up as Y-up with the
+/// sign byte preserved. Pin the swap: `(x, y, z) → (x, z, -y)` on
+/// .xyz, sign untouched.
+#[test]
+fn inline_tangents_propagate_with_zup_to_yup_axis_swap() {
+    let scene = NifScene::default();
+    let mut shape = renderable_shape(0);
+    // 3 vertices × distinct tangent records so the axis-swap can be
+    // pinned per-component without a single-vertex coincidence
+    // (e.g. `(1, 0, 0)` produces `(1, 0, 0)` under the swap and would
+    // hide a regression that broke the y/z components).
+    shape.tangents = vec![
+        [1.0, 0.0, 0.0, 1.0],  // Z-up x-axis  → Y-up x-axis
+        [0.0, 1.0, 0.0, -1.0], // Z-up y-axis  → Y-up -z-axis
+        [0.0, 0.0, 1.0, 1.0],  // Z-up z-axis  → Y-up y-axis
+    ];
+
+    let mesh = import(&scene, &shape);
+    assert_eq!(mesh.tangents.len(), 3, "all 3 inline tangents flow through");
+
+    // Vertex 0: (1,0,0,+1) → (1,0,0,+1)
+    assert!((mesh.tangents[0][0] - 1.0).abs() < 1e-6);
+    assert!(mesh.tangents[0][1].abs() < 1e-6);
+    assert!(mesh.tangents[0][2].abs() < 1e-6);
+    assert_eq!(mesh.tangents[0][3], 1.0);
+
+    // Vertex 1: (0,1,0,-1) → (0,0,-1,-1) per Z-up→Y-up swap.
+    assert!(mesh.tangents[1][0].abs() < 1e-6);
+    assert!(mesh.tangents[1][1].abs() < 1e-6);
+    assert!((mesh.tangents[1][2] - (-1.0)).abs() < 1e-6);
+    assert_eq!(
+        mesh.tangents[1][3], -1.0,
+        "bitangent sign must NOT flip under proper rotation"
+    );
+
+    // Vertex 2: (0,0,1,+1) → (0,1,0,+1) per Z-up→Y-up swap.
+    assert!(mesh.tangents[2][0].abs() < 1e-6);
+    assert!((mesh.tangents[2][1] - 1.0).abs() < 1e-6);
+    assert!(mesh.tangents[2][2].abs() < 1e-6);
+    assert_eq!(mesh.tangents[2][3], 1.0);
+}
+
+/// Path 3 (fallback): when `shape.tangents` is empty AND the
+/// BSTriShape has positions + normals + UVs + triangles, the
+/// importer must call `synthesize_tangents` and produce per-vertex
+/// tangent records. Mirrors the NiTriShape fallback so Skyrim+
+/// content lacking authored tangents still gets runtime tangents
+/// instead of falling through to the shader's screen-space TBN.
+#[test]
+fn empty_inline_tangents_falls_back_to_synthesize() {
+    let scene = NifScene::default();
+    let mut shape = renderable_shape(0);
+    shape.tangents = Vec::new();
+    // The renderable_shape fixture ships positions + UVs + 1
+    // triangle, but no normals — synthesize_tangents bails when
+    // normals.len() != positions.len(). Fill in the +Z normal that
+    // matches the triangle in the XY plane (vertex layout from
+    // `renderable_shape`: (0,0,0), (1,0,0), (0,1,0)).
+    shape.normals = vec![
+        NiPoint3 { x: 0.0, y: 0.0, z: 1.0 },
+        NiPoint3 { x: 0.0, y: 0.0, z: 1.0 },
+        NiPoint3 { x: 0.0, y: 0.0, z: 1.0 },
+    ];
+
+    let mesh = import(&scene, &shape);
+    assert_eq!(
+        mesh.tangents.len(),
+        mesh.positions.len(),
+        "synthesize_tangents fallback must produce one tangent per vertex"
+    );
+    // Triangle UVs: (0,0)/(1,0)/(0,1) → ∂P/∂U = +X axis (vertex 1
+    // - vertex 0 in world space at +X). After Z-up → Y-up the X
+    // axis is unchanged, so each vertex's tangent.x should be ≈ 1.
+    for t in &mesh.tangents {
+        assert!(
+            (t[0] - 1.0).abs() < 1e-3,
+            "synthesized tangent.x should align with +X (∂P/∂U): got {:?}",
+            t
+        );
+        // Sign should be +1 for this right-handed UV winding.
+        assert_eq!(t[3], 1.0);
+    }
 }

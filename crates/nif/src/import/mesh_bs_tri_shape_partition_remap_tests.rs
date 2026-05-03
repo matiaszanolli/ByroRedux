@@ -94,6 +94,7 @@ fn multi_partition_remap_picks_correct_global_per_vertex() {
         // Vertex 1 → partition 1, same shape.
         bone_weights: vec![[0.4, 0.3, 0.2, 0.1], [0.4, 0.3, 0.2, 0.1]],
         bone_indices: vec![[0, 1, 0, 1], [0, 1, 0, 1]],
+        tangents: Vec::new(),
         kind: BsTriShapeKind::Plain,
         data_size: 0,
     };
@@ -258,6 +259,7 @@ fn single_partition_shape_widens_indices_directly() {
         triangles: Vec::new(),
         bone_weights: vec![[1.0, 0.0, 0.0, 0.0]],
         bone_indices: vec![[3, 0, 0, 0]],
+        tangents: Vec::new(),
         kind: BsTriShapeKind::Plain,
         data_size: 0,
     };
@@ -365,6 +367,7 @@ fn missing_skin_partition_falls_back_to_identity_widen() {
         triangles: Vec::new(),
         bone_weights: vec![[1.0, 0.0, 0.0, 0.0]],
         bone_indices: vec![[7, 0, 0, 0]],
+        tangents: Vec::new(),
         kind: BsTriShapeKind::Plain,
         data_size: 0,
     };

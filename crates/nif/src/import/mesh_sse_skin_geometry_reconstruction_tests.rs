@@ -86,6 +86,7 @@ fn empty_inline_bs_tri_shape_with_populated_skin_partition_reconstructs() {
         triangles: Vec::new(),
         bone_weights: Vec::new(),
         bone_indices: Vec::new(),
+        tangents: Vec::new(),
         kind: BsTriShapeKind::Plain,
         data_size: 0,
     };
@@ -177,6 +178,7 @@ fn partition_vertex_map_remaps_local_indices_to_global() {
         triangles: Vec::new(),
         bone_weights: Vec::new(),
         bone_indices: Vec::new(),
+        tangents: Vec::new(),
         kind: BsTriShapeKind::Plain,
         data_size: 0,
     };
@@ -255,6 +257,7 @@ fn empty_inline_with_no_global_buffer_returns_none() {
         triangles: Vec::new(),
         bone_weights: Vec::new(),
         bone_indices: Vec::new(),
+        tangents: Vec::new(),
         kind: BsTriShapeKind::Plain,
         data_size: 0,
     };
@@ -361,6 +364,7 @@ fn sse_global_buffer_skin_payload_reaches_imported_skin() {
         // CRITICAL: empty inline arrays — the whole point of #638.
         bone_weights: Vec::new(),
         bone_indices: Vec::new(),
+        tangents: Vec::new(),
         kind: BsTriShapeKind::Plain,
         data_size: 0,
     };

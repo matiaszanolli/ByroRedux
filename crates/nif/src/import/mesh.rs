@@ -377,6 +377,20 @@ fn synthesize_tangents(
     out
 }
 
+/// Convert a slice of raw Z-up BSTriShape tangent records into the
+/// Y-up form `Vertex.tangent` consumes. The on-disk record's `xyz`
+/// already follows the existing audit convention (Bethesda's
+/// "bitangent" triplet stored as our tangent direction = ∂P/∂U) and
+/// the `w` carries the bitangent sign. Sign is rotation-invariant so
+/// only the .xyz components need axis swap, matching the
+/// `(x, y, z) → (x, z, -y)` convention applied to positions / normals
+/// throughout import. See #795 / SK-D1-03 + #796 / SK-D1-04.
+fn bs_tangents_zup_to_yup(zup: &[[f32; 4]]) -> Vec<[f32; 4]> {
+    zup.iter()
+        .map(|t| [t[0], t[2], -t[1], t[3]])
+        .collect()
+}
+
 #[inline]
 fn vec3_is_zero(v: &[f32; 3]) -> bool {
     v[0] * v[0] + v[1] * v[1] + v[2] * v[2] < 1e-12
@@ -714,23 +728,25 @@ pub(super) fn extract_bs_tri_shape(
         return None;
     }
 
-    let (positions, indices, sse_normals, sse_uvs, sse_colors) = if let Some(geom) = reconstructed {
-        (
-            geom.positions,
-            geom.indices,
-            Some(geom.normals),
-            Some(geom.uvs),
-            Some(geom.colors),
-        )
-    } else {
-        let positions: Vec<[f32; 3]> = shape.vertices.iter().map(zup_point_to_yup).collect();
-        let indices: Vec<u32> = shape
-            .triangles
-            .iter()
-            .flat_map(|tri| [tri[0] as u32, tri[1] as u32, tri[2] as u32])
-            .collect();
-        (positions, indices, None, None, None)
-    };
+    let (positions, indices, sse_normals, sse_uvs, sse_colors, sse_tangents) =
+        if let Some(geom) = reconstructed {
+            (
+                geom.positions,
+                geom.indices,
+                Some(geom.normals),
+                Some(geom.uvs),
+                Some(geom.colors),
+                Some(geom.tangents),
+            )
+        } else {
+            let positions: Vec<[f32; 3]> = shape.vertices.iter().map(zup_point_to_yup).collect();
+            let indices: Vec<u32> = shape
+                .triangles
+                .iter()
+                .flat_map(|tri| [tri[0] as u32, tri[1] as u32, tri[2] as u32])
+                .collect();
+            (positions, indices, None, None, None, None)
+        };
 
     let normals: Vec<[f32; 3]> = if let Some(n) = sse_normals {
         n
@@ -789,17 +805,67 @@ pub(super) fn extract_bs_tri_shape(
     // #430 — capture ShaderTypeFields before the `mat` move.
     let shader_type_fields = mat.shader_type_fields();
 
+    // #795 / SK-D1-03 + #796 / SK-D1-04 — per-vertex tangents.
+    //
+    // Three paths (precedence order):
+    //   1. SSE skin-partition reconstruction populated `sse_tangents`
+    //      (NPC bodies / creatures / dragons via `try_reconstruct_sse_geometry`).
+    //   2. Inline `shape.tangents` populated by the BSTriShape parser
+    //      when `VF_TANGENTS` is set on the vertex descriptor.
+    //   3. `VF_TANGENTS` was clear (or both upstream populates dropped
+    //      vertices for malformed input) — fall back to
+    //      `synthesize_tangents` mirroring the NiTriShape path so
+    //      Skyrim+ content lacking authored tangents still gets
+    //      runtime-computed ones instead of falling through to the
+    //      shader's screen-space derivative TBN.
+    //
+    // All three return Y-up tangents matching `Vertex.tangent`'s contract.
+    let tangents: Vec<[f32; 4]> = if let Some(t) = sse_tangents.filter(|v| !v.is_empty()) {
+        t
+    } else if !shape.tangents.is_empty() {
+        bs_tangents_zup_to_yup(&shape.tangents)
+    } else if !shape.normals.is_empty() && !shape.uvs.is_empty() {
+        // Synthesize from positions + normals + UVs + triangles (all
+        // raw Z-up — `synthesize_tangents` does the axis swap
+        // internally, matching the NiTriShape path's behaviour).
+        let triangles_for_synth: Vec<[u16; 3]> = if shape.triangles.is_empty() {
+            // SSE-reconstructed mesh whose inline triangle array is
+            // empty — rebuild from `indices`. BSTriShape caps at u16
+            // indices on disk so the cast is safe; if the mesh ever
+            // exceeds 65k vertices the synth simply produces fewer
+            // tangents and the empty result triggers the shader's
+            // Path-2 fallback (no regression vs pre-fix behaviour).
+            indices
+                .chunks_exact(3)
+                .filter_map(|c| {
+                    if c[0] <= u16::MAX as u32
+                        && c[1] <= u16::MAX as u32
+                        && c[2] <= u16::MAX as u32
+                    {
+                        Some([c[0] as u16, c[1] as u16, c[2] as u16])
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            shape.triangles.clone()
+        };
+        synthesize_tangents(
+            &shape.vertices,
+            &shape.normals,
+            &shape.uvs,
+            &triangles_for_synth,
+        )
+    } else {
+        Vec::new()
+    };
+
     Some(ImportedMesh {
         positions,
         colors,
         normals,
-        // #783 / M-NORMALS — placeholder; the NiTriShape path
-        // overwrites this with the decoded `geom.tangents` below
-        // (see Edit). BSTriShape and SSE-packed paths leave it empty
-        // until the inline-vertex-stream tangent decode lands as a
-        // follow-up; the renderer falls back to screen-space
-        // derivative TBN for now on those.
-        tangents: Vec::new(),
+        tangents,
         uvs,
         indices,
         translation: zup_point_to_yup(t),
@@ -1098,6 +1164,12 @@ struct ReconstructedSseGeometry {
     uvs: Vec<[f32; 2]>,
     colors: Vec<[f32; 4]>,
     indices: Vec<u32>,
+    /// Per-vertex tangent (xyz Y-up + bitangent sign). Populated when
+    /// the global buffer's `vertex_attrs` carries `VF_TANGENTS`; empty
+    /// otherwise. Mirrors `BsTriShape.tangents`'s contract — the on-
+    /// disk-named "bitangent" triplet is what we route here as ∂P/∂U
+    /// per the existing convention (#795 / SK-D1-04 sibling of SK-D1-03).
+    tangents: Vec<[f32; 4]>,
 }
 
 /// `BSVertexDesc` flag bits — mirror the constants in
@@ -1175,6 +1247,7 @@ fn try_reconstruct_sse_geometry(
         uvs: decoded.uvs,
         colors: decoded.colors,
         indices,
+        tangents: decoded.tangents,
     })
 }
 
@@ -1192,6 +1265,14 @@ struct DecodedPackedBuffer {
     /// `NiSkinPartition.partitions[i].bones` to get global skin
     /// list indices. See #638 / #613.
     bone_indices: Vec<[u8; 4]>,
+    /// Per-vertex tangent (Y-up xyz + bitangent sign) when the buffer
+    /// carries `VF_TANGENTS`. Empty otherwise. The xyz components are
+    /// Bethesda's bitangent triplet (∂P/∂U per nifly's `CalcTangentSpace`
+    /// swap) reassembled from `bitangent_x` (vec4 trailing slot of
+    /// position), `bitangent_y` (after normal), and `bitangent_z`
+    /// (after tangent). Sign derived from the on-disk tangent (∂P/∂V)
+    /// per `sign(dot(B, cross(N, T)))`. See #796 / SK-D1-04.
+    tangents: Vec<[f32; 4]>,
 }
 
 /// Decode a `SseSkinGlobalBuffer` into Y-up vertex arrays.
@@ -1219,6 +1300,7 @@ fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedPacke
     let mut uvs = Vec::with_capacity(num_vertices);
     let mut colors = Vec::with_capacity(num_vertices);
     let is_skinned = vertex_attrs & VF_SKINNED != 0;
+    let has_tangents = vertex_attrs & VF_TANGENTS != 0 && vertex_attrs & VF_NORMALS != 0;
     let mut bone_weights: Vec<[f32; 4]> = if is_skinned {
         Vec::with_capacity(num_vertices)
     } else {
@@ -1229,11 +1311,30 @@ fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedPacke
     } else {
         Vec::new()
     };
+    let mut tangents: Vec<[f32; 4]> = if has_tangents {
+        Vec::with_capacity(num_vertices)
+    } else {
+        Vec::new()
+    };
 
     for i in 0..num_vertices {
         let base = i * vertex_size;
         let bytes = &buffer.raw_bytes[base..base + vertex_size];
         let mut off = 0usize;
+
+        // Tangent reassembly state — see the matching block in
+        // `tri_shape.rs::BsTriShape::parse`. SSE buffer layout is the
+        // same packed format the inline parser walks, so the same
+        // three-slot capture (bitangent_x, bitangent_y, tangent_xyz +
+        // bitangent_z) applies. #796 / SK-D1-04 (sibling of SK-D1-03).
+        // `bitangent_x` is unconditionally read with the position
+        // (full-precision SSE always carries the f32 trailing slot)
+        // so it's `Some` directly; the others stay `Option` because
+        // their conditional flags can leave them unread.
+        let mut bitangent_y: Option<f32> = None;
+        let mut tangent_xyz: Option<[f32; 3]> = None;
+        let mut bitangent_z: Option<f32> = None;
+        let mut normal_zup: Option<[f32; 3]> = None;
 
         // Position: 3 × f32 + bitangent_x (f32) — 16 bytes total.
         // SSE always uses full-precision per inline-decoder's
@@ -1243,6 +1344,7 @@ fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedPacke
         let z = read_f32_le(bytes, off + 8)?;
         // Z-up → Y-up: (x, z, -y).
         positions.push([x, z, -y]);
+        let bitangent_x: f32 = read_f32_le(bytes, off + 12)?;
         off += 16;
 
         // UV: 2 × f16.
@@ -1253,18 +1355,30 @@ fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedPacke
             off += 4;
         }
 
-        // Normal: 3 × normbyte + 1 byte bitangent_y.
+        // Normal: 3 × normbyte + 1 byte bitangent_y normbyte.
         if vertex_attrs & VF_NORMALS != 0 {
             let nx = byte_to_normal(bytes[off]);
             let ny = byte_to_normal(bytes[off + 1]);
             let nz = byte_to_normal(bytes[off + 2]);
             // Z-up → Y-up: (x, z, -y).
             normals.push([nx, nz, -ny]);
+            normal_zup = Some([nx, ny, nz]);
+            bitangent_y = Some(byte_to_normal(bytes[off + 3]));
             off += 4;
         }
 
-        // Tangent: 3 × normbyte + bitangent_z. Discarded per #351.
-        if vertex_attrs & VF_TANGENTS != 0 && vertex_attrs & VF_NORMALS != 0 {
+        // Tangent: 3 × normbyte + bitangent_z normbyte. Pre-#796 the
+        // whole quad was discarded with `off += 4`; now we capture both
+        // halves so the assembler below can stitch the bitangent
+        // triplet (∂P/∂U → our tangent slot) and derive the sign from
+        // the on-disk tangent triplet (∂P/∂V).
+        if has_tangents {
+            tangent_xyz = Some([
+                byte_to_normal(bytes[off]),
+                byte_to_normal(bytes[off + 1]),
+                byte_to_normal(bytes[off + 2]),
+            ]);
+            bitangent_z = Some(byte_to_normal(bytes[off + 3]));
             off += 4;
         }
 
@@ -1308,6 +1422,27 @@ fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedPacke
             off += 4;
         }
 
+        // Assemble the per-vertex tangent record (Bethesda bitangent
+        // triplet → our tangent.xyz; sign from on-disk tangent
+        // (∂P/∂V) per `sign(dot(B, cross(N, T)))`). Operates on raw
+        // Z-up values and applies the same `(x, y, z) → (x, z, -y)`
+        // axis swap as the inline parser's importer-side helper. Sign
+        // is rotation-invariant so the swap doesn't flip it. See
+        // #796 / SK-D1-04.
+        if let (Some(by), Some(bz), Some(t_xyz), Some(n)) =
+            (bitangent_y, bitangent_z, tangent_xyz, normal_zup)
+        {
+            let bx = bitangent_x;
+            let cnx = n[1] * t_xyz[2] - n[2] * t_xyz[1];
+            let cny = n[2] * t_xyz[0] - n[0] * t_xyz[2];
+            let cnz = n[0] * t_xyz[1] - n[1] * t_xyz[0];
+            let dot_b_cross = bx * cnx + by * cny + bz * cnz;
+            let sign = if dot_b_cross >= 0.0 { 1.0 } else { -1.0 };
+            // Z-up → Y-up on the bitangent triplet (xyz). Sign passes
+            // through unchanged.
+            tangents.push([bx, bz, -by, sign]);
+        }
+
         // Trailing padding (vertex_size - off) bytes — silently absorbed.
         // Defensive guard: bail if we read past the declared stride.
         if off > vertex_size {
@@ -1335,6 +1470,7 @@ fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedPacke
         colors,
         bone_weights,
         bone_indices,
+        tangents,
     })
 }
 

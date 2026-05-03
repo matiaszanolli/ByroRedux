@@ -247,6 +247,19 @@ pub struct BsTriShape {
     /// Per-vertex bone indices (4 per vertex). Parallel to `bone_weights`.
     /// Empty when the vertex descriptor lacks VF_SKINNED.
     pub bone_indices: Vec<[u8; 4]>,
+    /// Per-vertex tangent (xyz raw Z-up, w bitangent sign). Populated only
+    /// when `VF_TANGENTS | VF_NORMALS` are set on the vertex descriptor;
+    /// empty otherwise. The xyz components hold **Bethesda's bitangent
+    /// triplet** (bitangent_x at end of position vec4, bitangent_y after
+    /// the normal triplet, bitangent_z after the tangent triplet) — per
+    /// nifly's `CalcTangentSpace` (`Geometry.cpp:1014-1034`) the
+    /// on-disk-named "bitangent" actually stores ∂P/∂U which is what the
+    /// fragment shader's `vertexTangent.xyz` contract wants. The on-disk
+    /// "tangent" stores ∂P/∂V and is used here only to derive the
+    /// bitangent sign (`sign(dot(B, cross(N, T)))`); axis swap to Y-up
+    /// happens at import time (`extract_bs_tri_shape`) on .xyz only —
+    /// the sign is invariant under proper rotation. See #795 / SK-D1-03.
+    pub tangents: Vec<[f32; 4]>,
     /// Wire-type discriminator. Set by each parser arm; the dispatcher
     /// in [`super::mod`] uses [`Self::with_kind`] to override for types
     /// that share a parser (BSMeshLODTriShape / BSSubIndexTriShape). #560.
@@ -511,6 +524,7 @@ impl BsTriShape {
         let mut triangles: Vec<[u16; 3]> = Vec::new();
         let mut bone_weights: Vec<[f32; 4]> = Vec::new();
         let mut bone_indices: Vec<[u8; 4]> = Vec::new();
+        let mut tangents: Vec<[f32; 4]> = Vec::new();
 
         if data_size > 0 {
             // #388/#408 — bounds-check every file-driven count before
@@ -536,6 +550,21 @@ impl BsTriShape {
             for _ in 0..num_vertices {
                 let vert_start = stream.position();
 
+                // Per-vertex tangent reconstruction state. Bethesda's
+                // bitangent is split across 3 non-contiguous slots in
+                // the packed vertex (`bitangent_x` at end of position,
+                // `bitangent_y` after normal, `bitangent_z` after
+                // tangent). Capture each as it streams past so the
+                // `[bx, by, bz, sign]` assembly at the end of the loop
+                // body can reconstruct the full tangent record. See
+                // #795 / SK-D1-03 + the on-disk-vs-shader convention
+                // notes on the `tangents` field.
+                let mut bitangent_x: Option<f32> = None;
+                let mut bitangent_y: Option<f32> = None;
+                let mut tangent_xyz: Option<[f32; 3]> = None;
+                let mut bitangent_z: Option<f32> = None;
+                let mut normal_xyz: Option<[f32; 3]> = None;
+
                 // Position: full-precision (3×f32 + f32) or half-precision (3×f16 + u16).
                 // SSE (BSVER < 130): always full-precision.
                 // FO4+ (BSVER >= 130): bit VF_FULL_PRECISION selects precision.
@@ -545,14 +574,19 @@ impl BsTriShape {
                     if full_precision {
                         let pos = stream.read_ni_point3()?;
                         vertices.push(pos);
-                        let _bitangent_x_or_w = stream.read_f32_le()?;
+                        // `Bitangent X` is f32 in full-precision per
+                        // nif.xml `BSVertexData`. Captured here so the
+                        // tangent assembler at the end of the loop
+                        // can stitch it together with bitangent_y/z.
+                        bitangent_x = Some(stream.read_f32_le()?);
                     } else {
                         // Half-float positions (FO4 default)
                         let x = half_to_f32(stream.read_u16_le()?);
                         let y = half_to_f32(stream.read_u16_le()?);
                         let z = half_to_f32(stream.read_u16_le()?);
                         vertices.push(NiPoint3 { x, y, z });
-                        let _bitangent_x_or_w = stream.read_u16_le()?;
+                        // `Bitangent X` is hfloat in half-precision.
+                        bitangent_x = Some(half_to_f32(stream.read_u16_le()?));
                     }
                 }
 
@@ -563,12 +597,13 @@ impl BsTriShape {
                     uvs.push([u, v]);
                 }
 
-                // Normal (ByteVector3 = 3 × u8 + bitangent Y as i8)
+                // Normal (ByteVector3 = 3 × u8 + bitangent Y as normbyte)
                 if vertex_attrs & VF_NORMALS != 0 {
                     let nx = byte_to_normal(stream.read_u8()?);
                     let ny = byte_to_normal(stream.read_u8()?);
                     let nz = byte_to_normal(stream.read_u8()?);
-                    let _bitangent_y = stream.read_u8()?;
+                    bitangent_y = Some(byte_to_normal(stream.read_u8()?));
+                    normal_xyz = Some([nx, ny, nz]);
                     normals.push(NiPoint3 {
                         x: nx,
                         y: ny,
@@ -576,9 +611,37 @@ impl BsTriShape {
                     });
                 }
 
-                // Tangent (ByteVector3 + bitangent Z)
+                // Tangent (ByteVector3 + bitangent Z normbyte). The
+                // on-disk "tangent" is Bethesda's ∂P/∂V; we keep it
+                // only to derive the bitangent sign — the value the
+                // fragment shader actually consumes (∂P/∂U) is the
+                // bitangent triplet captured above + below.
                 if vertex_attrs & VF_TANGENTS != 0 && vertex_attrs & VF_NORMALS != 0 {
-                    stream.skip(4)?; // 3 bytes tangent + 1 byte bitangent Z
+                    let tx = byte_to_normal(stream.read_u8()?);
+                    let ty = byte_to_normal(stream.read_u8()?);
+                    let tz = byte_to_normal(stream.read_u8()?);
+                    tangent_xyz = Some([tx, ty, tz]);
+                    bitangent_z = Some(byte_to_normal(stream.read_u8()?));
+                }
+
+                // Assemble the per-vertex tangent record (Bethesda
+                // bitangent triplet → our tangent slot, sign derived
+                // from on-disk tangent). All in raw Z-up; importer
+                // converts xyz → Y-up. Sign is rotation-invariant.
+                if let (Some(bx), Some(by), Some(bz), Some(t_xyz), Some(n)) =
+                    (bitangent_x, bitangent_y, bitangent_z, tangent_xyz, normal_xyz)
+                {
+                    // sign(dot(B, cross(N, T))) — disambiguates left/
+                    // right-handed TBN. Operates on raw Z-up values;
+                    // determinant is preserved across the proper
+                    // rotation Z-up → Y-up so the sign is correct
+                    // post-conversion. Mirrors `extract_tangents_from_extra_data`.
+                    let cnx = n[1] * t_xyz[2] - n[2] * t_xyz[1];
+                    let cny = n[2] * t_xyz[0] - n[0] * t_xyz[2];
+                    let cnz = n[0] * t_xyz[1] - n[1] * t_xyz[0];
+                    let dot_b_cross = bx * cnx + by * cny + bz * cnz;
+                    let sign = if dot_b_cross >= 0.0 { 1.0 } else { -1.0 };
+                    tangents.push([bx, by, bz, sign]);
                 }
 
                 // Vertex colors (RGBA as 4 × u8)
@@ -665,6 +728,7 @@ impl BsTriShape {
             triangles,
             bone_weights,
             bone_indices,
+            tangents,
             kind: BsTriShapeKind::Plain,
             data_size,
         })

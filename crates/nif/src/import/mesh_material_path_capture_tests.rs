@@ -139,6 +139,7 @@ fn renderable_shape(shader_idx: u32) -> BsTriShape {
         triangles: vec![[0, 1, 2]],
         bone_weights: Vec::new(),
         bone_indices: Vec::new(),
+        tangents: Vec::new(),
         kind: BsTriShapeKind::Plain,
         data_size: 0,
     }
