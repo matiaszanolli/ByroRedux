@@ -1348,6 +1348,17 @@ void main() {
             outAlbedo = vec4(albedo, 1.0);
             return;
         }
+
+        // Portal-escape ray hit interior geometry — this surface is
+        // classified `isWindow` only by α∈(0.02, 0.5), but it isn't an
+        // actual wall portal. Demote so the IOR refract+reflect branch
+        // below accepts it. Without this demotion, free-standing 3D
+        // glass volumes (alchemy beakers, drinking glasses, vials) lose
+        // both the portal and the IOR path and degrade to Fresnel-only,
+        // producing flat translucent shapes with no scene visible
+        // through them. The genuine-window contract is unchanged: a
+        // pane that opens onto sky returns above.
+        isWindow = false;
     }
 
     float glassFresnel = 0.0;
@@ -1362,8 +1373,19 @@ void main() {
     // Gated by the per-frame ray budget counter — atomicAdd claims 2 units
     // (reflection + refraction) and falls back to the Fresnel-highlight path
     // when the budget is exhausted (glassFresnel + specStrength still active).
-    // Window surfaces (isWindow) are excluded here — they already returned above.
-    const uint GLASS_RAY_BUDGET = 512u;
+    // Window surfaces (isWindow) are excluded here — actual wall portals
+    // returned via the sky-transmission branch above. Surfaces classified
+    // as windows by α alone but whose portal-escape ray hit interior
+    // geometry have already been demoted to `isWindow = false` above.
+    //
+    // Budget sized for a typical interior cell with ~15-20 small glass
+    // props (chem tables, drinking glass clusters, vial racks). At 1080p
+    // that's roughly 80k visible glass fragments; 8192 ray pairs cover
+    // the first ~10% of them on the IOR path before degrading to Fresnel
+    // — a stable cliff over time as TAA accumulates. Pre-fix value was
+    // 512 (256 pairs), exhausted in ~16×16 px and visibly producing
+    // flat-translucent beakers across the frame.
+    const uint GLASS_RAY_BUDGET = 8192u;
     bool glassIORAllowed = isGlass && rtEnabled && !isWindow && rtLOD < RT_LOD_IOR;
     if (glassIORAllowed) {
         uint old = atomicAdd(rayBudget.rayBudgetCount, 2u);
