@@ -186,8 +186,11 @@ pub struct NpcRecord {
     pub death_item_form_id: u32,
     /// Base level (from DATA).
     pub level: i16,
-    /// Disposition base (from DATA).
-    pub disposition_base: u8,
+    /// Disposition base (from ACBS — i16 at offset 20). FNV vanilla
+    /// default is 50; values are signed so unfriendly NPCs can sit
+    /// below 0. Reading the high byte was being dropped pre-#377,
+    /// silently truncating any disposition outside 0..=127.
+    pub disposition_base: i16,
     /// Flags (from ACBS).
     pub acbs_flags: u32,
     /// True when the NPC record carries a `VMAD` sub-record (Skyrim+
@@ -342,8 +345,13 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
             b"ACBS" if sub.data.len() >= 24 => {
                 record.acbs_flags = read_u32_at(&sub.data, 0).unwrap_or(0);
                 record.level = i16::from_le_bytes([sub.data[8], sub.data[9]]);
+                // disposition_base is i16 at offset 20 (per UESP /
+                // FalloutSnip). Pre-#377 the parser read a single byte
+                // here, so any value outside 0..=127 lost its high byte
+                // (and signed values past -128 had the sign chopped).
                 if sub.data.len() >= 22 {
-                    record.disposition_base = sub.data[20];
+                    record.disposition_base =
+                        i16::from_le_bytes([sub.data[20], sub.data[21]]);
                 }
             }
             // VMAD presence-only flag — see `has_script` field doc.
@@ -696,6 +704,42 @@ mod tests {
         assert_eq!(n.ai_packages, vec![0xEEEE]);
         assert_eq!(n.acbs_flags, 0x100);
         assert_eq!(n.level, 5);
+    }
+
+    /// Regression for #377 (FNV F2-03): ACBS `disposition_base` is an
+    /// i16 at offset 20, not a u8. Pre-fix the parser pulled
+    /// `sub.data[20]` (one byte), so values outside 0..=127 got their
+    /// high byte dropped and the sign destroyed. Verify both a negative
+    /// disposition (Raider-tier) and a positive value > 127 round-trip.
+    #[test]
+    fn npc_acbs_disposition_base_reads_signed_i16() {
+        // ACBS layout (FNV NPC_, 24 bytes): flags u32, fatigue u16,
+        // barter u16, level i16, calc_min u16, calc_max u16, speed_mult
+        // u16, karma f32, disposition_base i16, template_flags u16.
+        fn acbs_with_disposition(d: i16) -> Vec<u8> {
+            let mut a = Vec::with_capacity(24);
+            a.extend_from_slice(&0u32.to_le_bytes()); // flags
+            a.extend_from_slice(&[0u8; 4]); // fatigue + barter
+            a.extend_from_slice(&1i16.to_le_bytes()); // level
+            a.extend_from_slice(&[0u8; 10]); // calc_min + calc_max + speed_mult + karma
+            a.extend_from_slice(&d.to_le_bytes()); // disposition_base
+            a.extend_from_slice(&0u16.to_le_bytes()); // template_flags
+            a
+        }
+
+        let neg = parse_npc(
+            0x700,
+            &[sub(b"EDID", b"Raider\0"), sub(b"ACBS", &acbs_with_disposition(-40))],
+            GameKind::Fallout3NV,
+        );
+        assert_eq!(neg.disposition_base, -40, "negative disposition must keep its sign");
+
+        let high = parse_npc(
+            0x701,
+            &[sub(b"EDID", b"Friendly\0"), sub(b"ACBS", &acbs_with_disposition(200))],
+            GameKind::Fallout3NV,
+        );
+        assert_eq!(high.disposition_base, 200, "values > 127 must not lose the high byte");
     }
 
     #[test]
