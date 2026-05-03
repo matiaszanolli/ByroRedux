@@ -1591,12 +1591,25 @@ void main() {
             }
 
             if (!hit) {
-                // Escaped scene — fall back to sky tint (matches window
-                // portal contract). Interior cells will still see this
-                // as a soft blue because no geometry lies behind the
-                // refraction ray; for lit interiors that's acceptable
-                // for the rare "looking out" angle.
-                refrColor = vec3(0.6, 0.75, 1.0);
+                // Escaped scene — fall back to cell ambient. The
+                // diagnostic capture from #789-followup showed this
+                // branch is the *dominant* path for upright glass
+                // volumes in interior cells: side-on viewing bends
+                // refraction mostly horizontally, and most rays clear
+                // the chem-table edge or pass between widely-spaced
+                // wall geometry without finding a hit. Pre-fix this
+                // returned hard-coded daylight sky `(0.6, 0.75, 1.0)`
+                // which, when modulated by `glassTint × ambientLitFloor`
+                // at composite time, dominated the visible glass
+                // surface as a desaturated grey-white — *the* white-
+                // chem-glass look reported on #789. Cell ambient
+                // (`sceneFlags.yzw`) is the per-cell room mood; in
+                // exteriors it's already sky-derived from CLMT/WTHR,
+                // so the change is correct in both cases. Match the
+                // `traceReflection` miss fallback at :382 — half-fog
+                // half-ambient — so escaped refraction rays read
+                // consistent with escaped reflection rays.
+                refrColor = fog.xyz * 0.5 + sceneFlags.yzw * 0.5;
             } else {
                 GpuInstance tInst = instances[tIdx];
                 GpuMaterial tMat = materials[tInst.materialId];
