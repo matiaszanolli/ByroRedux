@@ -310,11 +310,34 @@ impl Material {
             };
         }
 
-        // Environment map scale as metalness proxy.
+        // Environment-map authored on this material — scales the
+        // legacy cube-map reflection intensity (BSShaderPPLighting
+        // shader_type 1, ENVIRONMENT_MAP). This is NOT a metalness
+        // signal: glass, polished wood, vinyl cushions, plastic
+        // armor, and lacquered ceramics all author env_map_scale > 0
+        // without being conductors. Treating it as metalness routes
+        // every dielectric with a sheen into the metal-reflection
+        // branch (`triangle.frag:metalness > 0.3`), which then picks
+        // up bright surroundings (cell ambient, nearby emissive
+        // sconces) via the env reflection — the "chrome cushion"
+        // look on FNV medical gurneys / hospital beds.
+        //
+        // Real conductors are caught by the texture-path keyword
+        // arms above (metal/iron/steel/dwemer/gold/silver/...).
+        // Power-armor authoring is `metal` in the texture path AND
+        // env_map_scale ≈ 2.5 — the keyword arm fires first and
+        // sets metalness=0.9. So leaving the env-mapped fallback at
+        // metalness=0 here doesn't lose the power-armor case.
+        //
+        // Use env_map_scale to drive a lower roughness instead —
+        // surfaces with an authored cube map are by definition
+        // smoother (the artist authored visible reflections) — so
+        // the dielectric specular lobe sharpens correctly and the
+        // reflection appears via Fresnel without the conductor tint.
         if self.env_map_scale > 0.3 {
             return PbrMaterial {
-                roughness: (1.0 - self.env_map_scale * 0.5).clamp(0.1, 0.8),
-                metalness: self.env_map_scale.clamp(0.0, 1.0),
+                roughness: (1.0 - self.env_map_scale * 0.3).clamp(0.2, 0.8),
+                metalness: 0.0,
             };
         }
 
@@ -392,6 +415,37 @@ mod tests {
 
         let glass = m.classify_pbr(Some("textures/clutter/ICE/IceShard01.dds"));
         assert!(glass.roughness < 0.2);
+    }
+
+    /// `env_map_scale > 0.3` (legacy BSShaderPPLighting cube-map
+    /// intensity) must NOT produce non-zero metalness. Pre-fix the
+    /// classifier piped env_map_scale straight into metalness, which
+    /// routed every dielectric-with-sheen (vinyl cushions, plastic,
+    /// lacquered wood, glass) into the metal-reflection branch and
+    /// produced "chrome cushion" looks on FNV medical gurneys / hospital
+    /// beds. env_map_scale is a reflection-intensity authoring knob,
+    /// not a conductor signal — true metals are caught by the texture-
+    /// path keyword arms.
+    #[test]
+    fn classify_pbr_env_map_scale_does_not_imply_metalness() {
+        let mut m = Material::default();
+        m.glossiness = 50.0;
+        m.env_map_scale = 0.5; // cushion-with-sheen tier
+        let p = m.classify_pbr(Some("textures/clutter/medical/hospitalbed01.dds"));
+        assert_eq!(
+            p.metalness, 0.0,
+            "env_map_scale must not drive metalness — that's the chrome-cushion bug"
+        );
+        // Roughness should drop relative to a no-envmap default (the
+        // sheen IS visible, just as a dielectric lobe).
+        assert!(p.roughness < 1.0);
+
+        // Power-armor tier (env_map_scale ≈ 2.5) on a non-keyword path
+        // also stays dielectric — the artist needs to put `metal` /
+        // `armor` in the texture path to mark conductor authoring.
+        m.env_map_scale = 2.5;
+        let p = m.classify_pbr(Some("textures/clutter/unknown/shiny.dds"));
+        assert_eq!(p.metalness, 0.0);
     }
 
     #[test]
