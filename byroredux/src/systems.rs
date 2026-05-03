@@ -9,9 +9,10 @@ use byroredux_core::animation::{
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
     ActiveCamera, AnimatedAlpha, AnimatedAmbientColor, AnimatedDiffuseColor, AnimatedEmissiveColor,
-    AnimatedShaderColor, AnimatedSpecularColor, AnimatedVisibility, Billboard, BillboardMode,
-    Children, DebugStats, DeltaTime, GlobalTransform, LocalBound, Name, Parent, ParticleEmitter,
-    TotalTime, Transform, World, WorldBound,
+    AnimatedMorphWeights, AnimatedShaderColor, AnimatedShaderFloat, AnimatedSpecularColor,
+    AnimatedUvTransform, AnimatedVisibility, Billboard, BillboardMode, Children, DebugStats,
+    DeltaTime, GlobalTransform, LocalBound, Name, Parent, ParticleEmitter, TotalTime, Transform,
+    World, WorldBound,
 };
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::{FixedString, StringPool};
@@ -197,6 +198,87 @@ fn apply_color_channels(
                 if let Some(q) = q.as_mut() {
                     if let Some(c) = q.get_mut(target_entity) {
                         c.0 = value;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Apply float channels to per-target sinks. Pre-#525 the only sink
+/// was [`AnimatedAlpha`]; every other [`FloatTarget`] arm
+/// (`UvOffsetU/V`, `UvScaleU/V`, `UvRotation`, `ShaderFloat`,
+/// `MorphWeight(idx)`) sampled correctly but dropped the value on the
+/// floor. The dispatch now covers every arm:
+///
+///   * `Alpha` → [`AnimatedAlpha`]
+///   * `UvOffsetU/V` / `UvScaleU/V` / `UvRotation` →
+///     [`AnimatedUvTransform`] (5 channels can write the same component
+///     on one entity — each slot is updated independently)
+///   * `ShaderFloat` → [`AnimatedShaderFloat`]
+///   * `MorphWeight(idx)` → [`AnimatedMorphWeights`] (zero-pads on
+///     first write past the current vec length)
+///
+/// Mirrors `apply_color_channels` — locks acquired lazily on first use
+/// of each sink, so a clip carrying only UV-offset channels never
+/// touches the morph or shader-float storages.
+fn apply_float_channels(
+    world: &World,
+    float_channels: &[(FixedString, byroredux_core::animation::FloatChannel)],
+    time: f32,
+    resolve_entity: &dyn Fn(&FixedString) -> Option<EntityId>,
+) {
+    let mut alpha_q = None;
+    let mut uv_q = None;
+    let mut shader_q = None;
+    let mut morph_q = None;
+
+    for (channel_name, channel) in float_channels {
+        let Some(target_entity) = resolve_entity(channel_name) else {
+            continue;
+        };
+        let value = sample_float_channel(channel, time);
+        match channel.target {
+            FloatTarget::Alpha => {
+                let q = alpha_q.get_or_insert_with(|| world.query_mut::<AnimatedAlpha>());
+                if let Some(q) = q.as_mut() {
+                    if let Some(a) = q.get_mut(target_entity) {
+                        a.0 = value;
+                    }
+                }
+            }
+            FloatTarget::UvOffsetU
+            | FloatTarget::UvOffsetV
+            | FloatTarget::UvScaleU
+            | FloatTarget::UvScaleV
+            | FloatTarget::UvRotation => {
+                let q = uv_q.get_or_insert_with(|| world.query_mut::<AnimatedUvTransform>());
+                if let Some(q) = q.as_mut() {
+                    if let Some(t) = q.get_mut(target_entity) {
+                        match channel.target {
+                            FloatTarget::UvOffsetU => t.offset.x = value,
+                            FloatTarget::UvOffsetV => t.offset.y = value,
+                            FloatTarget::UvScaleU => t.scale.x = value,
+                            FloatTarget::UvScaleV => t.scale.y = value,
+                            FloatTarget::UvRotation => t.rotation = value,
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+            }
+            FloatTarget::ShaderFloat => {
+                let q = shader_q.get_or_insert_with(|| world.query_mut::<AnimatedShaderFloat>());
+                if let Some(q) = q.as_mut() {
+                    if let Some(s) = q.get_mut(target_entity) {
+                        s.0 = value;
+                    }
+                }
+            }
+            FloatTarget::MorphWeight(idx) => {
+                let q = morph_q.get_or_insert_with(|| world.query_mut::<AnimatedMorphWeights>());
+                if let Some(q) = q.as_mut() {
+                    if let Some(m) = q.get_mut(target_entity) {
+                        m.set(idx as usize, value);
                     }
                 }
             }
@@ -443,22 +525,12 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
             }
         }
 
-        // Apply float channels (alpha, UV params, shader floats).
-        // Hold lock for entire channel batch instead of per-channel.
+        // Apply float channels — alpha + UV params + shader floats +
+        // morph weights. See `apply_float_channels` for the per-target
+        // dispatch table; pre-#525 only `Alpha` had a sink and every
+        // other `FloatTarget` arm dropped its value silently.
         if !clip.float_channels.is_empty() {
-            if let Some(mut aq) = world.query_mut::<AnimatedAlpha>() {
-                for (channel_name, channel) in &clip.float_channels {
-                    let Some(target_entity) = resolve_entity(channel_name) else {
-                        continue;
-                    };
-                    let value = sample_float_channel(channel, current_time);
-                    if channel.target == FloatTarget::Alpha {
-                        if let Some(a) = aq.get_mut(target_entity) {
-                            a.0 = value;
-                        }
-                    }
-                }
-            }
+            apply_float_channels(world, &clip.float_channels, current_time, &resolve_entity);
         }
 
         // Apply color channels — route to the right target component
@@ -678,19 +750,7 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         if let Some((clip_handle, time)) = dominant_info {
             if let Some(clip) = registry.get(clip_handle) {
                 if !clip.float_channels.is_empty() {
-                    if let Some(mut aq) = world.query_mut::<AnimatedAlpha>() {
-                        for (channel_name, channel) in &clip.float_channels {
-                            let Some(target_entity) = stack_resolve(channel_name) else {
-                                continue;
-                            };
-                            let value = sample_float_channel(channel, time);
-                            if channel.target == FloatTarget::Alpha {
-                                if let Some(a) = aq.get_mut(target_entity) {
-                                    a.0 = value;
-                                }
-                            }
-                        }
-                    }
+                    apply_float_channels(world, &clip.float_channels, time, &stack_resolve);
                 }
                 if !clip.color_channels.is_empty() {
                     apply_color_channels(world, &clip.color_channels, time, &stack_resolve);
@@ -2125,5 +2185,183 @@ mod weather_interior_gate_tests {
             "exterior fog_color was not updated by weather_system: {:?}",
             cell_lit.fog_color
         );
+    }
+}
+
+// ── #525 / FNV-ANIM-2 regression guards ───────────────────────────────
+//
+// Pre-#525 the float-channel dispatch in `animation_system` only had
+// a sink for `FloatTarget::Alpha`. Every other variant (UvOffsetU/V,
+// UvScaleU/V, UvRotation, ShaderFloat, MorphWeight) was sampled and
+// then silently dropped — animated UV scrolling on water / lava /
+// conveyor belts / HUD backdrops did nothing at runtime, and
+// FaceGen lip-sync morphs likewise had no consumer.
+//
+// `apply_float_channels` now routes each arm to a dedicated sparse
+// component. The tests exercise the helper directly with synthetic
+// (target, value) channels so the dispatch table itself is pinned;
+// full clip-registry/player wiring is covered by upstream animation
+// integration tests.
+#[cfg(test)]
+mod float_channel_dispatch_tests {
+    use super::*;
+    use byroredux_core::animation::{AnimFloatKey, FloatChannel};
+    use byroredux_core::ecs::World;
+
+    /// Build a world with an entity carrying every float-channel sink
+    /// pre-inserted at identity so `apply_float_channels` has a target
+    /// for every dispatch arm. Returns the entity id, a fresh
+    /// `StringPool` (only used to mint dummy `FixedString` keys for the
+    /// channel name slot), and a `resolve_entity` closure that maps
+    /// any name back to the entity.
+    fn world_with_sinks() -> (World, EntityId, FixedString) {
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(entity, AnimatedAlpha(1.0));
+        world.insert(entity, AnimatedUvTransform::identity());
+        world.insert(entity, AnimatedShaderFloat(0.0));
+        world.insert(entity, AnimatedMorphWeights(Vec::new()));
+        let mut pool = StringPool::new();
+        let dummy = pool.intern("target");
+        (world, entity, dummy)
+    }
+
+    /// Single-keyframe channel that always samples to `value` regardless
+    /// of `time`. Mirrors how a constant-value controller authors a
+    /// flat slider position.
+    fn const_channel(target: FloatTarget, value: f32) -> FloatChannel {
+        FloatChannel {
+            target,
+            keys: vec![AnimFloatKey { time: 0.0, value }],
+        }
+    }
+
+    fn resolve_to(entity: EntityId) -> impl Fn(&FixedString) -> Option<EntityId> {
+        move |_sym: &FixedString| Some(entity)
+    }
+
+    /// `FloatTarget::Alpha` keeps the pre-#525 behaviour — the only
+    /// arm that already had a sink. Pinned here to guard against the
+    /// helper accidentally dropping it during a future refactor.
+    #[test]
+    fn alpha_target_writes_animated_alpha() {
+        let (world, entity, name) = world_with_sinks();
+        let channels = vec![(name, const_channel(FloatTarget::Alpha, 0.5))];
+        apply_float_channels(&world, &channels, 0.0, &resolve_to(entity));
+        let q = world.query::<AnimatedAlpha>().unwrap();
+        assert_eq!(q.get(entity).unwrap().0, 0.5);
+    }
+
+    /// `FloatTarget::UvOffsetU` writes `AnimatedUvTransform.offset.x`
+    /// only — `offset.y` / `scale` / `rotation` stay at identity.
+    /// Pre-#525 the value was sampled and dropped; the static
+    /// `Material.uv_offset` ran the shader, so animated water never
+    /// scrolled.
+    #[test]
+    fn uv_offset_u_writes_offset_x_only() {
+        let (world, entity, name) = world_with_sinks();
+        let channels = vec![(name, const_channel(FloatTarget::UvOffsetU, 0.25))];
+        apply_float_channels(&world, &channels, 0.0, &resolve_to(entity));
+        let q = world.query::<AnimatedUvTransform>().unwrap();
+        let t = q.get(entity).unwrap();
+        assert_eq!(t.offset.x, 0.25);
+        assert_eq!(t.offset.y, 0.0, "UvOffsetU must not bleed into offset.y");
+        assert_eq!(t.scale.x, 1.0, "UvOffsetU must not touch scale");
+        assert_eq!(t.scale.y, 1.0);
+        assert_eq!(t.rotation, 0.0);
+    }
+
+    /// `FloatTarget::UvOffsetV` writes only the V slot. Same isolation
+    /// guarantee as the U test, on the orthogonal axis.
+    #[test]
+    fn uv_offset_v_writes_offset_y_only() {
+        let (world, entity, name) = world_with_sinks();
+        let channels = vec![(name, const_channel(FloatTarget::UvOffsetV, 0.75))];
+        apply_float_channels(&world, &channels, 0.0, &resolve_to(entity));
+        let q = world.query::<AnimatedUvTransform>().unwrap();
+        let t = q.get(entity).unwrap();
+        assert_eq!(t.offset.x, 0.0);
+        assert_eq!(t.offset.y, 0.75);
+    }
+
+    /// `FloatTarget::UvScaleU` / `UvScaleV` / `UvRotation` each land
+    /// in their dedicated slot. Bundled into one test because they
+    /// share the same `AnimatedUvTransform` sink and the dispatch
+    /// table is the same shape — verifying all three together pins
+    /// that no channel cross-writes another's slot.
+    #[test]
+    fn uv_scale_and_rotation_route_to_distinct_slots() {
+        let (world, entity, name) = world_with_sinks();
+        let channels = vec![
+            (name, const_channel(FloatTarget::UvScaleU, 2.0)),
+            (name, const_channel(FloatTarget::UvScaleV, 0.5)),
+            (name, const_channel(FloatTarget::UvRotation, 1.5708)),
+        ];
+        apply_float_channels(&world, &channels, 0.0, &resolve_to(entity));
+        let q = world.query::<AnimatedUvTransform>().unwrap();
+        let t = q.get(entity).unwrap();
+        assert_eq!(t.scale.x, 2.0);
+        assert_eq!(t.scale.y, 0.5);
+        assert!((t.rotation - 1.5708).abs() < 1e-4);
+        // Offset stays at identity even though scale/rotation wrote.
+        assert_eq!(t.offset.x, 0.0);
+        assert_eq!(t.offset.y, 0.0);
+    }
+
+    /// `FloatTarget::ShaderFloat` writes `AnimatedShaderFloat.0`
+    /// (single-slot today; per-named-uniform dispatch is downstream
+    /// growth). Driven by `BSLightingShaderPropertyFloatController`
+    /// on Skyrim+/FO4 content.
+    #[test]
+    fn shader_float_target_writes_shader_float_component() {
+        let (world, entity, name) = world_with_sinks();
+        let channels = vec![(name, const_channel(FloatTarget::ShaderFloat, 7.5))];
+        apply_float_channels(&world, &channels, 0.0, &resolve_to(entity));
+        let q = world.query::<AnimatedShaderFloat>().unwrap();
+        assert_eq!(q.get(entity).unwrap().0, 7.5);
+    }
+
+    /// `FloatTarget::MorphWeight(idx)` indexes into the morph weights
+    /// vec. Multiple channels on the same entity at distinct indices
+    /// stack — each writes its own slot. Pre-#525 every morph-weight
+    /// sample was dropped on the floor; FaceGen lip-sync NPC heads
+    /// stayed at the bind-pose blend.
+    #[test]
+    fn morph_weight_target_indexed_writes() {
+        let (world, entity, name) = world_with_sinks();
+        let channels = vec![
+            (name, const_channel(FloatTarget::MorphWeight(0), 0.3)),
+            (name, const_channel(FloatTarget::MorphWeight(2), 0.9)),
+        ];
+        apply_float_channels(&world, &channels, 0.0, &resolve_to(entity));
+        let q = world.query::<AnimatedMorphWeights>().unwrap();
+        let weights = q.get(entity).unwrap();
+        // Vec grows to fit the highest written index; intermediate
+        // (idx=1) zero-pads.
+        assert_eq!(weights.0.len(), 3);
+        assert_eq!(weights.get(0), 0.3);
+        assert_eq!(weights.get(1), 0.0, "unwritten morph slot must stay zero");
+        assert_eq!(weights.get(2), 0.9);
+    }
+
+    /// Missing-sink case — when an entity carries the float channels
+    /// but doesn't have the matching sparse component (e.g. an
+    /// importer didn't insert `AnimatedUvTransform` for a non-UV-
+    /// scrolling mesh), the dispatch is a no-op rather than panicking.
+    /// Mirrors the SCOL/PKIN parser's defensive posture.
+    #[test]
+    fn missing_sink_component_is_a_silent_noop() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        // Only AnimatedAlpha — no AnimatedUvTransform. UV channel
+        // arrives with no sink; helper must not panic.
+        world.insert(entity, AnimatedAlpha(1.0));
+        let mut pool = StringPool::new();
+        let name = pool.intern("target");
+        let channels = vec![(name, const_channel(FloatTarget::UvOffsetU, 0.5))];
+        apply_float_channels(&world, &channels, 0.0, &resolve_to(entity));
+        // Survived the call — alpha untouched, no panic.
+        let q = world.query::<AnimatedAlpha>().unwrap();
+        assert_eq!(q.get(entity).unwrap().0, 1.0);
     }
 }

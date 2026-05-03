@@ -23,7 +23,8 @@ pub mod world_bound;
 
 pub use animated::{
     AnimatedAlpha, AnimatedAmbientColor, AnimatedDiffuseColor, AnimatedEmissiveColor,
-    AnimatedShaderColor, AnimatedSpecularColor, AnimatedVisibility,
+    AnimatedMorphWeights, AnimatedShaderColor, AnimatedShaderFloat, AnimatedSpecularColor,
+    AnimatedUvTransform, AnimatedVisibility,
 };
 pub use billboard::{Billboard, BillboardMode};
 pub use bsx::{BSBound, BSXFlags};

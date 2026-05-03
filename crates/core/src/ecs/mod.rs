@@ -22,10 +22,11 @@ pub mod world;
 pub use access::{analyze_pair, Access, AccessConflict, AccessEntry, ConflictKind, ConflictPair};
 pub use components::{
     ActiveCamera, AnimatedAlpha, AnimatedAmbientColor, AnimatedDiffuseColor, AnimatedEmissiveColor,
-    AnimatedShaderColor, AnimatedSpecularColor, AnimatedVisibility, BSBound, BSXFlags, Billboard,
-    BillboardMode, Camera, CellRoot, Children, EmitterShape, GlobalTransform, LightSource,
-    LocalBound, Material, MeshHandle, Name, Parent, ParticleEmitter, ParticleSoA, SceneFlags,
-    SkinnedMesh, TextureHandle, Transform, WorldBound, MAX_BONES_PER_MESH,
+    AnimatedMorphWeights, AnimatedShaderColor, AnimatedShaderFloat, AnimatedSpecularColor,
+    AnimatedUvTransform, AnimatedVisibility, BSBound, BSXFlags, Billboard, BillboardMode, Camera,
+    CellRoot, Children, EmitterShape, GlobalTransform, LightSource, LocalBound, Material,
+    MeshHandle, Name, Parent, ParticleEmitter, ParticleSoA, SceneFlags, SkinnedMesh, TextureHandle,
+    Transform, WorldBound, MAX_BONES_PER_MESH,
 };
 pub use packed::PackedStorage;
 pub use query::{ComponentRef, QueryRead, QueryWrite};

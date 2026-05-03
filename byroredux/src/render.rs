@@ -1,9 +1,9 @@
 //! Per-frame render data collection from ECS queries.
 
 use byroredux_core::ecs::{
-    ActiveCamera, AnimatedVisibility, Camera, EntityId, GlobalTransform, LightSource, Material,
-    MeshHandle, ParticleEmitter, SkinnedMesh, TextureHandle, Transform, World, WorldBound,
-    MAX_BONES_PER_MESH,
+    ActiveCamera, AnimatedUvTransform, AnimatedVisibility, Camera, EntityId, GlobalTransform,
+    LightSource, Material, MeshHandle, ParticleEmitter, SkinnedMesh, TextureHandle, Transform,
+    World, WorldBound, MAX_BONES_PER_MESH,
 };
 use byroredux_core::math::{Mat4, Quat, Vec3, Vec4};
 use byroredux_renderer::vulkan::context::DrawCommand;
@@ -389,6 +389,16 @@ pub(crate) fn build_render_data(
     let decal_q = world.query::<Decal>();
     let vis_q = world.query::<AnimatedVisibility>();
     let mat_q = world.query::<Material>();
+    // #525 — `AnimatedUvTransform` overrides the static
+    // `Material::uv_offset` / `uv_scale` when an entity has an active
+    // UV-scrolling controller (water, lava, conveyor belts, flickering
+    // HUD backdrops). The component lands the per-axis values
+    // independently so a single channel can drive offset.x while the
+    // material's authored offset.y stays at 0 — the renderer reads the
+    // full Vec2 transform here. Identity defaults (0, 0) / (1, 1)
+    // mean the override is a no-op until the animation system writes
+    // a non-identity slot.
+    let anim_uv_q = world.query::<AnimatedUvTransform>();
     let nmap_q = world.query::<NormalMapHandle>();
     let dmap_q = world.query::<DarkMapHandle>();
     let extra_q = world.query::<ExtraTextureMaps>();
@@ -756,8 +766,29 @@ pub(crate) fn build_render_data(
                     // the `Material` component (already populated by
                     // the NIF importer and/or the FO4 BGSM resolver).
                     // Identity defaults when the mesh has no Material.
-                    uv_offset: mat.map(|m| m.uv_offset).unwrap_or([0.0, 0.0]),
-                    uv_scale: mat.map(|m| m.uv_scale).unwrap_or([1.0, 1.0]),
+                    //
+                    // #525 — `AnimatedUvTransform`, when present, REPLACES
+                    // the static authored values entirely (rather than
+                    // adds / multiplies). The component starts at
+                    // identity (0, 0) / (1, 1) on insertion and the
+                    // animation system writes per-channel slots over
+                    // time; the static `Material` values are the
+                    // baseline only for entities WITHOUT a controller.
+                    // This matches `NiTextureTransformController`'s
+                    // legacy semantic — the controller authored over
+                    // the material's UV transform, not on top of it.
+                    uv_offset: anim_uv_q
+                        .as_ref()
+                        .and_then(|q| q.get(entity))
+                        .map(|t| [t.offset.x, t.offset.y])
+                        .or_else(|| mat.map(|m| m.uv_offset))
+                        .unwrap_or([0.0, 0.0]),
+                    uv_scale: anim_uv_q
+                        .as_ref()
+                        .and_then(|q| q.get(entity))
+                        .map(|t| [t.scale.x, t.scale.y])
+                        .or_else(|| mat.map(|m| m.uv_scale))
+                        .unwrap_or([1.0, 1.0]),
                     material_alpha: mat.map(|m| m.alpha).unwrap_or(1.0),
                     // Average albedo for fast GI bounce approximation.
                     // Falls back to mid-gray (0.5) when no texture color
