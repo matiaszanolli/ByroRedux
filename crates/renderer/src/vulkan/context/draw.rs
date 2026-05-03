@@ -1299,14 +1299,31 @@ impl VulkanContext {
                 }
 
                 // Depth bias for decal geometry — only emit when state changes.
+                //
+                // The Vulkan formula is
+                //   bias = constant_factor × r + slope_factor × |max_dz/dxy|
+                // where `r` is the smallest representable depth at the
+                // fragment (≈ 2⁻²⁴ ≈ 6e-8 for D32_SFLOAT around mid-depth).
+                // For coplanar decals like rugs on hardwood floors the
+                // surface slope is near zero, so the constant component
+                // dominates: at `constant_factor = -4` the offset works
+                // out to ≈ 5e-7 of normalised depth — orders of magnitude
+                // too small to overcome z-buffer rounding ties, and
+                // visible as the speckled / zebra-striped z-fighting the
+                // user reported on Doc Mitchell's living-room rug.
+                //
+                // Bumping the constants to (-64, -2) lifts the offset
+                // into the ~4e-6 range — same scale Bethesda's D3D
+                // engines use for decal polygon offset. Big enough to
+                // win every coplanar tie, small enough that distant
+                // decals don't poke through occluders. The slope term
+                // helps when the underlying surface IS angled (blood
+                // splatters on stairs, wall posters tilted off-axis).
                 if batch.is_decal != last_is_decal {
-                    let bias = if batch.is_decal { -4.0_f32 } else { 0.0 };
-                    self.device.cmd_set_depth_bias(
-                        cmd,
-                        bias,
-                        0.0,
-                        if batch.is_decal { -1.0 } else { 0.0 },
-                    );
+                    let bias_const = if batch.is_decal { -64.0_f32 } else { 0.0 };
+                    let bias_slope = if batch.is_decal { -2.0_f32 } else { 0.0 };
+                    self.device
+                        .cmd_set_depth_bias(cmd, bias_const, 0.0, bias_slope);
                     last_is_decal = batch.is_decal;
                 }
 
