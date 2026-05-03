@@ -18,6 +18,7 @@ pub mod common;
 pub mod container;
 pub mod global;
 pub mod items;
+pub mod list_record;
 pub mod misc;
 pub mod movs;
 pub mod mswp;
@@ -26,6 +27,7 @@ pub mod scol;
 pub mod script;
 pub mod weather;
 
+pub use list_record::{parse_flst, FlstRecord};
 pub use movs::{parse_movs, MovableStaticRecord};
 pub use mswp::{parse_mswp, MaterialSwapEntry, MaterialSwapRecord};
 pub use pkin::{parse_pkin, PkinRecord};
@@ -179,6 +181,15 @@ pub struct EsmIndex {
     /// + password + body text captured so a future terminal-interaction
     /// system doesn't have to re-parse them.
     pub terminals: HashMap<u32, TermRecord>,
+    /// `FLST` FormID list records — flat arrays of form IDs referenced
+    /// by `IsInList` perk-entry-point conditions, COBJ recipe
+    /// ingredient lists, the FNV CCRD/CDCK Caravan deck, and quest
+    /// objective filters. Pre-#630 the entire top-level group fell
+    /// through to the catch-all skip and every `IsInList <flst>`
+    /// returned "not in list" because the lookup map was empty —
+    /// silently disabling ~50 vanilla FNV PERKs and the Caravan
+    /// mini-game. See audit `FNV-D2-02` / #630.
+    pub form_lists: HashMap<u32, FlstRecord>,
 }
 
 impl EsmIndex {
@@ -246,6 +257,7 @@ impl EsmIndex {
             ("actor_values", |s| s.actor_values.len()),
             ("activators", |s| s.activators.len()),
             ("terminals", |s| s.terminals.len()),
+            ("form_lists", |s| s.form_lists.len()),
         ]
     }
 
@@ -341,6 +353,7 @@ impl EsmIndex {
         self.actor_values.extend(other.actor_values);
         self.activators.extend(other.activators);
         self.terminals.extend(other.terminals);
+        self.form_lists.extend(other.form_lists);
     }
 }
 
@@ -618,6 +631,16 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             })?,
             b"TERM" => extract_records(&mut reader, end, b"TERM", &mut |fid, subs| {
                 index.terminals.insert(fid, parse_term(fid, subs));
+            })?,
+            // FLST FormID lists — flat arrays referenced by
+            // `IsInList <flst>` perk-entry-point conditions, COBJ
+            // recipe filters, FNV Caravan deck composition, and quest
+            // objective lookups. Pre-#630 the top-level group fell
+            // through to the catch-all skip and every `IsInList`
+            // returned "not in list", silently disabling ~50 vanilla
+            // FNV PERKs and the entire Caravan mini-game.
+            b"FLST" => extract_records(&mut reader, end, b"FLST", &mut |fid, subs| {
+                index.form_lists.insert(fid, parse_flst(fid, subs));
             })?,
             _ => {
                 reader.skip_group(&group);
@@ -1596,9 +1619,10 @@ mod tests {
     /// `pub foos: HashMap<...>` field, increment this.
     #[test]
     fn categories_table_row_count_pinned() {
-        // 36 typed maps on EsmIndex + 2 from cells (cells, statics).
+        // 37 typed maps on EsmIndex + 2 from cells (cells, statics).
         // Bumped from 37 → 38 in #624 (image_spaces map for IMGS dispatch).
+        // Bumped from 38 → 39 in #630 (form_lists map for FLST dispatch).
         // Bump in lockstep with the struct + `categories()` edits.
-        assert_eq!(EsmIndex::categories().len(), 38);
+        assert_eq!(EsmIndex::categories().len(), 39);
     }
 }

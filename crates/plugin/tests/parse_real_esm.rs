@@ -69,7 +69,7 @@ fn parse_rate_fnv_esm() {
         "[FNV] total={} | items={} containers={} LVLI={} LVLN={} NPCs={} \
          races={} classes={} factions={} globals={} game_settings={} \
          packages={} quests={} dialogues={} messages={} perks={} \
-         spells={} magic_effects={} activators={} terminals={}",
+         spells={} magic_effects={} activators={} terminals={} form_lists={}",
         index.total(),
         index.items.len(),
         index.containers.len(),
@@ -90,6 +90,7 @@ fn parse_rate_fnv_esm() {
         index.magic_effects.len(),
         index.activators.len(),
         index.terminals.len(),
+        index.form_lists.len(),
     );
 
     // Primary M24 baseline assertion — the "13,684 structured records"
@@ -170,6 +171,33 @@ fn parse_rate_fnv_esm() {
         index.terminals.len() >= 300,
         "TERM={} (expected >= 300; vanilla ships 344)",
         index.terminals.len(),
+    );
+
+    // #630 / audit FNV-D2-02 regression guard: FLST FormID lists must
+    // dispatch end-to-end. Pre-fix the entire top-level group fell
+    // through to the catch-all skip and every `IsInList <flst>` perk
+    // condition / Caravan deck lookup hit an empty map. Vanilla
+    // FalloutNV.esm ships ~340 FLST records; floor at 250 absorbs the
+    // BSA-vs-loose-files edge case without masking a dispatch
+    // regression. At least one FLST must carry > 1 entry — an
+    // EDID-only FLST with empty entries is the parse-side indicator
+    // of a sub-record extraction regression.
+    assert!(
+        index.form_lists.len() >= 250,
+        "FLST={} (expected >= 250; vanilla ships ~340)",
+        index.form_lists.len(),
+    );
+    let flst_with_entries = index
+        .form_lists
+        .values()
+        .filter(|f| f.entries.len() > 1)
+        .count();
+    assert!(
+        flst_with_entries >= 100,
+        "FLSTs with >1 entry = {}/{} — pre-fix 0/0 because the group \
+         was skipped; expected >= 100 after #630",
+        flst_with_entries,
+        index.form_lists.len(),
     );
 
     // #533 / audit M33-01 regression guard: at least one FNV weather must
