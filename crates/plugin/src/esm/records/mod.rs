@@ -57,7 +57,15 @@ pub use misc::{
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
 pub use weather::{parse_wthr, OblivionHdrLighting, SkyColor, WeatherRecord};
 
-use super::cell::EsmCellIndex;
+use super::cell::support::{
+    parse_ltex_group, parse_modl_group, parse_movs_group, parse_mswp_group, parse_pkin_group,
+    parse_scol_group, parse_txst_group,
+};
+use super::cell::walkers::parse_cell_group;
+use super::cell::wrld::parse_wrld_group;
+use super::cell::{
+    build_static_object_from_subs, CellData, EsmCellIndex, StaticObject, TextureSet,
+};
 use super::reader::{EsmReader, FormIdRemap, GameKind, SubRecord};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -386,12 +394,7 @@ pub fn parse_esm(data: &[u8]) -> Result<EsmIndex> {
 /// function exists so downstream code can opt in without another
 /// parse-layer refactor when the CLI grows multi-plugin support.
 pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Result<EsmIndex> {
-    let cells = super::cell::parse_esm_cells_with_load_order(data, remap.clone())
-        .context("Failed to parse ESM cells")?;
-    let mut index = EsmIndex {
-        cells,
-        ..EsmIndex::default()
-    };
+    let mut index = EsmIndex::default();
 
     let mut reader = EsmReader::new(data);
     if let Some(r) = remap {
@@ -402,15 +405,38 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     // FO3/FNV → Skyrim → FO4; without the HEDR discriminator every
     // Skyrim record would be parsed with the FO3/FNV schema and get
     // garbage stats (issue #347).
-    let file_header = reader.read_file_header().ok();
-    let game = GameKind::from_header(
-        reader.variant(),
-        file_header.as_ref().map(|h| h.hedr_version).unwrap_or(0.0),
-    );
+    let file_header = reader
+        .read_file_header()
+        .context("Failed to read ESM file header")?;
+    let game = GameKind::from_header(reader.variant(), file_header.hedr_version);
     // M41.0 Phase 1b — preserve game on the index so consumers
     // (NPC spawn dispatcher) can route per-version without
     // re-deriving from a HEDR they no longer have.
     index.game = game;
+    log::info!(
+        "ESM file: {} records, {} master files",
+        file_header.record_count,
+        file_header.master_files.len(),
+    );
+
+    // Cell-side scratch state — fed directly into `index.cells` after
+    // the unified walk. Pre-#527 these were owned by a separate first
+    // pass through the file (`parse_esm_cells_with_load_order`); the
+    // fused walker collapses both passes into one so a 70 MB ESM
+    // doesn't go through the header decoder + sub-record walker
+    // twice. See audit FNV-ESM-2.
+    let mut cells: HashMap<String, CellData> = HashMap::new();
+    let mut exterior_cells: HashMap<String, HashMap<(i32, i32), CellData>> = HashMap::new();
+    let mut statics: HashMap<u32, StaticObject> = HashMap::new();
+    let mut landscape_textures: HashMap<u32, String> = HashMap::new();
+    let mut worldspace_climates: HashMap<String, u32> = HashMap::new();
+    let mut txst_textures: HashMap<u32, String> = HashMap::new();
+    let mut texture_sets: HashMap<u32, TextureSet> = HashMap::new();
+    let mut ltex_to_txst: HashMap<u32, u32> = HashMap::new();
+    let mut scols: HashMap<u32, ScolRecord> = HashMap::new();
+    let mut packins: HashMap<u32, PkinRecord> = HashMap::new();
+    let mut movables: HashMap<u32, MovableStaticRecord> = HashMap::new();
+    let mut material_swaps: HashMap<u32, MaterialSwapRecord> = HashMap::new();
 
     // #348 / #624 — push the TES4 `Localized` flag into a thread-local
     // so every record parser's FULL/DESC decoder can route through the
@@ -421,9 +447,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     //   * Overlapping parses on the same thread (nested `parse_esm`
     //     calls) correctly stack — the outer parse's flag is restored
     //     when the inner guard drops.
-    let _localized_guard = common::LocalizedPluginGuard::new(
-        file_header.as_ref().map_or(false, |h| h.localized),
-    );
+    let _localized_guard = common::LocalizedPluginGuard::new(file_header.localized);
 
     // Walk top-level groups and dispatch by record-type label.
     while reader.remaining() > 0 {
@@ -438,40 +462,141 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         let label = group.label;
 
         match &label {
-            // Item categories — each handled by a per-type parser. ARMO,
-            // WEAP, AMMO are game-aware: their DATA/DNAM layouts differ
-            // between FO3/FNV and Skyrim+ (see items.rs regression tests).
-            b"WEAP" => extract_records(&mut reader, end, b"WEAP", &mut |fid, subs| {
-                index.items.insert(fid, parse_weap(fid, subs, game));
-            })?,
-            b"ARMO" => extract_records(&mut reader, end, b"ARMO", &mut |fid, subs| {
-                index.items.insert(fid, parse_armo(fid, subs, game));
-            })?,
-            b"AMMO" => extract_records(&mut reader, end, b"AMMO", &mut |fid, subs| {
-                index.items.insert(fid, parse_ammo(fid, subs, game));
-            })?,
-            b"MISC" => extract_records(&mut reader, end, b"MISC", &mut |fid, subs| {
-                index.items.insert(fid, parse_misc(fid, subs));
-            })?,
-            b"KEYM" => extract_records(&mut reader, end, b"KEYM", &mut |fid, subs| {
-                index.items.insert(fid, parse_keym(fid, subs));
-            })?,
-            b"ALCH" => extract_records(&mut reader, end, b"ALCH", &mut |fid, subs| {
-                index.items.insert(fid, parse_alch(fid, subs));
-            })?,
-            b"INGR" => extract_records(&mut reader, end, b"INGR", &mut |fid, subs| {
-                index.items.insert(fid, parse_ingr(fid, subs));
-            })?,
-            b"BOOK" => extract_records(&mut reader, end, b"BOOK", &mut |fid, subs| {
-                index.items.insert(fid, parse_book(fid, subs));
-            })?,
-            b"NOTE" => extract_records(&mut reader, end, b"NOTE", &mut |fid, subs| {
-                index.items.insert(fid, parse_note(fid, subs));
-            })?,
+            // ── Cell-only labels — formerly the entire first walker (#527 fusion). ──
+            //
+            // CELL / WRLD / LTEX / TXST / SCOL / PKIN / MOVS / MSWP have
+            // no typed `EsmIndex.<map>` consumer; they only feed the
+            // `cells` sub-tree. Calling the existing cell helpers
+            // inline keeps the cell-loader's already-trusted parsing
+            // path byte-identical while letting the unified walker
+            // own the outer loop.
+            b"CELL" => parse_cell_group(&mut reader, end, &mut cells)?,
+            b"WRLD" => parse_wrld_group(
+                &mut reader,
+                end,
+                &mut exterior_cells,
+                &mut worldspace_climates,
+            )?,
+            b"LTEX" => parse_ltex_group(
+                &mut reader,
+                end,
+                &mut ltex_to_txst,
+                &mut landscape_textures,
+            )?,
+            b"TXST" => parse_txst_group(&mut reader, end, &mut txst_textures, &mut texture_sets)?,
+            b"SCOL" => parse_scol_group(&mut reader, end, &mut statics, &mut scols)?,
+            b"PKIN" => parse_pkin_group(&mut reader, end, &mut statics, &mut packins)?,
+            b"MOVS" => parse_movs_group(&mut reader, end, &mut statics, &mut movables)?,
+            b"MSWP" => parse_mswp_group(&mut reader, end, &mut material_swaps)?,
+            // MODL-only labels — populate `cells.statics` for visual
+            // placement, no typed map. STAT / MSTT / FURN / DOOR /
+            // LIGH / FLOR / TREE / IDLM / BNDS / ADDN / TACT all carry
+            // a MODL but no record-side parser yet.
+            b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"LIGH" | b"FLOR" | b"TREE" | b"IDLM"
+            | b"BNDS" | b"ADDN" | b"TACT" => {
+                parse_modl_group(&mut reader, end, &mut statics)?;
+            }
+            // ── Dual-target labels — typed record + cells.statics in one walk. ──
+            //
+            // Every label below ships BOTH a typed `EsmIndex.<map>`
+            // entry AND wants `cells.statics` populated for visual
+            // placement (REFRs targeting the form ID still need a
+            // model_path / VMAD-script flag). Pre-#527 they were
+            // walked twice — once by the cell first-pass, once by the
+            // records second-pass. The fused helper walks each group
+            // once and dispatches both consumers from the same
+            // `subs` slice.
+            b"WEAP" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"WEAP",
+                &mut statics,
+                &mut |fid, subs| {
+                    index.items.insert(fid, parse_weap(fid, subs, game));
+                },
+            )?,
+            b"ARMO" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"ARMO",
+                &mut statics,
+                &mut |fid, subs| {
+                    index.items.insert(fid, parse_armo(fid, subs, game));
+                },
+            )?,
+            b"AMMO" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"AMMO",
+                &mut statics,
+                &mut |fid, subs| {
+                    index.items.insert(fid, parse_ammo(fid, subs, game));
+                },
+            )?,
+            b"MISC" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"MISC",
+                &mut statics,
+                &mut |fid, subs| {
+                    index.items.insert(fid, parse_misc(fid, subs));
+                },
+            )?,
+            b"KEYM" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"KEYM",
+                &mut statics,
+                &mut |fid, subs| {
+                    index.items.insert(fid, parse_keym(fid, subs));
+                },
+            )?,
+            b"ALCH" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"ALCH",
+                &mut statics,
+                &mut |fid, subs| {
+                    index.items.insert(fid, parse_alch(fid, subs));
+                },
+            )?,
+            b"INGR" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"INGR",
+                &mut statics,
+                &mut |fid, subs| {
+                    index.items.insert(fid, parse_ingr(fid, subs));
+                },
+            )?,
+            b"BOOK" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"BOOK",
+                &mut statics,
+                &mut |fid, subs| {
+                    index.items.insert(fid, parse_book(fid, subs));
+                },
+            )?,
+            b"NOTE" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"NOTE",
+                &mut statics,
+                &mut |fid, subs| {
+                    index.items.insert(fid, parse_note(fid, subs));
+                },
+            )?,
             // Containers and leveled lists.
-            b"CONT" => extract_records(&mut reader, end, b"CONT", &mut |fid, subs| {
-                index.containers.insert(fid, parse_cont(fid, subs));
-            })?,
+            b"CONT" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"CONT",
+                &mut statics,
+                &mut |fid, subs| {
+                    index.containers.insert(fid, parse_cont(fid, subs));
+                },
+            )?,
             b"LVLI" => extract_records(&mut reader, end, b"LVLI", &mut |fid, subs| {
                 index
                     .leveled_items
@@ -491,19 +616,34 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                     .leveled_creatures
                     .insert(fid, parse_leveled_list(fid, subs));
             })?,
-            // Actors and supporting records.
-            b"NPC_" => extract_records(&mut reader, end, b"NPC_", &mut |fid, subs| {
-                index.npcs.insert(fid, parse_npc(fid, subs, game));
-            })?,
+            // Actors and supporting records — dual-target via the
+            // fused walker so the cell-side STAT-equivalent
+            // registration in `statics` still happens (REFR base-form
+            // resolution against named NPCs / creatures keeps working).
+            b"NPC_" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"NPC_",
+                &mut statics,
+                &mut |fid, subs| {
+                    index.npcs.insert(fid, parse_npc(fid, subs, game));
+                },
+            )?,
             // Creatures share EDID / FULL / MODL / RNAM / CNAM / SNAM /
             // CNTO / PKID / ACBS with NPC_ — `parse_npc` populates the
             // same `NpcRecord` shape. FO3 bestiary (super mutants,
             // deathclaws, radroaches, robots) lives here; pre-fix the
             // whole top-level group was dropped at the catch-all skip.
             // See #442 / audit FO3-3-02.
-            b"CREA" => extract_records(&mut reader, end, b"CREA", &mut |fid, subs| {
-                index.creatures.insert(fid, parse_npc(fid, subs, game));
-            })?,
+            b"CREA" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"CREA",
+                &mut statics,
+                &mut |fid, subs| {
+                    index.creatures.insert(fid, parse_npc(fid, subs, game));
+                },
+            )?,
             b"RACE" => extract_records(&mut reader, end, b"RACE", &mut |fid, subs| {
                 index.races.insert(fid, parse_race(fid, subs));
             })?,
@@ -622,16 +762,30 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             b"AVIF" => extract_records(&mut reader, end, b"AVIF", &mut |fid, subs| {
                 index.actor_values.insert(fid, parse_avif(fid, subs));
             })?,
-            // ACTI / TERM #521 — dispatch pulled out of the cell
-            // MODL catch-all so SCRI / menu-tree cross-refs survive.
-            // cells.statics still picks them up via the MODL pass so
-            // existing rendering / collision code paths are untouched.
-            b"ACTI" => extract_records(&mut reader, end, b"ACTI", &mut |fid, subs| {
-                index.activators.insert(fid, parse_acti(fid, subs));
-            })?,
-            b"TERM" => extract_records(&mut reader, end, b"TERM", &mut |fid, subs| {
-                index.terminals.insert(fid, parse_term(fid, subs));
-            })?,
+            // ACTI / TERM #521 — dual-target: typed map for SCRI /
+            // menu-tree cross-refs AND `cells.statics` for visual
+            // placement. Pre-#527 the cell first-pass walked them via
+            // the MODL catch-all and the records second-pass walked
+            // them again for the typed parser; the fused helper does
+            // both in one walk.
+            b"ACTI" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"ACTI",
+                &mut statics,
+                &mut |fid, subs| {
+                    index.activators.insert(fid, parse_acti(fid, subs));
+                },
+            )?,
+            b"TERM" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"TERM",
+                &mut statics,
+                &mut |fid, subs| {
+                    index.terminals.insert(fid, parse_term(fid, subs));
+                },
+            )?,
             // FLST FormID lists — flat arrays referenced by
             // `IsInList <flst>` perk-entry-point conditions, COBJ
             // recipe filters, FNV Caravan deck composition, and quest
@@ -648,6 +802,43 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         }
     }
 
+    // Resolve LTEX → texture path via TXST indirection.
+    // FO3/FNV: LTEX.TNAM → TXST form ID → TXST.TX00 diffuse path.
+    // Oblivion: LTEX.ICON is a direct texture path (already in
+    // `landscape_textures` from `parse_ltex_group`).
+    for (ltex_id, txst_id) in &ltex_to_txst {
+        if let Some(path) = txst_textures.get(txst_id) {
+            landscape_textures.insert(*ltex_id, path.clone());
+        }
+    }
+
+    let total_exterior: usize = exterior_cells.values().map(|m| m.len()).sum();
+    let wrld_names: Vec<&str> = exterior_cells.keys().map(|s| s.as_str()).collect();
+    log::info!(
+        "ESM parsed: {} interior cells, {} exterior cells across {} worldspaces, {} base objects, {} landscape textures",
+        cells.len(),
+        total_exterior,
+        exterior_cells.len(),
+        statics.len(),
+        landscape_textures.len(),
+    );
+    if !wrld_names.is_empty() {
+        log::info!("  Worldspaces: {:?}", wrld_names);
+    }
+
+    index.cells = EsmCellIndex {
+        cells,
+        exterior_cells,
+        statics,
+        landscape_textures,
+        worldspace_climates,
+        texture_sets,
+        scols,
+        packins,
+        movables,
+        material_swaps,
+    };
+
     // Single source of truth — both this line and `index.total()` walk
     // the same `EsmIndex::categories` table so adding a new record
     // category is a single-edit operation. See #634 / FNV-D2-06.
@@ -657,6 +848,54 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     // `_localized_guard` drops — including on early-return paths and
     // panic unwinds. See #624.
     Ok(index)
+}
+
+/// Walk a top-level group once, dispatching every matching record to
+/// BOTH a typed-record callback AND the [`StaticObject`] builder for
+/// `cells.statics`. Used by `parse_esm_with_load_order` for dual-target
+/// labels (WEAP / ARMO / AMMO / MISC / KEYM / ALCH / INGR / BOOK /
+/// NOTE / CONT / NPC_ / CREA / ACTI / TERM) — every label that ships
+/// both a typed record AND wants visual-placement coverage in
+/// `cells.statics`.
+///
+/// Pre-#527 these labels were walked TWICE: once by
+/// `parse_esm_cells_with_load_order` to populate `statics`, and again
+/// by the typed dispatcher in `parse_esm_with_load_order`. The fused
+/// helper calls `read_sub_records` once and routes the same `subs`
+/// slice to both consumers, halving the sub-record decode cost on
+/// each dual-target group. Recurses into nested groups so worldspace
+/// children and persistent/temporary cell children are handled too —
+/// same recursion shape as `extract_records`.
+fn extract_records_with_modl(
+    reader: &mut EsmReader,
+    end: usize,
+    expected_type: &[u8; 4],
+    statics: &mut HashMap<u32, StaticObject>,
+    f: &mut dyn FnMut(u32, &[SubRecord]),
+) -> Result<()> {
+    while reader.position() < end && reader.remaining() > 0 {
+        if reader.is_group() {
+            let sub_group = reader.read_group_header()?;
+            let sub_end = reader.group_content_end(&sub_group);
+            extract_records_with_modl(reader, sub_end, expected_type, statics, f)?;
+            continue;
+        }
+        let header = reader.read_record_header()?;
+        if &header.record_type == expected_type {
+            let subs = reader.read_sub_records(&header)?;
+            // Cell-side: build the StaticObject from the same subs.
+            if let Some(stat) =
+                build_static_object_from_subs(header.form_id, &header.record_type, &subs)
+            {
+                statics.insert(header.form_id, stat);
+            }
+            // Records-side: typed parser.
+            f(header.form_id, &subs);
+        } else {
+            reader.skip_record(&header);
+        }
+    }
+    Ok(())
 }
 
 /// Walk a top-level group and call `f(form_id, subs)` for every record

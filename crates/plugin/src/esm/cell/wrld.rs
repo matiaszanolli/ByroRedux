@@ -3,11 +3,12 @@
 //! Functions: parse_wrld_group, parse_wrld_children.
 
 use super::helpers::{read_form_id, read_form_id_array, read_zstring};
+use super::walkers::parse_refr_group;
 use super::*;
 use crate::esm::records::common::read_lstring_or_zstring;
 
 /// Walk the WRLD group hierarchy to find exterior cells and their placed references.
-pub(super) fn parse_wrld_group(
+pub(crate) fn parse_wrld_group(
     reader: &mut EsmReader,
     end: usize,
     all_exterior_cells: &mut HashMap<String, HashMap<(i32, i32), CellData>>,
@@ -80,7 +81,7 @@ pub(super) fn parse_wrld_group(
 }
 
 /// Walk exterior cell hierarchy within a worldspace (group types 1, 4, 5).
-pub(super) fn parse_wrld_children(
+pub(crate) fn parse_wrld_children(
     reader: &mut EsmReader,
     end: usize,
     exterior_cells: &mut HashMap<(i32, i32), CellData>,

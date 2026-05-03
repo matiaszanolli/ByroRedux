@@ -5,20 +5,18 @@
 //! static/object definitions for NIF paths.
 
 use super::reader::EsmReader;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::HashMap;
 
 mod helpers;
-mod support;
-mod walkers;
-mod wrld;
+pub(crate) mod support;
+pub(crate) mod walkers;
+pub(crate) mod wrld;
 
-use support::{
-    parse_ltex_group, parse_modl_group, parse_movs_group, parse_mswp_group, parse_pkin_group,
-    parse_scol_group, parse_txst_group,
-};
-use walkers::{parse_cell_group, parse_refr_group};
-use wrld::parse_wrld_group;
+// Re-exported for `parse_esm_with_load_order` (#527 fused walker).
+// Internal callers (`tests`, sibling cell helpers) reach the same
+// helpers via `cell::support::*` directly.
+pub(crate) use support::build_static_object_from_subs;
 
 /// Interior cell lighting from XCLL subrecord.
 ///
@@ -655,184 +653,14 @@ pub fn parse_esm_cells_with_load_order(
     data: &[u8],
     remap: Option<super::reader::FormIdRemap>,
 ) -> Result<EsmCellIndex> {
-    let mut reader = EsmReader::new(data);
-    if let Some(r) = remap {
-        reader.set_form_id_remap(r);
-    }
-    let file_header = reader
-        .read_file_header()
-        .context("Failed to read ESM file header")?;
-
-    log::info!(
-        "ESM file: {} records, {} master files",
-        file_header.record_count,
-        file_header.master_files.len(),
-    );
-
-    let mut cells = HashMap::new();
-    let mut exterior_cells: HashMap<String, HashMap<(i32, i32), CellData>> = HashMap::new();
-    let mut statics = HashMap::new();
-    let mut landscape_textures: HashMap<u32, String> = HashMap::new();
-    let mut worldspace_climates: HashMap<String, u32> = HashMap::new();
-    // First pass collects TXST form IDs; second resolves LTEX → TXST → path.
-    let mut txst_textures: HashMap<u32, String> = HashMap::new();
-    let mut texture_sets: HashMap<u32, TextureSet> = HashMap::new();
-    let mut ltex_to_txst: HashMap<u32, u32> = HashMap::new();
-    let mut scols: HashMap<u32, super::records::ScolRecord> = HashMap::new();
-    let mut packins: HashMap<u32, super::records::PkinRecord> = HashMap::new();
-    let mut movables: HashMap<u32, super::records::MovableStaticRecord> = HashMap::new();
-    let mut material_swaps: HashMap<u32, super::records::MaterialSwapRecord> = HashMap::new();
-
-    // Walk top-level groups.
-    while reader.remaining() > 0 {
-        if !reader.is_group() {
-            let header = reader.read_record_header()?;
-            reader.skip_record(&header);
-            continue;
-        }
-
-        let group = reader.read_group_header()?;
-
-        match &group.label {
-            b"CELL" => {
-                let end = reader.group_content_end(&group);
-                parse_cell_group(&mut reader, end, &mut cells)?;
-            }
-            b"WRLD" => {
-                let end = reader.group_content_end(&group);
-                parse_wrld_group(
-                    &mut reader,
-                    end,
-                    &mut exterior_cells,
-                    &mut worldspace_climates,
-                )?;
-            }
-            b"LTEX" => {
-                let end = reader.group_content_end(&group);
-                parse_ltex_group(&mut reader, end, &mut ltex_to_txst, &mut landscape_textures)?;
-            }
-            b"TXST" => {
-                let end = reader.group_content_end(&group);
-                parse_txst_group(&mut reader, end, &mut txst_textures, &mut texture_sets)?;
-            }
-            // All record types that have a MODL sub-record (NIF model path).
-            // Placed references (REFR/ACHR/ACRE) can point to any of these.
-            // TXST is intentionally NOT in this list — it has a dedicated
-            // parser at the `b"TXST"` arm above (line 264) that pulls
-            // texture paths instead of model paths.
-            //
-            // CREA — Oblivion/FO3/FNV creature record (#396). FO3+ folded
-            // creatures into NPC_ so the MODL match arm never needed it
-            // for those games; Oblivion shipped 250+ creatures in a
-            // dedicated 440 KB CREA group (goblin/rat/zombie/daedra) and
-            // every Ayleid ruin / Oblivion gate / cave placement
-            // referenced one. Without CREA in the statics map every
-            // ACRE placement failed the base-ref lookup and silently
-            // skipped rendering. CREA uses the standard MODL sub-record,
-            // identical to STAT — no per-record field work needed.
-            b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"ACTI" | b"CONT" | b"LIGH" | b"MISC"
-            | b"FLOR" | b"TREE" | b"AMMO" | b"WEAP" | b"ARMO" | b"BOOK" | b"KEYM" | b"ALCH"
-            | b"INGR" | b"NOTE" | b"TACT" | b"IDLM" | b"BNDS" | b"ADDN" | b"TERM" | b"NPC_"
-            | b"CREA" => {
-                let end = reader.group_content_end(&group);
-                parse_modl_group(&mut reader, end, &mut statics)?;
-            }
-            // MOVS — FO4+ Movable Static. Visually identical to STAT
-            // (one MODL pointer); semantically distinct because the
-            // referenced mesh's `bhk` chain produces dynamic Havok
-            // motion at runtime. Pre-#588 MOVS was lumped into the
-            // MODL-only catch-all which preserved visual placement but
-            // dropped LNAM (loop sound) / ZNAM (activate sound) / DEST
-            // (destruction) / VMAD (script). The dedicated parser
-            // captures those fields into `movables` and still
-            // registers the MODL-backed `StaticObject` so REFRs against
-            // the form ID resolve unchanged. See audit FO4-DIM4-02.
-            b"MOVS" => {
-                let end = reader.group_content_end(&group);
-                parse_movs_group(&mut reader, end, &mut statics, &mut movables)?;
-            }
-            // SCOL — FO4+ Static Collection. Has a MODL (cached
-            // combined mesh) but ALSO carries ONAM/DATA placement
-            // arrays that the MODL-only parser would discard. Route
-            // through a dedicated parser that captures every child
-            // placement while still registering the record in the
-            // `statics` map (so REFRs targeting the SCOL still find
-            // its cached-mesh model_path). See audit FO4-D4-C2 / #405.
-            b"SCOL" => {
-                let end = reader.group_content_end(&group);
-                parse_scol_group(&mut reader, end, &mut statics, &mut scols)?;
-            }
-            // PKIN — FO4+ Pack-In bundle. CNAM-driven, no MODL; the
-            // MODL-only parser above would silently produce a
-            // `StaticObject { model_path: "" }` and discard every
-            // content reference. Route through a dedicated parser
-            // that captures the full CNAM list into `packins`; the
-            // cell loader expands PKIN REFRs into synthetic placements
-            // at spawn time (analogous to SCOL). Also register a
-            // nominal `StaticObject` entry so REFRs still resolve the
-            // base form at load time — the empty `model_path` plus
-            // PKIN presence in `packins` is the signal the cell
-            // loader keys on. See audit FO4-DIM4-03 / #589.
-            b"PKIN" => {
-                let end = reader.group_content_end(&group);
-                parse_pkin_group(&mut reader, end, &mut statics, &mut packins)?;
-            }
-            // MSWP — FO4+ Material Swap. Authors a list of source →
-            // target material substitutions plus an optional
-            // path-prefix filter. REFR `XMSP` sub-records (FO4-DIM6-02
-            // stage 2) point at MSWP form IDs; the cell loader
-            // resolves them here and produces per-REFR
-            // `TextureSlotSwap` overrides. Pre-#590 the type was in
-            // `RecordType::MSWP` but had no parser, so all 2,500
-            // vanilla Fallout4.esm entries fell into the catch-all
-            // `skip_group` below — every Raider armour / station-
-            // wagon / vault-decay variant rendered identically.
-            // See audit FO4-DIM6-05.
-            b"MSWP" => {
-                let end = reader.group_content_end(&group);
-                parse_mswp_group(&mut reader, end, &mut material_swaps)?;
-            }
-            _ => {
-                reader.skip_group(&group);
-            }
-        }
-    }
-
-    // Resolve LTEX → texture path via TXST indirection.
-    // FO3/FNV: LTEX.TNAM → TXST form ID → TXST.TX00 diffuse path.
-    // Oblivion: LTEX.ICON is a direct texture path (stored in landscape_textures directly).
-    for (ltex_id, txst_id) in &ltex_to_txst {
-        if let Some(path) = txst_textures.get(txst_id) {
-            landscape_textures.insert(*ltex_id, path.clone());
-        }
-    }
-
-    let total_exterior: usize = exterior_cells.values().map(|m| m.len()).sum();
-    let wrld_names: Vec<&str> = exterior_cells.keys().map(|s| s.as_str()).collect();
-    log::info!(
-        "ESM parsed: {} interior cells, {} exterior cells across {} worldspaces, {} base objects, {} landscape textures",
-        cells.len(),
-        total_exterior,
-        exterior_cells.len(),
-        statics.len(),
-        landscape_textures.len(),
-    );
-    if !wrld_names.is_empty() {
-        log::info!("  Worldspaces: {:?}", wrld_names);
-    }
-
-    Ok(EsmCellIndex {
-        cells,
-        exterior_cells,
-        statics,
-        landscape_textures,
-        worldspace_climates,
-        texture_sets,
-        scols,
-        packins,
-        movables,
-        material_swaps,
-    })
+    // #527 — fused single-pass walker. Pre-fix this function was the
+    // first of two top-level walks over the whole ESM byte slice; the
+    // typed-records walker in `super::records::parse_esm_with_load_order`
+    // ran the same loop again to populate items / containers / NPCs
+    // / etc. The fused walker now lives in records/mod.rs and produces
+    // both maps in one pass — this entry point becomes a thin wrapper
+    // that discards the typed maps for callers that only want cells.
+    super::records::parse_esm_with_load_order(data, remap).map(|i| i.cells)
 }
 
 #[cfg(test)]

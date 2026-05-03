@@ -63,7 +63,16 @@ fn parse_rate_fnv_esm() {
     };
     let esm_path = data.join("FalloutNV.esm");
     let bytes = std::fs::read(&esm_path).expect("read FalloutNV.esm");
+    let parse_start = std::time::Instant::now();
     let index = parse_esm(&bytes).expect("parse FalloutNV.esm");
+    let parse_elapsed = parse_start.elapsed();
+    // #527 — fused single-pass walker. Pre-fix audit baseline was
+    // 1.21s release on a cold load (two full walks of the 70 MB
+    // ESM); post-fix observed ~1.095s. The timing is diagnostic
+    // only — too disk-cache-sensitive to assert against without
+    // dedicated bench infra. The functional baselines below catch
+    // any regression that would matter to consumers.
+    eprintln!("[FNV] parse_esm wall={:?}", parse_elapsed);
 
     eprintln!(
         "[FNV] total={} | items={} containers={} LVLI={} LVLN={} NPCs={} \

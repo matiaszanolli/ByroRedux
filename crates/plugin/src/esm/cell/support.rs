@@ -4,10 +4,126 @@
 
 use super::helpers::read_zstring;
 use super::*;
+use crate::esm::reader::SubRecord;
+
+/// Build a [`StaticObject`] from a record's already-decoded sub-records.
+///
+/// Pulled out of `parse_modl_group`'s inner loop in #527 so the records-
+/// side walker can share the same MODL-extraction logic when handling
+/// dual-target labels (WEAP/ARMO/AMMO/MISC/KEYM/ALCH/INGR/BOOK/NOTE/
+/// CONT/NPC_/CREA/ACTI/TERM — every label that ships both a typed
+/// record AND wants `cells.statics` populated for visual placement).
+/// Pre-#527 the records walker re-decoded these groups end-to-end on a
+/// second full pass; the fused walker calls `read_sub_records` once and
+/// dispatches both consumers from the same `subs` slice.
+///
+/// Returns `None` for records that carry neither a model path, a LIGH
+/// `DATA` chunk, nor an ADDN `DATA`/`DNAM` payload — those would
+/// produce an empty `StaticObject` that the cell loader ignores anyway.
+pub(crate) fn build_static_object_from_subs(
+    form_id: u32,
+    record_type: &[u8; 4],
+    subs: &[SubRecord],
+) -> Option<StaticObject> {
+    let is_ligh = record_type == b"LIGH";
+    let is_addn = record_type == b"ADDN";
+    let mut editor_id = String::new();
+    let mut model_path = String::new();
+    let mut light_data = None;
+    let mut addon_index: Option<i32> = None;
+    let mut addon_dnam: Option<(u16, u16)> = None;
+    let mut has_script = false;
+    let mut xpwr_form_id: Option<u32> = None;
+
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => editor_id = read_zstring(&sub.data),
+            b"MODL" => model_path = read_zstring(&sub.data),
+            b"VMAD" => has_script = true,
+            b"DATA" if is_ligh && sub.data.len() >= 12 => {
+                let radius = u32::from_le_bytes([
+                    sub.data[4],
+                    sub.data[5],
+                    sub.data[6],
+                    sub.data[7],
+                ]) as f32;
+                let r = sub.data[8] as f32 / 255.0;
+                let g = sub.data[9] as f32 / 255.0;
+                let b = sub.data[10] as f32 / 255.0;
+                let flags = if sub.data.len() >= 16 {
+                    u32::from_le_bytes([
+                        sub.data[12],
+                        sub.data[13],
+                        sub.data[14],
+                        sub.data[15],
+                    ])
+                } else {
+                    0
+                };
+                light_data = Some(LightData {
+                    radius,
+                    color: [r, g, b],
+                    flags,
+                    xpwr_form_id: None,
+                });
+            }
+            b"XPWR" if is_ligh && sub.data.len() >= 4 => {
+                xpwr_form_id = Some(u32::from_le_bytes([
+                    sub.data[0],
+                    sub.data[1],
+                    sub.data[2],
+                    sub.data[3],
+                ]));
+            }
+            b"DATA" if is_addn && sub.data.len() >= 4 => {
+                addon_index = Some(i32::from_le_bytes([
+                    sub.data[0],
+                    sub.data[1],
+                    sub.data[2],
+                    sub.data[3],
+                ]));
+            }
+            b"DNAM" if is_addn && sub.data.len() >= 4 => {
+                let cap = u16::from_le_bytes([sub.data[0], sub.data[1]]);
+                let flags = u16::from_le_bytes([sub.data[2], sub.data[3]]);
+                addon_dnam = Some((cap, flags));
+            }
+            _ => {}
+        }
+    }
+
+    if let (Some(ref mut ld), Some(form)) = (&mut light_data, xpwr_form_id) {
+        ld.xpwr_form_id = Some(form);
+    }
+
+    let addon_data = if is_addn && (addon_index.is_some() || addon_dnam.is_some()) {
+        let (master_particle_cap, flags) = addon_dnam.unwrap_or((0, 0));
+        Some(AddonData {
+            addon_index: addon_index.unwrap_or(0),
+            master_particle_cap,
+            flags,
+        })
+    } else {
+        None
+    };
+
+    if !model_path.is_empty() || light_data.is_some() || addon_data.is_some() {
+        Some(StaticObject {
+            form_id,
+            editor_id,
+            model_path,
+            light_data,
+            addon_data,
+            has_script,
+        })
+    } else {
+        None
+    }
+}
 
 /// Walk a top-level record group and extract any record with a MODL sub-record.
 /// Works for STAT, MSTT, FURN, DOOR, ACTI, CONT, LIGH, MISC, etc.
-pub(super) fn parse_modl_group(
+pub(crate) fn parse_modl_group(
     reader: &mut EsmReader,
     end: usize,
     statics: &mut HashMap<u32, StaticObject>,
@@ -21,147 +137,11 @@ pub(super) fn parse_modl_group(
         }
 
         let header = reader.read_record_header()?;
+        let subs = reader.read_sub_records(&header)?;
+        if let Some(stat) =
+            build_static_object_from_subs(header.form_id, &header.record_type, &subs)
         {
-            let is_ligh = &header.record_type == b"LIGH";
-            let is_addn = &header.record_type == b"ADDN";
-            let subs = reader.read_sub_records(&header)?;
-            let mut editor_id = String::new();
-            let mut model_path = String::new();
-            let mut light_data = None;
-            let mut addon_index: Option<i32> = None;
-            let mut addon_dnam: Option<(u16, u16)> = None;
-            let mut has_script = false;
-            // FO4 LIGH power-circuit sub-record. Captured alongside
-            // LightData so the future settlement-circuit ECS system
-            // can resolve wired fixtures. See #602.
-            let mut xpwr_form_id: Option<u32> = None;
-
-            for sub in &subs {
-                match &sub.sub_type {
-                    b"EDID" => editor_id = read_zstring(&sub.data),
-                    b"MODL" => model_path = read_zstring(&sub.data),
-                    // VMAD presence-only flag — see `has_script` field doc on
-                    // `StaticObject`. Full decoding deferred to scripting-as-
-                    // ECS work. See #369.
-                    b"VMAD" => has_script = true,
-                    b"DATA" if is_ligh && sub.data.len() >= 12 => {
-                        // LIGH DATA: time(u32), radius(u32), color(RGBA u8×4), flags(u32), ...
-                        //
-                        // Bytes 8..12 are Red, Green, Blue, Unknown/alpha in that
-                        // order — xEdit defines LIGH DATA `Color` as a
-                        // { Red: u8; Green: u8; Blue: u8; Unknown: u8 } struct.
-                        //
-                        // Fix #389 previously flipped this to BGR after
-                        // cross-checking Oblivion's `RootGreenBright0650`
-                        // (bytes 36 74 66 00 → G=116 is max either way), but
-                        // that test case was ambiguous. FalloutNV.esm makes
-                        // the correct byte order unambiguous — every warm/
-                        // amber/red/orange EDID came out as its complement
-                        // (blue/cyan) under BGR:
-                        //   OurLadyHopeRed              [0.14, 0.58, 0.98]  ✗
-                        //   DunwichLightOrangeFlicker01 [0.15, 0.42, 0.68]  ✗
-                        //   BasementLightKickerWarm     [0.69, 0.83, 0.89]  ✗
-                        //   BasementLightFillCool       [0.79, 0.72, 0.65]  ✗  (should be cool)
-                        // Reading as RGB puts each one where its EDID says
-                        // it should land. See docs/engine/lighting-from-cells.md.
-                        let radius = u32::from_le_bytes([
-                            sub.data[4],
-                            sub.data[5],
-                            sub.data[6],
-                            sub.data[7],
-                        ]) as f32;
-                        let r = sub.data[8] as f32 / 255.0;
-                        let g = sub.data[9] as f32 / 255.0;
-                        let b = sub.data[10] as f32 / 255.0;
-                        let flags = if sub.data.len() >= 16 {
-                            u32::from_le_bytes([
-                                sub.data[12],
-                                sub.data[13],
-                                sub.data[14],
-                                sub.data[15],
-                            ])
-                        } else {
-                            0
-                        };
-                        light_data = Some(LightData {
-                            radius,
-                            color: [r, g, b],
-                            flags,
-                            // xpwr_form_id populated by the separate
-                            // XPWR sub-record arm below, if present.
-                            xpwr_form_id: None,
-                        });
-                    }
-                    // FO4 power-circuit FormID. Pre-work capture for
-                    // #602 — no consumer today, but we preserve the
-                    // raw reference so the future settlement-circuit
-                    // system can resolve wired lights. See audit
-                    // FO4-DIM6-07.
-                    b"XPWR" if is_ligh && sub.data.len() >= 4 => {
-                        xpwr_form_id = Some(u32::from_le_bytes([
-                            sub.data[0],
-                            sub.data[1],
-                            sub.data[2],
-                            sub.data[3],
-                        ]));
-                    }
-                    b"DATA" if is_addn && sub.data.len() >= 4 => {
-                        // ADDN DATA: signed 4-byte addon index. Negative
-                        // values are engine-reserved; positive indexes
-                        // select a master particle pool slot (#370).
-                        addon_index = Some(i32::from_le_bytes([
-                            sub.data[0],
-                            sub.data[1],
-                            sub.data[2],
-                            sub.data[3],
-                        ]));
-                    }
-                    b"DNAM" if is_addn && sub.data.len() >= 4 => {
-                        // ADDN DNAM: u16 master_particle_cap + u16 flags.
-                        let cap = u16::from_le_bytes([sub.data[0], sub.data[1]]);
-                        let flags = u16::from_le_bytes([sub.data[2], sub.data[3]]);
-                        addon_dnam = Some((cap, flags));
-                    }
-                    _ => {}
-                }
-            }
-
-            // Merge XPWR into LightData post-loop — sub-record authoring
-            // order isn't fixed so DATA and XPWR can appear in either
-            // sequence. The inner arm stores into a local; we fold it
-            // onto the finalised `LightData` here. See #602.
-            if let (Some(ref mut ld), Some(form)) = (&mut light_data, xpwr_form_id) {
-                ld.xpwr_form_id = Some(form);
-            }
-
-            let addon_data = if is_addn && (addon_index.is_some() || addon_dnam.is_some()) {
-                let (master_particle_cap, flags) = addon_dnam.unwrap_or((0, 0));
-                Some(AddonData {
-                    addon_index: addon_index.unwrap_or(0),
-                    master_particle_cap,
-                    flags,
-                })
-            } else {
-                None
-            };
-
-            // Insert if we have a model path, a LIGH with light data
-            // (some lights have no mesh — just point lights), or an
-            // ADDN with its addon-data payload (some ADDN records are
-            // pure particle emitters with no MODL).
-            if !model_path.is_empty() || light_data.is_some() || addon_data.is_some() {
-                statics.insert(
-                    header.form_id,
-                    StaticObject {
-                        form_id: header.form_id,
-                        editor_id,
-                        model_path,
-                        light_data,
-                        addon_data,
-                        has_script,
-                    },
-                );
-            }
+            statics.insert(header.form_id, stat);
         }
     }
     Ok(())
@@ -171,7 +151,7 @@ pub(super) fn parse_modl_group(
 ///
 /// FO3/FNV: LTEX has a TNAM sub-record pointing to a TXST form ID.
 /// Oblivion: LTEX has an ICON sub-record with a direct texture path.
-pub(super) fn parse_ltex_group(
+pub(crate) fn parse_ltex_group(
     reader: &mut EsmReader,
     end: usize,
     ltex_to_txst: &mut HashMap<u32, u32>,
@@ -224,7 +204,7 @@ pub(super) fn parse_ltex_group(
 /// XTNM/XPRD overrides referencing a TXST silently dropped 7 of 8
 /// channels (visible on Skyrim re-skinned statics as "wrong material
 /// on a re-textured prop"). See audit S6-11.
-pub(super) fn parse_txst_group(
+pub(crate) fn parse_txst_group(
     reader: &mut EsmReader,
     end: usize,
     txst_textures: &mut HashMap<u32, String>,
@@ -295,7 +275,7 @@ pub(super) fn parse_txst_group(
 /// cached `CM*.NIF` isn't shipped. Pre-#405 SCOLs were routed
 /// through `parse_modl_group` and the placement arrays were
 /// discarded. See audit FO4-D4-C2.
-pub(super) fn parse_scol_group(
+pub(crate) fn parse_scol_group(
     reader: &mut EsmReader,
     end: usize,
     statics: &mut HashMap<u32, StaticObject>,
@@ -355,7 +335,7 @@ pub(super) fn parse_scol_group(
 /// list was silently dropped. Vanilla Fallout4.esm ships 872 PKIN
 /// records — every FO4 workshop-content bundle REFR rendered as
 /// nothing. See audit FO4-DIM4-03.
-pub(super) fn parse_pkin_group(
+pub(crate) fn parse_pkin_group(
     reader: &mut EsmReader,
     end: usize,
     statics: &mut HashMap<u32, StaticObject>,
@@ -414,7 +394,7 @@ pub(super) fn parse_pkin_group(
 /// felt on DLC / mod content that authors breakable furniture,
 /// deployable workshop objects, and physics-puzzle props. See audit
 /// `FO4-DIM4-02` / #588.
-pub(super) fn parse_movs_group(
+pub(crate) fn parse_movs_group(
     reader: &mut EsmReader,
     end: usize,
     statics: &mut HashMap<u32, StaticObject>,
@@ -470,7 +450,7 @@ pub(super) fn parse_movs_group(
 /// Stores nothing on `statics` — MSWP isn't a placeable base form,
 /// only a substitution table consumed at REFR-spawn time when the
 /// REFR carries `XMSP`. See audit FO4-DIM6-05.
-pub(super) fn parse_mswp_group(
+pub(crate) fn parse_mswp_group(
     reader: &mut EsmReader,
     end: usize,
     material_swaps: &mut HashMap<u32, crate::esm::records::MaterialSwapRecord>,

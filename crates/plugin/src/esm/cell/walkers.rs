@@ -8,7 +8,7 @@ use crate::esm::records::common::read_lstring_or_zstring;
 use crate::esm::sub_reader::SubReader;
 
 /// Walk the CELL group hierarchy to find interior cells and their placed references.
-pub(super) fn parse_cell_group(
+pub(crate) fn parse_cell_group(
     reader: &mut EsmReader,
     end: usize,
     cells: &mut HashMap<String, CellData>,
@@ -269,7 +269,7 @@ pub(super) fn parse_cell_group(
 }
 
 /// Parse REFR and LAND records within a cell children group.
-pub(super) fn parse_refr_group(
+pub(crate) fn parse_refr_group(
     reader: &mut EsmReader,
     end: usize,
     refs: &mut Vec<PlacedRef>,
@@ -526,7 +526,7 @@ pub(super) fn parse_refr_group(
 /// VHGT encoding (from UESP): the heightmap is delta-encoded with a
 /// column-then-row accumulator scheme. See the UESP wiki "Vertex Height
 /// Data" section for the canonical algorithm.
-pub(super) fn parse_land_record(
+pub(crate) fn parse_land_record(
     reader: &mut EsmReader,
     header: &crate::esm::reader::RecordHeader,
 ) -> Result<LandscapeData> {
