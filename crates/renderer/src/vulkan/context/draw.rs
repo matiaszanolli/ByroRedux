@@ -40,6 +40,17 @@ pub(super) struct DrawBatch {
     /// blend pipeline cache on `VulkanContext`. See #392.
     pub pipeline_key: PipelineKey,
     pub is_decal: bool,
+    /// Apply the decal-style depth bias to this batch even when
+    /// `is_decal == false`. Set for alpha-tested geometry that writes
+    /// to depth and is typically authored to lie ON TOP of opaque
+    /// surfaces — rugs over floors, posters over walls, fences over
+    /// terrain, dirt overlays. The NIF doesn't flag these as decals
+    /// at the property level (see `rugsmall01.nif`:
+    /// `BSShaderPPLightingProperty` with no decal bits), so without
+    /// the bias they z-fight whatever they were placed against by
+    /// the level designer. Vanilla FNV's Doc Mitchell living-room
+    /// rug is the canonical reproducer.
+    pub needs_depth_bias: bool,
     pub first_instance: u32,
     pub instance_count: u32,
     pub index_count: u32,
@@ -924,10 +935,19 @@ impl VulkanContext {
             // implicit. Now an off-screen draw pushes an SSBO entry
             // but skips batch formation, so the next rasterized draw
             // might land at a non-contiguous `instance_idx`.
+            // Decal-style depth bias is needed for `is_decal` (true
+            // NIF-flagged decals — blood splats / scorch marks / bullet
+            // holes) AND for alpha-tested geometry (rugs / posters /
+            // fences). The latter writes to depth at the same z as the
+            // opaque surface beneath and z-fights without help. See
+            // `DrawBatch::needs_depth_bias`.
+            let needs_depth_bias = draw_cmd.is_decal || draw_cmd.alpha_test_func != 0;
+
             if let Some(batch) = batches.last_mut() {
                 if batch.mesh_handle == draw_cmd.mesh_handle
                     && batch.pipeline_key == pipeline_key
                     && batch.is_decal == draw_cmd.is_decal
+                    && batch.needs_depth_bias == needs_depth_bias
                     && batch.z_test == draw_cmd.z_test
                     && batch.z_write == draw_cmd.z_write
                     && batch.z_function == draw_cmd.z_function
@@ -943,6 +963,7 @@ impl VulkanContext {
                 mesh_handle: draw_cmd.mesh_handle,
                 pipeline_key,
                 is_decal: draw_cmd.is_decal,
+                needs_depth_bias,
                 first_instance: instance_idx,
                 instance_count: 1,
                 index_count: mesh.index_count,
@@ -1199,7 +1220,7 @@ impl VulkanContext {
                 dst: u8::MAX,
                 two_sided: false,
             };
-            let mut last_is_decal = false;
+            let mut last_needs_depth_bias = false;
             // #398 — extended dynamic depth state. Vulkan requires the
             // dynamic state to be set BEFORE any draw call when the
             // pipeline declares the corresponding `vk::DynamicState`.
@@ -1259,9 +1280,14 @@ impl VulkanContext {
             let indirect_stride = std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32;
 
             // Precompute indirect-buffer state for batch `i`. Returns
-            // `(pipe, is_decal)` — consecutive batches sharing the
-            // tuple form one indirect group.
-            let batch_state = |b: &DrawBatch| (b.pipeline_key, b.is_decal);
+            // `(pipe, is_decal, needs_depth_bias)` — consecutive batches
+            // sharing the tuple form one indirect group. `needs_depth_bias`
+            // is in the key because alpha-tested rugs/posters/fences pull
+            // the same bias as is_decal but originate from different
+            // pipeline state, so they must not be co-batched with
+            // unbiased opaque draws either (#decal-bias-rugs).
+            let batch_state =
+                |b: &DrawBatch| (b.pipeline_key, b.is_decal, b.needs_depth_bias);
 
             let mut i = 0;
             while i < batches.len() {
@@ -1319,12 +1345,12 @@ impl VulkanContext {
                 // decals don't poke through occluders. The slope term
                 // helps when the underlying surface IS angled (blood
                 // splatters on stairs, wall posters tilted off-axis).
-                if batch.is_decal != last_is_decal {
-                    let bias_const = if batch.is_decal { -64.0_f32 } else { 0.0 };
-                    let bias_slope = if batch.is_decal { -2.0_f32 } else { 0.0 };
+                if batch.needs_depth_bias != last_needs_depth_bias {
+                    let bias_const = if batch.needs_depth_bias { -64.0_f32 } else { 0.0 };
+                    let bias_slope = if batch.needs_depth_bias { -2.0_f32 } else { 0.0 };
                     self.device
                         .cmd_set_depth_bias(cmd, bias_const, 0.0, bias_slope);
-                    last_is_decal = batch.is_decal;
+                    last_needs_depth_bias = batch.needs_depth_bias;
                 }
 
                 // #398 — extended dynamic depth state. Emit only on
