@@ -145,17 +145,93 @@ pub(crate) fn extract_material_info_from_refs(
                             info.parallax_map = intern_texture_path(pool, px);
                         }
                     }
-                    // Env cube (textures[4]) + env mask (textures[5])
-                    // — reach the renderer alongside the existing
-                    // `env_map_scale`. #452.
-                    if info.env_map.is_none() {
-                        if let Some(env) = tex_set.textures.get(4) {
-                            info.env_map = intern_texture_path(pool, env);
+                    // Slot 4 / 5 / 7 routing branches on
+                    // `BSLightingShaderType` per nif.xml. Pre-#563 the
+                    // importer treated slot 4 as the env-cube on every
+                    // shader_type variant, which positively misbinds
+                    // FaceTint (4) — its slot 4 is `Detail`, NOT
+                    // envmap — and silently drops slot 7
+                    // (FaceTint's `Tint` and MultiLayerParallax's
+                    // inner `Layer`). EyeEnvmap (16) is the one
+                    // variant that actually does carry env at slot 4,
+                    // and falls through to the default arm.
+                    match shader.shader_type {
+                        4 => {
+                            // FaceTint — "Enables Detail(TS4), Tint(TS7)".
+                            // Slot 4 here is the per-face detail
+                            // overlay (skin freckles / pores), NOT
+                            // env. Route into the existing
+                            // `detail_map` slot (NiTexturingProperty
+                            // slot 2 already targets the same field
+                            // on pre-Skyrim content).
+                            if info.detail_map.is_none() {
+                                if let Some(detail) =
+                                    tex_set.textures.get(4).filter(|s| !s.is_empty())
+                                {
+                                    info.detail_map = intern_texture_path(pool, detail);
+                                }
+                            }
+                            if info.tint_map.is_none() {
+                                if let Some(tint) =
+                                    tex_set.textures.get(7).filter(|s| !s.is_empty())
+                                {
+                                    info.tint_map = intern_texture_path(pool, tint);
+                                }
+                            }
                         }
-                    }
-                    if info.env_mask.is_none() {
-                        if let Some(mask) = tex_set.textures.get(5) {
-                            info.env_mask = intern_texture_path(pool, mask);
+                        11 => {
+                            // MultiLayerParallax — "Enables …
+                            // Layer(TS7)". Slot 4 still carries the
+                            // env cube here per nif.xml, paired with
+                            // the `envmap_strength` scalar from
+                            // `ShaderTypeData::MultiLayerParallax`.
+                            if info.env_map.is_none() {
+                                if let Some(env) =
+                                    tex_set.textures.get(4).filter(|s| !s.is_empty())
+                                {
+                                    info.env_map = intern_texture_path(pool, env);
+                                }
+                            }
+                            if info.env_mask.is_none() {
+                                if let Some(mask) =
+                                    tex_set.textures.get(5).filter(|s| !s.is_empty())
+                                {
+                                    info.env_mask = intern_texture_path(pool, mask);
+                                }
+                            }
+                            if info.inner_layer_map.is_none() {
+                                if let Some(inner) =
+                                    tex_set.textures.get(7).filter(|s| !s.is_empty())
+                                {
+                                    info.inner_layer_map = intern_texture_path(pool, inner);
+                                }
+                            }
+                        }
+                        _ => {
+                            // Default arm — EnvironmentMap (1),
+                            // EyeEnvmap (16), and every other variant
+                            // route slot 4 → env cube, slot 5 →
+                            // env mask. Variants whose nif.xml entry
+                            // doesn't reference slot 4/5 (Default 0,
+                            // Glow 2, Parallax 3, SkinTint 5, HairTint 6,
+                            // ParallaxOcc 7, Landscape 8-10, etc.)
+                            // either author empty strings or skip the
+                            // slots entirely — the empty-filter
+                            // skips them silently.
+                            if info.env_map.is_none() {
+                                if let Some(env) =
+                                    tex_set.textures.get(4).filter(|s| !s.is_empty())
+                                {
+                                    info.env_map = intern_texture_path(pool, env);
+                                }
+                            }
+                            if info.env_mask.is_none() {
+                                if let Some(mask) =
+                                    tex_set.textures.get(5).filter(|s| !s.is_empty())
+                                {
+                                    info.env_mask = intern_texture_path(pool, mask);
+                                }
+                            }
                         }
                     }
                 }

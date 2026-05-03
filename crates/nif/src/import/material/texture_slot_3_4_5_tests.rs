@@ -785,3 +785,170 @@ fn bs_lighting_shader_property_keeps_low_range_material_kind() {
         "no effect-shader payload on a lit material"
     );
 }
+
+// ── #563 / SK-D3-02 regression guards ──────────────────────────
+//
+// Per nif.xml `BSLightingShaderType`:
+//   * FaceTint (4)            — slot 4 = Detail, slot 7 = Tint.
+//   * MultiLayerParallax (11) — slot 4 = Env, slot 7 = inner Layer.
+//   * EyeEnvmap (16)          — slot 4 = Env (default arm).
+//
+// Pre-#563 the importer treated slot 4 as env on every variant,
+// positively misbinding FaceTint detail textures as cubemaps and
+// silently dropping slot 7 across the board.
+
+fn lighting_shader_with_type_and_texset(shader_type: u32, tex_set_idx: u32) -> BSLightingShaderProperty {
+    BSLightingShaderProperty {
+        shader_type,
+        net: empty_net(),
+        material_reference: false,
+        shader_flags_1: 0,
+        shader_flags_2: 0,
+        sf1_crcs: Vec::new(),
+        sf2_crcs: Vec::new(),
+        uv_offset: [0.0, 0.0],
+        uv_scale: [1.0, 1.0],
+        texture_set_ref: BlockRef(tex_set_idx),
+        emissive_color: [0.0; 3],
+        emissive_multiple: 1.0,
+        texture_clamp_mode: 0,
+        alpha: 1.0,
+        refraction_strength: 0.0,
+        glossiness: 80.0,
+        specular_color: [1.0; 3],
+        specular_strength: 1.0,
+        lighting_effect_1: 0.0,
+        lighting_effect_2: 0.0,
+        subsurface_rolloff: 0.0,
+        rimlight_power: 0.0,
+        backlight_power: 0.0,
+        grayscale_to_palette_scale: 0.0,
+        fresnel_power: 0.0,
+        wetness: None,
+        luminance: None,
+        do_translucency: false,
+        translucency: None,
+        texture_arrays: Vec::new(),
+        shader_type_data: ShaderTypeData::None,
+    }
+}
+
+fn full_8_slot_tex_set(tag: &str) -> BSShaderTextureSet {
+    // 8 populated slots so the routing fix can exercise slot 7
+    // alongside the legacy slots 0..=5. Slot 6 stays empty —
+    // nif.xml doesn't reference it on FaceTint or MultiLayerParallax,
+    // so feeding a value would just confuse the assertions.
+    BSShaderTextureSet {
+        textures: vec![
+            format!("{tag}_d.dds"),
+            format!("{tag}_n.dds"),
+            format!("{tag}_g.dds"),
+            format!("{tag}_p.dds"),
+            format!("{tag}_4.dds"),
+            format!("{tag}_5.dds"),
+            String::new(),
+            format!("{tag}_7.dds"),
+        ],
+    }
+}
+
+#[test]
+fn face_tint_routes_slot_4_to_detail_not_envmap() {
+    // FaceTint (4) — slot 4 must land in `detail_map`, NOT
+    // `env_map`. Pre-#563 the slot was bound as an env cubemap,
+    // visibly corrupting every NPC face once SK-D5-02 lands.
+    let blocks: Vec<Box<dyn NiObject>> = vec![
+        Box::new(lighting_shader_with_type_and_texset(4, 1)),
+        Box::new(full_8_slot_tex_set("face")),
+    ];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let mut shape = make_tri_shape_with_props(Vec::new());
+    shape.shader_property_ref = BlockRef(0);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+
+    assert_path(&pool, info.detail_map, "face_4.dds");
+    assert!(
+        info.env_map.is_none(),
+        "FaceTint slot 4 must NOT be misbound as an env cubemap (#563)"
+    );
+    assert!(
+        info.env_mask.is_none(),
+        "FaceTint has no slot 5 binding either"
+    );
+    assert_path(&pool, info.tint_map, "face_7.dds");
+    assert!(
+        info.inner_layer_map.is_none(),
+        "FaceTint slot 7 routes to tint_map, not inner_layer_map"
+    );
+}
+
+#[test]
+fn multi_layer_parallax_routes_slot_7_to_inner_layer_alongside_env() {
+    // MultiLayerParallax (11) — slot 4 stays the env cube
+    // (paired with `multi_layer_envmap_strength`), slot 5 the
+    // env mask, and slot 7 must now land in `inner_layer_map`.
+    // Pre-#563 the slot was silently dropped, leaving Dragonborn
+    // ice walls and modded glass shaders without their inner
+    // layer.
+    let blocks: Vec<Box<dyn NiObject>> = vec![
+        Box::new(lighting_shader_with_type_and_texset(11, 1)),
+        Box::new(full_8_slot_tex_set("ice")),
+    ];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let mut shape = make_tri_shape_with_props(Vec::new());
+    shape.shader_property_ref = BlockRef(0);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+
+    assert_path(&pool, info.env_map, "ice_4.dds");
+    assert_path(&pool, info.env_mask, "ice_5.dds");
+    assert_path(&pool, info.inner_layer_map, "ice_7.dds");
+    assert!(
+        info.tint_map.is_none(),
+        "MultiLayerParallax slot 7 routes to inner_layer_map, not tint_map"
+    );
+    assert!(
+        info.detail_map.is_none(),
+        "MultiLayerParallax has no detail-slot route — slot 4 stays env"
+    );
+}
+
+#[test]
+fn eye_envmap_keeps_default_slot_4_envmap_routing() {
+    // EyeEnvmap (16) — the one variant that legitimately carries
+    // the env cube at slot 4. Falls through the default arm of
+    // the new shader_type match. Negative guard against a future
+    // refactor that drops EyeEnvmap into its own arm and forgets
+    // to route slot 4.
+    let blocks: Vec<Box<dyn NiObject>> = vec![
+        Box::new(lighting_shader_with_type_and_texset(16, 1)),
+        Box::new(full_8_slot_tex_set("eye")),
+    ];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let mut shape = make_tri_shape_with_props(Vec::new());
+    shape.shader_property_ref = BlockRef(0);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+
+    assert_path(&pool, info.env_map, "eye_4.dds");
+    assert_path(&pool, info.env_mask, "eye_5.dds");
+    assert!(
+        info.tint_map.is_none(),
+        "EyeEnvmap doesn't reference slot 7"
+    );
+    assert!(
+        info.inner_layer_map.is_none(),
+        "EyeEnvmap doesn't reference slot 7"
+    );
+    assert!(
+        info.detail_map.is_none(),
+        "EyeEnvmap doesn't reference the detail slot"
+    );
+}

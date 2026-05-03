@@ -321,6 +321,23 @@ pub(super) struct MaterialInfo {
     /// edges and rim highlights so only the polished surface reflects.
     /// See #452.
     pub env_mask: Option<FixedString>,
+    /// FaceTint per-NPC tint overlay (`BSShaderTextureSet` slot 7).
+    /// Drives the per-face NPC color overlay (warpaint, race tint,
+    /// scars). Pre-#563 the importer never read slot 7, so FaceTint
+    /// materials silently dropped the tint texture and the per-NPC
+    /// `material_kind == 4` dispatch had nothing to sample. See
+    /// nif.xml `BSLightingShaderType::FaceTint` ("Enables Detail(TS4),
+    /// Tint(TS7)") and #563.
+    pub tint_map: Option<FixedString>,
+    /// MultiLayerParallax inner-layer texture (`BSShaderTextureSet`
+    /// slot 7). Sampled beneath the diffuse layer for ice / glass /
+    /// crystal surfaces — paired with `multi_layer_inner_thickness` /
+    /// `multi_layer_inner_layer_scale`. Pre-#563 the importer never
+    /// read slot 7, so Dragonborn DLC ice walls and modded glass
+    /// shaders silently lost their inner layer. See nif.xml
+    /// `BSLightingShaderType::MultiLayerParallax` ("Enables …
+    /// Layer(TS7)") and #563.
+    pub inner_layer_map: Option<FixedString>,
     /// How vertex colors should participate in shading. See #214 /
     /// `VertexColorMode`. Defaults to `AmbientDiffuse` — the value
     /// Gamebryo uses when the NIF has no `NiVertexColorProperty`.
@@ -569,6 +586,8 @@ impl Default for MaterialInfo {
             parallax_map: None,
             env_map: None,
             env_mask: None,
+            tint_map: None,
+            inner_layer_map: None,
             vertex_color_mode: VertexColorMode::AmbientDiffuse,
             alpha_blend: false,
             src_blend_mode: 6, // SRC_ALPHA — Gamebryo default
