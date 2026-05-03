@@ -170,22 +170,27 @@ void main() {
     fragTexIndex = inst.textureIndex;
     fragInstanceIndex = gl_InstanceIndex;
 
-    // #783 / M-NORMALS — transform tangent direction by the same xform
-    // (mat3) as the normal. Tangent is a direction vector so the
-    // upper-3x3 with normalize() handles magnitude correctly under
-    // uniform scale; non-uniform scale uses the same inverse-transpose
-    // path the normal does. Zero-length tangent (no authored data)
-    // is preserved as zero so the fragment shader's fallback gate
-    // detects it and routes to screen-space derivative TBN.
+    // #783 / M-NORMALS — transform tangent direction by the same
+    // upper-3x3 as positions. Tangents are CONTRAVARIANT vectors
+    // (they transform like position derivatives), so the correct
+    // transform under both uniform AND non-uniform scale is `m3 * T`
+    // — NOT the inverse-transpose used for normals. Pre-#787 the
+    // non-uniform-scale path used `transpose(inverse(m3)) * T` (which
+    // produces the cotangent direction along the gradient of the
+    // parametrization, not the tangent). On axis-aligned scales the
+    // two coincide, but off-axis tangents on non-uniformly-scaled
+    // meshes ended up rotated relative to the surface u-axis;
+    // perturbNormal's Gram-Schmidt step at the fragment shader masks
+    // the magnitude error but cannot recover the wrong direction.
+    //
+    // Magnitude is irrelevant — `perturbNormal` re-normalizes T after
+    // Gram-Schmidt against N, so we only need to preserve direction.
+    // Zero-length tangent (no authored data) is preserved as zero so
+    // the fragment shader's fallback gate detects it and routes to
+    // screen-space derivative TBN. See #787 / R-N3.
     vec3 t_world;
     if (dot(inTangent.xyz, inTangent.xyz) < 1e-6) {
         t_world = vec3(0.0);
-    } else if ((inst.flags & 1u) != 0u) {
-        float det = determinant(m3);
-        t_world = (abs(det) > 1e-6)
-            ? transpose(inverse(m3)) * inTangent.xyz
-            : inTangent.xyz;
-        t_world = normalize(t_world);
     } else {
         t_world = m3 * inTangent.xyz;
         float t_len2 = dot(t_world, t_world);

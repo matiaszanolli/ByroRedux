@@ -639,26 +639,18 @@ const uint DBG_VIZ_TANGENT       = 0x8u;
 // Path 2 TBN bug) or from downstream specular / ambient code.
 // Set BYROREDUX_RENDER_DEBUG=0x10 to enable.
 //
-// 2026-05-03 update: `perturbNormal` is now DISABLED BY DEFAULT —
-// see `DBG_FORCE_NORMAL_MAP` below. This bit retains its bypass
-// meaning for symmetry / future re-enablement; today it's a no-op
-// because perturbation is already off in the default path.
+// 2026-05-03 / #786 closeout: `perturbNormal` is back ON by default
+// after the convention-swap fix at 5dde345 + the BSTriShape inline
+// tangent decode at b63ab0c. This bit remains as a runtime opt-out
+// so a future regression can be bisected without rebuilding the
+// shader.
 const uint DBG_BYPASS_NORMAL_MAP = 0x10u;
-// Re-enable per-fragment normal-map perturbation (#783 / M-NORMALS).
-// Disabled by default in the 2026-05-03 chrome-regression
-// follow-up: every authored/synthesized-tangent path tested produced
-// wet/chrome highlights on plaster + wood surfaces from the user's
-// camera angles in FNV `GSDocMitchellHouse`, despite `tex.missing`
-// reporting clean (so unlike Session 27's missing-texture root
-// cause). Bypass screenshot at `BYROREDUX_RENDER_DEBUG=0x10`
-// confirmed perturbNormal as the source. Surface bump detail is
-// forfeit on the default path until Path 1 / Path 2 of the
-// perturbation is properly diagnosed (RenderDoc-grade visual
-// validation of TBN handedness / sign, per
-// `feedback_speculative_vulkan_fixes.md`).
-//
-// To re-enable for testing: BYROREDUX_RENDER_DEBUG=0x20 (or 0x24
-// to combine with normals viz).
+// Historical: in the 77aa2de → 5dde345 window this bit was the
+// opt-IN for perturbNormal while the default was off. After #786
+// closed (2026-05-03) the default flipped back to on, making this
+// bit redundant. Preserved in the catalog so existing diagnostic
+// scripts (`BYROREDUX_RENDER_DEBUG=0x20` / `0x24` / `0x28`) keep
+// working as no-ops on top of the default-on path.
 const uint DBG_FORCE_NORMAL_MAP  = 0x20u;
 // #renderlayer — visualize the per-entity content-class layer driving
 // the depth-bias ladder. Tints fragments by layer:
@@ -841,36 +833,32 @@ void main() {
     vec3 N = normalize(fragNormal);
     // #783 / M-NORMALS — per-fragment normal-map perturbation.
     //
-    // Re-enabled 2026-05-02 with the per-vertex tangent path: the
-    // `fragTangent` varying carries the authored Bethesda tangent
-    // (xyz, world-space) + bitangent sign (w). `perturbNormal`
-    // reconstructs the bitangent as `sign × cross(N, T)` and
-    // applies the BC5 normal-map sample in tangent space. When
-    // `fragTangent.xyz` is zero (no authored data — synthetic /
-    // particle / non-Bethesda content), the function falls back
-    // to the original screen-space derivative TBN reconstruction.
+    // Re-enabled-by-default 2026-05-03 (#786 closeout). The
+    // chrome-walls regression that prompted the 77aa2de workaround
+    // was traced (via `DBG_VIZ_TANGENT` reading green on the chrome
+    // fragments) to nifly's Bethesda-convention `tan_u`/`tan_v` swap
+    // at the importer (`extract_tangents_from_extra_data` +
+    // `synthesize_tangents` were storing ∂P/∂V in `Vertex.tangent.xyz`
+    // while the shader expected ∂P/∂U). Commit 5dde345 unswapped the
+    // convention; commit b63ab0c added the missing BSTriShape inline
+    // tangent decode (#795 / #796 — Skyrim+ content was reaching the
+    // shader with empty tangents and would have fallen through to
+    // Path 2 once perturbation re-enabled).
     //
-    // The 2026-05-01 chrome-walls regression was caused by the
-    // screen-space-only path firing on Bethesda interior content
-    // whose mesh boundaries (adjacent floor planks, wall panels)
-    // produced TBN discontinuities at every seam. Authored tangents
-    // are per-vertex smooth, so this path is seam-free.
-    // 2026-05-03 — perturbNormal disabled by default pending
-    // chrome-regression diagnosis. The M-NORMALS infrastructure
-    // (authored-tangent decode at `extract_tangents_from_extra_data`,
-    // nifly `synthesize_tangents` fallback, Vertex layout, Path 1 /
-    // Path 2 in `perturbNormal`) stays in place — only the call is
-    // gated off until the wet/chrome highlights on the user's FNV
-    // `GSDocMitchellHouse` camera angles are properly traced. The
-    // bypass screenshot at `BYROREDUX_RENDER_DEBUG=0x10` confirmed
-    // perturbation as the source; without RenderDoc visibility into
-    // which fragments produce chrome (Path 1 wrong handedness vs
-    // Path 2 TBN discontinuity), shipping a speculative fix would
-    // violate `feedback_speculative_vulkan_fixes.md`. To re-enable
-    // for testing: `BYROREDUX_RENDER_DEBUG=0x20`. See follow-up
-    // tracking issue.
+    // The `fragTangent` varying carries the authored Bethesda tangent
+    // (xyz, world-space) + bitangent sign (w). `perturbNormal`
+    // reconstructs the bitangent as `sign × cross(N, T)` and applies
+    // the BC5 normal-map sample in tangent space. When
+    // `fragTangent.xyz` is zero (no authored data — synthetic /
+    // particle / non-Bethesda content), the function falls back to
+    // screen-space derivative TBN reconstruction (Path 2).
+    //
+    // `DBG_BYPASS_NORMAL_MAP = 0x10` remains as a runtime opt-out so
+    // a future regression can be bisected without rebuilding the
+    // shader. `DBG_FORCE_NORMAL_MAP = 0x20` is preserved in the bit
+    // catalog (now redundant, but harmless) so existing diagnostic
+    // scripts keep working.
     if (normalMapIdx != 0u
-        && (dbgFlags & DBG_FORCE_NORMAL_MAP) != 0u
         && (dbgFlags & DBG_BYPASS_NORMAL_MAP) == 0u)
     {
         N = perturbNormal(N, fragWorldPos, sampleUV, normalMapIdx, fragTangent);
