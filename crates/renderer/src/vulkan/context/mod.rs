@@ -228,6 +228,15 @@ pub struct DrawCommand {
     /// per-instance fields. `0` is a valid id (the first material in
     /// the frame's table); meaningless when the table itself is empty.
     pub material_id: u32,
+    /// `NiVertexColorProperty.vertex_mode == SOURCE_EMISSIVE` (#695 /
+    /// O4-03). When set, the fragment shader treats the per-vertex
+    /// `fragColor.rgb` as the authored emissive payload and skips the
+    /// `albedo *= fragColor` modulation that the default
+    /// `AmbientDiffuse` path applies. Mapped 1-to-1 onto
+    /// `GpuMaterial::material_flags`'s
+    /// [`material_flag::VERTEX_COLOR_EMISSIVE`](super::material::material_flag::VERTEX_COLOR_EMISSIVE)
+    /// bit by `to_gpu_material`.
+    pub vertex_color_emissive: bool,
 }
 
 impl DrawCommand {
@@ -309,7 +318,11 @@ impl DrawCommand {
             falloff_start_opacity: self.effect_falloff[2],
             falloff_stop_opacity: self.effect_falloff[3],
             soft_falloff_depth: self.effect_falloff[4],
-            _pad_pbr: 0.0,
+            material_flags: if self.vertex_color_emissive {
+                super::material::material_flag::VERTEX_COLOR_EMISSIVE
+            } else {
+                0
+            },
             _pad_falloff: 0.0,
         }
     }

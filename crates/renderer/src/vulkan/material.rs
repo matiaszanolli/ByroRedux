@@ -48,7 +48,14 @@ pub struct GpuMaterial {
     pub roughness: f32,    // offset 0
     pub metalness: f32,    // offset 4
     pub emissive_mult: f32, // offset 8
-    pub _pad_pbr: f32,     // offset 12
+    /// Bitfield of material-level flags consumed by the fragment
+    /// shader. Bit 0 (`MAT_FLAG_VERTEX_COLOR_EMISSIVE`): per-vertex
+    /// `fragColor.rgb` drives self-illumination instead of modulating
+    /// albedo — set when the source NIF declared
+    /// `NiVertexColorProperty.vertex_mode = SOURCE_EMISSIVE`. Pre-#695
+    /// this slot was an unused pad; routing the bit through here keeps
+    /// the 272 B std430 layout pinned by `gpu_material_size_is_272_bytes`.
+    pub material_flags: u32, // offset 12
 
     // ── Emissive RGB + specular_strength (vec4 #2) ─────────────────
     pub emissive_r: f32,        // offset 16
@@ -154,7 +161,7 @@ impl Default for GpuMaterial {
             roughness: 0.5,
             metalness: 0.0,
             emissive_mult: 0.0,
-            _pad_pbr: 0.0,
+            material_flags: 0,
             // Emissive RGB + specular_strength — black emission, full spec.
             emissive_r: 0.0,
             emissive_g: 0.0,
@@ -233,6 +240,19 @@ impl Default for GpuMaterial {
             _pad_falloff: 0.0,
         }
     }
+}
+
+/// `GpuMaterial::material_flags` bit catalog. Mirrored shader-side as
+/// raw `0x...u` literals in `triangle.frag` so the GLSL is grep-friendly
+/// without needing a generated header.
+pub mod material_flag {
+    /// Per-vertex `fragColor.rgb` drives self-illumination instead of
+    /// modulating albedo. Set when the source NIF declared
+    /// `NiVertexColorProperty.vertex_mode = SOURCE_EMISSIVE`. See
+    /// `crates/nif/src/import/material/walker.rs::extract_vertex_colors`
+    /// and the matching shader branch in
+    /// `crates/renderer/shaders/triangle.frag`.
+    pub const VERTEX_COLOR_EMISSIVE: u32 = 1 << 0;
 }
 
 impl GpuMaterial {

@@ -155,3 +155,66 @@ fn default_material_info_ambient_color_is_white() {
     let info = MaterialInfo::default();
     assert_eq!(info.ambient_color, [1.0, 1.0, 1.0]);
 }
+
+// ── #695 / O4-03 regression guards ──────────────────────────────────
+//
+// `NiVertexColorProperty.vertex_mode = SOURCE_EMISSIVE` (1) routes
+// per-vertex colors through the fragment shader's emissive
+// accumulator. Pre-fix `extract_vertex_colors` only honored
+// `AmbientDiffuse` (2) and silently dropped the authored emissive
+// payload on every flickering torch / glowing sign / baked emissive
+// card by returning the per-material diffuse-color fill instead.
+
+use super::walker::surfaces_authored_vertex_colors;
+
+#[test]
+fn emissive_mode_with_colors_surfaces_authored_data() {
+    // The fix: SOURCE_EMISSIVE meshes carry the authored vertex-color
+    // emissive payload through to the renderer, where the
+    // `MAT_FLAG_VERTEX_COLOR_EMISSIVE` bit on `GpuMaterial.material_flags`
+    // routes it into the emissive accumulator.
+    assert!(surfaces_authored_vertex_colors(
+        VertexColorMode::Emissive,
+        /* has_authored_colors */ true
+    ));
+}
+
+#[test]
+fn ambient_diffuse_mode_with_colors_surfaces_authored_data() {
+    // Existing AmbientDiffuse path (the only mode that surfaced
+    // pre-#695) — must still pass to avoid regressing baked AO,
+    // hair-tip cards, eyelash strips, BSEffectShader meshes (#618).
+    assert!(surfaces_authored_vertex_colors(
+        VertexColorMode::AmbientDiffuse,
+        true
+    ));
+}
+
+#[test]
+fn ignore_mode_falls_back_to_diffuse_constant_even_with_colors() {
+    // SOURCE_IGNORE: the property explicitly disables vertex color
+    // contribution. Even when the data block ships an authored array,
+    // it must NOT reach the renderer.
+    assert!(!surfaces_authored_vertex_colors(
+        VertexColorMode::Ignore,
+        true
+    ));
+}
+
+#[test]
+fn empty_vertex_colors_always_falls_back_regardless_of_mode() {
+    // No authored colors → diffuse-constant fill in every mode.
+    // The per-vertex emissive payload only exists when the data block
+    // actually shipped colors; a Mesh + Emissive property with no
+    // colors should not synthesize anything.
+    for mode in [
+        VertexColorMode::Ignore,
+        VertexColorMode::Emissive,
+        VertexColorMode::AmbientDiffuse,
+    ] {
+        assert!(!surfaces_authored_vertex_colors(
+            mode,
+            /* has_authored_colors */ false
+        ));
+    }
+}

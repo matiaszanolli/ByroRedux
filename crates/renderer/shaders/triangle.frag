@@ -85,7 +85,10 @@ struct GpuMaterial {
     float roughness;
     float metalness;
     float emissiveMult;
-    float _padPbr;
+    /// Bitfield of material-level flags. Bit 0
+    /// (`MAT_FLAG_VERTEX_COLOR_EMISSIVE`): per-vertex `fragColor.rgb`
+    /// drives self-illumination instead of modulating albedo. See #695.
+    uint materialFlags;
     // Emissive RGB + specular_strength (vec4 #2)
     float emissiveR, emissiveG, emissiveB, specularStrength;
     // Specular RGB + alpha_threshold (vec4 #3)
@@ -124,6 +127,11 @@ struct GpuMaterial {
 layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {
     GpuMaterial materials[];
 };
+
+// `GpuMaterial::material_flags` bit catalog. Mirrors the Rust
+// `crates/renderer/src/vulkan/material.rs::material_flag` module —
+// keep in lockstep when adding new bits.
+const uint MAT_FLAG_VERTEX_COLOR_EMISSIVE = 0x1u; // #695 / O4-03
 
 struct GpuLight {
     vec4 position_radius;  // xyz = position, w = radius
@@ -760,6 +768,16 @@ void main() {
     float metalness = mat.metalness;
     float emissiveMult = mat.emissiveMult;
     vec3 emissiveColor = vec3(mat.emissiveR, mat.emissiveG, mat.emissiveB);
+    // #695 / O4-03 — `NiVertexColorProperty.vertex_mode = SOURCE_EMISSIVE`
+    // means the authored per-vertex `fragColor.rgb` IS the emissive
+    // payload (flickering torches, glowing signs, baked emissive cards).
+    // Multiply it into `emissiveColor` and force a non-zero
+    // `emissiveMult` so the additive emissive pass below fires even when
+    // the material's authored `emissive_mult` defaulted to zero — which
+    // it always does on FO3/FNV legacy content that drives emit purely
+    // through vertex colors. The corresponding albedo path below
+    // (`vertexColorEmissive`) skips its `albedo *= fragColor` modulation
+    // so the texture sample stays at full diffuse intensity.
     float specStrength = mat.specularStrength;
     vec3 specColor = vec3(mat.specularR, mat.specularG, mat.specularB);
     uint normalMapIdx = mat.normalMapIndex;
@@ -952,7 +970,18 @@ void main() {
     }
 
     // Base reflectance: dielectrics use 0.04, metals use albedo color.
-    vec3 albedo = texColor.rgb * fragColor;
+    //
+    // #695 / O4-03 — `NiVertexColorProperty.vertex_mode = SOURCE_EMISSIVE`
+    // routes the per-vertex `fragColor.rgb` through the emissive
+    // accumulator (below) instead of the albedo modulation. Skip the
+    // multiply here so the surface diffuse stays at the texture sample
+    // and the Gamebryo `material_emissive + per_vertex_emissive` model
+    // composes cleanly. Default-mode meshes (most content) keep the
+    // original `albedo *= fragColor` modulation that drives baked AO,
+    // hair-tip cards, eyelash strips, and BSEffectShader meshes.
+    bool vertexColorEmissive =
+        (mat.materialFlags & MAT_FLAG_VERTEX_COLOR_EMISSIVE) != 0u;
+    vec3 albedo = vertexColorEmissive ? texColor.rgb : texColor.rgb * fragColor;
 
     // #221 — `NiMaterialProperty.diffuse` per-material multiplicative
     // tint. Default `[1.0; 3]` for every BSShader-only Skyrim+/FO4
@@ -1105,6 +1134,19 @@ void main() {
     vec3 emissive = vec3(0.0);
     if (emissiveMult > 0.01 && emissiveLum > 0.01) {
         emissive = min(emissiveColor * emissiveMult * albedo, vec3(1.5));
+    }
+
+    // #695 / O4-03 — additive per-vertex emissive contribution from
+    // `NiVertexColorProperty.vertex_mode = SOURCE_EMISSIVE`. Folded in
+    // ON TOP of the material-emissive accumulator above so a mesh can
+    // carry both an authored `emissive_mult` * `emissive_color` and a
+    // per-vertex modulation (rare but legal in Gamebryo). Modulated by
+    // `texColor.rgb` so a flame/sign texture's silhouette shapes the
+    // glow, mirroring the material-emissive `* albedo` modulation.
+    // Skipped on the BSEffectShader early-out path above — that branch
+    // already returns from the function with its own emissive math.
+    if (vertexColorEmissive) {
+        emissive = min(emissive + fragColor * texColor.rgb, vec3(1.5));
     }
 
     // ── Glass / transparent refraction ──────────────────────────────

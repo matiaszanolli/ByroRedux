@@ -782,6 +782,16 @@ pub(crate) fn build_render_data(
                     sparkle_rgba,
                     effect_falloff,
                     material_id: 0,
+                    // O4-03 / #695 — `NiVertexColorProperty.vertex_mode
+                    // == SOURCE_EMISSIVE` (encoded as `1` per
+                    // `Material::vertex_color_mode`). Routes the
+                    // per-vertex `fragColor` payload to the fragment
+                    // shader's emissive accumulator instead of the
+                    // albedo modulation. False on every mesh without a
+                    // Material component (defaults to AmbientDiffuse) or
+                    // when the property explicitly disables vertex
+                    // colors (`Ignore`).
+                    vertex_color_emissive: mat.is_some_and(|m| m.vertex_color_mode == 1),
                 };
                 cmd.material_id = material_table.intern(cmd.to_gpu_material());
                 draw_commands.push(cmd);
@@ -928,6 +938,10 @@ pub(crate) fn build_render_data(
                         // falloff cone; identity-pass-through.
                         effect_falloff: [1.0, 1.0, 1.0, 1.0, 0.0],
                         material_id: 0,
+                        // Particles ride the emissive accumulator through
+                        // `emissive_color` / `emissive_mult` already; no
+                        // per-vertex emissive payload (#695).
+                        vertex_color_emissive: false,
                     };
                     cmd.material_id = material_table.intern(cmd.to_gpu_material());
                     draw_commands.push(cmd);
@@ -1229,6 +1243,7 @@ mod draw_sort_key_tests {
             sparkle_rgba: [0.0; 4],
             effect_falloff: [1.0, 1.0, 1.0, 1.0, 0.0],
             material_id: 0,
+            vertex_color_emissive: false,
         }
     }
 

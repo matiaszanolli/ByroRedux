@@ -22,18 +22,50 @@ pub(crate) fn extract_vertex_colors(
 ) -> Vec<[f32; 4]> {
     let num_verts = data.vertices.len();
 
-    let use_vertex_colors =
-        !data.vertex_colors.is_empty() && mat.vertex_color_mode == VertexColorMode::AmbientDiffuse;
-
-    // Keep the alpha lane — authored per-vertex modulation on hair tip
-    // cards, eyelash strips, and BSEffectShader meshes is the source of
-    // truth for those surfaces. See #618.
-    if use_vertex_colors {
+    // O4-03 / #695 — `Emissive` and `AmbientDiffuse` both surface the
+    // authored per-vertex colors; `Ignore` falls back to the per-mesh
+    // diffuse constant.
+    //
+    //   * `AmbientDiffuse` (default): per-vertex colors modulate albedo
+    //     in the shader's `texColor.rgb * fragColor` line.
+    //   * `Emissive`: per-vertex colors drive self-illumination —
+    //     flickering torches, glowing signs, baked emissive cards. The
+    //     fragment shader treats `fragColor` as the per-vertex emissive
+    //     payload (gated by `MAT_FLAG_VERTEX_COLOR_EMISSIVE` on
+    //     `GpuMaterial.materialFlags`) and skips the `albedo *=
+    //     fragColor` modulation. Pre-fix this branch fell through to the
+    //     diffuse-color fallback below and silently dropped the
+    //     authored emissive payload, leaving torches and signs flat-lit.
+    //   * `Ignore`: vertex colors disabled by the property; treat as if
+    //     the data block had none.
+    //
+    // The alpha lane is preserved for both surfacing paths — authored
+    // per-vertex modulation on hair-tip cards, eyelash strips, and
+    // BSEffectShader meshes is the source of truth for those surfaces.
+    // See #618.
+    if surfaces_authored_vertex_colors(mat.vertex_color_mode, !data.vertex_colors.is_empty()) {
         return data.vertex_colors.to_vec();
     }
 
     let d = mat.diffuse_color;
     vec![[d[0], d[1], d[2], 1.0]; num_verts]
+}
+
+/// Decision predicate for [`extract_vertex_colors`]: should the authored
+/// per-vertex color array reach the renderer (vs. the per-material
+/// diffuse fallback)? Pulled out as a free function so the gating logic
+/// is testable without fabricating a [`NifScene`] / [`NiTriShape`] /
+/// [`GeomData`] tuple — the previous embedding inlined the rule and
+/// silently dropped the `Emissive` payload (#695).
+pub(super) fn surfaces_authored_vertex_colors(
+    mode: VertexColorMode,
+    has_authored_colors: bool,
+) -> bool {
+    has_authored_colors
+        && matches!(
+            mode,
+            VertexColorMode::AmbientDiffuse | VertexColorMode::Emissive
+        )
 }
 
 /// Extract all material properties from a NiTriShape in a single pass.

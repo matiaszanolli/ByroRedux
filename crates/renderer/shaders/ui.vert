@@ -39,7 +39,11 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
 // std430 stride must match the full 272 B layout, so every padded
 // vec4 lands at the right offset; unconsumed fields are layout-only.
 struct GpuMaterial {
-    float roughness, metalness, emissiveMult, _padPbr;
+    // `materialFlags` (#695): bitfield, layout-only here — the UI
+    // vertex stage doesn't read it. Matches the slot
+    // `triangle.frag::GpuMaterial.materialFlags` consumes.
+    float roughness, metalness, emissiveMult;
+    uint materialFlags;
     float emissiveR, emissiveG, emissiveB, specularStrength;
     float specularR, specularG, specularB, alphaThreshold;
     uint textureIndex, normalMapIndex, darkMapIndex, glowMapIndex;
