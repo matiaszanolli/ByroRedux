@@ -118,3 +118,83 @@ Try the cell_loader-pattern fix (separate player entity) as a one-line
 change. If it resolves the vanish, ship #772 closure. If not, the
 runtime diagnostic capture is the next step before any further code
 change.
+
+---
+
+## Resolution (2026-05-03)
+
+**None of the three original hypotheses was the cause.** The runtime
+diagnostic capture (FNV `GSDocMitchellHouse`, `BYRO_NPC_ANIMATION_EXPERIMENT=1`)
+revealed a fourth: **B-spline pose-fallback emits `±FLT_MAX` as a real
+frame-0 key**.
+
+### Empirical finding
+
+Doc Mitchell's `mtidle.kf` has 56 channels. 52 of them (every finger
+/ thumb / twist bone) bind via `NiBSplineCompTransformInterpolator` —
+contradicting the prior assumption that B-splines were Skyrim+ only;
+FNV uses them too for compact per-bone storage of rotation-only
+animation.
+
+When the B-spline payload omits a TRS axis (typical for finger bones
+that only animate rotation, not translation), `extract_transform_channel_bspline`
+fell back to `interp.transform.translation` — the static pose value
+on the interpolator. Bethesda authors that pose value as
+`(-FLT_MAX, -FLT_MAX, -FLT_MAX)` to mark "axis inactive, fall through
+to bind". The importer materialised that sentinel as a sampled
+translation key per timestep. The animation apply phase then wrote
+`Transform.translation = (-FLT_MAX, -FLT_MAX, +FLT_MAX)` (post
+zup→yup) to the bone, the bone-world matrix went to infinity, every
+skinned vertex flew off-screen, and the NPC was culled.
+
+### Same FLT_MAX-as-no-value convention as `BSShaderPPLighting`
+
+Project precedent: `crates/nif/src/blocks/shader.rs:977-978` already
+gates the rimlight backlight read on `< FLT_MAX` with a 3.0e38
+threshold (below the literal 3.4028235e38, accommodating float
+precision noise on the authoring round-trip). nif.xml uses
+`#FLT_MAX#` as the default for every "no value" float across the
+animation interpolator family.
+
+### Fix
+
+Three sites in `crates/nif/src/anim.rs` materialise pose values as
+keys; each gated on `is_flt_max(...)`:
+
+1. `extract_transform_channel_bspline` (line 1340-1430) — per-axis
+   gate inside the per-sample loop.
+2. `constant_transform_channel` (NiLookAtInterpolator path, line 1043).
+3. `static_transform_channel` (B-spline static fallback, line 1454).
+
+When the pose value is the FLT_MAX sentinel, the corresponding key
+list is left empty; `sample_translation` / `sample_rotation` /
+`sample_scale` then return `None` and the bone keeps its bind-pose
+value for that axis.
+
+### Verification (Doc Mitchell, FNV `GSDocMitchellHouse`)
+
+|                              | before | after |
+|------------------------------|-------:|------:|
+| FLT_MAX in `frame0`          | 33     | **0** |
+| `frame0=None` (correct)      | 1      | **34**|
+| Total channels in clip       | 56     | 56    |
+
+`bip01 r foretwist`, `l thumb11`, `r finger11`, `l finger11`, etc. now
+correctly return `None` for translation. `cargo test -p byroredux-nif`
++ `-p byroredux-core animation`: clean (51 pass, 0 fail).
+
+Visual confirm: Doc Mitchell renders solid in `GSDocMitchellHouse`,
+no infinity-collapse. The NPC stands in roughly bind pose.
+
+### Out of scope for #772 closure (filed as follow-ups)
+
+- **Hands missing at the wrist** — body NIF / hand mesh extent issue.
+  Hand bones (`bip01 r hand` / `l hand`) resolve correctly to entities
+  with bind-close transforms, so the skeleton side is sound; the
+  geometry side isn't. Pre-existing, not introduced by the AnimationPlayer
+  attach. → Separate issue.
+- **Idle motion not visibly animated** despite AnimationPlayer attaching.
+  The vanish symptom that #772 tracked is gone, but the breathing /
+  finger curl that mtidle is supposed to produce isn't observable.
+  Tick advancement and B-spline rotation sampling are the most likely
+  suspects. → Separate issue.

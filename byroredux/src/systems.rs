@@ -15,12 +15,14 @@ use byroredux_core::ecs::{
     World, WorldBound,
 };
 use byroredux_core::math::{Quat, Vec3};
-use byroredux_core::string::{FixedString, StringPool};
+#[cfg(test)]
+use byroredux_core::string::StringPool;
+use byroredux_core::string::FixedString;
 
 use crate::anim_convert::build_subtree_name_map;
 use crate::components::{
-    AnimationDiagnosticPending, CellLightingRes, GameTimeRes, InputState, NameIndex, SkyParamsRes,
-    Spinning, SubtreeCache, WeatherDataRes, WeatherTransitionRes,
+    CellLightingRes, GameTimeRes, InputState, NameIndex, SkyParamsRes, Spinning, SubtreeCache,
+    WeatherDataRes, WeatherTransitionRes,
 };
 
 /// Fly camera system: WASD + mouse look. Updates the active camera's Transform.
@@ -432,56 +434,6 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
                 name_index.map.get(sym).copied()
             }
         };
-
-        // #772 one-shot diagnostic — dump the per-channel resolution
-        // table BEFORE any transform mutation so we capture the
-        // bind-pose values and not the post-apply state. Removes the
-        // marker after dumping so it runs once per NPC per session.
-        if world.has::<AnimationDiagnosticPending>(entity) {
-            let pool_ref = world.try_resource::<StringPool>();
-            let transform_q = world.query::<Transform>();
-            let resolve_name = |sym: FixedString| -> String {
-                pool_ref
-                    .as_ref()
-                    .and_then(|p| p.resolve(sym))
-                    .unwrap_or("<unresolved>")
-                    .to_string()
-            };
-            let accum_root_str = clip
-                .accum_root_name
-                .as_ref()
-                .map(|s| resolve_name(*s))
-                .unwrap_or_else(|| "<none>".to_string());
-            log::warn!(
-                "#772 diagnostic — player entity {:?} root_entity={:?} clip_handle={} channels={} accum_root='{}'",
-                entity,
-                ps.root_entity,
-                ps.clip_handle,
-                clip.channels.len(),
-                accum_root_str,
-            );
-            for (channel_name, channel) in &clip.channels {
-                let name_str = resolve_name(*channel_name);
-                let target = resolve_entity(channel_name);
-                let bind_pose = target
-                    .and_then(|e| transform_q.as_ref().and_then(|q| q.get(e)))
-                    .map(|t| t.translation);
-                let frame0 = sample_translation(channel, 0.0);
-                log::warn!(
-                    "  channel '{}' -> entity={:?} bind_translation={:?} frame0_kf_translation={:?} accum={}",
-                    name_str,
-                    target,
-                    bind_pose,
-                    frame0,
-                    clip.accum_root_name.as_ref() == Some(channel_name),
-                );
-            }
-            drop(transform_q);
-            drop(pool_ref);
-            if let Some(mut q) = world.query_mut::<AnimationDiagnosticPending>() {
-                q.remove(entity);
-            }
-        }
 
         // Apply transform channels.
         let is_accum_root =

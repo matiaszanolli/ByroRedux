@@ -264,6 +264,105 @@ fn extract_transform_channel_emits_constant_pose_for_lookat() {
     assert_eq!(channel.scale_keys[0].time, 0.0);
 }
 
+/// #772 — FLT_MAX in any TRS axis of an interpolator pose value is
+/// Bethesda's "axis inactive" sentinel; the importer must NOT
+/// materialise it as a real key, or the apply phase writes infinity
+/// to the bone's Transform and skinned vertices fly off-screen
+/// (FNV Doc Mitchell finger bones / FO3 TestQAHairM 31→0 vanish).
+/// Same FLT_MAX-as-no-value convention as BSShaderPPLighting's
+/// rimlight gate at `crates/nif/src/blocks/shader.rs:977-978`.
+#[test]
+fn extract_transform_channel_drops_flt_max_pose_axes_for_lookat() {
+    use crate::types::{BlockRef, NiPoint3, NiQuatTransform};
+
+    // Pose with FLT_MAX on every axis — no static pose value at all.
+    // Empirically observed on FNV `mtidle.kf` finger / twist bones
+    // when bound through B-spline interpolators with no translation
+    // payload; the same NiQuatTransform shape is shared across
+    // `NiTransformInterpolator` / `NiBSplineCompTransformInterpolator`
+    // / `NiLookAtInterpolator` so the gate must apply uniformly.
+    let inactive_pose = NiQuatTransform {
+        translation: NiPoint3 {
+            x: -f32::MAX,
+            y: -f32::MAX,
+            z: -f32::MAX,
+        },
+        rotation: [-f32::MAX, -f32::MAX, -f32::MAX, -f32::MAX],
+        scale: -f32::MAX,
+    };
+    let lookat = NiLookAtInterpolator {
+        flags: 0,
+        look_at: BlockRef::NULL,
+        look_at_name: None,
+        transform: inactive_pose,
+        interp_translation: BlockRef::NULL,
+        interp_roll: BlockRef::NULL,
+        interp_scale: BlockRef::NULL,
+    };
+    let scene = NifScene {
+        blocks: vec![Box::new(lookat)],
+        ..NifScene::default()
+    };
+    let mut cb = dummy_controlled_block();
+    cb.interpolator_ref = BlockRef(0);
+
+    let channel = extract_transform_channel(&scene, &cb)
+        .expect("FLT_MAX pose still produces an empty TransformChannel, not None");
+    assert!(
+        channel.translation_keys.is_empty(),
+        "FLT_MAX translation must not materialise as a key"
+    );
+    assert!(
+        channel.rotation_keys.is_empty(),
+        "FLT_MAX rotation must not materialise as a key"
+    );
+    assert!(
+        channel.scale_keys.is_empty(),
+        "FLT_MAX scale must not materialise as a key"
+    );
+}
+
+/// #772 sibling — partial FLT_MAX (translation inactive, rotation
+/// authored). The translation axis must drop while rotation passes
+/// through. mtidle.kf for finger bones is exactly this shape: no
+/// translation payload, real rotation curve.
+#[test]
+fn extract_transform_channel_keeps_authored_axes_when_translation_is_flt_max() {
+    use crate::types::{BlockRef, NiPoint3, NiQuatTransform};
+
+    let half = std::f32::consts::FRAC_1_SQRT_2;
+    let mixed_pose = NiQuatTransform {
+        translation: NiPoint3 {
+            x: -f32::MAX,
+            y: -f32::MAX,
+            z: -f32::MAX,
+        },
+        rotation: [half, 0.0, 0.0, half], // 90° around +Z, real
+        scale: 1.0,                       // identity scale, real
+    };
+    let lookat = NiLookAtInterpolator {
+        flags: 0,
+        look_at: BlockRef::NULL,
+        look_at_name: None,
+        transform: mixed_pose,
+        interp_translation: BlockRef::NULL,
+        interp_roll: BlockRef::NULL,
+        interp_scale: BlockRef::NULL,
+    };
+    let scene = NifScene {
+        blocks: vec![Box::new(lookat)],
+        ..NifScene::default()
+    };
+    let mut cb = dummy_controlled_block();
+    cb.interpolator_ref = BlockRef(0);
+
+    let channel = extract_transform_channel(&scene, &cb).expect("mixed pose channel");
+    assert!(channel.translation_keys.is_empty());
+    assert_eq!(channel.rotation_keys.len(), 1);
+    assert_eq!(channel.scale_keys.len(), 1);
+    assert!((channel.scale_keys[0].value - 1.0).abs() < 1e-6);
+}
+
 /// #605 — NiPathInterpolator must emit translation keys sampled
 /// from its referenced NiPosData (Z-up → Y-up converted, interpolation
 /// type preserved). Rotation/scale stay identity matching legacy

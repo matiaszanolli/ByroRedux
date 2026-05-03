@@ -1041,30 +1041,52 @@ fn extract_transform_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<T
 /// pose without keyframe data) to surface the documented fall-back pose
 /// instead of dropping the channel.
 fn constant_transform_channel(t: &crate::types::NiQuatTransform) -> TransformChannel {
-    let translation = zup_to_yup_pos([t.translation.x, t.translation.y, t.translation.z]);
-    let rotation = zup_to_yup_quat(t.rotation);
-    TransformChannel {
-        translation_keys: vec![TranslationKey {
+    // FLT_MAX in any TRS axis means "no static pose for this axis";
+    // emit an empty key list so the bone keeps its bind-pose value
+    // for that axis. See FLT_MAX_SENTINEL above.
+    let pose_t = [t.translation.x, t.translation.y, t.translation.z];
+    let translation_keys = if is_flt_max(pose_t[0]) || is_flt_max(pose_t[1]) || is_flt_max(pose_t[2])
+    {
+        Vec::new()
+    } else {
+        vec![TranslationKey {
             time: 0.0,
-            value: translation,
+            value: zup_to_yup_pos(pose_t),
             forward: [0.0; 3],
             backward: [0.0; 3],
             tbc: None,
-        }],
-        translation_type: KeyType::Linear,
-        rotation_keys: vec![RotationKey {
+        }]
+    };
+    let rotation_keys = if is_flt_max(t.rotation[0])
+        || is_flt_max(t.rotation[1])
+        || is_flt_max(t.rotation[2])
+        || is_flt_max(t.rotation[3])
+    {
+        Vec::new()
+    } else {
+        vec![RotationKey {
             time: 0.0,
-            value: rotation,
+            value: zup_to_yup_quat(t.rotation),
             tbc: None,
-        }],
-        rotation_type: KeyType::Linear,
-        scale_keys: vec![ScaleKey {
+        }]
+    };
+    let scale_keys = if is_flt_max(t.scale) {
+        Vec::new()
+    } else {
+        vec![ScaleKey {
             time: 0.0,
             value: t.scale,
             forward: 0.0,
             backward: 0.0,
             tbc: None,
-        }],
+        }]
+    };
+    TransformChannel {
+        translation_keys,
+        translation_type: KeyType::Linear,
+        rotation_keys,
+        rotation_type: KeyType::Linear,
+        scale_keys,
         scale_type: KeyType::Linear,
         priority: 0,
     }
@@ -1328,7 +1350,10 @@ fn extract_transform_channel_bspline(
             0.0
         };
 
-        // Translation
+        // Translation. Bspline payload absent → pose-value fallback. If
+        // the pose itself is the FLT_MAX sentinel ("axis inactive"),
+        // skip the key so `sample_translation` returns None and the
+        // bone keeps its bind-pose translation.
         if let Some(ref cps) = trans_q {
             let p = deboor_cubic(cps, n_cp, BSPLINE_TRANS_STRIDE, u);
             let zup = [p[0], p[1], p[2]];
@@ -1340,21 +1365,26 @@ fn extract_transform_channel_bspline(
                 tbc: None,
             });
         } else {
-            translation_keys.push(TranslationKey {
-                time: t,
-                value: zup_to_yup_pos([
-                    interp.transform.translation.x,
-                    interp.transform.translation.y,
-                    interp.transform.translation.z,
-                ]),
-                forward: [0.0, 0.0, 0.0],
-                backward: [0.0, 0.0, 0.0],
-                tbc: None,
-            });
+            let pose = [
+                interp.transform.translation.x,
+                interp.transform.translation.y,
+                interp.transform.translation.z,
+            ];
+            if !(is_flt_max(pose[0]) || is_flt_max(pose[1]) || is_flt_max(pose[2])) {
+                translation_keys.push(TranslationKey {
+                    time: t,
+                    value: zup_to_yup_pos(pose),
+                    forward: [0.0, 0.0, 0.0],
+                    backward: [0.0, 0.0, 0.0],
+                    tbc: None,
+                });
+            }
         }
 
         // Rotation — normalize after sampling since the B-spline doesn't
-        // enforce unit length on quaternions.
+        // enforce unit length on quaternions. Same FLT_MAX gate as
+        // translation: an FLT_MAX-valued quaternion would normalise to
+        // NaN and rotate the bone to garbage.
         if let Some(ref cps) = rot_q {
             let p = deboor_cubic(cps, n_cp, BSPLINE_ROT_STRIDE, u);
             let [mut w, mut x, mut y, mut z] = [p[0], p[1], p[2], p[3]];
@@ -1377,14 +1407,17 @@ fn extract_transform_channel_bspline(
                 tbc: None,
             });
         } else {
-            rotation_keys.push(RotationKey {
-                time: t,
-                value: zup_to_yup_quat(interp.transform.rotation),
-                tbc: None,
-            });
+            let q = interp.transform.rotation;
+            if !(is_flt_max(q[0]) || is_flt_max(q[1]) || is_flt_max(q[2]) || is_flt_max(q[3])) {
+                rotation_keys.push(RotationKey {
+                    time: t,
+                    value: zup_to_yup_quat(q),
+                    tbc: None,
+                });
+            }
         }
 
-        // Scale
+        // Scale. Same FLT_MAX gate.
         if let Some(ref cps) = scale_q {
             let p = deboor_cubic(cps, n_cp, BSPLINE_SCALE_STRIDE, u);
             scale_keys.push(ScaleKey {
@@ -1394,7 +1427,7 @@ fn extract_transform_channel_bspline(
                 backward: 0.0,
                 tbc: None,
             });
-        } else {
+        } else if !is_flt_max(interp.transform.scale) {
             scale_keys.push(ScaleKey {
                 time: t,
                 value: interp.transform.scale,
@@ -1417,34 +1450,54 @@ fn extract_transform_channel_bspline(
 }
 
 /// Build a static single-key TransformChannel from an interpolator's
-/// fallback `NiQuatTransform`.
+/// fallback `NiQuatTransform`. FLT_MAX-encoded axes drop to empty key
+/// lists so the bone keeps its bind-pose value (see FLT_MAX_SENTINEL).
 fn static_transform_channel(interp: &NiBSplineCompTransformInterpolator) -> TransformChannel {
-    TransformChannel {
-        translation_keys: vec![TranslationKey {
+    let pose_t = [
+        interp.transform.translation.x,
+        interp.transform.translation.y,
+        interp.transform.translation.z,
+    ];
+    let translation_keys = if is_flt_max(pose_t[0]) || is_flt_max(pose_t[1]) || is_flt_max(pose_t[2])
+    {
+        Vec::new()
+    } else {
+        vec![TranslationKey {
             time: interp.start_time,
-            value: zup_to_yup_pos([
-                interp.transform.translation.x,
-                interp.transform.translation.y,
-                interp.transform.translation.z,
-            ]),
+            value: zup_to_yup_pos(pose_t),
             forward: [0.0, 0.0, 0.0],
             backward: [0.0, 0.0, 0.0],
             tbc: None,
-        }],
-        translation_type: KeyType::Linear,
-        rotation_keys: vec![RotationKey {
+        }]
+    };
+    let q = interp.transform.rotation;
+    let rotation_keys = if is_flt_max(q[0]) || is_flt_max(q[1]) || is_flt_max(q[2]) || is_flt_max(q[3])
+    {
+        Vec::new()
+    } else {
+        vec![RotationKey {
             time: interp.start_time,
-            value: zup_to_yup_quat(interp.transform.rotation),
+            value: zup_to_yup_quat(q),
             tbc: None,
-        }],
-        rotation_type: KeyType::Linear,
-        scale_keys: vec![ScaleKey {
+        }]
+    };
+    let scale_keys = if is_flt_max(interp.transform.scale) {
+        Vec::new()
+    } else {
+        vec![ScaleKey {
             time: interp.start_time,
             value: interp.transform.scale,
             forward: 0.0,
             backward: 0.0,
             tbc: None,
-        }],
+        }]
+    };
+    TransformChannel {
+        translation_keys,
+        translation_type: KeyType::Linear,
+        rotation_keys,
+        rotation_type: KeyType::Linear,
+        scale_keys,
         scale_type: KeyType::Linear,
         priority: 0,
     }
@@ -1753,6 +1806,25 @@ fn extract_texture_transform_channel(
         .unwrap_or(FloatTarget::UvOffsetU);
 
     extract_float_channel(scene, cb, target)
+}
+
+/// Bethesda's KF authoring tool stores `±FLT_MAX` (≈3.4028235e38) in
+/// `NiTransformInterpolator::transform` (the static pose-value triple
+/// of translation / rotation / scale) for channels whose B-spline
+/// payload omits that TRS axis — the runtime is meant to fall through
+/// to the bone's bind-pose for the absent axis. Same FLT_MAX-as-no-
+/// value convention as BSShaderPPLighting's rimlight gate
+/// ([shader.rs:977-978]); threshold sits below the literal so float-
+/// precision noise on the authoring round-trip doesn't slip through.
+/// Without this gate the B-spline fallback path materialises FLT_MAX
+/// as a real frame-0 key, the animation system writes it to the
+/// bone's `Transform.translation`, and the skinning matrix flies to
+/// infinity — NPCs vanish on first tick (#772 / FO3 TestQAHairM 31→0;
+/// FNV Doc Mitchell finger bones).
+const FLT_MAX_SENTINEL: f32 = 3.0e38;
+
+fn is_flt_max(v: f32) -> bool {
+    v.abs() >= FLT_MAX_SENTINEL
 }
 
 fn convert_vec3_keys(group: &KeyGroup<Vec3Key>) -> (Vec<TranslationKey>, KeyType) {

@@ -19,7 +19,6 @@ use byroredux_renderer::VulkanContext;
 
 use crate::anim_convert::convert_nif_clip;
 use crate::asset_provider::{MaterialProvider, TextureProvider};
-use crate::components::AnimationDiagnosticPending;
 use crate::helpers::add_child;
 use crate::scene::load_nif_bytes_with_skeleton;
 
@@ -636,107 +635,12 @@ pub fn spawn_npc_entity(
     //    threaded through every `spawn_npc_entity` call so the
     //    `AnimationClipRegistry` doesn't grow per-NPC.
     //
-    // Default OFF — gated on the env var
-    // `BYRO_NPC_ANIMATION_EXPERIMENT`. When unset, the function
-    // spawns NPCs in bind pose (the M41.0 Phase 1b shipping
-    // behaviour). When set, an `AnimationPlayer` is attached with
-    // `root_entity = skel_root` so KF channels keyed by `Bip01
-    // Spine`, `Bip01 Head`, etc. resolve against the skeleton's
-    // BFS-scoped subtree map.
-    //
-    // The gating exists because of an empirical Phase 2 finding:
-    // when the player ticks against `mtidle.kf` and the
-    // animation_system's apply phase writes
-    // `transform.translation = clip_frame_0_value` to skeleton
-    // bones, NPCs vanish from render — reproduced on FO3
-    // TestQAHairM (31 bodies → 0 visible). The clip's frame-0
-    // translations evidently don't align with skeleton.nif's
-    // authored bind-pose translations. Hypotheses to investigate at
-    // runtime via the env-var path:
-    //
-    //   1. KF stores deltas (relative to bind), not absolute
-    //      bone-local poses — `transform.translation = pos` would
-    //      write the delta directly and collapse the skeleton.
-    //   2. Coord-frame divergence between `import_nif_scene`'s
-    //      NiNode-Transform decoding and `import_kf`'s
-    //      TranslationKey decoding — both go through
-    //      `zup_to_yup_pos` so the convention should agree, but a
-    //      subtle off-by-one (e.g. parent-relative vs absolute)
-    //      could be hiding.
-    //   3. KF channel-root scoping resolves the wrong entity when
-    //      multiple sub-trees share a bone name (skeleton's
-    //      "Bip01 Spine" vs body NIF's cosmetic copy). The
-    //      `with_root(skel_root)` should constrain BFS to the
-    //      skeleton, but verify empirically.
-    //
-    // **#771 (palette `global_skin_transform`) was investigated and
-    // closed without a math change** — current `bone_world ×
-    // bind_inv` formula matches nifly's documented skin→bone
-    // semantics. So this issue's root cause is NOT the palette
-    // composition; it's strictly a KF↔skeleton bind-pose mismatch
-    // that needs runtime data to diagnose.
-    //
-    // Investigation procedure (cargo run with the env var):
-    //
-    //     BYRO_NPC_ANIMATION_EXPERIMENT=1 cargo run --release -- \
-    //       --esm "Fallout New Vegas/Data/FalloutNV.esm" \
-    //       --cell GoodspringsExt \
-    //       --bsa "Fallout - Meshes.bsa" \
-    //       --textures-bsa "Fallout - Textures.bsa" \
-    //       --textures-bsa "Fallout - Textures2.bsa"
-    //
-    // Look for the per-NPC log line emitted below; compare bone
-    // bind-pose translations against KF frame-0 sample values via
-    // the existing TCP debug protocol (`InspectSkinnedMesh`).
-    //
-    // See #772 for the full deferral rationale and tracking.
-    let attach_animation =
-        std::env::var_os("BYRO_NPC_ANIMATION_EXPERIMENT").is_some();
-    if attach_animation {
-        match (skel_root, idle_clip_handle) {
-            (Some(skel), Some(handle)) => {
-                let player = AnimationPlayer::new(handle).with_root(skel);
-                // The animation system queries `AnimationPlayer` and
-                // builds the BFS subtree map from `root_entity`, so
-                // there's no further wiring required here.
-                world.insert(placement_root, player);
-                // One-shot diagnostic — the animation system dumps the
-                // per-channel resolution table on the first apply tick
-                // and removes the marker. Captures the data needed to
-                // pick between the three #772 hypotheses.
-                world.insert(placement_root, AnimationDiagnosticPending);
-                log::warn!(
-                    "NPC {:08X} ({}): #772 experiment — AnimationPlayer attached \
-                     (idle clip {}, skel_root {:?}). Diagnostic dump on first tick. \
-                     Watch for vanish symptom.",
-                    npc.form_id,
-                    npc.editor_id,
-                    handle,
-                    skel,
-                );
-            }
-            (None, _) => {
-                log::warn!(
-                    "NPC {:08X} ({}): #772 experiment requested but skel_root is None \
-                     — animation skipped",
-                    npc.form_id,
-                    npc.editor_id,
-                );
-            }
-            (_, None) => {
-                log::warn!(
-                    "NPC {:08X} ({}): #772 experiment requested but idle clip handle \
-                     is None — animation skipped",
-                    npc.form_id,
-                    npc.editor_id,
-                );
-            }
-        }
-    } else {
-        // Default path — Phase 1b shipping behaviour; bodies stay
-        // in bind pose. Suppress the unused-binding warnings.
-        let _ = idle_clip_handle;
-        let _ = skel_root;
+    // KF channels keyed by `Bip01 Spine`, `Bip01 Head`, etc. resolve
+    // against the skeleton's BFS-scoped subtree map via
+    // `with_root(skel_root)`.
+    if let (Some(skel), Some(handle)) = (skel_root, idle_clip_handle) {
+        let player = AnimationPlayer::new(handle).with_root(skel);
+        world.insert(placement_root, player);
     }
 
     tag_descendants_as_actor(world, placement_root);
