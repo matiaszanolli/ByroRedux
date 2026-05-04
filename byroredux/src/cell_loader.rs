@@ -48,9 +48,11 @@ pub struct CellLoadResult {
     /// in `spawn_placed_instances` for this cell's references. Stable
     /// across repeat loads of the same cell (unlike the NIF-parse
     /// cache, which reports 0 on a second load even though the cell
-    /// still spawns all its entities). Useful as a telemetry baseline:
-    /// FNV Prospector Saloon should produce 784 here on every load,
-    /// matching the draw-count. See #477 (FNV-3-L2).
+    /// still spawns all its entities) and matches the per-cell
+    /// draw-count. Useful as a telemetry baseline. See #477
+    /// (FNV-3-L2). Bench-pinned counts for specific cells live in
+    /// `docs/audits/` — don't pin a number here, since dispatch
+    /// generation drift over time will desync it (see #822).
     pub mesh_count: usize,
     /// Bounding box center of all placed objects (Y-up, for camera positioning).
     pub center: Vec3,
@@ -862,9 +864,9 @@ fn load_references(
     // single `resource_mut` borrow after the loop instead of acquiring
     // the write lock on every REFR. Previously every iteration took
     // `world.resource_mut::<NifImportRegistry>()` (write lock + atomic
-    // CAS) even on the hot cache-hit path; for Prospector Saloon's 809
-    // REFRs that was 809 write-lock cycles serialising nothing. See
-    // #523.
+    // CAS) even on the hot cache-hit path; for Prospector Saloon's
+    // ~461 REFRs that was hundreds of write-lock cycles serialising
+    // nothing. See #523.
     let mut this_call_hits: u64 = 0;
     let mut this_call_misses: u64 = 0;
     // Parses performed during this call. Merged into the registry at
