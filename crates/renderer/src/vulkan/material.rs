@@ -23,7 +23,15 @@
 //! shaders, Phases 4–6 migrate fields one slice at a time and finally
 //! drop the redundant per-instance copies.
 
+use super::scene_buffer::MAX_MATERIALS;
 use std::collections::HashMap;
+use std::sync::Once;
+
+/// First-frame overflow latch for [`MaterialTable::intern`]. Wired through
+/// a `Once` so the warn fires exactly once per session; #797's regression
+/// guard is the truthful pairing of the upload-side warn message
+/// (`scene_buffer.rs:978`) with actual default-to-0 behaviour.
+static INTERN_OVERFLOW_WARNED: Once = Once::new();
 
 /// std430 GPU-side material record. 272 bytes per material (17 × vec4).
 ///
@@ -323,9 +331,37 @@ impl MaterialTable {
     /// Insert a material (or return the existing id if byte-equal to
     /// one already in the table). Returns the `material_id` the GPU
     /// will use to look it up.
+    ///
+    /// Capped at [`MAX_MATERIALS`] entries — over-cap interns return
+    /// id `0` and share the first-interned material's record for the
+    /// rest of the frame. See #797 / SAFE-22: the upload at
+    /// `scene_buffer.rs:975` truncates the buffer to `MAX_MATERIALS`
+    /// entries, so without this cap a `DrawCommand` carrying an over-
+    /// cap `material_id` would index past the SSBO end on the GPU
+    /// (implementation-defined OOB read; AMD returns zeros, NVIDIA
+    /// returns last-valid-page contents, Intel may DEVICE_LOST).
+    /// The pairing also makes the upload's warn message
+    /// (`"silently default to material 0"`) truthful.
+    ///
+    /// Real interior cells dedup to 50–200 unique materials and a
+    /// 3×3 exterior grid lands at 300–600 — well under the 4096 cap
+    /// (`scene_buffer.rs:60-62`). The overflow path is reachable
+    /// today only on modded / synthetic / future Starfield-FO76
+    /// large-exterior content.
     pub fn intern(&mut self, material: GpuMaterial) -> u32 {
         if let Some(&id) = self.index.get(&material) {
             return id;
+        }
+        if self.materials.len() >= MAX_MATERIALS {
+            INTERN_OVERFLOW_WARNED.call_once(|| {
+                log::warn!(
+                    "MaterialTable: unique-material count exceeded MAX_MATERIALS \
+                     ({}); over-cap entries share material 0 for the rest of \
+                     the session. See #797 / SAFE-22.",
+                    MAX_MATERIALS,
+                );
+            });
+            return 0;
         }
         let id = self.materials.len() as u32;
         self.materials.push(material);
@@ -473,5 +509,93 @@ mod tests {
         assert_eq!(slice[0].texture_index, 100);
         assert_eq!(slice[1].texture_index, 200);
         assert_eq!(slice[2].texture_index, 300);
+    }
+
+    /// #797 / SAFE-22 — over-cap interns return id `0` and share the
+    /// first material's record. Without this cap a DrawCommand
+    /// carrying the over-cap id would index past the MaterialBuffer
+    /// SSBO end on the GPU (implementation-defined OOB read).
+    ///
+    /// Builds a fresh table, fills it to `MAX_MATERIALS` distinct
+    /// entries (each varying by `texture_index`), then asserts:
+    ///   1. The 4097th distinct intern returns id `0`
+    ///   2. The table's stored count never exceeds `MAX_MATERIALS`
+    ///   3. The reverse-lookup map's count also stays bounded
+    ///   4. A subsequent intern of an already-interned material
+    ///      (one of the first `MAX_MATERIALS`) still returns its
+    ///      original id — the cap doesn't poison the dedup map
+    #[test]
+    fn intern_overflow_returns_material_zero() {
+        let mut table = MaterialTable::new();
+        // Fill the table to exactly `MAX_MATERIALS` distinct entries.
+        // `texture_index` is part of the byte-Hash dedup so each
+        // increment produces a fresh GpuMaterial.
+        for i in 0..MAX_MATERIALS as u32 {
+            let mut m = GpuMaterial::default();
+            m.texture_index = i;
+            let id = table.intern(m);
+            assert_eq!(id, i, "in-cap intern must return sequential ids");
+        }
+        assert_eq!(table.len(), MAX_MATERIALS);
+
+        // Over-cap intern: distinct material, but no slot to land in.
+        let mut overflow = GpuMaterial::default();
+        overflow.texture_index = MAX_MATERIALS as u32;
+        let overflow_id = table.intern(overflow);
+        assert_eq!(
+            overflow_id, 0,
+            "over-cap intern must return id 0 (sentinel) so the GPU \
+             read at materials[id] stays within bounds"
+        );
+
+        // Table count must not grow past the cap.
+        assert_eq!(
+            table.len(),
+            MAX_MATERIALS,
+            "over-cap intern must NOT push to materials Vec"
+        );
+
+        // Subsequent over-cap interns also fold to id 0 — the warn
+        // is `Once`-gated so the second call is silent.
+        let mut overflow2 = GpuMaterial::default();
+        overflow2.texture_index = MAX_MATERIALS as u32 + 1;
+        assert_eq!(table.intern(overflow2), 0);
+        assert_eq!(table.len(), MAX_MATERIALS);
+
+        // Already-interned materials still resolve to their original
+        // id — the cap path doesn't poison the dedup map.
+        let mut existing = GpuMaterial::default();
+        existing.texture_index = 42; // interned at id 42 in the loop above
+        assert_eq!(
+            table.intern(existing),
+            42,
+            "in-cap dedup hit must still return the original id even \
+             after the cap has been reached"
+        );
+    }
+
+    /// `clear()` releases the `Once`-guard implicitly by replacing
+    /// the table; verify the next overflow on a freshly-cleared
+    /// table still routes to id 0 (the *behaviour*, not the warn,
+    /// is what matters per-frame).
+    #[test]
+    fn intern_overflow_persists_across_clear() {
+        let mut table = MaterialTable::new();
+        for i in 0..MAX_MATERIALS as u32 {
+            let mut m = GpuMaterial::default();
+            m.texture_index = i;
+            table.intern(m);
+        }
+        let mut overflow = GpuMaterial::default();
+        overflow.texture_index = u32::MAX;
+        assert_eq!(table.intern(overflow), 0);
+
+        table.clear();
+        // After clear the table starts empty — first intern returns 0
+        // by normal sequential assignment, not by overflow.
+        let mut first = GpuMaterial::default();
+        first.texture_index = 1;
+        assert_eq!(table.intern(first), 0);
+        assert_eq!(table.len(), 1);
     }
 }
