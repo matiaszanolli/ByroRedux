@@ -49,13 +49,14 @@ pub use items::{
 pub use misc::{
     parse_acti, parse_arma, parse_avif, parse_bptd, parse_cobj, parse_csty, parse_dial, parse_eczn,
     parse_efsh, parse_ench, parse_expl, parse_eyes, parse_hair, parse_hdpt, parse_idle, parse_imgs,
-    parse_imod, parse_info, parse_ipct, parse_ipds, parse_lgtm, parse_mesg, parse_mgef, parse_navi,
-    parse_navm, parse_pack, parse_perk, parse_proj, parse_qust, parse_regn, parse_repu, parse_spel,
-    parse_term, parse_watr, ActiRecord, ArmaRecord, AvifRecord, BptdRecord, CobjRecord, CstyRecord,
-    DialRecord, EcznRecord, EfshRecord, EnchRecord, ExplRecord, EyesRecord, HairRecord, HdptRecord,
-    IdleRecord, ImgsRecord, ImodRecord, InfoRecord, IpctRecord, IpdsRecord, LgtmRecord, MesgRecord,
-    MgefRecord, NaviRecord, NavmRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RegnRecord,
-    RepuRecord, SpelRecord, TermRecord, WatrRecord,
+    parse_imod, parse_info, parse_ipct, parse_ipds, parse_lgtm, parse_mesg, parse_mgef,
+    parse_minimal_esm_record, parse_navi, parse_navm, parse_pack, parse_perk, parse_proj,
+    parse_qust, parse_regn, parse_repu, parse_spel, parse_term, parse_watr, ActiRecord, ArmaRecord,
+    AvifRecord, BptdRecord, CobjRecord, CstyRecord, DialRecord, EcznRecord, EfshRecord, EnchRecord,
+    ExplRecord, EyesRecord, HairRecord, HdptRecord, IdleRecord, ImgsRecord, ImodRecord, InfoRecord,
+    IpctRecord, IpdsRecord, LgtmRecord, MesgRecord, MgefRecord, MinimalEsmRecord, NaviRecord,
+    NavmRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RegnRecord, RepuRecord, SpelRecord,
+    TermRecord, WatrRecord,
 };
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
 pub use weather::{parse_wthr, OblivionHdrLighting, SkyColor, WeatherRecord};
@@ -253,6 +254,84 @@ pub struct EsmIndex {
     pub impact_data_sets: HashMap<u32, IpdsRecord>,
     /// `COBJ` constructible-object records — FNV crafting recipes.
     pub recipes: HashMap<u32, CobjRecord>,
+    // ── #810 / FNV-D2-NEW-03 — long-tail catch-all stubs ────────────
+    //
+    // 31 record types in the FNV catch-all-skip long tail. None has
+    // a concrete consumer driving a per-record parser; bulk-dispatched
+    // here so the catch-all skip approaches parity with FalloutNV.esm's
+    // authored content set. Each field stores [`MinimalEsmRecord`]
+    // (EDID + optional FULL); records that gain a real consumer later
+    // can grow per-record fields via the established #808 / #809
+    // pattern.
+    //
+    // Audio metadata (11):
+    /// `ALOC` audio location controller.
+    pub audio_locations: HashMap<u32, MinimalEsmRecord>,
+    /// `ANIO` animation object.
+    pub animation_objects: HashMap<u32, MinimalEsmRecord>,
+    /// `ASPC` acoustic space.
+    pub acoustic_spaces: HashMap<u32, MinimalEsmRecord>,
+    /// `CAMS` camera shot.
+    pub camera_shots: HashMap<u32, MinimalEsmRecord>,
+    /// `CPTH` camera path.
+    pub camera_paths: HashMap<u32, MinimalEsmRecord>,
+    /// `DOBJ` default object.
+    pub default_objects: HashMap<u32, MinimalEsmRecord>,
+    /// `MICN` menu icon.
+    pub menu_icons: HashMap<u32, MinimalEsmRecord>,
+    /// `MSET` media set.
+    pub media_sets: HashMap<u32, MinimalEsmRecord>,
+    /// `MUSC` music type.
+    pub music_types: HashMap<u32, MinimalEsmRecord>,
+    /// `SOUN` sound.
+    pub sounds: HashMap<u32, MinimalEsmRecord>,
+    /// `VTYP` voice type.
+    pub voice_types: HashMap<u32, MinimalEsmRecord>,
+    // Visual / world (8):
+    /// `AMEF` ammunition effect.
+    pub ammo_effects: HashMap<u32, MinimalEsmRecord>,
+    /// `DEBR` debris.
+    pub debris: HashMap<u32, MinimalEsmRecord>,
+    /// `GRAS` grass.
+    pub grasses: HashMap<u32, MinimalEsmRecord>,
+    /// `IMAD` imagespace modifier — referenced by CELL.XCIM transitions.
+    pub imagespace_modifiers: HashMap<u32, MinimalEsmRecord>,
+    /// `LSCR` load screen.
+    pub load_screens: HashMap<u32, MinimalEsmRecord>,
+    /// `LSCT` load screen type.
+    pub load_screen_types: HashMap<u32, MinimalEsmRecord>,
+    /// `PWAT` placeable water.
+    pub placeable_waters: HashMap<u32, MinimalEsmRecord>,
+    /// `RGDL` ragdoll.
+    pub ragdolls: HashMap<u32, MinimalEsmRecord>,
+    // FNV Hardcore mode (4):
+    /// `DEHY` dehydration stages (FNV hardcore).
+    pub dehydration_stages: HashMap<u32, MinimalEsmRecord>,
+    /// `HUNG` hunger stages (FNV hardcore).
+    pub hunger_stages: HashMap<u32, MinimalEsmRecord>,
+    /// `RADS` radiation stages.
+    pub radiation_stages: HashMap<u32, MinimalEsmRecord>,
+    /// `SLPD` sleep deprivation stages (FNV hardcore).
+    pub sleep_deprivation_stages: HashMap<u32, MinimalEsmRecord>,
+    // FNV Caravan + Casino (6):
+    /// `CCRD` caravan card.
+    pub caravan_cards: HashMap<u32, MinimalEsmRecord>,
+    /// `CDCK` caravan deck.
+    pub caravan_decks: HashMap<u32, MinimalEsmRecord>,
+    /// `CHAL` challenge.
+    pub challenges: HashMap<u32, MinimalEsmRecord>,
+    /// `CHIP` poker chip.
+    pub poker_chips: HashMap<u32, MinimalEsmRecord>,
+    /// `CMNY` caravan money.
+    pub caravan_money: HashMap<u32, MinimalEsmRecord>,
+    /// `CSNO` casino.
+    pub casinos: HashMap<u32, MinimalEsmRecord>,
+    // Recipe residuals (2):
+    /// `RCCT` recipe category — superseded by COBJ in #809 but FNV
+    /// ships both record types.
+    pub recipe_categories: HashMap<u32, MinimalEsmRecord>,
+    /// `RCPE` recipe — superseded by COBJ; FNV ships both.
+    pub recipe_records: HashMap<u32, MinimalEsmRecord>,
 }
 
 impl EsmIndex {
@@ -335,6 +414,38 @@ impl EsmIndex {
             ("impacts", |s| s.impacts.len()),
             ("impact_data_sets", |s| s.impact_data_sets.len()),
             ("recipes", |s| s.recipes.len()),
+            // #810 / FNV-D2-NEW-03 — long-tail minimal stubs.
+            ("audio_locations", |s| s.audio_locations.len()),
+            ("animation_objects", |s| s.animation_objects.len()),
+            ("acoustic_spaces", |s| s.acoustic_spaces.len()),
+            ("camera_shots", |s| s.camera_shots.len()),
+            ("camera_paths", |s| s.camera_paths.len()),
+            ("default_objects", |s| s.default_objects.len()),
+            ("menu_icons", |s| s.menu_icons.len()),
+            ("media_sets", |s| s.media_sets.len()),
+            ("music_types", |s| s.music_types.len()),
+            ("sounds", |s| s.sounds.len()),
+            ("voice_types", |s| s.voice_types.len()),
+            ("ammo_effects", |s| s.ammo_effects.len()),
+            ("debris", |s| s.debris.len()),
+            ("grasses", |s| s.grasses.len()),
+            ("imagespace_modifiers", |s| s.imagespace_modifiers.len()),
+            ("load_screens", |s| s.load_screens.len()),
+            ("load_screen_types", |s| s.load_screen_types.len()),
+            ("placeable_waters", |s| s.placeable_waters.len()),
+            ("ragdolls", |s| s.ragdolls.len()),
+            ("dehydration_stages", |s| s.dehydration_stages.len()),
+            ("hunger_stages", |s| s.hunger_stages.len()),
+            ("radiation_stages", |s| s.radiation_stages.len()),
+            ("sleep_deprivation_stages", |s| s.sleep_deprivation_stages.len()),
+            ("caravan_cards", |s| s.caravan_cards.len()),
+            ("caravan_decks", |s| s.caravan_decks.len()),
+            ("challenges", |s| s.challenges.len()),
+            ("poker_chips", |s| s.poker_chips.len()),
+            ("caravan_money", |s| s.caravan_money.len()),
+            ("casinos", |s| s.casinos.len()),
+            ("recipe_categories", |s| s.recipe_categories.len()),
+            ("recipe_records", |s| s.recipe_records.len()),
         ]
     }
 
@@ -922,6 +1033,170 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             })?,
             b"COBJ" => extract_records(&mut reader, end, b"COBJ", &mut |fid, subs| {
                 index.recipes.insert(fid, parse_cobj(fid, subs));
+            })?,
+            // #810 / FNV-D2-NEW-03 — 31 long-tail records that fell
+            // through the catch-all skip. Bulk-dispatched here using
+            // the shared `parse_minimal_esm_record` (EDID + optional
+            // FULL). When a real consumer arrives for any one of
+            // these, replace the dispatch arm + `MinimalEsmRecord`
+            // map with a dedicated parser pair via the established
+            // #808 / #809 pattern.
+            //
+            // Audio metadata (11):
+            b"ALOC" => extract_records(&mut reader, end, b"ALOC", &mut |fid, subs| {
+                index
+                    .audio_locations
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"ANIO" => extract_records(&mut reader, end, b"ANIO", &mut |fid, subs| {
+                index
+                    .animation_objects
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"ASPC" => extract_records(&mut reader, end, b"ASPC", &mut |fid, subs| {
+                index
+                    .acoustic_spaces
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"CAMS" => extract_records(&mut reader, end, b"CAMS", &mut |fid, subs| {
+                index
+                    .camera_shots
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"CPTH" => extract_records(&mut reader, end, b"CPTH", &mut |fid, subs| {
+                index
+                    .camera_paths
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"DOBJ" => extract_records(&mut reader, end, b"DOBJ", &mut |fid, subs| {
+                index
+                    .default_objects
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"MICN" => extract_records(&mut reader, end, b"MICN", &mut |fid, subs| {
+                index
+                    .menu_icons
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"MSET" => extract_records(&mut reader, end, b"MSET", &mut |fid, subs| {
+                index
+                    .media_sets
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"MUSC" => extract_records(&mut reader, end, b"MUSC", &mut |fid, subs| {
+                index
+                    .music_types
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"SOUN" => extract_records(&mut reader, end, b"SOUN", &mut |fid, subs| {
+                index.sounds.insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"VTYP" => extract_records(&mut reader, end, b"VTYP", &mut |fid, subs| {
+                index
+                    .voice_types
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            // Visual / world (8):
+            b"AMEF" => extract_records(&mut reader, end, b"AMEF", &mut |fid, subs| {
+                index
+                    .ammo_effects
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"DEBR" => extract_records(&mut reader, end, b"DEBR", &mut |fid, subs| {
+                index.debris.insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"GRAS" => extract_records(&mut reader, end, b"GRAS", &mut |fid, subs| {
+                index
+                    .grasses
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"IMAD" => extract_records(&mut reader, end, b"IMAD", &mut |fid, subs| {
+                index
+                    .imagespace_modifiers
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"LSCR" => extract_records(&mut reader, end, b"LSCR", &mut |fid, subs| {
+                index
+                    .load_screens
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"LSCT" => extract_records(&mut reader, end, b"LSCT", &mut |fid, subs| {
+                index
+                    .load_screen_types
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"PWAT" => extract_records(&mut reader, end, b"PWAT", &mut |fid, subs| {
+                index
+                    .placeable_waters
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"RGDL" => extract_records(&mut reader, end, b"RGDL", &mut |fid, subs| {
+                index
+                    .ragdolls
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            // FNV Hardcore mode (4):
+            b"DEHY" => extract_records(&mut reader, end, b"DEHY", &mut |fid, subs| {
+                index
+                    .dehydration_stages
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"HUNG" => extract_records(&mut reader, end, b"HUNG", &mut |fid, subs| {
+                index
+                    .hunger_stages
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"RADS" => extract_records(&mut reader, end, b"RADS", &mut |fid, subs| {
+                index
+                    .radiation_stages
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"SLPD" => extract_records(&mut reader, end, b"SLPD", &mut |fid, subs| {
+                index
+                    .sleep_deprivation_stages
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            // FNV Caravan + Casino (6):
+            b"CCRD" => extract_records(&mut reader, end, b"CCRD", &mut |fid, subs| {
+                index
+                    .caravan_cards
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"CDCK" => extract_records(&mut reader, end, b"CDCK", &mut |fid, subs| {
+                index
+                    .caravan_decks
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"CHAL" => extract_records(&mut reader, end, b"CHAL", &mut |fid, subs| {
+                index
+                    .challenges
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"CHIP" => extract_records(&mut reader, end, b"CHIP", &mut |fid, subs| {
+                index
+                    .poker_chips
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"CMNY" => extract_records(&mut reader, end, b"CMNY", &mut |fid, subs| {
+                index
+                    .caravan_money
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"CSNO" => extract_records(&mut reader, end, b"CSNO", &mut |fid, subs| {
+                index
+                    .casinos
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            // Recipe residuals (2):
+            b"RCCT" => extract_records(&mut reader, end, b"RCCT", &mut |fid, subs| {
+                index
+                    .recipe_categories
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"RCPE" => extract_records(&mut reader, end, b"RCPE", &mut |fid, subs| {
+                index
+                    .recipe_records
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
             })?,
             _ => {
                 reader.skip_group(&group);
@@ -1985,7 +2260,7 @@ mod tests {
     /// `pub foos: HashMap<...>` field, increment this.
     #[test]
     fn categories_table_row_count_pinned() {
-        // 49 typed maps on EsmIndex + 2 from cells (cells, statics).
+        // 80 typed maps on EsmIndex + 2 from cells (cells, statics).
         // Bumped from 37 → 38 in #624 (image_spaces map for IMGS dispatch).
         // Bumped from 38 → 39 in #630 (form_lists map for FLST dispatch).
         // Bumped from 39 → 44 in #808 (FNV-D2-NEW-01: PROJ + EFSH +
@@ -1993,7 +2268,14 @@ mod tests {
         // Bumped from 44 → 51 in #809 (FNV-D2-NEW-02: REPU + EXPL +
         //   CSTY + IDLE + IPCT + IPDS + COBJ stubs for NPC AI /
         //   crafting / impact-effect / faction-reputation coverage).
+        // Bumped from 51 → 82 in #810 (FNV-D2-NEW-03: 31 long-tail
+        //   minimal-stub records covering audio metadata, visual /
+        //   world, hardcore mode, Caravan + Casino, recipe residuals).
+        //   All 31 share `MinimalEsmRecord` via
+        //   `parse_minimal_esm_record` — replace with dedicated
+        //   per-record parsers via the #808/#809 pattern when a
+        //   consumer arrives.
         // Bump in lockstep with the struct + `categories()` edits.
-        assert_eq!(EsmIndex::categories().len(), 51);
+        assert_eq!(EsmIndex::categories().len(), 82);
     }
 }

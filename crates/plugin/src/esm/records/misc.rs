@@ -1393,6 +1393,55 @@ pub fn parse_cobj(form_id: u32, subs: &[SubRecord]) -> CobjRecord {
     out
 }
 
+// ── #810 / FNV-D2-NEW-03 — long-tail catch-all stubs ───────────────
+//
+// 31 record types in the FNV catch-all-skip long tail. None had a
+// concrete consumer driving a per-record parser (the audit's defer-
+// until-consumer recommendation). The user opted to bulk-dispatch
+// anyway so the catch-all skip approaches parity with FalloutNV.esm's
+// authored content set.
+//
+// All 31 share a single minimal-stub form: EDID + optional FULL.
+// Records that gain a real consumer later can grow per-record fields
+// via the established #808 / #809 pattern (each record gets its own
+// dedicated struct). Until then, this is the cheapest dispatch shape
+// that takes them off the catch-all skip without 31× boilerplate.
+//
+// Records covered (5 clusters):
+//   Audio metadata (11): ALOC ANIO ASPC CAMS CPTH DOBJ MICN MSET MUSC SOUN VTYP
+//   Visual / world (8):  AMEF DEBR GRAS IMAD LSCR LSCT PWAT RGDL
+//   Hardcore mode (4):   DEHY HUNG RADS SLPD
+//   Caravan + Casino (6): CCRD CDCK CHAL CHIP CMNY CSNO
+//   Recipe residuals (2): RCCT RCPE
+
+/// Minimal-stub record for the long-tail dispatch coverage. EDID +
+/// optional FULL captured; all other sub-records skipped. When a
+/// consumer for a specific record type arrives, replace its
+/// `HashMap<u32, MinimalEsmRecord>` field on `EsmIndex` with a
+/// dedicated struct + parser pair following the `#808` / `#809`
+/// established pattern. See audit `FNV-D2-NEW-03` / #810.
+#[derive(Debug, Clone, Default)]
+pub struct MinimalEsmRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    pub full_name: String,
+}
+
+pub fn parse_minimal_esm_record(form_id: u32, subs: &[SubRecord]) -> MinimalEsmRecord {
+    let mut out = MinimalEsmRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
+            _ => {}
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2055,5 +2104,32 @@ mod tests {
         let r = parse_repu(0x0011_E664, &subs);
         assert_eq!(r.editor_id, "PowderGangers");
         assert_eq!(r.base_value, 0.0);
+    }
+
+    // ── #810 / FNV-D2-NEW-03 — minimal-stub regression guards ─────
+
+    #[test]
+    fn parse_minimal_record_picks_edid_full() {
+        let subs = vec![
+            sub(b"EDID", b"MUSCMainTitle\0"),
+            sub(b"FULL", b"Main Title Theme\0"),
+            // Other sub-records ignored:
+            sub(b"FNAM", b"music\\base\\maintitle.mp3\0"),
+        ];
+        let m = parse_minimal_esm_record(0x0001_5C8C, &subs);
+        assert_eq!(m.form_id, 0x0001_5C8C);
+        assert_eq!(m.editor_id, "MUSCMainTitle");
+        assert_eq!(m.full_name, "Main Title Theme");
+    }
+
+    #[test]
+    fn parse_minimal_record_handles_edid_only() {
+        // Many long-tail records ship EDID only (no FULL). Stub must
+        // tolerate the missing FULL without panic; full_name stays
+        // empty.
+        let subs = vec![sub(b"EDID", b"DOBJDefaultObject\0")];
+        let m = parse_minimal_esm_record(0xDEAD_BEEF, &subs);
+        assert_eq!(m.editor_id, "DOBJDefaultObject");
+        assert!(m.full_name.is_empty());
     }
 }

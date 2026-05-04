@@ -383,6 +383,72 @@ fn parse_rate_fnv_esm() {
         index.idle_animations.len(),
     );
 
+    // #810 / audit FNV-D2-NEW-03 regression guard: the 31 long-tail
+    // record types must dispatch end-to-end via `parse_minimal_esm_record`.
+    // Pre-fix each fell through the catch-all skip. Granular per-record
+    // floors aren't worth the test churn — when a real consumer arrives
+    // and a record gains its own dedicated parser via the #808/#809
+    // pattern, the per-record floor lands with that work. Instead pin
+    // the SUM as a single anti-regression guard: vanilla FNV ships 5000+
+    // records across the long tail (1000+ SOUN alone), so a count below
+    // 1000 means the dispatch arms aren't firing.
+    let long_tail_total: usize = index.audio_locations.len()
+        + index.animation_objects.len()
+        + index.acoustic_spaces.len()
+        + index.camera_shots.len()
+        + index.camera_paths.len()
+        + index.default_objects.len()
+        + index.menu_icons.len()
+        + index.media_sets.len()
+        + index.music_types.len()
+        + index.sounds.len()
+        + index.voice_types.len()
+        + index.ammo_effects.len()
+        + index.debris.len()
+        + index.grasses.len()
+        + index.imagespace_modifiers.len()
+        + index.load_screens.len()
+        + index.load_screen_types.len()
+        + index.placeable_waters.len()
+        + index.ragdolls.len()
+        + index.dehydration_stages.len()
+        + index.hunger_stages.len()
+        + index.radiation_stages.len()
+        + index.sleep_deprivation_stages.len()
+        + index.caravan_cards.len()
+        + index.caravan_decks.len()
+        + index.challenges.len()
+        + index.poker_chips.len()
+        + index.caravan_money.len()
+        + index.casinos.len()
+        + index.recipe_categories.len()
+        + index.recipe_records.len();
+    assert!(
+        long_tail_total >= 1000,
+        "long-tail total = {} (expected >= 1000; vanilla FNV ships ~5500 \
+         across the 31 record types — most of that is SOUN). A count \
+         this low means the dispatch arms aren't firing.",
+        long_tail_total,
+    );
+
+    // SOUN is the largest single contributor (~1100 vanilla); pin a
+    // stand-alone floor so a SOUN-specific dispatch regression fails
+    // loud independently of the other 30 records.
+    assert!(
+        index.sounds.len() >= 800,
+        "SOUN={} (expected >= 800; vanilla ships ~1100)",
+        index.sounds.len(),
+    );
+
+    eprintln!(
+        "[FNV] long-tail total = {} | sounds={} idle={} grasses={} debris={}",
+        long_tail_total,
+        index.sounds.len(),
+        index.idle_animations.len(),
+        index.grasses.len(),
+        index.debris.len(),
+    );
+
     // #533 / audit M33-01 regression guard: at least one FNV weather must
     // have a non-zero NAM0 sky colour. Pre-fix the `>= 240 B` gate dropped
     // ~12/63 FNV weathers silently (those using the 160-B stride). Weather
