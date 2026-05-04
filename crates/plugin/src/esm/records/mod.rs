@@ -446,6 +446,15 @@ impl EsmIndex {
             ("casinos", |s| s.casinos.len()),
             ("recipe_categories", |s| s.recipe_categories.len()),
             ("recipe_records", |s| s.recipe_records.len()),
+            // FO4-architecture maps (live on `EsmCellIndex`, not the top
+            // level — same pattern as the `cells` and `statics` rows).
+            // Without these rows a regression that empties any of the
+            // five maps passes CI silently. See #817.
+            ("texture_sets", |s| s.cells.texture_sets.len()),
+            ("scols", |s| s.cells.scols.len()),
+            ("packins", |s| s.cells.packins.len()),
+            ("movables", |s| s.cells.movables.len()),
+            ("material_swaps", |s| s.cells.material_swaps.len()),
         ]
     }
 
@@ -2275,7 +2284,12 @@ mod tests {
         //   `parse_minimal_esm_record` — replace with dedicated
         //   per-record parsers via the #808/#809 pattern when a
         //   consumer arrives.
+        // Bumped from 82 → 87 in #817 (FO4-D4-NEW-05: 5 FO4-architecture
+        //   maps that live on `EsmCellIndex` rather than `EsmIndex` —
+        //   texture_sets, scols, packins, movables, material_swaps —
+        //   were silently uncovered by `category_breakdown()` and
+        //   would let regressions slip through CI).
         // Bump in lockstep with the struct + `categories()` edits.
-        assert_eq!(EsmIndex::categories().len(), 82);
+        assert_eq!(EsmIndex::categories().len(), 87);
     }
 }
