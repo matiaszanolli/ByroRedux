@@ -33,7 +33,7 @@ use std::sync::Once;
 /// (`scene_buffer.rs:978`) with actual default-to-0 behaviour.
 static INTERN_OVERFLOW_WARNED: Once = Once::new();
 
-/// std430 GPU-side material record. 272 bytes per material (17 × vec4).
+/// std430 GPU-side material record. 260 bytes per material.
 ///
 /// Mirrors the per-material fields of [`super::scene_buffer::GpuInstance`]
 /// at the same offsets within each vec4 group — this keeps the Phase 4–5
@@ -46,8 +46,8 @@ static INTERN_OVERFLOW_WARNED: Once = Once::new();
 /// so the byte-level `Hash`/`Eq` impls below are deterministic.
 ///
 /// **Shader Struct Sync**: matching `struct GpuMaterial` declarations
-/// in the GLSL shaders MUST be added in lockstep when Phase 3 lands.
-/// The `gpu_material_size_is_272_bytes` test below pins the layout
+/// in the GLSL shaders MUST be updated in lockstep. The
+/// `gpu_material_size_is_260_bytes` test below pins the layout
 /// invariant.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -113,53 +113,56 @@ pub struct GpuMaterial {
     pub ambient_g: f32, // offset 136
     pub ambient_b: f32, // offset 140
 
-    // ── avg_albedo RGB + skin_tint_a (vec4 #10) ────────────────────
-    pub avg_albedo_r: f32, // offset 144
-    pub avg_albedo_g: f32, // offset 148
-    pub avg_albedo_b: f32, // offset 152
-    pub skin_tint_a: f32,  // offset 156
+    // #804 / R1-N4 — `avg_albedo_r/g/b` (offsets 144-152) removed. The
+    // field was populated by `to_gpu_material` for every material but
+    // no shader read `mat.avgAlbedo*`; both consumers (caustic_splat.comp
+    // and triangle.frag GI miss) sample from the per-instance copy on
+    // `GpuInstance.avgAlbedo*` instead. The retention comment at
+    // `scene_buffer.rs:215-219` explains why the per-instance copy
+    // stays. Subsequent fields shift down by 12 bytes.
 
-    // ── skin_tint RGB + hair_tint_r (vec4 #11) ─────────────────────
-    pub skin_tint_r: f32, // offset 160
-    pub skin_tint_g: f32, // offset 164
-    pub skin_tint_b: f32, // offset 168
-    pub hair_tint_r: f32, // offset 172
+    // ── skin_tint_a + skin_tint RGB (offsets 144-156) ───────────────
+    pub skin_tint_a: f32, // offset 144
+    pub skin_tint_r: f32, // offset 148
+    pub skin_tint_g: f32, // offset 152
+    pub skin_tint_b: f32, // offset 156
 
-    // ── hair_tint GB + multi_layer_envmap_strength + eye_left_x (vec4 #12)
-    pub hair_tint_g: f32,                 // offset 176
-    pub hair_tint_b: f32,                 // offset 180
-    pub multi_layer_envmap_strength: f32, // offset 184
-    pub eye_left_center_x: f32,           // offset 188
+    // ── hair_tint RGB + multi_layer_envmap_strength (offsets 160-172)
+    pub hair_tint_r: f32,                 // offset 160
+    pub hair_tint_g: f32,                 // offset 164
+    pub hair_tint_b: f32,                 // offset 168
+    pub multi_layer_envmap_strength: f32, // offset 172
 
-    // ── eye_left YZ + eye_cubemap_scale + eye_right_x (vec4 #13) ───
-    pub eye_left_center_y: f32, // offset 192
-    pub eye_left_center_z: f32, // offset 196
-    pub eye_cubemap_scale: f32, // offset 200
-    pub eye_right_center_x: f32, // offset 204
+    // ── eye_left RGB + eye_cubemap_scale (offsets 176-188) ──────────
+    pub eye_left_center_x: f32, // offset 176
+    pub eye_left_center_y: f32, // offset 180
+    pub eye_left_center_z: f32, // offset 184
+    pub eye_cubemap_scale: f32, // offset 188
 
-    // ── eye_right YZ + multi_layer_inner_thickness + refraction (vec4 #14)
-    pub eye_right_center_y: f32,           // offset 208
-    pub eye_right_center_z: f32,           // offset 212
-    pub multi_layer_inner_thickness: f32,  // offset 216
-    pub multi_layer_refraction_scale: f32, // offset 220
+    // ── eye_right RGB + multi_layer_inner_thickness (offsets 192-204)
+    pub eye_right_center_x: f32,          // offset 192
+    pub eye_right_center_y: f32,          // offset 196
+    pub eye_right_center_z: f32,          // offset 200
+    pub multi_layer_inner_thickness: f32, // offset 204
 
-    // ── multi_layer_inner_scale UV + sparkle RG (vec4 #15) ─────────
-    pub multi_layer_inner_scale_u: f32, // offset 224
-    pub multi_layer_inner_scale_v: f32, // offset 228
-    pub sparkle_r: f32,                 // offset 232
-    pub sparkle_g: f32,                 // offset 236
+    // ── refraction_scale + multi_layer_inner_scale UV + sparkle_r (208-220)
+    pub multi_layer_refraction_scale: f32, // offset 208
+    pub multi_layer_inner_scale_u: f32,    // offset 212
+    pub multi_layer_inner_scale_v: f32,    // offset 216
+    pub sparkle_r: f32,                    // offset 220
 
-    // ── sparkle_b + sparkle_intensity + falloff angles (vec4 #16) ──
-    pub sparkle_b: f32,         // offset 240
-    pub sparkle_intensity: f32, // offset 244
-    pub falloff_start_angle: f32, // offset 248
-    pub falloff_stop_angle: f32, // offset 252
+    // ── sparkle_g/b + sparkle_intensity + falloff_start (224-236) ───
+    pub sparkle_g: f32,           // offset 224
+    pub sparkle_b: f32,           // offset 228
+    pub sparkle_intensity: f32,   // offset 232
+    pub falloff_start_angle: f32, // offset 236
 
-    // ── falloff opacities + soft_falloff_depth + pad (vec4 #17) ────
-    pub falloff_start_opacity: f32, // offset 256
-    pub falloff_stop_opacity: f32,  // offset 260
-    pub soft_falloff_depth: f32,    // offset 264
-    pub _pad_falloff: f32,          // offset 268 → total 272
+    // ── falloff_stop + opacities + soft_falloff_depth + pad (240-256)
+    pub falloff_stop_angle: f32,    // offset 240
+    pub falloff_start_opacity: f32, // offset 244
+    pub falloff_stop_opacity: f32,  // offset 248
+    pub soft_falloff_depth: f32,    // offset 252
+    pub _pad_falloff: f32,          // offset 256 → total 260
 }
 
 impl Default for GpuMaterial {
@@ -209,10 +212,6 @@ impl Default for GpuMaterial {
             ambient_r: 1.0,
             ambient_g: 1.0,
             ambient_b: 1.0,
-            // avg_albedo — mid-gray fallback for GI bounce.
-            avg_albedo_r: 0.5,
-            avg_albedo_g: 0.5,
-            avg_albedo_b: 0.5,
             // Skyrim+ variant payloads — zeroed; `material_kind == 0`
             // means the variant ladder skips reading them anyway.
             skin_tint_r: 0.0,
@@ -391,9 +390,14 @@ mod tests {
     /// Pin the std430 layout. Any growth must be intentional and
     /// matched by the shader-side `struct GpuMaterial` declaration in
     /// lockstep — same contract as `GpuInstance`.
+    ///
+    /// Was 272 B until #804 / R1-N4 dropped `avg_albedo_r/g/b` (12 B,
+    /// no shader read `mat.avgAlbedo*` — caustic_splat.comp + the
+    /// triangle.frag GI miss path both sample from the per-instance
+    /// `GpuInstance.avgAlbedo*` copy instead).
     #[test]
-    fn gpu_material_size_is_272_bytes() {
-        assert_eq!(std::mem::size_of::<GpuMaterial>(), 272);
+    fn gpu_material_size_is_260_bytes() {
+        assert_eq!(std::mem::size_of::<GpuMaterial>(), 260);
     }
 
     /// `#[repr(C)]` puts no implicit padding between f32/u32 fields,

@@ -295,9 +295,9 @@ impl DrawCommand {
             ambient_r: self.ambient_color[0],
             ambient_g: self.ambient_color[1],
             ambient_b: self.ambient_color[2],
-            avg_albedo_r: self.avg_albedo[0],
-            avg_albedo_g: self.avg_albedo[1],
-            avg_albedo_b: self.avg_albedo[2],
+            // #804 — `avg_albedo` is no longer carried on `GpuMaterial`;
+            // `caustic_splat.comp` + `triangle.frag` GI miss read the
+            // per-instance copy on `GpuInstance.avgAlbedo*` instead.
             skin_tint_r: self.skin_tint_rgba[0],
             skin_tint_g: self.skin_tint_rgba[1],
             skin_tint_b: self.skin_tint_rgba[2],

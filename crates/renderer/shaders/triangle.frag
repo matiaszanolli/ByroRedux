@@ -106,22 +106,23 @@ struct GpuMaterial {
     float uvScaleU, uvScaleV, diffuseR, diffuseG;
     // diffuse_b + ambient RGB (vec4 #9)
     float diffuseB, ambientR, ambientG, ambientB;
-    // avg_albedo RGB + skin_tint_a (vec4 #10)
-    float avgAlbedoR, avgAlbedoG, avgAlbedoB, skinTintA;
-    // skin_tint RGB + hair_tint_r (vec4 #11)
-    float skinTintR, skinTintG, skinTintB, hairTintR;
-    // hair_tint GB + multi_layer_envmap_strength + eye_left_x (vec4 #12)
-    float hairTintG, hairTintB, multiLayerEnvmapStrength, eyeLeftCenterX;
-    // eye_left YZ + eye_cubemap_scale + eye_right_x (vec4 #13)
-    float eyeLeftCenterY, eyeLeftCenterZ, eyeCubemapScale, eyeRightCenterX;
-    // eye_right YZ + multi_layer_inner_thickness + refraction (vec4 #14)
-    float eyeRightCenterY, eyeRightCenterZ, multiLayerInnerThickness, multiLayerRefractionScale;
-    // multi_layer_inner_scale UV + sparkle RG (vec4 #15)
-    float multiLayerInnerScaleU, multiLayerInnerScaleV, sparkleR, sparkleG;
-    // sparkle_b + sparkle_intensity + falloff angles (vec4 #16)
-    float sparkleB, sparkleIntensity, falloffStartAngle, falloffStopAngle;
-    // falloff opacities + soft_falloff_depth + pad (vec4 #17)
-    float falloffStartOpacity, falloffStopOpacity, softFalloffDepth, _padFalloff;
+    // #804 / R1-N4 — `avgAlbedoR/G/B` (offsets 144-152) removed; no
+    // shader read `mat.avgAlbedo*`. Subsequent fields shift down by 12.
+    // skin_tint A/R/G/B (offsets 144-156)
+    float skinTintA, skinTintR, skinTintG, skinTintB;
+    // hair_tint RGB + multi_layer_envmap_strength (offsets 160-172)
+    float hairTintR, hairTintG, hairTintB, multiLayerEnvmapStrength;
+    // eye_left RGB + eye_cubemap_scale (offsets 176-188)
+    float eyeLeftCenterX, eyeLeftCenterY, eyeLeftCenterZ, eyeCubemapScale;
+    // eye_right RGB + multi_layer_inner_thickness (offsets 192-204)
+    float eyeRightCenterX, eyeRightCenterY, eyeRightCenterZ, multiLayerInnerThickness;
+    // refraction_scale + multi_layer_inner_scale UV + sparkle_r (208-220)
+    float multiLayerRefractionScale, multiLayerInnerScaleU, multiLayerInnerScaleV, sparkleR;
+    // sparkle GB + sparkle_intensity + falloff_start (224-236)
+    float sparkleG, sparkleB, sparkleIntensity, falloffStartAngle;
+    // falloff_stop + opacities + soft_falloff_depth + pad (240-256, total 260)
+    float falloffStopAngle, falloffStartOpacity, falloffStopOpacity, softFalloffDepth;
+    float _padFalloff;
 };
 
 layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {
