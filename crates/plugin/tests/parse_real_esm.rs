@@ -18,6 +18,7 @@
 //! hardcoded-path only and had no `total >= 13_684` floor.
 
 use byroredux_plugin::esm::parse_esm;
+use byroredux_plugin::esm::reader::GameKind;
 use std::path::PathBuf;
 
 /// Resolve a `Data/` directory from an env var, falling back to the
@@ -50,6 +51,15 @@ const FNV_TOTAL_FLOOR: usize = 60_000;
 /// FO3: 30,000 records floor — covers the original 18,007 baseline +
 /// the 7 categories added in #446/#447. Observed 2026-04: 31,101.
 const FO3_TOTAL_FLOOR: usize = 30_000;
+
+/// FO4: 70,000 records floor — observed 2026-05-04 on vanilla
+/// Fallout4.esm: 76,468 (with #817 categories landed: cells 964 +
+/// statics 31,989 + scols 2,617 + packins 872 + material_swaps 2,537 +
+/// texture_sets 379 + items 4,076 + NPCs 3,015 + game_settings 2,039
+/// + globals 1,346 + LVLI 2,098 + factions 699 + weathers 71 + many
+/// smaller categories). Floor at 70 K absorbs DLC/patch drift without
+/// masking a category-wipe regression.
+const FO4_TOTAL_FLOOR: usize = 70_000;
 
 #[test]
 #[ignore]
@@ -789,4 +799,204 @@ fn parse_rate_oblivion_esm() {
             edid, w.classification, *expected,
         );
     }
+}
+
+/// FO4: vanilla `Fallout4.esm` parse-rate harness. Mirrors the FNV /
+/// FO3 patterns. Floors sit a few percent below 2026-05-04 observed
+/// counts to absorb patch drift without masking dispatch regressions.
+///
+/// Closes #819 / FO4-D4-NEW-07 — was missing while FNV / FO3 / Oblivion
+/// each had one. Floors specifically lock in the 5 FO4-architecture
+/// categories that #817 added to `EsmIndex::categories()`
+/// (texture_sets / scols / packins / movables / material_swaps).
+#[test]
+#[ignore]
+fn parse_rate_fo4_esm() {
+    let Some(data) = data_dir(
+        "BYROREDUX_FO4_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
+    ) else {
+        eprintln!("[FO4] skipping: BYROREDUX_FO4_DATA unset and fallback path missing");
+        return;
+    };
+    let esm_path = data.join("Fallout4.esm");
+    let bytes = std::fs::read(&esm_path).expect("read Fallout4.esm");
+    let parse_start = std::time::Instant::now();
+    let index = parse_esm(&bytes).expect("parse Fallout4.esm");
+    let parse_elapsed = parse_start.elapsed();
+    eprintln!("[FO4] parse_esm wall={:?}", parse_elapsed);
+
+    let scol_placements: usize = index
+        .cells
+        .scols
+        .values()
+        .map(|s| s.parts.iter().map(|p| p.placements.len()).sum::<usize>())
+        .sum();
+
+    eprintln!(
+        "[FO4] total={} game={:?} | cells={} statics={} scols={} \
+         (placements={}) packins={} movables={} material_swaps={} \
+         texture_sets={} items={} containers={} LVLI={} LVLN={} NPCs={} \
+         races={} classes={} factions={} globals={} game_settings={} \
+         weathers={} climates={}",
+        index.total(),
+        index.game,
+        index.cells.cells.len(),
+        index.cells.statics.len(),
+        index.cells.scols.len(),
+        scol_placements,
+        index.cells.packins.len(),
+        index.cells.movables.len(),
+        index.cells.material_swaps.len(),
+        index.cells.texture_sets.len(),
+        index.items.len(),
+        index.containers.len(),
+        index.leveled_items.len(),
+        index.leveled_npcs.len(),
+        index.npcs.len(),
+        index.races.len(),
+        index.classes.len(),
+        index.factions.len(),
+        index.globals.len(),
+        index.game_settings.len(),
+        index.weathers.len(),
+        index.climates.len(),
+    );
+
+    // HEDR → GameKind dispatch. Pre-#439 the FO4 master would
+    // misclassify as Fallout3NV; this guard keeps that fixed.
+    assert_eq!(
+        index.game,
+        GameKind::Fallout4,
+        "FO4 ESM classified as {:?}, expected Fallout4",
+        index.game,
+    );
+
+    // Primary baseline. With #817 categories landed, observed 2026-05-04
+    // is 76,468 records.
+    assert!(
+        index.total() >= FO4_TOTAL_FLOOR,
+        "FO4 total {} < baseline {}",
+        index.total(),
+        FO4_TOTAL_FLOOR,
+    );
+
+    // FO4-architecture categories — #817 made these visible to
+    // category_breakdown(). A regression that empties any of them
+    // (e.g. `parse_scol_group` rewrite that drops the insert) must
+    // fail loud here. Live counts: scols=2617, packins=872,
+    // material_swaps=2537, texture_sets=379, movables=0 (vanilla).
+    assert!(
+        index.cells.scols.len() >= 2500,
+        "SCOL={} (expected >= 2500; vanilla ships 2617) — \
+         dispatch / parse regression",
+        index.cells.scols.len(),
+    );
+    assert!(
+        index.cells.packins.len() >= 850,
+        "PKIN={} (expected >= 850; vanilla ships 872)",
+        index.cells.packins.len(),
+    );
+    assert!(
+        index.cells.material_swaps.len() >= 2400,
+        "MSWP={} (expected >= 2400; vanilla ships 2537)",
+        index.cells.material_swaps.len(),
+    );
+    assert!(
+        index.cells.texture_sets.len() >= 370,
+        "TXST={} (expected >= 370; vanilla ships 379) — \
+         3 DODT-only TXSTs are dropped by the equality guard \
+         until #813 / #814 / #818 land",
+        index.cells.texture_sets.len(),
+    );
+    // MOVS: vanilla ships 0; pin to 0 to catch a future spurious
+    // population (DLC-only or mod-content additions can lift this
+    // floor when those harnesses arrive).
+    assert_eq!(
+        index.cells.movables.len(),
+        0,
+        "MOVS={} (vanilla Fallout4.esm ships 0; non-zero indicates \
+         a DLC was loaded — bump the floor when that's expected)",
+        index.cells.movables.len(),
+    );
+
+    // SCOL placement decode regression guard (#405). 2617 SCOL
+    // records expand to 40,330 ONAM-anchored placements on vanilla.
+    // A regression in ScolPlacement::from_bytes that returns None
+    // unconditionally would drop placement count to 0 while
+    // record count stays at 2617.
+    assert!(
+        scol_placements >= 38_000,
+        "SCOL placements = {} (expected >= 38_000; vanilla yields \
+         40_330 across 2617 records). #405 ONAM/DATA decode \
+         regression suspected.",
+        scol_placements,
+    );
+
+    // Cell + STAT floors — the FO4 cell loader pipeline depends
+    // on these populating before SCOL placements can resolve.
+    assert!(
+        index.cells.cells.len() >= 900,
+        "FO4 cells={} (expected >= 900; vanilla ships 964)",
+        index.cells.cells.len(),
+    );
+    assert!(
+        index.cells.statics.len() >= 30_000,
+        "FO4 statics={} (expected >= 30_000; vanilla ships 31_989)",
+        index.cells.statics.len(),
+    );
+
+    // Per-category floors mirroring the FNV / FO3 harness shape.
+    // Observed vanilla: items=4076, containers=471, LVLI=2098,
+    // LVLN=228, NPCs=3015, factions=699, globals=1346,
+    // game_settings=2039, weathers=71, climates=7, races=45,
+    // classes=31.
+    assert!(index.items.len() >= 3800, "items={}", index.items.len());
+    assert!(
+        index.containers.len() >= 450,
+        "containers={}",
+        index.containers.len(),
+    );
+    assert!(
+        index.leveled_items.len() >= 1900,
+        "LVLI={}",
+        index.leveled_items.len(),
+    );
+    assert!(
+        index.leveled_npcs.len() >= 200,
+        "LVLN={}",
+        index.leveled_npcs.len(),
+    );
+    assert!(index.npcs.len() >= 2800, "NPCs={}", index.npcs.len());
+    assert!(index.races.len() >= 40, "races={}", index.races.len());
+    assert!(
+        index.classes.len() >= 25,
+        "classes={}",
+        index.classes.len(),
+    );
+    assert!(
+        index.factions.len() >= 660,
+        "factions={}",
+        index.factions.len(),
+    );
+    assert!(
+        index.globals.len() >= 1200,
+        "globals={}",
+        index.globals.len(),
+    );
+    assert!(
+        index.game_settings.len() >= 1900,
+        "game_settings={}",
+        index.game_settings.len(),
+    );
+    assert!(
+        index.weathers.len() >= 60,
+        "weathers={}",
+        index.weathers.len(),
+    );
+    assert!(
+        index.climates.len() >= 6,
+        "climates={}",
+        index.climates.len(),
+    );
 }
