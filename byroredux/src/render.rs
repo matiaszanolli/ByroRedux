@@ -14,8 +14,8 @@ use std::collections::HashMap;
 use std::sync::Once;
 
 use crate::components::{
-    AlphaBlend, CellLightingRes, DarkMapHandle, ExtraTextureMaps, NormalMapHandle, SkyParamsRes,
-    TerrainTileSlot, TwoSided,
+    AlphaBlend, CellLightingRes, CloudSimState, DarkMapHandle, ExtraTextureMaps, NormalMapHandle,
+    SkyParamsRes, TerrainTileSlot, TwoSided,
 };
 
 /// Once-per-session gate for the bone-palette overflow warn — see the
@@ -1198,7 +1198,16 @@ pub(crate) fn build_render_data(
     drop(cell_lit);
 
     // Sky params from ECS resource (exterior cells) or default (interior/none).
+    // #803 — cloud scroll lives on `CloudSimState` (survives cell
+    // transitions); the rest comes from `SkyParamsRes` (rebuilt per
+    // exterior load). When CloudSimState is absent (interior-only
+    // session before any exterior load) the scroll defaults to zero.
     let sky = if let Some(sky_res) = world.try_resource::<SkyParamsRes>() {
+        let clouds = world.try_resource::<CloudSimState>();
+        let scroll = clouds
+            .as_ref()
+            .map(|c| (c.cloud_scroll, c.cloud_scroll_1, c.cloud_scroll_2, c.cloud_scroll_3))
+            .unwrap_or_default();
         SkyParams {
             zenith_color: sky_res.zenith_color,
             horizon_color: sky_res.horizon_color,
@@ -1208,17 +1217,17 @@ pub(crate) fn build_render_data(
             sun_size: sky_res.sun_size,
             sun_intensity: sky_res.sun_intensity,
             is_exterior: sky_res.is_exterior,
-            cloud_scroll: sky_res.cloud_scroll,
+            cloud_scroll: scroll.0,
             cloud_tile_scale: sky_res.cloud_tile_scale,
             cloud_texture_index: sky_res.cloud_texture_index,
             sun_texture_index: sky_res.sun_texture_index,
-            cloud_scroll_1: sky_res.cloud_scroll_1,
+            cloud_scroll_1: scroll.1,
             cloud_tile_scale_1: sky_res.cloud_tile_scale_1,
             cloud_texture_index_1: sky_res.cloud_texture_index_1,
-            cloud_scroll_2: sky_res.cloud_scroll_2,
+            cloud_scroll_2: scroll.2,
             cloud_tile_scale_2: sky_res.cloud_tile_scale_2,
             cloud_texture_index_2: sky_res.cloud_texture_index_2,
-            cloud_scroll_3: sky_res.cloud_scroll_3,
+            cloud_scroll_3: scroll.3,
             cloud_tile_scale_3: sky_res.cloud_tile_scale_3,
             cloud_texture_index_3: sky_res.cloud_texture_index_3,
         }

@@ -21,8 +21,8 @@ use byroredux_core::string::FixedString;
 
 use crate::anim_convert::build_subtree_name_map;
 use crate::components::{
-    CellLightingRes, GameTimeRes, InputState, NameIndex, SkyParamsRes, Spinning, SubtreeCache,
-    WeatherDataRes, WeatherTransitionRes,
+    CellLightingRes, CloudSimState, GameTimeRes, InputState, NameIndex, SkyParamsRes, Spinning,
+    SubtreeCache, WeatherDataRes, WeatherTransitionRes,
 };
 
 /// Fly camera system: WASD + mouse look. Updates the active camera's Transform.
@@ -1479,27 +1479,41 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         sky.sun_color = sun_col;
         sky.sun_direction = sun_dir;
         sky.sun_intensity = sun_intensity;
-        // Wrap scroll at 1.0 so it never grows unboundedly; sampler REPEAT
-        // makes the wrap invisible.
-        sky.cloud_scroll[0] = (sky.cloud_scroll[0] + cloud_scroll_rate * dt).rem_euclid(1.0);
-        sky.cloud_scroll[1] = (sky.cloud_scroll[1] + cloud_scroll_rate * 0.3 * dt).rem_euclid(1.0);
+    }
+
+    // #803 — cloud scroll lives on `CloudSimState`, which survives
+    // cell transitions (unlike `SkyParamsRes`, which `unload_cell`
+    // removes on every cell unload). Writing here keeps the
+    // accumulator alive across interior visits so the renderer's
+    // next-frame sample lands at the same UV the player saw before
+    // entering the interior, rather than snapping back to origin.
+    //
+    // Wrap scroll at 1.0 so it never grows unboundedly; sampler
+    // REPEAT makes the wrap invisible.
+    if let Some(mut clouds) = world.try_resource_mut::<CloudSimState>() {
+        clouds.cloud_scroll[0] =
+            (clouds.cloud_scroll[0] + cloud_scroll_rate * dt).rem_euclid(1.0);
+        clouds.cloud_scroll[1] =
+            (clouds.cloud_scroll[1] + cloud_scroll_rate * 0.3 * dt).rem_euclid(1.0);
         // Layer 1 drifts in the opposite U direction at 1.35× speed.
         // Creates visible parallax against layer 0 with no per-weather
         // source needed. See #541 (ONAM/INAM decode) for eventual
         // authoritative values.
-        sky.cloud_scroll_1[0] =
-            (sky.cloud_scroll_1[0] - cloud_scroll_rate * 1.35 * dt).rem_euclid(1.0);
-        sky.cloud_scroll_1[1] =
-            (sky.cloud_scroll_1[1] + cloud_scroll_rate * 0.5 * dt).rem_euclid(1.0);
+        clouds.cloud_scroll_1[0] =
+            (clouds.cloud_scroll_1[0] - cloud_scroll_rate * 1.35 * dt).rem_euclid(1.0);
+        clouds.cloud_scroll_1[1] =
+            (clouds.cloud_scroll_1[1] + cloud_scroll_rate * 0.5 * dt).rem_euclid(1.0);
         // Layer 2 (WTHR ANAM) — same direction as layer 0 (M33.1).
-        sky.cloud_scroll_2[0] = (sky.cloud_scroll_2[0] + cloud_scroll_rate * dt).rem_euclid(1.0);
-        sky.cloud_scroll_2[1] =
-            (sky.cloud_scroll_2[1] + cloud_scroll_rate * 0.3 * dt).rem_euclid(1.0);
-        // Layer 3 (WTHR BNAM) — same opposite-direction pattern as layer 1 (M33.1).
-        sky.cloud_scroll_3[0] =
-            (sky.cloud_scroll_3[0] - cloud_scroll_rate * 1.35 * dt).rem_euclid(1.0);
-        sky.cloud_scroll_3[1] =
-            (sky.cloud_scroll_3[1] + cloud_scroll_rate * 0.5 * dt).rem_euclid(1.0);
+        clouds.cloud_scroll_2[0] =
+            (clouds.cloud_scroll_2[0] + cloud_scroll_rate * dt).rem_euclid(1.0);
+        clouds.cloud_scroll_2[1] =
+            (clouds.cloud_scroll_2[1] + cloud_scroll_rate * 0.3 * dt).rem_euclid(1.0);
+        // Layer 3 (WTHR BNAM) — same opposite-direction pattern as
+        // layer 1 (M33.1).
+        clouds.cloud_scroll_3[0] =
+            (clouds.cloud_scroll_3[0] - cloud_scroll_rate * 1.35 * dt).rem_euclid(1.0);
+        clouds.cloud_scroll_3[1] =
+            (clouds.cloud_scroll_3[1] + cloud_scroll_rate * 0.5 * dt).rem_euclid(1.0);
     }
 
     // Update CellLightingRes — exterior cells only. Interior cells own

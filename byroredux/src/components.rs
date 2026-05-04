@@ -137,8 +137,6 @@ pub(crate) struct SkyParamsRes {
     pub(crate) sun_size: f32,
     pub(crate) sun_intensity: f32,
     pub(crate) is_exterior: bool,
-    /// Cloud layer 0 scroll offset accumulated by `weather_system` each frame.
-    pub(crate) cloud_scroll: [f32; 2],
     /// Cloud layer 0 UV tile scale. `0.0` disables clouds (shader skips the sample).
     pub(crate) cloud_tile_scale: f32,
     /// Bindless texture handle for cloud_textures[0]. Only meaningful when
@@ -149,10 +147,6 @@ pub(crate) struct SkyParamsRes {
     /// Populated at cell load when the worldspace has a CLMT with a
     /// resolvable FNAM path. See #478.
     pub(crate) sun_texture_index: u32,
-    /// Cloud layer 1 scroll offset (WTHR CNAM). Accumulated by
-    /// `weather_system` each frame. Drifts in the opposite U direction
-    /// to layer 0 to create visible parallax.
-    pub(crate) cloud_scroll_1: [f32; 2],
     /// Cloud layer 1 UV tile scale. `0.0` disables the layer (shader
     /// branch-skips the sample). Set to `0.0` when no CNAM texture
     /// is available for the current weather.
@@ -160,17 +154,11 @@ pub(crate) struct SkyParamsRes {
     /// Bindless texture handle for cloud_textures[1] (WTHR CNAM).
     /// Only meaningful when `cloud_tile_scale_1 > 0.0`.
     pub(crate) cloud_texture_index_1: u32,
-    /// Cloud layer 2 scroll offset (WTHR ANAM). Same direction/speed
-    /// pattern as layer 0 but offset for parallax (M33.1).
-    pub(crate) cloud_scroll_2: [f32; 2],
     /// Cloud layer 2 UV tile scale. `0.0` disables the layer.
     /// Set to `0.0` when no ANAM texture is available.
     pub(crate) cloud_tile_scale_2: f32,
     /// Bindless texture handle for cloud_textures[2] (WTHR ANAM).
     pub(crate) cloud_texture_index_2: u32,
-    /// Cloud layer 3 scroll offset (WTHR BNAM). Same opposite-direction
-    /// drift pattern as layer 1 (M33.1).
-    pub(crate) cloud_scroll_3: [f32; 2],
     /// Cloud layer 3 UV tile scale. `0.0` disables the layer.
     /// Set to `0.0` when no BNAM texture is available.
     pub(crate) cloud_tile_scale_3: f32,
@@ -178,6 +166,34 @@ pub(crate) struct SkyParamsRes {
     pub(crate) cloud_texture_index_3: u32,
 }
 impl Resource for SkyParamsRes {}
+
+/// Continuous-simulation cloud scroll accumulators — survive cell
+/// transitions because the player exiting an exterior cell to an
+/// interior shouldn't snap the cloud frame back to origin on
+/// re-entry. Mirrors the `GameTimeRes` survives-transitions pattern.
+///
+/// Pre-#803 the four scroll fields lived on `SkyParamsRes`, which
+/// `cell_loader::unload_cell` removes on every cell unload; the next
+/// `apply_worldspace_weather` rebuilt the resource with `[0, 0]`
+/// scroll, producing a visible cloud snap-back on every exterior
+/// re-entry (~0.5 UV per 30 s of interior time, hard-cap at 1.0 via
+/// the `weather_system` `rem_euclid(1.0)` wrap). Lifting the
+/// accumulator into its own resource means `unload_cell` leaves it
+/// alone, the renderer reads the live values per-frame, and
+/// `weather_system` advances them across cell boundaries.
+#[derive(Debug, Default)]
+pub(crate) struct CloudSimState {
+    /// Cloud layer 0 scroll offset (matches the scroll vector that
+    /// formerly lived on `SkyParamsRes.cloud_scroll`).
+    pub(crate) cloud_scroll: [f32; 2],
+    /// Cloud layer 1 scroll offset (WTHR CNAM).
+    pub(crate) cloud_scroll_1: [f32; 2],
+    /// Cloud layer 2 scroll offset (WTHR ANAM).
+    pub(crate) cloud_scroll_2: [f32; 2],
+    /// Cloud layer 3 scroll offset (WTHR BNAM).
+    pub(crate) cloud_scroll_3: [f32; 2],
+}
+impl Resource for CloudSimState {}
 
 impl SkyParamsRes {
     /// Bindless texture handles owned by this resource.

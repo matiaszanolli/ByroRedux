@@ -19,8 +19,9 @@ use crate::asset_provider::{
 };
 use crate::cell_loader;
 use crate::components::{
-    AlphaBlend, CellLightingRes, DarkMapHandle, ExtraTextureMaps, GameTimeRes, InputState,
-    NormalMapHandle, SkyParamsRes, Spinning, TwoSided, WeatherDataRes, WeatherTransitionRes,
+    AlphaBlend, CellLightingRes, CloudSimState, DarkMapHandle, ExtraTextureMaps, GameTimeRes,
+    InputState, NormalMapHandle, SkyParamsRes, Spinning, TwoSided, WeatherDataRes,
+    WeatherTransitionRes,
 };
 use crate::helpers::add_child;
 use crate::streaming::{self, LoadedCell, WorldStreamingState};
@@ -316,20 +317,23 @@ fn apply_worldspace_weather(
             sun_size: 0.9995,
             sun_intensity: 4.0,
             is_exterior: true,
-            cloud_scroll: [0.0, 0.0],
             cloud_tile_scale,
             cloud_texture_index: cloud_tex_index,
             sun_texture_index: sun_tex_index,
-            cloud_scroll_1: [0.0, 0.0],
             cloud_tile_scale_1,
             cloud_texture_index_1: cloud_tex_index_1,
-            cloud_scroll_2: [0.0, 0.0],
             cloud_tile_scale_2,
             cloud_texture_index_2: cloud_tex_index_2,
-            cloud_scroll_3: [0.0, 0.0],
             cloud_tile_scale_3,
             cloud_texture_index_3: cloud_tex_index_3,
         });
+        // #803 — cloud scroll lives on `CloudSimState`, which survives
+        // cell transitions. Insert a default-zero state on first
+        // exterior load only; subsequent loads reuse the existing
+        // accumulator so clouds resume drift across interior visits.
+        if world.try_resource::<CloudSimState>().is_none() {
+            world.insert_resource(CloudSimState::default());
+        }
         // Full NAM0 color table for per-frame TOD interpolation.
         let mut sky_colors = [[[0.0f32; 3]; 6]; 10];
         for g in 0..SKY_COLOR_GROUPS {
@@ -424,20 +428,22 @@ fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [f32; 3]) {
         sun_size: 0.9995,
         sun_intensity: 4.0,
         is_exterior: true,
-        cloud_scroll: [0.0, 0.0],
         cloud_tile_scale: 0.0,
         cloud_texture_index: 0,
         sun_texture_index: 0,
-        cloud_scroll_1: [0.0, 0.0],
         cloud_tile_scale_1: 0.0,
         cloud_texture_index_1: 0,
-        cloud_scroll_2: [0.0, 0.0],
         cloud_tile_scale_2: 0.0,
         cloud_texture_index_2: 0,
-        cloud_scroll_3: [0.0, 0.0],
         cloud_tile_scale_3: 0.0,
         cloud_texture_index_3: 0,
     });
+    // #803 — same survives-transitions pattern as the WTHR-driven
+    // path: the procedural fallback also seeds CloudSimState only on
+    // the first exterior load.
+    if world.try_resource::<CloudSimState>().is_none() {
+        world.insert_resource(CloudSimState::default());
+    }
 
     // Synthetic NAM0 table — every TOD slot gets the same procedural
     // colour for the six groups `weather_system` reads. The lerp of

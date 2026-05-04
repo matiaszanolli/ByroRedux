@@ -22,17 +22,13 @@ fn mk_sky(indices: [u32; 5]) -> SkyParamsRes {
         sun_size: 1.0,
         sun_intensity: 1.0,
         is_exterior: true,
-        cloud_scroll: [0.0; 2],
         cloud_tile_scale: 1.0,
         cloud_texture_index: indices[0],
         sun_texture_index: indices[4],
-        cloud_scroll_1: [0.0; 2],
         cloud_tile_scale_1: 1.0,
         cloud_texture_index_1: indices[1],
-        cloud_scroll_2: [0.0; 2],
         cloud_tile_scale_2: 1.0,
         cloud_texture_index_2: indices[2],
-        cloud_scroll_3: [0.0; 2],
         cloud_tile_scale_3: 1.0,
         cloud_texture_index_3: indices[3],
     }
@@ -72,4 +68,51 @@ fn sky_params_resource_round_trip() {
     got.sort();
     assert_eq!(got, vec![1, 2, 3, 4, 5]);
     assert!(world.try_resource::<SkyParamsRes>().is_none());
+}
+
+/// #803 / STRM-N2 — `unload_cell` removes `SkyParamsRes` on every
+/// cell unload, then `apply_worldspace_weather` rebuilds it on the
+/// next exterior re-entry. Pre-fix the four cloud_scroll
+/// accumulators lived on `SkyParamsRes` and got reset to `[0, 0]`,
+/// producing a visible cloud snap-back on every interior↔exterior
+/// transition (~0.5 UV per 30 s indoors).
+///
+/// Lifting the accumulators onto a separate `CloudSimState`
+/// resource — which `unload_cell` does NOT remove — keeps the drift
+/// alive across cell boundaries, the same survives-transitions
+/// pattern `GameTimeRes` already uses for game-time persistence.
+///
+/// The test inserts a `CloudSimState` carrying non-zero scroll
+/// (simulating "the player has been outside for a while"), then
+/// performs the same unload/reinsert cycle the cell loader does on
+/// `SkyParamsRes`: removes `SkyParamsRes` only, reinserts a fresh
+/// copy. The asserted invariant: `CloudSimState` survives untouched
+/// on both sides of the cycle.
+#[test]
+fn cloud_sim_state_survives_sky_params_unload_reload() {
+    use crate::components::CloudSimState;
+    let mut world = World::new();
+    world.insert_resource(mk_sky([1, 2, 3, 4, 5]));
+    world.insert_resource(CloudSimState {
+        cloud_scroll: [0.42, 0.13],
+        cloud_scroll_1: [0.71, 0.05],
+        cloud_scroll_2: [0.18, 0.91],
+        cloud_scroll_3: [0.50, 0.50],
+    });
+    // Mirror `unload_cell`'s remove sequence (just `SkyParamsRes`,
+    // not `CloudSimState`).
+    world
+        .remove_resource::<SkyParamsRes>()
+        .expect("SkyParamsRes was inserted");
+    // Mirror `apply_worldspace_weather` re-creating the resource on
+    // re-entry. The freshly-built copy carries no scroll fields any
+    // more, so this reinsert can't perturb the accumulator.
+    world.insert_resource(mk_sky([1, 2, 3, 4, 5]));
+    let clouds = world
+        .try_resource::<CloudSimState>()
+        .expect("CloudSimState must NOT be removed by unload_cell");
+    assert_eq!(clouds.cloud_scroll, [0.42, 0.13]);
+    assert_eq!(clouds.cloud_scroll_1, [0.71, 0.05]);
+    assert_eq!(clouds.cloud_scroll_2, [0.18, 0.91]);
+    assert_eq!(clouds.cloud_scroll_3, [0.50, 0.50]);
 }
