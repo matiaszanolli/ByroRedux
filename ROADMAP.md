@@ -158,6 +158,49 @@ architectural review — not new features, but prevention work to stop
 known growth patterns from calcifying. Each R has a "why now" and
 typically gates a specific milestone.
 
+### Priority review — 2026-05-03
+
+A direction reset to keep work pointed at *capability* rather than
+recursive renderer polish. Sessions 25–28 closed 70+ commits chasing
+interior fidelity (Frostbite falloff, env_map_scale, depth-bias
+ladder, perturbNormal) — real wins, but bench-of-record is now 266
+commits stale because the visible-actor workload that would justify
+re-running it (M41) hasn't shipped. 16 distinct renderer audits in
+the last 30 days; 28 of 54 open issues are renderer-tagged; **0
+issues open at HIGH or CRITICAL severity**. The renderer has reached
+diminishing returns until new content classes (NPCs, audio, multi-
+cell exterior) exercise the existing surface differently.
+
+Three concrete adjustments:
+
+1. **Renderer-audit moratorium**: pause new full-renderer audits
+   until a visible regression is reported on real content *or* M41
+   produces a refreshed bench-of-record. The 49→51-issue backlog
+   from prior audits is the working set; close from it, don't grow
+   it. `/audit-renderer` runs only on user request, not as part of
+   session cadence. **The gate to re-open the audit cycle is M41
+   landing visible NPCs in a cell** — that's the workload that
+   would surface anything genuinely worth auditing.
+2. **Audio promoted to Tier 2** (was Tier 4). M44 depends on nothing
+   shipped or unshipped, takes 1–2 weeks, and is the single biggest
+   "feels like a game" gap. Footsteps + ambient + music + spatial
+   raycast occlusion lands in parallel with M41/M40 and converts
+   "we render Bethesda content" into "we run Bethesda content."
+3. **R5 (Papyrus quest prototype) ahead of M47.0** in Tier 3. The
+   ECS-native-scripting bet is the single biggest architectural
+   risk we haven't validated against real content. One transpiled
+   Skyrim quest with `Utility.Wait()` + state change + cross-script
+   callback tells us whether M47.0/M47.2 are 3 weeks or 3 months.
+   Currently M47.0 is sequenced first, which would commit hook
+   shape before the bet is de-risked.
+
+**The "better, not clone" trade-off.** When in doubt during this
+phase, prefer the axis where ByroRedux can credibly *improve* on
+Bethesda — proper async streaming, parallel ECS, structured save
+state, 3D positional audio with reverb zones, native UI — over
+chasing per-pixel reference parity with a 2008–2015 forward
+renderer's interior look.
+
 ### Tier 1 — Playable exterior (blocks "you can walk around")
 
 | #      | Milestone                      | Scope                                                                                                                                                                                                                                                                                                                        | Depends on         |
@@ -174,29 +217,32 @@ typically gates a specific milestone.
 |--------|--------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------|
 | ~~M29~~ | ~~Skinning chain verification~~ | **Closed.** End-to-end skinning chain (`SkinnedMesh` ECS → bone-palette → vertex shader) verified on FNV NiTriShape path via 7 integration tests in `byroredux/tests/skinning_e2e.rs` (4 FNV + 3 SSE). Bones populate, names round-trip, partition-local→global remap correct, palette responds to bone Transform mutations. CPU palette eval shipped; compute-shader dispatch deferred to M29.5 (gated on M41 producing measurable load). Defensive `MAX_TOTAL_BONES` overflow guard added (`render.rs:204`, `Once`-gated warn) so the silent truncation past 32 skinned meshes is no longer invisible. SSE BSTriShape per-vertex skin path filed as #638 (separate parser bug, not in M29 scope). | —                  |
 | M29.5  | Compute-shader palette dispatch | Move CPU palette eval to a Vulkan compute pass (workgroup-per-skinned-mesh, DEVICE_LOCAL bone SSBO + COMPUTE→VERTEX barrier). Gated on M41 (workload exists; today's bench has 0 skinned meshes) and R1 (DrawCommand → material_id reduces sibling churn).                                                                    | M41, R1            |
-| M41.0  | FaceGen heads render           | **Phases 0–4 shipped** in Session 24 — Phase 0 foundation (parser gate, path helpers), Phase 1a `GameKind` predicates + pre-FO4 FaceGen recipe parser, Phase 1b kf-era bind-pose spawn, Phase 2 idle-KF wiring, Phase 3a new `byroredux-facegen` crate (.egm/.egt/.tri), Phase 3b FGGS sym-morph evaluator, Phase 3c FGGA asym morphs, Phase 4 pre-baked FaceGen dispatch for Skyrim+. AnimationPlayer attach gated behind `BYRO_NPC_ANIMATION_EXPERIMENT` env var (#772) pending visible-content diagnosis. M41.0.5 GPU per-vertex morph runtime + M41.x Havok `.hkx` minimal stub remain. | M29, #458          |
-| M41    | NPC spawning                   | Resolve NPC_ / CREA records → ECS entities with race/class/equipped armor + weapons. Spawn ACHR references from CELL REFRs. Movement is fly-by-waypoint until M42. SSE actors will hit #638 until that lands.                                                                                                              | M24, M29, M41.0    |
+| M41.0  | FaceGen heads render           | **Phases 0–4 shipped** in Session 24 — Phase 0 foundation (parser gate, path helpers), Phase 1a `GameKind` predicates + pre-FO4 FaceGen recipe parser, Phase 1b kf-era bind-pose spawn, Phase 2 idle-KF wiring, Phase 3a new `byroredux-facegen` crate (.egm/.egt/.tri), Phase 3b FGGS sym-morph evaluator, Phase 3c FGGA asym morphs, Phase 4 pre-baked FaceGen dispatch for Skyrim+. AnimationPlayer attach gated behind `BYRO_NPC_ANIMATION_EXPERIMENT` env var (#772) pending visible-content diagnosis. **Closure (defined 2026-05-03):** open #772 in next session, run the diagnostic, ship one of the three deferred hypotheses' fix, close M41.0. M41.0.5 (GPU per-vertex morph runtime) + M41.x (Havok `.hkx` stub) move to Tier 5 — they're polish on top of "head renders," not part of the closure criterion. | M29, #458          |
+| M41    | NPC spawning                   | Resolve NPC_ / CREA records → ECS entities with race/class/equipped armor + weapons. Spawn ACHR references from CELL REFRs. Movement is fly-by-waypoint until M42. SSE actors will hit #638 until that lands. **Closure (defined 2026-05-03):** at least one Skyrim/FO4/FNV cell renders with NPCs visible at REFR positions, even in T-pose. Animations + idle behavior are M42 polish. **This unblocks the renderer-audit moratorium** — bench-of-record refresh, R6a-stale-7 closeout, GPU skinning compute (M29.5), and skinned BLAS coverage all exercise on real content once this ships.                                                                                                              | M24, M29, M41.0    |
 | M40    | World streaming                | **Phase 1a/1b shipped** in Session 23 — `streaming` module with diff logic (`cdfef07`), `WorldStreamingState` wired into App (`80e2966`), async cell-pre-parse worker thread (`592e7bf`), shutdown drain (`7dc354a`). Single-cell-at-a-time today. Remaining: multi-cell exterior grid + BLAS streaming (evict/reload) ties into M31's LRU eviction. | M32, M35           |
+| **M44** | Audio (3D spatial)            | **Promoted from Tier 4 (2026-05-03 priority review).** 3D positional audio via `rodio` or `kira`. Footsteps from FOOT/IMPD records. Ambient soundscapes from REGN. Music from MUSC/hardcoded. Crossfade + raycast occlusion. **Why Tier 2:** depends on nothing shipped or pending, 1–2 week scope, single largest "feels like a game" gap. Lands in parallel with M41/M40. ByroRedux's chance to *exceed* Bethesda baseline — proper reverb zones, full HRTF if `kira` allows, no Wwise-style middleware tax. | —                  |
 | ~~R6~~ | ~~Scratch-buffer instrumentation~~ | **Closed.** `ScratchTelemetry` resource refreshed per frame from `VulkanContext::fill_scratch_telemetry`, surfaced via the `ctx.scratch` console command. Reports per-Vec `len` / `capacity` / `bytes_used` / `wasted` for all 5 scratches (gpu_instances, batches, indirect_draws, terrain_tile, tlas_instances). On Prospector (1200 ent / 773 draws): 337 KB total, 320 B wasted — well right-sized; M40 cell transitions can now be diffed against this baseline. | —                  |
 
 ### Tier 3 — Scripting runtime (unblocks 1 257 FO3 SCPT records)
 
-Hooks-first so terminals, doors, traps, lights, and activator
-callbacks work before we try to boot the full Papyrus surface.
+**Reordered 2026-05-03**: R5 now comes first. Hooks-first sequencing
+risks committing M47.0's event-hook shape before validating the
+ECS-native-no-VM bet, then having to rework hooks if R5 falls back
+to "Papyrus stack-VM as an ECS system." De-risk first.
 
 | #      | Milestone                      | Scope                                                                                                                                                                                                                                                                                                                                                                                                      | Depends on      |
 |--------|--------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------|
-| M47.0  | Event hooks runtime            | Bytecode-less ECS event handlers that respond to the canonical `OnActivate` / `OnHit` / `OnTriggerEnter` / `OnCellLoad` / `OnEquip` set. Reads the SCPT source text (M30 parser) when present and compiles to ECS systems at cell load; opaque SCDA bytecode is ignored. Terminals, doors, traps, lights in vanilla FO3 / FNV use this subset heavily.                                                      | M30, #443       |
+| **R5** | Papyrus quest prototype        | **Sequenced first (2026-05-03 priority review).** Before committing to the full "ECS-native, no VM" bet in M47.2 *or* the M47.0 hook shape that will be consumed by it, pick *one* real Skyrim quest with latent `Utility.Wait()`, a state change, and a cross-script callback. Transpile by hand. If the ECS shape holds up, proceed. If it fights you, fall back to Papyrus stack-VM semantics run *as an ECS system* — still a huge improvement over the original engine. **Why now:** de-risks the entire M47 surface (hook shape + transpiler scope) for the cost of one quest. The original Tier-3 sequencing (M47.0 first) commits to a hook contract before the bet is validated. | M30             |
+| M47.0  | Event hooks runtime            | Bytecode-less ECS event handlers that respond to the canonical `OnActivate` / `OnHit` / `OnTriggerEnter` / `OnCellLoad` / `OnEquip` set. Reads the SCPT source text (M30 parser) when present and compiles to ECS systems at cell load; opaque SCDA bytecode is ignored. Terminals, doors, traps, lights in vanilla FO3 / FNV use this subset heavily. **Hook shape locked by R5 outcome.**                  | R5, #443        |
 | M47.1  | Condition eval                 | The ~300 condition function vocabulary (GetIsID, GetCurrentTime, GetQuestStage, GetFactionRank, …) evaluated against ECS state. Shared evaluator used by AI packages, perks, dialogue triggers, terminal branches.                                                                                                                                                                                         | M47.0           |
-| **R5** | Papyrus quest prototype        | Before committing to the full "ECS-native, no VM" bet in M47.2, pick *one* real Skyrim quest with latent `Utility.Wait()`, a state change, and a cross-script callback. Transpile by hand. If the ECS shape holds up, proceed. If it fights you, fall back to Papyrus stack-VM semantics run *as an ECS system* — still a huge improvement over the original engine. **Why now:** de-risks M47.2 scope.      | M30, M47.0      |
 | M47.2  | Full scripting runtime         | Papyrus transpiler (M30 AST → ECS components + systems), ESM-native 136-event dispatch, perk entry-point composition. Closes the loop for Skyrim+ Papyrus content. Shape determined by R5 outcome.                                                                                                                                                                                                         | R5, M30.2, M43  |
 
-### Tier 4 — Audio & save/load (unblocks "it feels like a game")
+### Tier 4 — Save/load (unblocks "it feels like a game")
 
 | #     | Milestone   | Scope                                                                                                                                                                                                                                  | Depends on                                      |
 |-------|-------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------|
-| M44   | Audio       | 3D spatial audio via `rodio` or `kira`. Footsteps from FOOT/IMPD. Ambient soundscapes from REGN. Music from MUSC / hardcoded. Basic crossfade + occlusion via raycast. No 5.1, no reverb zones initially.                              | —                                               |
-| M45   | Save/Load   | Serialize world state (ECS components relevant to game-state + change forms). Simple serde-based snapshot format for v1 — full cosave compatibility is follow-up. Unblocks playtest iteration.                                         | M40 (world streaming dictates what to serialize) |
+| ~~M44~~ | Audio (moved to Tier 2) | See Tier 2 row — promoted 2026-05-03.                                                                                                                                                                                                | —                                               |
+| M45   | Save/Load   | Serialize world state (ECS components relevant to game-state + change forms). Simple serde-based snapshot format for v1 — full cosave compatibility is follow-up. Unblocks playtest iteration. **Better-than-Bethesda axis**: structured ECS snapshot beats Bethesda's notorious save-bloat format. | M40 (world streaming dictates what to serialize) |
 
 ### Tier 5 — Renderer polish (quality, not capability)
 
@@ -245,6 +291,33 @@ active for incremental wins; don't let them block Tier 1–4.
 | M37.6   | DLSS2. Proprietary, 4070 Ti target. Post-M37 TAA is already solid; DLSS is a later polish pass if it ever becomes relevant.                                                     |
 | M25     | Vulkan Compute — partially realised (clustered lighting / SSAO / SVGF temporal are compute-backed). Remaining work folds into M29 (skinning) and M37 (spatial filter).          |
 | Full cosave save/load | M45 v1 ships a simple snapshot. Byte-compatible cosave format (load original-engine save into Redux, or vice versa) is speculative and not a priority.                         |
+| Morrowind (TES3)      | NIF v3.x / v4.x is fundamentally different from the v10+ era ByroRedux supports — separate parser, separate ESM dialect, no BSA. Gamebryo 2.3 source we reference predates Morrowind's release; OpenMW is the canonical clean-room re-implementation. **Out of scope** unless explicit demand surfaces — supporting it would double the parser surface for one extra game. |
+
+### What we are NOT doing (anti-scope)
+
+Documented to keep "wouldn't it be cool if" suggestions from
+silently growing the cone:
+
+- **Per-pixel parity with Bethesda's interior look.** Sessions 25–28
+  showed the trap: chasing "chrome cushion" / "yellow fog" took 3
+  sessions to find a missing texture and a Frostbite-curve adoption.
+  ByroRedux is RT-first; matching a 2008–2015 forward-renderer's
+  specific look is *not* the goal. Render correctly, ship.
+- **Original-engine save-format compatibility.** M45 ships a
+  structured ECS snapshot. Loading vanilla saves is a 6-month
+  reverse-engineering project for an audience of approximately zero.
+- **Mod-load-order tooling (LOOT-equivalent).** Content-addressed
+  Form IDs are explicitly the architectural alternative. We do not
+  ship a sorter.
+- **Console releases / non-Linux primary support.** Linux-first.
+  Windows + macOS are downstream if they happen.
+- **Online services.** No telemetry, no updater, no crash reporter
+  posting upstream, no skin / monetization surface.
+- **Cloning Papyrus VM semantics.** R5 may make us run "Papyrus
+  bytecode as an ECS system" if the pure transpiler bet fails — but
+  even then we are not implementing OpcodeFetch / OpcodeDispatch /
+  StackFrame / StackUnwind in their original shapes. Better, not
+  same.
 
 ---
 
@@ -285,11 +358,39 @@ Index:
 ### Growth discipline
 
 The project's single biggest risk is **scope growth without
-compression** (64K → ~94K LOC across the last three sessions). Tier
+compression** (64K → ~130K LOC over the last six sessions). Tier
 ordering gives top-level backpressure; apply it inside crates too. If
 a single file crosses 3 500 lines, a struct crosses 50 fields, or a
 context struct crosses 60 fields, treat it as a signal rather than a
 stat to report — investigate before adding.
+
+**Tripwire today**: `crates/plugin/src/esm/cell.rs` is at 3 217 lines
+— under threshold but R2 (typed subrecord decoder) was filed
+specifically because Tier-3 record growth would push it past 3 500
+on the current shape. R2 lands before M24.2 starts, not after.
+
+### Pacing discipline (added 2026-05-03)
+
+Audit cadence is a load-bearing risk. The renderer alone has 16
+distinct audit reports filed in 30 days; each generates LOW/MEDIUM
+findings that absorb commit budget. Without backpressure, audits
+become the work product instead of the work.
+
+- **Renderer audits**: paused. Re-open trigger is M41 visible NPCs
+  on real content (the workload that would change what an audit
+  surfaces). Until then, close from the existing 51-issue backlog;
+  do not run `/audit-renderer` on session cadence.
+- **Per-game audits** (`/audit-fnv`, `/audit-skyrim`, etc.):
+  on-demand only when working in that game's path, not periodic.
+- **Safety / ECS / NIF audits**: keep on session cadence —
+  these tend to surface real correctness issues, not visual nits.
+- **LOW-severity findings**: bundle into single PRs rather than
+  one-commit-per-finding. The Session 28 audit-bundle pattern (6
+  closes / 6 commits / 6 tests) was healthy; the alternative
+  (one audit → 30 small commits) is what calcifies.
+- **Stale-bench discipline**: any roadmap change that touches a
+  numbered claim must either refresh the claim or move it under a
+  `~~stale~~` block. No silent drift.
 
 ---
 
