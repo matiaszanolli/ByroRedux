@@ -1456,9 +1456,15 @@ void main() {
                 gl_FragCoord.xy + vec2(79.3, 193.7), frameCount + 53.0);
             float spread = roughness * 0.15;
             if (spread > 0.001 && dot(refractDir, refractDir) > 0.0001) {
-                vec3 rRight = normalize(cross(refractDir, N_geom_view));
-                vec3 rUp    = cross(refractDir, rRight);
-                refractDir  = normalize(refractDir
+                // #820: at normal incidence `refractDir` is parallel to
+                // `-N_geom_view`, so `cross(refractDir, N_geom_view)` is
+                // zero and `normalize(...)` returns NaN. Frisvad-basis
+                // (`buildOrthoBasis`) is singularity-free except at
+                // `dir.z = -1` exactly, matching the GI / shadow / metal-
+                // reflection sites.
+                vec3 rRight, rUp;
+                buildOrthoBasis(refractDir, rRight, rUp);
+                refractDir = normalize(refractDir
                     + (rRight * (rn1 * 2.0 - 1.0)
                     +  rUp    * (rn2 * 2.0 - 1.0)) * spread);
             }
