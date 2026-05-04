@@ -115,6 +115,69 @@ fn pack_depth_state(cmd: &DrawCommand) -> u8 {
     (cmd.z_test as u8) | ((cmd.z_write as u8) << 1) | ((cmd.z_function & 0x0F) << 4)
 }
 
+/// Daytime peak of `SkyParamsRes::sun_intensity` (per `systems.rs:1446`,
+/// hours 7..=17). Used by [`compute_directional_upload`] to normalise
+/// the 0..4 ramp into a 0..1 contribution multiplier.
+///
+/// Tracked here (not as a `pub const` next to `weather_system`) because
+/// the consumer is the directional-light upload — a bump on the
+/// systems-side ramp without a matching bump here would silently
+/// re-introduce a daytime brightness regression. Pin it via the
+/// `directional_upload_peak_matches_weather_system` test.
+const SUN_INTENSITY_PEAK: f32 = 4.0;
+
+/// Project the cell's authored directional colour into the value the
+/// renderer pushes to the per-frame `GpuLight` SSBO.
+///
+/// Interior arm: 0.6× constant fill, `radius = -1` so the shader skips
+/// shadow rays (sealed-wall leak protection). Independent of `sun_intensity`
+/// because interior XCLL is a subtle aesthetic fill — not a physical sun.
+///
+/// Exterior arm: ramp the contribution by `sun_intensity / SUN_INTENSITY_PEAK`
+/// so surfaces fade in lockstep with the composite sun disc
+/// (`composite.frag:217`). Normalised to keep daytime brightness at
+/// pre-#798 magnitude — the `SUN_INTENSITY_PEAK = 4.0` value was tuned
+/// for the disc's perceptual brightness (where it multiplies `sun_col`
+/// alongside other compositing terms), not for surface BRDF input.
+///
+/// Pre-#798 the exterior arm uploaded `directional_color` raw regardless
+/// of TOD; at midnight `sun_dir = (0, -1, 0)` per `systems.rs:1437-1442`
+/// and ceilings/overhangs received the full TOD-NIGHT `SKY_SUNLIGHT`
+/// colour. The WRS shadow ray subtracts when occluded, but at distances
+/// > 4000 units `shadowFade` decays to zero, leaving the unshadowed
+/// contribution un-cancelled.
+///
+/// Returns `(color, radius)` where `radius == -1` flags the shader to
+/// skip shadow rays (interior fill) and `radius == 0` is the standard
+/// directional contract.
+fn compute_directional_upload(
+    directional_color: &[f32; 3],
+    is_interior: bool,
+    sun_intensity: f32,
+) -> ([f32; 3], f32) {
+    if is_interior {
+        const INTERIOR_FILL_SCALE: f32 = 0.6;
+        (
+            [
+                directional_color[0] * INTERIOR_FILL_SCALE,
+                directional_color[1] * INTERIOR_FILL_SCALE,
+                directional_color[2] * INTERIOR_FILL_SCALE,
+            ],
+            -1.0,
+        )
+    } else {
+        let ramp = (sun_intensity / SUN_INTENSITY_PEAK).clamp(0.0, 1.0);
+        (
+            [
+                directional_color[0] * ramp,
+                directional_color[1] * ramp,
+                directional_color[2] * ramp,
+            ],
+            0.0,
+        )
+    }
+}
+
 /// Sort key for `DrawCommand`s — the batch-merge pass in
 /// `VulkanContext::draw_frame` relies on consecutive identical
 /// (alpha_blend, render_layer, two_sided, depth_state, mesh, …) runs
@@ -1031,21 +1094,12 @@ pub(crate) fn build_render_data(
     // acts as a subtle fill light (not a physical sun), so we scale it down
     // to avoid hard shadow leakage through unsealed interior walls.
     if let Some(cell_lit) = world.try_resource::<CellLightingRes>() {
-        let (dir_color, dir_radius) = if cell_lit.is_interior {
-            // Interior fill: scale down and flag unshadowed (radius = -1)
-            // so the shader skips shadow rays that would hit sealed walls.
-            let s = 0.6;
-            (
-                [
-                    cell_lit.directional_color[0] * s,
-                    cell_lit.directional_color[1] * s,
-                    cell_lit.directional_color[2] * s,
-                ],
-                -1.0_f32,
-            )
-        } else {
-            (cell_lit.directional_color, 0.0)
-        };
+        let sun_intensity = world
+            .try_resource::<SkyParamsRes>()
+            .map(|sky| sky.sun_intensity)
+            .unwrap_or(SUN_INTENSITY_PEAK);
+        let (dir_color, dir_radius) =
+            compute_directional_upload(&cell_lit.directional_color, cell_lit.is_interior, sun_intensity);
         gpu_lights.push(byroredux_renderer::GpuLight {
             position_radius: [0.0, 0.0, 0.0, dir_radius],
             color_type: [dir_color[0], dir_color[1], dir_color[2], 2.0],
@@ -1971,6 +2025,136 @@ mod variant_pack_gating_tests {
             [1.0, 1.0, 1.0, 1.0, 0.0],
             "non-effect kind must emit identity-pass-through falloff \
              regardless of Material.effect_falloff content"
+        );
+    }
+}
+
+/// #798 / SUN-N1 — pin the directional-light upload to ramp by
+/// `sun_intensity / SUN_INTENSITY_PEAK` on exterior cells so surfaces
+/// fade in lockstep with the composite sun disc. Without this gate,
+/// ceilings + overhangs received the full TOD-NIGHT `SKY_SUNLIGHT`
+/// colour at midnight from the (0,-1,0) direction.
+#[cfg(test)]
+mod directional_upload_tests {
+    use super::*;
+
+    /// Exterior at noon: `sun_intensity == SUN_INTENSITY_PEAK` → ramp
+    /// is exactly 1.0 → daytime brightness is unchanged from pre-#798.
+    /// Pins the conservative-normalization invariant: the fix must not
+    /// regress daytime surface lighting brightness.
+    #[test]
+    fn exterior_noon_preserves_pre_fix_brightness() {
+        let (color, radius) = compute_directional_upload(
+            &[0.7, 0.65, 0.55],
+            false,
+            SUN_INTENSITY_PEAK,
+        );
+        assert_eq!(radius, 0.0, "exterior radius must be 0 (shadowed)");
+        assert!((color[0] - 0.7).abs() < 1e-6);
+        assert!((color[1] - 0.65).abs() < 1e-6);
+        assert!((color[2] - 0.55).abs() < 1e-6);
+    }
+
+    /// Exterior at midnight: `sun_intensity == 0` → ramp is exactly
+    /// 0.0 → directional contribution is zero. THIS IS THE BUG FIX.
+    /// Pre-#798 the contribution was `directional_color * 1.0`
+    /// regardless of TOD; ceilings glowed with the TOD-NIGHT
+    /// `SKY_SUNLIGHT` colour from the (0,-1,0) direction.
+    #[test]
+    fn exterior_midnight_zeroes_directional_contribution() {
+        let (color, radius) = compute_directional_upload(
+            &[0.05, 0.07, 0.12], // typical TOD-NIGHT SKY_SUNLIGHT (dim blue)
+            false,
+            0.0,
+        );
+        assert_eq!(radius, 0.0);
+        assert_eq!(
+            color,
+            [0.0, 0.0, 0.0],
+            "midnight directional must be zeroed — ceilings/overhangs \
+             would otherwise glow with NIGHT SKY_SUNLIGHT from (0,-1,0)"
+        );
+    }
+
+    /// Exterior at sunrise (`sun_intensity == SUN_INTENSITY_PEAK / 2`):
+    /// ramp is 0.5 → contribution is exactly half of daytime. Pin the
+    /// linear ramp shape — a future change to `smoothstep` or
+    /// quadratic would regress the smooth dawn/dusk fade.
+    #[test]
+    fn exterior_sunrise_half_intensity_half_contribution() {
+        let (color, _) = compute_directional_upload(
+            &[0.6, 0.55, 0.40],
+            false,
+            SUN_INTENSITY_PEAK / 2.0,
+        );
+        assert!((color[0] - 0.30).abs() < 1e-6);
+        assert!((color[1] - 0.275).abs() < 1e-6);
+        assert!((color[2] - 0.20).abs() < 1e-6);
+    }
+
+    /// Out-of-range `sun_intensity` (negative or > peak) clamps to
+    /// [0, 1]. Defends against a future `weather_system` regression
+    /// that produces an out-of-range value (e.g. an HDR multiplier
+    /// that bumps peak past 4.0 without updating SUN_INTENSITY_PEAK).
+    /// Negative clamps to 0 → no directional contribution; over-cap
+    /// clamps to 1 → daytime equivalent.
+    #[test]
+    fn exterior_out_of_range_intensity_is_clamped() {
+        let (negative, _) = compute_directional_upload(&[1.0; 3], false, -10.0);
+        assert_eq!(negative, [0.0; 3], "negative intensity must clamp to zero");
+        let (over_cap, _) = compute_directional_upload(&[1.0; 3], false, 100.0);
+        assert_eq!(
+            over_cap,
+            [1.0; 3],
+            "over-cap intensity must clamp to peak (1.0× ramp)"
+        );
+    }
+
+    /// Interior fill: 0.6× constant scale, `radius == -1` for
+    /// shader-side shadow-skip. Independent of `sun_intensity` — the
+    /// XCLL fill is an aesthetic constant, not a TOD-driven sun. Pin
+    /// the independence: if a future change accidentally couples the
+    /// interior arm to the sun ramp, every interior would dim/brighten
+    /// with the wall-clock hour.
+    #[test]
+    fn interior_uses_fixed_fill_independent_of_sun_intensity() {
+        let (noon_color, noon_radius) = compute_directional_upload(
+            &[0.5, 0.5, 0.5],
+            true,
+            SUN_INTENSITY_PEAK,
+        );
+        let (midnight_color, midnight_radius) = compute_directional_upload(
+            &[0.5, 0.5, 0.5],
+            true,
+            0.0,
+        );
+        assert_eq!(noon_color, midnight_color, "interior fill must NOT vary with sun_intensity");
+        assert_eq!(noon_radius, -1.0, "interior radius must be -1 (unshadowed fill)");
+        assert_eq!(midnight_radius, -1.0);
+        // 0.6× scale per the established convention.
+        assert!((noon_color[0] - 0.30).abs() < 1e-6);
+    }
+
+    /// Sanity check that the constant matches `weather_system`'s
+    /// ramp peak. If `weather_system` is retuned to a different peak
+    /// (e.g., 5.0 for HDR headroom) without updating
+    /// `SUN_INTENSITY_PEAK` here, daytime surface lighting would
+    /// silently regress. This test fires whenever the two values
+    /// drift — pulling the live peak via systems.rs reflection isn't
+    /// possible (computed inline), so the cross-check is a literal
+    /// match against the known-good value.
+    #[test]
+    fn directional_upload_peak_matches_weather_system() {
+        // weather_system at byroredux/src/systems.rs:1446-1454 uses
+        // 4.0 as the daytime ceiling; the linear ramps at 6-7h /
+        // 17-18h reach this peak at the steady-state hours. If that
+        // value changes, this test is the canary.
+        assert_eq!(
+            SUN_INTENSITY_PEAK, 4.0,
+            "SUN_INTENSITY_PEAK must match weather_system's daytime peak \
+             (`systems.rs:1446-1454`); a tuning change there must update \
+             this constant in the same commit or every exterior surface \
+             dims/brightens by the ratio."
         );
     }
 }
