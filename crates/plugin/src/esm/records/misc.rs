@@ -948,6 +948,219 @@ pub fn parse_avif(form_id: u32, subs: &[SubRecord]) -> AvifRecord {
     out
 }
 
+// ── #808 / FNV-D2-NEW-01 — gameplay-critical record stubs ──────────
+//
+// Five record types that gate FNV gameplay subsystems:
+//   PROJ — projectile data; every WEAP references one for muzzle
+//          velocity, gravity, AoE, lifetime, impact behavior.
+//   EFSH — effect shader; visual effects for spells, grenades,
+//          muzzle flashes, blood splatter.
+//   IMOD — item mod (FNV-CORE); weapon attachments — sights,
+//          suppressors, extended mags, scopes.
+//   ARMA — armor addon; race-specific biped slot variants. ARMO
+//          → ARMA → race-specific MODL chain.
+//   BPTD — body part data; per-NPC dismemberment routing + biped
+//          slot count.
+//
+// All five are stub-form: EDID + a handful of key scalar / form-ref
+// fields. Full sub-record decoding lands when the consuming subsystem
+// arrives. Pattern matches the #458 / #519 / #520 / #521 / #629 /
+// #630 / #631 closeouts.
+
+/// PROJ — projectile record. Every WEAP references a PROJ for
+/// muzzle velocity, gravity, AoE radius, lifetime, impact behavior.
+/// The full FNV `DATA` payload is 92 bytes; the stub captures only
+/// the flag bitfield (offset 0) and the muzzle speed (offset 8) so
+/// downstream firing-simulator code has a starting point. See
+/// audit `FNV-D2-NEW-01` / #808.
+#[derive(Debug, Clone, Default)]
+pub struct ProjRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    pub full_name: String,
+    /// `DATA` offset 0..4 — projectile type bitfield (Missile, Lobber,
+    /// Beam, Flame, Cone, Barrier, Arrow). Decoded lazily per-game.
+    pub flags: u32,
+    /// `DATA` offset 8..12 — muzzle speed in game units / second.
+    pub muzzle_speed: f32,
+}
+
+pub fn parse_proj(form_id: u32, subs: &[SubRecord]) -> ProjRecord {
+    let mut out = ProjRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
+            b"DATA" if sub.data.len() >= 12 => {
+                out.flags = read_u32_at(&sub.data, 0).unwrap_or(0);
+                out.muzzle_speed = read_f32_at(&sub.data, 8).unwrap_or(0.0);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// EFSH — effect shader record. Visual-effect surface (fill texture,
+/// particle texture, addon model). Referenced from MGEF / SPEL / EXPL.
+/// Full DATA struct decode (render flags, fill colors, blend modes,
+/// addon model) deferred to the VFX consumer. See audit
+/// `FNV-D2-NEW-01` / #808.
+#[derive(Debug, Clone, Default)]
+pub struct EfshRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    /// `ICON` — fill texture path. The EFSH surface's primary look.
+    pub fill_texture: String,
+    /// `ICO2` — particle / addon texture path. Optional.
+    pub particle_texture: String,
+}
+
+pub fn parse_efsh(form_id: u32, subs: &[SubRecord]) -> EfshRecord {
+    let mut out = EfshRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"ICON" => out.fill_texture = read_zstring(&sub.data),
+            b"ICO2" => out.particle_texture = read_zstring(&sub.data),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// IMOD — item mod record (FNV-CORE). Weapon attachments — sights,
+/// suppressors, extended mags, scopes. Each WEAP has up to 3 mod
+/// slots referencing IMODs. Stub captures EDID + display name +
+/// description + value/weight scalars. See audit `FNV-D2-NEW-01`
+/// / #808.
+#[derive(Debug, Clone, Default)]
+pub struct ImodRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    pub full_name: String,
+    pub description: String,
+    /// `DATA` offset 0..4 — caps value (i32).
+    pub value: i32,
+    /// `DATA` offset 4..8 — weight in pounds (f32).
+    pub weight: f32,
+}
+
+pub fn parse_imod(form_id: u32, subs: &[SubRecord]) -> ImodRecord {
+    let mut out = ImodRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
+            b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
+            b"DATA" if sub.data.len() >= 8 => {
+                out.value =
+                    i32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
+                out.weight = read_f32_at(&sub.data, 4).unwrap_or(0.0);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// ARMA — armor addon record. Race-specific biped slot variants for
+/// armor. The ARMO → ARMA → race-specific MODL chain resolves armor
+/// rendering on non-default-race NPCs (Vipers, Ghouls, Super Mutants,
+/// Centaurs, Deathclaws, etc.).
+///
+/// Stub captures EDID + biped flags (BMDT) + DT/DR (DNAM). The MOD2 /
+/// MOD3 / MOD4 / MOD5 male/female + 1st/3rd person mesh paths flow
+/// through `cells.statics` via the existing MODL catch-all. See
+/// audit `FNV-D2-NEW-01` / #808.
+#[derive(Debug, Clone, Default)]
+pub struct ArmaRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    /// `BMDT` offset 0..4 — biped slot bitfield (head, hair, hands,
+    /// torso, legs, etc.). Drives the ARMO → ARMA biped-slot routing.
+    pub biped_flags: u32,
+    /// `BMDT` offset 4..8 — general flags (Heavy / Medium / Light,
+    /// power armor, etc.). Decoded lazily per-game.
+    pub general_flags: u32,
+    /// `DNAM` offset 0..2 — Damage Threshold (i16, FNV-specific).
+    pub dt: i16,
+    /// `DNAM` offset 2..4 — Damage Resistance (i16).
+    pub dr: i16,
+}
+
+pub fn parse_arma(form_id: u32, subs: &[SubRecord]) -> ArmaRecord {
+    let mut out = ArmaRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"BMDT" if sub.data.len() >= 8 => {
+                out.biped_flags = read_u32_at(&sub.data, 0).unwrap_or(0);
+                out.general_flags = read_u32_at(&sub.data, 4).unwrap_or(0);
+            }
+            b"DNAM" if sub.data.len() >= 4 => {
+                out.dt = i16::from_le_bytes([sub.data[0], sub.data[1]]);
+                out.dr = i16::from_le_bytes([sub.data[2], sub.data[3]]);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// BPTD — body part data record. Per-NPC dismemberment routing
+/// (head, torso, limbs) + biped slot count. Used by VATS targeting
+/// and gore effects.
+///
+/// Each part is described by a quartet of sub-records (`BPTN` name +
+/// `BPNN` node + `BPNT` target + `BPND` data). The stub captures the
+/// total part count and the first part name as a sanity check; the
+/// full per-part array decode lands with the dismemberment consumer.
+/// See audit `FNV-D2-NEW-01` / #808.
+#[derive(Debug, Clone, Default)]
+pub struct BptdRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    /// Number of body parts (count of `BPTN` sub-records).
+    pub part_count: u32,
+    /// `BPTN` of the first body part (often "Head"). Sanity-check
+    /// field; downstream code that needs every part will re-walk
+    /// the sub-records.
+    pub first_part_name: String,
+}
+
+pub fn parse_bptd(form_id: u32, subs: &[SubRecord]) -> BptdRecord {
+    let mut out = BptdRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"BPTN" => {
+                if out.part_count == 0 {
+                    out.first_part_name = read_lstring_or_zstring(&sub.data);
+                }
+                out.part_count += 1;
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1388,5 +1601,116 @@ mod tests {
         assert!(t.password.is_empty());
         assert_eq!(t.body_size, 0);
         assert!(t.menu_items.is_empty());
+    }
+
+    // ── #808 / FNV-D2-NEW-01 stubs ─────────────────────────────────
+
+    #[test]
+    fn parse_proj_picks_edid_full_speed() {
+        // `5mmRoundProjectile` shape: DATA carries the 92-byte payload
+        // where the first 4 bytes are the flag/type bitfield and bytes
+        // 8..12 are the muzzle speed (f32). Stub captures only the
+        // speed for now; the full DATA struct decode lands with the
+        // firing simulator.
+        let mut data = [0u8; 16];
+        data[0..4].copy_from_slice(&0x0000_0001u32.to_le_bytes()); // type bitfield
+        data[8..12].copy_from_slice(&3000.0_f32.to_le_bytes()); // muzzle speed
+        let subs = vec![
+            sub(b"EDID", b"5mmRoundProjectile\0"),
+            sub(b"FULL", b"5mm Round\0"),
+            sub(b"DATA", &data),
+        ];
+        let p = parse_proj(0x0007_4824, &subs);
+        assert_eq!(p.editor_id, "5mmRoundProjectile");
+        assert_eq!(p.full_name, "5mm Round");
+        assert_eq!(p.flags, 0x0000_0001);
+        assert!((p.muzzle_speed - 3000.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn parse_proj_short_data_is_tolerated() {
+        // Truncated DATA (or absent DATA on placeholder PROJs) must not
+        // panic. Stub returns Default::default() field values.
+        let subs = vec![sub(b"EDID", b"TestProjectile\0")];
+        let p = parse_proj(0xDEADBEEF, &subs);
+        assert_eq!(p.editor_id, "TestProjectile");
+        assert_eq!(p.flags, 0);
+        assert_eq!(p.muzzle_speed, 0.0);
+    }
+
+    #[test]
+    fn parse_efsh_picks_edid_fill_texture() {
+        // `EFFShockBeamCloud01` shape: ICON is the fill-texture path
+        // for the effect surface.
+        let subs = vec![
+            sub(b"EDID", b"EFFShockBeamCloud01\0"),
+            sub(b"ICON", b"effects\\shockbeam_cloud.dds\0"),
+            sub(b"ICO2", b"effects\\shockbeam_particles.dds\0"),
+        ];
+        let e = parse_efsh(0x0010_0BBE, &subs);
+        assert_eq!(e.editor_id, "EFFShockBeamCloud01");
+        assert_eq!(e.fill_texture, "effects\\shockbeam_cloud.dds");
+        assert_eq!(e.particle_texture, "effects\\shockbeam_particles.dds");
+    }
+
+    #[test]
+    fn parse_imod_picks_edid_full_desc_value_weight() {
+        // `Mod.5mmRound.Hollow Point` shape: DATA = i32 value + f32
+        // weight. Stub captures both.
+        let mut data = [0u8; 8];
+        data[0..4].copy_from_slice(&50_i32.to_le_bytes()); // value
+        data[4..8].copy_from_slice(&0.05_f32.to_le_bytes()); // weight
+        let subs = vec![
+            sub(b"EDID", b"Mod5mmRoundHollowPoint\0"),
+            sub(b"FULL", b"Hollow Point\0"),
+            sub(b"DESC", b"Increased damage at the cost of reduced DT effectiveness.\0"),
+            sub(b"DATA", &data),
+        ];
+        let m = parse_imod(0x0014_5824, &subs);
+        assert_eq!(m.editor_id, "Mod5mmRoundHollowPoint");
+        assert_eq!(m.full_name, "Hollow Point");
+        assert!(m.description.contains("Increased damage"));
+        assert_eq!(m.value, 50);
+        assert!((m.weight - 0.05).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_arma_picks_edid_biped_flags_dt_dr() {
+        // `MetalArmor` shape: BMDT = (i32 biped_flags, i32 general_flags),
+        // DNAM = (i16 dt, i16 dr). Stub captures the biped flags so the
+        // ARMO → ARMA → biped-slot routing has the data it needs.
+        let mut bmdt = [0u8; 8];
+        bmdt[0..4].copy_from_slice(&0x0000_000C_u32.to_le_bytes()); // body+legs slot
+        bmdt[4..8].copy_from_slice(&0x0000_0001_u32.to_le_bytes()); // metal flag
+        let mut dnam = [0u8; 4];
+        dnam[0..2].copy_from_slice(&15_i16.to_le_bytes()); // DT
+        dnam[2..4].copy_from_slice(&30_i16.to_le_bytes()); // DR
+        let subs = vec![
+            sub(b"EDID", b"MetalArmor\0"),
+            sub(b"BMDT", &bmdt),
+            sub(b"DNAM", &dnam),
+        ];
+        let a = parse_arma(0x0006_2103, &subs);
+        assert_eq!(a.editor_id, "MetalArmor");
+        assert_eq!(a.biped_flags, 0x0000_000C);
+        assert_eq!(a.general_flags, 0x0000_0001);
+        assert_eq!(a.dt, 15);
+        assert_eq!(a.dr, 30);
+    }
+
+    #[test]
+    fn parse_bptd_picks_edid_first_bptn() {
+        // `HumanRace` shape: BPTN labels each body-part name; stub
+        // captures the first one for sanity-check round-tripping.
+        let subs = vec![
+            sub(b"EDID", b"HumanRace\0"),
+            sub(b"BPTN", b"Head\0"),
+            sub(b"BPTN", b"Torso\0"),
+            sub(b"BPTN", b"Left Arm\0"),
+        ];
+        let b = parse_bptd(0x0009_29DC, &subs);
+        assert_eq!(b.editor_id, "HumanRace");
+        assert_eq!(b.part_count, 3);
+        assert_eq!(b.first_part_name, "Head");
     }
 }

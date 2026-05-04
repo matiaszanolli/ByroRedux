@@ -78,7 +78,8 @@ fn parse_rate_fnv_esm() {
         "[FNV] total={} | items={} containers={} LVLI={} LVLN={} NPCs={} \
          races={} classes={} factions={} globals={} game_settings={} \
          packages={} quests={} dialogues={} messages={} perks={} \
-         spells={} magic_effects={} activators={} terminals={} form_lists={}",
+         spells={} magic_effects={} activators={} terminals={} form_lists={} \
+         projectiles={} effect_shaders={} item_mods={} armor_addons={} body_parts={}",
         index.total(),
         index.items.len(),
         index.containers.len(),
@@ -100,6 +101,11 @@ fn parse_rate_fnv_esm() {
         index.activators.len(),
         index.terminals.len(),
         index.form_lists.len(),
+        index.projectiles.len(),
+        index.effect_shaders.len(),
+        index.item_mods.len(),
+        index.armor_addons.len(),
+        index.body_parts.len(),
     );
 
     // Primary M24 baseline assertion — the "13,684 structured records"
@@ -207,6 +213,76 @@ fn parse_rate_fnv_esm() {
          was skipped; expected >= 100 after #630",
         flst_with_entries,
         index.form_lists.len(),
+    );
+
+    // #808 / audit FNV-D2-NEW-01 regression guard: 5 gameplay-critical
+    // record types must dispatch end-to-end. Pre-fix each top-level
+    // group fell through to the catch-all skip and the entire
+    // category lookup returned an empty map. Floors below sit a few
+    // percent under the observed vanilla counts so a dispatch
+    // regression fails loud while ordinary content drift doesn't.
+    //
+    // Observed vanilla counts (FalloutNV.esm, no DLC, 2026-05-03):
+    //   PROJ=95, EFSH=35, IMOD=50, ARMA=131, BPTD=49.
+    // The audit body's "150-300 / 100 / 100-200 / 700+" estimates were
+    // inflated against the FO3+FNV+DLC superset; vanilla FNV ships
+    // smaller numbers. DLC content will push these up.
+    assert!(
+        index.projectiles.len() >= 80,
+        "PROJ={} (expected >= 80; vanilla ships ~95)",
+        index.projectiles.len(),
+    );
+    assert!(
+        index.effect_shaders.len() >= 30,
+        "EFSH={} (expected >= 30; vanilla ships ~35)",
+        index.effect_shaders.len(),
+    );
+    assert!(
+        index.item_mods.len() >= 40,
+        "IMOD={} (expected >= 40; vanilla ships ~50)",
+        index.item_mods.len(),
+    );
+    assert!(
+        index.armor_addons.len() >= 110,
+        "ARMA={} (expected >= 110; vanilla ships ~131)",
+        index.armor_addons.len(),
+    );
+    assert!(
+        index.body_parts.len() >= 40,
+        "BPTD={} (expected >= 40; vanilla ships ~49)",
+        index.body_parts.len(),
+    );
+
+    // At least one PROJ must have a parsed muzzle_speed > 0 — proves
+    // the DATA sub-record decode fires, not just the EDID extraction.
+    let projs_with_speed = index
+        .projectiles
+        .values()
+        .filter(|p| p.muzzle_speed > 1.0)
+        .count();
+    assert!(
+        projs_with_speed >= 60,
+        "PROJ with muzzle_speed > 0 = {}/{}, expected >= 60 (DATA \
+         decode regression)",
+        projs_with_speed,
+        index.projectiles.len(),
+    );
+
+    // At least one ARMA must have non-zero biped_flags — proves the
+    // BMDT decode fires. ARMOs with zero biped flags exist (the all-
+    // race-default ARMA from a few records) but most ARMAs have a
+    // body region set.
+    let arma_with_biped = index
+        .armor_addons
+        .values()
+        .filter(|a| a.biped_flags != 0)
+        .count();
+    assert!(
+        arma_with_biped >= 100,
+        "ARMA with non-zero biped_flags = {}/{}, expected >= 100 \
+         (BMDT decode regression)",
+        arma_with_biped,
+        index.armor_addons.len(),
     );
 
     // #533 / audit M33-01 regression guard: at least one FNV weather must

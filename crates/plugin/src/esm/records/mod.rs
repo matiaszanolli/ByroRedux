@@ -47,12 +47,13 @@ pub use items::{
     parse_weap, ItemKind, ItemRecord,
 };
 pub use misc::{
-    parse_acti, parse_avif, parse_dial, parse_eczn, parse_ench, parse_eyes, parse_hair, parse_hdpt,
-    parse_imgs, parse_info, parse_lgtm, parse_mesg, parse_mgef, parse_navi, parse_navm, parse_pack,
-    parse_perk, parse_qust, parse_regn, parse_spel, parse_term, parse_watr, ActiRecord, AvifRecord,
-    DialRecord, EcznRecord, EnchRecord, EyesRecord, HairRecord, HdptRecord, ImgsRecord, InfoRecord,
-    LgtmRecord, MesgRecord, MgefRecord, NaviRecord, NavmRecord, PackRecord, PerkRecord, QustRecord,
-    RegnRecord, SpelRecord, TermRecord, WatrRecord,
+    parse_acti, parse_arma, parse_avif, parse_bptd, parse_dial, parse_eczn, parse_efsh, parse_ench,
+    parse_eyes, parse_hair, parse_hdpt, parse_imgs, parse_imod, parse_info, parse_lgtm, parse_mesg,
+    parse_mgef, parse_navi, parse_navm, parse_pack, parse_perk, parse_proj, parse_qust, parse_regn,
+    parse_spel, parse_term, parse_watr, ActiRecord, ArmaRecord, AvifRecord, BptdRecord, DialRecord,
+    EcznRecord, EfshRecord, EnchRecord, EyesRecord, HairRecord, HdptRecord, ImgsRecord, ImodRecord,
+    InfoRecord, LgtmRecord, MesgRecord, MgefRecord, NaviRecord, NavmRecord, PackRecord, PerkRecord,
+    ProjRecord, QustRecord, RegnRecord, SpelRecord, TermRecord, WatrRecord,
 };
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
 pub use weather::{parse_wthr, OblivionHdrLighting, SkyColor, WeatherRecord};
@@ -198,6 +199,32 @@ pub struct EsmIndex {
     /// silently disabling ~50 vanilla FNV PERKs and the Caravan
     /// mini-game. See audit `FNV-D2-02` / #630.
     pub form_lists: HashMap<u32, FlstRecord>,
+    // ── #808 / FNV-D2-NEW-01 — gameplay-critical record stubs ──────
+    //
+    // Five record types that gate FNV gameplay subsystems: weapon
+    // firing (PROJ), visual effects (EFSH), weapon mods (IMOD),
+    // race-specific armor (ARMA), and dismemberment (BPTD). Pre-fix
+    // each of these top-level groups fell through to the catch-all
+    // skip — every WEAP→PROJ link, every IMOD attachment, every
+    // EFSH visual reference, every ARMO→ARMA chain, every NPC
+    // dismemberment route dangled.
+    /// `PROJ` projectile records — every WEAP references a PROJ for
+    /// muzzle velocity, gravity, AoE, lifetime, impact behavior.
+    pub projectiles: HashMap<u32, ProjRecord>,
+    /// `EFSH` effect-shader records — visual effects for spells,
+    /// grenades, muzzle flashes, blood splatter. Referenced from
+    /// MGEF / SPEL / EXPL.
+    pub effect_shaders: HashMap<u32, EfshRecord>,
+    /// `IMOD` item-mod records (FNV-CORE) — weapon attachments
+    /// (sights, suppressors, extended mags, scopes).
+    pub item_mods: HashMap<u32, ImodRecord>,
+    /// `ARMA` armor-addon records — race-specific biped slot
+    /// variants for ARMO. Drives ARMO → ARMA → race-specific MODL
+    /// rendering chain on non-default-race NPCs.
+    pub armor_addons: HashMap<u32, ArmaRecord>,
+    /// `BPTD` body-part-data records — per-NPC dismemberment
+    /// routing (head, torso, limbs) + biped slot count.
+    pub body_parts: HashMap<u32, BptdRecord>,
 }
 
 impl EsmIndex {
@@ -266,6 +293,12 @@ impl EsmIndex {
             ("activators", |s| s.activators.len()),
             ("terminals", |s| s.terminals.len()),
             ("form_lists", |s| s.form_lists.len()),
+            // #808 / FNV-D2-NEW-01 stubs.
+            ("projectiles", |s| s.projectiles.len()),
+            ("effect_shaders", |s| s.effect_shaders.len()),
+            ("item_mods", |s| s.item_mods.len()),
+            ("armor_addons", |s| s.armor_addons.len()),
+            ("body_parts", |s| s.body_parts.len()),
         ]
     }
 
@@ -795,6 +828,32 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             // FNV PERKs and the entire Caravan mini-game.
             b"FLST" => extract_records(&mut reader, end, b"FLST", &mut |fid, subs| {
                 index.form_lists.insert(fid, parse_flst(fid, subs));
+            })?,
+            // #808 / FNV-D2-NEW-01 — five gameplay-critical record
+            // types that previously fell through to the catch-all
+            // skip. Stub-form parsing (EDID + a handful of key
+            // scalar / form-ref fields); full sub-record decoding
+            // lands when the consuming subsystem arrives.
+            //
+            // PROJ — projectiles (every WEAP references one)
+            // EFSH — effect shaders (visual effects)
+            // IMOD — item mods (FNV-CORE: weapon attachments)
+            // ARMA — armor addons (race-specific biped variants)
+            // BPTD — body part data (NPC dismemberment routing)
+            b"PROJ" => extract_records(&mut reader, end, b"PROJ", &mut |fid, subs| {
+                index.projectiles.insert(fid, parse_proj(fid, subs));
+            })?,
+            b"EFSH" => extract_records(&mut reader, end, b"EFSH", &mut |fid, subs| {
+                index.effect_shaders.insert(fid, parse_efsh(fid, subs));
+            })?,
+            b"IMOD" => extract_records(&mut reader, end, b"IMOD", &mut |fid, subs| {
+                index.item_mods.insert(fid, parse_imod(fid, subs));
+            })?,
+            b"ARMA" => extract_records(&mut reader, end, b"ARMA", &mut |fid, subs| {
+                index.armor_addons.insert(fid, parse_arma(fid, subs));
+            })?,
+            b"BPTD" => extract_records(&mut reader, end, b"BPTD", &mut |fid, subs| {
+                index.body_parts.insert(fid, parse_bptd(fid, subs));
             })?,
             _ => {
                 reader.skip_group(&group);
@@ -1858,10 +1917,12 @@ mod tests {
     /// `pub foos: HashMap<...>` field, increment this.
     #[test]
     fn categories_table_row_count_pinned() {
-        // 37 typed maps on EsmIndex + 2 from cells (cells, statics).
+        // 42 typed maps on EsmIndex + 2 from cells (cells, statics).
         // Bumped from 37 → 38 in #624 (image_spaces map for IMGS dispatch).
         // Bumped from 38 → 39 in #630 (form_lists map for FLST dispatch).
+        // Bumped from 39 → 44 in #808 (FNV-D2-NEW-01: PROJ + EFSH +
+        //   IMOD + ARMA + BPTD stubs for FNV gameplay coverage).
         // Bump in lockstep with the struct + `categories()` edits.
-        assert_eq!(EsmIndex::categories().len(), 39);
+        assert_eq!(EsmIndex::categories().len(), 44);
     }
 }
