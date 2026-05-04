@@ -1161,6 +1161,238 @@ pub fn parse_bptd(form_id: u32, subs: &[SubRecord]) -> BptdRecord {
     out
 }
 
+// ── #809 / FNV-D2-NEW-02 — supporting record stubs ─────────────────
+//
+// Seven records that gate FNV NPC AI / crafting / impact-effect /
+// faction-reputation subsystems. All stub-form (EDID + a handful of
+// key scalar / form-ref fields per record); full sub-record decoding
+// lands when the consuming subsystem arrives. Pattern matches #808.
+
+/// REPU — reputation record (FNV-CORE). NCR / Legion / Powder
+/// Gangers / Boomers / Brotherhood / Followers — drives FNV's
+/// faction-reputation system and quest gating. ~12 vanilla records.
+/// See audit `FNV-D2-NEW-02` / #809.
+#[derive(Debug, Clone, Default)]
+pub struct RepuRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    pub full_name: String,
+    /// `DATA` — base reputation modifier (f32). Most records ship
+    /// `0.0` or `1.0`; edge cases shift towards a faction.
+    pub base_value: f32,
+}
+
+pub fn parse_repu(form_id: u32, subs: &[SubRecord]) -> RepuRecord {
+    let mut out = RepuRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
+            b"DATA" if sub.data.len() >= 4 => {
+                out.base_value = read_f32_at(&sub.data, 0).unwrap_or(0.0);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// EXPL — explosion record. Frag grenades, mines, explosive ammo
+/// blast effects. Linked to PROJ via PROJ→EXPL→EFSH chain, plus
+/// damage / radius / sound / impact-data refs. Stub captures the
+/// damage and force/radius scalars from `DATA`. See audit
+/// `FNV-D2-NEW-02` / #809.
+#[derive(Debug, Clone, Default)]
+pub struct ExplRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    pub full_name: String,
+    /// `DATA` offset 8..12 — damage in HP per direct hit (f32).
+    pub damage: f32,
+    /// `DATA` offset 12..16 — explosion blast radius in game units (f32).
+    pub radius: f32,
+}
+
+pub fn parse_expl(form_id: u32, subs: &[SubRecord]) -> ExplRecord {
+    let mut out = ExplRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
+            b"DATA" if sub.data.len() >= 16 => {
+                out.damage = read_f32_at(&sub.data, 8).unwrap_or(0.0);
+                out.radius = read_f32_at(&sub.data, 12).unwrap_or(0.0);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// CSTY — combat style record. NPC combat AI behavior profile
+/// (aggression, stealth preference, ranged vs melee). Per-NPC
+/// reference via NPC.SPCT. `CSTD` carries the FO3/FNV 124-byte
+/// payload; the stub captures only the first 4 bytes of CSTD as a
+/// flags scalar so the dispatch is verifiable. Full CSTD decode
+/// lands with the AI consumer. See audit `FNV-D2-NEW-02` / #809.
+#[derive(Debug, Clone, Default)]
+pub struct CstyRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    /// `CSTD` offset 0..4 — combat-style flag bitfield (u32). Decoded
+    /// lazily per-game; vanilla FNV uses ~12 bits.
+    pub csty_flags: u32,
+}
+
+pub fn parse_csty(form_id: u32, subs: &[SubRecord]) -> CstyRecord {
+    let mut out = CstyRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"CSTD" if sub.data.len() >= 4 => {
+                out.csty_flags = read_u32_at(&sub.data, 0).unwrap_or(0);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// IDLE — idle animation record. NPC behavior tree references —
+/// "lean against wall", "smoke", "drink", etc. Each NPC's PACK
+/// references IDLEs by form ID. Stub captures EDID + animation file
+/// path (MODL). See audit `FNV-D2-NEW-02` / #809.
+#[derive(Debug, Clone, Default)]
+pub struct IdleRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    /// `MODL` — animation file path (typically `.kf`).
+    pub animation_path: String,
+}
+
+pub fn parse_idle(form_id: u32, subs: &[SubRecord]) -> IdleRecord {
+    let mut out = IdleRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"MODL" => out.animation_path = read_zstring(&sub.data),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// IPCT — impact record. Bullet-impact visual effect (puff of dust on
+/// stone, splinters on wood, water splash, blood spray on flesh).
+/// Each material-class IPDS routes to a per-material IPCT. Stub
+/// captures EDID + impact model path. See audit `FNV-D2-NEW-02` / #809.
+#[derive(Debug, Clone, Default)]
+pub struct IpctRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    /// `MODL` — impact-effect model path (particle / decal mesh).
+    pub model_path: String,
+}
+
+pub fn parse_ipct(form_id: u32, subs: &[SubRecord]) -> IpctRecord {
+    let mut out = IpctRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"MODL" => out.model_path = read_zstring(&sub.data),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// IPDS — impact data set. 12-entry table mapping per-material
+/// surface kinds (stone, dirt, grass, glass, metal, wood, organic,
+/// cloth, water, hollow metal, organic bug, organic glow) to their
+/// respective IPCT records. Referenced by WEAP / PROJ for per-shot
+/// material-aware impact effects. Stub captures EDID + the count of
+/// material-IPCT pairs from `DATA`. See audit `FNV-D2-NEW-02` / #809.
+#[derive(Debug, Clone, Default)]
+pub struct IpdsRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    /// Number of material-IPCT pairs (12 on FO3/FNV per UESP).
+    /// `DATA` is a fixed 12-entry array of (material_kind: u8, ipct: u32)
+    /// or similar; stub captures the count for sanity-check.
+    pub material_pair_count: u32,
+}
+
+pub fn parse_ipds(form_id: u32, subs: &[SubRecord]) -> IpdsRecord {
+    let mut out = IpdsRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            // FO3/FNV IPDS DATA is a fixed-size 96-byte array
+            // (12 × 8 bytes = (material_kind: u32, ipct: u32) per
+            // entry). Skyrim uses 4-byte entries. Counting only:
+            b"DATA" => {
+                out.material_pair_count = (sub.data.len() / 8) as u32;
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// COBJ — constructible object record (FNV crafting). Workbench /
+/// reloading bench / campfire recipes. Stub captures EDID + created
+/// form (CNAM) + workbench filter (BNAM). The CNTO component list
+/// is deferred to the crafting consumer. See audit
+/// `FNV-D2-NEW-02` / #809.
+#[derive(Debug, Clone, Default)]
+pub struct CobjRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    /// `CNAM` — created form ID (the recipe's output item).
+    pub created_form: u32,
+    /// `BNAM` — workbench filter form ID (which workbench category
+    /// the recipe shows up under).
+    pub workbench_form: u32,
+}
+
+pub fn parse_cobj(form_id: u32, subs: &[SubRecord]) -> CobjRecord {
+    let mut out = CobjRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"CNAM" if sub.data.len() >= 4 => {
+                out.created_form = read_u32_at(&sub.data, 0).unwrap_or(0);
+            }
+            b"BNAM" if sub.data.len() >= 4 => {
+                out.workbench_form = read_u32_at(&sub.data, 0).unwrap_or(0);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1712,5 +1944,116 @@ mod tests {
         assert_eq!(b.editor_id, "HumanRace");
         assert_eq!(b.part_count, 3);
         assert_eq!(b.first_part_name, "Head");
+    }
+
+    // ── #809 / FNV-D2-NEW-02 stubs ─────────────────────────────────
+
+    #[test]
+    fn parse_repu_picks_edid_full_base_value() {
+        // `NCR` reputation shape: EDID + FULL + DATA(f32).
+        let mut data = [0u8; 4];
+        data[0..4].copy_from_slice(&1.0_f32.to_le_bytes());
+        let subs = vec![
+            sub(b"EDID", b"NCR\0"),
+            sub(b"FULL", b"New California Republic\0"),
+            sub(b"DATA", &data),
+        ];
+        let r = parse_repu(0x0011_E662, &subs);
+        assert_eq!(r.editor_id, "NCR");
+        assert_eq!(r.full_name, "New California Republic");
+        assert!((r.base_value - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_expl_picks_edid_full_damage_radius() {
+        // `FragGrenade` shape: damage at DATA[8..12], radius at [12..16].
+        let mut data = [0u8; 16];
+        data[8..12].copy_from_slice(&50.0_f32.to_le_bytes()); // damage
+        data[12..16].copy_from_slice(&350.0_f32.to_le_bytes()); // radius
+        let subs = vec![
+            sub(b"EDID", b"FragGrenade\0"),
+            sub(b"FULL", b"Frag Grenade\0"),
+            sub(b"DATA", &data),
+        ];
+        let e = parse_expl(0x0006_6EF8, &subs);
+        assert_eq!(e.editor_id, "FragGrenade");
+        assert!((e.damage - 50.0).abs() < 1e-3);
+        assert!((e.radius - 350.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn parse_csty_picks_edid_csty_flags() {
+        // `csyAggressive` shape: CSTD with a flag byte at offset 0.
+        let mut cstd = [0u8; 124];
+        cstd[0..4].copy_from_slice(&0x0000_0042_u32.to_le_bytes());
+        let subs = vec![sub(b"EDID", b"csyAggressive\0"), sub(b"CSTD", &cstd)];
+        let c = parse_csty(0x0008_3122, &subs);
+        assert_eq!(c.editor_id, "csyAggressive");
+        assert_eq!(c.csty_flags, 0x42);
+    }
+
+    #[test]
+    fn parse_idle_picks_edid_modl() {
+        // `IdleStandSmokingCigarette` shape: EDID + MODL pointing at
+        // a `.kf` animation file in `meshes\\actors\\character\\` etc.
+        let subs = vec![
+            sub(b"EDID", b"IdleStandSmokingCigarette\0"),
+            sub(b"MODL", b"actors\\character\\idleanims\\smoke.kf\0"),
+        ];
+        let i = parse_idle(0x000A_FB31, &subs);
+        assert_eq!(i.editor_id, "IdleStandSmokingCigarette");
+        assert!(i.animation_path.contains("smoke.kf"));
+    }
+
+    #[test]
+    fn parse_ipct_picks_edid_modl() {
+        // `MetalImpactSet` shape: EDID + MODL pointing at the impact
+        // particle / decal mesh.
+        let subs = vec![
+            sub(b"EDID", b"MetalImpactSet\0"),
+            sub(b"MODL", b"effects\\impacts\\metal.nif\0"),
+        ];
+        let i = parse_ipct(0x0007_C0A8, &subs);
+        assert_eq!(i.editor_id, "MetalImpactSet");
+        assert!(i.model_path.contains("metal.nif"));
+    }
+
+    #[test]
+    fn parse_ipds_picks_edid_pair_count() {
+        // FO3/FNV IPDS DATA is a fixed 96-byte array of 12 × 8-byte
+        // (material_kind, ipct_form_id) entries. Stub captures the
+        // pair count for sanity-check.
+        let data = [0u8; 96];
+        let subs = vec![sub(b"EDID", b"GenericImpactDataSet\0"), sub(b"DATA", &data)];
+        let i = parse_ipds(0x0006_E1F8, &subs);
+        assert_eq!(i.editor_id, "GenericImpactDataSet");
+        assert_eq!(i.material_pair_count, 12);
+    }
+
+    #[test]
+    fn parse_cobj_picks_edid_created_workbench() {
+        // `RecipeStimpak` shape: EDID + CNAM (created stimpak form) +
+        // BNAM (workbench filter form).
+        let subs = vec![
+            sub(b"EDID", b"RecipeStimpak\0"),
+            sub(b"CNAM", &0x0014_4F10_u32.to_le_bytes()),
+            sub(b"BNAM", &0x000A_6_001_u32.to_le_bytes()),
+        ];
+        let c = parse_cobj(0x0014_F800, &subs);
+        assert_eq!(c.editor_id, "RecipeStimpak");
+        assert_eq!(c.created_form, 0x0014_4F10);
+        assert_eq!(c.workbench_form, 0x000A_6_001);
+    }
+
+    #[test]
+    fn parse_repu_short_data_is_tolerated() {
+        // No DATA → base_value defaults to 0.0.
+        let subs = vec![
+            sub(b"EDID", b"PowderGangers\0"),
+            sub(b"FULL", b"Powder Gangers\0"),
+        ];
+        let r = parse_repu(0x0011_E664, &subs);
+        assert_eq!(r.editor_id, "PowderGangers");
+        assert_eq!(r.base_value, 0.0);
     }
 }

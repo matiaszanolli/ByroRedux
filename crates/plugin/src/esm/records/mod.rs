@@ -47,13 +47,15 @@ pub use items::{
     parse_weap, ItemKind, ItemRecord,
 };
 pub use misc::{
-    parse_acti, parse_arma, parse_avif, parse_bptd, parse_dial, parse_eczn, parse_efsh, parse_ench,
-    parse_eyes, parse_hair, parse_hdpt, parse_imgs, parse_imod, parse_info, parse_lgtm, parse_mesg,
-    parse_mgef, parse_navi, parse_navm, parse_pack, parse_perk, parse_proj, parse_qust, parse_regn,
-    parse_spel, parse_term, parse_watr, ActiRecord, ArmaRecord, AvifRecord, BptdRecord, DialRecord,
-    EcznRecord, EfshRecord, EnchRecord, EyesRecord, HairRecord, HdptRecord, ImgsRecord, ImodRecord,
-    InfoRecord, LgtmRecord, MesgRecord, MgefRecord, NaviRecord, NavmRecord, PackRecord, PerkRecord,
-    ProjRecord, QustRecord, RegnRecord, SpelRecord, TermRecord, WatrRecord,
+    parse_acti, parse_arma, parse_avif, parse_bptd, parse_cobj, parse_csty, parse_dial, parse_eczn,
+    parse_efsh, parse_ench, parse_expl, parse_eyes, parse_hair, parse_hdpt, parse_idle, parse_imgs,
+    parse_imod, parse_info, parse_ipct, parse_ipds, parse_lgtm, parse_mesg, parse_mgef, parse_navi,
+    parse_navm, parse_pack, parse_perk, parse_proj, parse_qust, parse_regn, parse_repu, parse_spel,
+    parse_term, parse_watr, ActiRecord, ArmaRecord, AvifRecord, BptdRecord, CobjRecord, CstyRecord,
+    DialRecord, EcznRecord, EfshRecord, EnchRecord, ExplRecord, EyesRecord, HairRecord, HdptRecord,
+    IdleRecord, ImgsRecord, ImodRecord, InfoRecord, IpctRecord, IpdsRecord, LgtmRecord, MesgRecord,
+    MgefRecord, NaviRecord, NavmRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RegnRecord,
+    RepuRecord, SpelRecord, TermRecord, WatrRecord,
 };
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
 pub use weather::{parse_wthr, OblivionHdrLighting, SkyColor, WeatherRecord};
@@ -225,6 +227,32 @@ pub struct EsmIndex {
     /// `BPTD` body-part-data records — per-NPC dismemberment
     /// routing (head, torso, limbs) + biped slot count.
     pub body_parts: HashMap<u32, BptdRecord>,
+    // ── #809 / FNV-D2-NEW-02 — supporting record stubs ──────────────
+    //
+    // Seven records that gate FNV NPC AI / crafting / impact-effect
+    // / faction-reputation subsystems. Pre-fix each of these top-level
+    // groups fell through to the catch-all skip.
+    /// `REPU` reputation records (FNV-CORE) — NCR / Legion / Powder
+    /// Gangers / Boomers / Brotherhood / Followers. Drives the
+    /// faction-reputation system and quest gating.
+    pub reputations: HashMap<u32, RepuRecord>,
+    /// `EXPL` explosion records — frag grenades, mines, explosive
+    /// ammo blast effects. Linked from PROJ via PROJ→EXPL→EFSH.
+    pub explosions: HashMap<u32, ExplRecord>,
+    /// `CSTY` combat-style records — per-NPC AI behavior profile
+    /// (aggression, stealth preference, ranged vs melee).
+    pub combat_styles: HashMap<u32, CstyRecord>,
+    /// `IDLE` idle-animation records — NPC behavior tree refs
+    /// ("lean against wall", "smoke", "drink", etc.).
+    pub idle_animations: HashMap<u32, IdleRecord>,
+    /// `IPCT` impact records — per-material bullet-impact visual
+    /// effects (puff of dust on stone, splinters on wood, etc.).
+    pub impacts: HashMap<u32, IpctRecord>,
+    /// `IPDS` impact data sets — 12-entry table mapping per-material
+    /// surface kinds to their respective IPCT records.
+    pub impact_data_sets: HashMap<u32, IpdsRecord>,
+    /// `COBJ` constructible-object records — FNV crafting recipes.
+    pub recipes: HashMap<u32, CobjRecord>,
 }
 
 impl EsmIndex {
@@ -299,6 +327,14 @@ impl EsmIndex {
             ("item_mods", |s| s.item_mods.len()),
             ("armor_addons", |s| s.armor_addons.len()),
             ("body_parts", |s| s.body_parts.len()),
+            // #809 / FNV-D2-NEW-02 stubs.
+            ("reputations", |s| s.reputations.len()),
+            ("explosions", |s| s.explosions.len()),
+            ("combat_styles", |s| s.combat_styles.len()),
+            ("idle_animations", |s| s.idle_animations.len()),
+            ("impacts", |s| s.impacts.len()),
+            ("impact_data_sets", |s| s.impact_data_sets.len()),
+            ("recipes", |s| s.recipes.len()),
         ]
     }
 
@@ -854,6 +890,38 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             })?,
             b"BPTD" => extract_records(&mut reader, end, b"BPTD", &mut |fid, subs| {
                 index.body_parts.insert(fid, parse_bptd(fid, subs));
+            })?,
+            // #809 / FNV-D2-NEW-02 — seven supporting records that
+            // gate FNV NPC AI / crafting / impact-effect / faction-
+            // reputation subsystems. Same stub-form pattern as #808.
+            //
+            // REPU — reputation (FNV-CORE: NCR / Legion / etc.)
+            // EXPL — explosion (PROJ → EXPL → EFSH chain)
+            // CSTY — combat style (NPC AI profile)
+            // IDLE — idle animation (NPC behavior tree)
+            // IPCT — impact (per-material bullet impact effect)
+            // IPDS — impact data set (material-kind → IPCT table)
+            // COBJ — constructible object (FNV crafting recipe)
+            b"REPU" => extract_records(&mut reader, end, b"REPU", &mut |fid, subs| {
+                index.reputations.insert(fid, parse_repu(fid, subs));
+            })?,
+            b"EXPL" => extract_records(&mut reader, end, b"EXPL", &mut |fid, subs| {
+                index.explosions.insert(fid, parse_expl(fid, subs));
+            })?,
+            b"CSTY" => extract_records(&mut reader, end, b"CSTY", &mut |fid, subs| {
+                index.combat_styles.insert(fid, parse_csty(fid, subs));
+            })?,
+            b"IDLE" => extract_records(&mut reader, end, b"IDLE", &mut |fid, subs| {
+                index.idle_animations.insert(fid, parse_idle(fid, subs));
+            })?,
+            b"IPCT" => extract_records(&mut reader, end, b"IPCT", &mut |fid, subs| {
+                index.impacts.insert(fid, parse_ipct(fid, subs));
+            })?,
+            b"IPDS" => extract_records(&mut reader, end, b"IPDS", &mut |fid, subs| {
+                index.impact_data_sets.insert(fid, parse_ipds(fid, subs));
+            })?,
+            b"COBJ" => extract_records(&mut reader, end, b"COBJ", &mut |fid, subs| {
+                index.recipes.insert(fid, parse_cobj(fid, subs));
             })?,
             _ => {
                 reader.skip_group(&group);
@@ -1917,12 +1985,15 @@ mod tests {
     /// `pub foos: HashMap<...>` field, increment this.
     #[test]
     fn categories_table_row_count_pinned() {
-        // 42 typed maps on EsmIndex + 2 from cells (cells, statics).
+        // 49 typed maps on EsmIndex + 2 from cells (cells, statics).
         // Bumped from 37 → 38 in #624 (image_spaces map for IMGS dispatch).
         // Bumped from 38 → 39 in #630 (form_lists map for FLST dispatch).
         // Bumped from 39 → 44 in #808 (FNV-D2-NEW-01: PROJ + EFSH +
         //   IMOD + ARMA + BPTD stubs for FNV gameplay coverage).
+        // Bumped from 44 → 51 in #809 (FNV-D2-NEW-02: REPU + EXPL +
+        //   CSTY + IDLE + IPCT + IPDS + COBJ stubs for NPC AI /
+        //   crafting / impact-effect / faction-reputation coverage).
         // Bump in lockstep with the struct + `categories()` edits.
-        assert_eq!(EsmIndex::categories().len(), 44);
+        assert_eq!(EsmIndex::categories().len(), 51);
     }
 }

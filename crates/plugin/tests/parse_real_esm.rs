@@ -79,7 +79,9 @@ fn parse_rate_fnv_esm() {
          races={} classes={} factions={} globals={} game_settings={} \
          packages={} quests={} dialogues={} messages={} perks={} \
          spells={} magic_effects={} activators={} terminals={} form_lists={} \
-         projectiles={} effect_shaders={} item_mods={} armor_addons={} body_parts={}",
+         projectiles={} effect_shaders={} item_mods={} armor_addons={} body_parts={} \
+         reputations={} explosions={} combat_styles={} idle_animations={} \
+         impacts={} impact_data_sets={} recipes={}",
         index.total(),
         index.items.len(),
         index.containers.len(),
@@ -106,6 +108,13 @@ fn parse_rate_fnv_esm() {
         index.item_mods.len(),
         index.armor_addons.len(),
         index.body_parts.len(),
+        index.reputations.len(),
+        index.explosions.len(),
+        index.combat_styles.len(),
+        index.idle_animations.len(),
+        index.impacts.len(),
+        index.impact_data_sets.len(),
+        index.recipes.len(),
     );
 
     // Primary M24 baseline assertion — the "13,684 structured records"
@@ -283,6 +292,95 @@ fn parse_rate_fnv_esm() {
          (BMDT decode regression)",
         arma_with_biped,
         index.armor_addons.len(),
+    );
+
+    // #809 / audit FNV-D2-NEW-02 regression guard: 7 supporting record
+    // types must dispatch end-to-end. Pre-fix each fell through to the
+    // catch-all skip.
+    //
+    // Observed vanilla counts (FalloutNV.esm, no DLC, 2026-05-03):
+    //   REPU=13, EXPL=154, CSTY=84, IDLE=1597, IPCT=125, IPDS=60, COBJ=0.
+    //
+    // COBJ=0 is intentional — vanilla FNV's crafting system predates
+    // the COBJ-driven recipe table (FO3 introduces the type but FNV
+    // workbenches use script effects, not COBJ records). DLC content
+    // (Honest Hearts, Old World Blues, Lonesome Road) adds some COBJs
+    // but vanilla ships an empty group. Floor at 0 documents this.
+    assert!(
+        index.reputations.len() >= 10,
+        "REPU={} (expected >= 10; vanilla ships ~13)",
+        index.reputations.len(),
+    );
+    assert!(
+        index.explosions.len() >= 130,
+        "EXPL={} (expected >= 130; vanilla ships ~154)",
+        index.explosions.len(),
+    );
+    assert!(
+        index.combat_styles.len() >= 70,
+        "CSTY={} (expected >= 70; vanilla ships ~84)",
+        index.combat_styles.len(),
+    );
+    assert!(
+        index.idle_animations.len() >= 1400,
+        "IDLE={} (expected >= 1400; vanilla ships ~1597)",
+        index.idle_animations.len(),
+    );
+    assert!(
+        index.impacts.len() >= 100,
+        "IPCT={} (expected >= 100; vanilla ships ~125)",
+        index.impacts.len(),
+    );
+    assert!(
+        index.impact_data_sets.len() >= 50,
+        "IPDS={} (expected >= 50; vanilla ships ~60)",
+        index.impact_data_sets.len(),
+    );
+    // COBJ vanilla=0 — dispatch arm is in place; DLC content adds some.
+
+    // At least one EXPL must have parsed damage > 0 — proves the DATA
+    // sub-record decode fires.
+    let expls_with_damage = index
+        .explosions
+        .values()
+        .filter(|e| e.damage > 0.0)
+        .count();
+    assert!(
+        expls_with_damage >= 100,
+        "EXPL with damage > 0 = {}/{}, expected >= 100 (DATA decode \
+         regression)",
+        expls_with_damage,
+        index.explosions.len(),
+    );
+
+    // At least one CSTY must have non-zero csty_flags — proves the
+    // CSTD sub-record decode fires.
+    let csty_with_flags = index
+        .combat_styles
+        .values()
+        .filter(|c| c.csty_flags != 0)
+        .count();
+    assert!(
+        csty_with_flags >= 50,
+        "CSTY with non-zero flags = {}/{}, expected >= 50 (CSTD decode \
+         regression)",
+        csty_with_flags,
+        index.combat_styles.len(),
+    );
+
+    // At least one IDLE must have a non-empty animation_path — proves
+    // MODL extraction fires.
+    let idle_with_path = index
+        .idle_animations
+        .values()
+        .filter(|i| !i.animation_path.is_empty())
+        .count();
+    assert!(
+        idle_with_path >= 1000,
+        "IDLE with animation_path = {}/{}, expected >= 1000 (MODL \
+         extraction regression)",
+        idle_with_path,
+        index.idle_animations.len(),
     );
 
     // #533 / audit M33-01 regression guard: at least one FNV weather must
