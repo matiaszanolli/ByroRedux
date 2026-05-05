@@ -41,9 +41,15 @@ use crate::ecs::world::World;
 pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + Sync {
     let mut roots: Vec<EntityId> = Vec::new();
     let mut queue: VecDeque<EntityId> = VecDeque::new();
+    // (Transform::len(), Parent::len(), World::next_entity_id()) — keys
+    // the cached `roots` set. Any spawn / despawn / Parent insert-or-
+    // remove changes one of these three values, so equality means the
+    // root set hasn't moved since last frame. `next_entity_id` covers
+    // the despawn-then-spawn-in-same-frame edge case where the two
+    // `len()`s happen to net out unchanged. See #825.
+    let mut last_seen: Option<(usize, usize, EntityId)> = None;
 
     move |world: &World, _dt: f32| {
-        roots.clear();
         queue.clear();
 
         // Acquire all ECS queries once per frame and hold them across
@@ -70,14 +76,27 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
         };
 
         // Phase 1: find root entities (have Transform but no Parent).
-        for (entity, _) in tq.iter() {
-            let is_root = parent_q
-                .as_ref()
-                .map(|pq| pq.get(entity).is_none())
-                .unwrap_or(true);
-            if is_root {
-                roots.push(entity);
+        // Steady-state interior cells touch ~6 k Transforms with ~30
+        // roots; rescanning every frame burned ~250 µs / frame on
+        // Megaton (#825). The generation key matches the `NameIndex`
+        // pattern used in `animation_system`.
+        let key = (
+            tq.len(),
+            parent_q.as_ref().map(|q| q.len()).unwrap_or(0),
+            world.next_entity_id(),
+        );
+        if last_seen != Some(key) {
+            roots.clear();
+            for (entity, _) in tq.iter() {
+                let is_root = parent_q
+                    .as_ref()
+                    .map(|pq| pq.get(entity).is_none())
+                    .unwrap_or(true);
+                if is_root {
+                    roots.push(entity);
+                }
             }
+            last_seen = Some(key);
         }
 
         // Phase 1b: update root GlobalTransforms via the held write query.
@@ -431,5 +450,77 @@ mod tests {
         let gr = gq.get(right).unwrap();
         assert!((gl.translation.x - 95.0).abs() < 1e-4);
         assert!((gr.translation.x - 105.0).abs() < 1e-4);
+    }
+
+    /// Regression test for #825: the cached root set must invalidate
+    /// when a new top-level entity (Transform-only) is spawned, when an
+    /// entity gains a Parent (becomes non-root), and when a Parent is
+    /// removed (becomes a root). All three transitions move the
+    /// `(Transform::len, Parent::len, next_entity_id)` key.
+    #[test]
+    fn root_cache_invalidates_on_topology_change() {
+        let mut world = World::new();
+        let r1 = spawn_with_transform(&mut world, Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+
+        let mut sys = make_transform_propagation_system();
+        sys(&world, 0.016);
+        assert_eq!(world.query::<GlobalTransform>().unwrap().get(r1).unwrap().translation.x, 10.0);
+
+        // 1) New root appears — cache must rescan and produce its GT.
+        let r2 = spawn_with_transform(&mut world, Vec3::new(20.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        sys(&world, 0.016);
+        let gq = world.query::<GlobalTransform>().unwrap();
+        assert_eq!(gq.get(r2).unwrap().translation.x, 20.0);
+        drop(gq);
+
+        // 2) New child of r1 — gains a Parent (Parent::len changes), so
+        //    the rescan must NOT classify it as a root, and BFS must
+        //    still compose its GT through r1.
+        let child = spawn_with_transform(&mut world, Vec3::new(3.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        world.insert(child, Parent(r1));
+        world.insert(r1, Children(vec![child]));
+        sys(&world, 0.016);
+        let gq = world.query::<GlobalTransform>().unwrap();
+        // r1 (10) + child local (3) = 13, composed via the BFS pass.
+        assert!((gq.get(child).unwrap().translation.x - 13.0).abs() < 1e-4);
+        drop(gq);
+
+        // 3) Remove the Parent — `child` should be promoted to root and
+        //    its GT should now equal its local Transform alone (3.0, not
+        //    13.0). Parent::len drops, invalidating the cache.
+        world.remove::<Parent>(child);
+        sys(&world, 0.016);
+        let gq = world.query::<GlobalTransform>().unwrap();
+        assert!(
+            (gq.get(child).unwrap().translation.x - 3.0).abs() < 1e-4,
+            "child should be a root after Parent removed (got x={})",
+            gq.get(child).unwrap().translation.x
+        );
+    }
+
+    /// Steady-state cache hit: with no topology change between frames,
+    /// the propagated values must remain correct (i.e. Phase 1b/2 still
+    /// run on the cached root set).
+    #[test]
+    fn root_cache_steady_state_still_runs_propagation() {
+        let mut world = World::new();
+        let root = spawn_with_transform(&mut world, Vec3::new(0.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        let child = spawn_with_transform(&mut world, Vec3::new(1.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        world.insert(child, Parent(root));
+        world.insert(root, Children(vec![child]));
+
+        let mut sys = make_transform_propagation_system();
+        sys(&world, 0.016);
+
+        // Mutate the root's local transform without touching topology —
+        // cache stays valid, but Phase 1b/2 must still re-compose.
+        {
+            let mut tq = world.query_mut::<Transform>().unwrap();
+            tq.get_mut(root).unwrap().translation.x = 50.0;
+        }
+        sys(&world, 0.016);
+        let gq = world.query::<GlobalTransform>().unwrap();
+        assert!((gq.get(root).unwrap().translation.x - 50.0).abs() < 1e-4);
+        assert!((gq.get(child).unwrap().translation.x - 51.0).abs() < 1e-4);
     }
 }
