@@ -1,0 +1,10 @@
+[package]
+name = "byroredux-audio"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+byroredux-core = { workspace = true }
+kira = { workspace = true }
+log = { workspace = true }
+glam = { workspace = true }

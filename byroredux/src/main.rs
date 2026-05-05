@@ -248,6 +248,11 @@ impl App {
         world.insert_resource(NameIndex::new());
         world.insert_resource(SubtreeCache::new());
         world.insert_resource(byroredux_physics::PhysicsWorld::new());
+        // M44 Phase 1 — audio world. Init failure (no audio device,
+        // CI, headless server) leaves the inner `AudioManager` as
+        // `None` and every subsequent audio operation no-ops. Boot
+        // never fails on a missing audio device.
+        world.insert_resource(byroredux_audio::AudioWorld::new());
         // Process-lifetime cache of parsed-and-imported NIF scenes.
         // Persists across cell transitions so repeat visits don't re-
         // parse every clutter mesh. See #381.
@@ -299,6 +304,13 @@ impl App {
         // world transforms (including billboard rotations). See #217.
         scheduler.add_exclusive(Stage::PostUpdate, make_world_bound_propagation_system());
         scheduler.add_to(Stage::Physics, byroredux_physics::physics_sync_system);
+        // M44 Phase 1 — audio update runs in Stage::Late so it sees
+        // final world transforms after propagation. The Phase 1 body
+        // is a stub (see byroredux_audio::audio_system); future
+        // phases (one-shot dispatch, listener pose sync, looping
+        // emitter lifecycle) flesh it out without touching the
+        // schedule wiring.
+        scheduler.add_to(Stage::Late, byroredux_audio::audio_system);
         scheduler.add_to_with_access(
             Stage::Late,
             log_stats_system,

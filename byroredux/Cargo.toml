@@ -18,6 +18,7 @@ byroredux-nif = { workspace = true }
 byroredux-bsa = { workspace = true }
 byroredux-bgsm = { workspace = true }
 byroredux-facegen = { workspace = true }
+byroredux-audio = { workspace = true }
 byroredux-physics = { workspace = true }
 byroredux-plugin = { workspace = true }
 byroredux-cxx-bridge = { workspace = true }

@@ -13,6 +13,7 @@ members = [
     "crates/ui",
     "crates/papyrus",
     "crates/facegen",
+    "crates/audio",
     "crates/debug-protocol",
     "crates/debug-server",
     "tools/byro-dbg",
@@ -40,6 +41,7 @@ byroredux-cxx-bridge = { path = "crates/cxx-bridge" }
 byroredux-ui = { path = "crates/ui" }
 byroredux-papyrus = { path = "crates/papyrus" }
 byroredux-facegen = { path = "crates/facegen" }
+byroredux-audio = { path = "crates/audio" }
 byroredux-debug-protocol = { path = "crates/debug-protocol" }
 byroredux-debug-server = { path = "crates/debug-server" }
 
@@ -91,6 +93,14 @@ rapier3d = { version = "0.22", features = ["simd-stable"] }
 
 # Image loading
 image = "0.24"
+
+# Audio (M44 — 3D positional, reverb zones, streaming, attenuation curves)
+# Pinned to 0.10 — game-oriented Rust audio with built-in SpatialScene
+# (per-emitter listener-relative attenuation), reverb effect, and
+# streaming/static sound formats (WAV/OGG/MP3/FLAC). Fallback strategy
+# for CI/headless: AudioWorld holds an Option<AudioManager>; init
+# failure (no audio device) leaves it None and the ECS system no-ops.
+kira = "0.10"
 
 # C++ interop
 cxx = "1"
