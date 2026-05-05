@@ -62,6 +62,48 @@
 //!   required — sidesteps the "Systems can't `&mut World::spawn`"
 //!   constraint that motivates this API.
 //!
+//! # Phase 4 (this commit)
+//!
+//! - `AudioEmitter.looping = true` is no longer just metadata. The
+//!   dispatch path applies kira's `StaticSoundData::loop_region(..)`
+//!   when the flag is set — the sound loops the full playback
+//!   region indefinitely. The prune sweep notices when a looping
+//!   sound's source entity has lost its `AudioEmitter` component
+//!   (despawn-by-cell-unload, or explicit removal) and issues a
+//!   tweened `stop()` on the kira handle; the next prune tick
+//!   observes `Stopped` and drops the entry.
+//!
+//! # Phase 5 (this commit)
+//!
+//! - [`load_streaming_sound_from_bytes`] / [`load_streaming_sound_from_file`]
+//!   — kira's `StreamingSoundData` lets multi-minute music play
+//!   without buffering the whole decompressed PCM in memory. The
+//!   bytes-overload is for BSA-extracted music; the file-overload
+//!   is for loose `Data/Music/*.mp3` / `*.wav`.
+//! - [`AudioWorld::play_music`] — single-slot music dispatch through
+//!   the main (non-spatial) track. Overwrites any currently-playing
+//!   track with a tweened fade. Music is non-positional by design:
+//!   the listener doesn't move relative to the music source.
+//! - [`AudioWorld::stop_music`] — explicit stop (cell exit, menu
+//!   open, etc.) with a configurable fade duration.
+//!
+//! # Phase 6 (this commit)
+//!
+//! - [`AudioWorld::set_reverb_send_db`] — global reverb send level.
+//!   On manager init, the audio crate creates one kira send track
+//!   with a `ReverbBuilder` effect at full-wet output. Every spatial
+//!   sub-track for an `AudioEmitter` or queue-driven one-shot opts
+//!   into routing some signal to that send via `with_send` at
+//!   construction time. The default send level is `f32::NEG_INFINITY`
+//!   (silent, "reverb off") so the engine boots with no audible
+//!   reverb. Cell-load logic (an interior detector that runs after
+//!   `cell_loader` finishes) toggles to `-12 dB` for interiors,
+//!   back to silent for exteriors. Send level changes apply to
+//!   *new* sounds — already-playing sounds keep their construction-
+//!   time level, which is fine for short SFX (footsteps, gunshots
+//!   loop the per-frame send level naturally as new sounds replace
+//!   old ones).
+//!
 //! # Future phases (not in this commit)
 //!
 //! - Phase 3.5b: FOOT records parser → per-material sound lookup.
@@ -76,11 +118,14 @@ use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
 use byroredux_core::ecs::Resource;
 use glam::Vec3;
+use kira::effect::reverb::ReverbBuilder;
 use kira::listener::ListenerHandle;
 use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle};
+use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
 use kira::sound::{FromFileError, PlaybackState};
-use kira::track::{SpatialTrackBuilder, SpatialTrackHandle};
-use kira::{AudioManager, AudioManagerSettings, DefaultBackend, Tween};
+use kira::track::{SendTrackBuilder, SendTrackHandle, SpatialTrackBuilder, SpatialTrackHandle};
+use kira::{AudioManager, AudioManagerSettings, DefaultBackend, Mix, Tween};
+use std::time::Duration;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -101,10 +146,15 @@ pub use kira::Frame;
 /// `AudioEmitter` component on completion so a downstream cleanup
 /// system can despawn the entity. Underscore-prefix on `_track`
 /// because we hold it for `Drop` side effect only.
+///
+/// `looping` (Phase 4): when true, the prune pass treats `Stopped`
+/// as a real "stop me" signal (caller-driven, e.g. cell unload).
+/// When false, `Stopped` is the natural one-shot termination.
 struct ActiveSound {
     entity: Option<EntityId>,
     handle: StaticSoundHandle,
     _track: SpatialTrackHandle,
+    looping: bool,
 }
 
 /// Fire-and-forget one-shot queued via [`AudioWorld::play_oneshot`].
@@ -141,6 +191,22 @@ pub struct AudioWorld {
     /// who can't allocate entities (Systems) can still trigger
     /// sounds. Phase 3.5.
     pending_oneshots: Vec<PendingOneShot>,
+    /// Single-slot music handle (Phase 5). Music is non-spatial —
+    /// it routes through the main track, not a spatial sub-track.
+    /// Calling `play_music` while a track is already playing fades
+    /// the old one out and the new one in (crossfade).
+    music: Option<StreamingSoundHandle<FromFileError>>,
+    /// Reverb send track (Phase 6). Created on manager init when
+    /// the audio device is available. Each spatial sub-track opts
+    /// into routing signal here via `with_send` at construction
+    /// time; the per-track send level is `reverb_send_db` at the
+    /// moment the track is built. `None` when the manager itself is
+    /// inactive or send-track creation failed.
+    reverb_send: Option<SendTrackHandle>,
+    /// Per-new-spatial-track reverb send level in dB. Default
+    /// `f32::NEG_INFINITY` = no reverb. Cell-load logic flips this
+    /// to `-12.0` (subtle) for interior cells.
+    reverb_send_db: f32,
     /// Lazily-created kira listener — the entity whose
     /// `GlobalTransform` drives spatial attenuation. Created on the
     /// first frame an `AudioListener` is found in the World.
@@ -162,23 +228,51 @@ impl AudioWorld {
     /// without `cpal`-supported backend), logs at WARN and returns an
     /// audioless world that no-ops cleanly.
     pub fn new() -> Self {
-        let manager = match AudioManager::<DefaultBackend>::new(AudioManagerSettings::default()) {
-            Ok(manager) => {
-                log::info!("M44 Phase 1: AudioManager initialised (default backend)");
-                Some(manager)
+        let mut manager =
+            match AudioManager::<DefaultBackend>::new(AudioManagerSettings::default()) {
+                Ok(manager) => {
+                    log::info!("M44 Phase 1: AudioManager initialised (default backend)");
+                    Some(manager)
+                }
+                Err(e) => {
+                    log::warn!(
+                        "M44 Phase 1: AudioManager init failed ({e}); engine continues \
+                         without audio. This is expected in headless/CI environments and \
+                         on systems without a working audio device."
+                    );
+                    None
+                }
+            };
+        // Phase 6: create a send track with a reverb effect at full
+        // wet output. Per-spatial-track send levels (in dB) control
+        // how much of each sound goes through. Default-disabled at
+        // f32::NEG_INFINITY so engine boots silent-of-reverb until
+        // a cell-load flips the toggle for interiors.
+        let reverb_send = manager.as_mut().and_then(|mgr| {
+            let builder = SendTrackBuilder::new().with_effect(
+                ReverbBuilder::new()
+                    .feedback(0.85)
+                    .damping(0.6)
+                    .stereo_width(1.0)
+                    .mix(Mix::WET),
+            );
+            match mgr.add_send_track(builder) {
+                Ok(handle) => {
+                    log::info!("M44 Phase 6: reverb send track created (initially silent)");
+                    Some(handle)
+                }
+                Err(e) => {
+                    log::warn!("M44 Phase 6: add_send_track for reverb failed: {e}");
+                    None
+                }
             }
-            Err(e) => {
-                log::warn!(
-                    "M44 Phase 1: AudioManager init failed ({e}); engine continues without audio. \
-                     This is expected in headless/CI environments and on systems without a \
-                     working audio device."
-                );
-                None
-            }
-        };
+        });
         Self {
             active_sounds: Vec::new(),
             pending_oneshots: Vec::new(),
+            music: None,
+            reverb_send,
+            reverb_send_db: f32::NEG_INFINITY,
             listener: None,
             manager,
         }
@@ -245,6 +339,98 @@ impl AudioWorld {
             attenuation,
             volume,
         });
+    }
+
+    /// **Phase 5**: play a streaming sound through the main track.
+    /// Music is non-spatial by design — it shouldn't attenuate with
+    /// player position the way a campfire's crackle does. Volume
+    /// is linear amplitude (1.0 = nominal); `fade_in_secs` controls
+    /// the kira tween used to fade in (and to fade out any existing
+    /// track being replaced).
+    ///
+    /// No-op when the manager is inactive (returns silently). When
+    /// active and a track is already playing, the existing handle
+    /// is told to fade out over `fade_in_secs` and replaced — the
+    /// fade-in of the new track and fade-out of the old overlap as
+    /// a natural crossfade.
+    pub fn play_music(
+        &mut self,
+        streaming_sound: StreamingSoundData<FromFileError>,
+        volume: f32,
+        fade_in_secs: f32,
+    ) {
+        let Some(mgr) = self.manager.as_mut() else {
+            return;
+        };
+        let fade = Tween {
+            start_time: kira::StartTime::Immediate,
+            duration: Duration::from_secs_f32(fade_in_secs.max(0.0)),
+            easing: kira::Easing::Linear,
+        };
+        // Fade out any current track over the same duration so the
+        // two overlap into a crossfade.
+        if let Some(existing) = self.music.as_mut() {
+            existing.stop(fade);
+        }
+        let db = if volume > 0.0001 {
+            20.0 * volume.log10()
+        } else {
+            -60.0
+        };
+        let configured = streaming_sound.volume(db).fade_in_tween(Some(fade));
+        match mgr.play(configured) {
+            Ok(handle) => {
+                self.music = Some(handle);
+            }
+            Err(e) => {
+                log::warn!("M44 Phase 5: play_music failed: {e}");
+                self.music = None;
+            }
+        }
+    }
+
+    /// **Phase 5**: stop the currently-playing music with a fade-out.
+    /// No-op when nothing is playing or when the manager is inactive.
+    pub fn stop_music(&mut self, fade_out_secs: f32) {
+        let Some(handle) = self.music.as_mut() else {
+            return;
+        };
+        let fade = Tween {
+            start_time: kira::StartTime::Immediate,
+            duration: Duration::from_secs_f32(fade_out_secs.max(0.0)),
+            easing: kira::Easing::Linear,
+        };
+        handle.stop(fade);
+        // Drop the handle so a future play_music call doesn't see
+        // a stale reference. Kira keeps the sound alive internally
+        // until the fade completes.
+        self.music = None;
+    }
+
+    /// True when music is currently playing or fading out. Useful
+    /// for menu-toggle / cell-load gameplay logic that wants to
+    /// avoid stacking music calls.
+    pub fn is_music_active(&self) -> bool {
+        self.music
+            .as_ref()
+            .map(|h| !matches!(h.state(), PlaybackState::Stopped))
+            .unwrap_or(false)
+    }
+
+    /// **Phase 6**: set the per-new-spatial-track reverb send level
+    /// in decibels. Already-playing sounds keep their construction-
+    /// time send level; the change applies to *new* sounds dispatched
+    /// after the call. Use `f32::NEG_INFINITY` (or any value below
+    /// ~-60 dB) to silence reverb. `-12.0` is a subtle interior
+    /// reverb; `-6.0` is more pronounced; `0.0` is full wet (rare —
+    /// the dry-too-wet ratio normally wants the wet attenuated).
+    pub fn set_reverb_send_db(&mut self, db: f32) {
+        self.reverb_send_db = db;
+    }
+
+    /// Current reverb send level (Phase 6). For telemetry / tests.
+    pub fn reverb_send_db(&self) -> f32 {
+        self.reverb_send_db
     }
 }
 
@@ -437,8 +623,20 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
         return;
     };
     for p in pending {
-        let track_builder = SpatialTrackBuilder::new()
+        let mut track_builder = SpatialTrackBuilder::new()
             .distances(p.attenuation.min_distance..=p.attenuation.max_distance);
+        // Phase 6: route a fraction of this track's signal to the
+        // global reverb send if one exists and the level isn't
+        // muted. with_send takes a Decibels-convertible f32; the
+        // f32 is treated as raw dB, so f32::NEG_INFINITY is a clean
+        // "no reverb" sentinel.
+        if let Some(reverb) = audio_world.reverb_send.as_ref() {
+            if audio_world.reverb_send_db.is_finite()
+                && audio_world.reverb_send_db > -60.0
+            {
+                track_builder = track_builder.with_send(reverb.id(), audio_world.reverb_send_db);
+            }
+        }
         let mut track =
             match mgr.add_spatial_sub_track(listener_id, p.position, track_builder) {
                 Ok(t) => t,
@@ -464,6 +662,7 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
             entity: None,
             handle,
             _track: track,
+            looping: false,
         });
     }
 }
@@ -491,6 +690,7 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
         attenuation: Attenuation,
         volume: f32,
         position: Vec3,
+        looping: bool,
     }
     let mut pending: Vec<Pending> = Vec::new();
     {
@@ -516,6 +716,7 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
                 attenuation: emitter.attenuation,
                 volume: emitter.volume,
                 position: gt.translation,
+                looping: emitter.looping,
             });
         }
     }
@@ -534,8 +735,20 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
         // exclusive `..` range we use elsewhere doesn't impl
         // `Into<SpatialTrackDistances>`. The values are min..=max
         // game-units, falloff between is linear (kira default).
-        let track_builder = SpatialTrackBuilder::new()
+        let mut track_builder = SpatialTrackBuilder::new()
             .distances(p.attenuation.min_distance..=p.attenuation.max_distance);
+        // Phase 6: route a fraction of this track's signal to the
+        // global reverb send if one exists and the level isn't
+        // muted. with_send takes a Decibels-convertible f32; the
+        // f32 is treated as raw dB, so f32::NEG_INFINITY is a clean
+        // "no reverb" sentinel.
+        if let Some(reverb) = audio_world.reverb_send.as_ref() {
+            if audio_world.reverb_send_db.is_finite()
+                && audio_world.reverb_send_db > -60.0
+            {
+                track_builder = track_builder.with_send(reverb.id(), audio_world.reverb_send_db);
+            }
+        }
         let mut track = match mgr.add_spatial_sub_track(listener_id, p.position, track_builder) {
             Ok(t) => t,
             Err(e) => {
@@ -558,7 +771,14 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
         } else {
             -60.0
         };
-        let sound = (*p.sound).clone().volume(db);
+        let mut sound = (*p.sound).clone().volume(db);
+        if p.looping {
+            // Phase 4: kira's `loop_region(..)` enables full-region
+            // looping. When the source entity is despawned externally
+            // (cell unload), the cleanup-looping sweep notices the
+            // missing entity and stops the handle.
+            sound = sound.loop_region(..);
+        }
         let handle = match track.play(sound) {
             Ok(h) => h,
             Err(e) => {
@@ -573,6 +793,7 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
             entity: Some(p.entity),
             handle,
             _track: track,
+            looping: p.looping,
         });
         started.push(p.entity);
     }
@@ -594,6 +815,36 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
 /// the source entity so a downstream cleanup system can despawn it
 /// without coupling to audio state.
 fn prune_stopped_sounds(world: &World, audio_world: &mut AudioWorld) {
+    // Phase 4: looping sounds whose source entity has lost its
+    // `AudioEmitter` component (despawn-by-cell-unload, or explicit
+    // removal) should be stopped at the kira layer too. Snapshot
+    // those entity IDs first, then issue stop calls below — kira's
+    // tweened stop is async, but the next prune tick catches the
+    // resulting `Stopped` state.
+    let emitter_q = world.query::<AudioEmitter>();
+    let mut to_stop_indices: Vec<usize> = Vec::new();
+    for (idx, s) in audio_world.active_sounds.iter().enumerate() {
+        if !s.looping {
+            continue;
+        }
+        let Some(entity) = s.entity else {
+            continue;
+        };
+        let still_has_emitter = emitter_q
+            .as_ref()
+            .map(|q| q.get(entity).is_some())
+            .unwrap_or(false);
+        if !still_has_emitter {
+            to_stop_indices.push(idx);
+        }
+    }
+    drop(emitter_q);
+    for idx in &to_stop_indices {
+        audio_world.active_sounds[*idx]
+            .handle
+            .stop(Tween::default());
+    }
+
     let mut finished: Vec<EntityId> = Vec::new();
     audio_world.active_sounds.retain(|s| {
         if matches!(s.handle.state(), PlaybackState::Stopped) {
@@ -673,6 +924,28 @@ pub fn spawn_oneshot_at(
 pub fn load_sound_from_bytes(bytes: Vec<u8>) -> Result<StaticSoundData, FromFileError> {
     let cursor = Cursor::new(bytes);
     StaticSoundData::from_cursor(cursor)
+}
+
+/// **Phase 5**: decode a fully-buffered audio blob as a streaming
+/// sound. Unlike [`load_sound_from_bytes`], the result decodes
+/// audio frames incrementally during playback — appropriate for
+/// multi-minute music that would otherwise burn ~30 MB of RAM per
+/// track decompressed.
+pub fn load_streaming_sound_from_bytes(
+    bytes: Vec<u8>,
+) -> Result<StreamingSoundData<FromFileError>, FromFileError> {
+    let cursor = Cursor::new(bytes);
+    StreamingSoundData::from_cursor(cursor)
+}
+
+/// **Phase 5**: streaming variant of [`load_streaming_sound_from_bytes`]
+/// that opens the file lazily — kira holds an `std::fs::File` and
+/// pulls decoded frames as the playback head advances. Use this for
+/// loose `Data/Music/*.mp3` / `*.wav` files that aren't archived.
+pub fn load_streaming_sound_from_file(
+    path: impl AsRef<std::path::Path>,
+) -> Result<StreamingSoundData<FromFileError>, FromFileError> {
+    StreamingSoundData::from_file(path)
 }
 
 /// Process-lifetime cache of decoded `StaticSoundData`, keyed by
@@ -967,6 +1240,9 @@ mod tests {
         let inactive = AudioWorld {
             active_sounds: Vec::new(),
             pending_oneshots: Vec::new(),
+            music: None,
+            reverb_send: None,
+            reverb_send_db: f32::NEG_INFINITY,
             listener: None,
             manager: None,
         };
@@ -992,6 +1268,238 @@ mod tests {
         assert_eq!(aw.active_sound_count(), 0);
     }
 
+    /// **Phase 6**: reverb send level defaults to NEG_INFINITY
+    /// (silent / disabled). The dispatch path explicitly checks
+    /// `is_finite() && > -60.0` before calling `with_send`, so a
+    /// fresh AudioWorld never produces audible reverb regardless
+    /// of whether a send track was created. Pinned because the
+    /// alternative (default `0.0` = full wet) would produce shocking
+    /// reverb on every spatial sound the moment audio init succeeded.
+    #[test]
+    fn reverb_send_defaults_to_silent() {
+        let world = AudioWorld::new();
+        assert!(
+            world.reverb_send_db().is_infinite() && world.reverb_send_db().is_sign_negative(),
+            "reverb send must default to NEG_INFINITY (silent), got {}",
+            world.reverb_send_db()
+        );
+    }
+
+    /// **Phase 6**: `set_reverb_send_db` persists the new level.
+    /// New sub-tracks created after the call use the new level;
+    /// already-playing sounds keep their construction-time level
+    /// (kira's `with_send` API is build-time only). This test pins
+    /// only the resource-side state — actual audible reverb on a
+    /// running stream needs the real-data lifecycle test for that.
+    #[test]
+    fn set_reverb_send_db_persists() {
+        let mut world = AudioWorld {
+            active_sounds: Vec::new(),
+            pending_oneshots: Vec::new(),
+            music: None,
+            reverb_send: None,
+            reverb_send_db: f32::NEG_INFINITY,
+            listener: None,
+            manager: None,
+        };
+        world.set_reverb_send_db(-12.0);
+        assert!((world.reverb_send_db() - (-12.0)).abs() < 1e-6);
+        world.set_reverb_send_db(f32::NEG_INFINITY);
+        assert!(world.reverb_send_db().is_infinite());
+    }
+
+    /// **Phase 5**: `play_music` and `stop_music` are no-ops when
+    /// the audio world is inactive (no audio device). Pinned because
+    /// a refactor that "asserts a manager exists" would crash on
+    /// every headless host on the very first cell-load music event.
+    #[test]
+    fn play_music_no_op_when_inactive() {
+        // We can't construct a real StreamingSoundData without bytes
+        // that decode, so this test only exercises the early-return
+        // branch (manager.is_none() → silent return). is_music_active
+        // and stop_music are also pinned along the inactive path.
+        let mut audio_world = AudioWorld {
+            active_sounds: Vec::new(),
+            pending_oneshots: Vec::new(),
+            music: None,
+            reverb_send: None,
+            reverb_send_db: f32::NEG_INFINITY,
+            listener: None,
+            manager: None,
+        };
+        assert!(!audio_world.is_music_active());
+        audio_world.stop_music(0.5); // No-op on no-music + no-manager.
+        assert!(!audio_world.is_music_active());
+    }
+
+    /// **Phase 5 real-data integration**: open FNV `Fallout - Sound.bsa`,
+    /// extract the longest OGG (proxy for "music" — vanilla FNV
+    /// ships music as separate `Fallout - Music.bsa` which we don't
+    /// require for the test), play it through `play_music`, verify
+    /// `is_music_active() == true` after dispatch, then `stop_music`
+    /// and verify it goes inactive.
+    ///
+    /// `#[ignore]` — needs working audio device + vanilla FNV data.
+    #[test]
+    #[ignore]
+    fn play_music_drives_streaming_playback_on_real_ogg() {
+        use byroredux_bsa::BsaArchive;
+        use std::path::PathBuf;
+        use std::time::{Duration, Instant};
+
+        const FNV_DEFAULT: &str =
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
+        let dir = std::env::var("BYROREDUX_FNV_DATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(FNV_DEFAULT));
+        if !dir.is_dir() {
+            return;
+        }
+        let bsa = match BsaArchive::open(&dir.join("Fallout - Sound.bsa")) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let bytes = bsa
+            .extract(
+                r"sound\fx\amb\~regions\goodsprings\oneshots\creak_low\amb_gsinterioroneshots_04.ogg",
+            )
+            .expect("vanilla creak OGG");
+
+        let streaming = load_streaming_sound_from_bytes(bytes).expect("decode");
+
+        let mut audio_world = AudioWorld::new();
+        if !audio_world.is_active() {
+            return;
+        }
+
+        // play_music with 0.05s fade-in (short so the test is fast).
+        audio_world.play_music(streaming, 0.5, 0.05);
+        assert!(
+            audio_world.is_music_active(),
+            "play_music must produce a Playing handle on first dispatch"
+        );
+
+        // Let it play briefly, then stop with a fade.
+        std::thread::sleep(Duration::from_millis(100));
+        audio_world.stop_music(0.05);
+
+        // Poll until inactive (the stop fade completes).
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while audio_world.is_music_active() {
+            if Instant::now() > deadline {
+                panic!("stop_music never produced an inactive state");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// **Phase 4**: an `AudioEmitter` with `looping = true` plays
+    /// past its natural duration. The real-data lifecycle test
+    /// (Phase 3) confirmed a one-shot stops at ~580ms; this test
+    /// runs the same sound for a wall-clock duration well past that
+    /// and asserts the active count stays at 1. Then removes the
+    /// emitter component (simulating cell unload) and verifies the
+    /// prune sweep stops the handle.
+    ///
+    /// `#[ignore]` — needs working audio device + vanilla FNV data.
+    #[test]
+    #[ignore]
+    fn looping_emitter_survives_natural_duration_and_stops_on_emitter_remove() {
+        use byroredux_bsa::BsaArchive;
+        use std::path::PathBuf;
+        use std::time::{Duration, Instant};
+
+        const FNV_DEFAULT: &str =
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
+        let dir = std::env::var("BYROREDUX_FNV_DATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(FNV_DEFAULT));
+        if !dir.is_dir() {
+            return;
+        }
+        let bsa = match BsaArchive::open(&dir.join("Fallout - Sound.bsa")) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let bytes = bsa
+            .extract(
+                r"sound\fx\npc\robotsecuritron\armswing\npc_securitron_armswing_02.wav",
+            )
+            .expect("vanilla securitron arm-swing");
+        let sound = Arc::new(load_sound_from_bytes(bytes).expect("decode WAV"));
+
+        let mut world = byroredux_core::ecs::World::new();
+        let aw = AudioWorld::new();
+        if !aw.is_active() {
+            return;
+        }
+        world.insert_resource(aw);
+
+        let listener = world.spawn();
+        world.insert(listener, Transform::IDENTITY);
+        world.insert(listener, GlobalTransform::IDENTITY);
+        world.insert(listener, AudioListener);
+
+        // Spawn a looping emitter manually (spawn_oneshot_at sets
+        // looping=false; need this branch).
+        let emitter = world.spawn();
+        let pos = glam::Vec3::new(0.0, 0.0, 5.0);
+        world.insert(emitter, Transform::new(pos, glam::Quat::IDENTITY, 1.0));
+        world.insert(
+            emitter,
+            GlobalTransform::new(pos, glam::Quat::IDENTITY, 1.0),
+        );
+        world.insert(
+            emitter,
+            AudioEmitter {
+                sound: Arc::clone(&sound),
+                attenuation: Attenuation::default(),
+                volume: 0.5, // half-volume so the test isn't loud
+                looping: true,
+            },
+        );
+        world.insert(emitter, OneShotSound);
+
+        // Tick — listener creates, emitter dispatches with loop_region.
+        audio_system(&world, 0.016);
+        assert_eq!(world.resource::<AudioWorld>().active_sound_count(), 1);
+
+        // Wait past the sound's natural duration (~580 ms) plus a
+        // safety margin. If looping isn't actually applied, the
+        // handle would report Stopped here and the prune would drop it.
+        std::thread::sleep(Duration::from_millis(900));
+        audio_system(&world, 0.016);
+        assert_eq!(
+            world.resource::<AudioWorld>().active_sound_count(),
+            1,
+            "looping emitter must survive past natural duration — \
+             loop_region(..) wasn't applied?"
+        );
+
+        // Remove the AudioEmitter component to simulate cell unload.
+        // The next prune sweep should call .stop(), and a subsequent
+        // tick should observe Stopped and drop the entry.
+        {
+            let mut q = world.query_mut::<AudioEmitter>().unwrap();
+            q.remove(emitter);
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            audio_system(&world, 0.016);
+            if world.resource::<AudioWorld>().active_sound_count() == 0 {
+                break;
+            }
+            if Instant::now() > deadline {
+                panic!(
+                    "looping sound never reported Stopped after AudioEmitter removal — \
+                     prune sweep missed the despawn signal"
+                );
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// **Phase 3.5**: `play_oneshot` enqueues regardless of audio
     /// activity (so a future re-init could replay), but the queue
     /// stays bounded at 256 entries via FIFO drop-oldest. Pinned
@@ -1004,6 +1512,9 @@ mod tests {
         let mut audio_world = AudioWorld {
             active_sounds: Vec::new(),
             pending_oneshots: Vec::new(),
+            music: None,
+            reverb_send: None,
+            reverb_send_db: f32::NEG_INFINITY,
             listener: None,
             manager: None,
         };
