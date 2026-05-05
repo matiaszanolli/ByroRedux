@@ -395,10 +395,11 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
                 events.push(AnimationTextKeyEvent { label: sym, time });
             });
             if !events.is_empty() {
-                eq.insert(
-                    ps.entity,
-                    AnimationTextKeyEvents(std::mem::take(&mut events)),
-                );
+                // `events.clone()` instead of `mem::take` so the scratch
+                // keeps its high-water-mark capacity across iterations
+                // (#828). `AnimationTextKeyEvent` is Copy — the clone is
+                // a memcpy of N × 8 bytes.
+                eq.insert(ps.entity, AnimationTextKeyEvents(events.clone()));
             }
         }
     }
@@ -520,9 +521,14 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
     drop(stack_query);
 
     // Scratch buffers reused across entities to avoid per-tick heap
-    // allocations (#251, #252). Cleared at the start of each iteration.
+    // allocations (#251, #252, #828). Cleared at the start of each
+    // iteration. Text-event scratches were originally declared inside
+    // the loop and re-allocated every entity per frame — see #828.
     let mut channel_names_scratch: Vec<FixedString> = Vec::new();
     let mut updates_scratch: Vec<(FixedString, EntityId, Vec3, Quat, f32)> = Vec::new();
+    use byroredux_scripting::events::AnimationTextKeyEvent;
+    let mut events: Vec<AnimationTextKeyEvent> = Vec::new();
+    let mut seen_labels: Vec<FixedString> = Vec::new();
 
     for entity in stack_entities {
         // Phase 1: advance all layers (write lock).
@@ -560,12 +566,12 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         // into owned / registry-borrowed data so the lock drops before any
         // writes. Dominant info is stored as (clip_handle, local_time) —
         // NO channel Vec clones (#265).
-        // Text-key events scratch + dedup seen-set (#339 / #231). Owned by
-        // this call; Vec capacity amortizes across layers. seen-set holds
-        // interned `FixedString` symbols so dedup is integer comparison.
-        use byroredux_scripting::events::AnimationTextKeyEvent;
-        let mut events: Vec<AnimationTextKeyEvent> = Vec::new();
-        let mut seen_labels: Vec<FixedString> = Vec::new();
+        // Text-key event scratches (#339 / #231 / #828) live on the outer
+        // closure scope; clear before each visit. `seen_labels` is also
+        // cleared internally by `visit_stack_text_events`, but we clear
+        // here too to keep the contract obvious.
+        events.clear();
+        seen_labels.clear();
         let accum_root: Option<FixedString>;
         let dominant_info: Option<(u32, f32)>;
         let stack_root: Option<EntityId>;
@@ -653,10 +659,14 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         }
 
         // Phase 3a: emit text events (write lock on a different component).
+        // `events.clone()` (not `mem::take`) so the scratch retains its
+        // capacity across iterations — `mem::take` swaps in a zero-cap
+        // Vec and forces the next iteration's visitor to grow from
+        // scratch. `AnimationTextKeyEvent` is Copy. See #828.
         if !events.is_empty() {
             use byroredux_scripting::events::AnimationTextKeyEvents;
             let mut eq = world.query_mut::<AnimationTextKeyEvents>().unwrap();
-            eq.insert(entity, AnimationTextKeyEvents(std::mem::take(&mut events)));
+            eq.insert(entity, AnimationTextKeyEvents(events.clone()));
         }
 
         // Phase 3b: apply blended transforms with root motion splitting (AR-02).
