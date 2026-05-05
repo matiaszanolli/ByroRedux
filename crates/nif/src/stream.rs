@@ -10,6 +10,17 @@ use crate::version::{NifVariant, NifVersion};
 use std::io::{self, Cursor, Read};
 use std::sync::Arc;
 
+// NIF format is little-endian by spec. The bulk-array readers below
+// (`read_ni_point3_array`, `read_u16_array`, …) cast a typed `Vec<T>`
+// into a `&mut [u8]` and pass that to `read_exact`, so the host's
+// endianness has to match the file's. Every supported target
+// (x86_64, aarch64) is LE; any future big-endian port will need a
+// per-element byte swap in those readers and should remove this
+// gate. The per-element `from_le_bytes` paths elsewhere in this
+// file are host-agnostic and unaffected. See #833.
+#[cfg(target_endian = "big")]
+compile_error!("NIF parser requires a little-endian host (bulk-array readers cast Vec<T> to &mut [u8])");
+
 /// Binary reader with NIF header context for version-aware parsing.
 pub struct NifStream<'a> {
     cursor: Cursor<&'a [u8]>,
@@ -249,43 +260,70 @@ impl<'a> NifStream<'a> {
 
     // ── Bulk reads (geometry hot path) ────────────────────────────────
     //
-    // Read entire arrays in a single read_exact call instead of per-element
-    // calls, reducing function call + bounds check overhead from O(N) to O(1).
-    // See #291.
+    // Read entire arrays in a single `read_exact` call instead of per-
+    // element calls, reducing function call + bounds check overhead from
+    // O(N) to O(1) (#291). #833 collapses the previous two-allocation
+    // pattern (intermediate `Vec<u8>` byte buffer + final `Vec<T>` typed
+    // output via `chunks_exact + map + collect`) into a single allocation
+    // by reading directly into a zero-initialized typed `Vec<T>` cast as
+    // `&mut [u8]`. `T` must be POD (any byte pattern is a valid value)
+    // and have alignment >= 1 — every type we instantiate this for
+    // (`u16`, `u32`, `f32`, `[f32; 2]`, `[f32; 4]`, `NiPoint3`) is POD,
+    // and the cast direction (typed → bytes) only weakens alignment so
+    // the slice fundamentals hold. The compile-error at the top of this
+    // module pins the LE-host requirement.
+
+    /// Read `count` POD values directly into a zero-initialized typed
+    /// `Vec<T>` via a single `read_exact`, then return the populated
+    /// vector. Call site must satisfy: `T` is `Copy + Default` and has
+    /// no padding bytes / no validity invariants beyond "any bit pattern
+    /// is sound" (true for `u16`, `u32`, `f32`, `[f32; N]`, and
+    /// `#[repr(C)]` 3-or-4-float structs). LE host required.
+    fn read_pod_vec<T: Copy + Default>(&mut self, count: usize) -> io::Result<Vec<T>> {
+        let byte_count = count
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "read_pod_vec: byte count overflow ({count} × {} bytes)",
+                        std::mem::size_of::<T>(),
+                    ),
+                )
+            })?;
+        self.check_alloc(byte_count)?;
+        let mut out: Vec<T> = vec![T::default(); count];
+        // SAFETY:
+        // - `out.as_mut_ptr()` is non-null and aligned to `align_of::<T>()`,
+        //   which is >= 1 (the target alignment for `u8`); casting to
+        //   `*mut u8` only weakens alignment requirements, which is sound.
+        // - The pointed-to region is exactly `count * size_of::<T>() == byte_count`
+        //   bytes (matches `Vec`'s contiguous-storage guarantee).
+        // - `read_exact` writes exactly `byte_count` bytes via the slice
+        //   and does not read existing contents (Read::read_exact is a
+        //   pure writer interface per the trait contract).
+        // - `T` is documented to require any-byte-pattern soundness, so
+        //   the post-read bytes are valid `T` values. `Vec`'s length is
+        //   already `count` from `vec![Default; count]`, so no `set_len`
+        //   call is needed.
+        // - The `target_endian = "big"` compile-error gate at the top of
+        //   the module ensures the on-disk LE bytes match the host's
+        //   in-memory layout.
+        let byte_slice: &mut [u8] = unsafe {
+            std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_count)
+        };
+        self.cursor.read_exact(byte_slice)?;
+        Ok(out)
+    }
 
     /// Read `count` NiPoint3 values (3×f32 each) in one bulk read.
     pub fn read_ni_point3_array(&mut self, count: usize) -> io::Result<Vec<NiPoint3>> {
-        let byte_count = count * 12;
-        self.check_alloc(byte_count)?;
-        let mut buf = vec![0u8; byte_count];
-        self.cursor.read_exact(&mut buf)?;
-        Ok(buf
-            .chunks_exact(12)
-            .map(|c| NiPoint3 {
-                x: f32::from_le_bytes([c[0], c[1], c[2], c[3]]),
-                y: f32::from_le_bytes([c[4], c[5], c[6], c[7]]),
-                z: f32::from_le_bytes([c[8], c[9], c[10], c[11]]),
-            })
-            .collect())
+        self.read_pod_vec::<NiPoint3>(count)
     }
 
     /// Read `count` RGBA color values (4×f32 each) in one bulk read.
     pub fn read_ni_color4_array(&mut self, count: usize) -> io::Result<Vec<[f32; 4]>> {
-        let byte_count = count * 16;
-        self.check_alloc(byte_count)?;
-        let mut buf = vec![0u8; byte_count];
-        self.cursor.read_exact(&mut buf)?;
-        Ok(buf
-            .chunks_exact(16)
-            .map(|c| {
-                [
-                    f32::from_le_bytes([c[0], c[1], c[2], c[3]]),
-                    f32::from_le_bytes([c[4], c[5], c[6], c[7]]),
-                    f32::from_le_bytes([c[8], c[9], c[10], c[11]]),
-                    f32::from_le_bytes([c[12], c[13], c[14], c[15]]),
-                ]
-            })
-            .collect())
+        self.read_pod_vec::<[f32; 4]>(count)
     }
 
     /// Read `count` generic 2D vectors (2×f32 each) in one bulk read.
@@ -296,55 +334,22 @@ impl<'a> NifStream<'a> {
 
     /// Read `count` UV pairs (2×f32 each) in one bulk read.
     pub fn read_uv_array(&mut self, count: usize) -> io::Result<Vec<[f32; 2]>> {
-        let byte_count = count * 8;
-        self.check_alloc(byte_count)?;
-        let mut buf = vec![0u8; byte_count];
-        self.cursor.read_exact(&mut buf)?;
-        Ok(buf
-            .chunks_exact(8)
-            .map(|c| {
-                [
-                    f32::from_le_bytes([c[0], c[1], c[2], c[3]]),
-                    f32::from_le_bytes([c[4], c[5], c[6], c[7]]),
-                ]
-            })
-            .collect())
+        self.read_pod_vec::<[f32; 2]>(count)
     }
 
     /// Read `count` u16 values in one bulk read.
     pub fn read_u16_array(&mut self, count: usize) -> io::Result<Vec<u16>> {
-        let byte_count = count * 2;
-        self.check_alloc(byte_count)?;
-        let mut buf = vec![0u8; byte_count];
-        self.cursor.read_exact(&mut buf)?;
-        Ok(buf
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect())
+        self.read_pod_vec::<u16>(count)
     }
 
     /// Read `count` u32 values in one bulk read.
     pub fn read_u32_array(&mut self, count: usize) -> io::Result<Vec<u32>> {
-        let byte_count = count * 4;
-        self.check_alloc(byte_count)?;
-        let mut buf = vec![0u8; byte_count];
-        self.cursor.read_exact(&mut buf)?;
-        Ok(buf
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect())
+        self.read_pod_vec::<u32>(count)
     }
 
     /// Read `count` f32 values in one bulk read.
     pub fn read_f32_array(&mut self, count: usize) -> io::Result<Vec<f32>> {
-        let byte_count = count * 4;
-        self.check_alloc(byte_count)?;
-        let mut buf = vec![0u8; byte_count];
-        self.cursor.read_exact(&mut buf)?;
-        Ok(buf
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect())
+        self.read_pod_vec::<f32>(count)
     }
 
     // ── NIF-specific reads ─────────────────────────────────────────────
@@ -1009,5 +1014,104 @@ mod tests {
         let out = stream.read_bytes(cap).unwrap();
         assert_eq!(out.len(), cap);
         assert_eq!(stream.position() as usize, cap);
+    }
+
+    /// Regression for #833: the bulk-array readers must produce the same
+    /// values they did before the `read_pod_vec` rewrite — i.e. each
+    /// element decoded from the on-disk LE bytes via `from_le_bytes`-equivalent
+    /// semantics. Pins the byte-order contract so a future port to a BE
+    /// host (which would currently fail at the compile-error gate at the
+    /// top of this module) can't silently flip endianness, and so a
+    /// future migration to bytemuck / a different POD-cast path can't
+    /// silently break existing call sites either.
+    #[test]
+    fn bulk_readers_decode_le_byte_order() {
+        let header = test_header(NifVersion::V20_2_0_7);
+
+        // u16: 0x1234, 0xCAFE
+        {
+            let data: Vec<u8> = vec![0x34, 0x12, 0xFE, 0xCA];
+            let mut s = NifStream::new(&data, &header);
+            let v = s.read_u16_array(2).unwrap();
+            assert_eq!(v, vec![0x1234, 0xCAFE]);
+            assert_eq!(s.position() as usize, data.len());
+        }
+
+        // u32: 0xDEADBEEF, 0x01020304
+        {
+            let data: Vec<u8> = vec![0xEF, 0xBE, 0xAD, 0xDE, 0x04, 0x03, 0x02, 0x01];
+            let mut s = NifStream::new(&data, &header);
+            let v = s.read_u32_array(2).unwrap();
+            assert_eq!(v, vec![0xDEAD_BEEF, 0x0102_0304]);
+        }
+
+        // f32: 1.0, -2.0
+        {
+            let data: Vec<u8> = {
+                let mut d = Vec::new();
+                d.extend_from_slice(&1.0f32.to_le_bytes());
+                d.extend_from_slice(&(-2.0f32).to_le_bytes());
+                d
+            };
+            let mut s = NifStream::new(&data, &header);
+            let v = s.read_f32_array(2).unwrap();
+            assert_eq!(v, vec![1.0, -2.0]);
+        }
+
+        // NiPoint3: { x: 1.0, y: 2.0, z: 3.0 }
+        {
+            let data: Vec<u8> = {
+                let mut d = Vec::new();
+                for f in &[1.0f32, 2.0, 3.0] {
+                    d.extend_from_slice(&f.to_le_bytes());
+                }
+                d
+            };
+            let mut s = NifStream::new(&data, &header);
+            let v = s.read_ni_point3_array(1).unwrap();
+            assert_eq!(v.len(), 1);
+            assert_eq!(v[0].x, 1.0);
+            assert_eq!(v[0].y, 2.0);
+            assert_eq!(v[0].z, 3.0);
+        }
+
+        // [f32; 2] (UV): (0.25, 0.75)
+        {
+            let data: Vec<u8> = {
+                let mut d = Vec::new();
+                d.extend_from_slice(&0.25f32.to_le_bytes());
+                d.extend_from_slice(&0.75f32.to_le_bytes());
+                d
+            };
+            let mut s = NifStream::new(&data, &header);
+            let v = s.read_uv_array(1).unwrap();
+            assert_eq!(v, vec![[0.25f32, 0.75]]);
+        }
+
+        // [f32; 4] (color): (0.1, 0.2, 0.3, 1.0)
+        {
+            let data: Vec<u8> = {
+                let mut d = Vec::new();
+                for f in &[0.1f32, 0.2, 0.3, 1.0] {
+                    d.extend_from_slice(&f.to_le_bytes());
+                }
+                d
+            };
+            let mut s = NifStream::new(&data, &header);
+            let v = s.read_ni_color4_array(1).unwrap();
+            assert_eq!(v.len(), 1);
+            assert!((v[0][0] - 0.1).abs() < 1e-6);
+            assert!((v[0][1] - 0.2).abs() < 1e-6);
+            assert!((v[0][2] - 0.3).abs() < 1e-6);
+            assert_eq!(v[0][3], 1.0);
+        }
+
+        // count == 0 must succeed and consume nothing
+        {
+            let data: Vec<u8> = vec![];
+            let mut s = NifStream::new(&data, &header);
+            assert_eq!(s.read_u16_array(0).unwrap(), Vec::<u16>::new());
+            assert_eq!(s.position(), 0);
+        }
     }
 }

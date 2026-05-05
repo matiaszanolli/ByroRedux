@@ -4,6 +4,15 @@
 //! and are converted to glam types during the ECS import phase.
 
 /// 3D point/vector — maps to Gamebryo's NiPoint3.
+///
+/// `#[repr(C)]` documents the 12-byte tightly-packed layout that the
+/// bulk readers in `stream.rs::read_ni_point3_array` rely on for the
+/// direct byte-slice `read_exact` fast path (#833). Practical layout
+/// is unchanged from the default `repr(Rust)` for three same-size /
+/// same-alignment fields — no padding either way — but the annotation
+/// pins the contract so a future field reorder or padding insertion
+/// can't silently corrupt the bulk-read path.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NiPoint3 {
     pub x: f32,
