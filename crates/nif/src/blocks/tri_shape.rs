@@ -465,7 +465,18 @@ impl BsTriShape {
         // — and routing through the derived stride aligns the loop
         // correctly across all such content.
         let mut vertex_size_bytes = vertex_size_quads * 4;
-        if data_size != 0 {
+        // #836 / SK-D5-NEW-02: gate the warning on `num_vertices != 0`
+        // too. SSE skinned bodies legitimately ship `num_vertices == 0`
+        // here because the packed vertex buffer lives on a sister
+        // `NiSkinPartition` (consumed via `try_reconstruct_sse_geometry`,
+        // fix #559). The `data_size` field still carries the persisted
+        // size of the data on the sister block, so without this gate
+        // every skinned body in Skyrim Meshes0/1 (~67 / Whiterun cell
+        // load) fired a false-positive "irrational" warning. The
+        // per-vertex loop below is already bounded by `num_vertices`,
+        // so the parse output is identical with or without the
+        // warning fire — only the log noise changes.
+        if data_size != 0 && num_vertices != 0 {
             let expected_data_size =
                 (vertex_size_bytes * num_vertices as usize) + (num_triangles as usize * 6);
             if (data_size as usize) != expected_data_size {
