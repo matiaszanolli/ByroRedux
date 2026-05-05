@@ -33,25 +33,60 @@
 //!   `Arc<StaticSoundData>`. Repeat plays of the same SFX (footsteps,
 //!   weapon fire, dialogue line) skip the decode cost entirely.
 //!
+//! # Phase 3 (this commit)
+//!
+//! - [`audio_system`] is no longer a stub — it now lazily creates a
+//!   `kira::ListenerHandle` from the `AudioListener` entity's
+//!   `GlobalTransform`, dispatches `OneShotSound` emitters through
+//!   per-emitter `SpatialTrackHandle`s (kira's spatial sub-track
+//!   model), and prunes `Stopped` sounds each tick — including
+//!   removing the entity's audio-emitter components so a future
+//!   pruning system can despawn the entity if it carries no other
+//!   gameplay components.
+//! - [`spawn_oneshot_at`] — public helper that composes the
+//!   `OneShotSound + AudioEmitter + Transform + GlobalTransform`
+//!   bundle on a fresh entity. The intended consumer is gameplay
+//!   code (footstep timer, weapon-fire trigger, dialogue dispatcher)
+//!   that owns the policy of *when* to play; this helper owns the
+//!   ECS-shape of *how* to play.
+//!
 //! # Future phases (not in this commit)
 //!
-//! - Phase 3: FOOT records → per-material footstep dispatch.
+//! - Phase 3.5: FOOT records → per-material footstep dispatch.
 //! - Phase 4: REGN ambient soundscapes (region-based ambient layers).
 //! - Phase 5: MUSC + hardcoded music routing with crossfade.
 //! - Phase 6: Reverb zones (kira's `ReverbBuilder`) keyed off cell
 //!   acoustics; raycast occlusion attenuation.
 
+use byroredux_core::ecs::components::{GlobalTransform, Transform};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
-use byroredux_core::ecs::storage::Component;
+use byroredux_core::ecs::storage::{Component, EntityId};
+use byroredux_core::ecs::world::World;
 use byroredux_core::ecs::Resource;
-use kira::sound::static_sound::StaticSoundData;
-use kira::sound::FromFileError;
-use kira::{AudioManager, AudioManagerSettings, DefaultBackend};
+use glam::Vec3;
+use kira::listener::ListenerHandle;
+use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle};
+use kira::sound::{FromFileError, PlaybackState};
+use kira::track::{SpatialTrackBuilder, SpatialTrackHandle};
+use kira::{AudioManager, AudioManagerSettings, DefaultBackend, Tween};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
 
-/// Resource holding the `kira::AudioManager` for the whole engine.
+/// One currently-playing sound. The `_track` field keeps the spatial
+/// sub-track alive — dropping it would tear down playback even if the
+/// `handle` is still ticking. Entity is the source ECS entity so the
+/// system can clean up its audio-emitter components on completion.
+/// Underscore-prefix because the field is held purely for its `Drop`
+/// side effect; we never read it back.
+struct ActiveSound {
+    entity: EntityId,
+    handle: StaticSoundHandle,
+    _track: SpatialTrackHandle,
+}
+
+/// Resource holding the `kira::AudioManager` + listener + active-sound
+/// tracking for the whole engine.
 ///
 /// Wrapping the manager in an `Option` is the headless / no-device
 /// fallback: when `AudioWorld::new()` fails to acquire an audio device
@@ -59,7 +94,21 @@ use std::sync::Arc;
 /// system call short-circuits. Booting the engine never fails because
 /// audio is unavailable — that would be hostile to operators running
 /// the engine for testing in environments without a sound card.
+///
+/// Field-drop order matters: `active_sounds` (which owns
+/// `SpatialTrackHandle`s) drops before `listener` drops before
+/// `manager` drops. Rust struct-field drop order is declaration order
+/// — the field declarations below match that, top-to-bottom.
 pub struct AudioWorld {
+    /// Currently-playing one-shot sounds. Cleaned up per-frame as
+    /// kira reports `PlaybackState::Stopped`.
+    active_sounds: Vec<ActiveSound>,
+    /// Lazily-created kira listener — the entity whose
+    /// `GlobalTransform` drives spatial attenuation. Created on the
+    /// first frame an `AudioListener` is found in the World.
+    listener: Option<ListenerHandle>,
+    /// kira manager. `None` means no audio device was acquired; every
+    /// audio operation no-ops.
     manager: Option<AudioManager<DefaultBackend>>,
 }
 
@@ -75,12 +124,10 @@ impl AudioWorld {
     /// without `cpal`-supported backend), logs at WARN and returns an
     /// audioless world that no-ops cleanly.
     pub fn new() -> Self {
-        match AudioManager::<DefaultBackend>::new(AudioManagerSettings::default()) {
+        let manager = match AudioManager::<DefaultBackend>::new(AudioManagerSettings::default()) {
             Ok(manager) => {
                 log::info!("M44 Phase 1: AudioManager initialised (default backend)");
-                Self {
-                    manager: Some(manager),
-                }
+                Some(manager)
             }
             Err(e) => {
                 log::warn!(
@@ -88,8 +135,13 @@ impl AudioWorld {
                      This is expected in headless/CI environments and on systems without a \
                      working audio device."
                 );
-                Self { manager: None }
+                None
             }
+        };
+        Self {
+            active_sounds: Vec::new(),
+            listener: None,
+            manager,
         }
     }
 
@@ -103,6 +155,12 @@ impl AudioWorld {
     /// audio init failed; callers must handle that case.
     pub fn manager_mut(&mut self) -> Option<&mut AudioManager<DefaultBackend>> {
         self.manager.as_mut()
+    }
+
+    /// Number of one-shot sounds currently tracked as active. Useful
+    /// for telemetry — a runaway count signals a pruning regression.
+    pub fn active_sound_count(&self) -> usize {
+        self.active_sounds.len()
     }
 }
 
@@ -183,19 +241,266 @@ impl Component for OneShotSound {
 }
 
 /// Per-frame audio update — synchronises listener pose, plays new
-/// one-shots, removes spent one-shot entities. Stage::Late is the
-/// canonical home (after transform propagation has produced final
-/// world poses for the listener and every emitter).
+/// one-shots through per-emitter spatial sub-tracks, prunes finished
+/// sounds. `Stage::Late` is the canonical home (after transform
+/// propagation has produced final world poses for the listener and
+/// every emitter).
 ///
-/// Phase 1 implementation is intentionally minimal: it only dispatches
-/// `OneShotSound` emitters. Looping / streaming dispatch lands once
-/// `AudioEmitter` carries an active-handle slot and the system gains
-/// the lifecycle (start / stop / fade) it needs.
-pub fn audio_system(_world: &byroredux_core::ecs::World, _dt: f32) {
-    // Phase 1 stub. The full system body lands once `World::despawn`
-    // semantics + `AudioEmitter` handle lifecycle settle. Today the
-    // ECS components compile and the AudioWorld resource boots — that
-    // is the closure criterion for Phase 1.
+/// Phase 3 implementation:
+///
+/// 1. **Listener sync**: locate the (single) `AudioListener` entity.
+///    On first frame, lazily call `manager.add_listener` with its
+///    `GlobalTransform`. On subsequent frames, push pose updates
+///    through `ListenerHandle::set_position` / `set_orientation`.
+/// 2. **Dispatch new one-shots**: for each entity carrying both
+///    `OneShotSound` + `AudioEmitter`, create a spatial sub-track
+///    anchored at the entity's `GlobalTransform`, play the sound on
+///    that track, and remove `OneShotSound` so the dispatcher won't
+///    re-trigger next frame. The `AudioEmitter` stays so callers
+///    can query "is this entity still playing?" via the active list.
+/// 3. **Prune stopped**: walk `active_sounds`, drop any whose handle
+///    reports `PlaybackState::Stopped`. Removing the entity's
+///    `AudioEmitter` lets a downstream cleanup system (or the cell
+///    unloader) despawn it without coupling to audio state.
+///
+/// Looping playback / fade-in / fade-out / streaming lifecycle land
+/// in subsequent phases on top of the same shape.
+pub fn audio_system(world: &World, _dt: f32) {
+    let Some(mut audio_world) = world.try_resource_mut::<AudioWorld>() else {
+        return;
+    };
+    if !audio_world.is_active() {
+        return;
+    }
+
+    sync_listener_pose(world, &mut audio_world);
+    dispatch_new_oneshots(world, &mut audio_world);
+    prune_stopped_sounds(world, &mut audio_world);
+}
+
+/// Find the (first) `AudioListener` entity in the world, read its
+/// `GlobalTransform`, and either lazy-create the kira listener or
+/// push a pose update through the existing handle.
+fn sync_listener_pose(world: &World, audio_world: &mut AudioWorld) {
+    let listener_entity = {
+        let Some(q) = world.query::<AudioListener>() else {
+            return;
+        };
+        let Some((entity, _)) = q.iter().next() else {
+            return;
+        };
+        entity
+    };
+    let pose = {
+        let Some(q) = world.query::<GlobalTransform>() else {
+            return;
+        };
+        let Some(gt) = q.get(listener_entity) else {
+            return;
+        };
+        (gt.translation, gt.rotation)
+    };
+    if audio_world.listener.is_none() {
+        let Some(mgr) = audio_world.manager.as_mut() else {
+            return;
+        };
+        match mgr.add_listener(pose.0, pose.1) {
+            Ok(handle) => {
+                log::info!(
+                    "M44 Phase 3: kira listener created at ({:.1},{:.1},{:.1})",
+                    pose.0.x,
+                    pose.0.y,
+                    pose.0.z,
+                );
+                audio_world.listener = Some(handle);
+            }
+            Err(e) => {
+                log::warn!("M44 Phase 3: add_listener failed: {e}");
+            }
+        }
+    } else if let Some(handle) = audio_world.listener.as_mut() {
+        handle.set_position(pose.0, Tween::default());
+        handle.set_orientation(pose.1, Tween::default());
+    }
+}
+
+/// Iterate `OneShotSound + AudioEmitter` entities; for each, create
+/// a spatial sub-track anchored at the entity's world position, play
+/// the sound on that track, and remove `OneShotSound` so the entity
+/// isn't re-dispatched next frame. The track + handle land in
+/// `active_sounds` so they outlive the helper-function scope.
+fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
+    let Some(listener_id) = audio_world.listener.as_ref().map(|l| l.id()) else {
+        // No listener yet — defer dispatch. The next frame's
+        // `sync_listener_pose` will create it; one-shots queued this
+        // frame will dispatch then.
+        return;
+    };
+
+    // Snapshot the (entity, sound, attenuation, volume, position) tuple
+    // for every new one-shot before mutating storages. Locks held
+    // across `manager_mut().add_spatial_sub_track` would otherwise
+    // collide with the per-emitter component reads.
+    struct Pending {
+        entity: EntityId,
+        sound: Arc<StaticSoundData>,
+        attenuation: Attenuation,
+        volume: f32,
+        position: Vec3,
+    }
+    let mut pending: Vec<Pending> = Vec::new();
+    {
+        let Some(oneshot_q) = world.query::<OneShotSound>() else {
+            return;
+        };
+        let Some(emitter_q) = world.query::<AudioEmitter>() else {
+            return;
+        };
+        let Some(gt_q) = world.query::<GlobalTransform>() else {
+            return;
+        };
+        for (entity, _) in oneshot_q.iter() {
+            let Some(emitter) = emitter_q.get(entity) else {
+                continue;
+            };
+            let Some(gt) = gt_q.get(entity) else {
+                continue;
+            };
+            pending.push(Pending {
+                entity,
+                sound: Arc::clone(&emitter.sound),
+                attenuation: emitter.attenuation,
+                volume: emitter.volume,
+                position: gt.translation,
+            });
+        }
+    }
+
+    if pending.is_empty() {
+        return;
+    }
+
+    let Some(mgr) = audio_world.manager.as_mut() else {
+        return;
+    };
+    let mut started: Vec<EntityId> = Vec::with_capacity(pending.len());
+    for p in pending {
+        // kira's `SpatialTrackBuilder::distances` accepts a
+        // `RangeInclusive<f32>` (or `(f32, f32)` / `[f32; 2]`); the
+        // exclusive `..` range we use elsewhere doesn't impl
+        // `Into<SpatialTrackDistances>`. The values are min..=max
+        // game-units, falloff between is linear (kira default).
+        let track_builder = SpatialTrackBuilder::new()
+            .distances(p.attenuation.min_distance..=p.attenuation.max_distance);
+        let mut track = match mgr.add_spatial_sub_track(listener_id, p.position, track_builder) {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!(
+                    "M44 Phase 3: add_spatial_sub_track failed for entity {:?}: {e}",
+                    p.entity
+                );
+                continue;
+            }
+        };
+        // kira reasons about gain in decibels; gameplay reasons in
+        // linear amplitude (1.0 = "as authored", 0.5 = half-loud).
+        // Convert: db = 20 * log10(amplitude). Clamp to SILENCE
+        // (-60 dB) for non-positive volumes so log10 doesn't blow
+        // up. The underlying `Arc<[Frame]>` is reused — `volume()`
+        // returns a fresh `StaticSoundData` value with new settings,
+        // not new audio.
+        let db = if p.volume > 0.0001 {
+            20.0 * p.volume.log10()
+        } else {
+            -60.0
+        };
+        let sound = (*p.sound).clone().volume(db);
+        let handle = match track.play(sound) {
+            Ok(h) => h,
+            Err(e) => {
+                log::warn!(
+                    "M44 Phase 3: track.play failed for entity {:?}: {e}",
+                    p.entity
+                );
+                continue;
+            }
+        };
+        audio_world.active_sounds.push(ActiveSound {
+            entity: p.entity,
+            handle,
+            _track: track,
+        });
+        started.push(p.entity);
+    }
+
+    // Clear the OneShotSound marker on every entity that started so we
+    // don't re-dispatch next frame. AudioEmitter stays — callers can
+    // observe "is this entity still playing?" through the active list.
+    if !started.is_empty() {
+        if let Some(mut oneshot_q) = world.query_mut::<OneShotSound>() {
+            for entity in started {
+                oneshot_q.remove(entity);
+            }
+        }
+    }
+}
+
+/// Walk `active_sounds`, drop any whose `StaticSoundHandle::state()`
+/// reports `Stopped`, and remove the `AudioEmitter` component from
+/// the source entity so a downstream cleanup system can despawn it
+/// without coupling to audio state.
+fn prune_stopped_sounds(world: &World, audio_world: &mut AudioWorld) {
+    let mut finished: Vec<EntityId> = Vec::new();
+    audio_world.active_sounds.retain(|s| {
+        if matches!(s.handle.state(), PlaybackState::Stopped) {
+            finished.push(s.entity);
+            false
+        } else {
+            true
+        }
+    });
+    if !finished.is_empty() {
+        if let Some(mut emitter_q) = world.query_mut::<AudioEmitter>() {
+            for entity in finished {
+                emitter_q.remove(entity);
+            }
+        }
+    }
+}
+
+/// Spawn a one-shot sound entity at `position` with default
+/// orientation. The audio system picks it up next tick (post
+/// transform propagation). Returns the entity so callers can attach
+/// gameplay components (e.g. parenting under an actor for
+/// short-lived position tracking) before the system fires.
+///
+/// This is the public ECS-shape contract Phase 3 commits to.
+/// Gameplay code (footstep timer, weapon-fire trigger, dialogue
+/// dispatcher) owns the *when*; this helper owns the *how*.
+pub fn spawn_oneshot_at(
+    world: &mut World,
+    sound: Arc<StaticSoundData>,
+    position: Vec3,
+    attenuation: Attenuation,
+    volume: f32,
+) -> EntityId {
+    let entity = world.spawn();
+    world.insert(entity, Transform::new(position, glam::Quat::IDENTITY, 1.0));
+    world.insert(
+        entity,
+        GlobalTransform::new(position, glam::Quat::IDENTITY, 1.0),
+    );
+    world.insert(
+        entity,
+        AudioEmitter {
+            sound,
+            attenuation,
+            volume,
+            looping: false,
+        },
+    );
+    world.insert(entity, OneShotSound);
+    entity
 }
 
 /// Decode a fully-buffered audio blob into a `StaticSoundData`.
@@ -454,6 +759,200 @@ mod tests {
         });
         assert!(hit.is_some());
         assert_eq!(calls.get(), 1, "loader call count unchanged after cache hit");
+    }
+
+    /// **Phase 3**: `spawn_oneshot_at` lays down the canonical
+    /// component bundle so the audio system picks it up. Pinning
+    /// the bundle shape here means a future "simplify spawn helpers"
+    /// refactor can't quietly drop one component (e.g. `OneShotSound`)
+    /// and break dispatch silently.
+    #[test]
+    fn spawn_oneshot_at_creates_correct_component_bundle() {
+        use kira::sound::static_sound::StaticSoundSettings;
+
+        let mut world = byroredux_core::ecs::World::new();
+        let sound = Arc::new(StaticSoundData {
+            sample_rate: 22_050,
+            frames: Arc::from(
+                vec![kira::Frame { left: 0.0, right: 0.0 }; 50].into_boxed_slice(),
+            ),
+            settings: StaticSoundSettings::default(),
+            slice: None,
+        });
+        let pos = glam::Vec3::new(10.0, 0.0, 5.0);
+        let entity = spawn_oneshot_at(&mut world, sound, pos, Attenuation::default(), 0.8);
+
+        // Every component the audio system needs to dispatch this
+        // entity must be present.
+        assert!(world.has::<Transform>(entity));
+        assert!(world.has::<GlobalTransform>(entity));
+        assert!(world.has::<AudioEmitter>(entity));
+        assert!(world.has::<OneShotSound>(entity));
+
+        let q = world.query::<Transform>().unwrap();
+        let t = q.get(entity).unwrap();
+        assert_eq!(t.translation, pos);
+        let q = world.query::<AudioEmitter>().unwrap();
+        let e = q.get(entity).unwrap();
+        assert_eq!(e.volume, 0.8);
+        assert!(!e.looping);
+    }
+
+    /// **Phase 3**: when `AudioWorld` is inactive (no audio device,
+    /// CI / headless), `audio_system` must NOT dispatch — the
+    /// `OneShotSound` marker stays on the entity so a future tick
+    /// (or a future fix that brings audio back online) can pick it
+    /// up. Active-sound count stays at zero. This is the regression
+    /// gate against a "dispatch even without manager" refactor that
+    /// would crash on null-handle play.
+    #[test]
+    fn audio_system_no_op_when_audio_world_inactive() {
+        use kira::sound::static_sound::StaticSoundSettings;
+        let mut world = byroredux_core::ecs::World::new();
+
+        // Force-construct an inactive AudioWorld. We can't reliably
+        // hit the cpal-init failure path on a dev machine that has
+        // a sound card, so build the variant by hand — same shape
+        // `AudioWorld::new()` produces when init fails.
+        let inactive = AudioWorld {
+            active_sounds: Vec::new(),
+            listener: None,
+            manager: None,
+        };
+        world.insert_resource(inactive);
+
+        let sound = Arc::new(StaticSoundData {
+            sample_rate: 22_050,
+            frames: Arc::from(
+                vec![kira::Frame { left: 0.0, right: 0.0 }; 50].into_boxed_slice(),
+            ),
+            settings: StaticSoundSettings::default(),
+            slice: None,
+        });
+        let pos = glam::Vec3::ZERO;
+        let entity = spawn_oneshot_at(&mut world, sound, pos, Attenuation::default(), 1.0);
+
+        audio_system(&world, 0.016);
+
+        // Marker preserved — no dispatch.
+        assert!(world.has::<OneShotSound>(entity));
+        assert!(world.has::<AudioEmitter>(entity));
+        let aw = world.resource::<AudioWorld>();
+        assert_eq!(aw.active_sound_count(), 0);
+    }
+
+    /// **Phase 3 real-data integration**: open FNV `Fallout - Sound.bsa`,
+    /// decode a real WAV, spawn it as a one-shot at world origin
+    /// with a listener nearby, run `audio_system` to dispatch, then
+    /// poll until kira reports `Stopped` (or a max-iteration cap
+    /// fires). Verifies the full lifecycle end-to-end on the real
+    /// cpal backend.
+    ///
+    /// `#[ignore]` — needs a working audio device AND vanilla FNV
+    /// game data. Run with:
+    /// ```sh
+    /// BYROREDUX_FNV_DATA=<path> cargo test -p byroredux-audio
+    ///   audio_system_full_lifecycle -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn audio_system_full_lifecycle_on_real_fnv_sound() {
+        use byroredux_bsa::BsaArchive;
+        use std::path::PathBuf;
+        use std::time::Instant;
+
+        const FNV_DEFAULT: &str =
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
+        let dir = std::env::var("BYROREDUX_FNV_DATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(FNV_DEFAULT));
+        if !dir.is_dir() {
+            eprintln!("skipping: FNV data dir {:?} not found", dir);
+            return;
+        }
+        let bsa = match BsaArchive::open(&dir.join("Fallout - Sound.bsa")) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("skipping: open FNV Sound.bsa: {e}");
+                return;
+            }
+        };
+        let bytes = bsa
+            .extract(
+                r"sound\fx\npc\robotsecuritron\armswing\npc_securitron_armswing_02.wav",
+            )
+            .expect("vanilla FNV Sound.bsa must contain securitron arm-swing");
+        let sound = Arc::new(load_sound_from_bytes(bytes).expect("decode real WAV"));
+
+        let mut world = byroredux_core::ecs::World::new();
+        let aw = AudioWorld::new();
+        if !aw.is_active() {
+            eprintln!("skipping: no audio device on this host");
+            return;
+        }
+        world.insert_resource(aw);
+
+        // Listener at origin (default orientation), emitter 5m in
+        // front. Inside the (2, 30) attenuation envelope, so we get
+        // audible playback rather than a silent test.
+        let listener = world.spawn();
+        world.insert(listener, Transform::IDENTITY);
+        world.insert(listener, GlobalTransform::IDENTITY);
+        world.insert(listener, AudioListener);
+
+        let emitter = spawn_oneshot_at(
+            &mut world,
+            Arc::clone(&sound),
+            glam::Vec3::new(0.0, 0.0, 5.0),
+            Attenuation::default(),
+            1.0,
+        );
+
+        // First tick: `sync_listener_pose` creates the listener,
+        // then `dispatch_new_oneshots` (running in the same tick)
+        // sees the just-created handle and dispatches. Both the
+        // OneShotSound removal and the active_sounds insert happen
+        // on tick 1.
+        audio_system(&world, 0.016);
+        assert!(
+            !world.has::<OneShotSound>(emitter),
+            "tick 1 must dispatch the one-shot — listener creation \
+             and dispatch both run inside `audio_system`"
+        );
+        {
+            let aw = world.resource::<AudioWorld>();
+            assert_eq!(
+                aw.active_sound_count(),
+                1,
+                "exactly one sound dispatched and tracked"
+            );
+        }
+
+        // Poll for Stopped. The arm-swing is ~580 ms; cap at 3s
+        // wall-clock so a stuck test fails loud rather than hanging.
+        let deadline = Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            audio_system(&world, 0.016);
+            let aw = world.resource::<AudioWorld>();
+            if aw.active_sound_count() == 0 {
+                break;
+            }
+            drop(aw);
+            if Instant::now() > deadline {
+                panic!(
+                    "audio_system did not prune the active sound within 3s — kira's \
+                     PlaybackState::Stopped never reported, or prune logic has a bug"
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        // After completion, the emitter entity has no audio
+        // components — a downstream cleanup system can despawn it.
+        assert!(
+            !world.has::<AudioEmitter>(emitter),
+            "AudioEmitter must be removed after Stopped"
+        );
     }
 
     /// **Real-data integration**: extract one WAV and one OGG from

@@ -55,8 +55,10 @@ rspirv = "0.12"
 winit = "0.30"
 raw-window-handle = "0.6"
 
-# Math
-glam = "0.29"
+# Math — `mint` feature exposes `Into<mint::Vector3<f32>>` etc. for
+# kira's spatial API (`add_listener`, `add_spatial_sub_track`). No
+# runtime cost when unused; the conversions are zero-overhead casts.
+glam = { version = "0.29", features = ["mint"] }
 
 # Logging
 log = "0.4"
