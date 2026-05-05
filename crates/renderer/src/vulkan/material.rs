@@ -35,7 +35,8 @@ use std::sync::Once;
 /// (`scene_buffer.rs:978`) with actual default-to-0 behaviour.
 static INTERN_OVERFLOW_WARNED: Once = Once::new();
 
-/// std430 GPU-side material record. 272 bytes per material.
+/// std430 GPU-side material record. 260 bytes per material (was 272 B
+/// before #804 / R1-N4 dropped the unread `avg_albedo_r/g/b` triplet).
 ///
 /// (Historical: the per-instance → per-material migration shipped as
 /// R1 Phases 4–6, finishing with #785. The layout below was originally
@@ -58,8 +59,9 @@ static INTERN_OVERFLOW_WARNED: Once = Once::new();
 /// (`ui_vert_reads_texture_index_from_instance_not_material_table`)
 /// pins this for `ui.vert` after #776 / #785; mirror checks for the
 /// other two stages live in the same module. Layout invariant is pinned
-/// by `gpu_material_size_is_272_bytes` and the per-field offset tests
-/// below.
+/// by `gpu_material_size_is_260_bytes` and
+/// `gpu_material_field_offsets_match_shader_contract` (added #806 to
+/// catch within-vec4 reorderings the size pin alone would miss).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuMaterial {
@@ -73,7 +75,9 @@ pub struct GpuMaterial {
     /// albedo — set when the source NIF declared
     /// `NiVertexColorProperty.vertex_mode = SOURCE_EMISSIVE`. Pre-#695
     /// this slot was an unused pad; routing the bit through here keeps
-    /// the 272 B std430 layout pinned by `gpu_material_size_is_272_bytes`.
+    /// the std430 layout pinned by `gpu_material_size_is_260_bytes`
+    /// (260 B post-#804 / R1-N4; was 272 B before that fix dropped the
+    /// unread `avg_albedo_r/g/b` triplet).
     pub material_flags: u32, // offset 12
 
     // ── Emissive RGB + specular_strength (vec4 #2) ─────────────────
@@ -436,6 +440,133 @@ mod tests {
         // vec4 alignment of 16 comes from the buffer-stride rule, not
         // from the struct declaration itself.
         assert_eq!(std::mem::align_of::<GpuMaterial>(), 4);
+    }
+
+    /// Regression guard for the GpuMaterial Shader Struct Sync (#806).
+    /// The size pin (`gpu_material_size_is_260_bytes`) catches additions
+    /// or removals; this catches reorderings WITHIN the existing 16
+    /// vec4 slots that the size pin alone would miss — e.g. swapping
+    /// `texture_index` and `normal_map_index` within vec4 #4 would
+    /// preserve total size but produce wrong shader reads.
+    ///
+    /// Mirrors the `gpu_instance_field_offsets_match_shader_contract`
+    /// pattern at `scene_buffer.rs:1453`. The shader-side
+    /// `struct GpuMaterial` declaration at `triangle.frag:83-126` is the
+    /// source of truth for these offsets — every named field on the
+    /// Rust side gets an explicit `offset_of!` assertion against the
+    /// vec4 group its shader-side counterpart sits in.
+    #[test]
+    fn gpu_material_field_offsets_match_shader_contract() {
+        use std::mem::offset_of;
+
+        // ── PBR scalars (vec4 #1, offsets 0-12) ────────────────────
+        assert_eq!(offset_of!(GpuMaterial, roughness), 0);
+        assert_eq!(offset_of!(GpuMaterial, metalness), 4);
+        assert_eq!(offset_of!(GpuMaterial, emissive_mult), 8);
+        assert_eq!(offset_of!(GpuMaterial, material_flags), 12);
+
+        // ── Emissive RGB + specular_strength (vec4 #2, offsets 16-28)
+        assert_eq!(offset_of!(GpuMaterial, emissive_r), 16);
+        assert_eq!(offset_of!(GpuMaterial, emissive_g), 20);
+        assert_eq!(offset_of!(GpuMaterial, emissive_b), 24);
+        assert_eq!(offset_of!(GpuMaterial, specular_strength), 28);
+
+        // ── Specular RGB + alpha_threshold (vec4 #3, offsets 32-44) ─
+        assert_eq!(offset_of!(GpuMaterial, specular_r), 32);
+        assert_eq!(offset_of!(GpuMaterial, specular_g), 36);
+        assert_eq!(offset_of!(GpuMaterial, specular_b), 40);
+        assert_eq!(offset_of!(GpuMaterial, alpha_threshold), 44);
+
+        // ── Texture indices group A (vec4 #4, offsets 48-60) ───────
+        assert_eq!(offset_of!(GpuMaterial, texture_index), 48);
+        assert_eq!(offset_of!(GpuMaterial, normal_map_index), 52);
+        assert_eq!(offset_of!(GpuMaterial, dark_map_index), 56);
+        assert_eq!(offset_of!(GpuMaterial, glow_map_index), 60);
+
+        // ── Texture indices group B (vec4 #5, offsets 64-76) ───────
+        assert_eq!(offset_of!(GpuMaterial, detail_map_index), 64);
+        assert_eq!(offset_of!(GpuMaterial, gloss_map_index), 68);
+        assert_eq!(offset_of!(GpuMaterial, parallax_map_index), 72);
+        assert_eq!(offset_of!(GpuMaterial, env_map_index), 76);
+
+        // ── env_mask + alpha_test_func + material_kind + alpha
+        //    (vec4 #6, offsets 80-92) ───────────────────────────────
+        assert_eq!(offset_of!(GpuMaterial, env_mask_index), 80);
+        assert_eq!(offset_of!(GpuMaterial, alpha_test_func), 84);
+        assert_eq!(offset_of!(GpuMaterial, material_kind), 88);
+        assert_eq!(offset_of!(GpuMaterial, material_alpha), 92);
+
+        // ── Parallax POM + UV offset (vec4 #7, offsets 96-108) ─────
+        assert_eq!(offset_of!(GpuMaterial, parallax_height_scale), 96);
+        assert_eq!(offset_of!(GpuMaterial, parallax_max_passes), 100);
+        assert_eq!(offset_of!(GpuMaterial, uv_offset_u), 104);
+        assert_eq!(offset_of!(GpuMaterial, uv_offset_v), 108);
+
+        // ── UV scale + diffuse RG (vec4 #8, offsets 112-124) ───────
+        assert_eq!(offset_of!(GpuMaterial, uv_scale_u), 112);
+        assert_eq!(offset_of!(GpuMaterial, uv_scale_v), 116);
+        assert_eq!(offset_of!(GpuMaterial, diffuse_r), 120);
+        assert_eq!(offset_of!(GpuMaterial, diffuse_g), 124);
+
+        // ── diffuse_b + ambient RGB (vec4 #9, offsets 128-140) ─────
+        assert_eq!(offset_of!(GpuMaterial, diffuse_b), 128);
+        assert_eq!(offset_of!(GpuMaterial, ambient_r), 132);
+        assert_eq!(offset_of!(GpuMaterial, ambient_g), 136);
+        assert_eq!(offset_of!(GpuMaterial, ambient_b), 140);
+
+        // (#804 / R1-N4 dropped `avg_albedo_r/g/b` — what would have
+        // been vec4 #10 at offsets 144-152 is gone; subsequent fields
+        // shift down by 12 bytes from their pre-#804 positions.)
+
+        // ── skin_tint A/R/G/B (offsets 144-156) ────────────────────
+        assert_eq!(offset_of!(GpuMaterial, skin_tint_a), 144);
+        assert_eq!(offset_of!(GpuMaterial, skin_tint_r), 148);
+        assert_eq!(offset_of!(GpuMaterial, skin_tint_g), 152);
+        assert_eq!(offset_of!(GpuMaterial, skin_tint_b), 156);
+
+        // ── hair_tint RGB + multi_layer_envmap_strength
+        //    (offsets 160-172) ─────────────────────────────────────
+        assert_eq!(offset_of!(GpuMaterial, hair_tint_r), 160);
+        assert_eq!(offset_of!(GpuMaterial, hair_tint_g), 164);
+        assert_eq!(offset_of!(GpuMaterial, hair_tint_b), 168);
+        assert_eq!(offset_of!(GpuMaterial, multi_layer_envmap_strength), 172);
+
+        // ── eye_left RGB + eye_cubemap_scale (offsets 176-188) ─────
+        assert_eq!(offset_of!(GpuMaterial, eye_left_center_x), 176);
+        assert_eq!(offset_of!(GpuMaterial, eye_left_center_y), 180);
+        assert_eq!(offset_of!(GpuMaterial, eye_left_center_z), 184);
+        assert_eq!(offset_of!(GpuMaterial, eye_cubemap_scale), 188);
+
+        // ── eye_right RGB + multi_layer_inner_thickness
+        //    (offsets 192-204) ─────────────────────────────────────
+        assert_eq!(offset_of!(GpuMaterial, eye_right_center_x), 192);
+        assert_eq!(offset_of!(GpuMaterial, eye_right_center_y), 196);
+        assert_eq!(offset_of!(GpuMaterial, eye_right_center_z), 200);
+        assert_eq!(offset_of!(GpuMaterial, multi_layer_inner_thickness), 204);
+
+        // ── refraction_scale + multi_layer_inner_scale UV + sparkle_r
+        //    (offsets 208-220) ─────────────────────────────────────
+        assert_eq!(offset_of!(GpuMaterial, multi_layer_refraction_scale), 208);
+        assert_eq!(offset_of!(GpuMaterial, multi_layer_inner_scale_u), 212);
+        assert_eq!(offset_of!(GpuMaterial, multi_layer_inner_scale_v), 216);
+        assert_eq!(offset_of!(GpuMaterial, sparkle_r), 220);
+
+        // ── sparkle GB + sparkle_intensity + falloff_start
+        //    (offsets 224-236) ─────────────────────────────────────
+        assert_eq!(offset_of!(GpuMaterial, sparkle_g), 224);
+        assert_eq!(offset_of!(GpuMaterial, sparkle_b), 228);
+        assert_eq!(offset_of!(GpuMaterial, sparkle_intensity), 232);
+        assert_eq!(offset_of!(GpuMaterial, falloff_start_angle), 236);
+
+        // ── falloff_stop + opacities + soft_falloff_depth
+        //    (offsets 240-252) ─────────────────────────────────────
+        assert_eq!(offset_of!(GpuMaterial, falloff_stop_angle), 240);
+        assert_eq!(offset_of!(GpuMaterial, falloff_start_opacity), 244);
+        assert_eq!(offset_of!(GpuMaterial, falloff_stop_opacity), 248);
+        assert_eq!(offset_of!(GpuMaterial, soft_falloff_depth), 252);
+
+        // ── trailing pad to round to 260 B (offset 256) ────────────
+        assert_eq!(offset_of!(GpuMaterial, _pad_falloff), 256);
     }
 
     #[test]
