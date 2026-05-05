@@ -79,38 +79,40 @@ pub fn humanoid_skeleton_path(game: GameKind, _gender: Gender) -> Option<&'stati
     }
 }
 
-/// Hardcoded vanilla body NIF path (`upperbody.nif`).
+/// Hardcoded vanilla body NIF paths.
 ///
 /// On FNV / FO3 the RACE record's `MODL` fields carry **head** mesh
 /// paths (e.g. `Characters\Head\HeadHuman.NIF`), not body — the body
-/// ships at a single canonical path per gender that every humanoid
-/// race shares. This helper returns that canonical path. Pre-Phase-1c
-/// the body alone is enough for "an NPC stands here in bind pose".
+/// ships at canonical paths per gender that every humanoid race shares.
+/// FNV's `Fallout - Meshes.bsa` ships hands as separate NIFs alongside
+/// the upperbody, so a single path is not enough to fully cover a kf-
+/// era humanoid (#793 — pre-fix every NPC rendered without hands).
 ///
-/// Returns `None` for game variants on the pre-baked-FaceGen track —
+/// Returns `&[]` for game variants on the pre-baked-FaceGen track —
 /// SSE / FO4 / FO76 / Starfield don't ship a separate skinned body
 /// NIF; the per-NPC `facegendata\facegeom\<plugin>\<formid:08x>.nif`
 /// carries head + body in one mesh. That spawn path lands in Phase 4.
-pub fn humanoid_body_path(game: GameKind, gender: Gender) -> Option<&'static str> {
-    match (game, gender) {
-        (GameKind::Oblivion | GameKind::Fallout3NV, Gender::Male) => {
-            Some(r"meshes\characters\_male\upperbody.nif")
-        }
-        // FNV vanilla ships only the male body NIF; female humanoids
-        // re-use it (verified 2026-04-28 — `_female\` directory not
-        // present in vanilla Fallout - Meshes.bsa). Mods may add a
-        // `_female\upperbody.nif`; the gender split here lets a future
-        // mod-aware lookup flip in without breaking the type signature.
-        (GameKind::Oblivion | GameKind::Fallout3NV, Gender::Female) => {
-            Some(r"meshes\characters\_male\upperbody.nif")
-        }
-        (
-            GameKind::Skyrim
-            | GameKind::Fallout4
-            | GameKind::Fallout76
-            | GameKind::Starfield,
-            _,
-        ) => None,
+///
+/// Female humanoids on FNV vanilla re-use the male body (verified
+/// 2026-04-28 — `_female\` directory not present in vanilla
+/// Fallout - Meshes.bsa). Mods may add a separate female set;
+/// keeping the `Gender` split in the signature lets a future
+/// mod-aware lookup flip in without breaking the type.
+pub fn humanoid_body_paths(game: GameKind, _gender: Gender) -> &'static [&'static str] {
+    match game {
+        // Oblivion's mesh layout uses the same `_male\` directory shape
+        // as FO3 / FNV; if Oblivion ships hands at different paths the
+        // load will silently miss (debug-logged) like any other modded
+        // path. Verification deferred per #793 issue body.
+        GameKind::Oblivion | GameKind::Fallout3NV => &[
+            r"meshes\characters\_male\upperbody.nif",
+            r"meshes\characters\_male\lefthand.nif",
+            r"meshes\characters\_male\righthand.nif",
+        ],
+        GameKind::Skyrim
+        | GameKind::Fallout4
+        | GameKind::Fallout76
+        | GameKind::Starfield => &[],
     }
 }
 
@@ -387,12 +389,14 @@ pub fn spawn_npc_entity(
         );
     }
 
-    // 3. Body. Hardcoded vanilla path (`upperbody.nif`); the RACE
-    //    record's MODL fields are head models on FNV / FO3, not body.
-    //    Skip silently when the body NIF isn't extractable — modded
-    //    setups may have replaced the path, in which case the NPC
-    //    still gets a skeleton + head.
-    if let Some(body_path) = humanoid_body_path(game, gender) {
+    // 3. Body. Hardcoded vanilla paths (`upperbody.nif` + per-hand
+    //    NIFs); the RACE record's MODL fields are head models on FNV /
+    //    FO3, not body. Each missing NIF is skipped silently — modded
+    //    setups may have replaced or removed individual paths, in
+    //    which case the NPC still gets a skeleton + head + whatever
+    //    of the body was actually loadable. Pre-#793 only `upperbody`
+    //    shipped, so every kf-era NPC rendered handless.
+    for body_path in humanoid_body_paths(game, gender) {
         match tex_provider.extract_mesh(body_path) {
             Some(body_data) => {
                 // M41.0 Phase 1b.x — body skinning catastrophically
@@ -950,6 +954,56 @@ mod tests {
             humanoid_skeleton_path(GameKind::Starfield, Gender::Male),
             Some(r"meshes\actors\character\character assets\skeleton.nif"),
         );
+    }
+
+    /// Regression test for #793: kf-era humanoids must surface
+    /// `lefthand.nif` and `righthand.nif` alongside `upperbody.nif`.
+    /// Pre-fix the resolver returned a single path and every NPC
+    /// rendered handless because the hand mesh was never loaded.
+    #[test]
+    fn body_paths_kf_era_include_separate_hand_meshes() {
+        for game in [GameKind::Oblivion, GameKind::Fallout3NV] {
+            for gender in [Gender::Male, Gender::Female] {
+                let paths = humanoid_body_paths(game, gender);
+                assert_eq!(
+                    paths.len(),
+                    3,
+                    "{game:?}/{gender:?} should ship upperbody + 2 hands, got {paths:?}",
+                );
+                assert!(
+                    paths.iter().any(|p| p.ends_with("upperbody.nif")),
+                    "{game:?}/{gender:?} missing upperbody: {paths:?}",
+                );
+                assert!(
+                    paths.iter().any(|p| p.ends_with("lefthand.nif")),
+                    "{game:?}/{gender:?} missing lefthand: {paths:?}",
+                );
+                assert!(
+                    paths.iter().any(|p| p.ends_with("righthand.nif")),
+                    "{game:?}/{gender:?} missing righthand: {paths:?}",
+                );
+            }
+        }
+    }
+
+    /// Skyrim+/FO4+ stand on the pre-baked-FaceGen track — head + body
+    /// ship in one per-NPC `facegeom.nif`. The body resolver must
+    /// return an empty slice for those variants so the NPC-spawn loop
+    /// no-ops on body load and lets the FaceGen path (Phase 4) fill in.
+    #[test]
+    fn body_paths_facegen_era_returns_empty_slice() {
+        for game in [
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+            GameKind::Fallout76,
+            GameKind::Starfield,
+        ] {
+            let paths = humanoid_body_paths(game, Gender::Male);
+            assert!(
+                paths.is_empty(),
+                "{game:?} should defer body to FaceGen path, got {paths:?}",
+            );
+        }
     }
 
     #[test]
