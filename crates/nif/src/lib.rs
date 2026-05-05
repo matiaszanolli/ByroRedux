@@ -209,6 +209,19 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
     // file itself rather than a manually-maintained table. See #324.
     let mut parsed_size_cache: std::collections::HashMap<String, Vec<u32>> =
         std::collections::HashMap::new();
+
+    // Bump a per-type counter without paying `to_string()` on the hot
+    // (already-seen) path. `HashMap::entry(K)` takes K by value, so a
+    // direct `entry(name.to_string())` would allocate every block —
+    // see #832 for the audit numbers (~150 KB/cell on Oblivion).
+    fn bump_counter(map: &mut std::collections::HashMap<String, u32>, key: &str) {
+        if let Some(c) = map.get_mut(key) {
+            *c += 1;
+        } else {
+            map.insert(key.to_string(), 1);
+        }
+    }
+
     let no_block_sizes = header.block_sizes.is_empty() && header.num_blocks > 0;
 
     if no_block_sizes {
@@ -329,7 +342,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                                 size,
                                 consumed,
                             );
-                            *drifted_by_type.entry(type_name.to_string()).or_insert(0) += 1;
+                            bump_counter(&mut drifted_by_type, type_name);
                         }
                         stream.set_position(start_pos + size as u64);
                     }
@@ -358,10 +371,15 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                             );
                         }
                     }
-                    parsed_size_cache
-                        .entry(type_name.to_string())
-                        .or_default()
-                        .push(final_consumed);
+                    // #832 — same allocation-on-every-block bug as the
+                    // drifted_by_type bump above. This site fires on
+                    // EVERY successful parse on Oblivion-no-block-sizes
+                    // files (~7500 blocks per cell load).
+                    if let Some(v) = parsed_size_cache.get_mut(type_name) {
+                        v.push(final_consumed);
+                    } else {
+                        parsed_size_cache.insert(type_name.to_string(), vec![final_consumed]);
+                    }
                 }
                 // Dispatch-level unknown-type recovery: `parse_block`'s
                 // fallback at `blocks/mod.rs` returns `Ok(NiUnknown)`
@@ -407,7 +425,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                         data: Vec::new(),
                     }));
                     recovered_blocks += 1;
-                    *recovered_by_type.entry(type_name.to_string()).or_insert(0) += 1;
+                    bump_counter(&mut recovered_by_type, type_name);
                     continue;
                 }
                 // Without block_size (Oblivion), there's no header-driven
@@ -445,7 +463,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                                 data: Vec::new(),
                             }));
                             recovered_blocks += 1;
-                            *recovered_by_type.entry(type_name.to_string()).or_insert(0) += 1;
+                            bump_counter(&mut recovered_by_type, type_name);
                             continue;
                         }
                     }
@@ -470,7 +488,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                             data: Vec::new(),
                         }));
                         recovered_blocks += 1;
-                        *recovered_by_type.entry(type_name.to_string()).or_insert(0) += 1;
+                        bump_counter(&mut recovered_by_type, type_name);
                         continue;
                     }
                     // If the skip would go past EOF, fall through to the
