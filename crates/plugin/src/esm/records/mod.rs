@@ -851,7 +851,12 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             })?,
             // Weather records — sky colors, fog, wind, clouds.
             b"WTHR" => extract_records(&mut reader, end, b"WTHR", &mut |fid, subs| {
-                index.weathers.insert(fid, parse_wthr(fid, subs));
+                // `game` threaded through (#539 / M33-07) — Skyrim WTHR
+                // has a different sub-record schema and the FNV-only
+                // arm needs gating so a 320-B Skyrim NAM0 doesn't get
+                // truncated to "first 240 B = FNV colours" silently
+                // once M32.5 routes Skyrim.esm through this dispatch.
+                index.weathers.insert(fid, parse_wthr(fid, subs, game));
             })?,
             // Climate records — weather probability tables. The WLST
             // entry size dispatches off `game` (M33-08 / #540) so

@@ -25,7 +25,7 @@
 //! DNAM/CNAM/ANAM/BNAM, not NAM0). See issue #729 / EXT-RENDER-1.
 
 use super::common::{read_f32_at, read_zstring};
-use crate::esm::reader::SubRecord;
+use crate::esm::reader::{GameKind, SubRecord};
 
 /// Number of color groups in NAM0.
 pub const SKY_COLOR_GROUPS: usize = 10;
@@ -201,13 +201,49 @@ impl Default for WeatherRecord {
 }
 
 /// Parse a WTHR record from its sub-records.
-pub fn parse_wthr(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
+///
+/// `game` selects the on-disk schema. Today only the Gamebryo / FO3-era
+/// family (Oblivion, FO3, FNV, FO4, FO76, Starfield) has a known NAM0
+/// layout that's safe to parse here; Skyrim's NAM0 has a different TOD
+/// slot count and sub-record FourCCs (M33-04 / M33-05 will land the
+/// proper Skyrim branch). For now the Skyrim arm logs a one-shot warning
+/// and returns the record with default sky colours rather than reading
+/// the first 240 B as if they were FNV layout — silent garbage was the
+/// failure mode flagged in #539 / M33-07.
+pub fn parse_wthr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WeatherRecord {
     let mut record = WeatherRecord {
         form_id,
         ..WeatherRecord::default()
     };
 
+    // Skyrim NAM0 + WTHR sub-record schema diverges from the FO3-era
+    // family. Until a proper Skyrim parser lands, decline to parse
+    // sky-colour / fog / cloud sub-records here. EDID is still read so
+    // weather records remain identifiable in the index.
+    let parse_fnv_schema = !matches!(game, GameKind::Skyrim);
+    if !parse_fnv_schema {
+        static SKYRIM_WARNED: std::sync::Once = std::sync::Once::new();
+        SKYRIM_WARNED.call_once(|| {
+            log::warn!(
+                "WTHR: Skyrim schema not yet supported (#539 / M33-04..07); \
+                 weather records are indexed but sky / fog / clouds stay at \
+                 defaults. Cell streaming for Skyrim is gated on M32.5 — \
+                 this is a placeholder until the Skyrim WTHR parser lands."
+            );
+        });
+    }
+
     for sub in subs {
+        // #539 / M33-07 — Skyrim WTHR has different NAM0 stride and
+        // different cloud / fog sub-record FourCCs. Skip every non-EDID
+        // sub-record under that game's schema so we don't silently
+        // truncate or mis-cast bytes intended for a different layout.
+        // EDID is universal across all Bethesda games and is the only
+        // field we keep here. See M33-01 / M33-02 / M33-04 / M33-05 for
+        // the per-game schema work this gate is the placeholder for.
+        if !parse_fnv_schema && &sub.sub_type != b"EDID" {
+            continue;
+        }
         match &sub.sub_type {
             b"EDID" => record.editor_id = read_zstring(&sub.data),
 
@@ -368,7 +404,7 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::esm::reader::SubRecord;
+    use crate::esm::reader::{GameKind, SubRecord};
 
     fn make_sub(sub_type: &[u8; 4], data: Vec<u8>) -> SubRecord {
         SubRecord {
@@ -421,7 +457,7 @@ mod tests {
             make_sub(b"BNAM", b"sky\\clouds_03_top.dds\0".to_vec()),
         ];
 
-        let w = parse_wthr(0x1234, &subs);
+        let w = parse_wthr(0x1234, &subs, GameKind::Fallout3NV);
         assert_eq!(w.form_id, 0x1234);
         assert_eq!(w.editor_id, "TestWeather");
 
@@ -468,7 +504,7 @@ mod tests {
             make_sub(b"00TX", b"sky\\stale.dds\0".to_vec()),
             make_sub(b"10TX", b"sky\\stale.dds\0".to_vec()),
         ];
-        let w = parse_wthr(0xFADE, &subs);
+        let w = parse_wthr(0xFADE, &subs, GameKind::Fallout3NV);
         assert!(w.cloud_textures.iter().all(|c| c.is_none()));
     }
 
@@ -502,7 +538,7 @@ mod tests {
             make_sub(b"EDID", b"RainyOffsetCheck\0".to_vec()),
             make_sub(b"DATA", data_bytes),
         ];
-        let w = parse_wthr(0x600, &subs);
+        let w = parse_wthr(0x600, &subs, GameKind::Fallout3NV);
         assert_eq!(w.wind_speed, 50);
         assert_eq!(w.sun_glare, 200);
         assert_eq!(w.sun_damage, 30);
@@ -528,7 +564,7 @@ mod tests {
             make_sub(b"EDID", b"FNVFogCheck\0".to_vec()),
             make_sub(b"FNAM", fnam_data),
         ];
-        let w = parse_wthr(0xF09, &subs);
+        let w = parse_wthr(0xF09, &subs, GameKind::Fallout3NV);
         assert!((w.fog_day_near + 500.0).abs() < 0.01);
         assert!((w.fog_day_far - 85_000.0).abs() < 0.01);
         assert!((w.fog_night_near + 1000.0).abs() < 0.01);
@@ -548,7 +584,7 @@ mod tests {
             make_sub(b"EDID", b"OBLFogCheck\0".to_vec()),
             make_sub(b"FNAM", fnam_data),
         ];
-        let w = parse_wthr(0x0B1, &subs);
+        let w = parse_wthr(0x0B1, &subs, GameKind::Fallout3NV);
         assert!((w.fog_day_near + 500.0).abs() < 0.01);
         assert!((w.fog_day_far - 16_000.0).abs() < 0.01);
         assert!((w.fog_night_near + 600.0).abs() < 0.01);
@@ -581,7 +617,7 @@ mod tests {
             make_sub(b"FNAM", fnam_data),
             make_sub(b"HNAM", hnam_data),
         ];
-        let w = parse_wthr(0xEED, &subs);
+        let w = parse_wthr(0xEED, &subs, GameKind::Fallout3NV);
         assert!(
             (w.fog_day_far - 16_000.0).abs() < 0.01,
             "fog_day_far={}",
@@ -630,7 +666,7 @@ mod tests {
             make_sub(b"EDID", b"SEClearTrans\0".to_vec()),
             make_sub(b"HNAM", hnam),
         ];
-        let w = parse_wthr(0x0100_0001, &subs);
+        let w = parse_wthr(0x0100_0001, &subs, GameKind::Fallout3NV);
         let hdr = w
             .oblivion_hdr
             .expect("56-byte HNAM must populate oblivion_hdr");
@@ -670,7 +706,7 @@ mod tests {
             make_sub(b"EDID", b"FNVDay\0".to_vec()),
             make_sub(b"FNAM", fnam_data),
         ];
-        let w = parse_wthr(0x0200_0001, &subs);
+        let w = parse_wthr(0x0200_0001, &subs, GameKind::Fallout3NV);
         assert!(w.oblivion_hdr.is_none());
     }
 
@@ -685,7 +721,7 @@ mod tests {
             make_sub(b"EDID", b"DnamPathCheck\0".to_vec()),
             make_sub(b"DNAM", b"sky\\a.dds\0".to_vec()),
         ];
-        let w = parse_wthr(0x5ECD, &subs);
+        let w = parse_wthr(0x5ECD, &subs, GameKind::Fallout3NV);
         assert_eq!(w.cloud_textures[0].as_deref(), Some("sky\\a.dds"));
     }
 
@@ -715,7 +751,7 @@ mod tests {
             make_sub(b"NAM0", nam0_data),
         ];
 
-        let w = parse_wthr(0x2468, &subs);
+        let w = parse_wthr(0x2468, &subs, GameKind::Fallout3NV);
         // On-disk slots populate as authored. Indices match #729 / xEdit
         // fopdoc — `SKY_SUN = 5`, `SKY_HORIZON = 8`.
         let sun_sunrise = w.sky_colors[SKY_SUN][TOD_SUNRISE];
@@ -753,7 +789,7 @@ mod tests {
             make_sub(b"EDID", b"Truncated\0".to_vec()),
             make_sub(b"NAM0", vec![0xFF; 80]),
         ];
-        let w = parse_wthr(0xBADD, &subs);
+        let w = parse_wthr(0xBADD, &subs, GameKind::Fallout3NV);
         // All slots remain at SkyColor::default() (all zero).
         for group in 0..SKY_COLOR_GROUPS {
             for slot in 0..SKY_TIME_SLOTS {
@@ -807,7 +843,7 @@ mod tests {
             make_sub(b"EDID", b"SlotPin\0".to_vec()),
             make_sub(b"NAM0", nam0),
         ];
-        let w = parse_wthr(0x729, &subs);
+        let w = parse_wthr(0x729, &subs, GameKind::Fallout3NV);
 
         let day = TOD_DAY;
         assert_eq!(w.sky_colors[SKY_UPPER][day].r, 0); // 0  Sky-Upper
@@ -820,6 +856,87 @@ mod tests {
         assert_eq!(w.sky_colors[SKY_LOWER][day].r, 112); // 7  Sky-Lower
         assert_eq!(w.sky_colors[SKY_HORIZON][day].r, 128); // 8  Horizon
         assert_eq!(w.sky_colors[SKY_UNUSED_9][day].r, 144); // 9  Unused
+    }
+
+    /// #539 / M33-07 — Skyrim WTHR has a different NAM0 stride (and
+    /// different cloud / fog FourCCs), so the FO3-era schema arms must
+    /// NOT fire under the Skyrim variant. Pre-fix the parser had no
+    /// `GameKind` parameter and would have read the first 240 B of a
+    /// hypothetical 320-B Skyrim NAM0 as if they were FNV colours
+    /// (silent garbage). With the gate in place the EDID still flows
+    /// through (universal across all Bethesda games) but every other
+    /// sub-record is dropped until the proper Skyrim parser lands.
+    #[test]
+    fn parse_wthr_skyrim_skips_fnv_schema_subrecords() {
+        // Synthetic 240-B NAM0 (FNV stride). On Skyrim this should be
+        // ignored — the real Skyrim NAM0 stride differs and feeding
+        // these bytes through the FNV path would produce garbage.
+        let mut nam0_data = vec![0u8; 240];
+        let off = (0 * SKY_TIME_SLOTS + TOD_DAY) * 4;
+        nam0_data[off] = 200;
+        nam0_data[off + 1] = 100;
+        nam0_data[off + 2] = 50;
+        nam0_data[off + 3] = 255;
+
+        // FNAM fog fixture — should also be skipped on Skyrim.
+        let mut fnam_data = vec![0u8; 16];
+        fnam_data[4..8].copy_from_slice(&5_555.0_f32.to_le_bytes());
+
+        // DATA (15 B) — also skipped on Skyrim.
+        let mut data_data = vec![0u8; 15];
+        data_data[11] = WTHR_RAINY;
+
+        let subs = vec![
+            make_sub(b"EDID", b"SkyrimWeather\0".to_vec()),
+            make_sub(b"NAM0", nam0_data),
+            make_sub(b"FNAM", fnam_data),
+            make_sub(b"DATA", data_data),
+        ];
+        let w = parse_wthr(0xDEAD, &subs, GameKind::Skyrim);
+
+        // EDID universal — kept.
+        assert_eq!(w.editor_id, "SkyrimWeather");
+        // Sky colours stayed at default (no FNV-schema parse).
+        let sky_upper_day = w.sky_colors[0][TOD_DAY];
+        assert_eq!(sky_upper_day.r, 0);
+        assert_eq!(sky_upper_day.g, 0);
+        assert_eq!(sky_upper_day.b, 0);
+        // Fog stayed at default (FNAM was dropped — default is the
+        // 10 000-unit far plane from `WeatherRecord::default()`, NOT
+        // the 5 555 we put in the synthetic FNAM payload).
+        assert_eq!(w.fog_day_far, 10_000.0);
+        // Classification stayed at default (DATA was dropped).
+        assert_eq!(w.classification, 0);
+    }
+
+    /// Sibling pin: the same fixture under `GameKind::Fallout3NV` MUST
+    /// parse cleanly, so the gate doesn't accidentally drop FNV /
+    /// FO3 / Oblivion data. Pairs with the Skyrim-skip pin above.
+    #[test]
+    fn parse_wthr_fnv_schema_still_parses_under_fnv_kind() {
+        let mut nam0_data = vec![0u8; 240];
+        let off = (0 * SKY_TIME_SLOTS + TOD_DAY) * 4;
+        nam0_data[off] = 200;
+        nam0_data[off + 1] = 100;
+        nam0_data[off + 2] = 50;
+        nam0_data[off + 3] = 255;
+
+        let mut fnam_data = vec![0u8; 16];
+        fnam_data[4..8].copy_from_slice(&5_555.0_f32.to_le_bytes());
+
+        let subs = vec![
+            make_sub(b"EDID", b"FnvWeather\0".to_vec()),
+            make_sub(b"NAM0", nam0_data),
+            make_sub(b"FNAM", fnam_data),
+        ];
+        let w = parse_wthr(0xBEEF, &subs, GameKind::Fallout3NV);
+
+        assert_eq!(w.editor_id, "FnvWeather");
+        let sky_upper_day = w.sky_colors[0][TOD_DAY];
+        assert_eq!(sky_upper_day.r, 200);
+        assert_eq!(sky_upper_day.g, 100);
+        assert_eq!(sky_upper_day.b, 50);
+        assert!((w.fog_day_far - 5_555.0).abs() < 0.001);
     }
 
     #[test]
