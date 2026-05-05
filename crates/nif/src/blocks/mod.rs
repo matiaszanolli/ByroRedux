@@ -266,13 +266,23 @@ pub fn parse_block(
         // bytes unread and relying on block-loop realignment. See #146.
         "BSSegmentedTriShape" => Ok(Box::new(NiTriShape::parse_segmented(stream)?)),
         "BSTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse(stream)?)),
-        // BSMeshLODTriShape / BSLODTriShape: same 3-u32 LOD-size trailing
-        // layout. BSLODTriShape is the FO4 distant-LOD variant;
-        // BSMeshLODTriShape appears in Skyrim SE DLC. `parse_lod` stamps
-        // `LOD { lod0, lod1, lod2 }`; for BSMeshLODTriShape we overwrite
-        // via `with_kind(MeshLOD)` so downstream importers can tell the
-        // two wire subclasses apart. See issue #147, #157, #560.
-        "BSLODTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse_lod(stream)?)),
+        // BSLODTriShape and BSMeshLODTriShape look identical at the
+        // dispatch level (both have the trailing `[lod0, lod1, lod2]`
+        // u32 triplet) but inherit from DIFFERENT bodies per nif.xml:
+        //
+        //   BSLODTriShape       inherit="NiTriBasedGeom"   versions=#SKY##SSE#
+        //   BSMeshLODTriShape   inherit="BSTriShape"       versions=#FO4#
+        //
+        // Pre-#838 BSLODTriShape was routed through `BsTriShape::parse_lod`
+        // which over-consumed by 23 bytes on real Skyrim tree LODs
+        // (`expected 109 bytes, consumed 132`); `block_size` recovery
+        // silently realigned the stream so the bug only surfaced as
+        // per-block WARN noise, but the LOD-size triplet was decoded
+        // from whatever vertex bytes happened to fall at the trailer
+        // offset on Skyrim. Routing through `NiLodTriShape` parses the
+        // 97-byte NiTriShape body + 12-byte LOD trailer correctly.
+        // See issues #147, #157, #560, #838.
+        "BSLODTriShape" => Ok(Box::new(tri_shape::NiLodTriShape::parse(stream)?)),
         "BSMeshLODTriShape" => Ok(Box::new(
             tri_shape::BsTriShape::parse_lod(stream)?.with_kind(tri_shape::BsTriShapeKind::MeshLOD),
         )),

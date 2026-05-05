@@ -716,29 +716,84 @@ fn bs_sub_index_tri_shape_truncated_segmentation_preserves_body() {
     );
 }
 
-/// Regression: #157 — BSLODTriShape must dispatch to the LOD parser
-/// and consume its 3 trailing LOD-size u32s. Previously routed to
-/// NiUnknown, breaking FO4 distant LOD.
+/// Build a minimal valid Skyrim SE NiTriShape body (NiTriBasedGeom
+/// inheritance, 97 B). Used by the BSLODTriShape regression below
+/// — pre-#838 BSLODTriShape was incorrectly assembled from a
+/// `BSTriShape` body even though nif.xml says it inherits
+/// `NiTriBasedGeom`.
+fn minimal_sse_ni_tri_shape_bytes() -> Vec<u8> {
+    let mut d = Vec::new();
+    // NiObjectNET: name=-1, extra_data count=0, controller=-1
+    d.extend_from_slice(&(-1i32).to_le_bytes());
+    d.extend_from_slice(&0u32.to_le_bytes());
+    d.extend_from_slice(&(-1i32).to_le_bytes());
+    // NiAVObject (SSE bsver=100, no properties): flags u32 + transform + collision_ref
+    d.extend_from_slice(&0u32.to_le_bytes()); // flags
+    for _ in 0..3 {
+        d.extend_from_slice(&0.0f32.to_le_bytes()); // translation
+    }
+    for row in 0..3 {
+        for col in 0..3 {
+            let v: f32 = if row == col { 1.0 } else { 0.0 };
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    d.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+    // bsver=100 > 34, so properties_list is omitted (Vec::new()).
+    d.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
+    // NiTriShape body fields:
+    d.extend_from_slice(&(-1i32).to_le_bytes()); // data_ref
+    d.extend_from_slice(&(-1i32).to_le_bytes()); // skin_instance_ref
+    d.extend_from_slice(&0u32.to_le_bytes()); // num_materials = 0
+    d.extend_from_slice(&0u32.to_le_bytes()); // active_material_index
+    d.push(0u8); // dirty_flag (v >= 20.2.0.7)
+    // SSE has has_shader_alpha_refs = true.
+    d.extend_from_slice(&(-1i32).to_le_bytes()); // shader_property_ref
+    d.extend_from_slice(&(-1i32).to_le_bytes()); // alpha_property_ref
+    debug_assert_eq!(d.len(), 97, "SSE NiTriShape body must be exactly 97 B");
+    d
+}
+
+/// Regression: #838 (SK-D5-NEW-07) — BSLODTriShape inherits from
+/// `NiTriBasedGeom` (NiTriShape body, not BSTriShape body). Pre-fix
+/// the dispatcher routed it through `BsTriShape::parse_lod`, which
+/// over-consumed by 23 bytes per block on real Skyrim tree LODs
+/// (`expected 109 bytes, consumed 132`); `block_size` recovery
+/// silently realigned the stream so the bug only surfaced as
+/// per-block WARN noise. Routing through `NiLodTriShape` parses the
+/// 97-byte NiTriShape body + 12-byte LOD trailer correctly.
+///
+/// Replaces the prior #157 regression which built BSLODTriShape from
+/// a `minimal_bs_tri_shape_bytes()` body — that fixture passed only
+/// because the test built the same wrong body the parser expected;
+/// real Skyrim NIFs ship the NiTriShape format and drifted.
 #[test]
-fn bs_lod_tri_shape_dispatches_and_consumes_trailing_bytes() {
+fn bs_lod_tri_shape_skyrim_consumes_ni_tri_shape_body_plus_3u32_trailer() {
     let header = test_header();
-    let mut bytes = minimal_bs_tri_shape_bytes();
-    // BSLODTriShape trailing: 3 × u32 LOD sizes.
+    let mut bytes = minimal_sse_ni_tri_shape_bytes();
+    // 3 × u32 LOD sizes — matches nif.xml `BSLODTriShape` definition.
     bytes.extend_from_slice(&10u32.to_le_bytes());
     bytes.extend_from_slice(&5u32.to_le_bytes());
     bytes.extend_from_slice(&1u32.to_le_bytes());
+    // 97 (NiTriShape body) + 12 (trailer) = 109 — the exact size the
+    // Skyrim Meshes0 nif_stats run reports for real BSLODTriShape blocks.
+    assert_eq!(bytes.len(), 109);
 
     let mut stream = crate::stream::NifStream::new(&bytes, &header);
     let block = parse_block("BSLODTriShape", &mut stream, Some(bytes.len() as u32))
-        .expect("BSLODTriShape should dispatch through BsTriShape::parse_lod");
-    assert!(
-        block.as_any().downcast_ref::<BsTriShape>().is_some(),
-        "BSLODTriShape did not downcast to BsTriShape"
-    );
+        .expect("BSLODTriShape should dispatch through NiLodTriShape::parse");
+    assert_eq!(block.block_type_name(), "BSLODTriShape");
+    let lod = block
+        .as_any()
+        .downcast_ref::<crate::blocks::tri_shape::NiLodTriShape>()
+        .expect("BSLODTriShape must downcast to NiLodTriShape");
+    assert_eq!(lod.lod0_size, 10);
+    assert_eq!(lod.lod1_size, 5);
+    assert_eq!(lod.lod2_size, 1);
     assert_eq!(
         stream.position() as usize,
         bytes.len(),
-        "BSLODTriShape trailing LOD sizes not fully consumed"
+        "BSLODTriShape trailing LOD sizes not fully consumed",
     );
 }
 
@@ -762,25 +817,11 @@ fn bs_tri_shape_variants_stamp_their_kind() {
         assert_eq!(block.block_type_name(), "BSTriShape");
     }
 
-    // 2. BSLODTriShape → LOD { lod0, lod1, lod2 } (values preserved).
-    {
-        let mut bytes = minimal_bs_tri_shape_bytes();
-        bytes.extend_from_slice(&10u32.to_le_bytes());
-        bytes.extend_from_slice(&5u32.to_le_bytes());
-        bytes.extend_from_slice(&1u32.to_le_bytes());
-        let mut stream = crate::stream::NifStream::new(&bytes, &header);
-        let block = parse_block("BSLODTriShape", &mut stream, Some(bytes.len() as u32)).unwrap();
-        let shape = block.as_any().downcast_ref::<BsTriShape>().unwrap();
-        assert_eq!(
-            shape.kind,
-            BsTriShapeKind::LOD {
-                lod0: 10,
-                lod1: 5,
-                lod2: 1,
-            }
-        );
-        assert_eq!(block.block_type_name(), "BSLODTriShape");
-    }
+    // 2. BSLODTriShape — covered by `bs_lod_tri_shape_skyrim_consumes_ni_tri_shape_body_plus_3u32_trailer`
+    //    above. Per #838 / nif.xml, BSLODTriShape inherits from
+    //    NiTriBasedGeom (NiTriShape body), NOT BSTriShape — it
+    //    downcasts to `NiLodTriShape`, not `BsTriShape`. BSMeshLODTriShape
+    //    (FO4) IS a BSTriShape subclass and stays in this matrix below.
 
     // 3. BSMeshLODTriShape → MeshLOD (same wire format as LOD but
     //    different kind so importers can branch — Skyrim SE DLC

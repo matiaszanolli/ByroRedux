@@ -179,6 +179,71 @@ impl NiTriShape {
 /// NiTriStrips — identical serialization to NiTriShape (both are NiGeometry).
 pub type NiTriStrips = NiTriShape;
 
+/// `BSLODTriShape` — Skyrim/SSE distant-LOD shape for visibility
+/// control over vertex groups. Per niftools nif.xml inherits from
+/// `NiTriBasedGeom` (the `NiTriShape` lineage), **not** `BSTriShape`.
+/// Pre-#838 the dispatcher routed it through [`BsTriShape::parse_lod`]
+/// which over-consumed by 23 bytes per block on real Skyrim tree LODs
+/// (`BSLODTriShape: expected 109 bytes, consumed 132`) — `block_size`
+/// recovery silently realigned the stream and the LOD-size triplet
+/// was decoded from BSTriShape vertex bytes that happened to land in
+/// the right position.
+///
+/// Wire layout (Skyrim SE, 109 B):
+/// ```text
+/// NiTriShape body (97 B — NiAVObjectData no-properties + 2 BlockRefs
+///                       + num_materials u32 + active_material_index u32
+///                       + dirty_flag u8 + 2 shader BlockRefs)
+/// uint lod0_size
+/// uint lod1_size
+/// uint lod2_size
+/// ```
+///
+/// Note: FO4's `BSMeshLODTriShape` IS a true `BSTriShape` subclass
+/// (per nif.xml `inherit="BSTriShape" versions="#FO4#"`) so it stays
+/// on `BsTriShape::parse_lod`. The two LOD-style block types share
+/// the trailing 3-u32 layout but live on different bodies.
+#[derive(Debug)]
+pub struct NiLodTriShape {
+    pub base: NiTriShape,
+    pub lod0_size: u32,
+    pub lod1_size: u32,
+    pub lod2_size: u32,
+}
+
+impl NiObject for NiLodTriShape {
+    fn block_type_name(&self) -> &'static str {
+        "BSLODTriShape"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_object_net(&self) -> Option<&dyn traits::HasObjectNET> {
+        Some(&self.base)
+    }
+    fn as_av_object(&self) -> Option<&dyn traits::HasAVObject> {
+        Some(&self.base)
+    }
+    fn as_shader_refs(&self) -> Option<&dyn traits::HasShaderRefs> {
+        Some(&self.base)
+    }
+}
+
+impl NiLodTriShape {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiTriShape::parse(stream)?;
+        let lod0_size = stream.read_u32_le()?;
+        let lod1_size = stream.read_u32_le()?;
+        let lod2_size = stream.read_u32_le()?;
+        Ok(Self {
+            base,
+            lod0_size,
+            lod1_size,
+            lod2_size,
+        })
+    }
+}
+
 /// Discriminator for the five wire-distinct types that share the
 /// [`BsTriShape`] Rust struct. Pre-#560 every variant reported
 /// `"BSTriShape"` and downstream consumers (facegen head detection,
