@@ -988,6 +988,15 @@ pub(crate) fn setup_scene(
     world.insert(cam, Transform::new(cam_pos, cam_rotation, 1.0));
     world.insert(cam, GlobalTransform::new(cam_pos, cam_rotation, 1.0));
     world.insert(cam, Camera::default());
+    // M44 Phase 1: the camera entity doubles as the audio listener
+    // ("ears at the eyes"). M28.5 character controller will likely
+    // split listener onto a head joint of the player capsule, but
+    // for fly-cam fidelity this is canonical.
+    world.insert(cam, byroredux_audio::AudioListener);
+    // M44 Phase 3.5: opt the camera into footstep dispatch. Stride
+    // threshold + per-footstep volume are read from `FootstepConfig`
+    // (engine-wide resource set up in `App::new`).
+    world.insert(cam, crate::components::FootstepEmitter::new());
     world.insert_resource(ActiveCamera(cam));
 
     // NOTE: M28 Phase 1 attached a `PlayerBody::HUMAN` capsule to the

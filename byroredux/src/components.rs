@@ -1,9 +1,12 @@
 //! Application-specific marker components and resources.
 
+use byroredux_audio::Sound;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Component, Resource, SparseSetStorage};
+use byroredux_core::math::Vec3;
 use byroredux_core::string::FixedString;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use winit::keyboard::KeyCode;
 
 /// Marker component for entities that should spin in the demo scene.
@@ -354,3 +357,72 @@ impl Default for InputState {
         }
     }
 }
+
+// ── M44 Phase 3.5 — footstep gameplay loop ──────────────────────────
+
+/// Marker + accumulator on the entity whose horizontal movement
+/// should produce footstep sounds (today the fly-camera entity; an
+/// `M28.5` character controller will own this in future).
+///
+/// `last_position` and `accumulated_stride` are mutated each frame
+/// by `footstep_system`; `stride_threshold` is read-only configuration
+/// — a stride distance that triggers one footstep. Defaults to 1.5
+/// game-units (~1.5m at FNV scale; reasonable walking cadence).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FootstepEmitter {
+    /// World position last frame, in renderer Y-up game units. Set
+    /// from the entity's `GlobalTransform.translation` on first tick;
+    /// updated each frame.
+    pub(crate) last_position: Vec3,
+    /// Horizontal distance walked since the last footstep fire,
+    /// game-units. XZ plane only — vertical motion (jumping, falling)
+    /// doesn't count toward stride.
+    pub(crate) accumulated_stride: f32,
+    /// Stride distance that triggers a footstep dispatch.
+    pub(crate) stride_threshold: f32,
+    /// Whether `last_position` has been initialised. False on first
+    /// tick so the system seeds it without computing a bogus delta
+    /// against the default zero pose.
+    pub(crate) initialised: bool,
+}
+
+impl Component for FootstepEmitter {
+    type Storage = SparseSetStorage<Self>;
+}
+
+impl FootstepEmitter {
+    pub(crate) fn new() -> Self {
+        Self {
+            last_position: Vec3::ZERO,
+            accumulated_stride: 0.0,
+            stride_threshold: 1.5,
+            initialised: false,
+        }
+    }
+}
+
+/// Resource — engine-wide footstep configuration. Today carries one
+/// hardcoded sound (loaded at startup from a vanilla BSA when
+/// available). Phase 3.5b replaces the single sound with a per-
+/// material lookup (FOOT records).
+pub(crate) struct FootstepConfig {
+    /// Default footstep sound. `None` when the BSA-load failed
+    /// (no archive on disk, decode error, audio inactive).
+    pub(crate) default_sound: Option<Arc<Sound>>,
+    /// Volume multiplier applied to every footstep play. 0.6 keeps
+    /// footsteps mixed below dialogue / weapons / music; tweak per
+    /// gameplay feel.
+    pub(crate) volume: f32,
+}
+
+impl Resource for FootstepConfig {}
+
+impl Default for FootstepConfig {
+    fn default() -> Self {
+        Self {
+            default_sound: None,
+            volume: 0.6,
+        }
+    }
+}
+

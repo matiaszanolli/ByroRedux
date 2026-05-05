@@ -33,11 +33,11 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::commands::build_command_registry;
-use crate::components::{InputState, NameIndex, Spinning, SubtreeCache};
+use crate::components::{FootstepConfig, InputState, NameIndex, Spinning, SubtreeCache};
 use crate::helpers::world_resource_set;
 use crate::render::build_render_data;
 use crate::systems::{
-    animation_system, billboard_system, fly_camera_system, log_stats_system,
+    animation_system, billboard_system, fly_camera_system, footstep_system, log_stats_system,
     make_transform_propagation_system, make_world_bound_propagation_system, particle_system,
     spin_system, weather_system,
 };
@@ -106,7 +106,7 @@ fn main() -> Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::new(debug_mode);
+    let mut app = App::new(debug_mode, &args);
     app.bench_frames_target = bench_frames;
     app.screenshot_path = screenshot_path;
     app.camera_pos_override = camera_pos;
@@ -230,7 +230,7 @@ struct App {
 }
 
 impl App {
-    fn new(debug_mode: bool) -> Self {
+    fn new(debug_mode: bool, args: &[String]) -> Self {
         let mut world = World::new();
 
         // Register built-in resources.
@@ -253,6 +253,17 @@ impl App {
         // `None` and every subsequent audio operation no-ops. Boot
         // never fails on a missing audio device.
         world.insert_resource(byroredux_audio::AudioWorld::new());
+        // M44 Phase 3.5 — footstep config. `default_sound` is None
+        // until/unless the cell loader (or a future asset-provider
+        // hook) decodes a BSA-archived sound and stores it here.
+        // Defaults are safe: `None` makes `footstep_system` no-op.
+        world.insert_resource(FootstepConfig::default());
+        // M44 Phase 3.5 — opportunistic footstep BSA load. When the
+        // user passed `--sounds-bsa <path>`, decode the canonical
+        // dirt-walk WAV and stash the `Arc<StaticSoundData>` in
+        // `FootstepConfig.default_sound`. Silently no-op when the
+        // flag is absent or the archive isn't openable.
+        crate::asset_provider::try_load_default_footstep(&mut world, args);
         // Process-lifetime cache of parsed-and-imported NIF scenes.
         // Persists across cell transitions so repeat visits don't re-
         // parse every clutter mesh. See #381.
@@ -261,6 +272,11 @@ impl App {
         // Pre-register component storages that the physics sync system
         // queries on the first frame (before anything has been inserted).
         world.register::<byroredux_physics::RapierHandles>();
+        // M44 Phase 3.5: pre-register footstep emitter storage so
+        // `footstep_system`'s `query_mut::<FootstepEmitter>` returns
+        // `Some` even before the first emitter is inserted (e.g. on
+        // startup with no scene loaded).
+        world.register::<crate::components::FootstepEmitter>();
 
         // Register scripting component storages.
         byroredux_scripting::register(&mut world);
@@ -286,6 +302,17 @@ impl App {
         scheduler.add_to(Stage::Early, weather_system);
         scheduler.add_to(Stage::Early, byroredux_scripting::timer_tick_system);
         scheduler.add_to(Stage::Update, animation_system);
+        // M44 Phase 3.5: footstep dispatch. Runs in Stage::Update so
+        // it sees the post-fly-camera Transform (which the camera
+        // system writes in Stage::Early) but BEFORE
+        // transform_propagation in Stage::PostUpdate — so the
+        // GlobalTransform we read is one frame stale relative to the
+        // camera's Transform. That's acceptable for footstep position
+        // accuracy at human movement speeds (~1 frame at 60 FPS = 17
+        // ms = ~3 cm of motion). If a future tick rate or speed
+        // mode surfaces a glitch, this can move to PostUpdate after
+        // propagation.
+        scheduler.add_to(Stage::Update, footstep_system);
         scheduler.add_to_with_access(
             Stage::Update,
             spin_system,

@@ -749,6 +749,99 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
 // to change. See issue #81.
 pub(crate) use byroredux_core::ecs::make_transform_propagation_system;
 
+/// M44 Phase 3.5 — footstep gameplay loop.
+///
+/// Walks every entity with a `FootstepEmitter`, accumulates horizontal
+/// (XZ-plane) movement from frame to frame against
+/// `stride_threshold`, and queues a one-shot via
+/// `AudioWorld::play_oneshot` each time the stride threshold is
+/// crossed. Vertical movement (jumping, falling, elevators) does
+/// NOT count toward stride.
+///
+/// No-ops cleanly when:
+///   - `FootstepConfig` resource isn't registered (engine started
+///     without audio wiring).
+///   - `FootstepConfig.default_sound` is `None` (BSA-load failed
+///     at startup; e.g. running without game data).
+///   - `AudioWorld` is inactive (no audio device).
+///   - The first tick on a fresh `FootstepEmitter` — the system seeds
+///     `last_position` from the current pose without firing, so we
+///     don't emit a "phantom footstep" against the default zero pose.
+///
+/// Spawn a `FootstepEmitter` on the player entity to opt in. The
+/// fly-camera attach is wired in `main.rs::App::new`.
+pub(crate) fn footstep_system(world: &World, _dt: f32) {
+    use crate::components::{FootstepConfig, FootstepEmitter};
+
+    let Some(config) = world.try_resource::<FootstepConfig>() else {
+        return;
+    };
+    let Some(sound) = config.default_sound.clone() else {
+        return;
+    };
+    let volume = config.volume;
+    drop(config);
+
+    // Phase 1: walk every emitter, accumulate stride, collect the
+    // positions where a footstep should fire this tick. Holding
+    // GlobalTransform read + FootstepEmitter write concurrently is
+    // fine (separate storages), but we want to release both locks
+    // before touching `AudioWorld` in Phase 2 — minimises contention
+    // with `audio_system` running in the same stage.
+    let mut triggers: Vec<Vec3> = Vec::new();
+    {
+        let Some(gt_q) = world.query::<GlobalTransform>() else {
+            return;
+        };
+        let Some(mut fs_q) = world.query_mut::<FootstepEmitter>() else {
+            return;
+        };
+        for (entity, fs) in fs_q.iter_mut() {
+            let Some(gt) = gt_q.get(entity) else {
+                continue;
+            };
+            let pos = gt.translation;
+            if !fs.initialised {
+                fs.last_position = pos;
+                fs.initialised = true;
+                continue;
+            }
+            // XZ-plane delta only — vertical (Y) motion isn't a step.
+            let dx = pos.x - fs.last_position.x;
+            let dz = pos.z - fs.last_position.z;
+            let horizontal = (dx * dx + dz * dz).sqrt();
+            fs.accumulated_stride += horizontal;
+            fs.last_position = pos;
+            if fs.accumulated_stride >= fs.stride_threshold {
+                fs.accumulated_stride = 0.0;
+                triggers.push(pos);
+            }
+        }
+    }
+
+    // Phase 2: dispatch one-shots for every triggered stride.
+    if triggers.is_empty() {
+        return;
+    }
+    let Some(mut audio_world) = world.try_resource_mut::<byroredux_audio::AudioWorld>() else {
+        return;
+    };
+    for pos in triggers {
+        audio_world.play_oneshot(
+            std::sync::Arc::clone(&sound),
+            pos,
+            byroredux_audio::Attenuation {
+                // Tighter attenuation than the default — footsteps
+                // drop off fast in real environments. 0.5m → full
+                // volume, 12m → inaudible.
+                min_distance: 0.5,
+                max_distance: 12.0,
+            },
+            volume,
+        );
+    }
+}
+
 /// Orients `Billboard` entities so their forward axis faces the active camera.
 ///
 /// Runs after `transform_propagation_system`: it reads each billboard's
@@ -2797,5 +2890,202 @@ mod animation_system_e2e_tests {
              — got {:?}; subtree scoping is broken",
             body_xf.rotation
         );
+    }
+}
+
+// ── M44 Phase 3.5 — footstep_system regression tests ──────────────
+//
+// Synthetic-only: walk an emitter through a known-distance path,
+// verify the stride accumulator triggers exactly when expected and
+// queues a one-shot for each trigger. Audio device not required —
+// `AudioWorld` runs in the no-device branch and `play_oneshot`
+// queues into the pending vec without touching kira.
+#[cfg(test)]
+mod footstep_system_tests {
+    use super::*;
+    use crate::components::{FootstepConfig, FootstepEmitter};
+    use byroredux_audio::{Frame, Sound, SoundSettings};
+    use byroredux_core::ecs::World;
+    use std::sync::Arc;
+
+    fn synth_world(volume: f32) -> (World, Arc<Sound>) {
+        let mut world = World::new();
+        let sound = Arc::new(Sound {
+            sample_rate: 22_050,
+            frames: Arc::from(
+                vec![Frame { left: 0.0, right: 0.0 }; 50].into_boxed_slice(),
+            ),
+            settings: SoundSettings::default(),
+            slice: None,
+        });
+        world.insert_resource(FootstepConfig {
+            default_sound: Some(Arc::clone(&sound)),
+            volume,
+        });
+        // AudioWorld via `Default::default()` — picks up the
+        // headless fallback path when the test host has no audio
+        // device, otherwise creates a real manager. Either way
+        // `play_oneshot` enqueues without immediately dispatching
+        // (drain only fires inside `audio_system`, which we don't
+        // call from the footstep tests).
+        world.insert_resource(byroredux_audio::AudioWorld::default());
+        (world, sound)
+    }
+
+    /// First tick on a fresh `FootstepEmitter` must seed
+    /// `last_position` and NOT fire — otherwise the emitter would
+    /// always emit one phantom footstep against the default zero
+    /// pose at spawn time.
+    #[test]
+    fn first_tick_seeds_last_position_without_firing() {
+        let (mut world, _sound) = synth_world(0.5);
+        let entity = world.spawn();
+        world.insert(entity, Transform::IDENTITY);
+        world.insert(
+            entity,
+            GlobalTransform::new(Vec3::new(10.0, 0.0, 5.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(entity, FootstepEmitter::new());
+
+        footstep_system(&world, 0.016);
+
+        let aw = world.resource::<byroredux_audio::AudioWorld>();
+        assert_eq!(
+            aw.pending_oneshot_count(),
+            0,
+            "first tick must NOT fire — only seed last_position"
+        );
+        let q = world.query::<FootstepEmitter>().unwrap();
+        let fs = q.get(entity).unwrap();
+        assert!(fs.initialised, "first tick must mark emitter initialised");
+        assert_eq!(fs.last_position, Vec3::new(10.0, 0.0, 5.0));
+        assert_eq!(fs.accumulated_stride, 0.0);
+    }
+
+    /// Walking exactly one threshold distance fires exactly one
+    /// footstep. Vertical motion is excluded — only XZ delta counts.
+    #[test]
+    fn stride_threshold_fires_exactly_one_footstep() {
+        let (mut world, _sound) = synth_world(0.7);
+        let entity = world.spawn();
+        world.insert(entity, Transform::IDENTITY);
+        world.insert(
+            entity,
+            GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0),
+        );
+        world.insert(entity, FootstepEmitter::new());
+
+        // Tick 1: seed last_position at origin.
+        footstep_system(&world, 0.016);
+
+        // Move 1.5 game-units along +X (exactly the default threshold).
+        // Also bump Y by 100 — vertical-only motion that must NOT
+        // contribute to stride.
+        {
+            let mut q = world.query_mut::<GlobalTransform>().unwrap();
+            let gt = q.get_mut(entity).unwrap();
+            gt.translation = Vec3::new(1.5, 100.0, 0.0);
+        }
+
+        // Tick 2: stride accumulates 1.5 units, hits threshold, fires.
+        footstep_system(&world, 0.016);
+
+        let aw = world.resource::<byroredux_audio::AudioWorld>();
+        assert_eq!(
+            aw.pending_oneshot_count(),
+            1,
+            "1.5-unit horizontal stride must fire exactly one footstep"
+        );
+    }
+
+    /// Walking 4× the threshold distance in one tick must fire 1
+    /// footstep (stride resets when the threshold is crossed; a
+    /// catastrophic teleport doesn't multiply footsteps). This pins
+    /// the "reset to zero on fire" semantic — a "subtract threshold,
+    /// keep remainder" refactor would fire 4 footsteps and feel
+    /// machine-gun-like at high speeds.
+    #[test]
+    fn single_large_jump_fires_one_footstep_only() {
+        let (mut world, _sound) = synth_world(1.0);
+        let entity = world.spawn();
+        world.insert(entity, Transform::IDENTITY);
+        world.insert(
+            entity,
+            GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0),
+        );
+        world.insert(entity, FootstepEmitter::new());
+
+        footstep_system(&world, 0.016); // seed
+
+        // 6.0 horizontal units in one frame — 4× threshold.
+        {
+            let mut q = world.query_mut::<GlobalTransform>().unwrap();
+            let gt = q.get_mut(entity).unwrap();
+            gt.translation = Vec3::new(6.0, 0.0, 0.0);
+        }
+
+        footstep_system(&world, 0.016);
+
+        let aw = world.resource::<byroredux_audio::AudioWorld>();
+        assert_eq!(
+            aw.pending_oneshot_count(),
+            1,
+            "single-tick teleport must fire exactly one footstep, not multiple"
+        );
+    }
+
+    /// A standing-still emitter (zero stride) never fires. Pinned
+    /// because a regression that "fires on every tick when stride
+    /// >= 0" would silently spam audio when the player isn't moving.
+    #[test]
+    fn standing_still_never_fires() {
+        let (mut world, _sound) = synth_world(0.5);
+        let entity = world.spawn();
+        world.insert(entity, Transform::IDENTITY);
+        world.insert(
+            entity,
+            GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0),
+        );
+        world.insert(entity, FootstepEmitter::new());
+
+        for _ in 0..30 {
+            footstep_system(&world, 0.016);
+        }
+
+        let aw = world.resource::<byroredux_audio::AudioWorld>();
+        assert_eq!(aw.pending_oneshot_count(), 0);
+    }
+
+    /// Footsteps no-op cleanly when no `default_sound` is loaded
+    /// (i.e. user didn't pass --sounds-bsa). The emitter should still
+    /// update its last_position so a future runtime reload of the
+    /// sound picks up cleanly without a phantom step.
+    #[test]
+    fn no_default_sound_is_silent_noop() {
+        let (mut world, _sound) = synth_world(0.5);
+        // Drop the sound reference, leaving the config but with
+        // default_sound: None.
+        {
+            let mut config = world.resource_mut::<FootstepConfig>();
+            config.default_sound = None;
+        }
+        let entity = world.spawn();
+        world.insert(entity, Transform::IDENTITY);
+        world.insert(
+            entity,
+            GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0),
+        );
+        world.insert(entity, FootstepEmitter::new());
+
+        footstep_system(&world, 0.016);
+        {
+            let mut q = world.query_mut::<GlobalTransform>().unwrap();
+            let gt = q.get_mut(entity).unwrap();
+            gt.translation = Vec3::new(5.0, 0.0, 0.0);
+        }
+        footstep_system(&world, 0.016);
+
+        let aw = world.resource::<byroredux_audio::AudioWorld>();
+        assert_eq!(aw.pending_oneshot_count(), 0);
     }
 }

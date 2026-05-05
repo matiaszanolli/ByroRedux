@@ -50,9 +50,21 @@
 //!   that owns the policy of *when* to play; this helper owns the
 //!   ECS-shape of *how* to play.
 //!
+//! # Phase 3.5 (this commit)
+//!
+//! - [`AudioWorld::play_oneshot`] — fire-and-forget queue API.
+//!   Gameplay code with `&World` access (a System, which can't spawn
+//!   entities) writes a pending one-shot via `world.resource_mut::<
+//!   AudioWorld>().play_oneshot(...)`. `audio_system` drains the
+//!   queue at the start of each frame and dispatches each entry
+//!   through the same spatial-sub-track path as the entity-based
+//!   `OneShotSound + AudioEmitter` flow. No entity allocation
+//!   required — sidesteps the "Systems can't `&mut World::spawn`"
+//!   constraint that motivates this API.
+//!
 //! # Future phases (not in this commit)
 //!
-//! - Phase 3.5: FOOT records → per-material footstep dispatch.
+//! - Phase 3.5b: FOOT records parser → per-material sound lookup.
 //! - Phase 4: REGN ambient soundscapes (region-based ambient layers).
 //! - Phase 5: MUSC + hardcoded music routing with crossfade.
 //! - Phase 6: Reverb zones (kira's `ReverbBuilder`) keyed off cell
@@ -73,16 +85,37 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
 
+// Re-export the kira types downstream crates need so they can hold
+// `Arc<StaticSoundData>` (in `Resource`s, components, etc.) without
+// pulling kira as a direct dependency. The audio crate is the canon
+// owner of the audio-engine surface.
+pub use kira::sound::static_sound::{StaticSoundData as Sound, StaticSoundSettings as SoundSettings};
+pub use kira::Frame;
+
 /// One currently-playing sound. The `_track` field keeps the spatial
 /// sub-track alive — dropping it would tear down playback even if the
-/// `handle` is still ticking. Entity is the source ECS entity so the
-/// system can clean up its audio-emitter components on completion.
-/// Underscore-prefix because the field is held purely for its `Drop`
-/// side effect; we never read it back.
+/// `handle` is still ticking. `entity` is `Some(EntityId)` for the
+/// entity-based `OneShotSound + AudioEmitter` flow (Phase 3) and
+/// `None` for queue-driven fire-and-forget plays (Phase 3.5
+/// `play_oneshot`). When `Some`, the prune pass removes the
+/// `AudioEmitter` component on completion so a downstream cleanup
+/// system can despawn the entity. Underscore-prefix on `_track`
+/// because we hold it for `Drop` side effect only.
 struct ActiveSound {
-    entity: EntityId,
+    entity: Option<EntityId>,
     handle: StaticSoundHandle,
     _track: SpatialTrackHandle,
+}
+
+/// Fire-and-forget one-shot queued via [`AudioWorld::play_oneshot`].
+/// Drained and dispatched by `audio_system` at the start of each
+/// frame. Lives in `AudioWorld` rather than as ECS components so
+/// callers without `&mut World` (Systems) can still trigger sounds.
+struct PendingOneShot {
+    sound: Arc<StaticSoundData>,
+    position: Vec3,
+    attenuation: Attenuation,
+    volume: f32,
 }
 
 /// Resource holding the `kira::AudioManager` + listener + active-sound
@@ -103,6 +136,11 @@ pub struct AudioWorld {
     /// Currently-playing one-shot sounds. Cleaned up per-frame as
     /// kira reports `PlaybackState::Stopped`.
     active_sounds: Vec<ActiveSound>,
+    /// Queued fire-and-forget one-shots from [`Self::play_oneshot`].
+    /// Drained at the start of each `audio_system` tick so callers
+    /// who can't allocate entities (Systems) can still trigger
+    /// sounds. Phase 3.5.
+    pending_oneshots: Vec<PendingOneShot>,
     /// Lazily-created kira listener — the entity whose
     /// `GlobalTransform` drives spatial attenuation. Created on the
     /// first frame an `AudioListener` is found in the World.
@@ -140,6 +178,7 @@ impl AudioWorld {
         };
         Self {
             active_sounds: Vec::new(),
+            pending_oneshots: Vec::new(),
             listener: None,
             manager,
         }
@@ -161,6 +200,51 @@ impl AudioWorld {
     /// for telemetry — a runaway count signals a pruning regression.
     pub fn active_sound_count(&self) -> usize {
         self.active_sounds.len()
+    }
+
+    /// Number of one-shots queued but not yet dispatched. Drained on
+    /// each `audio_system` tick. A runaway count would signal that
+    /// `audio_system` isn't running, or that the manager is inactive
+    /// and queue items pile up indefinitely.
+    pub fn pending_oneshot_count(&self) -> usize {
+        self.pending_oneshots.len()
+    }
+
+    /// Fire-and-forget one-shot dispatch from a context that cannot
+    /// allocate ECS entities (i.e., a System with `&World`). The
+    /// next `audio_system` tick drains the queue and plays each
+    /// pending entry through a fresh spatial sub-track at the
+    /// authored position.
+    ///
+    /// No-op when audio is inactive: pending entries still queue up
+    /// (so a future re-init could replay them), but `audio_system`
+    /// short-circuits before drain. To avoid unbounded growth in a
+    /// no-device-forever scenario, the queue is bounded at 256
+    /// entries — overflow drops oldest with a one-shot warn. 256 is
+    /// 8 seconds of footsteps at 32 Hz cadence; real gameplay never
+    /// approaches it.
+    pub fn play_oneshot(
+        &mut self,
+        sound: Arc<StaticSoundData>,
+        position: Vec3,
+        attenuation: Attenuation,
+        volume: f32,
+    ) {
+        const MAX_PENDING: usize = 256;
+        if self.pending_oneshots.len() >= MAX_PENDING {
+            log::warn!(
+                "M44: pending one-shot queue at cap ({MAX_PENDING}); dropping oldest. \
+                 audio_system may not be running, or the queue is being filled \
+                 faster than it's drained."
+            );
+            self.pending_oneshots.remove(0);
+        }
+        self.pending_oneshots.push(PendingOneShot {
+            sound,
+            position,
+            attenuation,
+            volume,
+        });
     }
 }
 
@@ -274,6 +358,7 @@ pub fn audio_system(world: &World, _dt: f32) {
     }
 
     sync_listener_pose(world, &mut audio_world);
+    drain_pending_oneshots(&mut audio_world);
     dispatch_new_oneshots(world, &mut audio_world);
     prune_stopped_sounds(world, &mut audio_world);
 }
@@ -321,6 +406,65 @@ fn sync_listener_pose(world: &World, audio_world: &mut AudioWorld) {
     } else if let Some(handle) = audio_world.listener.as_mut() {
         handle.set_position(pose.0, Tween::default());
         handle.set_orientation(pose.1, Tween::default());
+    }
+}
+
+/// Drain the `play_oneshot` queue and dispatch each entry through a
+/// fresh spatial sub-track. Entity-less; queued items have no
+/// associated `EntityId`. Logs at WARN if a single tick drains more
+/// than 32 items — that's footstep-tempo gone wrong, audible signal
+/// that something upstream is firing per-frame instead of per-stride.
+fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
+    let Some(listener_id) = audio_world.listener.as_ref().map(|l| l.id()) else {
+        return;
+    };
+    if audio_world.pending_oneshots.is_empty() {
+        return;
+    }
+    let pending = std::mem::take(&mut audio_world.pending_oneshots);
+    if pending.len() > 32 {
+        log::warn!(
+            "M44 Phase 3.5: drained {} pending one-shots in one tick — \
+             upstream system is firing too fast (footstep stride, weapon \
+             rate-of-fire, dialogue queue?)",
+            pending.len()
+        );
+    }
+    let Some(mgr) = audio_world.manager.as_mut() else {
+        // Inactive — queue cleared (see drop above) since pending
+        // entries can't dispatch and queueing them indefinitely
+        // would grow the Vec forever.
+        return;
+    };
+    for p in pending {
+        let track_builder = SpatialTrackBuilder::new()
+            .distances(p.attenuation.min_distance..=p.attenuation.max_distance);
+        let mut track =
+            match mgr.add_spatial_sub_track(listener_id, p.position, track_builder) {
+                Ok(t) => t,
+                Err(e) => {
+                    log::warn!("M44 Phase 3.5: add_spatial_sub_track failed: {e}");
+                    continue;
+                }
+            };
+        let db = if p.volume > 0.0001 {
+            20.0 * p.volume.log10()
+        } else {
+            -60.0
+        };
+        let sound = (*p.sound).clone().volume(db);
+        let handle = match track.play(sound) {
+            Ok(h) => h,
+            Err(e) => {
+                log::warn!("M44 Phase 3.5: track.play (queue) failed: {e}");
+                continue;
+            }
+        };
+        audio_world.active_sounds.push(ActiveSound {
+            entity: None,
+            handle,
+            _track: track,
+        });
     }
 }
 
@@ -426,7 +570,7 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
             }
         };
         audio_world.active_sounds.push(ActiveSound {
-            entity: p.entity,
+            entity: Some(p.entity),
             handle,
             _track: track,
         });
@@ -453,7 +597,13 @@ fn prune_stopped_sounds(world: &World, audio_world: &mut AudioWorld) {
     let mut finished: Vec<EntityId> = Vec::new();
     audio_world.active_sounds.retain(|s| {
         if matches!(s.handle.state(), PlaybackState::Stopped) {
-            finished.push(s.entity);
+            // Queue-driven plays have `entity == None` — nothing to
+            // clean up on the ECS side. Entity-driven plays surface
+            // their `EntityId` so the prune pass can remove the
+            // `AudioEmitter` component.
+            if let Some(e) = s.entity {
+                finished.push(e);
+            }
             false
         } else {
             true
@@ -816,6 +966,7 @@ mod tests {
         // `AudioWorld::new()` produces when init fails.
         let inactive = AudioWorld {
             active_sounds: Vec::new(),
+            pending_oneshots: Vec::new(),
             listener: None,
             manager: None,
         };
@@ -839,6 +990,140 @@ mod tests {
         assert!(world.has::<AudioEmitter>(entity));
         let aw = world.resource::<AudioWorld>();
         assert_eq!(aw.active_sound_count(), 0);
+    }
+
+    /// **Phase 3.5**: `play_oneshot` enqueues regardless of audio
+    /// activity (so a future re-init could replay), but the queue
+    /// stays bounded at 256 entries via FIFO drop-oldest. Pinned
+    /// here so a refactor that "simplifies" by removing the cap
+    /// can't quietly let the queue grow without bound on a no-
+    /// device host.
+    #[test]
+    fn play_oneshot_queue_caps_at_max_pending() {
+        use kira::sound::static_sound::StaticSoundSettings;
+        let mut audio_world = AudioWorld {
+            active_sounds: Vec::new(),
+            pending_oneshots: Vec::new(),
+            listener: None,
+            manager: None,
+        };
+        let sound = Arc::new(StaticSoundData {
+            sample_rate: 22_050,
+            frames: Arc::from(
+                vec![kira::Frame { left: 0.0, right: 0.0 }; 50].into_boxed_slice(),
+            ),
+            settings: StaticSoundSettings::default(),
+            slice: None,
+        });
+
+        // Push past the 256 cap.
+        for i in 0..300 {
+            audio_world.play_oneshot(
+                Arc::clone(&sound),
+                glam::Vec3::new(i as f32, 0.0, 0.0),
+                Attenuation::default(),
+                1.0,
+            );
+        }
+        // Cap holds — exactly 256 entries remain (oldest 44 dropped).
+        assert_eq!(
+            audio_world.pending_oneshot_count(),
+            256,
+            "queue must cap at 256; got {}",
+            audio_world.pending_oneshot_count()
+        );
+    }
+
+    /// **Phase 3.5 real-data integration**: queue API drives playback
+    /// end-to-end. Mirrors the entity-based lifecycle test but uses
+    /// `play_oneshot` (no entity allocation) — the path a System
+    /// without `&mut World` would take.
+    ///
+    /// `#[ignore]` — needs working audio device + vanilla FNV data.
+    #[test]
+    #[ignore]
+    fn play_oneshot_queue_drives_real_playback() {
+        use byroredux_bsa::BsaArchive;
+        use std::path::PathBuf;
+        use std::time::Instant;
+
+        const FNV_DEFAULT: &str =
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
+        let dir = std::env::var("BYROREDUX_FNV_DATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(FNV_DEFAULT));
+        if !dir.is_dir() {
+            eprintln!("skipping: FNV data dir {:?} not found", dir);
+            return;
+        }
+        let bsa = match BsaArchive::open(&dir.join("Fallout - Sound.bsa")) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("skipping: open FNV Sound.bsa: {e}");
+                return;
+            }
+        };
+        let bytes = bsa
+            .extract(
+                r"sound\fx\npc\robotsecuritron\armswing\npc_securitron_armswing_02.wav",
+            )
+            .expect("vanilla FNV Sound.bsa must contain securitron arm-swing");
+        let sound = Arc::new(load_sound_from_bytes(bytes).expect("decode WAV"));
+
+        let mut world = byroredux_core::ecs::World::new();
+        let aw = AudioWorld::new();
+        if !aw.is_active() {
+            eprintln!("skipping: no audio device on this host");
+            return;
+        }
+        world.insert_resource(aw);
+
+        // Listener at origin.
+        let listener = world.spawn();
+        world.insert(listener, Transform::IDENTITY);
+        world.insert(listener, GlobalTransform::IDENTITY);
+        world.insert(listener, AudioListener);
+
+        // Queue a one-shot via the new API. No entity allocation.
+        {
+            let mut aw = world.resource_mut::<AudioWorld>();
+            aw.play_oneshot(
+                Arc::clone(&sound),
+                glam::Vec3::new(0.0, 0.0, 5.0),
+                Attenuation::default(),
+                1.0,
+            );
+            assert_eq!(aw.pending_oneshot_count(), 1);
+        }
+
+        // Tick: listener creates, queue drains, dispatch fires.
+        audio_system(&world, 0.016);
+        {
+            let aw = world.resource::<AudioWorld>();
+            assert_eq!(
+                aw.pending_oneshot_count(),
+                0,
+                "queue must drain on first tick"
+            );
+            assert_eq!(
+                aw.active_sound_count(),
+                1,
+                "drained queue items become active sounds"
+            );
+        }
+
+        // Poll until Stopped (3s timeout).
+        let deadline = Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            audio_system(&world, 0.016);
+            if world.resource::<AudioWorld>().active_sound_count() == 0 {
+                break;
+            }
+            if Instant::now() > deadline {
+                panic!("queue-driven sound never reported Stopped within 3s");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 
     /// **Phase 3 real-data integration**: open FNV `Fallout - Sound.bsa`,

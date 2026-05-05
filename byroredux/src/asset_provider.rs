@@ -193,6 +193,66 @@ fn open_with_numeric_siblings(path: &str, kind: &str, archives: &mut Vec<Archive
     }
 }
 
+/// M44 Phase 3.5 — try to populate `FootstepConfig.default_sound`
+/// from the BSA at `--sounds-bsa <path>` (if provided). Decodes the
+/// canonical FNV dirt-walk left-foot WAV — every kf-era humanoid
+/// hits this on every other step. Future Phase 3.5b replaces the
+/// single-sound fallback with FOOT-record-driven per-material lookup.
+///
+/// Silently skips when:
+///   - `--sounds-bsa` is absent (no audio data wired by the user).
+///   - The BSA can't be opened (missing file, permissions).
+///   - The canonical path is missing from the archive (modded loadout?).
+///   - The decode fails through `byroredux_audio::load_sound_from_bytes`.
+///
+/// Each failure logs at WARN; engine boot continues regardless.
+pub(crate) fn try_load_default_footstep(
+    world: &mut byroredux_core::ecs::World,
+    args: &[String],
+) {
+    let mut path: Option<&str> = None;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--sounds-bsa" {
+            path = args.get(i + 1).map(|s| s.as_str());
+            break;
+        }
+        i += 1;
+    }
+    let Some(path) = path else { return };
+    let archive = match Archive::open(path) {
+        Ok(a) => a,
+        Err(e) => {
+            log::warn!("M44 Phase 3.5: open --sounds-bsa '{path}': {e}");
+            return;
+        }
+    };
+    // Vanilla FNV ships dirt-walk footsteps with left/right
+    // alternation. Pick one canonical entry as the default until
+    // FOOT records land. Path verified by `probe_substring` against
+    // `Fallout - Sound.bsa`, 2026-05-05.
+    const CANONICAL: &str = r"sound\fx\fst\dirt\walk\left\fst_dirt_walk_01.wav";
+    let bytes = match archive.extract(CANONICAL) {
+        Ok(b) => b,
+        Err(e) => {
+            log::warn!(
+                "M44 Phase 3.5: '{path}' missing canonical footstep '{CANONICAL}': {e}"
+            );
+            return;
+        }
+    };
+    let sound = match byroredux_audio::load_sound_from_bytes(bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("M44 Phase 3.5: decode '{CANONICAL}': {e}");
+            return;
+        }
+    };
+    let mut config = world.resource_mut::<crate::components::FootstepConfig>();
+    config.default_sound = Some(std::sync::Arc::new(sound));
+    log::info!("M44 Phase 3.5: footstep sound loaded from '{path}' ({CANONICAL})");
+}
+
 /// Build a TextureProvider from CLI arguments.
 pub(crate) fn build_texture_provider(args: &[String]) -> TextureProvider {
     let mut provider = TextureProvider::new();
