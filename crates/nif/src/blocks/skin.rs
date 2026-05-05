@@ -262,21 +262,20 @@ impl NiSkinPartition {
             let num_strips = stream.read_u16_le()?;
             let num_weights_per_vertex = stream.read_u16_le()?;
 
-            // #388: `num_bones` is a file-driven u16; bound through allocate_vec.
-            stream.allocate_vec::<u16>(num_bones as u32)?;
+            // `read_u16_array` validates `n * 2 <= remaining` via
+            // `check_alloc`, which is stricter than the per-element
+            // `allocate_vec` budget — no upstream check needed (#831).
             let bones = stream.read_u16_array(num_bones as usize)?;
 
             // Vertex map (conditional on has_vertex_map for v >= 10.1.0.0).
             let vertex_map = if has_conditionals {
                 let has = stream.read_byte_bool()?;
                 if has {
-                    stream.allocate_vec::<u16>(num_vertices as u32)?;
                     stream.read_u16_array(num_vertices as usize)?
                 } else {
                     Vec::new()
                 }
             } else {
-                stream.allocate_vec::<u16>(num_vertices as u32)?;
                 stream.read_u16_array(num_vertices as usize)?
             };
 
@@ -284,9 +283,8 @@ impl NiSkinPartition {
             let vertex_weights = if has_conditionals {
                 let has = stream.read_byte_bool()?;
                 if has {
-                    let count = num_vertices as u32 * num_weights_per_vertex as u32;
-                    stream.allocate_vec::<f32>(count)?;
-                    stream.read_f32_array(count as usize)?
+                    let count = num_vertices as usize * num_weights_per_vertex as usize;
+                    stream.read_f32_array(count)?
                 } else {
                     Vec::new()
                 }
@@ -296,7 +294,6 @@ impl NiSkinPartition {
             };
 
             // Strip lengths.
-            stream.allocate_vec::<u16>(num_strips as u32)?;
             let strip_lengths = stream.read_u16_array(num_strips as usize)?;
 
             // Has faces (conditional) — gates both strips and triangles.
@@ -315,7 +312,6 @@ impl NiSkinPartition {
                         stream.skip(len as u64 * 2)?;
                     }
                 } else {
-                    stream.allocate_vec::<[u16; 3]>(num_triangles as u32)?;
                     let flat = stream.read_u16_array(num_triangles as usize * 3)?;
                     triangles = flat
                         .chunks_exact(3)

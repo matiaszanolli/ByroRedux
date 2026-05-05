@@ -215,11 +215,9 @@ impl NiMorphData {
                 let _legacy_weight = stream.read_f32_le()?;
             }
 
-            // Vertex deltas — guarded against an absurd num_vertices
-            // that would otherwise OOM the process on a corrupt block.
-            // The hard cap stays as defensive belt; allocate_vec also
-            // bounds against remaining stream bytes (#408).
-            stream.allocate_vec::<[f32; 3]>((num_vertices as u32).min(1_000_000))?;
+            // Vertex deltas — `read_ni_point3_array` validates
+            // `num_vertices * 12 <= remaining` via its internal
+            // `check_alloc`, which also enforces the hard cap (#408 / #831).
             let points = stream.read_ni_point3_array(num_vertices as usize)?;
             let vectors: Vec<[f32; 3]> = points.into_iter().map(|p| [p.x, p.y, p.z]).collect();
 

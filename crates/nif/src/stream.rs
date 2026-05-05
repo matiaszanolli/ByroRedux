@@ -188,6 +188,12 @@ impl<'a> NifStream<'a> {
     ///
     /// See #388 / OBL-D5-C1 — every Oblivion content sweep used to
     /// abort the process on a crafted or drifted `NiTextKeyExtraData`.
+    ///
+    /// `#[must_use]` because the helper exists to *replace* a downstream
+    /// `Vec::with_capacity` — calling it just for its bound-check side
+    /// effect allocates an empty Vec and immediately drops it. Use
+    /// [`Self::check_alloc`] when you only need validation. See #831.
+    #[must_use = "allocate_vec returns a sized Vec; bind it or use check_alloc instead"]
     pub fn allocate_vec<T>(&self, count: u32) -> io::Result<Vec<T>> {
         let pos = self.cursor.position() as usize;
         let total = self.cursor.get_ref().len();
