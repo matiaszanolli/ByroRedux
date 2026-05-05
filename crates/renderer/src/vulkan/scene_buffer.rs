@@ -62,6 +62,14 @@ pub const MAX_TERRAIN_TILES: usize = 1024;
 /// the largest observed scene to absorb future content. See R1.
 pub const MAX_MATERIALS: usize = 4096;
 
+/// Per-frame stride for the shared ray-budget buffer (#683 / MEM-2-8).
+/// Each frame's slot must start on a `minStorageBufferOffsetAlignment`
+/// boundary; 256 covers every common desktop / mobile GPU
+/// (NVIDIA = 16, AMD = 4, Intel = 16, mobile up to 256). The actual
+/// payload is 4 bytes — the rest is alignment padding. Total buffer
+/// at MAX_FRAMES_IN_FLIGHT = 2 is 512 bytes.
+pub const RAY_BUDGET_STRIDE: vk::DeviceSize = 256;
+
 /// Per-instance flag bits on [`GpuInstance::flags`].
 /// Kept in lockstep with the inline comments in `draw.rs` flag assembly
 /// and with the fragment shader's `flags & N` checks.
@@ -359,11 +367,22 @@ pub struct SceneBuffers {
     /// `terrainTiles[tile_idx]` when `INSTANCE_FLAG_TERRAIN_SPLAT` is
     /// set on the instance. See #470 / #497.
     terrain_tile_buffer: GpuBuffer,
-    /// One HOST_VISIBLE u32 SSBO per frame-in-flight for the RT mipmap
-    /// glass ray budget counter. The CPU zeroes it before each render pass;
-    /// the fragment shader atomically increments it per IOR ray pair fired
-    /// and skips Phase-3 glass once the budget is exhausted. Binding 11.
-    ray_budget_buffers: Vec<GpuBuffer>,
+    /// Single HOST_VISIBLE buffer holding `MAX_FRAMES_IN_FLIGHT` ray-budget
+    /// counter slots, one per frame-in-flight, each [`RAY_BUDGET_STRIDE`]
+    /// bytes apart so they satisfy `minStorageBufferOffsetAlignment` on
+    /// every common device. Each frame's descriptor set writes binding 11
+    /// at `offset = frame * RAY_BUDGET_STRIDE, range = 4`. The CPU zeroes
+    /// the active frame's slot before each render pass; the fragment
+    /// shader atomically increments it per IOR ray pair fired and skips
+    /// Phase-3 glass once the budget is exhausted.
+    ///
+    /// Pre-fix this was `Vec<GpuBuffer>` with one allocation per frame
+    /// for a single u32 — `gpu-allocator` rounded each up to the
+    /// alignment-padded sub-allocation size and could reserve a fresh
+    /// 64 KB host-visible block to satisfy the layout. The single shared
+    /// buffer collapses both frames into one ~512 B sub-allocation.
+    /// See #683 / MEM-2-8.
+    ray_budget_buffer: GpuBuffer,
     /// Size of the terrain tile buffer in bytes — stashed so upload
     /// paths don't have to recompute it from `MAX_TERRAIN_TILES`.
     terrain_tile_buf_size: vk::DeviceSize,
@@ -416,7 +435,16 @@ impl SceneBuffers {
         let mut bone_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut instance_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut indirect_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let mut ray_budget_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        // #683 / MEM-2-8 — single shared buffer covering all frame slots
+        // (see `RAY_BUDGET_STRIDE` doc). Created outside the per-frame
+        // loop below; each frame's descriptor write picks its slot via
+        // an offset into this one allocation.
+        let ray_budget_buffer = GpuBuffer::create_host_visible(
+            device,
+            allocator,
+            RAY_BUDGET_STRIDE * MAX_FRAMES_IN_FLIGHT as vk::DeviceSize,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+        )?;
         let mut material_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             light_buffers.push(GpuBuffer::create_host_visible(
@@ -455,14 +483,9 @@ impl SceneBuffers {
                 material_buf_size,
                 vk::BufferUsageFlags::STORAGE_BUFFER,
             )?);
-            // Ray budget counter: 4 bytes, atomically incremented by the
-            // fragment shader, zeroed by the CPU before each render pass.
-            ray_budget_buffers.push(GpuBuffer::create_host_visible(
-                device,
-                allocator,
-                std::mem::size_of::<u32>() as vk::DeviceSize,
-                vk::BufferUsageFlags::STORAGE_BUFFER,
-            )?);
+            // Ray budget counter is now a SINGLE shared buffer (declared
+            // outside this loop) with per-frame slots at
+            // `frame * RAY_BUDGET_STRIDE`. See #683 / MEM-2-8.
         }
         // Terrain tile SSBO: single DEVICE_LOCAL buffer, uploaded via
         // staging at cell load. TRANSFER_DST needed for the staging
@@ -740,9 +763,12 @@ impl SceneBuffers {
                 offset: 0,
                 range: terrain_tile_buf_size,
             }];
+            // #683 / MEM-2-8 — slot into the shared buffer at this
+            // frame's stride offset. `range` is the actual u32 payload;
+            // the alignment padding is invisible to the shader.
             let ray_budget_buf_info = [vk::DescriptorBufferInfo {
-                buffer: ray_budget_buffers[i].buffer,
-                offset: 0,
+                buffer: ray_budget_buffer.buffer,
+                offset: (i as vk::DeviceSize) * RAY_BUDGET_STRIDE,
                 range: std::mem::size_of::<u32>() as vk::DeviceSize,
             }];
             let material_buf_info = [vk::DescriptorBufferInfo {
@@ -827,7 +853,7 @@ impl SceneBuffers {
             indirect_buffers,
             terrain_tile_buffer,
             terrain_tile_buf_size,
-            ray_budget_buffers,
+            ray_budget_buffer,
             descriptor_pool,
             descriptor_set_layout,
             descriptor_sets,
@@ -1333,8 +1359,19 @@ impl SceneBuffers {
     /// exceeds `GLASS_RAY_BUDGET` (declared in `triangle.frag`) all further
     /// glass fragments degrade to the tier-1 cheaper path for that frame.
     pub fn reset_ray_budget(&mut self, device: &ash::Device, frame: usize) -> Result<()> {
-        let zero: u32 = 0;
-        self.ray_budget_buffers[frame].write_mapped(device, std::slice::from_ref(&zero))
+        // #683 / MEM-2-8 — write the u32 zero at this frame's stride
+        // offset within the shared buffer, then flush only that slot's
+        // range on non-coherent memory. Mapped slice access bypasses
+        // the from-byte-0-only `write_mapped` helper.
+        let offset = (frame as vk::DeviceSize) * RAY_BUDGET_STRIDE;
+        let off_usize = offset as usize;
+        let mapped = self.ray_budget_buffer.mapped_slice_mut()?;
+        mapped[off_usize..off_usize + 4].copy_from_slice(&0u32.to_le_bytes());
+        self.ray_budget_buffer.flush_range(
+            device,
+            offset,
+            std::mem::size_of::<u32>() as vk::DeviceSize,
+        )
     }
 
     /// Destroy all resources.
@@ -1374,10 +1411,8 @@ impl SceneBuffers {
             buf.destroy(device, allocator);
         }
         self.indirect_buffers.clear();
-        for buf in &mut self.ray_budget_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.ray_budget_buffers.clear();
+        // #683 / MEM-2-8 — single shared buffer, single destroy.
+        self.ray_budget_buffer.destroy(device, allocator);
         self.terrain_tile_buffer.destroy(device, allocator);
         device.destroy_descriptor_pool(self.descriptor_pool, None);
         device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
