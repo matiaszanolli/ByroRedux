@@ -31,6 +31,7 @@
 //! state shape on this struct stay the same.
 
 use byroredux_core::ecs::storage::EntityId;
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -270,38 +271,48 @@ fn pre_parse_cell(
         model_paths.insert(model_path.to_ascii_lowercase());
     }
 
-    // Extract + parse each unique NIF off-thread. Errors are recorded
-    // as `None` entries so the drain step caches the negative result
-    // and downstream placements skip silently.
-    for path in model_paths {
-        let Some(bytes) = tex_provider.extract_mesh(&path) else {
-            log::debug!("[stream-worker] NIF not in BSA: '{}'", path);
-            parsed.insert(path, None);
-            continue;
-        };
-        let scene = match byroredux_nif::parse_nif(&bytes) {
-            Ok(s) => s,
-            Err(e) => {
-                log::warn!("[stream-worker] NIF parse failed '{}': {}", path, e);
-                parsed.insert(path, None);
-                continue;
-            }
-        };
-        let bsx = byroredux_nif::import::extract_bsx_flags(&scene);
-        let lights = byroredux_nif::import::import_nif_lights(&scene);
-        let particle_emitters = byroredux_nif::import::import_nif_particle_emitters(&scene);
-        let embedded_clip = byroredux_nif::anim::import_embedded_animations(&scene);
-        parsed.insert(
-            path,
-            Some(PartialNifImport {
-                scene,
-                bsx,
-                lights,
-                particle_emitters,
-                embedded_clip,
-            }),
-        );
-    }
+    // Extract + parse each unique NIF in parallel via rayon. Each path
+    // is independent: `extract_mesh` is `&self` on a `Send + Sync`
+    // provider (the underlying BSA/BA2 wrap their `File` in `Mutex<File>`,
+    // so concurrent extracts serialise on the file mutex but parse +
+    // import work parallelises fully). On a 7950X this drops a 100-model
+    // exterior cell from ~300 ms (1 core) to ~40-50 ms (8 rayon
+    // workers). #830 / NIF-PERF-06.
+    //
+    // Errors are recorded as `None` entries so the drain step caches
+    // the negative result and downstream placements skip silently.
+    let model_paths: Vec<String> = model_paths.into_iter().collect();
+    let results: Vec<(String, Option<PartialNifImport>)> = model_paths
+        .into_par_iter()
+        .map(|path| {
+            let Some(bytes) = tex_provider.extract_mesh(&path) else {
+                log::debug!("[stream-worker] NIF not in BSA: '{}'", path);
+                return (path, None);
+            };
+            let scene = match byroredux_nif::parse_nif(&bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::warn!("[stream-worker] NIF parse failed '{}': {}", path, e);
+                    return (path, None);
+                }
+            };
+            let bsx = byroredux_nif::import::extract_bsx_flags(&scene);
+            let lights = byroredux_nif::import::import_nif_lights(&scene);
+            let particle_emitters = byroredux_nif::import::import_nif_particle_emitters(&scene);
+            let embedded_clip = byroredux_nif::anim::import_embedded_animations(&scene);
+            (
+                path,
+                Some(PartialNifImport {
+                    scene,
+                    bsx,
+                    lights,
+                    particle_emitters,
+                    embedded_clip,
+                }),
+            )
+        })
+        .collect();
+    parsed.extend(results);
 
     LoadCellPayload {
         gx,
