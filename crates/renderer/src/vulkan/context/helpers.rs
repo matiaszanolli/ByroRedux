@@ -157,10 +157,21 @@ pub(super) fn create_render_pass(
             vk::AccessFlags::COLOR_ATTACHMENT_WRITE
                 | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
         )
+        // BOTTOM_OF_PIPE is omitted intentionally (#573 / SY-2). Per
+        // Vulkan spec the BOTTOM_OF_PIPE stage in `dst_stage_mask`
+        // must be paired with a zero `dst_access_mask`; combining it
+        // with `SHADER_READ` is rejected by Synchronization2
+        // validation. The flag also provides no memory-ordering
+        // guarantee on its own — the FRAGMENT_SHADER + COMPUTE_SHADER
+        // pair is what actually gates the downstream reads (composite
+        // fragment shader for HDR color, SSAO compute shader for
+        // depth in READ_ONLY layout). composite.rs:408 and
+        // screenshot.rs:164 also use BOTTOM_OF_PIPE in `dst_stage_mask`
+        // but pair it with an empty `dst_access_mask`, which the spec
+        // permits — so they're left alone.
         .dst_stage_mask(
             vk::PipelineStageFlags::FRAGMENT_SHADER
-                | vk::PipelineStageFlags::COMPUTE_SHADER
-                | vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                | vk::PipelineStageFlags::COMPUTE_SHADER,
         )
         .dst_access_mask(vk::AccessFlags::SHADER_READ);
 
