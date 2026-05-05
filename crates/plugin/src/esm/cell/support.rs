@@ -253,6 +253,40 @@ pub(crate) fn parse_txst_group(
                     // default()` guard would fail and `txst_textures`
                     // never got a diffuse fallback either. See #406.
                     b"MNAM" => set.material_path = extract(&sub.data),
+                    // TXST flags (`DNAM`). FO4 = 2 bytes, Skyrim = 1
+                    // byte; capture as u16 with the Skyrim path landing
+                    // in the low byte. 100 % of vanilla Fallout4.esm
+                    // TXSTs ship a DNAM. See #814.
+                    b"DNAM" if !sub.data.is_empty() => {
+                        set.flags = if sub.data.len() >= 2 {
+                            u16::from_le_bytes([sub.data[0], sub.data[1]])
+                        } else {
+                            sub.data[0] as u16
+                        };
+                    }
+                    // TXST decal-data (`DODT`). Fixed 36-byte layout
+                    // per UESP / xEdit `wbDefinitionsFO4`. 207 / 382
+                    // vanilla Fallout4.esm TXSTs (every decal-bearing
+                    // record) ship a DODT — pre-#813 silently dropped.
+                    b"DODT" if sub.data.len() >= 36 => {
+                        let d = &sub.data;
+                        let f32_at = |o: usize| -> f32 {
+                            f32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
+                        };
+                        set.decal_data = Some(crate::esm::cell::DecalData {
+                            min_width: f32_at(0),
+                            max_width: f32_at(4),
+                            min_height: f32_at(8),
+                            max_height: f32_at(12),
+                            depth: f32_at(16),
+                            shininess: f32_at(20),
+                            parallax_scale: f32_at(24),
+                            parallax_passes: d[28],
+                            flags: d[29],
+                            // d[30..32] is unused per xEdit.
+                            color: [d[32], d[33], d[34], d[35]],
+                        });
+                    }
                     _ => {}
                 }
             }

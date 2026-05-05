@@ -87,11 +87,7 @@ fn build_overlay_full_txst_fills_every_authored_slot() {
             normal: Some(r"textures\a\nrm.dds".to_string()),
             glow: Some(r"textures\a\glow.dds".to_string()),
             specular: Some(r"textures\a\spec.dds".to_string()),
-            env: None,
-            env_mask: None,
-            height: None,
-            inner: None,
-            material_path: None,
+            ..TextureSet::default()
         },
     );
     let mut placed = empty_placed_ref(0x0100_0001);

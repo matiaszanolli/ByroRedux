@@ -455,6 +455,36 @@ pub struct LightData {
     pub xpwr_form_id: Option<u32>,
 }
 
+/// FO4/Skyrim TXST decal-data sub-record (`DODT`). Fixed 36-byte
+/// layout per UESP / xEdit `wbDefinitionsFO4` covering the geometry
+/// authoring of decal placements (blood splatters, scorch marks,
+/// posters, graffiti) emitted from a TXST. 207 of 382 vanilla
+/// `Fallout4.esm` TXST records ship a DODT payload; pre-fix every
+/// one of those was silently dropped at the catch-all `_ => {}` arm
+/// in `parse_txst_group`. See #813 / FO4-D4-NEW-01.
+///
+/// Renderer-side decal rendering (`RenderLayer::Decal`) consumes the
+/// width / depth / parallax / colour fields once the M28 decal
+/// pipeline extension lands; until then the parsed payload rides
+/// through unused on the `TextureSet`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DecalData {
+    pub min_width: f32,
+    pub max_width: f32,
+    pub min_height: f32,
+    pub max_height: f32,
+    pub depth: f32,
+    pub shininess: f32,
+    pub parallax_scale: f32,
+    pub parallax_passes: u8,
+    /// Decal flag byte. Bit 0 = Parallax, bit 1 = Alpha-Blending,
+    /// bit 2 = Alpha-Testing, bit 3 = No Subtextures.
+    pub flags: u8,
+    /// Decal tint colour (RGBA, 0..=255). Multiplied with the diffuse
+    /// slot at decal-pass blend time.
+    pub color: [u8; 4],
+}
+
 /// Addon-node record data extracted from ADDN sub-records.
 ///
 /// Skyrim/FO3/FNV addon nodes are particle emitters / auxiliary visual
@@ -543,6 +573,20 @@ pub struct TextureSet {
     /// is tracked separately; this field preserves the raw path so
     /// texture resolution can route through BGSM when that lands. #406.
     pub material_path: Option<String>,
+    /// TXST flags (`DNAM` sub-record). FO4 ships 2 bytes (u16),
+    /// Skyrim 1 byte; we capture as u16 with the Skyrim path
+    /// landing in the low byte. Bit 0 = NoSpecular, bit 1 =
+    /// FaceGenTinting, bit 2 (FO4) = HasModelSpaceNormals.
+    /// 100 % of vanilla `Fallout4.esm` TXST records (382 / 382)
+    /// ship a DNAM payload — pre-fix every flag bit was silently
+    /// dropped. The renderer's normal-map decode path branches on
+    /// `HasModelSpaceNormals` once it consumes this field.
+    /// See #814 / FO4-D4-NEW-02.
+    pub flags: u16,
+    /// TXST decal-data (`DODT` sub-record). 207 of 382 vanilla
+    /// `Fallout4.esm` TXST records carry a DODT payload — every
+    /// decal-bearing TXST. See [`DecalData`] and #813 / FO4-D4-NEW-01.
+    pub decal_data: Option<DecalData>,
 }
 
 /// Result of parsing an ESM file for cell loading.
