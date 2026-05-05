@@ -2348,3 +2348,454 @@ mod float_channel_dispatch_tests {
         assert_eq!(q.get(entity).unwrap().0, 1.0);
     }
 }
+
+// ── #794 / M41-IDLE end-to-end animation_system regression guards ─────
+//
+// `animation_system` is the single consumer of imported KF clips on
+// the apply side. Pre-#794 NPCs spawned with `AnimationPlayer` (post
+// #772 close) attached to the placement_root and `with_root(skel_root)`,
+// but bones never visibly moved. Suspect 2 in the issue (B-spline
+// rotation decoder near-identity) was ruled out via the
+// `mtidle_motion_diagnostic` test in `crates/nif/tests/`. These tests
+// pin the *system-level* path: synthetic clip → tick → bone Transform
+// must change.
+#[cfg(test)]
+mod animation_system_e2e_tests {
+    use super::*;
+    use byroredux_core::animation::{
+        AnimationClip, AnimationClipRegistry, CycleType, KeyType, RotationKey, TransformChannel,
+    };
+    use byroredux_core::ecs::World;
+    use std::collections::HashMap;
+
+    /// Build a clip with one rotation channel keyed by `bone_name` —
+    /// two rotation keys, identity at t=0 and a 90° around Y at t=1.
+    fn rotation_clip(pool: &mut StringPool, bone_name: &str) -> AnimationClip {
+        let sym = pool.intern(bone_name);
+        let mut channels = HashMap::new();
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        channels.insert(
+            sym,
+            TransformChannel {
+                translation_keys: Vec::new(),
+                translation_type: KeyType::Linear,
+                rotation_keys: vec![
+                    RotationKey {
+                        time: 0.0,
+                        value: Quat::IDENTITY,
+                        tbc: None,
+                    },
+                    RotationKey {
+                        time: 1.0,
+                        value: Quat::from_xyzw(0.0, half, 0.0, half),
+                        tbc: None,
+                    },
+                ],
+                rotation_type: KeyType::Linear,
+                scale_keys: Vec::new(),
+                scale_type: KeyType::Linear,
+                priority: 0,
+            },
+        );
+        AnimationClip {
+            name: "rot_test".to_string(),
+            duration: 1.0,
+            cycle_type: CycleType::Loop,
+            frequency: 1.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels,
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: Vec::new(),
+        }
+    }
+
+    /// Insert the resources the system reads. Returns the bone entity
+    /// (the one keyed by `bone_name` and parented under `root`).
+    fn build_skeleton_and_clip(bone_name: &str) -> (World, EntityId, EntityId, u32) {
+        let mut world = World::new();
+        // animation_system queries `AnimationTextKeyEvents` unconditionally
+        // and unwraps the storage handle; the production engine relies on
+        // `byroredux_scripting::register(&mut world)` having seeded the
+        // sparse-set so the query is `Some`. Mirror that here.
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(StringPool::new());
+        world.insert_resource(NameIndex::new());
+        world.insert_resource(SubtreeCache::new());
+        world.insert_resource(AnimationClipRegistry::new());
+
+        // Spawn the skeleton root and one named child bone. Mirror
+        // npc_spawn's shape: root has a Name + Transform, bone has a
+        // Name + Transform, bone's Parent = root, root.Children = [bone].
+        let root = world.spawn();
+        let bone = world.spawn();
+        world.insert(root, Transform::IDENTITY);
+        world.insert(bone, Transform::IDENTITY);
+        world.insert(bone, Parent(root));
+        world.insert(root, Children(vec![bone]));
+
+        let bone_sym = {
+            let mut pool = world.resource_mut::<StringPool>();
+            pool.intern(bone_name)
+        };
+        world.insert(bone, Name(bone_sym));
+        let root_sym = {
+            let mut pool = world.resource_mut::<StringPool>();
+            pool.intern("__root__")
+        };
+        world.insert(root, Name(root_sym));
+
+        // Register a synthetic clip and grab its handle.
+        let handle = {
+            let clip = {
+                let mut pool = world.resource_mut::<StringPool>();
+                rotation_clip(&mut pool, bone_name)
+            };
+            let mut reg = world.resource_mut::<AnimationClipRegistry>();
+            reg.add(clip)
+        };
+
+        (world, root, bone, handle)
+    }
+
+    /// End-to-end pin for #794: a player attached to the root entity
+    /// with `root_entity = root` must drive the named bone's local
+    /// rotation when the system ticks. If this fails, the apply phase
+    /// has a regression — that's the third suspect in #794.
+    #[test]
+    fn rotation_channel_writes_bone_transform_through_animation_system() {
+        let bone_name = "Bip01 Spine";
+        let (mut world, root, bone, handle) = build_skeleton_and_clip(bone_name);
+
+        // Attach the player on the root, scoped to its own subtree —
+        // mirrors npc_spawn::spawn_npc_entity's `with_root(skel_root)`
+        // pattern. Pre-#794 the engine's runtime equivalent of this
+        // call left bones at bind pose despite ticking.
+        let player = AnimationPlayer::new(handle).with_root(root);
+        world.insert(root, player);
+
+        // Tick to t=0.5 — rotation should be ~halfway between identity
+        // and 90° around Y. SLERP at t=0.5 of (Quat::IDENTITY,
+        // Quat(y=√2/2, w=√2/2)) is a non-identity rotation — any
+        // non-zero y component proves the apply phase wrote.
+        animation_system(&world, 0.5);
+
+        let q = world.query::<Transform>().unwrap();
+        let bone_transform = q.get(bone).expect("bone Transform present");
+        assert!(
+            bone_transform.rotation.y.abs() > 1e-3,
+            "bone rotation.y must be non-zero after tick — got {:?} \
+             (apply phase isn't writing into the resolved bone entity, \
+             matching #794 suspect 3)",
+            bone_transform.rotation
+        );
+    }
+
+    /// `local_time` advances on every tick when `playing=true`. If the
+    /// player happens to flip to `playing=false` (or `dt=0`), the bone
+    /// stays frozen — that's #794 suspect 1.
+    #[test]
+    fn animation_player_local_time_advances_per_tick() {
+        let bone_name = "Bip01 Spine";
+        let (mut world, root, _bone, handle) = build_skeleton_and_clip(bone_name);
+        let player = AnimationPlayer::new(handle).with_root(root);
+        world.insert(root, player);
+
+        animation_system(&world, 0.1);
+        animation_system(&world, 0.1);
+        animation_system(&world, 0.1);
+
+        let q = world.query::<AnimationPlayer>().unwrap();
+        let p = q.get(root).expect("player present");
+        assert!(
+            p.local_time > 0.25,
+            "local_time must accumulate across ticks — got {}",
+            p.local_time
+        );
+    }
+
+    /// Player on a separate entity with `root_entity = skel_root` —
+    /// the cell_loader pattern. Functionally equivalent to player-on-
+    /// root, pinned here so future divergence between the two patterns
+    /// surfaces as a test failure.
+    #[test]
+    fn player_on_separate_entity_still_drives_bone_rotation() {
+        let bone_name = "Bip01 Spine";
+        let (mut world, root, bone, handle) = build_skeleton_and_clip(bone_name);
+
+        let player_entity = world.spawn();
+        let mut player = AnimationPlayer::new(handle);
+        player.root_entity = Some(root);
+        world.insert(player_entity, player);
+
+        animation_system(&world, 0.5);
+
+        let q = world.query::<Transform>().unwrap();
+        let bone_transform = q.get(bone).expect("bone Transform present");
+        assert!(
+            bone_transform.rotation.y.abs() > 1e-3,
+            "separate-player-entity pattern must also drive bone rotation \
+             — got {:?}",
+            bone_transform.rotation
+        );
+    }
+
+    /// Real-content closure for #794 — loads FNV `mtidle.kf` from the
+    /// vanilla BSA, runs it through the production import + convert
+    /// path, attaches an AnimationPlayer to a synthetic skeleton with
+    /// the same bone names as mtidle's channels, ticks
+    /// `animation_system` four times across the clip, and asserts at
+    /// least one bone's local rotation diverges from its initial state.
+    ///
+    /// This is the closure-strength version of the in-crate
+    /// synthetic e2e test above: same shape, but using real
+    /// B-spline-quantized rotation channels read straight off
+    /// disk. If this fails after the synthetic counterpart passes,
+    /// the divergence is in the parser-to-system glue (pool
+    /// interning, channel-name resolution against scoped subtree
+    /// maps), not in either layer alone.
+    ///
+    /// `#[ignore]` because it needs vanilla FNV game data; run with
+    /// `BYROREDUX_FNV_DATA=<path> cargo test -p byroredux --bin byroredux
+    /// rotation_through_animation_system_on_real_mtidle -- --ignored
+    /// --nocapture`.
+    #[test]
+    #[ignore]
+    fn rotation_through_animation_system_on_real_mtidle() {
+        use byroredux_bsa::BsaArchive;
+        use std::path::PathBuf;
+
+        const MTIDLE_PATH: &str = r"meshes\characters\_male\locomotion\mtidle.kf";
+        const FNV_BSA: &str = "Fallout - Meshes.bsa";
+
+        let data_dir = std::env::var("BYROREDUX_FNV_DATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                PathBuf::from(
+                    "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+                )
+            });
+        if !data_dir.is_dir() {
+            eprintln!("skipping: FNV data dir not found at {:?}", data_dir);
+            return;
+        }
+        let bsa_path = data_dir.join(FNV_BSA);
+        let archive = match BsaArchive::open(&bsa_path) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("skipping: failed to open {:?}: {}", bsa_path, e);
+                return;
+            }
+        };
+        let bytes = archive
+            .extract(MTIDLE_PATH)
+            .expect("vanilla FNV BSA must contain mtidle.kf");
+        let nif_scene = byroredux_nif::parse_nif(&bytes).expect("mtidle.kf parses");
+        let mut nif_clips = byroredux_nif::anim::import_kf(&nif_scene);
+        assert!(!nif_clips.is_empty(), "import_kf yields a clip");
+        let nif_clip = nif_clips.remove(0);
+        let channel_names: Vec<std::sync::Arc<str>> =
+            nif_clip.channels.keys().cloned().collect();
+        eprintln!(
+            "real mtidle: '{}' duration={:.2}s freq={} channels={}",
+            nif_clip.name,
+            nif_clip.duration,
+            nif_clip.frequency,
+            channel_names.len()
+        );
+
+        // Build a World with one fake bone per channel, all under a
+        // synthetic skel_root parented under a synthetic placement_root.
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(StringPool::new());
+        world.insert_resource(NameIndex::new());
+        world.insert_resource(SubtreeCache::new());
+        world.insert_resource(AnimationClipRegistry::new());
+
+        let placement_root = world.spawn();
+        world.insert(placement_root, Transform::IDENTITY);
+        let skel_root = world.spawn();
+        world.insert(skel_root, Transform::IDENTITY);
+        world.insert(skel_root, Parent(placement_root));
+        world.insert(placement_root, Children(vec![skel_root]));
+
+        let mut bones: Vec<(std::sync::Arc<str>, EntityId)> =
+            Vec::with_capacity(channel_names.len());
+        let mut child_ids: Vec<EntityId> = Vec::with_capacity(channel_names.len());
+        for name_arc in &channel_names {
+            let bone = world.spawn();
+            world.insert(bone, Transform::IDENTITY);
+            let sym = {
+                let mut pool = world.resource_mut::<StringPool>();
+                pool.intern(name_arc)
+            };
+            world.insert(bone, Name(sym));
+            world.insert(bone, Parent(skel_root));
+            bones.push((name_arc.clone(), bone));
+            child_ids.push(bone);
+        }
+        world.insert(skel_root, Children(child_ids));
+
+        // Convert + register the clip through the production pool.
+        let handle = {
+            let clip = {
+                let mut pool = world.resource_mut::<StringPool>();
+                crate::anim_convert::convert_nif_clip(&nif_clip, &mut pool)
+            };
+            let mut reg = world.resource_mut::<AnimationClipRegistry>();
+            reg.add(clip)
+        };
+        let player = AnimationPlayer::new(handle).with_root(skel_root);
+        world.insert(placement_root, player);
+
+        // Capture initial bone Transforms.
+        let initial: HashMap<EntityId, Quat> = {
+            let q = world.query::<Transform>().unwrap();
+            bones
+                .iter()
+                .map(|(_, e)| (*e, q.get(*e).unwrap().rotation))
+                .collect()
+        };
+
+        // Tick through ~half the clip in 4 steps.
+        let step = (nif_clip.duration / 4.0).max(0.05);
+        for _ in 0..4 {
+            animation_system(&world, step);
+        }
+
+        // Find the maximum component-wise rotation delta across all
+        // bones. mtidle's max inter-sample rotation delta in the
+        // mtidle_motion_diagnostic test was 0.065; gating at 1e-3 is
+        // far below that and well above float noise.
+        let mut max_delta = 0.0f32;
+        let mut max_name: Option<std::sync::Arc<str>> = None;
+        {
+            let q = world.query::<Transform>().unwrap();
+            for (name_arc, e) in &bones {
+                let r0 = initial[e];
+                let r1 = q.get(*e).unwrap().rotation;
+                let d = (r1.x - r0.x).abs().max(
+                    (r1.y - r0.y)
+                        .abs()
+                        .max((r1.z - r0.z).abs().max((r1.w - r0.w).abs())),
+                );
+                if d > max_delta {
+                    max_delta = d;
+                    max_name = Some(name_arc.clone());
+                }
+            }
+        }
+
+        eprintln!(
+            "max rotation delta after 4 ticks @ {:.2}s = {:.6} on bone '{}'",
+            step,
+            max_delta,
+            max_name.as_deref().unwrap_or("<none>"),
+        );
+        assert!(
+            max_delta > 1e-3,
+            "real mtidle.kf piped through animation_system must move *some* \
+             bone (max component delta {:.6} ≤ 1e-3). Production runtime \
+             reports 'NPCs stand rigid' under exactly this composition; if \
+             this lab test passes too, the visible-motion gap is downstream \
+             of the apply phase (skinning palette, body skin resolution, \
+             or perceptual amplitude — mtidle's authored deltas are subtle).",
+            max_delta,
+        );
+    }
+
+    /// Faithful npc_spawn composition: placement_root → skel_root →
+    /// bone, with player on placement_root and `with_root(skel_root)`.
+    /// The body-NIF clone hierarchy adds a *second* "Bip01 Spine"
+    /// entity directly under placement_root (mirroring the body NIF's
+    /// own skeleton-shaped NiNode hierarchy). The scoped subtree map
+    /// must dispatch to the **skeleton's** bone, not the body's clone
+    /// — verified by checking the body clone stays at identity.
+    #[test]
+    fn npc_spawn_shape_drives_skeleton_bone_not_body_clone() {
+        let bone_name = "Bip01 Spine";
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(StringPool::new());
+        world.insert_resource(NameIndex::new());
+        world.insert_resource(SubtreeCache::new());
+        world.insert_resource(AnimationClipRegistry::new());
+
+        // placement_root (carries world pose, NPC editor_id name)
+        let placement_root = world.spawn();
+        world.insert(placement_root, Transform::IDENTITY);
+        let editor_id_sym = {
+            let mut pool = world.resource_mut::<StringPool>();
+            pool.intern("DocMitchell")
+        };
+        world.insert(placement_root, Name(editor_id_sym));
+
+        // skel_root (skeleton.nif root) under placement_root
+        let skel_root = world.spawn();
+        world.insert(skel_root, Transform::IDENTITY);
+        let skel_root_sym = {
+            let mut pool = world.resource_mut::<StringPool>();
+            pool.intern("NPC")
+        };
+        world.insert(skel_root, Name(skel_root_sym));
+        world.insert(skel_root, Parent(placement_root));
+
+        // Skeleton's bone — actual animation target
+        let skel_bone = world.spawn();
+        world.insert(skel_bone, Transform::IDENTITY);
+        let bone_sym = {
+            let mut pool = world.resource_mut::<StringPool>();
+            pool.intern(bone_name)
+        };
+        world.insert(skel_bone, Name(bone_sym));
+        world.insert(skel_bone, Parent(skel_root));
+        world.insert(skel_root, Children(vec![skel_bone]));
+
+        // Body-NIF clone of "Bip01 Spine" — directly under
+        // placement_root (NOT under skel_root, per npc_spawn's
+        // documented intent at the body parenting comment).
+        let body_clone = world.spawn();
+        world.insert(body_clone, Transform::IDENTITY);
+        world.insert(body_clone, Name(bone_sym));
+        world.insert(body_clone, Parent(placement_root));
+        world.insert(
+            placement_root,
+            Children(vec![skel_root, body_clone]),
+        );
+
+        let handle = {
+            let clip = {
+                let mut pool = world.resource_mut::<StringPool>();
+                rotation_clip(&mut pool, bone_name)
+            };
+            let mut reg = world.resource_mut::<AnimationClipRegistry>();
+            reg.add(clip)
+        };
+
+        let player = AnimationPlayer::new(handle).with_root(skel_root);
+        world.insert(placement_root, player);
+
+        animation_system(&world, 0.5);
+
+        let q = world.query::<Transform>().unwrap();
+        let skel_xf = q.get(skel_bone).expect("skel bone");
+        let body_xf = q.get(body_clone).expect("body clone");
+
+        assert!(
+            skel_xf.rotation.y.abs() > 1e-3,
+            "skeleton's bone must rotate — got {:?}",
+            skel_xf.rotation
+        );
+        assert!(
+            (body_xf.rotation.y).abs() < 1e-6
+                && (body_xf.rotation.w - 1.0).abs() < 1e-6,
+            "body clone (outside skel_root subtree) must stay at identity \
+             — got {:?}; subtree scoping is broken",
+            body_xf.rotation
+        );
+    }
+}
