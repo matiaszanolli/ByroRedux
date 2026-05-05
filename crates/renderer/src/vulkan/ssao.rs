@@ -511,11 +511,21 @@ impl SsaoPipeline {
         );
 
         // Transition this frame's AO image to GENERAL for compute write.
+        // The actual layout coming in is always SHADER_READ_ONLY_OPTIMAL:
+        // `initialize_ao_images` leaves it that way after the clear-to-1.0,
+        // and the post-dispatch barrier below restores it at end of every
+        // frame. The pre-#673 form used `UNDEFINED` which the spec defines
+        // as "discard contents" — the cleared 1.0 (no-occlusion) value
+        // initialize_ao_images sets up was being formally discarded on
+        // frame 1 before the dispatch ever wrote it. Invisible in the
+        // common case (compute writes every pixel) but UB on a partial
+        // dispatch (early-out bounds check, lost device). Match the
+        // steady-state pattern svgf.rs:746 / taa.rs:617 already use.
         let ao_image = self.ao_images[frame];
         let ao_barrier = vk::ImageMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::SHADER_READ)
             .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .old_layout(vk::ImageLayout::UNDEFINED)
+            .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .new_layout(vk::ImageLayout::GENERAL)
             .image(ao_image)
             .subresource_range(vk::ImageSubresourceRange {
