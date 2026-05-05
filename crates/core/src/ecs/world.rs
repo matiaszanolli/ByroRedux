@@ -52,6 +52,12 @@ fn resource_lock_poisoned<R: Resource>() -> ! {
 
 pub struct World {
     storages: HashMap<TypeId, RwLock<Box<dyn DynStorage>>>,
+    /// Maps each registered storage's `TypeId` to the source type name
+    /// (`std::any::type_name::<T>()`). Used by type-erased panic paths
+    /// like [`World::despawn`] so a poisoned-lock cascade still names
+    /// the offending component. Populated at every storage-creation
+    /// site ([`World::register`] and [`World::storage_write`]). #466.
+    type_names: HashMap<TypeId, &'static str>,
     resources: HashMap<TypeId, RwLock<Box<dyn Any + Send + Sync>>>,
     next_entity: EntityId,
 }
@@ -60,6 +66,7 @@ impl World {
     pub fn new() -> Self {
         Self {
             storages: HashMap::new(),
+            type_names: HashMap::new(),
             resources: HashMap::new(),
             next_entity: 0,
         }
@@ -90,10 +97,14 @@ impl World {
     /// succeed for a type before any entity has that component.
     /// Otherwise, storage is created lazily on first `insert()`.
     pub fn register<T: Component>(&mut self) {
-        self.storages.entry(TypeId::of::<T>()).or_insert_with(|| {
+        let type_id = TypeId::of::<T>();
+        self.storages.entry(type_id).or_insert_with(|| {
             let storage: Box<dyn DynStorage> = Box::new(T::Storage::default());
             RwLock::new(storage)
         });
+        // Record the type name so type-erased panic paths can surface
+        // it (#466). Idempotent: re-registration leaves the entry alone.
+        self.type_names.entry(type_id).or_insert_with(std::any::type_name::<T>);
     }
 
     /// Despawn an entity, removing all of its components from every
@@ -110,11 +121,19 @@ impl World {
             return;
         }
         for (type_id, lock) in self.storages.iter_mut() {
+            // Resolve the source type name through the side-table
+            // populated at every storage-creation site (#466). Fallback
+            // is unreachable in practice — every storage in `self.storages`
+            // arrives via `register` or `storage_write`, both of which
+            // also populate `type_names` — but kept for defense.
+            let type_name = self
+                .type_names
+                .get(type_id)
+                .copied()
+                .unwrap_or("<unknown>");
             lock.get_mut()
-                .unwrap_or_else(|_| storage_lock_poisoned_erased("<unknown>"))
+                .unwrap_or_else(|_| storage_lock_poisoned_erased(type_name))
                 .remove_entity_erased(entity);
-            // `type_id` is present but not used for naming — keep it suppressed.
-            let _ = type_id;
         }
     }
 
@@ -707,8 +726,13 @@ impl World {
 
     /// Get or create the storage for a component type (requires &mut self).
     fn storage_write<T: Component>(&mut self) -> &mut T::Storage {
+        let type_id = TypeId::of::<T>();
+        // Record the type name on first lazy creation so type-erased
+        // panic paths can surface it (#466). Done outside the entry
+        // closure so the borrow on `self.storages` doesn't conflict.
+        self.type_names.entry(type_id).or_insert_with(std::any::type_name::<T>);
         self.storages
-            .entry(TypeId::of::<T>())
+            .entry(type_id)
             .or_insert_with(|| {
                 let storage: Box<dyn DynStorage> = Box::new(T::Storage::default());
                 RwLock::new(storage)
@@ -1904,6 +1928,51 @@ mod tests {
         assert!(
             lock_tracker::is_clean(),
             "tracker row leaked after try_resource<ResA> poison-panic"
+        );
+    }
+
+    /// Regression test for issue #466: when `World::despawn` walks the
+    /// type-erased storage map and trips a poisoned lock, the panic must
+    /// name the offending component type instead of the literal
+    /// `"<unknown>"`. Pre-fix the loop discarded the `TypeId` and passed
+    /// `"<unknown>"` to the helper, masking the cascade source.
+    #[test]
+    fn despawn_poisoned_lock_panics_with_type_name() {
+        use std::sync::Arc;
+
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+        let world_arc = Arc::new(world);
+
+        // Poison the Health storage from another thread.
+        let w = Arc::clone(&world_arc);
+        let _ = std::thread::spawn(move || {
+            let _q = w.query_mut::<Health>().unwrap();
+            panic!("intentional panic to poison the lock");
+        })
+        .join();
+
+        // Reclaim ownership now that the worker thread has dropped its
+        // Arc clone. `try_unwrap` succeeds because strong_count == 1.
+        let mut world = Arc::try_unwrap(world_arc)
+            .unwrap_or_else(|_| panic!("Arc still aliased after worker join"));
+
+        // `despawn` walks all storages with `&mut self`. The poisoned
+        // Health lock should now panic — and the message must name
+        // `Health`, not `<unknown>`.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            world.despawn(e);
+        }));
+        let err = result.expect_err("expected poisoned-lock panic from despawn");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("Health") && msg.contains("poisoned"),
+            "despawn panic should name the component type, got: {msg}"
         );
     }
 }
