@@ -23,11 +23,18 @@
 //! - [`audio_system`] — ECS system that updates listener position,
 //!   plays new emitters, and prunes finished one-shots.
 //!
+//! # Phase 2 (this commit)
+//!
+//! - [`load_sound_from_bytes`] — decode a fully-buffered audio blob
+//!   (typically extracted from a Bethesda BSA) through kira's
+//!   symphonia-backed `StaticSoundData::from_cursor` path. WAV + OGG
+//!   covered by kira's default features.
+//! - [`SoundCache`] — process-lifetime path-keyed cache of decoded
+//!   `Arc<StaticSoundData>`. Repeat plays of the same SFX (footsteps,
+//!   weapon fire, dialogue line) skip the decode cost entirely.
+//!
 //! # Future phases (not in this commit)
 //!
-//! - Phase 2: BSA sound extraction (`Fallout - Sound.bsa` / `Skyrim -
-//!   Sounds.bsa`), `.wav` / `.ogg` decode through kira's static-sound
-//!   path or streaming path for ambient/music.
 //! - Phase 3: FOOT records → per-material footstep dispatch.
 //! - Phase 4: REGN ambient soundscapes (region-based ambient layers).
 //! - Phase 5: MUSC + hardcoded music routing with crossfade.
@@ -38,7 +45,10 @@ use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::Resource;
 use kira::sound::static_sound::StaticSoundData;
+use kira::sound::FromFileError;
 use kira::{AudioManager, AudioManagerSettings, DefaultBackend};
+use std::collections::HashMap;
+use std::io::Cursor;
 use std::sync::Arc;
 
 /// Resource holding the `kira::AudioManager` for the whole engine.
@@ -188,6 +198,120 @@ pub fn audio_system(_world: &byroredux_core::ecs::World, _dt: f32) {
     // is the closure criterion for Phase 1.
 }
 
+/// Decode a fully-buffered audio blob into a `StaticSoundData`.
+///
+/// `bytes` must own its data so kira's `Cursor<T: AsRef<[u8]> + Send +
+/// Sync + 'static>` requirement is satisfied — typically a `Vec<u8>`
+/// extracted from a Bethesda BSA via [`byroredux_bsa::BsaArchive::extract`].
+///
+/// Format detection is automatic via symphonia's probe (kira pulls
+/// in symphonia with the `wav`, `ogg`, `mp3`, and `flac` features by
+/// default). The two formats present in vanilla `Fallout - Sound.bsa`
+/// — WAV (4233 / 6465 files) and OGG Vorbis (2232 / 6465 files) —
+/// both decode through this path.
+///
+/// **Not** for ambient music or other long-running streams: those
+/// should land on `kira::sound::streaming` once Phase 5 wires it.
+/// Static decoding loads the entire decompressed audio into memory
+/// up-front, which is what we want for short SFX (footsteps, impacts,
+/// gunshots) but wasteful for multi-minute ambient loops.
+pub fn load_sound_from_bytes(bytes: Vec<u8>) -> Result<StaticSoundData, FromFileError> {
+    let cursor = Cursor::new(bytes);
+    StaticSoundData::from_cursor(cursor)
+}
+
+/// Process-lifetime cache of decoded `StaticSoundData`, keyed by
+/// lowercased asset path. Repeat plays of the same SFX (footsteps,
+/// weapon fire, dialogue lines) skip the decode cost entirely —
+/// kira clones the `Arc<StaticSoundData>` cheaply when handing it
+/// to the playback handle.
+///
+/// Lookup is case-insensitive to match the BSA / NIF / texture
+/// asset-path convention shared across the engine. Storing lowercased
+/// keys means `get` / `insert` callers don't have to re-lowercase
+/// per-call; intern the lowered form once at insert time.
+///
+/// Eviction strategy: **none today**. The full vanilla SFX set fits
+/// in a few hundred MB of decoded PCM; aggressive eviction would
+/// trade load latency for memory we don't need to save. If a future
+/// scenario surfaces (1000+ unique sounds, or platform memory
+/// pressure), bolt on an LRU here without touching the call sites.
+pub struct SoundCache {
+    map: HashMap<String, Arc<StaticSoundData>>,
+}
+
+impl Default for SoundCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SoundCache {
+    pub fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+        }
+    }
+
+    /// Look up a cached sound by path. Returns `None` on a miss —
+    /// callers should follow up with [`Self::insert`] after extracting
+    /// + decoding the bytes.
+    pub fn get(&self, path: &str) -> Option<Arc<StaticSoundData>> {
+        self.map.get(&path.to_ascii_lowercase()).cloned()
+    }
+
+    /// Insert a decoded sound at `path`. Returns the `Arc` so callers
+    /// can chain into an [`AudioEmitter::sound`] without a second
+    /// lookup. Repeated inserts at the same path overwrite — useful
+    /// when a mod replaces a vanilla SFX.
+    pub fn insert(&mut self, path: &str, sound: StaticSoundData) -> Arc<StaticSoundData> {
+        let key = path.to_ascii_lowercase();
+        let arc = Arc::new(sound);
+        self.map.insert(key, Arc::clone(&arc));
+        arc
+    }
+
+    /// Convenience: cache hit → reuse, cache miss → decode the bytes
+    /// returned by `loader` and insert. The loader is only invoked
+    /// on a miss, so callers can pay the BSA-extract cost lazily.
+    ///
+    /// Returns `None` if the cache missed AND the decode failed —
+    /// the loader's bytes were unusable. Callers can log + skip.
+    pub fn get_or_load<F>(&mut self, path: &str, loader: F) -> Option<Arc<StaticSoundData>>
+    where
+        F: FnOnce() -> Vec<u8>,
+    {
+        let key = path.to_ascii_lowercase();
+        if let Some(existing) = self.map.get(&key) {
+            return Some(Arc::clone(existing));
+        }
+        match load_sound_from_bytes(loader()) {
+            Ok(sound) => {
+                let arc = Arc::new(sound);
+                self.map.insert(key, Arc::clone(&arc));
+                Some(arc)
+            }
+            Err(e) => {
+                log::warn!("M44: decode failed for sound '{path}': {e}");
+                None
+            }
+        }
+    }
+
+    /// Number of cached sounds. Useful for telemetry — a sudden
+    /// growth burst during a cell load is the canonical signal that
+    /// SFX dispatch is firing per-NPC instead of per-archive-load.
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+impl Resource for SoundCache {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,5 +387,148 @@ mod tests {
         use byroredux_core::ecs::World;
         let world = World::new();
         audio_system(&world, 0.016);
+    }
+
+    /// `SoundCache` returns `None` on miss and stable `Arc` clones
+    /// on hit. Lower-case key normalisation: same sound looked up
+    /// with different casings hits the same slot.
+    #[test]
+    fn sound_cache_hits_are_case_insensitive_and_share_arc() {
+        use kira::sound::static_sound::StaticSoundSettings;
+        let mut cache = SoundCache::new();
+        assert!(cache.is_empty());
+        assert!(cache.get(r"sound\fx\foo.wav").is_none());
+
+        // Synthesise + insert.
+        let sound = StaticSoundData {
+            sample_rate: 22_050,
+            frames: Arc::from(vec![kira::Frame { left: 0.0, right: 0.0 }; 100].into_boxed_slice()),
+            settings: StaticSoundSettings::default(),
+            slice: None,
+        };
+        let inserted = cache.insert(r"sound\fx\Foo.wav", sound);
+        assert_eq!(cache.len(), 1);
+
+        // Different casing → same slot.
+        let hit_lower = cache.get(r"sound\fx\foo.wav").expect("cache hit");
+        let hit_upper = cache.get(r"SOUND\FX\FOO.WAV").expect("case-insensitive hit");
+        assert!(Arc::ptr_eq(&inserted, &hit_lower));
+        assert!(Arc::ptr_eq(&inserted, &hit_upper));
+    }
+
+    /// `get_or_load` only invokes the loader on cache miss, and
+    /// short-circuits to a stable `Arc` clone on hit. Pinned because
+    /// a regression that re-decodes per call would silently 10×
+    /// the per-frame SFX cost without changing any visible behaviour.
+    #[test]
+    fn sound_cache_get_or_load_invokes_loader_only_on_miss() {
+        use std::cell::Cell;
+        let mut cache = SoundCache::new();
+        let calls = Cell::new(0_usize);
+
+        // Miss: loader fires, but our synthesised junk bytes won't
+        // decode → returns None. The cache stays empty (we only
+        // insert on successful decode).
+        let result = cache.get_or_load(r"sound\fx\bar.wav", || {
+            calls.set(calls.get() + 1);
+            vec![0u8; 16] // not a valid audio file
+        });
+        assert!(result.is_none());
+        assert_eq!(calls.get(), 1);
+        assert!(cache.is_empty());
+
+        // Insert a real synthetic sound at that path. Subsequent
+        // get_or_load must hit the cache without invoking the loader.
+        use kira::sound::static_sound::StaticSoundSettings;
+        let sound = StaticSoundData {
+            sample_rate: 22_050,
+            frames: Arc::from(vec![kira::Frame { left: 0.0, right: 0.0 }; 50].into_boxed_slice()),
+            settings: StaticSoundSettings::default(),
+            slice: None,
+        };
+        cache.insert(r"sound\fx\bar.wav", sound);
+
+        let hit = cache.get_or_load(r"sound\fx\bar.wav", || {
+            calls.set(calls.get() + 1);
+            unreachable!("loader must not fire on cache hit");
+        });
+        assert!(hit.is_some());
+        assert_eq!(calls.get(), 1, "loader call count unchanged after cache hit");
+    }
+
+    /// **Real-data integration**: extract one WAV and one OGG from
+    /// vanilla FNV `Fallout - Sound.bsa` and decode each through
+    /// `load_sound_from_bytes`. Pins the kira ↔ symphonia ↔ BSA
+    /// path end-to-end against actual game content.
+    ///
+    /// `#[ignore]` because it needs vanilla FNV game data; run with:
+    /// ```sh
+    /// BYROREDUX_FNV_DATA=<path> cargo test -p byroredux-audio
+    ///   real_fnv_sounds_decode -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn real_fnv_sounds_decode_through_kira() {
+        use byroredux_bsa::BsaArchive;
+        use std::path::PathBuf;
+
+        const FNV_DEFAULT: &str =
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
+        let dir = std::env::var("BYROREDUX_FNV_DATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(FNV_DEFAULT));
+        if !dir.is_dir() {
+            eprintln!("skipping: FNV data dir {:?} not found", dir);
+            return;
+        }
+        let bsa_path = dir.join("Fallout - Sound.bsa");
+        let bsa = match BsaArchive::open(&bsa_path) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("skipping: open {bsa_path:?}: {e}");
+                return;
+            }
+        };
+
+        // Two canonical sample paths verified via probe_extensions
+        // 2026-05-05: a securitron arm-swing WAV and a Goodsprings
+        // ambient creak OGG. If either disappears from the vanilla
+        // archive in a future patch, the test fails loud and the
+        // sample list above gets refreshed.
+        let cases: &[(&str, &str)] = &[
+            (
+                "wav",
+                r"sound\fx\npc\robotsecuritron\armswing\npc_securitron_armswing_02.wav",
+            ),
+            (
+                "ogg",
+                r"sound\fx\amb\~regions\goodsprings\oneshots\creak_low\amb_gsinterioroneshots_04.ogg",
+            ),
+        ];
+
+        for (label, path) in cases {
+            let bytes = bsa
+                .extract(path)
+                .unwrap_or_else(|e| panic!("vanilla FNV BSA must contain {path}: {e}"));
+            assert!(!bytes.is_empty(), "{label}: empty extract");
+            let sound = load_sound_from_bytes(bytes).unwrap_or_else(|e| {
+                panic!("{label} decode failed for {path}: {e}");
+            });
+            eprintln!(
+                "[M44 P2] {label} '{path}' → {} frames @ {} Hz",
+                sound.frames.len(),
+                sound.sample_rate
+            );
+            assert!(
+                sound.frames.len() > 100,
+                "{label}: short decode ({} frames) — symphonia may have aborted",
+                sound.frames.len()
+            );
+            assert!(
+                sound.sample_rate >= 11_025 && sound.sample_rate <= 48_000,
+                "{label}: unexpected sample rate {} Hz",
+                sound.sample_rate
+            );
+        }
     }
 }

@@ -8,3 +8,6 @@ byroredux-core = { workspace = true }
 kira = { workspace = true }
 log = { workspace = true }
 glam = { workspace = true }
+
+[dev-dependencies]
+byroredux-bsa = { workspace = true }
