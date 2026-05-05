@@ -166,6 +166,22 @@ pub struct CellData {
     /// Music type (XCMO, FormID — references an MUSC record). Selects
     /// which music track plays while the player is in this cell.
     pub music_type_form: Option<u32>,
+    /// Pre-Skyrim music-type enum (XCMT, single byte). Oblivion / FO3
+    /// / FNV interior cells use this instead of the FormID-based XCMO
+    /// — values are: 0 = Default, 1 = Public, 2 = Dungeon, 3 = None.
+    /// `None` when the cell omits XCMT (Skyrim+ cells, or pre-Skyrim
+    /// cells that fall back to the default track). Distinct from
+    /// `music_type_form` because they're authored on different game
+    /// generations and the consumer (audio system) needs to know
+    /// which path produced the value. See #693 / O3-N-05.
+    pub music_type_enum: Option<u8>,
+    /// Per-cell climate override (XCCM, FormID — references a CLMT
+    /// record). Skyrim+ exterior cells can override the worldspace
+    /// CLMT default for that one cell; useful for boss arenas /
+    /// scripted weather pockets / interior-feeling exteriors. `None`
+    /// means inherit from worldspace. Pre-Skyrim cells don't ship
+    /// XCCM. See #693 / O3-N-05.
+    pub climate_override: Option<u32>,
     /// Location (XLCN, FormID — references an LCTN record). Used by
     /// quest / Story Manager systems for "player is in location X"
     /// conditions.

@@ -1372,8 +1372,101 @@ fn parse_cell_without_skyrim_extras_leaves_them_default() {
     assert_eq!(cell.water_type_form, None);
     assert_eq!(cell.acoustic_space_form, None);
     assert_eq!(cell.music_type_form, None);
+    assert_eq!(cell.music_type_enum, None);
+    assert_eq!(cell.climate_override, None);
     assert_eq!(cell.location_form, None);
     assert!(cell.regions.is_empty());
+}
+
+/// #693 / O3-N-05 — pre-Skyrim interior cells (Oblivion / FO3 /
+/// FNV) carry XCMT (1-byte enum: 0=Default, 1=Public, 2=Dungeon,
+/// 3=None) instead of the FormID-based XCMO. The walker dropped
+/// XCMT on the catch-all `_` arm, so every interior music type
+/// across the entire pre-Skyrim ESM library was lost.
+#[test]
+fn parse_cell_tes4_xcmt_populates_music_type_enum() {
+    // 1-byte XCMT payload; value = 2 (Dungeon).
+    let mut sub_data = Vec::new();
+    let edid = "AyleidRuin\0";
+    sub_data.extend_from_slice(b"EDID");
+    sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(edid.as_bytes());
+    sub_data.extend_from_slice(b"DATA");
+    sub_data.extend_from_slice(&1u16.to_le_bytes());
+    sub_data.push(0x01); // is_interior
+    sub_data.extend_from_slice(b"XCMT");
+    sub_data.extend_from_slice(&1u16.to_le_bytes());
+    sub_data.push(0x02); // Dungeon
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"CELL");
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes());
+    buf.extend_from_slice(&0xCAFE_BABEu32.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]);
+    buf.extend_from_slice(&sub_data);
+
+    // Tes5Plus covers FO3 / FNV which both author XCMT despite
+    // their 24-byte header (the audit groups them with Oblivion as
+    // the pre-Skyrim cohort that uses XCMT). Oblivion's 20-byte
+    // header is structurally tested elsewhere; the XCMT sub-record
+    // parses identically across variants.
+    let mut reader = super::super::reader::EsmReader::with_variant(
+        &buf,
+        super::super::reader::EsmVariant::Tes5Plus,
+    );
+    let end = buf.len();
+    let mut cells = HashMap::new();
+    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+
+    let cell = cells.get("ayleidruin").expect("interior CELL present");
+    assert_eq!(cell.music_type_enum, Some(0x02));
+    // Sanity: the FormID-based slot stays None when only XCMT is present.
+    assert_eq!(cell.music_type_form, None);
+}
+
+/// #693 / O3-N-05 — Skyrim+ exterior cells can override the
+/// worldspace climate via XCCM (4-byte CLMT FormID). Pre-fix the
+/// walker dropped it on the catch-all arm and the renderer fell
+/// back to the worldspace default everywhere, missing scripted
+/// weather pockets and boss-arena climate overrides.
+///
+/// The test exercises the interior walker (cheaper to set up than a
+/// full WRLD/CELL group), which now also accepts XCCM since it's
+/// well-formed on the rare interior mod that authors it. The wrld.rs
+/// path uses identical match-arm code (verified by sibling check).
+#[test]
+fn parse_cell_skyrim_xccm_populates_climate_override() {
+    let mut sub_data = Vec::new();
+    let edid = "BossArena\0";
+    sub_data.extend_from_slice(b"EDID");
+    sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(edid.as_bytes());
+    sub_data.extend_from_slice(b"DATA");
+    sub_data.extend_from_slice(&1u16.to_le_bytes());
+    sub_data.push(0x01);
+    sub_data.extend_from_slice(b"XCCM");
+    sub_data.extend_from_slice(&4u16.to_le_bytes());
+    sub_data.extend_from_slice(&0x0001_A2B3u32.to_le_bytes());
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"CELL");
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes());
+    buf.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]);
+    buf.extend_from_slice(&sub_data);
+
+    let mut reader = super::super::reader::EsmReader::with_variant(
+        &buf,
+        super::super::reader::EsmVariant::Tes5Plus,
+    );
+    let end = buf.len();
+    let mut cells = HashMap::new();
+    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+
+    let cell = cells.get("bossarena").expect("interior CELL present");
+    assert_eq!(cell.climate_override, Some(0x0001_A2B3));
 }
 
 #[test]
@@ -2460,6 +2553,8 @@ fn make_interior_cell(form_id: u32, edid: &str) -> CellData {
         water_type_form: None,
         acoustic_space_form: None,
         music_type_form: None,
+        music_type_enum: None,
+        climate_override: None,
         location_form: None,
         regions: Vec::new(),
         lighting_template_form: None,

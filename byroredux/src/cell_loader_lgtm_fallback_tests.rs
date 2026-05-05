@@ -43,6 +43,8 @@ fn empty_cell(form_id: u32, edid: &str) -> CellData {
         water_type_form: None,
         acoustic_space_form: None,
         music_type_form: None,
+        music_type_enum: None,
+        climate_override: None,
         location_form: None,
         regions: Vec::new(),
         lighting_template_form: None,

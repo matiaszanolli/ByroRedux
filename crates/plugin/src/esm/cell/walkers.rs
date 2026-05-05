@@ -61,6 +61,11 @@ pub(crate) fn parse_cell_group(
                 let mut water_type_form: Option<u32> = None;
                 let mut acoustic_space_form: Option<u32> = None;
                 let mut music_type_form: Option<u32> = None;
+                // #693 / O3-N-05 — pre-Skyrim XCMT (1-byte enum) and
+                // Skyrim XCCM (4-byte CLMT FormID). Both fell to the
+                // catch-all `_` arm pre-fix.
+                let mut music_type_enum: Option<u8> = None;
+                let mut climate_override: Option<u32> = None;
                 let mut location_form: Option<u32> = None;
                 let mut regions: Vec<u32> = Vec::new();
                 // SK-D6-02 / #566 — LTMP lighting-template FormID. Skyrim+
@@ -113,6 +118,16 @@ pub(crate) fn parse_cell_group(
                         b"LTMP" => lighting_template_form = read_form_id(&sub.data),
                         b"XCAS" => acoustic_space_form = read_form_id(&sub.data),
                         b"XCMO" => music_type_form = read_form_id(&sub.data),
+                        // #693 / O3-N-05 — XCMT pre-Skyrim music enum
+                        // (Oblivion / FO3 / FNV). 1-byte payload.
+                        b"XCMT" if !sub.data.is_empty() => {
+                            music_type_enum = Some(sub.data[0]);
+                        }
+                        // #693 / O3-N-05 — XCCM Skyrim climate override
+                        // (per-cell CLMT FormID, exterior cells only,
+                        // but a few interior mods have been seen with
+                        // it for "outside through window" effects).
+                        b"XCCM" => climate_override = read_form_id(&sub.data),
                         b"XLCN" => location_form = read_form_id(&sub.data),
                         // XCLR is a packed FormID array — region tags
                         // referenced by REGN records. Variable length;
@@ -250,6 +265,8 @@ pub(crate) fn parse_cell_group(
                             water_type_form,
                             acoustic_space_form,
                             music_type_form,
+                            music_type_enum,
+                            climate_override,
                             location_form,
                             regions: regions.clone(),
                             lighting_template_form,

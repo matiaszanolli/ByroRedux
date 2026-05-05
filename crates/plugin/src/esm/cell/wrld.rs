@@ -134,6 +134,14 @@ pub(crate) fn parse_wrld_children(
                 let mut water_type_form: Option<u32> = None;
                 let mut acoustic_space_form: Option<u32> = None;
                 let mut music_type_form: Option<u32> = None;
+                // #693 / O3-N-05 — pre-Skyrim XCMT (1-byte enum) and
+                // Skyrim XCCM (4-byte CLMT FormID, the per-cell
+                // climate override). Both fell to the catch-all `_`
+                // arm pre-fix; XCCM is the more impactful one on
+                // exterior cells (boss arenas, scripted-weather
+                // pockets, interior-feeling exteriors).
+                let mut music_type_enum: Option<u8> = None;
+                let mut climate_override: Option<u32> = None;
                 let mut location_form: Option<u32> = None;
                 let mut regions: Vec<u32> = Vec::new();
                 // SK-D6-02 / #566 — exterior cells can also carry an
@@ -183,6 +191,15 @@ pub(crate) fn parse_wrld_children(
                         b"XCWT" => water_type_form = read_form_id(&sub.data),
                         b"XCAS" => acoustic_space_form = read_form_id(&sub.data),
                         b"XCMO" => music_type_form = read_form_id(&sub.data),
+                        // #693 / O3-N-05 — see interior walker for
+                        // semantics. XCMT is rare on exterior cells
+                        // (most exteriors use the worldspace default
+                        // music) but pinned for completeness; XCCM
+                        // is the load-bearing one here.
+                        b"XCMT" if !sub.data.is_empty() => {
+                            music_type_enum = Some(sub.data[0]);
+                        }
+                        b"XCCM" => climate_override = read_form_id(&sub.data),
                         b"XLCN" => location_form = read_form_id(&sub.data),
                         b"XCLR" => regions = read_form_id_array(&sub.data),
                         // LTMP — lighting template FormID (SK-D6-02 / #566).
@@ -229,6 +246,8 @@ pub(crate) fn parse_wrld_children(
                             water_type_form,
                             acoustic_space_form,
                             music_type_form,
+                            music_type_enum,
+                            climate_override,
                             location_form,
                             regions,
                             lighting_template_form,
