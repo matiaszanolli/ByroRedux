@@ -2129,8 +2129,21 @@ void main() {
                 // Soft clamp to tame outliers without killing the effect.
                 indirect = min(indirect, vec3(0.4));
             } else {
-                // Ray escaped — sky fill adds subtle blue to open areas.
-                indirect = vec3(0.6, 0.75, 1.0) * 0.06;
+                // Ray escaped (no geometry within 3000u) — fall back to
+                // the per-cell ambient color, NOT a hardcoded sky blue.
+                // Pre-fix used `vec3(0.6, 0.75, 1.0) * 0.06` regardless
+                // of cell mood, which injected unauthored blue into
+                // red-lit caves / sunset interiors / magic-tinted
+                // dungeons. The GI miss semantically means "open void
+                // around me" — in interiors that's the cell's
+                // ambient-fill direction, in exteriors it's already
+                // sky-derived from CLMT/WTHR via `sceneFlags.yzw` (the
+                // worldspace sets ambient to the sky tone). The 0.5
+                // factor is the audit's recommendation for "open areas
+                // get extra fill"; matches the hit-path's `* 0.3` scale
+                // since misses imply less occlusion than near-bounces.
+                // See #671 / RT-8.
+                indirect = sceneFlags.yzw * 0.5;
             }
             // Smooth distance fade: attenuate GI contribution at range
             // to prevent a visible boundary at the cutoff distance.
