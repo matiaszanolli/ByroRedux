@@ -331,13 +331,20 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
                 Some(q) => q,
                 None => return,
             };
-            let mut new_map = std::collections::HashMap::new();
-            for (entity, name_comp) in name_query.iter() {
-                new_map.insert(name_comp.0, entity);
-            }
-            drop(name_query);
+            // #824 — refill the existing HashMap in place instead of
+            // allocating a fresh one and dropping the old. `clear()`
+            // keeps the bucket array; `reserve(N)` forces one rehash
+            // to a sufficient size on the cold-start path so the
+            // refill doesn't growth-double through 0→1→2→...→N.
+            // Name (component) and NameIndex (resource) live on
+            // different storages — holding `name_query` read while
+            // taking `idx` write is fine, no TypeId conflict.
             let mut idx = world.resource_mut::<NameIndex>();
-            idx.map = new_map;
+            idx.map.clear();
+            idx.map.reserve(current_name_count);
+            for (entity, name_comp) in name_query.iter() {
+                idx.map.insert(name_comp.0, entity);
+            }
             idx.generation = current_name_count;
         }
     }
