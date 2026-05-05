@@ -179,9 +179,14 @@ vec3 compute_sky(vec3 dir) {
     // sun_size is cos(half-angle) of the disc — lower = wider.
     // Use a smooth transition band outside the core to avoid hard edges
     // from screen-space direction reconstruction precision.
+    //
+    // `elevation > 0.0` matches the cloud-layer gate convention above
+    // and stops the disc painting over the below-horizon ground tint
+    // at sunset/sunrise (the sky-lower mix at L107 produces a "ground"
+    // colour that the disc would otherwise overwrite). #800.
     float cos_angle = dot(dir, sun_direction);
     float sun_edge_start = sun_size - 0.002; // soft outer fringe
-    if (cos_angle > sun_edge_start) {
+    if (cos_angle > sun_edge_start && elevation > 0.0) {
         float t = (cos_angle - sun_edge_start) / (1.0 - sun_edge_start);
         t = smoothstep(0.0, 1.0, t);
         // Core is bright, edge fades smoothly.
