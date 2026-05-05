@@ -304,6 +304,14 @@ pub struct MaterialTable {
     materials: Vec<GpuMaterial>,
     /// Reverse lookup for dedup. Cleared in lockstep with `materials`.
     index: HashMap<GpuMaterial, u32>,
+    /// R1 telemetry — total `intern()` calls this frame (one per
+    /// `DrawCommand`). Read alongside `len()` to compute the dedup
+    /// ratio and surfaced via `ctx.scratch`. The counter exists so a
+    /// regression that breaks byte-equality dedup (alignment hole,
+    /// non-deterministic float in the producer) shows up as a
+    /// dropping ratio in telemetry rather than silently inflating
+    /// VRAM. See #780 / PERF-N1.
+    interned_count: usize,
 }
 
 impl Default for MaterialTable {
@@ -317,6 +325,7 @@ impl MaterialTable {
         Self {
             materials: Vec::new(),
             index: HashMap::new(),
+            interned_count: 0,
         }
     }
 
@@ -325,6 +334,7 @@ impl MaterialTable {
     pub fn clear(&mut self) {
         self.materials.clear();
         self.index.clear();
+        self.interned_count = 0;
     }
 
     /// Insert a material (or return the existing id if byte-equal to
@@ -348,6 +358,7 @@ impl MaterialTable {
     /// today only on modded / synthetic / future Starfield-FO76
     /// large-exterior content.
     pub fn intern(&mut self, material: GpuMaterial) -> u32 {
+        self.interned_count += 1;
         if let Some(&id) = self.index.get(&material) {
             return id;
         }
@@ -380,6 +391,12 @@ impl MaterialTable {
 
     pub fn is_empty(&self) -> bool {
         self.materials.is_empty()
+    }
+
+    /// Total `intern()` calls so far this frame (hits + misses).
+    /// Dedup ratio = `len() / interned_count()`. See #780 / PERF-N1.
+    pub fn interned_count(&self) -> usize {
+        self.interned_count
     }
 }
 
@@ -496,6 +513,50 @@ mod tests {
         table.clear();
         assert!(table.is_empty());
         assert!(table.materials.capacity() >= cap_before);
+    }
+
+    /// #780 / PERF-N1 — `interned_count` ticks on every `intern` call
+    /// (hits AND misses) so the dedup ratio `len / interned_count` is
+    /// computable from telemetry. `clear` resets it in lockstep with
+    /// the materials Vec so the per-frame snapshot is honest.
+    #[test]
+    fn interned_count_increments_on_hit_and_miss() {
+        let mut table = MaterialTable::new();
+        assert_eq!(table.interned_count(), 0);
+
+        let mut a = GpuMaterial::default();
+        let mut b = GpuMaterial::default();
+        b.roughness = 0.7;
+
+        table.intern(a); // miss
+        assert_eq!(table.interned_count(), 1);
+        assert_eq!(table.len(), 1);
+
+        table.intern(a); // hit — count still ticks
+        assert_eq!(table.interned_count(), 2);
+        assert_eq!(table.len(), 1);
+
+        table.intern(b); // miss
+        assert_eq!(table.interned_count(), 3);
+        assert_eq!(table.len(), 2);
+
+        // 5 more hits on b — only `interned_count` moves.
+        for _ in 0..5 {
+            table.intern(b);
+        }
+        assert_eq!(table.interned_count(), 8);
+        assert_eq!(table.len(), 2);
+
+        // Tweaking `a` after-the-fact must not retroactively count.
+        a.roughness = 0.5; // same as default — still a hit on the
+                           // first interned `a` (byte-equal).
+        table.intern(a);
+        assert_eq!(table.interned_count(), 9);
+        assert_eq!(table.len(), 2);
+
+        table.clear();
+        assert_eq!(table.interned_count(), 0);
+        assert_eq!(table.len(), 0);
     }
 
     #[test]

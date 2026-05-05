@@ -197,6 +197,18 @@ impl ScratchRow {
 #[derive(Debug, Default)]
 pub struct ScratchTelemetry {
     pub rows: Vec<ScratchRow>,
+    /// R1 / #780 — unique materials at end of last `build_render_data`
+    /// (== `MaterialTable::len()`). Pairs with `materials_interned` to
+    /// compute the dedup ratio.
+    pub materials_unique: usize,
+    /// R1 / #780 — total `intern()` calls during last
+    /// `build_render_data` (== `MaterialTable::interned_count()`,
+    /// one tick per emitted `DrawCommand`). Dedup ratio =
+    /// `materials_unique / materials_interned`. A drop here flags a
+    /// regression (alignment hole, non-deterministic float in the
+    /// producer) that breaks byte-equality dedup before VRAM
+    /// pressure shows it.
+    pub materials_interned: usize,
 }
 
 impl Resource for ScratchTelemetry {}

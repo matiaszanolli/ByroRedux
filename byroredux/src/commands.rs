@@ -326,6 +326,17 @@ impl ConsoleCommand for CtxScratchCommand {
             tlm.total_wasted(),
             tlm.rows.len(),
         ));
+        // #780 / PERF-N1 — R1 MaterialTable dedup ratio. Reads zero
+        // until the first `build_render_data` populates the resource;
+        // after that, divergence between unique and interned counts
+        // is what catches a dedup regression at scale.
+        if tlm.materials_interned > 0 {
+            let ratio = tlm.materials_interned as f64 / tlm.materials_unique.max(1) as f64;
+            lines.push(format!(
+                "  materials: {} unique / {} interned ({:.1}× dedup)",
+                tlm.materials_unique, tlm.materials_interned, ratio,
+            ));
+        }
         CommandOutput::lines(lines)
     }
 }

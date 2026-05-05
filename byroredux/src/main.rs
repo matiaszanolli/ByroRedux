@@ -788,6 +788,17 @@ impl ApplicationHandler for App {
                         self.bench_build_render_ns += brd_t0.elapsed().as_nanos() as u64;
                     }
 
+                    // #780 / PERF-N1 — snapshot R1 dedup metrics for
+                    // the frame we just built so `ctx.scratch` can
+                    // surface them. Cheap (two usize writes) and
+                    // capturing here means the values reflect the
+                    // exact state visible to the SSBO upload below.
+                    {
+                        let mut tlm = self.world.resource_mut::<ScratchTelemetry>();
+                        tlm.materials_unique = self.material_table.len();
+                        tlm.materials_interned = self.material_table.interned_count();
+                    }
+
                     // Rebuild the global geometry SSBO if new meshes were
                     // loaded since the last build (cell transitions, late
                     // streaming). See #258.
