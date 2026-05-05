@@ -163,38 +163,60 @@ impl Ba2Archive {
         // FO4 original / FO76, v2/v3 = Starfield, v7/v8 = FO4 Next Gen
         // patches with the same 24-byte header as v1.
         //
+        // v1 / v7 / v8: 24-byte base header, zlib compression (per-game
+        //   variant; the parser treats them identically here).
         // v2 (Starfield GNRL and DX10): +8 bytes (2×u32 unknown, likely
-        //   compressed name-table metadata). Compression is always zlib for
-        //   v1/v2/v7/v8 — the `self.compression` field threaded through every
-        //   dispatch site will always be Zlib for these versions.
+        //   compressed name-table metadata). Compression is always zlib.
         // v3 (Starfield DX10 only in vanilla; no v3 GNRL observed across 108
         //   vanilla archives): +12 bytes (2×u32 unknown + u32 compression
         //   method). Method 0 = zlib, 3 = LZ4 block.
-        let mut compression = Ba2Compression::Zlib;
-        if version == 2 || version == 3 {
-            let mut extra = [0u8; 8];
-            reader.read_exact(&mut extra)?;
-        }
-        if version == 3 {
-            let mut method_buf = [0u8; 4];
-            reader.read_exact(&mut method_buf)?;
-            let method = u32::from_le_bytes(method_buf);
-            compression = match method {
-                0 => Ba2Compression::Zlib,
-                3 => Ba2Compression::Lz4Block,
-                other => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "BA2 v3: unsupported compression method {} \
-                             (expected 0=zlib or 3=lz4_block)",
-                            other
-                        ),
-                    ));
-                }
-            };
-            log::debug!("BA2 v3 compression method: {:?}", compression);
-        }
+        //
+        // #811 / FO4-D2-NEW-01 — match exhaustively over the supported
+        // version set so unknown majors (0, 4, 5, 6, 9, ..., u32::MAX)
+        // bail with a clear error instead of silently falling through to
+        // the v1 record-layout path. Mirrors the BSA reader's allowlist
+        // discipline at `archive.rs:165-173`.
+        let compression = match version {
+            1 | 7 | 8 => Ba2Compression::Zlib,
+            2 => {
+                let mut extra = [0u8; 8];
+                reader.read_exact(&mut extra)?;
+                Ba2Compression::Zlib
+            }
+            3 => {
+                let mut extra = [0u8; 8];
+                reader.read_exact(&mut extra)?;
+                let mut method_buf = [0u8; 4];
+                reader.read_exact(&mut method_buf)?;
+                let method = u32::from_le_bytes(method_buf);
+                let c = match method {
+                    0 => Ba2Compression::Zlib,
+                    3 => Ba2Compression::Lz4Block,
+                    other => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "BA2 v3: unsupported compression method {} \
+                                 (expected 0=zlib or 3=lz4_block)",
+                                other
+                            ),
+                        ));
+                    }
+                };
+                log::debug!("BA2 v3 compression method: {:?}", c);
+                c
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "unsupported BA2 version: {} \
+                         (expected 1, 2, 3, 7, or 8)",
+                        other
+                    ),
+                ));
+            }
+        };
 
         // ── File records ────────────────────────────────────────────
         let files = match variant {
@@ -1051,6 +1073,52 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         let msg = format!("{err}");
         assert!(msg.contains("unsupported compression method"), "got: {msg}");
+    }
+
+    /// Regression for #811 (FO4-D2-NEW-01) — a BA2 header with a
+    /// version outside the supported allowlist `{1, 2, 3, 7, 8}` must
+    /// bail with `InvalidData` at `open()` time. Pre-fix the cascading
+    /// `if version == 2 || version == 3` / `if version == 3` arms
+    /// silently fell through to the v1 record-layout path for any
+    /// other version, including hypothetical future BTDX revisions
+    /// that might add header fields, where the reader would either
+    /// fail confusingly mid-extract or return corrupted bytes.
+    #[test]
+    fn unknown_version_rejected() {
+        use std::io::Write;
+        // Minimal 24-byte BA2 header with version=5 (not in the
+        // supported set). file_count=0 keeps the v1-layout fall-through
+        // path silent — the version check is the only thing that should
+        // trip here.
+        let mut hdr = Vec::with_capacity(24);
+        hdr.extend_from_slice(b"BTDX"); // magic
+        hdr.extend_from_slice(&5u32.to_le_bytes()); // version = 5 (not in {1,2,3,7,8})
+        hdr.extend_from_slice(b"GNRL"); // type_tag
+        hdr.extend_from_slice(&0u32.to_le_bytes()); // file_count = 0
+        hdr.extend_from_slice(&24u64.to_le_bytes()); // name_table_offset = 24
+        assert_eq!(hdr.len(), 24);
+
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "byroredux_ba2_unknown_version_{}.ba2",
+            std::process::id()
+        ));
+        {
+            let mut f = std::fs::File::create(&path).expect("create temp BA2");
+            f.write_all(&hdr).expect("write header");
+        }
+        let result = Ba2Archive::open(&path);
+        let _ = std::fs::remove_file(&path);
+        let err = match result {
+            Ok(_) => panic!("unsupported BA2 version must not be accepted"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("unsupported BA2 version") && msg.contains("expected 1, 2, 3, 7, or 8"),
+            "error message must name the offending version + supported set, got: {msg}"
+        );
     }
 
     /// Regression for #586 (FO4-DIM2-01) — a corrupted / hostile BA2
