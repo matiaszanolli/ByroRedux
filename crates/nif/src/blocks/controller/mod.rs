@@ -89,6 +89,153 @@ impl NiTimeController {
     }
 }
 
+// ── BSLagBoneController ────────────────────────────────────────────────
+//
+// Skyrim+ controller that trails a bone behind an actor (cape sway,
+// hair drag, dragon-wing physics, banner cloth). nif.xml ships three
+// trailing floats after the NiTimeController base:
+//
+//   Linear Velocity   (f32)  — How long it takes to rotate about an
+//                              actor back to the rest position.
+//   Linear Rotation   (f32)  — How the bone lags rotation.
+//   Maximum Distance  (f32)  — How far the bone will tail an actor.
+//
+// Pre-#837 the type fell through to the NiTimeController base-only
+// stub, so the trailing 12 bytes were eaten by `block_size` recovery
+// and 42-78 WARN-level realignment events fired per Skyrim Meshes0
+// sweep — drowning out real per-block drift bugs (#838).
+#[derive(Debug)]
+pub struct BsLagBoneController {
+    pub base: NiTimeControllerBase,
+    pub linear_velocity: f32,
+    pub linear_rotation: f32,
+    pub maximum_distance: f32,
+}
+
+impl NiObject for BsLagBoneController {
+    fn block_type_name(&self) -> &'static str {
+        "BSLagBoneController"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsLagBoneController {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiTimeControllerBase::parse(stream)?;
+        let linear_velocity = stream.read_f32_le()?;
+        let linear_rotation = stream.read_f32_le()?;
+        let maximum_distance = stream.read_f32_le()?;
+        Ok(Self {
+            base,
+            linear_velocity,
+            linear_rotation,
+            maximum_distance,
+        })
+    }
+}
+
+// ── BSProceduralLightningController ────────────────────────────────────
+//
+// Skyrim+ lightning-effect controller paired with dummy TriShapes to
+// generate procedural lightning bolt geometry (storm spells, special
+// effects). Per nif.xml: 9 interpolator refs driving generation /
+// mutation / subdivision / branch count / branch-count variation /
+// length / length-variation / width / arc-offset, then bolt-shape
+// scalars (subdivisions u16, num_branches u16, num_branches_var u16,
+// 6 floats, 3 byte-bools), then a Shader Property ref.
+//
+// 73 trailing bytes total (Skyrim version) on top of NiTimeController.
+// Pre-#837 these all fell into `block_size` recovery and produced
+// per-block WARN noise on the 3 Meshes0 instances per sweep (rare
+// content — fewer than BSLagBoneController, but on the same channel).
+#[derive(Debug)]
+pub struct BsProceduralLightningController {
+    pub base: NiTimeControllerBase,
+    pub interp_generation: BlockRef,
+    pub interp_mutation: BlockRef,
+    pub interp_subdivision: BlockRef,
+    pub interp_num_branches: BlockRef,
+    pub interp_num_branches_var: BlockRef,
+    pub interp_length: BlockRef,
+    pub interp_length_var: BlockRef,
+    pub interp_width: BlockRef,
+    pub interp_arc_offset: BlockRef,
+    pub subdivisions: u16,
+    pub num_branches: u16,
+    pub num_branches_variation: u16,
+    pub length: f32,
+    pub length_variation: f32,
+    pub width: f32,
+    pub child_width_mult: f32,
+    pub arc_offset: f32,
+    pub fade_main_bolt: bool,
+    pub fade_child_bolts: bool,
+    pub animate_arc_offset: bool,
+    pub shader_property: BlockRef,
+}
+
+impl NiObject for BsProceduralLightningController {
+    fn block_type_name(&self) -> &'static str {
+        "BSProceduralLightningController"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsProceduralLightningController {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiTimeControllerBase::parse(stream)?;
+        let interp_generation = stream.read_block_ref()?;
+        let interp_mutation = stream.read_block_ref()?;
+        let interp_subdivision = stream.read_block_ref()?;
+        let interp_num_branches = stream.read_block_ref()?;
+        let interp_num_branches_var = stream.read_block_ref()?;
+        let interp_length = stream.read_block_ref()?;
+        let interp_length_var = stream.read_block_ref()?;
+        let interp_width = stream.read_block_ref()?;
+        let interp_arc_offset = stream.read_block_ref()?;
+        let subdivisions = stream.read_u16_le()?;
+        let num_branches = stream.read_u16_le()?;
+        let num_branches_variation = stream.read_u16_le()?;
+        let length = stream.read_f32_le()?;
+        let length_variation = stream.read_f32_le()?;
+        let width = stream.read_f32_le()?;
+        let child_width_mult = stream.read_f32_le()?;
+        let arc_offset = stream.read_f32_le()?;
+        let fade_main_bolt = stream.read_bool()?;
+        let fade_child_bolts = stream.read_bool()?;
+        let animate_arc_offset = stream.read_bool()?;
+        let shader_property = stream.read_block_ref()?;
+        Ok(Self {
+            base,
+            interp_generation,
+            interp_mutation,
+            interp_subdivision,
+            interp_num_branches,
+            interp_num_branches_var,
+            interp_length,
+            interp_length_var,
+            interp_width,
+            interp_arc_offset,
+            subdivisions,
+            num_branches,
+            num_branches_variation,
+            length,
+            length_variation,
+            width,
+            child_width_mult,
+            arc_offset,
+            fade_main_bolt,
+            fade_child_bolts,
+            animate_arc_offset,
+            shader_property,
+        })
+    }
+}
+
 // ── NiSingleInterpController ───────────────────────────────────────────
 // Adds: interpolator_ref (Ref = i32 = 4 bytes) for version >= 10.1.0.104.
 // Subclasses: NiTransformController, NiVisController, NiAlphaController,

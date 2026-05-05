@@ -621,15 +621,19 @@ pub fn parse_block(
                 type_name_static,
             )?))
         }
-        // Bethesda / Fallout controller types that extend NiTimeController
-        // or NiInterpController with additional fields we don't model yet.
-        // Dispatch to the NiTimeController base-parse stub so the RTTI name
-        // is preserved in telemetry; block_size recovery on FO3+ seeks past
-        // any trailing extra data. Oblivion-era files never reference these
-        // types. See issues #234, #235.
-        "BSLagBoneController"                        // base + 3 floats
-        | "BSKeyframeController"                     // NiSingleInterpController + Data2 ref
-        | "BSProceduralLightningController"          // base + 3 interp refs + strip data
+        // BSLagBoneController + BSProceduralLightningController have
+        // dedicated parsers landed in #837 so their trailing fields
+        // model correctly and block_size recovery doesn't fire WARN
+        // noise on every Skyrim sweep. The remaining types in this
+        // group still fall through to the NiTimeController base-only
+        // stub — block_size recovery on FO3+ seeks past any trailing
+        // extra data. Oblivion-era files never reference these types.
+        // See issues #234, #235, #837.
+        "BSLagBoneController" => Ok(Box::new(controller::BsLagBoneController::parse(stream)?)),
+        "BSProceduralLightningController" => Ok(Box::new(
+            controller::BsProceduralLightningController::parse(stream)?,
+        )),
+        "BSKeyframeController"                       // NiSingleInterpController + Data2 ref
         | "NiMorpherController"                      // base + NiMorphData ref
         | "NiMorphController"                        // base (no extra fields in nif.xml)
         | "NiMorphWeightsController" => {            // base + interpolator / target arrays

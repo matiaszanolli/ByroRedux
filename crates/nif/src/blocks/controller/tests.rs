@@ -558,3 +558,114 @@ fn parse_controller_sequence_oblivion_string_palette_format() {
     assert!(cb.node_name.is_none());
     assert!(cb.property_type.is_none());
 }
+
+/// Regression for #837 — BSLagBoneController must parse as
+/// NiTimeController base (26 B) + 3 floats (12 B) = 38 B total per
+/// nif.xml. Pre-fix the type fell through to the NiTimeController
+/// stub and the trailing 12 bytes were eaten by `block_size`
+/// recovery, firing per-block WARN noise on every Skyrim sweep.
+#[test]
+fn parse_bs_lag_bone_controller_38_bytes() {
+    let header = make_header_fnv();
+    let mut data = Vec::new();
+    write_time_controller_base(&mut data);
+    // Linear Velocity: 3.0 (default per nif.xml)
+    data.extend_from_slice(&3.0f32.to_le_bytes());
+    // Linear Rotation: 1.0 (default)
+    data.extend_from_slice(&1.0f32.to_le_bytes());
+    // Maximum Distance: 400.0 (default)
+    data.extend_from_slice(&400.0f32.to_le_bytes());
+    assert_eq!(data.len(), 38);
+
+    let mut stream = NifStream::new(&data, &header);
+    let ctrl = BsLagBoneController::parse(&mut stream).unwrap();
+    assert_eq!(
+        stream.position(),
+        38,
+        "BSLagBoneController must consume exactly NiTimeController(26) + 3×f32(12) = 38 B",
+    );
+    assert_eq!(ctrl.linear_velocity, 3.0);
+    assert_eq!(ctrl.linear_rotation, 1.0);
+    assert_eq!(ctrl.maximum_distance, 400.0);
+    assert!(ctrl.base.next_controller_ref.is_null());
+}
+
+/// Dispatch test — `parse_block("BSLagBoneController", …)` must route
+/// through the dedicated parser, not the NiTimeController fallback.
+#[test]
+fn bs_lag_bone_controller_dispatches_via_parse_block() {
+    let header = make_header_fnv();
+    let mut data = Vec::new();
+    write_time_controller_base(&mut data);
+    data.extend_from_slice(&3.0f32.to_le_bytes());
+    data.extend_from_slice(&1.0f32.to_le_bytes());
+    data.extend_from_slice(&400.0f32.to_le_bytes());
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = crate::blocks::parse_block(
+        "BSLagBoneController",
+        &mut stream,
+        Some(data.len() as u32),
+    )
+    .unwrap();
+    assert_eq!(block.block_type_name(), "BSLagBoneController");
+    let blbc = block
+        .as_any()
+        .downcast_ref::<BsLagBoneController>()
+        .expect("must dispatch to BsLagBoneController, not NiTimeController");
+    assert_eq!(blbc.maximum_distance, 400.0);
+}
+
+/// Regression for #837 — BSProceduralLightningController must parse
+/// as NiTimeController base (26 B) + 9 BlockRef (36 B) + 3 u16
+/// (6 B) + 5 f32 (20 B) + 3 byte-bool (3 B) + BlockRef (4 B) = 95 B
+/// total per nif.xml.
+#[test]
+fn parse_bs_procedural_lightning_controller_95_bytes() {
+    let header = make_header_fnv();
+    let mut data = Vec::new();
+    write_time_controller_base(&mut data); // 26 B
+
+    // 9 interpolator refs — write distinct values so a cross-wired
+    // field assignment shows up as a wrong index downstream.
+    for i in 0..9i32 {
+        data.extend_from_slice(&i.to_le_bytes());
+    }
+    // Subdivisions / Num Branches / Num Branches Variation
+    data.extend_from_slice(&6u16.to_le_bytes()); // default 6
+    data.extend_from_slice(&1u16.to_le_bytes());
+    data.extend_from_slice(&1u16.to_le_bytes());
+    // Length / Length Variation / Width / Child Width Mult / Arc Offset
+    data.extend_from_slice(&512.0f32.to_le_bytes());
+    data.extend_from_slice(&30.0f32.to_le_bytes());
+    data.extend_from_slice(&16.0f32.to_le_bytes());
+    data.extend_from_slice(&0.75f32.to_le_bytes());
+    data.extend_from_slice(&20.0f32.to_le_bytes());
+    // Fade Main Bolt / Fade Child Bolts / Animate Arc Offset (byte-bools at v20.2)
+    data.push(1);
+    data.push(1);
+    data.push(0);
+    // Shader Property ref
+    data.extend_from_slice(&7i32.to_le_bytes());
+    assert_eq!(data.len(), 95);
+
+    let mut stream = NifStream::new(&data, &header);
+    let ctrl = BsProceduralLightningController::parse(&mut stream).unwrap();
+    assert_eq!(
+        stream.position(),
+        95,
+        "BSProceduralLightningController must consume exactly 26 + 36 + 6 + 20 + 3 + 4 = 95 B",
+    );
+    // Spot-check the cross-wiring guard: each interp ref should land in
+    // its own field.
+    assert_eq!(ctrl.interp_generation.index(), Some(0));
+    assert_eq!(ctrl.interp_mutation.index(), Some(1));
+    assert_eq!(ctrl.interp_arc_offset.index(), Some(8));
+    assert_eq!(ctrl.subdivisions, 6);
+    assert_eq!(ctrl.length, 512.0);
+    assert_eq!(ctrl.child_width_mult, 0.75);
+    assert!(ctrl.fade_main_bolt);
+    assert!(ctrl.fade_child_bolts);
+    assert!(!ctrl.animate_arc_offset);
+    assert_eq!(ctrl.shader_property.index(), Some(7));
+}
