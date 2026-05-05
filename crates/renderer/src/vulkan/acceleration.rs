@@ -1790,6 +1790,16 @@ impl AccelerationManager {
         let mut instances = std::mem::take(&mut self.tlas_instances_scratch);
         instances.clear();
         instances.reserve(draw_commands.len());
+        // Diagnostic counter for the warn-rate-limited log below
+        // (#678 / AS-8-6). Counts ONLY draws that opted into TLAS
+        // inclusion but couldn't get an instance emitted — i.e.
+        // genuine RT-shadow regressions. Pre-fix this was derived
+        // from `draw_commands.len() - instances.len()`, which
+        // bundled in `!in_tlas` skips (particles, UI quad — by
+        // design rasterized but not in TLAS). A frame with 200
+        // particle draws would spam the warning every second
+        // suggesting an RT regression that didn't exist.
+        let mut missing_blas: usize = 0;
         for (i, draw_cmd) in draw_commands.iter().enumerate() {
             // Skip instances not flagged for TLAS inclusion (particles,
             // UI quad — small / transient / 2D). Frustum-culled geometry
@@ -1813,6 +1823,7 @@ impl AccelerationManager {
                     // here the entity will be invisible to RT this
                     // frame, but raster's inline-skinning path still
                     // renders it correctly).
+                    missing_blas += 1;
                     continue;
                 };
                 entry.last_used_frame = self.frame_counter;
@@ -1820,6 +1831,7 @@ impl AccelerationManager {
             } else {
                 let mesh_handle = draw_cmd.mesh_handle as usize;
                 let Some(Some(blas)) = self.blas_entries.get_mut(mesh_handle) else {
+                    missing_blas += 1;
                     continue;
                 };
                 blas.last_used_frame = self.frame_counter;
@@ -1830,6 +1842,7 @@ impl AccelerationManager {
             // and `mesh_registry` diverge (e.g. a BLAS briefly survives
             // its source mesh during eviction).
             let Some(ssbo_idx) = instance_map.get(i).copied().flatten() else {
+                missing_blas += 1;
                 continue;
             };
 
@@ -1877,8 +1890,7 @@ impl AccelerationManager {
         }
 
         let instance_count = instances.len() as u32;
-        let missing = draw_commands.len() - instances.len();
-        if missing > 0 && frame_index == 0 {
+        if missing_blas > 0 && frame_index == 0 {
             // Log once per second (at 60fps, frame_index 0 fires 30×/s — good enough).
             static LAST_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let now = std::time::SystemTime::now()
@@ -1889,7 +1901,7 @@ impl AccelerationManager {
                 LAST_LOG.store(now, std::sync::atomic::Ordering::Relaxed);
                 log::warn!(
                     "TLAS: {} instances from {} draw commands ({} lack BLAS — no RT shadows for those meshes)",
-                    instance_count, draw_commands.len(), missing
+                    instance_count, draw_commands.len(), missing_blas
                 );
             }
         }
