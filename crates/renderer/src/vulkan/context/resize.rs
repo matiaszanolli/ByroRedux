@@ -274,7 +274,7 @@ impl VulkanContext {
 
         // Collect fresh G-buffer views before we borrow &mut self.svgf /
         // self.composite. Motion and mesh_id are needed by SVGF.
-        let (raw_indirect_views, motion_views_in, mesh_id_views_in, albedo_views) = {
+        let (raw_indirect_views, motion_views_in, mesh_id_views_in, normal_views_in, albedo_views) = {
             let gbuffer_ref = self
                 .gbuffer
                 .as_ref()
@@ -283,8 +283,13 @@ impl VulkanContext {
             let ri: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.raw_indirect_view(i)).collect();
             let mo: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.motion_view(i)).collect();
             let mi: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.mesh_id_view(i)).collect();
+            // #650 / SH-5 — SVGF temporal needs the GBuffer normal
+            // attachments for the 2×2 bilinear consistency loop. Same
+            // ping-pong source as mesh_id; rebuilt on every resize so
+            // the descriptor write picks up the new image views.
+            let nm: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.normal_view(i)).collect();
             let ab: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.albedo_view(i)).collect();
-            (ri, mo, mi, ab)
+            (ri, mo, mi, nm, ab)
         };
 
         // Recreate SVGF history images + rewrite its descriptor sets
@@ -299,6 +304,7 @@ impl VulkanContext {
                 &raw_indirect_views,
                 &motion_views_in,
                 &mesh_id_views_in,
+                &normal_views_in,
                 self.swapchain_state.extent.width,
                 self.swapchain_state.extent.height,
             )?;

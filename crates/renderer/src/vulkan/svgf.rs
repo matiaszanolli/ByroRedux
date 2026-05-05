@@ -39,6 +39,17 @@
 //! | 6       | out indirect        | image2D (rgba16f, storage) |
 //! | 7       | out moments         | image2D (rgba16f, storage) |
 //! | 8       | SvgfTemporalParams  | uniform buffer             |
+//! | 9       | curr normal         | sampler2D (RG16_SNORM oct) |
+//! | 10      | prev normal         | sampler2D (RG16_SNORM oct) |
+//!
+//! Bindings 9/10 land #650 / SH-5 — the 2×2 bilinear consistency loop
+//! also rejects taps whose previous-frame normal disagrees with the
+//! current-frame normal by more than ~25°. mesh_id alone wasn't enough
+//! to catch same-mesh disocclusions on long static walls (camera orbit
+//! revealing a previously self-occluded part of the same mesh would
+//! pick up the wrong tap and ghost-streak the lighting integration).
+//! Schied 2017 §4.2 specifies depth + normal rejection in addition
+//! to mesh_id; this lands the normal half of that.
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
@@ -159,12 +170,14 @@ impl SvgfPipeline {
         raw_indirect_views: &[vk::ImageView],
         motion_views: &[vk::ImageView],
         mesh_id_views: &[vk::ImageView],
+        normal_views: &[vk::ImageView],
         width: u32,
         height: u32,
     ) -> Result<Self> {
         debug_assert_eq!(raw_indirect_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(motion_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(mesh_id_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(normal_views.len(), MAX_FRAMES_IN_FLIGHT);
 
         let result = Self::new_inner(
             device,
@@ -173,6 +186,7 @@ impl SvgfPipeline {
             raw_indirect_views,
             motion_views,
             mesh_id_views,
+            normal_views,
             width,
             height,
         );
@@ -189,6 +203,7 @@ impl SvgfPipeline {
         raw_indirect_views: &[vk::ImageView],
         motion_views: &[vk::ImageView],
         mesh_id_views: &[vk::ImageView],
+        normal_views: &[vk::ImageView],
         width: u32,
         height: u32,
     ) -> Result<Self> {
@@ -325,6 +340,19 @@ impl SvgfPipeline {
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 9: curr normal (sampler2D, octahedral RG16_SNORM) — #650
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(9)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 10: prev normal (other frame-in-flight slot of the same
+            // G-buffer normal attachment) — #650
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(10)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
         validate_set_layout(
             0,
@@ -388,7 +416,10 @@ impl SvgfPipeline {
         let pool_sizes = [
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 6) as u32,
+                // 8 sampler bindings per set after #650: curr indirect,
+                // motion, curr/prev mesh_id, prev indirect/moments
+                // history, curr/prev normal.
+                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 8) as u32,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_IMAGE,
@@ -422,7 +453,7 @@ impl SvgfPipeline {
         });
 
         // ── 7. Write descriptor sets ──────────────────────────────────
-        partial.write_descriptor_sets(device, raw_indirect_views, motion_views, mesh_id_views);
+        partial.write_descriptor_sets(device, raw_indirect_views, motion_views, mesh_id_views, normal_views);
 
         log::info!("SVGF pipeline created: {}x{}", width, height);
         Ok(partial)
@@ -525,6 +556,7 @@ impl SvgfPipeline {
         raw_indirect_views: &[vk::ImageView],
         motion_views: &[vk::ImageView],
         mesh_id_views: &[vk::ImageView],
+        normal_views: &[vk::ImageView],
     ) {
         let param_size = std::mem::size_of::<SvgfTemporalParams>() as vk::DeviceSize;
         for f in 0..MAX_FRAMES_IN_FLIGHT {
@@ -545,6 +577,16 @@ impl SvgfPipeline {
             let prev_mid = [vk::DescriptorImageInfo::default()
                 .sampler(self.point_sampler)
                 .image_view(mesh_id_views[prev])
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            // #650 / SH-5 — curr / prev normal taps for the bilinear
+            // consistency loop. Same ping-pong source as mesh_id.
+            let curr_norm = [vk::DescriptorImageInfo::default()
+                .sampler(self.point_sampler)
+                .image_view(normal_views[f])
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let prev_norm = [vk::DescriptorImageInfo::default()
+                .sampler(self.point_sampler)
+                .image_view(normal_views[prev])
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             let prev_ind = [vk::DescriptorImageInfo::default()
                 .sampler(self.point_sampler)
@@ -612,6 +654,16 @@ impl SvgfPipeline {
                     .dst_binding(8)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .buffer_info(&params),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[f])
+                    .dst_binding(9)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&curr_norm),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[f])
+                    .dst_binding(10)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&prev_norm),
             ];
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
@@ -827,6 +879,7 @@ impl SvgfPipeline {
         raw_indirect_views: &[vk::ImageView],
         motion_views: &[vk::ImageView],
         mesh_id_views: &[vk::ImageView],
+        normal_views: &[vk::ImageView],
         width: u32,
         height: u32,
     ) -> Result<()> {
@@ -880,7 +933,7 @@ impl SvgfPipeline {
             return result;
         }
 
-        self.write_descriptor_sets(device, raw_indirect_views, motion_views, mesh_id_views);
+        self.write_descriptor_sets(device, raw_indirect_views, motion_views, mesh_id_views, normal_views);
         Ok(())
     }
 

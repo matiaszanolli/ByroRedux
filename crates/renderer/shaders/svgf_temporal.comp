@@ -41,8 +41,27 @@ layout(set = 0, binding = 8) uniform SvgfTemporalParams {
     vec4 params;   // x = alpha_color, y = alpha_moments, z = first_frame_flag (1.0 = reset), w = unused
 };
 
+// ── Curr / prev octahedral-encoded world normals (#650 / SH-5) ──
+// Same ping-pong source as mesh_id; reads the RG16_SNORM
+// `outNormal` G-buffer attachment from triangle.frag:644. Used by
+// the bilinear consistency loop to reject same-mesh disocclusion
+// taps that the mesh_id-only check misses (camera orbit revealing
+// previously-self-occluded parts of a long static wall).
+layout(set = 0, binding = 9) uniform sampler2D currNormalTex;
+layout(set = 0, binding = 10) uniform sampler2D prevNormalTex;
+
 float luminance(vec3 c) {
     return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+// Octahedral decode (matches triangle.frag:267 / caustic_splat.comp:91).
+vec3 octDecode(vec2 e) {
+    vec3 n = vec3(e.xy, 1.0 - abs(e.x) - abs(e.y));
+    if (n.z < 0.0) {
+        n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0,
+                                        n.y >= 0.0 ? 1.0 : -1.0);
+    }
+    return normalize(n);
 }
 
 void main() {
@@ -53,6 +72,9 @@ void main() {
     float currLum = luminance(currInd);
     float currLum2 = currLum * currLum;
     uint currID = texelFetch(currMeshIdTex, p, 0).r;
+    // #650 / SH-5 — current-pixel world normal for the bilinear
+    // consistency loop's normal-cone rejection.
+    vec3 currN = octDecode(texelFetch(currNormalTex, p, 0).rg);
 
     // Background pixels (mesh_id 0 = sky/clear): no accumulation needed.
     // Alpha-blend fragments (mesh_id bit 15 set by triangle.frag) take
@@ -105,6 +127,16 @@ void main() {
             if (q.x < 0 || q.y < 0 || q.x >= int(screen.x) || q.y >= int(screen.y)) continue;
             uint prevID = texelFetch(prevMeshIdTex, q, 0).r;
             if (prevID != currID) continue;
+            // #650 / SH-5 — same-mesh disocclusion rejection. mesh_id
+            // alone misses the case where the camera orbit reveals a
+            // previously-self-occluded part of a long static wall:
+            // both the new and old taps share the wall's mesh_id, but
+            // their world normals differ once the orbit crosses an
+            // edge. A 0.9 cosine threshold (~25° cone) matches the
+            // Schied 2017 §4.2 default and keeps grazing-angle noise
+            // from over-rejecting on slightly-bumpy surfaces.
+            vec3 prevN = octDecode(texelFetch(prevNormalTex, q, 0).rg);
+            if (dot(currN, prevN) < 0.9) continue;
 
             vec3 sInd = texelFetch(prevIndirectHistTex, q, 0).rgb;
             vec4 sMom = texelFetch(prevMomentsHistTex, q, 0);
@@ -138,7 +170,12 @@ void main() {
             ivec2 q = ivec2(round(prevPx));
             if (q.x >= 0 && q.y >= 0 && q.x < int(screen.x) && q.y < int(screen.y)) {
                 uint nearID = texelFetch(prevMeshIdTex, q, 0).r;
-                if (nearID == currID) {
+                // #650 / SH-5 — apply the same normal-cone rejection
+                // here so the sub-pixel-motion fallback doesn't
+                // resurrect a same-mesh-but-different-normal tap that
+                // the bilinear loop just rejected.
+                vec3 nearN = octDecode(texelFetch(prevNormalTex, q, 0).rg);
+                if (nearID == currID && dot(currN, nearN) >= 0.9) {
                     vec4 sMom = texelFetch(prevMomentsHistTex, q, 0);
                     histInd   = texelFetch(prevIndirectHistTex, q, 0).rgb;
                     histMom   = sMom.xy;

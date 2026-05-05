@@ -1058,6 +1058,12 @@ impl VulkanContext {
             (0..n_frames).map(|i| gbuffer_ref.motion_view(i)).collect();
         let mesh_id_views_seed: Vec<vk::ImageView> =
             (0..n_frames).map(|i| gbuffer_ref.mesh_id_view(i)).collect();
+        // #650 / SH-5 — SVGF needs the GBuffer normal attachments too
+        // for the 2×2 consistency loop's normal-cone rejection. Pulled
+        // up from below the SVGF init so the new binding is wired at
+        // pipeline-creation time.
+        let normal_views_for_svgf: Vec<vk::ImageView> =
+            (0..n_frames).map(|i| gbuffer_ref.normal_view(i)).collect();
         let albedo_views: Vec<vk::ImageView> =
             (0..n_frames).map(|i| gbuffer_ref.albedo_view(i)).collect();
 
@@ -1073,6 +1079,7 @@ impl VulkanContext {
             &raw_indirect_views,
             &motion_views_seed,
             &mesh_id_views_seed,
+            &normal_views_for_svgf,
             swapchain_state.extent.width,
             swapchain_state.extent.height,
         ) {
