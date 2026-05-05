@@ -41,7 +41,11 @@ struct LockState {
     has_write: bool,
     /// Type name captured at the first track() call. Stable across
     /// reentrant acquires because `std::any::type_name::<T>()` returns
-    /// a `&'static str` for every distinct T.
+    /// a `&'static str` for every distinct T. Only read by the
+    /// debug-only `record_and_check` lock-order audit (#823); kept on
+    /// the struct in release builds too so the storage layout stays
+    /// identical between profiles.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     type_name: &'static str,
 }
 
@@ -71,16 +75,21 @@ pub(crate) fn track_read(type_id: TypeId, type_name: &'static str) {
         if is_new {
             // Only check global order on transition 0→held — re-entrant
             // read acquires on the same type don't add any new edges.
-            let held_others: Vec<(TypeId, &'static str)> = map
-                .iter()
-                .filter(|(id, _)| **id != type_id)
-                .map(|(id, state)| (*id, state.type_name))
-                .collect();
-            drop(map);
+            // The held-set collection + the `record_and_check` call are
+            // debug-only; gated as one block so release builds skip the
+            // Vec allocation entirely (#823 — pre-fix the Vec was built
+            // before the cfg switch and immediately discarded in release,
+            // costing ~100 small allocs/frame on the hot path).
             #[cfg(debug_assertions)]
-            global_order::record_and_check(type_id, type_name, &held_others);
-            #[cfg(not(debug_assertions))]
-            let _ = held_others;
+            {
+                let held_others: Vec<(TypeId, &'static str)> = map
+                    .iter()
+                    .filter(|(id, _)| **id != type_id)
+                    .map(|(id, state)| (*id, state.type_name))
+                    .collect();
+                drop(map);
+                global_order::record_and_check(type_id, type_name, &held_others);
+            }
         }
     });
 }
@@ -112,16 +121,17 @@ pub(crate) fn track_write(type_id: TypeId, type_name: &'static str) {
         }
         entry.has_write = true;
         if is_new {
-            let held_others: Vec<(TypeId, &'static str)> = map
-                .iter()
-                .filter(|(id, _)| **id != type_id)
-                .map(|(id, state)| (*id, state.type_name))
-                .collect();
-            drop(map);
+            // Debug-only — see the matching gate in `track_read` (#823).
             #[cfg(debug_assertions)]
-            global_order::record_and_check(type_id, type_name, &held_others);
-            #[cfg(not(debug_assertions))]
-            let _ = held_others;
+            {
+                let held_others: Vec<(TypeId, &'static str)> = map
+                    .iter()
+                    .filter(|(id, _)| **id != type_id)
+                    .map(|(id, state)| (*id, state.type_name))
+                    .collect();
+                drop(map);
+                global_order::record_and_check(type_id, type_name, &held_others);
+            }
         }
     });
 }
