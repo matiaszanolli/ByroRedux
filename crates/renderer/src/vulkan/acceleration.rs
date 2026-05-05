@@ -133,6 +133,15 @@ pub struct AccelerationManager {
     /// reuse the existing buffer. See #60 / #424 SIBLING — never a
     /// per-build allocation.
     scratch_buffers: [Option<GpuBuffer>; MAX_FRAMES_IN_FLIGHT],
+    /// Per-slot record of the most recent fresh-build's
+    /// `sizes.build_scratch_size`. Drives [`Self::shrink_tlas_scratch_to_fit`]'s
+    /// hysteresis check (#682 / MEM-2-7) — the BLAS path can derive its
+    /// peak from `blas_entries`, but TLAS scratch sizing is determined
+    /// at slot-create time by the AS spec's
+    /// `vkGetAccelerationStructureBuildSizesKHR` query and we don't
+    /// re-run it on refit/update, so we cache the last value here.
+    /// `0` until the slot has had its first fresh build.
+    tlas_scratch_peak_bytes: [vk::DeviceSize; MAX_FRAMES_IN_FLIGHT],
     /// Shared BLAS scratch buffer (reused across builds, grows to the
     /// high-water mark across single and batched builds). BLAS builds
     /// use one-time command buffers with a fence wait, so a single
@@ -431,6 +440,7 @@ impl AccelerationManager {
             blas_entries: Vec::new(),
             tlas: [None, None],
             scratch_buffers: [None, None],
+            tlas_scratch_peak_bytes: [0, 0],
             blas_scratch_buffer: None,
             tlas_instances_scratch: Vec::new(),
             tlas_addresses_scratch: Vec::new(),
@@ -2003,6 +2013,18 @@ impl AccelerationManager {
                 })
                 .context("Failed to create TLAS")?;
 
+            // Record this build's scratch requirement on the slot
+            // (#682 / MEM-2-7). The fresh-create path is the ONLY site
+            // that re-runs `vkGetAccelerationStructureBuildSizesKHR`
+            // for TLAS — refit/update reuse the existing scratch on
+            // the spec guarantee `BUILD ≥ UPDATE`. So this is the
+            // canonical peak for the slot's lifetime, written
+            // unconditionally even if the existing scratch buffer is
+            // big enough to skip realloc below: a previous-slot's
+            // larger peak shouldn't permanently inflate a smaller
+            // current-slot's recorded peak.
+            self.tlas_scratch_peak_bytes[frame_index] = sizes.build_scratch_size;
+
             // Grow-only per-frame scratch buffer (#424 SIBLING) — reuse
             // the existing allocation when it still fits the new build.
             // DEVICE_LOCAL: GPU-only scratch during TLAS build. The
@@ -2529,6 +2551,130 @@ impl AccelerationManager {
         true
     }
 
+    /// Drop or reallocate the per-frame TLAS build scratch on
+    /// `slot_index` when its capacity has grown out of proportion to
+    /// the current peak requirement. Mirror of
+    /// [`Self::shrink_blas_scratch_to_fit`] for the per-frame
+    /// `scratch_buffers[i]` (#682 / MEM-2-7) — those are grow-only via
+    /// [`scratch_needs_growth`], so a single 8 K-instance exterior
+    /// peak pinned MB-scale DEVICE_LOCAL VRAM for the rest of the
+    /// session even after the player walked into a small interior.
+    ///
+    /// Hysteresis matches the BLAS-scratch policy ([`scratch_should_shrink`]) —
+    /// the same `2× + 16 MB slack` shape, since both paths allocate
+    /// from the same DEVICE_LOCAL heap at comparable scale.
+    ///
+    /// Two cases:
+    ///
+    /// 1. `tlas[slot_index]` is `None` (slot was destroyed by
+    ///    [`Self::shrink_tlas_to_fit`]) — drop the scratch entirely.
+    ///    The next [`Self::build_tlas`] call sees `tlas[i].is_none()`,
+    ///    re-runs the size query, and allocates a correctly-sized
+    ///    scratch via [`scratch_needs_growth`]'s `None` arm.
+    /// 2. `tlas[slot_index]` is live — compare the scratch capacity
+    ///    against `tlas_scratch_peak_bytes[slot_index]` (recorded at
+    ///    last fresh build). If hysteresis fires, reallocate at
+    ///    peak. The peak is a static property of the live slot's
+    ///    geometry between fresh builds, so this is a reliable
+    ///    target.
+    ///
+    /// Returns `true` when the scratch was destroyed or reallocated.
+    ///
+    /// # Safety
+    ///
+    /// - Caller must guarantee no command buffer in flight references
+    ///   `scratch_buffers[slot_index]`. Typical call site is the App's
+    ///   end-of-frame path **after** the per-frame fence wait that
+    ///   gates the next recording into `slot_index`. See
+    ///   [`Self::shrink_tlas_to_fit`] doc for the same precondition.
+    /// - The `device` and `allocator` must be the same ones that
+    ///   allocated the slot's scratch buffer.
+    pub unsafe fn shrink_tlas_scratch_to_fit(
+        &mut self,
+        slot_index: usize,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+    ) -> bool {
+        let current = match self.scratch_buffers[slot_index].as_ref().map(|b| b.size) {
+            Some(c) => c,
+            None => return false,
+        };
+
+        // Slot was destroyed (e.g. by `shrink_tlas_to_fit` on the
+        // previous tick) — its scratch is now backing nothing live.
+        // Drop entirely; the next build allocates fresh.
+        if self.tlas[slot_index].is_none() {
+            if let Some(mut old) = self.scratch_buffers[slot_index].take() {
+                old.destroy(device, allocator);
+                log::debug!(
+                    "TLAS[{}] scratch dropped: {:.1} MB → 0 (slot destroyed)",
+                    slot_index,
+                    current as f64 / (1024.0 * 1024.0),
+                );
+            }
+            self.tlas_scratch_peak_bytes[slot_index] = 0;
+            return true;
+        }
+
+        // Live slot — compare against last fresh-build peak.
+        let peak = self.tlas_scratch_peak_bytes[slot_index];
+        if peak == 0 || !scratch_should_shrink(current, peak) {
+            return false;
+        }
+
+        if let Some(mut old) = self.scratch_buffers[slot_index].take() {
+            old.destroy(device, allocator);
+        }
+        match GpuBuffer::create_device_local_uninit(
+            device,
+            allocator,
+            peak,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+        ) {
+            Ok(new_buf) => {
+                log::debug!(
+                    "TLAS[{}] scratch shrunk: {:.1} MB → {:.1} MB (slot peak)",
+                    slot_index,
+                    current as f64 / (1024.0 * 1024.0),
+                    peak as f64 / (1024.0 * 1024.0),
+                );
+                self.scratch_buffers[slot_index] = Some(new_buf);
+                true
+            }
+            Err(e) => {
+                // Allocation failed — leave the slot's scratch as
+                // `None`. The next build's `scratch_needs_growth(None,
+                // ...)` arm will re-allocate. Degraded but correct.
+                log::warn!(
+                    "TLAS[{}] scratch shrink realloc failed: {e}; next build will re-allocate",
+                    slot_index,
+                );
+                true
+            }
+        }
+    }
+
+    /// Current TLAS scratch buffer capacity for a frame slot, in
+    /// bytes. `None` if the slot is empty (post-shrink, pre-first-
+    /// build, or never built). Exposed for
+    /// [`Self::shrink_tlas_scratch_to_fit`]'s regression test and
+    /// shutdown telemetry. See #682 / MEM-2-7.
+    pub fn tlas_scratch_capacity_bytes(&self, slot_index: usize) -> Option<vk::DeviceSize> {
+        self.scratch_buffers
+            .get(slot_index)
+            .and_then(|s| s.as_ref().map(|b| b.size))
+    }
+
+    /// Recorded last-fresh-build peak for a frame slot's TLAS scratch.
+    /// `0` when the slot has never had a fresh build. Exposed for
+    /// [`Self::shrink_tlas_scratch_to_fit`]'s regression test.
+    pub fn tlas_scratch_peak_bytes(&self, slot_index: usize) -> vk::DeviceSize {
+        self.tlas_scratch_peak_bytes
+            .get(slot_index)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Current total BLAS memory in bytes.
     pub fn total_blas_bytes(&self) -> vk::DeviceSize {
         self.total_blas_bytes
@@ -3044,6 +3190,25 @@ mod tests {
         // current = 2× peak exactly — ratio check is strict `>`, so
         // equality does NOT trigger.
         assert!(!scratch_should_shrink(64 * MB, 32 * MB));
+    }
+
+    /// #682 / MEM-2-7 — the policy that gates `shrink_tlas_scratch_to_fit`
+    /// is the same `scratch_should_shrink` that gates the BLAS path,
+    /// but the TLAS scratch failure mode is distinct: a single big
+    /// exterior frame (8 K+ instances → MB-scale build scratch) used
+    /// to pin that capacity for the rest of the session. Pin the
+    /// canonical scenario here so a future tweak to the threshold
+    /// surfaces in the diff for both #495 (BLAS) and #682 (TLAS)
+    /// failure modes.
+    #[test]
+    fn tlas_scratch_shrink_fires_after_exterior_peak() {
+        // 8 K-instance exterior cell can land scratch at ~32 MB on
+        // typical desktop drivers; settling into a small interior
+        // typically needs <1 MB. Ratio = 32× and excess = 31 MB
+        // > 16 MB SLACK → shrink.
+        let exterior_peak = 32 * MB;
+        let interior_steady = 1 * MB;
+        assert!(scratch_should_shrink(exterior_peak, interior_steady));
     }
 
     /// #659 — `is_scratch_aligned` enforces the AS-spec
