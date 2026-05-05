@@ -14,14 +14,16 @@
 //! material via a `material_id: u32` index. Identical materials
 //! dedup to the same id via `MaterialTable::intern`.
 //!
-//! ## Phase status (R1)
+//! ## Phase status (R1) — closed (#785)
 //!
-//! Phase 1 (this module): types + dedup table only. Nothing reads
-//! `material_id` yet; the legacy per-instance fields still ship the
-//! ground truth. Phase 2 wires the table into `build_render_data`,
-//! Phase 3 plumbs the SSBO + `material_id` field into `GpuInstance` +
-//! shaders, Phases 4–6 migrate fields one slice at a time and finally
-//! drop the redundant per-instance copies.
+//! R1 shipped end-to-end: the table is built per-frame in
+//! `build_render_data`, uploaded as the `MaterialBuffer` SSBO at
+//! binding 13, and `triangle.frag` reads
+//! `materials[inst.materialId].foo` for every per-material field.
+//! The legacy per-instance copies were removed in Phase 6 (#785).
+//! See `feedback_shader_struct_sync.md` for the narrowed
+//! "only triangle.frag mirrors GpuMaterial" contract that landed
+//! alongside the closeout.
 
 use super::scene_buffer::MAX_MATERIALS;
 use std::collections::HashMap;
@@ -33,22 +35,31 @@ use std::sync::Once;
 /// (`scene_buffer.rs:978`) with actual default-to-0 behaviour.
 static INTERN_OVERFLOW_WARNED: Once = Once::new();
 
-/// std430 GPU-side material record. 260 bytes per material.
+/// std430 GPU-side material record. 272 bytes per material.
 ///
-/// Mirrors the per-material fields of [`super::scene_buffer::GpuInstance`]
-/// at the same offsets within each vec4 group — this keeps the Phase 4–5
-/// shader-side migration mechanical (rename `instance.foo` to
-/// `materials[instance.material_id].foo`, no layout shuffling).
+/// (Historical: the per-instance → per-material migration shipped as
+/// R1 Phases 4–6, finishing with #785. The layout below was originally
+/// kept at the same vec4 offsets as the legacy `GpuInstance` slots so
+/// the per-shader rename was mechanical; that migration is closed and
+/// the layout is now whatever the dedup table needs, not what
+/// `GpuInstance` looks like.)
 ///
 /// **CRITICAL**: All fields are scalar (f32/u32). NEVER use `[f32; 3]` —
 /// std430 aligns vec3 to 16 B, which would silently mismatch a tightly-
 /// packed `#[repr(C)]` Rust struct. Pad explicitly with named pad fields
 /// so the byte-level `Hash`/`Eq` impls below are deterministic.
 ///
-/// **Shader Struct Sync**: matching `struct GpuMaterial` declarations
-/// in the GLSL shaders MUST be updated in lockstep. The
-/// `gpu_material_size_is_260_bytes` test below pins the layout
-/// invariant.
+/// **Shader Struct Sync** (current, narrower contract): only
+/// `crates/renderer/shaders/triangle.frag` declares a matching
+/// `struct GpuMaterial` and reads from `materials[inst.materialId]`
+/// (binding 13). `triangle.vert`, `ui.vert`, and `caustic_splat.comp`
+/// MUST NOT mirror the struct or index the material buffer — the build-
+/// time grep at `scene_buffer.rs:1639`
+/// (`ui_vert_reads_texture_index_from_instance_not_material_table`)
+/// pins this for `ui.vert` after #776 / #785; mirror checks for the
+/// other two stages live in the same module. Layout invariant is pinned
+/// by `gpu_material_size_is_272_bytes` and the per-field offset tests
+/// below.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuMaterial {
