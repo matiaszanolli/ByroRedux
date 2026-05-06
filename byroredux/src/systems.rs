@@ -299,11 +299,20 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         return;
     }
 
+    // Single shared Name query handle — drives both the SubtreeCache
+    // generation check and the NameIndex rebuild path. Pre-#827 the
+    // prelude took THREE `world.query::<Name>()` acquisitions (two for
+    // .len() and one for the rebuild iter); merging them halves the
+    // RwLock fast-path traffic on the hot path and removes a fragile
+    // "Name spawned between block 1 and block 2" inconsistency window
+    // (today unreachable, but the pattern was brittle).
+    let name_query = world.query::<Name>();
+    let current_name_count = name_query.as_ref().map(|q| q.len()).unwrap_or(0);
+
     // Persisted subtree name maps — survives across frames, only cleared when
     // Name component count changes. Eliminates ~1500 HashMap insertions/frame
     // for typical animated scenes. #278.
     {
-        let current_name_count = world.query::<Name>().map(|q| q.len()).unwrap_or(0);
         let needs_clear = world
             .try_resource::<SubtreeCache>()
             .map(|c| c.generation != current_name_count)
@@ -321,15 +330,17 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
     // this fix the generation tracked `world.next_entity_id()` and
     // every entity spawn (even unnamed ones) forced a full rebuild.
     {
-        let current_name_count = world.query::<Name>().map(|q| q.len()).unwrap_or(0);
         let needs_rebuild = world
             .try_resource::<NameIndex>()
             .map(|idx| idx.generation != current_name_count)
             .unwrap_or(true);
         if needs_rebuild {
-            let name_query = match world.query::<Name>() {
-                Some(q) => q,
-                None => return,
+            // Reuse the prelude's shared `name_query` for the iter —
+            // a `None` here means the Name storage has never existed,
+            // which is the same `return` semantics the pre-#827 path
+            // used at line 332.
+            let Some(ref name_query) = name_query else {
+                return;
             };
             // #824 — refill the existing HashMap in place instead of
             // allocating a fresh one and dropping the old. `clear()`
@@ -348,6 +359,7 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
             idx.generation = current_name_count;
         }
     }
+    drop(name_query);
 
     let name_index = world.try_resource::<NameIndex>().unwrap();
 
