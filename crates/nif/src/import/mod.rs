@@ -393,12 +393,20 @@ pub struct ImportedMesh {
     pub no_lighting_falloff: Option<NoLightingFalloff>,
     /// Forces wireframe rendering (polygon_mode = LINE). Set by
     /// `NiWireframeProperty { flags: 1 }`. Oblivion vanilla never uses this;
-    /// common in FO3/FNV mods. Renderer-side VK_POLYGON_MODE_LINE is future work.
+    /// common in FO3/FNV mods. Renderer-side `VK_POLYGON_MODE_LINE` is
+    /// deferred — tracked at #869 (O4-D4-NEW-01). The eventual fix ships a
+    /// `WireframeOpaque { two_sided }` pipeline variant + matching `Blended`
+    /// arm in `crates/renderer/src/vulkan/pipeline.rs`. Until then this
+    /// bool is captured but not consulted on the render path.
     pub wireframe: bool,
     /// Forces flat shading (no per-vertex normal interpolation). Set by
     /// `NiShadeProperty { flags: 0 }` (bit 0 off = flat). Used on a handful
     /// of Oblivion architectural pieces for a faceted look. Renderer-side
-    /// `flat` GLSL qualifier is future work.
+    /// consumption is deferred — tracked at #869 (O4-D4-NEW-01). The two
+    /// implementation paths are (a) parallel `triangle_flat.vert/frag` pair
+    /// with pipeline-time switch, or (b) per-fragment dFdx/dFdy face-normal
+    /// recompute gated on a per-batch flag. Until then this bool is captured
+    /// but not consulted on the render path.
     pub flat_shading: bool,
 }
 

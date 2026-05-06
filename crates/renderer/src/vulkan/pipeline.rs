@@ -206,6 +206,17 @@ fn triangle_pipeline_inner(
     // projection. front_face=CCW + cull_mode=BACK is therefore correct.
     // All pipelines enable depth bias (set dynamically per-draw to resolve
     // Z-fighting for coplanar geometry like decals).
+    //
+    // `polygon_mode(FILL)` is hard-coded across both rasterizers below —
+    // the importer captures a `wireframe: bool` on `MaterialInfo` /
+    // `ImportedMesh` from `NiWireframeProperty`, but no pipeline variant
+    // routes to `vk::PolygonMode::LINE` yet. Tracked at #869 (O4-D4-NEW-01)
+    // — the deferred fix ships `WireframeOpaque { two_sided }` and matching
+    // `Blended` arms; the pipeline-cache key already includes blend +
+    // two-sided so adding the `wireframe` boolean is mechanical. Requires
+    // the device to expose `features.fillModeNonSolid`. Oblivion vanilla
+    // ships zero wireframe meshes, so this gap is invisible to the
+    // gameplay-content render today.
     let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
         .depth_clamp_enable(false)
         .rasterizer_discard_enable(false)
@@ -404,6 +415,7 @@ pub fn create_blend_pipeline(
     } else {
         vk::CullModeFlags::BACK
     };
+    // Hard-coded `polygon_mode(FILL)`; wireframe routing deferred per #869.
     let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
         .depth_clamp_enable(false)
         .rasterizer_discard_enable(false)
@@ -567,6 +579,7 @@ pub fn create_ui_pipeline(
         .scissor_count(1);
     let _ = extent;
 
+    // Hard-coded `polygon_mode(FILL)`; wireframe routing deferred per #869.
     let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
         .depth_clamp_enable(false)
         .rasterizer_discard_enable(false)
