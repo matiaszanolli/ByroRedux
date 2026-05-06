@@ -643,8 +643,21 @@ fn consume_streaming_payload(
             }
             None => {
                 let cache_key = model_path.to_ascii_lowercase();
-                let mut reg = world.resource_mut::<cell_loader::NifImportRegistry>();
-                reg.insert(cache_key, None);
+                let freed = {
+                    let mut reg = world.resource_mut::<cell_loader::NifImportRegistry>();
+                    reg.insert(cache_key, None)
+                };
+                // #863 — release LRU-evicted clip handles. Negative
+                // cache inserts can still trigger eviction of older
+                // entries when `BYRO_NIF_CACHE_MAX > 0`.
+                if !freed.is_empty() {
+                    let mut clip_reg = world
+                        .resource_mut::<byroredux_core::animation::AnimationClipRegistry>(
+                        );
+                    for h in freed {
+                        clip_reg.release(h);
+                    }
+                }
             }
         }
     }

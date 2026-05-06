@@ -614,8 +614,20 @@ fn stream_initial_radius(
                 ),
                 None => {
                     let cache_key = model_path.to_ascii_lowercase();
-                    let mut reg = world.resource_mut::<cell_loader::NifImportRegistry>();
-                    reg.insert(cache_key, None);
+                    let freed = {
+                        let mut reg =
+                            world.resource_mut::<cell_loader::NifImportRegistry>();
+                        reg.insert(cache_key, None)
+                    };
+                    // #863 — release LRU-evicted clip handles.
+                    if !freed.is_empty() {
+                        let mut clip_reg = world.resource_mut::<
+                            byroredux_core::animation::AnimationClipRegistry,
+                        >();
+                        for h in freed {
+                            clip_reg.release(h);
+                        }
+                    }
                 }
             }
         }

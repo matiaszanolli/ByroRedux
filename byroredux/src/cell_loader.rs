@@ -1268,13 +1268,17 @@ fn load_references(
     // drives `parsed_count` / `failed_count` and runs LRU eviction; we
     // touch hit keys first so they bump above the LRU watermark before
     // any new inserts fight them for cache space (#635 / FNV-D3-05).
-    let (this_cell_hits, this_cell_misses, this_cell_unique, lifetime_hit_rate) = {
+    let (this_cell_hits, this_cell_misses, this_cell_unique, lifetime_hit_rate, freed_clip_handles) = {
         let mut reg = world.resource_mut::<NifImportRegistry>();
+        let mut freed: Vec<u32> = Vec::new();
         reg.hits += this_call_hits;
         reg.misses += this_call_misses;
         reg.touch_keys(pending_hits.iter().map(String::as_str));
         for (key, entry) in pending_new {
-            reg.insert(key, entry);
+            // #863 — accumulate LRU-evicted clip handles from each
+            // insert; the AnimationClipRegistry release happens after
+            // we drop the NifImportRegistry write lock.
+            freed.extend(reg.insert(key, entry));
         }
         // #544 — commit per-call clip handles into the process-lifetime
         // registry. Future cell loads of the same NIF reach the
@@ -1289,8 +1293,19 @@ fn load_references(
             reg.misses.saturating_sub(cache_misses_at_entry),
             new_entries,
             reg.hit_rate_pct(),
+            freed,
         )
     };
+    // Release the clip-registry slots of every cache victim that
+    // surfaced an evicted clip handle (#863). Drains the keyframe
+    // arrays without invalidating live `clip_handle: u32` consumers.
+    if !freed_clip_handles.is_empty() {
+        let mut clip_reg =
+            world.resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
+        for h in freed_clip_handles {
+            clip_reg.release(h);
+        }
+    }
     log::info!(
         "'{}' loaded: {} entities, {} new unique meshes parsed, NIF cache hits/misses {}/{} this cell ({:.1}% lifetime hit rate), {} statics hits, {} statics misses",
         label,
@@ -1563,8 +1578,20 @@ pub(crate) fn finish_partial_import(
             "[stream-drain] Skipping editor marker NIF '{}'",
             model_path
         );
-        let mut reg = world.resource_mut::<NifImportRegistry>();
-        reg.insert(cache_key, None);
+        let freed = {
+            let mut reg = world.resource_mut::<NifImportRegistry>();
+            reg.insert(cache_key, None)
+        };
+        // #863 — release any LRU-evicted clip handles. Negative-cache
+        // insert can still trigger eviction of pre-existing entries
+        // when `BYRO_NIF_CACHE_MAX > 0`.
+        if !freed.is_empty() {
+            let mut clip_reg =
+                world.resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
+            for h in freed {
+                clip_reg.release(h);
+            }
+        }
         return;
     }
 
@@ -1606,10 +1633,23 @@ pub(crate) fn finish_partial_import(
         embedded_clip,
     });
 
-    let mut reg = world.resource_mut::<NifImportRegistry>();
-    reg.insert(cache_key.clone(), Some(cached));
-    if let Some(handle) = clip_handle {
-        reg.set_clip_handle(cache_key, handle);
+    let freed_clip_handles = {
+        let mut reg = world.resource_mut::<NifImportRegistry>();
+        let freed = reg.insert(cache_key.clone(), Some(cached));
+        if let Some(handle) = clip_handle {
+            reg.set_clip_handle(cache_key, handle);
+        }
+        freed
+    };
+    // Release the keyframes of any clip handles whose owning cache
+    // entries were just LRU-evicted (#863). No-op when
+    // `BYRO_NIF_CACHE_MAX=0` (default unlimited mode).
+    if !freed_clip_handles.is_empty() {
+        let mut clip_reg =
+            world.resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
+        for h in freed_clip_handles {
+            clip_reg.release(h);
+        }
     }
 }
 

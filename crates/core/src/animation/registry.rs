@@ -8,15 +8,22 @@ use super::types::AnimationClip;
 
 /// Shared registry of loaded animation clips, indexed by handle.
 ///
-/// The registry is grow-only by design: handles never alias stale data
-/// after a cell unload, so any held `clip_handle: u32` (in
-/// `AnimationStack` layers, `AnimationController` catalogs, etc.) is
-/// guaranteed to point at the same clip for the process lifetime.
+/// Slots never alias stale data: a `clip_handle: u32` issued by
+/// [`Self::add`] always resolves to the same slot for the process
+/// lifetime. The slot's *contents* can be cleared via
+/// [`Self::release`] (called from the cell-loader's LRU eviction
+/// path — see #863) to drop the keyframe arrays without needing to
+/// invalidate live `AnimationPlayer` / `AnimationLayer` consumers.
+/// A released slot reads as an empty clip; sampling produces
+/// identity transforms, identical to a never-loaded clip — so live
+/// handles stay resolvable and just stop animating.
 ///
 /// Path-keyed memoisation via [`Self::get_or_insert_by_path`] is the
 /// dedup mechanism for caller paths that load the same `.kf` repeatedly
 /// (e.g. NPC spawn re-using `idle.kf` across every loaded cell). See
-/// #790.
+/// #790. `release` removes any path-binding pointing at the released
+/// handle so the next `get_or_insert_by_path` for the same key
+/// rebuilds rather than returning the empty stub.
 pub struct AnimationClipRegistry {
     clips: Vec<AnimationClip>,
     /// Path-keyed memoisation. Populated by
@@ -85,6 +92,68 @@ impl AnimationClipRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.clips.is_empty()
+    }
+
+    /// Drop the keyframe arrays of `handle`'s slot so the registry
+    /// stops holding references to evicted cell-load NIF clips.
+    /// Called from the cell-loader's LRU eviction path (#863) when a
+    /// cached `NifImportRegistry` entry's memoised clip handle is
+    /// retired.
+    ///
+    /// **Slot semantics**: the slot stays occupied at the same index
+    /// — the contained `AnimationClip` is replaced with an empty
+    /// stub (zero duration, no channels, no text keys). Live
+    /// `AnimationPlayer.clip_handle` / `AnimationLayer.clip_handle`
+    /// consumers still resolve via [`Self::get`] but read an empty
+    /// clip; sampling produces identity transforms, identical to a
+    /// never-loaded clip. This keeps the no-stale-handle invariant
+    /// the rest of the engine assumes (no `clip_handle: u32` ever
+    /// aliases a different clip after release) without needing to
+    /// switch every holder to a generational handle scheme.
+    ///
+    /// Returns `true` when a populated slot was cleared, `false`
+    /// when the handle was out-of-range or the slot was already
+    /// empty (idempotent).
+    ///
+    /// Also drops any [`Self::clip_handles_by_path`] reverse-map
+    /// entry pointing at this handle so a subsequent
+    /// `get_or_insert_by_path` for the same key rebuilds the clip
+    /// instead of returning the empty stub.
+    pub fn release(&mut self, handle: u32) -> bool {
+        let idx = handle as usize;
+        let Some(slot) = self.clips.get_mut(idx) else {
+            return false;
+        };
+        // Idempotency check — already-empty slot returns false so the
+        // caller's release-counter telemetry doesn't double-count
+        // releases against the same handle.
+        let was_populated = !slot.channels.is_empty()
+            || !slot.float_channels.is_empty()
+            || !slot.color_channels.is_empty()
+            || !slot.bool_channels.is_empty()
+            || !slot.texture_flip_channels.is_empty()
+            || !slot.text_keys.is_empty()
+            || slot.duration > 0.0;
+        if !was_populated {
+            return false;
+        }
+        // Drain heavy collections via .clear() — the Vec/HashMap
+        // capacities deallocate on the next allocator turn; the slot
+        // headers stay so the slot stays addressable.
+        slot.name = String::new();
+        slot.duration = 0.0;
+        slot.weight = 1.0;
+        slot.accum_root_name = None;
+        slot.channels.clear();
+        slot.float_channels.clear();
+        slot.color_channels.clear();
+        slot.bool_channels.clear();
+        slot.texture_flip_channels.clear();
+        slot.text_keys.clear();
+        // Path-memo cleanup: drop reverse-map entries pointing here.
+        // O(N) on path-map size; called rarely (LRU eviction freq).
+        self.clip_handles_by_path.retain(|_, h| *h != handle);
+        true
     }
 }
 
@@ -171,5 +240,97 @@ mod tests {
         let mut reg = AnimationClipRegistry::new();
         let _ = reg.add(empty_clip());
         assert_eq!(reg.get_by_path("anything"), None);
+    }
+
+    fn populated_clip() -> AnimationClip {
+        use crate::animation::types::{TransformChannel, KeyType};
+        let mut clip = empty_clip();
+        clip.name = "evicted_clip".to_string();
+        clip.duration = 1.5;
+        clip.text_keys.push((0.5, crate::string::StringPool::new().intern("evt")));
+        clip.channels.insert(
+            crate::string::StringPool::new().intern("Bip01 Pelvis"),
+            TransformChannel {
+                translation_keys: Vec::new(),
+                rotation_keys: Vec::new(),
+                scale_keys: Vec::new(),
+                translation_type: KeyType::Linear,
+                rotation_type: KeyType::Linear,
+                scale_type: KeyType::Linear,
+                priority: 0,
+            },
+        );
+        clip
+    }
+
+    /// Regression for #863: `release(handle)` drops the slot's
+    /// keyframe arrays so the cell-loader LRU eviction path can stop
+    /// the unbounded `AnimationClipRegistry` growth without
+    /// invalidating live `clip_handle: u32` consumers. The slot stays
+    /// addressable at the same index; sampling reads an empty clip
+    /// (identical to a never-loaded one).
+    #[test]
+    fn release_clears_slot_keyframes_but_keeps_slot_addressable() {
+        let mut reg = AnimationClipRegistry::new();
+        let h = reg.add(populated_clip());
+
+        // Sanity: the slot starts populated.
+        let pre = reg.get(h).expect("slot must exist after add");
+        assert_eq!(pre.duration, 1.5);
+        assert_eq!(pre.channels.len(), 1);
+        assert_eq!(pre.text_keys.len(), 1);
+
+        let cleared = reg.release(h);
+        assert!(cleared, "release must return true for a populated slot");
+
+        // Slot still addressable — live handles still resolve.
+        let post = reg.get(h).expect("slot must remain addressable after release");
+        assert_eq!(post.duration, 0.0);
+        assert!(post.channels.is_empty());
+        assert!(post.text_keys.is_empty());
+        assert!(post.float_channels.is_empty());
+        // Length unchanged — slot count is monotonic.
+        assert_eq!(reg.len(), 1);
+    }
+
+    #[test]
+    fn release_is_idempotent_on_empty_slot() {
+        let mut reg = AnimationClipRegistry::new();
+        let h = reg.add(populated_clip());
+        assert!(reg.release(h));
+        // Second release sees an already-empty slot — returns false
+        // so caller's telemetry doesn't double-count.
+        assert!(!reg.release(h));
+    }
+
+    #[test]
+    fn release_returns_false_for_out_of_range_handle() {
+        let mut reg = AnimationClipRegistry::new();
+        let _ = reg.add(empty_clip());
+        assert!(!reg.release(99), "out-of-range handle must return false");
+    }
+
+    /// Path-memo cleanup: a released handle's path-binding is dropped
+    /// so the next `get_or_insert_by_path` rebuilds rather than
+    /// returning the empty stub.
+    #[test]
+    fn release_drops_path_binding_so_next_get_or_insert_rebuilds() {
+        let mut reg = AnimationClipRegistry::new();
+        let key = "meshes\\evicted.kf";
+        let h1 = reg.get_or_insert_by_path(key.to_string(), populated_clip);
+        assert_eq!(reg.get_by_path(key), Some(h1));
+
+        reg.release(h1);
+
+        // Path-map binding gone: the next get_or_insert_by_path with
+        // the same key returns a NEW handle pointing at a freshly-
+        // populated clip (not the empty h1 stub).
+        assert_eq!(reg.get_by_path(key), None);
+        let h2 = reg.get_or_insert_by_path(key.to_string(), populated_clip);
+        assert_ne!(h1, h2, "post-release rebuild must allocate a fresh slot");
+        // h1 stays empty (live handles get the no-op behaviour); h2
+        // is the populated rebuild.
+        assert_eq!(reg.get(h1).unwrap().duration, 0.0);
+        assert_eq!(reg.get(h2).unwrap().duration, 1.5);
     }
 }

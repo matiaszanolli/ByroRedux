@@ -230,7 +230,24 @@ impl NifImportRegistry {
     /// `len > max_entries`. The eviction loop is a no-op when
     /// `max_entries == 0` (unlimited mode), so the default path stays
     /// O(1) per insert.
-    pub(crate) fn insert(&mut self, key: String, value: Option<Arc<CachedNifImport>>) {
+    ///
+    /// Returns a `Vec<u32>` of `AnimationClipRegistry` handles whose
+    /// owning cache entries were evicted by this call — the caller
+    /// MUST forward each to
+    /// [`byroredux_core::animation::AnimationClipRegistry::release`]
+    /// to free the underlying keyframe arrays. Pre-#863 the eviction
+    /// path silently dropped the path binding and the clip's keyframe
+    /// memory leaked under long-running `BYRO_NIF_CACHE_MAX > 0`
+    /// sessions. The `must_use` attribute makes a forgetful caller a
+    /// compile warning rather than a silent leak. Empty Vec on the
+    /// no-eviction path (the default `BYRO_NIF_CACHE_MAX=0` mode); no
+    /// allocation cost there.
+    #[must_use = "evicted clip handles must be released into AnimationClipRegistry to free their keyframe arrays — see #863"]
+    pub(crate) fn insert(
+        &mut self,
+        key: String,
+        value: Option<Arc<CachedNifImport>>,
+    ) -> Vec<u32> {
         // Adjust parsed/failed state so they stay in lockstep with
         // `cache.values().filter(|v| v.is_some()).count()`.
         match (self.cache.get(&key), &value) {
@@ -256,6 +273,7 @@ impl NifImportRegistry {
         self.next_tick = self.next_tick.wrapping_add(1);
         self.access_tick.insert(key, t);
 
+        let mut freed_clip_handles: Vec<u32> = Vec::new();
         if self.max_entries > 0 {
             while self.cache.len() > self.max_entries {
                 // O(N) sweep over `access_tick`. For caches sized in
@@ -277,7 +295,15 @@ impl NifImportRegistry {
                 // clip rather than reaching into the
                 // `AnimationClipRegistry` for a stale handle pointing
                 // at a clip that was logically discarded.
-                self.clip_handles.remove(&victim_key);
+                //
+                // #863 — capture the freed handle (if any) so the
+                // caller can `release()` it into the
+                // AnimationClipRegistry. Pre-fix the handle was
+                // dropped on the floor and the keyframe arrays
+                // leaked.
+                if let Some(handle) = self.clip_handles.remove(&victim_key) {
+                    freed_clip_handles.push(handle);
+                }
                 match removed {
                     Some(Some(_)) => {
                         self.parsed_count = self.parsed_count.saturating_sub(1);
@@ -290,6 +316,7 @@ impl NifImportRegistry {
                 self.evictions = self.evictions.saturating_add(1);
             }
         }
+        freed_clip_handles
     }
 }
 

@@ -94,7 +94,7 @@ fn unlimited_mode_never_evicts() {
     let mut reg = NifImportRegistry::new();
     assert_eq!(reg.max_entries(), 0, "default cap is unlimited");
     for i in 0..100u32 {
-        reg.insert(format!("mesh_{i}.nif"), Some(dummy_cached()));
+        let _ = reg.insert(format!("mesh_{i}.nif"), Some(dummy_cached()));
     }
     assert_eq!(reg.len(), 100);
     assert_eq!(reg.evictions, 0);
@@ -118,14 +118,14 @@ fn lru_cap_evicts_least_recently_inserted_entry() {
         evictions: 0,
         clip_handles: HashMap::new(),
     };
-    reg.insert("a.nif".into(), Some(dummy_cached()));
-    reg.insert("b.nif".into(), Some(dummy_cached()));
-    reg.insert("c.nif".into(), Some(dummy_cached()));
+    let _ = reg.insert("a.nif".into(), Some(dummy_cached()));
+    let _ = reg.insert("b.nif".into(), Some(dummy_cached()));
+    let _ = reg.insert("c.nif".into(), Some(dummy_cached()));
     assert_eq!(reg.len(), 3);
     assert_eq!(reg.evictions, 0);
 
     // Fourth insert evicts the oldest entry (a.nif).
-    reg.insert("d.nif".into(), Some(dummy_cached()));
+    let _ = reg.insert("d.nif".into(), Some(dummy_cached()));
     assert_eq!(reg.len(), 3);
     assert_eq!(reg.evictions, 1);
     assert!(!reg.cache.contains_key("a.nif"), "a.nif must have been evicted");
@@ -155,16 +155,16 @@ fn touch_keys_protects_recently_hit_entries_from_lru() {
         evictions: 0,
         clip_handles: HashMap::new(),
     };
-    reg.insert("door.nif".into(), Some(dummy_cached())); // tick 0
-    reg.insert("wall.nif".into(), Some(dummy_cached())); // tick 1
-    reg.insert("sky.nif".into(), Some(dummy_cached()));  // tick 2
+    let _ = reg.insert("door.nif".into(), Some(dummy_cached())); // tick 0
+    let _ = reg.insert("wall.nif".into(), Some(dummy_cached())); // tick 1
+    let _ = reg.insert("sky.nif".into(), Some(dummy_cached()));  // tick 2
 
     // Simulate a cell load that hits door.nif again — it must rise
     // above wall.nif and sky.nif in LRU order.
     reg.touch_keys(["door.nif"].iter().copied());
 
     // Adding a fresh entry now evicts wall.nif (now the oldest tick).
-    reg.insert("table.nif".into(), Some(dummy_cached()));
+    let _ = reg.insert("table.nif".into(), Some(dummy_cached()));
     assert_eq!(reg.evictions, 1);
     assert!(reg.cache.contains_key("door.nif"), "touched key must survive");
     assert!(!reg.cache.contains_key("wall.nif"), "untouched-and-oldest is the victim");
@@ -180,18 +180,18 @@ fn touch_keys_protects_recently_hit_entries_from_lru() {
 #[test]
 fn insert_overwrite_transitions_parsed_failed_counters() {
     let mut reg = NifImportRegistry::new();
-    reg.insert("broken.nif".into(), None);
+    let _ = reg.insert("broken.nif".into(), None);
     assert_eq!(reg.parsed_count, 0);
     assert_eq!(reg.failed_count, 1);
 
     // Replace with a successful parse.
-    reg.insert("broken.nif".into(), Some(dummy_cached()));
+    let _ = reg.insert("broken.nif".into(), Some(dummy_cached()));
     assert_eq!(reg.parsed_count, 1);
     assert_eq!(reg.failed_count, 0);
     assert_eq!(reg.len(), 1);
 
     // Replace with a failed parse again (e.g., the BSA file rotted).
-    reg.insert("broken.nif".into(), None);
+    let _ = reg.insert("broken.nif".into(), None);
     assert_eq!(reg.parsed_count, 0);
     assert_eq!(reg.failed_count, 1);
 }
@@ -337,15 +337,22 @@ fn lru_eviction_drops_clip_handle_for_victim() {
         evictions: 0,
         clip_handles: HashMap::new(),
     };
-    reg.insert("a.nif".into(), Some(dummy_cached()));
+    let _ = reg.insert("a.nif".into(), Some(dummy_cached()));
     reg.set_clip_handle("a.nif".into(), 1);
-    reg.insert("b.nif".into(), Some(dummy_cached()));
+    let _ = reg.insert("b.nif".into(), Some(dummy_cached()));
     reg.set_clip_handle("b.nif".into(), 2);
     assert_eq!(reg.clip_handle_for("a.nif"), Some(1));
     assert_eq!(reg.clip_handle_for("b.nif"), Some(2));
 
-    // Triggers eviction of `a.nif` (least-recently inserted).
-    reg.insert("c.nif".into(), Some(dummy_cached()));
+    // Triggers eviction of `a.nif` (least-recently inserted). The
+    // returned Vec carries the freed clip handle (#863) so the caller
+    // can pass it to `AnimationClipRegistry::release`.
+    let freed = reg.insert("c.nif".into(), Some(dummy_cached()));
+    assert_eq!(
+        freed,
+        vec![1],
+        "insert must return the evicted entry's clip handle"
+    );
 
     assert_eq!(reg.evictions, 1);
     assert!(
@@ -361,6 +368,57 @@ fn lru_eviction_drops_clip_handle_for_victim() {
     assert_eq!(reg.clip_handle_for("b.nif"), Some(2));
 }
 
+/// Regression for #863: when no eviction happens (default unlimited
+/// mode or cache below `max_entries`), `insert` returns an empty Vec
+/// — the no-eviction path stays allocation-free.
+#[test]
+fn insert_returns_empty_vec_when_no_eviction() {
+    let mut reg = NifImportRegistry::new(); // default max_entries = 0 (unlimited)
+    let freed_a = reg.insert("a.nif".into(), Some(dummy_cached()));
+    let freed_b = reg.insert("b.nif".into(), Some(dummy_cached()));
+    let freed_c = reg.insert("c.nif".into(), None); // negative cache also returns empty
+    assert!(freed_a.is_empty());
+    assert!(freed_b.is_empty());
+    assert!(freed_c.is_empty());
+    assert_eq!(reg.evictions, 0);
+}
+
+/// Regression for #863: a victim cache entry without a memoised clip
+/// handle (e.g. a NIF that authored no controllers, or a negative
+/// cache entry) does NOT appear in the freed-handles Vec — only
+/// entries that actually had a clip handle leak when un-released.
+#[test]
+fn insert_only_returns_freed_handles_for_evicted_entries_with_clips() {
+    let mut reg = NifImportRegistry {
+        cache: HashMap::new(),
+        access_tick: HashMap::new(),
+        next_tick: 0,
+        max_entries: 2,
+        hits: 0,
+        misses: 0,
+        parsed_count: 0,
+        failed_count: 0,
+        evictions: 0,
+        clip_handles: HashMap::new(),
+    };
+    // Two entries; `a.nif` has a clip handle, `b.nif` doesn't.
+    let _ = reg.insert("a.nif".into(), Some(dummy_cached()));
+    reg.set_clip_handle("a.nif".into(), 7);
+    let _ = reg.insert("b.nif".into(), Some(dummy_cached()));
+    // (no set_clip_handle for "b.nif" — it authored no controllers)
+
+    // Evict `a.nif` (least-recently inserted) — freed Vec carries 7.
+    let freed_a = reg.insert("c.nif".into(), Some(dummy_cached()));
+    assert_eq!(freed_a, vec![7]);
+
+    // Now evict `b.nif` — no clip handle was ever memoised, so
+    // freed Vec is empty (the cache entry still gets evicted; just
+    // nothing to release into AnimationClipRegistry).
+    let freed_b = reg.insert("d.nif".into(), Some(dummy_cached()));
+    assert!(freed_b.is_empty(), "no clip handle on b.nif → empty freed Vec");
+    assert_eq!(reg.evictions, 2);
+}
+
 /// Regression for #862 / FNV-D3-NEW-03: the cell-stream worker filters
 /// its `model_paths` against `NifImportRegistry::snapshot_keys()` so a
 /// 7×7 grid traversal in WastelandNV doesn't re-extract+parse every
@@ -370,9 +428,9 @@ fn lru_eviction_drops_clip_handle_for_victim() {
 #[test]
 fn snapshot_keys_includes_positive_and_negative_cache_entries() {
     let mut reg = NifImportRegistry::new();
-    reg.insert("rock_cliff.nif".into(), Some(dummy_cached()));
-    reg.insert("missing_model.nif".into(), None); // negative cache
-    reg.insert("junkpile.nif".into(), Some(dummy_cached()));
+    let _ = reg.insert("rock_cliff.nif".into(), Some(dummy_cached()));
+    let _ = reg.insert("missing_model.nif".into(), None); // negative cache
+    let _ = reg.insert("junkpile.nif".into(), Some(dummy_cached()));
 
     let snap = reg.snapshot_keys();
     assert_eq!(snap.len(), 3);
@@ -397,11 +455,11 @@ fn snapshot_keys_decoupled_from_registry_after_capture() {
     // see a moving target and produce non-deterministic skip
     // decisions.
     let mut reg = NifImportRegistry::new();
-    reg.insert("a.nif".into(), Some(dummy_cached()));
+    let _ = reg.insert("a.nif".into(), Some(dummy_cached()));
     let snap_before = reg.snapshot_keys();
     assert_eq!(snap_before.len(), 1);
 
-    reg.insert("b.nif".into(), Some(dummy_cached()));
+    let _ = reg.insert("b.nif".into(), Some(dummy_cached()));
     // The previously-captured snapshot must NOT see "b.nif".
     assert_eq!(snap_before.len(), 1);
     assert!(!snap_before.contains("b.nif"));
