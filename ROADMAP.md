@@ -12,10 +12,11 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-05-05 (post-Session 29, three-day audit-bundle
-marathon — M-NORMALS follow-on, R1 telemetry/safety/offset-guard, FNV
-ESM long-tail dispatch, BA2 reader hardening, NIF parse hot-path perf,
-perf + Skyrim D5 audit closeouts — see [HISTORY.md](HISTORY.md)).
+**Last verified**: 2026-05-06 (post-Session 30, M44 audio Phases 1–6
+end-to-end, cell-streaming hardening — panic catch + cache reuse +
+evicted-clip release, ECS perf audit final four, concurrency audit
+dims 2-3 closeouts including the SwapchainState double-destroy gap and
+material slot-0 overload — see [HISTORY.md](HISTORY.md)).
 **Bench-of-record**: Prospector Saloon 172.6 FPS / 5.79 ms — commit
 `6a6950a`, wall-clock bench. Scene is glass-heavy (bottles, pitcher,
 marquee sign); RT refraction/reflection cost is representative of a
@@ -489,7 +490,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 ### Open — Tier 3 / 4 gaps
 
 - [ ] 1 257 FO3 SCPT records parsed; no runtime executes them (M47.0)
-- [ ] No audio subsystem of any kind (M44)
+- [x] ~~No audio subsystem of any kind (M44)~~ — **closed 2026-05-06**. `byroredux-audio` crate scaffolded on kira `0.10` (Phase 1), BSA → symphonia decode + `SoundCache` (Phase 2), spatial sub-tracks + per-emitter `SpatialTrackHandle` (Phase 3), `play_oneshot` queue + `FootstepEmitter` + XZ-plane stride `footstep_system` (Phase 3.5), looping ambient via `loop_region` + tweened stop on `AudioEmitter` despawn (Phase 4), streaming music via `StreamingSoundData` + `play_music` / `stop_music` (Phase 5), global reverb send + per-cell `set_reverb_send_db` (Phase 6). Pending: FOOT records → per-material lookup (drops dirt hardcode), REGN region-keyed ambient layers, per-cell-load reverb-toggle wiring (API ships, cell loader doesn't call yet), raycast-occlusion attenuation. See M44 row in active milestones.
 - [ ] No save/load — playtest iterations require cold cell re-load (M45)
 - [ ] `PACK` (AI packages) records have stubs only — no evaluator (#446, M42)
 
@@ -503,7 +504,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] **R6** `VulkanContext` scratch buffers have no capacity telemetry — **closed**. `ctx.scratch` console command + `ScratchTelemetry` resource cover all 5 persistent scratches; per-frame refresh via `VulkanContext::fill_scratch_telemetry`. Prospector baseline: 337 KB total, 320 B wasted.
 - [x] **R6a** Prospector re-bench — **closed**. 192.8 FPS / 5.19 ms at `e6e8091`, wall-clock bench.
 - [x] **R6a-stale** Bench-of-record refreshed at `6a6950a` (2026-04-24). Prospector 172.6 FPS / 5.79 ms (was 192.8 / 5.19 — slight regression in compositor-jitter range; fence_ms unchanged at 4.34, GPU still the bottleneck). Skyrim Whiterun 253.3 FPS / 3.95 ms at 1932 entities (was 237 FPS at 1258 entities — entity count up 53% while FPS improved, indicating more REFRs land now without perf cost). FO4 MedTek 92.5 FPS / 10.82 ms (was 90, 7434 entities unchanged).
-- [ ] **R6a-stale-7** Bench-of-record `6a6950a` is now 322 commits stale. Sessions 24-25 stacked M41.0 Phases 0–4 + R1 MaterialTable refactor; Session 28 added the RenderLayer depth-bias ladder + Frostbite light falloff curve + `env_map_scale` ≠ metalness fix; Session 29 was bug-bash + parser fixes (no rendering hot-path changes that would invalidate the bench, but the rayon parallel parse `#830` may shorten cell-stream latency on radius-3 grids — companion telemetry work needed before that's measurable). Refresh still deferred until M41 lands the visible-actor workload that exercises the new code paths. Not blocking.
+- [ ] **R6a-stale-7** Bench-of-record `6a6950a` is now 363 commits stale. Sessions 24-25 stacked M41.0 Phases 0–4 + R1 MaterialTable refactor; Session 28 added the RenderLayer depth-bias ladder + Frostbite light falloff curve + `env_map_scale` ≠ metalness fix; Session 29 was bug-bash + parser fixes (no rendering hot-path changes that would invalidate the bench, but the rayon parallel parse `#830` may shorten cell-stream latency on radius-3 grids — companion telemetry work needed before that's measurable). Session 30 shipped M44 audio (no rendering-path impact) + cell-streaming hardening + concurrency audit closeouts (#871 `SkinSlot` rollback, #655 `SwapchainState::destroy` `&mut self`, #675 SVGF moments.b semantics, #799 sun glow ramp, #807 `material_id` slot-0 reservation — none of them on the per-frame hot path). Refresh still deferred until M41 lands the visible-actor workload that exercises the new code paths. Not blocking.
 - [x] **R7** Scheduler access declarations — **closed**. `Access` builder + `System::access()` opt-in + `Scheduler::add_to_with_access` for closures + `sys.accesses` console command surface a per-stage Conflict / Unknown report. 3 of 12 systems declared so far (fly_camera, spin, log_stats); 4 Unknown pairs remaining. M27 flip is diagnosable now; eliminating the Unknown rows is incremental migration work.
 
 ### Closed — Renderer regressions (2026-05-01 / 02 live debug arc)
@@ -528,16 +529,16 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-05-05, verified by `/session-close`.
+Ground-truth as of 2026-05-06, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (non-test)            | ~134 834                     |
-| Rust total lines                        | ~139 950                     |
-| Source files (non-test)                 | 276                          |
-| Workspace members                       | 17                           |
-| Tests (last reported by ROADMAP)        | 1649 (Session 28 1581 + Session 29 +68 across audit-bundle regression coverage: BSLagBone/BSProceduralLightning/NiLodTriShape parse fixtures, TXST DODT/DNAM, ECS root-cache invalidation, despawn-poisoned-lock-names-component, kf-era body-paths, BA2 unknown-version-rejected, NIF bulk-reader LE byte-order, GpuMaterial per-field offsets) |
-| Open issue directories                  | 798 (`.claude/issues/`)       |
+| Rust source lines (non-test)            | ~140 312                     |
+| Rust total lines                        | ~146 072                     |
+| Source files (non-test)                 | 282                          |
+| Workspace members                       | 18                           |
+| Tests (last reported by ROADMAP)        | 1729 (Session 29 1649 + Session 30 +80 across M44 audio crate end-to-end coverage — 12 default + 5 ignored real-data integrations, cell-streaming worker panic-catch regression, evicted-clip release pin, root-set cache for world_bound_propagation, billboard cycle collapse, NIF Vec pre-size, M41 animation chain 3-layer regression suite, concurrency audit dims 2-3 closeouts: SkinSlot rollback, MaterialTable seeded-slot-0, SVGF moments early-out semantics) |
+| Open issue directories                  | 826 (`.claude/issues/`)       |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 96.24%, FO4 96.46%, FO76 97.34%, Starfield 98.6% aggregate (see compat matrix for per-archive breakdown). Recoverable 100% on all except Oblivion 99.99%. Sweep date 2026-04-27. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
