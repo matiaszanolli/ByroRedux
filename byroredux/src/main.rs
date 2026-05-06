@@ -33,7 +33,9 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::commands::build_command_registry;
-use crate::components::{FootstepConfig, InputState, NameIndex, Spinning, SubtreeCache};
+use crate::components::{
+    CellRootIndex, FootstepConfig, InputState, NameIndex, Spinning, SubtreeCache,
+};
 use crate::helpers::world_resource_set;
 use crate::render::build_render_data;
 use crate::systems::{
@@ -255,6 +257,7 @@ impl App {
         world.insert_resource(AnimationClipRegistry::new());
         world.insert_resource(NameIndex::new());
         world.insert_resource(SubtreeCache::new());
+        world.insert_resource(CellRootIndex::new());
         world.insert_resource(byroredux_physics::PhysicsWorld::new());
         // M44 Phase 1 — audio world. Init failure (no audio device,
         // CI, headless server) leaves the inner `AudioManager` as

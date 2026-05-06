@@ -20,7 +20,7 @@ use crate::asset_provider::{
     TextureProvider,
 };
 use crate::components::{
-    AlphaBlend, CellLightingRes, DarkMapHandle, ExtraTextureMaps, NormalMapHandle,
+    AlphaBlend, CellLightingRes, CellRootIndex, DarkMapHandle, ExtraTextureMaps, NormalMapHandle,
     SkyParamsRes, TerrainTileSlot, TwoSided, WeatherDataRes, WeatherTransitionRes,
 };
 
@@ -78,6 +78,12 @@ pub struct CellLoadResult {
 /// [`World::next_entity_id`] before/after the load. `cell_root` itself
 /// also gets the component so it's picked up by the same query in
 /// [`unload_cell`].
+///
+/// Also populates the `CellRootIndex` Resource (#791) — an inverted
+/// `cell_root → owned entities` map so [`unload_cell`] can drain victims
+/// by `HashMap::remove` instead of scanning the entire `CellRoot`
+/// SparseSet. The two paths stay in lockstep: anything stamped with
+/// `CellRoot(cell_root)` also lands in `CellRootIndex.map[cell_root]`.
 fn stamp_cell_root(world: &mut World, cell_root: EntityId, first: EntityId, last: EntityId) {
     world.insert(cell_root, CellRoot(cell_root));
     for eid in first..last {
@@ -85,6 +91,21 @@ fn stamp_cell_root(world: &mut World, cell_root: EntityId, first: EntityId, last
         // given any component never created a CellRoot storage entry
         // — the row just stays in the sparse set for lookup.
         world.insert(eid, CellRoot(cell_root));
+    }
+    // Populate the inverted index. Production always registers the
+    // resource at App init (`main.rs:258`); test fixtures that drive
+    // stamp_cell_root through reduced setups may not. Skip silently in
+    // that case — `unload_cell` will also skip and fall through to an
+    // empty victim set, which is the same observable behaviour the
+    // unload path had pre-#791 for cells whose query found no rows.
+    if let Some(mut idx) = world.try_resource_mut::<CellRootIndex>() {
+        let entry = idx.map.entry(cell_root).or_insert_with(Vec::new);
+        let span = last.saturating_sub(first) as usize;
+        entry.reserve(span + 1);
+        for eid in first..last {
+            entry.push(eid);
+        }
+        entry.push(cell_root);
     }
 }
 
@@ -106,18 +127,16 @@ fn stamp_cell_root(world: &mut World, cell_root: EntityId, first: EntityId, last
 /// clutter textures to the checkerboard.
 #[allow(dead_code)] // exposed for scripting / doorwalking wiring (M40)
 pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: EntityId) {
-    // Collect victims that the query iterator can see. Hold the lock
-    // only for the iteration, then release before calling despawn
-    // (which takes `&mut World`).
-    let victims: Vec<EntityId> = {
-        let Some(q) = world.query::<CellRoot>() else {
-            return;
-        };
-        q.iter()
-            .filter(|(_, root)| root.0 == cell_root)
-            .map(|(eid, _)| eid)
-            .collect()
-    };
+    // Drain victims from the `CellRootIndex` inverted map (#791). Pre-#791
+    // this filtered the entire `CellRoot` SparseSet to find victims of a
+    // single cell, scaling O(total resident entities); the index makes
+    // lookup O(victims). If the resource is absent (test fixtures that
+    // don't register it) or the cell isn't tracked, fall through with
+    // an empty victim set — `unload_cell` is idempotent.
+    let victims: Vec<EntityId> = world
+        .try_resource_mut::<CellRootIndex>()
+        .and_then(|mut idx| idx.map.remove(&cell_root))
+        .unwrap_or_default();
 
     // Gather mesh handles (HashSet — per-cell mesh buffers are unique,
     // a HashSet is only guarding against double-drops within one cell).
@@ -2412,3 +2431,7 @@ mod lgtm_fallback_tests;
 #[cfg(test)]
 #[path = "cell_loader_placement_root_subtree_tests.rs"]
 mod placement_root_subtree_tests;
+
+#[cfg(test)]
+#[path = "cell_loader_root_index_tests.rs"]
+mod root_index_tests;

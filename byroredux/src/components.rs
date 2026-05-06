@@ -573,6 +573,28 @@ impl SubtreeCache {
     }
 }
 
+/// Inverted index of `CellRoot → owned entities`, populated by
+/// `cell_loader::stamp_cell_root` and drained by `unload_cell`. Pre-#791
+/// the unload path iterated the entire `CellRoot` SparseSet to filter
+/// down to victims of a single cell, scanning ~13.5k rows on a
+/// radius-3 streaming grid (49 cells × ~1.5k entities) to find the
+/// ~1.5k that belong to the unloading cell. With this index the lookup
+/// is `HashMap::remove`, independent of the number of resident cells.
+///
+/// Memory cost is ~8 B per cell-owned entity (one `EntityId` per slot
+/// in the inner `Vec`), dwarfed by the entity's component data.
+pub(crate) struct CellRootIndex {
+    pub(crate) map: HashMap<EntityId, Vec<EntityId>>,
+}
+impl Resource for CellRootIndex {}
+impl CellRootIndex {
+    pub(crate) fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+        }
+    }
+}
+
 impl NameIndex {
     pub(crate) fn new() -> Self {
         Self {
