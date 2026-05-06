@@ -577,6 +577,13 @@ pub struct VulkanContext {
     /// concurrent callers — only one reset+wait cycle at a time.
     pub transfer_fence: Arc<Mutex<vk::Fence>>,
     framebuffers: Vec<vk::Framebuffer>,
+    // Single VkImage shared across all frames-in-flight (NOT per-frame
+    // like the G-buffer / TAA / SVGF / caustic / SSAO attachments).
+    // Safe at MAX_FRAMES_IN_FLIGHT == 2 because the double-fence wait
+    // at draw.rs:108-120 (#282) is equivalent to device-idle for prior
+    // frames; bumping MAX_FRAMES_IN_FLIGHT requires per-frame depth or
+    // an extended fence wait. The const_assert at sync.rs:8 enforces
+    // the contract at workspace-build time. See #870.
     depth_image_view: vk::ImageView,
     depth_image: vk::Image,
     depth_allocation: Option<vk_alloc::Allocation>,
