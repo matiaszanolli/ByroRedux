@@ -87,9 +87,12 @@ pub struct CellLoadResult {
 fn stamp_cell_root(world: &mut World, cell_root: EntityId, first: EntityId, last: EntityId) {
     world.insert(cell_root, CellRoot(cell_root));
     for eid in first..last {
-        // `insert` is overwrite-safe, and entities that were never
-        // given any component never created a CellRoot storage entry
-        // — the row just stays in the sparse set for lookup.
+        // `insert` is overwrite-safe; every spawned entity in
+        // `first..last` gets a `CellRoot` row regardless of whether
+        // it received any other components. The unload path filters
+        // `CellRoot` storage by `cell_root`, so this stamp is what
+        // makes the entity reachable from `unload_cell` (post-#791,
+        // also via the `CellRootIndex` populated below).
         world.insert(eid, CellRoot(cell_root));
     }
     // Populate the inverted index. Production always registers the
