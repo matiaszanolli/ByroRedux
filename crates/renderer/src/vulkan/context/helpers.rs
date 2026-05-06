@@ -533,19 +533,148 @@ fn pipeline_cache_path() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("pipeline_cache.bin"))
 }
 
+/// Validate a Vulkan pipeline cache header against the running
+/// device's properties. Per VK spec
+/// [`VkPipelineCacheHeaderVersionOne`] the on-disk header is 32
+/// bytes:
+///
+/// | bytes | field            |
+/// |-------|------------------|
+/// |  0–3  | u32 headerSize   |
+/// |  4–7  | u32 headerVersion (= 1, `VK_PIPELINE_CACHE_HEADER_VERSION_ONE`) |
+/// |  8–11 | u32 vendorID     |
+/// | 12–15 | u32 deviceID     |
+/// | 16–31 | u8[16] pipelineCacheUUID |
+///
+/// Returns `true` only when every field matches the running device.
+/// Drivers re-validate independently, but defense-in-depth: a buggy
+/// driver — or a malicious cache file dropped next to the binary by
+/// a process with filesystem write access — could trip undefined
+/// behaviour parsing partial bad data before its own validator runs.
+/// Re-checking here means a bad header never reaches the driver.
+/// See SAFE-11 / #91.
+///
+/// Pure helper, separated from the load path so the bit-shuffling
+/// can be unit-tested without a Vulkan device.
+pub(super) fn validate_pipeline_cache_header(
+    initial_data: &[u8],
+    expected_vendor_id: u32,
+    expected_device_id: u32,
+    expected_uuid: &[u8; 16],
+) -> bool {
+    // VK_PIPELINE_CACHE_HEADER_VERSION_ONE has exactly 32 bytes of
+    // fixed prefix; anything shorter is corrupt or truncated.
+    if initial_data.len() < 32 {
+        return false;
+    }
+    let header_size = u32::from_le_bytes([
+        initial_data[0],
+        initial_data[1],
+        initial_data[2],
+        initial_data[3],
+    ]);
+    let header_version = u32::from_le_bytes([
+        initial_data[4],
+        initial_data[5],
+        initial_data[6],
+        initial_data[7],
+    ]);
+    let vendor_id = u32::from_le_bytes([
+        initial_data[8],
+        initial_data[9],
+        initial_data[10],
+        initial_data[11],
+    ]);
+    let device_id = u32::from_le_bytes([
+        initial_data[12],
+        initial_data[13],
+        initial_data[14],
+        initial_data[15],
+    ]);
+    // Indexing 16..32 is safe — we already early-returned on len < 32.
+    let mut uuid = [0u8; 16];
+    uuid.copy_from_slice(&initial_data[16..32]);
+
+    // headerSize is the size of the fixed-prefix struct itself
+    // (always 32 today). A driver that writes a longer prefix would
+    // bump this; a value < 32 means the file lies about its own
+    // shape — reject. We don't upper-bound: a future version might
+    // legitimately grow the prefix, and the body bytes after the
+    // prefix are driver-specific.
+    if header_size < 32 {
+        return false;
+    }
+    if header_version != 1 {
+        return false;
+    }
+    if vendor_id != expected_vendor_id {
+        return false;
+    }
+    if device_id != expected_device_id {
+        return false;
+    }
+    if uuid != *expected_uuid {
+        return false;
+    }
+    true
+}
+
 /// Load pipeline cache data from disk, or create an empty cache.
-pub(super) fn load_or_create_pipeline_cache(device: &ash::Device) -> Result<vk::PipelineCache> {
+///
+/// Validates the on-disk header against the running device's
+/// `VkPhysicalDeviceProperties` (vendor / device / pipelineCacheUUID)
+/// before handing the bytes to the driver. A mismatch — driver
+/// upgrade, GPU swap, mod-installed bad file, malicious payload —
+/// silently degrades to an empty cache with a one-line warn rather
+/// than feeding suspect bytes through `vkCreatePipelineCache`. See
+/// SAFE-11 / #91.
+pub(super) fn load_or_create_pipeline_cache(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    device: &ash::Device,
+) -> Result<vk::PipelineCache> {
     let initial_data = std::fs::read(pipeline_cache_path()).unwrap_or_default();
 
-    let create_info = if initial_data.is_empty() {
+    // Header validation gate — drop the bytes when any field
+    // disagrees with the running device. The driver would reject
+    // these too, but pre-validating keeps untrusted bytes off the
+    // driver's parse path entirely. SAFE-11 / #91.
+    let validated_data = if !initial_data.is_empty() {
+        // SAFETY: `instance` + `physical_device` are valid for the
+        // lifetime of `VulkanContext::new` (the only caller); both
+        // were minted by `pick_physical_device` immediately above
+        // this call site and aren't destroyed until VulkanContext
+        // shutdown.
+        let props = unsafe { instance.get_physical_device_properties(physical_device) };
+        if validate_pipeline_cache_header(
+            &initial_data,
+            props.vendor_id,
+            props.device_id,
+            &props.pipeline_cache_uuid,
+        ) {
+            log::info!(
+                "Loading pipeline cache from disk ({} bytes, header validated)",
+                initial_data.len()
+            );
+            initial_data
+        } else {
+            log::warn!(
+                "Pipeline cache header mismatch — discarding {} stale bytes \
+                 (driver upgrade, GPU swap, or tampered file). Starting with \
+                 empty cache. SAFE-11 / #91.",
+                initial_data.len()
+            );
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    let create_info = if validated_data.is_empty() {
         log::info!("Creating empty pipeline cache");
         vk::PipelineCacheCreateInfo::default()
     } else {
-        log::info!(
-            "Loading pipeline cache from disk ({} bytes)",
-            initial_data.len()
-        );
-        vk::PipelineCacheCreateInfo::default().initial_data(&initial_data)
+        vk::PipelineCacheCreateInfo::default().initial_data(&validated_data)
     };
 
     let cache = unsafe {
@@ -576,5 +705,146 @@ pub(super) fn save_pipeline_cache(device: &ash::Device, cache: vk::PipelineCache
         log::error!("Failed to save pipeline cache to {}: {}", path.display(), e);
     } else {
         log::info!("Pipeline cache saved to {} ({} bytes)", path.display(), data.len());
+    }
+}
+
+#[cfg(test)]
+mod pipeline_cache_header_tests {
+    //! Regression tests for `validate_pipeline_cache_header` — issue
+    //! #91 / SAFE-11. The header is the only part of the cache file
+    //! we can sanity-check without a Vulkan device, so the unit tests
+    //! pin all six rejection paths plus the happy path.
+    use super::*;
+
+    /// Build a synthetic `VkPipelineCacheHeaderVersionOne` prefix
+    /// (32 bytes) with caller-controlled fields. Body bytes (driver-
+    /// specific opaque payload) follow at offset 32 — the validator
+    /// doesn't inspect them, so the body length is whatever the
+    /// caller appends.
+    fn make_header(
+        header_size: u32,
+        header_version: u32,
+        vendor_id: u32,
+        device_id: u32,
+        uuid: [u8; 16],
+    ) -> Vec<u8> {
+        let mut out = Vec::with_capacity(32);
+        out.extend_from_slice(&header_size.to_le_bytes());
+        out.extend_from_slice(&header_version.to_le_bytes());
+        out.extend_from_slice(&vendor_id.to_le_bytes());
+        out.extend_from_slice(&device_id.to_le_bytes());
+        out.extend_from_slice(&uuid);
+        out
+    }
+
+    /// Canonical "matching device" header — the happy path. Plus a
+    /// kilobyte of zero body bytes so the validator's prefix-only
+    /// scope is verified (it must not touch the body).
+    #[test]
+    fn happy_path_valid_header_returns_true() {
+        let uuid = [0x42u8; 16];
+        let mut data = make_header(32, 1, 0x1002, 0x73BF, uuid);
+        data.resize(1024, 0); // body bytes — must be ignored
+        assert!(validate_pipeline_cache_header(
+            &data, 0x1002, 0x73BF, &uuid
+        ));
+    }
+
+    #[test]
+    fn empty_data_returns_false() {
+        assert!(!validate_pipeline_cache_header(&[], 0x1002, 0x73BF, &[0u8; 16]));
+    }
+
+    #[test]
+    fn truncated_under_32_bytes_returns_false() {
+        let data = vec![0u8; 31];
+        assert!(!validate_pipeline_cache_header(
+            &data, 0x1002, 0x73BF, &[0u8; 16]
+        ));
+    }
+
+    /// `headerSize < 32` is a malformed file claiming a smaller
+    /// fixed-prefix than VK_PIPELINE_CACHE_HEADER_VERSION_ONE — reject.
+    #[test]
+    fn header_size_below_32_returns_false() {
+        let uuid = [0x42u8; 16];
+        let data = make_header(16, 1, 0x1002, 0x73BF, uuid);
+        assert!(!validate_pipeline_cache_header(
+            &data, 0x1002, 0x73BF, &uuid
+        ));
+    }
+
+    #[test]
+    fn unknown_header_version_returns_false() {
+        let uuid = [0x42u8; 16];
+        let data = make_header(32, 99, 0x1002, 0x73BF, uuid);
+        assert!(!validate_pipeline_cache_header(
+            &data, 0x1002, 0x73BF, &uuid
+        ));
+    }
+
+    /// Vendor ID mismatch — running on AMD (0x1002) with a cache
+    /// written by NVIDIA (0x10DE). Must reject — feeding a foreign
+    /// vendor's IR through the wrong driver is exactly the
+    /// undefined-behaviour surface SAFE-11 guards against.
+    #[test]
+    fn vendor_id_mismatch_returns_false() {
+        let uuid = [0x42u8; 16];
+        let data = make_header(32, 1, 0x10DE, 0x73BF, uuid); // NVIDIA file
+        assert!(!validate_pipeline_cache_header(
+            &data, 0x1002, 0x73BF, &uuid
+        )); // AMD device
+    }
+
+    #[test]
+    fn device_id_mismatch_returns_false() {
+        let uuid = [0x42u8; 16];
+        let data = make_header(32, 1, 0x1002, 0x1234, uuid);
+        assert!(!validate_pipeline_cache_header(
+            &data, 0x1002, 0x73BF, &uuid
+        ));
+    }
+
+    /// `pipelineCacheUUID` mismatch is the most common rejection
+    /// path in practice — drivers update the UUID on every minor
+    /// version bump, so a cache from yesterday's driver is rejected
+    /// by tomorrow's. The happy `vendor + device` match means the
+    /// UUID-only check is the regression guard for driver-upgrade
+    /// staleness.
+    #[test]
+    fn pipeline_cache_uuid_mismatch_returns_false() {
+        let device_uuid = [0x42u8; 16];
+        let cache_uuid = [0x99u8; 16]; // different driver build
+        let data = make_header(32, 1, 0x1002, 0x73BF, cache_uuid);
+        assert!(!validate_pipeline_cache_header(
+            &data, 0x1002, 0x73BF, &device_uuid
+        ));
+    }
+
+    /// All-zero header — the on-disk shape `std::fs::read` returns
+    /// after a corruption that zero-fills the file. Must reject.
+    /// Zero `headerSize` fails the `< 32` gate; zero `headerVersion`
+    /// fails the `!= 1` gate.
+    #[test]
+    fn all_zero_header_returns_false() {
+        let data = vec![0u8; 32];
+        assert!(!validate_pipeline_cache_header(
+            &data, 0x1002, 0x73BF, &[0u8; 16]
+        ));
+    }
+
+    /// Future-driver headers may legitimately grow the prefix
+    /// (`headerSize > 32`). The validator must accept that — only
+    /// the < 32 case is malformed.
+    #[test]
+    fn larger_header_size_returns_true_when_other_fields_match() {
+        let uuid = [0x42u8; 16];
+        let mut data = make_header(64, 1, 0x1002, 0x73BF, uuid);
+        // 32 bytes of forward-compat extension prefix the validator
+        // ignores (driver consumes them; we don't).
+        data.resize(64, 0);
+        assert!(validate_pipeline_cache_header(
+            &data, 0x1002, 0x73BF, &uuid
+        ));
     }
 }

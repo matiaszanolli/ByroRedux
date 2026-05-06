@@ -914,8 +914,13 @@ impl VulkanContext {
         // 12b. Pipeline cache (load from disk if available).
         // Created before ANY pipeline-create call so every compile
         // writes into the shared cache — warm-start second-launch
-        // skips most driver IR compilation (#426).
-        let pipeline_cache = load_or_create_pipeline_cache(&device)?;
+        // skips most driver IR compilation (#426). The on-disk
+        // header is validated against the running device's
+        // vendorID / deviceID / pipelineCacheUUID before the bytes
+        // reach the driver — defense in depth against tampered or
+        // post-upgrade-stale files (SAFE-11 / #91).
+        let pipeline_cache =
+            load_or_create_pipeline_cache(&vk_instance, physical_device, &device)?;
 
         // 12c. Cluster cull compute pipeline (light culling)
         let cluster_cull = match ClusterCullPipeline::new(
