@@ -223,9 +223,15 @@ vec3 compute_sky(vec3 dir) {
     }
 
     // Sun glow: soft radial halo around the sun.
+    //
+    // #799 — multiply by `sun_intensity` so the halo fades with the
+    // disc through the day/night ramp. Pre-fix the disc faded
+    // correctly (line 222) but the halo stayed at constant 0.15 *
+    // sun_col, so a WTHR with non-zero `SKY_SUN[NIGHT]` (e.g.
+    // Skyrim's MoonShadow) painted a faint warm halo at midnight.
     float glow = max(cos_angle, 0.0);
     glow = pow(glow, 4.0);
-    sky += sun_col * glow * 0.15;
+    sky += sun_col * glow * 0.15 * sun_intensity;
 
     return sky;
 }
