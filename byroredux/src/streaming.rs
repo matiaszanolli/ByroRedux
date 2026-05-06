@@ -206,7 +206,11 @@ impl WorldStreamingState {
 /// single `LoadCellPayload` per request.
 ///
 /// Exits when `request_rx` returns `Err` (sender dropped on
-/// `WorldStreamingState` shutdown).
+/// `WorldStreamingState` shutdown). Panics inside `pre_parse_cell`
+/// are caught and converted into an empty payload — without this
+/// guard a single parser-level panic would tear down the worker
+/// thread, drop `request_rx`, and silently disable exterior streaming
+/// for the rest of the session (#854).
 fn cell_pre_parse_worker(
     request_rx: mpsc::Receiver<LoadCellRequest>,
     payload_tx: mpsc::Sender<LoadCellPayload>,
@@ -220,13 +224,42 @@ fn cell_pre_parse_worker(
             wctx,
             tex_provider,
         } = req;
-        let payload = pre_parse_cell(gx, gy, generation, &wctx, &tex_provider);
+        let payload = pre_parse_cell_panic_safe(gx, gy, generation, || {
+            pre_parse_cell(gx, gy, generation, &wctx, &tex_provider)
+        });
         if payload_tx.send(payload).is_err() {
             // Receiver dropped — main thread is shutting down; exit cleanly.
             break;
         }
     }
     log::info!("cell-stream worker thread exiting");
+}
+
+/// Run `f` (the cell pre-parse) inside a panic guard. If `f` panics,
+/// log and return an empty payload tagged with the request's
+/// coordinates and generation. The drain step still observes the
+/// (empty) payload, clears the pending entry, and the streaming loop
+/// stays live for the next cell crossing — unlike the pre-#854
+/// behaviour where the worker thread died and every subsequent send
+/// failed.
+fn pre_parse_cell_panic_safe<F>(gx: i32, gy: i32, generation: u64, f: F) -> LoadCellPayload
+where
+    F: FnOnce() -> LoadCellPayload,
+{
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| {
+        log::error!(
+            "[stream-worker] panic in pre_parse_cell({}, {}) gen={} — recovered with empty payload (#854)",
+            gx,
+            gy,
+            generation
+        );
+        LoadCellPayload {
+            gx,
+            gy,
+            generation,
+            parsed: HashMap::new(),
+        }
+    })
 }
 
 /// Per-cell pre-parse: walk references, resolve unique model paths,
@@ -285,31 +318,44 @@ fn pre_parse_cell(
     let results: Vec<(String, Option<PartialNifImport>)> = model_paths
         .into_par_iter()
         .map(|path| {
-            let Some(bytes) = tex_provider.extract_mesh(&path) else {
-                log::debug!("[stream-worker] NIF not in BSA: '{}'", path);
-                return (path, None);
-            };
-            let scene = match byroredux_nif::parse_nif(&bytes) {
-                Ok(s) => s,
-                Err(e) => {
-                    log::warn!("[stream-worker] NIF parse failed '{}': {}", path, e);
-                    return (path, None);
-                }
-            };
-            let bsx = byroredux_nif::import::extract_bsx_flags(&scene);
-            let lights = byroredux_nif::import::import_nif_lights(&scene);
-            let particle_emitters = byroredux_nif::import::import_nif_particle_emitters(&scene);
-            let embedded_clip = byroredux_nif::anim::import_embedded_animations(&scene);
-            (
-                path,
+            // Per-NIF panic guard — converts a parser-level panic into
+            // the same `None` failure marker used by the regular Err
+            // path. Without this, a panic would propagate through
+            // rayon's `collect()` and tear down the worker thread
+            // (#854).
+            let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let Some(bytes) = tex_provider.extract_mesh(&path) else {
+                    log::debug!("[stream-worker] NIF not in BSA: '{}'", path);
+                    return None;
+                };
+                let scene = match byroredux_nif::parse_nif(&bytes) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::warn!("[stream-worker] NIF parse failed '{}': {}", path, e);
+                        return None;
+                    }
+                };
+                let bsx = byroredux_nif::import::extract_bsx_flags(&scene);
+                let lights = byroredux_nif::import::import_nif_lights(&scene);
+                let particle_emitters =
+                    byroredux_nif::import::import_nif_particle_emitters(&scene);
+                let embedded_clip = byroredux_nif::anim::import_embedded_animations(&scene);
                 Some(PartialNifImport {
                     scene,
                     bsx,
                     lights,
                     particle_emitters,
                     embedded_clip,
-                }),
-            )
+                })
+            }))
+            .unwrap_or_else(|_| {
+                log::error!(
+                    "[stream-worker] panic parsing NIF '{}' — recording None (#854)",
+                    path
+                );
+                None
+            });
+            (path, parsed)
         })
         .collect();
     parsed.extend(results);

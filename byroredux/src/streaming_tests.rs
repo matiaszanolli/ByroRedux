@@ -7,8 +7,8 @@
 //! silently miscompute the load / unload set.
 
 use super::{
-    classify_payload, compute_streaming_deltas, world_pos_to_grid, LoadedCell, PayloadDecision,
-    StreamingDeltas,
+    classify_payload, compute_streaming_deltas, pre_parse_cell_panic_safe, world_pos_to_grid,
+    LoadCellPayload, LoadedCell, PayloadDecision, StreamingDeltas,
 };
 use byroredux_core::ecs::storage::EntityId;
 use std::collections::HashMap;
@@ -232,4 +232,45 @@ fn payload_decision_does_not_consult_unrelated_coords() {
         classify_payload(&pending, (0, 0), 7),
         PayloadDecision::StaleNoPending
     );
+}
+
+// ── Worker panic recovery (#854) ────────────────────────────────
+
+#[test]
+fn worker_panic_safe_recovers_panic_with_empty_payload() {
+    // Pre-#854: a panic inside `pre_parse_cell` (e.g. a parser-level
+    // `unwrap()` regression on vanilla content) propagated up the
+    // worker thread, dropped `request_rx`, and silently disabled
+    // streaming for the rest of the session. The guard converts the
+    // panic into an empty payload tagged with the same coords +
+    // generation so the drain step clears `pending` and the worker
+    // stays alive for the next request.
+    let payload = pre_parse_cell_panic_safe(3, 4, 7, || {
+        panic!("simulated parser panic on bad NIF");
+    });
+    assert_eq!(payload.gx, 3);
+    assert_eq!(payload.gy, 4);
+    assert_eq!(payload.generation, 7);
+    assert!(
+        payload.parsed.is_empty(),
+        "panic recovery must emit an empty parsed map"
+    );
+}
+
+#[test]
+fn worker_panic_safe_passes_through_normal_payload() {
+    // Sanity: the guard is transparent on the success path.
+    let mut parsed_in = HashMap::new();
+    parsed_in.insert("test/model.nif".to_string(), None);
+    let payload = pre_parse_cell_panic_safe(1, 2, 5, || LoadCellPayload {
+        gx: 1,
+        gy: 2,
+        generation: 5,
+        parsed: parsed_in,
+    });
+    assert_eq!(payload.gx, 1);
+    assert_eq!(payload.gy, 2);
+    assert_eq!(payload.generation, 5);
+    assert_eq!(payload.parsed.len(), 1);
+    assert!(payload.parsed.contains_key("test/model.nif"));
 }
