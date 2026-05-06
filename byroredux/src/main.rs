@@ -43,6 +43,14 @@ use crate::systems::{
 };
 use byroredux_core::ecs::SystemList;
 
+/// Cell-streaming SVGF/TAA recovery window — bumps both pipelines'
+/// elevated-α / history-reset windows when a cell loads or unloads,
+/// so trail ghosting on freshly-streamed geometry is washed out in
+/// this many frames instead of 30+ at the steady-state α=0.2 floor.
+/// At 60 FPS that's ~130 ms of recovery, comparable to TAA history-
+/// reset windows. See #801 / STRM-N1.
+const SVGF_TAA_STREAMING_RECOVERY_FRAMES: u32 = 8;
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let debug_mode = args.iter().any(|a| a == "--debug");
@@ -514,6 +522,7 @@ impl App {
 
         // Unload first to free GPU resources before kicking new loads —
         // cuts peak VRAM at the boundary crossing.
+        let mut unloaded_any = false;
         for coord in deltas.to_unload {
             if let Some(slot) = state.loaded.remove(&coord) {
                 cell_loader::unload_cell(&mut self.world, ctx, slot.cell_root);
@@ -523,10 +532,19 @@ impl App {
                     coord.1,
                     slot.cell_root
                 );
+                unloaded_any = true;
             }
             // If a load was in flight for this cell, leave the
             // pending entry; the drain step compares generation and
             // drops the stale payload when it eventually arrives.
+        }
+        // Cell unload despawns instances and forces a TLAS rebuild on
+        // the next frame; the SVGF/TAA history is now stale for the
+        // pixels those instances covered. Bump the recovery window so
+        // ghosting is washed out in ~8 frames instead of 30+ at the
+        // steady-state α. See #801 / STRM-N1.
+        if unloaded_any {
+            ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
         }
 
         // Dispatch new loads — non-blocking send, worker picks them up
@@ -637,6 +655,12 @@ fn consume_streaming_payload(
                     cell_root: info.cell_root,
                 },
             );
+            // Newly-spawned instances mean a TLAS rebuild + fresh
+            // pixels with no history. Bump the SVGF/TAA recovery
+            // window so the ghosting transient on the just-streamed
+            // geometry is washed out in ~8 frames instead of 30+ at
+            // the steady-state α. See #801 / STRM-N1.
+            ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
         }
         Ok(None) => {
             // Worldspace hole — common at edges; pending entry already

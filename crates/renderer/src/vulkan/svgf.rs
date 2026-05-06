@@ -1058,4 +1058,31 @@ mod tests {
             );
         }
     }
+
+    /// Regression for #801 / STRM-N1: a cell-streaming event bumps
+    /// recovery to N frames; the next N dispatches must run with the
+    /// elevated α and then revert exactly on frame N+1. Walks the
+    /// state machine from N=8 (the cell-streaming default) down to 0
+    /// to pin the sequence end-to-end — guards against an off-by-one
+    /// that would keep ghosting one extra frame or drop the elevated
+    /// weighting one frame early.
+    #[test]
+    fn streaming_recovery_window_runs_full_n_frames_then_reverts() {
+        const N: u32 = 8;
+        let mut counter = N;
+        for frame in 0..N {
+            let (a_color, a_moments, next) = next_svgf_temporal_alpha(counter);
+            assert!(
+                (a_color - SVGF_ALPHA_RECOVERY).abs() < 1e-6,
+                "frame {frame} of {N}-frame recovery: expected α={SVGF_ALPHA_RECOVERY}, got {a_color}",
+            );
+            assert!((a_moments - SVGF_ALPHA_RECOVERY).abs() < 1e-6);
+            assert_eq!(next, N - 1 - frame, "counter must decrement by 1 per dispatch");
+            counter = next;
+        }
+        // Frame N+1 — recovery exhausted, back to steady-state.
+        let (a_color, _, next) = next_svgf_temporal_alpha(counter);
+        assert!((a_color - SVGF_ALPHA_STEADY_STATE).abs() < 1e-6);
+        assert_eq!(next, 0);
+    }
 }

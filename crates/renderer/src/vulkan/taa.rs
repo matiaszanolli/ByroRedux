@@ -515,6 +515,25 @@ impl TaaPipeline {
         self.history[frame].view
     }
 
+    /// Force the next [`MAX_FRAMES_IN_FLIGHT`] frames to skip the
+    /// temporal tap, dropping ghost-resolved history when scene
+    /// content changes underneath the camera (cell load / unload,
+    /// weather flip, fast camera turn).
+    ///
+    /// Same effect as `recreate_on_resize` for `frames_since_creation`
+    /// — `should_force_history_reset(self.frames_since_creation)` flips
+    /// to `true` for two dispatches and the param.y reset flag forces
+    /// the shader to use only the current frame. No GPU resources are
+    /// touched (history images stay allocated).
+    ///
+    /// Pairs with [`SvgfPipeline`]'s recovery-α window so SVGF and TAA
+    /// recover together — without this, TAA would keep trailing
+    /// ghosting on freshly-streamed geometry for ~30 frames at 60 FPS
+    /// while SVGF's elevated-α window already faded. See #801.
+    pub fn signal_history_reset(&mut self) {
+        self.frames_since_creation = 0;
+    }
+
     /// UNDEFINED → GENERAL for every history slot. Call once after `new()`.
     /// # Safety
     /// device / queue / pool must be valid; queue must support graphics.

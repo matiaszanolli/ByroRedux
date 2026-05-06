@@ -1455,8 +1455,17 @@ impl VulkanContext {
     ///
     /// Calls accumulate via `max` — bumping by 5 mid-recovery extends
     /// the window rather than truncating it. Schied 2017 §4 / #674.
+    ///
+    /// Also resets the TAA history-reset window so TAA's resolved
+    /// indirect doesn't keep trailing the SVGF recovery — without
+    /// the paired reset TAA would ghost newly-streamed geometry for
+    /// ~30 frames at 60 FPS while SVGF's elevated-α window already
+    /// faded. See #801.
     pub fn signal_temporal_discontinuity(&mut self, frames: u32) {
         self.svgf_recovery_frames = self.svgf_recovery_frames.max(frames);
+        if let Some(ref mut taa) = self.taa {
+            taa.signal_history_reset();
+        }
     }
 
     /// Snapshot every persistent CPU-side scratch `Vec` owned by the
