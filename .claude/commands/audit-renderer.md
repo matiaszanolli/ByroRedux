@@ -76,7 +76,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - Attachment load/store ops (CLEAR + STORE for all G-buffer outputs)
 - Layout transitions (UNDEFINED → COLOR_ATTACHMENT → SHADER_READ for G-buffer targets)
 - Subpass dependencies cover all stage/access masks
-- G-buffer format choices match shader output types (R16G16B16A16_SFLOAT for normals, R16G16_SFLOAT for motion vectors, R32_UINT for mesh ID)
+- G-buffer format choices match shader output types (RG16_SNORM octahedral-packed for normals per Schied 2017, R16G16_SFLOAT for motion vectors, **R16_UINT** for mesh ID — 15-bit id + bit 15 = ALPHA_BLEND_NO_HISTORY flag for SVGF disocclusion, hard-cap 32767 instances guarded by `debug_assert!` in `draw.rs`; see `helpers.rs:54-62`)
 - Depth attachment format and load/store ops
 - G-buffer images created with SAMPLED usage (needed by SVGF and composite reads)
 **Output**: `/tmp/audit/renderer/dim_4.md`
@@ -210,7 +210,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 ### Dimension 12: GPU Skinning Compute + BLAS Refit (M29.5 + M29.3)
 **Entry points**: `crates/renderer/src/vulkan/skin_compute.rs`, `crates/renderer/shaders/skin_vertices.comp`, `crates/renderer/src/vulkan/acceleration.rs` (per-skinned-entity BLAS refit), `byroredux/src/render.rs` (skinned-mesh enumeration)
 **Checklist**:
-- `VERTEX_STRIDE_FLOATS = 21` matches `crates/renderer/src/vertex.rs::Vertex` exactly (84 B / vertex). Drift here corrupts every skinned vertex
+- `VERTEX_STRIDE_FLOATS = 25` matches `crates/renderer/src/vertex.rs::Vertex` exactly (100 B / vertex; widened from the pre-M-NORMALS 21 / 84 B per #783 once tangent + bitangent_sign landed). Drift here corrupts every skinned vertex
 - `SkinPushConstants` (vertex_offset, vertex_count, bone_offset) matches the GLSL `PushConstants` struct in skin_vertices.comp; total ≤ 128 B
 - Per-skinned-mesh output buffer usage flags include `STORAGE_BUFFER` AND `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR` (BLAS reads it). M29.3 Phase 3 also re-adds `VERTEX_BUFFER` (#681 / `MEM-2-6` regression note in roadmap)
 - Bone palette SSBO is DEVICE_LOCAL with HOST_VISIBLE staging, uploaded once per frame, sized for `MAX_TOTAL_BONES`
