@@ -874,22 +874,24 @@ pub(crate) fn billboard_system(world: &World, _dt: f32) {
     let cam_entity = active.0;
     drop(active);
 
-    let Some(cam_gq) = world.query::<GlobalTransform>() else {
+    // Single GlobalTransform write query — `get` reads the camera GT
+    // through the same handle that drives the billboard writes below.
+    // Pre-#829 the system cycled a read lock + write lock on the same
+    // storage every frame; the read-then-write pair burned ~50–100 ns
+    // and a Vec allocation in release (compounding with #823) plus
+    // opened a window for a future deadlock if the prelude grew
+    // another acquisition between the two.
+    let Some(mut gq) = world.query_mut::<GlobalTransform>() else {
         return;
     };
-    let Some(cam_global) = cam_gq.get(cam_entity).copied() else {
+    let Some(cam_global) = gq.get(cam_entity).copied() else {
         return;
     };
-    drop(cam_gq);
-
     let cam_pos = cam_global.translation;
     // Camera forward = rotation * -Z (see Camera::view_matrix).
     let cam_forward = cam_global.rotation * -Vec3::Z;
 
     let Some(bq) = world.query::<Billboard>() else {
-        return;
-    };
-    let Some(mut gq) = world.query_mut::<GlobalTransform>() else {
         return;
     };
 
